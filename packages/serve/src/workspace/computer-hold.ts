@@ -281,7 +281,8 @@ function heldPort<P extends Port>(port: P, hold: ComputerHold): P {
     async call(op: string, args: unknown, signal?: AbortSignal) {
       const what = actOf(port, op, args);
       if (what === undefined && !LOOKS.has(op)) return port.call(op, args, signal);
-      const parked = hold.state() !== "agent";
+      // Awaited: in a run's own process the hold is its runner's, and its state an answer over the channel (run-child.ts).
+      const parked = (await hold.state()) !== "agent";
       const leave = await hold.enter(signal);
       if (parked && what !== undefined) {
         leave();

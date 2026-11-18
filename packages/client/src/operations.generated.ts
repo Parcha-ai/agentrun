@@ -36,8 +36,7 @@ export type Agent = {
     issues: Array<string>;
     capabilities: {
       launch: boolean;
-      notes: boolean;
-      skills: boolean;
+      learning: boolean;
       workflows: false;
       approval: "native" | "unavailable";
       usage: boolean;
@@ -143,8 +142,7 @@ export type DefinitionInput = {
     issues: Array<string>;
     capabilities: {
       launch: boolean;
-      notes: boolean;
-      skills: boolean;
+      learning: boolean;
       workflows: false;
       approval: "native" | "unavailable";
       usage: boolean;
@@ -259,7 +257,7 @@ export type DefinitionInput = {
     [key: string]: unknown;
   };
   approvals?: "ask" | "never";
-  learning?: true | false | "notes" | {
+  learning?: boolean | {
     compile_after?: number;
     agree_min?: number;
     alone_min?: number;
@@ -396,35 +394,13 @@ export type RunSummary = {
   effort?: Effort;
   error?: RunError | null;
   learning?: {
-    state: "seeded" | "reflecting" | "proposed" | "merged" | "dropped";
-    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_timeout" | "reflect_failed" | "empty" | "unparsed" | "propose_failed" | "checker" | "grader" | "grade_failed" | "use" | null;
+    state: "seeded" | "reflecting" | "merged" | "dropped";
+    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
     detail: string | null;
-    given?: Array<{
-      file: string;
-      name: string;
-    }>;
-    read?: Array<{
-      file: string;
-      name: string;
-    }>;
-    learned?: Array<{
-      file: string;
-      name: string;
-      supersedes: Array<string>;
-    }>;
-    skills?: Array<{
-      file: string;
-      name: string;
-      pending?: true;
-    }>;
     workflows?: Array<{
       file: string;
       name: string;
       pending?: true;
-    }>;
-    pending?: Array<{
-      file: string;
-      name: string;
     }>;
   } | null;
   review?: {
@@ -704,36 +680,14 @@ export type Run = {
     };
   };
   learning?: {
-    state: "seeded" | "reflecting" | "proposed" | "merged" | "dropped";
-    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_timeout" | "reflect_failed" | "empty" | "unparsed" | "propose_failed" | "checker" | "grader" | "grade_failed" | "use" | null;
+    state: "seeded" | "reflecting" | "merged" | "dropped";
+    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
     detail: string | null;
     at: string;
-    given?: Array<{
-      file: string;
-      name: string;
-    }>;
-    read?: Array<{
-      file: string;
-      name: string;
-    }>;
-    learned?: Array<{
-      file: string;
-      name: string;
-      supersedes: Array<string>;
-    }>;
-    skills?: Array<{
-      file: string;
-      name: string;
-      pending?: true;
-    }>;
     workflows?: Array<{
       file: string;
       name: string;
       pending?: true;
-    }>;
-    pending?: Array<{
-      file: string;
-      name: string;
     }>;
   } | null;
   review?: {
@@ -939,8 +893,8 @@ export type TimelineRow = {
   tool_input?: Record<string, unknown>;
   tool_result_text?: string | null;
   learning?: {
-    state: "seeded" | "reflecting" | "proposed" | "merged" | "dropped";
-    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_timeout" | "reflect_failed" | "empty" | "unparsed" | "propose_failed" | "checker" | "grader" | "grade_failed" | "use" | null;
+    state: "seeded" | "reflecting" | "merged" | "dropped";
+    reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
     detail: string | null;
   };
 };
@@ -980,7 +934,6 @@ export type Capabilities = {
   regions: Array<Region>;
   limits: Limits;
   learning: {
-    grade_model: string | null;
     pending: true;
     approve: boolean;
     approve_needs?: "password";
@@ -1059,7 +1012,7 @@ export type Capabilities = {
     default_permission: "allow" | "ask" | "deny";
     permissions: Array<"allow" | "ask" | "deny">;
     ask_needs?: "password";
-    key?: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "openrouter";
+    key?: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "particle" | "openrouter";
   }>;
   workflows?: {
     nodes: Array<string>;
@@ -1090,6 +1043,7 @@ export type Capabilities = {
     condition: string;
     limit: string;
   };
+  run_isolation?: "uid" | "process";
 };
 
 export type Features = {
@@ -1283,8 +1237,7 @@ export type ConnectNativeResponse = {
     issues: Array<string>;
     capabilities: {
       launch: boolean;
-      notes: boolean;
-      skills: boolean;
+      learning: boolean;
       workflows: false;
       approval: "native" | "unavailable";
       usage: boolean;
@@ -1341,8 +1294,7 @@ export type DisconnectNativeResponse = {
     issues: Array<string>;
     capabilities: {
       launch: boolean;
-      notes: boolean;
-      skills: boolean;
+      learning: boolean;
       workflows: false;
       approval: "native" | "unavailable";
       usage: boolean;
@@ -1384,8 +1336,7 @@ export type DiscoverNativeResponse = {
     issues: Array<string>;
     capabilities: {
       launch: boolean;
-      notes: boolean;
-      skills: boolean;
+      learning: boolean;
       workflows: false;
       approval: "native" | "unavailable";
       usage: boolean;
@@ -1436,7 +1387,6 @@ export type GetLearningLoopResponse = {
     round: number;
     at: string;
     workflow: string | null;
-    from_notes: Array<string>;
     attempts: Array<{
       ok: boolean;
       errors: Array<string>;
@@ -1471,8 +1421,7 @@ export type GetNativeResponse = {
     issues: Array<string>;
     capabilities: {
       launch: boolean;
-      notes: boolean;
-      skills: boolean;
+      learning: boolean;
       workflows: false;
       approval: "native" | "unavailable";
       usage: boolean;
@@ -1684,8 +1633,7 @@ export type VerifyNativeResponse = {
     issues: Array<string>;
     capabilities: {
       launch: boolean;
-      notes: boolean;
-      skills: boolean;
+      learning: boolean;
       workflows: false;
       approval: "native" | "unavailable";
       usage: boolean;
@@ -1763,8 +1711,7 @@ export type ImportRemoteTargetBody = {
     issues: Array<string>;
     capabilities: {
       launch: boolean;
-      notes: boolean;
-      skills: boolean;
+      learning: boolean;
       workflows: false;
       approval: "native" | "unavailable";
       usage: boolean;
@@ -1801,8 +1748,7 @@ export type ImportRemoteTargetResponse = {
     issues: Array<string>;
     capabilities: {
       launch: boolean;
-      notes: boolean;
-      skills: boolean;
+      learning: boolean;
       workflows: false;
       approval: "native" | "unavailable";
       usage: boolean;
@@ -1967,237 +1913,11 @@ export type WriteHomeFileResponse = {
   unreadable?: true;
 };
 
-/** A learning batch's progress: rows done, right or wrong, lessons, workflow revisions, cost, the path each run took (GET /agents/{agent_id}/learning/batches/{batch_id}). */
-export type GetLearningBatchResponse = {
-  id: string;
-  agent_id: string;
-  created_at: string;
-  ended_at: string | null;
-  status: "running" | "completed" | "cancelled" | "stopped";
-  stopped: "cap" | "cost_unknown" | "learning_off" | null;
-  inputs: Array<string>;
-  answer: string;
-  answer_field: string | null;
-  effort: string | null;
-  max_cost_usd: number;
-  total: number;
-  finished: number;
-  right: number;
-  wrong: number;
-  failed: number;
-  spent_usd: number;
-  unknown_cost_rows: number;
-  paths: {
-    agent: number;
-    handed_back: number;
-    workflow: number;
-  };
-  lessons: {
-    notes: Array<string>;
-    skills: Array<string>;
-    workflows: Array<string>;
-  };
-  revisions: Array<{
-    row: number;
-    commit: string | null;
-    workflows: Array<string>;
-  }>;
-  cost_usd: number | null;
-  remaining_usd: number | null;
-  current: number | null;
-  rows: Array<{
-    n: number;
-    state: "pending" | "running" | "done" | "failed";
-    reference: string;
-    run_id?: string;
-    answer?: string | null;
-    right?: boolean;
-    reviewed?: boolean;
-    path?: "agent" | "handed_back" | "workflow";
-    cost_usd?: number | null;
-    learning_usd?: number | null;
-    total_usd?: number | null;
-    learned?: {
-      notes: Array<string>;
-      skills: Array<string>;
-      workflows: Array<string>;
-    };
-    merged?: string | null;
-    error?: string;
-  }>;
-  error?: string;
-};
-
-/** Cancel a running learning batch (POST /agents/{agent_id}/learning/batches/{batch_id}/cancel). */
-export type CancelLearningBatchResponse = {
-  id: string;
-  agent_id: string;
-  created_at: string;
-  ended_at: string | null;
-  status: "running" | "completed" | "cancelled" | "stopped";
-  stopped: "cap" | "cost_unknown" | "learning_off" | null;
-  inputs: Array<string>;
-  answer: string;
-  answer_field: string | null;
-  effort: string | null;
-  max_cost_usd: number;
-  total: number;
-  finished: number;
-  right: number;
-  wrong: number;
-  failed: number;
-  spent_usd: number;
-  unknown_cost_rows: number;
-  paths: {
-    agent: number;
-    handed_back: number;
-    workflow: number;
-  };
-  lessons: {
-    notes: Array<string>;
-    skills: Array<string>;
-    workflows: Array<string>;
-  };
-  revisions: Array<{
-    row: number;
-    commit: string | null;
-    workflows: Array<string>;
-  }>;
-  cost_usd: number | null;
-  remaining_usd: number | null;
-  current: number | null;
-  rows: Array<{
-    n: number;
-    state: "pending" | "running" | "done" | "failed";
-    reference: string;
-    run_id?: string;
-    answer?: string | null;
-    right?: boolean;
-    reviewed?: boolean;
-    path?: "agent" | "handed_back" | "workflow";
-    cost_usd?: number | null;
-    learning_usd?: number | null;
-    total_usd?: number | null;
-    learned?: {
-      notes: Array<string>;
-      skills: Array<string>;
-      workflows: Array<string>;
-    };
-    merged?: string | null;
-    error?: string;
-  }>;
-  error?: string;
-};
-
-/** Learn from rows: run the agent on each in order, with learning on, and tell it the reference answer after each (POST /agents/{agent_id}/learning/batches). */
-export type CreateLearningBatchBody = {
-  inputs: Array<string>;
-  answer: string;
-  rows: Array<Record<string, string>>;
-  max_cost_usd: number;
-  answer_field?: string;
-  effort?: string;
-};
-export type CreateLearningBatchResponse = {
-  id: string;
-  agent_id: string;
-  created_at: string;
-  ended_at: string | null;
-  status: "running" | "completed" | "cancelled" | "stopped";
-  stopped: "cap" | "cost_unknown" | "learning_off" | null;
-  inputs: Array<string>;
-  answer: string;
-  answer_field: string | null;
-  effort: string | null;
-  max_cost_usd: number;
-  total: number;
-  finished: number;
-  right: number;
-  wrong: number;
-  failed: number;
-  spent_usd: number;
-  unknown_cost_rows: number;
-  paths: {
-    agent: number;
-    handed_back: number;
-    workflow: number;
-  };
-  lessons: {
-    notes: Array<string>;
-    skills: Array<string>;
-    workflows: Array<string>;
-  };
-  revisions: Array<{
-    row: number;
-    commit: string | null;
-    workflows: Array<string>;
-  }>;
-  cost_usd: number | null;
-  remaining_usd: number | null;
-  current: number | null;
-  rows: Array<{
-    n: number;
-    state: "pending" | "running" | "done" | "failed";
-    reference: string;
-    run_id?: string;
-    answer?: string | null;
-    right?: boolean;
-    reviewed?: boolean;
-    path?: "agent" | "handed_back" | "workflow";
-    cost_usd?: number | null;
-    learning_usd?: number | null;
-    total_usd?: number | null;
-    learned?: {
-      notes: Array<string>;
-      skills: Array<string>;
-      workflows: Array<string>;
-    };
-    merged?: string | null;
-    error?: string;
-  }>;
-  error?: string;
-};
-
-/** The agent's learning batches, latest first (GET /agents/{agent_id}/learning/batches). */
-export type ListLearningBatchesResponse = {
-  batches: Array<{
-    id: string;
-    agent_id: string;
-    created_at: string;
-    ended_at: string | null;
-    status: "running" | "completed" | "cancelled" | "stopped";
-    stopped: "cap" | "cost_unknown" | "learning_off" | null;
-    inputs: Array<string>;
-    answer: string;
-    answer_field: string | null;
-    effort: string | null;
-    max_cost_usd: number;
-    total: number;
-    finished: number;
-    right: number;
-    wrong: number;
-    failed: number;
-    spent_usd: number;
-    unknown_cost_rows: number;
-    paths: {
-      agent: number;
-      handed_back: number;
-      workflow: number;
-    };
-    lessons: {
-      notes: Array<string>;
-      skills: Array<string>;
-      workflows: Array<string>;
-    };
-    revisions: Array<{
-      row: number;
-      commit: string | null;
-      workflows: Array<string>;
-    }>;
-    cost_usd: number | null;
-    remaining_usd: number | null;
-    error?: string;
-  }>;
+/** The agent's corrections.md on main, with its ETag (GET /agents/{agent_id}/learning/corrections). */
+export type GetLearningCorrectionsResponse = {
+  text: string;
+  etag: string;
+  cap_bytes: 2048;
 };
 
 /** The agent's cost per run, run after run: its own cost, what learning added and the path it took (GET /agents/{agent_id}/learning/cost). */
@@ -2315,92 +2035,11 @@ export type GetLearningCostResponse = {
   };
 };
 
-/** The agent's eval records: the latest, and every one kept, newest first (GET /agents/{agent_id}/learning/evals). */
-export type ListLearningEvalsResponse = {
-  agent: string;
-  latest: {
-    id: string;
-    name: string;
-    n: number;
-    correct: number;
-    label_source: string | null;
-    cost_per_task_usd: number | null;
-    baseline_cost_per_task_usd: number | null;
-    learned_revision: string | null;
-    accuracy: number;
-    ci: Array<number>;
-    recorded_at: string;
-  } | null;
-  evals: Array<{
-    id: string;
-    name: string;
-    n: number;
-    correct: number;
-    label_source: string | null;
-    cost_per_task_usd: number | null;
-    baseline_cost_per_task_usd: number | null;
-    learned_revision: string | null;
-    accuracy: number;
-    ci: Array<number>;
-    recorded_at: string;
-  }>;
-};
-
-/** What the agent has learned: its index, notes, log of changes and counts (GET /agents/{agent_id}/learning). */
+/** What the agent has learned: its corrections, workflow drafts, log of changes and counts (GET /agents/{agent_id}/learning). */
 export type GetAgentLearningResponse = {
   agent: string;
   main: string | null;
-  index: string;
-  notes: {
-    items: Array<{
-      file: string;
-      name: string;
-      description: string;
-      type: "user" | "feedback" | "project" | "reference";
-      status: "active" | "superseded" | "retired" | "pending";
-      origin: "you" | "run";
-      superseded_by: string | null;
-      text: string;
-      etag: string;
-      runs: {
-        given: number;
-        read: number;
-      };
-      retired?: {
-        at: string;
-        by: "person" | "run" | "host";
-        from?: "active" | "pending";
-        why?: "unreadable";
-      };
-      last_change?: {
-        kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned" | "superseded";
-        by: "person" | "run";
-        at: string;
-      };
-    }>;
-    total: number;
-    next_cursor: string | null;
-  };
-  skills: Array<{
-    name: string;
-    file: string;
-    description: string;
-    status: "active" | "pending" | "retired";
-    run: string | null;
-    bytes: number;
-    etag: string;
-    retired?: {
-      at: string;
-      by: "person" | "run" | "host";
-      from?: "active" | "pending";
-      why?: "unreadable";
-    };
-    last_change?: {
-      kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned" | "superseded";
-      by: "person" | "run";
-      at: string;
-    };
-  }>;
+  corrections: string;
   workflows: Array<{
     name: string;
     file: string;
@@ -2417,7 +2056,7 @@ export type GetAgentLearningResponse = {
       why?: "unreadable";
     };
     last_change?: {
-      kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned" | "superseded";
+      kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned";
       by: "person" | "run";
       at: string;
     };
@@ -2483,72 +2122,8 @@ export type ListLearningLogResponse = {
   next_cursor: string | null;
 };
 
-/** A page of the agent's notes (GET /agents/{agent_id}/learning/notes). */
-export interface ListLearningNotesParams {
-  cursor?: string;
-  limit?: number;
-  status?: "active" | "superseded" | "retired" | "pending";
-}
-export type ListLearningNotesResponse = {
-  items: Array<{
-    file: string;
-    name: string;
-    description: string;
-    type: "user" | "feedback" | "project" | "reference";
-    status: "active" | "superseded" | "retired" | "pending";
-    origin: "you" | "run";
-    superseded_by: string | null;
-    text: string;
-    etag: string;
-    runs: {
-      given: number;
-      read: number;
-    };
-    retired?: {
-      at: string;
-      by: "person" | "run" | "host";
-      from?: "active" | "pending";
-      why?: "unreadable";
-    };
-    last_change?: {
-      kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned" | "superseded";
-      by: "person" | "run";
-      at: string;
-    };
-  }>;
-  total: number;
-  next_cursor: string | null;
-};
-
-/** One note (or MEMORY.md, a skill's SKILL.md or a draft's file) on main, as text, with its ETag (GET /agents/{agent_id}/learning/files/{file}). */
+/** One file of a learned workflow on main (its workflow.json or README.md), as text, with its ETag (GET /agents/{agent_id}/learning/files/{file}). */
 export type ReadLearningFileResponse = unknown;
-
-/** Record a held-out test of the agent: its counts and the cost a task, with learning and by hand (POST /agents/{agent_id}/learning/evals). */
-export type RecordLearningEvalBody = {
-  name: string;
-  n: number;
-  correct: number;
-  label_source?: string | null;
-  cost_per_task_usd?: number | null;
-  baseline_cost_per_task_usd?: number | null;
-  learned_revision?: string | null;
-};
-export interface RecordLearningEvalParams {
-  "Idempotency-Key"?: string;
-}
-export type RecordLearningEvalResponse = {
-  id: string;
-  name: string;
-  n: number;
-  correct: number;
-  label_source: string | null;
-  cost_per_task_usd: number | null;
-  baseline_cost_per_task_usd: number | null;
-  learned_revision: string | null;
-  accuracy: number;
-  ci: Array<number>;
-  recorded_at: string;
-};
 
 /** Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab) (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}). */
 export type GetLearnedWorkflowReplayResponse = {
@@ -2576,7 +2151,7 @@ export type GetLearnedWorkflowReplayResponse = {
   reason?: string;
 };
 
-/** Retire a note, a skill or a workflow draft: out of every later run, kept in history (POST /agents/{agent_id}/learning/files/{file}/retire). */
+/** Retire a workflow draft: out of every later run, kept in history (POST /agents/{agent_id}/learning/files/{file}/retire). */
 export interface RetireLearningFileParams {
   "If-Match"?: string;
 }
@@ -2604,14 +2179,18 @@ export type ListLearnedWorkflowRevisionsResponse = {
   truncated: boolean;
 };
 
-/** Edit a note (If-Match) or create one (If-None-Match: *) (PUT /agents/{agent_id}/learning/files/{file}). */
-export type WriteLearningFileBody = {
+/** Replace the agent's corrections.md (If-Match) (PUT /agents/{agent_id}/learning/corrections). */
+export type PutLearningCorrectionsBody = {
   text: string;
 };
-export interface WriteLearningFileParams {
-  "If-Match"?: string;
-  "If-None-Match"?: string;
+export interface PutLearningCorrectionsParams {
+  "If-Match": string;
 }
+export type PutLearningCorrectionsResponse = {
+  text: string;
+  etag: string;
+  cap_bytes: 2048;
+};
 
 /** Start Connect GitHub: the app-manifest form the console posts to GitHub (POST /integrations/github/connect). */
 export type ConnectGitHubBody = {
@@ -3680,7 +3259,7 @@ export type GradeRunResponse = {
   path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
   workflow: string | null;
   workflow_digest: string | null;
-  feedback: "look_back" | null;
+  feedback: "correction" | null;
   expected?: Record<string, unknown>;
 };
 
@@ -3771,28 +3350,18 @@ export type HandBackRunComputerResponse = {
 /** The run's learning whole: its seed, merge, verdict, problems and cost (GET /runs/{run_id}/learning). */
 export type GetRunLearningResponse = {
   run: string;
-  state: "seeded" | "reflecting" | "proposed" | "merged" | "dropped";
-  reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_timeout" | "reflect_failed" | "empty" | "unparsed" | "propose_failed" | "checker" | "grader" | "grade_failed" | "use" | null;
+  state: "seeded" | "reflecting" | "merged" | "dropped";
+  reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
   detail: string | null;
   at: string;
   seed: string | null;
   merged: string | null;
-  pending: Array<{
+  workflows: Array<{
     file: string;
     name: string;
+    pending?: true;
   }>;
-  verdict: {
-    merge: boolean;
-    reason: string;
-    items: Array<{
-      file: string;
-      keep: boolean;
-      pending?: true;
-      origin?: "you" | "run";
-      question?: string;
-      why: string;
-    }>;
-  } | null;
+  corrections: number;
   problems: Array<{
     rule: string;
     path?: string;
@@ -3800,7 +3369,6 @@ export type GetRunLearningResponse = {
   }>;
   compiled: {
     workflow: string;
-    from_notes: Array<string>;
     attempts: Array<{
       ok: boolean;
       errors: Array<string>;
@@ -3809,51 +3377,13 @@ export type GetRunLearningResponse = {
     promoted: boolean | null;
   } | null;
   draft_errors: Array<string>;
-  cost_usd: {
-    grade: number | null;
-  };
-  tokens: {
-    grade: {
-      input: number;
-      cache_read: number;
-      cache_write: number;
-      output: number;
-    } | null;
-  };
   used: {
-    skills: Array<{
-      name: string;
-      read: boolean;
-    }>;
     workflows: Array<{
       name: string;
       calls: number;
       failed: number;
     }>;
   };
-  given?: Array<{
-    file: string;
-    name: string;
-  }>;
-  read?: Array<{
-    file: string;
-    name: string;
-  }>;
-  learned?: Array<{
-    file: string;
-    name: string;
-    supersedes: Array<string>;
-  }>;
-  skills?: Array<{
-    file: string;
-    name: string;
-    pending?: true;
-  }>;
-  workflows?: Array<{
-    file: string;
-    name: string;
-    pending?: true;
-  }>;
   graded?: {
     run_id: string;
     correct: boolean;
@@ -3862,7 +3392,7 @@ export type GetRunLearningResponse = {
     path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
     workflow: string | null;
     workflow_digest: string | null;
-    feedback: "look_back" | null;
+    feedback: "correction" | null;
     feedback_status: "running" | "ended" | "not_run" | null;
   };
 } | null;
@@ -3967,6 +3497,39 @@ export interface GetTimelineParams {
 }
 export type GetTimelineResponse = TimelinePage;
 
+/** A run's trace: each model request and tool call, with its time, tokens and cost (GET /runs/{run_id}/trace). */
+export type GetRunTraceResponse = {
+  run_id: Id;
+  model_requests: "priced" | "tokens_only" | "not_recorded";
+  spans: Array<{
+    id: string;
+    kind: "model" | "tool";
+    parent_id: string | null;
+    name: string;
+    agent_label: string | null;
+    started_at: Timestamp;
+    ended_at: string | null;
+    status: "ok" | "failed" | "refused" | "interrupted" | "waiting" | "running";
+    stop_reason: string | null;
+    tokens: {
+      input: number;
+      cache_read: number;
+      cache_write: number;
+      output: number;
+      reasoning?: number;
+    } | null;
+    usd: number | null;
+    decision: boolean;
+    charged: boolean;
+    not_metered: boolean;
+    tool_use_id: string | null;
+    input_preview: string | null;
+    result_preview: string | null;
+    result_size_bytes: number | null;
+  }>;
+  dropped: number;
+};
+
 /** Show the archived run in the lists again (POST /runs/{run_id}/unarchive). */
 export type UnarchiveRunResponse = Record<string, unknown>;
 
@@ -4055,10 +3618,6 @@ export type StartSdkRunResponse = {
     enabled: boolean;
     revision: string | null;
     context: string;
-    skills: Array<{
-      name: string;
-      files: Record<string, string>;
-    }>;
     workflows: Array<{
       name: string;
       workflow: string;
@@ -4426,7 +3985,7 @@ export type ListTemplatesResponse = {
 /** The tool keys a person may save, and which are set: names only, never a value (GET /settings/tool-keys). */
 export type ListToolKeysResponse = {
   keys: Array<{
-    id: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "openrouter";
+    id: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "particle" | "openrouter";
     kind: "tool" | "model";
     label: string;
     unlocks: Array<string>;
@@ -5773,21 +5332,15 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   listHomeFiles: {"method":"GET","path":"/agents/{agent_id}/home/files","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   readHomeFile: {"method":"GET","path":"/agents/{agent_id}/home/files/{path}","pathParams":["agent_id","path"],"multiSegment":["path"],"query":["download"],"headers":[],"body":null,"answer":"bytes","secret":false,"publicFields":[],"tagged":false},
   writeHomeFile: {"method":"PUT","path":"/agents/{agent_id}/home/files/{path}","pathParams":["agent_id","path"],"multiSegment":["path"],"query":[],"headers":[],"body":{"required":true,"types":["application/octet-stream","*/*"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  getLearningBatch: {"method":"GET","path":"/agents/{agent_id}/learning/batches/{batch_id}","pathParams":["agent_id","batch_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  cancelLearningBatch: {"method":"POST","path":"/agents/{agent_id}/learning/batches/{batch_id}/cancel","pathParams":["agent_id","batch_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  createLearningBatch: {"method":"POST","path":"/agents/{agent_id}/learning/batches","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  listLearningBatches: {"method":"GET","path":"/agents/{agent_id}/learning/batches","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getLearningCorrections: {"method":"GET","path":"/agents/{agent_id}/learning/corrections","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":true},
   getLearningCost: {"method":"GET","path":"/agents/{agent_id}/learning/cost","pathParams":["agent_id"],"multiSegment":[],"query":["limit","format"],"headers":[],"body":null,"answer":"json+text","secret":false,"publicFields":[],"tagged":false},
-  listLearningEvals: {"method":"GET","path":"/agents/{agent_id}/learning/evals","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getAgentLearning: {"method":"GET","path":"/agents/{agent_id}/learning","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listLearningLog: {"method":"GET","path":"/agents/{agent_id}/learning/log","pathParams":["agent_id"],"multiSegment":[],"query":["cursor","limit"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  listLearningNotes: {"method":"GET","path":"/agents/{agent_id}/learning/notes","pathParams":["agent_id"],"multiSegment":[],"query":["cursor","limit","status"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   readLearningFile: {"method":"GET","path":"/agents/{agent_id}/learning/files/{file}","pathParams":["agent_id","file"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json+text","secret":false,"publicFields":[],"tagged":true},
-  recordLearningEval: {"method":"POST","path":"/agents/{agent_id}/learning/evals","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getLearnedWorkflowReplay: {"method":"GET","path":"/agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}","pathParams":["agent_id","name","digest","replay_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   retireLearningFile: {"method":"POST","path":"/agents/{agent_id}/learning/files/{file}/retire","pathParams":["agent_id","file"],"multiSegment":[],"query":[],"headers":["If-Match"],"body":null,"answer":"text","secret":false,"publicFields":[],"tagged":true},
   listLearnedWorkflowRevisions: {"method":"GET","path":"/agents/{agent_id}/learning/workflows/{name}/revisions","pathParams":["agent_id","name"],"multiSegment":[],"query":["limit"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
-  writeLearningFile: {"method":"PUT","path":"/agents/{agent_id}/learning/files/{file}","pathParams":["agent_id","file"],"multiSegment":[],"query":[],"headers":["If-Match","If-None-Match"],"body":{"required":true,"types":["text/markdown","text/plain","application/json"]},"answer":"text","secret":false,"publicFields":[],"tagged":true},
+  putLearningCorrections: {"method":"PUT","path":"/agents/{agent_id}/learning/corrections","pathParams":["agent_id"],"multiSegment":[],"query":[],"headers":["If-Match"],"body":{"required":true,"types":["text/markdown","text/plain","application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":true},
   connectGitHub: {"method":"POST","path":"/integrations/github/connect","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createPairing: {"method":"POST","path":"/computers/pairings","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteCalendar: {"method":"DELETE","path":"/settings/calendar","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
@@ -5861,6 +5414,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   stopRun: {"method":"POST","path":"/runs/{run_id}/stop","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   takeOverRunComputer: {"method":"POST","path":"/runs/{run_id}/computer/take-over","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getTimeline: {"method":"GET","path":"/runs/{run_id}/timeline","pathParams":["run_id"],"multiSegment":[],"query":["after","wait_ms","limit","calls"],"headers":["Last-Event-ID"],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getRunTrace: {"method":"GET","path":"/runs/{run_id}/trace","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   unarchiveRun: {"method":"POST","path":"/runs/{run_id}/unarchive","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   completeSdkRun: {"method":"POST","path":"/sdk-runs/{run_id}/complete","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   sdkRunEvents: {"method":"POST","path":"/sdk-runs/{run_id}/events","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5984,36 +5538,24 @@ export function resources(call: Call) {
       write: (agentId: string, path: string, body: RawBody, options?: BodyOptions): Promise<WriteHomeFileResponse> => call("writeHomeFile", [agentId, path], body, undefined, options),
     },
     learning: {
-      /** A learning batch's progress: rows done, right or wrong, lessons, workflow revisions, cost, the path each run took (GET /agents/{agent_id}/learning/batches/{batch_id}). */
-      batch: (agentId: string, batchId: string, options?: RequestOptions): Promise<GetLearningBatchResponse> => call("getLearningBatch", [agentId, batchId], undefined, undefined, options),
-      /** Cancel a running learning batch (POST /agents/{agent_id}/learning/batches/{batch_id}/cancel). */
-      batchCancel: (agentId: string, batchId: string, options?: RequestOptions): Promise<CancelLearningBatchResponse> => call("cancelLearningBatch", [agentId, batchId], undefined, undefined, options),
-      /** Learn from rows: run the agent on each in order, with learning on, and tell it the reference answer after each (POST /agents/{agent_id}/learning/batches). */
-      batchStart: (agentId: string, body: CreateLearningBatchBody, options?: RequestOptions): Promise<CreateLearningBatchResponse> => call("createLearningBatch", [agentId], body, undefined, options),
-      /** The agent's learning batches, latest first (GET /agents/{agent_id}/learning/batches). */
-      batches: (agentId: string, options?: RequestOptions): Promise<ListLearningBatchesResponse> => call("listLearningBatches", [agentId], undefined, undefined, options),
+      /** The agent's corrections.md on main, with its ETag (GET /agents/{agent_id}/learning/corrections). */
+      corrections: (agentId: string, options?: RequestOptions): Promise<Tagged<GetLearningCorrectionsResponse>> => call("getLearningCorrections", [agentId], undefined, undefined, options),
       /** The agent's cost per run, run after run: its own cost, what learning added and the path it took (GET /agents/{agent_id}/learning/cost). */
       cost: (agentId: string, params?: GetLearningCostParams, options?: RequestOptions): Promise<GetLearningCostResponse | string> => call("getLearningCost", [agentId], undefined, params, options),
-      /** The agent's eval records: the latest, and every one kept, newest first (GET /agents/{agent_id}/learning/evals). */
-      evals: (agentId: string, options?: RequestOptions): Promise<ListLearningEvalsResponse> => call("listLearningEvals", [agentId], undefined, undefined, options),
-      /** What the agent has learned: its index, notes, log of changes and counts (GET /agents/{agent_id}/learning). */
+      /** What the agent has learned: its corrections, workflow drafts, log of changes and counts (GET /agents/{agent_id}/learning). */
       get: (agentId: string, options?: RequestOptions): Promise<GetAgentLearningResponse> => call("getAgentLearning", [agentId], undefined, undefined, options),
       /** A page of the changes on the agent's main, newest first (GET /agents/{agent_id}/learning/log). */
       log: (agentId: string, params?: ListLearningLogParams, options?: RequestOptions): Promise<ListLearningLogResponse> => call("listLearningLog", [agentId], undefined, params, options),
-      /** A page of the agent's notes (GET /agents/{agent_id}/learning/notes). */
-      notes: (agentId: string, params?: ListLearningNotesParams, options?: RequestOptions): Promise<ListLearningNotesResponse> => call("listLearningNotes", [agentId], undefined, params, options),
-      /** One note (or MEMORY.md, a skill's SKILL.md or a draft's file) on main, as text, with its ETag (GET /agents/{agent_id}/learning/files/{file}). */
+      /** One file of a learned workflow on main (its workflow.json or README.md), as text, with its ETag (GET /agents/{agent_id}/learning/files/{file}). */
       read: (agentId: string, file: string, options?: RequestOptions): Promise<Tagged<ReadLearningFileResponse | string>> => call("readLearningFile", [agentId, file], undefined, undefined, options),
-      /** Record a held-out test of the agent: its counts and the cost a task, with learning and by hand (POST /agents/{agent_id}/learning/evals). */
-      recordEval: (agentId: string, body: RecordLearningEvalBody, params?: RecordLearningEvalParams, options?: RequestOptions): Promise<RecordLearningEvalResponse> => call("recordLearningEval", [agentId], body, params, options),
       /** Read a replay's result: running, done or failed, its counts and its score (start one from the console's Learning tab) (GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}). */
       replay: (agentId: string, name: string, digest: string, replayId: string, options?: RequestOptions): Promise<GetLearnedWorkflowReplayResponse> => call("getLearnedWorkflowReplay", [agentId, name, digest, replayId], undefined, undefined, options),
-      /** Retire a note, a skill or a workflow draft: out of every later run, kept in history (POST /agents/{agent_id}/learning/files/{file}/retire). */
+      /** Retire a workflow draft: out of every later run, kept in history (POST /agents/{agent_id}/learning/files/{file}/retire). */
       retire: (agentId: string, file: string, params?: RetireLearningFileParams, options?: RequestOptions): Promise<Tagged<string>> => call("retireLearningFile", [agentId, file], undefined, params, options),
       /** A learned workflow's revisions on main, oldest first, each with its workflow.json as it was then (GET /agents/{agent_id}/learning/workflows/{name}/revisions). */
       workflowRevisions: (agentId: string, name: string, params?: ListLearnedWorkflowRevisionsParams, options?: RequestOptions): Promise<ListLearnedWorkflowRevisionsResponse> => call("listLearnedWorkflowRevisions", [agentId, name], undefined, params, options),
-      /** Edit a note (If-Match) or create one (If-None-Match: *) (PUT /agents/{agent_id}/learning/files/{file}). */
-      write: (agentId: string, file: string, body: WriteLearningFileBody | RawBody, params?: WriteLearningFileParams, options?: BodyOptions): Promise<Tagged<string>> => call("writeLearningFile", [agentId, file], body, params, options),
+      /** Replace the agent's corrections.md (If-Match) (PUT /agents/{agent_id}/learning/corrections). */
+      writeCorrections: (agentId: string, body: PutLearningCorrectionsBody | RawBody, params: PutLearningCorrectionsParams, options?: BodyOptions): Promise<Tagged<PutLearningCorrectionsResponse>> => call("putLearningCorrections", [agentId], body, params, options),
     },
     local: {
       /** A code that pairs a person's own computer with this server (POST /computers/pairings). */
@@ -6162,6 +5704,8 @@ export function resources(call: Call) {
       takeOverRunComputer: (runId: string, body?: TakeOverRunComputerBody, options?: RequestOptions): Promise<TakeOverRunComputerResponse> => call("takeOverRunComputer", [runId], body, undefined, options),
       /** The run's timeline, as a page or a stream (GET /runs/{run_id}/timeline). */
       timeline: (runId: string, params?: GetTimelineParams, options?: RequestOptions): Promise<GetTimelineResponse> => call("getTimeline", [runId], undefined, params, options),
+      /** A run's trace: each model request and tool call, with its time, tokens and cost (GET /runs/{run_id}/trace). */
+      trace: (runId: string, options?: RequestOptions): Promise<GetRunTraceResponse> => call("getRunTrace", [runId], undefined, undefined, options),
       /** Show the archived run in the lists again (POST /runs/{run_id}/unarchive). */
       unarchive: (runId: string, options?: RequestOptions): Promise<UnarchiveRunResponse> => call("unarchiveRun", [runId], undefined, undefined, options),
     },

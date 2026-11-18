@@ -27,10 +27,11 @@ import { landWorkflows, readmeOf, startAt } from "./learned-workflow-seed-suppor
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
+const { childLoops } = await import("../dist/runner/run-child-host.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
 const { putGrade, promotionsOf, promotionsShown, recordPromotion } = await import("../dist/learn/promote.js");
-const { WORKFLOW_NAME } = await import("../dist/learn/skills.js");
+const { WORKFLOW_NAME } = await import("../dist/learn/workflow-draft.js");
 const { learningWorkspace } = await import("../dist/workspace/index.js");
 const { learningCommit } = await import("../dist/learn/commit.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
@@ -93,7 +94,7 @@ const until = async (done, what, ms = 60_000) => {
  *  instead (its turn ends before it answers: no draft of it failed its checks), for a test that lands the revision
  *  itself, as a graded recompile merges it. `env`: the runner's environment (a secret-named value in it is one the run
  *  refuses). */
-async function world(t, { learning, prior = 0, flows = [{ name: "answer", description: "Answers a question as a number", workflow: FIRST }], submit, landsRevision = false, env = {}, draftName } = {}) {
+async function world(t, { learning, prior = 0, flows = [{ name: "answer", description: "Answers a question as a number", workflow: FIRST }], submit, landsRevision = false, env = {}, draftName, childRuns = false } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-promote-once-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -114,9 +115,14 @@ async function world(t, { learning, prior = 0, flows = [{ name: "answer", descri
   const price = (_model, usage) => ((usage.input ?? 0) * 3 + (usage.output ?? 0) * 15) / 1e6;
   const route = { model: MODEL, provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price, fetch: globalThis.fetch };
   const logs = [];
-  const deps = { env, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
+  // `childRuns`: each run a process of its own (run-child-host.ts childLoops), as the CLI's start runs them: its model
+  // the faux gateway's Messages route (ANTHROPIC_BASE_URL), on a dummy key its claim hands it; its store writes, its
+  // promotion's among them, the runner's.
+  const runEnv = childRuns ? { PATH: process.env.PATH, TMPDIR: dir, ANTHROPIC_BASE_URL: gw.url, ANTHROPIC_API_KEY: `not-a-secret-${"pi"}`, ...env } : env;
+  const deps = { env: runEnv, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: (line) => logs.push(line) };
   const specOf = async (claim, run) => adapterRunSpecFromLaunch(readLaunchBody((await store.runs.launch(claim.runId)).body), run, deps, claim);
-  runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop: createAdapterLoop(specOf) });
+  const createLoop = childRuns ? childLoops({ deps, isolation: { kind: "process", why: "a test's runner" }, log: deps.log }) : createAdapterLoop(specOf);
+  runner = startRunner({ store, name: "runner-a", ...TIMING, createLoop });
   const ended = (id) => until(async () => {
     const row = await server.runs.get(id);
     return ["ended", "failed", "stopped"].includes(row?.state) && row.runner === null && row;
@@ -240,6 +246,21 @@ test("(b) a draft that says what the agent said on its last runs, alone, is prom
   assert.deepEqual([third.metrics?.path, third.metrics?.workflow_digest], ["workflow", DIGEST], JSON.stringify(third.metrics));
   assert.deepEqual(await decisions(w.server), [[DIGEST, "replaying"], [DIGEST, "promote"]], "no queued, refit, graded or second replay record");
   assert.equal((await w.replays()).length, 5, "no second replay");
+});
+
+// Each run a process of its own, as the CLI's start runs them: the learning a run's end takes at its claim (the check's
+// reservation, its replays, the promotion it decides) is the runner's, never a store write the run's process asks for.
+test("(b) through a run's own process: the draft's check starts, replays the agent's last 5 inputs and promotes it, and the next run is served by it", { timeout: 240_000 }, async (t) => {
+  const w = await world(t, { learning: { compile_after: 5 }, prior: 5, childRuns: true });
+  const first = await w.start("run-1", "What is six times seven");
+  assert.equal(first.state, "ended", JSON.stringify(first));
+  const refused = () => w.logs.filter((line) => line.includes("a run's process may not"));
+  const runs = await w.replaysEnded(5).catch((error) => assert.fail(`${error.message}; refused: ${JSON.stringify(refused())}`));
+  assert.deepEqual(runs.map((row) => [row.state, row.metrics?.path, row.metrics?.replay?.outcome]), runs.map(() => ["ended", "replay", "answered"]), w.logs.join("\n"));
+  const second = await w.start("run-2", "What is seven times six");
+  assert.deepEqual([second.metrics?.path, second.metrics?.workflow_digest], ["workflow", DIGEST], `served first: ${JSON.stringify(second.metrics)}`);
+  assert.deepEqual(await decisions(w.server), [[DIGEST, "replaying"], [DIGEST, "promote"]]);
+  assert.deepEqual(refused(), [], "no store call refused to a run's process");
 });
 
 // Review on #3064 (PRRT_kwDOUmdVMs64PlpM): records saved in a state this release no longer writes (queued, skipped) are
@@ -406,36 +427,4 @@ test("(a) compile_after 5, 5 own completed runs then 250 workflow-served runs, t
   const deps = { store, learningFolder: () => { opened++; throw new Error("folder opened: the compile is due"); } };
   await askOf(deps, { runId: "now", agentId: "agent-1", outcome: "completed", refuse: [], seedWorkflows: 0 }).catch(() => undefined);
   assert.equal(opened > 0, true, "the 5 own runs are found behind the 250 served ones: the compile is due");
-});
-
-// Review on #3064 (PRRT_kwDOUmdVMs64PlpB): a passing draft waits on its grade however many runs kept learning since. The
-// compile ask reads the agent's kept learning whose grade has not ended (the store's grading read), never a window of the
-// newest proposals: 250 later runs' proposals never push it out, and no new compile is asked until its grade ends.
-test("(a) a passing draft's grade still queued after 250 later runs' kept learning: no new compile is asked; once its grade ends, one is", { timeout: 120_000 }, async (t) => {
-  const { compileAskOf: askOf } = await import("../dist/runner/learning-end.js");
-  const { learningFolderOf } = await import("../dist/learning.js");
-  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-promote-once-grading-"));
-  const store = await openSqliteStore({ dataDir: dir, role: "server" });
-  t.after(async () => {
-    await store.close().catch(() => {});
-    rmSync(dir, { recursive: true, force: true });
-  });
-  await store.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", learning: { compile_after: 5 } } });
-  const body = { input: { content: "What is six times seven?" }, title: "t", place: { mode: "runner" } };
-  const ended = async (id, proposal, also = []) => {
-    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body });
-    const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
-    await store.runs.update(claim, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal } }, ...also] });
-  };
-  // The compile: its draft passed its checks (a compiled digest), its learning run (the grade that merges it) queued.
-  await ended("compiled", { state: "proposed", compiled: { workflow: "answer", from_notes: [], attempts: [{ ok: true, errors: [] }], digest: DIGEST } }, [{ table: "learning_run", row: { id: "grade-1" } }]);
-  for (let i = 0; i < 250; i++) await ended(`later-${i}`, { state: "dropped", reason: "empty", detail: "Nothing to keep." });
-  await store.runs.create({ id: "now", agentId: "agent-1", revisionId: "rev-1" }, { body });
-  assert.equal((await store.runs.get("grade-1"))?.state, "queued", "the grade waits");
-  assert.equal((await store.learning.proposals("agent-1", { limit: 200 })).some((one) => one.runId === "compiled"), false, "the newest 200 proposals no longer hold it");
-  const deps = { store, data: dir, env: {}, learningFolder: (agentId) => learningFolderOf(dir, agentId), log: () => {} };
-  const ask = () => askOf(deps, { runId: "now", agentId: "agent-1", outcome: "completed", refuse: [], seedWorkflows: 0 });
-  assert.equal(await ask(), undefined, "the draft still waits on its grade: no new compile");
-  await store.runs.update(await store.claim("grade-1", "runner-a", { leaseMs: 60_000 }), { state: "ended" });
-  assert.notEqual(await ask(), undefined, "its grade ended (it landed or was dropped): the compile is asked");
 });

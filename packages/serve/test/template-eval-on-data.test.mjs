@@ -12,7 +12,6 @@ import { evalTemplate, readCases, startFake } from "../dist/template-eval.js";
 import { asOwner, scratch, serve } from "./support.mjs";
 import { ADDRESS, mailbox, saved } from "./email-support.mjs";
 import { schedule } from "./trigger-support.mjs";
-import { LEARN, learner, made } from "./learn-support.mjs";
 
 const PKG = new URL("./fixtures/templates-eval/evalpkg", import.meta.url).pathname;
 const FAUX = new URL("./fixtures/faux-template-eval.mjs", import.meta.url).pathname;
@@ -100,28 +99,6 @@ test("on an owner's data folder the eval keeps the folder's saved API token: the
   await again.stop();
   await assert.rejects(evalTemplate({ dir: await mailPackage(), data, serve: { faux: FAUX } }), /keeps an email account/);
   assert.equal(existsSync(join(data, ".token")) ? readFileSync(join(data, ".token"), "utf8") : null, token, "a refused eval keeps it too");
-});
-
-test("a data folder with learning work waiting (a batch running, its row's run not ended) is refused before anything runs: the eval's runner would claim it", { timeout: 120_000 }, async (t) => {
-  const data = join(await scratch(), "agents");
-  const first = await serve(t, { data, runner: false, learning: "on", faux: LEARN, batchPollMs: 50 });
-  const id = "owners-learner";
-  await made(first.api, learner(id));
-  const created = await first.api("POST", `/agents/${id}/learning/batches`, { inputs: ["q"], answer: "a", rows: [{ q: "One?", a: "1" }], max_cost_usd: 1 });
-  assert.equal(created.status, 202, JSON.stringify(created.body));
-  // The batch's first row has its run (queued: no runner here) before the server stops.
-  const deadline = Date.now() + 20_000;
-  for (;;) {
-    const read = await first.api("GET", `/agents/${id}/learning/batches/${created.body.id}`);
-    if (read.body.rows?.[0]?.run_id) break;
-    assert.ok(Date.now() < deadline, `the batch's row got no run: ${JSON.stringify(read.body)}`);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  await first.stop();
-  await assert.rejects(evalTemplate({ dir: PKG, cases: ["all-pass"], data, serve: { faux: FAUX } }), (error) => {
-    assert.match(error.message, /has work of its own: .*1 learning batch running/, error.message);
-    return true;
-  });
 });
 
 test("a data folder another server holds is refused before anything runs", { timeout: 120_000 }, async (t) => {

@@ -22,13 +22,16 @@ const ALLOWED = {
   "decisions.ts": "Jev's OpenRouter route on an openrouter.ai gateway's key: a decision key, never a run's model route",
   "run-model-key.ts": "whether the server holds a key for a run's route (serverKeyMissing, noServerKeyFor)",
   "runner/claim-secrets.ts": "defines savedModelKeys and tierModelKeys, and claimSpendOff's check of the server's key",
-  "runner/harness-loops.ts": "a learning run's grade and an SDK run's look-back: runs no caller handed a key, on the server's key or skipped",
+  "runner/harness-loops.ts": "an SDK run's compile turn: asked after its backend reported it complete, with no caller's key, on the server's key or skipped",
   // These two read the saved keys only where the run holds no key of its own: checked line by line below.
   "runner/adapter-run-spec.ts": "the subagent tiers' and learned tiers' keys, read only for a run with no key of its own",
   "runner/cli-run-spec.ts": "the learned tiers' keys, read only for a run with no key of its own",
+  // A run's own process holds no seal key: it asks its runner for these (held.ts), and the runner answers for the claim.
+  "runner/held.ts": "the seam's declarations of what a run's process asks its runner for (savedModelKeys, tierModelKeys): no read",
+  "runner/run-child-host.ts": "the runner's answers to a run's process (heldFor), read only for a run with no key of its own",
 };
 /** The modules whose every read must sit behind the run's own key: `keyed ? {} : <read>` (claim-secrets.ts keyedAtClaim). */
-const GUARDED = new Set(["runner/adapter-run-spec.ts", "runner/cli-run-spec.ts"]);
+const GUARDED = new Set(["runner/adapter-run-spec.ts", "runner/cli-run-spec.ts", "runner/run-child-host.ts"]);
 
 const READ = /\.(AGENT_MODEL_API_KEY|ANTHROPIC_API_KEY)\b|\[\s*["'](AGENT_MODEL_API_KEY|ANTHROPIC_API_KEY)["']\s*\]|\[\s*(GATEWAY_KEY_ENV|JEV_GATEWAY_KEY_ENV|ANTHROPIC_GATEWAY_KEY)\s*\]|\b(savedModelKeys|tierModelKeys)\s*\(/;
 const COMMENT = /^\s*(\/\/|\*|\/\*\*?)/;

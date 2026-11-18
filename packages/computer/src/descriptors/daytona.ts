@@ -37,8 +37,8 @@ export const DAYTONA_GPU_SNAPSHOT_GPU: Readonly<DaytonaSnapshotGpu> = Object.fre
  * daytona-gpu, alone (another type needs a snapshot of its own), with its limits on a GPU sandbox: its stop deletes it
  * (no pause, no snapshot: nothing is kept), it runs in region earth, it has the snapshot's 16 vCPUs, 100 GiB of memory
  * and 400 GiB of disk, it may be preempted (daytona.io/pricing lists its GPUs as "Preemptible GPU prices", 11-10), and
- * it takes no mount: Daytona's GPU host gives no /dev/fuse, even to root (live 11-11), and the archil client mounts
- * through FUSE, so an Archil mount is refused in words.
+ * it takes a synced folder alone: Daytona's GPU host gives no /dev/fuse, even to root (live 11-11), and the archil client
+ * mounts through FUSE, so an Archil mount is refused in words.
  */
 export const DAYTONA_GPU: Readonly<GpuCapability> = Object.freeze({
 	types: [DAYTONA_GPU_SNAPSHOT_GPU.type],
@@ -47,7 +47,7 @@ export const DAYTONA_GPU: Readonly<GpuCapability> = Object.freeze({
 	stopDeletes: true,
 	region: DAYTONA_GPU_REGION,
 	perGpu: { cpus: 16, memoryMb: 100 * 1024, diskMb: 400 * 1024 },
-	mounts: [],
+	mounts: ["sync" as const],
 	unmounted: Object.freeze({ why: "Daytona's GPU runtime gives it no /dev/fuse", yet: false }),
 });
 
@@ -78,10 +78,10 @@ export function daytonaGpuSnapshot(gpuSnapshot?: string): DaytonaGpuSnapshot {
 	return { snapshot: gpuSnapshot, type, count: 1 };
 }
 
-/** The GPUs a provider declares for its GPU snapshot (DAYTONA_GPU's limits and no mount, the snapshot's GPU): a copy. */
+/** The GPUs a provider declares for its GPU snapshot (DAYTONA_GPU's limits and synced folder, the snapshot's GPU): a copy. */
 export function daytonaGpu(gpuSnapshot?: string): GpuCapability {
 	const { type, count } = daytonaGpuSnapshot(gpuSnapshot);
-	return { ...DAYTONA_GPU, types: [type], max: count, perGpu: { ...(DAYTONA_GPU.perGpu as NonNullable<GpuCapability["perGpu"]>) }, mounts: [] };
+	return { ...DAYTONA_GPU, types: [type], max: count, perGpu: { ...(DAYTONA_GPU.perGpu as NonNullable<GpuCapability["perGpu"]>) }, mounts: ["sync"] };
 }
 
 export const DAYTONA = defineProvider({

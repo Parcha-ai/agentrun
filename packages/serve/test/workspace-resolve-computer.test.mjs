@@ -302,11 +302,11 @@ test("registryHere: Daytona mounts Archil only where DAYTONA_ARCHIL_EGRESS has a
   const here = async (values) => registryHere(real, async (name) => (read.push(name), values[name]));
   const daytona = (registry) => registry.PROVIDERS.find((one) => one.id === "daytona");
   const hosted = await here({});
-  assert.deepEqual([daytona(hosted).mounts, daytona(hosted).imageNamed], [[], undefined]);
+  assert.deepEqual([daytona(hosted).mounts, daytona(hosted).imageNamed], [["sync"], undefined]);
   assert.deepEqual([...new Set(read)].sort(), ["AGENTRUN_DAYTONA_SNAPSHOT", "DAYTONA_ARCHIL_EGRESS"], "only the names an entry's mountsWith or imageEnv names are read");
-  assert.deepEqual(daytona(await here({ DAYTONA_ARCHIL_EGRESS: "  " })).mounts, [], "a value of whitespace alone is none");
+  assert.deepEqual(daytona(await here({ DAYTONA_ARCHIL_EGRESS: "  " })).mounts, ["sync"], "a value of whitespace alone is none");
   const relayed = await here({ DAYTONA_ARCHIL_EGRESS: "192.0.2.40:18100:42050", AGENTRUN_DAYTONA_SNAPSHOT: "agentrun-archil-0123456789ab" });
-  assert.deepEqual([daytona(relayed).mounts, daytona(relayed).unmounted, daytona(relayed).imageNamed], [["archil"], {}, true]);
+  assert.deepEqual([daytona(relayed).mounts, daytona(relayed).unmounted, daytona(relayed).imageNamed], [["sync", "archil"], {}, true]);
   for (const entry of REAL.filter((one) => one.id !== "daytona")) assert.equal(relayed.PROVIDERS.find((one) => one.id === entry.id), entry, entry.id);
   // Where a run's shell is follows: a Mode 2 Daytona sandbox has its computer's shell with the egress, none without.
   assert.equal(shellOf({ kind: "sandbox", provider: "daytona" }, 2, relayed), "computer");

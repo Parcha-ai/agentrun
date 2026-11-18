@@ -30,7 +30,7 @@ const bounded = (v: unknown, max = MAX_COMMAND_BYTES) => { if (Buffer.byteLength
 type Connector = { id: string; installation_id: string; label: string; created_at: string; last_seen: number; credential_hash: string; expires: number; revoked: boolean; native_execution: boolean; history_import?: boolean };
 type Enrollment = { expires: number; label: string; capabilities?: {native_execution:boolean;history_import:boolean}; connector_id?: string; request_hash?: string };
 type Target = { target_id: string; agent_id: string; name: string; target: NativeBinding; history_only?: boolean; owner_disconnected?: boolean };
-export type RemoteCommandType = 'prepare' | 'open' | 'send' | 'close' | 'grade';
+export type RemoteCommandType = 'prepare' | 'open' | 'send' | 'close';
 type EventBatch = { sequence: number; events: NativeEvent[]; hash: string };
 type Command = { command_id: string; connector_id: string; target_id: string; type: RemoteCommandType; session_key?: string; payload: unknown; deadline_at: number; created_at: number; state: 'queued'|'leased'|'complete'|'cancelled'|'unknown'; lease_token?: string; lease_expires_at?: number; worker_id?: string; result?: unknown; error?: string; completion_hash?: string; batches: EventBatch[] };
 
@@ -309,7 +309,7 @@ export function checkedPrepared(before: NativeBinding, result: unknown): { targe
         ? 'This source bridge did not check imported or additional Claude policy files.'
         : undefined;
   if (unchecked && !instructions.incomplete) instructions = { ...instructions, incomplete: unchecked };
-  if (instructions.incomplete || instructions.truncated) target = { ...target, capabilities: { ...target.capabilities, notes: false, skills: false }, issues: [...target.issues, `Self-improvement is unavailable: ${instructions.incomplete ?? 'the source instruction snapshot exceeds the grading evidence limit.'} Native jobs remain available; no incomplete policy is automatically graded.`] };
+  if (instructions.incomplete || instructions.truncated) target = { ...target, capabilities: { ...target.capabilities, learning: false }, issues: [...target.issues, `Self-improvement is unavailable: ${instructions.incomplete ?? 'the source instruction snapshot exceeds the grading evidence limit.'} Native jobs remain available; no incomplete policy is automatically graded.`] };
   return { target, instructions };
 }
 
@@ -338,10 +338,10 @@ export async function verifyRemote(store: Store, entry: AgentEntry): Promise<Age
   return updateNative(store, entry, {...prepared.target,connected:binding.connected});
 }
 
-/** A session transport only. Task/reflection/grading policy remains in the native loop and source runtime. */
-export async function openRemoteSession(broker: RemoteConnectors, target: NativeBinding, options: { signal?: AbortSignal; context?: string; skills?: readonly {name:string;files?:Record<string,string>}[]; runId: string; onEvent?: (event:NativeEvent)=>Promise<void>|void }): Promise<NativeSession> {
+/** A session transport only. Task and end-of-run policy remains in the native loop and source runtime. */
+export async function openRemoteSession(broker: RemoteConnectors, target: NativeBinding, options: { signal?: AbortSignal; context?: string; runId: string; onEvent?: (event:NativeEvent)=>Promise<void>|void }): Promise<NativeSession> {
   const sessionKey = opaque('session');
-  await broker.request(target, 'open', { context: options.context ?? '', skills: options.skills ?? [], run_id: options.runId, expected_fingerprint: target.fingerprint }, { signal: options.signal, sessionKey, timeoutMs: 30_000 });
+  await broker.request(target, 'open', { context: options.context ?? '', run_id: options.runId, expected_fingerprint: target.fingerprint },{ signal: options.signal, sessionKey, timeoutMs: 30_000 });
   return {
     send: async (prompt, sendOptions = {}) => remoteResult(await broker.request(target, 'send', { prompt, reflection: sendOptions.reflection ?? false, timeout_ms: sendOptions.timeoutMs ?? 180_000 }, { signal: sendOptions.signal ?? options.signal, sessionKey, timeoutMs: (sendOptions.timeoutMs ?? 180_000) + 5000, onEvent: options.onEvent })),
     close: async () => { try { await broker.request(target, 'close', {}, { sessionKey, timeoutMs: 5000 }); } catch { /* lease loss already requires the worker to close its session */ } },

@@ -54,6 +54,7 @@ import { provenFor, type RunnerLive } from "./live-reach.js";
 import { clearWaitEnded, markWaitEnded } from "./browser-wait-ended.js";
 import type { Claim, Store } from "./store/store.js";
 import { type RunSignIn, runSignIn, verifyRunSignIn } from "./sign-ins-store.js";
+import { held } from "./runner/held.js";
 
 export const ASK_TOOL = "ask_person";
 /** Under `--faux` only: a module whose default export gives the browser's `{ computer, driver }` for the run's
@@ -397,11 +398,14 @@ export const savedOnRelease = (row: { session: { resourceId: string | null; rele
 /** On the runner, the per-session hook that verifies the run's saved sign-in: a session that saved to it (savedOnRelease,
  *  in a run handed it to save) verifies it under the run's claim, at the session's own end (its time, else now), as the
  *  saved mark main reads at the lease's end. Answers whether it verified (sign-ins-store.ts verifyRunSignIn). */
-export const runSignInSaved = (store: Pick<Store, "runs" | "signIns">, sealKey: Buffer, claim: Claim, kept: RunSignIn) =>
+export const runSignInSaved = (store: Pick<Store, "runs" | "signIns">, sealKey: Buffer | undefined, claim: Claim, kept: RunSignIn) =>
   async (row: { session: { resourceId: string | null; releaseReason: string | null; endedAt?: string | null } }, change: string): Promise<boolean> => {
     if (!kept.save || !savedOnRelease(row, change)) return false;
     const ended = row.session.endedAt ? Date.parse(row.session.endedAt) : Number.NaN;
-    return verifyRunSignIn(store, sealKey, claim, kept, Number.isFinite(ended) ? ended : Date.now());
+    const at = Number.isFinite(ended) ? ended : Date.now();
+    // A run's own process holds no seal key: its runner marks it under the claim (held.ts verifySignIn).
+    if (!sealKey) return (await held()?.verifySignIn(kept, at)) ?? false;
+    return verifyRunSignIn(store, sealKey, claim, kept, at);
   };
 
 /** A browser on pi-browser's durable adapter, its sessions a browser computer provider's of the computer registry
@@ -449,7 +453,9 @@ const browserTool: ToolEntry = {
     // launch makes it: never the process's environment, so one run's keys never make another's.
     const runLog = (line: string) => void process.stderr.write(`agentrun-serve: run ${host.where.ref.id}: ${line}\n`);
     const vendorFetch = async () => (host.env[FAUX_ENV] ? fauxFetch(host.env, FAUX_VENDOR_API_ENV) : fetch);
-    const handed = computer ? undefined : host.claim ? (planeRefused || !host.store || !host.sealKey ? undefined : await runSignIn(host.store, host.sealKey, host.claim, vendor, { vendors: vendorsOver(() => host.env, vendorFetch), log: runLog })) : handedSignIn();
+    // A run's own process holds no seal key: its runner opens the run's sign-in under the claim (held.ts runSignIn).
+    const atRunner = held();
+    const handed = computer ? undefined : host.claim ? (planeRefused || !host.store ? undefined : host.sealKey ? await runSignIn(host.store, host.sealKey, host.claim, vendor, { vendors: vendorsOver(() => host.env, vendorFetch), log: runLog }) : await atRunner?.runSignIn(vendor)) : handedSignIn();
     const kept = !planeRefused && handed?.provider === vendor ? handed : undefined;
     // Tests only (--faux): the faux browser's computer provider and driver stand in for the plane vendor's and the raw-CDP
     // driver. The agent's browser computer is still the claim's, so a test hands the claim a faux provider of its own.
@@ -575,7 +581,7 @@ const browserTool: ToolEntry = {
     const files = { files: uploadsFrom(work, MAX_UPLOAD_BYTES, uploadMime), ...(folder !== undefined && keepsDownloads ? { workspace: () => folder } : {}) };
     // A session that saved to the sign-in, let go: its time, for the sign-in's verified_at when the run's lease ends.
     // On the runner, the store's verified_at under the run's claim (runSignInSaved), never a mark in the run's directory.
-    const verify = kept?.save && host.claim && host.store && host.sealKey ? runSignInSaved(host.store, host.sealKey, host.claim, kept as RunSignIn) : undefined;
+    const verify = kept?.save && host.claim && host.store && (host.sealKey || held()) ? runSignInSaved(host.store, host.sealKey, host.claim, kept as RunSignIn) : undefined;
     // Awaited by the session's change, so the release that lets a run's sessions go (beforeRelease) returns only once its
     // last save is verified: the run's end commit, which ends the claim, never fences it.
     const saved = verify
@@ -769,7 +775,7 @@ export const allows = (allowed: readonly string[], name: string): boolean => all
  *  agent's `granted` tools a workflow's call node runs here (CALL_TOOLS, and each MCP tool granted by its own name,
  *  tool-names.ts mcpNameOf), and with the run's `plane`, none it resolves unavailable (its agent's own tool of the name
  *  does not run either). A
- *  learned model node runs without tools (learn/skills.ts MODEL_NODE_TOOLS), and a harness's own tool (Bash,
+ *  learned model node runs without tools (learn/workflow-draft.ts MODEL_NODE_TOOLS), and a harness's own tool (Bash,
  *  exec_command, apply_patch) is never one, so the DSL refuses a draft that names it. */
 export const learnedWorkflowTools = (granted: readonly string[], plane?: Plane, options: LearnedMcp = {}): string[] =>
   [...new Set(granted.filter((name) => (options.mcp === true && mcpNameOf(name) !== undefined) || (allows(CALL_TOOLS, name) && !isUnavailable(plane?.[name as Pickable]))))];

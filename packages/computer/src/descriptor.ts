@@ -64,7 +64,10 @@ export interface ProviderDescriptor<Module extends ProviderModule = ProviderModu
 	readonly settings?: readonly DescriptorSetting[];
 	/** The vendor bills by time; prices are the vendor's page, not ours. */
 	readonly metered: boolean;
-	/** The mount kinds its computers take, as its providers' capabilities().mount declare them; [] for none. */
+	/**
+	 * The mount kinds its computers take beside the synced folder, bind or archil; [] for none. sync is never listed: it
+	 * is derived (syncs, derivedMounts), and capabilities().mount declares both.
+	 */
 	readonly mounts: readonly MountKind[];
 	/**
 	 * Mount kinds its computers don't take though a caller would ask for them, each with why in one sentence: check()
@@ -165,10 +168,10 @@ export function descriptorProblems(value: unknown): string[] {
 	if (typeof d.label !== "string" || d.label.trim() === "") problems.push("label is not a name in words");
 	if (typeof d.metered !== "boolean") problems.push("metered is not true or false");
 	if (typeof d.load !== "function") problems.push("load is not a function that imports the provider module");
-	if (!Array.isArray(d.mounts) || d.mounts.some((kind) => kind !== "bind" && kind !== "archil")) problems.push("mounts is not a list of mount kinds (bind, archil)");
+	if (!Array.isArray(d.mounts) || d.mounts.some((kind) => kind !== "bind" && kind !== "archil")) problems.push("mounts is not a list of mount kinds (bind, archil): sync is derived, never listed");
 	if (d.unmounted !== undefined) {
 		const entries = typeof d.unmounted === "object" && d.unmounted !== null && !Array.isArray(d.unmounted) ? Object.entries(d.unmounted) : undefined;
-		if (entries === undefined || entries.some(([kind, why]) => (kind !== "bind" && kind !== "archil") || typeof why !== "string" || why.trim() === "")) problems.push("unmounted maps mount kinds (bind, archil) to why, in words");
+		if (entries === undefined || entries.some(([kind, why]) => (kind !== "bind" && kind !== "archil" && kind !== "sync") || typeof why !== "string" || why.trim() === "")) problems.push("unmounted maps mount kinds (bind, archil, sync) to why, in words");
 		else if (Array.isArray(d.mounts) && entries.some(([kind]) => d.mounts?.includes(kind as MountKind))) problems.push("unmounted names a mount kind that mounts declares");
 	}
 	if (d.mountsWith !== undefined) {
@@ -238,12 +241,29 @@ export function connectOf(descriptor: Pick<ProviderDescriptor, "label" | "connec
 }
 
 /**
- * The mount kinds a provider's computers take, and why not the others, with the keys `set` says the operator has set: its
- * mounts, and each kind of its mountsWith whose key is set, which leaves its unmounted. What a provider made with those
- * keys declares (capabilities().mount), and what a server reads to know whether that provider can mount a run's folder.
+ * Whether a configuration takes a synced folder: its groups have exec and files (all the runner reads and writes the
+ * folder through), and its descriptor binds no host folder (a bind is the folder itself) nor says why it takes none
+ * (unmounted.sync).
  */
-export function mountsOf(descriptor: Pick<ProviderDescriptor, "mounts" | "unmounted" | "mountsWith">, set: (name: string) => boolean): { mounts: MountKind[]; unmounted: Unmounted } {
+export function syncs(descriptor: Pick<ProviderDescriptor, "mounts" | "unmounted">, configuration: Pick<KindCapabilities, "groups">): boolean {
+	return configuration.groups.includes("exec") && configuration.groups.includes("files") && !descriptor.mounts.includes("bind") && descriptor.unmounted?.sync === undefined;
+}
+
+/** A descriptor's mounts, with sync where one of its configurations takes it (syncs). */
+export function derivedMounts(descriptor: Pick<ProviderDescriptor, "mounts" | "unmounted" | "capabilities">): MountKind[] {
+	const sync = !descriptor.mounts.includes("sync") && descriptor.capabilities.some((one) => syncs(descriptor, one));
+	return [...descriptor.mounts, ...(sync ? (["sync"] as const) : [])];
+}
+
+/**
+ * The mount kinds a provider's computers take, and why not the others, with the keys `set` says the operator has set: its
+ * derived mounts, and each kind of its mountsWith whose key is set, which leaves its unmounted. What a provider made with
+ * those keys declares (capabilities().mount), and what a server reads to know whether that provider can mount a run's
+ * folder.
+ */
+export function mountsOf(descriptor: Pick<ProviderDescriptor, "mounts" | "unmounted" | "mountsWith" | "capabilities">, set: (name: string) => boolean): { mounts: MountKind[]; unmounted: Unmounted } {
 	const taken = Object.entries(descriptor.mountsWith ?? {}).flatMap(([kind, key]) => (typeof key === "string" && set(key) ? [kind as MountKind] : []));
 	const unmounted = Object.fromEntries(Object.entries(descriptor.unmounted ?? {}).filter(([kind]) => !taken.includes(kind as MountKind)));
-	return { mounts: [...descriptor.mounts, ...taken.filter((kind) => !descriptor.mounts.includes(kind))], unmounted };
+	const mounts = [...descriptor.mounts, ...taken.filter((kind) => !descriptor.mounts.includes(kind))];
+	return { mounts: derivedMounts({ ...descriptor, mounts }), unmounted };
 }

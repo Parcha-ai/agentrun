@@ -160,6 +160,20 @@ test("a refusal names the client that called by its user-agent, cut to 120 chara
   assert.equal(refusals[0].status, 401);
 });
 
+test("a local route with a body is answered by the proxy with it, only to the session's key or a side key, and nothing is forwarded or asked", async (t) => {
+  const models = JSON.stringify({ data: [{ id: 'session-model', type: 'model' }], has_more: false });
+  const { p, forwarded, hooks } = await proxy(t, { policy: { ...policy, routes: [...policy.routes, { method: 'GET', path: '/v1/models', local: 200, localJson: models }] } });
+  for (const key of [null, 'wrong', `${KEY}x`]) assert.equal((await send(p.url, { method: 'GET', path: '/v1/models', key, body: '' })).status, 401, `key ${key}`);
+  for (const key of [KEY, p.sideKey('learned_workflow')]) {
+    const listed = await send(p.url, { method: 'GET', path: '/v1/models', key, body: '' });
+    assert.deepEqual([listed.status, listed.text, listed.headers['content-type']], [200, models, 'application/json']);
+  }
+  // Its path text is matched as every route's: a query or another method is not it.
+  assert.equal((await send(p.url, { method: 'GET', path: '/v1/models?limit=1000', body: '' })).status, 403);
+  assert.equal((await send(p.url, { method: 'POST', path: '/v1/models' })).status, 403);
+  assert.deepEqual([forwarded.length, hooks.before.length, hooks.after.length], [0, 0, 0]);
+});
+
 test("a local route is answered by the proxy with its status alone, with or without the key, and nothing is forwarded or asked", async (t) => {
   const { p, forwarded, hooks } = await proxy(t);
   // A client's connectivity check carries no key (the Claude Agent CLI's does not): it learns only that the proxy is up.

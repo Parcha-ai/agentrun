@@ -6,7 +6,7 @@
         "image": "ghcr.io/parcha-ai/agentrun-server:beta"
       },
       "deploy": {
-        "startCommand": "/bin/sh -c \"chown 1000:1000 /data && chmod 700 /data && { [ ! -d /data/lost+found ] || chown -h 1000:1000 /data/lost+found; } && exec setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/home/node /opt/agentrun/packages/serve/launcher/agentrun-serve -- /usr/bin/tini -- /bin/sh /opt/agentrun/packages/serve/docker/start.sh server-and-runner --data /data --listen 0.0.0.0 --port 7340 --drain-timeout 6s\"",
+        "startCommand": "/bin/sh -c \"chown 1000:1000 /data && chmod 711 /data &&{ [ ! -d /data/lost+found ] || chown -h 1000:1000 /data/lost+found; } && exec setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/home/node /opt/agentrun/packages/serve/launcher/agentrun-serve -- /usr/bin/tini -- /bin/sh /opt/agentrun/packages/serve/docker/start.sh server-and-runner --data /data --listen 0.0.0.0 --port 7340 --drain-timeout 6s\"",
         "healthcheckPath": "/v2/health",
         "restartPolicyType": "ON_FAILURE",
         "restartPolicyMaxRetries": 10

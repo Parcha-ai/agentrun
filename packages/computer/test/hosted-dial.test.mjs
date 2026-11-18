@@ -249,9 +249,9 @@ test("a machine whose daemon's sha256 is not the server's never dials, and creat
 	assert.deepEqual(fake.live(), []);
 });
 
-test("a dial host takes no Archil mount, in words, and declares none", async () => {
+test("a dial host takes no Archil mount, in words, and declares a synced folder alone", async () => {
 	const { fake, provider } = setup();
-	assert.deepEqual(provider.capabilities().mount, []);
+	assert.deepEqual(provider.capabilities().mount, ["sync"]);
 	const refused = await create(provider, { ...SPEC, mount: { kind: "archil", disk: "dsk-0123456789abcdef", region: "aws-us-east-1", folder: "agents/a/runs/r/work" } });
 	assert.equal(refused.ok, false);
 	assert.match(refused.error.message, /mount: Fakehost's machines dial this server, and a machine that dials takes no Archil mount yet/);

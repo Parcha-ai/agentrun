@@ -143,11 +143,11 @@ describe("text in angle brackets", () => {
     }
   });
 
-  it("in What it changed (the learning diff), a note's <name> reads literally", () => {
+  it("in What it changed (the learning diff), a correction's <name> reads literally", () => {
     // Closed at first: its text is in the page once opened.
     const host = document.body.appendChild(document.createElement("div"));
     root = createRoot(host);
-    act(() => root!.render(createElement(RunChanges, { got: { state: "read", changes: [{ file: "refund-summary-format.md", said: "Added: Refund summary format", before: null, after: [{ text: '"Customer: <name>"', mark: "added" }, { text: '"Amount: $<amount>"', mark: "added" }] }] }, retry: () => {} })));
+    act(() => root!.render(createElement(RunChanges, { got: { state: "read", changes: [{ file: "corrections.md", said: "Changed: corrections", before: null, after: [{ text: '"Customer: <name>"', mark: "added" }, { text: '"Amount: $<amount>"', mark: "added" }] }] }, retry: () => {} })));
     act(() => { host.querySelector("button")!.click(); });
     expect(host.textContent).toContain('"Customer: <name>"');
     expect(host.textContent).toContain('"Amount: $<amount>"');

@@ -19,7 +19,7 @@ import { agent, call, client, cookieOf, FAUX, follow, harnessData, printed, scra
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
 const FAUX_BROWSER = new URL("./fixtures/faux-browser.mjs", import.meta.url).pathname;
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
-const KEYS = ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY", "TYPESAFE_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENTRUN_SEAL_KEY"];
+const KEYS = ["PARALLEL_API_KEY", "MONID_API_KEY", "BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY", "TYPESAFE_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "PARTICLE_API_KEY", "AGENTRUN_SEAL_KEY"];
 const sealKey = () => randomBytes(32).toString("base64");
 /** A throwaway value: none is a real key. */
 const made = () => `not-a-secret-${randomBytes(12).toString("hex")}`;
@@ -94,7 +94,7 @@ test("a key saved by name is kept sealed over the store: GET says which fields a
   assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values: { BROWSERBASE_PROJECT_ID: values.BROWSERBASE_PROJECT_ID } })).status, 204, "one field of two, the other kept");
   const listed = await api("GET", "/settings/tool-keys");
   assert.equal(listed.status, 200);
-  assert.deepEqual(fieldsOf(listed.body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: STORED, BROWSERBASE_PROJECT_ID: STORED, KERNEL_API_KEY: UNSET, TYPESAFE_API_KEY: UNSET, ANTHROPIC_API_KEY: UNSET, OPENAI_API_KEY: UNSET, OPENROUTER_API_KEY: UNSET });
+  assert.deepEqual(fieldsOf(listed.body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: STORED, BROWSERBASE_PROJECT_ID: STORED, KERNEL_API_KEY: UNSET, TYPESAFE_API_KEY: UNSET, ANTHROPIC_API_KEY: UNSET, OPENAI_API_KEY: UNSET, OPENROUTER_API_KEY: UNSET, PARTICLE_API_KEY: UNSET });
   // A model key's harnesses: pi and its provider's own, every one installed and with room here, none saved yet.
   assert.deepEqual(listed.body.keys.map((k) => [k.id, k.kind, k.unlocks, k.harnesses]), [
     ["parallel", "tool", ["web_fetch", "web_search", "decisions.parallel"], ["pi", "claude-agent", "codex", "opencode"]],
@@ -104,6 +104,7 @@ test("a key saved by name is kept sealed over the store: GET says which fields a
     ["typesafe", "tool", ["decisions.jev"], []],
     ["anthropic", "model", [], ["pi", "claude-agent"]],
     ["openai", "model", [], ["pi", "codex", "opencode"]],
+    ["particle", "model", [], ["pi"]],
     ["openrouter", "model", [], ["pi", "claude-agent", "codex", "opencode"]],
   ], "only what this server binds: web_fetch and web_search on every harness; monid's endpoints, granted by name, on every harness, as host tools run");
   assert.equal(listed.body.reenter, null);
@@ -116,7 +117,7 @@ test("a key saved by name is kept sealed over the store: GET says which fields a
   }
   holdsNone(storeBytes(data), keyForms(key), "the store");
   assert.equal((await api("DELETE", "/settings/tool-keys/browserbase")).status, 204);
-  assert.deepEqual(fieldsOf((await api("GET", "/settings/tool-keys")).body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: UNSET, BROWSERBASE_PROJECT_ID: UNSET, KERNEL_API_KEY: UNSET, TYPESAFE_API_KEY: UNSET, ANTHROPIC_API_KEY: UNSET, OPENAI_API_KEY: UNSET, OPENROUTER_API_KEY: UNSET });
+  assert.deepEqual(fieldsOf((await api("GET", "/settings/tool-keys")).body), { PARALLEL_API_KEY: STORED, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: UNSET, BROWSERBASE_PROJECT_ID: UNSET, KERNEL_API_KEY: UNSET, TYPESAFE_API_KEY: UNSET, ANTHROPIC_API_KEY: UNSET, OPENAI_API_KEY: UNSET, OPENROUTER_API_KEY: UNSET, PARTICLE_API_KEY: UNSET });
 });
 
 test("each key unlocks only what capabilities bind, a tool or a decision provider, and runs on the union of those tools' harnesses; a name bound later shows with no edit to the key table", async (t) => {
@@ -192,7 +193,7 @@ test("before any model key is saved, a model key's row names every harness the k
       assert.deepEqual([offers["claude-agent"].available, offers.codex.available], [false, false], JSON.stringify(caps.harnesses));
       for (const offer of caps.harnesses) assert.equal("keys" in offer, false, "what a key would unlock is the key rows', never served in capabilities");
       const view = (await api("GET", "/settings/tool-keys")).body;
-      assert.deepEqual(Object.fromEntries(view.keys.filter((key) => key.kind === "model").map((key) => [key.id, key.harnesses])), rows, JSON.stringify(caps.harnesses.map((offer) => [offer.id, offer.reason ?? null])));
+      assert.deepEqual(Object.fromEntries(view.keys.filter((key) => key.kind === "model").map((key) => [key.id, key.harnesses])), { ...rows, particle: ["pi"] }, JSON.stringify(caps.harnesses.map((offer) => [offer.id, offer.reason ?? null])));
       await meetsDocument(api, view);
     });
   }
@@ -234,7 +235,7 @@ test("a field the server is started with is the server's: GET says so, PUT and D
   assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values: { BROWSERBASE_API_KEY: made() } })).status, 409);
   assert.equal((await api("PUT", "/settings/tool-keys/browserbase", { values: { BROWSERBASE_PROJECT_ID: made() } })).status, 204);
   const view = (await api("GET", "/settings/tool-keys")).body;
-  assert.deepEqual(fieldsOf(view), { PARALLEL_API_KEY: { set: true, source: "server" }, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: { set: true, source: "server" }, BROWSERBASE_PROJECT_ID: STORED, KERNEL_API_KEY: UNSET, TYPESAFE_API_KEY: UNSET, ANTHROPIC_API_KEY: UNSET, OPENAI_API_KEY: UNSET, OPENROUTER_API_KEY: UNSET });
+  assert.deepEqual(fieldsOf(view), { PARALLEL_API_KEY: { set: true, source: "server" }, MONID_API_KEY: UNSET, BROWSERBASE_API_KEY: { set: true, source: "server" }, BROWSERBASE_PROJECT_ID: STORED, KERNEL_API_KEY: UNSET, TYPESAFE_API_KEY: UNSET, ANTHROPIC_API_KEY: UNSET, OPENAI_API_KEY: UNSET, OPENROUTER_API_KEY: UNSET, PARTICLE_API_KEY: UNSET });
   for (const value of Object.values(server)) holdsNone(JSON.stringify(view) + JSON.stringify(refused.body), formsOf(value), "an answer");
   assert.equal((await api("DELETE", "/settings/tool-keys/browserbase")).status, 204, "its stored field goes; the server's stays");
   assert.deepEqual(fieldsOf((await api("GET", "/settings/tool-keys")).body).BROWSERBASE_PROJECT_ID, UNSET);

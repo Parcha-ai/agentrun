@@ -11,10 +11,11 @@
 // times its last build's time when that is longer, so a long run's work never turns into a view built per commit. Two
 // things outside a run's writes also move its listing: the server's keys (a failed run's error names a refused key by
 // them; relist at the start and on a key's save) and an agent's learning folder (a learning held for its owner's OK reads
-// as it stands there; read for the agents that have such runs, each pass).
-import type { Store } from "./store/store.js";
+// as it stands there; read for the agents that have such runs, each pass). A list that finds a listing behind builds it
+// through the lister too (Lister.build), so every build of a held listing hands the lister the folder state it read.
+import type { RunListing, Store } from "./store/store.js";
 import { LISTING_HELD, LISTING_KEYED } from "./store/schema.js";
-import { listingOverStore, type ViewDeps } from "./store-view.js";
+import { LISTING_RETRY_MS, listingOverStore, type ViewDeps } from "./store-view.js";
 
 /** Most rows one read of a pass reads. */
 const PASS_ROWS = 32;
@@ -22,25 +23,31 @@ const PASS_ROWS = 32;
 export const LISTER_IDLE_MS = 400;
 /** The least time between two builds of one run a runner holds (ms). */
 const HELD_REBUILD_MS = 1_000;
-/** How long a run whose view failed to build waits before it is tried again (ms). */
-const FAILED_RETRY_MS = 30_000;
 
 export interface Lister {
+  /** Starts its own passes: the first at once, then one each idle time (none with an idle time of Infinity). */
+  start(): void;
+  /** Builds run `runId`'s listing over `deps` and writes it at `mark`, the mark read before the build (Runs.putListing:
+   *  not written when a write moved it since). A listing that read a workflow held for its owner's OK puts its agent's
+   *  folder among those each pass reads, with the statuses this build read: an approval that lands after that read is
+   *  then seen by the next pass, whoever built the listing (a pass, or a list). Undefined for an unknown run. */
+  build(runId: string, mark: number, deps: ViewDeps): Promise<{ listing: RunListing | undefined; written: boolean }>;
   /** Resolves once a pass finds nothing it may build now: every run's listing is current, but for a held run built within
    *  its rebuild time. For tests and benchmarks; the server never waits on it. */
   settled(): Promise<void>;
   /** The server's keys or settings changed: every failed run's listing (its error words) is marked behind before this
    *  resolves, so the next list builds it again. */
   keysChanged(): Promise<void>;
-  /** A person changed agent `agentId`'s learning folder (a note written, approved, retired or restored): each of its runs
-   *  whose listing read a note held for the owner's OK is marked behind before this resolves, so the next list says what
+  /** A person changed agent `agentId`'s learning folder (a workflow approved, retired or restored): each of its runs
+   *  whose listing read a workflow held for the owner's OK is marked behind before this resolves, so the next list says what
    *  the folder says now. A change made outside the server is read by the next pass. */
   learningChanged(agentId: string): Promise<void>;
   /** Stops after the pass under way. */
   stop(): Promise<void>;
 }
 
-export function startLister(store: Store, depsOf: () => ViewDeps, options: { readonly log?: (line: string, error: Error) => void; readonly now?: () => number; readonly idleMs?: number } = {}): Lister {
+/** The lister over `store`, its passes not started (Lister.start): a list may build through it before they are. */
+export function createLister(store: Store, depsOf: () => ViewDeps, options: { readonly log?: (line: string, error: Error) => void; readonly now?: () => number; readonly idleMs?: number } = {}): Lister {
   const now = options.now ?? Date.now;
   /** Infinity: no pass of its own, only those settled() asks for. */
   const idleMs = options.idleMs ?? LISTER_IDLE_MS;
@@ -49,7 +56,8 @@ export function startLister(store: Store, depsOf: () => ViewDeps, options: { rea
   let pass: Promise<number> = Promise.resolve(0);
   /** A held run's last build: when, and how long it took. */
   const built = new Map<string, { at: number; ms: number }>();
-  /** The agents with a run whose learning holds items for the owner's OK, with their folder's statuses as last read. */
+  /** The agents with a run whose learning holds items for the owner's OK, with their folder's statuses as last read (for an
+   *  agent first met in a build, as that build read them). */
   const folders = new Map<string, unknown>();
   /** When each run whose view failed to build last failed. */
   const failed = new Map<string, number>();
@@ -58,6 +66,20 @@ export function startLister(store: Store, depsOf: () => ViewDeps, options: { rea
   let relistKeys = true;
 
   const say = (what: string, error: unknown) => options.log?.(what, error instanceof Error ? error : new Error(String(error)));
+
+  /** Lister.build: the one build of a listing, a pass's or a list's. */
+  async function build(id: string, mark: number, deps: ViewDeps): Promise<{ listing: RunListing | undefined; written: boolean }> {
+    // The folder statuses this build read, by agent: the baseline a later pass compares against, never a read made after
+    // it, which a person's approval landing before this listing's write would already hold.
+    const read = new Map<string, unknown>();
+    const statuses = deps.statuses;
+    const buildDeps: ViewDeps = statuses ? { ...deps, statuses: async (agentId) => { const seen = await statuses(agentId); if (!read.has(agentId)) read.set(agentId, seen); return seen; } } : deps;
+    const listing = await listingOverStore(store, id, buildDeps);
+    const written = listing ? await store.runs.putListing(id, mark, listing) : false;
+    const agentId = listing ? String(listing.item.agent_id) : "";
+    if (listing && listing.flags & LISTING_HELD && !folders.has(agentId)) folders.set(agentId, read.get(agentId));
+    return { listing, written };
+  }
 
   /** One pass: what moved outside the runs' writes, then each behind row this pass may build. The rows it built. */
   async function once(): Promise<number> {
@@ -82,16 +104,15 @@ export function startLister(store: Store, depsOf: () => ViewDeps, options: { rea
       for (const { id, mark, held } of rows) {
         if (closing) break;
         const last = built.get(id);
-        if ((held && last && now() - last.at < Math.max(HELD_REBUILD_MS, 4 * last.ms)) || (failed.get(id) ?? -Infinity) > now() - FAILED_RETRY_MS) {
+        if ((held && last && now() - last.at < Math.max(HELD_REBUILD_MS, 4 * last.ms)) || (failed.get(id) ?? -Infinity) > now() - LISTING_RETRY_MS) {
           passed++;
           continue;
         }
         const start = now();
-        let listing: Awaited<ReturnType<typeof listingOverStore>>;
-        let written = false;
+        let listing: RunListing | undefined;
+        let written: boolean;
         try {
-          listing = await listingOverStore(store, id, deps);
-          if (listing) written = await store.runs.putListing(id, mark, listing);
+          ({ listing, written } = await build(id, mark, deps));
           failed.delete(id);
         } catch (error) {
           failed.set(id, now());
@@ -104,8 +125,6 @@ export function startLister(store: Store, depsOf: () => ViewDeps, options: { rea
         count++;
         if (held) built.set(id, { at: now(), ms: now() - start });
         else built.delete(id);
-        const agentId = String(listing.item.agent_id);
-        if (listing.flags & LISTING_HELD && !folders.has(agentId)) folders.set(agentId, await deps.statuses?.(agentId));
       }
       if (closing || count > 0 || rows.length < PASS_ROWS) return count;
     }
@@ -118,9 +137,12 @@ export function startLister(store: Store, depsOf: () => ViewDeps, options: { rea
     timer = setTimeout(() => void turn().then((count) => next(count > 0 ? 0 : idleMs)), delay);
     timer.unref();
   }
-  next(0);
 
   return {
+    start() {
+      next(0);
+    },
+    build,
     async settled() {
       while ((await turn()) > 0);
     },

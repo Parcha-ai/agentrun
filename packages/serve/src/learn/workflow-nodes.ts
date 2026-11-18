@@ -1,4 +1,4 @@
-// The one walk over a learned workflow's nodes (learn/skills.ts callNodes): only the
+// The one walk over a learned workflow's nodes (learn/workflow-draft.ts callNodes): only the
 // workflow's node positions, never an object in a call's args, a schema or any other data, however it is shaped.
 
 import { TIERED_KINDS } from "./check.js";

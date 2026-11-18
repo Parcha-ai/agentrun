@@ -14,8 +14,7 @@ function service({ enabled = true, eventsError = false } = {}) {
       if (path === '/v2/agents/backend-codex') return Response.json({ definition: { sdk: { runtime: 'codex-sdk' } } });
       if (path === '/v2/agents/backend-codex/sdk-runs') return Response.json({ run_id: 'sdk-run', agent_id: 'backend-codex',
         token: 'fixture-scoped-key', console_url: 'https://server.example/#/runs/sdk-run', learning: { enabled,
-          revision: enabled ? 'approved-revision' : null, context: 'Start release reports with Ready or Blocked.',
-          skills: [{ name: 'release-report', files: { 'SKILL.md': 'Keep the report to two sentences.' } }] } });
+          revision: enabled ? 'approved-revision' : null, context: '- Start release reports with Ready or Blocked.\n- Keep the report to two sentences.' } });
       if (path === '/v2/sdk-runs/sdk-run/events') return eventsError
         ? Response.json({ error: { code: 'unavailable' } }, { status: 503 }) : Response.json({ accepted: true });
       if (path === '/v2/sdk-runs/sdk-run/complete') return Response.json({ accepted: true });
@@ -130,7 +129,7 @@ test('learning Off preserves input by identity, including multimodal native inpu
   assert.doesNotMatch(JSON.stringify(requests), /private\/diagram/);
 });
 
-test('multimodal calls preserve native image objects but cannot learn from images the grader has not seen', async () => {
+test('multimodal calls preserve native image objects but cannot learn from images the server has not seen', async () => {
   const { config, requests } = service(), { codex, calls } = native({ result: response });
   const wrapped = withCodexAgentLearning(codex, config);
   const image = { type: 'local_image', path: '/private/diagram.png' };

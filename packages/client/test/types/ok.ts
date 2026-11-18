@@ -17,7 +17,7 @@ export async function consumer(): Promise<void> {
   }
   const bytes: Uint8Array = await client.runs.readFile(run.run_id, "notes.md");
   const response: Response = await client.runs.readFile(run.run_id, "notes.md", undefined, { stream: true });
-  const note: string = (await client.learning.write("notes", "policies.md", "# Policies\n", { "If-None-Match": "*" })).body;
+  const corrections: string = (await client.learning.writeCorrections("notes", { text: "- Look in policies/ first.\n" }, { "If-Match": "\"etag-1\"" })).body.text;
   await client.files.upload("f1", new Uint8Array([1, 2]), { contentType: "image/png" });
   // What the server serves, in the types with no cast: a workflow agent's definition with no instructions, version or
   // skills; a create's warnings; the archived agents' list; the usage report's unpriced runs.
@@ -33,7 +33,7 @@ export async function consumer(): Promise<void> {
     if (error instanceof AgentRunRefused) void [error.status, error.code, error.error?.message];
     if (error instanceof AgentRunTimeout) void error.run?.status;
   }
-  void [first, bytes, response, note];
+  void [first, bytes, response, corrections];
 }
 
 // The backend explicitly supplies its interpreter; host adapter request types are inferred without casts.

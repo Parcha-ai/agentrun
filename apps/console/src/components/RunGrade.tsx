@@ -39,12 +39,12 @@ function refusal(e: unknown): string {
 /** What a round says when its run ended before it took the grade's words (`feedback_status` `not_run`). */
 export const NOT_RUN = "The review could not run.";
 
-/** What came of the grade, in words: the look-back round it opened (`feedback`, running, done or never run), or that it was
+/** What came of the grade, in words: the correction round it opened (`feedback`, running, done or never run), or that it was
  *  kept with none (the form's NO_WORDS says before sending that a wrong grade without words opens none; a grade of a run
  *  its learned workflow answered alone opens none either: the workflow's graded hold reads it). */
 function outcome(graded: RunGraded, reviewing: boolean): string {
   if (graded.feedback && graded.feedback_status === "not_run") return NOT_RUN;
-  if (graded.feedback === "look_back") return reviewing ? "The agent is looking back on your words." : "The agent looked back on your words.";
+  if (graded.feedback === "correction") return reviewing ? "Your words are being added to its corrections." : "Your words were added to its corrections.";
   return "Kept for this agent.";
 }
 

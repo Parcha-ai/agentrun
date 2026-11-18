@@ -19,6 +19,7 @@
 //                                         as stmt, or as step (one statement, its changes and rows, its `expect` checked)
 //                                         in between
 //   close
+import { chmodSync, closeSync, openSync } from "node:fs";
 import { parentPort } from "node:worker_threads";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { inMemory } from "./memory.js";
@@ -183,14 +184,34 @@ function takeOwnerLock(file: string): void {
   owner = lock;
 }
 
+/** The store's files, the server's alone (0600) whatever the umask: a run's process, a user of its own that may cross the
+ *  data directory to its folders, opens none of them. The file is made 0600 before SQLite opens it, and SQLite makes its
+ *  WAL and shared-memory files with the database file's mode; each one already there is set again (a store an earlier
+ *  start made 0644). A file this process does not own (a runner's on the server's store) is left as it is. */
+function keepPrivate(file: string, made: boolean): void {
+  if (inMemory(file)) return;
+  if (made) {
+    try {
+      closeSync(openSync(file, "a", 0o600));
+    } catch {}
+  }
+  for (const each of [file, `${file}-wal`, `${file}-shm`, `${file}.owner`, `${file}.owner-journal`]) {
+    try {
+      chmodSync(each, 0o600);
+    } catch {}
+  }
+}
+
 function handle(request: Request): unknown {
   switch (request.op) {
     case "open": {
+      if (request.owner) keepPrivate(request.file, true);
       if (request.owner) takeOwnerLock(request.file);
       db = new DatabaseSync(request.file);
       busyTimeout = Math.max(0, Math.floor(request.busyTimeoutMs));
       db.exec(`PRAGMA busy_timeout = ${busyTimeout}`);
       db.exec("PRAGMA journal_mode = WAL");
+      if (request.owner) keepPrivate(request.file, false);
       db.exec(NORMAL);
       db.exec("PRAGMA foreign_keys = ON");
       return null;

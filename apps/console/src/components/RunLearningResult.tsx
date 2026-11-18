@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
 import { ProblemCard } from "@/components/Problem";
-import { money, underWay, type RunLearningResultData } from "@/lib/learning";
+import { corrections, underWay, type RunLearningResultData } from "@/lib/learning";
 import { when } from "@/lib/format";
 import { problem } from "@/lib/problem";
 import type { Run } from "@/lib/v2";
@@ -14,8 +14,7 @@ type Props = {
   onViewChanges?: () => void;
 };
 type Read = { data: RunLearningResultData | null | undefined; error?: unknown; reading: boolean };
-const stateLabel: Record<string, string> = { seeded: "Prepared", reflecting: "Reflecting", proposed: "Under review", merged: "Saved", dropped: "Not saved", pending: "Awaiting approval" };
-const count = (value: number | null | undefined) => typeof value === "number" && Number.isFinite(value) ? value.toLocaleString("en-US") : "Not reported";
+const stateLabel: Record<string, string> = { seeded: "Prepared", reflecting: "Reflecting", merged: "Saved", dropped: "Not saved" };
 
 /** A read-only view of the recorded result, separate from the run's compact learning summary. */
 export function RunLearningResult({ run, read, onViewChanges }: Props) {
@@ -38,7 +37,7 @@ export function RunLearningResult({ run, read, onViewChanges }: Props) {
     return () => { current = false; };
   }, [runId, state, at, available, tries]);
   // Returning from an external run or owner review reads the result again. The parent also updates the result when
-  // the run's learning state moves, so a completed job can finish grading without reloading the page.
+  // the run's learning state moves, so a completed job can finish learning without reloading the page.
   useEffect(() => {
     const refresh = () => { if (!document.hidden) setTries((n) => n + 1); };
     window.addEventListener("focus", refresh); document.addEventListener("visibilitychange", refresh);
@@ -46,7 +45,6 @@ export function RunLearningResult({ run, read, onViewChanges }: Props) {
   }, []);
   const result = got.data;
   const retry = () => setTries((n) => n + 1);
-  const grade = result?.tokens?.grade;
   return <section className="overflow-hidden border bg-card" aria-label="Learning result">
     <header className="flex flex-wrap items-center gap-3 border-b px-5 py-4">
       <h2 className="text-lead font-semibold">Learning result</h2>
@@ -67,38 +65,19 @@ export function RunLearningResult({ run, read, onViewChanges }: Props) {
           {result.at && <span>Updated {when(result.at)}</span>}{result.reason && <span>Reason: {result.reason}</span>}
         </div>
       </div>
-      <section aria-label="Grader decision">
-        <h3 className="mb-2 text-body font-semibold">Grader decision</h3>
-        {result.verdict ? <>
-          <p className="text-small text-muted-foreground">{result.verdict.merge
-            ? result.verdict.items?.some((item) => !item.keep) ? "Recommended keeping some changes." : "Recommended keeping these changes."
-            : "Did not recommend keeping these changes."}</p>
-          <p className="mt-2 break-words text-body leading-relaxed">{result.verdict.reason}</p>
-          {result.verdict.items?.length ? <ul className="mt-3 divide-y border">{result.verdict.items.map((item, i) => <li key={`${item.file}-${i}`} className="space-y-2 p-3">
-            <div className="flex flex-wrap items-center justify-between gap-2"><code className="min-w-0 break-all text-small">{item.file}</code><Chip tone={item.pending ? "warning" : item.keep ? "success" : "muted"}>{item.pending ? "Needs approval" : item.keep ? "Keep" : "Do not keep"}</Chip></div>
-            <p className="break-words text-body leading-relaxed text-muted-foreground">{item.why}</p>
-            {item.question && <p className="text-small">{item.question}</p>}
-            {item.origin && <p className="text-label text-muted-foreground">{item.origin === "you" ? "From your instruction" : `Origin: ${item.origin}`}</p>}
-          </li>)}</ul> : <p className="mt-2 text-small text-muted-foreground">No item decisions reported.</p>}
-        </> : <p className="text-body text-muted-foreground">{underWay(result) ? "No grader decision recorded yet." : "No grader decision was recorded for this run."}</p>}
+      <section aria-label="What it kept">
+        <h3 className="mb-2 text-body font-semibold">What it kept</h3>
+        {result.workflows?.length || result.corrections ? <ul className="divide-y border">
+          {result.workflows?.map((item) => <li key={item.file} className="flex flex-wrap items-center justify-between gap-2 p-3"><code className="min-w-0 break-all text-small">{item.name}</code><Chip tone={item.pending ? "warning" : "success"}>{item.pending ? "Waits for your OK" : "Workflow"}</Chip></li>)}
+          {result.corrections > 0 && <li className="p-3 text-small">{corrections(result.corrections)} added to corrections.md</li>}
+        </ul> : <p className="text-body text-muted-foreground">{underWay(result) ? "Nothing kept yet." : "Nothing was kept from this run."}</p>}
       </section>
-      {!!result.pending?.length && <div className="border border-warning/40 px-4 py-3 break-words text-small leading-relaxed">
-        <p className="font-semibold">Held for approval in this result</p>
-        <p className="mt-1 text-muted-foreground">{result.pending.map((item) => item.name).join(", ")}. These changes required approval when recorded. Check their current status in Agent learning.</p>
-      </div>}
       <section aria-label="Learning validation">
         <h3 className="mb-2 text-body font-semibold">Validation</h3>
         {result.problems?.length || result.draft_errors?.length ? <ul className="space-y-3">
           {result.problems?.map((issue, i) => <li key={`problem-${i}`} className="border p-3"><p className="text-body">{issue.detail}</p><p className="mt-1 break-all font-mono text-label text-muted-foreground">{[issue.rule, issue.path].filter(Boolean).join(" · ")}</p></li>)}
           {result.draft_errors?.map((detail, i) => <li key={`draft-${i}`} className="border p-3"><p className="mb-1 font-mono text-label text-muted-foreground">Workflow draft</p><p className="break-words text-body">{detail}</p></li>)}
         </ul> : <p className="text-small text-muted-foreground">No validation problems reported.</p>}
-      </section>
-      <section aria-label="Grading usage">
-        <h3 className="mb-3 text-body font-semibold">Grading usage</h3>
-        <dl className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-          {[["Grading cost", typeof result.cost_usd?.grade === "number" ? money(result.cost_usd.grade) : "Not reported"], ["Input", count(grade?.input)], ["Output", count(grade?.output)], ["Cache reads", count(grade?.cache_read)], ["Cache writes", count(grade?.cache_write)]].map(([name, value]) => <div key={name} className="border p-3"><dt className="mb-1 text-label text-muted-foreground">{name}</dt><dd className="font-mono text-body">{value}</dd></div>)}
-        </dl>
-        <p className="mt-3 text-label leading-relaxed text-muted-foreground">Input excludes cache reads and writes. Reflection usage is included in the run's totals. These figures cover grading only.</p>
       </section>
       <section aria-label="Learning provenance" className="border-t pt-4">
         <div className="mb-3 flex flex-wrap items-center justify-between gap-3"><h3 className="text-body font-semibold">Provenance</h3>{onViewChanges && <Button size="sm" onClick={onViewChanges}>View changes<ArrowUpRight aria-hidden /></Button>}</div>

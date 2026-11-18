@@ -130,7 +130,8 @@ export function relayUpgrade(mintedColumns: ReadonlySet<string>): readonly strin
  *  it is behind, never one that says it is current. `listing` is the list item without the parts read when it is listed
  *  (console_url, archived_at); `list_status` its status, which a status filter reads in SQL; `listing_live` whether a runner
  *  held the run when it was built (its status reads otherwise once that claim runs out); `listing_until` when it goes stale
- *  by the clock alone (an ask that expires); `listing_flags` what outside the run it read (LISTING_HELD: learning held for
+ *  by the clock alone (an ask that expires, or the retry of a build that withheld the run for a sign-in it could not read
+ *  back); `listing_flags` what outside the run it read (LISTING_HELD: learning held for
  *  its owner's OK on its agent's folder; LISTING_KEYED: a failed run's error words, which read the server's keys). */
 export const RUN_LISTING_COLUMNS = [
   "list_mark INTEGER NOT NULL DEFAULT 1",

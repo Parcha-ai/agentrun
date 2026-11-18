@@ -6,7 +6,7 @@
 //   - on a server with no key, a start or a message that would start a turn with no model_key is 422
 //     model_key_required, nothing written (never a failure at the first model call);
 //   - the key reaches the gateway, through the run's model proxy, on every request tied to the run: its turn and its
-//     end-of-run look-back (spend outside the job's turn, before the run reports its turn ended);
+//     end-of-run compile turn (spend outside the job's turn, before the run reports its turn ended);
 //   - it is sealed in the run's launch bound to the gateway's origin, and erased by the write that ends the turn;
 //   - a message's key replaces it from the turn the message starts;
 //   - a runner that dies mid-turn is replaced by one that opens the sealed key from the store and goes on with it;
@@ -118,15 +118,16 @@ async function keyMidTurn(t, { serverKey, start = {}, key }) {
   return { seen: front.seen, server, runId, logs };
 }
 
-test("a server with no model key: a run and a message without model_key are 422 model_key_required; the run's key goes to the gateway on its turn and its look-back, sealed for the run and erased at its turn's end; a message's key replaces it; it is nowhere else", { timeout: 180_000 }, async (t) => {
+test("a server with no model key: a run and a message without model_key are 422 model_key_required; the run's key goes to the gateway on its turn and its compile turn, sealed for the run and erased at its turn's end; a message's key replaces it; it is nowhere else", { timeout: 180_000 }, async (t) => {
   const gw = await startFauxGateway({ text: "Answered." });
   t.after(() => gw.close());
   withEnv(t, keylessEnv(gw.url), NAMES);
   const logs = [];
   const server = await serve(t, { learning: "on", faux: undefined, log: (line) => logs.push(line) });
   const { api, store, data } = server;
-  // A notes run looks back at the end of every turn: model spend outside the job's own turn, on the same run.
-  await made(api, learner("keyed"));
+  // An agent whose first compile is due at its first completed run asks its compile turn at that run's end: model spend
+  // outside the job's own turn, on the same run.
+  await made(api, learner("keyed", { learning: { compile_after: 1 } }));
 
   const refused = await api("POST", "/agents/keyed/runs", { input: { content: "Answer." } });
   assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.fields?.[0]?.field], [422, "model_key_required", "model_key"], JSON.stringify(refused.body));
@@ -143,9 +144,9 @@ test("a server with no model key: a run and a message without model_key are 422 
   assert.deepEqual([retried.status, retried.body.run_id], [202, runId], JSON.stringify(retried.body));
   const first = await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
   assert.equal(first.last.status, "completed", JSON.stringify(first.rows.slice(-3)));
-  // The look-back is asked before the run's end is written: wait for its request too.
-  await until(async () => (await api("GET", `/runs/${runId}`)).body.learning?.state !== "running" && bearers(gw).length >= 2, "the job's request and the look-back's");
-  assert.ok(bearers(gw).length >= 2, `the job's turn and its look-back both asked the gateway: ${bearers(gw).length}`);
+  // The compile turn is asked before the run's end is written: wait for its request too.
+  await until(async () => (await api("GET", `/runs/${runId}`)).body.learning?.state !== "running" && bearers(gw).length >= 2, "the job's request and the compile turn's");
+  assert.ok(bearers(gw).length >= 2, `the job's turn and its compile turn both asked the gateway: ${bearers(gw).length}`);
   assert.deepEqual([...new Set(bearers(gw))], [`Bearer ${KEY_ONE}`], "every request tied to the run carried the run's first key, and only it");
   await until(async () => (await store.runs.launch(runId)).sealed === null, "the turn's end erases the run's key");
 
@@ -176,24 +177,27 @@ test("model_key where the run's model never goes through a gateway is 422 at mod
   assert.equal((await store.runs.list({})).length, 0, "no run made");
 });
 
-test("a server that holds a gateway key spends it on a run that brings none, and never on a run that brings its own, its look-back included", { timeout: 180_000 }, async (t) => {
+test("a server that holds a gateway key spends it on a run that brings none, and never on a run that brings its own, its compile turn included", { timeout: 180_000 }, async (t) => {
   const gw = await startFauxGateway({ text: "Answered." });
   t.after(() => gw.close());
   const SERVER_KEY = `not-a-secret-${"server-gateway-key"}-77aa`;
   withEnv(t, { ...keylessEnv(gw.url), AGENT_MODEL_API_KEY: SERVER_KEY }, NAMES);
   const { api } = await serve(t, { learning: "on", faux: undefined });
-  await made(api, learner("both"));
-  const plain = await api("POST", "/agents/both/runs", { input: { content: "Answer." } });
+  // Two agents, each compiling at its first completed run (an agent compiles once: a compile whose draft failed stops
+  // its next), so each run asks a compile turn at its end.
+  await made(api, learner("plain", { learning: { compile_after: 1 } }));
+  await made(api, learner("keyed", { learning: { compile_after: 1 } }));
+  const plain = await api("POST", "/agents/plain/runs", { input: { content: "Answer." } });
   assert.equal(plain.status, 202, JSON.stringify(plain.body));
   await follow(api, plain.body.run_id, ["completed"], { deadlineMs: 90_000 });
-  await until(async () => (await api("GET", `/runs/${plain.body.run_id}`)).body.learning?.state !== "running" && bearers(gw).length >= 2, "the job's request and the look-back's");
+  await until(async () => (await api("GET", `/runs/${plain.body.run_id}`)).body.learning?.state !== "running" && bearers(gw).length >= 2, "the job's request and the compile turn's");
   assert.deepEqual([...new Set(bearers(gw))], [`Bearer ${SERVER_KEY}`], "a run that brings no key spends the server's");
   const before = bearers(gw).length;
-  const keyed = await api("POST", "/agents/both/runs", { input: { content: "Answer." }, model_key: KEY_ONE });
+  const keyed = await api("POST", "/agents/keyed/runs", { input: { content: "Answer." }, model_key: KEY_ONE });
   assert.equal(keyed.status, 202, JSON.stringify(keyed.body));
   await follow(api, keyed.body.run_id, ["completed"], { deadlineMs: 90_000 });
-  await until(async () => (await api("GET", `/runs/${keyed.body.run_id}`)).body.learning?.state !== "running" && bearers(gw).length >= before + 2, "the keyed run's job and look-back");
-  assert.deepEqual([...new Set(bearers(gw).slice(before))], [`Bearer ${KEY_ONE}`], "a run that brings its key spends it alone, its look-back included, never the server's");
+  await until(async () => (await api("GET", `/runs/${keyed.body.run_id}`)).body.learning?.state !== "running" && bearers(gw).length >= before + 2, "the keyed run's job and compile turn");
+  assert.deepEqual([...new Set(bearers(gw).slice(before))], [`Bearer ${KEY_ONE}`], "a run that brings its key spends it alone, its compile turn included, never the server's");
 });
 
 test("a runner that dies mid-turn: the next runner opens the run's sealed key from the store and goes on with it", { timeout: 120_000 }, async (t) => {

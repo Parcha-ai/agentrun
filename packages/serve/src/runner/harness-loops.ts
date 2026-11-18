@@ -1,13 +1,10 @@
-import { createSdkLoop, sdkSourceInstructions } from "./sdk-loop.js";
-import { sdkOf } from "../sdk/runs.js";
-import { createNativeLoop, nativeLearningLoop, nativeSourceInstructions } from "./native-loop.js";
-import { nativeOf } from "../native/binding.js";
+import { createSdkLoop } from "./sdk-loop.js";
+import { createNativeLoop } from "./native-loop.js";
 // The runner's dispatch switch (design 2.1: "the runner takes every run"): which loop a claimed run runs, by its revision
 // and the harness its launch names. The runner holds one dispatch loop (dispatch.ts) for every run; at the claim the
 // dispatch reads the launch and asks this switch for the run's inner loop:
 //   - a workflow revision runs on the workflow loop (createWorkflowLoop), whatever its harness name (a workflow's default
 //     harness is pi), so the revision is read here to tell it from an agentic pi run;
-//   - a built-in learning run (its launch names harness "learning") runs on the learning loop;
 //   - pi runs on the kernel's adapter loop with the run's pi spec (adapterRunSpecFromLaunch), and so does a harness a
 //     module adds with no adapter facts of its own, on its runner's adapter;
 //   - a CLI harness (claude-agent, codex, opencode) runs on the adapter loop with its own adapter;
@@ -22,8 +19,7 @@ import { savedModelKeys, withModelKeys } from "./claim-secrets.js";
 import { noServerKeyFor } from "../run-model-key.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { cliRunSpecFromLaunch } from "./cli-run-spec.js";
-import { gradeModelFor, type GradeRouteAsk, gradeRouteOf, learningLoopOf } from "./learning-dispatch.js";
-import type { GraderRoute } from "./learning-ask.js";
+import { askRouteOf } from "./sdk-ask.js";
 import { ClaimRefused, type LoopFactory } from "./loop-contract.js";
 import { createWorkflowLoop, isWorkflowRevision } from "./workflow-loop.js";
 import { workflowSpecOf } from "./workflow-spec.js";
@@ -49,53 +45,21 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
       // store-secrets.ts), and every one the server keeps is held by the run's one redactor.
       return createWorkflowLoop(workflowSpecOf({ store: deps.store, sealKey: deps.sealKey, data: deps.data, ...(deps.env ? { env: deps.env } : {}) }));
     }
-    if (harness !== "learning" && launch.sdk) return createSdkLoop(launch, deps, async () => {
+    // A backend SDK run's compile turn is asked on the runner's one model route, on the agent's own model (its learning
+    // start's), its key from the runner's environment, else the one saved in Settings → Model keys, read at each ask.
+    if (launch.sdk) return createSdkLoop(launch, deps, async () => {
       const base = deps.env ?? process.env;
-      // An SDK run's look-back runs after its backend reported it complete, on no run's key: on a server that holds no
-      // gateway key it is skipped in words (run-model-key.ts noServerKeyFor), nothing sent.
-      const env = withModelKeys(base, await savedModelKeys({store:deps.store,sealKey:deps.sealKey,env:base}));
-      const off = noServerKeyFor(env, "An SDK run's look-back");
+      const env = withModelKeys(base, await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: base }));
+      // It runs after its backend reported the run complete, on no run's key: on a server that holds no gateway key it is
+      // skipped in words (run-model-key.ts noServerKeyFor), nothing sent.
+      const off = noServerKeyFor(env, "An SDK run's compile turn");
       if (off) {
         deps.log?.(off);
         throw new Error(off);
       }
-      return gradeRouteFor({model:launch.learning!.gradeModel,agentId:run!.agentId},env,deps.routeOf);
+      return askRouteOf(launch.learning!.model, env, (model) => deps.routeOf(model, env, "default", PI_WIRES));
     });
-    if (harness !== "learning" && launch.native) return createNativeLoop(launch, deps);
-    if (harness === "learning") {
-      const native = nativeOf(revision?.body);
-      if (native && !launch.model) return nativeLearningLoop(deps, native);
-      // A built-in learning run on the learning loop: its grade goes through the runner's one model route, on the grade
-      // model its launch names (none: the agent's own), at that route's price (learning-dispatch.ts).
-      return learningLoopOf({
-        store: deps.store,
-        data: deps.data,
-        ...(sdkOf(revision?.body) ? {sourceInstructions:(runId:string)=>sdkSourceInstructions(deps.store,runId)} : {}),
-        ...(native ? {sourceInstructions:(runId:string)=>nativeSourceInstructions(deps.store,runId)} : {}),
-        // The grader speaks the route's wire, as pi does (learning-ask.ts: pi.ts policyFor and port-models.ts
-        // sessionProvider), so its route is asked on pi's wires; a model on neither keeps the route's Messages translation.
-        // A grade model whose vendor this host reaches only through OpenRouter goes there as main's grade does
-        // (gradeRouteOf): OpenRouter's key its one credential, priced at OpenRouter's price.
-        // The grade's model, main's order (gradeModelFor): the grade model the server names, else the agent's own.
-        // Its model's key from the runner's environment, else the one saved in Settings → Model keys (savedModelKeys), read
-        // at each grade, so a key saved with no restart grades the next learning run.
-        routeOf: async (grade) => {
-          const base = deps.env ?? process.env;
-          // A learning run grades after its source run's turn ended, on no run's key (a run that brought its own queues no
-          // grade: learning-end.ts spendOff): on a server that holds no gateway key it is skipped in words
-          // (run-model-key.ts noServerKeyFor). Nothing is sent; the learning run ends dropped.
-          const env = withModelKeys(base, await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: base }));
-          const off = noServerKeyFor(env, "A learning run's grade");
-          if (off) {
-            deps.log?.(off);
-            throw new Error(off);
-          }
-          return gradeRouteFor(grade, env, deps.routeOf);
-        },
-        ...(deps.log ? { log: deps.log } : {}),
-        ...(deps.gradeBound ? { gradeBound: deps.gradeBound } : {}),
-      });
-    }
+    if (launch.native) return createNativeLoop(launch, deps);
     // The harness's own entry decides which spec builds the run, by what the entry gives and never the harness's name: an
     // entry with an adapter's facts and serve's own adapter for it (the CLI harnesses) runs the CLI spec (cli-run-spec.ts);
     // any other (pi, or a harness module's entry that gives only the required members) runs the run spec
@@ -122,19 +86,6 @@ export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, laun
     }
     return undefined;
   };
-}
-
-/** The route a grade asks for (gradeModelFor: the grade model the server named, else the agent's own), from the runner's
- *  one route (`routeOf`), through gradeRouteOf. A grade model the server named (--grade-model, else AGENT_MODEL_STRONG)
- *  is the strong tier's: it goes with that tier's settings, sent whole as AGENT_MODEL_STRONG is (never cut to its bare id
- *  by AGENT_MODEL_GATEWAY_IDS) and priced at AGENT_MODEL_STRONG_PRICE. The agent's own model goes as its runs' does, on
- *  the default tier. */
-export function gradeRouteFor(grade: GradeRouteAsk, env: NodeJS.ProcessEnv, routeOf: AdapterSpecDeps["routeOf"]): Promise<GraderRoute> {
-  return gradeRouteOf(gradeModelFor(grade), env, (model) => (grade.model !== undefined && model === grade.model
-    // The runner's environment under the grader as its strong model: every key it holds read through it, a non-enumerable
-    // one (a launcher-held or Settings key) too, which a copy would drop.
-    ? routeOf(undefined, Object.create(env, { AGENT_MODEL_STRONG: { value: model, enumerable: true } }) as NodeJS.ProcessEnv, "strong", PI_WIRES)
-    : routeOf(model, env, "default", PI_WIRES)));
 }
 
 /** The loop factory the runner holds for every run (its createLoop), built from the runner's deps over the one store: the

@@ -6,12 +6,9 @@ import { gradesOf } from "../dist/learn/promote.js";
 // A completed SDK task belongs to its application. A retained grade must not reopen it onto a managed feedback
 // steer that the SDK loop cannot consume, or change its settled execution and learning beyond the grade readback.
 for (const runtime of ["claude-agent-sdk", "codex-sdk"]) test(`${runtime} retains grades without reopening SDK execution`, async t => {
-  const server = await serve(t, {
-    faux: new URL("./fixtures/sdk-learning-model.mjs", import.meta.url).pathname,
-    gradeModel: "anthropic/claude-sonnet-4-5",
-  });
+  const server = await serve(t);
   const { api, store } = server, id = "sdk-feedback";
-  const created = await api("POST", "/agents", { definition: { id, name: id, instructions: "Retain the application policy.", sdk: { runtime }, learning: "notes", tools: [] } });
+  const created = await api("POST", "/agents", { definition: { id, name: id, instructions: "Retain the application policy.", sdk: { runtime }, learning: true, tools: [] } });
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const started = await api("POST", `/agents/${id}/sdk-runs`, { runtime, input: "Remember: begin every answer with Verified. Report release status.", instructions: "Retain application-owned execution." }, { "Idempotency-Key": "feedback" });
   assert.equal(started.status, 201, JSON.stringify(started.body));
@@ -26,7 +23,8 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) test(`${runtime} retain
     await new Promise(resolve => setTimeout(resolve, 50));
   }
   assert.equal(receipt.state, "completed");
-  assert.equal(receipt.learning.state, "merged", JSON.stringify(receipt));
+  // No owner words and no compile due: the first round keeps nothing, settled before the grade.
+  assert.equal(receipt.learning.state, "dropped", JSON.stringify(receipt));
   const before = await store.runs.get(runId), firstRound = await store.learning.proposal(runId, 1);
   const graded = await api("PUT", `/runs/${runId}/grade`, { correct: false, label: "Retain this reviewer feedback without starting another SDK task." });
   assert.equal(graded.status, 200, JSON.stringify(graded.body));

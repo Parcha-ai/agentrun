@@ -2,10 +2,10 @@
 //   startAudit (withAudit: at the served run's end, before the end commits): a run the promoted workflow answered (path
 //     `workflow`; a run it handed back is never drawn and never counts as served) is drawn at 1 in k (auditDrawn, from its id), and a drawn one appends a `started` line to audits.jsonl (with the
 //     promotion serving it and the answer it audits, `turn`: the id of the run's newest answer row now), then starts its
-//     shadow run: the same agent and revision on the same input with learning off (no seed, no look-back), marked as the
+//     shadow run: the same agent and revision on the same input with learning off (no seed, no compile turn), marked as the
 //     audit of the served run (launch.audit), no row of the run list, billed to the agent as learning cost. Its cap is
 //     what the served run's cap left (the two together never pass it; the served run's later gates count it beside them,
-//     learning-end.ts besideOf); none left, no shadow (`skipped: "no allowance"`). A shadow never waits on a person: where
+//     learning-end.ts shadowBesideOf); none left, no shadow (`skipped: "no allowance"`). A shadow never waits on a person: where
 //     it would park (an approval its owner's setting asks, a raise of that cap, a question) it ends at once in
 //     AUDIT_PARKED's words (AdapterRunSpec.neverWaits, the gate untouched: nothing is let through, no one is asked to
 //     answer), and its row is `parked`. Only a run started over the API (no trigger: its context is never rebuilt for a
@@ -25,11 +25,10 @@
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { overCapMessage } from "@parcha/agentrun-kernel/kernel/cap";
 import { auditLoopOf, type AuditLoop } from "../learning-setting.js";
-import { RUN_CAP_MIN_USD } from "../learning-batch.js";
 import { launchBody, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { runEntries } from "../store-reads/journal.js";
 import { runPathOverStore } from "../store-reads/learning.js";
-import { type AlsoRow, FINAL_STATES, type RunRow, type Store, StoreConstraint } from "../store/store.js";
+import { FINAL_STATES, type RunRow, type Store, StoreConstraint } from "../store/store.js";
 import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { isObject, type Json } from "../validate.js";
 import { type AuditRow, type AuditStarted, auditableLaunch, auditChange, auditEveryOf, auditDrawn, auditsOffWords, auditWriterOf, holdOf, type LedgerLine, ledgerOf, lineKey, openAudits, rowsOf, shadowRunId } from "../learn/audit.js";
@@ -42,6 +41,11 @@ import { auditRoomOf } from "./learning-end.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
 import { answerOf, answerRowOf } from "./promotion.js";
 import { servedOf, type WorkflowFirst } from "./workflow-first.js";
+import { held, heldEndOfRun } from "./held.js";
+
+/** The least cap a run can take a step under (cap.ts: the next step needs at least a cent): a shadow with less left
+ *  is never started. */
+const RUN_CAP_MIN_USD = 0.01;
 
 /** What the audit reads and writes at a claim (or the server's grade): the agent, the run claimed (none for a grade),
  *  its revision (whose definition holds the numbers) and launch, the agent's learning folder, the host's secrets as a
@@ -105,27 +109,30 @@ export const AUDIT_PARKED = "the audit ended where it would wait on a person";
 /** The served run's end-of-run step `step` (none for a run that only uses what its agent learned), its audit started
  *  after it (startAudit) on an end the run reached on its own (a cut run starts none): the learned workflow that served
  *  it, read from its journal whatever claim it served on (servedOf), and, for a capped run, what its cap leaves once this
- *  end is counted (auditRoomOf: its job, its look-back, the grades beside it and the one this end queues). A run that
+ *  end is counted (auditRoomOf: its job, its follow-ups, its compile turns). A run that
  *  could never be audited (no learning start, or not auditableLaunch) keeps `step` as it is. */
 export function withAudit(step: EndOfRunTurn | undefined, deps: AuditDeps & { readonly launch: RunLaunch; readonly redact?: (text: string) => string }): EndOfRunTurn | undefined {
   if (!deps.launch.learning || !auditableLaunch(deps.launch)) return step;
+  // In a run's own process the whole step is its runner's (held.ts endOfRun), the audit's start with it: it reads the
+  // run's journal and writes the ledger and a run, which no run's process may.
+  if (held()) return heldEndOfRun();
   return async (input) => {
     const rows = step ? await step(input) : undefined;
-    if (input.cut === undefined) await auditAtEnd(deps, input.runId, rows?.also ?? []);
+    if (input.cut === undefined) await auditAtEnd(deps, input.runId);
     return rows;
   };
 }
 
 /** Only a run the workflow answered is drawn: its path `workflow` by the one classifier its record keeps
  *  (store-reads/learning.ts runPathOverStore, with the run's `redact`), never one it handed back. */
-async function auditAtEnd(deps: AuditDeps & { readonly launch: RunLaunch; readonly redact?: (text: string) => string }, runId: string, queued: readonly AlsoRow[]): Promise<void> {
+async function auditAtEnd(deps: AuditDeps & { readonly launch: RunLaunch; readonly redact?: (text: string) => string }, runId: string): Promise<void> {
   try {
     const entries = await runEntries(deps.store, runId, BACKGROUND_CONTEXT);
     const served = servedOf(entries);
     if (!served?.digest) return;
     if ((await runPathOverStore(deps.store, runId, deps.launch.learning, deps.redact)).path !== "workflow") return;
     const capUsd = deps.launch.maxCostUsd;
-    await startAudit({ ...deps, runId, ...(capUsd !== undefined ? { room: () => auditRoomOf(deps.store, runId, capUsd, entries, queued) } : {}) }, { name: served.workflow, digest: served.digest });
+    await startAudit({ ...deps, runId, ...(capUsd !== undefined ? { room: () => auditRoomOf(deps.store, runId, capUsd, entries) } : {}) }, { name: served.workflow, digest: served.digest });
   } catch (error) {
     deps.log(`workflow-first: the audit of this run did not start (${(error as Error)?.message ?? error})`);
   }
@@ -211,7 +218,8 @@ export async function startAudit(deps: AuditDeps & { readonly runId: string; rea
 
 /** The per_run MCP credentials run `from` was handed, sealed for shadow run `id` alone (as a replay run's are). */
 async function handedTo(deps: Pick<AuditDeps, "store" | "sealKey">, from: string, id: string): Promise<Uint8Array | undefined> {
-  if (!deps.sealKey) return undefined;
+  // A run's own process holds no seal key: its runner seals them again, from its own run alone (held.ts handOn).
+  if (!deps.sealKey) return held()?.handOn(from, id);
   const sealed = await deps.store.runs.launch(from).then((one) => one.sealed ?? null, () => null);
   const handed = sealed === null ? undefined : openRunMcpAuth(deps.sealKey, from, sealed);
   return handed && Object.keys(handed).length ? sealRunMcpAuth(deps.sealKey, id, handed) : undefined;
