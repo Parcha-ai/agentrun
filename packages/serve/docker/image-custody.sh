@@ -72,6 +72,7 @@ names=$(dk run --rm --entrypoint sh "$image" -c "sed -n \"s/^SECRETS='\\(.*\\)'\
 shape=one
 net=
 store=
+store_kind=sqlite
 if [ -n "$two" ]; then
   if dk run --rm --entrypoint sh "$image" -c "test -f $root/docker/start.sh"; then shape=server-and-runner; else shape=runner-beside; fi
   dk network create "$name-net" >/dev/null
@@ -83,6 +84,7 @@ if [ -n "$two" ]; then
     sleep 1
   done
   net="--network $name-net"
+  store_kind=postgres
   store="postgres://agentrun:$canary-store@$name-pg:5432/agentrun"
 fi
 # Names and canaries have no spaces, so the -e arguments go as one word list.
@@ -123,7 +125,7 @@ if [ "$shape" = runner-beside ]; then
 fi
 say "$image, $shape"
 rc=0
-dk exec -i -e CANARY="$canary" -e SEAL="$seal" -e TOKEN="$canary-AGENTRUN_TOKEN" -e SOCKET_GID="$socket_gid" "$name" node --input-type=module - <"$here/image-custody-check.mjs" || rc=$?
+dk exec -i -e CANARY="$canary" -e SEAL="$seal" -e TOKEN="$canary-AGENTRUN_TOKEN" -e SOCKET_GID="$socket_gid" -e STORE_KIND="$store_kind" "$name" node --input-type=module - <"$here/image-custody-check.mjs" || rc=$?
 if [ "$rc" -ne 0 ]; then
   say "the container's last lines:"
   dk logs --tail 20 "$name" >&2 || true

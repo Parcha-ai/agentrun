@@ -35,6 +35,7 @@ import { storeSecrets } from "./store-secrets.js";
 import { FAUX_ENV } from "../model.js";
 import { FAUX_VENDOR_API_ENV } from "../tools.js";
 import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
+import { runZone } from "../environment.js";
 import { shadowRunId } from "../learn/audit.js";
 import { LEARNING_SCRIPT, learningWorkspace } from "../learn/folder.js";
 import { learningFolderOf } from "../learning.js";
@@ -525,6 +526,8 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     // The claim's own run's key alone (its launch, as the runner reads it), whatever run the process would name.
     runModelKey: () => openRunModelKey(keys, claim.runId),
     serverKeyless: () => serverKeyless(keys),
+    // The zone alone, from the claim's own launch's trigger: the process never reads a trigger's row.
+    runZone: () => runZone(store, launch.inputOrigin),
     liveViewerPut: (handover) => putLiveViewer(store, sealKey, claim, handover),
     liveViewerDrop: (tag) => dropLiveViewer(store, claim, tag),
     handOn: async (from, id) => {

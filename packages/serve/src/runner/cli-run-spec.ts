@@ -60,7 +60,7 @@ import { ASK_TOOL, askPerson } from "../tools.js";
 import { fakedPlane } from "../web-fake.js";
 import { type ClaimModelKey, claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
 import { mcpWhereHeld } from "./mcp-run.js";
-import { heldSignInReads } from "./held.js";
+import { held as runnerSeam, heldSignInReads } from "./held.js";
 import { DECISION_PROVIDER_KEYS, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { decisionProvidersIn } from "../decisions.js";
 import { resolveHarness } from "./adapters/index.js";
@@ -479,8 +479,10 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The run's clock: a template eval case's (EvalFakes.now), else the real one. Its environment line and the harness's own
   // turn date (claude-agent's dateLine) read it.
   const now = fakes?.now;
-  const zone = await runZone(deps.store, launch.inputOrigin);
-  const built = await entry.adapter(env, { zone, model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}), ...(now ? { now: () => now } : {}) });
+  // A run's own process reads no trigger's row: its runner answers the zone (held.ts runZone).
+  const seam = deps.sealKey ? undefined : runnerSeam();
+  const zone = seam ? await seam.runZone() : await runZone(deps.store, launch.inputOrigin);
+  const built =await entry.adapter(env, { zone, model: chosen.model, models: chosen.models, unpriced: chosen.unpriced, ...(confine ? { confine } : {}), ...(native.length ? { skills: native } : {}), ...(now ? { now: () => now } : {}) });
   // The harness's own session options, its private directory and its working directory (SessionIO's dir and cwd, which
   // every CLI adapter reads), set on its open here, so the loop lends the session nothing of its own. A turn that ends on
   // the CLI's own error names the harness first, as main words it (harness-app.ts: `<harness>: <error>`), so the run's

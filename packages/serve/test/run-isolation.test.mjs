@@ -208,6 +208,25 @@ async function launched(t, { faux = BREAKER, keys = true, extra = {} } = {}) {
   return { api: client(/AGENTRUN_BASE_URL=(\S+)/.exec(out)[1], secrets.AGENTRUN_TOKEN), data, said: () => said };
 }
 
+test("a run a schedule trigger started is told its trigger's zone in its own process, by its runner: the process reads no trigger's row", { timeout: 180_000 }, async (t) => {
+  const { api, said } = await launched(t);
+  assert.equal((await api("POST", "/agents", { definition: { id: "zoned", version: 1, name: "zoned", instructions: "Answer.", skills: [], tools: [], model: "openai/gpt-6.1-sol" } })).status, 201);
+  // A zone no CI host sits in, so the line names the trigger's and never the host's.
+  const zone = "Pacific/Kiritimati";
+  const created = await api("POST", "/triggers", { name: "zoned", enabled: false, source: { kind: "schedule", cron: "0 9 * * 1", timezone: zone }, target: { kind: "start_run", agent_id: "zoned", input: { content: "Today." }, max_cost_usd: 0.5 } });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const fired = await api("POST", `/triggers/${created.body.id}/fire`, undefined, { "idempotency-key": "zoned-1" });
+  assert.ok(fired.status < 300 && fired.body.run_id, JSON.stringify(fired.body));
+  let view;
+  for (const end = Date.now() + 90_000; !["completed", "failed", "cancelled"].includes((view = (await api("GET", `/runs/${fired.body.run_id}`)).body).status); await sleep(200)) {
+    assert.ok(Date.now() < end, `the run never ended: ${JSON.stringify(view)}`);
+  }
+  const lines = said().split("\n").filter((line) => !line.includes("event=request"));
+  assert.equal(view.status, "completed", `${JSON.stringify(view)}\nthe server said: ${lines.join("\n").slice(-3000)}`);
+  assert.match(view.result.final_answer, new RegExp(`^Today is .*\\(${zone.replace("/", "\\/")}\\)\\.`));
+  assert.deepEqual(lines.filter((line) => /which a run's process may not/.test(line)), [], "the run's process asked the store for what it may not");
+});
+
 test("a run whose process writes a frame its channel never sends fails, in words, and the server goes on; the store's files are the server's alone (0600)", { timeout: 180_000 }, async (t) => {
   const { api, data, said } = await launched(t);
   assert.equal((await api("GET", "/capabilities")).body.run_isolation, "process", "a host with no helper says process");

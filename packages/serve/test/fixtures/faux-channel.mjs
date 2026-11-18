@@ -1,6 +1,7 @@
 // A faux model whose run's process writes on its channel to the runner (fd 4) what no channel sends: "Garbled." a frame
 // that does not deserialize, "Oversized." a frame head past the channel's cap, "Stranger." a well-formed frame that is
-// not a message of the channel. Anything else is answered with its own pid and resident set, the run's process's.
+// not a message of the channel. "Today." is answered with its system prompt's environment line ("Today is …"). Anything
+// else is answered with its own pid and resident set, the run's process's.
 import { writeSync } from "node:fs";
 import { serialize } from "node:v8";
 
@@ -13,6 +14,10 @@ const frame = (body) => {
 
 export default function reply(context, faux) {
   const last = textOf(context.messages.filter((m) => m.role === "user").at(-1));
+  if (last.includes("Today.")) {
+    const system = [context.systemPrompt, ...context.messages.filter((m) => m.role === "system").flatMap((m) => [textOf(m), ...Object.values(m.sections ?? {}).map((s) => textOf({ content: s }))])].filter(Boolean).join("\n");
+    return faux.message(/Today is [^\n]*?\([^)\n]+\)\./.exec(system)?.[0] ?? "no environment line");
+  }
   let bytes;
   if (last.includes("Garbled.")) bytes = frame(Buffer.from([0xff, 0x0f, 0x01, 0x02, 0x03]));
   else if (last.includes("Oversized.")) bytes = Buffer.from([0x7f, 0xff, 0xff, 0xff, 0x00]);

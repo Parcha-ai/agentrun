@@ -80,6 +80,9 @@ export interface Held {
   runModelKey(): Promise<RunModelKey | undefined>;
   /** Whether the server has a gateway and holds no key for it (claim-secrets.ts serverKeyless): a boolean, never a key. */
   serverKeyless(): Promise<boolean>;
+  /** The zone the claim's run's day is told in (environment.ts runZone): its trigger's, read by the runner from the
+   *  claim's own launch, else the server's. A zone's name, never the trigger's row. */
+  runZone(): Promise<string>;
   /** The host's keys of the decision providers `providers` (claim-secrets.ts hostDecisionKeys). */
   decisionKeys(providers: readonly string[]): Promise<Record<string, string>>;
   /** A browser session's viewer handed over, and taken back (browser-live.ts). */

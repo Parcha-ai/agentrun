@@ -178,7 +178,10 @@ if (walkedOut) {
   if (walkedOut.uid !== FIRST_RUN_ID + SLOTS - 1) fail(`the walk ran as uid ${walkedOut.uid}, not slot ${SLOTS - 1}'s`);
   const reachedData = walkedOut.reached.filter((path) => !path.startsWith("/data/harnesses"));
   if (reachedData.length) fail(`a slot's uid reaches ${reachedData.length} entries of the data directory: ${reachedData.slice(0, 12).join(", ")}`);
-  if (!entries.some(({ path }) => /\/store\.sqlite$/.test(path))) fail("the walk found no store.sqlite: it proves nothing");
+  // What the walk must have met for it to prove anything: the server's own record (.server.json, written once it
+  // listens, in either shape) and, on a SQLite store, the store's file (a Postgres store keeps nothing in /data).
+  const anchors = [".server.json", ...(process.env.STORE_KIND === "postgres" ? [] : ["store.sqlite"])];
+  for (const anchor of anchors) if (!entries.some(({ path }) => path.endsWith(`/${anchor}`))) fail(`the walk found no ${anchor}: it proves nothing`);
 }
 
 // 4. The beacon run's end: every process of its uid gone (the one in a session of its own too), its file in /tmp swept,

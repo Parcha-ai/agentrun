@@ -59,7 +59,7 @@ import { UNREADABLE_SIGN_IN } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
 import { claimModelEnv, claimModelKey, claimSecrets, claimSpendOff, holdRunKey, keyedAtClaim, hostDecisionKeys, learnedDecisionKeys, savedModelKeys, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
 import { catalogSessionNames, type ClaimMcp, mcpWhereHeld } from "./mcp-run.js";
-import { heldOrThrow, heldSignInReads } from "./held.js";
+import { held as runnerSeam, heldOrThrow, heldSignInReads } from "./held.js";
 import { type AdapterLoopOptions, type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { RUNNER_HARNESSES, type RunnerHarness } from "./adapters/index.js";
 import { DEFAULT_HARNESS } from "../harness.js";
@@ -778,8 +778,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const guidance = effortGuidance(launch.effort);
   // The run's clock: a template eval case's (EvalFakes.now), else the real one.
   const now = fakes?.now;
-  const zone = await runZone(deps.store, launch.inputOrigin);
-  const system = [environmentLine(now, zone), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line));
+  // A run's own process reads no trigger's row: its runner answers the zone (held.ts runZone).
+  const seam = deps.sealKey ? undefined : runnerSeam();
+  const zone = seam ? await seam.runZone() : await runZone(deps.store, launch.inputOrigin);
+  const system =[environmentLine(now, zone), checkout?.note, instructions, outputContract(body.outputSchema), guidance].filter((line): line is string => Boolean(line));
 
   // The subagent tool, one of the session's own tools (no extension of its own): a child's tools are a subset of the
   // revision's grants (each by its session name: an MCP tool's wire name, the browser's registrations), its model the
