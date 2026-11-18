@@ -112,7 +112,7 @@ said "$logs/2.log" "Kept the API token and the seal key in $dir/.env"
 [ "$(container)" = "$before" ] || die "the container was made again with nothing changed"
 healthy
 
-step "3. an upgrade${image[*]:+ to this checkout's image}, on the faux model: the same token, the data kept"
+step "3. an upgrade${image[*]:+ to the image built from this checkout}, on the faux model: the same token, the data kept"
 if [ ${#image[@]} -gt 0 ]; then
   docker build -q -f "$repo/packages/serve/docker/Dockerfile" -t agentrun-vps:local "$repo" > /dev/null || die "the image did not build"
 fi
