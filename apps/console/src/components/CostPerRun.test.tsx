@@ -209,6 +209,15 @@ describe("CostChart", () => {
     act(() => root?.unmount());
     expect(draw(unknownRun).querySelectorAll("details tbody tr")[43]!.textContent).toContain("unknown");
   });
+  it("never says no learned workflow ran on a run that took the workflow path with its revision unknown", () => {
+    const host = draw({ ...sample, runs: sample.runs.map((r) => (r.n === 21 ? { ...r, digest: null } : r)) });
+    const plot = host.querySelector<HTMLElement>("[tabindex='0']")!;
+    act(() => { plot.dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true })); });
+    act(() => { for (let i = 0; i < 20; i++) plot.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })); });
+    const live = host.querySelector("[aria-live]")!.textContent!;
+    expect(live).toMatch(/^Run 21, \$0\.\d+ all-in, Learned workflow: sort-invoice$/);
+    expect(live).not.toContain("No learned workflow ran");
+  });
   it("draws the execution mix on the run axis: a column a block, a segment a path it took, the last block's share said", () => {
     const host = draw(sample);
     const mix = host.querySelector<HTMLElement>('[data-testid="execution-mix"]')!;
