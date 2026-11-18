@@ -31,7 +31,7 @@ let host: HTMLDivElement;
 let calls: Call[];
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; localStorage.clear(); });
 
-const mount = async (props: Omit<ComponentProps<typeof AgentRequest>, "v2" | "origin">, answer: (call: Call) => Response) => {
+const mount = async (props: Omit<ComponentProps<typeof AgentRequest>, "v2" | "origin">, answer: (call: Call) => Response | Promise<Response>) => {
   calls = [];
   const fetch = (async (url: string, init?: RequestInit) => {
     const call = { path: new URL(url, origin).pathname, method: init?.method ?? "GET", body: init?.body ? JSON.parse(String(init.body)) : undefined };
@@ -103,6 +103,38 @@ describe("the playground's Create an agent, the Model field", () => {
     act(() => editor.unmount());
     await pick(model()!, "anthropic/claude-sonnet-5-5");
     expect(said(model()!), "a changed model is not the refused one").toEqual([]);
+  });
+
+  // The server's words depend on the harness ("On pi, a model is ..."): they belong to the harness and model sent.
+  const refused = () => json({ error: { code: "invalid_request", message: "The definition is not valid.", retryable: false, fields: [{ field: "definition.model", reason: "bad_format", message: REFUSAL }] } }, 422);
+  const harness = () => picker(host, "Harness")!;
+
+  it("a refusal said on pi is not shown once the harness is codex, the model the same; back on pi it is", async () => {
+    await mount({ operation: "create-agent", draft: blankDraft, harnesses }, refused);
+    await pick(model(), CUSTOM);
+    await type(custom()!, "Sonnet 5.5");
+    await send();
+    expect(said(model())).toEqual([REFUSAL]);
+    await pick(harness(), "codex");
+    expect(custom()?.value, "the model is still the one refused").toBe("Sonnet 5.5");
+    expect(said(model()), "pi's words, not codex's").toEqual([]);
+    await pick(harness(), "pi");
+    expect(said(model()), "the harness and model sent").toEqual([REFUSAL]);
+  });
+
+  it("a refusal that arrives after the harness changed is not shown at the field", async () => {
+    let answer: ((response: Response) => void) | undefined;
+    await mount({ operation: "create-agent", draft: blankDraft, harnesses }, (call) => call.method === "POST" ? new Promise<Response>((resolve) => { answer = resolve; }) : json({}, 500));
+    await pick(model(), CUSTOM);
+    await type(custom()!, "Sonnet 5.5");
+    await send();
+    expect(sent()?.harness ?? "pi", "sent on pi").toBe("pi");
+    expect(answer, "the request is waiting for its answer").toBeDefined();
+    await pick(harness(), "codex");
+    await act(async () => answer!(refused()));
+    expect(said(model()), "said of pi, the form on codex").toEqual([]);
+    await pick(harness(), "pi");
+    expect(said(model()), "the harness and model sent").toEqual([REFUSAL]);
   });
 });
 
