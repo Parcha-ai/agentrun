@@ -13,6 +13,7 @@ const { API_ONLY_ENV, API_ONLY_ROUTES, apiOnlyFrom, servedApiOnly } = await impo
 const { ROUTES } = await import("../dist/server.js");
 const { banner } = await import("../dist/print.js");
 const { putSealedKey } = await import("../dist/server-keys.js");
+const { ARCHIL_API_KEY_ROW } = await import("../dist/workspace/index.js");
 /** A password or key for a request the profile refuses before reading it, plainly no secret (as mcp.test.mjs makes them). */
 const notSecret = (name) => `not-a-secret-${name}`;
 
@@ -101,11 +102,12 @@ test("an API-only server serves the computers list and the Archil settings with 
   const sealKey = randomBytes(32);
   withEnv(t, { AGENTRUN_SEAL_KEY: sealKey.toString("base64"), AGENTRUN_ARCHIL_REGION: "aws-us-east-1", AGENTRUN_ARCHIL_S3_URL: "https://s3.archil.example" }, ["AGENTRUN_SEAL_KEY", "ARCHIL_API_KEY", "AGENTRUN_ARCHIL_REGION", "AGENTRUN_ARCHIL_S3_URL", "AGENTRUN_ARCHIL_IMAGE", "FAUX_SANDBOX_KEY"]);
   const server = await serve(t, { apiOnly: true, runner: false });
-  const planted = { FAUX_SANDBOX_KEY: "fake-test-key-planted-computer-0001", "archil.api_key": "fake-test-key-planted-archil-0001" };
-  for (const [row, value] of Object.entries(planted)) await putSealedKey(server.store, sealKey, row, value);
+  // Each sealed row and the value planted in it.
+  const planted = [["FAUX_SANDBOX_KEY", "fake-test-key-planted-computer-0001"], [ARCHIL_API_KEY_ROW, "fake-test-key-planted-archil-0001"]];
+  for (const [row, value] of planted) await putSealedKey(server.store, sealKey, row, value);
   // Each sealed row's bytes as an answer could carry them: base64 and hex.
-  const sealed = (await Promise.all(Object.keys(planted).map((row) => server.store.sealedKeys.get(row)))).map((bytes) => Buffer.from(bytes));
-  const never = [...Object.values(planted), ...sealed.flatMap((bytes) => [bytes.toString("base64"), bytes.toString("hex")]), sealKey.toString("base64"), server.token];
+  const sealed = (await Promise.all(planted.map(([row]) => server.store.sealedKeys.get(row)))).map((bytes) => Buffer.from(bytes));
+  const never = [...planted.map(([, value]) => value), ...sealed.flatMap((bytes) => [bytes.toString("base64"), bytes.toString("hex")]), sealKey.toString("base64"), server.token];
 
   const computers = await send(server, "GET", "/v2/computers");
   assert.equal(computers.status, 200, JSON.stringify(computers.body));
