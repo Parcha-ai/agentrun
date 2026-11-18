@@ -854,6 +854,12 @@ Route: `GET /runs/{run_id}/timeline`.
 - `--last-event-id STRING` (string): SSE reconnect. Same meaning as `after`, and wins over it.
 - `--follow` (boolean, this CLI's own): the timeline as it changes, one page per line (NDJSON), until the run ends; resumes a dropped connection
 
+### `agentrun runs trace RUN_ID`
+
+A run's trace: each model request and tool call, with its time, tokens and cost.
+
+Route: `GET /runs/{run_id}/trace`.
+
 ### `agentrun runs unarchive RUN_ID`
 
 Show the archived run in the lists again.

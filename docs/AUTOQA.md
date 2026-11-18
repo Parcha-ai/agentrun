@@ -119,6 +119,11 @@ Each row: entry point, then what makes it pass.
     Graph. Capture console errors and HTTP ≥ 400 per page. The page CSP is
     `default-src 'self'` (plus the Keys page's provider icons from Google's favicon service), so any violation is a
     finding.
+21. **Run trace**: after a run that calls a tool, `GET /v2/runs/{id}/trace` → `model_requests` (`priced` on pi,
+    `not_recorded` on a CLI harness, `tokens_only` for a workflow run) and `spans[]`: on pi, one `model` span per
+    request with `tokens` and `usd`, whose `usd` sum to the run's `cost.usd`, and one `tool` span per call whose
+    `parent_id` is the request that made it. In the console the run's Dev tools tab lists the same spans; a row opens
+    its panel.
 
 ## Subsystems
 
@@ -140,7 +145,7 @@ same ground with no key.
 
 | | Names on main |
 | --- | --- |
-| Serves | `POST /v2/agents/{id}/runs` (`input`, `revision`, `effort`, `max_cost_usd`), `GET /v2/runs`, `GET /v2/runs/{id}`, `GET /v2/runs/{id}/timeline` (pages or SSE), `POST /v2/runs/{id}/{messages,stop,cancel,pause,resume}`, `GET /v2/runs/{id}/graph`, `GET /v2/usage`, and `harnesses[]` in `GET /v2/capabilities` |
+| Serves | `POST /v2/agents/{id}/runs` (`input`, `revision`, `effort`, `max_cost_usd`), `GET /v2/runs`, `GET /v2/runs/{id}`, `GET /v2/runs/{id}/timeline` (pages or SSE), `POST /v2/runs/{id}/{messages,stop,cancel,pause,resume}`, `GET /v2/runs/{id}/graph`, `GET /v2/runs/{id}/trace`, `GET /v2/usage`, and `harnesses[]` in `GET /v2/capabilities` |
 | Run fields others read | `status`, `state`, `result.final_answer`, `error.code` (`spend_cap_reached`, `moderated`, `run_failed`, `escalated`), `cost.usd` (`null` when unknown) |
 | Journal | In the run's rows of the store (`pi_entries`, `pi_tasks`, `pi_submissions`), from `packages/serve/src/timeline`: `REQUEST_STARTED` (`heldUsd`, `capRefused`), `REQUEST_ENDED` (`heldUsd`, `unsent`), `REQUEST_COST`, `REQUEST_REFUSED`, `REQUEST_COST_PENDING`, `REQUEST_COST_LATE`, `REQUEST_CONTINUED`. Read through `timelineOf` and `runMetricsOf` |
 | Run directory | `DIR/disk/agents/<agent>/runs/<id>/work/`; the run's record is in the store, not its folder. The run's claim is its row in `runs` (`epoch`, `runner`, `claimed_until`), and a message, stop, cancel, raise or approval is a row of `commands` that its runner reads |
@@ -375,7 +380,7 @@ npm run test:docker -w @parcha/agentrun-computer` (without the variable, every D
 ### Console, import and analytics
 
 **Seam.** Takes the `/v2` routes the console reads: `/agents`, an agent's `/revisions` and `/runs`, `/runs` and a
-run's `/timeline`, `/graph` and `/files`, `/stats` with its `analytics` block, `/usage`, `/capabilities` and
+run's `/timeline`, `/trace`, `/graph` and `/files`, `/stats` with its `analytics` block, `/usage`, `/capabilities` and
 `/settings/tool-keys`. Also the agent store's `run_metrics` and `run_tool_metrics`, which `/stats` sums. Gives back
 `/v2` writes only: create, revise and archive an agent; start a run, message it, stop, cancel or archive it. `import`
 gives the store its runs through `AgentStore.importRun`, each with its `run_metrics`.

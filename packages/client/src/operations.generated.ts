@@ -3963,6 +3963,39 @@ export interface GetTimelineParams {
 }
 export type GetTimelineResponse = TimelinePage;
 
+/** A run's trace: each model request and tool call, with its time, tokens and cost (GET /runs/{run_id}/trace). */
+export type GetRunTraceResponse = {
+  run_id: Id;
+  model_requests: "priced" | "tokens_only" | "not_recorded";
+  spans: Array<{
+    id: string;
+    kind: "model" | "tool";
+    parent_id: string | null;
+    name: string;
+    agent_label: string | null;
+    started_at: Timestamp;
+    ended_at: string | null;
+    status: "ok" | "failed" | "refused" | "interrupted" | "waiting" | "running";
+    stop_reason: string | null;
+    tokens: {
+      input: number;
+      cache_read: number;
+      cache_write: number;
+      output: number;
+      reasoning?: number;
+    } | null;
+    usd: number | null;
+    decision: boolean;
+    charged: boolean;
+    not_metered: boolean;
+    tool_use_id: string | null;
+    input_preview: string | null;
+    result_preview: string | null;
+    result_size_bytes: number | null;
+  }>;
+  dropped: number;
+};
+
 /** Show the archived run in the lists again (POST /runs/{run_id}/unarchive). */
 export type UnarchiveRunResponse = Record<string, unknown>;
 
@@ -5857,6 +5890,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   stopRun: {"method":"POST","path":"/runs/{run_id}/stop","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   takeOverRunComputer: {"method":"POST","path":"/runs/{run_id}/computer/take-over","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getTimeline: {"method":"GET","path":"/runs/{run_id}/timeline","pathParams":["run_id"],"multiSegment":[],"query":["after","wait_ms","limit","calls"],"headers":["Last-Event-ID"],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getRunTrace: {"method":"GET","path":"/runs/{run_id}/trace","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   unarchiveRun: {"method":"POST","path":"/runs/{run_id}/unarchive","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   completeSdkRun: {"method":"POST","path":"/sdk-runs/{run_id}/complete","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   sdkRunEvents: {"method":"POST","path":"/sdk-runs/{run_id}/events","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -6158,6 +6192,8 @@ export function resources(call: Call) {
       takeOverRunComputer: (runId: string, body?: TakeOverRunComputerBody, options?: RequestOptions): Promise<TakeOverRunComputerResponse> => call("takeOverRunComputer", [runId], body, undefined, options),
       /** The run's timeline, as a page or a stream (GET /runs/{run_id}/timeline). */
       timeline: (runId: string, params?: GetTimelineParams, options?: RequestOptions): Promise<GetTimelineResponse> => call("getTimeline", [runId], undefined, params, options),
+      /** A run's trace: each model request and tool call, with its time, tokens and cost (GET /runs/{run_id}/trace). */
+      trace: (runId: string, options?: RequestOptions): Promise<GetRunTraceResponse> => call("getRunTrace", [runId], undefined, undefined, options),
       /** Show the archived run in the lists again (POST /runs/{run_id}/unarchive). */
       unarchive: (runId: string, options?: RequestOptions): Promise<UnarchiveRunResponse> => call("unarchiveRun", [runId], undefined, undefined, options),
     },
