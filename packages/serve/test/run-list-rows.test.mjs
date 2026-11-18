@@ -150,9 +150,9 @@ test("a run's learning, and a grade with words that opens the run again, are lis
   await sameAsViews(api, await everyItem(api, "/runs?agent=learner"), "learning read");
   const graded = await api("PUT", `/runs/${runId}/grade`, { correct: false, label: "The answer is forty-two, in words." });
   assert.equal(graded.status, 200, JSON.stringify(graded.body));
-  assert.equal(graded.body.feedback, "look_back", "the grade's words open the run again");
+  assert.equal(graded.body.feedback, "correction", "the grade's words open the run again");
   const opened = (await api("GET", `/runs/${runId}`)).body;
-  assert.notEqual(opened.status, "completed", `the run reads open again for its look-back, with no runner to take it: ${opened.status}/${opened.state}`);
+  assert.notEqual(opened.status, "completed", `the run reads open again for its correction round, with no runner to take it: ${opened.status}/${opened.state}`);
   await sameAsViews(api, await everyItem(api, "/runs?agent=learner"), "graded with words");
   await filtersMatchViews(api, "?agent=learner");
 });
