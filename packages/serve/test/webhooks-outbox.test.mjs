@@ -118,9 +118,11 @@ test("a try's bound is refused at or past the claim it holds its message by (60 
   for (const timeoutMs of [0, -1, 60_000, 90_000, Number.NaN, 1500.5]) {
     assert.throws(() => new Webhooks({}, randomBytes(32), () => undefined, { timeoutMs }), RangeError, `bound ${timeoutMs}`);
   }
-  // The server's option reaches the same check: one it is given is never dropped for the default.
+  // The server's option reaches the same check: one it is given is never dropped for the default. Each start is refused
+  // before serve() registers its own cleanup, so its data is in a scratch directory the file removes.
   for (const webhookTimeoutMs of [0, Number.NaN, 1500.5]) {
-    await assert.rejects(serve(t, { ...PRIVATE_OK, webhookTimeoutMs }), RangeError, `the server's bound ${webhookTimeoutMs}`);
+    const data = join(await scratch(t), "agents");
+    await assert.rejects(serve(t, { ...PRIVATE_OK, data, webhookTimeoutMs }), RangeError, `the server's bound ${webhookTimeoutMs}`);
   }
 });
 
