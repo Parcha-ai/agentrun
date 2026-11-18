@@ -2036,9 +2036,10 @@ provider does in `process.env`. `COMPUTER_E2B_PUBLIC_STREAM` is no longer read.
 ### E2B on dial
 
 With `connect: "dial"` (a server's `e2bConnect` setting; `exec` by default) an E2B sandbox dials the server instead
-([PROVIDERS.md](PROVIDERS.md#machines-that-dial-in)): kind linux alone (its default on dial; a desktop named
-there is refused), no Archil mount, and the host has no
-exec and no upload. E2B runs a template's start command once, at the template's build, and snapshots it running, so
+([PROVIDERS.md](PROVIDERS.md#machines-that-dial-in)): a desktop by default, as on exec, since the box template has
+the desktop (`box/install.sh`'s `desktop` step), or kind linux; no Archil mount, and the host has no
+exec and no upload. A desktop's launch adds `DISPLAY` to the boot env, and its X server and xfwm4 start over the
+socket the sandbox dialed, through `process.start`. E2B runs a template's start command once, at the template's build, and snapshots it running, so
 it never sees a create's env ([docs.e2b.dev/template/start-ready-command](https://docs.e2b.dev/template/start-ready-command)).
 So create starts the box template's `agentrun-dial` itself, once, right after `Sandbox.create`: one envd process as
 root with the boot env as that process's env alone (never the sandbox's `envs`, which envd gives every process), after

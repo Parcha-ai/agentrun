@@ -575,12 +575,13 @@ export function fakeHost({
 				if (backstop) m.endsAt = new Date(req.backstopAt);
 				if (stale) m.listedAs = { ...view(m), state: "running" };
 				if (req.boot) {
-					// A dial machine's agentrun-dial: init started by AGENTRUN_INIT_ARGS, then the dial itself, the caller's (onBoot).
+					// A dial machine's agentrun-dial: init started by AGENTRUN_INIT_ARGS, with the boot env's DISPLAY, then the dial
+					// itself, the caller's (onBoot).
 					m.boot = { ...req.boot.env };
 					const args = m.boot.AGENTRUN_INIT_ARGS.split(" ");
 					const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : "");
 					m.daemon = { path: DAEMON, sha256: m.boot.AGENTRUN_DAEMON_SHA256 };
-					startInit(m, { deadline: flag("--deadline"), user: flag("--user"), max: flag("--max-deadline"), network: flag("--network") });
+					startInit(m, { deadline: flag("--deadline"), user: flag("--user"), display: m.boot.DISPLAY ?? "", max: flag("--max-deadline"), network: flag("--network") });
 					queueMicrotask(() => onBoot(m));
 				}
 				if (req.command) {

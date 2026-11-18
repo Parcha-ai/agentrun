@@ -198,18 +198,20 @@ provider's, made and deleted by runs; only the transport is this binding's.
   32 random bytes, for the computer's name, kind, os and arch. The store keeps only its SHA-256. It expires at the
   computer's `backstopAt` (its deadline cap plus the backstop margin), so a machine the janitor never reaches stops
   dialing then at the latest.
-- **Boot env.** The vendor's create puts five names in the machine's env, and nothing else is run in it:
-  `AGENTRUN_ATTACH_URL` (`wss://<public host>/v2/computers/attach`; `ws://127.0.0.1` only in tests),
+- **Boot env.** The vendor's create puts five names in the machine's env, and a sixth for a desktop, and nothing
+  else is run in it: `AGENTRUN_ATTACH_URL` (`wss://<public host>/v2/computers/attach`; `ws://127.0.0.1` only in tests),
   `AGENTRUN_ATTACH_TOKEN`, `AGENTRUN_DAEMON_URL` (`https://<public host>/v2/computers/daemon?arch=<amd64|arm64>`),
-  `AGENTRUN_DAEMON_SHA256` (the build the server serves for that arch) and `AGENTRUN_INIT_ARGS` (init's arguments, as
-  a start passes them, space-separated). The image's `agentrun-dial` fetches the daemon, refuses it unless its SHA-256
-  is that one, starts `computerd init` with an env that holds no token, and runs `computerd attach` with the URL and
-  token alone.
+  `AGENTRUN_DAEMON_SHA256` (the build the server serves for that arch), `AGENTRUN_INIT_ARGS` (init's arguments, as
+  a start passes them, space-separated) and, for a desktop, `DISPLAY` (`:0`). The image's `agentrun-dial` fetches the
+  daemon, refuses it unless its SHA-256 is that one, starts `computerd init` with an env that holds no token (and
+  `DISPLAY`, when given), and runs `computerd attach` with the URL and token alone. A desktop's X server and window
+  manager start after it dials, through `process.start` over its socket, as on a machine reached by exec.
 - **The daemon route.** `GET /v2/computers/daemon?arch=` takes the token as the attach upgrade does and answers the
   server's own `computerd` for that arch, at most 10 a minute per token (`429` past it).
 - **The upgrade.** A minted token the store doesn't hold, revoked or past its expiry is `401` before the upgrade. A
   minted socket goes to the hub under the computer's name, a paired computer of its mint (`mintedComputer`); a `hello`
   of another kind, os or arch is closed `4400` (its token is that machine's alone), and one of another build `4400`.
+  One exception: a machine minted a desktop may say `linux`, as it does until its display answers.
 - **Delete.** `release` with `delete`, the provider's own failed create and a machine that never dials within
   `createMs` (create fails `timeout`, naming the URL it was given) all revoke the token and close the socket.
 - **Never logged.** The token sits in the machine's env and in the `Authorization` header. Neither serve nor `computerd`

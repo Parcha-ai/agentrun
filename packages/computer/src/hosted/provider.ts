@@ -350,11 +350,8 @@ export class HostedProvider implements ComputerProvider {
 		if (!isWhole(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > host.facts.maxLifetimeMs) {
 			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most ${host.facts.maxLifetimeMs} ms, the longest ${label} keeps a computer`);
 		}
-		if (host.facts.connect === "dial") {
-			// Every connection goes over the socket the machine dials: nothing reaches into it from here.
-			if (host.exec || host.upload) throw new Error(`${label}'s machines dial this server (facts.connect "dial"), so its host has no exec and no upload: leave them out`);
-			if (kind === "desktop") throw new Error(`${label}'s machines dial this server (facts.connect "dial"), and agentrun-dial starts init with no display: make it kind linux`);
-		}
+		// Every connection of a dial host's machine goes over the socket it dials: nothing reaches into it from here.
+		if (host.facts.connect === "dial" && (host.exec || host.upload)) throw new Error(`${label}'s machines dial this server (facts.connect "dial"), so its host has no exec and no upload: leave them out`);
 		const user = USER.exec(daemonUser);
 		if (user === null || Number(user[1]) > MAX_ID || Number(user[2]) > MAX_ID) throw new Error(`the daemon user ${daemonUser} must be uid:gid in numbers, such as 1000:1000`);
 		// The numbers, not the text: "00" is root as much as "0" is.
@@ -861,6 +858,8 @@ export class HostedProvider implements ComputerProvider {
 			AGENTRUN_DAEMON_URL: dialed.daemon,
 			AGENTRUN_DAEMON_SHA256: sha256,
 			AGENTRUN_INIT_ARGS: initFlags(init).join(" "),
+			// A desktop's init gets its display as the exec path's start gives it: DISPLAY, which agentrun-dial passes on.
+			...(this.#desktop === undefined ? {} : { DISPLAY: this.#desktop.display }),
 		});
 	}
 
@@ -1135,7 +1134,14 @@ export class HostedProvider implements ComputerProvider {
 			// calls in flight gone, and the first call after a redial is refused gone (attach.ts, AttachHub.connection).
 			const connection = this.#dial?.hub.connection(ref.name);
 			if (connection === undefined) return this.#fail("gone", `${ref.name} is not attached to this server now: its computerd dials back on its own, so try again shortly`);
-			return ok(deletedSaid(this.host, ref, this.#label, requestMs, connection));
+			// The hub holds the hello of the machine's dial; a desktop's display answered after it, so each open asks again,
+			// as a bridge's open does.
+			const hello = await connection.client.call("hello", { client: `@parcha/agentrun-computer ${VERSION}` }, { signal: bounded(helloMs, signal) });
+			if (!hello.ok) {
+				await connection.close();
+				return hello.error.code === "aborted" && !signal?.aborted ? this.#fail("timeout", `the daemon in ${ref.name} did not answer hello within ${seconds(helloMs)}`) : hello;
+			}
+			return ok(deletedSaid(this.host, ref, this.#label, requestMs, { ...connection, hello: hello.value }));
 		}
 		const opened = await openBridge(this.host, ref.id, { argv: hostedCommands().stdio, name: ref.name, version: VERSION, requestMs, helloMs, ...(signal ? { signal } : {}) });
 		return opened.ok ? ok(deletedSaid(this.host, ref, this.#label, requestMs, opened.value)) : opened;

@@ -418,7 +418,22 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
   called. The daemon your machines fetch is `hostedDaemonPath(arch)`, the file whose SHA-256 they check.
 - **The token sits in the machine's env**, scoped to that machine (its kind, os and arch) until delete or its
   `backstopAt`, whichever comes first. A machine that never dials within `createMs` is deleted.
-- **No Archil mount yet.** A spec with one is refused in words, and kind `desktop` is refused at construction.
+- **No Archil mount yet.** A spec with one is refused in words.
+- **A desktop over dial** works as on exec: create adds `DISPLAY` (`:0`) to the boot env, `agentrun-dial` gives it
+  to init, and once the machine dials, its X server and window manager start through computerd's `process.start` over
+  that socket, as the tool user. Its token takes a `linux` hello until the display answers. Per provider today:
+  - **E2B** takes one, its default on either connect: the box template has Xvfb, xfwm4 and the apps
+    (`box/install.sh`'s `desktop` step).
+  - **Fly Machines**, **Cloudflare**, **Modal** and **Daytona** make kind `linux` alone: each constructor fixes the
+    kind and each descriptor declares a sandbox alone, so Settings never offers them for a desktop and a claim that
+    names one is refused in words before any create. Each boots the box image, which has the desktop, so what
+    stands between them and one is a desktop configuration in the descriptor and a live run. Fly's guest is sized by
+    the spec (up to 8 shared CPUs and 2 GiB of memory a CPU, fly-go's `MachineGuest` as `src/fly.ts` holds it);
+    Cloudflare's instance types reach standard-4, 4 vCPUs and 12 GiB
+    ([containers/platform-details/limits](https://developers.cloudflare.com/containers/platform-details/limits/));
+    Daytona's box snapshot carries 2 CPUs and 4 GB, and no resources may be sent beside a snapshot; Modal runs the
+    image on gVisor, where the window manager's `unshare --user --net` is **unverified**. Xvfb on any of the four is
+    **unverified**: no live run yet.
 - **Prove it** as below. Your conformance module also exports `dialKit()`, the server your machines dial, for the
   Core case `provider.dial-token` (`test/fixtures/dial-provider.mjs` is one).
 - **No REST call that starts a machine?** Ship a relay the operator deploys once, as Cloudflare's

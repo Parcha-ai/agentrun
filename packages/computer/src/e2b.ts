@@ -62,7 +62,7 @@ export interface E2BProviderOptions extends Omit<HostedOptions, "maxLifetimeMs">
 	Sandbox: E2BSandboxClass;
 	/** E2B's domain: the API is https://api.<domain>. Default e2b.app. */
 	domain?: string;
-	/** desktop (default; linux on connect "dial"): a template with an X server, started through the daemon; linux: no screen. */
+	/** desktop (default): a template with an X server, started through the daemon; linux: no screen. */
 	kind?: "desktop" | "linux";
 	/** The longest lifetime check takes: E2B Hobby's 1 h by default, Pro's 24 h at most. */
 	maxLifetimeMs?: number;
@@ -70,7 +70,7 @@ export interface E2BProviderOptions extends Omit<HostedOptions, "maxLifetimeMs">
 	/**
 	 * exec (default): the daemon goes in through envd's file API and each connection is a bridge through envd's process
 	 * stream. dial: create starts the box template's agentrun-dial once, and the machine dials the server (options.dial),
-	 * which every connection goes over; kind linux alone.
+	 * which every connection goes over.
 	 */
 	connect?: "exec" | "dial";
 }
@@ -481,11 +481,8 @@ export class E2BProvider extends HostedProvider {
 	constructor(options: E2BProviderOptions) {
 		// A caller who still names the option is told it is gone, whatever its value: it once let public traffic in.
 		if (typeof options === "object" && options !== null && Object.hasOwn(options, "publicStream")) throw new Error(PUBLIC);
-		const { apiKey, Sandbox, domain = DEFAULT_DOMAIN, kind: named, maxLifetimeMs = HOBBY_MAX_MS, connect, ...rest } = options;
+		const { apiKey, Sandbox, domain = DEFAULT_DOMAIN, kind = "desktop", maxLifetimeMs = HOBBY_MAX_MS, connect, ...rest } = options;
 		const via = connectOf(connect, "E2B");
-		// A server names connect alone (its e2bConnect setting): on dial the kind is linux unless named, since agentrun-dial
-		// starts init with no display; a desktop named on dial is the adapter's refusal.
-		const kind = named ?? (via === "dial" ? "linux" : "desktop");
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the E2B API key, is required: the provider reads no environment, so the caller passes it");
 		const lacks = ["create", "connect", "getInfo", "setTimeout", "kill", "list"].filter((name) => typeof (Sandbox as unknown as Record<string, unknown>)?.[name] !== "function");
 		if (lacks.length > 0) throw new Error(`options.Sandbox must be the e2b SDK's Sandbox class; it lacks ${lacks.join(", ")}`);

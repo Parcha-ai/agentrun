@@ -252,12 +252,34 @@ test("a dial host takes no Archil mount, in words, and declares a synced folder 
 	assert.equal(fake.creates(), 0);
 });
 
-test("the constructor refuses a dial host with exec or upload, or for a desktop", () => {
+test("the constructor refuses a dial host with exec or upload", () => {
 	const dialFacts = { connect: "dial", lifetime: "vendor" };
 	const host = fakeHost({ facts: dialFacts }).host;
 	assert.throws(() => new HostedProvider({ ...host, exec: fakeHost().host.exec }, { daemonPath: DAEMON_PATH }), /dial this server \(facts.connect "dial"\), so its host has no exec and no upload/);
 	assert.throws(() => new HostedProvider({ ...host, upload: async () => {} }, { daemonPath: DAEMON_PATH }), /has no exec and no upload/);
-	assert.throws(() => new HostedProvider(host, { daemonPath: DAEMON_PATH, kind: "desktop" }), /agentrun-dial starts init with no display: make it kind linux/);
+});
+
+test("a dial desktop boots init with DISPLAY, starts the X server and the window manager over the socket it dialed, and declares the screen", async () => {
+	const { fake, provider, hub } = setup({ facts: { windowManager: true } }, { kind: "desktop" });
+	const ref = made(await create(provider));
+	const [, request] = fake.calls.find(([what]) => what === "create");
+	assert.equal(request.boot.env.DISPLAY, ":0");
+	assert.equal(fake.machines.get(ref.id).init.display, ":0", "init started with the display");
+	assert.deepEqual(fake.events.filter(({ what }) => what.startsWith("run ")), [], "nothing was run in the machine through the host");
+	assert.deepEqual(fake.uploads, [], "and nothing uploaded");
+	// The X server, then the window manager, started by computerd as any program, over the socket the machine dialed.
+	assert.deepEqual(
+		fake.machines.get(ref.id).processes.map(({ argv }) => argv[0]),
+		["Xvfb", "unshare"],
+	);
+	assert.ok(fake.machines.get(ref.id).processes[1].argv.some((arg) => arg.includes("xfwm4")));
+	const connection = made(await provider.connect(ref));
+	assert.equal(connection.hello.kind, "desktop");
+	assert.ok(connection.hello.groups.includes("screen"));
+	await connection.close();
+	assert.equal(hub.online(ref.name), true);
+	made(await provider.release(ref, "delete"));
+	assert.deepEqual(fake.live(), []);
 });
 
 test("a minted machine's hello of another kind, os or arch is closed 4400 in a machine's words; a paired computer's arch may change", () => {
@@ -269,24 +291,30 @@ test("a minted machine's hello of another kind, os or arch is closed 4400 in a m
 		assert.equal(wrong?.code, ATTACH_CLOSE.mismatch, JSON.stringify(other));
 		assert.match(wrong.message, /^computer-5f3a9c1e7b2d was made a linux linux on amd64 and says .*: its token is that machine's alone$/);
 	}
+	// A minted desktop says linux until its create starts the X server over its socket; on another os or arch it is refused.
+	const desktop = mintedComputer("computer-5f3a9c1e7b2d", { kind: "desktop", os: "linux", arch: "amd64" });
+	assert.equal(helloMismatch(desktop, hello), undefined);
+	assert.equal(helloMismatch(desktop, { ...hello, arch: "arm64" })?.code, ATTACH_CLOSE.mismatch);
 	// A paired computer's driver may move from amd64 (under Rosetta) to arm64: the same computer.
 	const paired = { id: "c-1", name: "Test Mac", hello: { ...hello, os: "macos", kind: "desktop", groups: ["screen", "input.pointer", "input.keys", "apps", "ui"] }, labels: {} };
 	assert.equal(helloMismatch(paired, { ...paired.hello, arch: "arm64" }), undefined);
 });
 
-test("Core's provider cases pass over a dial host, provider.dial-token among them, and leave nothing behind", { timeout: 60_000 }, async () => {
-	const { conformanceCases, runConformance } = await import("../dist/conformance/index.js");
-	const { fake, provider, kit } = setup();
-	// Not provider.deadline or drift.arch: they run programs, which the fake host's daemon only echoes (as the packed host's run).
-	const cases = conformanceCases.filter((one) => ["provider", "health", "drift"].includes(one.group) && one.level === "core" && !["provider.deadline", "drift.arch"].includes(one.id));
-	const report = await runConformance(provider, { image: "img", cases, dial: kit, caseTimeoutMs: 20_000, cleanupTimeoutMs: 5_000 });
-	assert.equal(report.results.find(({ id }) => id === "provider.dial-token")?.status, "pass", JSON.stringify(report.results.find(({ id }) => id === "provider.dial-token")));
-	assert.deepEqual(
-		report.results.filter(({ status }) => status === "fail").map(({ id, reason }) => `${id}: ${reason}`),
-		[],
-	);
-	assert.deepEqual(fake.live(), [], "every machine made was deleted");
-});
+for (const kind of ["linux", "desktop"]) {
+	test(`Core's provider cases pass over a dial host's ${kind}, provider.dial-token among them, and leave nothing behind`, { timeout: 60_000 }, async () => {
+		const { conformanceCases, runConformance } = await import("../dist/conformance/index.js");
+		const { fake, provider, kit } = setup({ facts: { windowManager: true } }, { kind });
+		// Not provider.deadline or drift.arch: they run programs, which the fake host's daemon only echoes (as the packed host's run).
+		const cases = conformanceCases.filter((one) => ["provider", "health", "drift"].includes(one.group) && one.level === "core" && !["provider.deadline", "drift.arch"].includes(one.id));
+		const report = await runConformance(provider, { image: "img", cases, dial: kit, caseTimeoutMs: 20_000, cleanupTimeoutMs: 5_000 });
+		assert.equal(report.results.find(({ id }) => id === "provider.dial-token")?.status, "pass", JSON.stringify(report.results.find(({ id }) => id === "provider.dial-token")));
+		assert.deepEqual(
+			report.results.filter(({ status }) => status === "fail").map(({ id, reason }) => `${id}: ${reason}`),
+			[],
+		);
+		assert.deepEqual(fake.live(), [], "every machine made was deleted");
+	});
+}
 
 test("provider.dial-token is said and passes for a host with exec, and fails a dial host's run given no server", async () => {
 	const { conformanceCases, runConformance } = await import("../dist/conformance/index.js");

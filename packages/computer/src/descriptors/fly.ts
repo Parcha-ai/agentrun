@@ -21,7 +21,7 @@ export const FLY = defineProvider({
 	// one way out is init's egress proxy, which reaches the public internet alone, and with a list its hosts alone
 	// (hosted/network.ts). The machine itself always reaches out: it fetches its daemon from the server and dials it.
 	network: ["none", "open", "allow"],
-	// A linux computer alone: agentrun-dial starts init with no display.
+	// A linux computer alone: no desktop configuration yet, though the box image has one (PROVIDERS.md, Machines that dial in).
 	capabilities: [SANDBOX],
 	// No default image: every computer starts from the box image its prepareImage() answers.
 	prepareImage: true,

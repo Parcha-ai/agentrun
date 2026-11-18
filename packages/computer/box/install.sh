@@ -73,7 +73,7 @@ dial() {
 # agentrun-dial (written by the box image's install.sh): a machine that dials the server. From the env the provider's
 # create gave it, it fetches the server's computerd with the machine's token, checks its sha256, installs it root's alone
 # where the provider's exec install puts it, starts `computerd init` as that start does, in a clean environment without
-# the token, and becomes `computerd attach` with the attach URL and the token alone in its environment. Before init, it
+# the token (with DISPLAY, for a desktop), and becomes `computerd attach` with the attach URL and the token alone in its environment. Before init, it
 # gives /workspace to init's user (its --user), 0700, where a synced folder's runner pushes the run's folder. A daemon
 # whose sha256 is not AGENTRUN_DAEMON_SHA256 is removed, and nothing runs. Exits 2 for env missing, 3 when the fetch
 # failed, 4 for a sha256 mismatch, 5 when init never listened, 6 when /workspace was not made init's user's; else it is
@@ -118,8 +118,9 @@ fi
 chown "$OWNER" "$DAEMON.part"
 chmod 0755 "$DAEMON.part"
 mv -f "$DAEMON.part" "$DAEMON"
-# init's arguments are words with no space and no pattern (set -f): split, never globbed.
-env -i PATH="$PATH" HOME="$HOME_DIR" AGENTRUN_COMPUTERD_SOCKET="$SOCKET_DIR/computerd.sock" \
+# init's arguments are words with no space and no pattern (set -f): split, never globbed. A desktop's create sets
+# DISPLAY, the display init's screen and input methods drive, as the provider's exec start gives it.
+env -i PATH="$PATH" HOME="$HOME_DIR" AGENTRUN_COMPUTERD_SOCKET="$SOCKET_DIR/computerd.sock" ${DISPLAY:+DISPLAY="$DISPLAY"} \
 	setsid sh -c 'cd "$HOME" && exec "$@"' sh "$DAEMON" init $AGENTRUN_INIT_ARGS >"$INIT_LOG" 2>&1 </dev/null &
 i=0
 until [ -S "$SOCKET_DIR/computerd.sock" ]; do

@@ -23,7 +23,7 @@ export const CLOUDFLARE = defineProvider({
 	// one way out is init's egress proxy (hosted/network.ts). The container itself always reaches out (enableInternet): it
 	// fetches its daemon from the server and dials it.
 	network: ["none", "open", "allow"],
-	// A linux computer alone: agentrun-dial starts init with no display.
+	// A linux computer alone: no desktop configuration yet, though the box image has one (PROVIDERS.md, Machines that dial in).
 	capabilities: [SANDBOX],
 	// No default image: every computer starts from the box image the relay was deployed with, which prepareImage() reads.
 	prepareImage: true,

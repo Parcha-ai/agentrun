@@ -119,6 +119,16 @@ test("agentrun-dial fetches the daemon with the token, installs it, starts init 
 	assert.ok(!stderr.includes(TOKEN.slice(4)), "nothing it says holds the token");
 });
 
+test("agentrun-dial gives a desktop's DISPLAY to init alone: attach's environment is the URL and token still", async (t) => {
+	const { env, run } = await box(t);
+	const { status, stderr, calls } = await run({ DISPLAY: ":0" });
+	assert.equal(status, 0, stderr);
+	const init = calls.find((call) => call.command === "init");
+	assert.deepEqual(Object.keys(init.env).sort(), ["AGENTRUN_COMPUTERD_SOCKET", "DISPLAY", "HOME", "OLDPWD", "PATH", "PWD"]);
+	assert.equal(init.env.DISPLAY, ":0");
+	assert.deepEqual(calls.find((call) => call.command === "attach").env, { AGENTRUN_ATTACH_URL: env.AGENTRUN_ATTACH_URL, AGENTRUN_ATTACH_TOKEN: TOKEN });
+});
+
 test("agentrun-dial refuses a daemon whose sha256 is not the one it was given, before it runs anything, and removes it", async (t) => {
 	const { fixed, run } = await box(t);
 	const { status, stderr, calls } = await run({ AGENTRUN_DAEMON_SHA256: "0".repeat(64) });

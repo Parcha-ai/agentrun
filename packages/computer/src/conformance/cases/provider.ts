@@ -458,7 +458,9 @@ export const providerCases: Case[] = [
 		// Past the machine's backstop: create's time, the most it may live and the margin, and a minute.
 		const past = new Date(Date.now() + t.provider.capabilities().maxLifetimeMs + BACKSTOP_MARGIN_MS + 60_000);
 		t.equal(await kit.check(token, past), undefined, "the machine's token past its backstop");
-		const others = [{ kind: hello.kind === "linux" ? "desktop" : "linux" }, { os: hello.os === "linux" ? "windows" : "linux" }, { arch: hello.arch === "amd64" ? "arm64" : "amd64" }] as const;
+		// A desktop's token takes a linux hello, its own before its display answers (attach.ts helloMismatch): it is held to
+		// another kind instead.
+		const others = [{ kind: hello.kind === "linux" ? "desktop" : hello.kind === "desktop" ? "android" : "linux" }, { os: hello.os === "linux" ? "windows" : "linux" }, { arch: hello.arch === "amd64" ? "arm64" : "amd64" }] as const;
 		for (const other of others) {
 			t.equal(await kit.dialAs(token, { ...hello, ...other } as HelloResult), ATTACH_CLOSE.mismatch, `the machine's token with a hello of ${JSON.stringify(other)}: the close code`);
 		}
