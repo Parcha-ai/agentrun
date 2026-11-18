@@ -64,6 +64,16 @@ test('the post names the version, links the release, and gives the first lines o
   assert.equal(SLACK_ENDPOINT, 'https://slack.com/api/chat.postMessage');
 });
 
+test('the post carries no fragment marker the fold wrote into the changelog', () => {
+  const marked = changelog
+    .replace('- Keep the same data folder and change only the image.', '$& <!-- changes/keep-data.md -->')
+    .replace('- SQLite keeps schema version 11 & Postgres 16 <no migration>.', '$&\n  <!-- changes/sqlite.md -->');
+  assert.notEqual(marked, changelog);
+  const text = releasePost({ tag: 'v0.1.0-beta.44', url, changelog: marked });
+  assert.doesNotMatch(text, /<!--|&lt;!--|changes\//);
+  assert.equal(text, releasePost({ tag: 'v0.1.0-beta.44', url, changelog }));
+});
+
 test('set: it posts with the bot token to the channel through chat.postMessage, as the stars notification does', async (t) => {
   const slack = await fakeSlack(t, () => [200, { ok: true, ts: '1.2' }]);
   const line = await announce({ env: { SLACK_BOT_TOKEN: 'fake-bot-token', SLACK_CHANNEL: 'C0TEST' }, tag: 'v0.1.0-beta.44', url, changelog: await changelogFile(t), endpoint: slack.endpoint });
