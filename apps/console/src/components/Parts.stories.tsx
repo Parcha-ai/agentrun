@@ -48,11 +48,14 @@ export const Errors: Story = {
     <RunError title="The server refused the request" error={recorded<{ error: ApiError }>("error.run-not-found").body.error} />
   </>),
 };
-/** A trigger's agent with tools that ask: the warning on the trigger forms and a trigger's page, with its one fix; then
+/** A trigger's agent with tools that ask: the warning on the trigger forms and a trigger's page, with its one fix (a
+ *  schedule's, which skips later firings; a pushed trigger's; a server with accounts off, which refuses the call); then
  *  the fix being saved, and a save the server refused. */
 export const TriggerToolsAsk: Story = {
   render: () => pad(<>
-    <UnattendedBanner tools={["mcp:gmail/send_email", "mcp:github/create_issue"]} onFix={noop} />
+    <UnattendedBanner tools={["mcp:gmail/send_email", "mcp:github/create_issue"]} skips onFix={noop} />
+    <UnattendedBanner tools={["mcp:github/create_issue"]} onFix={noop} />
+    <UnattendedBanner tools={["mcp:gmail/send_email"]} outcome="refused" onFix={noop} />
     <UnattendedBanner tools={["bash"]} busy onFix={noop} />
     <UnattendedBanner tools={["mcp:gmail/send_email"]} failed="Not saved: the agent changed since this page read it. Try again." onFix={noop} />
   </>),

@@ -372,8 +372,9 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
         </p>
       )}
       {said && <ProblemCard problem={said} className="mt-4" />}
-      {/* Its agent's tools that ask stop a run from it until someone answers (and skip later firings): said, with the fix. */}
-      {trigger.target.kind === "start_run" && <UnattendedWarning v2={v2} agentId={trigger.target.agent_id} className="mt-4" />}
+      {/* Its agent's tools that ask stop a run from it until someone answers (a schedule's later firings skipped meanwhile):
+          said, with the fix. */}
+      {trigger.target.kind === "start_run" && <UnattendedWarning v2={v2} agentId={trigger.target.agent_id} skips={trigger.source.kind === "schedule"} className="mt-4" />}
       {composioNote && <p role="status" data-composio-note className="mt-4 border border-warning/50 bg-warning/10 px-3 py-2 text-body text-warning-text">{composioNote}</p>}
       {hook && fresh && <SecretOnce label="The webhook's new secret" secret={fresh} />}
       {feed && <LastCheck check={feed.last_check ?? null} newest={firings[0]} />}
@@ -579,7 +580,7 @@ function ScheduleForm({ v2, go, trigger, minEvery, now = Date.now }: FormProps &
               ...live.map((a) => ({ value: a.agent_id, label: `${a.definition.name || a.agent_id}${a.kind === "workflow" ? " (workflow)" : ""}` })),
               ...(draft.agentId && agents && !live.some((a) => a.agent_id === draft.agentId) ? [{ value: draft.agentId, label: draft.agentId }] : [])]} />
         </Field>
-        <UnattendedWarning v2={v2} agentId={draft.agentId} />
+        <UnattendedWarning v2={v2} agentId={draft.agentId} skips />
         <Field label="Each run is asked" field="target.input" issue={issues["target.input"]}><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
         <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
           hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : capOptional ? "Uses the agent's default if empty." : "Required: each run this schedule starts stops at this spend."}>
