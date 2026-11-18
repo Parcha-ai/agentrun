@@ -296,6 +296,10 @@ export interface ModelPort {
  *  them: ModelRequest's figures without the note (its `inputTokensMaxWithoutNote`), the same ones the cap admits it by. */
 export type NoteRequest = { inputTokensMax?: number; outputTokensAsked?: number; outputTokensLeast?: number };
 
+/** What a cut answer says when the run's cap limited its output: the cap, and the least cap that sends its request with
+ *  all the output it asked (its whole input uncached and that output, beside what the run had spent and held), in USD. */
+export type CapCut = { capUsd: number; raiseToUsd: number };
+
 /** A paid request's admission: the turn it was admitted as, which its answer is booked under. */
 export interface ModelTicket {
   turn: number;
@@ -305,6 +309,9 @@ export interface ModelTicket {
   /** Admitted only without its host's note (ModelRequest.noted): its bytes did not fit what is left of the cap. The
    *  request goes as its client sent it, and the note waits for another request. */
   noteDropped?: true;
+  /** Limited below the output it asked (`outputTokensMax`) by what is left of its host's spend cap: an answer the provider
+   *  cuts at that limit is the cap's cut, said with these figures (turn_end's capCut), never a normal answer. */
+  capCut?: CapCut;
 }
 
 /** What the host lends a session. */
@@ -392,8 +399,9 @@ export type AdapterEvent =
   | { type: "tool_start"; callId: string; name: string; args: unknown; parent?: string }
   | { type: "tool_end"; callId: string; name: string; isError: boolean; result?: string; truncated?: true }
   /** `stopReason: "length"` only when the turn's final answer was cut at the model's output limit (unfinished), with that
-   *  answer's output tokens when the adapter knows them: a host reads the answer as cut, never as the run's end. */
-  | { type: "turn_end"; status: TurnStatus; stopReason?: "length"; outputTokens?: number }
+   *  answer's output tokens when the adapter knows them: a host reads the answer as cut, never as the run's end. `capCut`:
+   *  the limit it was cut at was the run's cap's (ModelTicket.capCut), with the cap and the least cap that finishes it. */
+  | { type: "turn_end"; status: TurnStatus; stopReason?: "length"; outputTokens?: number; capCut?: CapCut }
   /** The model was given these submissions (the ids `send` or `steer` placed them under): a steer placed mid-turn reaches
    *  it at the turn's next step, after the tool calls in flight. An adapter that records nothing of its own says it, so
    *  its host records the message where the model read it. */

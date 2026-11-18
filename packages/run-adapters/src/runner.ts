@@ -10,7 +10,7 @@ import { Compile } from "typebox/compile";
 import { submitParameters } from "@parcha/agentrun-dsl";
 import { HarnessRunError, SessionFenced, TurnParked } from "./errors.js";
 import { bookRequest, type Ended } from "./booking.js";
-import type { AdapterEvent, AgentAdapter, HarnessEvent, HostTool, JsonValue, ModelPort, ModelRequest, ModelTicket, ModelUsage, NodeRequest, NoteRequest, SessionRecord, SessionSpec, SessionStore, SessionWriter } from "./types.js";
+import type { AdapterEvent, AgentAdapter, CapCut, HarnessEvent, HostTool, JsonValue, ModelPort, ModelRequest, ModelTicket, ModelUsage, NodeRequest, NoteRequest, SessionRecord, SessionSpec, SessionStore, SessionWriter } from "./types.js";
 
 /** Exactly the interpreter's `runNode`, plus `stop`: a pause of every node it is running. With `drainMs`, each node
  *  starts no new turn, call or paid request, its calls in flight run on until their outcomes are recorded (for at most
@@ -117,8 +117,9 @@ export type InFlight = { turn: number; model: string; inputTokensMax?: number; o
  *  `note`: the host's record of the note this request carries, written on the request's `runner.turn` record once it
  *  ends, beside how it was booked, so a later process reads whether the note reached an answer. `freeRequest`: one of
  *  the run's requests on a free model, which its ceiling on such requests counts: written on its runner.request (as
- *  `freeRequest`), so the count holds it in every process, and a cut one books at $0 (bookCut). */
-export type Admission = { holdUsd?: number; outputTokensMax?: number; stoppedUsd?: (streamedTokens: number) => number; withoutNote?: true; note?: { [key: string]: JsonValue }; freeRequest?: true };
+ *  `freeRequest`), so the count holds it in every process, and a cut one books at $0 (bookCut). `capCut`: its output
+ *  limited below what it asked by what is left of the cap, the figures an answer cut at that limit says (ModelTicket). */
+export type Admission = { holdUsd?: number; outputTokensMax?: number; stoppedUsd?: (streamedTokens: number) => number; withoutNote?: true; note?: { [key: string]: JsonValue }; freeRequest?: true; capCut?: CapCut };
 
 /** An admission as a host gives it: with `free` when the request is on a free model (its known price is $0 for every
  *  token, with no fee beside), so it costs nothing however it ends: booked a known $0 (booking.ts), its own cost 0, its
@@ -529,7 +530,9 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
     }
     open.push({ turn, model, inputTokensMax, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(hold === undefined ? {} : { holdUsd: hold }), ...(host === undefined ? {} : { host }), ...(route === undefined ? {} : { route }), ...(paid?.hold ? { stays: true as const } : {}) });
     fly(turn);
-    return { turn, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(withoutNote ? { noteDropped: true as const } : {}) };
+    // The cap's figures for a cut of its answer, only with the limit they are about.
+    const capCut = limited !== undefined && verdict && "capCut" in verdict && verdict.capCut ? verdict.capCut : undefined;
+    return { turn, ...(limited === undefined ? {} : { outputTokensMax: limited }), ...(withoutNote ? { noteDropped: true as const } : {}), ...(capCut ? { capCut } : {}) };
   };
   const models: ModelPort = {
     ...(options.note ? { note: options.note } : {}),

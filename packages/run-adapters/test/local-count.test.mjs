@@ -78,6 +78,10 @@ test("an image by file id or with no URL counts at the most an image of unknown 
   assert.ok((await responsesLocalInputTokens(item)) > most);
   const output = { model: MODEL, input: [{ type: 'function_call_output', call_id: 'c1', output: [{ type: 'input_image', file_id: 'file-abc123' }] }] };
   assert.ok((await responsesLocalInputTokens(output)) > most);
+  // In a custom tool call's output (Codex code mode's exec), the same: the API reads its parts as a function call's.
+  const custom = { model: MODEL, input: [{ type: 'custom_tool_call_output', call_id: 'c1', output: [{ type: 'input_image', file_id: 'file-abc123' }] }] };
+  const customCounted = await responsesLocalInputTokens(custom);
+  assert.ok(customCounted > most, `a custom tool call's image counted at its billed most: ${customCounted}`);
 });
 
 test("each part of a function call's output is an item: three text parts add three items' margin over one string output", async () => {
