@@ -238,6 +238,10 @@ async function rmEmptyParents(parents: readonly string[]): Promise<void> {
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
       if (code === "ENOTEMPTY" || code === "EEXIST") return;
+      // A folder this process may not remove ends the climb: a run's own process on a slot (run-child-host.ts) removes
+      // its harness folder, and the run's scratch folder and its agent's are its runner's, which sweeps them after the
+      // slot's reap.
+      if (code === "EACCES" || code === "EPERM") return;
       // Already gone (a sweep cut off after it, or never made): the folder above it may still be left empty.
       if (code !== "ENOENT") throw error;
     }

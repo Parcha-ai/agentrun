@@ -12,7 +12,7 @@
 // the server), and its folders are given back to the server's group.
 import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { existsSync, type Stats } from "node:fs";
-import { chmod, chown, lchown, lstat, mkdir, readdir } from "node:fs/promises";
+import { chmod, chown, lchown, lstat, mkdir, readdir, rm } from "node:fs/promises";
 import type { Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -373,6 +373,22 @@ export async function reapSlot(isolation: Extract<RunIsolation, { kind: "uid" }>
     }
   }
   return reaped.code === 0;
+}
+
+/** After a reap that held: the run's scratch folder as a claim's end in the runner's own process leaves it (cli-run-spec.ts
+ *  sweepScratch), with the temporary folder the runner laid for its process (its TMPDIR) gone too. The agent's folder
+ *  above it stays: another run's start may be laying it (0711) at this moment, and the start sweep takes it once empty.
+ *  Logged, never thrown. */
+async function sweepRunScratch(data: string, agentId: string, claim: Claim, log: (line: string) => void): Promise<void> {
+  const scratch = scratchFolder(data, agentId, claim.runId);
+  const harnesses = join(scratch, "harness");
+  try {
+    await rm(join(scratch, "tmp"), { recursive: true, force: true });
+    const { sweepScratch } = await import("./cli-run-spec.js");
+    await sweepScratch(harnesses, claim.epoch, [harnesses, scratch]);
+  } catch (error) {
+    log(`run ${claim.runId}: its scratch folder could not be swept: ${(error as Error)?.message ?? error}`);
+  }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1144,6 +1160,9 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
             return false;
           });
           await heldSide.release();
+          // The run's scratch folder, which its process may not remove (the folder above it is the server's): swept here
+          // once the reap made what is in it the server's, as a run in the runner's own process sweeps it.
+          if (reaped && isolation.kind === "uid" && slot !== undefined) await sweepRunScratch(deps.data, runRow.agentId, claim, log);
           // No kill of this run reaps the slot once it is given back: those still reaping end first.
           await hold?.settle();
           await letGo(slot, reaped, claim.runId);

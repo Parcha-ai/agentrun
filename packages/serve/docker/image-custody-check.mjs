@@ -201,14 +201,18 @@ if (walkedOut) {
   for (const anchor of anchors) if (!entries.some(({ path }) => path.endsWith(`/${anchor}`))) fail(`the walk found no ${anchor}: it proves nothing`);
 }
 
-// 4. The beacon run's end: every process of its uid gone (the one in a session of its own too), its file in /tmp swept,
-// and the next run, on the same slot, reaching nothing it left.
+// 4. The beacon run's end: every process of its uid gone (the one in a session of its own too), its file in /tmp and its
+// scratch folder swept (the runner's to remove, as the folder above it is the server's), and the next run, on the same
+// slot, reaching nothing it left.
+const agentDir = `custody-${createHash("sha256").update("custody", "utf8").digest("hex").slice(0, 16)}`;
+const beaconScratch = `/data/scratch/${agentDir}/${beaconRun.run_id}`;
 await api("POST", `/runs/${beaconRun.run_id}/cancel`);
-for (let i = 0; alive(beacon.pid) || alive(beacon.started) || existsSync(BEACON); i++) {
+for (let i = 0; alive(beacon.pid) || alive(beacon.started) || existsSync(BEACON) || existsSync(beaconScratch); i++) {
   if (i > 300) {
     if (alive(beacon.pid)) fail("the cancelled run's process is still running");
     if (alive(beacon.started)) fail("the program the cancelled run started in a session of its own is still running");
     if (existsSync(BEACON)) fail("the cancelled run's file in /tmp is still there");
+    if (existsSync(beaconScratch)) fail(`the cancelled run's scratch folder is still there: ${(() => { try { return readdirSync(beaconScratch).join(", ") || "empty"; } catch (error) { return error.code; } })()}`);
     break;
   }
   await sleep(100);
@@ -238,7 +242,7 @@ else if (inputs.answer.inputs !== "custody upload\n") fail(`a run started with a
 
 // 4c. What the server's user left deep in a run's work folder (a volume from before runs had a uid of their own), the
 // run's to write beside in its next message.
-const work = `/data/disk/agents/custody-${createHash("sha256").update("custody", "utf8").digest("hex").slice(0, 16)}/runs/${run.run_id}/work`;
+const work = `/data/disk/agents/${agentDir}/runs/${run.run_id}/work`;
 mkdirSync(`${work}/old/deep`, { recursive: true });
 for (const dir of [`${work}/old`, `${work}/old/deep`]) chmodSync(dir, 0o755);
 writeFileSync(`${work}/old/deep/before.txt`, "before\n", { mode: 0o644 });
@@ -300,7 +304,8 @@ for (const pid of pids) {
     try {
       const own = openSync(`/proc/${pid}/fd/${fd}`, constants.O_RDONLY | constants.O_NONBLOCK);
       const chunk = Buffer.alloc(65_536);
-      for (let got; (got = (() => { try { return readSync(own, chunk, 0, chunk.length, null); } catch { return 0; } })()) > 0; ) {
+      // What it holds now, at most 4 MiB: a pipe a live process keeps writing (a server's log) never runs dry.
+      for (let got, reads = 0; reads < 64 && (got = (() => { try { return readSync(own, chunk, 0, chunk.length, null); } catch { return 0; } })()) > 0; reads++) {
         if (holds(chunk.subarray(0, got))) fail(`pid ${pid} (${what})'s fd ${fd} has a secret unread`);
       }
       closeSync(own);
