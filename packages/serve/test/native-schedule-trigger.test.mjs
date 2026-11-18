@@ -20,7 +20,6 @@ for (const runtime of ['claude-code','codex']) {
   const capped=await api('POST','/triggers',{name:'nightly-capped',source:{kind:'schedule',every_s:3600},target:{...target,max_cost_usd:1}});
   assert.equal(capped.status,422,JSON.stringify(capped.body));
   assert.deepEqual(capped.body.error.fields.map((f)=>[f.field,f.reason]),[['target.max_cost_usd','not_allowed']]);
-  assert.match(capped.body.error.fields[0].message,/can't cap them in dollars/);
   // An effort is refused when the trigger is made: the run start refuses one, so every firing would fail.
   const effort=await api('POST','/triggers',{name:'nightly-effort',source:{kind:'schedule',every_s:3600},target:{...target,effort:'high'}});
   assert.equal(effort.status,422,JSON.stringify(effort.body));

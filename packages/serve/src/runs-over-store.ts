@@ -1,4 +1,4 @@
-import { nativeOf } from "./native/binding.js";
+import { NATIVE_RUN_OVERRIDES_UNSUPPORTED, nativeOf, nativeRunOverrides } from "./native/binding.js";
 import { launchNative } from "./native/connection.js";
 // The write half of the run's server cut (design 2.1, "the runner takes every run"): the functions the v2 routes call to
 // start a run and to act on one (message, stop, raise, approve, archive), over the one store (A). The old per-run-process
@@ -487,6 +487,8 @@ export interface StartOptions {
   /** The run's title when its starter names one (a trigger's: "<Source> <name>"), else it is made from its input. */
   readonly title?: string;
   readonly origin?: RunOrigin;
+  /** The run must have a cap (a trigger's), its own or else its agent's default. A native run needs none: it takes no cap
+   *  (StartDeps.runnable refuses one). */
   readonly capped?: boolean;
   readonly from?: MessageOrigin;
 }
@@ -658,7 +660,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   const { revision } = pinned;
   const native = nativeOf(revision.body);
   if (native && !nativeOf(entry.revision?.body)?.connected) throw new ApiError("agent_not_runnable", "This native connection is disconnected. Reconnect its source project before starting any revision.");
-  if(native && (body.effort!==undefined || fileIds.length || body.archil_disk!==undefined))throw new ApiError("input_invalid","Native jobs use their original effort and project files. Run effort overrides, uploaded file_ids and Archil disks are unavailable; edit the native configuration or source project instead.");
+  if (native && nativeRunOverrides(body).length) throw new ApiError("input_invalid", NATIVE_RUN_OVERRIDES_UNSUPPORTED);
   if (fileIds.length) await deps.readyFiles(fileIds);
   const rbody = revision.body as StartBody;
   const input = body.input as Json;
@@ -666,7 +668,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   if (wrong.length) throw deps.told(invalid(await deps.explainRun(wrong, body, revision)));
   // The run's own cap, else the agent's default: the caller chose its own.
   const cap = typeof body.max_cost_usd === "number" ? body.max_cost_usd : rbody.maxCostUsd;
-  if (capped && cap === undefined) throw invalid([{ field: "max_cost_usd", reason: "missing", message: "Every run a trigger starts is capped: give the trigger's target a max_cost_usd or set the agent's." }]);
+  if (capped && cap === undefined && !native) throw invalid([{ field: "max_cost_usd", reason: "missing", message: "Every run a trigger starts is capped: give the trigger's target a max_cost_usd or set the agent's." }]);
   const place = resolvePlace(rbody.place as Place | undefined, deps.fallbackPlace(revision.kind, revision.kind === "agentic" ? (rbody.tools ?? []) : []));
   // Checked as pinned: an earlier revision with no pin is pinned now, once (StartDeps.pinFirst); one that could not be, as
   // its server could not be listed, is refused with the rest (runnable).

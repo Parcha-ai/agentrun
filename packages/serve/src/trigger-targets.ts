@@ -9,18 +9,10 @@ import { message, type RunMoment, type RunsStore, startRun, type StartDeps, WAIT
 import { runOfOrigin } from "./store-reads/runs.js";
 import type { Store } from "./store/index.js";
 import type { AgentEntry } from "./agents-store.js";
-import { nativeOf } from "./native/binding.js";
+import { NATIVE_CAP_UNSUPPORTED, NATIVE_RUN_OVERRIDES_UNSUPPORTED, nativeOf, nativeRunOverrides } from "./native/binding.js";
 import type { MessageOrigin } from "./timeline/index.js";
 import type { Json } from "./validate.js";
 import type { RunTrigger, Target } from "./triggers.js";
-
-/** Why a trigger's target on a connected (native) agent takes no cap: the agent's own CLI runs on its own sign-in and
- *  limits, which AgentRun cannot hold to a dollar cap (server.ts runnable refuses a capped native run). */
-const NATIVE_CAP = "A connected agent's runs keep their own CLI's limits, and AgentRun can't cap them in dollars: remove max_cost_usd from the target and the agent.";
-
-/** Why a trigger's target on a connected agent takes no effort: the run start refuses one (runs-over-store.ts
- *  prepareLaunch), so a trigger made with one would fail at every firing. Refused when the trigger is made instead. */
-const NATIVE_EFFORT = "A connected agent's runs use the effort its own CLI is set to: remove effort from the target and set it in the source project.";
 
 /** Why a trigger may not message a run with no cap (server.ts NO_CAP). */
 const NO_CAP = "The run has no spend cap: a trigger only messages a run with one, as every turn it drives is capped.";
@@ -102,21 +94,19 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
       const pinned = await deps.start.pinnedOf(entry, { input: target.input });
       const revision = pinned?.revision;
       const defaultCap = (revision?.body as { maxCostUsd?: number } | undefined)?.maxCostUsd;
-      // A connected agent's run is never capped (its CLI keeps its own limits), so its trigger needs none, and takes none.
-      if (revision && nativeOf(revision.body)) {
-        const capped = [
-          ...(target.max_cost_usd !== undefined ? [{ field: "target.max_cost_usd", reason: "not_allowed", message: NATIVE_CAP }] : []),
-          ...(defaultCap !== undefined ? [{ field: "target.agent_id", reason: "not_allowed", message: NATIVE_CAP }] : []),
-          ...(target.effort !== undefined ? [{ field: "target.effort", reason: "not_allowed", message: NATIVE_EFFORT }] : []),
-        ];
-        const wrong = await deps.start.explainRun(await deps.start.inputIssuesOf(revision, target.input), { input: target.input }, revision);
-        return [...capped, ...wrong.map((issue) => ({ ...issue, field: `target.${issue.field}` }))];
-      }
-      const uncapped = target.max_cost_usd === undefined && defaultCap === undefined
-        ? [{ field: "target.max_cost_usd", reason: "missing", message: `Every run a trigger starts is capped: give the target a max_cost_usd or set the agent's (the agent ${target.agent_id} has none).` }]
-        : [];
+      // A native run takes no cap and none of nativeRunOverrides, which its start refuses: so does a trigger on one.
+      const native = revision !== undefined && nativeOf(revision.body) !== undefined;
+      const start = native
+        ? [
+            ...(target.max_cost_usd !== undefined ? [{ field: "target.max_cost_usd", reason: "not_allowed", message: NATIVE_CAP_UNSUPPORTED }] : []),
+            ...(defaultCap !== undefined ? [{ field: "target.agent_id", reason: "not_allowed", message: NATIVE_CAP_UNSUPPORTED }] : []),
+            ...nativeRunOverrides(target).map((field) => ({ field: `target.${field}`, reason: "not_allowed", message: NATIVE_RUN_OVERRIDES_UNSUPPORTED })),
+          ]
+        : target.max_cost_usd === undefined && defaultCap === undefined
+          ? [{ field: "target.max_cost_usd", reason: "missing", message: `Every run a trigger starts is capped: give the target a max_cost_usd or set the agent's (the agent ${target.agent_id} has none).` }]
+          : [];
       const wrong = revision ? await deps.start.explainRun(await deps.start.inputIssuesOf(revision, target.input), { input: target.input }, revision) : [];
-      return [...uncapped, ...wrong.map((issue) => ({ ...issue, field: `target.${issue.field}` }))];
+      return [...start, ...wrong.map((issue) => ({ ...issue, field: `target.${issue.field}` }))];
     },
     async start(target, given, trigger, from, title, previous = true) {
       const entry = await deps.needAgent(target.agent_id);
@@ -126,16 +116,14 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
       const content = (given as { content?: unknown }).content;
       const handed = previous && entry.revision?.kind === "agentic" && typeof content === "string" ? await previousResultOf(store, deps, trigger) : "";
       const input = handed ? { ...given, content: `${content}${handed}` } : given;
-      // The target's cap, else the agent's default as it stands now: a run a trigger starts is never uncapped (capped),
-      // but a connected agent's, which its own CLI's limits keep and AgentRun can't cap (NATIVE_CAP).
-      const native = Boolean(nativeOf(entry.revision?.body));
+      // The target's cap, else the agent's default as it stands now: a run a trigger starts is never uncapped (capped).
       const run = await startRun(
         store,
         deps.start,
         entry,
         { input, ...(target.max_cost_usd !== undefined ? { max_cost_usd: target.max_cost_usd } : {}), ...(target.effort ? { effort: target.effort } : {}) },
         // Titled from the trigger (the engine's titleOf: "<Source> <name>"), never from its input, a sender's markup.
-        { trigger, origin: { key: trigger.firing_key }, capped: !native, from, ...(title ? { title } : {}) },
+        { trigger, origin: { key: trigger.firing_key }, capped: true, from, ...(title ? { title } : {}) },
       );
       return { run_id: run.id };
     },
