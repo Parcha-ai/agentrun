@@ -28,6 +28,7 @@ This release keeps a runner whose run isolation is refused up and refusing runs,
 Runs and the server
 
 - A host that won't let the runner start a run as a user of its own (a spawn `EPERM`, as on Render) leaves the server up: the runner says why and claims no runs (`AGENTRUN_RUN_USER=same` lets it), instead of stopping the container. Any refusal of the runner's isolation does this, in the image's two processes and in a server with its runner in its own process. The server still serves its console and API, and its runs wait queued until the setting is fixed and the server restarts.
+- Outbound webhook messages name their agent, so a receiver no longer reads the trigger or the agent back to know whose it is: `trigger.failed` adds `agent_id` and `agent_name`, and `run.ended` and `run.needs_input` add `agent_name` beside `agent_id` (the agent's id when it has no name). No field is removed or renamed, and a message still carries no run output or input (#3130).
 
 Learning
 
@@ -47,7 +48,8 @@ Docs and release
 - The server README's Particle-1 section records a live pass against Particle's API: a saved key, a plain run, tool calls after the model's reasoning, a follow-up, a cancel, a capped run and a workflow's model nodes, each priced run's cost equal to its tokens at list price. Not yet seen live: a rate limit or server error from Particle, and the estimate against Particle's own bill (#3190).
 - A release no longer posts to Slack on its own: whoever cuts it posts its summary once the release page is out, in the shape `docs/releasing.md` gives (what you can do now, three lines before you upgrade, the install lines and the notes link). <!-- changes/release-post-by-hand.md -->
 - beta.45's changelogs now tell the four changes its tag carried past its release pull request's fold as its release page did, under 0.1.0-beta.45, with a known issue for a Render or Railway upgrade to it.
-- Tests: the steer-mid-turn test's failure names the steer's outcome and what the model was handed, and a relay test that read the server's log before the line was written is deleted (#3192).
+- Tests: the steer-mid-turn test's failure names the steer's outcome and what the model was handed (#3192).
+- Tests: a relay test that read the server's log before the line was written is deleted.
 
 ## 0.1.0-beta.45 (2026-11-18)
 

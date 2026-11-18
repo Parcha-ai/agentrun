@@ -82,7 +82,9 @@ export async function openPostgresStore(options: PostgresStoreOptions): Promise<
   });
   try {
     const found = await connection.withClient((client) => (role === "server" ? migrate(client, schema, now(), migrations) : versionOf(client, schema)));
-    if (found !== known) throw new SchemaVersionUnknown(placeOf(schema), found, known);
+    // An earlier schema is one this release's server migrates in place (migrate takes every pending migration), so only a
+    // runner meets it here, and its way on is that server's start.
+    if (found !== known) throw new SchemaVersionUnknown(placeOf(schema), found, known, { upgradesInPlace: true });
     if(role==="server")await backfillNativeCommandOwners(connection);
     if (role === "runner" && options.warn) {
       const gap = now() - (await connection.clock());
