@@ -75,12 +75,17 @@ export interface TemplatePackage {
   readonly id: string;
   readonly version: string;
   readonly sha: string | null;
-  /** The parameters the apply was given, as it checked them (each left out at its default): a later fresh apply of the
-   *  same package with the same ones warns of this agent. Absent on a revision applied before they were kept. */
-  readonly parameters?: unknown;
+  /** A keyed digest of the parameters the apply was given, as it checked them (seal-key.ts parametersDigest), never the
+   *  parameters, one of which may be a credential: a later fresh apply of the same package whose parameters give the same
+   *  digest warns of this agent. Absent on a revision applied before it was kept. */
+  readonly parameters_digest?: string;
   /** The names of the package's triggers as this apply had them: the ones a later update may remove when the package
    *  drops them (a trigger the owner added to the agent is never the package's). Absent before they were kept. */
   readonly triggers?: readonly string[];
+  /** The names of triggers an earlier apply's package had that this one dropped, and that the agent still had when this
+   *  apply read it: recorded with the revision before they are removed, so a removal that fails is done by the next apply.
+   *  A name leaves it once an apply finds no trigger by that name. */
+  readonly removing?: readonly string[];
 }
 
 export interface NewRevision {

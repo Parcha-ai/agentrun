@@ -279,12 +279,14 @@ const EDIT_TRIES = 5;
  *  another request may move the current revision meanwhile: an edit with If-Match is then precondition_failed, and one
  *  without is built and checked again on the new current revision, so what it leaves out (skill files, harness, place, learning, cap) is never carried over from a
  *  revision it does not follow. `contract`: an edit that always makes a new revision, even one equal to the current.
- *  `template`: the package an apply with agent_id wrote it from, kept on the revision (getAgent's `template`). */
+ *  `template`: the package an apply with agent_id wrote it from, kept on the revision (getAgent's `template`).
+ *  `fromPackage`: the definition is a whole package's (an apply with agent_id), so what it leaves out is not carried over
+ *  (editOn). */
 export async function commitAgent(
   store: AgentsStore,
   read: AgentEntry,
   { definition, skills, note }: DefinitionBody,
-  { ifCurrent, check, contract = false, template }: { ifCurrent?: string | null; check?: SaveCheck; contract?: boolean; template?: TemplatePackage } = {},
+  { ifCurrent, check, contract = false, template, fromPackage = false }: { ifCurrent?: string | null; check?: SaveCheck; contract?: boolean; template?: TemplatePackage; fromPackage?: boolean } = {},
 ): Promise<AgentEntry> {
   const stale = () => new ApiError("precondition_failed", "the agent's current revision moved since the If-Match it was read at: read the agent again");
   const held = (entry: AgentEntry): AgentEntry => {
@@ -305,7 +307,7 @@ export async function commitAgent(
   for (let tries = 1; ; tries++) {
     if (tries > 1) entry = held((await getAgent(store, agent.id)) ?? entry);
     // A template applied onto the agent (apply with agent_id) keeps its package on the revision it writes, as a create does.
-    const made = editOn(entry, definition, skills, note);
+    const made = editOn(entry, definition, skills, note, fromPackage);
     const edit = template ? { ...made, package: template } : made;
     const revision = stamped(edit, await check?.(edit, entry.revision));
     const base = entry.revision?.id ?? null;
@@ -334,7 +336,7 @@ export async function commitAgent(
 
 /** The revision an edit makes on `entry`'s current one: what the edit leaves out keeps the current revision's, its skill
  *  files, harness, place, learning switch and default cap. Absent here is unchanged, not the default. */
-function editOn(entry: AgentEntry, definition: Json, skills: Record<string, string> | undefined, note: string | undefined): NewRevision & { note?: string } {
+function editOn(entry: AgentEntry, definition: Json, skills: Record<string, string> | undefined, note: string | undefined, fromPackage = false): NewRevision & { note?: string } {
   const current = entry.revision;
   const currentBody = (current?.body ?? {}) as Partial<AgenticBody & WorkflowBody>;
   let files = skills;
@@ -346,6 +348,13 @@ function editOn(entry: AgentEntry, definition: Json, skills: Record<string, stri
         ...(definition.harness === undefined && currentBody.harness ? { harness: currentBody.harness } : {}),
         // The computer and its place go together: an edit naming neither keeps both (the computer, else the place).
         ...(definition.place === undefined && definition.computer === undefined ? (currentBody.computer ? { computer: currentBody.computer } : currentBody.place ? { place: currentBody.place } : {}) : {}),
+      }
+    : {};
+  // A template's update (fromPackage) replaces what the package owns: the learning switch, the default cap, the input and
+  // answer schemas and the checkout it leaves out are gone, never carried from the revision the package wrote before.
+  // What the host owns (the sdk and native references, the harness, the computer and place) carries as an edit's does.
+  const owned = current && !fromPackage
+    ? {
         ...(definition.learning === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).learning !== undefined ? { learning: (currentBody as AgenticBody).learning } : {}),
         // No approvals here: an edit that leaves them out asks (openapi.ts DefinitionInput.approvals),
         // so no edit makes an agent unattended by saying nothing. The console's edit sends back the approvals it read.
@@ -358,7 +367,7 @@ function editOn(entry: AgentEntry, definition: Json, skills: Record<string, stri
         ...(definition.checkout === undefined && current.kind === "agentic" && !isObject(definition.workflow) && (currentBody as AgenticBody).checkout !== undefined ? { checkout: (currentBody as AgenticBody).checkout } : {}),
       }
     : {};
-  return makeRevision({ ...definition, ...carried }, files, note);
+  return makeRevision({ ...definition, ...carried, ...owned }, files, note);
 }
 
 /** Makes `revisionId`, one of the agent's own, its current one (POST /agents/{id}/current). */
