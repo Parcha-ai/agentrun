@@ -143,6 +143,9 @@ export type LoopCompile = LearningLoop["compiles"][number];
  *  read it, each learned workflow it called, how many times and how many of those failed. */
 export type LearnedUse = NonNullable<RunLearningRead>["used"];
 export type TimelinePage = components["TimelinePage"];
+/** GET /v2/runs/{id}/trace's answer: each model request and tool call of a run as a span (the Dev tools tab). */
+export type RunTrace = Answer<"getRunTrace">;
+export type TraceSpan = RunTrace["spans"][number];
 
 export type RunFile = components["RunFile"];
 export type RunFiles = components["RunFileList"];

@@ -111,6 +111,28 @@ export const COMMANDS = [
   {
     "command": [
       "agents",
+      "delete-agent"
+    ],
+    "operationId": "deleteAgent",
+    "method": "DELETE",
+    "path": "/agents/{agent_id}",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Delete an agent another system owns"
+  },
+  {
+    "command": [
+      "agents",
       "delete-agent-archil"
     ],
     "operationId": "deleteAgentArchil",
@@ -3024,6 +3046,28 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "The run's timeline, as a page or a stream"
+  },
+  {
+    "command": [
+      "runs",
+      "trace"
+    ],
+    "operationId": "getRunTrace",
+    "method": "GET",
+    "path": "/runs/{run_id}/trace",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "A run's trace: each model request and tool call, with its time, tokens and cost"
   },
   {
     "command": [

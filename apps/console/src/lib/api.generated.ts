@@ -482,7 +482,7 @@ export interface components {
       detail: string;
     }[];
   };
-  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "learned_not_active" | "replay_conflict" | "model_key_required";
+  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "learned_not_active" | "replay_conflict" | "agent_not_external" | "runs_in_flight" | "learning_busy" | "model_key_required";
   ExternalRef: {
     source: string;
     kind: string;
@@ -1983,6 +1983,10 @@ export interface operations {
       note?: string;
     };
   };
+  deleteAgent: {
+    body: never;
+    answer: never;
+  };
   deleteAgentArchil: {
     body: never;
     answer: {
@@ -3072,6 +3076,40 @@ export interface operations {
         patch?: string;
         withheld?: "too_large" | "secret";
       }[];
+    };
+  };
+  getRunTrace: {
+    body: never;
+    answer: {
+      run_id: components["Id"];
+      model_requests: "priced" | "tokens_only" | "not_recorded";
+      spans: {
+        id: string;
+        kind: "model" | "tool";
+        parent_id: string | null;
+        name: string;
+        agent_label: string | null;
+        started_at: components["Timestamp"];
+        ended_at: string | null;
+        status: "ok" | "failed" | "refused" | "interrupted" | "waiting" | "running";
+        stop_reason: string | null;
+        tokens: {
+          input: number;
+          cache_read: number;
+          cache_write: number;
+          output: number;
+          reasoning?: number;
+        } | null;
+        usd: number | null;
+        decision: boolean;
+        charged: boolean;
+        not_metered: boolean;
+        tool_use_id: string | null;
+        input_preview: string | null;
+        result_preview: string | null;
+        result_size_bytes: number | null;
+      }[];
+      dropped: number;
     };
   };
   getSdkRun: {

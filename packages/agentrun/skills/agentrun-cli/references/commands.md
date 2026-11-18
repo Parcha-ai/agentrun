@@ -34,6 +34,12 @@ Route: `POST /agents`.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
+### `agentrun agents delete-agent AGENT_ID`
+
+Delete an agent another system owns.
+
+Route: `DELETE /agents/{agent_id}`.
+
 ### `agentrun agents delete-agent-archil AGENT_ID`
 
 Remove an agent's own Archil disk, and everything on it.
@@ -847,6 +853,12 @@ Route: `GET /runs/{run_id}/timeline`.
 - `--calls whole` (string, one of these): `whole`: each `tool_use` row carries its call's arguments (`tool_input`) and each `tool_result` row the head of its output to 8000 characters (`tool_result_text`; a web call's every url, only its long texts cut), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (`after`, `Last-Event-ID`) from one read goes with the same `calls`.
 - `--last-event-id STRING` (string): SSE reconnect. Same meaning as `after`, and wins over it.
 - `--follow` (boolean, this CLI's own): the timeline as it changes, one page per line (NDJSON), until the run ends; resumes a dropped connection
+
+### `agentrun runs trace RUN_ID`
+
+A run's trace: each model request and tool call, with its time, tokens and cost.
+
+Route: `GET /runs/{run_id}/trace`.
 
 ### `agentrun runs unarchive RUN_ID`
 
