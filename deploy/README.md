@@ -119,7 +119,11 @@ Where you open it:
 - **Tailscale logged in.** On your own tailnet only, at `https://<server>.<tailnet DNS name>/`, through `tailscale serve`,
   never Funnel, as `--tailscale` does on your own computer. The installer runs that step from the server's image with
   the server's `tailscale` and its socket. The address needs MagicDNS and HTTPS certificates on in your tailnet's
-  [DNS settings](https://login.tailscale.com/admin/dns). Tailscale's Personal plan is free.
+  [DNS settings](https://login.tailscale.com/admin/dns). Tailscale's Personal plan is free. `serve` reaches the server
+  through Docker's private bridge, so the installer sets `AGENTRUN_TRUSTED_PROXIES=uniquelocal` in `.env`: each visitor's
+  sign-in tries count under the address `X-Forwarded-For` names. That header decides only which address a try counts
+  against, never who you are, and the server's limit on wrong passwords still holds, so a Docker box that fakes it can
+  only spread its tries ([the sign-in limit](../packages/serve/README.md)).
 - **No Tailscale, or logged out.** The server's loopback only. The installer prints the steps (install Tailscale, then
   `tailscale up`) and the command to run again, and exits 0. It never installs Tailscale or logs in for you. Until
   then, open it through an SSH tunnel: the installer prints the one `ssh -N -L` line to run on your computer.
