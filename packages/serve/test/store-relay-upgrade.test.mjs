@@ -53,8 +53,8 @@ test("a runner's relay row: put, renewed only under its incarnation, read and li
   const store = await storeOf(t, () => now);
   assert.deepEqual(await store.runnerRelays.list(), []);
   await store.runnerRelays.put({ runner: "runner-b", incarnation: "inc-b", host: "127.0.0.1", port: 40_001 });
-  await store.runnerRelays.put({ runner: "runner-a", incarnation: "inc-1", host: "10.0.0.7", port: 40_000 });
-  assert.deepEqual(await store.runnerRelays.get("runner-a"), { runner: "runner-a", incarnation: "inc-1", host: "10.0.0.7", port: 40_000, seenAt: T });
+  await store.runnerRelays.put({ runner: "runner-a", incarnation: "inc-1", host: "runner-a.example", port: 40_000 });
+  assert.deepEqual(await store.runnerRelays.get("runner-a"), { runner: "runner-a", incarnation: "inc-1", host: "runner-a.example", port: 40_000, seenAt: T });
   now = T + 5_000;
   assert.equal(await store.runnerRelays.seen("runner-a", "inc-1"), true, "renewed under its incarnation");
   assert.equal(await store.runnerRelays.seen("runner-a", "inc-0"), false, "an earlier incarnation renews nothing");
@@ -63,9 +63,9 @@ test("a runner's relay row: put, renewed only under its incarnation, read and li
   assert.deepEqual((await store.runnerRelays.list()).map((row) => row.runner), ["runner-a", "runner-b"]);
   // A restart: the same name under a new incarnation replaces the row; the earlier process's close removes nothing.
   now = T + 9_000;
-  await store.runnerRelays.put({ runner: "runner-a", incarnation: "inc-2", host: "10.0.0.7", port: 40_002 });
+  await store.runnerRelays.put({ runner: "runner-a", incarnation: "inc-2", host: "runner-a.example", port: 40_002 });
   await store.runnerRelays.remove("runner-a", "inc-1");
-  assert.deepEqual(await store.runnerRelays.get("runner-a"), { runner: "runner-a", incarnation: "inc-2", host: "10.0.0.7", port: 40_002, seenAt: T + 9_000 });
+  assert.deepEqual(await store.runnerRelays.get("runner-a"), { runner: "runner-a", incarnation: "inc-2", host: "runner-a.example", port: 40_002, seenAt: T + 9_000 });
   await store.runnerRelays.remove("runner-a", "inc-2");
   assert.equal(await store.runnerRelays.get("runner-a"), undefined);
   assert.deepEqual((await store.runnerRelays.list()).map((row) => row.runner), ["runner-b"]);
