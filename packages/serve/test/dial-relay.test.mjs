@@ -13,13 +13,15 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createServer } from "node:http";
+import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { setTimeout as sleep } from "node:timers/promises";
 import WebSocket, { WebSocketServer } from "ws";
 import { agent, client, follow, printed, scratch, startServe } from "./support.mjs";
 
-const { ATTACH_PATH, ATTACH_SUBPROTOCOL, AttachHub, MAX_LINE_BYTES } = await import("@parcha/agentrun-computer");
+const { ATTACH_PATH, ATTACH_SUBPROTOCOL, AttachHub, HostedProvider, MAX_LINE_BYTES, RUN_LABEL } = await import("@parcha/agentrun-computer");
+const { fakeHost } = await import("../../computer/test/fake-host.mjs");
 const { createAttachRoutes, sha256Hex } = await import("../dist/computer-attach.js");
 const { LIVE_PROOF_HEADER } = await import("../dist/live-reach.js");
 const { openRunnerStore } = await import("../dist/runner/main.js");
@@ -307,6 +309,32 @@ test("a dial whose runner is gone (its relay closed), whose listener does not an
   assert.ok(waited instanceof Error, "the launch fails");
   assert.match(waited.message, /^the faux dial machine faux-dial-[0-9a-f]+'s dial to http:\/\/127\.0\.0\.1:\d+ was refused: HTTP 503: a dial for run run-wait \(machine faux-dial-[0-9a-f]+\): runner runner-dead, which made it, did not answer at /);
   assert.doesNotMatch(waited.message, MINTED);
+});
+
+test("a real dial provider's create on a runner apart ends at once in the server's words when the server will not relay its machine's dial (the runner answers at a host this server does not dial), not at createMs", { timeout: 60_000 }, async (t) => {
+  const { data, lines, address } = await relayServer(t);
+  const side = await runnerSide(t, data);
+  const { relay } = await relayOf(t, side, address, "runner-far");
+  // The runner's row names a host the server was not given (AGENTRUN_RUNNER_HOSTS): a runner on another host the
+  // server's operator did not list.
+  await side.store.runnerRelays.put({ runner: "runner-far", incarnation: relay.incarnation, host: "203.0.113.7", port: relay.port });
+  // A dial host whose machine dials the server's public address with its token, as agentrun-dial does.
+  const fake = fakeHost({ facts: { connect: "dial", lifetime: "janitor" }, onBoot: (m) => void machine(address, m.boot.AGENTRUN_ATTACH_TOKEN) });
+  const daemonPath = join(await scratch(t), "computerd");
+  writeFileSync(daemonPath, "a stand-in for computerd\n");
+  const createMs = 30_000;
+  const provider = new HostedProvider(fake.host, { daemonPath, timeouts: { createMs, pollMs: 50 }, dial: relay.dial });
+  const started = Date.now();
+  const made = await provider.create({ image: "img", lifetimeMs: 600_000, network: "none", labels: { [RUN_LABEL]: "run-far" } }, { requestId: "relay-refused-1" });
+  const took = Date.now() - started;
+  assert.equal(made.ok, false, "the create fails");
+  assert.equal(made.error.code, "refused", made.error.message);
+  assert.match(made.error.message, /the server refused a dial for run run-far \(machine computer-[0-9a-f]{12}\): runner runner-far, which made it, answers at 203\.0\.113\.7, which is not one of this server's runners' hosts/);
+  assert.doesNotMatch(made.error.message, MINTED);
+  assert.ok(took < createMs / 3, `the create ended at the server's refusal, not at createMs: ${took} ms`);
+  assert.deepEqual(fake.live(), [], "the machine was deleted");
+  assert.ok(lines.some((line) => line.includes("machine_relay_refused") && line.includes("run-far")), lines.join("\n"));
+  assert.ok(!lines.some((line) => MINTED.test(line)), "no token in the server's lines");
 });
 
 test("the runner's attach listener answers nothing without the server's proof, on loopback too: none, a wrong key's, a stale one's, another runner's, another token's, and a replay are each 401; the server's own proof opens it once", { timeout: 60_000 }, async (t) => {
