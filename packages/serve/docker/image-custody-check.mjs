@@ -8,13 +8,16 @@
 //   - the data directory walked as a slot's uid while the beacon is live: nothing in it listed or read;
 //   - the beacon's end: its process, the program it left in a session of its own and its file in /tmp gone, and the next
 //     run on its slot (the same uid) reaching nothing it left;
+//   - a run started with an upload (file_ids) reading it in its work folder, and a run's next message writing beside the
+//     folders the server's user left deep in its work folder;
 //   - a run holding its turn while every process is read for a secret.
 // Every failure is said, one line each, and the check exits 1 after the last.
 // Its environment: CANARY (the prefix of every canary but the seal key's), SEAL (the seal key's canary; empty, the key in
 // seal/seal.key is one), TOKEN (the API token), SOCKET_GID (the group the container gives the server's user, the Docker
 // socket's stand-in).
 import { spawnSync } from "node:child_process";
-import { chmodSync, chownSync, closeSync, constants, existsSync, lstatSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, rmSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { chmodSync, chownSync, closeSync, constants, existsSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, readSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 
@@ -59,6 +62,20 @@ const finished = async (run) => {
     await sleep(200);
   }
   return JSON.parse(view.result.final_answer);
+};
+/** Run `runId`'s answer once it names `key` ({answer}), or what its failure said ({failed}); never a stop, so the checks
+ *  after it still run. */
+const answered = async (runId, key) => {
+  for (let i = 0; ; i++) {
+    const view = (await api("GET", `/runs/${runId}`)).body;
+    if (view?.status === "failed") return { failed: JSON.stringify(view.result ?? view.error ?? view).slice(0, 400) };
+    try {
+      const answer = JSON.parse(view?.result?.final_answer ?? "null");
+      if (answer && key in answer) return { answer };
+    } catch {}
+    if (i > 600) return { failed: `no answer naming ${key}: ${JSON.stringify(view).slice(0, 400)}` };
+    await sleep(200);
+  }
 };
 
 /** What the helper left a run's process (or a program it starts) as its /proc/self/status says: its slot's uid and gid in
@@ -209,6 +226,28 @@ for (const [who, seen] of [["the slot's next run", next.run], ["a program the sl
 server.close();
 rmSync(SOCKET, { force: true });
 
+// 4b. A run started with an upload (file_ids) reads it in its work folder: the runner places it there before the run's
+// process starts, as the upload's hold is the server's alone.
+const uploaded = await fetch(`${base}/files?path=custody/notes.txt`, { method: "POST", headers: { authorization: `Bearer ${process.env.TOKEN}`, "content-type": "text/plain" }, body: "custody upload\n" }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => null) }));
+if (uploaded.status !== 201) stop(`the upload was not taken (${uploaded.status} ${JSON.stringify(uploaded.body)})`);
+const inputsRun = (await api("POST", "/agents/custody/runs", { input: { content: "Inputs." }, file_ids: [uploaded.body.file.file_id] })).body;
+const inputs = await answered(inputsRun.run_id, "inputs");
+console.log(`INPUTS ${JSON.stringify(inputs)}`);
+if (inputs.failed) fail(`a run started with an upload did not complete: ${inputs.failed}`);
+else if (inputs.answer.inputs !== "custody upload\n") fail(`a run started with an upload read ${JSON.stringify(inputs.answer.inputs)} at inputs/custody/notes.txt, not the upload`);
+
+// 4c. What the server's user left deep in a run's work folder (a volume from before runs had a uid of their own), the
+// run's to write beside in its next message.
+const work = `/data/disk/agents/custody-${createHash("sha256").update("custody", "utf8").digest("hex").slice(0, 16)}/runs/${run.run_id}/work`;
+mkdirSync(`${work}/old/deep`, { recursive: true });
+for (const dir of [`${work}/old`, `${work}/old/deep`]) chmodSync(dir, 0o755);
+writeFileSync(`${work}/old/deep/before.txt`, "before\n", { mode: 0o644 });
+await api("POST", `/runs/${run.run_id}/messages`, { content: "Deep." });
+const deep = await answered(run.run_id, "deep");
+console.log(`DEEP ${JSON.stringify(deep)}`);
+if (deep.failed) fail(`a run's next message did not complete: ${deep.failed}`);
+else if (deep.answer.deep !== "written") fail(`a run's next message could not write beside the folders the server's user left deep in its work folder: ${deep.answer.deep}`);
+
 // 5. A turn held open, so every process that holds anything only while a turn goes is there to be read.
 await api("POST", `/runs/${run.run_id}/messages`, { content: "Hold." });
 for (let i = 0; (await api("GET", `/runs/${run.run_id}`)).body.state !== "working"; i++) {
@@ -272,4 +311,4 @@ for (const pid of pids) {
 await api("POST", `/runs/${run.run_id}/cancel`);
 for (const why of failed) console.error(`image custody: FAIL ${why}`);
 if (failed.length) process.exit(1);
-console.log(`image custody: PASS no secret in ${checked} processes; PID 1 ${pid1Pipe ? "holds the launcher's pipe, read empty" : "holds no launcher pipe"}; the run's process was handed its model key alone, runs as uid ${report.run.uid} with its group alone, no capability and no_new_privs, and neither it nor a program it starts reaches the data directory or the server's memory; two live runs (uids ${beacon.uid} and ${reached.run.uid}) reach neither the other's folder, environment, memory nor descriptors, nor the socket of the server's group ${socketGid}; a slot's uid lists and reads nothing of ${entries.length} entries of the data directory; the ended run's processes (one in a session of its own) and its file in /tmp are gone, and its slot's next run reaches nothing it left`);
+console.log(`image custody: PASS no secret in ${checked} processes; PID 1 ${pid1Pipe ? "holds the launcher's pipe, read empty" : "holds no launcher pipe"}; the run's process was handed its model key alone, runs as uid ${report.run.uid} with its group alone, no capability and no_new_privs, and neither it nor a program it starts reaches the data directory or the server's memory; two live runs (uids ${beacon.uid} and ${reached.run.uid}) reach neither the other's folder, environment, memory nor descriptors, nor the socket of the server's group ${socketGid}; a slot's uid lists and reads nothing of ${entries.length} entries of the data directory; the ended run's processes (one in a session of its own) and its file in /tmp are gone, and its slot's next run reaches nothing it left; a run reads its upload, and its next message writes beside the server's user's folders deep in its work folder`);

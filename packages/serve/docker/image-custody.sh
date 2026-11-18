@@ -18,6 +18,8 @@
 #   - a slot's uid lists or reads any entry of the data directory (its harnesses aside, which runs execute);
 #   - a cancelled run leaves a process (one in a session of its own included) or a file in /tmp, or the next run on its
 #     slot reaches its folder;
+#   - a run started with an upload (file_ids) does not read it in its work folder, or a run's next message cannot write
+#     beside the folders the server's user left deep in its work folder;
 #   - any process has a canary in its environment, its command line or a pipe it holds; one but PID 1 (tini) holds the
 #     launcher's pipe; PID 1 is not tini.
 # Every container, and the network and Postgres of --two, is removed by its name at the end.

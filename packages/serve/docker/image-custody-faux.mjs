@@ -12,12 +12,17 @@
 //              process's environment, memory and descriptors, a socket of a group the server's user is given), each
 //              "read" or "denied"; and the probe's status (uid, groups, capabilities) as for "Report.".
 //   "Hold."    holds the turn until it is stopped, so the check reads every process while a turn is going.
+//   "Inputs."  the run reads the upload its start named (file_ids) at inputs/custody/notes.txt in its work folder:
+//              {inputs: its text, or the error's code}.
+//   "Deep."    (a later message) the run writes beside what the server's user left deep in its work folder
+//              (old/deep/next.txt, and a folder old/deep/more): {deep: "written", or the error's code}.
+// Its work folder, from its HOME (its scratch folder, <data>/scratch/<agent>/<run>): <data>/disk/agents/<agent>/runs/<run>/work.
 // The probe: its uid; its /proc/self/status lines (Uid, Gid, Groups, the five capability sets, NoNewPrivs); whether it
 // lists the data directory; seal/seal.key and the SQLite store's files, each "read", "denied" or "absent"; and the
 // processes of the data directory's uid whose memory it opens (/proc/<pid>/mem: the open is where ptrace's access check
 // is made).
 import { spawn, spawnSync } from "node:child_process";
-import { statSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 
 const secrets = await import("/opt/agentrun/packages/serve/dist/secrets.js");
 const DATA = "/data";
@@ -114,10 +119,32 @@ const childOf = (source) => {
 
 const held = (faux) => new Promise((resolve) => faux.signal?.addEventListener("abort", () => resolve(faux.message("", { stopReason: "aborted" })), { once: true }));
 
+/** The run's work folder, from its scratch folder (its HOME). */
+const workOf = () => {
+  const [agent, run] = (process.env.HOME ?? "").slice(`${DATA}/scratch/`.length).split("/");
+  return `${DATA}/disk/agents/${agent}/runs/${run}/work`;
+};
+const codeOf = (act) => {
+  try {
+    return act();
+  } catch (error) {
+    return error.code ?? String(error.message).slice(0, 80);
+  }
+};
+
 export default async function reply(context, faux) {
   const first = textOf(context.messages.find((m) => m.role === "user"));
   const last = textOf(context.messages.filter((m) => m.role === "user").at(-1));
   if (last.includes("Hold.")) return held(faux);
+  if (last.includes("Deep.")) {
+    const deep = codeOf(() => {
+      writeFileSync(`${workOf()}/old/deep/next.txt`, "next\n");
+      mkdirSync(`${workOf()}/old/deep/more`);
+      return "written";
+    });
+    return faux.message(JSON.stringify({ deep }));
+  }
+  if (first.startsWith("Inputs.")) return faux.message(JSON.stringify({ inputs: codeOf(() => readFileSync(`${workOf()}/inputs/custody/notes.txt`, "utf8")) }));
   if (first.startsWith("Beacon.")) {
     const tmp = process.env.TMPDIR ?? "";
     writeFileSync(`${tmp}/beacon`, "beacon\n");
