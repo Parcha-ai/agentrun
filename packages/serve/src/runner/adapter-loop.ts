@@ -151,6 +151,9 @@ export interface AdapterRunSpec {
    *  run, its model requests, its paid tool calls and its decisions, is admitted and booked through it. An uncapped run
    *  gives capUsd: () => undefined. */
   readonly runCap: RunCapConfig;
+  /** This claim's model-request retry policy over the loop's defaults. A provider whose failed request may already be
+   *  billed can disable automatic retries for every conversation in the claim, including its subagents. */
+  readonly retry?: Partial<ConversationRetryPolicy>;
   /** The run's cap, when it has one (filled from the run's launch): its figure, and what a refusal does to the run (the
    *  kernel cap's parkOf: parked with a pending budget for a refusal a raise could fix, else failed in its words), at the
    *  cap the run is held to when it parks (`capUsd`: the newest raise's, else the launch's), which its pending budget
@@ -1640,7 +1643,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         /** The root a phase is making, awaited before the owed writes are read. */
         let rootMaking: Promise<unknown> | undefined;
         harness = await Harness.open(gate.journal, {
-          models: () => models, registry, settings: { restartLimit, retry, stream }, onReport: () => {},
+          models: () => models, registry, settings: () => ({ restartLimit, retry: { ...retry, ...specNow?.retry }, stream }), onReport: () => {},
           // A tool host's onConversation, in each agent conversation's creating commit (the spec's, once it is known: the
           // root is created when the session opens, after the spec).
           conversationCreated: async (tx, record) => {

@@ -1005,9 +1005,9 @@ connection is tested, and no run's process gets them, in its environment or on i
 An agentic revision names its model as `provider/model-id` (`"model"` in its definition), or names none and runs on
 this host's default, `AGENT_MODEL`. With no `AGENT_MODEL`, a model provider's key, the server's own or saved as a
 [tool key](#tool-keys), gives the default, the first of: `anthropic/claude-sonnet-5-5` with `ANTHROPIC_API_KEY`,
-`openai/gpt-6.1-sol` with `OPENAI_API_KEY`, `openrouter/anthropic/claude-sonnet-5.5` with `OPENROUTER_API_KEY`. Each is
-its provider's capable everyday model, not its dearest ($2 in and $10 out per million tokens); set `AGENT_MODEL` for
-another. claude-agent takes only the Anthropic one and codex only the OpenAI one. A workflow revision names no model: each model node names a tier (`fast`, `default`
+`openai/gpt-6.1-sol` with `OPENAI_API_KEY`, `particle/particle-1` with `PARTICLE_API_KEY`, then
+`openrouter/openai/gpt-6.1-sol` with `OPENROUTER_API_KEY`. Set `AGENT_MODEL` for another. Direct Particle runs on Pi;
+claude-agent takes the Anthropic one and codex the OpenAI one. A workflow revision names no model: each model node names a tier (`fast`, `default`
 or `strong`), and the host maps it, `fast` to `AGENT_MODEL_FAST` and `strong` to `AGENT_MODEL_STRONG`, each falling back
 to `AGENT_MODEL`. Capabilities show the mapping in `models` (`{source, route_prefix, fast, default, strong}`):
 `source` is `gateway`, `providers`, `chatgpt` or `faux` (the published document marks `gateway` and `providers` as
@@ -1156,6 +1156,56 @@ answer 401 for it. Model spend that would run after the turn ends is never sent 
 Jev and the other decision providers run on their own keys (`TYPESAFE_API_KEY`, `PARALLEL_API_KEY`,
 `OPENROUTER_API_KEY`), which are not model keys and which a run's key does not replace. On a run that brings its own
 key, no model key is on the env its decision nodes run under, so Jev's route on an openrouter.ai gateway's key is off.
+
+### Direct Particle-1
+
+Save a Particle key in **Settings → Model keys → Particle**, then select `particle/particle-1` with the **Pi** harness.
+Alternatively supply `PARTICLE_API_KEY` where AgentRun starts and set `AGENT_MODEL=particle/particle-1` (or a workflow's
+`AGENT_MODEL_FAST` / `AGENT_MODEL_STRONG`). Get an inference-enabled key from [Particle's platform](https://platform.particle.ai/).
+The key uses the existing sealed storage and provider-scoped handover; it is not placed in run environments. Saving
+it checks `GET /v1/models`, which performs no generation. No OpenRouter key is required.
+
+The provider sends native Chat Completions to `https://api.particle.ai/v1/chat/completions`, using request alias
+`particle-1`. The [official catalog](https://docs.particle.ai/models) lists text/image input, a 1,048,576-token combined
+context and a 131,072-token output ceiling (the API's omitted-limit default is 32,000). Strict schema guarantees are
+not advertised. AgentRun sends native tools and `reasoning_effort`; it does not reuse OpenRouter's reasoning object or
+its measured text-tools caching workaround. Existing `openrouter/particle-ai/particle-1` definitions and the code-review
+template keep their OpenRouter route.
+
+Supported scope is Pi agentic runs and workflow model nodes (including nested learned workflows) through Pi's
+existing local proxy. Codex, Claude Agent and OpenCode do not support this direct provider. Particle's
+[Responses API](https://docs.particle.ai/responses) is WebSocket-only; it does not implement HTTP `POST /v1/responses`.
+Pointing `AGENT_MODEL_BASE_URL` at Particle's global or US API is therefore refused with setup instructions. This
+integration currently uses the global endpoint and regular service only; it does not expose regional routing, Flex,
+WebSocket steering, files or other Particle models.
+
+The [reasoning levels](https://docs.particle.ai/reasoning) map low to low, medium/high/xhigh to high, and max to max.
+Pi requests with thinking off explicitly send `none`, rather than inheriting the API's high default. Native tool
+continuations retain the assistant's reasoning and tool-call IDs. Nested learned-workflow and `llm` side calls take
+the model's limits and reasoning configuration from the live session port, preserving their requested effort.
+
+An opaque hash of the Pi conversation ID becomes `prompt_cache_key`, within Particle's 256-byte limit. Side requests
+without an ID share a key for the lifetime of their route. `cacheRetention: "none"` omits the explicit hint;
+Particle may still derive affinity and cache the prompt. Read the returned cached-token count, since
+[affinity does not guarantee a cache hit](https://docs.particle.ai/prompt-caching).
+
+Usage keeps the provider's token counts: uncached input is prompt tokens minus cached input, and reasoning is a
+breakdown of completion tokens, never added to them again. Cost is an **estimate at regular peak list prices**:
+$0.25 uncached input, $0.03 cached input and $1 output per million tokens. The same rates reserve the run's cap.
+[Off-peak discounts, Flex and account-specific pricing](https://docs.particle.ai/usage-billing) can change the bill;
+Chat usage does not supply an authoritative dollar total. Missing or malformed usage, or a stream missing its terminal
+`[DONE]`, fails the request with unknown cost rather than reporting a free completion. Cancellation aborts the provider
+request, but does not undo tokens already generated or guarantee final usage.
+
+Provider and session transports disable retries. A Pi claim using Particle, including one of its subagent tiers,
+also disables automatic conversation retries for the whole claim. Errors are surfaced for the caller to decide;
+even a pre-admission 429 is not retried automatically. This changes request retry configuration, not recovery
+admission, dispatch, journal fencing, restart or cancellation behavior; the recovery models do not change.
+
+Offline regressions cover streamed native tools, continuation, reasoning, cache accounting, missing usage, cancellation,
+errors, credential scoping and actual Pi conversation retries. **Live validation remains outstanding.** A maintainer
+must supply a key and explicitly authorize a bounded spend before testing real tool continuation, cache-hit behavior,
+cancellation and billing. The protocol fixtures are not evidence of live compatibility or cache savings.
 
 ### On a ChatGPT plan
 
@@ -1782,10 +1832,10 @@ A tool's key comes from one of two places. The server's own environment, through
 `PUT /v2/settings/tool-keys/{id}` with `{values: {NAME: "..."}}` saves one, field by field (`parallel` takes
 `PARALLEL_API_KEY`, `monid` `MONID_API_KEY`, `browserbase` `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`,
 `kernel` `KERNEL_API_KEY`, `typesafe` `TYPESAFE_API_KEY`, which unlocks Jev's decisions, `decisions.jev`), and `DELETE` forgets it. A model
-provider's key is saved the same way (`anthropic`, `openai` and `openrouter`, each `kind: "model"`, the others
-`"tool"`): every run gets it, as every run gets the launcher's model keys, and with no `AGENT_MODEL` it gives the
+provider's key is saved the same way (`anthropic`, `openai`, `particle` and `openrouter`, each `kind: "model"`, the others
+`"tool"`): a run gets only its model providers' keys, and with no `AGENT_MODEL` a key gives the
 default model ([models](#models)); its `harnesses` are pi and the harnesses that talk to that provider's API (OpenAI's:
-codex and opencode; OpenRouter's, all four), of
+codex and opencode; Particle's, Pi only; OpenRouter's, all four), of
 those this server runs or would run once the key is set, so a row names them before it is saved: one left out is one
 this server cannot run for another reason (not installed, not the pinned build, more than this host's memory). `GET
 /v2/settings/tool-keys` lists each key, what it unlocks and the harnesses that run that, and each field's `set` and
