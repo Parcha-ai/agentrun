@@ -1,12 +1,14 @@
 // An SDK run's compile ask (runner/sdk-ask.ts bookedAsk) is a paid model request held to the run's cap as every other paid
 // step is (the kernel's runCap over the run's sessions, its backend's reported job spend beside them): one whose hold would
 // pass the cap is refused before it leaves, nothing sent and nothing booked for it, and the compile is skipped in the
-// cap's words (reflect-hook.ts CAP_REFUSAL: no_budget), the job's figures kept. Under the cap it is sent and booked.
+// cap's words (reflect-hook.ts CAP_REFUSAL: no_budget), the job's figures kept. Under the cap it is sent and booked. On a
+// free model, uncapped (the case an SDK start allows today), the run's free-request limit refuses it the same way.
 // Real HTTP SDK receipts; only the provider is scripted, and nothing here reads a clock.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { serve, client } from "./support.mjs";
 import { createSdkLoop } from "../dist/runner/sdk-loop.js";
+import { bookedAsk } from "../dist/runner/sdk-ask.js";
 import { askedForCompile } from "../dist/learn/compile.js";
 import { said } from "../dist/learning-words.js";
 
@@ -30,15 +32,19 @@ const COST = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
 const USED = { input: 20, output: 10 };
 const ASK_USD = (USED.input * COST.input + USED.output * COST.output) / 1e6;
 
-/** The compile route: a scripted origin that records every request it gets and answers a compile with a valid draft. */
-function scriptedRoute() {
+/** A free model's rates: its catalog price is all zeros, so no dollar figure stops it; only the run's free-request limit does. */
+const FREE = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+
+/** The compile route at rates `cost`: a scripted origin that records every request it gets and answers a compile with a
+ *  valid draft. */
+function scriptedRoute(cost = COST) {
   const requests = [];
   const route = {
     provider: { api: "anthropic-messages", origin: "https://scripted-ask-cap.invalid", credential: () => "scripted-provider-credential" },
     model: "scripted-ask-cap",
-    cost: COST,
+    cost,
     outputCeiling: 64_000,
-    price: (_model, usage) => (usage.input * COST.input + usage.output * COST.output + usage.cacheRead * COST.cacheRead + usage.cacheWrite * COST.cacheWrite) / 1e6,
+    price: (_model, usage) => (usage.input * cost.input + usage.output * cost.output + usage.cacheRead * cost.cacheRead + usage.cacheWrite * cost.cacheWrite) / 1e6,
     fetch: async (_url, init) => {
       const body = JSON.parse(String(init.body));
       const prompt = body.messages.map(message => typeof message.content === "string" ? message.content : message.content.map(part => part.text ?? "").join("\n")).join("\n");
@@ -59,8 +65,9 @@ function scriptedRoute() {
 }
 
 /** One completed SDK run of an agent that compiles after its first run, its end-of-run step run under a cap of `capUsd`
- *  (the launch's figure, as a capped run's launch carries it). */
-async function endUnderCap(t, capUsd) {
+ *  (the launch's figure, as a capped run's launch carries it; undefined: uncapped) on a route at rates `cost`, with the
+ *  runner's `env`. `before` runs on the claim first, with the route and its origin's requests. */
+async function endUnderCap(t, capUsd, { cost = COST, env = {}, before } = {}) {
   const runtime = "claude-agent-sdk", server = await serve(t, { runner: false }), agentId = "sdk-ask-cap";
   assert.equal((await server.api("POST", "/agents", { definition: {
     id: agentId, name: agentId, instructions, sdk: { runtime }, learning: { compile_after: 1 }, tools: [], output_schema: tool.output_schema,
@@ -74,9 +81,11 @@ async function endUnderCap(t, capUsd) {
   assert.equal(completed.status, 200);
   const claim = await server.store.claim(runId, "sdk-ask-cap", { leaseMs: 60_000 });
   assert.ok(claim);
-  const launch = { ...(await server.store.runs.launch(runId)).body, maxCostUsd: capUsd };
-  const { route, requests } = scriptedRoute();
-  const loop = createSdkLoop(launch, { store: server.store, data: server.data, env: {}, sealKey: Buffer.alloc(32, 7) }, async () => route)({
+  const launch = { ...(await server.store.runs.launch(runId)).body, ...(capUsd === undefined ? {} : { maxCostUsd: capUsd }) };
+  assert.equal(launch.maxCostUsd, capUsd);
+  const { route, requests } = scriptedRoute(cost);
+  if (before) await before({ route, requests, run: { journal: () => server.store.journal(claim), flush: () => server.store.flush() } });
+  const loop = createSdkLoop(launch, { store: server.store, data: server.data, env, sealKey: Buffer.alloc(32, 7) }, async () => route)({
     journal: () => server.store.journal(claim), flush: () => server.store.flush(), signal: new AbortController().signal,
   });
   assert.equal((await loop.start(claim)).state, "ended");
@@ -109,4 +118,30 @@ test("an SDK run's compile ask that fits under the run's cap is sent and booked 
   assert.ok(Math.abs(run.costUsd - (JOB_USD + requests.length * ASK_USD)) < 1e-9, `the run's cost books the job and each ask once (${run.costUsd})`);
   assert.equal(kept.proposal.job_cost_usd, JOB_USD);
   assert.ok(Math.abs(kept.proposal.look_back_usd - requests.length * ASK_USD) < 1e-9, `the compile's spend is look-back spend (${kept.proposal.look_back_usd})`);
+});
+
+test("an uncapped SDK run's compile ask on a free model is held to the run's free-request limit: past it, refused unsent and the compile skipped as no_budget", async t => {
+  // No dollar cap (an SDK start refuses one today) and a free model: only AGENTRUN_FREE_MODEL_REQUESTS holds the ask.
+  const env = { AGENTRUN_FREE_MODEL_REQUESTS: "1" };
+  const { run, kept, requests, learning } = await endUnderCap(t, undefined, {
+    cost: FREE, env,
+    // The run's one free request: an ask admitted on the ask's session, sent and booked at $0.
+    before: async ({ route, requests, run }) => {
+      const first = await bookedAsk(route, { capUsd: undefined, beside: async () => 0, freeRequests: 1 })({ prompt: "Say ready.", maxTokens: 64 }, new AbortController().signal, run);
+      assert.equal(first.text, "No notes.");
+      assert.equal(first.usd, 0);
+      assert.equal(requests.length, 1, "the first ask was sent");
+    },
+  });
+  // The end-of-run compile reopens the ask's booking: its next request is past the limit.
+  assert.equal(requests.length, 1, "the scripted origin saw no second request");
+  assert.equal(run.state, "ended");
+  assert.equal(run.outcome, "completed", "the backend's completed job stays completed");
+  assert.equal(run.costUsd, JOB_USD, "the job's spend, and $0 for the free ask");
+  assert.equal(kept.proposal.state, "dropped");
+  assert.equal(kept.proposal.reason, "no_budget", JSON.stringify(kept.proposal));
+  assert.equal(kept.proposal.detail, said.noBudget);
+  assert.equal(kept.proposal.job_cost_usd, JOB_USD);
+  assert.equal(kept.proposal.look_back_usd, 0, "the refused compile spent nothing");
+  assert.equal(learning.compiled, null, "no compile ran");
 });
