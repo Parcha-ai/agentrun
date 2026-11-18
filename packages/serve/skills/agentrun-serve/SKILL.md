@@ -16,8 +16,9 @@ existing instance is not permission to start a replacement or change its destina
 Secrets are saved by the person in the console, never with the API token: a model or tool key, an MCP server's token
 or headers, the webhook's secret, GitHub. Prepare everything else through the API. A secret write answers `403
 forbidden` with `error.details.console_url`, the console's form with the rest filled in (or build it:
-`<console>/#/settings/mcp?add=<name>&url=<url>&auth=bearer`). Open that link in the person's browser for them and tell
-them to paste the secret there and save. Never ask for a secret in the chat.
+`<console>/#/settings/mcp?add=<name>&auth=bearer`, adding `&url=<url>` only when no key or token is in the URL).
+Open that link in the person's browser for them and tell them to paste the secret there and save. Never ask for a
+secret in the chat.
 
 ## Choose the onboarding path
 

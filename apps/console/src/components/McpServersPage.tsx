@@ -93,7 +93,8 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
   // replaces a server of that name (an older one that matches no need, say). Chosen once the list is read, and kept for
   // that link: the server it saves is never counted against it.
   const named = useRef<{ key: string; name: string } | null>(null);
-  if (add && servers && named.current?.key !== addKey) named.current = { key: addKey, name: freeName(add.name, servers) };
+  // A link to change a saved server (a refused secret write's `change`) keeps its name: its save replaces that server.
+  if (add && servers && named.current?.key !== addKey) named.current = { key: addKey, name: add.change ? add.name : freeName(add.name, servers) };
   // The need's toolkit stays the link's own (a url need's is its name) when the name moves to a free one.
   const filled = (a: Add): Add => (named.current?.key === JSON.stringify(a) && named.current.name !== a.name ? { ...a, toolkit: a.toolkit ?? a.name, name: named.current.name } : a);
   // A form a link filled waits for the list (or its failure), so the name it shows is the one it saves.
@@ -504,7 +505,9 @@ function ServerForm({ v2, saved, add, given, writable, taken, signIn, onCancel, 
   const shownSource: McpSource = type === "github_app" ? "github" : saved?.source === "composio" ? "composio" : "url";
   // A preset's tools are its toolkit's, whatever name the link gave the server.
   // A template's url need names its toolkit by the server's name; a refused write's link names one only when it sent one.
-  const [toolkit, setToolkit] = useState(saved?.toolkit ?? (linked ? linked.name : add?.auth === "github_app" ? "" : add ? add.toolkit ?? (add.auth || add.url ? "" : add.name) : ""));
+  // A link to change a saved server with the toolkit its refused save named fills that one over the saved one, as it does
+  // the address and the kind of credential.
+  const [toolkit, setToolkit] = useState((add?.change ? add.toolkit : undefined) ?? saved?.toolkit ?? (linked ? linked.name : add?.auth === "github_app" ? "" : add ? add.toolkit ?? (add.auth || add.url ? "" : add.name) : ""));
   const shownToolkit = shownSource === "github" ? "github" : toolkit.trim();
   // What a save sends of it: only a toolkit that differs from the saved server's (a new one: only one said); one on the
   // GitHub App's tokens sends none.

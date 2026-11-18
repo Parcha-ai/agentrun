@@ -90,6 +90,14 @@ registerNotSecretWrite("refreshMcpServer", "A refresh lists the saved server's t
  *  digit or both cases of letter in it (a Zapier-style /mcp/<key>/sse, a UUID, base64). A plain word or a dashed name
  *  ("streamable-http-endpoint") is none. */
 const keyShaped = (part: string): boolean => /^[A-Za-z0-9_\-+/=.~%]{20,}$/.test(part) && (/\d/.test(part) || (/[a-z]/.test(part) && /[A-Z]/.test(part)));
+/** Whether `text` holds a key that spans separators: base64's alphabet has "/" and "+", so one key can cross path segments
+ *  (`aB3dE5gH7jK9mN2p/Q4rS6tU8vW0xY2z4`, each piece too short to look like one) or read as two words once a query's "+"
+ *  is decoded. Any run of 20 or more base64 characters, separators counted, with both cases of letter in it. A path of
+ *  plain lowercase words and digits ("/mcp/v1/sse/stream/events") is none. */
+const spansKey = (text: string): boolean => (text.match(/[A-Za-z0-9+/=]{20,}/g) ?? []).some((run) => /[a-z]/.test(run) && /[A-Z]/.test(run));
+/** Whether a host's label could be an unguessable id (a per-person subdomain): 20 or more letters and digits in a row with
+ *  a digit in them, or a UUID. */
+const hostKeyed = (label: string): boolean => (label.match(/[a-z0-9]{20,}/g) ?? []).some((run) => /\d/.test(run)) || /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/.test(label);
 const decoded = (part: string): string => {
   try {
     return decodeURIComponent(part);
@@ -100,19 +108,24 @@ const decoded = (part: string): string => {
 
 /** The URL a refusal's console link may carry: only one a save would take as it is (http or https, at most 2048
  *  characters, no user or password, no query parameter named like a credential: urlOf, the save's own check), with
- *  nothing in it shaped like a secret (secretShapes, the learning guard's shapes) and no key-shaped path segment or query
- *  name or value. Its fragment is dropped. Anything else is left out whole, and the person pastes it in the console. */
+ *  nothing in it shaped like a secret (secretShapes, the learning guard's shapes), no key-shaped path segment or query
+ *  name or value, no key spanning path segments or a query's separators (spansKey), and no host label that could be an id.
+ *  Its fragment is dropped. Anything else is left out whole, and the person pastes it in the console. */
 export function linkableUrl(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const issues: InputIssue[] = [];
   const url = urlOf(value, issues);
   if (!url || issues.length || secretShapes(value).length || secretShapes(decoded(value)).length) return undefined;
   const parts = [...url.pathname.split("/"), ...[...url.searchParams].flat()];
-  return parts.some((part) => keyShaped(part) || keyShaped(decoded(part))) ? undefined : url.href;
+  if (parts.some((part) => keyShaped(part) || keyShaped(decoded(part)) || keyShaped(part.replace(/\s+/g, "")))) return undefined;
+  if ([url.pathname, decoded(url.pathname), url.search, decoded(url.search)].some(spansKey)) return undefined;
+  return url.hostname.split(".").some(hostKeyed) ? undefined : url.href;
 }
 
 /** A server's name or a toolkit as a link may carry it: a name a server can have, and not key-shaped. */
 const linkName = (value: unknown): string | undefined => (typeof value === "string" && MCP_SERVER_NAME.test(value) && !keyShaped(value) ? value : undefined);
+/** The kinds of credential the console's form can fill. `per_run` (and anything else) it cannot: such a save's link opens
+ *  the page alone, since a form filled otherwise would save another kind than the one asked for. */
 const AUTH_TYPES: ReadonlySet<string> = new Set(["none", "bearer", "headers", "oauth", "github_app"]);
 const MCP_PAGE = "/#/settings/mcp";
 
@@ -120,10 +133,14 @@ const MCP_PAGE = "/#/settings/mcp";
 export const mcpSecretPage = (operation: string) => async (body: unknown, request: SecretRequest): Promise<string> => {
   const given = isObject(body) ? body : {};
   const toolkit = linkName(given.toolkit);
+  const servers = (request.store as SavedServers).mcp;
   if (operation === "listComposioTools" || operation === "saveComposioServer") {
     const name = linkName(operation === "saveComposioServer" ? request.params[0] : given.toolkit);
     if (!name) return MCP_PAGE;
-    const query = new URLSearchParams({ add: name, preset: "composio", ...(toolkit ? { toolkit } : {}) });
+    // A save over a saved server's name replaces that server: `change`, so the console saves under the name asked for and
+    // never moves it to a free `<name>-2` beside the old one. A listing names no server, so it is always a new one's.
+    const replaces = operation === "saveComposioServer" && (await servers.server(name)) !== undefined;
+    const query = new URLSearchParams({ [replaces ? "change" : "add"]: name, preset: "composio", ...(toolkit ? { toolkit } : {}) });
     const tools = Array.isArray(given.tools) ? given.tools.filter((tool): tool is string => typeof tool === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(tool) && !keyShaped(tool)).slice(0, 64) : [];
     if (tools.length) query.set("tools", tools.join(","));
     return `${MCP_PAGE}?${query}`;
@@ -131,12 +148,15 @@ export const mcpSecretPage = (operation: string) => async (body: unknown, reques
   if (operation !== "saveMcpServer" && operation !== "startMcpOAuth") return MCP_PAGE;
   const name = linkName(request.params[0]);
   if (!name) return MCP_PAGE;
-  const saved = await (request.store as SavedServers).mcp.server(name);
+  // The kind of credential the request asks for. A save with no auth asks for none (mcp-probe authOf), which the link says
+  // so a Change form never falls back to the saved kind and keeps the credential the save would have dropped.
+  const asked = operation === "startMcpOAuth" ? "oauth" : given.auth === undefined ? "none" : isObject(given.auth) ? given.auth.type : undefined;
+  if (typeof asked !== "string" || !AUTH_TYPES.has(asked)) return MCP_PAGE;
+  const saved = await servers.server(name);
   const query = new URLSearchParams({ [saved ? "change" : "add"]: name });
   const url = linkableUrl(given.url);
   if (url) query.set("url", url);
-  const auth = operation === "startMcpOAuth" ? "oauth" : isObject(given.auth) && typeof given.auth.type === "string" && AUTH_TYPES.has(given.auth.type) ? given.auth.type : undefined;
-  if (auth) query.set("auth", auth);
+  query.set("auth", asked);
   if (toolkit) query.set("toolkit", toolkit);
   return `${MCP_PAGE}?${query}`;
 };

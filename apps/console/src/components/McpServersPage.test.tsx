@@ -516,6 +516,8 @@ describe("Settings → MCP servers, GitHub App", () => {
     expect(route("#/settings/mcp?add=slack&preset=composio&toolkit=slack&tools=SLACK_SEND_MESSAGE,bad%20name,SLACK_FIND_CHANNELS").add)
       .toEqual({ name: "slack", preset: "composio", toolkit: "slack", tools: ["SLACK_SEND_MESSAGE", "SLACK_FIND_CHANNELS"] });
     expect(route("#/settings/mcp?add=slack&preset=composio&toolkit=Not_A_Toolkit").add).toEqual({ name: "slack" });
+    expect(route("#/settings/mcp?change=slack&preset=composio&toolkit=slack&tools=SLACK_SEND_MESSAGE").add)
+      .toEqual({ name: "slack", preset: "composio", toolkit: "slack", tools: ["SLACK_SEND_MESSAGE"], change: true });
   });
 
   it("routes a refused secret write's link to the form filled with its name, address, kind of credential and toolkit: a user or password in the address is dropped", () => {
@@ -554,6 +556,25 @@ describe("Settings → MCP servers, GitHub App", () => {
     await p.type("mcp-token", VARS.token);
     await p.click(/^Save$/);
     expect(s.writes().at(-1)).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/docs", body: { url: VARS.url, auth: { type: "bearer", token: VARS.token } } });
+  });
+
+  it("a link to change a saved server with another toolkit fills the link's toolkit over the saved one, and Save sends it", async () => {
+    const s = server([[saved({ name: "docs", toolkit: "old-kit" })]], (c) => (c.method === "PUT" ? json(200, saved({ name: "docs", toolkit: "new-kit" })) : undefined));
+    const p = await open(s.v2, { add: route(`#/settings/mcp?change=docs&url=${encodeURIComponent(VARS.url)}&auth=bearer&toolkit=new-kit`).add });
+    expect(p.host.querySelector('form[aria-label="Change docs"]')).toBeTruthy();
+    expect(p.input("mcp-toolkit").value).toBe("new-kit");
+    await p.type("mcp-token", VARS.token);
+    await p.click(/^Save$/);
+    expect(s.writes().at(-1)).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/docs", body: { url: VARS.url, auth: { type: "bearer", token: VARS.token }, toolkit: "new-kit" } });
+  });
+
+  it("a link to change a saved server to no credential opens its Change form on none, so Save drops the credential as the refused save asked", async () => {
+    const s = server([[saved({ name: "docs" })]], (c) => (c.method === "PUT" ? json(200, saved({ name: "docs", auth: { type: "none" }, credential: null })) : undefined));
+    const p = await open(s.v2, { add: route("#/settings/mcp?change=docs&auth=none").add });
+    expect(p.host.querySelector('form[aria-label="Change docs"]')).toBeTruthy();
+    expect((p.host.querySelector('input[name="mcp-auth"][value="none"]') as HTMLInputElement).checked).toBe(true);
+    await p.click(/^Save$/);
+    expect(s.writes().at(-1)).toMatchObject({ method: "PUT", path: "/v2/settings/mcp-servers/docs", body: { auth: { type: "none" } } });
   });
 
   it("opens the add form for a template's url need with its toolkit filled, and saves the server as url and that toolkit", async () => {
@@ -847,6 +868,21 @@ describe("Settings → MCP servers, the Composio preset", () => {
     const u = await open(server([older]).v2, { add: { name: "hubspot" } });
     expect(u.input("mcp-name").value).toBe("hubspot-2");
     expect(u.input("mcp-toolkit").value).toBe("hubspot");
+  });
+
+  it("a refused Composio save's link to replace a saved server keeps its name: the save replaces slack, never a slack-2 beside it", async () => {
+    const SLACK = [{ slug: "SLACK_SEND_MESSAGE", name: "Send a message", description: "Send a message." }];
+    const s = server([[saved({ name: "slack", source: "composio", toolkit: "slack" })]], (c) => {
+      if (c.path === TOOLS_PATH) return json(200, { toolkit: "slack", no_auth: false, tools: SLACK });
+      if (c.method === "PUT" && c.path === "/v2/settings/mcp-servers/slack/composio") return json(200, { server: saved({ name: "slack", source: "composio", toolkit: "slack" }) });
+      return undefined;
+    });
+    const p = await open(s.v2, { add: route("#/settings/mcp?change=slack&preset=composio&toolkit=slack&tools=SLACK_SEND_MESSAGE").add });
+    await p.type("composio-key", KEY);
+    await p.click(/^Load actions$/);
+    expect(p.input("composio-name").value).toBe("slack");
+    await p.click(/^Save$/);
+    expect(s.writes().at(-1)).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/slack/composio", body: { api_key: KEY, toolkit: "slack", tools: ["SLACK_SEND_MESSAGE"] } });
   });
 
   it("a free name stays within a server name's 32 characters: the toolkit's name is cut to leave room for its number", () => {

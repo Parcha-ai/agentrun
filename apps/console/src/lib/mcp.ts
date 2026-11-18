@@ -48,7 +48,8 @@ export const urlPresetOf = (id: string | undefined): McpPreset | undefined => MC
  *  or, with `preset=composio`, the Composio form with its toolkit and the actions to tick. A secret write the server
  *  refused the API token links here too (its refusal's `details.console_url`): the form filled with what the request held
  *  that is no secret, its `url`, the kind of credential (`auth`) and `toolkit`, so the person pastes the credential alone;
- *  `change` (from `?change=<name>`) opens that saved server's Change form instead of a new one. */
+ *  `change` (from `?change=<name>`) opens that saved server's Change form instead of a new one, or, with
+ *  `preset=composio`, the Composio form saving under that name (it replaces the saved server, never a `<name>-2`). */
 export type McpAdd = { name: string; auth?: McpAuthType; preset?: "composio" | McpPresetId; toolkit?: string; tools?: string[]; url?: string; change?: true };
 const LINK_AUTH: readonly McpAuthType[] = ["none", "bearer", "headers", "oauth", "github_app"];
 /** An address a link may fill: an http or https URL, never one with a user or password in it. */
@@ -61,7 +62,7 @@ const linkUrl = (value: string | null): string | undefined => {
   }
 };
 /** `#/settings/mcp?add=<name>[&auth=github_app | &preset=<URL preset id> | &preset=composio&toolkit=<toolkit>&tools=<A,B>]`,
- *  or `?add=<name>|change=<name>[&url=<URL>][&auth=<type>][&toolkit=<toolkit>]`. Undefined when the query asks for none;
+ *  or `?add=<name>|change=<name>[&url=<URL>][&auth=<type>][&toolkit=<toolkit>]`, or `?change=<name>&preset=composio&...`. Undefined when the query asks for none;
  *  a preset id that is none of them opens the plain form. */
 export function addOf(query: string | undefined): McpAdd | undefined {
   const q = new URLSearchParams(query ?? "");
@@ -70,9 +71,9 @@ export function addOf(query: string | undefined): McpAdd | undefined {
   if (!name || !TOOLKIT.test(name)) return undefined;
   const toolkit = q.get("toolkit") ?? "";
   const preset = q.get("preset") ?? undefined;
-  if (added !== null && preset === "composio" && TOOLKIT.test(toolkit)) {
+  if (preset === "composio" && TOOLKIT.test(toolkit)) {
     const tools = (q.get("tools") ?? "").split(",").filter((t) => /^[A-Za-z0-9_-]{1,128}$/.test(t)).slice(0, 64);
-    return { name, preset: "composio", toolkit, ...(tools.length ? { tools } : {}) };
+    return { name, preset: "composio", toolkit, ...(tools.length ? { tools } : {}), ...(added === null ? { change: true as const } : {}) };
   }
   const url = urlPresetOf(preset);
   if (added !== null && url) return { name, preset: url.id as McpPresetId };

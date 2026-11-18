@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { call, serve, withEnv } from "./support.mjs";
+import { asOwner, call, serve, withEnv } from "./support.mjs";
 
 const gate = await import("../dist/secret-writes.js");
 // The planes register their operations as their modules load: the server's own imports, as a started server has them.
@@ -17,6 +17,8 @@ await import("../dist/server.js");
 const json = { "content-type": "application/json" };
 /** A fake credential, made fresh each run: none of these is a real token. */
 const fake = (label) => `not-a-secret-${label}-${randomBytes(12).toString("hex")}`;
+/** A piece of a fake base64 key, 14 characters with both cases of letter: too short alone to look like a key. */
+const piece = () => `aZ${randomBytes(9).toString("base64url").replace(/[-_]/g, "x")}`;
 
 async function started(t) {
   withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
@@ -82,13 +84,23 @@ test("a URL with anything in it that could be a credential never reaches the lin
     "query value": `https://mcp.example.test/mcp?k=${key}`,
     path: `https://hooks.example.test/api/mcp/s/${key}/sse`,
     shaped: `https://mcp.example.test/mcp/ghp_${"a".repeat(36)}`,
+    // A base64 key holds "/" and "+": split across path segments, or read as two words once a query's "+" is decoded,
+    // each piece is too short to look like a key alone.
+    "path spanning segments": `https://mcp.example.test/mcp/${piece()}/${piece()}/sse`,
+    "query value with a plus": `https://mcp.example.test/mcp?k=${piece()}+${piece()}`,
+    // A per-person subdomain can be the key.
+    host: `https://${randomBytes(12).toString("hex")}.mcp.example.test/mcp`,
   };
   for (const [what, url] of Object.entries(urls)) {
     const res = await token("PUT", "/settings/mcp-servers/leaky", { url, auth: { type: "bearer", token: fake("bearer") } });
     const link = refusedWithLink(res, origin);
     assert.deepEqual(queryOf(link), { add: "leaky", auth: "bearer" }, `${what}: ${link}`);
-    for (const part of [secret, key, "ghp_"]) assert.ok(!link.includes(part), `${what}: the link holds none of the URL: ${link}`);
+    for (const part of [secret, key, "ghp_", "example.test"]) assert.ok(!link.includes(part) && !link.includes(encodeURIComponent(part)), `${what}: the link holds none of the URL: ${link}`);
   }
+  // A URL of plain words and version numbers is still filled.
+  const plain = "https://mcp.example.test/v1/mcp/stream/events?transport=streamable";
+  const res = await token("PUT", "/settings/mcp-servers/plain", { url: plain, auth: { type: "bearer", token: fake("bearer") } });
+  assert.deepEqual(queryOf(refusedWithLink(res, origin)), { add: "plain", url: plain, auth: "bearer" });
 });
 
 test("a token's change of a saved server's credential links to that server's Change form, not to a new one", async (t) => {
@@ -101,11 +113,35 @@ test("a token's change of a saved server's credential links to that server's Cha
   assert.deepEqual(queryOf(refusedWithLink(res, origin)), { change: "docs", url: open.url, auth: "bearer" });
 });
 
+test("a token's save that would drop a saved server's credential links to its Change form on none; one of a kind the form can't fill links to the page alone", async (t) => {
+  const { server, origin, token } = await started(t);
+  const secret = fake("bearer");
+  const mcp = await startFakeMcp({ token: secret });
+  t.after(() => mcp.close());
+  const saved = await asOwner(server)("PUT", "/settings/mcp-servers/docs", { url: mcp.url, auth: { type: "bearer", token: secret } });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  // No auth is none (the save drops the token): the link says none, so the Change form never falls back to bearer.
+  const dropped = await token("PUT", "/settings/mcp-servers/docs", { url: mcp.url });
+  assert.deepEqual(queryOf(refusedWithLink(dropped, origin)), { change: "docs", url: mcp.url, auth: "none" });
+  const perRun = await token("PUT", "/settings/mcp-servers/docs", { url: mcp.url, auth: { type: "per_run" } });
+  assert.equal(refusedWithLink(perRun, origin), `${origin}/#/settings/mcp`);
+});
+
+test("a token's Composio save over a saved server's name links to replace it (change), never to add a server beside it", async (t) => {
+  const { origin, token } = await started(t);
+  const open = await startFakeMcp();
+  t.after(() => open.close());
+  assert.equal((await token("PUT", "/settings/mcp-servers/slack", { url: open.url, auth: { type: "none" } })).status, 200);
+  const res = await token("PUT", "/settings/mcp-servers/slack/composio", { api_key: fake("composio"), toolkit: "slack", tools: ["SLACK_SEND_MESSAGE"] });
+  assert.deepEqual(queryOf(refusedWithLink(res, origin)), { change: "slack", preset: "composio", toolkit: "slack", tools: "SLACK_SEND_MESSAGE" });
+});
+
 test("every other secret write links to its own page: a trigger's, the webhook's, an agent's sign-ins, each settings page", async (t) => {
   const { origin, token } = await started(t);
   const pages = [
     ["POST", "/triggers/trg_abc/secret", undefined, "/#/triggers/trg_abc"],
     ["DELETE", "/settings/webhook", undefined, "/#/settings/webhook"],
+    ["POST", "/settings/webhook/secret", undefined, "/#/settings/webhook"],
     ["PUT", "/settings/mcp-servers/oauth/private-hosts", { hosts: ["auth.internal.test"] }, "/#/settings/mcp"],
     ["PUT", "/settings/tool-keys/parallel", { values: { PARALLEL_API_KEY: fake("tool") } }, "/#/settings/keys"],
     ["DELETE", "/agents/triage/sign-ins/github", undefined, "/#/agents/triage"],
