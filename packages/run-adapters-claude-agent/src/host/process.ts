@@ -50,9 +50,10 @@ export interface SessionMachine {
   readonly root: string;
   readonly dirs: Readonly<Record<CacheDir, string>>;
   readonly signal: AbortSignal;
-  /** The model proxy's base URL (loopback), and the per-session key it admits. */
-  readonly modelUrl: string;
-  readonly modelKey: string;
+  /** The model proxy's base URL (loopback), and the per-session key it admits. Neither on a machine with no proxy, whose
+   *  CLI runs on a person's own login. */
+  readonly modelUrl?: string;
+  readonly modelKey?: string;
   /** What the model must hear about this machine (none locally), and its acknowledgement key. */
   readonly notes: readonly string[];
   readonly notesKey?: string;
