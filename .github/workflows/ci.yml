@@ -227,18 +227,20 @@ jobs:
       # no full-page writes (a throwaway database), and a lock wait past 1 s logged with the holder's pid and statement, so
       # a stall that is a lock says whose.
       - name: The test database's settings
+        env:
+          PGHOST: 127.0.0.1 # key-gate: loopback-rule the Postgres service container of this job, published on the runner loopback
         run: |
           for setting in "fsync = off" "full_page_writes = off" "log_lock_waits = on" "deadlock_timeout = '1s'"; do
-            psql -h 127.0.0.1 -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET ${setting}"
+            psql -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET ${setting}"
           done
-          psql -h 127.0.0.1 -v ON_ERROR_STOP=1 -tAc "SELECT pg_reload_conf()"
+          psql -v ON_ERROR_STOP=1 -tAc "SELECT pg_reload_conf()"
           # The reload reaches new connections once the server has read it: wait for it, and fail if it never does.
           for try in $(seq 1 20); do
-            [ "$(psql -h 127.0.0.1 -tAc "SHOW fsync")" = off ] && break
+            [ "$(psql -tAc "SHOW fsync")" = off ] && break
             [ "$try" = 20 ] && { echo "::error::the test database's settings were not applied"; exit 1; }
             sleep 0.5
           done
-          psql -h 127.0.0.1 -tAc "SELECT name || '=' || setting FROM pg_settings WHERE name IN ('fsync', 'full_page_writes', 'log_lock_waits', 'deadlock_timeout') ORDER BY name"
+          psql -tAc "SELECT name || '=' || setting FROM pg_settings WHERE name IN ('fsync', 'full_page_writes', 'log_lock_waits', 'deadlock_timeout') ORDER BY name"
       - uses: actions/setup-node@v4
         with:
           node-version: '24.22.3'
