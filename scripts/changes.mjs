@@ -164,7 +164,7 @@ export const bulletOf = body => body.split('\n').map((line, index) => (index ===
  * A fragment's marker, `<!-- changes/<file> -->`: the fold writes it at the end of the first line of each bullet it makes of the
  * fragment, so a section says which fragments it holds by their file names, whatever its words. A release pull request that rewrites a
  * folded bullet keeps its marker anywhere in its entry (one entry may carry several); the fold then holds that fragment as written.
- * GitHub and the website's renderer hide an HTML comment; the release notes and the Slack post take it out (`withoutMarkers`).
+ * GitHub and the website's renderer hide an HTML comment; the release notes take it out (`withoutMarkers`).
  */
 export const markerOf = file => `<!-- changes/${file} -->`;
 const marker = /[ \t]*<!-- changes\/([a-z0-9][a-z0-9-]*\.md) -->/g;
