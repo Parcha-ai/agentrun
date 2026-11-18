@@ -264,6 +264,24 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
   // The parameters an apply sent: what its "applied" title names, whatever was typed while it was under way.
   const [sentValues, setSentValues] = useState<ParameterText>({});
   const keys = useRef(keeper()).current;
+  // The agents here this template made (GET /agents, `template.id`): each is offered as Update <agent> beside Apply, which
+  // applies onto it (agent_id) in place of making another. A read that fails offers none; Apply still works.
+  const [mine, setMine] = useState<{ id: string; name: string }[]>([]);
+  useEffect(() => {
+    let live = true;
+    (async () => {
+      const found: { id: string; name: string }[] = [];
+      let cursor: string | null = null;
+      for (let page = 0; page < 20; page++) {
+        const r = await v2.listAgents({ cursor });
+        found.push(...r.agents.filter((a) => a.template?.id === t.id).map((a) => ({ id: a.agent_id, name: a.definition?.name || a.agent_id })));
+        cursor = r.next_cursor;
+        if (!cursor) break;
+      }
+      return found;
+    })().then((found) => { if (live) setMine(found); }, () => {});
+    return () => { live = false; };
+  }, [v2, t.id]);
   // Whether this page is still the one shown: an Apply that answers after the owner left never takes them anywhere.
   const shown = useRef(true);
   // Set on every setup, not only the first: StrictMode runs setup, cleanup, then setup again.
@@ -324,12 +342,14 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
     setValues((was) => ({ ...was, [key]: value }));
     if (fieldValid(p, value)) setIssues((was) => was.filter((i) => fieldOfIssue(i.field, "parameters") !== key));
   };
-  const apply = async () => {
+  // `onto`: the agent an Update applies onto (agent_id); none, a new agent.
+  const apply = async (onto?: string) => {
     if (!applies || blocked || waiting.length) return;
     setApplying(true); setIssues([]); setSaid(null);
     const sending = values;
+    const sent = onto ? { ...body, agent_id: onto } : body;
     try {
-      const done = await v2.applyTemplate(t.id, body, keys.keyFor(t.id, body));
+      const done = await v2.applyTemplate(t.id, sent, keys.keyFor(t.id, sent));
       keys.done();
       // Each trigger the apply made, read back: a schedule shows when it runs next. One that can't be read, or isn't
       // answered within TRIGGER_READ_MS, is left out (the Triggers page has it): a slow read never holds the result back.
@@ -556,6 +576,7 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
       <div className="mt-1 flex flex-wrap items-center gap-3">
         {applies ? <>
           <Button size="sm" variant="primary" onClick={() => void apply()} disabled={applying || blocked || waiting.length > 0} title={unread ? (serversError ? "The saved MCP servers couldn't be read: try again first" : "Reading the saved MCP servers…") : unpicked.length ? `Pick the server for ${unpicked.join(", ")} first` : reading ? `Reading ${reading.what}…` : undefined}>{applying ? "Applying…" : "Apply"}</Button>
+          {mine.map((a) => <Button key={a.id} size="sm" variant="outline" onClick={() => void apply(a.id)} disabled={applying || blocked || waiting.length > 0} title={`Apply this template onto ${a.name}: a new revision of it, its runs, notes and triggers kept`}>{`Update ${a.name}`}</Button>)}
           {!playground && <CodingAgentAction variant="outline" label="Set it up with an agent" disabled={blocked} prompt={runTemplatePrompt(location.origin, t, body)} playgroundHref={templatePlaygroundHref(t, body)} />}
           {waiting.map((r) => held[r.id] === "unmet"
             ? <p key={r.id} role="status" data-requirement={r.id} className="min-w-0 text-body text-warning-text">{r.unmet.before}<a href={r.unmet.href} className="font-mono text-primary-text underline-offset-2 hover:underline">{r.unmet.link}</a>{r.unmet.after}</p>

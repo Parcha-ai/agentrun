@@ -75,6 +75,12 @@ export interface TemplatePackage {
   readonly id: string;
   readonly version: string;
   readonly sha: string | null;
+  /** The parameters the apply was given, as it checked them (each left out at its default): a later fresh apply of the
+   *  same package with the same ones warns of this agent. Absent on a revision applied before they were kept. */
+  readonly parameters?: unknown;
+  /** The names of the package's triggers as this apply had them: the ones a later update may remove when the package
+   *  drops them (a trigger the owner added to the agent is never the package's). Absent before they were kept. */
+  readonly triggers?: readonly string[];
 }
 
 export interface NewRevision {

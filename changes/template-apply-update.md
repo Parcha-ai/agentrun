@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun-client, @parcha/agentrun
+kind: feature
+---
+Applying a template again can update the agent it made instead of making a second one. `POST /v2/templates/{name}/apply` takes an optional `agent_id`: the apply writes a new revision of that agent, answered 200 with the same id, and its runs and learned notes stay. The parameters and grants are checked as a fresh apply checks them. Its triggers are matched by name: one the agent has is changed in place (a feed trigger keeps the items it has seen, a webhook trigger keeps its secret, and one the owner turned off stays off), a new one is made, and one the package no longer has is removed; a trigger the owner added to the agent is left alone. An agent not made from that template is refused with 422 under `agent_id`, saying where it came from, and an unknown id is 404. A fresh apply of a template whose same parameters already made a live agent still makes one, with a `duplicate` warning naming that agent. In the console, a template that already made an agent shows "Update <agent>" next to Apply.

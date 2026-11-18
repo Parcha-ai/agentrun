@@ -4140,6 +4140,7 @@ export type ApplyTemplateBody = {
   parameters?: Record<string, unknown>;
   servers?: Record<string, string>;
   grants?: Array<string>;
+  agent_id?: string;
   overrides?: {
     model?: string;
     choice?: string;

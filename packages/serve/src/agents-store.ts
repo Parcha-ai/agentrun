@@ -62,7 +62,8 @@ export type AgentEntry = {
   version: number;
   revisions: number;
   sizes: Map<string, number>;
-  /** The template package it was applied from, as its first revision keeps it; absent or null for one made otherwise. */
+  /** The template package it was last applied from, as the newest revision an apply wrote keeps it (its first, until an
+   *  apply with agent_id updates it); absent or null for one made otherwise. */
   template?: TemplatePackage | null;
 };
 
@@ -175,7 +176,9 @@ function checkPast(definition: Json, current: number): void {
  *  and the same pins: a save after a server changed a granted tool (or monid an endpoint) is a new revision, pinned anew
  *  (that is how a person takes a server's changed tools). */
 function sameRevision(current: RevisionRow, next: NewRevision): boolean {
-  return current.kind === next.kind && canonical(current.body) === canonical(next.body) && canonical(current.mcpPin ?? null) === canonical(next.mcpPin ?? null) && canonical(current.monidPin ?? null) === canonical(next.monidPin ?? null);
+  // A template's update (next.package) that changes only the package (its version, its parameters) is a new revision too.
+  return current.kind === next.kind && canonical(current.body) === canonical(next.body) && canonical(current.mcpPin ?? null) === canonical(next.mcpPin ?? null) && canonical(current.monidPin ?? null) === canonical(next.monidPin ?? null)
+    && (next.package === undefined || canonical(current.package ?? null) === canonical(next.package));
 }
 
 /** What a save's check stamps on the revision it let through: its MCP pin (the granted MCP tools as their servers listed
@@ -209,7 +212,7 @@ export async function getAgent(store: AgentsStore, id: string): Promise<AgentEnt
   const revisions = await store.agents.revisions(id); // oldest first (created_at, id)
   const at = agent.currentRevision === null ? -1 : revisions.findIndex((r) => r.id === agent.currentRevision);
   const revision = at < 0 ? null : revisions[at]!;
-  return { agent, revision, version: at < 0 ? 0 : at + 1, revisions: revisions.length, sizes: sizesOf(revision), template: revisions[0]?.package ?? null };
+  return { agent, revision, version: at < 0 ? 0 : at + 1, revisions: revisions.length, sizes: sizesOf(revision), template: revisions.findLast((r) => r.package)?.package ?? null };
 }
 
 /** Every agent here, newest first (its creation, then its id). Archived agents are left out by default. */
@@ -275,12 +278,13 @@ const EDIT_TRIES = 5;
  *  holds across every server on the store. `check` may refuse the revision before a write; it runs outside the write, so
  *  another request may move the current revision meanwhile: an edit with If-Match is then precondition_failed, and one
  *  without is built and checked again on the new current revision, so what it leaves out (skill files, harness, place, learning, cap) is never carried over from a
- *  revision it does not follow. `contract`: an edit that always makes a new revision, even one equal to the current. */
+ *  revision it does not follow. `contract`: an edit that always makes a new revision, even one equal to the current.
+ *  `template`: the package an apply with agent_id wrote it from, kept on the revision (getAgent's `template`). */
 export async function commitAgent(
   store: AgentsStore,
   read: AgentEntry,
   { definition, skills, note }: DefinitionBody,
-  { ifCurrent, check, contract = false }: { ifCurrent?: string | null; check?: SaveCheck; contract?: boolean } = {},
+  { ifCurrent, check, contract = false, template }: { ifCurrent?: string | null; check?: SaveCheck; contract?: boolean; template?: TemplatePackage } = {},
 ): Promise<AgentEntry> {
   const stale = () => new ApiError("precondition_failed", "the agent's current revision moved since the If-Match it was read at: read the agent again");
   const held = (entry: AgentEntry): AgentEntry => {
@@ -300,7 +304,9 @@ export async function commitAgent(
   if (kept.length) throw invalid(kept);
   for (let tries = 1; ; tries++) {
     if (tries > 1) entry = held((await getAgent(store, agent.id)) ?? entry);
-    const edit = editOn(entry, definition, skills, note);
+    // A template applied onto the agent (apply with agent_id) keeps its package on the revision it writes, as a create does.
+    const made = editOn(entry, definition, skills, note);
+    const edit = template ? { ...made, package: template } : made;
     const revision = stamped(edit, await check?.(edit, entry.revision));
     const base = entry.revision?.id ?? null;
     const now = held((await getAgent(store, agent.id)) ?? entry);

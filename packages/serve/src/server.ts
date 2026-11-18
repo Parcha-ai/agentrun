@@ -1399,7 +1399,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     list: (options: { archived?: boolean } = {}) => listAgents(store, options),
     create: (body: DefinitionBody, check?: SaveCheck, fresh?: { place: RevisionPlace; tools: readonly string[] }, template?: TemplatePackage) =>
       createAgent(store, body, { ...(check ? { check } : {}), ...(fresh ? { fresh } : {}), ...(template ? { template } : {}) }),
-    commit: (entry: AgentEntry, body: DefinitionBody, options: { ifCurrent?: string | null; check?: SaveCheck; contract?: boolean } = {}) => commitAgent(store, entry, body, options),
+    commit: (entry: AgentEntry, body: DefinitionBody, options: { ifCurrent?: string | null; check?: SaveCheck; contract?: boolean; template?: TemplatePackage } = {}) => commitAgent(store, entry, body, options),
     revisions: (id: string) => agentRevisions(store, id),
     revision: (agentId: string, revisionId: string) => agentRevision(store, agentId, revisionId),
     setCurrent: (entry: AgentEntry, revisionId: string) => setCurrentRevision(store, entry, revisionId),
@@ -2487,6 +2487,38 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return { entry, warnings };
   }
 
+  /** A definition edit's body made into a new revision of agent `entry`, as PUT /agents/{id}/definition makes one
+   *  (commitAgent: the definition's checks and what this host refuses of it, saveable), with what this host still lacks for
+   *  it; then its computer reconciled. `template`: the package an apply with agent_id wrote it from. */
+  async function reviseAgentOf(entry: AgentEntry, body: Json, options: { contract?: boolean; ifCurrent?: string | null; template?: TemplatePackage } = {}): Promise<{ entry: AgentEntry; warnings: InputIssue[] }> {
+    let warnings: InputIssue[] = [];
+    const check = async (revision: NewRevision, on: RevisionRow | null) => {
+      // The pins of the revision this try builds on (commitAgent's read, a retry's newer one) carry what it kept.
+      const saved = await saveable(revision, on);
+      warnings = saved.warnings;
+      return saved.stamp;
+    };
+    const edited = await agents.commit(entry, checkDefinitionBody(body, { creating: false, harnesses }), { check, ...options });
+    reconcileComputer(entry.agent.id);
+    return { entry: edited, warnings };
+  }
+
+  /** The agent an apply with agent_id writes onto: one the template `pkg` made (the package id its revisions keep), live.
+   *  None by that id is 404; one made otherwise, or from another template, is 422 under agent_id, in words that say which;
+   *  an archived one is 409 agent_archived. */
+  async function templateAgentOf(id: string, pkg: Package): Promise<AgentEntry> {
+    const entry = await needAgent(id);
+    const from = entry.template?.id;
+    if (from !== pkg.id) {
+      const message = from
+        ? `The agent ${id} was made from the ${from} template, not ${pkg.id}: apply ${from} with agent_id to update it, or apply ${pkg.id} without agent_id to make a new agent.`
+        : `The agent ${id} was not made from a template, so the ${pkg.name} template can't update it: apply without agent_id to make a new agent.`;
+      throw invalid([{ field: "agent_id", reason: "not_an_option", message }]);
+    }
+    if (entry.agent.archivedAt) throw new ApiError("agent_archived", `The agent ${id} is archived: unarchive it, then apply the ${pkg.name} template onto it again.`);
+    return entry;
+  }
+
   /** A replay's ports for agent `entry` (runner/promotion.ts askReplay, replayView): its learning folder where this server
    *  reads it, cut of the host's secrets as the learning reads cut them, and a replay run's launch made as a run's start
    *  makes one now (prepareLaunch: the agent's current revision, model, plane and learning start). */
@@ -2557,9 +2589,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  picks, then each trigger on it as POST /triggers makes one. A trigger refused undoes the apply: the triggers made
    *  before it are deleted and the agent is archived (an agent store keeps every agent), and the refusal is the answer, a 422's fields under `triggers.<i>`; a
    *  github trigger GitHub is not connected for is skipped instead, with a warning there, and one made is said there. A webhook
-   *  trigger's secret is not in the answer (the Idempotency-Key record would keep it): POST /triggers/{id}/secret makes one. */
+   *  trigger's secret is not in the answer (the Idempotency-Key record would keep it): POST /triggers/{id}/secret makes one.
+   *  With `agent_id` (an agent this template made, templateAgentOf), the same checks, then a new revision of that agent in
+   *  place of a new one (its runs and learned notes stay), and its triggers reconciled by name (below); a refused trigger
+   *  removes the ones this apply made, and the agent is not archived. A fresh apply warns of a live agent the same
+   *  package and parameters made. */
   async function applyTemplate(template: Package, body: Json) {
-    const { parameters, grants: asked, servers: picks, model: override, choice, approvals } = applyBodyOf(template, body);
+    const { parameters, grants: asked, servers: picks, model: override, choice, approvals, agentId } = applyBodyOf(template, body);
+    // With agent_id, the apply writes a new revision of that agent (one this template made) in place of making another:
+    // everything below checks the package as a fresh apply does, through the same code.
+    const onto = agentId === undefined ? undefined : await templateAgentOf(agentId, template);
     // A model choice's own keys are needed as the package's are: missing, the apply is refused and nothing is made.
     const missing = [...new Set([...template.secrets, ...(choice?.secrets ?? [])])].filter((name) => !secret(name, storedKeys));
     // Each MCP need on the saved server whose source and toolkit match (the owner's pick when several do, never a silent
@@ -2623,9 +2662,28 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (refusedTriggers.length) throw invalid(refusedTriggers);
     // POST /agents' and POST /triggers' own body limit: parameters filled in more than once can grow a package past it.
     for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
-    // The agent keeps where it came from (its first revision's package): the package's id, version and, imported, its SHA.
-    const { entry, warnings } = await createAgentOf(made.agent, { id: pkg.id, version: pkg.version, sha: pkg.origin?.sha ?? null });
+    // The agent keeps where it came from (the package on the revision the apply writes): the package's id, version and,
+    // imported, its SHA; the parameters it was given and its triggers' names, which a later apply reads (below).
+    const origin: TemplatePackage = { id: pkg.id, version: pkg.version, sha: pkg.origin?.sha ?? null, parameters, triggers: made.triggers.map((trigger) => String(trigger.name).trim()) };
+    // A fresh apply of what already made a live agent here (the same package and parameters) still makes one, and says
+    // which is there: an apply with its agent_id updates that one instead. Read before this apply's agent is made.
+    const twins: InputIssue[] = onto ? [] : (await agents.list())
+      .filter((one) => one.template?.id === pkg.id && one.template.parameters !== undefined && stable(one.template.parameters) === stable(parameters))
+      .map((one) => ({ field: "agent_id", reason: "duplicate", message: `The agent ${one.agent.id} was made from the ${pkg.name} template with these parameters, and this apply made another. To change that one instead, apply with agent_id ${one.agent.id}.` }));
+    // An update writes the package as a new revision of the agent, as an edit does (its id, name and description are the
+    // agent's own, kept from its creation); a fresh apply makes the agent as POST /agents does.
+    const { entry, warnings } = onto
+      ? await reviseAgentOf(onto, { ...made.agent, definition: Object.fromEntries(Object.entries(made.agent.definition as Json).filter(([key]) => key !== "name" && key !== "description")) }, { template: origin })
+      : await createAgentOf(made.agent, origin);
+    // An update's triggers are reconciled by name with the ones the agent has: the package's trigger of a name the agent
+    // has (of the same kind) is changed in place, keeping its id, a feed's seen items, a webhook's secret and whether the
+    // owner turned it off; a new name is made; one the package had last time and has no more is removed. A trigger the
+    // owner added to the agent is never the package's: only names its last apply recorded are removed.
+    const had = onto ? await store.triggers.list(onto.agent.id) : [];
+    const hadByName = new Map(had.map((row) => [row.name, row]));
     const ids: string[] = [];
+    // The triggers this apply made (never one it changed in place): what a refusal's undo removes.
+    const madeNow: string[] = [];
     // Each webhook trigger's signing secret, minted as it is made: handed back in the apply's first answer alone, as POST
     // /triggers hands back its own, so the owner can give it to the sender.
     const secrets: { trigger_id: string; secret: string }[] = [];
@@ -2636,9 +2694,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     try {
       for (const [i, trigger] of made.triggers.entries()) {
         if (emptyFeeds.has(i)) continue;
+        const aimed: Json = { ...trigger, target: { ...(trigger.target as Json), agent_id: entry.agent.id } };
+        const was = hadByName.get(String(trigger.name).trim());
         try {
-          const { id: madeId, secret } = await triggers.create({ ...trigger, target: { ...(trigger.target as Json), agent_id: entry.agent.id } });
+          if (was && isObject(trigger.source) && isObject(was.source) && was.source.kind === trigger.source.kind) {
+            const { enabled: _owners, ...patch } = aimed;
+            await triggers.update(was.id, patch);
+            ids.push(was.id);
+            continue;
+          }
+          // Of another kind now: a trigger's source kind is fixed, so the old one goes and the new one is made.
+          if (was) await triggers.remove(was.id);
+          const { id: madeId, secret } = await triggers.create(aimed);
           ids.push(madeId);
+          madeNow.push(madeId);
           if (secret) secrets.push({ trigger_id: madeId, secret });
         } catch (error) {
           if (error instanceof ApiError && isObject(trigger.source) && notSetUpYet(trigger.source.kind, error.code)) {
@@ -2649,8 +2718,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           throw error;
         }
       }
+      // Each trigger the package had last time and has no more (a feed it left empty is not made, so not kept either).
+      const listed = new Set(made.triggers.flatMap((trigger, i) => (emptyFeeds.has(i) ? [] : [String(trigger.name).trim()])));
+      const packaged = new Set(onto?.template?.triggers ?? []);
+      for (const row of had) if (packaged.has(row.name) && !listed.has(row.name)) await triggers.remove(row.id);
     } catch (error) {
-      for (const id of ids.reverse()) {
+      // An update's revision and the triggers it changed stand; what it made is removed. A fresh apply is undone whole.
+      for (const id of madeNow.reverse()) {
         try {
           await triggers.remove(id);
         } catch (undo) {
@@ -2659,7 +2733,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       // Archived through the trigger engine, as POST /agents/{id}/archive is: a trigger the undo could not remove is turned
       // off in that same store transaction with the reason agent_archived, never with none, and unarchive answers it.
-      await triggers.agentArchived(entry.agent.id).catch((undo: Error) => log?.(logLine("template_undo_failed", { template: pkg.name, agent: entry.agent.id, message: undo.message })));
+      if (!onto) await triggers.agentArchived(entry.agent.id).catch((undo: Error) => log?.(logLine("template_undo_failed", { template: pkg.name, agent: entry.agent.id, message: undo.message })));
       throw error;
     }
     // A pinned send whose destination parameter was not given is denied, never let go anywhere: said, by its gate name.
@@ -2688,8 +2762,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const minted = new Map(secrets.map(({ trigger_id, secret }) => [trigger_id, secret]));
     // Which saved server each MCP need runs on (null: none here, said under mcp.<toolkit>).
     const used = Object.fromEntries(mapped.map(({ need, server }) => [need.toolkit, server]));
-    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, servers: used, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...appShort] };
-    return { applied, minted };
+    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, servers: used, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...appShort, ...twins] };
+    return { applied, minted, updated: onto !== undefined };
   }
 
   /** A run create's issues told from the input this server checks (explain.ts): an agentic run's input schema in force
@@ -3670,15 +3744,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         }
         // The check above is a fast path; the store compares If-Match again inside the commit, so of two edits that read
         // the same revision exactly one lands.
-        let warnings: InputIssue[] = [];
-        const check = async (revision: NewRevision, on: RevisionRow | null) => {
-          // The pins of the revision this try builds on (commitAgent's read, a retry's newer one) carry what it kept.
-          const saved = await saveable(revision, on);
-          warnings = saved.warnings;
-          return saved.stamp;
-        };
-        const edited = await agents.commit(entry, checkDefinitionBody(contract ? { definition: body } : body, { creating: false, harnesses }), { check, contract, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
-        reconcileComputer(id);
+        const { entry: edited, warnings } = await reviseAgentOf(entry, contract ? { definition: body } : body, { contract, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
         return send(res, 200, { ...agentView(edited, linkOrigin(req), await agentExtra(edited)), warnings }, { etag: etagOf(edited) });
       }
       case "listRevisions": {
@@ -4570,13 +4636,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const answer = await idempotent(req, `/templates/${encodeURIComponent(pkg.id)}/apply`, body, async () => {
           const made = await applyTemplate(pkg, body);
           minted = made.minted;
-          return { status: 201, body: made.applied, headers: { location: `/v2/agents/${made.applied.agent_id}` } };
+          // 200 for an update of the agent agent_id named, 201 for an agent made.
+          return { status: made.updated ? 200 : 201, body: made.applied, headers: { location: `/v2/agents/${made.applied.agent_id}` } };
         });
         // Each webhook trigger's secret, to the owner's session in this first answer alone (trigger-secrets-shown.ts
         // templateApplied): the record above never held it, so a replay under the key shows none.
         const replayed = answer.headers?.["idempotent-replayed"] === "true";
         const shown = replayed ? "replay" : mayHoldSecrets(req) ? "first" : "token";
-        return send(res, answer.status, answer.status === 201 ? templateApplied(answer.body as Json, minted, shown) : answer.body, answer.headers);
+        return send(res, answer.status, answer.status === 201 || answer.status === 200 ? templateApplied(answer.body as Json, minted, shown) : answer.body, answer.headers);
       }
       case "rotateTriggerSecret":
         // A secret write: the dispatch's one check let only the owner's session this far (trigger-secrets-shown.ts).

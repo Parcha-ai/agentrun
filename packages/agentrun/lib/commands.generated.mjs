@@ -3392,7 +3392,14 @@ export const COMMANDS = [
         "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first"
       }
     ],
-    "bodyFlags": [],
+    "bodyFlags": [
+      {
+        "name": "agent_id",
+        "type": "string",
+        "required": false,
+        "description": "An agent this package made here (GET /agents `template.id` is the package's id): the apply writes a new revision of it in place of making another, answered 200 with the same id. Its runs and learned notes stay. The parameters and grants are checked as a fresh apply checks them. Its triggers are reconciled by name: one of a name it has is changed in place (its id, a feed trigger's seen items, a webhook trigger's secret and whether it is on are kept), a new name is made, and one the package's last apply onto it made that the package no longer has is removed; a trigger the owner added is left alone. An agent made otherwise, or from another package, is 422 under `agent_id`, saying which; an unknown id is 404; an archived agent is 409 agent_archived."
+      }
+    ],
     "hasBody": true,
     "bodyRequired": true,
     "bodyTypes": [
