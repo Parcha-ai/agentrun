@@ -85,12 +85,12 @@ test("a store the server it replaces is still closing (its last connection's che
   // Another process holds the store file exclusively, as a closing server's checkpoint does, for a moment.
   const holder = spawn(process.execPath, ["-e", `
     const { DatabaseSync } = require("node:sqlite");
-    const db = new DatabaseSync(process.argv[1]);
+    const db = new DatabaseSync(process.env.HELD_STORE);
     db.exec("PRAGMA locking_mode = EXCLUSIVE");
     db.exec("BEGIN EXCLUSIVE");
     process.stdout.write("held\\n");
     setTimeout(() => { db.exec("COMMIT"); db.close(); }, 500);
-  `, join(data, "store.sqlite")], { stdio: ["ignore", "pipe", "inherit"] });
+  `], { env: { ...process.env, HELD_STORE: join(data, "store.sqlite") }, stdio: ["ignore", "pipe", "inherit"] });
   const gone = new Promise((resolve) => holder.once("exit", resolve));
   t.after(async () => { if (holder.exitCode === null && holder.signalCode === null) holder.kill("SIGKILL"); await gone; });
   await new Promise((resolve) => createInterface({ input: holder.stdout }).once("line", resolve));
