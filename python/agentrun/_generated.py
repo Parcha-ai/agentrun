@@ -737,6 +737,8 @@ __all__ = [
     "RevokeRemoteConnectorResponseConnectorCapabilities",
     "RotateComposioSecretResponse",
     "RotateTriggerSecretResponse",
+    "RotateWebhookSecretResponse",
+    "RotateWebhookSecretResponseDisabled",
     "Run",
     "RunClaim",
     "RunComputer",
@@ -8518,6 +8520,21 @@ class RedeliverWebhookResponse(TypedDict):
     redelivery: bool
 
 
+class RotateWebhookSecretResponse(TypedDict):
+    configured: Literal[True]
+    url: str
+    secret: SecretMeta
+    signing: Literal["sealed", "unreadable"]
+    disabled: RotateWebhookSecretResponseDisabled | None
+    updated_at: str
+    signing_secret: str
+
+
+class RotateWebhookSecretResponseDisabled(TypedDict):
+    at: str
+    reason: str
+
+
 class SaveWebhookBody(TypedDict):
     url: str
 
@@ -8754,6 +8771,7 @@ OPERATIONS: dict[str, Operation] = {
     "listWebhookDeliveries": Operation(method="GET", path="/settings/webhook/deliveries", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getWebhook": Operation(method="GET", path="/settings/webhook", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "redeliverWebhook": Operation(method="POST", path="/settings/webhook/deliveries/{webhook_id}/redeliver", path_params=("webhook_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "rotateWebhookSecret": Operation(method="POST", path="/settings/webhook/secret", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=True, public_fields=(), tagged=False),
     "saveWebhook": Operation(method="PUT", path="/settings/webhook", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "testWebhook": Operation(method="POST", path="/settings/webhook/test", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "validateWorkflow": Operation(method="POST", path="/workflows/validate", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -9418,6 +9436,10 @@ class WebhookResource(Group):
     def redeliver(self, webhook_id: str, *, timeout: float | None = None) -> RedeliverWebhookResponse:
         """Send a message of the log again, once now, under the same webhook-id and body (POST /settings/webhook/deliveries/{webhook_id}/redeliver)."""
         return self._call("redeliverWebhook", (webhook_id,), None, None, timeout=timeout)
+
+    def rotate_secret(self, *, timeout: float | None = None) -> RotateWebhookSecretResponse:
+        """The webhook's new signing secret, shown once; the old one signs nothing from now on (POST /settings/webhook/secret). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
+        return self._call("rotateWebhookSecret", (), None, None, timeout=timeout)
 
     def save(self, body: SaveWebhookBody, *, timeout: float | None = None) -> SaveWebhookResponse:
         """Set the webhook's URL (PUT /settings/webhook)."""

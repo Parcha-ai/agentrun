@@ -191,6 +191,8 @@ export type ChatGPTSignOut = Answer<"signOutChatGPT">;
 export type Webhook = Answer<"getWebhook">;
 /** A PUT's answer: the webhook, and its secret the first time (201), shown this once. */
 export type WebhookSaved = Answer<"saveWebhook"> & { signing_secret?: string };
+/** A rotation's answer (POST /v2/settings/webhook/secret): the webhook, and its new secret, shown this once. */
+export type WebhookRotated = Answer<"rotateWebhookSecret">;
 /** One try of a message (GET .../deliveries, newest first). */
 export type WebhookAttempt = Answer<"listWebhookDeliveries">["attempts"][number];
 /** `capabilities.features.webhooks`. */

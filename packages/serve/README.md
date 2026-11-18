@@ -2283,8 +2283,11 @@ service's incoming-hook URL is a credential itself). The URL is refused when it 
 by address or by any address its name resolves to, and each try resolves the name again and dials the address it
 checked; an operator who sends to an internal receiver sets `AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` where the server starts. A `DIR/webhook.json` an earlier build left is not read: the
 server says so at its start (`condition=webhook_left_over`), and a `PUT` sets the webhook again. A new secret for the
-same URL is a `DELETE` and a `PUT`; a secret that no longer opens under the server's key (sealed under another) is
-replaced, and shown once, by the next `PUT`. The URL and its secret go live together: a `PUT` whose write the store
+same URL is `POST /v2/settings/webhook/secret` (Settings → Webhook → Rotate secret in the console), from the owner's
+signed-in session alone, as every secret write is: it answers the new secret once, as `signing_secret`, and retires the
+old one at once, so every try after it is signed with the new one, a message queued before it included. A `404` says no
+webhook is set. A secret that no longer opens under the server's key (sealed under another) is replaced, and shown
+once, by a rotation or the next `PUT`. The URL and its secret go live together: a `PUT` whose write the store
 refuses leaves the webhook as it was, and the secret it made is never used.
 
 A try that is not answered 2xx within 15 s fails; a redirect is not followed. A failed message is tried again on the

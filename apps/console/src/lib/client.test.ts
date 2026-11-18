@@ -67,6 +67,16 @@ describe("createClient", () => {
     expect(rotate.init?.credentials).toBe("same-origin");
   });
 
+  it("rotates the webhook's secret with no body at all: the route refuses any, `{}` too", async () => {
+    const { fn, calls } = fakeFetch(() => json(200, { configured: true, url: "https://hooks.example.test/…erun", signing: "sealed", secret: { name: "webhook:outbound", set: true, source: "console", changed_at: null }, disabled: null, updated_at: "2026-11-03T12:00:00.000Z", signing_secret: "whsec_fake" }));
+    const v2 = createClient({ fetch: fn });
+    await v2.rotateWebhookSecret();
+    const [rotate] = calls;
+    expect([rotate.init?.method, rotate.url]).toEqual(["POST", "/v2/settings/webhook/secret"]);
+    expect(rotate.init?.body).toBeUndefined();
+    expect(new Headers(rotate.init?.headers).get("content-type")).toBe("application/json");
+  });
+
   it("asks the timeline from its cursor and long-polls", async () => {
     const { fn, calls } = fakeFetch(() => json(200, running.body));
     const v2 = createClient({ fetch: fn });

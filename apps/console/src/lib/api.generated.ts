@@ -4783,6 +4783,21 @@ export interface operations {
       signing_secret?: string;
     };
   };
+  rotateWebhookSecret: {
+    body: never;
+    answer: {
+      configured: true;
+      url: string;
+      secret: components["SecretMeta"];
+      signing: "sealed" | "unreadable";
+      disabled: {
+        at: string;
+        reason: string;
+      } | null;
+      updated_at: string;
+      signing_secret: string;
+    };
+  };
   saveCalendar: {
     body: {
       url: string;
