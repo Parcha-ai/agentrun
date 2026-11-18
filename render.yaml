@@ -42,6 +42,11 @@ services:
       # Every runner must be given this same value.
       - key: AGENTRUN_SEAL_KEY
         generateValue: true
+      # Render's platform hasn't been shown to keep the image helper's file capabilities, so runs run as the server's
+      # user, each still a process of its own. Remove this variable to run each run as a user of its own once the
+      # platform allows it.
+      - key: AGENTRUN_RUN_USER
+        value: same
       # Every model key is optional. To add one, the recommended key: OpenRouter covers every model, Jev included.
       - key: OPENROUTER_API_KEY
         sync: false

@@ -31,6 +31,10 @@
         "AGENTRUN_PUBLIC_URL": {
           "defaultValue": "https://${{RAILWAY_PUBLIC_DOMAIN}}",
           "description": "The address people open. Its first visit asks for a setup code."
+        },
+        "AGENTRUN_RUN_USER": {
+          "defaultValue": "sam${{secret(1, \"e\")}}",
+          "description": "same: Railway's platform hasn't been shown to keep the image helper's file capabilities, so runs run as the server's user, each still a process of its own. Remove this variable to run each run as a user of its own once the platform allows it."
         }
       },
       "networking": {
