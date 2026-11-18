@@ -15,3 +15,5 @@ The direct route supports Pi, workflow model nodes (including nested learned wor
 the live port's model metadata; calls with no conversation ID use route-local cache affinity. HTTP Responses gateways
 and CLI harnesses are unsupported; configuring Particle as `AGENT_MODEL_BASE_URL` is refused with setup instructions.
 Live validation requires a key and explicit spend authorization; see the server README's Direct Particle-1 section.
+
+The Compose files (`compose.yaml`, `deploy/compose.yaml`) pass `PARTICLE_API_KEY` through to the server.

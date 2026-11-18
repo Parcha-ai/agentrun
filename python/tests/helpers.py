@@ -28,7 +28,7 @@ if str(PYTHON) not in sys.path:
     sys.path.insert(0, str(PYTHON))
 ROOT = PYTHON.parent
 SERVE = ROOT / "packages" / "serve" / "dist" / "cli.js"
-DROPPED = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENTRUN_BOXES", "PARALLEL_API_KEY"]
+DROPPED = ["AGENTRUN_BASE_URL", "AGENTRUN_API_KEY", "AGENTRUN_TOKEN", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "PARTICLE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL", "AGENTRUN_BOXES", "PARALLEL_API_KEY"]
 
 KEY = f"test-key-{secrets.token_hex(12)}"
 JSON_HEADERS = {"content-type": "application/json"}

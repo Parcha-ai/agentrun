@@ -675,7 +675,7 @@ describe("App, the no-model bar", () => {
     serve(() => ({ source: "providers", default: null, ready: false, needs: "key" }), false);
     const host = await mount("#/playground");
     await until(() => !!bar(host));
-    expect(bar(host)?.textContent).toBe("No model yet. Set OPENROUTER_API_KEY (one key gives every harness its model), or ANTHROPIC_API_KEY or OPENAI_API_KEY, and restart.");
+    expect(bar(host)?.textContent).toBe("No model yet. Set OPENROUTER_API_KEY (one key gives every harness its model), ANTHROPIC_API_KEY, OPENAI_API_KEY or PARTICLE_API_KEY, and restart.");
     expect(bar(host)?.querySelector("a")).toBeNull();
   });
 

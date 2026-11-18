@@ -90,10 +90,10 @@ this app uses your ChatGPT plan. Manage usage in your ChatGPT settings. The sign
 agents on this server with it.
 
 Or add a model key. With no `AGENT_MODEL`, the server runs a current model of the first provider it has a key for,
-Anthropic, then OpenAI, then OpenRouter: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `OPENROUTER_API_KEY` in your
-environment, or a key saved in the console's Settings → Model keys, which counts from the save on. Signed in with
-ChatGPT, pi and Codex run on the plan's model by default, key or not, unless `AGENT_MODEL` names another. Other
-commands are the server's:
+Anthropic, then OpenAI, then Particle (pi only), then OpenRouter: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`PARTICLE_API_KEY` or `OPENROUTER_API_KEY` in your environment, or a key saved in the console's Settings → Model
+keys, which counts from the save on. Signed in with ChatGPT, pi and Codex run on the plan's model by default, key or
+not, unless `AGENT_MODEL` names another. Other commands are the server's:
 `npx @parcha/agentrun import` brings in your local Claude Code, Codex and pi sessions, and
 `npx @parcha/agentrun reset-password` clears the console's password. `--data DIR` and `--port N` change where it keeps
 its data and the port it takes.

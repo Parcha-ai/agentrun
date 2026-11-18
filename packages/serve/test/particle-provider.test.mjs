@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { catalogPrice, catalogPrices, providerModels, unpricedModels } from "../dist/model.js";
 
-const env = { PARTICLE_API_KEY: "particle-test-key" };
+const env = { PARTICLE_API_KEY: "fake-test-key" };
 const user = { role: "user", content: "Look up two files.", timestamp: 0 };
 const tools = [{ name: "read_file", description: "Read a file", parameters: { type: "object", properties: { path: { type: "string" } }, required: ["path"] } }];
 const usage = { prompt_tokens: 1000, completion_tokens: 100, total_tokens: 1100, prompt_tokens_details: { cached_tokens: 800 }, completion_tokens_details: { reasoning_tokens: 60 } };
@@ -56,7 +56,7 @@ test("Particle streams native tool arguments and reasoning, then continues with 
   assert.equal(requests.length, 2);
   for (const request of requests) {
     assert.equal(request.url, "https://api.particle.ai/v1/chat/completions");
-    assert.equal(request.headers.get("authorization"), "Bearer particle-test-key");
+    assert.equal(request.headers.get("authorization"), `Bearer ${env.PARTICLE_API_KEY}`);
     assert.equal(request.body.model, "particle-1");
     assert.equal(request.body.reasoning_effort, "high");
     assert.equal(request.body.reasoning, undefined, "no OpenRouter reasoning object");
