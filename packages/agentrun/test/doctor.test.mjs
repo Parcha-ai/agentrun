@@ -346,6 +346,8 @@ test("Models: none ready fails with the console's Model keys and the gateway's v
   assert.equal(run.report.exit, 1);
   const models = run.check("models");
   assert.equal(models.status, "fail");
+  // It speaks of the model AgentRun runs: a connected native agent runs on its own sign-in.
+  assert.match(models.summary, /no agent on a model AgentRun runs can start\. A connected native agent \(Claude Code or Codex on its own sign-in\) needs none/);
   assert.ok(models.fix.some((f) => f.includes("Settings → Model keys")));
   assert.ok(models.fix.some((f) => ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_GATEWAY_IDS=bare", "AGENT_MODEL_API_KEY"].every((name) => f.includes(name))));
   const harnesses = run.check("harnesses");
@@ -401,6 +403,12 @@ test("Docker: no box warns with the reason and the fix", async () => {
   assert.match(run.check("docker").summary, /Docker does not answer here/);
   assert.match(run.check("docker").fix.join("\n"), /docker info must answer/);
   assert.equal(run.report.exit, 0);
+  // Another box ready (a remote computer): Docker's absence is info, and no install is asked for.
+  const remoteBox = { ...HEALTHY_CAPS, places: { boxes: [{ id: "docker", available: false, reason: "Docker does not answer here" }, { id: "daytona", available: true }, { id: "modal", available: false }] } };
+  const elsewhere = await doctor({ home, data, server: serverOf({ caps: { status: 200, body: remoteBox } }) });
+  assert.equal(elsewhere.check("docker").status, "info");
+  assert.match(elsewhere.check("docker").summary, /runs in daytona instead/);
+  assert.deepEqual(elsewhere.check("docker").fix, []);
   const missing = await doctor({ home, data, readToken: () => undefined, exec: execOf((command) => (command === "docker" ? { status: null, error: Object.assign(new Error("ENOENT"), { code: "ENOENT" }) } : undefined)) });
   assert.match(missing.check("docker").summary, /Docker is not installed/);
 });

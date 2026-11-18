@@ -280,7 +280,9 @@ export async function doctorOf({
             "In the console: Settings → Model keys (an Anthropic, OpenAI or OpenRouter key, or Continue with ChatGPT)",
             "Or a gateway (LiteLLM, OpenRouter, ...): restart AgentRun with AGENT_MODEL_BASE_URL=<its base URL>, AGENT_MODEL=<its model id>, AGENT_MODEL_GATEWAY_IDS=bare when it names models without a provider/ prefix, and AGENT_MODEL_API_KEY when it takes a key",
           ];
-      add("models", "Models", "fail", `No model is ready (it needs ${models.needs === "model" ? "another model" : "a model key"}): no run can start.`, { fix, docs: DOCS.models, details: { source: models.source ?? null, needs: models.needs ?? null } });
+      // models.ready is the model AgentRun runs itself; a connected native agent (Claude Code or Codex on its own sign-in)
+      // runs without it.
+      add("models", "Models", "fail", `No model is ready (it needs ${models.needs === "model" ? "another model" : "a model key"}): no agent on a model AgentRun runs can start. A connected native agent (Claude Code or Codex on its own sign-in) needs none.`, { fix, docs: DOCS.models, details: { source: models.source ?? null, needs: models.needs ?? null } });
     }
     const harnesses = Array.isArray(caps.harnesses) ? caps.harnesses : [];
     // Ready: it runs here and has a model to run a definition that names none. One that runs here with no default model
@@ -314,8 +316,12 @@ export async function doctorOf({
     if (/permission denied/i.test(why) && platform === "linux") return [`Let this user use Docker: sudo usermod -aG docker ${user}, then log in again`, "Then restart AgentRun (agentrun service restart)"];
     return [platform === "darwin" ? "Install and start Docker Desktop (or OrbStack, Colima): docker info must answer" : "Install Docker Engine and start it (https://docs.docker.com/engine/install/): docker info must answer", "Then restart AgentRun (agentrun service restart): it looks for Docker at its start"];
   };
-  const box = Array.isArray(caps?.places?.boxes) ? caps.places.boxes.find((b) => b.id === "docker") : undefined;
+  const boxes = Array.isArray(caps?.places?.boxes) ? caps.places.boxes : [];
+  const box = boxes.find((b) => b.id === "docker");
+  // Another box that is ready (Daytona, Modal, ...) runs an agent's computer without Docker: then Docker's absence is a fact.
+  const others = boxes.filter((b) => b.id !== "docker" && b.available === true).map((b) => b.id);
   if (box?.available) add("docker", "Docker", "ok", "Docker boxes are ready: an agent with a computer runs its tools in one.");
+  else if (box && others.length) add("docker", "Docker", "info", `No Docker box: ${box.reason ?? "unavailable"}. An agent that needs a computer runs in ${others.join(" or ")} instead.`, { details: { ready: others } });
   else if (box) add("docker", "Docker", "warn", `No Docker box: ${box.reason ?? "unavailable"}. An agent that needs a computer (bash, files) fails to start, and new agents run on the runner.`, { fix: dockerFix(box.reason ?? ""), docs: DOCS.docker });
   else {
     const info = exec("docker", ["info", "--format", "{{.ServerVersion}}"]);
