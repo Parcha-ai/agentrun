@@ -7,6 +7,7 @@ import { RunsList } from "@/components/RunsList";
 import { Shell } from "@/components/Shell";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Timeline } from "@/components/Timeline";
+import { UnattendedBanner } from "@/components/UnattendedWarning";
 import { failedWith, recorded, runFixture, runNames } from "@/fixtures";
 import type { ApiError, Run } from "@/lib/v2";
 
@@ -45,5 +46,14 @@ export const Errors: Story = {
     <RunError error={failedWith("escalated").run.error!} />
     <RunError title="The server refused the request" error={recorded<{ error: ApiError }>("error.definition-stale-etag").body.error} />
     <RunError title="The server refused the request" error={recorded<{ error: ApiError }>("error.run-not-found").body.error} />
+  </>),
+};
+/** A trigger's agent with tools that ask: the warning on the trigger forms and a trigger's page, with its one fix; then
+ *  the fix being saved, and a save the server refused. */
+export const TriggerToolsAsk: Story = {
+  render: () => pad(<>
+    <UnattendedBanner tools={["mcp:gmail/send_email", "mcp:github/create_issue"]} onFix={noop} />
+    <UnattendedBanner tools={["bash"]} busy onFix={noop} />
+    <UnattendedBanner tools={["mcp:gmail/send_email"]} failed="Not saved: the agent changed since this page read it. Try again." onFix={noop} />
   </>),
 };
