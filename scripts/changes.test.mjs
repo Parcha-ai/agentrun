@@ -64,7 +64,7 @@ test('a fold turns Unreleased into the version, bullets first, and opens a new U
   const result = await fold(root, '0.1.0-beta.13', '2026-10-20');
   assert.equal(result.folded, 3);
   assert.equal(await readFile(join(root, 'CHANGELOG.md'), 'utf8'),
-    '# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.13 (2026-10-20)\n\n- Existing root bullet.\n- Breaking change.\n- Core feature.\n\n## 0.1.0-beta.12, 2026-10-09\n\n- Older.\n');
+    '# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.13 (2026-10-20)\n\n**Breaking:**\n\n- Breaking change.\n\n**Changes:**\n\n- Existing root bullet.\n- Core feature.\n\n## 0.1.0-beta.12, 2026-10-09\n\n- Older.\n');
   assert.equal(await readFile(join(root, 'packages/run-adapters/CHANGELOG.md'), 'utf8'),
     '# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.13 (2026-10-20)\n\n- Existing kernel bullet.\n- Kernel fix.\n\n  - Detail.\n');
   assert.deepEqual(await loadFragments(root), []);
@@ -139,11 +139,13 @@ async function heldTree(root, git, fragments) {
   await git('add', '-A'); await git('commit', '-q', '-m', 'held package and its fragments');
 }
 const heldPath = 'packages/pi-transport/CHANGELOG.md';
+/** `heldLog` as the fold leaves it when it adds a breaking change: `breaking` under a Breaking heading, `rest` under Changes. */
+const heldBroken = (breaking, rest) => `# Changelog\n\n## [Unreleased]\n\n**Breaking:**\n\n${breaking}\n\n**Changes:**\n\n${rest}\n`;
 
 test("the fold's own change passes the Unreleased check, a held package's appended fragments included", () => repo(async (root, git) => {
   await heldTree(root, git, { 'a-feature.md': fragment('@parcha/pi-transport', 'feature', 'Held feature.'), 'b-breaking.md': fragment('@parcha/pi-transport', 'breaking', 'Held breaking.') });
   await fold(root, '0.1.0-beta.13', '2026-10-20');
-  assert.match(await readFile(join(root, heldPath), 'utf8'), /- Held entry\.\n- Held breaking\.\n- Held feature\.\n/, 'in the fold\'s order: breaking before feature');
+  assert.equal(await readFile(join(root, heldPath), 'utf8'), heldBroken('- Held breaking.', '- Held entry.\n- Held feature.'), 'the breaking change under its heading, the rest under Changes');
   assert.deepEqual(await unreleasedEdits(root, 'HEAD'), { fold: true, edited: [] });
 }));
 
@@ -164,14 +166,17 @@ test("an edit of a held package's Unreleased is still refused: appended by hand,
   await rm(join(root, 'changes/a-feature.md')); await rm(join(root, 'changes/b-breaking.md'));
   await append(`${heldLog}- Something else.\n`);
   assert.deepEqual((await unreleasedEdits(root, 'HEAD')).edited, [heldPath]);
-  // their text, in the wrong order
-  await append(`${heldLog}- Held feature.\n- Held breaking.\n`);
-  assert.deepEqual((await unreleasedEdits(root, 'HEAD')).edited, [heldPath], 'the fold writes breaking first');
-  // their text, in the fold's order, plus a line of the author's
-  await append(`${heldLog}- Held breaking.\n- Held feature.\n- And one more.\n`);
+  // their text, headless, as the fold wrote it before a breaking change got its heading
+  await append(`${heldLog}- Held breaking.\n- Held feature.\n`);
+  assert.deepEqual((await unreleasedEdits(root, 'HEAD')).edited, [heldPath], 'the fold puts a breaking change under its heading');
+  // their text, under the headings the other way round
+  await append(heldBroken('- Held feature.', '- Held entry.\n- Held breaking.'));
+  assert.deepEqual((await unreleasedEdits(root, 'HEAD')).edited, [heldPath]);
+  // their text, in the fold's shape, plus a line of the author's
+  await append(heldBroken('- Held breaking.', '- Held entry.\n- Held feature.\n- And one more.'));
   assert.deepEqual((await unreleasedEdits(root, 'HEAD')).edited, [heldPath]);
   // exactly the fold's result
-  await append(`${heldLog}- Held breaking.\n- Held feature.\n`);
+  await append(heldBroken('- Held breaking.', '- Held entry.\n- Held feature.'));
   assert.deepEqual(await unreleasedEdits(root, 'HEAD'), { fold: true, edited: [] });
 }));
 
@@ -259,6 +264,68 @@ test('a second fold of the same version appends to its section', () => repo(asyn
   assert.match(log, /- One\.\n- Two\.\n\n## 0\.1\.0-beta\.12/);
 }));
 
+const breakingHeadings = text => text.match(/^\*\*Breaking:\*\*$/gm)?.length ?? 0;
+
+test('a breaking change opens a Breaking heading at the top of its section, in the root and a package changelog, and the rest goes under Changes', () => repo(async root => {
+  await writeFile(join(root, 'packages/run-adapters/CHANGELOG.md'), '# Changelog\n\n## Unreleased\n');
+  await writeFile(join(root, 'changes/a-fix.md'), fragment('repo, @parcha/agentrun-kernel', 'fix', 'A fix.'));
+  await writeFile(join(root, 'changes/b-breaks.md'), fragment('repo, @parcha/agentrun-kernel', 'breaking', 'Breaks both.\n\n- What an upgrader does.'));
+  await fold(root, '0.1.0-beta.13', '2026-10-20');
+  assert.equal(await readFile(join(root, 'CHANGELOG.md'), 'utf8'),
+    '# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.13 (2026-10-20)\n\n**Breaking:**\n\n- Breaks both.\n\n  - What an upgrader does.\n\n**Changes:**\n\n- Existing root bullet.\n- A fix.\n\n## 0.1.0-beta.12, 2026-10-09\n\n- Older.\n');
+  assert.equal(await readFile(join(root, 'packages/run-adapters/CHANGELOG.md'), 'utf8'),
+    '# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.13 (2026-10-20)\n\n**Breaking:**\n\n- Breaks both.\n\n  - What an upgrader does.\n\n**Changes:**\n\n- A fix.\n');
+}));
+
+test('a section of breaking changes alone gets the Breaking heading and nothing else, and a later fix to it goes under a Changes heading, never under Breaking', () => repo(async root => {
+  await writeFile(join(root, 'CHANGELOG.md'), '# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.12, 2026-10-09\n\n- Older.\n');
+  await writeFile(join(root, 'changes/only.md'), fragment('repo', 'breaking', 'Only a break.'));
+  await fold(root, '0.1.0-beta.13', '2026-10-20');
+  assert.equal(await readFile(join(root, 'CHANGELOG.md'), 'utf8'),
+    '# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.13 (2026-10-20)\n\n**Breaking:**\n\n- Only a break.\n\n## 0.1.0-beta.12, 2026-10-09\n\n- Older.\n');
+  await writeFile(join(root, 'changes/then.md'), fragment('repo', 'fix', 'Then a fix.'));
+  await writeFile(join(root, 'changes/then-break.md'), fragment('repo', 'breaking', 'Then a break.'));
+  await fold(root, '0.1.0-beta.13', '2026-10-21');
+  assert.equal(await readFile(join(root, 'CHANGELOG.md'), 'utf8'),
+    '# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.13 (2026-10-20)\n\n**Breaking:**\n\n- Only a break.\n- Then a break.\n\n**Changes:**\n\n- Then a fix.\n\n## 0.1.0-beta.12, 2026-10-09\n\n- Older.\n');
+}));
+
+// A release pull request's section, as beta.44's was written: its blocks under bold headings, Breaking among them.
+const curated = version => `## ${version} (2026-10-20)\n\n**Upgrading and going back:**\n\n- Keep the data folder.\n\n**Breaking:**\n\n- Curated break.\n\n**Known issues:**\n\n- None new in this release.\n\n**Changes:**\n\n- Curated change.\n`;
+const curatedAfter = version => `## ${version} (2026-10-20)\n\n**Upgrading and going back:**\n\n- Keep the data folder.\n\n**Breaking:**\n\n- Curated break.\n- Late break.\n\n  - Detail.\n\n**Known issues:**\n\n- None new in this release.\n\n**Changes:**\n\n- Curated change.\n- Late fix.\n`;
+
+test("a fold into a release pull request's section adds a breaking change under its Breaking heading, never a second one, in the root and a package changelog", () => repo(async root => {
+  await writeFile(join(root, 'CHANGELOG.md'), `# Changelog\n\n## Unreleased\n\n${curated('0.1.0-beta.13')}\n## 0.1.0-beta.12, 2026-10-09\n\n- Older.\n`);
+  await writeFile(join(root, 'packages/run-adapters/CHANGELOG.md'), `# Changelog\n\n## Unreleased\n\n${curated('0.1.0-beta.13')}`);
+  // What a tag carries past its release pull request's fold, folded by the release workflow into the section that pull request wrote.
+  await writeFile(join(root, 'changes/late-break.md'), fragment('repo, @parcha/agentrun-kernel', 'breaking', 'Late break.\n\n- Detail.'));
+  await writeFile(join(root, 'changes/late-fix.md'), fragment('repo, @parcha/agentrun-kernel', 'fix', 'Late fix.'));
+  await fold(root, '0.1.0-beta.13', '2026-10-20', { previous: null });
+  const rootLogAfter = await readFile(join(root, 'CHANGELOG.md'), 'utf8');
+  const kernelAfter = await readFile(join(root, 'packages/run-adapters/CHANGELOG.md'), 'utf8');
+  assert.equal(rootLogAfter, `# Changelog\n\n## Unreleased\n\n${curatedAfter('0.1.0-beta.13')}\n## 0.1.0-beta.12, 2026-10-09\n\n- Older.\n`);
+  assert.equal(kernelAfter, `# Changelog\n\n## Unreleased\n\n${curatedAfter('0.1.0-beta.13')}`);
+  assert.deepEqual([breakingHeadings(rootLogAfter), breakingHeadings(kernelAfter)], [1, 1]);
+}));
+
+test("a late breaking fragment goes under a Breaking heading in its release's section, the same at the tag and on main", () => repo(async (root, git) => {
+  await taggedWithLateFragments(root, git, async () => {
+    await writeFile(join(root, 'changes/c-late-break.md'), fragment('repo, @parcha/agentrun-kernel', 'breaking', 'Late break.'));
+  });
+  const rootSection = '## 0.1.0-beta.13 (2026-10-20)\n\n**Breaking:**\n\n- Late break.\n\n**Changes:**\n\n- Existing root bullet.\n- Early.\n- Late.\n';
+  const kernelSection = '## 0.1.0-beta.13 (2026-10-20)\n\n**Breaking:**\n\n- Late break.\n\n**Changes:**\n\n- Late.\n- Late vision.\n';
+  // At the tag, as the release workflow folds it: the root's section exists, the kernel's is made.
+  await fold(root, '0.1.0-beta.13', '2026-10-20');
+  assert.equal(sectionOf(await readFile(join(root, 'CHANGELOG.md'), 'utf8'), '0.1.0-beta.13'), rootSection);
+  assert.equal(sectionOf(await readFile(join(root, 'packages/run-adapters/CHANGELOG.md'), 'utf8'), '0.1.0-beta.13'), kernelSection);
+  // On main, the next release's fold puts the same fragments into the same sections.
+  await git('checkout', '-q', 'HEAD', '--', '.');
+  const next = await fold(root, '0.1.0-beta.14', '2026-10-25');
+  assert.deepEqual(next.shipped, ['a-late.md', 'b-late-vision.md', 'c-late-break.md']);
+  assert.equal(sectionOf(await readFile(join(root, 'CHANGELOG.md'), 'utf8'), '0.1.0-beta.13'), rootSection);
+  assert.equal(sectionOf(await readFile(join(root, 'packages/run-adapters/CHANGELOG.md'), 'utf8'), '0.1.0-beta.13'), kernelSection);
+}));
+
 // A release's tag carries the fragments of pull requests that merged after its release pull request's fold. The release workflow folds
 // them at the tag into the archives; the next release's fold puts them into that release's section on main.
 const sectionOf = (text, version) => text.slice(text.indexOf(`## ${version}`)).split(/\n(?=## )/)[0];
@@ -339,7 +406,7 @@ test("a held package's late fragment joins its Unreleased in the fold's order wi
   await commitAll(git, 'a held fragment after the tag');
   const { stdout: base } = await git('rev-parse', 'HEAD');
   await fold(root, '0.1.0-beta.14', '2026-10-25');
-  assert.equal(await readFile(join(root, heldPath), 'utf8'), `${heldLog}- Held next.\n- Held late.\n`, 'breaking before fix, one run');
+  assert.equal(await readFile(join(root, heldPath), 'utf8'), heldBroken('- Held next.', '- Held entry.\n- Held late.'), 'the breaking one under its heading, the fix with the rest');
   assert.deepEqual(await unreleasedEdits(root, base.trim()), { fold: true, edited: [] });
 }));
 
