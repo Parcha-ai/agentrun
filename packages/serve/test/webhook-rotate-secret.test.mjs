@@ -2,7 +2,8 @@
 // here and shown once, to the owner's signed-in session alone, as the console's Settings → Webhook asks for it. The old
 // secret signs nothing from then on: a test send, and a message that was queued before the rotation and tried after it,
 // are signed with the new one. The API token is refused it in the secret-write words, the old secret kept; a rotation with
-// no webhook set is refused, and so is one with a body.
+// no webhook set is refused, and so is one with a body; one whose write fails leaves the old secret signing, after a
+// restart too.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
@@ -113,4 +114,35 @@ test("a message queued before the rotation and tried again after it is signed wi
   assert.ok(verifies(second, after), "the try after it is signed with the new one");
   assert.ok(!verifies(first, after), "and not with the old one");
   assert.deepEqual(webhooks.signingSecrets().sort(), [first, second].sort(), "the old one is kept retired, still cut from what runs say");
+});
+
+test("a rotation whose setting was put but not flushed fails, and the old secret still signs, after a restart too", async (t) => {
+  const hook = await receiver(t);
+  const dir = await scratch(t);
+  // Once armed, the store takes the next put of the webhook's setting (the one naming the new secret), then fails the
+  // flush after it, once: the write's outcome is unknown, and the setting is in the store.
+  let armed = false;
+  let failFlush = false;
+  const flaky = (store) => new Proxy(store, {
+    get: (target, name) => {
+      if (name === "flush") return async () => { if (failFlush) { failFlush = false; throw new Error("the store could not flush"); } return target.flush(); };
+      if (name === "settings") return { ...target.settings, put: async (key, value) => { await target.settings.put(key, value); if (armed && key === "webhook-out") (armed = false, failFlush = true); } };
+      const value = Reflect.get(target, name, target);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const on = await webhookOn(t, dir, { wrap: flaky });
+  const webhooks = await on.open();
+  const { secret: first } = await webhooks.save({ url: hook.url });
+  armed = true;
+  await assert.rejects(webhooks.rotate(), /the store could not flush/);
+  assert.equal(webhooks.view().signing, "sealed");
+  assert.equal((await webhooks.test()).status_code, 200);
+  assert.ok(verifies(first, hook.got[0]), "the failed rotation left the old secret signing");
+  await webhooks.close();
+
+  const restarted = await on.open();
+  assert.equal(restarted.view().signing, "sealed", "after a restart the setting names a secret that opens here");
+  assert.equal((await restarted.test()).status_code, 200);
+  assert.ok(verifies(first, hook.got[1]), "and it is still the old one, the one the receiver holds");
 });

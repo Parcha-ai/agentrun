@@ -294,8 +294,8 @@ export class Webhooks {
    *  it was set, and off if a 410 turned it off). The secret it replaces goes at once, retired (still cut from what a run
    *  says): every try from then on, of a message queued before it too, is signed with the new one, since a try signs with
    *  the secret the setting names when it sends (tryOnce). A try already sending was signed with the old one. As a PUT
-   *  does, the new secret is sealed under a scope of its own before the setting that names it is written, and a setting
-   *  the store refuses leaves the old secret signing. */
+   *  does, the new secret is sealed under a scope of its own before the setting that names it is written, and a write
+   *  that fails leaves the old secret signing, after a restart too. */
   rotate(): Promise<{ view: ReturnType<Webhooks["view"]>; secret: string }> {
     return this.change(async () => {
       const was = this.config;
@@ -305,7 +305,12 @@ export class Webhooks {
       try {
         await this.write({ ...was, secret_at: new Date().toISOString(), secret_scope: scope });
       } catch (error) {
-        await this.secrets.remove(scope).catch((removal: Error) => this.say({ condition: "secret_unremoved", error: removal.message }));
+        // The store may hold the setting that names the new secret (a put that landed, its flush failed). The old setting
+        // goes back first, and only once it is durable does the new secret go: the store never names a secret that is gone.
+        // If it can't go back, the new secret stays, and the next start removes whichever secret the setting does not name
+        // (load).
+        const restored = await this.write(was).then(() => true, () => false);
+        if (restored) await this.secrets.remove(scope).catch((removal: Error) => this.say({ condition: "secret_unremoved", error: removal.message }));
         throw error;
       }
       await this.secrets.remove(was.secret_scope).catch((removal: Error) => this.say({ condition: "secret_unremoved", error: removal.message }));
