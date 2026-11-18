@@ -38,14 +38,17 @@ async function storeOf(t, now) {
   return store;
 }
 
-test("a minted token's row names the runner and incarnation that minted it, or none for the server's own process", async (t) => {
+test("a minted token's row names the runner and incarnation that minted it, or none for the server's own process, and the run its machine is for, or none", async (t) => {
   const store = await storeOf(t, () => T);
-  await store.mintedTokens.mint({ machine: "m-runner", tokenSha256: "b".repeat(64), kind: "desktop", os: "linux", arch: "amd64", expiresAt: FAR, runner: "runner-a", incarnation: "inc-1" });
+  await store.mintedTokens.mint({ machine: "m-runner", tokenSha256: "b".repeat(64), kind: "desktop", os: "linux", arch: "amd64", expiresAt: FAR, runner: "runner-a", incarnation: "inc-1", run: "run-1" });
   await store.mintedTokens.mint({ machine: "m-server", tokenSha256: "c".repeat(64), kind: "desktop", os: "linux", arch: "amd64", expiresAt: FAR });
   const runner = await store.mintedTokens.byToken("b".repeat(64));
-  assert.deepEqual([runner?.machine, runner?.runner, runner?.incarnation], ["m-runner", "runner-a", "inc-1"]);
+  assert.deepEqual([runner?.machine, runner?.runner, runner?.incarnation, runner?.run], ["m-runner", "runner-a", "inc-1", "run-1"]);
   const server = await store.mintedTokens.get("m-server");
-  assert.deepEqual([server?.runner, server?.incarnation], [null, null]);
+  assert.deepEqual([server?.runner, server?.incarnation, server?.run], [null, null, null]);
+  // A mint again for the machine replaces its run with the new mint's.
+  await store.mintedTokens.mint({ machine: "m-runner", tokenSha256: "d".repeat(64), kind: "desktop", os: "linux", arch: "amd64", expiresAt: FAR, runner: "runner-a", incarnation: "inc-1" });
+  assert.equal((await store.mintedTokens.get("m-runner"))?.run, null);
 });
 
 test("a runner's relay row: put, renewed only under its incarnation, read and listed, replaced by a restart, and removed only under its incarnation", async (t) => {
@@ -80,7 +83,7 @@ test("SQLite: a version 12 store comes to 13 at its server's open, never at a ru
   const old = new DatabaseSync(file);
   try {
     old.exec("DROP TABLE runner_relays");
-    for (const column of ["runner", "incarnation"]) old.exec(`ALTER TABLE minted_tokens DROP COLUMN ${column}`);
+    for (const column of ["runner", "incarnation", "run"]) old.exec(`ALTER TABLE minted_tokens DROP COLUMN ${column}`);
     old.exec("UPDATE store_meta SET schema_version = 12 WHERE singleton = 1");
     old.prepare("INSERT INTO minted_tokens (machine, token_sha256, kind, os, arch, expires_at, revoked_at, created_at) VALUES (?, ?, ?, ?, ?, ?, NULL, ?)").run("m-old", SHA, "desktop", "linux", "amd64", FAR, T);
   } finally {
@@ -106,9 +109,9 @@ test("SQLite: a version 12 store comes to 13 at its server's open, never at a ru
   try {
     const after = read();
     assert.deepEqual([after.version, after.relays], [SCHEMA_VERSION, 1]);
-    assert.deepEqual(after.minted.slice(-2), ["runner", "incarnation"]);
+    assert.deepEqual(after.minted.slice(-3), ["runner", "incarnation", "run"]);
     const row = await store.mintedTokens.byToken(SHA);
-    assert.deepEqual([row?.machine, row?.runner, row?.incarnation], ["m-old", null, null], "the earlier release's token is the server's own");
+    assert.deepEqual([row?.machine, row?.runner, row?.incarnation, row?.run], ["m-old", null, null, null], "the earlier release's token is the server's own, of no run");
   } finally {
     await store.close();
   }
@@ -140,5 +143,5 @@ test("Postgres: a store at 0017 takes 0018, its minted rows the server's own", p
   assert.ok(migrationsIn().some((m) => m.version === 18), "0018 ships");
   assert.equal(await tables(), 1);
   const row = await store.mintedTokens.byToken(SHA);
-  assert.deepEqual([row?.machine, row?.runner, row?.incarnation], ["m-old", null, null], "the earlier release's token is the server's own");
+  assert.deepEqual([row?.machine, row?.runner, row?.incarnation, row?.run], ["m-old", null, null, null], "the earlier release's token is the server's own, of no run");
 });

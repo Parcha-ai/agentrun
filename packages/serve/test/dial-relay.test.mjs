@@ -45,7 +45,8 @@ const FIX = "start the image with the server options alone, without server-and-r
 const DIAL_APART = `no run on this server can use Faux dial: its machines dial this server, and its runner runs in a process of its own, with no attach hub to take their socket: ${FIX}`;
 /** The hello a minted desktop's machine says, as faux-dial's does. */
 const HELLO = { protocol: "0.2", version: "test", os: "linux", kind: "desktop", arch: "amd64", groups: ["screen", "input.pointer", "input.keys"], screen: { width: 1, height: 1, scale: 1 } };
-const MINT = () => ({ kind: "desktop", os: "linux", arch: "amd64", expiresAt: new Date(Date.now() + 3_600_000) });
+/** A mint as a dial provider's create makes one, for a computer of run `run` (its agentrun.run label) where given. */
+const MINT = (run) => ({ kind: "desktop", os: "linux", arch: "amd64", expiresAt: new Date(Date.now() + 3_600_000), ...(run ? { run } : {}) });
 const FAUX_DIAL_ENTRY = () => fauxComputers().kinds.PROVIDERS.find((one) => one.id === "faux-dial");
 
 /** Every row of provider `id` in GET /v2/computers' kinds. */
@@ -110,7 +111,7 @@ test("two processes: a server with --no-runner and a runner apart with the serve
   const tools = JSON.stringify(rows);
   assert.ok(!/computer_unavailable|did not dial|no attach hub/.test(tools), `no computer call was refused: ${tools.slice(0, 2_000)}`);
   // The server relayed the machine's socket and the runner's hub took it; neither side's output carries its token.
-  assert.match(server.said(), /machine_relayed/, "the server relayed the machine's dial");
+  assert.match(server.said(), new RegExp(`event=machine_relayed run=${run.body.run_id} machine=faux-dial-`), "the server relayed the machine's dial, its line naming the run");
   assert.match(runner.said.err, /machine_attached/, "the runner's hub took the machine");
   assert.doesNotMatch(`${server.said()}${runner.said.out}${runner.said.err}`, MINTED, "no machine token in either process's output");
 });
@@ -200,10 +201,10 @@ function machine(address, token, { maxPayload = MAX_LINE_BYTES, headers = {} } =
   return { ws, texts, opened, closed };
 }
 
-/** A token minted for `runner` in `incarnation` into `store`, as that runner's attach routes mint one. */
-async function mintedFor(store, runner, incarnation, name = `m-${randomBytes(4).toString("hex")}`) {
+/** A token minted for `runner` in `incarnation` into `store`, as that runner's attach routes mint one (for run `run`). */
+async function mintedFor(store, runner, incarnation, name = `m-${randomBytes(4).toString("hex")}`, run = undefined) {
   const routes = createAttachRoutes({ store, hub: new AttachHub(), machinesOnly: true, owner: { runner, incarnation } });
-  return { name, token: await routes.machineTokens.mint(name, MINT()) };
+  return { name, token: await routes.machineTokens.mint(name, MINT(run)) };
 }
 
 /** A stand-in runner listener on loopback, recorded where `runner` answers: `onSocket` is given each socket it takes. */
@@ -255,18 +256,20 @@ test("a close on either side of a relayed socket closes the other: the machine's
   assert.equal(closed?.code, 4401, `the machine's socket closes with the runner's code: ${JSON.stringify(closed)}`);
 });
 
-test("a dial whose runner is gone (its relay closed), whose listener does not answer, or which restarted since is answered 503 in words naming the machine, never a hang, and the provider's wait ends in words", { timeout: 60_000 }, async (t) => {
-  const { data, address } = await relayServer(t);
+test("a dial whose runner is gone (its relay closed), whose listener does not answer, or which restarted since is answered 503 in words naming the run (its machine after), never a hang, and the provider's wait ends in words", { timeout: 60_000 }, async (t) => {
+  const { data, lines, address } = await relayServer(t);
   const side = await runnerSide(t, data);
   const { startRunnerRelay } = await relayModule();
 
   // Gone: its relay closed, its row with it.
   const gone = await startRunnerRelay({ store: side.store, sealKey: side.seal.key, runner: "runner-gone", env: { AGENTRUN_PUBLIC_URL: address } });
-  const left = await gone.dial.tokens.mint("m-gone", MINT());
+  const left = await gone.dial.tokens.mint("m-gone", MINT("run-gone"));
   await gone.close();
   const refusedGone = await Promise.race([machine(address, left).opened, sleep(10_000).then(() => "hung")]);
   assert.equal(refusedGone.status, 503, JSON.stringify(refusedGone));
-  assert.match(refusedGone.body, /^a dial for machine m-gone: runner runner-gone, which made it, is not running now/);
+  assert.match(refusedGone.body, /^a dial for run run-gone \(machine m-gone\): runner runner-gone, which made it, is not running now/);
+  await until(async () => lines.find((line) => line.includes("machine_relay_refused") && line.includes("m-gone")), Boolean, "the server's refusal line");
+  assert.match(lines.find((line) => line.includes("machine_relay_refused") && line.includes("m-gone")), /"a dial for run run-gone \(machine m-gone\): runner runner-gone, which made it, is not running now/, "the server's line says the run too");
 
   // Not answering: its row names a port nothing listens on (a runner killed with no close).
   const dead = createServer();
@@ -274,30 +277,35 @@ test("a dial whose runner is gone (its relay closed), whose listener does not an
   const port = dead.address().port;
   await new Promise((resolve) => dead.close(resolve));
   await side.store.runnerRelays.put({ runner: "runner-dead", incarnation: "inc-dead", host: "127.0.0.1", port });
-  const { token: deadToken } = await mintedFor(side.store, "runner-dead", "inc-dead", "m-dead");
+  const { token: deadToken } = await mintedFor(side.store, "runner-dead", "inc-dead", "m-dead", "run-dead");
   const refusedDead = await Promise.race([machine(address, deadToken).opened, sleep(15_000).then(() => "hung")]);
   assert.equal(refusedDead.status, 503, JSON.stringify(refusedDead));
-  assert.match(refusedDead.body, /^a dial for machine m-dead: runner runner-dead, which made it, did not answer at 127\.0\.0\.1:\d+/);
+  assert.match(refusedDead.body, /^a dial for run run-dead \(machine m-dead\): runner runner-dead, which made it, did not answer at 127\.0\.0\.1:\d+/);
+  // A machine of no run (its create named none) is named by itself.
+  const { token: noRunToken } = await mintedFor(side.store, "runner-dead", "inc-dead", "m-no-run");
+  const refusedNoRun = await Promise.race([machine(address, noRunToken).opened, sleep(15_000).then(() => "hung")]);
+  assert.equal(refusedNoRun.status, 503, JSON.stringify(refusedNoRun));
+  assert.match(refusedNoRun.body, /^a dial for machine m-no-run: runner runner-dead, which made it, did not answer at /);
 
   // Restarted: the same runner's name under a new incarnation; the old machine's re-dial is refused, the new one's lands.
   // The earlier process's listener still up (it has not noticed): only its row's incarnation tells the server.
   const before = await startRunnerRelay({ store: side.store, sealKey: side.seal.key, runner: "runner-r", env: { AGENTRUN_PUBLIC_URL: address } });
   t.after(() => before.close());
-  const old = await before.dial.tokens.mint("m-old", MINT());
+  const old = await before.dial.tokens.mint("m-old", MINT("run-old"));
   const { relay: after } = await relayOf(t, side, address, "runner-r");
   assert.notEqual(after.incarnation, before.incarnation);
   const refusedOld = await Promise.race([machine(address, old).opened, sleep(10_000).then(() => "hung")]);
   assert.equal(refusedOld.status, 503, JSON.stringify(refusedOld));
-  assert.match(refusedOld.body, /^a dial for machine m-old: runner runner-r, which made it, restarted since/);
+  assert.match(refusedOld.body, /^a dial for run run-old \(machine m-old\): runner runner-r, which made it, restarted since/);
   const fresh = machine(address, await after.dial.tokens.mint("m-new", MINT()));
   assert.equal(await fresh.opened, true, "a fresh token of the runner's new incarnation lands");
   fresh.ws.close();
 
   // The provider's wait: its machine refused, the launch ends in words, naming no token.
   const routes = createAttachRoutes({ store: side.store, hub: new AttachHub(), machinesOnly: true, owner: { runner: "runner-dead", incarnation: "inc-dead" } });
-  const waited = await fauxComputers().launch(FAUX_DIAL_ENTRY(), { kind: "desktop", keys: {} }, { dial: { url: address, tokens: routes.machineTokens, hub: new AttachHub() } }).then(() => undefined, (error) => error);
+  const waited = await fauxComputers().launch(FAUX_DIAL_ENTRY(), { kind: "desktop", keys: {}, run: "run-wait" }, { dial: { url: address, tokens: routes.machineTokens, hub: new AttachHub() } }).then(() => undefined, (error) => error);
   assert.ok(waited instanceof Error, "the launch fails");
-  assert.match(waited.message, /^the faux dial machine faux-dial-[0-9a-f]+'s dial to http:\/\/127\.0\.0\.1:\d+ was refused: HTTP 503: a dial for machine faux-dial-[0-9a-f]+: runner runner-dead, which made it, did not answer at /);
+  assert.match(waited.message, /^the faux dial machine faux-dial-[0-9a-f]+'s dial to http:\/\/127\.0\.0\.1:\d+ was refused: HTTP 503: a dial for run run-wait \(machine faux-dial-[0-9a-f]+\): runner runner-dead, which made it, did not answer at /);
   assert.doesNotMatch(waited.message, MINTED);
 });
 
@@ -349,14 +357,14 @@ test("the runner's attach listener refuses, with the server's proof, a token who
   assert.equal(await proven(await relay.dial.tokens.mint("m-own", MINT())), 101, "its own token opens it");
 });
 
-test("no dial token goes into a log line or an error on either side: the server's and the runner's lines and every refusal say the machine, never its token", { timeout: 60_000 }, async (t) => {
+test("no dial token goes into a log line or an error on either side: the server's and the runner's lines and every refusal say the run and its machine, never its token", { timeout: 60_000 }, async (t) => {
   const { data, lines, address } = await relayServer(t);
   const side = await runnerSide(t, data);
   const { relay, lines: relayLines } = await relayOf(t, side, address);
   const tokens = [];
   const said = [];
   const mint = async (name) => {
-    const token = await relay.dial.tokens.mint(name, MINT());
+    const token = await relay.dial.tokens.mint(name, MINT(`run-of-${name}`));
     tokens.push(token);
     return token;
   };
@@ -377,7 +385,8 @@ test("no dial token goes into a log line or an error on either side: the server'
   said.push(gone.body);
   await sleep(200);
   const all = [...lines, ...relayLines, ...side.warned, ...said].join("\n");
-  assert.ok(all.includes("m-said-3"), `the words name the machine: ${all}`);
+  assert.ok(all.includes("a dial for run run-of-m-said-3 (machine m-said-3)"), `the words name the run, then the machine: ${all}`);
+  assert.ok([...lines].join("\n").includes("a dial for run run-of-m-said-3"), `the server's line names the run: ${lines.join("\n")}`);
   for (const token of tokens) {
     assert.ok(!all.includes(token), `a token in a line: ${all}`);
     assert.ok(!all.includes(sha256Hex(token)), `a token's hash in a line: ${all}`);

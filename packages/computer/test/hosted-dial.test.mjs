@@ -62,6 +62,17 @@ test("a dial create boots the machine with its env, runs nothing in it, and read
 	assert.deepEqual(fake.live(), []);
 });
 
+test("a dial create's mint names the run its labels name (agentrun.run), and none for a computer of no run", async () => {
+	const { fake, provider, tokens } = setup();
+	const ofRun = made(await create(provider, { ...SPEC, labels: { "agentrun.run": "run-7", "agentrun.epoch": "1" } }));
+	const runToken = fake.calls.filter(([what]) => what === "create").at(-1)[1].boot.env.AGENTRUN_ATTACH_TOKEN;
+	assert.equal(tokens.check(runToken)?.mint.run, "run-7", "the token's mint names its run");
+	const ofNone = made(await create(provider));
+	const noneToken = fake.calls.filter(([what]) => what === "create").at(-1)[1].boot.env.AGENTRUN_ATTACH_TOKEN;
+	assert.equal(tokens.check(noneToken)?.mint.run, undefined, "a computer of no run names none");
+	for (const ref of [ofRun, ofNone]) made(await provider.release(ref, "delete"));
+});
+
 test("a release of a machine gone already revokes its token and closes its socket", async () => {
 	const { fake, provider, hub, tokens } = setup();
 	const ref = made(await create(provider));
