@@ -7,7 +7,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { LABEL, UNIT, INSTALL_COMMAND, managerOf, plistArgs, plistEnv, plistText, serviceOf, systemdWord, systemdWords, unitArgs, unitEnv, unitText } from "../lib/service.mjs";
+import { LABEL, UNIT, INSTALL_COMMAND, canOpen, launchOpener, managerOf, plistArgs, plistEnv, plistText, serviceOf, systemdWord, systemdWords, unitArgs, unitEnv, unitText } from "../lib/service.mjs";
 import { removeAtEnd } from "./support.mjs";
 
 const PACKAGE = new URL("..", import.meta.url).pathname;
@@ -163,7 +163,7 @@ test("service install writes the unit for the installer's command, starts it, wa
   assert.match(unit, /^Environment=PATH=\/usr\/local\/bin:\/usr\/bin$/m);
   assert.ok(existsSync(join(home, ".agentrun", "logs")));
   assert.deepEqual(calls.filter((call) => call.startsWith("systemctl")), ["systemctl --user show-environment", "systemctl --user daemon-reload", `systemctl --user enable ${UNIT}`, `systemctl --user restart ${UNIT}`]);
-  assert.deepEqual(fetched, ["http://127.0.0.1:7345/v2/health"]);
+  assert.deepEqual(fetched, ["http://127.0.0.1:7345/v2/health", "http://127.0.0.1:7345/v2/auth/session"], "once it answers, whether it has an owner yet");
   const said = out.join("");
   assert.match(said, /AgentRun is running at http:\/\/127\.0\.0\.1:7345\/ \(systemd --user agentrun\.service\)/);
   assert.match(said, /sudo loginctl enable-linger a/);
@@ -172,6 +172,152 @@ test("service install writes the unit for the installer's command, starts it, wa
   const again = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, exec, io: status.io, fail, get });
   assert.equal(await again.status(), 0);
   assert.match(status.out.join(""), /Service: systemd --user agentrun\.service, active \(running\), pid 7\nConsole: http:\/\/127\.0\.0\.1:7345\/\nHealth: ok/);
+});
+
+/** A server with no owner yet behind linuxHome's fake systemd: /health ok, /auth/session as `session`, and POST
+ *  /setup/code answering `printed` (a printed code is appended to the log as the server does). */
+function setupHome({ session = { accounts: true, password_set: false, signed_in: false, setup_code: true }, printed = false, line = true } = {}) {
+  const box = linuxHome();
+  const log = join(box.home, ".agentrun", "logs", "agentrun.log");
+  mkdirSync(join(box.home, ".agentrun", "logs"), { recursive: true });
+  writeFileSync(log, line ? "AgentRun is running at https://box.example.test/\nSet up this server: https://box.example.test/setup#code=OLDCODE1 (or paste AGENTRUN_TOKEN)\n" : "AgentRun is running at https://box.example.test/\n");
+  const asked = [];
+  const answer = (body) => ({ ok: true, status: 200, json: async () => body });
+  box.get = async (url, init = {}) => {
+    asked.push(`${init.method ?? "GET"} ${new URL(url).pathname}`);
+    if (url.endsWith("/health")) return answer({ status: "ok" });
+    if (url.endsWith("/auth/session")) return answer(session);
+    if (url.endsWith("/setup/code")) {
+      if (printed) writeFileSync(log, `${readFileSync(log, "utf8")}Set up this server: https://box.example.test/setup#code=NEWCODE2 (or paste AGENTRUN_TOKEN)\n`);
+      return answer({ printed, expires_at: "2026-11-18T12:30:00.000Z" });
+    }
+    return { ok: false, status: 404, json: async () => ({}) };
+  };
+  // The opener is launched, never run through exec: exec waits for its exit, and an opener can stay until the browser closes.
+  const run = box.exec;
+  box.exec = (command, args, options) => {
+    if (["open", "xdg-open"].includes(command)) throw new Error(`${command} went through exec, which waits for the browser`);
+    return run(command, args, options);
+  };
+  box.launch = async (command, args) => (box.calls.push([command, ...args].join(" ")), true);
+  return { ...box, asked, log };
+}
+
+test("canOpen: a browser on macOS, and on Linux with a display; never in CI", () => {
+  assert.equal(canOpen({}, "darwin"), true);
+  assert.equal(canOpen({ DISPLAY: ":0" }, "linux"), true);
+  assert.equal(canOpen({ WAYLAND_DISPLAY: "wayland-0" }, "linux"), true);
+  assert.equal(canOpen({}, "linux"), false);
+  assert.equal(canOpen({ CI: "1" }, "darwin"), false);
+  assert.equal(canOpen({}, "win32"), false);
+});
+
+test("service install on a server with no owner opens its setup page in the browser, the logged setup code filled in", async () => {
+  const { home, calls, exec, get, asked, launch } = setupHome();
+  const { out, io } = ioOf();
+  const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: { DISPLAY: ":0" }, exec, io, fail, get, waitMs: 5_000, launch });
+  assert.equal(await service.install({}), 0);
+  assert.deepEqual(calls.filter((call) => call.startsWith("xdg-open")), ["xdg-open https://box.example.test/setup#code=OLDCODE1"]);
+  assert.ok(asked.includes("POST /v2/setup/code"), "a code still good is kept; an expired or spent one is replaced first");
+  assert.match(out.join(""), /Opened the setup page in your browser: set the owner password there\./);
+  // An opener can start and still find no browser: the link is there to open by hand.
+  assert.match(out.join(""), /If no browser opened, open https:\/\/box\.example\.test\/setup#code=OLDCODE1\n/);
+  assert.match(out.join(""), /works once and for 30 minutes/);
+});
+
+// The service's log holds the setup lines of the server in ~/.agentrun alone: a server started on another --data prints
+// its own in its own terminal, so its page opens without a code, never with the service's.
+test("agentrun open --data on another server never fills in the service log's code; it says where that server's code is", async () => {
+  const box = setupHome();
+  const other = join(box.home, "other");
+  mkdirSync(other);
+  writeFileSync(join(other, ".server.json"), JSON.stringify({ base_url: "http://127.0.0.1:7399/v2", pid: process.pid }));
+  const { out, io } = ioOf();
+  const service = serviceOf({ platform: "linux", home: box.home, uid: 1000, user: "a", env: { DISPLAY: ":0" }, exec: box.exec, io, fail, get: box.get, launch: box.launch });
+  assert.equal(await service.open({ data: other }), 0);
+  assert.deepEqual(box.calls.filter((call) => call.startsWith("xdg-open")), ["xdg-open http://127.0.0.1:7399/"]);
+  assert.doesNotMatch(out.join(""), /OLDCODE1/);
+  assert.match(out.join(""), /Its setup code is in the log of the terminal or service AgentRun runs in/);
+});
+
+// A crash or a forced stop leaves .server.json behind: its address answers nothing, so there is nothing to open.
+// /v2/health answers 503 when free disk is below its floor, while the console and sign-in still work: a server that
+// answers is opened whatever its check says, and the check is said beside it.
+test("agentrun open on a server whose health check fails (low disk, 503) still opens it, and says what the check answered", async () => {
+  const box = setupHome({ session: { accounts: true, password_set: true, signed_in: false, setup_code: false } });
+  writeFileSync(join(box.home, ".agentrun", ".server.json"), JSON.stringify({ base_url: "http://127.0.0.1:7345/v2", pid: process.pid }));
+  const answered = box.get;
+  const get = async (url, init) => (url.endsWith("/health") ? { ok: false, status: 503, json: async () => ({ status: "degraded", checks: { store: "ok", disk: "low" } }) } : answered(url, init));
+  const { out, io } = ioOf();
+  assert.equal(await serviceOf({ platform: "darwin", home: box.home, uid: 501, user: "a", env: {}, exec: box.exec, io, fail, get, launch: box.launch }).open({}), 0);
+  assert.deepEqual(box.calls.filter((call) => call.startsWith("open ")), ["open http://127.0.0.1:7345/"]);
+  assert.match(out.join(""), /Its health check answers 503 degraded \(disk: low\); agentrun service status says more\./);
+});
+
+test("agentrun open on a record no server answers says no AgentRun answers, exit 1, and opens nothing", async () => {
+  const box = setupHome();
+  writeFileSync(join(box.home, ".agentrun", ".server.json"), JSON.stringify({ base_url: "http://127.0.0.1:7345/v2", pid: process.pid }));
+  const { err, io } = ioOf();
+  const refused = async () => { throw new Error("refused"); };
+  assert.equal(await serviceOf({ platform: "darwin", home: box.home, uid: 501, user: "a", env: {}, exec: box.exec, io, fail, get: refused, launch: box.launch }).open({}), 1);
+  assert.match(err.join(""), /No AgentRun answers for /);
+  assert.deepEqual(box.calls.filter((call) => call.startsWith("open ")), []);
+});
+
+test("with no browser here (a remote machine), the setup link is printed for the person, never opened; a new code is waited for", async () => {
+  const { home, calls, exec, get, launch } = setupHome({ printed: true });
+  const { out, io } = ioOf();
+  const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, exec, io, fail, get, waitMs: 5_000, launch });
+  assert.equal(await service.install({}), 0);
+  assert.deepEqual(calls.filter((call) => call.startsWith("xdg-open")), []);
+  assert.match(out.join(""), /Set the owner password at the setup page: https:\/\/box\.example\.test\/setup#code=NEWCODE2\n/, "the newest code, printed after the renewal");
+});
+
+test("agentrun open: the setup page with no code on a loopback server; the console once there is an owner; with --setup-only, nothing then", async () => {
+  const open = setupHome({ session: { accounts: true, password_set: false, signed_in: false, setup_code: false }, line: false });
+  writeFileSync(join(open.home, ".agentrun", ".server.json"), JSON.stringify({ base_url: "http://127.0.0.1:7345/v2", pid: process.pid }));
+  const first = ioOf();
+  assert.equal(await serviceOf({ platform: "darwin", home: open.home, uid: 501, user: "a", env: {}, exec: open.exec, io: first.io, fail, get: open.get, launch: open.launch }).open({}), 0);
+  assert.deepEqual(open.calls.filter((call) => call.startsWith("open ")), ["open http://127.0.0.1:7345/setup"]);
+  assert.ok(!open.asked.includes("POST /v2/setup/code"), "setup takes no code here: none is asked for");
+
+  const owned = setupHome({ session: { accounts: true, password_set: true, signed_in: false, setup_code: false } });
+  writeFileSync(join(owned.home, ".agentrun", ".server.json"), JSON.stringify({ base_url: "http://127.0.0.1:7345/v2", pid: process.pid }));
+  const said = ioOf();
+  const service = serviceOf({ platform: "darwin", home: owned.home, uid: 501, user: "a", env: {}, exec: owned.exec, io: said.io, fail, get: owned.get, launch: owned.launch });
+  assert.equal(await service.open({ "setup-only": true }), 0);
+  assert.deepEqual(owned.calls.filter((call) => call.startsWith("open ")), [], "the installer's last step opens nothing once the owner is set");
+  assert.equal(await service.open({}), 0);
+  assert.deepEqual(owned.calls.filter((call) => call.startsWith("open ")), ["open http://127.0.0.1:7345/"]);
+  assert.match(said.out.join(""), /Opened the console in your browser\./);
+});
+
+// An opener that stays in the foreground until the browser closes held `agentrun service install` (and the installer)
+// open after the setup page was up, until the browser closed: the opener is started and left running.
+test("launchOpener returns once the opener has started, while it still runs; false when there is no such command", async (t) => {
+  const dir = fresh();
+  const pidFile = join(dir, "opener.pid");
+  writeFileSync(join(dir, "xdg-open"), `#!/bin/sh\necho $$ > "${pidFile}"\nexec sleep 30\n`, { mode: 0o755 });
+  const began = Date.now();
+  assert.equal(await launchOpener("xdg-open", ["http://127.0.0.1:7345/setup"], { PATH: `${dir}:/usr/bin:/bin` }), true);
+  assert.ok(Date.now() - began < 5_000, "it did not wait for the opener to exit");
+  for (let waited = 0; !existsSync(pidFile) && waited < 5_000; waited += 50) await new Promise((done) => setTimeout(done, 50));
+  const pid = Number(readFileSync(pidFile, "utf8"));
+  t.after(() => {
+    try {
+      process.kill(pid, "SIGKILL");
+    } catch {}
+  });
+  assert.doesNotThrow(() => process.kill(pid, 0), "the opener still runs");
+  assert.equal(await launchOpener("agentrun-no-such-opener", ["x"], { PATH: dir }), false);
+});
+
+test("agentrun open with no server answering says so, exit 1", async () => {
+  const home = fresh();
+  const { exec } = execOf();
+  const { err, io } = ioOf();
+  assert.equal(await serviceOf({ platform: "darwin", home, uid: 501, user: "a", env: {}, exec, io, fail, get: async () => { throw new Error("refused"); } }).open({}), 1);
+  assert.match(err.join(""), /No AgentRun answers for /);
 });
 
 test("service install with --data waits on that directory's server, and a restart waits for a record newer than itself", async () => {
