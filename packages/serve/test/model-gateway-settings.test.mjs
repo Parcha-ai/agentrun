@@ -255,3 +255,38 @@ test("the test leaves out a model id that holds the key it asked with", async ()
   const answer = await testGateway({ store, sealKey: Buffer.alloc(32), env: {}, changed: async () => {}, fetch }, { base_url: "https://gateway.example", api_key: CANARY });
   assert.deepEqual(answer, { ok: true, models: ["m-1"] });
 });
+
+test("a run in a process of its own (childLoops) runs on the saved gateway and its key: its runner lays the gateway over the claim and hands the key over the pipe; the run's process reads no store row of it", { timeout: 180_000 }, async (t) => {
+  const gw = await startFauxGateway({ text: "Answered.", models: [MODEL], key: CANARY });
+  t.after(() => gw.close());
+  withEnv(t, {}, NAMES);
+  const { api } = await serve(t, { faux: undefined, childRuns: {} });
+  const saved = await api("PUT", "/settings/model-gateway", { base_url: `${gw.url}/v1`, api_key: CANARY, models: { default: MODEL } });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.equal((await api("POST", "/agents", agent("in-own-process"))).status, 201);
+  const started = await api("POST", "/agents/in-own-process/runs", { input: { content: "Answer." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  const { last, rows } = await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 120_000 });
+  assert.equal(last.status, "completed", JSON.stringify(rows.slice(-3)));
+  assert.ok(gw.requests.some((request) => request.method === "POST"), "the run's model requests went to the gateway");
+  assert.deepEqual([...new Set(bearers(gw))], [`Bearer ${CANARY}`], "on the saved key");
+});
+
+test("in a run's own process (no seal key), the runner's mark says the gateway is the saved one: no store row is read, and the key stays off the tools", async () => {
+  const { withSavedGatewayDeps } = await import("../dist/runner/harness-loops.js");
+  const { savedGatewayIn, SAVED_GATEWAY_ENV } = await import("../dist/model-gateway.js");
+  const { claimSecrets } = await import("../dist/runner/claim-secrets.js");
+  const refused = () => { throw new Error("a run's process may not read the store's settings"); };
+  const store = { settings: { get: refused }, sealedKeys: { get: refused } };
+  const env = { PATH: "/bin", AGENT_MODEL_BASE_URL: "https://gateway.example", AGENT_MODEL: "m-1", [SAVED_GATEWAY_ENV]: "1" };
+  Object.defineProperty(env, "AGENT_MODEL_API_KEY", { value: CANARY, enumerable: false });
+  const deps = await withSavedGatewayDeps({ store, env });
+  assert.equal(savedGatewayIn(deps.env), true, "marked as the saved gateway");
+  assert.equal(deps.env[SAVED_GATEWAY_ENV], undefined, "the mark itself is not passed on");
+  assert.equal(deps.env.AGENT_MODEL_API_KEY, CANARY, "the model routes read the key by name");
+  // Without the mark and with no seal key, nothing is read either.
+  const plain = { store, env: { PATH: "/bin" } };
+  assert.equal(await withSavedGatewayDeps(plain), plain);
+  const tools = await claimSecrets({ store: { sealedKeys: { get: async () => undefined }, settings: { get: async () => undefined } }, env: deps.env }, { kind: "agentic", body: { tools: [] } }, { model: { provider: "agent-model", modelId: "m-1" } });
+  assert.equal(JSON.stringify(Object.getOwnPropertyNames(tools).map((name) => tools[name])).includes(CANARY), false, "not on the tools' environment");
+});

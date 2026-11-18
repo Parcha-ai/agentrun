@@ -123,6 +123,22 @@ const SAVED = Symbol.for("agentrun.saved-gateway");
 /** Whether `env`'s gateway is the one saved in the console. */
 export const savedGatewayIn = (env: NodeJS.ProcessEnv): boolean => (env as Record<symbol, unknown>)[SAVED] === true;
 
+/** The plain variable a runner sets on a run's own process (run-child-host.ts) whose gateway is the one saved in the
+ *  console: that process holds no seal key and reads no store row of the gateway, so its runner lays the gateway over the
+ *  claim and hands its key over the secrets' pipe, and this says the gateway is the saved one (savedGatewayIn), so its
+ *  key stays off the run's tools there too. Not a secret. */
+export const SAVED_GATEWAY_ENV = "AGENTRUN_MODEL_GATEWAY_SAVED";
+
+/** `env` (a run's own process's, its runner having laid the saved gateway over it) marked as the saved gateway's, without
+ *  SAVED_GATEWAY_ENV; `env` itself where that variable is not set. A copy, every property of `env` as it is. */
+export function savedGatewayMarked<E extends NodeJS.ProcessEnv>(env: E): E {
+  if (envValue(env, SAVED_GATEWAY_ENV) !== "1") return env;
+  const out = {} as E;
+  for (const name of Reflect.ownKeys(env)) if (name !== SAVED_GATEWAY_ENV) Object.defineProperty(out, name, Object.getOwnPropertyDescriptor(env, name)!);
+  Object.defineProperty(out, SAVED, { value: true, enumerable: true, configurable: true });
+  return out;
+}
+
 /**
  * `env` with the saved gateway laid over it, as the variables would set it: AGENT_MODEL_BASE_URL, its key as
  * AGENT_MODEL_API_KEY (non-enumerable; empty where none is saved, so a key the environment holds for no address never goes

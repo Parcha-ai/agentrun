@@ -1,4 +1,5 @@
-import { envGatewayInForce, readSavedGateway, withSavedGateway } from "../model-gateway.js";
+import { envGatewayInForce, readSavedGateway, savedGatewayMarked, SAVED_GATEWAY_ENV, withSavedGateway } from "../model-gateway.js";
+import { envValue } from "../key-meta.js";
 import { createSdkLoop } from "./sdk-loop.js";
 import { createNativeLoop } from "./native-loop.js";
 // The runner's dispatch switch (design 2.1: "the runner takes every run"): which loop a claimed run runs, by its revision
@@ -104,10 +105,13 @@ export function dispatchRunner(deps: AdapterSpecDeps): LoopFactory {
 }
 
 /** `deps` with the model gateway saved in the console laid over its run environment (model-gateway.ts withSavedGateway),
- *  read from the store now; `deps` itself where none is saved or the runner's environment names its own. */
-async function withSavedGatewayDeps(deps: AdapterSpecDeps): Promise<AdapterSpecDeps> {
+ *  read from the store now; `deps` itself where none is saved or the runner's environment names its own. A run's own
+ *  process (no seal key) reads nothing of it: its runner laid it over the claim (run-child-host.ts) and marked it
+ *  (SAVED_GATEWAY_ENV), and only that mark is read here. */
+export async function withSavedGatewayDeps(deps: AdapterSpecDeps): Promise<AdapterSpecDeps> {
   const base = deps.env ?? process.env;
-  if (envGatewayInForce(base)) return deps;
+  if (envValue(base, SAVED_GATEWAY_ENV) === "1") return { ...deps, env: savedGatewayMarked(base) };
+  if (envGatewayInForce(base) || !deps.sealKey) return deps;
   const saved = await readSavedGateway(deps.store, deps.sealKey);
   return saved ? { ...deps, env: withSavedGateway(base, saved) } : deps;
 }
