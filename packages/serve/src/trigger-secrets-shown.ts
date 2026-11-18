@@ -6,7 +6,7 @@
 // send the person to the console for it.
 // Rotating a trigger's secret, or the outbound webhook's, is a secret write: the token is refused it in the secret-write
 // words, at the one check in the server's dispatch.
-import { registerSecretWrite, type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
+import { registerSecretPage, registerSecretWrite, type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
 
 // Replacing a trigger's secret or the outbound webhook's, and removing the outbound webhook (its secret goes with it), are
@@ -15,6 +15,10 @@ import type { TriggerAdapter } from "./trigger-adapter.js";
 registerSecretWrite("rotateTriggerSecret", () => true);
 registerSecretWrite("rotateWebhookSecret", () => true);
 registerSecretWrite("deleteWebhook", () => true);
+// Where the owner finishes each in the console: the trigger's own page (Rotate), and Settings → Webhook (Rotate secret,
+// Remove). The webhook's URL is never in a link: it can be a credential itself (webhooks.ts shownUrl).
+registerSecretPage("rotateTriggerSecret", (_body, { params: [id] }) => (id && /^[A-Za-z0-9_-]{1,128}$/.test(id) ? `/#/triggers/${id}` : "/#/triggers"));
+registerSecretPage(["rotateWebhookSecret", "deleteWebhook"], "/#/settings/webhook");
 
 /** What the token's answer says of a webhook trigger's secret, made and kept but not shown to it. */
 export const TRIGGER_SECRET_WORDS = "Open the console to see this trigger's signing secret once: rotate it there.";

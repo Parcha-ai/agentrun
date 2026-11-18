@@ -13,6 +13,13 @@ Read this skill from the target server's `/skills/agentrun-serve/SKILL.md` when 
 build. Inspect `/v2/capabilities` and `/v2/openapi.json` before using an optional feature. A handoff naming an
 existing instance is not permission to start a replacement or change its destination.
 
+Secrets are saved by the person in the console, never with the API token: a model or tool key, an MCP server's token
+or headers, the webhook's secret, GitHub. Prepare everything else through the API. A secret write answers `403
+forbidden` with `error.details.console_url`, the console's form with the rest filled in (or build it:
+`<console>/#/settings/mcp?add=<name>&auth=bearer`, adding `&url=<url>` only when no key or token is in the URL).
+Open that link in the person's browser for them and tell them to paste the secret there and save. Never ask for a
+secret in the chat.
+
 ## Choose the onboarding path
 
 For general setup, establish whether the user wants to **start a new agent** or **bring an existing agent**.
@@ -360,6 +367,7 @@ For everything the MCP tools do not cover (tool keys, triggers, webhooks, files,
 ## Troubleshooting
 
 - `401`: the token is not this server's. Read it again from the data directory the server was started with.
+- `403 forbidden` with `error.details.console_url`: a secret write, which only the person's console makes. Open the link for them; they paste the secret there.
 - `403` on `/v2/mcp`: the request carried a browser `Origin` that is not the server's own. Call it from your MCP client, not a web page.
 - `405` on `/v2/mcp`: it takes POST only (no stream, no session).
 - `409 agent_not_runnable`: this server cannot run that agent yet (a harness, tool or key it lacks); `error.details` and `whoami` say which.

@@ -1999,6 +1999,9 @@ trigger in the console, with each step's API call.
 
 What can go wrong, told apart:
 
+- `403 forbidden` with `details.console_url`: the API token sent, dropped or changed a credential, which only the
+  owner's console saves. The link opens Settings → MCP servers with the form filled in (name, URL, kind of credential,
+  toolkit; for a saved server, its Change form), never the credential. A URL that could hold one is left out.
 - `422 auth_required`: the server answered 401 or 403. `details.auth` is `oauth` when it names protected-resource
   metadata (in its `WWW-Authenticate`, or at `/.well-known/oauth-protected-resource`), else `bearer`.
 - `422 not_mcp`: the URL answered, but nothing it answered was a JSON-RPC reply (a web page, a JSON API, a 404).

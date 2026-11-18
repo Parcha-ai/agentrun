@@ -14,7 +14,7 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { inspect } from "node:util";
 import { CredentialUnavailable } from "@parcha/agentrun-kernel/host";
 import { holdSecret } from "./secrets.js";
-import { registerSecretWrite } from "./secret-writes.js";
+import { registerSecretPage, registerSecretWrite } from "./secret-writes.js";
 import { putSealedKey } from "./server-keys.js";
 import { held } from "./runner/held.js";
 import { type SealedKeys, sealColumn, sealedAt, type Settings, STORE_WRITE_DEADLINE_MS, unsealColumn } from "./store/index.js";
@@ -22,6 +22,7 @@ import { type SealedKeys, sealColumn, sealedAt, type Settings, STORE_WRITE_DEADL
 // Every operation of the sign-in is the owner's session's alone (secret-writes.ts), the token in none of them: its view
 // holds no token, but a pending sign-in's link is the owner's to open.
 for (const operation of ["getChatGPTSignIn", "startChatGPTSignIn", "finishChatGPTSignIn", "signOutChatGPT"]) registerSecretWrite(operation, () => true);
+registerSecretPage(["getChatGPTSignIn", "startChatGPTSignIn", "finishChatGPTSignIn", "signOutChatGPT"], "/#/settings/keys");
 
 /** The sealed row that holds the sign-in. */
 export const CHATGPT_PLAN_ROW = "chatgpt:plan";
