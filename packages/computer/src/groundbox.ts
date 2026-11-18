@@ -1,0 +1,589 @@
+// The Groundbox host: sandboxes on Groundbox (https://groundbox.dev), each a Firecracker microVM, over its REST API
+// (https://api.groundbox.dev/v1, a Bearer key) with fetch and Node's WebSocket (no SDK). The exec is a resumable
+// command of Groundbox's command stream (GET /v1/sandboxes/{id}/exec/stream, a WebSocket of JSON messages), handed to
+// framedExec: the command runs on in the sandbox when a connection ends, as every connection does within the hour, and
+// a new socket reads on from the last output position, so no output is lost or read twice. Its stdin does not ride that
+// socket, where input is delivered at most once and nothing says what arrived: the command reads a fifo, and each write
+// is one answered call that writes the fifo (POST .../exec). A computer starts from our box image by default
+// (prepareImage), where Groundbox runs a command as root; on Groundbox's own image or a template it runs as the image's
+// user, runner, who has passwordless sudo, which the adapter's scripts use. A command's own kill is the user's who ran
+// it, so kill is the shared pid kill as root. Labels are the sandbox's metadata, which the listing filters by. The
+// lifetime is the janitor's, by the deadline label, and Groundbox's own timer (timeout_minutes) is set to the request's
+// backstop. The rest of the computer is the shared machine-host adapter's (./hosted/provider.ts). Every Groundbox fact
+// used here is cited in the README's Groundbox section.
+import { randomBytes } from "node:crypto";
+import { boxImageRef } from "./box-image.js";
+import { GROUNDBOX, GROUNDBOX_OWN_IMAGE } from "./descriptors/groundbox.js";
+import { DEADLINE_LABEL, show } from "./drift.js";
+import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
+import { type FramedEvent, framedExec } from "./hosted/framed-exec.js";
+import { boundOf, orThrow, pause } from "./hosted/process.js";
+import { HostedProvider, type HostedOptions } from "./hosted/provider.js";
+import { allPages, jsonOf, type Rest, rest } from "./hosted/rest.js";
+import { PID_KILL } from "./hosted/scripts.js";
+import { dateOf, isWhole } from "./hosted/values.js";
+import type { ComputerSpec, Refusal } from "./provider.js";
+import { type ComputerErrorCode, ok, type Result } from "./result.js";
+
+/** The parts of a WebSocket the host uses: Node's global WebSocket, or a stand-in in tests. */
+export interface GroundboxSocket {
+	/** 0 connecting, 1 open, 2 closing, 3 closed. */
+	readonly readyState: number;
+	/** Bytes sent and not yet on the wire: a write waits while it is high. */
+	readonly bufferedAmount: number;
+	send(text: string): void;
+	close(code?: number): void;
+	addEventListener(type: "open" | "message" | "close" | "error", listener: (event: { data?: unknown; code?: number; message?: string }) => void): void;
+}
+
+export type GroundboxSocketFactory = (url: string, init: { headers: Record<string, string> }) => GroundboxSocket;
+
+/** The Groundbox provider's options: the key and Groundbox's own settings, then the shared adapter's (HostedOptions). */
+export interface GroundboxProviderOptions extends Omit<HostedOptions, "kind" | "desktop"> {
+	/** The Groundbox API key (gbx_...). The caller passes it; this provider never reads it from the environment. */
+	apiKey: string;
+	/** The REST API, ending in /v1; default https://api.groundbox.dev/v1. */
+	apiUrl?: string;
+	/** Every sandbox's disk, in whole GB, 1 to 100; default Groundbox's own (20). A spec names no disk. */
+	diskGb?: number;
+	/** The fetch every call goes through; default the global one. */
+	fetch?: typeof fetch;
+	/** For tests: every command stream opens through it. Default Node's global WebSocket. */
+	webSocket?: GroundboxSocketFactory;
+}
+
+export async function create(options: GroundboxProviderOptions): Promise<GroundboxProvider> {
+	return new GroundboxProvider(options);
+}
+
+/** The conformance CLI's module for Groundbox: its live switch, the run's 30-minute cap and its image. */
+export const conformance = () => import("./conformance/groundbox.js");
+
+const DEFAULT_API_URL = "https://api.groundbox.dev/v1";
+/** The longest a resumable command may run, in seconds: 30 days (EXEC_STREAM_MAX_TIMEOUT_S in Groundbox's contracts). The sandbox's own timer ends it first. */
+const EXEC_STREAM_MAX_S = 30 * 24 * 3_600;
+/** The most timeout_minutes takes: 30 days (SANDBOX_MAX_TIMEOUT_MINUTES). */
+const MAX_TIMEOUT_MINUTES = 30 * 24 * 60;
+/**
+ * The longest any plan keeps a computer: Groundbox's 30 days, less the adapter's backstop margin of 5 minutes and a
+ * minute of rounding, so the backstop create asks Groundbox's timer for is one it takes.
+ */
+const MAX_LIFETIME_MS = (MAX_TIMEOUT_MINUTES - 6) * 60_000;
+/** The cap a user gets unless the provider is given another: a day. */
+const DEFAULT_LIFETIME_MS = 24 * 60 * 60_000;
+/** A size's bounds (SandboxSpec): whole CPUs, and whole GB of memory up to 4 a CPU; with no CPUs named, Groundbox gives 2. */
+const MAX_CPUS = 16;
+const MAX_MEMORY_GB_PER_CPU = 4;
+const DEFAULT_CPUS = 2;
+const MAX_DISK_GB = 100;
+/** A metadata name is 1 to 64 characters and its value at most 512 (Metadata). */
+const LABEL_NAME_MAX = 64;
+const LABEL_VALUE_MAX = 512;
+/** A template's id, or its name, with a version or without (TemplateRef). */
+const TEMPLATE = /^(tpl_[A-Za-z0-9]{8,40}|[a-z0-9][a-z0-9-]{0,62})(:[1-9]\d{0,5})?$/;
+/**
+ * Any other image is a public image reference that `docker pull` takes (ghcr.io/org/app:tag, name@sha256:...), sent as
+ * `image`: one word of printable ASCII. A bare Docker Hub name such as "alpine" reads as a template; name it in full
+ * (docker.io/library/alpine) or with a tag that is not a number (alpine:3.20).
+ */
+const IMAGE_REF = /^[\x21-\x7e]{1,512}$/;
+/** What a spec's image is: Groundbox's own (no field sent), a template of the key's team, or a public image. */
+const imageField = (image: string): { template?: string; image?: string } => (image === GROUNDBOX_OWN_IMAGE ? {} : TEMPLATE.test(image) ? { template: image } : { image });
+/** The user of Groundbox's own image, which Groundbox runs a command as there (uid 1001, with passwordless sudo): init refuses to start beside its processes. */
+const IMAGE_UID = 1001;
+/** The listing's page, the most it takes, and the most pages read. */
+const PAGE = 200;
+const MAX_PAGES = 100;
+/**
+ * Groundbox's statuses (SANDBOX_STATUSES) as the adapter's. One shut down with its disk kept is there and not running.
+ * stopped and failed are records Groundbox keeps of sandboxes that will not come back, so none; `live=true` lists
+ * neither.
+ */
+const STATES: Readonly<Record<string, Machine["state"] | undefined>> = {
+	...{ queued: "starting", starting: "starting", resuming: "starting", running: "running" },
+	...{ pausing: "stopped", paused: "stopped", shutting_down: "stopped", shut_down: "stopped" },
+	...{ stopping: "gone", stopped: undefined, failed: undefined },
+};
+/** Groundbox's error codes (ERROR_CODES) as the adapter's; one not here is read by its status (httpCode). */
+const CODES: Readonly<Record<string, ComputerErrorCode>> = {
+	...{ unauthorized: "denied", forbidden: "denied", key_pending_claim: "denied", missing_scope: "denied", team_held: "denied", team_suspended: "denied", paid_plan_required: "denied" },
+	...{ insufficient_balance: "limit", spend_cap_reached: "limit", concurrency_limit: "limit", rate_limited: "limit" },
+	...{ not_found: "not_found", timeout: "timeout", bad_request: "invalid", conflict: "refused", idempotency_key_reused: "refused" },
+	...{ no_capacity: "vendor", not_available: "vendor", internal: "vendor" },
+};
+/** Where a command's stdin fifo is made, beside the record of its pid: the image's user's alone, in /tmp. */
+const FIFO_PREFIX = "/tmp/.agentrun-stdin-";
+/**
+ * The sh every command starts under ($1 the fifo, then the argv): makes the fifo, records its own pid and start time
+ * beside it (as PID_WRAPPER's line, for the kill; written whole and then renamed, so the kill never reads half of it),
+ * and runs the argv with the fifo as its stdin, opened to read and write, so the fifo never reads end of file between
+ * two writers. Then it removes both and exits as the argv did.
+ */
+const START_SCRIPT = [
+	"f=$1; shift",
+	'mkfifo -m 600 "$f" || exit 126',
+	'echo "$$ $(s=$(cat /proc/$$/stat 2>/dev/null) && set -- ${s##*") "} && echo "${20}")" >"$f.new" && mv -f "$f.new" "$f.pid"',
+	'"$@" 0<>"$f"; c=$?',
+	'rm -f "$f" "$f.pid" "$f.new"; exit $c',
+].join("\n");
+/**
+ * One write ($1 the fifo): its stdin into the fifo. A command Groundbox has just started may not have made its fifo
+ * yet, so the write waits up to 5 s for it; with none by then the command has ended (its sh removed it): exit 3.
+ */
+const WRITE_SCRIPT = 'i=0; until [ -p "$1" ]; do [ "$i" -lt 50 ] || exit 3; i=$((i + 1)); sleep 0.1; done; cat >"$1"';
+/**
+ * The kill ($1 the fifo, $2 PID_KILL): the shared pid kill of the recorded pid, as root, since a command that became
+ * root through sudo is past its starter's signals, and Groundbox's own kill of a command is that user's. A command
+ * Groundbox has just started may not have recorded its pid yet, so the kill waits up to 5 s for the record, as a write
+ * waits for the fifo; with none by then the command has ended (its sh removed it). Then the fifo and the record are
+ * removed, as the killed sh could not.
+ */
+const KILL_SCRIPT = ['f=$1; i=0; until [ -s "$f.pid" ]; do [ "$i" -lt 50 ] || exit 0; i=$((i + 1)); sleep 0.1; done', 'read -r pid start 2>/dev/null <"$f.pid" || exit 0', 'p=; [ "$(id -u)" = 0 ] || p="sudo -n"', '$p sh -c "$2" sh "$pid" "$start"', 'rm -f "$f" "$f.pid"'].join("\n");
+/** One write's bytes: POST .../exec takes 512 KiB of stdin (EXEC_MAX_STDIN_BYTES). */
+const WRITE_BYTES = 256 * 1024;
+/** A write or a kill is one short command: its own bound in the sandbox, and the call's past it. */
+const STEP_S = 60;
+const STEP_MS = 75_000;
+/** A resumable stream says `heartbeat` every 20 s (EXEC_STREAM_HEARTBEAT_S): one silent for this long is dead, and is opened again. */
+const SILENCE_MS = 70_000;
+/** The pauses between tries to read on, doubling from the first to the last; and how long with no socket before the stream fails. */
+const RESUME_MIN_MS = 500;
+const RESUME_MAX_MS = 10_000;
+const RESUME_GIVE_UP_MS = 5 * 60_000;
+/** The close code of a socket this host drops to open another (not 1000, which ends the command). */
+const DROP = 4000;
+
+/** A sandbox as the API answers it (Sandbox in Groundbox's contracts), as far as this host reads it. */
+interface Sandbox {
+	id: string;
+	status: string;
+	metadata?: Record<string, string>;
+	created_at?: string;
+	stop_reason?: string | null;
+}
+
+/** One message of the command stream, as the server sends it (ExecStreamServerMessage). */
+interface StreamMessage {
+	type?: unknown;
+	data?: unknown;
+	seq?: unknown;
+	exec_id?: unknown;
+	exit_code?: unknown;
+	message?: unknown;
+	code?: unknown;
+	bytes?: unknown;
+}
+
+/** One resumable command: its id, its fifo, where its output has been read to, and what the stream has given. */
+interface Command {
+	sandbox: string;
+	fifo: string;
+	/** The command's id once `started` came: what a new socket attaches to. */
+	execId?: string;
+	/** The position in the command's output just after the last chunk read. */
+	seq: number;
+	socket?: GroundboxSocket;
+	/** The stream's events not read yet. */
+	events: FramedEvent[];
+	/** The stream is over: the command exited, or it failed (failure). */
+	ended: boolean;
+	failure?: Error;
+	/** Wakes the events waiting for more. */
+	wake: () => void;
+}
+
+/** A sandbox as the adapter reads a machine; none for a record Groundbox keeps of one that has ended. */
+function machineOf(sandbox: Sandbox): Machine | undefined {
+	const labels = { ...(sandbox.metadata ?? {}) };
+	// A status this host does not know is a machine that is there and not running: the janitor still finds and ends it.
+	if (!(sandbox.status in STATES)) return { id: sandbox.id, labels, state: "stopped", why: `Groundbox reads its status as ${sandbox.status}` };
+	const state = STATES[sandbox.status];
+	if (state === undefined) return undefined;
+	const created = dateOf(sandbox.created_at);
+	return { id: sandbox.id, labels, state, ...(created ? { createdAt: created } : {}) };
+}
+
+/** Why Groundbox's metadata can't hold these labels, in words; undefined when it can. */
+function labelProblem(labels: Record<string, unknown>): string | undefined {
+	const names = Object.keys(labels).filter((name) => name.length < 1 || name.length > LABEL_NAME_MAX);
+	if (names.length > 0) return `Groundbox takes label names of 1 to ${LABEL_NAME_MAX} characters: ${names.map((name) => show(name)).join(", ")}`;
+	const long = Object.entries(labels).filter(([, value]) => typeof value === "string" && value.length > LABEL_VALUE_MAX);
+	if (long.length > 0) return `Groundbox takes label values of at most ${LABEL_VALUE_MAX} characters: ${long.map(([name, value]) => `${name} holds ${(value as string).length}`).join(", ")}`;
+	return undefined;
+}
+
+/** Groundbox's sandboxes as a MachineHost (./host.ts). */
+class GroundboxHost implements MachineHost {
+	readonly descriptor = GROUNDBOX;
+	readonly facts: HostFacts = {
+		daemon: "child",
+		isolation: "microvm",
+		lifetime: "janitor",
+		maxLifetimeMs: MAX_LIFETIME_MS,
+		arch: "amd64",
+		// Groundbox's agent in the guest listens on a unix socket that is root's, reached over vsock: nothing on TCP.
+		vendorAgentPorts: [],
+	};
+	readonly #apiKey: string;
+	readonly #apiUrl: string;
+	readonly #fetch: typeof fetch | undefined;
+	readonly #webSocket: GroundboxSocketFactory;
+	readonly #diskGb: number | undefined;
+	readonly #api: Rest;
+
+	constructor(options: { apiKey: string; apiUrl: string; fetch?: typeof fetch; webSocket: GroundboxSocketFactory; diskGb?: number }) {
+		this.#apiKey = options.apiKey;
+		this.#apiUrl = options.apiUrl.replace(/\/+$/, "");
+		this.#fetch = options.fetch;
+		this.#webSocket = options.webSocket;
+		this.#diskGb = options.diskGb;
+		this.#api = this.#client();
+	}
+
+	/** The API's client, with headers of one call's own beside the key (a create's Idempotency-Key). */
+	#client(headers: Record<string, string> = {}): Rest {
+		return rest({
+			base: this.#apiUrl,
+			headers: () => ({ Authorization: `Bearer ${this.#apiKey}`, Accept: "application/json", ...headers }),
+			vendor: GROUNDBOX.id,
+			...(this.#fetch ? { fetch: this.#fetch } : {}),
+			timeoutMs: 30_000,
+			retry: { attempts: 3, baseMs: 500 },
+			// Every refusal's body is { error: { code, message } } (ErrorResponse): the code is read as the adapter's, the
+			// message is the words.
+			explain: ({ status, bytes, what }) => {
+				const error = (jsonOf(bytes) as { error?: { code?: unknown; message?: unknown } } | null)?.error;
+				const code = typeof error?.code === "string" ? CODES[error.code] : undefined;
+				const words = typeof error?.message === "string" ? error.message : "";
+				return { ...(code ? { code } : {}), message: `${what} answered ${status}${typeof error?.code === "string" ? ` ${error.code}` : ""}${words ? `: ${words}` : ""}` };
+			},
+		});
+	}
+
+	async #call<T>(method: string, path: string, json: unknown, ctx: HostCall, extra: { retry?: boolean; bytes?: Uint8Array<ArrayBuffer> } = {}, api: Rest = this.#api): Promise<T> {
+		const answer = orThrow(await api.call(method, api.url(path), { ...(json === undefined ? {} : { json }), timeoutMs: ctx.timeoutMs, ...extra }, ctx.signal));
+		return jsonOf(answer.bytes) as T;
+	}
+
+	/**
+	 * A spec's image is "default" (Groundbox's own), a template of the key's team, or a public image; its size is whole CPUs and whole GiB of memory, as
+	 * Groundbox takes them (a size outside its bounds is refused there, never rounded); a label is one its metadata holds.
+	 */
+	check(spec: Partial<ComputerSpec>): Refusal[] {
+		const refusals: Refusal[] = [];
+		const { image, cpus, memoryMb, labels } = spec;
+		if (image !== undefined && !(typeof image === "string" && IMAGE_REF.test(image))) {
+			refusals.push({ field: "image", message: `an image is "${GROUNDBOX_OWN_IMAGE}" (the team's default template, else Groundbox's own Ubuntu 24.04), a Groundbox template (its id tpl_..., its name, or name:version), or a public image reference such as ghcr.io/org/app:tag` });
+		}
+		if (cpus !== undefined && !(isWhole(cpus) && cpus >= 1 && cpus <= MAX_CPUS)) refusals.push({ field: "cpus", message: `a Groundbox computer has a whole number of CPUs, 1 to ${MAX_CPUS}` });
+		if (memoryMb !== undefined) {
+			const most = (isWhole(cpus) && cpus >= 1 && cpus <= MAX_CPUS ? cpus : DEFAULT_CPUS) * MAX_MEMORY_GB_PER_CPU;
+			if (!(isWhole(memoryMb) && memoryMb >= 1024 && memoryMb % 1024 === 0)) refusals.push({ field: "memoryMb", message: "a Groundbox computer's memory is a whole number of GiB, such as 4096" });
+			else if (memoryMb / 1024 > most) refusals.push({ field: "memoryMb", message: `a Groundbox computer has at most ${MAX_MEMORY_GB_PER_CPU} GiB of memory a CPU (${most * 1024} with ${most / MAX_MEMORY_GB_PER_CPU} CPUs): name more cpus, up to ${MAX_CPUS}` });
+		}
+		const problem = labels !== null && typeof labels === "object" && !Array.isArray(labels) ? labelProblem(labels) : undefined;
+		if (problem) refusals.push({ field: "labels", message: problem });
+		return refusals;
+	}
+
+	/**
+	 * POST /v1/sandboxes from the spec's image (a template, a public image, or neither for Groundbox's own), with the labels
+	 * as its metadata, the spec's size when it names one (else Groundbox's own, or the
+	 * template's), and timeout_minutes to the request's backstop: Groundbox's timer is the only one it has, and it ends a
+	 * sandbox whose server is gone. The call carries an Idempotency-Key of this one request, so sent again on no answer
+	 * it never starts a second sandbox. Groundbox answers once the sandbox runs, or with it still starting, which the
+	 * adapter then waits out; one it could not start is refused here in its words.
+	 */
+	async create(req: MachineRequest, ctx: HostCall): Promise<{ id: string }> {
+		// The adapter's own labels are held to Groundbox's bounds here: a network list or an image name may be long.
+		const problem = labelProblem(req.labels);
+		if (problem) throw new HostError("limit", `${problem}; give a shorter network list or labels`);
+		const minutes = Math.ceil((Date.parse(req.backstopAt) - Date.now()) / 60_000);
+		const body = {
+			...imageField(req.image),
+			...(req.cpus === undefined ? {} : { cpus: req.cpus }),
+			...(req.memoryMb === undefined ? {} : { memory_gb: req.memoryMb / 1024 }),
+			...(this.#diskGb === undefined ? {} : { disk_gb: this.#diskGb }),
+			timeout_minutes: Math.min(MAX_TIMEOUT_MINUTES, Math.max(1, minutes)),
+			metadata: req.labels,
+		};
+		const made = await this.#call<Sandbox>("POST", "/sandboxes", body, ctx, { retry: true }, this.#client({ "Idempotency-Key": `agentrun-${req.name}-${req.backstopAt}` }));
+		if (typeof made?.id !== "string") throw new Error("POST /sandboxes: no sandbox id in the answer");
+		if (made.status === "failed" || made.status === "stopped") {
+			throw new HostError("vendor", `Groundbox did not start ${made.id}: its status is ${made.status}${made.stop_reason ? ` (${made.stop_reason})` : ""}`);
+		}
+		return { id: made.id };
+	}
+
+	/** GET /v1/sandboxes/{id}; a 404 is not_found, which the adapter reads as none, and an ended sandbox's record is none. */
+	async get(id: string, ctx: HostCall): Promise<Machine | undefined> {
+		return machineOf(await this.#call<Sandbox>("GET", `/sandboxes/${encodeURIComponent(id)}`, undefined, ctx, { retry: true }));
+	}
+
+	/**
+	 * Every sandbox of the key's team that is there and carries these labels: one listing, `live=true` (every status but
+	 * stopped and failed) with a `metadata[name]=value` for each label, every page, within ctx.timeoutMs in all.
+	 */
+	async list(labels: Record<string, string>, ctx: HostCall): Promise<Machine[]> {
+		const until = Date.now() + ctx.timeoutMs;
+		const filter = Object.entries(labels).map(([name, value]) => `&${encodeURIComponent(`metadata[${name}]`)}=${encodeURIComponent(value)}`);
+		const listed = orThrow(
+			await allPages<Sandbox>(
+				async (cursor) => {
+					const query = `live=true&limit=${PAGE}${filter.join("")}${cursor === undefined ? "" : `&cursor=${encodeURIComponent(cursor)}`}`;
+					const page = await this.#api.json("GET", this.#api.url(`/sandboxes?${query}`), { retry: true, timeoutMs: Math.max(1, until - Date.now()) }, ctx.signal);
+					if (!page.ok) return page;
+					const { data, next_cursor: next } = (page.value ?? {}) as { data?: unknown; next_cursor?: unknown };
+					if (!Array.isArray(data)) return { ok: false, error: { code: "vendor", vendor: GROUNDBOX.id, message: "GET /sandboxes: a page that is not a list of sandboxes" } };
+					return { ok: true, value: { items: data as Sandbox[], ...(typeof next === "string" ? { next } : {}) } };
+				},
+				MAX_PAGES,
+				{ vendor: GROUNDBOX.id, what: "the listing of live sandboxes" },
+			),
+		);
+		return listed.map((sandbox) => (typeof sandbox?.id === "string" ? machineOf(sandbox) : undefined)).filter((machine): machine is Machine => machine !== undefined);
+	}
+
+	/** DELETE /v1/sandboxes/{id}, which answers the sandbox, ended or still stopping; one already ended is fine. */
+	async delete(id: string, ctx: HostCall): Promise<void> {
+		await this.#call("DELETE", `/sandboxes/${encodeURIComponent(id)}`, undefined, ctx, { retry: true });
+	}
+
+	/**
+	 * argv as one resumable command of the stream, through framedExec, under START_SCRIPT: as the sandbox's command user,
+	 * in its own process group, with the longest timeout Groundbox takes (the sandbox's own timer ends it first), its
+	 * output as base64, so every byte comes as it was and a position in it is exact. A write is one call per WRITE_BYTES
+	 * that writes the command's fifo and answers once it has; there is no end of stdin (a fifo held open has none), which
+	 * nothing the adapter runs waits for. kill is KILL_SCRIPT's.
+	 */
+	exec(id: string, argv: readonly string[], ctx: HostCall): Promise<MachineProcess> {
+		return framedExec<Command>(
+			{
+				start: (argv, ctx) => this.#start(id, argv, ctx),
+				events: (command) => this.#events(command),
+				write: async (command, text) => {
+					const bytes = Buffer.from(text, "utf8");
+					for (let at = 0; at < bytes.length; at += WRITE_BYTES) {
+						const code = await this.#step(command, [WRITE_SCRIPT, "sh", command.fifo], bytes.subarray(at, at + WRITE_BYTES));
+						if (code === 3) throw new Error("the process has ended");
+						// Its words never hold what was written: it may be a disk's token.
+						if (code !== 0) throw new Error(`writing to the command failed (exit ${code})`);
+					}
+				},
+				kill: async (command) => void (await this.#step(command, [KILL_SCRIPT, "sh", command.fifo, PID_KILL])),
+			},
+			argv,
+			ctx,
+		);
+	}
+
+	/** One short command beside a running one (POST .../exec), its stdin given whole: its exit code, -1 past its bound. Never sent twice. */
+	async #step(command: Command, script: readonly string[], stdin?: Uint8Array): Promise<number> {
+		const body = { args: ["sh", "-c", ...script], timeout_s: STEP_S, ...(stdin === undefined ? {} : { stdin_base64: Buffer.from(stdin).toString("base64") }) };
+		const ran = await this.#call<{ exit_code?: unknown; timed_out?: unknown }>("POST", `/sandboxes/${encodeURIComponent(command.sandbox)}/exec`, body, { timeoutMs: STEP_MS });
+		return typeof ran?.exit_code === "number" && ran.timed_out !== true ? ran.exit_code : -1;
+	}
+
+	/** Starts the command on a new socket and answers once Groundbox says it has started, within the call's bound. */
+	async #start(id: string, argv: readonly string[], ctx: HostCall): Promise<Command> {
+		const command: Command = { sandbox: id, fifo: `${FIFO_PREFIX}${randomBytes(8).toString("hex")}`, seq: 0, events: [], ended: false, wake: () => {} };
+		const first = { type: "start", args: ["sh", "-c", START_SCRIPT, "sh", command.fifo, ...argv], resumable: true, encoding: "base64", timeout_s: EXEC_STREAM_MAX_S };
+		try {
+			await this.#connect(command, first, ctx);
+		} catch (error) {
+			this.#end(command);
+			throw error;
+		}
+		return command;
+	}
+
+	/** The stream is over: nothing more is read, and its socket is closed (1000, which also ends a command still running). */
+	#end(command: Command, failure?: Error): void {
+		if (!command.ended) command.failure ??= failure;
+		command.ended = true;
+		command.socket?.close(1000);
+		command.wake();
+	}
+
+	/**
+	 * One socket of the command's stream: `first` is its start, or an attach from the position read to. It answers once
+	 * the socket is the command's (a start: Groundbox said `started`; an attach: it was sent), within the bound. From then
+	 * its messages are the command's events, and a close that is no end of the command opens another (#resume). A socket
+	 * that does not open says what the sandbox reads as: a refused upgrade carries its status and body where a WebSocket
+	 * client can't read them.
+	 */
+	async #connect(command: Command, first: { type: string }, ctx: HostCall): Promise<void> {
+		const url = `${this.#apiUrl.replace(/^http/, "ws")}/sandboxes/${encodeURIComponent(command.sandbox)}/exec/stream`;
+		let socket: GroundboxSocket;
+		try {
+			socket = this.#webSocket(url, { headers: { Authorization: `Bearer ${this.#apiKey}` } });
+		} catch (error) {
+			throw new Error(`opening the command stream: ${(error as Error).message}`);
+		}
+		command.socket = socket;
+		let ready!: (failure?: Error) => void;
+		const readied = new Promise<Error | undefined>((done) => (ready = done));
+		let silence: ReturnType<typeof setTimeout> | undefined;
+		/** This socket was given up on before it was the command's: its close opens no other. */
+		let abandoned = false;
+		const heard = () => {
+			clearTimeout(silence);
+			// A resumable stream is never silent for long (its heartbeat): one that is has died without a close.
+			if (command.execId !== undefined && !command.ended) (silence = setTimeout(() => socket.close(DROP), SILENCE_MS)).unref?.();
+		};
+		socket.addEventListener("open", () => {
+			try {
+				socket.send(JSON.stringify(first));
+				if (first.type === "attach") ready();
+				heard();
+			} catch (error) {
+				ready(new Error(`the command stream took no ${first.type}: ${(error as Error).message}`));
+			}
+		});
+		socket.addEventListener("message", ({ data }) => {
+			if (socket !== command.socket || command.ended || typeof data !== "string") return;
+			let message: StreamMessage;
+			try {
+				message = JSON.parse(data) as StreamMessage;
+			} catch {
+				return;
+			}
+			heard();
+			if (message.type === "started" && typeof message.exec_id === "string") {
+				command.execId = message.exec_id;
+				ready();
+			} else if ((message.type === "stdout" || message.type === "stderr") && typeof message.data === "string") {
+				command.events.push({ stream: message.type, base64: message.data });
+				if (typeof message.seq === "number") command.seq = message.seq;
+			} else if (message.type === "skipped") {
+				this.#end(command, new Error(`Groundbox no longer keeps ${String(message.bytes)} bytes of the command's output, lost while its stream was down`));
+			} else if (message.type === "exit" && typeof message.exit_code === "number") {
+				command.events.push({ exit: message.exit_code });
+				this.#end(command);
+			} else if (message.type === "error") {
+				const failure = new HostError((typeof message.code === "string" ? CODES[message.code] : undefined) ?? "vendor", `Groundbox ended the command: ${typeof message.message === "string" ? message.message : "no reason given"}`);
+				ready(failure);
+				this.#end(command, failure);
+			}
+			command.wake();
+		});
+		socket.addEventListener("error", (event) => ready(new Error(`the command stream failed${event.message ? `: ${event.message}` : ""}`)));
+		socket.addEventListener("close", ({ code }) => {
+			clearTimeout(silence);
+			ready(new Error(`the command stream closed before the command ${first.type === "attach" ? "was read on" : "started"} (code ${code ?? "none"})`));
+			// The command runs on in the sandbox: another socket reads on from where this one got to.
+			if (socket === command.socket && !abandoned && !command.ended && command.execId !== undefined) void this.#resume(command);
+		});
+		const bound = boundOf(ctx.timeoutMs, ctx.signal, "opening the command stream");
+		try {
+			const failed = await Promise.race([readied, bound.promise]);
+			if (failed !== undefined) throw failed;
+		} catch (error) {
+			abandoned = true;
+			clearTimeout(silence);
+			socket.close(DROP);
+			const name = (error as { name?: unknown }).name;
+			if (error instanceof HostError || name === "AbortError" || name === "TimeoutError") throw error;
+			const read = await this.#api.json("GET", this.#api.url(`/sandboxes/${encodeURIComponent(command.sandbox)}`), { timeoutMs: ctx.timeoutMs }, ctx.signal);
+			if (!read.ok) throw new HostError(read.error.code, `${(error as Error).message}; ${read.error.message}`);
+			const status = (read.value as Sandbox | null)?.status;
+			const words = `${(error as Error).message}; Groundbox reads the sandbox as ${show(status)}`;
+			throw typeof status === "string" && status in STATES && STATES[status] === undefined ? new HostError("gone", words) : new Error(words);
+		} finally {
+			bound.clear();
+		}
+	}
+
+	/**
+	 * Reads on after a socket closed with the command still running: a new socket attaches from the position read to,
+	 * tried again with doubling pauses. A sandbox that is gone, or no socket for RESUME_GIVE_UP_MS, fails the stream.
+	 */
+	async #resume(command: Command): Promise<void> {
+		const since = Date.now();
+		for (let wait = RESUME_MIN_MS; !command.ended; wait = Math.min(wait * 2, RESUME_MAX_MS)) {
+			try {
+				await this.#connect(command, { type: "attach", exec_id: command.execId, seq: command.seq, encoding: "base64" } as { type: string }, { timeoutMs: 30_000 });
+				return;
+			} catch (error) {
+				const code = error instanceof HostError ? error.code : undefined;
+				if (code === "not_found" || code === "gone") return this.#end(command, error as Error);
+				if (Date.now() - since > RESUME_GIVE_UP_MS) return this.#end(command, new Error(`the command's stream could not be opened again for ${RESUME_GIVE_UP_MS / 1000} s: ${(error as Error).message}`));
+			}
+			await pause(wait);
+		}
+	}
+
+	/** The command's events as its sockets give them, to its exit or its failure; then the last socket is let go of. */
+	async *#events(command: Command): AsyncGenerator<FramedEvent> {
+		try {
+			for (;;) {
+				const next = command.events.shift();
+				if (next !== undefined) yield next;
+				else if (command.ended) break;
+				else await new Promise<void>((done) => (command.wake = done));
+			}
+			if (command.failure) throw command.failure;
+		} finally {
+			this.#end(command);
+		}
+	}
+
+	/**
+	 * The daemon's upload through the files API (PUT /v1/sandboxes/{id}/files?path=), the bytes as they are, written as
+	 * the sandbox's command user (root on the box image, runner on Groundbox's own).
+	 */
+	async upload(id: string, path: string, bytes: Uint8Array, ctx: HostCall): Promise<void> {
+		await this.#call("PUT", `/sandboxes/${encodeURIComponent(id)}/files?path=${encodeURIComponent(path)}`, undefined, ctx, { retry: true, bytes: new Uint8Array(bytes) });
+	}
+
+	/**
+	 * The janitor's deadline label, moved. PATCH /v1/sandboxes/{id} replaces the whole metadata map, so the map is read
+	 * and sent back with the one label changed; the adapter is its only writer. Groundbox's own timer stays at the
+	 * backstop create gave it.
+	 */
+	async extend(id: string, endsAt: Date, ctx: HostCall): Promise<void> {
+		const path = `/sandboxes/${encodeURIComponent(id)}`;
+		const sandbox = await this.#call<Sandbox>("GET", path, undefined, ctx, { retry: true });
+		await this.#call("PATCH", path, { metadata: { ...(sandbox?.metadata ?? {}), [DEADLINE_LABEL]: endsAt.toISOString() } }, ctx);
+	}
+}
+
+/**
+ * Computers that are Groundbox sandboxes, on the shared adapter. A spec's image is the box image by default
+ * (prepareImage), "default" (the team's default template, else Groundbox's own image), a template of the key's team, or
+ * a public image.
+ */
+export class GroundboxProvider extends HostedProvider {
+	/**
+	 * The provider contract's prepareImage (its descriptor declares it): the box image the release publishes, by its
+	 * public registry tag (box-image.ts). No call: Groundbox turns it into a disk at the first create from it, and keeps
+	 * that disk for later ones.
+	 */
+	async prepareImage(): Promise<Result<string>> {
+		return ok(boxImageRef());
+	}
+
+	constructor(options: GroundboxProviderOptions) {
+		const { apiKey, apiUrl = DEFAULT_API_URL, diskGb, fetch, webSocket, maxLifetimeMs = DEFAULT_LIFETIME_MS, ...rest } = options ?? ({} as GroundboxProviderOptions);
+		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Groundbox API key, is required: the provider reads no environment, so the caller passes it");
+		let url: URL | undefined;
+		try {
+			url = new URL(apiUrl);
+		} catch {
+			// Refused below, in words.
+		}
+		if (url === undefined || (url.protocol !== "https:" && url.protocol !== "http:")) throw new Error(`the Groundbox API URL must be an http(s) URL such as ${DEFAULT_API_URL}, not ${JSON.stringify(apiUrl)}`);
+		if (diskGb !== undefined && !(isWhole(diskGb) && diskGb >= 1 && diskGb <= MAX_DISK_GB)) throw new Error(`diskGb is a whole number of GB, 1 to ${MAX_DISK_GB}, not ${String(diskGb)}`);
+		if (Number(rest.daemonUser?.split(":")[0]) === IMAGE_UID) throw new Error(`the daemon user ${rest.daemonUser} is the uid of the sandbox's own user, whose processes init refuses to run beside; choose another, such as 2510:2510`);
+		super(
+			new GroundboxHost({
+				apiKey,
+				apiUrl,
+				...(fetch ? { fetch } : {}),
+				webSocket: webSocket ?? ((url, init) => new WebSocket(url, init as never) as unknown as GroundboxSocket),
+				...(diskGb === undefined ? {} : { diskGb }),
+			}),
+			{ ...rest, maxLifetimeMs },
+		);
+	}
+}
