@@ -2,8 +2,7 @@
 // learned item (its first merge: here an owner's correction) against its completed runs that started from at least one
 // (a line of corrections.md, or a learned workflow their claims laid). Each side: how many runs, their median time to the
 // answer (the run's start to its job's answer), the median of the job's own cost over the `cost_runs` whose cost is
-// known, and the median of what learning itself cost a run (its compile turn; 0 for a run that asked none). Null until
-// both sides count 2. A run with learning off, or one seeded with nothing (its corrections cleared), is on neither side.
+// known (what learning itself cost is the bill's, GET /v2/agents/{id}/learning/cost). Null until both sides count 2. A run with learning off, or one seeded with nothing (its corrections cleared), is on neither side.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ended, fedBack, LEARN, learner, made, started } from "./learn-support.mjs";
@@ -35,7 +34,6 @@ async function sideOf(store, data, runIds) {
     median_duration_s: Math.round(median(runs.map((run) => run.duration)) * 10) / 10,
     median_cost_usd: Math.round(median(runs.map((run) => run.cost)) * 1e6) / 1e6,
     cost_runs: runs.length,
-    median_learning_usd: Math.round(median(runs.map((run) => run.learning)) * 1e6) / 1e6,
   };
 }
 
@@ -74,7 +72,7 @@ test("an agent's impact: null before any correction and until each side counts 2
   assert.deepEqual(both, { before: await sideOf(store, data, before), after: await sideOf(store, data, after) });
   assert.deepEqual([both.before.runs, both.after.runs, both.before.cost_runs, both.after.cost_runs], [3, 2, 3, 2]);
   assert.ok(both.before.median_cost_usd > 0 && both.after.median_cost_usd > 0, JSON.stringify(both));
-  assert.equal(both.after.median_learning_usd, 0, "a run that asked no compile turn spent nothing on learning");
+  assert.ok(!("median_learning_usd" in both.after), "what learning cost is the bill's (cost.bill.learning_usd), never a second median here");
 
   // The corrections cleared: a run seeded from nothing is on neither side.
   const read = await api("GET", `/agents/${id}/learning/corrections`);

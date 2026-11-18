@@ -1,10 +1,10 @@
 import { type KeyboardEvent, type PointerEvent, type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { Client } from "@/lib/client";
-import { niceTop, runTicks, usd, yTicksOf } from "@/lib/costPerRun";
+import { niceAxis, runTicks, spread, usd } from "@/lib/costPerRun";
 import { when } from "@/lib/format";
 import { type Audits, auditLinesOf, billWords, type Champion, checkLineWords, checkWords, tierWords } from "@/lib/learningBill";
 import { cn } from "@/lib/utils";
-import type { Bill, BillPoint, LearningCost, Serving } from "@/lib/v2";
+import type { Bill, BillPoint, CostRun, LearningCost, Serving } from "@/lib/v2";
 
 // The owner's bill on the Learning tab (GET /v2/agents/{id}/learning/cost `bill`, booked dollars only): run after run,
 // what the agent has cost with learning, cumulative (every run that does a job, with its compile turn, audit shadow
@@ -35,7 +35,7 @@ export function LearningBill({ v2, agentId, cost, serving, width }: { v2: Client
     <>
       <BillChart bill={bill} width={width} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <AuditLine serving={serving} audits={audits} bill={bill} />
+        <AuditLine serving={serving} audits={audits} bill={bill} runs={cost.runs} />
         {serves?.champion && <ServingWorkflow workflow={serves.workflow} champion={serves.champion} />}
       </div>
     </>
@@ -44,6 +44,9 @@ export function LearningBill({ v2, agentId, cost, serving, width }: { v2: Client
 
 const M = { top: 16, right: 16, bottom: 30, left: 60 };
 const H = 220;
+/** The gutter right of the plot that holds the two lines' end labels, off the data; a narrow card has none (the legend
+ *  and the headline say the figures). */
+const GUTTER = 84;
 
 /** The bill as a chart: the booked bill and the agent for all of it, cumulative, on one dollar axis; the break-even
  *  marker; a hover with each run's two figures; a table of every point. */
@@ -62,17 +65,24 @@ export function BillChart({ bill, width: fixed }: { bill: Bill; width?: number }
   const { headline, marker } = billWords(bill);
   const both = points.some((p) => p.agent_usd !== null);
   const width = Math.max(300, room);
-  const plotW = width - M.left - M.right;
+  const narrow = width < 520;
+  const plotW = width - M.left - (narrow ? M.right : GUTTER);
   const first = points[0]?.n ?? 1, last = points.at(-1)?.n ?? 1;
   const x = (n: number) => M.left + (last === first ? plotW / 2 : ((n - first) / (last - first)) * plotW);
-  // A reduce, never a spread: a long history's every point as one call's arguments overflows the stack.
-  const top = useMemo(() => niceTop(points.reduce((max, p) => Math.max(max, p.actual_usd, p.agent_usd ?? 0), -Infinity)), [points]);
+  // A reduce, never a spread: a long history's every point as one call's arguments overflows the stack. The top is the
+  // clean step just above the most (niceAxis): $1.18 reads to $1.25, never $2 with half the chart empty.
+  const { top, ticks } = useMemo(() => niceAxis(points.reduce((max, p) => Math.max(max, p.actual_usd, p.agent_usd ?? 0), -Infinity)), [points]);
   const y = (v: number) => M.top + H - (v / top) * H;
   const path = (values: readonly (readonly [number, number])[]) => values.map(([n, v], i) => `${i ? "L" : "M"}${x(n).toFixed(1)},${y(v).toFixed(1)}`).join("");
   const actual = path(points.map((p) => [p.n, p.actual_usd] as const));
   const agent = both ? path(points.filter((p) => p.agent_usd !== null).map((p) => [p.n, p.agent_usd!] as const)) : null;
   const end = points.at(-1);
-  const narrow = width < 520;
+  // The two lines' end labels, in the gutter right of the last point at each line's end, pushed apart when the lines end
+  // close: never on a line.
+  const ends = end && !narrow ? spread([
+    { key: "bill", words: `Bill ${money(end.actual_usd)}`, at: y(end.actual_usd) },
+    ...(end.agent_usd !== null ? [{ key: "agent", words: `Agent ${money(end.agent_usd)}`, at: y(end.agent_usd) }] : []),
+  ], M.top + 4, M.top + H) : [];
   const at = active === null ? null : points[active] ?? null;
   const unattributed = bill.unattributed_usd ?? 0;
   const pick = (e: PointerEvent<SVGSVGElement>) => {
@@ -109,7 +119,7 @@ export function BillChart({ bill, width: fixed }: { bill: Bill; width?: number }
         <div className="relative" tabIndex={0} onKeyDown={step} onBlur={() => setActive(null)} aria-label={`The bill, runs ${first} to ${last}. ${headline}. Arrow keys step through the runs.`}>
           <svg width={width} height={M.top + H + M.bottom} className="block select-none font-mono" onPointerMove={pick} onPointerLeave={() => setActive(null)} aria-hidden>
             <g data-testid="bill-y-axis">
-              {yTicksOf(top).map((t) => (
+              {ticks.map((t) => (
                 <g key={t}>
                   <path d={`M${M.left},${y(t)}H${M.left + plotW}`} className={t === 0 ? "stroke-border-strong" : "stroke-border"} strokeWidth={1} />
                   <text x={M.left - 8} y={y(t)} dy="0.32em" textAnchor="end" className="fill-muted-foreground text-label">{usd(t)}</text>
@@ -128,12 +138,9 @@ export function BillChart({ bill, width: fixed }: { bill: Bill; width?: number }
             )}
             {agent && <path d={agent} data-testid="bill-agent" fill="none" className="stroke-chart-agent" strokeWidth={2} strokeDasharray="5 3" strokeLinejoin="round" />}
             <path d={actual} data-testid="bill-actual" fill="none" className="stroke-chart-workflow" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
-            {end && !narrow && (
-              <g>
-                <Label x={x(end.n) - 4} y={y(end.actual_usd) + (end.agent_usd !== null && end.agent_usd > end.actual_usd ? 16 : -8)} anchor="end">Your bill {usd(end.actual_usd)}</Label>
-                {end.agent_usd !== null && <Label x={x(end.n) - 4} y={y(end.agent_usd) + (end.agent_usd > end.actual_usd ? -8 : 16)} anchor="end">Agent for all of it {usd(end.agent_usd)}</Label>}
-              </g>
-            )}
+            {end && ends.map((l) => (
+              <text key={l.key} data-testid="bill-end-label" x={x(end.n) + 6} y={l.at} dy="0.32em" className={cn("text-label", l.key === "bill" ? "fill-foreground font-semibold" : "fill-muted-foreground")}>{l.words}</text>
+            ))}
             {at && (
               <g>
                 <path d={`M${x(at.n)},${M.top}V${M.top + H}`} className="stroke-border-strong" strokeWidth={1} />
@@ -178,9 +185,11 @@ export function BillChart({ bill, width: fixed }: { bill: Bill; width?: number }
 const money = (value: number) => (value >= 1 ? `$${value.toFixed(2)}` : usd(value));
 
 /** Each serving learned workflow's audit line, and each hold at the run the server placed it on (`bill.holds`). Nothing
- *  when there is neither. While the audits are read nothing of all time is said; a failed read says so. */
-export function AuditLine({ serving, audits, bill }: { serving: readonly Serving[]; audits: Audits; bill: Bill }) {
-  const lines = auditLinesOf(serving, audits);
+ *  when there is neither. While the audits are read nothing of all time is said; a failed read says so. `runs`: the cost
+ *  read's, so an audited run the ledger has not scored yet is counted as such, and the line agrees with the runs a
+ *  shadow was charged to. */
+export function AuditLine({ serving, audits, bill, runs = [] }: { serving: readonly Serving[]; audits: Audits; bill: Bill; runs?: readonly CostRun[] }) {
+  const lines = auditLinesOf(serving, audits, runs);
   const holds = bill.holds;
   if (!lines.length && !holds.length) return null;
   const last = bill.points.at(-1)?.n;
@@ -191,7 +200,7 @@ export function AuditLine({ serving, audits, bill }: { serving: readonly Serving
           <li key={line.workflow} className="space-y-0.5">
             <span className="block font-mono font-semibold">{line.workflow}</span>
             {line.recent && <span className="block">Last {line.recent.rows} {line.recent.rows === 1 ? "audit" : "audits"}: {line.recent.agreed} agreed <span className="text-muted-foreground">· hold at {line.recent.disagree} disagreeing of the newest {line.recent.window}</span></span>}
-            {line.all && <span className="block">All time: {line.all.agreed} of {line.all.rows} agreed</span>}
+            {line.all && <span className="block">All time: {line.all.agreed} of {line.all.rows} agreed{line.pending ? <span className="text-muted-foreground" title="Its shadow run is charged to the run; the audit is scored at a later run's start."> · {line.pending} not scored yet</span> : null}</span>}
             {line.off && <span className="block text-muted-foreground">{line.off}</span>}
           </li>
         ))}

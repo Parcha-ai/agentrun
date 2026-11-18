@@ -2,6 +2,7 @@
 // workflow took over (promoted by one check on the inputs of the agent's own runs), and runs got cheaper, with how often
 // it handed back. The arithmetic here reads the server's records only (GET .../learning/cost, .../promotions,
 // .../loop, .../workflows/{name}/revisions); nothing is simulated and nothing says more than they do.
+import { timesOf } from "./costPerRun";
 import type { CostRun, LearningCost, LearningLoop, Promotion, Serving } from "./v2";
 
 /** When a job compiles into a workflow (serve learning-setting.ts COMPILE_AFTER_DEFAULT): at this many completed runs
@@ -25,23 +26,31 @@ export const MARKER_LETTER: Record<MarkerKind, string> = { revision: "R", promot
 /** A promotion record's kind of marker: a replay that started, a new revision; else its decision. */
 export const kindOf = (record: Promotion): MarkerKind => (record.decided === "replaying" ? "revision" : record.decided);
 
-/** Each promotion record on the run axis: at the first run (of `runs`, in order) that started at or after it, the run it
- *  first bore on. One newer than the last run is left out (no run of the axis is its), and so is one older than the first
- *  run read. Every record keeps its own marker, even two of one kind on one run (two workflows promoted between two
+/** Each promotion record on the run axis, which numbers the runs that do a job (a replay is never a marker's run): at the
+ *  first job (of `runs`, in order) that started at or after it, the run it first bore on. A promotion is written as the
+ *  run it serves first is claimed, after that run started: it stands on the first run its revision served from the
+ *  newest job started by then (the cost summary's takeover and the bill's promoted, one run), and on the next job when
+ *  none has served since. One newer than the last job is left out (no run of the axis is its), and so is one older than
+ *  the first run read. Every record keeps its own marker, even two of one kind on one run (two workflows held between two
  *  runs): the chart stacks their flags in rows. */
 export function markersOf(runs: readonly CostRun[], records: readonly Promotion[]): Marker[] {
-  if (!runs.length) return [];
-  const starts = runs.map((r) => Date.parse(r.started_at));
-  const first = starts[0]!;
+  const jobs = runs.filter((r): r is CostRun & { n: number } => r.path !== "replay" && r.n !== null);
+  if (!runs.length || !jobs.length) return [];
+  const starts = jobs.map((r) => Date.parse(r.started_at));
+  const first = Date.parse(runs[0]!.started_at);
   const out: Marker[] = [];
   for (const record of records) {
     const t = Date.parse(record.at);
     if (!Number.isFinite(t) || t < first - 1) continue;
-    const i = starts.findIndex((s) => s >= t);
+    const next = starts.findIndex((s) => s >= t);
+    let i = next;
+    if (record.decided === "promote") {
+      const from = Math.max(0, (next < 0 ? starts.length : next) - 1);
+      const served = jobs.findIndex((r, j) => j >= from && (r.path === "workflow" || r.path === "handed_back") && r.digest === record.digest && (r.workflow ?? record.workflow) === record.workflow);
+      if (served >= 0) i = served;
+    }
     if (i < 0) continue;
-    const kind = kindOf(record);
-    const n = runs[i]!.n;
-    out.push({ kind, n, at: record.at, workflow: record.workflow, digest: record.digest, reason: record.reason, record });
+    out.push({ kind: kindOf(record), n: jobs[i]!.n, at: record.at, workflow: record.workflow, digest: record.digest, reason: record.reason, record });
   }
   return out.sort((a, b) => a.n - b.n);
 }
@@ -159,7 +168,7 @@ export function storyOf(input: {
     return stages;
   }
   if (s?.takeover) {
-    stages.push({ key: "took_over", title: "Took over", value: `Run ${s.takeover.n}`, detail: servingLine ?? (newest?.check?.n ? replayLine(newest) : newest ? newest.reason : "the first run a learned workflow finished alone"), state: stopped || (newest?.decided === "hold" && !champion) ? "warn" : "done" });
+    stages.push({ key: "took_over", title: "Took over", value: `Run ${s.takeover.n}`, detail: servingLine ?? (newest?.check?.n ? replayLine(newest) : newest ? newest.reason : "the first run a learned workflow served"), state: stopped || (newest?.decided === "hold" && !champion) ? "warn" : "done" });
   } else if (newest) {
     if (servingLine) stages.push({ key: "took_over", title: "Take over", value: standingOf(recordOf(promotions, newest.workflow, champion) ?? newest, { serving: champion, stopped: stopped ? champion : null }).word, detail: servingLine, state: stopped ? "warn" : "done" });
     else {
@@ -177,7 +186,7 @@ export function storyOf(input: {
     const ratio = s.times_cheaper;
     if (ratio !== null && ratio > 1) stages.push({ key: "cheaper", title: "Cheaper", ...cheaperClaim(s, ratio), state: "done" });
     // times_cheaper is rounded by the server (0.03 reads as 0), so the increase comes from the two means.
-    else if (ratio !== null) stages.push({ key: "cheaper", title: "Cheaper", value: ratio < 1 ? (s.before.mean_usd > 0 ? `Not cheaper yet: ${timesWord(s.after.mean_usd / s.before.mean_usd)} the cost` : "Not cheaper yet") : "Same cost", detail: words, state: "now" });
+    else if (ratio !== null) stages.push({ key: "cheaper", title: "Cheaper", value: ratio < 1 ? (s.before.mean_usd > 0 ? `Not cheaper yet: ${timesOf(s.after.mean_usd / s.before.mean_usd)} the cost` : "Not cheaper yet") : "Same cost", detail: words, state: "now" });
     else stages.push({ key: "cheaper", title: "Cheaper", value: `${s.after.runs} served ${s.after.runs === 1 ? "run" : "runs"} so far`, detail: `${words}; how many times cheaper shows after ${CHEAPER_AFTER} runs`, state: "now" });
   } else if (s?.takeover && s.after_state === "cost_unknown") {
     stages.push({ key: "cheaper", title: "Cheaper", value: "No cost yet", detail: "no served run's cost is known yet", state: "now" });
@@ -201,21 +210,21 @@ export function withheldWords(w: { unknown: number; at_most: number }): string {
 }
 export const WITHHELD_NEXT = "how many times cheaper shows once every run's cost is known";
 
-/** The tab's cheaper headline over a ratio above 1: "About Nx cheaper" and what its check showed when the serving
- *  champion's check cleared (the cost summary's `replay`): it passed the agreement check, N of the M inputs it answered
- *  alone agreeing with the agent against the bar, and what was served under it. Never "the same accuracy": passing the
- *  bar is all it says. Else the ratio alone, and why accuracy is not claimed. */
+/** The tab's cheaper headline over a ratio above 1: "Nx cheaper", in the one format the cost chart says it (timesOf),
+ *  and what its check showed when the serving champion's check cleared (the cost summary's `replay`): it passed the
+ *  agreement check, N of the M inputs it answered alone agreeing with the agent against the bar, and what was served
+ *  under it. Never "the same accuracy": passing the bar is all it says. Else the ratio alone, and why accuracy is not
+ *  claimed. */
 function cheaperClaim(s: LearningCost["summary"], ratio: number): { value: string; detail: string } {
-  const n = ratio >= 1.5 ? `${Math.round(ratio)}x` : `${ratio.toFixed(1)}x`;
+  const n = timesOf(ratio);
   const r = s.replay;
   const scored = r ? `workflow ${Math.round(r.workflow_pct)}% vs agent ${Math.round(r.agent_pct)}% on ${r.n} inputs` : "";
   if (r?.cleared) {
     const served = s.hand_backs ? ` · served ${s.hand_backs.ran} ${s.hand_backs.ran === 1 ? "run" : "runs"}, handed back ${s.hand_backs.back}` : "";
-    return { value: `About ${n} cheaper`, detail: `Passed the agreement check: ${r.agreed} of ${r.alone} agreed (bar ${Math.round(r.agree_min * 100)}%)${served}` };
+    return { value: `${n} cheaper`, detail: `Passed the agreement check: ${r.agreed} of ${r.alone} agreed (bar ${Math.round(r.agree_min * 100)}%)${served}` };
   }
   return { value: `${n} cheaper`, detail: `accuracy not claimed: ${r ? `its check was below the bar (${scored})` : "no check yet"}` };
 }
 
 /** A dollar level as the chart says it (costPerRun.ts level): three figures under a dollar. */
 const dollars = (v: number) => (v === 0 ? "$0" : v < 0.0001 ? "<$0.0001" : v >= 1 ? `$${v.toFixed(2)}` : `$${v.toPrecision(3)}`);
-const timesWord = (ratio: number) => { const t = Math.round(ratio * 10) / 10; return `${t >= 10 ? Math.round(ratio) : t.toFixed(1)}x`; };

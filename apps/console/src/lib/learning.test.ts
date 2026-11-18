@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { approval, bytesOf, change, changeWords, correctionLines, corrections, dropKind, dropWords, fileChanges, fileWords, impactWords, learningHash, learningLabel, learningSteps, type LearningDiff, lookedBack, money, type RunLearning, shownImpact, took, underWay, waitingWords, workflowsBy } from "./learning";
+import { approval, bytesOf, change, changeWords, correctionLines, corrections, dropKind, dropWords, fileChanges, fileWords, impactWords, learningHash, learningLabel, learningSteps, type LearningDiff, lookedBack, money, type RunLearning, shownImpact, took, tookChange, underWay, waitingWords, workflowsBy } from "./learning";
 import { recorded } from "@/fixtures";
 import type { LastChange } from "./learning";
 import type { TimelineRow } from "./v2";
@@ -33,8 +33,10 @@ describe("a run's learning, read tolerantly", () => {
   });
   it("why it kept nothing: the server's own sentence when it sends one, else plain words for the reason", () => {
     expect(dropWords({ state: "dropped", reason: "checker", detail: "Not kept: the draft did not pass the checks." })).toBe("Not kept: the draft did not pass the checks.");
-    expect(dropWords({ state: "dropped", reason: "empty", detail: null })).toBe("Nothing new to remember from this run.");
-    expect(dropWords({ state: "dropped", reason: "no_budget", detail: null })).toBe("Skipped: no budget left in this run to look back.");
+    // The server's own words for each (learning-words.ts), so a row with no detail reads as one that has it.
+    expect(dropWords({ state: "dropped", reason: "empty", detail: null })).toBe("Nothing new to keep from this run.");
+    expect(dropWords({ state: "dropped", reason: "no_budget", detail: null })).toBe("Skipped: no budget left in this run to write what it learned.");
+    expect(dropWords({ state: "dropped", reason: "unknown_cost", detail: null })).toBe("Skipped: this run's spend is unknown, so its budget can't cover writing what it learned.");
     expect(dropWords({ state: "dropped", reason: "a_new_reason", detail: null })).toBe("Not kept: learning stopped.");
     expect(["checker", "empty", "use", "no_budget", "unknown_cost", "crashed", null].map(dropKind)).toEqual(["refused", "nothing", "nothing", "skipped", "skipped", "stopped", "stopped"]);
   });
@@ -45,14 +47,27 @@ describe("a run's learning, read tolerantly", () => {
 });
 
 describe("the before and after", () => {
-  const impact = { before: { runs: 2, median_duration_s: 18.4, median_cost_usd: 0.1146, cost_runs: 2, median_learning_usd: null }, after: { runs: 4, median_duration_s: 12, median_cost_usd: 0.0311, cost_runs: 4, median_learning_usd: null } };
+  const impact = { before: { runs: 2, median_duration_s: 18.4, median_cost_usd: 0.1146, cost_runs: 2 }, after: { runs: 4, median_duration_s: 12, median_cost_usd: 0.0311, cost_runs: 4 } };
   it("says it in a line: the time to the answer and a run's cost, each side's median, on the after side's runs", () => {
     expect(impactWords(impact)).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 12s instead of 18s · $0.03 est. instead of $0.11 est. a run");
     expect(impactWords({ ...impact, after: { ...impact.after, median_cost_usd: null } })).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 12s instead of 18s");
-    expect(impactWords({ ...impact, after: { ...impact.after, median_learning_usd: 0.008 } })).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 12s instead of 18s · $0.03 est. instead of $0.11 est. a run · learning itself $0.0080 est. a run");
+    expect(impactWords(impact, 0.0193)).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 12s instead of 18s · $0.03 est. instead of $0.11 est. a run · learning itself $0.0193 a run, booked");
+  });
+  it("learning itself is the bill's (compile turns, audit shadows, replays over its runs), never a median of mostly-zero rows", () => {
+    // The impact carries no learning figure of its own (a median of mostly-zero rows read $0): only the bill's is said.
+    expect(impact.after).not.toHaveProperty("median_learning_usd");
+    expect(impactWords(impact, null)).not.toMatch(/learning itself/);
+    expect(impactWords(impact, 0.0193)).toMatch(/learning itself \$0\.0193 a run, booked$/);
+  });
+  it("a short time to the answer to a tenth of a second, the change from the times shown: never 2s instead of 1s at +7%", () => {
+    const quick = { before: { ...impact.before, median_duration_s: 1.38 }, after: { ...impact.after, median_duration_s: 1.46 } };
+    expect(impactWords(quick, null)).toMatch(/^Since it learned \(medians of 4 runs started from what it learned\): answers in 1\.5s instead of 1\.4s/);
+    expect(tookChange(1.38, 1.46)).toBe(7);
+    expect(tookChange(1.44, 1.46)).toBe(7);
+    expect(tookChange(18.4, 12)).toBe(-33);
   });
   it("says a slower or costlier after as it is", () => {
-    expect(impactWords({ before: { runs: 2, median_duration_s: 14, median_cost_usd: 0.0214, cost_runs: 2, median_learning_usd: null }, after: { runs: 4, median_duration_s: 21, median_cost_usd: 0.0377, cost_runs: 4, median_learning_usd: null } })).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 21s instead of 14s · $0.04 est. instead of $0.02 est. a run");
+    expect(impactWords({ before: { runs: 2, median_duration_s: 14, median_cost_usd: 0.0214, cost_runs: 2 }, after: { runs: 4, median_duration_s: 21, median_cost_usd: 0.0377, cost_runs: 4 } })).toBe("Since it learned (medians of 4 runs started from what it learned): answers in 21s instead of 14s · $0.04 est. instead of $0.02 est. a run");
   });
   it("is shown only when the server sends both sides with two runs each", () => {
     expect(shownImpact(impact)).toBe(true);
@@ -60,7 +75,7 @@ describe("the before and after", () => {
     expect(shownImpact({ ...impact, before: { ...impact.before, runs: 1 } })).toBe(false);
   });
   it("formats with the console's own: a run's time as elapsed() writes it, a cost as cost() writes an estimate, the change as a whole percent", () => {
-    expect([took(65), took(12.4), took(3.8), took(0)]).toEqual(["1m 05s", "12s", "4s", "0s"]);
+    expect([took(65), took(12.4), took(9.96), took(3.8), took(0)]).toEqual(["1m 05s", "12s", "10s", "3.8s", "0.0s"]);
     expect([money(1.234), money(0.1146), money(0.000814)]).toEqual(["$1.23 est.", "$0.11 est.", "$0.0008 est."]);
     expect([change(18, 12), change(0.11, 0.03), change(0, 1)]).toEqual([-33, -73, null]);
   });

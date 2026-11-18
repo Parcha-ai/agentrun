@@ -25,7 +25,7 @@ function draw(element: ReturnType<typeof createElement>) {
 }
 
 const DIGEST = "d".repeat(16);
-const RUNS: CostRun[] = Array.from({ length: 9 }, (_, i) => ({ n: i + 1, run_id: `run-${i + 1}`, started_at: hour(i + 1), path: i < 3 ? "agent" : "workflow", workflow: i < 3 ? null : "answer", learned_revision: null, cost_usd: 1, cost_upper_bound: false, learning_usd: 0, total_usd: 1 }));
+const RUNS: CostRun[] = Array.from({ length: 9 }, (_, i) => ({ n: i + 1, run_id: `run-${i + 1}`, started_at: hour(i + 1), path: i < 3 ? "agent" : "workflow", workflow: i < 3 ? null : "answer", digest: i < 3 ? null : DIGEST, audited: false, cost_usd: 1, cost_upper_bound: false, learning_usd: 0, total_usd: 1 }));
 const CHECK = { compile_after: 20, agree_min: 0.9, alone_min: 0.8, attempt: 1 as const, n: 10, agreed: 9, alone: 9 };
 /** The champion as the promotions read gives it (`champion`): its nodes with their tiers and checks, and its check. */
 const CHAMPION: NonNullable<Serving["champion"]> = { digest: DIGEST, commit: "c".repeat(40), check: CHECK, nodes: [
@@ -75,6 +75,27 @@ describe("the bill chart", () => {
     expect(html).toContain('data-testid="bill-actual"');
     expect(html).toContain("run-200000");
   }, 60_000);
+  it("tops the dollar axis just above the bill: $1.18 reads to $1.25, never $2", () => {
+    const small: Bill = { ...BILL, points: BILL.points.map((p) => ({ ...p, actual_usd: p.actual_usd / 10, agent_usd: Math.min(1.18, p.agent_usd! / 10 + 0.28) })), booked_usd: 0.7 };
+    const host = draw(createElement(BillChart, { bill: small, width: 900 }));
+    const ticks = [...host.querySelectorAll("[data-testid=bill-y-axis] text")].map((t) => t.textContent);
+    expect(ticks.at(-1)).toBe("$1.25");
+    expect(ticks).not.toContain("$2.00");
+  });
+  it("labels the two lines' ends off the data: in a gutter right of the last point, short, pushed apart", () => {
+    const host = draw(createElement(BillChart, { bill: BILL, width: 900 }));
+    const labels = [...host.querySelectorAll<SVGTextElement>("[data-testid=bill-end-label]")];
+    expect(labels.map((l) => l.textContent)).toEqual(["Bill $7.00", "Agent $9.00"]);
+    const end = Number(/([\d.]+),[\d.]+$/.exec(host.querySelector("[data-testid=bill-actual]")!.getAttribute("d")!)![1]);
+    for (const l of labels) expect(Number(l.getAttribute("x"))).toBeGreaterThan(end);
+    const [a, b] = labels.map((l) => Number(l.getAttribute("y")));
+    expect(Math.abs(a! - b!)).toBeGreaterThanOrEqual(12);
+    // Lines that end together still read apart.
+    const close: Bill = { ...BILL, points: BILL.points.map((p) => ({ ...p, agent_usd: p.actual_usd + 0.01 })) };
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const ys = [...draw(createElement(BillChart, { bill: close, width: 900 })).querySelectorAll<SVGTextElement>("[data-testid=bill-end-label]")].map((l) => Number(l.getAttribute("y")));
+    expect(Math.abs(ys[0]! - ys[1]!)).toBeGreaterThanOrEqual(12);
+  });
 });
 
 describe("the audit line", () => {
@@ -97,6 +118,14 @@ describe("the audit line", () => {
     expect(holds).toHaveLength(1);
     expect(holds[0]).toMatch(/^Held at run 8 · answer · refused by this release's DSL/);
     expect(holds[0]).not.toContain("check");
+  });
+  it("agrees with the runs a shadow was charged to: an audited run the ledger has no row of yet is said as not scored yet", () => {
+    // 16 audited served runs; the ledger has 15 rows: the newest is scored at a later run's start.
+    const runs: CostRun[] = Array.from({ length: 16 }, (_, i) => ({ ...RUNS[3]!, n: i + 4, run_id: `run-${i}`, audited: true }));
+    const host = draw(createElement(AuditLine, { serving: SERVING, audits: AUDITS, bill: BILL, runs }));
+    expect(host.textContent).toContain("All time: 13 of 15 agreed · 1 not scored yet");
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    expect(draw(createElement(AuditLine, { serving: SERVING, audits: AUDITS, bill: BILL, runs: runs.slice(0, 15) })).textContent).not.toContain("not scored");
   });
   it("says nothing of all time while the audits are read", () => {
     const host = draw(createElement(AuditLine, { serving: SERVING, audits: "loading", bill: BILL }));

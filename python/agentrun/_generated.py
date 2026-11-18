@@ -3279,7 +3279,6 @@ class GetAgentLearningResponseImpactBefore(TypedDict):
     median_duration_s: float
     median_cost_usd: float | None
     cost_runs: int
-    median_learning_usd: float | None
 
 
 class GetAgentLearningResponseImpactAfter(TypedDict):
@@ -3287,7 +3286,6 @@ class GetAgentLearningResponseImpactAfter(TypedDict):
     median_duration_s: float
     median_cost_usd: float | None
     cost_runs: int
-    median_learning_usd: float | None
 
 
 class ListLearningLogResponse(TypedDict):

@@ -2089,14 +2089,12 @@ export type GetAgentLearningResponse = {
       median_duration_s: number;
       median_cost_usd: number | null;
       cost_runs: number;
-      median_learning_usd: number | null;
     };
     after: {
       runs: number;
       median_duration_s: number;
       median_cost_usd: number | null;
       cost_runs: number;
-      median_learning_usd: number | null;
     };
   } | null;
 };
