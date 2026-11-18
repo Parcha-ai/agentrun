@@ -1227,9 +1227,11 @@ even a pre-admission 429 is not retried automatically. This changes request retr
 admission, dispatch, journal fencing, restart or cancellation behavior; the recovery models do not change.
 
 Offline regressions cover streamed native tools, continuation, reasoning, cache accounting, missing usage, cancellation,
-errors, credential scoping and actual Pi conversation retries. **Live validation remains outstanding.** A maintainer
-must supply a key and explicitly authorize a bounded spend before testing real tool continuation, cache-hit behavior,
-cancellation and billing. The protocol fixtures are not evidence of live compatibility or cache savings.
+errors, credential scoping and actual Pi conversation retries. A live pass against Particle's API (2026-11-18, twelve
+checks) saved a key, then completed a plain run, tool calls continued after the model's reasoning, a follow-up, a
+cancel, a capped run and a workflow's model nodes. Replies reported cached input tokens and no cache writes, and each
+priced run's cost equaled its tokens at list price. Not yet seen live: a rate limit or server error from Particle,
+and the estimate against Particle's own bill. The protocol fixtures alone are not evidence of live compatibility.
 
 ### On a ChatGPT plan
 
