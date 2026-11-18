@@ -13,6 +13,7 @@ import * as table from "../dist/harness-table.js";
 import * as host from "../dist/host.js";
 import { agent, follow, scratch, serve } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
+import { installGoose, needsGoose } from "./fixtures/goose-installed.mjs";
 
 const MiB = 2 ** 20;
 // Read as names, not bindings: a build without them fails each test on its own, not the file at its import.
@@ -50,6 +51,15 @@ test("the memory math: what runs may hold is the host's memory less the server's
   assert.equal(neverFits("claude-agent", 512 * MiB), undefined);
   assert.equal(neverFits("claude-agent", 384 * MiB), "This server has 384 MB of memory and keeps 128 MB for itself; a claude-agent run needs about 288 MB more, so it can't start here. pi and codex runs fit.");
   assert.equal(neverFits("codex", 300 * MiB), "This server has 300 MB of memory and keeps 128 MB for itself; a codex run needs about 192 MB more, so it can't start here. pi runs fit.");
+});
+
+test("the memory words name Goose among the runs that fit only once it is installed: not before", { skip: needsGoose }, async (t) => {
+  const { DATA_ENV } = await import("../dist/files.js");
+  const bare = { [DATA_ENV]: join(await scratch(t), "agents") };
+  assert.match(neverFits("claude-agent", 384 * MiB, bare), / pi and codex runs fit\.$/, "not installed: not named");
+  const installed = { [DATA_ENV]: installGoose(join(await scratch(t), "agents")) };
+  // 384 MB keeps 256 for runs: one Goose run (256) fits, as one codex run (192) does.
+  assert.match(neverFits("claude-agent", 384 * MiB, installed), / pi, codex and goose runs fit\.$/);
 });
 
 test("an opencode run reserves its own measured size, 704 MB, not the largest: 1 GB holds one, 2 GB two and 512 MB none, said in words", () => {

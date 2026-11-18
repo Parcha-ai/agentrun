@@ -3945,7 +3945,7 @@ export interface operations {
         kind: "tool" | "model";
         label: string;
         unlocks: string[];
-        harnesses: ("pi" | "claude-agent" | "codex" | "opencode")[];
+        harnesses: string[];
         fields: {
           name: string;
           set: boolean;
