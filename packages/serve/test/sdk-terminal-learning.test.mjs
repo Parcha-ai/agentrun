@@ -10,7 +10,7 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
     test(`${runtime} SDK ${mode} settles terminal learning without dispatching a model`, async t => {
       const server = await serve(t, { runner: false });
       const { api, store } = server, learning = mode !== "expired-off", id = "sdk-terminal";
-      const created = await api("POST", "/agents", { definition: { id, name: id, instructions: "Keep application execution in its backend.", sdk: { runtime }, learning: learning ? "notes" : false, tools: [] } });
+      const created = await api("POST", "/agents", { definition: { id, name: id, instructions: "Keep application execution in its backend.", sdk: { runtime }, learning, tools: [] } });
       assert.equal(created.status, 201, JSON.stringify(created.body));
       const started = await api("POST", `/agents/${id}/sdk-runs`, { runtime, input: "An application task whose outcome has not been reported.", instructions: "Keep the original application policy." }, { "Idempotency-Key": "terminal" });
       assert.equal(started.status, 201, JSON.stringify(started.body));

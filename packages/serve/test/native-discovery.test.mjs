@@ -81,7 +81,7 @@ for(const [runtime,versions,minimum] of [
   const env={...f.env,NATIVE_TEST_VERSION:version};
   const target=(await discoverNative({project:f.project,runtime,env})).targets[0];
   assert.equal(target.state,'needs_attention',version);
-  assert.deepEqual([target.capabilities.launch,target.capabilities.notes,target.capabilities.skills],[false,false,false],version);
+  assert.deepEqual([target.capabilities.launch,target.capabilities.learning],[false,false],version);
   assert.ok(target.issues.some(issue=>issue.includes(minimum)),JSON.stringify(target.issues));
   const verified=await verifyNative(target,{env});assert.equal(verified.state,'needs_attention');assert.equal(verified.connected,false);
  }

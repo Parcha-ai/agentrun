@@ -11,6 +11,7 @@ export const COLOR_TOKENS = {
   run: ["run-active"],
   workflow: ["wf-jev", "wf-parallel", "wf-openrouter", "wf-tool", "wf-exit"],
   chart: ["chart-agent", "chart-handed-back", "chart-workflow"],
+  trace: ["trace-model", "trace-tool"],
 } as const;
 
 /** The type scale: the class, its size, and what it is for. */
@@ -81,4 +82,6 @@ export const NON_TEXT_PAIRS: readonly { mark: string; on: string }[] = [
   { mark: "ring", on: "background" },
   { mark: "ring", on: "card" },
   { mark: "ring", on: "muted" },
+  // A trace's bars are told from the panel they sit on, and from the page under a swatch.
+  ...["trace-model", "trace-tool"].flatMap((mark) => ["background", "card"].map((on) => ({ mark, on }))),
 ];

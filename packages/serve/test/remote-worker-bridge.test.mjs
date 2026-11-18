@@ -27,21 +27,20 @@ for(const runtime of ['claude-code','codex'])test(`remote ${runtime} reuses the 
  const discovered=await remote.call('discover',{payload:{project:f.project,runtime}}),target=discovered.targets.find(t=>t.selector.kind==='project');
  const prepared=await remote.call('prepare',{target});
  assert.equal(prepared.target.connected,true);assert.match(prepared.instructions.text,/Source project policy/);
- await remote.call('open',{target,session_key:'task-session',payload:{expected_fingerprint:prepared.target.fingerprint,context:'Use the approved learned preference.',skills:[{name:'approved-skill',files:{'SKILL.md':'Use the retained skill.','references/detail.md':'Read-only skill evidence.'}}]}});
+ await remote.call('open',{target,session_key:'task-session',payload:{expected_fingerprint:prepared.target.fingerprint,context:'Use the approved learned preference.'}});
  const first=await remote.call('send',{target,session_key:'task-session',payload:{prompt:'Perform this task.',timeout_ms:3000}});
  const second=await remote.call('send',{target,session_key:'task-session',payload:{prompt:'Reflect on the task.',reflection:true,timeout_ms:3000}});
  assert.equal(first.sessionId,second.sessionId);assert.equal(first.answer,'native answer');
  assert.ok(remote.events.some(e=>e.session_key==='task-session'&&e.event.type==='usage'));
  await assert.rejects(remote.call('close',{target:{...target,project:'/another/source'},session_key:'task-session'}),/different source target/);
  await remote.call('close',{target,session_key:'task-session'});
- const grade=await remote.call('grade',{target,payload:{prompt:'Evaluate this learning evidence.',timeout_ms:3000}});
- assert.equal(grade.answer,'native answer');
+ await assert.rejects(remote.call('grade',{target,payload:{prompt:'Evaluate this learning evidence.',timeout_ms:3000}}),/Unsupported remote operation/,'no grader turn reaches a source');
  const calls=(await f.calls()).filter(c=>c.args.includes('--print')||c.args.includes('exec'));
- assert.equal(calls.length,3);assert.equal(calls[0].cwd,f.project);assert.equal(calls[1].cwd,f.project);assert.notEqual(calls[2].cwd,f.project);
+ assert.equal(calls.length,2);assert.equal(calls[0].cwd,f.project);assert.equal(calls[1].cwd,f.project);
  assert.equal(await readFile(join(f.project,runtime==='codex'?'AGENTS.md':'CLAUDE.md'),'utf8'),'Source project policy remains unchanged.');
  assert.ok(calls.every(call=>!call.args.some(arg=>/dangerously|full-auto|bypass/.test(arg))));
  const firstText=runtime==='claude-code'?JSON.stringify(calls[0]):JSON.parse((await readFile(inputLog,'utf8')).split('\n')[0]).prompt;
- assert.match(firstText,/approved learned preference/);assert.match(firstText,/approved-skill/);
+ assert.match(firstText,/approved learned preference/);
 });
 
 test('remote cancellation kills the native turn and refuses another turn in the failed session',async t=>{

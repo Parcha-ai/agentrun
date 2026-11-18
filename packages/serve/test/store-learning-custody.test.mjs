@@ -2,7 +2,7 @@
 // run-learning-served.ts) is cut by the run's one cut (run-cut.ts), as its words are: every secret this server keeps and
 // every sign-in pointer the run was handed. A run whose hand can't be read back here is withheld: its view and list row
 // serve no learning, and GET /runs/{id}/learning is refused (403, in the view's words), as its graph and files are. The
-// learning rows are written to the store directly (its launch's given notes, its kept learning_proposals row); a workflow
+// learning rows are written to the store directly (its launch's learning start, its kept learning_proposals row); a workflow
 // run can't drive learning on this switch.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
@@ -22,23 +22,23 @@ const sha = (text) => createHash("sha256").update(text, "utf8").digest("hex");
 const vendors = { remove: async () => undefined };
 const depsOf = (store) => ({ origin: "https://run.test", serverSecrets: () => [KEY], signIns: signInsOverStore(store, SEAL, vendors) });
 
-/** Agent alpha (it learns), its Browserbase sign-in POINTER saved, and run-1 launched on a Browserbase plane given a note
- *  whose name holds KEY and POINTER, handed `hand`, ended with its learning kept. */
+/** Agent alpha (it learns), its Browserbase sign-in POINTER saved, and run-1 launched on a Browserbase plane, handed
+ *  `hand`, ended with its learning kept: a drop whose detail holds KEY and POINTER. */
 async function learnedRun(t, hand) {
   const { store } = await storeOn(t);
   await store.agents.create({ id: "alpha", name: "Alpha" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", learning: true } });
   await saveSignIn(store, SEAL, { agentId: "alpha", provider: "browserbase", pointer: POINTER });
-  const given = [{ file: "account.md", name: `Account ${POINTER} under ${KEY}` }];
-  await store.runs.create({ id: "run-1", agentId: "alpha", revisionId: "rev-1" }, { body: { input: { content: "Go." }, title: "t", place: { mode: "runner" }, plane: { browser: "browserbase" }, learning: { given, seed: "a".repeat(40), section: "# Learned\n" } } });
+  await store.runs.create({ id: "run-1", agentId: "alpha", revisionId: "rev-1" }, { body: { input: { content: "Go." }, title: "t", place: { mode: "runner" }, plane: { browser: "browserbase" }, learning: { seed: "a".repeat(40), section: "# Learned\n" } } });
   const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   await store.runs.update(claim, { signInHanded: [sha(hand)] });
-  await store.runs.update(claim, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: { state: "dropped", reason: "empty", detail: "Nothing to keep." } } }] });
+  const detail = `Nothing to keep for account ${POINTER} under ${KEY}.`;
+  await store.runs.update(claim, { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: { state: "dropped", reason: "empty", detail } } }] });
   return store;
 }
 
 const holds = (value, needle) => JSON.stringify(value ?? null).includes(needle);
 
-test("a readable handed run's learning, its note names holding a key this server keeps and the pointer it was handed, is served cut in its view, its list row and GET /runs/{id}/learning", async (t) => {
+test("a readable handed run's learning, its detail holding a key this server keeps and the pointer it was handed, is served cut in its view, its list row and GET /runs/{id}/learning", async (t) => {
   const store = await learnedRun(t, POINTER);
   const deps = depsOf(store);
   const view = (await viewOverStore(store, "run-1", deps)).learning;
@@ -46,7 +46,7 @@ test("a readable handed run's learning, its note names holding a key this server
   const body = await servedRunLearning(deps, store, "run-1");
   for (const [where, learning] of Object.entries({ view, listed, body })) {
     assert.ok(learning, `${where} serves its learning`);
-    assert.equal(learning.given?.[0]?.name, "Account [redacted] under [redacted]", `${where}: ${JSON.stringify(learning.given)}`);
+    assert.equal(learning.detail, "Nothing to keep for account [redacted] under [redacted].", `${where}: ${JSON.stringify(learning)}`);
     assert.ok(!holds(learning, POINTER) && !holds(learning, KEY), `${where}: ${JSON.stringify(learning)}`);
   }
 });

@@ -51,22 +51,12 @@ on a harness the server does not run (409 `agent_not_runnable`).
 
 No password is recorded: a request that sent one lists only its field names (`body_fields`), and the session value is a placeholder.
 
-`learning.*` are one agent's learning, recorded from a faux server with learning on (a refund-policy finder that works slowly until it has notes and reads each note first once it does, run six times). Taylor Stitch's run keeps the first note, Brooklinen's
-keeps a better one that replaces it, a person adds a note of their own, Kith's note is not kept (about one shop only), and
-three runs have nothing new. Then, in order: the agent, its learning, its runs and its stats; a person opens a note
-(`learning.note`), someone else saves a change to it (`learning.note-theirs`), the person's save on the version they
-opened is refused (`learning.note-stale`, 412), the newest version (`learning.note-newest`), a save with a hidden
-character the checks refuse (`learning.note-refused`, 400 with `problems`), the clean save (`learning.note-saved`) and the
-learning after it; the person's own note read and retired, and the learning after that. `learning.off-*` are an agent with
-no notes and learning off: its learning, its runs, the definition saved with learning on, the agent read again after it
-(`learning.off-agent-after`, as its page reads it), and its learning after.
-They are recorded from a server that says what each run read and kept (`used`, `learned`, on a run and in every list)
-and the agent's before and after (`impact`): two Brooklinen and Allbirds runs, the agent's runs and its learning carry
-them. Each note in the learning carries its `etag`, the same value as `learning.note`'s ETag, so the console edits and
-retires on the version a card shows; the note's own reads are kept for the reload after a refused save. The runs list
-carries each run's learning in words (`detail`), and the impact each side's time to the answer, the job's own cost and
-what learning itself costs a run.
-`learning.diff-run` and `learning.diff` are a pair from one later recording of the same story: Brooklinen's run, and what
-its learning changed (`GET /v2/runs/{id}/learning/diff`: the note it added, the note it replaced, and the index), for
-the run page's "What it changed". Their run is not the one in `learning.runs`.
+`learning.*` are one agent's learning, first recorded from a faux server with learning on. `learning.stats` is a refund-policy
+finder's stats. `learning.off-*` are an agent with nothing learned and learning off: its learning, its runs, the
+definition saved with learning on, the agent read again after it (`learning.off-agent-after`, as its page reads it), and
+its learning after. `learning.diff-run` and `learning.diff` are a pair: Brooklinen's run, and what its learning changed
+(`GET /v2/runs/{id}/learning/diff`: a line added to corrections.md and a workflow draft it compiled), for the run page's
+"What it changed". When notes were deleted (corrections.md and workflow drafts are all an agent learns), the learning
+views were edited to the served shape (`corrections`, `workflows`) and the diff pair to a corrections and workflow
+change; the note-story recordings went with the notes.
 No token is written to any fixture.

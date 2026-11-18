@@ -3,7 +3,7 @@ parameters:
   owner: "acme"
   repo: "lantern"
   groups: "Slack, Status"
-# The agent's learning folder is seeded from fixtures/learning/ (MEMORY.md and its one note) before the run, so the
-# run reads the note under # Learned as it would after the owner's edit to a past draft was kept. The message itself
-# says nothing about the word: only the learning path can carry it.
-learning: fixtures/learning/
+# The agent's corrections are seeded from fixtures/corrections.md (one line) before the run, so the run reads it under
+# # Learned as it would after the owner's correction of a past draft. The message itself says nothing about the word:
+# only the learning path can carry it.
+learning: fixtures/corrections.md

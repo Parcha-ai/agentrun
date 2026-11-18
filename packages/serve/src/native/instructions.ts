@@ -2,9 +2,12 @@ import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { basename, dirname, sep } from "node:path";
 import { parse as parseToml } from "smol-toml";
-import { NATIVE_GRADE_INSTRUCTION_BYTES } from "../learn/grade.js";
 import type { NativeBinding, NativeTarget } from "./types.js";
 import {NATIVE_RUNTIME_FACTS,NATIVE_CLAUDE_POLICY_UNRESOLVED,NATIVE_CLAUDE_ADDITIONAL_POLICY_UNRESOLVED} from './runtimes.js';
+
+/** The most bytes (UTF-8) of a native or SDK run's standing instructions kept as its learning's evidence: a source policy
+ *  past it is cut, and learning is skipped for the run. */
+export const INSTRUCTION_EVIDENCE_BYTES = 65_536;
 
 export type NativeInstructionSnapshot = {
   text: string;
@@ -88,9 +91,9 @@ export function withSavedNativeInstructions(snapshot: NativeInstructionSnapshot,
 
 function boundedSnapshot(text: string, files: NativeInstructionSnapshot["files"], truncated: boolean, incomplete?: string): NativeInstructionSnapshot {
   const bytes=Buffer.from(text,"utf8");
-  if(bytes.length<=NATIVE_GRADE_INSTRUCTION_BYTES)return {text,files,truncated,...(incomplete?{incomplete}:{})};
+  if(bytes.length<=INSTRUCTION_EVIDENCE_BYTES)return {text,files,truncated,...(incomplete?{incomplete}:{})};
   const marker="\n\n[Native instruction snapshot truncated: additional standing policy was omitted. Do not assume the excerpt is complete.]";
-  let end=NATIVE_GRADE_INSTRUCTION_BYTES-Buffer.byteLength(marker,"utf8"), prefix="";
+  let end=INSTRUCTION_EVIDENCE_BYTES-Buffer.byteLength(marker,"utf8"), prefix="";
   const decoder=new TextDecoder("utf-8",{fatal:true});
   // A prefix must end on a whole UTF8 codepoint, including when a policy uses non-ASCII text.
   for(let trim=0;trim<4;trim++){try{prefix=decoder.decode(bytes.subarray(0,end-trim));break;}catch{ /* incomplete final codepoint */ }}

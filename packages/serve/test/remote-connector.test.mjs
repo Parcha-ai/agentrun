@@ -1,14 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { serve, follow, storeBytes } from './support.mjs';
-import { mkdir,writeFile } from 'node:fs/promises';
-import { dirname,join } from 'node:path';
-import { agentFolderOf } from '../dist/files.js';
-import { seedOf } from '../dist/learning.js';
-import { git,resnap } from './learn-support.mjs';
+import { learningFolderOf, seedOf } from '../dist/learning.js';
+import { learningCommit } from '../dist/learn/commit.js';
 import { RemoteConnectors } from '../dist/native/remote.js';
 
-const target = { runtime:'codex',project:'/source-only/project',selector:{kind:'project'},machine_id:'source-machine',version:'0.167.2',model:'source-model',fingerprint:'f'.repeat(64),configuration:[],skills:[],mcp_servers:[],state:'ready',issues:[],capabilities:{launch:true,notes:true,skills:true,workflows:false,approval:'unavailable',usage:true},connected:true,verified_at:new Date().toISOString() };
+const target = { runtime:'codex',project:'/source-only/project',selector:{kind:'project'},machine_id:'source-machine',version:'0.167.2',model:'source-model',fingerprint:'f'.repeat(64),configuration:[],skills:[],mcp_servers:[],state:'ready',issues:[],capabilities:{launch:true,learning:true,workflows:false,approval:'unavailable',usage:true},connected:true,verified_at:new Date().toISOString() };
 const usage={input_tokens:100,output_tokens:20,cache_read_tokens:0,cache_write_tokens:0,cost_usd:null};
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 async function setup(t, options={runner:false}) {
@@ -155,10 +152,9 @@ test('expired remote dispatch is never replayed and cancellation reaches the sou
  const polled=await broker.poll(s.id,{worker_id:'worker-2',active:[{command_id:next.command_id,lease_token:next.lease_token}]});assert.ok(polled.cancelled.includes(next.command_id));
 });
 
-test('remote task uses the ordinary journal, checked promotion and next-run seed; Off omits learning', {timeout:90_000},async t=>{
+test('remote task uses the ordinary journal and the learned corrections as its seed; Off omits learning', {timeout:90_000},async t=>{
  let stopped=false;let failure;let worker; t.after(async()=>{stopped=true;await worker;if(failure)throw failure;});
  const s=await setup(t,{runner:true});const sessions=new Map(), seen=[];
- const note='---\nname: Release status format\ndescription: How to answer release status requests\ntype: user\n---\nFor release status answers, use the label Launch state followed by the status.\n';
  worker=(async()=>{while(!stopped){
   const polled=await s.call('POST','/poll',{worker_id:'worker-1'});
   if(polled.status!==200)throw new Error(JSON.stringify(polled.body));
@@ -168,28 +164,29 @@ test('remote task uses the ordinary journal, checked promotion and next-run seed
    else if(c.type==='open')sessions.set(c.session_key,{context:c.payload.context,turn:0});
    else if(c.type==='send'){
     const session=sessions.get(c.session_key);session.turn++;
-    const answer=c.payload.reflection?'```note release-status.md\n'+note+'```':session.context.includes('Launch state')?'Launch state: ready':'ready';
+    const answer=session.context?.includes('Launch state')?'Launch state: ready':'ready';
     const events=[{type:'session',sessionId:c.session_key},{type:'text',text:answer},{type:'usage',usage}];
     const recorded=await s.call('POST',`/commands/${c.command_id}/events`,{lease_token:c.lease_token,sequence:0,events});assert.equal(recorded.status,200,JSON.stringify(recorded.body));
     result={sessionId:c.session_key,answer,model:'source-model',usage};
-   }else if(c.type==='grade')result={sessionId:'isolated-grader',answer:JSON.stringify({merge:true,reason:'Explicit user preference.',items:[{file:'release-status.md',general:true,decision:'keep',origin:'you',why:'The user requested a stable format.'}]}),model:'source-model',usage};
-   else if(c.type==='close')sessions.delete(c.session_key);
+   }else if(c.type==='close')sessions.delete(c.session_key);
    const done=await s.call('POST',`/commands/${c.command_id}/complete`,{lease_token:c.lease_token,result});assert.equal(done.status,200,JSON.stringify(done.body));
   }
   await pause(10);
  }})().catch(e=>{failure=e;});
  assert.equal((await s.api('POST',`/agents/${s.agentId}/native/verify`,{})).body.native.state,'ready');
- assert.equal((await s.api('PUT',`/agents/${s.agentId}/definition`,{definition:{instructions:'',learning:'notes'}})).status,200);
+ assert.equal((await s.api('PUT',`/agents/${s.agentId}/definition`,{definition:{instructions:'',learning:true}})).status,200);
  const start=async content=>{const r=await s.api('POST',`/agents/${s.agentId}/runs`,{input:{content}});assert.equal(r.status,202,JSON.stringify(r.body));await follow(s.api,r.body.run_id,['completed']);return r.body.run_id;};
- const first=await start('Remember my release status preference: label it Launch state followed by the status. Current status ready.');
- let learning;for(let i=0;i<200;i++){learning=(await s.api('GET',`/runs/${first}/learning`)).body;if(learning.state==='merged')break;await pause(50);}
- assert.equal(learning.state,'merged',JSON.stringify(learning));
+ // The owner's correction on the agent's learning main, as a run's merge lands one.
+ await seedOf(s.data,s.agentId);const folder=learningFolderOf(s.data,s.agentId);
+ try{const merged=await learningCommit(folder.workspace,{runId:'owner-correction',reason:"The owner's correction",files:[],correction:'For release status answers, use the label Launch state followed by the status.'});assert.equal(merged.ok,true,JSON.stringify(merged));}finally{await folder.end();}
+ const main=(await seedOf(s.data,s.agentId)).sha;
  const second=await start('Report the release status. It is ready.');
- const run=(await s.api('GET',`/runs/${second}`)).body;assert.equal(run.result.final_answer,'Launch state: ready');assert.ok(run.native.learning_revision);
+ const run=(await s.api('GET',`/runs/${second}`)).body;assert.equal(run.result.final_answer,'Launch state: ready');assert.equal(run.native.learning_revision,main);
  assert.equal((await s.api('PUT',`/agents/${s.agentId}/definition`,{definition:{instructions:'',learning:false}})).status,200);
  const third=await start('Report the release status. It is ready.');const off=(await s.api('GET',`/runs/${third}`)).body;
  assert.equal(off.result.final_answer,'ready');assert.equal(off.native.learning_revision,null);assert.equal(off.learning,null);
- assert.notEqual(run.native.session_id,off.native.session_id);assert.ok(seen.some(c=>c.type==='grade'));assert.equal(seen.filter(c=>c.type==='open').length,3);
+ assert.notEqual(run.native.session_id,off.native.session_id);assert.equal(seen.filter(c=>c.type==='open').length,2);
+ assert.equal(seen.filter(c=>c.type==='send').length,2,'one send a run: no end-of-run turn reaches the source');
 });
 
 
@@ -218,69 +215,4 @@ test('a worker heartbeat requests only its own command namespace from the store'
 });
 
 
-test('a remote run starts with supported learned skills and visibly omits excess skills and resources', {timeout:60_000}, async t=>{
- let stopped=false,worker,failure; t.after(async()=>{stopped=true;await worker;if(failure)throw failure;});
- const s=await setup(t,{runner:true}),opened=[];
- await seedOf(s.data,s.agentId);
- const repo=join(agentFolderOf(s.data,s.agentId),'learning');
- for(const name of ['large-resource',...Array.from({length:65},(_,i)=>`small-${String(i).padStart(2,'0')}`)]){
-  const folder=join(repo,'skills',name);await mkdir(folder,{recursive:true});
-  await writeFile(join(folder,'SKILL.md'),`---\nname: ${name}\ndescription: Fixture skill\n---\nUse this stable rule.\n`);
-  if(name==='large-resource')for(let i=0;i<128;i++)await writeFile(join(folder,`resource-${i}.txt`),'small');
- }
- git(repo,['add','skills']);git(repo,['commit','-q','-m','learned bounded fixtures']);await resnap(s.data,s.agentId);
- assert.equal((await s.api('PUT',`/agents/${s.agentId}/definition`,{definition:{instructions:'',learning:'notes'}})).status,200);
- worker=(async()=>{while(!stopped){
-  const reply=await s.call('POST','/poll',{worker_id:'worker-skills'});assert.equal(reply.status,200);
-  for(const command of reply.body.commands){
-   let result={},error;
-   if(command.type==='prepare')result={target,instructions:{text:'Source policy',files:[],truncated:false}};
-   if(command.type==='open'){
-    opened.push(command.payload.skills);
-    if(command.payload.skills.length>64 || command.payload.skills.some(skill=>Object.keys(skill.files).length>128))error='Invalid learned skills: source count limits exceeded.';
-   }
-   if(command.type==='send')result={sessionId:command.session_key,answer:'Task completed.',usage};
-   if(command.type==='grade')result={sessionId:'grade',answer:'{"merge":false,"reason":"No proposal","items":[]}',usage};
-   const done=await s.call('POST',`/commands/${command.command_id}/complete`,{lease_token:command.lease_token,...(error?{error}:{result})});assert.equal(done.status,200,JSON.stringify(done.body));
-  }
-  await pause(10);
- }})().catch(error=>{failure=error;});
- const start=await s.api('POST',`/agents/${s.agentId}/runs`,{input:{content:'Use any supported learned skills.'}});assert.equal(start.status,202,JSON.stringify(start.body));
- const {last,rows}=await follow(s.api,start.body.run_id,['completed','failed']);
- assert.equal(last.status,'completed',JSON.stringify(last));
- assert.equal(opened.length,1);assert.equal(opened[0].length,64);
- assert.ok(opened[0].every(skill=>Object.keys(skill.files).length<=128));
- assert.ok(!opened[0].some(skill=>skill.name==='large-resource'));
- assert.ok(rows.some(row=>row.kind==='phase' && /learned skills.*left out/i.test(row.summary) && /64|128/.test(row.summary)),'the caller sees why skills were left out');
-});
 
-for(const cacheWrite of [20,null])test('remote Codex grading durably separates uncached input with cache writes '+cacheWrite,{timeout:60_000},async t=>{
- let stopped=false,worker,failure;t.after(async()=>{stopped=true;await worker;if(failure)throw failure;});
- const s=await setup(t,{runner:true}),seen=[],fence=String.fromCharCode(96).repeat(3);
- const file='report-format.md',note='---\nname: Report labels\ndescription: Stable labels for release status reports\ntype: user\n---\nStart release reports with Launch state followed by the status.\n';
- const verdict=JSON.stringify({merge:false,reason:'Inspect reported grading usage without promoting fixture policy.',items:[{file,decision:'drop',question:'General',why:'The test only reads the durable grade usage.'}]});
- const gradeUsage={input_tokens:100,output_tokens:20,cache_read_tokens:40,cache_write_tokens:cacheWrite,cost_usd:null};
- worker=(async()=>{while(!stopped){
-  const reply=await s.call('POST','/poll',{worker_id:'worker-grade-cache'});assert.equal(reply.status,200,JSON.stringify(reply.body));
-  for(const command of reply.body.commands){
-   seen.push(command);let result={};
-   if(command.type==='prepare')result={target,instructions:{text:'Keep source permissions and report release status.',files:[],truncated:false,codexConfigurationChecked:true}};
-   if(command.type==='send')result={sessionId:command.session_key,answer:command.payload.reflection?fence+'note '+file+'\n'+note+fence:'Task completed.',model:'source-model',usage};
-   if(command.type==='grade')result={sessionId:'separate-grade-session',answer:verdict,model:'source-model',usage:gradeUsage};
-   const done=await s.call('POST','/commands/'+command.command_id+'/complete',{lease_token:command.lease_token,result});assert.equal(done.status,200,JSON.stringify(done.body));
-  }
-  await pause(10);
- }})().catch(error=>{failure=error;});
- assert.equal((await s.api('PUT','/agents/'+s.agentId+'/definition',{definition:{instructions:'',learning:'notes'}})).status,200);
- const start=await s.api('POST','/agents/'+s.agentId+'/runs',{input:{content:'Remember my release report preference: start with Launch state, then the status.'}});assert.equal(start.status,202,JSON.stringify(start.body));
- await follow(s.api,start.body.run_id,['completed']);
- let learning;
- for(const by=Date.now()+10_000;;){
-  learning=(await s.api('GET','/runs/'+start.body.run_id+'/learning')).body;
-  if(learning.state==='dropped')break;
-  assert.ok(Date.now()<by,JSON.stringify(learning));await pause(50);
- }
- assert.equal(seen.filter(command=>command.type==='grade').length,1,'the ordinary learning runner uses one leased remote grade');
- assert.deepEqual(learning.tokens.grade,cacheWrite===null?null:{input:40,cache_read:40,cache_write:20,output:20});
- assert.equal(learning.cost_usd.grade,null,'unknown native dollar cost remains unknown');
-});

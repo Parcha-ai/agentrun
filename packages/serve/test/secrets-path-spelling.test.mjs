@@ -7,7 +7,9 @@ import { posix } from "node:path";
 import { test } from "node:test";
 
 const { redactSecrets, valueMatcher } = await import("../dist/learn/secrets.js");
-const { checkNote } = await import("../dist/learn/check.js");
+const { correctionLine, correctionsProblems } = await import("../dist/learn/corrections.js");
+/** What corrections.md would hold with the owner's correction `text`: what the checks read before it is kept. */
+const correction = (text) => correctionLine(text);
 
 /** Whether `text` holds any 8 characters of `value` in a row. */
 const holdsPiece = (text, value) => [...Array(Math.max(0, value.length - 7)).keys()].some((i) => text.includes(value.slice(i, i + 8)));
@@ -42,18 +44,16 @@ test("learning's guard sees a held value as a path names it: the matcher holds t
   assert.equal(holds("nothing held here"), false);
 });
 
-test("a learning note quoting a held value as a path names it is refused, as one quoting it as written is: never laid into a later run", () => {
+test("an owner's correction quoting a held value as a path names it is refused, as one quoting it as written is: never laid into a later run", () => {
   const value = `not-a-secret-path-key//${randomBytes(8).toString("hex")}/`;
   const spelled = value.replace("//", "/").slice(0, -1);
-  const note = (text) => new TextEncoder().encode(`---\nname: where-it-failed\ndescription: The read that failed.\n---\n\n${text}\n`);
   for (const [what, text] of [["as a path names it", `The read failed: open 'notes/${spelled}.txt'.`], ["as written", `The key is ${value}.`]]) {
-    const { problems, note: kept } = checkNote("where-it-failed.md", note(text), [value]);
+    const problems = correctionsProblems(correction(text), [value]);
     assert.ok(problems.some((problem) => problem.rule === "secret_value"), `${what}: refused as the host's value: ${JSON.stringify(problems)}`);
-    assert.equal(kept, undefined, `${what}: no note kept`);
     assert.equal(holdsPiece(JSON.stringify(problems), value), false, `${what}: its problems print no piece of it`);
   }
-  const clean = checkNote("where-it-failed.md", note("The read failed: the file was not there."), [value]);
-  assert.equal(clean.problems.some((problem) => problem.rule === "secret_value"), false, "a note holding no part of it is not refused for it");
+  const clean = correctionsProblems(correction("The read failed: the file was not there."), [value]);
+  assert.equal(clean.some((problem) => problem.rule === "secret_value"), false, "a correction holding no part of it is not refused for it");
 });
 
 // A path or a URL writer can also percent-encode a held value (encodeURIComponent: "/" is %2F, "+" is %2B, "=" is %3D;
@@ -82,8 +82,7 @@ test("a held value with a dot segment, named as a resolver normalizes it (\"a/./
   }
 });
 
-test("a learning note quoting a held value percent-encoded or dot-normalized is refused as the host's value", () => {
-  const note = (text) => new TextEncoder().encode(`---\nname: where-it-failed\ndescription: The call that failed.\n---\n\n${text}\n`);
+test("an owner's correction quoting a held value percent-encoded or dot-normalized is refused as the host's value", () => {
   const encodedValue = encodable();
   const [dotValue] = dotted();
   for (const [what, value, text] of [
@@ -91,9 +90,8 @@ test("a learning note quoting a held value percent-encoded or dot-normalized is 
     ["encodeURI", encodedValue, `It called ${encodeURI(encodedValue)}.`],
     ["dot-normalized", dotValue, `It read notes/${normalized(dotValue)}.txt.`],
   ]) {
-    const { problems, note: kept } = checkNote("where-it-failed.md", note(text), [value]);
+    const problems = correctionsProblems(correction(text), [value]);
     assert.ok(problems.some((problem) => problem.rule === "secret_value"), `${what}: refused as the host's value: ${JSON.stringify(problems)}`);
-    assert.equal(kept, undefined, `${what}: no note kept`);
   }
 });
 
@@ -124,13 +122,11 @@ test("a held value with a leading \"..\" that a folder of the path takes, named 
   }
 });
 
-test("a learning note quoting a held value as its leading \"..\" resolved names it is refused as the host's value", () => {
-  const note = (text) => new TextEncoder().encode(`---\nname: where-it-failed\ndescription: The read that failed.\n---\n\n${text}\n`);
+test("an owner's correction quoting a held value as its leading \"..\" resolved names it is refused as the host's value", () => {
   for (const one of leading()) {
     const value = one.value;
-    const { problems, note: kept } = checkNote("where-it-failed.md", note(`The read failed: open '${resolvedPath(one)}'.`), [value]);
+    const problems = correctionsProblems(correction(`The read failed: open '${resolvedPath(one)}'.`), [value]);
     assert.ok(problems.some((problem) => problem.rule === "secret_value"), `refused as the host's value: ${JSON.stringify(problems)}`);
-    assert.equal(kept, undefined, "no note kept");
     assert.equal(holdsPiece(JSON.stringify(problems), core(value)), false, "its problems print no piece of it");
   }
 });

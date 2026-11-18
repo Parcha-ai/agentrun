@@ -286,7 +286,7 @@ test("imported remote history has every listed token cut, not only the server's 
   assert.equal(registered.status, 200, JSON.stringify(registered.body));
   const id = registered.body.connector.id, credential = registered.body.credential;
   const call = (method, path, body) => request(method, `/connectors/${id}${path}`, body, credential);
-  const target = { runtime: "codex", project: "/source/project", selector: { kind: "project" }, machine_id: "remote-machine", version: "1.0", model: "original-model", fingerprint: "f".repeat(64), configuration: [], skills: [], mcp_servers: [], state: "ready", issues: [], capabilities: { launch: true, notes: true, skills: true, workflows: false, approval: "unavailable", usage: true } };
+  const target = { runtime: "codex", project: "/source/project", selector: { kind: "project" }, machine_id: "remote-machine", version: "1.0", model: "original-model", fingerprint: "f".repeat(64), configuration: [], skills: [], mcp_servers: [], state: "ready", issues: [], capabilities: { launch: true, learning: true, workflows: false, approval: "unavailable", usage: true } };
   assert.equal((await call("POST", "/import", { target_id: "selected", target, history_only: true })).status, 200);
   const pasted = `Tokens pasted by mistake: ${OLD} ${NEW}`;
   const session = { source: "codex", id: "source-session", startedAt: "2026-01-01T09:00:00Z", endedAt: "2026-01-01T09:01:00Z", state: "completed", model: "openai/source-model", activeMs: 60_000, firstPrompt: pasted,

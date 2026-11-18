@@ -5,9 +5,8 @@ import { RunDetail } from "@/components/RunDetail";
 import { messageFeatures } from "@/fixtures";
 import type { LearnedUse, Run, RunLearningRead } from "@/lib/v2";
 
-// A run's page, what its job did with what its agent learned (GET /v2/runs/{id}/learning `used`): the learned skills it
-// was given, read or not, and the learned workflows it called, how many times and how many failed. Nothing when both are
-// empty.
+// A run's page, what its job did with what its agent learned (GET /v2/runs/{id}/learning `used`): the learned workflows
+// it called, how many times and how many failed. Nothing when it called none.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
@@ -19,12 +18,10 @@ const run = (learning: Run["learning"]): Run => ({ sha: null, updated_at: "2026-
 });
 const LEARNS: Run["learning"] = { detail: null, at: "2026-11-11T10:00:09Z", state: "dropped", reason: "empty" };
 const answer = (used: LearnedUse): RunLearningRead => ({
-  run: "run-u", state: "dropped", reason: "empty", detail: null, at: "2026-11-11T10:00:09Z", seed: "c1", merged: null, pending: [], verdict: null, problems: [], compiled: null, draft_errors: [],
-  cost_usd: { grade: null }, tokens: { grade: null }, used,
+  run: "run-u", state: "dropped", reason: "empty", detail: null, at: "2026-11-11T10:00:09Z", seed: "c1", merged: null, workflows: [], corrections: 0, problems: [], compiled: null, draft_errors: [], used,
 });
 const USED: LearnedUse = {
-  skills: [{ name: "find-policies", read: true }, { name: "answer-shape", read: false }],
-  workflows: [{ name: "check-refunds", calls: 3, failed: 1 }],
+  workflows: [{ name: "check-refunds", calls: 3, failed: 1 }, { name: "find-policies", calls: 2, failed: 0 }],
 };
 
 async function open(r: Run, read?: () => Promise<RunLearningRead>, tab: "report" | "timeline" = "report") {
@@ -38,23 +35,21 @@ async function open(r: Run, read?: () => Promise<RunLearningRead>, tab: "report"
   return { host, reads, section };
 }
 
-describe("a run's page, the learned skills and workflows it used", () => {
-  it("lists each skill it was given, read or not, and each learned workflow it called, how many times and how many failed", async () => {
+describe("a run's page, the learned workflows it used", () => {
+  it("lists each learned workflow it called, how many times and how many failed", async () => {
     const t = await open(run(LEARNS), async () => answer(USED));
     expect(t.reads).toEqual(["run-u"]);
     const section = t.section()!;
     expect(section).not.toBeNull();
     const items = [...section.querySelectorAll("li")].map((li) => li.textContent ?? "");
-    expect(items).toHaveLength(3);
-    expect(items[0]).toContain("find-policies");
-    expect(items[0]).toContain("Skill");
-    expect(items[0]).toContain("Read");
-    expect(items[1]).toContain("answer-shape");
-    expect(items[1]).toContain("Given, not read");
-    expect(items[2]).toContain("check-refunds");
-    expect(items[2]).toContain("Workflow");
-    expect(items[2]).toContain("Called 3 times");
-    expect(items[2]).toContain("1 failed");
+    expect(items).toHaveLength(2);
+    expect(items[0]).toContain("check-refunds");
+    expect(items[0]).toContain("Workflow");
+    expect(items[0]).toContain("Called 3 times");
+    expect(items[0]).toContain("1 failed");
+    expect(items[1]).toContain("find-policies");
+    expect(items[1]).toContain("Called twice");
+    expect(items[1]).not.toContain("failed");
     // The agent's Learning tab is a click away.
     expect(section.querySelector('a[href="#/agents/refunds/learning"]')).not.toBeNull();
   });
@@ -62,13 +57,13 @@ describe("a run's page, the learned skills and workflows it used", () => {
     expect((await open(run(LEARNS), async () => answer(USED), "timeline")).section()).not.toBeNull();
   });
   it("one workflow call that did not fail says so without a failed count", async () => {
-    const t = await open(run(LEARNS), async () => answer({ skills: [], workflows: [{ name: "check-refunds", calls: 1, failed: 0 }] }));
+    const t = await open(run(LEARNS), async () => answer({ workflows: [{ name: "check-refunds", calls: 1, failed: 0 }] }));
     const text = t.section()!.textContent ?? "";
     expect(text).toContain("Called once");
     expect(text).not.toContain("failed");
   });
-  it("is hidden when both lists are empty", async () => {
-    const t = await open(run(LEARNS), async () => answer({ skills: [], workflows: [] }));
+  it("is hidden when it called no learned workflow", async () => {
+    const t = await open(run(LEARNS), async () => answer({ workflows: [] }));
     expect(t.reads).toEqual(["run-u"]);
     expect(t.section()).toBeNull();
   });

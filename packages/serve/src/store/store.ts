@@ -274,16 +274,9 @@ export interface ImportRunInput {
 export type AlsoRow =
   | { readonly table: "channel_posts"; readonly row: ChannelPost }
   | { readonly table: "channel_told"; readonly row: { channel: string; marker: string } }
-  /** What the run's end-of-run turn kept: the turn and the proposal checked from it (the run's agent is the row's), and
-   *  its `round` (absent: 1): the run's first end is round 1, each end after a follow-up opened it again the next. */
-  | { readonly table: "learning_proposals"; readonly row: { turn: unknown; proposal: unknown; round?: number } }
-  /** The learning run that grades and merges the kept proposal: a queued run `id` of the run's agent and revision. Started
-   *  once: the same id staged again (an end replayed after a crash) adds nothing. */
-  /** `model`: the grade model (gradeModelOf, as the server resolves it), on the learning run's launch; none, the agent's own.
-   *  `round`: the round it grades (absent: 1), named in its launch. `capUsd`: what the run's cap leaves once everything it
-   *  spent is counted (learning-end.ts gradeCapOf), the learning run's own cap (its launch's max_cost_usd), so its grade
-   *  never takes the run past its cap; absent for an uncapped run, whose grade is capped by nothing. */
-  | { readonly table: "learning_run"; readonly row: { id: string; model?: string; round?: number; capUsd?: number } };
+  /** What the run's end-of-run step kept: the turn and how its learning ended (the run's agent is the row's), and its
+   *  `round` (absent: 1): the run's first end is round 1, each end after a follow-up opened it again the next. */
+  | { readonly table: "learning_proposals"; readonly row: { turn: unknown; proposal: unknown; round?: number } };
 
 /** A run's kept learning (learning_proposals): what its end-of-run turn asked and answered, and the proposal checked from it. */
 export interface LearningProposal {
@@ -304,9 +297,6 @@ export interface Learning {
   proposal(runId: string, round?: number): Promise<LearningProposal | undefined>;
   /** The agent's kept proposals (each round of a run one), newest first. */
   proposals(agentId: string, options?: { limit?: number }): Promise<LearningProposal[]>;
-  /** The agent's kept proposals whose learning run (its grade) has not ended: queued, running or parked. Every one of
-   *  them, however many proposals were kept since, newest first. */
-  grading(agentId: string): Promise<LearningProposal[]>;
   /** Everything agent `agentId`'s runs' learning kept, in two reads whatever the number of its runs: every round of every
    *  run's kept proposal (oldest round first within a run), and the rows of the learning runs they name (as runs.get
    *  reads one; a learning run named and never written has none). An agent-wide read's, never a read a run. */
@@ -316,12 +306,6 @@ export interface Learning {
    *  before it was proposed ended when it was kept; a proposal ended when its learning run ended (ended or failed), whose
    *  row keeps the grade's spend as its cost. One still waiting for its grade is none of them. */
   spend(window: { from: number; to: number }): Promise<LearningSpend[]>;
-  /** What was spent beside run `runId` on its behalf, the one figure every cap gate of the run reads with its own
-   *  sessions (and its grade's cap, learning-end.ts gradeCapOf): each learning run its rounds queued (`beforeRound`: only
-   *  those of the rounds before it), one that ended at its cost, one not ended at its own cap (the most its grade may
-   *  take), and one that ended at an unknown cost at that cap too, the most it could have taken. Null: unknown (one with
-   *  neither). 0 for a run that queued none. */
-  spentBeside(runId: string, options?: { beforeRound?: number }): Promise<number | null>;
 }
 
 /** One run's learning end as GET /usage's learning meter counts it (Learning.spend). */
