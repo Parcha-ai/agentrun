@@ -35,6 +35,7 @@ import { storeSecrets } from "./store-secrets.js";
 import { FAUX_ENV } from "../model.js";
 import { FAUX_VENDOR_API_ENV } from "../tools.js";
 import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
+import { shadowRunId } from "../learn/audit.js";
 import { LEARNING_SCRIPT, learningWorkspace } from "../learn/folder.js";
 import { learningFolderOf } from "../learning.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
@@ -279,6 +280,8 @@ export interface Bound {
 
 type Check = (args: readonly unknown[], bound: Bound) => boolean;
 const ownRun: Check = (args, bound) => args[0] === bound.claim.runId;
+/** The claim's run, or its own audit's shadow run, whose spend its cap gates read beside it (learning-end.ts besideOf). */
+const ownRunOrShadow: Check = (args, bound) => args[0] === bound.claim.runId || args[0] === shadowRunId(bound.claim.runId);
 const ownAgent: Check = (args, bound) => args[0] === bound.agentId;
 const ownClaim: Check = (args, bound) => {
   const claim = args[0] as Partial<Claim> | undefined;
@@ -292,12 +295,13 @@ const always: Check = () => true;
 
 /** The store's methods a run's loop calls, each with what binds it to the claim. A method not here is refused, and the
  *  refusal is said on the runner's log. Reads of the claim's run, its launch, its commands and its agent's revisions;
- *  of the agent's own runs (its learning reads its past runs); the settings its tools read (no sealed value is a setting:
- *  sealed rows are refused whole). Writes only under the claim. */
+ *  of what was spent beside it (its learning grades, its own audit's shadow run's row and launch, which its cap gates
+ *  read); of the agent's own runs (its learning reads its past runs); the settings its tools read (no sealed value is a
+ *  setting: sealed rows are refused whole). Writes only under the claim. */
 const STORE_CALLS: ReadonlyMap<string, Check> = new Map<string, Check>([
   ["flush", always],
-  ["runs.get", ownRun],
-  ["runs.launch", ownRun],
+  ["runs.get", ownRunOrShadow],
+  ["runs.launch", ownRunOrShadow],
   ["runs.list", agentQuery],
   ["runs.ofAgent", ownAgent],
   ["runs.update", ownClaim],
@@ -315,6 +319,7 @@ const STORE_CALLS: ReadonlyMap<string, Check> = new Map<string, Check>([
   ["mcp.pin", ownRun],
   ["readJournal", ownRun],
   ["learning.proposal", ownRun],
+  ["learning.spentBeside", ownRun],
   ["learning.proposals", ownAgent],
   ["learning.list", ownAgent],
   ["learning.get", always],

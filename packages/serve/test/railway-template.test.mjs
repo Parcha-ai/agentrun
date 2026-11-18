@@ -42,8 +42,9 @@ test("the start command is the image's own entrypoint and command, as the image'
   const mount = Object.values(service.volumeMounts)[0].mountPath;
   // Railway's volume is a disk with a lost+found (root's, mode 700): it is given to the server's user too, so an image
   // whose server can't look into it (released before the store's scan let it be) starts. `-h`: the server's user owns
-  // the volume and could make lost+found a link to /etc, which root must not then follow.
-  assert.equal(script, `chown 1000:1000 ${mount} && chmod 700 ${mount} && { [ ! -d ${mount}/lost+found ] || chown -h 1000:1000 ${mount}/lost+found; } && exec setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/home/node ${[...entrypoint, ...cmd].join(" ")}`);
+  // the volume and could make lost+found a link to /etc, which root must not then follow. 711, as the image's /data: a
+  // run's process, a uid of its own, crosses it to its own folders without listing it.
+  assert.equal(script, `chown 1000:1000 ${mount} && chmod 711 ${mount} &&{ [ ! -d ${mount}/lost+found ] || chown -h 1000:1000 ${mount}/lost+found; } && exec setpriv --reuid=1000 --regid=1000 --init-groups env HOME=/home/node ${[...entrypoint, ...cmd].join(" ")}`);
   // Railway mounts a volume as root: the container starts as root (RAILWAY_RUN_UID=0) only for the chown above.
   assert.equal(renderValue(service.variables.RAILWAY_RUN_UID.defaultValue, { domain: "x" }), "0");
   assert.ok(cmd.includes(mount) && cmd[cmd.indexOf("--data") + 1] === mount, "the server's data directory is the volume");

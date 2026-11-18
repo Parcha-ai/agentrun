@@ -13,6 +13,7 @@ import { duplexPair } from "node:stream";
 import { test } from "node:test";
 import { serialize } from "node:v8";
 import { SECRET_NAMES } from "../dist/secrets.js";
+import { shadowRunId } from "../dist/learn/audit.js";
 import { Channel, ChannelClosed, MAX_FRAME } from "../dist/runner/run-channel.js";
 import { FIRST_RUN_ID, RUN_SLOTS, RunIsolationRefused, runIsolationOf, slotId, Slots, storeCall } from "../dist/runner/run-child-host.js";
 import { createServer } from "node:http";
@@ -105,6 +106,27 @@ test("the store a run's process reaches is bound to its claim: another run's jou
   assert.deepEqual(await call("agents.revision", ["rev-own"]), { id: "rev-own", agentId: "agent-own" });
   assert.ok(lines.some((line) => /asked the store for readJournal, which a run's process may not/.test(line)), lines.join("\n"));
   assert.ok(lines.some((line) => /asked for another agent's revision/.test(line)), lines.join("\n"));
+});
+
+test("a capped run's process reads what was spent beside it, its own learning grades and its own audit's shadow run, and no other run's", async () => {
+  const called = [];
+  const store = {
+    runs: {
+      get: async (runId) => (called.push(`runs.get ${runId}`), { id: runId }),
+      launch: async (runId) => (called.push(`runs.launch ${runId}`), { body: "{}" }),
+    },
+    learning: { spentBeside: async (runId) => (called.push(`learning.spentBeside ${runId}`), 0) },
+  };
+  const bound = { claim: { runId: "run-own", epoch: 1 }, agentId: "agent-own", revisionId: "rev-own" };
+  const call = (method, args) => storeCall(store, method, args, bound, () => {});
+  const own = shadowRunId("run-own");
+  assert.equal(await call("learning.spentBeside", ["run-own", {}]), 0);
+  assert.deepEqual(await call("runs.get", [own]), { id: own });
+  assert.deepEqual(await call("runs.launch", [own]), { body: "{}" });
+  await assert.rejects(call("learning.spentBeside", ["run-other", {}]), /of another run or agent/);
+  await assert.rejects(call("runs.get", [shadowRunId("run-other")]), /of another run or agent/);
+  await assert.rejects(call("runs.launch", [shadowRunId("run-other")]), /of another run or agent/);
+  assert.deepEqual(called, ["learning.spentBeside run-own", `runs.get ${own}`, `runs.launch ${own}`]);
 });
 
 // ---------------------------------------------------------------------------------------------------------------------

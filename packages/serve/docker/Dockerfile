@@ -132,11 +132,11 @@ RUN case "$TARGETARCH" in amd64) t=x86_64-linux-gnu a=x86_64 ;; arm64) t=aarch64
 FROM debian:trixie-slim@sha256:a72b4433de1cf7d6bae0c4cee74d0547f58601a643b3375f070c51600d63b6b2
 COPY --from=node /opt/node/ /usr/local/
 # The node user (1000:1000) the official node image has, which the server runs as and /data belongs to.
+RUN groupadd --gid 1000 node && useradd --uid 1000 --gid node --shell /bin/bash --create-home node
 # A run's process runs as a user of its own: slot s of a runner as uid and gid 1001 + s (s < 256, the helper's compiled
 # range), each a user with no home and no shell, its group holding node too, so the server reads what a run writes in
 # its folders (made the slot group's, 2770) and nothing of one run is another's.
-RUN groupadd --gid 1000 node && useradd --uid 1000 --gid node --shell /bin/bash --create-home node \
- && s=0 && while [ "$s" -lt 256 ]; do \
+RUN s=0 && while [ "$s" -lt 256 ]; do \
       id=$((1001 + s)) \
       && groupadd --gid "$id" "run-$s" \
       && useradd --uid "$id" --gid "$id" --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin "run-$s" \
