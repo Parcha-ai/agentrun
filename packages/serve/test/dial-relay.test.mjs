@@ -317,7 +317,7 @@ test("a real dial provider's create on a runner apart ends at once in the server
   const { relay } = await relayOf(t, side, address, "runner-far");
   // The runner's row names a host the server was not given (AGENTRUN_RUNNER_HOSTS): a runner on another host the
   // server's operator did not list.
-  await side.store.runnerRelays.put({ runner: "runner-far", incarnation: relay.incarnation, host: "203.0.113.7", port: relay.port });
+  await side.store.runnerRelays.put({ runner: "runner-far", incarnation: relay.incarnation, host: "runner-far.example", port: relay.port });
   // A dial host whose machine dials the server's public address with its token, as agentrun-dial does.
   const fake = fakeHost({ facts: { connect: "dial", lifetime: "janitor" }, onBoot: (m) => void machine(address, m.boot.AGENTRUN_ATTACH_TOKEN) });
   const daemonPath = join(await scratch(t), "computerd");
@@ -329,7 +329,7 @@ test("a real dial provider's create on a runner apart ends at once in the server
   const took = Date.now() - started;
   assert.equal(made.ok, false, "the create fails");
   assert.equal(made.error.code, "refused", made.error.message);
-  assert.match(made.error.message, /the server refused a dial for run run-far \(machine computer-[0-9a-f]{12}\): runner runner-far, which made it, answers at 203\.0\.113\.7, which is not one of this server's runners' hosts/);
+  assert.match(made.error.message, /the server refused a dial for run run-far \(machine computer-[0-9a-f]{12}\): runner runner-far, which made it, answers at runner-far\.example, which is not one of this server's runners' hosts/);
   assert.doesNotMatch(made.error.message, MINTED);
   assert.ok(took < createMs / 3, `the create ended at the server's refusal, not at createMs: ${took} ms`);
   assert.deepEqual(fake.live(), [], "the machine was deleted");
