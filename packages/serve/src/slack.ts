@@ -21,7 +21,7 @@ import { fetch as undiciFetch } from "undici";
 import { ApiError, invalid } from "./errors.js";
 import { redacted } from "./key-refusal.js";
 import { SERVER_SCOPE } from "./sealed-settings-store.js";
-import { registerNotSecretWrite, registerSecretWrite, secretMeta, secretName, type SecretMeta } from "./secret-writes.js";
+import { registerNotSecretWrite, registerSecretPage, registerSecretWrite, secretMeta, secretName, type SecretMeta } from "./secret-writes.js";
 import type { TriggerFailed } from "./triggers.js";
 import { isObject, unknownFields } from "./validate.js";
 import { type Emitted, type Gone, type Outbound, type OutboundConfig, RUN_EVENTS, type RunNotice, shownUrl, WEBHOOK_EVENTS, Webhooks, type WebhooksOptions, type WebhooksStore } from "./webhooks.js";
@@ -30,6 +30,8 @@ import { type Emitted, type Gone, type Outbound, type OutboundConfig, RUN_EVENTS
 // the API token. A save of the events alone writes no secret, and neither does a test or a redelivery.
 registerSecretWrite("saveSlack", (body) => isObject(body) && body.url !== undefined);
 registerSecretWrite("deleteSlack", () => true);
+// Where the owner finishes each in the console: Settings → Slack. Slack's URL is never in a link: it is the credential.
+registerSecretPage(["saveSlack", "deleteSlack"], "/#/settings/slack");
 registerNotSecretWrite("testSlack", "A test send posts to the saved URL and writes none.");
 registerNotSecretWrite("redeliverSlack", "A redelivery posts a logged message to the saved URL again and writes none.");
 

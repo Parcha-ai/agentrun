@@ -10,7 +10,7 @@ spend cap on every run, and agents that learn from their own runs. Get the perso
 run in about five minutes, with no Node install, no Terminal steps and no hunt for a key. Never ask for a password, key
 or token in this chat, never print one, and never put one on a command line.
 
-The person saves every secret (a model or tool key, an MCP server's token or headers, the webhook's secret, GitHub) in
+The person saves every secret (a model or tool key, an MCP server's token or headers, the webhook's secret, Slack's incoming-webhook URL, GitHub) in
 the console; the API token you hold can't. Prepare everything else through the API or CLI. A secret write answers `403
 forbidden` with `error.details.console_url`, the console's form with the rest filled in (or build it:
 `<console address>/#/settings/mcp?add=<name>&auth=bearer`, adding `&url=<url>` only when no key or token is in the

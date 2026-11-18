@@ -11,7 +11,7 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
-import { SECRET_WRITE_REFUSAL } from "../dist/secret-writes.js";
+import { secretWriteRefusal } from "../dist/secret-writes.js";
 import { slackMessage, SlackPosts } from "../dist/slack.js";
 import { Webhooks } from "../dist/webhooks.js";
 import { openSqliteStore } from "../dist/store/index.js";
@@ -289,7 +289,11 @@ describe("Slack's settings over the API", () => {
     const { url } = canaryUrl();
     const refused = await token("PUT", "/settings/slack", { url });
     assert.equal(refused.status, 403, refused.text);
-    assert.equal(refused.json.error.message, SECRET_WRITE_REFUSAL);
+    // The refusal sends the owner to Settings → Slack, and never names the URL.
+    const link = refused.json.error.details?.console_url;
+    assert.match(String(link), /\/#\/settings\/slack$/);
+    assert.equal(refused.json.error.message, secretWriteRefusal(link));
+    assert.ok(!refused.text.includes(url.split("/").pop()), "the refusal names none of the URL");
     assert.equal((await api("GET", "/settings/slack")).body.configured, false, "nothing saved");
     const saved = await api("PUT", "/settings/slack", { url });
     assert.equal(saved.status, 201, JSON.stringify(saved.body));

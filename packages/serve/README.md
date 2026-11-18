@@ -2335,7 +2335,7 @@ Settings → Slack, or `PUT /v2/settings/slack` with `{"url": "https://hooks.sla
 signed-in session. The URL must be `https://hooks.slack.com/services/...`, with no port, query or user.
 
 The URL is the credential: anyone who has it can post to the channel. So saving it is a secret write (the API token is
-refused `403`), it is sealed under the server's seal key like a [tool key](#tool-keys), and no answer, log line or
+refused `403`, with `details.console_url` opening Settings → Slack, never the URL), it is sealed under the server's seal key like a [tool key](#tool-keys), and no answer, log line or
 delivery shows more than its last four characters. A replaced or removed URL stays sealed in the store, so a run that
 echoes it, or its token, is still cut.
 
