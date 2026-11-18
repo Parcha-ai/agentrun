@@ -1,7 +1,7 @@
 // The lines an import ends with: how many sessions it found and from where, how many agents they make, and what they
 // used, from every session found, those imported before included. A number with no data behind it reads unknown.
 import type { RunMetrics } from "./timeline/index.js";
-import { SOURCES, type Source } from "./import-sources.js";
+import { SOURCE_NAMES, SOURCES, type Source } from "./import-sources.js";
 
 /** A session an import found: its source and agent; what it used (undefined: unknown), with its time at work; and its
  *  model requests by local hour of the day (undefined: their times are unknown). `untied`: a subagent's session whose
@@ -13,8 +13,6 @@ export type Found = {
   hours?: number[];
   untied?: boolean;
 };
-
-const NAMES: Record<Source, string> = { "claude-code": "Claude Code", codex: "Codex", pi: "pi" };
 
 /** Requests by local hour of the day, from their times (ms). */
 export function hoursOf(times: Iterable<number>): number[] {
@@ -78,7 +76,7 @@ export function summaryLines(everything: readonly Found[], open: OpenAt, importe
   const [top, topCalls] = [...calls].sort(([a, x], [b, y]) => y - x || a.localeCompare(b))[0] ?? [];
   const tool = !measured.length ? "unknown" : top === undefined || !total ? "none" : `${top} (${Math.round((100 * topCalls!) / total)}%)`;
   return [
-    `Found ${plural(found.length, "session")}${by.length ? `  ${by.map(([source, n]) => `${NAMES[source]} ${count(n)}`).join(" · ")}` : ""}`,
+    `Found ${plural(found.length, "session")}${by.length ? `  ${by.map(([source, n]) => `${SOURCE_NAMES[source]} ${count(n)}`).join(" · ")}` : ""}`,
     imported ? importedLine(imported, agents, found.length) : `Would import into ${plural(agents, "agent")} (one per project)`,
     `+ ${used.join(" · ")}`,
     `+ Busiest hour: ${busiest === undefined ? "unknown" : `${String(busiest).padStart(2, "0")}:00`} · top tool: ${tool}`,
