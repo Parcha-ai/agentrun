@@ -37,7 +37,8 @@ export const RECORDED_HEADERS = Object.freeze(["authorization", "x-api-key", "an
  *   tokens every answer reports (default 10 in, 2 out), and on Messages the prompt cache's reads and writes
  *   (`cache_read_input_tokens`, `cache_creation_input_tokens`; default 0); `port`: the port to listen on (default: one the
  *   system picks); `grader`: what a grader request (learn/promote.ts GRADER_PROMPT) is answered with, as a function of
- *   the request (default: the faux grader's verdict, fixtures/faux-grader.mjs), before `text`.
+ *   the request (default: the faux grader's verdict, fixtures/faux-grader.mjs), before `text`; `hang`: a request it
+ *   records and never answers, when it returns true (its connection stays open until the client drops it or close()).
  * @returns {Promise<{ url: string, requests: GatewayRequest[], close(): Promise<void> }>} `url` is the origin
  *   (`http://127.0.0.1:<port>`), with no path.
  * @typedef {{ method: string, path: string, query: string, headers: Record<string, string | undefined>, body: any }} GatewayRequest
@@ -71,6 +72,8 @@ export async function startFauxGateway(options = {}) {
       requests.push(request);
       const stream = body?.stream === true;
       if (req.method !== "POST") return void res.writeHead(404, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: `no ${req.method} ${path} here` } }));
+      // A request the test holds open: recorded, never answered (close() ends its connection).
+      if (options.hang?.(request)) return;
       const refused = options.refuse?.(request);
       if (refused) return void res.writeHead(refused.status ?? 400, { "content-type": "application/json" }).end(JSON.stringify({ error: { message: refused.message } }));
       const call = options.call?.(request);

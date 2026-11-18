@@ -9,8 +9,11 @@
 //   (3) a grader reply that is not the verdict disagrees, and the record says why;
 //   (4) the run's cap refusing the grader's request disagrees and books nothing;
 //   (5) the audit compares through the grader, and its request is the served run's learning cost;
-//   (6) the grader's cost is its check's replay runs' cost, the revision's check_usd.
-// Plus the pieces alone: the verdict's parse, the one retry, the comparison, the check's words, the request's ends.
+//   (6) the grader's cost is its check's replay runs' cost, the revision's check_usd;
+//   (7) a person's stop while the grader's request hangs stops the replay at once, and its pair counts as differing;
+//   (8) a verdict is of the two answers it read: the source run answering again after it was compared makes it stale.
+// Plus the pieces alone: the verdict's parse, the one retry, the comparison, the check's words, the request's ends (its
+// stop and its deadline among them).
 // The agent's runs are real runs of the store on a pi run of the faux gateway, whose faux grader (fixtures/faux-grader.mjs)
 // says two answers are the same when their JSON values match once their reasons are left out.
 import assert from "node:assert/strict";
@@ -28,7 +31,7 @@ const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
-const { promotionsOf, GRADER_PROMPT, graderVerdictOf, gradeAnswers, compareAnswers, COMPARE_UNREAD, COMPARE_CAP_HELD } = await import("../dist/learn/promote.js");
+const { promotionsOf, GRADER_PROMPT, graderVerdictOf, gradeAnswers, compareAnswers, answersPair, COMPARE_UNREAD, COMPARE_CAP_HELD, COMPARE_STALE } = await import("../dist/learn/promote.js");
 const { decideCheck, NEVER_WORD_FOR_WORD } = await import("../dist/runner/promotion.js");
 const { graderAsk } = await import("../dist/runner/compare-end.js");
 const { learningWorkspace } = await import("../dist/workspace/index.js");
@@ -47,6 +50,9 @@ const FAST = { AGENT_MODEL_FAST: "anthropic/claude-haiku-5-5" };
 /** The agent's answer as a model writes it: prose, then a json fence with its reason. The workflow says the same
  *  decision as bare JSON, {"answer":42,"sure":true}: equal neither byte for byte nor as JSON values. */
 const AGENT_PROSE = `Six times seven is 42, and I am sure of it.\n\n\`\`\`json\n${JSON.stringify({ answer: 42, sure: true, why: "six times seven is forty-two" })}\n\`\`\``;
+/** A follow-up that makes the agent answer 41: another decision than the workflow's 42. */
+const SAY_41 = "Count again: the answer is 41.";
+const AGENT_41 = `On a second count it is 41.\n\n\`\`\`json\n${JSON.stringify({ answer: 41, sure: true, why: "counted again" })}\n\`\`\``;
 
 /** The audit's draw (learn/audit.ts auditDrawn): a run id the default 1 in 10 never draws keeps its shadow out of a check. */
 const drawn = (runId, k) => Number.parseInt(createHash("sha256").update(`audit:${runId}`).digest("hex").slice(0, 8), 16) % k === 0;
@@ -92,16 +98,18 @@ const FINAL = ["ended", "failed", "stopped"];
 /** An agent of `learning` with `prior` runs of its own ("Question 0" …), each answered AGENT_PROSE, the learned workflow
  *  `answer` landed and promoted, and a runner claiming every run from its stored launch on `env`. `grader(request)`: the
  *  grader's reply instead of the faux grader's; `priced(model, usage)`: each request's cost; `cap`: the cap of every run
- *  made after the prior ones. */
-async function world(t, { learning, prior = 0, env = FAST, grader, priced, cap } = {}) {
+ *  made after the prior ones; `hang(request)`: a request the gateway never answers. A follow-up that says SAY_41 is
+ *  answered AGENT_41. */
+async function world(t, { learning, prior = 0, env = FAST, grader, priced, cap, hang } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-grader-compare-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
   const gw = await startFauxGateway({
     call: ({ body }) => (offers(body, "submit") && !hasResult(body) ? { name: "submit", input: { value: { answer: 42, sure: true } } } : undefined),
-    text: ({ body }) => (offers(body, "submit") ? "submitted" : compiling(body) ? BROKEN_DRAFT : AGENT_PROSE),
+    text: ({ body }) => (offers(body, "submit") ? "submitted" : compiling(body) ? BROKEN_DRAFT : textOf((body?.messages ?? []).findLast((m) => m.role === "user")).includes(SAY_41) ? AGENT_41 : AGENT_PROSE),
     refuse: ({ body }) => (compiling(body) && textOf((body?.messages ?? []).findLast((m) => m.role === "user")).startsWith("One more turn: revise") ? { message: "the test lands any revision itself" } : undefined),
     ...(grader ? { grader } : {}),
+    ...(hang ? { hang } : {}),
   });
   let runner;
   t.after(async () => {
@@ -144,10 +152,11 @@ async function world(t, { learning, prior = 0, env = FAST, grader, priced, cap }
     if (shadow) await ended(shadow.row.id);
     return row;
   };
-  const replaysEnded = (count) => until(async () => {
+  const replaysEnded = (count, ms = 120_000) => until(async () => {
     const all = (await launches((launch) => launch?.replay)).map(({ row }) => row);
     return all.length === count && all.every((row) => FINAL.includes(row.state) && row.runner === null) && all;
-  }, `the ${count} replay runs ended`, 120_000);
+  }, `the ${count} replay runs ended`, ms);
+  const replays = async () => launches((launch) => launch?.replay);
   const audits = async () => {
     const folder = learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" });
     try {
@@ -157,7 +166,7 @@ async function world(t, { learning, prior = 0, env = FAST, grader, priced, cap }
     }
   };
   const graderRequests = () => gw.requests.filter((request) => isGrader(request.body));
-  return { dir, server, gw, start, replaysEnded, shadowOf, audits, graderRequests };
+  return { dir, server, gw, start, ended, replays, replaysEnded, shadowOf, audits, graderRequests };
 }
 
 /** Lands `workflow` as the next revision of `answer` on the learning folder's main. */
@@ -240,7 +249,9 @@ test("(5) the audit compares through the grader: the shadow's worded-apart answe
   assert.equal(served.metrics?.path, "workflow");
   const shadow = (await w.shadowOf("served-1")).row;
   assert.equal(w.graderRequests().length, 1, "the shadow's one grader request");
-  assert.deepEqual(shadow.metrics?.audit?.compared, { same: true, grader: MODEL });
+  const { pair, ...verdict } = shadow.metrics?.audit?.compared ?? {};
+  assert.deepEqual(verdict, { same: true, grader: MODEL });
+  assert.match(pair ?? "", /^[0-9a-f]{64}$/, "the verdict names the two answers it read");
   await w.start("served-2", "What is seven times six");
   const row = (await w.audits()).find((one) => one.run === "served-1");
   assert.equal(row?.agreed, true, JSON.stringify(row));
@@ -261,6 +272,50 @@ test("(6) the grader's requests are its check's cost: each replay books its node
   assert.ok(Math.abs(revision.check_usd - 3 * 2 * each) < 1e-9, JSON.stringify(revision));
 });
 
+test("(7) a person's stop while each replay's grader request hangs: every replay stops at once, keeps no verdict, and its pair counts as differing", { timeout: 300_000 }, async (t) => {
+  const ids = undrawn("stop");
+  const w = await world(t, { learning: { compile_after: 3 }, prior: 3, hang: (request) => isGrader(request.body) });
+  await landRevision(w.dir, answerFlow(REVISED), ids[0]);
+  await w.start(ids[0], "Question 10");
+  await until(() => w.graderRequests().length === 3, "each replay's grader request is in flight", 120_000);
+  const at = Date.now();
+  for (const { row } of await w.replays()) await w.server.command(row.id, { kind: "stop" });
+  // A stop never waits on the grader: well inside the 60 s a hung request would hold it, and the gateway never answers.
+  const stopped = await w.replaysEnded(3, 20_000);
+  assert.ok(Date.now() - at < 20_000, `stopped in ${Date.now() - at} ms`);
+  for (const row of stopped) {
+    assert.equal(row.state, "stopped", `${row.id}: ${row.summary}`);
+    assert.equal(row.metrics?.replay?.compared, undefined, `${row.id} keeps no verdict`);
+  }
+  await w.start(ids[1], "Question 11");
+  const record = (await promotionsOf(w.server.settings, "agent-1")).findLast((one) => one.digest === DIGEST_2 && one.decided !== "replaying");
+  assert.ok(record, "the revision's check decided");
+  assert.equal(record.decided, "hold", record.reason);
+  assert.equal(record.check.agreed, 0, JSON.stringify(record.check));
+});
+
+test("(8) a verdict is of the two answers it read: the source run answers 41 after its replay was compared, and the check never counts the old 'same'", { timeout: 300_000 }, async (t) => {
+  const ids = undrawn("stale");
+  const w = await world(t, { learning: { compile_after: 3 }, prior: 3 });
+  await landRevision(w.dir, answerFlow(REVISED), ids[0]);
+  await w.start(ids[0], "Question 10");
+  const replays = await w.replaysEnded(3);
+  for (const row of replays) assert.equal(row.metrics?.replay?.compared?.same, true, `${row.id}: ${JSON.stringify(row.metrics?.replay)}`);
+  // A person follows up on one replay's source run, and it answers again, with another decision.
+  const source = (await w.replays())[0].launch.replay.of;
+  await w.server.runs.reopen(source, { kind: "steer", body: { text: SAY_41 } });
+  await w.ended(source);
+  await w.start(ids[1], "Question 11");
+  const record = (await promotionsOf(w.server.settings, "agent-1")).findLast((one) => one.digest === DIGEST_2 && one.decided !== "replaying");
+  assert.ok(record, "the revision's check decided");
+  assert.equal(record.check.agreed, 2, JSON.stringify(record.check));
+  assert.equal(record.decided, "hold", record.reason);
+  const differs = record.check.disagreements.find((one) => one.run === source);
+  assert.ok(differs, JSON.stringify(record.check.disagreements));
+  assert.equal(differs.differs_on, COMPARE_STALE);
+  assert.match(differs.agent ?? "", /41/, "the disagreement shows the source's newest answer");
+});
+
 test("the grader's verdict: one JSON object, bare or the whole of one fence; anything else is none", () => {
   assert.deepEqual(graderVerdictOf('{"same": true, "differs_on": null}'), { same: true, differs_on: null });
   assert.deepEqual(graderVerdictOf('```json\n{"same": false, "differs_on": " the code "}\n```'), { same: false, differs_on: "the code" });
@@ -268,37 +323,46 @@ test("the grader's verdict: one JSON object, bare or the whole of one fence; any
   for (const text of ["same", '{"same": "yes"}', '{"same": true, "differs_on": 3}', 'Sure: {"same": true}', "[true]"]) assert.equal(graderVerdictOf(text), undefined, text);
 });
 
-test("gradeAnswers asks once more on a transport failure alone; a refusal, two failures and a non-verdict differ, in words", async () => {
+test("gradeAnswers asks once more on a transport failure alone; a refusal, two failures, a cut request and a non-verdict differ, in words", async () => {
   const graderOf = (replies) => {
     const asked = [];
     return { asked, grader: { model: "fast-1", ask: async (request) => (asked.push(request), replies.shift()) } };
   };
+  // Every verdict names the two answers it read (agent "a", workflow "b").
+  const pair = answersPair("a", "b");
   const once = graderOf([{ failed: "socket hang up" }, { text: '{"same": true, "differs_on": null}' }]);
-  assert.deepEqual(await gradeAnswers("in", "a", "b", once.grader), { same: true, grader: "fast-1" });
+  assert.deepEqual(await gradeAnswers("in", "a", "b", once.grader), { same: true, grader: "fast-1", pair });
   assert.equal(once.asked.length, 2);
   assert.equal(once.asked[0].system, GRADER_PROMPT);
   assert.match(once.asked[0].user, /The job input:\n<<<\nin\n>>>\n\nThe agent's answer:\n<<<\na\n>>>\n\nThe workflow's answer:\n<<<\nb\n>>>/);
   const twice = graderOf([{ failed: "socket hang up" }, { failed: "socket hang up" }]);
-  assert.deepEqual(await gradeAnswers("in", "a", "b", twice.grader), { same: false, grader: "fast-1", differs_on: `${COMPARE_UNREAD}: its request failed twice` });
+  assert.deepEqual(await gradeAnswers("in", "a", "b", twice.grader), { same: false, grader: "fast-1", pair, differs_on: `${COMPARE_UNREAD}: its request failed twice` });
   const refused = graderOf([{ refused: "spend_cap_reached" }]);
-  assert.deepEqual(await gradeAnswers("in", "a", "b", refused.grader), { same: false, grader: "fast-1", differs_on: COMPARE_CAP_HELD });
+  assert.deepEqual(await gradeAnswers("in", "a", "b", refused.grader), { same: false, grader: "fast-1", pair, differs_on: COMPARE_CAP_HELD });
   assert.equal(refused.asked.length, 1, "a refusal is not asked again");
+  const cut = graderOf([{ cut: "its request was stopped with the run" }]);
+  assert.deepEqual(await gradeAnswers("in", "a", "b", cut.grader), { same: false, grader: "fast-1", pair, differs_on: `${COMPARE_UNREAD}: its request was stopped with the run` });
+  assert.equal(cut.asked.length, 1, "a stopped or timed-out request is not asked again");
   const prose = graderOf([{ text: "same" }]);
-  assert.deepEqual(await gradeAnswers("in", "a", "b", prose.grader), { same: false, grader: "fast-1", differs_on: `${COMPARE_UNREAD}: its reply was not the verdict asked for` });
+  assert.deepEqual(await gradeAnswers("in", "a", "b", prose.grader), { same: false, grader: "fast-1", pair, differs_on: `${COMPARE_UNREAD}: its reply was not the verdict asked for` });
   const differ = graderOf([{ text: '{"same": false, "differs_on": "mcc"}' }]);
-  assert.deepEqual(await gradeAnswers("in", "a", "b", differ.grader), { same: false, grader: "fast-1", differs_on: "mcc" });
+  assert.deepEqual(await gradeAnswers("in", "a", "b", differ.grader), { same: false, grader: "fast-1", pair, differs_on: "mcc" });
   const unnamed = graderOf([{ text: '{"same": false, "differs_on": null}' }]);
   assert.equal((await gradeAnswers("in", "a", "b", unnamed.grader)).differs_on, "a decision it did not name");
 });
 
-test("compareAnswers: agree_on decides alone; equal answers agree with no verdict; else the grader's verdict, else differ", () => {
-  const verdict = { same: true, grader: "fast-1" };
+test("compareAnswers: agree_on decides alone; equal answers agree with no verdict; else the grader's verdict on that same pair, else differ", () => {
+  const verdict = { same: true, grader: "fast-1", pair: answersPair('{"a":2}', '{"a":1}') };
   assert.deepEqual(compareAnswers('{"a":1,"b":2}', '{"a":1,"b":3}', ["a"], { same: false, grader: "fast-1", differs_on: "a" }), { same: true });
   assert.deepEqual(compareAnswers('{"a":1}', '```json\n{"a":1}\n```', undefined), { same: true });
   assert.deepEqual(compareAnswers('{"a":1}', '{"a":2}', undefined, verdict), verdict);
   assert.deepEqual(compareAnswers('{"a":1}', '{"a":2}', undefined), { same: false });
   assert.deepEqual(compareAnswers('{"a":1}', '{"a":2}', undefined, { same: true }), { same: false }, "a verdict no grader gave is none");
   assert.deepEqual(compareAnswers(null, '{"a":1}', undefined, verdict), { same: false });
+  // A verdict on another pair (one of the answers changed since it was read), or naming none, is stale: they differ.
+  assert.deepEqual(compareAnswers('{"a":1}', '{"a":3}', undefined, verdict), { same: false, grader: "fast-1", differs_on: COMPARE_STALE });
+  assert.deepEqual(compareAnswers('{"a":1}', '{"a":2}', undefined, { same: true, grader: "fast-1" }), { same: false, grader: "fast-1", differs_on: COMPARE_STALE });
+  assert.notEqual(answersPair("a", "b"), answersPair("ab", ""), "the pair's two answers never run together");
 });
 
 /** The settings a promotion record is written through, in memory. */
@@ -312,7 +376,9 @@ function settingsOf() {
 }
 async function decide(bar, compared) {
   const settings = settingsOf();
-  const rows = compared.map((one, i) => ({ of: `r-${i}`, input: `{"q":${i}}`, agent: AGENT_PROSE, outcome: "answered", answer: '{"answer":42,"sure":true}', ...(one ? { compared: one } : {}) }));
+  const answer = '{"answer":42,"sure":true}';
+  // Each verdict is of the row's own pair (gradeAnswers' `pair`).
+  const rows = compared.map((one, i) => ({ of: `r-${i}`, input: `{"q":${i}}`, agent: AGENT_PROSE, outcome: "answered", answer, ...(one ? { compared: { ...one, pair: answersPair(AGENT_PROSE, answer) } } : {}) }));
   const read = { rows, cost: 0, outcomes: { answered: rows.length, handed_back: 0, skipped_write: 0, failed: 0 }, unstarted: 0 };
   const deps = { store: { settings }, agentId: "a", runId: "now", revisionId: "rev", launch: {}, context: ctx, log: () => {}, shown: async () => secretsShown([]) };
   return (await decideCheck(deps, "answer", "d1", { compile_after: 3, agree_min: 0.8, alone_min: 0.7, attempt: 1, ...bar }, read, () => true, {})).record;
@@ -355,4 +421,28 @@ test("graderAsk: a reply's text, a cap refusal as refused (nothing sent), any ot
   assert.deepEqual(await graderAsk(thrown.models, { system: "S", user: "U" }), { failed: "ECONNRESET" });
   const down = { getModels: () => [], completeSimple: async () => assert.fail("never sent") };
   assert.ok("failed" in (await graderAsk(down, { system: "S", user: "U" })));
+});
+
+test("graderAsk: a request that never answers is cut by the run's stop, or at its deadline, and its own signal is aborted with it", async () => {
+  const model = { id: "fast-1", provider: "p" };
+  const hung = () => {
+    const signals = [];
+    return { signals, models: { getModels: () => [model], getModel: () => model, streamSimple: () => { throw new Error("unused"); }, completeSimple: (m, context, options) => (signals.push(options.signal), new Promise(() => {})) } };
+  };
+  const stopping = hung();
+  const stop = new AbortController();
+  const asked = graderAsk(stopping.models, { system: "S", user: "U" }, { signal: stop.signal, deadlineMs: 60_000 });
+  setTimeout(() => stop.abort(new Error("the run was stopped")), 20);
+  const at = Date.now();
+  assert.deepEqual(await asked, { cut: "its request was stopped with the run" });
+  assert.ok(Date.now() - at < 5_000, "the stop never waits on the request");
+  assert.equal(stopping.signals[0]?.aborted, true, "the request's own signal is aborted");
+  const late = hung();
+  assert.deepEqual(await graderAsk(late.models, { system: "S", user: "U" }, { deadlineMs: 30 }), { cut: "its request gave no answer within 0.03 s" });
+  assert.equal(late.signals[0]?.aborted, true);
+  const already = hung();
+  const gone = new AbortController();
+  gone.abort();
+  assert.deepEqual(await graderAsk(already.models, { system: "S", user: "U" }, { signal: gone.signal }), { cut: "its request was stopped with the run" });
+  assert.equal(already.signals.length, 0, "a run stopped already sends nothing");
 });
