@@ -601,3 +601,30 @@ test("a trigger of the agent's marked with another package, with a package trigg
   assert.equal((await triggersOf(server.api, made.agent_id)).daily.target.input.content, "Today's note on cats.", "daily as it was");
   assert.equal(await markOf(server, daily.id), "other", "still the other package's");
 });
+
+test("a trigger setting the package's new version leaves out goes back to its default on an update in place, as a fresh apply would make it: catchup_window_s 3600, max_active_runs none; one it sets is the new version's; the owner's off is kept", { timeout: 120_000 }, async (t) => {
+  // 0.1.0: new-pr, a feed, capped at 2 runs; daily and weekly, schedules, that never catch up a missed time.
+  const V1_SET = { version: "0.1.0", triggers: [`${NEW_PR()}\n    max_active_runs: 2`, `${SCHEDULE("daily", "0 9 * * *")}\n    catchup_window_s: 0`, `${SCHEDULE("weekly", "0 9 * * 1")}\n    catchup_window_s: 0`] };
+  // 0.2.0: new-pr and daily say neither; weekly catches up within 2 minutes.
+  const V2_SET = { version: "0.2.0", triggers: [NEW_PR(), SCHEDULE("daily", "0 9 * * *"), `${SCHEDULE("weekly", "0 9 * * 1")}\n    catchup_window_s: 120`] };
+  const quiet = await feed(t, { format: "json-list", items: [] });
+  const first = await serve(t, { templates: await templates(t, V1_SET), runner: false, feedsAt: () => quiet.url });
+  const made = await applied(first.api, "digest", { parameters: { topic: "cats" } });
+  const before = await triggersOf(first.api, made.agent_id);
+  const settings = (all) => Object.fromEntries(Object.entries(all).map(([name, one]) => [name, { id: one.id, enabled: one.enabled, catchup_window_s: one.catchup_window_s, max_active_runs: one.max_active_runs }]));
+  assert.deepEqual(settings(before), {
+    "new-pr": { id: before["new-pr"].id, enabled: true, catchup_window_s: 3600, max_active_runs: 2 },
+    daily: { id: before.daily.id, enabled: true, catchup_window_s: 0, max_active_runs: null },
+    weekly: { id: before.weekly.id, enabled: true, catchup_window_s: 0, max_active_runs: null },
+  }, "0.1.0 makes its triggers with its settings");
+  assert.equal((await first.api("PATCH", `/triggers/${before.daily.id}`, { enabled: false })).status, 200, "the owner turns daily off");
+  await first.stop();
+
+  const second = await serve(t, { data: first.data, templates: await templates(t, V2_SET), runner: false, feedsAt: () => quiet.url });
+  await updated(second.api, "digest", { parameters: { topic: "cats" }, agent_id: made.agent_id }, "0.2.0 leaves new-pr's cap and daily's catch-up out");
+  assert.deepEqual(settings(await triggersOf(second.api, made.agent_id)), {
+    "new-pr": { id: before["new-pr"].id, enabled: true, catchup_window_s: 3600, max_active_runs: null },
+    daily: { id: before.daily.id, enabled: false, catchup_window_s: 3600, max_active_runs: null },
+    weekly: { id: before.weekly.id, enabled: true, catchup_window_s: 120, max_active_runs: null },
+  }, "each kept in place: new-pr's cap gone (null) and daily's catch-up back to 3600, as a fresh apply of 0.2.0 makes them; weekly's the 120 0.2.0 sets; daily still off, as the owner left it");
+});
