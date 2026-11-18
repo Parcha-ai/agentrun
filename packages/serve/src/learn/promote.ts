@@ -10,6 +10,7 @@ import type { RunPath } from "../learning-cost.js";
 import type { FeedbackRound, OpenedRound } from "../runner/feedback-round.js";
 import type { Settings } from "../store/store.js";
 import { answerJson } from "../answer-json.js";
+import { pathSegments } from "../learning-setting.js";
 import type { Skipped } from "./replay-calls.js";
 import type { ReplayOutcome } from "../runner/workflow-first.js";
 
@@ -122,12 +123,14 @@ export interface AuditHold {
   readonly stopped?: true;
 }
 
-/** The bar a compiled draft's check was started with: the agent definition's loop numbers then (learning-setting.ts), and
- *  which check of the compile it is (`attempt`: 1, the first draft's; 2, the one recompile's, after which it stops). */
+/** The bar a compiled draft's check was started with: the agent definition's loop numbers then (learning-setting.ts), the
+ *  answer paths it compares on (`agree_on`, the definition's; absent, the whole answer), and which check of the compile
+ *  it is (`attempt`: 1, the first draft's; 2, the one recompile's, after which it stops). */
 export interface CheckBar {
   readonly compile_after: number;
   readonly agree_min: number;
   readonly alone_min: number;
+  readonly agree_on?: readonly string[];
   readonly attempt: 1 | 2;
 }
 
@@ -428,8 +431,37 @@ function same(a: unknown, b: unknown): boolean {
   return ka.length === kb.length && ka.every((key) => same((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]));
 }
 
-/** Whether two answers say the same: equal as JSON values, else as trimmed text. */
-export const sameAnswer = (a: string | null, b: string | null): boolean => a !== null && b !== null && same(valueOf(a), valueOf(b));
+const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+
+/** Not there: a path of agree_on that does not resolve in an answer. */
+const MISSING = Symbol("missing");
+
+/** The value at a dotted path (learning-setting.ts pathSegments) of a JSON value: each segment an own key of an object
+ *  (never an array's index, never through text or null); MISSING when one is not. */
+function valueAt(value: unknown, path: string): unknown {
+  let here = value;
+  for (const segment of pathSegments(path)) {
+    if (!isObject(here) || !Object.hasOwn(here, segment)) return MISSING;
+    here = here[segment];
+  }
+  return here;
+}
+
+/** Whether two answers say the same: equal as JSON values, else as trimmed text. On `on` (the revision's agree_on,
+ *  dotted paths into the answer's JSON object): each path resolves in both answers to equal values; a path that does
+ *  not resolve in either (a key missing, a segment through an array, text or null) disagrees, on both sides too. */
+export function sameAnswer(a: string | null, b: string | null, on?: readonly string[]): boolean {
+  if (a === null || b === null) return false;
+  const [va, vb] = [valueOf(a), valueOf(b)];
+  if (!on?.length) return same(va, vb);
+  return on.every((path) => {
+    const [x, y] = [valueAt(va, path), valueAt(vb, path)];
+    return x !== MISSING && y !== MISSING && same(x, y);
+  });
+}
+
+/** The fields a check or an audit compared on, in words: "mcc", "mcc and riskTier", "mcc, riskTier and siteStatus". */
+export const fieldsWords = (on: readonly string[]): string => (on.length < 2 ? on.join("") : `${on.slice(0, -1).join(", ")} and ${on.at(-1)}`);
 
 /** A grade as the API answers it (PUT /runs/{id}/grade; GET /runs/{id}/learning's `graded`, without `expected`). */
 export const gradeView = (grade: Grade) => ({

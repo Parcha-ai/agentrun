@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun-client, @parcha/agentrun
+kind: feature
+---
+A learned workflow's check and its shadow audit compare two answers on the fields that carry the decision, not word for word. A definition's `learning` takes `agree_on`, dotted paths into the answer's JSON object (e.g. `["verdict.decision"]` or `["mcc", "riskTier"]`; 1 to 16 distinct paths, each up to 128 characters and 8 non-empty segments, kept in the order given; a bad one is a 422 under `definition.learning`): each path must resolve in both answers to equal values, and a path missing on either side disagrees. Left out, the whole answer is compared as before, and a check that agreed on none says to name the fields. The kyb template declares `verdict.decision` and inbound-lead `next_step.action`; a template's `learning` takes the same object, each path a required field of its output schema. The check record keeps `agree_on`, and its reason says "said what the agent said on mcc and riskTier"; the console's check line says "compared the whole answer" when there was none.

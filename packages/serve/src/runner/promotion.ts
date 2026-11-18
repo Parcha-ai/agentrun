@@ -56,7 +56,7 @@ import type { McpPin } from "../mcp-gateway.js";
 import { pinAnnotations, type Recorded, recordedCalls, type ReplayCalls, replayCalls, type Skipped, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
 import { isObject, type Json } from "../validate.js";
 import { agentRun, lastOwnRuns, newCompileAttempt } from "../learn/compile.js";
-import { type CheckBar, type CheckDisagreement, type CheckRecord, checkPasses, checkShares, CHECK_TEXT_MAX, championOf, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, sameAnswer, type SkippedTool, skippedToolsOf } from "../learn/promote.js";
+import { type CheckBar, type CheckDisagreement, type CheckRecord, checkPasses, checkShares, CHECK_TEXT_MAX, championOf, fieldsWords, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, sameAnswer, type SkippedTool, skippedToolsOf } from "../learn/promote.js";
 import { sendCommand } from "./commands.js";
 import { ClaimRefused } from "./loop-contract.js";
 import { readSnapshot } from "../learn/folder.js";
@@ -323,14 +323,12 @@ async function decide(deps: PromotionDeps, workflow: LearnedWorkflow, digest: st
 }
 
 /** The loop's numbers (learning-setting.ts) of the revision the claim runs: its definition's `learning`, each one it
- *  leaves out at its default (a revision that cannot be read: every default). */
+ *  leaves out at its default, and the answer paths its check compares on (its agree_on; none, the whole answer). A read
+ *  that fails throws: no check is saved on defaults (a bar with no agree_on would compare the whole answer for the
+ *  check's life); the claim's gate leaves the run to its agent and the next claim reads it again (#3182 review). */
 async function loopOfRevision(deps: Pick<PromotionDeps, "store" | "revisionId">) {
-  try {
-    const revision = await deps.store.agents.revision(deps.revisionId);
-    return loopOf((revision?.body as { learning?: unknown } | undefined)?.learning);
-  } catch {
-    return loopOf(undefined);
-  }
+  const revision = await deps.store.agents.revision(deps.revisionId);
+  return loopOf((revision?.body as { learning?: unknown } | undefined)?.learning);
 }
 
 /** Which check of a compile a new revision's is: 2 when the workflow's newest record of another revision is a first
@@ -415,7 +413,7 @@ async function startCheck(deps: PromotionDeps, workflow: LearnedWorkflow, digest
     return;
   }
   const loop = await loopOfRevision(deps);
-  const bar: CheckBar = { compile_after: loop.compile_after, agree_min: loop.agree_min, alone_min: loop.alone_min, attempt: attemptOf(records, workflow.name, digest) };
+  const bar: CheckBar = { ...loop, attempt: attemptOf(records, workflow.name, digest) };
   const { inputs, looked, unfit, files } = await checkInputs(deps, workflow, { of: [], n: loop.compile_after }, auditInputsOf(records, workflow.name, digest));
   if (!inputs.length) {
     // Nothing of the agent's to check it on (a workflow landed before any run it fits): never promoted unchecked. It
@@ -438,6 +436,8 @@ async function startCheck(deps: PromotionDeps, workflow: LearnedWorkflow, digest
 
 /** The words a stopped check's record starts with when it had nothing to check its draft on. */
 export const NOTHING_TO_CHECK = "nothing to check it on";
+/** What a held check compared on the whole answer says when it answered some inputs alone and agreed on none. */
+export const NEVER_WORD_FOR_WORD = "its answers never matched the agent's word for word; name the fields that carry the decision (learning.agree_on)";
 
 /** Stops a draft its check had nothing to run on (`why`: no input of the agent's it takes, or every input skipped at a
  *  write): held, never promoted unchecked, its record `stopped` (nothing compiles again until a hold or its owner acts)
@@ -537,8 +537,8 @@ async function settleCheck(deps: PromotionDeps, workflow: LearnedWorkflow, diges
 }
 
 /** Decides a check on its rows: each input it ran on (a skipped write is none) agreed when the draft answered it alone
- *  with the agent's recorded answer (learn/promote.ts sameAnswer), alone when it answered it with no escalate and no
- *  failed step. Promoted when it clears the bar (checkPasses); else held with the inputs it did not agree on, which the
+ *  with the agent's recorded answer (learn/promote.ts sameAnswer, on the bar's agree_on when it names fields), alone
+ *  when it answered it with no escalate and no failed step. Promoted when it clears the bar (checkPasses); else held with the inputs it did not agree on, which the
  *  agent's next run's compile turn reads as data (its one recompile); a recompile's check that holds it too stops:
  *  nothing compiles again. No grade, refit, queue or second replay. Kept only while `still` holds of the digest's record
  *  (the one write: of two claims at once, one decides). */
@@ -546,7 +546,8 @@ export async function decideCheck(deps: PromotionDeps, name: string, digest: str
   const now = deps.now ?? Date.now;
   const ran = read.rows.filter((row) => row.outcome !== "skipped_write");
   const alone = (row: CheckRow) => row.outcome === "answered";
-  const agrees = (row: CheckRow) => alone(row) && sameAnswer(row.answer, row.agent);
+  // Compared on the bar's agree_on when it names paths (the definition's), else the whole answer.
+  const agrees = (row: CheckRow) => alone(row) && sameAnswer(row.answer, row.agent, bar.agree_on);
   const score = { n: ran.length, agreed: ran.filter(agrees).length, alone: ran.filter(alone).length };
   const ok = checkPasses(score, bar);
   // Each text is cut of the host's secrets whole, then shortened (learn/secrets.ts excerptShown).
@@ -578,8 +579,10 @@ export async function decideCheck(deps: PromotionDeps, name: string, digest: str
   // and the words say none ran.
   const said = read.unstarted === score.n
     ? `none of its ${plural(score.n, "check run")} started by the check's deadline (its launch was interrupted: the server stopped after reserving it, say): nothing was checked`
-    : `checked on ${score.n} of the agent's inputs: answered ${score.alone} alone (${pct(shares.alone)}, the bar ${pct(bar.alone_min)}), and ${score.agreed} of those said what the agent said (${pct(shares.agreement)}, the bar ${pct(bar.agree_min)})${aside ? ` (${aside})` : ""}`;
-  const reason = ok ? `${said}: promoted` : stopped ? `${said}: held, and this was the recompile's check, so it stops: nothing compiles again until a hold or its owner acts` : `${said}: held; the agent's next run recompiles it once with the inputs it did not agree on`;
+    : `checked on ${score.n} of the agent's inputs: answered ${score.alone} alone (${pct(shares.alone)}, the bar ${pct(bar.alone_min)}), and ${score.agreed} of those said what the agent said${bar.agree_on?.length ? ` on ${fieldsWords(bar.agree_on)}` : ""} (${pct(shares.agreement)}, the bar ${pct(bar.agree_min)})${aside ? ` (${aside})` : ""}`;
+  // Compared whole and never once the same: free text two runs never repeat, most likely, so the owner is told what to set.
+  const verbatim = !ok && !bar.agree_on?.length && score.alone > 0 && score.agreed === 0 ? `; ${NEVER_WORD_FOR_WORD}` : "";
+  const reason = ok ? `${said}: promoted` : stopped ? `${said}: held${verbatim}, and this was the recompile's check, so it stops: nothing compiles again until a hold or its owner acts` : `${said}: held${verbatim}; the agent's next run recompiles it once with the inputs it did not agree on`;
   const check: CheckRecord = { ...bar, ...score, ...numbers, ...(disagreements.length ? { disagreements } : {}), ...(stopped ? { stopped: true as const } : {}) };
   const decided = await recordPromotion(deps.store.settings, deps.agentId, { workflow: name, digest, at: iso(now()), decided: ok ? "promote" : "hold", reason, check, ...seedOf(deps), ...extra }, still);
   if (decided.won) deps.log(`workflow-first: ${name} at ${digest} ${ok ? "promoted" : "held"}: ${reason}`);
@@ -849,7 +852,7 @@ export async function askReplay(ask: ReplayAsk, name: string, digest: string, in
   const { launch, revisionId } = await ask.launchOf(picked[0]!.launch.input as Json);
   if (!launch.learning || launch.learning.noWorkflows) throw new ReplayRefused("conflict", `A replay runs ${name} as a run of the agent that learns does, and the agent's runs do not take learned workflows here (its learning is off, it takes no workflows, or this server's is off).`);
   const deps: PromotionDeps = { store: ask.store, agentId: ask.agentId, revisionId, launch: { ...launch, learning: { ...launch.learning, seed: found.commit } }, context: ask.context, log: ask.log, shown: ask.shown, ...(ask.now ? { now: ask.now } : {}) };
-  const bar: CheckBar = { compile_after: loop.compile_after, agree_min: loop.agree_min, alone_min: loop.alone_min, attempt: attemptOf(records, name, digest) };
+  const bar: CheckBar = { ...loop, attempt: attemptOf(records, name, digest) };
   const said = `checking it on ${plural(picked.length, "input")} of the agent's own runs, as its owner asked`;
   // Kept only while the revision's newest record is still the one read here: each record write stamps a new `at`.
   const reserved = await reserve(deps, found.workflow, digest, picked, said, (was) => was?.at === own?.at && was?.decided === own?.decided, bar);
