@@ -8,9 +8,9 @@ This release runs each run in a process of its own. In the Docker image each run
 
 **Upgrading and going back:**
 
-- Back up the data folder (and the Postgres schema, if you use one) before you upgrade: the first start moves the store to SQLite version 12 or Postgres migration 0018, which beta.44 refuses, so going back means restoring that backup (#3123, #3133).
-- The image now runs `server-and-runner` by default, the server and one runner as two processes. No run under it can use a paired computer or one that dials the server (Fly, Cloudflare, or a provider set to dial): give the image the server's options alone for those (#3123).
-- Start the server before any runner of its own: a runner refuses a version 11 store until the server has upgraded it. After the upgrade the server builds each run's listing in the background, the runs no runner holds first (#3123).
+- Back up the data folder (and the Postgres schema, if you use one) before you upgrade: the first start moves the store to SQLite version 13 or Postgres migration 0019, which beta.44 refuses, so going back means restoring that backup (#3123, #3133, #3170).
+- The image now runs `server-and-runner` by default, the server and one runner as two processes. Under it a paired computer needs the server's options alone instead, and a computer that dials the server needs the server's public address in `AGENTRUN_PUBLIC_URL` (#3123, #3170).
+- Start the server before any runner of its own: a runner refuses a version 11 or 12 store until the server has upgraded it. After the upgrade the server builds each run's listing in the background, the runs no runner holds first (#3123).
 - Each run now runs as a process of its own, and in the image as a user of its own: slot `s` of a runner runs as uid and gid `1001 + s`, so a run's tools can't read another run's folder or the store. `GET /v2/capabilities` says which as `run_isolation` (`"uid"` or `"process"`). A local install runs each run as a process of its own under the user who started the server (#3128).
 - A learning run, an SDK backend run and a native run stay in the runner's process (#3128).
 - In the image, the runner starts runs through a helper that needs its file capabilities. On a platform that strips them, or that starts the container with no-new-privileges (Docker's `no-new-privileges:true`, Kubernetes' `allowPrivilegeEscalation: false`), the runner claims no runs and says why: "This runner will not claim runs: it cannot start a run as a user of its own (...)". Allow them, or set `AGENTRUN_RUN_USER=same` to run every run as the runner's own user, each still in a process of its own (#3128).
@@ -24,7 +24,7 @@ This release runs each run in a process of its own. In the Docker image each run
 
 **Breaking:**
 
-- Image: the default command is `server-and-runner`, and `render.yaml` and the Railway template run it too. An operator who gives the image server options of their own still gets one process with the runner inside it; put `server-and-runner` before them for two. On the default command a paired computer, and a provider whose machines dial the server, are refused: every provider row and paired computer in `GET /v2/computers` carries `runs_refused`, null where runs can use it, and the console shows it (#3123).
+- Image: the default command is `server-and-runner`, and `render.yaml` and the Railway template run it too. An operator who gives the image server options of their own still gets one process with the runner inside it; put `server-and-runner` before them for two. On the default command a paired computer is refused, and so is a provider whose machines dial the server while the runner has no public address: every provider row and paired computer in `GET /v2/computers` carries `runs_refused`, null where runs can use it, and the console shows it (#3123, #3170).
 - Image: on a platform that strips file capabilities or sets no-new-privileges, the runner claims no runs until the platform allows them or `AGENTRUN_RUN_USER=same` is set. The Render and Railway templates set `AGENTRUN_RUN_USER=same`; a server already deployed from either and moved to this release needs that variable added in its environment, or its runner claims no runs (#3128).
 - Learning: notes, learned skills, the look-back turn and the learning grader are gone. Removed: `GET .../learning/notes`, `PUT .../learning/files/{file}`, `POST .../learning/workflows/{name}/promote`, the learning batches and evals, the server options `--learning-budget` and `--grade-model`, `capabilities.learning.grade_model`, and a definition's `learning: "notes"`. A grade's `feedback` round is `correction` (was `look_back`); a run's learning carries `corrections` and `workflows`, not `given`, `read`, `learned`, `pending` or `verdict`. The clients' `learning.notes` and `learning.write` are `learning.corrections` and `learning.writeCorrections` (Python `write_corrections`). A native target's `capabilities.notes` and `capabilities.skills` are one `capabilities.learning` (#3097).
 - Learning cost: a cost run has `digest`, `took_over` and `audited` in place of `learned_revision`, and a replay run's `n` is null. `GET /agents/{id}/learning`'s `impact` sides are `runs` and `median_duration_s` only: read a run's cost before and after learning from the cost read's `summary`, and what learning costs a run from `bill.learning_usd` (#3166).
@@ -33,7 +33,7 @@ This release runs each run in a process of its own. In the Docker image each run
 
 **Known issues:**
 
-- Under the image's default command, no run can use a paired computer or a computer whose machines dial the server (Fly Machines, Cloudflare, and E2B, Daytona or Modal set to dial). Start the image with the server's options alone for those.
+- Under the image's default command, no run can use a paired computer. Start the image with the server's options alone for one.
 - A runner of its own started on a Postgres store before its server has upgraded it says to start on a new, empty data folder. Don't: start the server first, which upgrades the store in place, then the runner.
 - A learned workflow refused for a host setting (a tool gated, denied or missing) still reads `serving`, while every run it is given hands back to the agent. A workflow this release's DSL refuses is held, as in beta.44.
 - For up to about 10 minutes after the release is published, an install can fail while npm shows the new packages one by one. Try again a few minutes later.
@@ -51,6 +51,8 @@ Runs and the server
 - A held computer's run released before its owner started it always ends cancelled, its agent never run. Before, a release that reached the runner just as it took up the run was missed and the agent ran (#3172).
 - A run a person stops reads stopped as soon as nothing in it is working, never `input_required` with nothing to answer; tool calls still waiting for approval read withdrawn (#3165).
 - A server started while the one it replaces is still closing its store waits for the store's lock (10 s by default) instead of exiting with "database is locked" (#3173).
+- A learning pi run that compacted its context twice or more reads its stored cost on `GET /v2/runs/{id}` and in the learning cost read, instead of a null `cost.usd` (#3180).
+- A webhook try's bound can be set, under the 60 s claim a try holds its message by: the server's `webhookTimeoutMs` option (15 s by default, as before) and `Webhooks`' `timeoutMs`. A try cut by it says the bound it had (#3177).
 
 Learning
 
@@ -77,6 +79,7 @@ Computers
 - A synced folder keeps its links and modes when a run moves off an Archil mount, and a runner that lost a run's claim can no longer write its folder: "this runner no longer holds the run's claim, so its write to the run's folder was not sent". <!-- changes/serve-synced-folder-reverse-fence.md --> (#3175)
 - A Linux box of your own pairs as a computer: `computerd pair <server URL> [--name <name>]` reads the console's code from stdin and keeps the token in `~/.config/agentrun/computer.token` (root's in `/etc/agentrun/`), mode `0600`, never printed; `computerd attach` reads it, and `computerd unpair` deletes it. A box with a display pairs as a desktop. A paired computer that says hello with another arch than it paired with is closed `4400`. <!-- changes/computerd-linux-pairing.md --> (#3174)
 - A dial computer can be a desktop on E2B, Fly Machines, Cloudflare, Modal and Daytona: the box image's `agentrun-dial` starts its display, and until it answers the computer is a linux one whose screen and input calls are refused in words. The box image's recipe changed, so its name moved with its hash. <!-- changes/computer-desktop-over-dial.md --> (#3167)
+- A computer whose machines dial the server (Fly Machines, Cloudflare, and E2B, Daytona or Modal set to dial) works under a runner in a process of its own, the image's default included: the machine dials the server as before, and the server relays its socket to the runner that made it. Give the runner the server's public address, `AGENTRUN_PUBLIC_URL` (the image passes the environment to both); across hosts, also its `AGENTRUN_RUNNER_LIVE_HOST`, listed in the server's `AGENTRUN_RUNNER_HOSTS`. A dial whose runner is gone or restarted is answered 503 in words naming its run, and the run makes a new machine at its next claim. A runner started beside its server in the image no longer gets the server's own API tokens. <!-- changes/dial-relay.md --> (#3170)
 - The server and the runner make every computer provider's vendor call through the standard `HTTPS_PROXY` (or `HTTP_PROXY`), with `NO_PROXY`'s hosts, loopback and the server's own public address direct. Unset, nothing changes. The Archil mount still connects direct. <!-- changes/computer-https-proxy.md --> (#3157)
 
 Setup
@@ -93,7 +96,7 @@ Docs and release
 
 - A node with an unknown key reads "unknown key(s) for an agent node" (it said "a agent"); the CLI's flag help and the command reference give a flag's whole first paragraph and write `*/*` as itself. <!-- changes/site-audit-docs-wording.md --> (#3110)
 - The changelog fold puts a breaking change under a **Breaking:** heading, and knows a fragment a section holds by its marker, not by its words. beta.44's changelogs on main now carry its seven late changes as its release page told them. <!-- changes/fold-breaking-heading.md --> (#3138, #3139)
-- Tests: four flaky tests deleted and the four real bugs under them fixed; a computer-deps test takes its Docker answer from the test, not the CI host (#3165, #3171).
+- Tests: four flaky tests deleted and the four real bugs under them fixed; a computer-deps test takes its Docker answer from the test, not the CI host; CI's Postgres job keeps its database on tmpfs; and three CLI tests hold one claim each (#3165, #3171, #3177, #3183).
 
 ## 0.1.0-beta.44 (2026-11-17)
 
