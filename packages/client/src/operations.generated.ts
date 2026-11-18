@@ -5249,6 +5249,20 @@ export type RedeliverWebhookResponse = {
   redelivery: boolean;
 };
 
+/** The webhook's new signing secret, shown once; the old one signs nothing from now on (POST /settings/webhook/secret). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
+export type RotateWebhookSecretResponse = {
+  configured: true;
+  url: string;
+  secret: SecretMeta;
+  signing: "sealed" | "unreadable";
+  disabled: {
+    at: string;
+    reason: string;
+  } | null;
+  updated_at: string;
+  signing_secret: string;
+};
+
 /** Set the webhook's URL (PUT /settings/webhook). */
 export type SaveWebhookBody = {
   url: string;
@@ -5468,6 +5482,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   listWebhookDeliveries: {"method":"GET","path":"/settings/webhook/deliveries","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getWebhook: {"method":"GET","path":"/settings/webhook","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   redeliverWebhook: {"method":"POST","path":"/settings/webhook/deliveries/{webhook_id}/redeliver","pathParams":["webhook_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  rotateWebhookSecret: {"method":"POST","path":"/settings/webhook/secret","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":true,"publicFields":[],"tagged":false},
   saveWebhook: {"method":"PUT","path":"/settings/webhook","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   testWebhook: {"method":"POST","path":"/settings/webhook/test","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   validateWorkflow: {"method":"POST","path":"/workflows/validate","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5805,6 +5820,8 @@ export function resources(call: Call) {
       get: (options?: RequestOptions): Promise<GetWebhookResponse> => call("getWebhook", [], undefined, undefined, options),
       /** Send a message of the log again, once now, under the same webhook-id and body (POST /settings/webhook/deliveries/{webhook_id}/redeliver). */
       redeliver: (webhookId: string, options?: RequestOptions): Promise<RedeliverWebhookResponse> => call("redeliverWebhook", [webhookId], undefined, undefined, options),
+      /** The webhook's new signing secret, shown once; the old one signs nothing from now on (POST /settings/webhook/secret). */
+      rotateSecret: (options?: RequestOptions): Promise<RotateWebhookSecretResponse> => call("rotateWebhookSecret", [], undefined, undefined, options),
       /** Set the webhook's URL (PUT /settings/webhook). */
       save: (body: SaveWebhookBody, options?: RequestOptions): Promise<SaveWebhookResponse> => call("saveWebhook", [], body, undefined, options),
       /** Send a `webhook.test` message now, once, and say how it went (POST /settings/webhook/test). */

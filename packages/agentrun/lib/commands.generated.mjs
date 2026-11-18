@@ -3814,6 +3814,12 @@ export const SECRET_ROUTES = [
     "publicFields": []
   },
   {
+    "operationId": "rotateWebhookSecret",
+    "method": "POST",
+    "path": "/settings/webhook/secret",
+    "publicFields": []
+  },
+  {
     "operationId": "saveComposioServer",
     "method": "PUT",
     "path": "/settings/mcp-servers/{name}/composio",

@@ -13,14 +13,14 @@ import type { ApiError, Webhook, WebhookAttempt } from "@/lib/v2";
 
 const apiError = (e: unknown): ApiError => (e instanceof ClientError ? e.toApiError() : { code: "network", message: e instanceof Error ? e.message : String(e), retryable: false });
 const SIGNING: Record<Exclude<Extract<Webhook, { configured: true }>["signing"], "sealed">, string> = {
-  unreadable: "Its secret can't sign here: it was sealed under another key, or is damaged. Nothing is sent until the webhook is removed and set again.",
+  unreadable: "Its secret can't sign here: it was sealed under another key, or is damaged. Nothing is sent until its secret is rotated, or the webhook is removed and set again.",
 };
 
 /** Settings → Webhook (GET, PUT and DELETE /v2/settings/webhook, a serve extension): the URL run notices are POSTed to,
  *  signed by the Standard Webhooks spec; whether its secret signs here; why it is off; the secret, shown only on the
- *  save that made it, copied with one press, and never kept in the page after; a test send; and the last attempts
- *  (GET .../deliveries), newest first, with the receiver's answer or why each failed, and a redelivery of any (POST
- *  .../redeliver). */
+ *  save or the rotation (POST .../secret, asked first) that made it, copied with one press, and never kept in the page
+ *  after; a test send; and the last attempts (GET .../deliveries), newest first, with the receiver's answer or why each
+ *  failed, and a redelivery of any (POST .../redeliver). */
 export function WebhookPage({ v2 }: { v2: Client }) {
   const [webhook, setWebhook] = useState<Webhook | null>(null);
   const [attempts, setAttempts] = useState<WebhookAttempt[]>([]);
@@ -29,6 +29,9 @@ export function WebhookPage({ v2 }: { v2: Client }) {
   const [problem, setProblem] = useState<{ title: string; error: ApiError } | null>(null);
   const [tested, setTested] = useState<WebhookAttempt | null>(null);
   const [removing, setRemoving] = useState(false);
+  // Rotate secret, asked first: the old secret stops signing at once. The focus goes back to its button after.
+  const [rotating, setRotating] = useState(false);
+  const rotateButton = useRef<HTMLButtonElement>(null);
   const [busy, setBusy] = useState(false);
   // What the person types to save. The server shows a saved URL shortened (its origin and last four characters), so the
   // field never takes it: a save sends only a URL typed here, never the shortened one, which would move the receiver.
@@ -45,6 +48,16 @@ export function WebhookPage({ v2 }: { v2: Client }) {
     setProblem(null); setBusy(true);
     try { await work(); } catch (e) { setProblem({ title, error: apiError(e) }); } finally { setBusy(false); }
     load();
+  };
+  const closeRotate = () => { setRotating(false); requestAnimationFrame(() => rotateButton.current?.focus()); };
+  const rotate = () => {
+    setRotating(false);
+    void act("The secret was not rotated", async () => {
+      // As a first save's: shown this once, from the answer that made it.
+      const { signing_secret: fresh, ...view } = await v2.rotateWebhookSecret();
+      setSecret(fresh);
+      setWebhook(view);
+    });
   };
   const save = (e: FormEvent) => {
     e.preventDefault();
@@ -102,8 +115,16 @@ export function WebhookPage({ v2 }: { v2: Client }) {
                 className="h-9 min-w-[280px] flex-1" aria-label="Webhook URL" />
               <Button type="submit" variant="solid" disabled={busy || !url.trim()}>Save</Button>
               {webhook.configured && <Button type="button" variant="outline" disabled={busy} onClick={() => act("The test was not sent", async () => setTested(await v2.testWebhook()))}>Send a test</Button>}
-              {webhook.configured && !removing && <Button type="button" variant="outline" disabled={busy} onClick={() => setRemoving(true)}>Remove</Button>}
+              {webhook.configured && !rotating && <Button ref={rotateButton} type="button" variant="outline" disabled={busy} onClick={() => { setRemoving(false); setRotating(true); }}>Rotate secret</Button>}
+              {webhook.configured && !removing && <Button type="button" variant="outline" disabled={busy} onClick={() => { setRotating(false); setRemoving(true); }}>Remove</Button>}
             </form>
+            {rotating && (
+              <div className="mt-3 flex flex-wrap items-center gap-2 text-body" role="alertdialog" aria-label="Rotate the signing secret?" onKeyDown={(e) => { if (e.key === "Escape") closeRotate(); }}>
+                <span>The old secret stops signing at once; your receiver needs the new one.</span>
+                <Button type="button" variant="solid" disabled={busy} onClick={rotate}>Rotate the secret</Button>
+                <Button type="button" variant="ghost" autoFocus onClick={closeRotate}>Cancel</Button>
+              </div>
+            )}
             {removing && (
               <div className="mt-3 flex flex-wrap items-center gap-2 text-body">
                 <span>Its pending messages are dropped; the log of attempts stays.</span>

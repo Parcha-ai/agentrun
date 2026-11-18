@@ -1,5 +1,5 @@
 {
-  "secretBody": ["saveToolKey", "saveMcpServer", "previewMcpServer", "startMcpOAuth", "listComposioTools", "saveComposioServer", "rotateTriggerSecret"],
+  "secretBody": ["saveToolKey", "saveMcpServer", "previewMcpServer", "startMcpOAuth", "listComposioTools", "saveComposioServer", "rotateTriggerSecret", "rotateWebhookSecret"],
   "publicFields": {
     "saveMcpServer": ["url", "auth.type"],
     "previewMcpServer": ["url", "auth.type", "name"],
@@ -118,6 +118,7 @@
     "putToolSettings": ["tool-settings", "save"],
     "getWebhook": ["webhook", "get"],
     "saveWebhook": ["webhook", "save"],
+    "rotateWebhookSecret": ["webhook", "rotate-secret"],
     "deleteWebhook": ["webhook", "delete"],
     "testWebhook": ["webhook", "test"],
     "listWebhookDeliveries": ["webhook", "deliveries"],

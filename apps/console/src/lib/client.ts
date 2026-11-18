@@ -7,7 +7,7 @@ import type { AgentLearning, Corrections, LearningChange, LearningDiff, Learning
 import type { ComposioTools, McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginView, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
+import type { ApiError, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginView, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Webhook, WebhookAttempt, WebhookRotated, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
@@ -340,6 +340,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** Sets the webhook's URL; the first PUT makes its secret and answers it, once (`secret`). */
     saveWebhook: (url: string) => call<WebhookSaved>("PUT", "/settings/webhook", { body: { url } }),
     removeWebhook: () => call<unknown>("DELETE", "/settings/webhook"),
+    /** A new signing secret for the webhook's URL, shown this once; the old one signs nothing from now on. No body. */
+    rotateWebhookSecret: () => call<WebhookRotated>("POST", "/settings/webhook/secret"),
     /** A `webhook.test` message, tried once now: its attempt. */
     testWebhook: () => call<WebhookAttempt>("POST", "/settings/webhook/test", { body: {} }),
     /** The server's email account, never its password (a serve extension). */

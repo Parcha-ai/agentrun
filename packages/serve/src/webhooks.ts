@@ -290,6 +290,29 @@ export class Webhooks {
     return { created: !was, view: this.view(), ...(secret ? { secret } : {}) };
   }
 
+  /** POST .../secret: a new secret for the URL set now, answered once; the webhook is otherwise as it was (its URL, when
+   *  it was set, and off if a 410 turned it off). The secret it replaces goes at once, retired (still cut from what a run
+   *  says): every try from then on, of a message queued before it too, is signed with the new one, since a try signs with
+   *  the secret the setting names when it sends (tryOnce). A try already sending was signed with the old one. As a PUT
+   *  does, the new secret is sealed under a scope of its own before the setting that names it is written, and a setting
+   *  the store refuses leaves the old secret signing. */
+  rotate(): Promise<{ view: ReturnType<Webhooks["view"]>; secret: string }> {
+    return this.change(async () => {
+      const was = this.config;
+      if (!was) throw new ApiError("not_found", "no webhook is set: PUT /v2/settings/webhook sets one");
+      const scope = `${SERVER_SCOPE}:${randomBytes(8).toString("hex")}`;
+      const secret = await this.secrets.mint(scope, SECRET_FIELD);
+      try {
+        await this.write({ ...was, secret_at: new Date().toISOString(), secret_scope: scope });
+      } catch (error) {
+        await this.secrets.remove(scope).catch((removal: Error) => this.say({ condition: "secret_unremoved", error: removal.message }));
+        throw error;
+      }
+      await this.secrets.remove(was.secret_scope).catch((removal: Error) => this.say({ condition: "secret_unremoved", error: removal.message }));
+      return { view: this.view(), secret };
+    });
+  }
+
   /** DELETE: the webhook gone, its queued messages with it, and its secret (retired: still cut from what a run says); the
    *  log of attempts stays. In that order: shut to new notices, its queued messages dropped, the setting removed, then
    *  every secret of the webhook, on every DELETE (none once gone), so a removal of a secret that failed is finished by

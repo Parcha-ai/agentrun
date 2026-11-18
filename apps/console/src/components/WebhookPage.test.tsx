@@ -11,6 +11,8 @@ import type { Webhook, WebhookAttempt } from "@/lib/v2";
 
 /** An obvious fake: not a secret anywhere. */
 const SECRET = "whsec_bm90LWEtcmVhbC1zZWNyZXQtMDEyMzQ1Njc4OWFi";
+/** The secret a rotation makes: another obvious fake. */
+const ROTATED = "whsec_cm90YXRlZC1ub3QtYS1yZWFsLXNlY3JldC0wMTIzNDU2";
 const SET: Extract<Webhook, { configured: true }> = { configured: true, url: "https://hooks.example.test/agentrun", signing: "sealed", secret: { name: "webhook:outbound", set: true, source: "console", changed_at: "2026-11-03T12:00:00.000Z" }, disabled: null, updated_at: "2026-11-03T12:00:00.000Z" };
 const NONE: Webhook = { configured: false, secret: { name: "webhook:outbound", set: false, source: null, changed_at: null } };
 const attempt = (extra: Partial<WebhookAttempt>): WebhookAttempt => ({ webhook_id: "msg_0123456789abcdef0123456789abcdef", type: "run.ended", at: "2026-11-03T12:01:00.000Z", status_code: 200, latency_ms: 42, error: null, retry_at: null, redelivery: false, ...extra });
@@ -32,6 +34,7 @@ function server(state: { webhook: Webhook; attempts: WebhookAttempt[]; readsFail
       state.webhook = { ...SET, url: (call.body as { url: string }).url };
       return json(created ? 201 : 200, { ...state.webhook, ...(created ? { signing_secret: SECRET } : {}) });
     }
+    if (path === "/v2/settings/webhook/secret" && call.method === "POST") return json(200, { ...state.webhook, signing_secret: ROTATED });
     if (path === "/v2/settings/webhook" && call.method === "DELETE") { state.webhook = NONE; return new Response(null, { status: 204 }); }
     if (path === "/v2/settings/webhook/deliveries") return json(200, { attempts: state.attempts });
     if (path === "/v2/settings/webhook/test" || path.endsWith("/redeliver")) {
@@ -181,6 +184,42 @@ describe("WebhookPage", () => {
     await page.click(/^Remove the webhook$/);
     expect(page.host.querySelector('[aria-label="Webhook secret"]')).toBeNull();
     expect(page.host.textContent).not.toContain(SECRET);
+  });
+
+  it("rotates the secret only once asked and answered: it says the old one stops signing, then shows the new one this once", async () => {
+    const { v2, calls } = server({ webhook: SET, attempts: [] });
+    const page = await open(v2);
+    await page.click(/^Rotate secret$/);
+    const ask = page.host.querySelector('[role="alertdialog"][aria-label="Rotate the signing secret?"]');
+    expect(ask?.textContent).toContain("The old secret stops signing at once; your receiver needs the new one.");
+    expect(calls.some((c) => c.path.endsWith("/settings/webhook/secret"))).toBe(false);
+    await page.click(/^Rotate the secret$/, ask!);
+    const rotations = calls.filter((c) => c.method === "POST" && c.path.endsWith("/settings/webhook/secret"));
+    expect(rotations.length).toBe(1);
+    expect(rotations[0]!.body).toBeUndefined();
+    const shown = page.host.querySelector('[aria-label="Webhook secret"]');
+    expect(shown?.textContent).toContain(ROTATED);
+    expect(shown?.textContent).toContain("shown this once");
+    expect(page.host.querySelector('[role="alertdialog"]')).toBeNull();
+    act(() => root!.unmount()); root = undefined;
+    const again = await open(v2);
+    expect(again.host.textContent).not.toContain(ROTATED);
+  });
+
+  it("Cancel on Rotate secret rotates nothing", async () => {
+    const { v2, calls } = server({ webhook: SET, attempts: [] });
+    const page = await open(v2);
+    await page.click(/^Rotate secret$/);
+    await page.click(/^Cancel$/, page.host.querySelector('[role="alertdialog"]')!);
+    expect(page.host.querySelector('[role="alertdialog"]')).toBeNull();
+    expect(calls.some((c) => c.path.endsWith("/settings/webhook/secret"))).toBe(false);
+    expect(page.host.querySelector('[aria-label="Webhook secret"]')).toBeNull();
+  });
+
+  it("offers no Rotate secret before a webhook is set", async () => {
+    const { v2 } = server({ webhook: NONE, attempts: [] });
+    const page = await open(v2);
+    expect(page.button(/^Rotate secret$/)).toBeUndefined();
   });
 
   it("removes the webhook, and says when this server can't keep a secret", async () => {
