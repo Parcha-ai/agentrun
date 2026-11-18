@@ -122,6 +122,7 @@ import { bootSealKey, parametersDigest, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
+import { type CostBasis, joinedBasis } from "./runner/metrics.js";
 import { agentLoopOverStore } from "./store-reads/loop.js";
 import { printable } from "./learn/index.js";
 import { agentCostOverStore, agentLearningOverStore, allInOf, costRunOf, costStopOverStore, learningCountsOverStore, learningSpendOverStore, runAllInOverStore, runLearningEnd } from "./store-reads/learning.js";
@@ -3468,6 +3469,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Tool calls run with no price (an MCP tool its owner set none for): outside every cost, counted on `tools`.
     let notMetered = 0;
     const total = { usd: 0, unpriced: 0 };
+    // How the runs' costs in the window were reached (metrics.ts joinedBasis over each run's costBasis).
+    const bases: CostBasis[] = [];
     // The browser_time line's seconds: its ended runs' (their stores keep each charge's), none once a live run is in it.
     let browserSeconds: number | null = 0;
     // A cost that is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it never
@@ -3487,6 +3490,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // A running run's cost is its booked-so-far spend (store-reads/runs listRuns reads it over the store with
       // spentOverStore); an ended run's is its stored cost. A null cost (a running run with none yet) counts unpriced.
       const usd = row.costUsd ?? null;
+      bases.push(row.costBasis);
       const key = group === "agent" ? row.agent : group === "day" ? row.startedAt.slice(0, 10) : group === "meter" ? "tokens" : "local";
       // By meter, what a run's paid tools charged (monid's) is `tools`, its browser session time `browser_time`, the rest
       // `tokens`, all from the same records: a live run's rows (a call still marked is no charge), else its store as it
@@ -3524,7 +3528,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     const round = (v: number) => Math.round(v * 1e6) / 1e6;
     return {
-      from: new Date(from).toISOString(), to: new Date(to).toISOString(), currency: "USD", basis: "estimate", group_by: group, total_usd: round(total.usd), unpriced_runs: total.unpriced,
+      from: new Date(from).toISOString(), to: new Date(to).toISOString(), currency: "USD", basis: joinedBasis(bases), group_by: group, total_usd: round(total.usd), unpriced_runs: total.unpriced,
       lines: [...lines].map(([key, line]) => ({ group: key, ...(group === "meter" ? { meter: key } : {}), ...(key === "browser_time" && group === "meter" && browserSeconds !== null ? { quantity: round(browserSeconds), unit: "second" } : {}), usd: round(line.usd), unpriced_runs: line.unpriced, ...(group === "meter" && key === "tools" && notMetered ? { not_metered_calls: notMetered } : {}) })),
       account: null,
     };

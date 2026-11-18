@@ -259,13 +259,21 @@ export interface components {
   CommitSha: string;
   Cost: {
     usd: number | null;
-    basis: "charge" | "estimate";
+    basis: "charge" | "estimate" | "reported" | "unpriced";
     charge_state?: "held" | "settled" | "released" | null;
     cap_usd?: number | null;
     free?: true;
     so_far_usd?: number;
     unpriced?: number;
     upper_bound?: true;
+    tokens?: {
+      input: number;
+      output: number;
+      cache_read: number;
+      cache_write: number;
+      requests?: number;
+      unmetered?: number;
+    };
     learning_usd?: number | null;
     all_in_usd?: number | null;
     plan?: {
@@ -1288,7 +1296,7 @@ export interface components {
     from: components["Timestamp"];
     to: components["Timestamp"];
     currency: "USD";
-    basis: "charge" | "estimate";
+    basis: "charge" | "estimate" | "reported" | "unpriced";
     group_by: "meter" | "agent" | "key" | "day" | "region";
     total_usd: number | null;
     lines: components["UsageLine"][];
@@ -2825,7 +2833,7 @@ export interface operations {
       }[];
       cost: {
         usd: number | null;
-        basis: "estimate" | null;
+        basis: "reported" | "estimate" | "unpriced" | null;
         unknown_runs: number;
       };
       archived: {
