@@ -3,13 +3,13 @@
 // contents read; decision and tier keys of the claim's learned workflows alone, as the runner chose them; the settings of
 // the server's shared configuration and the claim's own rows, never another run's; its viewers' address under its own
 // run's proof key, never the runners' shared one; no channel post; the computer it made let go by the runner at the
-// claim's release. Which runs stay in the runner. And the channel lets go of a function it handed once the other side's
+// claim's release; the install it asks for, readable by its user. Which runs stay in the runner. And the channel lets go of a function it handed once the other side's
 // stand-in for it is gone. No key, no network: a fake GitHub on loopback, dummy keys.
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { duplexPair } from "node:stream";
 import { test } from "node:test";
@@ -33,6 +33,14 @@ const ANTHROPIC_DUMMY = `not-a-secret-${"anthropic-key"}`;
 const OPENAI_DUMMY = `not-a-secret-${"openai-key"}`;
 const HEAD = "a".repeat(40);
 const PULL = `Review it.\n\n<trigger-payload source="github" installation="777" repo="acme/widgets" number="7" head_sha="${HEAD}">{}</trigger-payload>`;
+
+/** Every folder under `dir` its owner's to write again, so the test's own cleanup removes it. */
+function chmodTree(dir) {
+  const st = lstatSync(dir, { throwIfNoEntry: false });
+  if (!st || !st.isDirectory()) return;
+  chmodSync(dir, 0o700);
+  for (const name of readdirSync(dir)) chmodTree(join(dir, name));
+}
 
 /** The GitHub App's rows, sealed under KEY as the server's sealed settings write them. */
 async function connected(store) {
@@ -158,6 +166,56 @@ test("a run that runs no agent's code here stays in its runner: a learning run, 
   assert.equal(host.runsInRunner("claude-agent", { sdk: { runtime: "claude-agent-sdk", instructions: "Policy." } }), true, "an SDK backend run");
   assert.equal(host.runsInRunner("pi", { native: { runtime: "claude-code", remote: { connector_id: "c-1" } } }), true, "a native run");
   for (const harness of ["pi", "claude-agent", "codex"]) assert.equal(host.runsInRunner(harness, {}), false, harness);
+});
+
+test("a run whose agent works on what the server's user alone reads stays in its runner: a workflow run on a server's documents directory, a run on Claude Code's login on this machine", async (t) => {
+  assert.equal(typeof host.staysInRunner, "function", "the runner says, per run, which runs stay in it");
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-stays-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const runner = { mode: "runner" };
+  const deps = (kind, login) => ({
+    data,
+    env: {},
+    store: {
+      runs: { get: async (id) => ({ id, agentId: "agent-own", revisionId: "rev-own" }) },
+      agents: { revision: async () => ({ id: "rev-own", kind, body: {} }) },
+      settings: { get: async (key) => (key === "claude_login" && login ? { v: 1, place: "agentrun", host: hostname(), only_me: true } : null) },
+    },
+  });
+  assert.equal(await host.staysInRunner(deps("workflow"), "pi", { input: {}, place: runner, documents: data }, "run-own"), true, "a workflow run rooted at the server's documents directory");
+  assert.equal(await host.staysInRunner(deps("workflow"), "pi", { input: {}, place: runner }, "run-own"), false, "a workflow run with no documents directory (rooted at /tmp) is a process of its own");
+  assert.equal(await host.staysInRunner(deps("agentic"), "pi", { input: {}, place: runner, documents: data }, "run-own"), false, "an agentic run, which never reads the documents directory");
+  assert.equal(await host.staysInRunner(deps("agentic", true), "claude-agent", { input: {}, place: runner }, "run-own"), true, "a claude-agent run on this machine's Claude Code login");
+  assert.equal(await host.staysInRunner(deps("agentic", true), "codex", { input: {}, place: runner }, "run-own"), false, "a harness the login is not for");
+  assert.equal(await host.staysInRunner(deps("agentic"), "claude-agent", { input: {}, place: runner }, "run-own"), false, "a claude-agent run on model keys, the login off");
+  assert.equal(await host.staysInRunner(deps("agentic"), "learning", { input: {}, place: runner }, "run-own"), true, "runsInRunner's runs too");
+});
+
+test("the install a run's process asks for is readable by every user and writable by none, an install from before installs were shared too", { skip: process.getuid?.() === 0 && "root reads every folder" }, async (t) => {
+  const { store } = await storeOn(t);
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-install-"));
+  t.after(() => (chmodTree(data), rmSync(data, { recursive: true, force: true })));
+  // An install as one before installs were shared left it: its top folder its owner's alone, as its staging was made.
+  const dir = join(data, "harnesses", "claude-agent");
+  mkdirSync(join(dir, "node_modules", "sdk"), { recursive: true });
+  writeFileSync(join(dir, "node_modules", "sdk", "index.js"), "export {};\n", { mode: 0o644 });
+  writeFileSync(join(dir, "node_modules", "sdk", "cli"), "#!/bin/sh\n", { mode: 0o755 });
+  chmodSync(join(dir, "node_modules", "sdk", "index.js"), 0o400);
+  chmodSync(join(dir, "node_modules", "sdk", "cli"), 0o500);
+  chmodSync(join(dir, "node_modules", "sdk"), 0o500);
+  chmodSync(join(dir, "node_modules"), 0o500);
+  chmodSync(dir, 0o500);
+  const asked = [];
+  const deps = { store, sealKey: KEY, env: {}, data, installForClaim: async (entry, at) => void asked.push([entry.id, at]) };
+  const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch: { input: { content: "Hello." }, harness: "claude-agent" }, revision: { kind: "agentic", body: {} }, claimed: {} };
+  const held = host.heldFor(deps, reads, (text) => text, () => {}).held;
+  await held.install("claude-agent");
+  assert.deepEqual(asked, [["claude-agent", dir]], "the runner installed (or found) the harness");
+  const mode = (path) => statSync(path).mode & 0o777;
+  assert.equal(mode(dir), 0o555, "its top folder is entered and listed by every user");
+  assert.equal(mode(join(dir, "node_modules", "sdk")), 0o555, "and every folder under it");
+  assert.equal(mode(join(dir, "node_modules", "sdk", "index.js")), 0o444, "a file is read by every user, written by none");
+  assert.equal(mode(join(dir, "node_modules", "sdk", "cli")), 0o555, "a program its owner may run, run by every user");
 });
 
 test("the computer the runner made for a run is released by the runner at the claim's release, whatever its process did: once, as the run's end", async (t) => {

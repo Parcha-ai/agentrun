@@ -10,7 +10,7 @@
 // npm here is a script of the test's (npm_execpath), which writes the package into the staging directory it is given.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { hostname, tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -95,6 +95,15 @@ process.stdout.write("writing\\n");`], { stdio: ["ignore", "pipe", "inherit"], e
   assert.equal(installed(install), VERSION, "the harness is in place");
   writer.kill("SIGKILL");
   await gone;
+});
+
+test("an install in place is readable by every user and writable by none, its top folder (made as its staging, its owner's alone) too: a run's process of a user of its own loads it", async (t) => {
+  const { entry, install, env, installs } = setup(t, "shared");
+  await npmInstall(entry, install, { version: VERSION, platform: "any" }, { env: env(installs) });
+  const mode = (path) => statSync(path).mode & 0o777;
+  assert.equal(mode(install), 0o555, "its top folder");
+  assert.equal(mode(join(install, "node_modules", PACKAGE)), 0o555, "a folder under it");
+  assert.equal(mode(join(install, "node_modules", PACKAGE, "package.json")), 0o444, "a file under it");
 });
 
 test("a leftover beside the install that can't be removed now never fails the install, and stays for a later sweep", { skip: root }, async (t) => {

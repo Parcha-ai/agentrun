@@ -22,7 +22,7 @@ import { CALENDAR_EVENTS } from "../calendar/names.js";
 import { openCalendar } from "../calendar/address.js";
 import { openAccount } from "../email/account.js";
 import { harnessOf } from "../harness-table.js";
-import { installDirOf, installForClaim } from "../harness-install.js";
+import { installDirOf, installForClaim, shareInstall } from "../harness-install.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import { planOf } from "../chatgpt-plan.js";
 import { forgottenSignIns, handedSignInReadsBack, peekSignIn, runSignIn, signInReads, verifyRunSignIn } from "../sign-ins-store.js";
@@ -60,6 +60,8 @@ import { heldMcpOf, mcpForClaim } from "./mcp-run.js";
 import { learnedTiers, learnsWorkflows, mcpReachOf, type AdapterSpecDeps } from "./adapter-run-spec.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { resolveRunnerLoop } from "./harness-loops.js";
+import { isWorkflowRevision } from "./workflow-loop.js";
+import { loginForRun } from "../claude-login.js";
 import type { Held, HeldComputerAsk } from "./held.js";
 import { type Claim, type Command, type CommandOutcome, type HeldState, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, type StopReason, ClaimRefused } from "./loop-contract.js";
 import { Channel, ChannelClosed } from "./run-channel.js";
@@ -765,6 +767,9 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       if (!harness || !entry?.installs || !entry.pins || entry.installs.id !== name) throw new ClaimRefused(`the run's harness installs no ${JSON.stringify(name)}`);
       const lock = deps.harnessLocks?.[harness];
       await (deps.installForClaim ?? installForClaim)(entry.installs, installDirOf(deps.data, harness), entry.pins, { ...(lock ? { lock } : {}), ...(signal ? { signal } : {}) });
+      // The run's process, a slot's user, loads the install itself: read and traverse for every user, never write, an
+      // install from before installs were shared too.
+      await shareInstall(installDirOf(deps.data, harness));
     },
     computer: async (ask: HeldComputerAsk) => {
       const made = await archilOf();
@@ -953,8 +958,23 @@ export const childArgv = (): string[] => [process.execPath, "--import", new URL(
  *  connectors, whose rows are the server's. */
 export const runsInRunner = (harness: string, launch: Pick<RunLaunch, "sdk" | "native">): boolean => harness === "learning" || Boolean(launch.sdk) || Boolean(launch.native);
 
+/** Whether run `runId` stays in its runner's process: runsInRunner's, and the two whose agent works on what the server's
+ *  user alone reads, which no slot's user is given. A workflow run on a server with a documents directory (launch
+ *  .documents): its reads and its writes (a pdf_pages call's pages) are rooted there, a folder the server's user holds.
+ *  A run on Claude Code's login on this machine (claude-login.ts loginForRun): its CLI reads and refreshes the login in
+ *  the server's own folder. */
+export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data" | "env">, harness: string, launch: RunLaunch, runId: string): Promise<boolean> {
+  if (runsInRunner(harness, launch)) return true;
+  if (launch.documents !== undefined) {
+    const run = await deps.store.runs.get(runId);
+    const revision = run ? await deps.store.agents.revision(run.revisionId) : undefined;
+    if (revision && isWorkflowRevision(revision)) return true;
+  }
+  return (await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, harness, launch.place)) !== undefined;
+}
+
 /** The runner's loop factory where each run is a process of its own: a ChildLoop per claim, but for a run that stays in
- *  the runner (runsInRunner). */
+ *  the runner (staysInRunner). */
 export function childLoops(options: ChildLoopsOptions): LoopFactory {
   // Each slot locked on the data directory too: another runner on it whose range overlaps this one's never runs a run
   // on a slot this one holds.
@@ -963,7 +983,7 @@ export function childLoops(options: ChildLoopsOptions): LoopFactory {
   const here = resolveRunnerLoop(options.deps);
   return createDispatchLoop({
     launchOf: (runId) => options.deps.store.runs.launch(runId),
-    resolve: (harness, launch, runId) => (runsInRunner(harness, launch) ? here(harness, launch, runId) : own),
+    resolve: async (harness, launch, runId) => ((await staysInRunner(options.deps, harness, launch, runId)) ? here(harness, launch, runId) : own),
   });
 }
 
