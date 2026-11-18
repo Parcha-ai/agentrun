@@ -61,5 +61,17 @@ test("a manifest's learning object is checked as a definition's, and each agree_
   assert.deepEqual(problemsOf('learning: { agree_on: ["verdict..decision"] }'), ["agent.md: learning.agree_on[0] is not a dotted path into the answer's JSON object (e.g. verdict.decision): an empty segment"]);
   assert.deepEqual(problemsOf('learning: { agree_on: ["verdict.outcome"] }'), ["agent.md: learning.agree_on[0] is verdict.outcome, which kyb.schema.json does not declare: outcome is no property of verdict"]);
   assert.deepEqual(problemsOf('learning: { agree_on: ["verdict.conditions"] }'), ["agent.md: learning.agree_on[0] is verdict.conditions, which kyb.schema.json does not require: an answer may leave conditions out of verdict, and a path missing on both sides never agrees"]);
+  // No output schema: nothing to check the paths against and nothing makes an answer hold them, so refused (#3182 r2 P2).
+  const noOutput = (line) => {
+    const files = kybWith(line);
+    try {
+      readPackage({ ...files, text: (path) => (path === "agent.md" ? files.text(path).replace(/^output: .*\n/m, "") : files.text(path)) }, { evalFixtures: false });
+      return [];
+    } catch (error) {
+      return error.problems ?? [String(error)];
+    }
+  };
+  assert.deepEqual(noOutput('learning: { agree_on: ["verdict.decision"] }'), ["agent.md: learning.agree_on names fields of the answer, so the package declares the answer's schema (output: {schema}) that holds them"]);
+  assert.deepEqual(noOutput("learning: true"), [], "learning with no agree_on needs no output schema");
   assert.deepEqual(problemsOf("learning: on"), ["agent.md: learning is true, false or an object of the loop's numbers ({compile_after?, agree_min?, alone_min?, agree_on?, audit_every?, audit_every_later?, audit_later_after?, hold_window?, hold_disagree?, stop_window?}, on with those set)"]);
 });
