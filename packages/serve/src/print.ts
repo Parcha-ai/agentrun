@@ -1,6 +1,7 @@
 // What the server prints on stdout: its banner at start, and one line per request, per run start and end, and per
 // refused credential (logfmt: `at=<time> event=<name> key=value ...`). No line holds a token or any part of one.
 import { join } from "node:path";
+import type { HoldShort } from "@parcha/agentrun-kernel";
 
 /** Where the token came from: made at this start (printed this once), kept in DIR/.token, the environment's
  *  (AGENTRUN_TOKEN), or the token list's alone (AGENTRUN_TOKENS). */
@@ -47,6 +48,15 @@ export function holdShortLine(o: { run: string; session: string; turn: number; h
     run: o.run, session: o.session, turn: o.turn, harness: o.harness, model: o.model, bound_tokens: o.boundTokens, billed_tokens: o.billedTokens, held_usd: usd(o.heldUsd),
     ...(o.billedUsd === undefined ? {} : { billed_usd: usd(o.billedUsd), short_usd: usd(o.billedUsd - o.heldUsd) }),
   });
+}
+
+/** Writes `event`'s holdShortLine, when it is a booking's request_end that carries a `holdShort` (the kernel's booking,
+ *  modelPortFor, tells one for a request billed past its hold's bound), to stderr with the runner's other warnings;
+ *  any other event writes nothing. The one place every caller of the booking prints it (the adapter loop, a workflow
+ *  run's model nodes, a learning grade), under `run` and `harness` (the harness, or what the booking's requests are). */
+export function warnHoldShort(run: string, harness: string, event: { type: string; key: string; turn?: number; holdShort?: HoldShort }, warn: (line: string) => void = (line) => console.warn(line)): void {
+  if (event.type !== "request_end" || !event.holdShort || event.turn === undefined) return;
+  warn(holdShortLine({ run, session: event.key, turn: event.turn, harness, ...event.holdShort }));
 }
 
 /** The log line of a runner's start or end event (runner.ts RunnerEvent): `run_started` (run, agent, kind) once a run's

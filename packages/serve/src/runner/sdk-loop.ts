@@ -380,7 +380,7 @@ export function createSdkLoop(
                             maxTokens: 16_000,
                           },
                           AbortSignal.any([signal, AbortSignal.timeout(opts.deadlineMs)]),
-                          { journal: () => journal, flush: deps.flush },
+                          { journal: () => journal, flush: deps.flush, runId: claim.runId },
                         );
                         if (typeof answer.text !== "string")
                           return withKept({

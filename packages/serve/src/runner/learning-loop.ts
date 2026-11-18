@@ -119,6 +119,8 @@ export type LearningCommitResult =
 export interface GraderRun {
   journal(): Journal;
   flush(): Promise<void>;
+  /** The learning run's id: what the grade's warn lines name (print.ts warnHoldShort). Absent: none is written. */
+  readonly runId?: string;
 }
 
 export interface LearningLoopDeps {
@@ -496,7 +498,7 @@ export function createLearningLoop(learning: LearningLoopDeps): (deps: LoopDeps)
               const timer = AbortSignal.timeout(GRADE_TIMEOUT_MS);
               let answer: Awaited<ReturnType<LearningLoopDeps["ask"]>>;
               try {
-                answer = await learning.ask({ prompt: again ? `${prompt}\n\n${again}` : prompt, maxTokens: GRADE_MAX_TOKENS }, AbortSignal.any([deps.signal, timer, stopAsk.signal]), { journal: () => deps.journal(claim), flush: () => deps.flush() });
+                answer = await learning.ask({ prompt: again ? `${prompt}\n\n${again}` : prompt, maxTokens: GRADE_MAX_TOKENS }, AbortSignal.any([deps.signal, timer, stopAsk.signal]), { journal: () => deps.journal(claim), flush: () => deps.flush(), runId: claim.runId });
               } catch (error) {
                 // A call the cap refused was never sent: it spent nothing, and what the grade spent before it stands, as its
                 // records hold it (an earlier attempt's included).

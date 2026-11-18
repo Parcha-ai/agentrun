@@ -18,6 +18,7 @@ import { policyFor } from "./adapters/pi.js";
 import { GradeOverCap, type LearningLoopDeps } from "./learning-loop.js";
 import type { RouteCost } from "./model-route.js";
 import { journalSessions } from "./sessions.js";
+import { warnHoldShort } from "../print.js";
 
 /** How long the ask waits, once the grade answered, for the proxy to book its request: the proxy books a request after its
  *  client has the whole answer (when the provider's stream ends, which can come later), so the spend is read once it is
@@ -91,6 +92,8 @@ export function bookedAsk(options: BookedAskOptions): LearningLoopDeps["ask"] {
         onEvent: async (event) => {
           if (event.type === "request_start") await run.flush();
           if (event.type === "request_end") booked?.();
+          // The grade billed past the bound its hold was priced on: the cap's warn line (print.ts warnHoldShort).
+          if (run.runId !== undefined) warnHoldShort(run.runId, "grade", event);
         },
       });
       // A grade request an earlier attempt sent and a crash cut is booked first, at its held figure.
