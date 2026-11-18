@@ -42,7 +42,7 @@ import { auditRoomOf } from "./learning-end.js";
 import type { EndOfRunTurn } from "./loop-contract.js";
 import { answerOf, answerRowOf } from "./promotion.js";
 import { servedOf, type WorkflowFirst } from "./workflow-first.js";
-import { held } from "./held.js";
+import { held, heldEndOfRun } from "./held.js";
 
 /** What the audit reads and writes at a claim (or the server's grade): the agent, the run claimed (none for a grade),
  *  its revision (whose definition holds the numbers) and launch, the agent's learning folder, the host's secrets as a
@@ -110,6 +110,9 @@ export const AUDIT_PARKED = "the audit ended where it would wait on a person";
  *  could never be audited (no learning start, or not auditableLaunch) keeps `step` as it is. */
 export function withAudit(step: EndOfRunTurn | undefined, deps: AuditDeps & { readonly launch: RunLaunch; readonly redact?: (text: string) => string }): EndOfRunTurn | undefined {
   if (!deps.launch.learning || !auditableLaunch(deps.launch)) return step;
+  // In a run's own process the whole step is its runner's (held.ts endOfRun), the audit's start with it: it reads the
+  // run's journal and writes the ledger and a run, which no run's process may.
+  if (held()) return heldEndOfRun();
   return async (input) => {
     const rows = step ? await step(input) : undefined;
     if (input.cut === undefined) await auditAtEnd(deps, input.runId, rows?.also ?? []);

@@ -3,7 +3,9 @@
 // (a name the other side exposed, or a handle it was given) and a method, and is answered with a value or an error.
 //
 // What crosses is data, with three exceptions, each passed by reference as a handle the receiver calls back through:
-// a function, an object with methods (a computer, a Workspace), and an AbortSignal (its abort is posted across). An
+// a function, an object with methods (a computer, a Workspace), and an AbortSignal (its abort is posted across). The
+// sender keeps what it handed until the receiver's stand-in of it is collected (a release is then posted) or the
+// channel ends, so a long run's callbacks do not pile up on either side. An
 // error crosses as its name, message, code and own fields, made again on the other side as an instance of the class of
 // that name when ERRORS lists it, so `instanceof Fenced` holds across the channel.
 //
@@ -38,6 +40,10 @@ export function registerErrors(classes: Record<string, abstract new (...args: ne
 export type Dispatch = (method: string, args: unknown[]) => unknown;
 
 const TAG = "\u0000agentrun-rpc";
+/** A post that aborts the stand-in of the sender's signal. */
+const ABORT = "\u0000abort";
+/** A post that tells the sender its handle's stand-in was let go of: it lets go of what it handed under it. */
+const RELEASE = "\u0000release";
 type Tagged =
   | { [TAG]: "fn"; h: number }
   | { [TAG]: "obj"; h: number; data: Record<string, unknown>; methods: string[] }
@@ -45,7 +51,7 @@ type Tagged =
   | { [TAG]: "error"; name: string; message: string; stack?: string; fields: Record<string, unknown> };
 
 type Message =
-  | { t: "call"; id: number; to: string | number; m: string; a: unknown[] }
+  | { t: "call"; id: number; to: string | number; m: string; a: unknown[]; c?: unknown }
   | { t: "ok"; id: number; v: unknown }
   | { t: "err"; id: number; e: unknown }
   | { t: "post"; to: string | number; m: string; a: unknown[] };
@@ -81,6 +87,11 @@ export interface ChannelOptions {
   readonly maxFrame?: number;
   /** Called once when the channel ends, with why. */
   readonly onClose?: (why: Error) => void;
+  /** What each call this side makes carries beside its arguments, encoded as they are (a run's process: the ledger of
+   *  the tool call it is made in, paid-calls.ts). None: nothing. */
+  readonly context?: () => unknown;
+  /** Runs each call the other side makes inside what it carried (a runner: paid-calls.ts bookedIn on that ledger). */
+  readonly within?: (carried: unknown, run: () => unknown) => unknown;
 }
 
 /** One side of the channel over `socket`. */
@@ -88,12 +99,26 @@ export class Channel {
   readonly #socket: Duplex;
   readonly #maxFrame: number;
   readonly #onClose: ((why: Error) => void) | undefined;
+  readonly #context: (() => unknown) | undefined;
+  readonly #within: ((carried: unknown, run: () => unknown) => unknown) | undefined;
   #next = 1;
   readonly #pending = new Map<number, { resolve: (value: unknown) => void; reject: (error: unknown) => void }>();
-  /** What this side handed the other by reference: functions, objects with methods, AbortControllers' signals. */
+  /** What this side handed the other by reference: functions and objects with methods, each kept until the other side
+   *  lets go of its stand-in (RELEASE) or the channel ends. */
   readonly #handles = new Map<number, unknown>();
-  /** The signals the other side handed this one, each aborted here when it aborts there. */
-  readonly #signals = new Map<number, AbortController>();
+  /** This side's signals the other side holds a stand-in of: the listener that posts each one's abort, removed when the
+   *  other side lets go of it. */
+  readonly #handedSignals = new Map<number, { readonly signal: AbortSignal; readonly listener: () => void }>();
+  /** The stand-ins of the other side's signals, by its handle: each aborted here when it aborts there. Held weakly, so a
+   *  stand-in nobody here holds any more is let go of (and the other side told). */
+  readonly #signals = new Map<number, WeakRef<AbortSignal>>();
+  /** Each stand-in signal's controller, alive as long as the signal is. */
+  readonly #controllers = new WeakMap<AbortSignal, AbortController>();
+  /** Tells the other side, once a stand-in of its handle is collected here, that it may let go of what it handed. */
+  readonly #released = new FinalizationRegistry<number>((h) => {
+    this.#signals.delete(h);
+    this.post(h, RELEASE, []);
+  });
   readonly #targets = new Map<string, Dispatch>();
   #buffer: Buffer = Buffer.alloc(0);
   #closed: Error | undefined;
@@ -102,6 +127,8 @@ export class Channel {
     this.#socket = socket;
     this.#maxFrame = options.maxFrame ?? MAX_FRAME;
     this.#onClose = options.onClose;
+    this.#context = options.context;
+    this.#within = options.within;
     socket.on("data", (chunk: Buffer) => this.#read(chunk));
     socket.on("error", (error) => this.close(new ChannelClosed(`the channel's socket failed: ${error.message}`)));
     socket.on("close", () => this.close(new ChannelClosed("the channel's socket closed")));
@@ -109,6 +136,11 @@ export class Channel {
 
   get closed(): boolean {
     return this.#closed !== undefined;
+  }
+
+  /** How many functions, objects and signals this side has handed the other and still keeps for it. */
+  get handed(): number {
+    return this.#handles.size + this.#handedSignals.size;
   }
 
   /** Answers calls to `name` with `dispatch`. */
@@ -122,7 +154,8 @@ export class Channel {
     const id = this.#next++;
     return new Promise((resolve, reject) => {
       this.#pending.set(id, { resolve, reject });
-      this.#send({ t: "call", id, to, m: method, a: args.map((arg) => this.#encode(arg)) });
+      const carried = this.#context?.();
+      this.#send({ t: "call", id, to, m: method, a: args.map((arg) => this.#encode(arg)), ...(carried !== undefined ? { c: this.#encode(carried) } : {}) });
     });
   }
 
@@ -158,9 +191,14 @@ export class Channel {
     this.#closed = why;
     for (const { reject } of this.#pending.values()) reject(why);
     this.#pending.clear();
-    for (const controller of this.#signals.values()) controller.abort(why);
+    for (const ref of this.#signals.values()) {
+      const signal = ref.deref();
+      if (signal) this.#controllers.get(signal)?.abort(why);
+    }
     this.#signals.clear();
     this.#handles.clear();
+    for (const { signal, listener } of this.#handedSignals.values()) signal.removeEventListener("abort", listener);
+    this.#handedSignals.clear();
     this.#socket.destroy();
     this.#onClose?.(why);
   }
@@ -241,11 +279,27 @@ export class Channel {
       else pending.reject(decoded);
       return;
     }
-    if (message.t === "post" && message.m === "\u0000abort" && typeof message.to === "number") {
-      this.#signals.get(message.to)?.abort(this.#decodeSafe(message.a[0]));
+    if (message.t === "post" && message.m === ABORT && typeof message.to === "number") {
+      const signal = this.#signals.get(message.to)?.deref();
+      this.#signals.delete(message.to);
+      if (signal) this.#controllers.get(signal)?.abort(this.#decodeSafe(message.a[0]));
       return;
     }
-    const run = async (): Promise<unknown> => this.#dispatch(message.to, message.m, message.a.map((arg) => this.#decode(arg)));
+    if (message.t === "post" && message.m === RELEASE && typeof message.to === "number") {
+      // The other side let go of its stand-in: what this side handed under that handle goes too.
+      this.#handles.delete(message.to);
+      const handed = this.#handedSignals.get(message.to);
+      if (handed) handed.signal.removeEventListener("abort", handed.listener);
+      this.#handedSignals.delete(message.to);
+      return;
+    }
+    const run = async (): Promise<unknown> => {
+      const args = message.a.map((arg) => this.#decode(arg));
+      // Decoded either way, so what it handed is released once collected here.
+      const carried = message.t === "call" && message.c !== undefined ? this.#decode(message.c) : undefined;
+      if (carried === undefined || !this.#within) return this.#dispatch(message.to, message.m, args);
+      return this.#within(carried, () => this.#dispatch(message.to, message.m, args));
+    };
     const answered = run();
     if (message.t === "call") {
       answered.then(
@@ -303,7 +357,14 @@ export class Channel {
       if (value instanceof AbortSignal) {
         const h = this.#next++;
         const signal = value;
-        if (!signal.aborted) signal.addEventListener("abort", () => this.post(h, "\u0000abort", [this.#encodeData(signal.reason)]), { once: true });
+        if (!signal.aborted) {
+          const listener = () => {
+            this.#handedSignals.delete(h);
+            this.post(h, ABORT, [this.#encodeData(signal.reason)]);
+          };
+          signal.addEventListener("abort", listener, { once: true });
+          this.#handedSignals.set(h, { signal, listener });
+        }
         return { [TAG]: "signal", h, aborted: signal.aborted, ...(signal.aborted ? { reason: this.#encodeData(signal.reason) } : {}) } satisfies Tagged;
       }
       if (ArrayBuffer.isView(value) || value instanceof ArrayBuffer || value instanceof Date || value instanceof RegExp) return value;
@@ -356,19 +417,31 @@ export class Channel {
       made.catch(() => undefined);
       return made;
     };
-    if (tag === "fn" && Number.isSafeInteger(h)) return (...args: unknown[]) => quiet(this.call(h as number, "", args));
+    if (tag === "fn" && Number.isSafeInteger(h)) {
+      const fn = (...args: unknown[]) => quiet(this.call(h as number, "", args));
+      // Once nothing here holds the stand-in, the other side lets go of the function.
+      this.#released.register(fn, h as number);
+      return fn;
+    }
     if (tag === "obj" && Number.isSafeInteger(h)) {
       const { data, methods } = tagged as { data?: unknown; methods?: unknown };
       if (!data || typeof data !== "object" || !Array.isArray(methods)) throw new ChannelRefused("a handed object is not one");
       const out = this.#decode(data) as Record<string, unknown>;
-      for (const name of methods) if (typeof name === "string") own(out, name, (...args: unknown[]) => quiet(this.call(h as number, name, args)));
+      // One token every method holds: the object is let go of once neither it nor any of its methods is held here.
+      const kept = {};
+      for (const name of methods) if (typeof name === "string") own(out, name, (...args: unknown[]) => (void kept, quiet(this.call(h as number, name, args))));
+      this.#released.register(kept, h as number);
       return out;
     }
     if (tag === "signal" && Number.isSafeInteger(h)) {
       const controller = new AbortController();
       const { aborted, reason } = tagged as { aborted?: unknown; reason?: unknown };
       if (aborted) controller.abort(this.#decode(reason));
-      else this.#signals.set(h as number, controller);
+      else {
+        this.#controllers.set(controller.signal, controller);
+        this.#signals.set(h as number, new WeakRef(controller.signal));
+        this.#released.register(controller.signal, h as number);
+      }
       return controller.signal;
     }
     if (tag === "error") {

@@ -18,6 +18,7 @@ import type { HarnessInstallEntry, HarnessPins } from "../harness-install.js";
 import type { AlsoRow } from "../store/store.js";
 import type { RunModelKey } from "../store/seal.js";
 import type { EndOfRunKept, EndOfRunTurn } from "./loop-contract.js";
+import type { LearnedFirst } from "./learned-first.js";
 
 /** One MCP tool of the claim, its call made by the runner (mcp-run.ts mcpForClaim), with what the gate reads of it. */
 export interface HeldMcpTool {
@@ -68,11 +69,14 @@ export interface Held {
   verifySignIn(kept: RunSignIn, at: number): Promise<boolean>;
   /** The claim's MCP (mcp-run.ts mcpForClaim); none when its revision grants no MCP tool. */
   mcp(ask: HeldMcpAsk): Promise<HeldMcp | undefined>;
-  /** The GitHub App's access for the run's launch (github-app.ts githubAppAccess). */
+  /** The GitHub App's access for the run's pull-request checkout (pr-checkout.ts): none unless its revision checks one
+   *  out and its launch's payload names the pull request. Its mint makes a token of that repository alone, contents
+   *  read, whatever the process names; its MCP mints on the runner (mcp). */
   githubAppAccess(): Promise<GithubAppAccessAt | undefined>;
   /** Every saved model key, for a run whose routes have no revision to scope them by (a subagent's tiers, a grade). */
   savedModelKeys(): Promise<Record<string, string>>;
-  /** The model keys the host's models of `tiers` need (claim-secrets.ts tierModelKeys), the plan's reader with them. */
+  /** The model keys the host's models of `tiers` need (claim-secrets.ts tierModelKeys), the plan's reader with them: of
+   *  the tiers the claim's learned workflows name, as the runner chose them (learnedFirst), alone. */
   tierModelKeys(tiers: readonly Tier[]): Promise<{ readonly keys: Record<string, string>; readonly plan?: PlanReader }>;
   /** The run's own model key, opened from the claim's run's launch (claim-secrets.ts claimModelKey): none where it holds
    *  none; throws, in words, where the launch does not open under the runner's seal key. Asked again for each message's
@@ -83,7 +87,8 @@ export interface Held {
   /** The zone the claim's run's day is told in (environment.ts runZone): its trigger's, read by the runner from the
    *  claim's own launch, else the server's. A zone's name, never the trigger's row. */
   runZone(): Promise<string>;
-  /** The host's keys of the decision providers `providers` (claim-secrets.ts hostDecisionKeys). */
+  /** The host's keys of the decision providers `providers` (claim-secrets.ts hostDecisionKeys): of the providers the
+   *  claim's learned workflows' questions name, as the runner chose them (learnedFirst), alone. */
   decisionKeys(providers: readonly string[]): Promise<Record<string, string>>;
   /** A browser session's viewer handed over, and taken back (browser-live.ts). */
   liveViewerPut(handover: LiveHandover): Promise<boolean>;
@@ -113,6 +118,13 @@ export interface Held {
    *  turns are asked through `input.ask`, the run's own session; `input.keptOf` is read once, for the round the runner
    *  reads. */
   endOfRun(input: HeldEndOfRunInput): Promise<{ readonly also: readonly AlsoRow[] } | undefined>;
+  /** The claim's learned first choice (learned-first.ts learnedFirst), run by the runner over the workflows it reads at the
+   *  claim's seed: `laid` says only whether the process's seed lay laid any (false: none is laid). Its audits, promotion
+   *  and replay reads are the runner's. */
+  learnedFirst(ask: { readonly laid: boolean }): Promise<LearnedFirst>;
+  /** The runner's live address (live-reach.ts runnerLiveOf) with the claim's own proof key (liveForRun): what proves a
+   *  request for this run's viewers alone. None on a runner on its server's machine. */
+  liveAt(): Promise<{ readonly host: string; readonly bind: string; readonly key: Uint8Array } | undefined>;
 }
 
 /** What a run's process hands its runner for the end-of-run step: EndOfRunTurn's input, its keptOf asked over the

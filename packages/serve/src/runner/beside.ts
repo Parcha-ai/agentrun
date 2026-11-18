@@ -137,7 +137,9 @@ export async function serveWithRunner(options: import("../server.js").ServeOptio
   const { besideRunEnv } = await import("./main.js");
   const { loops, loopsTold, drainMs } = besideRunnerOptions(options, process.env);
   const serve = await startServe(options);
-  const beside = await runnerBeside(options.data, { loops, loopsTold, drainMs, env: besideRunEnv(process.env, fauxEnvOf(options)), hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, ...(options.log ? { onLine: options.log } : {}) }).catch(async (error: unknown) => {
+  // Each run a process of its own, as a user of its own where the image's helper can switch, as the CLI's start runs
+  // them (cli.ts): the isolation the server's capabilities say (runIsolationOf over the same helper) is the runner's.
+  const beside = await runnerBeside(options.data, { loops, loopsTold, drainMs, env: besideRunEnv(process.env, fauxEnvOf(options)), ownProcesses: true, hub: serve.attachHub, dial: serve.dial, mcpLoopback: serve.localInstall, mcpOwn: serve.own, ...(options.log ? { onLine: options.log } : {}) }).catch(async (error: unknown) => {
     await serve.close();
     throw error;
   });

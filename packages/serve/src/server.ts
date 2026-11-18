@@ -66,7 +66,7 @@ import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, 
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { type ComputerOf, computerView, type JournalEntry, lapsedOf, sessionIn } from "./computer-view.js";
 import { readKept } from "./workspace/computer-kept.js";
-import { liveReachOf } from "./live-reach.js";
+import { liveReachOf, reachForRun } from "./live-reach.js";
 import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
 import { type RunMoment, type State, type Status } from "./run-view.js";
@@ -1316,7 +1316,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // Its runners on other hosts (AGENTRUN_RUNNER_HOSTS): a viewer's row naming one of their hosts is dialled there, with
   // the proxy's proof under the seal key (live-reach.ts); any other host is never dialled.
   const reach = liveReachOf(env, sealKey);
-  const answers = (handover: LiveHandover): Promise<boolean> => viewerAnswers(handover, reach);
+  // Each run's viewers are asked under that run's key (live-reach.ts reachForRun).
+  const answers = (runId: string) => (handover: LiveHandover): Promise<boolean> => viewerAnswers(handover, reachForRun(reach, runId));
   // Settings → Computers and the owner's Archil settings, over the one store (computers.ts, archil-routes.ts), built once
   // at the first request, when the server's own address is known (--faux's desktop view is a page on it). The real kind
   // registry and each provider's create() are the computer package's (kinds.ts, providers.ts providerFor); under --faux,
@@ -1718,7 +1719,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     withheld: (_store, runId) => withheldOverStore(store, runId, viewDepsFor(ownOriginOf())),
     cutValues: (_store, runId) => runCutValues({ serverSecrets, signIns }, store, runId),
     context: ctx,
-    liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId, answers),
+    liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId, answers(runId)),
   };
   // The run timeline reader over the store (run-reads-over-store runTimelines): one change-numbered RowLog per run, synced
   // from its journal (store-reads) on each read, its view (viewOverStore) for status/state/cost and whether it is final.
@@ -4090,10 +4091,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const view = await computerView({
           viewer: async () => {
             if (family === "browser") {
-              const link = await liveViewerLink(store, sealKey, run.id, answers);
+              const link = await liveViewerLink(store, sealKey, run.id, answers(run.id));
               return link === undefined ? undefined : { kind: "browser" as const, viewer: link.viewer };
             }
-            return computerViewerLink(store, sealKey, run.id, answers);
+            return computerViewerLink(store, sealKey, run.id, answers(run.id));
           },
           computer: () => (viewed ? { kind: viewed } : computerOf(kept, env, family, own)),
           session: (kind) => sessionIn(kind, entries, run.terminal || (parked && kind !== "browser")),
@@ -4979,7 +4980,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const admitted = () => held.some((value) => owner.valid(value));
       if (!admitted()) return deny("401 Unauthorized");
       viewers.watch(socket, admitted);
-      proxyLiveUpgrade(req, socket, head, handover, viewing[3]!, () => { piping = true; }, reach);
+      proxyLiveUpgrade(req, socket, head, handover, viewing[3]!, () => { piping = true; }, reachForRun(reach, run!.id));
     })().catch(() => (piping ? void socket.destroy() : deny("500 Internal Server Error")));
   };
   // The CLI's early listener answers with this server's routes from here on, where a new one would start to listen.

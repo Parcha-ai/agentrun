@@ -53,7 +53,7 @@ import { FINAL_STATES, RunFinal, type RunRow, type Store, StoreConstraint } from
 import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { isCliRecord, piShaped, runEntries, runTimeline } from "../store-reads/journal.js";
 import type { McpPin } from "../mcp-gateway.js";
-import { pinAnnotations, recordedCalls, type ReplayCalls, replayCalls, type Skipped, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
+import { pinAnnotations, type Recorded, recordedCalls, type ReplayCalls, replayCalls, type Skipped, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
 import { isObject, type Json } from "../validate.js";
 import { agentRun, lastOwnRuns, newCompileAttempt } from "../learn/compile.js";
 import { type CheckBar, type CheckDisagreement, type CheckRecord, checkPasses, checkShares, CHECK_TEXT_MAX, championOf, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, sameAnswer, type SkippedTool, skippedToolsOf } from "../learn/promote.js";
@@ -921,14 +921,18 @@ export async function replayView(ask: ReplayAsk, name: string, digest: string, i
   return checkView(ask, record, id, name, digest);
 }
 
-/** A replay run's call nodes (launch.replay; learn/replay-calls.ts): the agent run's recorded calls, read from its journal
- *  (a CLI's record shaped as pi's), and each tool classed by the claim's MCP pin (`runId`'s, its servers' annotations as
- *  they listed them) or the built-in list. Undefined for any other run. A recording that cannot be read is an empty one:
- *  every write is then skipped, never run. */
-export async function replayCallsFor(store: Store, runId: string, launch: RunLaunch, context: Context): Promise<ReplayCalls | undefined> {
+/** A replay run's recording (launch.replay; learn/replay-calls.ts): the agent run's recorded calls, read from its journal
+ *  (a CLI's record shaped as pi's; another run's, which only a runner reads: learned-first.ts). Undefined for any other
+ *  run. A recording that cannot be read is an empty one: every write is then skipped, never run. */
+export async function replayRecordedFor(store: Store, launch: RunLaunch, context: Context): Promise<Map<string, Recorded> | undefined> {
   if (!launch.replay) return undefined;
   const entries = await runEntries(store, launch.replay.of, context).catch(() => []);
-  const recorded = recordedCalls(isCliRecord(entries) ? piShaped(entries) : entries);
+  return recordedCalls(isCliRecord(entries) ? piShaped(entries) : entries);
+}
+
+/** The replay's call nodes over `recorded`, each tool classed by run `runId`'s own MCP pin (its servers' annotations as
+ *  they listed them) or the built-in list. */
+export async function replayCallsOver(store: Pick<Store, "mcp">, runId: string, recorded: ReadonlyMap<string, Recorded>): Promise<ReplayCalls> {
   const pin = (await store.mcp.pin(runId).catch(() => undefined))?.body as McpPin | undefined;
   const annotations = pinAnnotations(pin);
   return replayCalls(recorded, (tool) => toolClassOf(tool, annotations));

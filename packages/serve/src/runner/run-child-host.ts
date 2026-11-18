@@ -12,7 +12,7 @@
 // the server), and its folders are given back to the server's group.
 import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { existsSync, type Stats } from "node:fs";
-import { chmod, chown, lstat, mkdir, readdir } from "node:fs/promises";
+import { chmod, chown, lchown, lstat, mkdir, readdir } from "node:fs/promises";
 import type { Socket } from "node:net";
 import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -34,19 +34,30 @@ import { runnerSecrets } from "./redact.js";
 import { storeSecrets } from "./store-secrets.js";
 import { FAUX_ENV } from "../model.js";
 import { FAUX_VENDOR_API_ENV } from "../tools.js";
+import { withinCarried } from "../paid-calls.js";
 import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { runZone } from "../environment.js";
 import { shadowRunId } from "../learn/audit.js";
 import { LEARNING_SCRIPT, learningWorkspace } from "../learn/folder.js";
-import { learningFolderOf } from "../learning.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { agentDirName, recordingsFolder, runFolder, scratchFolder } from "../workspace/paths.js";
 import type { Workspace } from "../workspace/workspace.js";
-import { claimModelKey, claimSecrets, claimSpendOff, hostDecisionKeys, openRunModelKey, savedModelKeys, serverKeyless, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
-import { githubAppAccess } from "./github-app.js";
+import { keptKeyOf } from "../workspace/computer-kept.js";
+import { claimModelKey, claimSecrets, claimSpendOff, hostDecisionKeys, learnedDecisionKeys, openRunModelKey, savedModelKeys, serverKeyless, tierModelKeys, withoutModelKeys } from "./claim-secrets.js";
+import { type GithubAppAccessAt, githubAppAccess } from "./github-app.js";
+import { githubPullOf } from "../github.js";
+import { isObject } from "../validate.js";
+import { liveForRun, runnerLiveOf } from "../live-reach.js";
+import { type LearnedWorkflow, learningFolderOf, secretsShown } from "../learning.js";
+import { learningStartOf, seedFailed } from "../run-launch.js";
+import { messageText } from "../run-manifest.js";
+import { placeRunInputs } from "../uploads.js";
+import { withAudit } from "./audit.js";
+import { learnedFirst, type LearnedFirst } from "./learned-first.js";
+import { workflowsAt } from "./learning-seed.js";
 import { heldMcpOf, mcpForClaim } from "./mcp-run.js";
-import { mcpReachOf, type AdapterSpecDeps } from "./adapter-run-spec.js";
+import { learnedTiers, learnsWorkflows, mcpReachOf, type AdapterSpecDeps } from "./adapter-run-spec.js";
 import { createDispatchLoop } from "./dispatch.js";
 import { resolveRunnerLoop } from "./harness-loops.js";
 import type { Held, HeldComputerAsk } from "./held.js";
@@ -141,7 +152,8 @@ export const slotLocks = (data: string): string => join(data, "run-slots");
  *  slot. Undefined when another holds it. */
 async function lockSlot(dir: string, slot: number): Promise<ChildProcess | undefined> {
   await mkdir(dir, { recursive: true, mode: 0o700 });
-  const holder = spawn("flock", ["-n", "-E", "75", join(dir, `${slot}.lock`), "sh", "-c", "echo held; exec cat >/dev/null"], { stdio: ["pipe", "pipe", "pipe"] });
+  // Its environment PATH alone: the holder lives as long as the slot is held, and needs none of the runner's.
+  const holder = spawn("flock", ["-n", "-E", "75", join(dir, `${slot}.lock`), "sh", "-c", "echo held; exec cat >/dev/null"], { stdio: ["pipe", "pipe", "pipe"], env: { PATH: process.env.PATH ?? "/usr/bin:/bin" } });
   holder.unref();
   for (const stream of [holder.stdin, holder.stdout, holder.stderr] as unknown as { unref?: () => void }[]) stream?.unref?.();
   let said = "";
@@ -168,12 +180,15 @@ export class Slots {
   readonly #free: number[];
   readonly #locks: string | undefined;
   readonly #held = new Map<number, ChildProcess>();
+  readonly #retired = new Set<number>();
   constructor(first: number, count: number, locks?: string) {
     this.#free = Array.from({ length: count }, (_, i) => first + count - 1 - i);
     this.#locks = locks;
   }
-  /** A free slot of this runner no other runner holds; undefined when another holds every free one. */
+  /** A free slot of this runner no other runner holds; undefined when another holds every free one, or every slot not
+   *  held is retired. */
   async take(): Promise<number | undefined> {
+    if (this.#free.length === 0 && this.#retired.size > 0) return undefined;
     if (this.#free.length === 0) throw new Error("every run slot of this runner is held: it claimed more runs than it has slots");
     if (this.#locks === undefined) return this.#free.pop();
     for (const slot of [...this.#free].reverse()) {
@@ -185,6 +200,15 @@ export class Slots {
       return slot;
     }
     return undefined;
+  }
+  /** Never gives `slot` back: a slot whose reap did not hold (a process of its uid may still be alive) runs no run of
+   *  this runner again, and its lock is kept, so no other runner on the data directory takes it either. */
+  retire(slot: number): void {
+    this.#retired.add(slot);
+  }
+  /** The slots retired (retire). */
+  get retired(): readonly number[] {
+    return [...this.#retired];
   }
   /** Gives `slot` back, its lock ended first. */
   async give(slot: number): Promise<void> {
@@ -260,6 +284,9 @@ async function layRunFolders(isolation: Extract<RunIsolation, { kind: "uid" }>, 
       const moved = await execText(isolation.helper, ["reown", String(other), String(slot), top], 120_000);
       if (moved.code !== 0) throw new Error(`the run's folder could not be given to its slot: ${moved.stderr.trim()}`);
     }
+    // What the server's user made there (a run's inputs placed at this claim, an earlier run's folders on a volume from
+    // before runs had slots of their own): the slot group's, so the run writes there too.
+    await toSlotGroup(top, gid);
   }
   // The folders the run's process opens first, made here in the slot's group (setgid): its folder, its recordings and its
   // temporary folder (its TMPDIR), each one the server reads through the group as the run writes it.
@@ -270,6 +297,34 @@ async function layRunFolders(isolation: Extract<RunIsolation, { kind: "uid" }>, 
     await chown(folder, process.getuid!(), gid);
     await chmod(folder, 0o2770);
   }
+}
+
+/** Every entry under `dir` the server's user owns, given to group `gid` as the helper's reown gives a slot's: a folder
+ *  the group's to enter and write (2770), a file's owner bits copied to the group, none for others. The whole tree, a
+ *  symlink never followed nor changed (an lstat's). Run while no process of the slot is alive (after its reap), so
+ *  nothing it walks is swapped under it. */
+export async function toSlotGroup(dir: string, gid: number): Promise<void> {
+  const me = process.getuid!();
+  const walk = async (at: string): Promise<void> => {
+    let names: string[];
+    try {
+      names = await readdir(at);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      const path = join(at, name);
+      const stat = await lstat(path).catch(() => undefined);
+      if (!stat || stat.isSymbolicLink()) continue;
+      if (stat.uid === me) {
+        await lchown(path, me, gid);
+        const owner = stat.mode & 0o700;
+        await chmod(path, stat.isDirectory() ? 0o2770 : owner | (owner >> 3));
+      }
+      if (stat.isDirectory()) await walk(path);
+    }
+  };
+  await walk(dir);
 }
 
 /** The other slots that own an entry anywhere under `dir`, as the helper's reown walks it: the whole tree, a symlink
@@ -302,8 +357,10 @@ const SWEPT = ["/tmp", "/var/tmp", "/dev/shm", "/run/lock", "/var/lock", "/dev/m
 
 /** After the run's process ended: every process of the slot's uid killed, its files in the shared temporary folders
  *  removed, what it left in its folders readable and removable by the server's group, and its top folders the server's
- *  own again (0770), which the slot's next run cannot enter. */
-export async function reapSlot(isolation: Extract<RunIsolation, { kind: "uid" }>, slot: number, tops: readonly string[], log: (line: string) => void): Promise<void> {
+ *  own again (0770), which the slot's next run cannot enter. Whether the reap held: the helper kills until no process of
+ *  the uid is left, and says so; false when one still is, or the reap could not run (the slot is then never run on
+ *  again by this runner). */
+export async function reapSlot(isolation: Extract<RunIsolation, { kind: "uid" }>, slot: number, tops: readonly string[], log: (line: string) => void): Promise<boolean> {
   const args = ["reap", String(slot), ...SWEPT.flatMap((dir) => ["--sweep", dir]), ...tops.flatMap((top) => ["--fix", top])];
   const reaped = await execText(isolation.helper, args, 120_000);
   if (reaped.code !== 0) log(`slot ${slot}'s reap said: ${reaped.stderr.trim()}`);
@@ -315,6 +372,7 @@ export async function reapSlot(isolation: Extract<RunIsolation, { kind: "uid" }>
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") log(`the run's folder ${top} was not given back to the server: ${(error as Error).message}`);
     }
   }
+  return reaped.code === 0;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -382,11 +440,31 @@ const agentQuery: Check = (args, bound) => {
 };
 const always: Check = () => true;
 
+/** The settings a run's process may read, the server's own configuration its loop and tools read: its tool settings,
+ *  its Archil settings (no credential), its MCP hosts and server names, its Claude-login mode and its approvers. */
+const SHARED_SETTINGS: ReadonlySet<string> = new Set(["tool-settings", "archil", "mcp.private_oauth_hosts", "mcp.server_own", "claude_login", "approvers"]);
+
+/** The settings of the claim's own run and agent a run's process may read: its run's Archil disk, SDK record, kept
+ *  computer and browser wait, and its agent's Archil disk and promotions. Every other row (another run's or agent's) is
+ *  not its to read. */
+const ownSettings = (bound: Bound): ReadonlySet<string> => new Set([
+  `archil.run.${bound.claim.runId}`,
+  `sdk-run:${bound.claim.runId}`,
+  keptKeyOf(bound.claim.runId),
+  `browser_wait_ended:${bound.claim.runId}`,
+  `archil.agent.${bound.agentId}`,
+  `learning.promotions.${bound.agentId}`,
+]);
+
+/** Whether a run's process may read setting `key`. */
+export const settingReadable = (key: unknown, bound: Bound): boolean => typeof key === "string" && (SHARED_SETTINGS.has(key) || ownSettings(bound).has(key));
+const readableSetting: Check = (args, bound) => settingReadable(args[0], bound);
+
 /** The store's methods a run's loop calls, each with what binds it to the claim. A method not here is refused, and the
  *  refusal is said on the runner's log. Reads of the claim's run, its launch, its commands and its agent's revisions;
  *  of what was spent beside it (its learning grades, its own audit's shadow run's row and launch, which its cap gates
- *  read); of the agent's own runs (its learning reads its past runs); the settings its tools read (no sealed value is a
- *  setting: sealed rows are refused whole). Writes only under the claim. */
+ *  read); of the agent's own runs (its learning reads its past runs); the server's settings its tools read and the
+ *  claim's own rows (settingReadable). Writes only under the claim. */
 const STORE_CALLS: ReadonlyMap<string, Check> = new Map<string, Check>([
   ["flush", always],
   ["runs.get", ownRunOrShadow],
@@ -403,7 +481,8 @@ const STORE_CALLS: ReadonlyMap<string, Check> = new Map<string, Check>([
   ["agents.get", ownAgent],
   ["agents.revision", always],
   ["agents.revisions", ownAgent],
-  ["settings.get", always],
+  ["settings.get", readableSetting],
+  // Its rows filtered to the readable ones (storeCall).
   ["settings.all", always],
   ["mcp.pin", ownRun],
   ["readJournal", ownRun],
@@ -442,6 +521,7 @@ export async function storeCall(store: object, method: string, args: unknown[], 
     log(`run ${bound.claim.runId}: its process asked for another agent's revision`);
     throw new ClaimRefused("a run's process may read only its own agent's revisions");
   }
+  if (method === "settings.all") return dataOnly((answer as readonly { key: unknown }[]).filter((row) => settingReadable(row.key, bound)));
   return dataOnly(answer);
 }
 
@@ -545,7 +625,7 @@ const grantsEmail = (granted: readonly string[]): boolean => granted.some((tool)
 
 /** Held (held.ts) for one claim, on the runner: each answer the claim's own, read with the runner's seal key from the
  *  runner's own reads of the claim; every argument from the run's process is checked or ignored. */
-export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, reads: ClaimReads, cut: (text: string) => string, log: (line: string) => void): { held: Held; release(): Promise<void> } {
+export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, reads: ClaimReads, cut: (text: string) => string, log: (line: string) => void): { held: Held; inputs(): Promise<void>; release(): Promise<void> } {
   const { claim, run, launch, revision, claimed } = reads;
   const sealKey = deps.sealKey;
   const store = deps.store;
@@ -571,6 +651,18 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     const made = await archilOf();
     return made === undefined ? learningFolderOf(deps.data, run.agentId) : learningWorkspace({ mode: "archil", agentId: run.agentId, archil: made });
   };
+  /** The learning folder's reader, made once the claim's Archil claim is known (learnedFirst's folder is synchronous). */
+  const folderNow = async () => {
+    const made = await archilOf();
+    return () => (made === undefined ? learningFolderOf(deps.data, run.agentId) : learningWorkspace({ mode: "archil", agentId: run.agentId, archil: made }));
+  };
+  /** What a learned workflow must never hold, as this runner sees it: every secret it holds (learning-seed.ts). */
+  const shown = async () => secretsShown(runnerSecrets(deps.env, await storeSecrets(store, sealKey, deps.data)), { local: true });
+  /** The workflows the claim's learned_workflow tool runs, as this runner chose them (held.learnedFirst): what scopes the
+   *  tier and decision keys it hands. None until it chose. */
+  let learnedFlows: readonly LearnedWorkflow[] = [];
+  /** The claim's one learned first choice: its promotion's writes are made once, however often the process asks. */
+  let chosen: Promise<LearnedFirst> | undefined;
   const held: Held = {
     plan: async () => {
       const plan = planOf(claimed);
@@ -592,9 +684,23 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       return heldMcpOf(made, cut);
     },
     githubAppAccess: async () => {
+      // A run's process mints for one thing alone: its revision's pull-request checkout (pr-checkout.ts), of the pull
+      // request its launch's payload names, contents read. Its MCP mints on the runner (mcp above). So the mint handed
+      // here makes that token and no other, whatever repository or permissions the process names.
+      if (revision.body.checkout !== "pull_request") return undefined;
+      const pull = githubPullOf(isObject(launch.input) ? launch.input.content : launch.input, { payload: fromGitHub });
+      if (!pull) return undefined;
       const access = await github();
       if (!access) return undefined;
-      return { api: access.api, target: dataOnly(access.target) as never, mint: access.mint, ...(access.revoke ? { revoke: access.revoke } : {}), ...(access.same ? { same: access.same } : {}) };
+      const bound = { repo: pull.repo, ...(pull.installation !== undefined ? { installation: pull.installation } : {}) };
+      const mint: GithubAppAccessAt["mint"] = async (to) => {
+        if (to?.repo !== bound.repo || to.installation !== bound.installation) {
+          log(`run ${claim.runId}: its process asked for a GitHub token of another repository than its pull request's, which a run's process may not`);
+          throw new ClaimRefused("a run's process mints a GitHub token only for its own pull request's repository");
+        }
+        return access.mint(bound, { contents: "read" });
+      };
+      return { api: access.api, target: bound, mint, ...(access.revoke ? { revoke: access.revoke } : {}), ...(access.same ? { same: access.same } : {}) };
     },
     savedModelKeys: async () => {
       // Only a run whose routes have no revision to scope their keys by: a subagent's tiers, a learning run's grade, an SDK
@@ -605,12 +711,21 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       return reads ? stringsOf(keyed ? {} : await savedModelKeys(keys)) : {};
     },
     tierModelKeys: async (tiers) => {
+      // The tiers the claim's learned workflows name (learnedTiers), as this runner chose them (learnedFirst below): a
+      // tier the process names beyond them gets no key, and none before the choice.
+      const asked = new Set((tiers as readonly unknown[]).filter((tier): tier is Tier => typeof tier === "string"));
+      const named = learnsWorkflows(revision.kind, learnedFlows) ? learnedTiers(learnedFlows).filter((tier) => asked.has(tier)) : [];
       const keyed = await runKeyed();
-      const got = keyed ? {} : await tierModelKeys(keys, (tiers as readonly unknown[]).filter((tier): tier is Tier => typeof tier === "string"));
+      const got = keyed || !named.length ? {} : await tierModelKeys(keys, named);
       const plan = planOf(got);
       return { keys: stringsOf(got), ...(plan ? { plan: { state: plan.state, models: [...plan.models], token: () => plan.token(), refused: (sent: string) => plan.refused(sent), watch: (listener: (tokens: string[]) => void) => plan.watch(listener) } } : {}) };
     },
-    decisionKeys: (providers) => hostDecisionKeys(keys, (providers as readonly unknown[]).filter((one): one is string => typeof one === "string")),
+    // The decision providers the claim's learned workflows' questions name (learnedDecisionKeys), as this runner chose
+    // them: of those, the ones the process asks for (its gate's allowed). Any other provider gets no key.
+    decisionKeys: async (providers) => {
+      const asked = new Set((providers as readonly unknown[]).filter((one): one is string => typeof one === "string"));
+      return learnsWorkflows(revision.kind, learnedFlows) ? learnedDecisionKeys(keys, learnedFlows, (provider) => asked.has(provider)) : {};
+    },
     // The claim's own run's key alone (its launch, as the runner reads it), whatever run the process would name.
     runModelKey: () => openRunModelKey(keys, claim.runId),
     serverKeyless: () => serverKeyless(keys),
@@ -672,10 +787,14 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // The step as the run's spec builds it in a runner (adapter-run-spec.ts), over the runner's reads of the claim: what
       // the run must never learn is every secret this runner holds, the keys its claim handed it, every secret the server
       // keeps sealed and its sign-in's pointers, none of which the run's process is given.
+      // A replay run or an audit's shadow run asks nothing at its end, as the run's spec says (adapter-run-spec.ts).
+      if (launch.replay || launch.audit) return undefined;
       const made = await archilOf();
       // The grade's spend, skipped as the run's spec skips it (claim-secrets.ts claimSpendOff): over the claim's own key.
       const spendOff = await claimSpendOff(keys, await claimModelKey(keys, claim.runId));
-      const step = learningEndOfRun(launch, {
+      // The audit's start after the step (audit.ts withAudit) is this runner's too: it reads the run's journal and writes
+      // the ledger and a run.
+      const step = withAudit(learningEndOfRun(launch, {
         store,
         data: deps.data,
         spendOff,
@@ -686,7 +805,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         log,
         decisionProviders: async () => decisionProvidersIn({ ...(deps.env ?? {}), ...(await hostDecisionKeys(keys, DECISION_PROVIDER_KEYS)) }),
         learningFolder: made === undefined ? (agentId: string) => learningFolderOf(deps.data, agentId) : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil: made }),
-      });
+      }), { store, agentId: run.agentId, revisionId: run.revisionId, context: BACKGROUND_CONTEXT, folder: await folderNow(), shown, log, sealKey, spendOff, launch, redact: cut });
       if (!step) return undefined;
       // keptOf is the run's process's, asked over the channel: read once, for the round learningEndOfRun reads (the
       // round after the newest the run kept), before the step reads it at once.
@@ -699,16 +818,48 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         agentId: run.agentId,
         claim,
         outcome: input.outcome === "failed" ? "failed" : "completed",
-        ...(input.cut === "stopped" || input.cut === "stopped-looking" || input.cut === "faulted" ? { cut: input.cut } : {}),
+        // A cut the runner does not know is a fault: never an end the run reached on its own, which starts an audit.
+        ...(input.cut === undefined ? {} : { cut: input.cut === "stopped" || input.cut === "stopped-looking" ? input.cut : "faulted" }),
         ask: (prompt, opts) => ask(prompt, opts),
         keptOf: (asked) => (asked === round ? kept : undefined),
         signal: input.signal,
       });
       return rows === undefined ? undefined : { also: dataOnly(rows.also ?? []) as AlsoRow[] };
     },
+    learnedFirst: (ask) => (chosen ??= (async () => {
+      // The workflows the claim's seed lays, read by this runner at the launch's seed (learning-seed.ts workflowsAt), as
+      // the process's lay chose them: none where its lay laid none (`laid` false: a read that failed, a notes-only seed).
+      const start = learningStartOf(launch);
+      const folder = await folderNow();
+      const laid = ask?.laid === true && start && !seedFailed(start) && !start.notesOnly ? await workflowsAt({ folder, shown }, start.seed).catch(() => []) : [];
+      const spendOff = await claimSpendOff(keys, await claimModelKey(keys, claim.runId));
+      const outputSchema = (revision.body as { outputSchema?: unknown }).outputSchema;
+      const got = await learnedFirst({ store, sealKey, agentId: run.agentId, runId: claim.runId, revisionId: run.revisionId, kind: revision.kind, ...(outputSchema !== undefined ? { outputSchema } : {}), launch, context: BACKGROUND_CONTEXT, log, folder, shown, spendOff }, laid);
+      learnedFlows = got.workflows;
+      return cutDeep(dataOnly(got) as LearnedFirst, cut);
+    })()),
+    liveAt: async () => {
+      const live = runnerLiveOf(deps.env ?? {}, sealKey);
+      if (!live) return undefined;
+      const own = liveForRun(live, claim.runId);
+      return { host: own.host, bind: own.bind, key: new Uint8Array(own.key) };
+    },
   };
   return {
     held,
+    inputs: async () => {
+      // The run's uploads and its opening message (uploads.ts placeRunInputs), placed by this runner before the run's
+      // process starts: their hold is the server's alone.
+      const made = await archilOf();
+      const ws = made === undefined
+        ? await openRunWorkspace({ mode: 1, agentId: run.agentId, runId: claim.runId, data: deps.data, log })
+        : await openRunWorkspace({ mode: 2, agentId: run.agentId, runId: claim.runId, archil: made, log });
+      try {
+        await placeRunInputs(deps.data, claim.runId, ws.workspace, launch.files ?? [], messageText(launch.input));
+      } finally {
+        await ws.end();
+      }
+    },
     release: async () => {
       for (const release of releases.reverse()) await Promise.resolve(release()).catch((error: unknown) => log(`run ${claim.runId}: a release on its runner failed: ${(error as Error)?.message ?? error}`));
     },
@@ -832,15 +983,24 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
   };
   /** Ends the run's process: its channel closed (its loop ended), a grace to exit, then everything it left killed and, on
    *  a slot, the slot reaped. */
-  const end = async (slot: number | undefined, tops: readonly string[]): Promise<void> => {
+  const end = async (slot: number | undefined, tops: readonly string[]): Promise<boolean> => {
     let timer: NodeJS.Timeout | undefined;
     const gone = exited ? Promise.race([exited, new Promise((resolve) => (timer = setTimeout(resolve, EXIT_GRACE_MS)))]) : Promise.resolve();
     channel?.close();
     await gone;
     clearTimeout(timer);
-    if (isolation.kind === "uid" && slot !== undefined) await reapSlot(isolation, slot, tops, log);
+    let reaped = true;
+    if (isolation.kind === "uid" && slot !== undefined) reaped = await reapSlot(isolation, slot, tops, log);
     else await kill();
     await exited?.catch(() => undefined);
+    return reaped;
+  };
+  /** Gives the slot back where its reap held, else retires it (Slots.retire), said on the log. */
+  const letGo = async (slot: number | undefined, reaped: boolean, runId: string): Promise<void> => {
+    if (slot === undefined || !slots) return;
+    if (reaped) return slots.give(slot);
+    slots.retire(slot);
+    log(`run ${runId}: slot ${slot} is retired: its reap did not end every process of its user, so no run of this runner runs on it again until the runner restarts`);
   };
   return {
     start(claim) {
@@ -875,12 +1035,23 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           ready();
           return { state: "interrupted" };
         }
+        // A slot is reaped before its first run here too: a runner that died (its locks ended with it) may have left a
+        // process of the slot's uid alive, which must never share a user with this run. A reap that does not hold
+        // retires the slot, and the run is handed back unstarted.
+        if (isolation.kind === "uid" && slot !== undefined && !(await reapSlot(isolation, slot, [], log))) {
+          await letGo(slot, false, claim.runId);
+          ready();
+          return { state: "interrupted" };
+        }
         if (isolation.kind === "uid" && slot !== undefined) hold = new SlotHold(slot, isolation.helper, log);
         const tops = runTops(deps.data, runRow.agentId, claim.runId);
         const heldSide = heldFor(deps, { claim, run: runRow, launch, revision, claimed }, cut, log);
         try {
           let extra: Record<string, string> = {};
           let argv = [...(options.argv ?? childArgv())];
+          // The run's uploads and opening message, placed by the runner before its process starts (their hold is the
+          // server's alone), then given to the slot with its folders.
+          await heldSide.inputs();
           if (isolation.kind === "uid" && slot !== undefined) {
             await layRunFolders(isolation, deps.data, runRow.agentId, claim.runId, slot);
             const scratch = scratchFolder(deps.data, runRow.agentId, claim.runId);
@@ -904,7 +1075,8 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           keyPipe.end(keys);
           const socket = child.stdio[4] as Socket;
           let broke: Error | undefined;
-          channel = new Channel(socket, { onClose: (why) => void (broke ??= why) });
+          // Each call of the run's process runs inside the ledger of the tool call it was made in (paid-calls.ts).
+          channel = new Channel(socket, { onClose: (why) => void (broke ??= why), within: withinCarried });
           const bound: Bound = { claim, agentId: runRow.agentId, revisionId: runRow.revisionId };
           channel.expose("store", (method, args) => storeCall(deps.store, method, args, bound, log));
           channel.expose("journal", journalTarget(loopDeps.journal(claim), cut));
@@ -958,11 +1130,14 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           }
         } finally {
           ready();
-          await end(slot, tops).catch((error: unknown) => log(`run ${claim.runId}: its process's end failed: ${(error as Error)?.message ?? error}`));
+          const reaped = await end(slot, tops).catch((error: unknown) => {
+            log(`run ${claim.runId}: its process's end failed: ${(error as Error)?.message ?? error}`);
+            return false;
+          });
           await heldSide.release();
           // No kill of this run reaps the slot once it is given back: those still reaping end first.
           await hold?.settle();
-          if (slot !== undefined) await slots?.give(slot);
+          await letGo(slot, reaped, claim.runId);
         }
       })());
     },

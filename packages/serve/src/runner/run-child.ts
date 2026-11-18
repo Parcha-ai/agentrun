@@ -18,6 +18,7 @@ import { heldRedactor, processSecretRedactor } from "./redact.js";
 import { Channel } from "./run-channel.js";
 import { registerRunErrors } from "./run-errors.js";
 import { runEnv } from "./main.js";
+import { carriedLedger } from "../paid-calls.js";
 import { heldHands, type ComputerHold, type HoldAsk, type HoldEvent, type HoldState } from "../workspace/computer-hold.js";
 import type { ClaimComputer } from "../workspace/computer-for-claim.js";
 import type { AdapterSpecDeps } from "./adapter-run-spec.js";
@@ -47,6 +48,9 @@ const socket = new Socket({ fd: 4, readable: true, writable: true });
 const channel = new Channel(socket, {
   // The runner closed the channel (the loop's end answered) or is gone: nothing of the run's goes on.
   onClose: () => void setImmediate(() => process.exit(0)),
+  // Each call carries the ledger of the tool call it is made in: what the runner does for it (an MCP tool's call, a
+  // computer's) books on the run's one ledger, as it would in the run's own process.
+  context: carriedLedger,
 });
 
 /** A journal's reads for run `runId`, each `call(read, args)` to the runner with the arguments the caller gave but its

@@ -97,7 +97,7 @@ export async function layLearningSeed(lay: LearningSeedLay): Promise<LaidSeed | 
 /** The learned workflows the folder held active at `commit`, as a claim's lay hands them to the learned_workflow tool
  *  (chooseWorkflows: within the budget, none holding a secret): what a champion serves from while a newer revision of it
  *  is on main (runner/promotion.ts). Throws when the folder cannot answer or the commit is gone. */
-export async function workflowsAt(read: Pick<LearningSeedLay, "folder" | "shown">, commit: string): Promise<LearnedWorkflow[]> {
+export async function workflowsAt(read: Pick<LearningSeedLay, "folder" | "shown">, commit: string | null): Promise<LearnedWorkflow[]> {
   const folder = read.folder();
   let seed: Seed;
   try {
