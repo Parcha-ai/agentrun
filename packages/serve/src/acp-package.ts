@@ -18,6 +18,8 @@ export type AcpPackage = {
   readonly GOOSE_NOT_INSTALLED: string;
   acpPlatform(): string | undefined;
   gooseAdapter(options: Record<string, unknown>): AgentAdapter;
+  /** Any ACP agent's adapter, from its recipe (a harness module's, harness-table.ts acpEntry). */
+  acpAdapter(options: Record<string, unknown>): AgentAdapter;
   verifyPinnedBinary(path: string, sha256: string): void;
   verifyPinnedBinaryAsync(path: string, sha256: string): Promise<void>;
 };

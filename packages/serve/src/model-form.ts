@@ -1,8 +1,8 @@
 // The models a person is offered to pick for each harness, in the exact form that harness takes, and the words a refusal
 // uses when a model is named in a form it does not take. One list, served in capabilities (`harnesses[].models`) and read
 // by the console's Model picker, so the picker, the save's refusal and a run's refusal never name different forms.
-// A leaf of model.ts and provider.ts (it reads their tables only when called, never as it loads).
-import { adapterFactsOf } from "./adapter-facts.js";
+// A leaf of model.ts, provider.ts and harness-table.ts (it reads their tables only when called, never as it loads).
+import { factsOf } from "./harness-table.js";
 import { FAUX_ENV, MODEL_KEYS } from "./model.js";
 import { openRouterName } from "./provider.js";
 import { WIRES } from "./wires.js";
@@ -19,9 +19,9 @@ export const PICKABLE: readonly { vendor: string; ids: readonly string[] }[] = O
   { vendor: "particle", ids: Object.freeze(["particle-1"]) },
 ]);
 
-/** The vendors whose models `harness` runs: pi any; an adapter harness, its wire's vendor. */
-const vendorsOf = (harness: string): readonly string[] => {
-  const facts = adapterFactsOf(harness);
+/** The vendors whose models `harness` runs on `env`: pi any; an adapter harness (its facts on the table, factsOf), its wire's vendor. */
+const vendorsOf = (env: NodeJS.ProcessEnv, harness: string): readonly string[] => {
+  const facts = factsOf(env, harness);
   return facts ? [WIRES[facts.wire].vendor] : PICKABLE.map((p) => p.vendor);
 };
 
@@ -40,9 +40,9 @@ export function pickerCandidates(env: NodeJS.ProcessEnv, harness: string): strin
   if (env[FAUX_ENV]) return [];
   // The gateway serves the harnesses whose wire goes through it (pi, and the OpenAI Responses wire: providerFor); the
   // Anthropic Messages wire never does, so Claude is offered Anthropic's models on its own key.
-  const facts = adapterFactsOf(harness);
+  const facts = factsOf(env, harness);
   if (env.AGENT_MODEL_BASE_URL && facts?.wire !== "anthropic-messages") return [...new Set([env.AGENT_MODEL, env.AGENT_MODEL_FAST, env.AGENT_MODEL_STRONG].filter((id): id is string => Boolean(id)))];
-  const vendors = vendorsOf(harness);
+  const vendors = vendorsOf(env, harness);
   // Signed in to a ChatGPT plan, its models first for a harness that runs on it (`chatgpt/<model-id>`).
   const plan = PLAN_HARNESSES.includes(harness) && signedIn(env) ? (planOf(env)?.models ?? []).map((id) => `${PLAN_PROVIDER}/${id}`) : [];
   return [...plan, ...PICKABLE.filter((p) => vendors.includes(p.vendor)).flatMap((p) => p.ids.map((id) => formOf(env, p.vendor, id)))];
@@ -57,7 +57,7 @@ export type FreeModel = { id: string; context_window: number };
  *  pi with OpenRouter's key, by id. None for an adapter harness (each runs its own wire's vendor), behind a gateway (its
  *  ids are its own) or with the faux model. */
 export async function freeCandidates(env: NodeJS.ProcessEnv, harness: string): Promise<FreeModel[]> {
-  if (env[FAUX_ENV] || env.AGENT_MODEL_BASE_URL || !env.OPENROUTER_API_KEY || adapterFactsOf(harness)) return [];
+  if (env[FAUX_ENV] || env.AGENT_MODEL_BASE_URL || !env.OPENROUTER_API_KEY || factsOf(env, harness)) return [];
   const [{ builtinModels }, { withLocalModels, isFree }] = await Promise.all([import("@earendil-works/pi-ai/providers/all"), import("./local-models.js")]);
   return withLocalModels(builtinModels()).getModels("openrouter").filter(isFree)
     .map((model) => ({ id: `openrouter/${model.id}`, context_window: model.contextWindow }))
@@ -72,7 +72,7 @@ const spelled = (given: string): string => (given.split("/").pop() ?? "").toLowe
 export function likelyModel(env: NodeJS.ProcessEnv, harness: string, given: string): string | undefined {
   const wanted = spelled(given);
   if (!wanted) return undefined;
-  const vendors = vendorsOf(harness);
+  const vendors = vendorsOf(env, harness);
   for (const { vendor, ids } of PICKABLE) {
     if (!vendors.includes(vendor)) continue;
     const id = ids.find((each) => spelled(each) === wanted || spelled(each).endsWith(`-${wanted}`));
@@ -94,7 +94,7 @@ export function modelFormWhy(env: NodeJS.ProcessEnv, harness: string, named: str
  *  vendor's everyday model, the vendor's own and OpenRouter's. Only the forms a key here runs; with neither key both, since
  *  either key makes one run. */
 export function modelShape(env: NodeJS.ProcessEnv, harness: string): string {
-  const first = PICKABLE.find((p) => vendorsOf(harness).includes(p.vendor))!;
+  const first = PICKABLE.find((p) => vendorsOf(env, harness).includes(p.vendor))!;
   const id = first.ids[0]!;
   const own = Boolean(env[MODEL_KEYS.find((r) => r.id === first.vendor)!.field]);
   const router = Boolean(env.OPENROUTER_API_KEY);

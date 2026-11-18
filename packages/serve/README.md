@@ -3007,11 +3007,26 @@ the console all read that table. An owner adds harnesses with a harness module: 
 takes the same flag and setting, and needs them to run the module's harnesses. MODULE is a path, or a package installed
 with `npm install --prefix <data>/harnesses <package>`.
 
-A module exports `entries(builtins)`, which returns new entries by id. Each entry gives `label`, `steer`, `runMib`,
-`oneAlwaysFits`, `runs`, `onWire`, `model`, `priceModel`, `refusal` and its `runner`, and may give `promises`. A run of
-the harness runs on its runner's `adapter(launch, extra)`, and is admitted by the `runMib` its entry declares. A module
-adds harnesses and never replaces one. The start of the server, or of a separate runner, is refused, naming the module
-and the id, when a module:
+A module exports `entries(builtins, kit)`, which returns new entries by id. [HARNESS.md](../../HARNESS.md) walks through
+writing one, and [examples/harness-module](../../examples/harness-module/README.md) is a whole one. Its types are
+`@parcha/agentrun-serve/harness`, which loads nothing of serve. `kit` holds the builders the built-in adapter harnesses
+are made with, on the running server's own copy:
+- `kit.adapterEntry(facts, adapter, extra?)` makes an adapter harness's whole entry from its facts (the kernel's
+  `AdapterFacts`): its models are its wire's vendor's, its key rows are that vendor's and OpenRouter's, and its tools are
+  gated and named by its facts, as for claude-agent, codex and opencode. `adapter(launch)` builds the adapter for one run
+  from the launch serve chose on this server's keys (`ModuleLaunch`: the provider's model id, the origin and credential
+  the session's proxy forwards to, the price of a request's usage, a log, and the server's environment). A person's
+  Claude Code login is never a launch's credential.
+- `kit.acpEntry({facts, recipe, proxy, beforeStart?, promises?})` makes an ACP agent's entry on serve's own ACP adapter
+  (`@parcha/agentrun-harness-acp`), promising `load`, `permission` and `proxy` unless `promises` says otherwise.
+- Either takes `missing(env)`: what no model key fixes (its binary, say), asked before the key, so the harness's offer
+  says it and names no key until it is there.
+
+An entry made otherwise gives `label`, `steer`, `runMib`, `oneAlwaysFits`, `runs`, `onWire`, `model`, `priceModel`,
+`refusal` and its `runner`, and may give `promises`; a run of it runs on its runner's `adapter(launch, extra)`. Every
+harness is admitted by the `runMib` its entry declares. A module adds harnesses and never replaces one: the built-in
+harnesses' facts, offers, key rows, default models and tool names are the same with any module loaded. The start of the
+server, or of a separate runner, is refused, naming the module and the id, when a module:
 - gives an id that does not match `^[a-z][a-z0-9-]{0,39}$`;
 - names an id serve's own runs carry: `learning`, `sdk`, `workflow`, `claude-agent-sdk` or `codex-sdk`;
 - names a built-in harness;
@@ -3022,6 +3037,10 @@ and the id, when a module:
 A module's entry that gives no adapter `facts` runs on the general spec, with pi's tools: capabilities list its id on
 every tool pi runs (`tools[].harnesses`) and on MCP grants (`features.mcp_client.harnesses`), so an agent on it keeps
 its tool choices. One that gives `facts` runs the host tools, as the other built-in harnesses do.
+
+A module's author proves its harness with `@parcha/agentrun-serve/conformance`: the same suite (`registerHarnessConformance`),
+adapter loop (`createAdapterLoop`) and host tools (`suiteHostTools`) this repository proves its own harnesses with. An ACP
+agent's module runs it on `@parcha/agentrun-harness-acp/testing`'s fake ACP agent, which needs no binary, model or key.
 
 The harnesses a module adds are listed in `capabilities.harnesses` after the built-in ones. Each offer there carries a
 `label` and `promises`:

@@ -10,7 +10,7 @@ import { journalRecords, transcriptOf } from '@parcha/agentrun-kernel/process';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { acpAdapter } from '@parcha/agentrun-harness-acp';
 
-export const FAKE = fileURLToPath(new URL('./fake-acp-agent.mjs', import.meta.url));
+export const FAKE = fileURLToPath(new URL('../testing/fake-acp-agent.mjs', import.meta.url));
 const ROOT = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'agentrun-acp-test-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
 let n = 0;

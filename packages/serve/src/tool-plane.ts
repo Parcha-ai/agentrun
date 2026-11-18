@@ -27,7 +27,8 @@ import { keyNeeded } from "./key-words.js";
 import type { InputIssue } from "./errors.js";
 import type { Settings } from "./store/index.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessId } from "./harness.js";
-import { builtinHarness, harnessOf } from "./harness-table.js";
+import type { AdapterFacts } from "@parcha/agentrun-kernel";
+import { builtinHarness, factsOf as tableFactsOf, harnessOf } from "./harness-table.js";
 import { viaOpenRouter, WIRES } from "./provider.js";
 import { savedIn } from "./secrets.js";
 import { hostModel } from "./model.js";
@@ -176,6 +177,9 @@ export type ResolveInput = {
   openRouter?: boolean;
   /** Its permission in force (tool-gate.ts); absent, allow. */
   permission?: Permission;
+  /** The facts of the adapter the harness runs on, its owner's table entry's (harness-table.ts factsOf: a module's
+   *  harness's too); absent, the built-in harness's. */
+  facts?: AdapterFacts;
 };
 
 /** Whether a harness's own search, `native` in its facts (the provider's search tool, through its proxy), has per-use fees
@@ -185,9 +189,16 @@ const cappedOwn = (id: string, label: string, mode: "native" | "live"): { id: st
     ? { id: `${id} under a spend cap: ${label}'s own search has per-use fees a spend cap cannot reserve yet, so web_search works under a cap through the default provider, auto`, why: `under a spend cap ${label}'s own search is not offered, since a cap cannot reserve its per-use fees yet` }
     : { id: `${id} under a spend cap`, why: `under a spend cap ${label}'s own search is not offered, since its request has no input bound` };
 
-/** The facts of the adapter `harness` runs on (none for pi): its own search, its wire. A stand-in keeps the facts of the
- *  harness it stands in for (harness-table.ts). */
-const factsOf = (harness: string) => builtinHarness(harness)?.facts;
+/** The facts of the adapter `input`'s harness runs on (none for pi): its own search, its wire. Those the input carries
+ *  (the owner's table's, a module's harness's too), else the built-in harness's: a stand-in keeps the facts of the harness
+ *  it stands in for (harness-table.ts). */
+const factsOf = (input: ResolveInput): AdapterFacts | undefined => input.facts ?? builtinHarness(input.harness)?.facts;
+
+/** `harness`'s facts on `env`'s owner table, as a ResolveInput carries them; none for one that has none. */
+const withFacts = (env: NodeJS.ProcessEnv, harness: string): { facts?: AdapterFacts } => {
+  const facts = tableFactsOf(env, harness);
+  return facts ? { facts } : {};
+};
 
 /** Whether a run on `harness` sends through OpenRouter, where a harness's own search does not run: false for one with
  *  none (and for pi, whose hosted search is asked of the model's provider). */
@@ -207,7 +218,7 @@ function noNative(input: ResolveInput): { id: string; why: string } | undefined 
   // provider-hosted tool) has none at all. Where there is none, `native` is unavailable, and `auto` goes to Parallel on
   // the server's key (its fee booked and held by a cap, paid-calls.ts), else to keyless Exa.
   const vendor = input.model?.slice(0, Math.max(0, input.model.indexOf("/")));
-  const facts = factsOf(input.harness);
+  const facts = factsOf(input);
   if (facts) {
     if (!facts.webSearch) return { id: `${input.harness}, whose model requests carry no provider-hosted tool`, why: `${facts.label}'s model requests carry no provider-hosted tool` };
     if (input.openRouter) return { id: `${input.harness} on OpenRouter`, why: `through OpenRouter ${facts.label}'s own search is not run, and its searches are not counted to price` };
@@ -221,7 +232,7 @@ function noNative(input: ResolveInput): { id: string; why: string } | undefined 
 
 /** The native search of a run that has one, in a sentence. */
 const nativeWhy = (input: ResolveInput): string => {
-  const facts = factsOf(input.harness);
+  const facts = factsOf(input);
   return facts?.webSearch ? `${facts.label}'s own search` : `${input.model?.startsWith("openai/") ? "OpenAI" : "Anthropic"}'s hosted search, for ${input.model}`;
 };
 
@@ -239,14 +250,14 @@ export function explainCapability(capability: Pickable, input: ResolveInput): { 
   if (chosen === "exa-keyless") return { resolves: "exa-keyless", why: `keyless Exa, ${picked}: Exa's free search, no key` };
   // Under ask, a harness's own search runs inside its CLI, where no call can wait for a person: none on claude-agent or
   // codex then, and the kernel's search, which the gate holds, in its place. pi's is a tool of the run's, which it holds.
-  const asks = input.permission === "ask" && factsOf(input.harness) !== undefined;
+  const asks = input.permission === "ask" && factsOf(input) !== undefined;
   const without = noNative(input);
   if (chosen === "native" && asks && without === undefined) return { resolves: NATIVE_ASKS, why: "native search cannot wait for an approval: it runs inside the harness's CLI" };
   const none = without ?? (asks ? { id: input.harness, why: "under ask the harness's own search cannot wait for a person's approval" } : undefined);
   if (chosen === "native") return none === undefined ? { resolves: "native", why: nativeWhy(input) } : { resolves: `unavailable: no native search for ${none.id}`, why: `no native search for ${none.id}` };
   // `auto` skips a harness's own search that has per-use fees (its facts' `native`: the provider's search tool), an
   // explicit pick (`native`): Parallel on the server's key, else keyless Exa.
-  const facts = factsOf(input.harness);
+  const facts = factsOf(input);
   if (facts?.webSearch === "native") return input.parallelKey ? { resolves: "parallel", why: key } : { resolves: "exa-keyless", why: `Exa's free keyless search, no key; ${facts.label}'s own search is an explicit pick` };
   if (none === undefined) return { resolves: "native", why: nativeWhy(input) };
   return input.parallelKey ? { resolves: "parallel", why: `${none.why}; ${key}` } : { resolves: "exa-keyless", why: `${none.why}; Exa's free keyless search, no key` };
@@ -327,7 +338,7 @@ export function explainsView(env: NodeJS.ProcessEnv, settings: ToolSettingsMap, 
     const input = { ...served(env), ...picked(name, settings, overrides) };
     const each = HARNESSES.map((harness) => {
       const on = model ?? hostModel(env, "default", harness);
-      return [harness, explainCapability(name, { ...input, ...(on ? { model: on } : {}), harness, openRouter: ownSearchViaOpenRouter(env, harness, on) })] as const;
+      return [harness, explainCapability(name, { ...input, ...(on ? { model: on } : {}), harness, ...withFacts(env, harness), openRouter: ownSearchViaOpenRouter(env, harness, on) })] as const;
     });
     return [name, { resolves: Object.fromEntries(each.map(([harness, said]) => [harness, said.resolves])), why: Object.fromEntries(each.map(([harness, said]) => [harness, said.why])) }];
   })) as Record<Pickable, { resolves: Record<HarnessId, Resolution>; why: Record<HarnessId, string> }>;
@@ -367,7 +378,7 @@ export function planeFor(env: NodeJS.ProcessEnv, tooling: Tooling, settings: Too
   for (const name of PICKABLE) {
     if (!granted.includes(name)) continue;
     const chosen = picked(name, settings, tooling.overrides, tooling.approvals ?? "ask");
-    plane[name] = resolveCapability(name, { ...served(env), harness, capped, openRouter: ownSearchViaOpenRouter(env, harness, model), ...(model ? { model } : {}), ...chosen, ...(run && chosen.permission === "deny" ? { permission: "ask" as const } : {}) });
+    plane[name] = resolveCapability(name, { ...served(env), harness, ...withFacts(env, harness), capped, openRouter: ownSearchViaOpenRouter(env, harness, model), ...(model ? { model } : {}), ...chosen, ...(run && chosen.permission === "deny" ? { permission: "ask" as const } : {}) });
   }
   // The model a search through its provider's hosted search asks (hosted-search.ts): pi's own web_search, and on
   // another harness, whose agent searches with its own tool, a learned workflow's call node (learned-workflow.ts).

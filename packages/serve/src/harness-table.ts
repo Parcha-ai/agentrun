@@ -15,6 +15,7 @@ import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
 import { facts as openCodeFacts } from "./harness-opencode/facts.js";
 import { GOOSE_FACTS } from "./adapter-facts.js";
+import { ACP_PACKAGE, acpPackage } from "./acp-package.js";
 import { gooseHidden } from "./harness-goose.js";
 import type { AdapterNeeds } from "./adapters.js";
 import { DEFAULT_HARNESS, HARNESS_ID_PATTERN, type HarnessId, PLAN_HARNESSES, RESERVED_HARNESS_IDS } from "./harness.js";
@@ -95,9 +96,56 @@ export interface HarnessEntry {
   hidden?(env: NodeJS.ProcessEnv): string | undefined;
 }
 
-/** What a test's table module exports: entries by id, each merged over the built-in one of that id (all of it, for one
- *  the server has none of), given the built-ins to build on. Loaded with require: the module has no top-level await. */
-export type HarnessTableModule = { entries(builtins: Readonly<Record<string, HarnessEntry>>): Record<string, Partial<HarnessEntry>> };
+/** What one run of a module's adapter harness is given (HarnessModuleKit.adapterEntry): the model as its provider names it,
+ *  where the session's proxy forwards it (origin, credential, auth), the price of a request's usage, a log, and the
+ *  confinement its process starts under. serve chooses each from the run's model and this server's keys (providerFor),
+ *  as it does for the built-in harnesses. */
+export interface ModuleLaunch {
+  readonly model: string;
+  readonly provider: { readonly origin: string; readonly credential: () => string | Promise<string>; readonly auth?: "bearer" | "x-api-key" };
+  readonly price: (model: string, usage: { input: number; output: number; cacheRead?: number; cacheWrite?: number }) => number | null;
+  readonly log: (message: string, fields?: Record<string, unknown>) => void;
+  readonly confine?: AdapterNeeds["confine"];
+  /** The server's environment, for the module's own settings (its binary's path, say). */
+  readonly env: NodeJS.ProcessEnv;
+}
+
+/** What an ACP agent's module gives acpEntry: its facts, its recipe for a run (the binary, the run's model), and the model
+ *  proxy each of its processes reaches the session's booking through (its wire's policy: what may leave on this server's
+ *  key). `promises`: default ACP_PROMISES (a resume by session/load, tool calls through its permission asks, billing
+ *  through the proxy); an agent that cannot load a session gives `resume: "restart"`. */
+export interface AcpEntryOptions extends ModuleChecks {
+  readonly facts: AdapterFacts;
+  recipe(launch: ModuleLaunch): unknown;
+  proxy(launch: ModuleLaunch): unknown;
+  beforeStart?(command: string): Promise<void>;
+  readonly promises?: HarnessPromises;
+}
+
+/** What a module's harness lacks that no model key gives it, asked before its model key, as the built-in harnesses ask
+ *  for their binary first. */
+export interface ModuleChecks {
+  /** Why it cannot run on `env` whatever key is saved (its binary is not where its setting says, say), in words that end
+   *  with what to do; undefined when nothing is missing. Its offer then says this and names no key, where without it a
+   *  harness that lacks both would be offered as one a key runs. */
+  missing?(env: NodeJS.ProcessEnv): string | undefined | Promise<string | undefined>;
+}
+
+/** What serve hands a harness module beside the built-ins (HarnessTableModule.entries' second argument): the builders the
+ *  built-in harnesses are made with, so a module's entry chooses models, refuses and is offered as theirs are, on the
+ *  running server's own copy, never a second serve's. */
+export interface HarnessModuleKit {
+  /** An adapter harness's whole entry: its models are its wire's vendor's (WIRES), its key rows those that run them, its
+   *  refusal the adapter's own check. `adapter` builds its adapter for one run. */
+  adapterEntry(facts: AdapterFacts, adapter: (launch: ModuleLaunch) => AgentAdapter | Promise<AgentAdapter>, extra?: Pick<HarnessEntry, "skillCheck" | "promises" | "hidden"> & ModuleChecks): HarnessEntry;
+  /** An ACP agent's whole entry, on serve's own ACP adapter (@parcha/agentrun-harness-acp): adapterEntry over acpAdapter. */
+  acpEntry(options: AcpEntryOptions): HarnessEntry;
+}
+
+/** What a harness module (and a test's table module) exports: entries by id, given the built-ins to build on and the kit
+ *  (HarnessModuleKit). A test's are merged over the built-in one of that id (all of it, for one the server has none of);
+ *  a harness module's add whole entries of new ids. Loaded with require: the module has no top-level await. */
+export type HarnessTableModule = { entries(builtins: Readonly<Record<string, HarnessEntry>>, kit: HarnessModuleKit): Record<string, Partial<HarnessEntry>> };
 
 // The memory one run of each harness reserves while its process lives, in MiB (each entry's runMib, an adapter's from its
 // facts): what admission counts (host.ts).
@@ -185,6 +233,66 @@ function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs:
   return Object.freeze(entry);
 }
 
+/** A module's adapter for one run, from `facts` and its builder: the launch serve chooses for the run's model on this
+ *  server's keys (providerFor, priceOf), as gooseOf does for the built-in ACP harness. */
+function moduleAdapter(facts: AdapterFacts, build: (launch: ModuleLaunch) => AgentAdapter | Promise<AgentAdapter>, { missing }: ModuleChecks) {
+  return async (env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> => {
+    const { harnessLog, priceOf } = await import("./adapters.js");
+    // What no key fixes is said first, as gooseOf says Goose's binary: a refusal for it names no key.
+    const lacks = await missing?.(env);
+    if (lacks) throw new HarnessUnavailable(lacks);
+    const provider = providerFor(facts.wire, env, needs.model, facts.id);
+    // A person's Claude Code login is its CLI's alone (claude-login.ts): a module's requests never go on it.
+    if (provider.login) throw new HarnessUnavailable(`${facts.label} runs on a model key: Claude Code's login on this machine is its CLI's alone.`);
+    return build({
+      model: provider.modelId,
+      provider: { origin: provider.origin, credential: provider.credential, ...(provider.auth ? { auth: provider.auth } : {}) },
+      price: priceOf({ ...needs, model: provider.priceModel }),
+      log: harnessLog(facts.id, env),
+      ...(needs.confine ? { confine: needs.confine } : {}),
+      env,
+    });
+  };
+}
+
+/** A module's entry is run on serve's table (its facts' adapter, cli-run-spec.ts), never by a runner's adapter of its
+ *  own: this one says so if it is ever asked. The loop keeps the run's record, as for every CLI harness. */
+const ON_TABLE: RunnerHarness = Object.freeze({
+  record: "loop" as const,
+  adapter: async () => {
+    throw new Error("a harness module's adapter harness runs from its table entry (facts and adapter), not a runner adapter");
+  },
+});
+
+/** What an ACP harness promises by default: a resume by the agent's session/load, tool calls through its permission asks,
+ *  its model through the session's proxy (Goose's). */
+const ACP_PROMISES: HarnessPromises = Object.freeze({ resume: "load", tool_gate: "permission", billing: "proxy" });
+
+/** A module's adapter harness's whole entry (HarnessModuleKit.adapterEntry): the built-in harnesses' builder over the
+ *  module's adapter, run from the table (ON_TABLE). */
+const moduleEntry: HarnessModuleKit["adapterEntry"] = (facts, adapter, { missing, ...extra } = {}) =>
+  Object.freeze({ ...adapterEntry(facts, moduleAdapter(facts, adapter, missing ? { missing } : {}), extra), runner: ON_TABLE });
+
+/** A module's ACP agent's whole entry (HarnessModuleKit.acpEntry): moduleEntry over serve's own ACP adapter. */
+const acpModuleEntry: HarnessModuleKit["acpEntry"] = (options) =>
+  moduleEntry(options.facts, (launch) => {
+    const acp = acpPackage();
+    if (!acp) throw new HarnessUnavailable(`${options.facts.label} needs the ACP adapter (${ACP_PACKAGE}) beside this server`);
+    return acp.acpAdapter({
+      recipe: options.recipe(launch),
+      proxy: options.proxy(launch),
+      ...(options.beforeStart ? { beforeStart: options.beforeStart } : {}),
+      ...(launch.confine ? { confine: launch.confine } : {}),
+      log: launch.log,
+    });
+  }, { promises: options.promises ?? ACP_PROMISES, ...(options.missing ? { missing: options.missing } : {}) });
+
+/** The kit a harness module is handed (HarnessModuleKit). */
+const MODULE_KIT: HarnessModuleKit = Object.freeze({
+  adapterEntry: moduleEntry,
+  acpEntry: acpModuleEntry,
+});
+
 /** The harnesses this server runs, by id. */
 const BUILTIN: Readonly<Record<HarnessId, HarnessEntry>> = Object.freeze({
   [DEFAULT_HARNESS]: PI,
@@ -208,7 +316,7 @@ const BUILTIN: Readonly<Record<HarnessId, HarnessEntry>> = Object.freeze({
   // (`agentrun harness install goose`, harness-goose.ts), never a run; listed only once it is installed and verified.
   ...(GOOSE_FACTS ? {
     [GOOSE_FACTS.id]: adapterEntry(GOOSE_FACTS, async (env, needs) => (await import("./adapters.js")).gooseOf(env, needs), {
-      promises: Object.freeze({ resume: "load", tool_gate: "permission", billing: "proxy" }),
+      promises: ACP_PROMISES,
       hidden: gooseHidden,
     }),
   } : {}),
@@ -224,7 +332,7 @@ const WHOLE = Object.freeze(["label", "steer", "runMib", "oneAlwaysFits", "runs"
 function entriesOf(path: string, named: string): Record<string, Partial<HarnessEntry>> {
   const module = requireHere(resolve(path)) as Partial<HarnessTableModule>;
   if (typeof module.entries !== "function") throw new Error(`${named} names ${path}, which exports no entries(builtins)`);
-  return module.entries(BUILTIN);
+  return module.entries(BUILTIN, MODULE_KIT);
 }
 
 /** The harness modules `env` names (HARNESS_MODULES_ENV): none when it names none. */
@@ -323,6 +431,12 @@ export const ownerHarness = (env: NodeJS.ProcessEnv, id: string | undefined): Ha
   const key = id ?? DEFAULT_HARNESS;
   return Object.hasOwn(table, key) ? table[key] : undefined;
 };
+
+/** The facts of harness `id`'s adapter on the owner's table (ownerTable: the built-in harnesses and those `env`'s modules
+ *  add, never a test table's, so a stand-in keeps the facts of the harness it stands in for). Every reader of a harness's
+ *  facts by id asks here: its models (model-form.ts), its key rows (model.ts), its search and tool names (tool-plane.ts,
+ *  tool-gate.ts). Undefined for pi, for a module's harness that gives none, and for an id the table has none of. */
+export const factsOf = (env: NodeJS.ProcessEnv, id: string | undefined): AdapterFacts | undefined => ownerHarness(env, id)?.facts;
 
 /** The entry of harness `id` (none: the default, pi) on `env`'s table; undefined for an id this server has none of. */
 export const harnessOf = (env: NodeJS.ProcessEnv, id: string | undefined): HarnessEntry | undefined => harnessTable(env)[id ?? DEFAULT_HARNESS];

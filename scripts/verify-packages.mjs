@@ -76,7 +76,8 @@ const allowedExtraFiles = {
   // And the locks the CLI harnesses' first use installs by (src/harness-install.ts): each the package.json it locks and
   // npm's lock, metadata naming the package at its pin and every package of its tree by sha512, never the CLI itself.
   // And the template packages it ships, which it reads at its start (src/templates.ts), with their format (templates/README.md).
-  serve: ['package/launcher/agentrun-serve', 'package/harnesses/claude-agent/package.json', 'package/harnesses/claude-agent/package-lock.json', 'package/harnesses/codex/package.json', 'package/harnesses/codex/package-lock.json', ...templateFiles()],
+  // And the two subpaths a harness's author imports (HARNESS.md): the module's types and the conformance suite.
+  serve: ['package/launcher/agentrun-serve', 'package/dist/harness-module.js', 'package/dist/harness-module.d.ts', 'package/dist/conformance.js', 'package/dist/conformance.d.ts','package/harnesses/claude-agent/package.json', 'package/harnesses/claude-agent/package-lock.json', 'package/harnesses/codex/package.json', 'package/harnesses/codex/package-lock.json', ...templateFiles()],
   // `npx @parcha/agentrun` is a command, not a library: its bin and the module the bin loads, plain JavaScript with no build,
   // and the API's CLI with its command table generated from the server's OpenAPI document (scripts/generate-clients.mjs),
   // its wait-and-follow module (follow.mjs), the commands that read a secret from stdin (login.mjs), its skill's
@@ -378,6 +379,8 @@ import { createModels } from '@earendil-works/pi-ai/models';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import { execFileSync } from 'node:child_process';
 import * as serve from '@parcha/agentrun-serve';
+import * as serveHarness from '@parcha/agentrun-serve/harness';
+import * as serveConformance from '@parcha/agentrun-serve/conformance';
 import * as computer from '@parcha/agentrun-computer';
 import * as computerMount from '@parcha/agentrun-computer/mount';
 assert.equal(validateWorkflow(supportTriage).ok,true);
@@ -400,6 +403,7 @@ assert.equal(typeof authorWorkflow,'function');
 assert.ok(browser.BROWSER_TOOLS.length>0); assert.equal(typeof browserDurable.createBrowserExtension,'function'); assert.equal(typeof browserTesting.FakeBackend,'function'); assert.equal(typeof browserCdp.cdpProvider,'function');
 assert.ok(loadAuthorReference('language').includes(authorContract()));
 { assert.equal(typeof serve.startServe,'function'); const servePkg=join(process.cwd(),'node_modules','@parcha','agentrun-serve'); assert.ok(JSON.parse(await readFile(join(servePkg,'dist','openapi','agentrun-v2.openapi.json'),'utf8')).openapi,'the install has the contract its build copies, dist/openapi/agentrun-v2.openapi.json'); const caps=await serve.capabilities({}); assert.equal(caps.contract,'agentrun.v2/0'); assert.equal(caps.backend,'local'); assert.deepEqual(caps.models,{source:'providers',route_prefix:null,fast:null,default:null,strong:null,ready:false,needs:'key',priced:null}); assert.deepEqual(caps.harnesses.map((h)=>[h.id,h.default_model]),[['pi',null],['claude-agent',null],['codex',null],['opencode',null]]); assert.equal(serve.ERROR_STATUS.unsupported_here,501); }
+{ assert.deepEqual(Object.keys(serveHarness),[],'the harness subpath is types alone: a module that imports it loads nothing of serve'); assert.deepEqual(Object.keys(serveConformance).sort(),['MAX_RESTARTS','createAdapterLoop','registerHarnessConformance','suiteHostTools']); assert.equal(typeof serveConformance.registerHarnessConformance,'function'); assert.equal(typeof serveConformance.suiteHostTools,'function'); assert.equal(typeof serveConformance.createAdapterLoop,'function'); assert.equal(serveConformance.MAX_RESTARTS,5); }
 { const faux=adaptersTesting.fauxAdapter({script:()=>[{submit:{answer:'ok'}}]}); const runNode=adapters.createHarnessRunner(faux,{store:adaptersTesting.memorySessionStore()}); assert.deepEqual(await runNode({kind:'agent',label:'smoke',system:[],user:'{}',schema:{type:'object',required:['answer'],properties:{answer:{type:'string'}}}}),{answer:'ok'}); assert.equal(faux.requests,1); assert.equal(typeof adapters.HarnessRunError,'function'); assert.equal(adapters.SUBMIT_TOOL,'submit'); }
 { const drive=await adaptersKernel.openDrive({writer:await adaptersTesting.memorySessionStore().open('packed'),signal:new AbortController().signal}); assert.equal(await drive.effect('k',{name:'k',replay:'never'},async()=>'ok'),'ok'); await drive.submit({id:'p',kind:'prompt',text:'hi'}); await adaptersProcess.placeSubmissions(drive,drive.pending()); assert.deepEqual(drive.pending(),[]); assert.equal(typeof adaptersKernel.Restart,'function'); assert.equal(typeof adaptersProcess.NativeJournal,'function'); }
 { const fetch=async()=>new Response(JSON.stringify({mode:'fast',answers:{holds:{type:'noul',noul:0.9},pick:{type:'choice',choice:'a',probabilities:{a:0.75,b:0.25}}},citations:[{url:'https://example.org/a',excerpts:[]}],usage:{input_tokens:1,output_tokens:0},decision_id:'decisions_0'}),{status:200,headers:{'content-type':'application/json'}}); const result=await judgeFromProvider(decisions.parallelProvider({apiKey:'fake-test-key',fetch}))({label:'smoke',kind:'judge',state:{},questions:{holds:{type:'noul',instructions:'Q?'},pick:{type:'choice',instructions:'Which?',criteria:{a:null,b:null}}}}); assert.equal(result.answers.holds.noul,0.9); assert.equal(result.answers.pick.confidence,0.5); assert.deepEqual([result.cost_basis,result.evidence.length,result.confidence_source.pick],['estimate',1,'derived']); assert.equal(typeof registerDecisionProviderConformance,'function'); }
@@ -547,6 +551,18 @@ const leaked: MountReadBack = { kind: 'archil', disk: 'd', region: 'r', folder: 
 void [back, checkMount(spec, kinds), takes, leaked, undefined as ComputerProvider | undefined];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'computer-consumer.ts'], consumer);
+  // A harness module's author (HARNESS.md) types a module and a conformance subject from serve's two subpaths alone.
+  await writeFile(join(consumer, 'harness-consumer.ts'), `import type { HarnessEntry, HarnessLaunch, HarnessModuleKit, HarnessTableModule, ModuleLaunch, RunnerHarness } from '@parcha/agentrun-serve/harness';
+import { createAdapterLoop, MAX_RESTARTS, registerHarnessConformance, suiteHostTools, type ConformanceSubject, type TestFunction } from '@parcha/agentrun-serve/conformance';
+const runner: RunnerHarness = { record: 'loop', adapter: async (launch: HarnessLaunch) => { throw new Error('not in this check: ' + launch.model); } };
+export const entries: HarnessTableModule['entries'] = (builtins: Readonly<Record<string, HarnessEntry>>, kit: HarnessModuleKit) => ({
+  mine: { ...builtins.pi, label: 'Mine', runner },
+  theirs: kit.acpEntry({ facts: builtins['claude-agent']!.facts!, recipe: (launch: ModuleLaunch) => ({ model: launch.model }), proxy: () => undefined }),
+});
+const subject: ConformanceSubject = { name: 'mine', createLoop: () => createAdapterLoop(async () => { throw new Error('not in this check'); }, { restartLimit: MAX_RESTARTS }) };
+void [subject, suiteHostTools({}), registerHarnessConformance as (subject: ConformanceSubject, options: { test: TestFunction }) => void];
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'harness-consumer.ts'], consumer);
   // The Claude Agent adapter installed without its SDK (an optional peer the host brings) says so in one line that ends with
   // the line installing the pinned SDK. That line, run exactly as printed in a consumer of its own, is all it takes for the
   // adapter's checks to pass: the SDK, its platform package (the CLI) and the MCP library it brings as a peer.
