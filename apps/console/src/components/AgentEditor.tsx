@@ -18,9 +18,8 @@ import { buildAgentPrompt, editAgentPrompt } from "@/lib/codingAgentPrompts";
 import { type Agent, type AgentFields, capOf, editBody, toolsOnSwitch, runsOn, notOn, DECISION, DEFAULT_INSTRUCTIONS, defaultTools, harnessOptions, defaultPlaceOf, isStarter, reachesWeb, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
-import { contextSize, type FreeModel, freeRequestsNote, harnessDefault, harnessFree, harnessModels, modelLabel, NO_DEFAULT } from "@/lib/models";
-import { Switch } from "@/components/ui/switch";
-import { type PickerOption, Picker } from "@/components/ui/picker";
+import { type FreeModel, freeRequestsNote, harnessDefault } from "@/lib/models";
+import { ModelField, useModelField } from "@/components/ModelField";
 import { SpendCapMinimum } from "@/lib/spendCap";
 import { CAP_NOTE, isPlanModel } from "@/lib/chatgpt";
 import type { McpServer } from "@/lib/mcp";
@@ -45,9 +44,6 @@ export type Revision = { revision: string; version: number; current: boolean; no
 /** `computers`: the server's computers list (capabilities.computers.kinds), the Computer step's kinds; null on a server
  *  that lists none, where the step shows where runs go (places). */
 export type EditorCaps = { computers?: ComputerKindView[] | null; harnesses: { id: string; available: boolean; reason?: string; default_model?: string | null; models?: string[]; free_models?: FreeModel[] }[]; tools: ToolOffer[]; thinking: string[]; routePrefix?: string | null; decisionProvider?: string; places?: Places | null; learning?: "on" | "off"; mcp?: boolean; mcpHarnesses?: string[]; freeRequests?: number };
-/** The Model picker's value for "type a model": a model id always has a provider and a slash (the save's own rule), so no
- *  id can be this. */
-const CUSTOM_MODEL = "custom";
 
 export type EditorProps = {
   /** The agent being edited, or null for a new one. */
@@ -127,9 +123,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // agent starts on the place the server gives new agents (a sandbox where it has a box: bash ticked too); else none.
   const startPlace = creating ? newAgentPlace(caps.places) : undefined;
   const [f, setF] = useState<AgentFields>({ name: d?.name ?? "", description: d?.description ?? "", instructions: d?.instructions ?? (creating ? DEFAULT_INSTRUCTIONS : ""), harness: d?.harness ?? "pi", thinking: d?.thinking, model: d?.model, tools: creating ? defaultTools("pi", caps.tools, startPlace) : d?.tools ?? [], maxCostText: typeof d?.max_cost_usd === "number" && d.max_cost_usd > 0 ? String(d.max_cost_usd) : "", ...(startPlace ? { place: startPlace } : {}), ...(agent?.kind === "workflow" ? { workflowText: draft ?? JSON.stringify(d!.workflow, null, 2) } : {}) });
-  // Whether the person picked Custom in the Model picker (the box shows too for any model the harness's list lacks).
-  const [customPicked, setCustomPicked] = useState(false);
-  const [freeOnly, setFreeOnly] = useState(false);
+  // The Model field's own choices (Custom picked, Free only), kept across steps.
+  const modelField = useModelField();
   // The form as it is now, for a save's answer to compare with what that save sent.
   const formNow = useRef(f);
   formNow.current = f;
@@ -265,19 +260,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   };
   // A save under way holds nothing: a new agent's save opens its page itself.
   const guard = useUnsavedChangesGuard(!saving && dirty);
-  // The model a definition that names none runs on, for this harness, as a person reads it: the gateway's routing prefix
-  // off, the full id in a title.
+  // The model a definition that names none runs on, for this harness (the server's default for it).
   const fallback = harnessDefault(f.harness ?? "pi", caps.harnesses);
-  const modelDefault = fallback ? modelLabel(fallback, caps.routePrefix) : undefined;
-  // The Model picker lists what the server offers for this harness (harnesses[].models); a model it does not list, or Custom
-  // picked, shows the free-text box, so any model the server runs can still be named.
-  const offered = harnessModels(f.harness ?? "pi", caps.harnesses);
-  const customModel = customPicked || (f.model !== undefined && !offered.includes(f.model));
-  // The free ones (harnesses[].free_models: a catalog price of all zeros) are tagged with their context size, and Free only
-  // narrows the list to them; the default and Custom stay, and so does the model picked.
-  const free = harnessFree(f.harness ?? "pi", caps.harnesses);
-  const listed = freeOnly && free.size ? offered.filter((id) => free.has(id) || id === f.model) : offered;
-  const modelOptions: PickerOption[] = [{ value: "", label: modelDefault ? `Server default (${modelDefault.text})` : "Server default" }, ...listed.map((id) => ({ value: id, label: modelLabel(id, caps.routePrefix).text, ...(free.has(id) ? { tag: `Free · ${contextSize(free.get(id)!.context_window)} context` } : {}) })), { value: CUSTOM_MODEL, label: "Custom..." }];
   // A server signed in to a ChatGPT plan (a harness offers its models): the cap says it counts dollars, which the plan's
   // requests are not.
   const onPlan = caps.harnesses.some((h) => isPlanModel(h.default_model) || h.models?.some(isPlanModel));
@@ -531,22 +515,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   </div>
                 </Field>
               )}
-              {!starting && (
-                <Field label="Model" id="agent-model" optional note={modelDefault ? <>Empty uses the server's default (<span title={modelDefault.title}>{modelDefault.text}</span>).</> : NO_DEFAULT} error={fieldError("model")} warning={fieldWarning("model")}>
-                  <Picker id="agent-model" label="Model" className="w-full" value={customModel ? CUSTOM_MODEL : f.model ?? ""} options={modelOptions}
-                    onChange={(v) => {
-                      // Custom keeps what is typed (or picked) so far; a listed model or the default closes the box.
-                      if (v === CUSTOM_MODEL) { setCustomPicked(true); return; }
-                      setCustomPicked(false); set({ model: v || undefined });
-                    }} />
-                  {customModel && <Input id="agent-model-custom" aria-label="Custom model" className="mt-2" value={f.model ?? ""} onChange={(e) => { setCustomPicked(true); set({ model: e.target.value || undefined }); }} placeholder="provider/model" />}
-                  {free.size > 0 && (
-                    <label className="mt-2 flex items-center gap-2 text-small text-muted-foreground">
-                      <Switch checked={freeOnly} onChange={setFreeOnly} label="Free models only" /> Free models only ({free.size}): $0 a request; the provider limits requests per day.
-                    </label>
-                  )}
-                </Field>
-              )}
+              {!starting && <ModelField id="agent-model" harness={f.harness ?? "pi"} model={f.model} onModel={(model) => set({ model })} harnesses={caps.harnesses} routePrefix={caps.routePrefix} state={modelField} error={fieldError("model")} warning={fieldWarning("model")} />}
               {!starting && (
                 <Field label="Default spend cap per run, $" id="agent-max-cost" optional note={<>A run started without a cap of its own, and a trigger with none, stops at this spend. Empty means none.{onPlan && <span className="mt-1 block">{CAP_NOTE}</span>}{freeNote && <span className="mt-1 block" data-note="free-requests">{freeNote}</span>}</>} hint={<SpendCapMinimum />} error={fieldError("max_cost_usd")} warning={fieldWarning("max_cost_usd")}>
                   <Input id="agent-max-cost" inputMode="decimal" value={f.maxCostText ?? ""} onChange={(e) => set({ maxCostText: e.target.value })} placeholder="e.g., 2.50" />

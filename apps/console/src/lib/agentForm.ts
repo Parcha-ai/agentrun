@@ -276,8 +276,9 @@ export function learningWriteError(e: ClientError): LearningWriteProblem {
   return { kind: "other", message: e.fields?.[0]?.message ?? e.message, code: e.code };
 }
 
-/** The warnings that name `field` of the definition, or a part of it (`tools` takes `definition.tools[2]`). */
-export function warningsFor(warnings: SaveWarning[] | undefined, field: string): SaveWarning[] {
+/** The warnings (or a refusal's issues) that name `field` of the definition, or a part of it (`tools` takes
+ *  `definition.tools[2]`). */
+export function warningsFor<T extends { field: string }>(warnings: readonly T[] | undefined, field: string): T[] {
   const at = `definition.${field}`;
   return (warnings ?? []).filter((w) => w.field === at || w.field.startsWith(`${at}[`) || w.field.startsWith(`${at}.`) || w.field.startsWith(`${at}/`));
 }

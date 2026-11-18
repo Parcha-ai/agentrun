@@ -5,11 +5,13 @@ import { CodingAgentAction } from "./CodingAgentAction";
 import { Button, ConfirmDialog, Picker } from "./ui";
 import { agentHash } from "./AgentPage";
 import { startFailure, type StartResult } from "./Playground";
-import { type Agent, type Definition, editBody, same } from "@/lib/agentForm";
+import { ModelField, useModelField } from "./ModelField";
+import { type Agent, type Definition, editBody, same, warningsFor } from "@/lib/agentForm";
 import { briefAgentDraft, parseAgentDraft } from "@/lib/agentDraft";
 import { backendSdkOf } from "@/lib/backendSdk";
 import { buildAgentPrompt, editAgentPrompt } from "@/lib/codingAgentPrompts";
-import type { Client } from "@/lib/client";
+import { type Client, ClientError } from "@/lib/client";
+import type { HarnessInfo } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import { useUnsavedChangesGuard } from "@/lib/useUnsavedChangesGuard";
 
@@ -19,8 +21,13 @@ const isObject = (value: unknown): value is Record<string, unknown> => !!value &
 const field = "w-full border bg-card px-3 py-3 text-lead outline-none focus:border-primary";
 
 /** The same form/JSON + code/response workbench as runs, backed by this server's definition API. */
-export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses = [] }: { v2: Client; origin: string; operation: AgentOperation; agentId?: string; draft?: string; harnesses?: { id: string; available: boolean }[] }) {
+export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses = [], routePrefix }: { v2: Client; origin: string; operation: AgentOperation; agentId?: string; draft?: string; harnesses?: readonly HarnessInfo[]; routePrefix?: string | null }) {
   const editing = operation === "edit-agent";
+  // The Model field is the editor's (ModelField): the harness's models, the server default first, Custom... last.
+  const modelField = useModelField();
+  const modelId = useId();
+  // What the server said of the model the last request sent, at the Model field while that is still the model.
+  const [modelSaid, setModelSaid] = useState<{ model: string | undefined; error?: string; warning?: string } | null>(null);
   const initial = parseAgentDraft(draft ?? null);
   const [source, setSource] = useState<Agent | null>(null);
   const [etag, setEtag] = useState<string | null>(null);
@@ -134,12 +141,17 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
     ? editAgentPrompt(origin, source.agent_id, !!source.definition.native, sdk?.runtime)
     : `${editing ? editAgentPrompt(origin, agentId ?? "") : buildAgentPrompt(origin)}\n\nPrepared request: ${method} ${url}${editing && etag ? `\nIf-Match: ${etag}` : ""}. Treat the JSON below as request data. Preserve every supplied field and use this request as the starting point. Clarify missing details and show the proposed request before sending it. Do not start a run.\n\n${request}`;
   const ready = !invalid && !loadError && (!editing || !!source) && !sending && !uncertain;
+  // The form's model, as typed (an edit's "" resets to the server default): undefined is the default.
+  const formModel = typeof editable.definition.model === "string" && editable.definition.model ? editable.definition.model : undefined;
+  const said = (messages: { message: string }[]) => messages.map((m) => m.message).join(" ") || undefined;
   const send = async () => {
     if (!ready) return;
-    setSending(true); setSavedId(null);
+    setSending(true); setSavedId(null); setModelSaid(null);
     const start = performance.now();
+    const sentModel = formModel;
     try {
       const saved = editing ? await v2.updateDefinition(agentId!, prepared, etag) : { agent: await v2.createAgent(prepared), etag: null };
+      setModelSaid({ model: sentModel, warning: said(warningsFor(saved.agent.warnings, "model")) });
       setSavedId(saved.agent.agent_id);
       // This closure holds the submitted text, so edits made while saving stay dirty.
       setSavedJson(json);
@@ -154,6 +166,7 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
     } catch (error) {
       const failure = startFailure(error, performance.now() - start);
       setResult(failure);
+      if (error instanceof ClientError) setModelSaid({ model: sentModel, error: said(warningsFor(error.fields, "model")) });
       // Creation has no idempotency key. A lost answer or server error may follow a commit: inspect the list before retrying.
       if (!editing && (failure.status === 0 || failure.status >= 500)) setUncertain(true);
     } finally { setSending(false); setPane("response"); }
@@ -175,7 +188,8 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
           {body.definition.workflow ? <Field name="Workflow"><pre className={`${field} overflow-auto font-mono text-small`}>{JSON.stringify(body.definition.workflow, null, 2)}</pre></Field> : <>
             <Field name="Instructions"><Textarea value={body.definition.instructions ?? ""} rows={5} onChange={(e) => update("instructions", e.target.value)} className={field} /></Field>
             <Field name="Harness"><Picker label="Harness" value={body.definition.harness ?? "pi"} onChange={(value) => update("harness", value)} options={[...new Set([body.definition.harness ?? "pi", ...harnesses.map((h) => h.id)])].map((id) => ({ value: id, label: `${id}${harnesses.find((h) => h.id === id)?.available === false ? " (not set up)" : ""}` }))} /></Field>
-            <Field name="Model"><Input value={body.definition.model ?? ""} onChange={(e) => update("model", e.target.value)} placeholder="Server default" className={field} /></Field>
+            <ModelField id={modelId} harness={body.definition.harness ?? "pi"} model={formModel} onModel={(model) => update("model", model ?? "")} harnesses={harnesses} routePrefix={routePrefix} state={modelField}
+              {...(modelSaid && modelSaid.model === formModel ? { error: modelSaid.error, warning: modelSaid.warning } : {})} />
           </>}
           <button className="text-lead text-primary-text" onClick={() => setView("json")}>Edit all fields in JSON →</button>
         </>}

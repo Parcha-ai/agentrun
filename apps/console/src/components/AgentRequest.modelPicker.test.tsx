@@ -51,8 +51,13 @@ const type = (input: HTMLInputElement, value: string) => act(() => {
 const button = (label: string) => [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === label)!;
 const send = () => act(async () => button("Send request").click());
 const sent = () => (calls.filter((c) => c.method !== "GET").at(-1)?.body as { definition: Agent["definition"] } | undefined)?.definition;
-/** What the page says at a field: the alerts its control is described by. */
-const said = (field: HTMLElement) => (field.getAttribute("aria-describedby") ?? "").split(" ").map((id) => document.getElementById(id)).filter((e) => e?.getAttribute("role") === "alert").map((e) => e!.textContent);
+/** What the page says at a field: the alerts of the Field whose label names its control. */
+const said = (field: HTMLElement) => {
+  const label = [...document.querySelectorAll("label")].find((l) => field.id && l.htmlFor === field.id);
+  expect(label, "the field has its label").not.toBeNull();
+  const box = label!.parentElement!.parentElement!;
+  return [...box.querySelectorAll(':scope > [role="alert"]')].map((e) => e.textContent);
+};
 const blankDraft = JSON.stringify(briefAgentDraft("Answer support questions."));
 
 describe("the playground's Create an agent, the Model field", () => {
