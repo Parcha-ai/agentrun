@@ -282,6 +282,11 @@ test("Address: loopback from a remote session warns with a tunnel and the tailne
   const byUnit = await doctor({ ...named, env: {}, readToken: () => undefined });
   assert.equal(byUnit.check("address").status, "ok");
 
+  // Started in a terminal (no service): the restart keeps this port, which the tailnet entry forwards to.
+  const terminal = homeOf({ service: false });
+  const fromTerminal = await doctor({ ...terminal, env: { SSH_CONNECTION: "203.0.113.5 50000 198.51.100.7 22" }, exec: tailscale, readToken: () => undefined });
+  assert.ok(fromTerminal.check("address").fix.some((f) => f.includes("tailscale serve --bg 7340") && f.includes("start AgentRun with --port 7340 --public-url https://box.tailnet.example.test")), fromTerminal.check("address").fix.join("\n"));
+
   // agentrun service install --public-url keeps the address on the service's command line.
   const flagged = homeOf({ args: ["--public-url", "https://agentrun.example.test"] });
   const byFlag = await doctor({ ...flagged, env: { SSH_CONNECTION: "203.0.113.5 50000 198.51.100.7 22" }, readToken: () => undefined });

@@ -234,8 +234,10 @@ export async function doctorOf({
     else if (reachable) add("address", "Address", "ok", `It listens on loopback (${at.host}) and is served at a name of its own${typeof tailnet?.url === "string" ? ` (${tailnet.url}, on your tailnet)` : " (its public URL)"}.`);
     else if (!remote) add("address", "Address", "ok", `It listens on loopback (${at.host}): a browser on this machine opens it.`);
     else {
-      // The launcher's --public-url: kept on the service's command line, or given where AgentRun starts in a terminal.
-      const publicUrl = (url) => (installed ? `agentrun service install --public-url ${url}` : `start AgentRun with --public-url ${url}${dataFlag}`);
+      // The launcher's --public-url: kept on the service's command line (its port kept too), or given where AgentRun starts
+      // in a terminal, with this port: a start without --port takes the first free one from 7340, which a proxy to this
+      // port does not reach.
+      const publicUrl = (url) => (installed ? `agentrun service install --public-url ${url}` : `start AgentRun with --port ${port} --public-url ${url}${dataFlag}`);
       const fix = [`From your own computer, a tunnel: ssh -L ${port}:localhost:${port} <this machine>, then open http://localhost:${port}/`];
       const status = exec("tailscale", ["status", "--json"]);
       let ts;
