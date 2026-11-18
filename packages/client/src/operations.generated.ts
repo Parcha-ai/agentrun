@@ -459,6 +459,14 @@ export type RunSummary = {
     id: string;
     firing_key: string;
   } | null;
+  served?: {
+    workflow: string | null;
+    digest: string | null;
+  };
+  handed_back?: {
+    workflow: string | null;
+    digest: string | null;
+  };
 };
 
 export type RunStatus = "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
@@ -748,6 +756,14 @@ export type Run = {
   } | null;
   audit_of?: string | null;
   path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
+  served?: {
+    workflow: string | null;
+    digest: string | null;
+  };
+  handed_back?: {
+    workflow: string | null;
+    digest: string | null;
+  };
 };
 
 export type RunResult = {

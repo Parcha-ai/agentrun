@@ -53,7 +53,7 @@ import { freeCeilingMessage, overCapMessage, SPEND_CAP_REACHED } from "@parcha/a
 import { type BookedSpend, bookedSpend, cliModelWorked, costWordsOf, planSpend, type RunCost, runCostOf } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
-import { laidOf, runLearningEnd, usedOnly } from "./store-reads/learning.js";
+import { laidOf, runLearningEnd, servedViewOf, usedOnly } from "./store-reads/learning.js";
 import { correctionCount } from "./learn/corrections.js";
 import { isCliRecord, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
@@ -614,6 +614,9 @@ async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: Store
     cost: costOfView(run),
     // The run an audit's shadow run audits (launch.audit, runner/audit.ts); null for any other run.
     audit_of: launch?.audit?.of ?? null,
+    // The learned workflow that answered it alone (`served`) or ran first and handed it back (`handed_back`), as its record
+    // keeps its path, the read the cost per run makes (store-reads/learning.ts servedViewOf); neither on any other run.
+    ...servedViewOf(runRow, row.kind, launch ? learningStartOf(launch) : undefined),
     // Whether it ran unattended (its revision's approvals, as it started): never, an ask allowed at its gate; ask, the default.
     approvals: run.approvalsMode,
     archived_at: row.archivedAt ?? null,
@@ -649,6 +652,9 @@ export function summaryOfView(view: Record<string, unknown>): Record<string, unk
     ...(effort ? { effort } : {}),
     created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, labels,
     learning: learning ? shortOf(learning as Parameters<typeof shortOf>[0]) : null,
+    // Read off the run's record, so a list carries it with no read of the run's journal.
+    ...(view.served ? { served: view.served } : {}),
+    ...(view.handed_back ? { handed_back: view.handed_back } : {}),
   };
 }
 

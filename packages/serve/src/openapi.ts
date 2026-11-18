@@ -990,6 +990,19 @@ const RUN_TRIGGER: Json = {
   description: "The trigger that started the run, and its firing; null for a run a caller started.",
   ...TRIGGER_MARK,
 };
+/** served/1: the learned workflow a run's views name (store-reads/learning.ts servedViewOf), on Run and RunSummary alike. */
+const SERVED_BY = (what: string): Json => ({
+  ...closed({
+    workflow: { type: ["string", "null"], description: "The learned workflow, by name (GET /agents/{agent_id}/learning/promotions names it); null when its launch offered none by that name." },
+    digest: { type: ["string", "null"], description: "The revision that ran: the first 16 hex of its workflow.json's sha256, as GET /agents/{agent_id}/learning/cost `runs[].digest` names it; null when its record names none." },
+  }),
+  description: what,
+  "x-agentrun-serve": "served/1",
+});
+const RUN_SERVED: Record<string, Json> = {
+  served: SERVED_BY("Present only on a run a learned workflow answered alone, as its end recorded it (`path` `workflow`, the path GET /agents/{agent_id}/learning/cost gives the same run): the workflow and its revision. The run's answer is the workflow's. Absent on every other run: one the agent did (`agent`), one the workflow handed back (`handed_back`), a check's replay run, an audit's shadow run, a run not ended, and a workflow revision's run. Read off the run's record, so every row of a runs list carries it."),
+  handed_back: SERVED_BY("Present only on a run a learned workflow ran first and handed back to the agent, as its end recorded it (`path` `handed_back`): the workflow and its revision. The run's answer is the agent's. Absent on every other run, as `served` is."),
+};
 const DATE_TIME = { type: "string", format: "date-time" };
 /** A trigger's source, as `adapters` give it. */
 const sourceSchemaOf = (adapters: readonly TriggerAdapter[]) => ({
@@ -3098,6 +3111,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "On the run read (GET /v2/runs/{run_id}): the path the run took, as its end recorded it. `agent`: no learned workflow ran (every run of an agent that does not learn); `workflow`: a learned workflow served it first and its answer stands, `result.final_answer` that answer as the workflow gave it; `handed_back`: a learned workflow served it first and handed back (an escalate node said it could not, a step failed) or the agent answered after it, `result.final_answer` the agent's; `replay`: a check's run of a new revision on one of the agent's graded inputs; `audit`: an audit's shadow run (`audit_of`), the agent on a served run's input with learning off. A host's run list holds no `audit` run, and its webhooks never name one. Null while the run has not ended, for a workflow revision's run, and for a run that learns whose end recorded no path.",
       "x-agentrun-serve": "allin/1",
     },
+    ...RUN_SERVED,
   },
   InputIssue: {
     code: { type: "string", description: "A workflow definition's issue: the DSL's validation code (`STATE_PATH_UNPRODUCED`, say), with `field` the path to it under `definition.workflow`.", "x-agentrun-serve": "validate/1" },
@@ -3121,6 +3135,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "imported/1",
     },
     trigger: RUN_TRIGGER,
+    ...RUN_SERVED,
   },
   RunResult: {
     output_error: {
