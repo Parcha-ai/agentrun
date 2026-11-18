@@ -1,6 +1,6 @@
 # Add learning to a Codex SDK backend
 
-Wrap the existing `Codex` instance and keep creating a fresh thread per backend request. AgentRun adds approved learning to the input and records the outcome; the native SDK still runs the task with your existing configuration, tools and credentials.
+Wrap the existing `Codex` instance and keep creating a fresh thread per backend request. AgentRun adds the agent's learning (its owner's corrections) to the input and records the outcome; the native SDK still runs the task with your existing configuration, tools and credentials.
 
 Use the client and server from the same reviewed development checkout. Install its built `packages/client` package into your backend until the wrapper exports are released. The example and type compatibility check use `@openai/codex-sdk` 0.167.2. This is the Codex SDK, not the separate OpenAI Agents SDK.
 
@@ -49,17 +49,17 @@ await codex.flushLearning();
 
 Here `existingThreadOptions`, `prompt`, `abortController` and `deliverOriginalEvent` are the values/handler in your backend. No work starts until you consume the stream. Event identity and order are preserved, and ending consumption closes the native iterator and records an unfinished task as cancelled.
 
-AgentRun stores the original text input, instructions, assistant text, tool names/status, session id and reported token counters. It excludes raw tool arguments/stdout, reasoning, configuration and image bytes/paths. Text-plus-image input still reaches the native SDK unchanged apart from added text context, but a run containing images cannot produce new learning because the grader has not seen those images. `flushLearning()` reports that limitation; it does not replace the SDK's result.
+AgentRun stores the original text input, instructions, assistant text, tool names/status, session id and reported token counters. It excludes raw tool arguments/stdout, reasoning, configuration and image bytes/paths. Text-plus-image input still reaches the native SDK unchanged apart from added text context, but a run containing images cannot produce new learning because the compile turn has not seen those images. `flushLearning()` reports that limitation; it does not replace the SDK's result.
 
-Reflection runs on the AgentRun server without tools, followed by independent grading through the ordinary learning pipeline. No extra Codex turn enters the user's thread. Accepted notes and skill text appear as task context on the next fresh thread. The basic wrapper installs no project files or native tools. To execute accepted workflows with existing callbacks, explicitly configure the [workflow MCP bridge](sdk-workflow-learning.md) in your native Codex constructor and wrapper. Configure the server's reflection/grading model separately; those calls add usage, and your native SDK credentials remain in your backend.
+An SDK task carries no owner feedback of its own. The agent's `corrections.md` changes when its owner edits it: in the console's Learning tab, or with `PUT /v2/agents/{id}/learning/corrections` on the version just read. That file appears whole, under `# Learned`, as task context on the next fresh thread. No extra Codex turn enters the user's thread. The basic wrapper installs no project files or native tools. Once the agent has its `learning.compile_after` completed runs (20 by default), the server's compile turn may draft a workflow from them; to execute an accepted workflow with existing callbacks, explicitly configure the [workflow MCP bridge](sdk-workflow-learning.md) in your native Codex constructor and wrapper. Configure the server's model for the compile turn separately; those calls add usage, and your native SDK credentials remain in your backend.
 
-Flush before a worker exits, and between a teaching run and its reuse test. A failed upload or incomplete trace prevents new learning and is reported by `flushLearning()`. A normal checked rejection is not a transport failure; inspect it in Learning Dojo. Model calls are never blindly repeated after an uncertain failure.
+Flush before a worker exits, and before a run that should see an earlier run's learning. A failed upload or incomplete trace prevents new learning and is reported by `flushLearning()`. A compiled workflow held by its check is not a transport failure; inspect it in the agent's Learning tab. Model calls are never blindly repeated after an uncertain failure.
 
 Only one task per wrapped thread is supported initially. A second `run`/`runStreamed` call on that thread, or `resumeThread`, is explicitly refused. Keep the original client for conversations outside this integration.
 
 ## Verify a real tool and fresh-run reuse
 
-Run the [live release-reporter example](../../examples/sdk-learning/README.md). Codex reads a fictional status file with its normal shell in a read-only workspace. The example teaches a preference, checks the accepted note or skill and seed revision, and compares a fresh reuse run with a learning-Off control. It leaves the recorded agents/runs in your console for inspection.
+Run the [live release-reporter example](../../examples/sdk-learning/README.md). Codex reads a fictional status file with its normal shell in a read-only workspace. The example adds the owner's preference to `corrections.md` as a correction, checks that a fresh run starts from that revision and is given it, and compares that run with a learning-Off control. It leaves the recorded agents/runs in your console for inspection.
 
 The native Linux shell sandbox requires namespace support. For a restricted container that cannot create those namespaces, run the example with `--live --mcp`. This uses a real read-only `release_status` MCP service configured on the existing Codex client and keeps the read-only sandbox. Both modes check successful tool completion and the actual release facts, not just whether a tool was attempted. The wrapper itself does not alter native tools or sandbox permissions.
 

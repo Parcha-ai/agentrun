@@ -1,7 +1,7 @@
 // The runner's model route: where a model's requests go, on which id, at what price. A model is resolved as main
 // resolves a run's (model.ts chooseModel and runModels: the faux module under --faux, the gateway, or each provider on
 // its own key), and a route speaks a wire its caller speaks (`wires`: the pi adapter speaks both of main's, provider.ts,
-// and so do the learning grader and a workflow's model nodes, which take the route's wire as pi does):
+// and so do a workflow's model nodes, which take the route's wire as pi does):
 // - an Anthropic model goes to Anthropic itself (its catalog origin, ANTHROPIC_BASE_URL's when set), its key read by
 //   name when a request goes, never held by the route; a Claude model of serve's gateway goes to the gateway on Messages;
 // - a model pi-ai speaks OpenAI's Responses to (OpenAI's own on its key, serve's gateway), for a caller that speaks
@@ -38,8 +38,7 @@ export type RouteUsage = { input: number; output: number; cacheRead: number; cac
 
 /** Where a model's requests go: the API `provider.api` names at `origin` (the shape the kernel's model proxy forwards), its
  *  credential sent as `auth` says, for `model` (its id on that wire), priced by `price`; `fetch`, the route's own upstream
- *  when its model speaks no wire of the caller's. The fields of the learning grader's route (learning-ask.ts GraderRoute),
- *  and `cost` beside them. */
+ *  when its model speaks no wire of the caller's, and `cost` beside them. */
 export interface ModelRoute {
   /** `plan`: a ChatGPT plan's route (provider.ts billing "plan"), billed to the plan: no price, its rules on the wire.
    *  Whether its answers state what they cost is the proxy's to read from `origin` (statesUsageCost): OpenRouter's, or

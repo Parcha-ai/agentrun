@@ -53,7 +53,7 @@ export function holdShortLine(o: { run: string; session: string; turn: number; h
 /** Writes `event`'s holdShortLine, when it is a booking's request_end that carries a `holdShort` (the kernel's booking,
  *  modelPortFor, tells one for a request billed past its hold's bound), to stderr with the runner's other warnings;
  *  any other event writes nothing. The one place every caller of the booking prints it (the adapter loop, a workflow
- *  run's model nodes, a learning grade), under `run` and `harness` (the harness, or what the booking's requests are). */
+ *  run's model nodes), under `run` and `harness` (the harness, or what the booking's requests are). */
 export function warnHoldShort(run: string, harness: string, event: { type: string; key: string; turn?: number; holdShort?: HoldShort }, warn: (line: string) => void = (line) => console.warn(line)): void {
   if (event.type !== "request_end" || !event.holdShort || event.turn === undefined) return;
   warn(holdShortLine({ run, session: event.key, turn: event.turn, harness, ...event.holdShort }));

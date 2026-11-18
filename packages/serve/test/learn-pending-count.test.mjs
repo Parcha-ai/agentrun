@@ -1,13 +1,13 @@
-// How many learned items wait for the owner's OK, on the agent itself: GET /agents and GET /agents/{id} say
-// `learning.pending` (notes, skills and workflow drafts held with `status: pending`), for an agent that learns; read
-// once per commit of its folder's main, never per list call.
+// How many workflow drafts wait for the owner's OK, on the agent itself: GET /agents and GET /agents/{id} say
+// `learning.pending` (drafts whose README.md is held with `status: pending`), for an agent that learns; read once per
+// commit of its folder's main, never per list call.
 import assert from "node:assert/strict";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { learningRepo, seedOf } from "../dist/learning.js";
 import { pendingTestHooks } from "../dist/learning-routes.js";
-import { note, skill } from "./learn-format-support.mjs";
+import { workflow } from "./learn-format-support.mjs";
 import { git, resnap } from "./learn-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
 import { agent, serve } from "./support.mjs";
@@ -24,16 +24,15 @@ async function commit(data, id, files) {
   git(repo, ["commit", "-q", "-m", "learned"]);
   await resnap(data, id);
 }
+const readme = (name) => `---\nname: ${name}\ndescription: Answers the ${name} question; use when asked\n---\n`;
 const held = (text) => text.replace(/\n---\n/, "\nstatus: pending\n---\n");
+/** Workflow draft `name`'s two files, its README.md held when `waits`. */
+const draft = (name, waits = false) => ({ [`workflows/${name}/README.md`]: waits ? held(readme(name)) : readme(name), [`workflows/${name}/workflow.json`]: workflow({ name }) });
 
-test("an agent that learns says how many learned items wait for its owner's OK, in the list and on its own view; one approved counts no more", async (t) => {
+test("an agent that learns says how many workflow drafts wait for its owner's OK, in the list and on its own view; one approved counts no more", async (t) => {
   const { api, data, baseUrl } = await serve(t, { learning: "on" });
   assert.equal((await api("POST", "/agents", agent("waits", { learning: true }))).status, 201);
-  await commit(data, "waits", {
-    "held-note.md": held(note({ name: "Held note" })),
-    "kept-note.md": note({ name: "Kept note" }),
-    "skills/find-policies/SKILL.md": held(skill()),
-  });
+  await commit(data, "waits", { ...draft("held-one", true), ...draft("kept"), ...draft("held-two", true) });
   const listed = (await api("GET", "/agents")).body.agents.find((a) => a.agent_id === "waits");
   assert.deepEqual(listed.learning, { pending: 2 }, JSON.stringify(listed.learning));
   const view = (await api("GET", "/agents/waits")).body;
@@ -42,8 +41,8 @@ test("an agent that learns says how many learned items wait for its owner's OK, 
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   assert.equal(doc.components.schemas.Agent.properties.learning.properties.pending.type, "integer");
   assert.deepEqual(schemaProblems(doc, doc.components.schemas.Agent.properties.learning, view.learning), [], JSON.stringify(view.learning));
-  // The owner's OK, as main records it: the note's status gone.
-  await commit(data, "waits", { "held-note.md": note({ name: "Held note" }) });
+  // The owner's OK, as main records it: the README's status gone.
+  await commit(data, "waits", { "workflows/held-one/README.md": readme("held-one") });
   assert.deepEqual((await api("GET", "/agents/waits")).body.learning, { pending: 1 });
 });
 
@@ -59,13 +58,13 @@ test("an agent that does not learn has no learning field, nor does one on a serv
 test("the count is read once per commit of the folder's main: a list again reads nothing, a new commit is read again", async (t) => {
   const { api, data } = await serve(t, { learning: "on" });
   assert.equal((await api("POST", "/agents", agent("cached", { learning: true }))).status, 201);
-  await commit(data, "cached", { "held-note.md": held(note({ name: "Held note" })) });
+  await commit(data, "cached", draft("held-one", true));
   await api("GET", "/agents");
   const reads = pendingTestHooks.reads;
   await api("GET", "/agents");
   await api("GET", "/agents/cached");
   assert.equal(pendingTestHooks.reads, reads, "no read while main stays");
-  await commit(data, "cached", { "held-two.md": held(note({ name: "Held two" })) });
+  await commit(data, "cached", draft("held-two", true));
   assert.deepEqual((await api("GET", "/agents/cached")).body.learning, { pending: 2 });
   assert.equal(pendingTestHooks.reads, reads + 1, "one read for the new commit");
 });

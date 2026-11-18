@@ -21,10 +21,9 @@ const PAGE: TimelinePage = {
   unchanged: false, final: true, has_more: false, next_after: 0,
 };
 const LEARNING: NonNullable<RunLearningRead> = {
-  run: RUN.run_id, state: "dropped", reason: "empty", detail: null, at: "2026-11-11T10:00:09Z", seed: "a".repeat(40), merged: null, pending: [],
-  verdict: { merge: false, reason: "The existing guidance covered this task.", items: [] }, problems: [], compiled: null, draft_errors: [],
-  cost_usd: { grade: 0.008 }, tokens: { grade: { input: 1200, output: 100, cache_read: 600, cache_write: 50 } },
-  used: { skills: [{ name: "find-policies", read: true }, { name: "answer-shape", read: false }], workflows: [{ name: "check-refunds", calls: 3, failed: 1 }] },
+  run: RUN.run_id, state: "dropped", reason: "empty", detail: "Nothing new to remember from this run.", at: "2026-11-11T10:00:09Z", seed: "a".repeat(40), merged: null,
+  workflows: [], corrections: 0, problems: [], compiled: null, draft_errors: [],
+  used: { workflows: [{ name: "check-refunds", calls: 3, failed: 1 }, { name: "find-policies", calls: 1, failed: 0 }] },
 };
 
 async function open({ readRun = () => RUN, readPage = async () => PAGE, learning = LEARNING }: {
@@ -49,9 +48,9 @@ async function open({ readRun = () => RUN, readPage = async () => PAGE, learning
 }
 
 describe("LiveRun's learning readers", () => {
-  it("shows learned skill and workflow usage on Report and Timeline while keeping the Learning result reader", async () => {
+  it("shows learned workflow usage on Report and Timeline while keeping the Learning result reader", async () => {
     const page = await open();
-    const details = ["Skillfind-policiesRead", "Skillanswer-shapeGiven, not read", "Workflowcheck-refundsCalled 3 times1 failed"];
+    const details = ["Workflowcheck-refundsCalled 3 times1 failed", "Workflowfind-policiesCalled once"];
     expect(page.usedRows()).toEqual(details);
     expect(page.host.querySelector('section[aria-label="What it used of what it learned"] a')?.getAttribute("href")).toBe("#/agents/refunds/learning");
     expect(page.v2.runLearning.mock.calls).toEqual([[RUN.run_id]]);
@@ -61,27 +60,25 @@ describe("LiveRun's learning readers", () => {
     await page.click("Learning");
     expect(page.v2.runLearningResult.mock.calls).toEqual([[RUN.run_id]]);
     const result = page.host.querySelector('section[aria-label="Learning result"]')!;
-    expect(result.textContent).toContain("The existing guidance covered this task.");
-    const fact = (name: string) => [...result.querySelectorAll("dt")].find((term) => term.textContent === name)?.nextElementSibling?.textContent;
-    expect(fact("Grading cost")).toBe("$0.0080 est.");
-    expect(fact("Input")).toBe("1,200");
+    expect(result.textContent).toContain("Nothing new to remember from this run.");
+    expect(result.textContent).toContain("Nothing was kept from this run.");
     await page.click("Report");
     expect(page.usedRows()).toEqual(details);
   });
 
-  it("reads usage again when the live run ends so late skill reads and workflow calls appear", async () => {
+  it("reads usage again when the live run ends so late workflow calls appear", async () => {
     let current: Run = { ...RUN, status: "working", state: "working", ended_at: null };
     let end!: (page: TimelinePage) => void;
     const timeline = new Promise<TimelinePage>((resolve) => { end = resolve; });
     const page = await open({ readRun: () => current, readPage: () => timeline,
-      learning: { ...LEARNING, used: { skills: [{ name: "find-policies", read: false }], workflows: [] } },
+      learning: { ...LEARNING, used: { workflows: [{ name: "check-refunds", calls: 1, failed: 0 }] } },
     });
-    expect(page.usedRows()).toEqual(["Skillfind-policiesGiven, not read"]);
+    expect(page.usedRows()).toEqual(["Workflowcheck-refundsCalled once"]);
     page.v2.runLearning.mockResolvedValue(LEARNING);
     current = RUN;
     await act(async () => end(PAGE)); await settle();
     expect(page.v2.runLearning.mock.calls).toEqual([[RUN.run_id], [RUN.run_id]]);
-    expect(page.usedRows()).toEqual(["Skillfind-policiesRead", "Skillanswer-shapeGiven, not read", "Workflowcheck-refundsCalled 3 times1 failed"]);
+    expect(page.usedRows()).toEqual(["Workflowcheck-refundsCalled 3 times1 failed", "Workflowfind-policiesCalled once"]);
     expect(page.v2.runLearningResult).not.toHaveBeenCalled();
   });
 });

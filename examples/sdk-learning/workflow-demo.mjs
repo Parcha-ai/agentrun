@@ -59,12 +59,10 @@ export async function demonstrateWorkflows({ runtime, createBackend,
   };
   try {
     await run('teach', on, teachReleaseTask('demo-api'), 'demo-api');
-    let learned = await client.learning.get(agentId);
-    assert.ok(learned.skills.some(skill => skill.status === 'active' && skill.run),
-      'No checked skill was accepted. Inspect Learning Dojo; this demo does not seed or approve learning.');
-    // The compiler considers a job after the agent's `learning.compile_after` completed runs (5 here,
-    // set on the agent at registration; 20 by default), when it has no workflow and no recent compile.
-    // Teaching plus four practice runs reaches it without fabricating history.
+    let learned;
+    // The compile turn asks for a job's workflow once the agent has its `learning.compile_after` completed runs (5
+    // here, set on the agent at registration; 20 by default) and no workflow yet. Teaching plus four practice runs
+    // reaches it without fabricating history.
     for (let index = 1; index <= 4; index++) {
       await run(`practice-${index}`, on, releaseTask('demo-api'), 'demo-api');
       learned = await client.learning.get(agentId);

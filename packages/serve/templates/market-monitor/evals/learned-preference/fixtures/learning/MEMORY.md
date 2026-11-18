@@ -1,1 +1,0 @@
-- [Skip junior job posts](skip-junior-job-posts.md) — the owner doesn't want junior or entry-level postings in the digest

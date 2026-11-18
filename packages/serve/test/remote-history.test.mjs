@@ -8,7 +8,7 @@ import { remoteHistorySessions, REMOTE_HISTORY_BODY_BYTES } from '../dist/native
 import { RemoteConnectors } from '../dist/native/remote.js';
 import { claudeSession, codexSession, sessionId } from './fixtures/import-sessions.mjs';
 
-const sourceTarget={runtime:'codex',project:'/source/project',selector:{kind:'project'},machine_id:'remote-machine',version:'1.0',model:'original-model',fingerprint:'f'.repeat(64),configuration:[],skills:[],mcp_servers:[],state:'ready',issues:[],capabilities:{launch:true,notes:true,skills:true,workflows:false,approval:'unavailable',usage:true}};
+const sourceTarget={runtime:'codex',project:'/source/project',selector:{kind:'project'},machine_id:'remote-machine',version:'1.0',model:'original-model',fingerprint:'f'.repeat(64),configuration:[],skills:[],mcp_servers:[],state:'ready',issues:[],capabilities:{launch:true,learning:true,workflows:false,approval:'unavailable',usage:true}};
 const packet={source:'codex',id:'source-session',startedAt:'2026-01-01T09:00:00Z',endedAt:'2026-01-01T09:01:00Z',state:'completed',model:'openai/source-model',activeMs:60_000,firstPrompt:'Inspect the selected project.',turns:[{role:'user',text:'Inspect the selected project.',at:Date.parse('2026-01-01T09:00:00Z')},{role:'assistant',text:'The selected project is ready.',at:Date.parse('2026-01-01T09:01:00Z'),calls:[],usage:{input:10,output:5,cacheRead:2,cacheWrite:0}}]};
 async function source(t,capabilities={native_execution:false,history_import:true}){
  const server=await serve(t,{runner:false});

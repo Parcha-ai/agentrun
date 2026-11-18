@@ -11,7 +11,7 @@ function fixture(context = 'Prefer concise release reports.') {
       const body = init?.body ? JSON.parse(init.body) : undefined;
       requests.push({ path, method: init.method, body });
       let value;
-      if (path.endsWith('/sdk-runs') && init.method === 'POST') value = { run_id: 'sdk-1', agent_id: 'backend-agent', console_url: 'http://127.0.0.1/#/runs/sdk-1', token: 'fixture-scoped-key', learning: { enabled: !!context, revision: context ? 'revision-1' : null, context, skills: [] } };
+      if (path.endsWith('/sdk-runs') && init.method === 'POST') value = { run_id: 'sdk-1', agent_id: 'backend-agent', console_url: 'http://127.0.0.1/#/runs/sdk-1', token: 'fixture-scoped-key', learning: { enabled: !!context, revision: context ? 'revision-1' : null, context } };
       else if (path.endsWith('/sdk-runs/sdk-1')) value = { run_id: 'sdk-1', state: 'completed', learning: context ? { state: 'merged' } : null };
       else if (path.endsWith('/agents/backend-agent')) value = { agent_id: 'backend-agent', definition: { id: 'backend-agent', sdk: { runtime: 'claude-agent-sdk' }, learning: !!context } };
       else value = { accepted: true };

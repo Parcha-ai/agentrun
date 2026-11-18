@@ -13,7 +13,7 @@ const { archiveRun, approve, cancel, message, pause, raiseCap, resume, startRun,
 const { sendCommand } = await import("../dist/runner/commands.js");
 const { momentOverStore } = await import("../dist/store-view.js");
 const { readLaunchBody, learningStartOf } = await import("../dist/run-launch.js");
-const { learnedParts } = await import("../dist/learning.js");
+const { learnedSection } = await import("../dist/learning.js");
 
 const dirs = [];
 after(() => {
@@ -658,48 +658,34 @@ test("startRun under an origin key starts one run; a retry under the same key ge
 // ---- learning start -------------------------------------------------------------------------------------------------
 
 const shown = () => ({ text: (t) => t, name: (n) => n, holds: () => false });
-/** A learning seed with one active note. */
-const learningSeed = () => ({ sha: "seed-abc", notes: { "a.md": "# A\n\nlearned a thing" }, files: [], skipped: [], recent: ["a.md"] });
-const learningDeps = (over = {}) => startDeps({ learning: "on", learningBudget: 8000, shown, seedFor: async () => ({ seed: learningSeed() }), pinnedOf: async () => ({ revision: revisionOf({ learning: true, tools: ["read"] }), version: 1 }), ...over });
+/** A learning seed: its owner's corrections and one learned workflow. */
+const learningSeed = () => ({ sha: "seed-abc", corrections: "Convert every amount to one unit first.\n", workflows: [{ name: "answer", description: "Answers a question", workflow: "{}" }] });
+const learningDeps = (over = {}) => startDeps({ learning: "on", shown, seedFor: async () => ({ seed: learningSeed() }), pinnedOf: async () => ({ revision: revisionOf({ learning: true, tools: ["read"] }), version: 1 }), ...over });
 
-test("startRun records the exact given notes, seed, # Learned section and seedNotes a learning agent's start would", async () => {
+test("startRun records the exact seed, # Learned section and learned workflows a learning agent's start would", async () => {
   const store = await freshStore();
   const run = await startRun(store, learningDeps(), entryOf(), { input: { content: "hi" }, max_cost_usd: 1 });
   const launch = readLaunchBody((await store.runs.launch(run.id)).body);
-  const options = { budget: 8000, read: true, shown: shown() };
-  const expected = { given: learnedParts(learningSeed(), options).given.map(({ file, name }) => ({ file, name })), seed: "seed-abc", section: learnedParts(learningSeed(), options).section ?? "", seedNotes: Object.keys(learningSeed().notes).length };
+  const expected = { seed: "seed-abc", section: learnedSection(learningSeed(), shown()), workflows: ["answer"] };
+  assert.equal(expected.section, "Convert every amount to one unit first.", "the section is the owner's corrections");
   assert.deepEqual(launch.learning, expected);
   assert.deepEqual(learningStartOf(launch), expected);
-  // Each given entry carries its name, not just a file.
-  assert.ok(launch.learning.given.every((n) => typeof n.file === "string" && typeof n.name === "string"));
 });
 
-test("seedNotes counts the whole seed, so a seed over the budget has seedNotes above given.length", async () => {
-  const store = await freshStore();
-  // Several notes, each sizeable; a small budget admits fewer than all into given.
-  const bigSeed = () => ({ sha: "seed-big", notes: { "a.md": `# A\n\n${"x".repeat(400)}`, "b.md": `# B\n\n${"y".repeat(400)}`, "c.md": `# C\n\n${"z".repeat(400)}` }, files: [], skipped: [], recent: ["a.md", "b.md", "c.md"] });
-  const run = await startRun(store, learningDeps({ learningBudget: 300, seedFor: async () => ({ seed: bigSeed() }) }), entryOf(), { input: { content: "hi" } });
-  const learning = readLaunchBody((await store.runs.launch(run.id)).body).learning;
-  assert.equal(learning.seedNotes, 3);
-  assert.ok(learning.seedNotes > learning.given.length, "the budget narrowed given below the whole seed's note count");
-});
-
-test("startRun records the learned skills the seed offers the run: each with its files and no host secret, none held by its size", async () => {
+test("startRun records the learned workflows the seed offers the run, none holding a host secret; a seed with none records none", async () => {
   const store = await freshStore();
   const seed = () => ({
     ...learningSeed(),
-    skills: [
-      { name: "weekly-report", bytes: 10, files: { "SKILL.md": "---\nname: weekly-report\ndescription: d\n---\nSteps." } },
-      { name: "too-big", bytes: 999999 },
-      { name: "leaky", bytes: 10, files: { "SKILL.md": "---\nname: leaky\ndescription: d\n---\nUse secret-value-0001." } },
+    workflows: [
+      { name: "weekly-report", description: "Reports the week", workflow: "{}" },
+      { name: "leaky", description: "Calls with secret-value-0001", workflow: "{}" },
     ],
   });
   const holds = { text: (t) => t, name: (n) => n, holds: (t) => t.includes("secret-value-0001") };
   const run = await startRun(store, learningDeps({ seedFor: async () => ({ seed: seed() }), shown: () => holds }), entryOf(), { input: { content: "hi" } });
-  assert.deepEqual(readLaunchBody((await store.runs.launch(run.id)).body).learning.skills, ["weekly-report"]);
-  // A seed with no skill records none.
-  const plain = await startRun(store, learningDeps(), entryOf(), { input: { content: "hi" } });
-  assert.equal("skills" in readLaunchBody((await store.runs.launch(plain.id)).body).learning, false);
+  assert.deepEqual(readLaunchBody((await store.runs.launch(run.id)).body).learning.workflows, ["weekly-report"]);
+  const plain = await startRun(store, learningDeps({ seedFor: async () => ({ seed: { ...learningSeed(), workflows: [] } }) }), entryOf(), { input: { content: "hi" } });
+  assert.equal("workflows" in readLaunchBody((await store.runs.launch(plain.id)).body).learning, false);
 });
 
 test("startRun records no learning for a non-learning run", async () => {
@@ -715,22 +701,22 @@ test("startRun records the server's learning off as no learning", async () => {
   assert.equal(readLaunchBody((await store.runs.launch(run.id)).body).learning, undefined);
 });
 
-test("a learning run whose seed cannot be read starts with nothing (given empty, seed null, section empty)", async () => {
+test("a learning run whose seed cannot be read starts with nothing (seed null, section empty)", async () => {
   const store = await freshStore();
   const run = await startRun(store, learningDeps({ seedFor: async () => ({ failed: "no git here" }) }), entryOf(), { input: { content: "hi" } });
-  assert.deepEqual(readLaunchBody((await store.runs.launch(run.id)).body).learning, { given: [], seed: null, section: "", seedFailed: "unreadable" });
+  assert.deepEqual(readLaunchBody((await store.runs.launch(run.id)).body).learning, { seed: null, section: "", seedFailed: "unreadable" });
 });
 
 test("a learning run whose start can't be made from the seed it read starts with nothing, saying it was not copied", async () => {
   const store = await freshStore();
-  // A seed read whole whose notes can't be read into the start (here, a notes field that is no object).
-  const run = await startRun(store, learningDeps({ seedFor: async () => ({ seed: { ...learningSeed(), notes: null } }) }), entryOf(), { input: { content: "hi" } });
+  // A seed read whole whose corrections can't be read into the start (here, a corrections field that is no text).
+  const run = await startRun(store, learningDeps({ seedFor: async () => ({ seed: { ...learningSeed(), corrections: null } }) }), entryOf(), { input: { content: "hi" } });
   const learning = readLaunchBody((await store.runs.launch(run.id)).body).learning;
-  assert.deepEqual(learning, { given: [], seed: null, section: "", seedFailed: "not_copied" });
+  assert.deepEqual(learning, { seed: null, section: "", seedFailed: "not_copied" });
 });
 
 test("a launch's seedFailed outside its list is read as none", () => {
-  assert.equal(readLaunchBody({ input: { content: "x" }, title: "t", place: { mode: "runner" }, learning: { given: [], seed: null, section: "", seedFailed: "elsewhere" } }).learning.seedFailed, undefined);
+  assert.equal(readLaunchBody({ input: { content: "x" }, title: "t", place: { mode: "runner" }, learning: { seed: null, section: "", seedFailed: "elsewhere" } }).learning.seedFailed, undefined);
 });
 
 // ---- cancel ---------------------------------------------------------------------------------------------------------

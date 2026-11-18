@@ -10,13 +10,7 @@
   "body": {
     "agent": "release-notes",
     "main": null,
-    "index": "",
-    "notes": {
-      "items": [],
-      "total": 0,
-      "next_cursor": null
-    },
-    "skills": [],
+    "corrections": "",
     "workflows": [],
     "log": {
       "items": [],

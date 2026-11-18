@@ -19,7 +19,7 @@ import { openCodeHarness, sentSubmissions, type DriveControl } from "./harness.j
 import { openCodePolicy, TOOL_PREFIX } from "./host/policy.js";
 import type { ConfineChild } from "./host/server.js";
 import { verifyOpenCode } from "./verify.js";
-import { learnedFront } from "../learn/skills.js";
+import { learnedFront } from "../learn/workflow-draft.js";
 
 /** A name OpenCode keeps whole for an MCP tool (it turns anything else into `_`), short enough that `hands_<name>` is a
  *  function name the Responses API takes (at most 64). */

@@ -7,7 +7,7 @@ import type { AgentLearning } from "@/lib/learning";
 import type { Run, TimelinePage } from "@/lib/v2";
 
 // The agent page's Learning tab: shown for an agentic agent on a server with learning, at its own address; a run row
-// says what the run read and kept.
+// says what the run kept.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const agent = (kind: Agent["kind"] = "agentic"): Agent => ({
@@ -17,15 +17,15 @@ const agent = (kind: Agent["kind"] = "agentic"): Agent => ({
 const run: Run = { sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },
   run_id: "run-b", agent_id: "refunds", agent_version: 1, revision: "r1", kind: "agentic", status: "completed", state: "idle", title: "brooklinen.com",
   created_at: "2026-11-03T16:52:00Z", ended_at: "2026-11-03T16:52:04Z", result: null, error: null, cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null,
-  learning: { detail: null, at: "2026-11-03T16:52:09Z", state: "merged", reason: null, read: [{ file: "a.md", name: "Shopify refund policy path" }], learned: [{ file: "b.md", name: "Try it first", supersedes: ["a.md"] }] },
+  learning: { detail: null, at: "2026-11-03T16:52:09Z", state: "merged", reason: null, workflows: [{ file: "workflows/try-it-first/workflow.json", name: "try-it-first" }] },
 };
-const EMPTY: AgentLearning = { agent: "refunds", main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, skills: [], workflows: [], log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 }, impact: null };
+const EMPTY: AgentLearning = { agent: "refunds", main: null, corrections: "", workflows: [], log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 }, impact: null };
 const ended: TimelinePage = { cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, run_id: "run-b", status: "completed", state: "idle", rows: [], drop: [], reset: true, unchanged: false, final: true, has_more: false, next_after: 1 };
 
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; vi.useRealTimers(); });
 const settle = async () => { for (let i = 0; i < 8; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
-async function open(a: Agent, props: { tab?: string; learning?: "on" | "off" | null; notes?: string[] } = {}, listed: Run = run, reread: () => Run = () => run, timeline: () => TimelinePage = () => ended) {
+async function open(a: Agent, props: { tab?: string; learning?: "on" | "off" | null } = {}, listed: Run = run, reread: () => Run = () => run, timeline: () => TimelinePage = () => ended) {
   let current = a;
   let reads = 0;
   let timelines = 0;
@@ -88,11 +88,10 @@ describe("AgentPage's Learning tab", () => {
     expect(p.host.querySelector('[role="switch"]')!.getAttribute("aria-checked")).toBe("true");
     expect(p.text()).toContain("Nothing learned yet");
   });
-  it("on the Runs tab, a run's row says what it read and kept", async () => {
+  it("on the Runs tab, a run's row says what it kept", async () => {
     const p = await open(agent(), { learning: "on" });
     const row = p.host.querySelector('table[aria-label="Runs"] tbody tr')!;
-    expect(row.textContent).toContain("Read: 1 note");
-    expect(row.textContent).toContain("Learned 1 note");
+    expect(row.textContent).toContain("Learned 1 workflow");
   });
   it("refreshes learning status in the table after a completed run finishes reflecting", async () => {
     const deciding: Run = { ...run, learning: { detail: null, at: "2026-11-03T16:52:09Z", state: "reflecting", reason: null } };
@@ -105,7 +104,7 @@ describe("AgentPage's Learning tab", () => {
     expect(row()).toContain("Looking back");
     await act(async () => { window.dispatchEvent(new Event("focus")); });
     await settle();
-    expect(row()).toContain("Learned 1 note");
+    expect(row()).toContain("Learned 1 workflow");
     expect(p.host.querySelector('section[aria-label="Latest run"]')).toBeNull();
     expect(p.reads()).toBe(0);
     expect(p.timelines()).toBe(0);

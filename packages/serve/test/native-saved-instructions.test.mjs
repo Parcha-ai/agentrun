@@ -6,11 +6,13 @@ import { serve, follow } from './support.mjs';
 import { nativeFixture } from './native-fixtures/setup.mjs';
 import { openSqliteStore } from '../dist/store/index.js';
 import { createDispatchLoop } from '../dist/runner/dispatch.js';
-import { createNativeLoop, nativeSourceInstructions } from '../dist/runner/native-loop.js';
+import { createNativeLoop } from '../dist/runner/native-loop.js';
 import { startRunner } from '../dist/runner/runner.js';
+import { journalEntries } from '../dist/runner/journal-reader.js';
+import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 
 for (const runtime of ['claude-code', 'codex']) for (const instructions of ['', 'Saved policy: use the approved release channel and require owner review.']) {
-  test(`${runtime} dispatches its pinned ${instructions ? 'saved' : 'empty'} instructions and grades that same policy`, { timeout: 30_000 }, async t => {
+  test(`${runtime} dispatches its pinned ${instructions ? 'saved' : 'empty'} instructions and snapshots that same policy`, { timeout: 30_000 }, async t => {
     let runner, runnerStore;
     t.after(async () => { await runner?.close(); await runnerStore?.close(); });
     const f = await nativeFixture(t);
@@ -46,9 +48,12 @@ for (const runtime of ['claude-code', 'codex']) for (const instructions of ['', 
     else assert.equal(calls[0].args.includes('--append-system-prompt') || inputs[0].prompt.includes('<agentrun_context>'), false, 'empty saved instructions add no override');
     assert.doesNotMatch(taskContext, /LATER_REVISION_MUST_NOT_REPLACE_PINNED_POLICY/);
     assert.equal(await readFile(sourcePath, 'utf8'), sourcePolicy, 'native source policy is not modified');
-    const grading = await nativeSourceInstructions(runnerStore, queued.body.run_id);
-    assert.ok(grading.includes(sourcePolicy));
-    if (instructions) assert.ok(grading.includes(instructions), 'grading receives the same pinned saved policy as the task');
-    assert.doesNotMatch(grading, /LATER_REVISION_MUST_NOT_REPLACE_PINNED_POLICY/);
+    const rows = await journalEntries(runnerStore.readJournal(queued.body.run_id), BACKGROUND_CONTEXT);
+    const dispatched = rows.findIndex(row => row.kind === 'agentrun.native.sending' && row.data.phase === 'task');
+    assert.ok(dispatched >= 0);
+    const snapshot = rows.slice(0, dispatched).findLast(row => row.kind === 'agentrun.native.instructions').data.text;
+    assert.ok(snapshot.includes(sourcePolicy));
+    if (instructions) assert.ok(snapshot.includes(instructions), 'the run snapshots the same pinned saved policy as the task');
+    assert.doesNotMatch(snapshot, /LATER_REVISION_MUST_NOT_REPLACE_PINNED_POLICY/);
   });
 }

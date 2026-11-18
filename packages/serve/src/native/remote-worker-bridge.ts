@@ -5,13 +5,11 @@ import { createHash } from 'node:crypto';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { execFile } from 'node:child_process';
-import { promisify, types } from 'node:util';
+import { types } from 'node:util';
 import { discoverNative, nativeIdentity, verifyNative } from './discovery.js';
 import { nativeEnvironment } from './environment.js';
 import { openNativeSession } from './runtime.js';
 import { snapshotNativeInstructions } from './instructions.js';
-import { nativeSkillContext } from './context.js';
 import { exportRemoteHistory } from '../import.js';
 import { runnerSecrets, secretRedactor } from '../runner/redact.js';
 import { redactedOutput } from '../key-refusal.js';
@@ -117,45 +115,25 @@ export async function runRemoteWorkerBridge(options: {idleTimeoutMs?: number} = 
    try{return await held.session.send(text(payload.prompt),{signal,reflection:payload.reflection===true,timeoutMs:timeout(payload.timeout_ms)});}
    finally{expireIdle(sessionKey);}
   }
-  if (type !== 'open' && type !== 'grade') throw new Error('Unsupported remote operation.');
+  if (type !== 'open') throw new Error('Unsupported remote operation.');
   const approved = await current(message.target), identity = nativeIdentity(approved);
-  const sessionKey = type === 'grade' ? `grade-${key(message.id)}` : key(message.session_key);
+  const sessionKey = key(message.session_key);
   if (sessions.has(sessionKey) || sessions.size >= 8) throw new Error('The native session already exists or the source session limit was reached.');
   signal.throwIfAborted();
-  if (type === 'open' && (typeof payload.expected_fingerprint !== 'string' || payload.expected_fingerprint !== approved.fingerprint)) throw new Error('The source configuration changed after preparation. Start a new run after reviewing it.');
+  if ((typeof payload.expected_fingerprint !== 'string' || payload.expected_fingerprint !== approved.fingerprint)) throw new Error('The source configuration changed after preparation. Start a new run after reviewing it.');
   const root = await mkdtemp(join(tmpdir(),'agentrun-remote-'));
   const locks = join(tmpdir(),`agentrun-native-locks-${process.getuid?.() ?? 'user'}`);
   await mkdir(locks,{mode:0o700,recursive:true});
-  const lock = join(locks,createHash('sha256').update(type === 'grade' ? root : approved.project).digest('hex'));
+  const lock = join(locks,createHash('sha256').update(approved.project).digest('hex'));
   try { await mkdir(lock,{mode:0o700}); } catch { await rm(root,{recursive:true,force:true}); throw new Error('Another remote job holds this source project. Inspect any interrupted job before removing a stale source lock.'); }
   let opened:NativeSession|undefined;
   try {
-   let target = approved, context = payload.context === undefined ? '' : text(payload.context);
-   if (type === 'grade') {
-    await promisify(execFile)('git',['init','--quiet',root],{timeout:10_000});
-    const report = await discoverNative({project:root,runtime:approved.runtime,env});
-    target = {...report.targets.find(item => item.selector.kind === 'project')!,connected:true};
-    if (!target.runtime) throw new Error('The native grading runtime is unavailable.');
-    context = '';
-   } else if (payload.skills !== undefined) {
-    if (!Array.isArray(payload.skills) || payload.skills.length > 64) throw new Error('Invalid learned skills.');
-    const skills = payload.skills.map(value => {
-     const skill = object(value), files = object(skill.files);
-     if (Object.keys(files).length > 128) throw new Error('Too many learned skill resources.');
-     const read: Record<string,string> = {};
-     for (const [path,value] of Object.entries(files)) read[path] = text(value);
-     return {name:text(skill.name,128),files:read};
-    });
-    if (Buffer.byteLength(JSON.stringify(skills)) > 2_000_000) throw new Error('Learned skills exceed the source limit.');
-    context = [context,await nativeSkillContext(join(root,'skills'),skills)].filter(Boolean).join('\n\n');
-   }
+   const context = payload.context === undefined ? '' : text(payload.context);
    signal.throwIfAborted();
-   const session = opened = await openNativeSession({target,context,env,signal,onEvent:event=>{output({event,session_key:sessionKey});}});
+   const session = opened = await openNativeSession({target:approved,context,env,signal,onEvent:event=>{output({event,session_key:sessionKey});}});
    signal.throwIfAborted();
    sessions.set(sessionKey,{session,root,lock,identity});
-   if (type === 'open') {expireIdle(sessionKey);return {};}
-   try { return await session.send(text(payload.prompt),{signal,reflection:true,timeoutMs:timeout(payload.timeout_ms)}); }
-   finally { await close(sessionKey); }
+   expireIdle(sessionKey);return {};
   } catch(error) { try{await opened?.close();}finally{await rm(root,{recursive:true,force:true});await rm(lock,{recursive:true,force:true});}throw error; }
  };
  const lines = createInterface({input:process.stdin,crlfDelay:Infinity});

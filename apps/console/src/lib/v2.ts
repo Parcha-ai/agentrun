@@ -112,16 +112,8 @@ export type BillPoint = Bill["points"][number];
 /** GET /v2/agents/{id}/learning/audits: the audit ledger's rows, oldest first. */
 export type LearningAudits = Answer<"listLearningAudits">;
 export type AuditRow = LearningAudits["audits"][number];
-/** The held-out tests recorded for an agent (GET /v2/agents/{id}/learning/evals), newest first. */
-export type LearningEvals = Answer<"listLearningEvals">;
-export type LearningEval = LearningEvals["evals"][number];
 /** One run of that series. `path`: `workflow` a learned workflow finished it alone, `handed_back` one ran and the agent
  *  went on, `agent` none ran, `replay` a replay run deciding whether a learned workflow's new revision serves. */
-/** A learning batch (learn from rows): GET /v2/agents/{id}/learning/batches/{batch_id}'s answer, its list's headers, a start's body and a row. */
-export type LearningBatch = Answer<"getLearningBatch">;
-export type LearningBatchHead = Answer<"listLearningBatches">["batches"][number];
-export type LearningBatchStart = Body<"createLearningBatch">;
-export type LearningBatchRow = LearningBatch["rows"][number];
 export type CostRun = LearningCost["runs"][number];
 export type RunPath = CostRun["path"];
 /** GET /v2/agents/{id}/learning/workflows/{name}/revisions' answer: the commits on main that changed a learned workflow's
@@ -139,10 +131,13 @@ export type Serving = Promotions["serving"][number];
 /** GET /v2/agents/{id}/learning/loop: the agent's compile turns (newest first). */
 export type LearningLoop = Answer<"getLearningLoop">;
 export type LoopCompile = LearningLoop["compiles"][number];
-/** What the run's job did with the learned skills and workflows it was offered (`used`): each skill and whether its job
- *  read it, each learned workflow it called, how many times and how many of those failed. */
+/** What the run's job did with the learned workflows it was offered (`used`): each one it called, how many times and how
+ *  many of those failed. */
 export type LearnedUse = NonNullable<RunLearningRead>["used"];
 export type TimelinePage = components["TimelinePage"];
+/** GET /v2/runs/{id}/trace's answer: each model request and tool call of a run as a span (the Dev tools tab). */
+export type RunTrace = Answer<"getRunTrace">;
+export type TraceSpan = RunTrace["spans"][number];
 
 export type RunFile = components["RunFile"];
 export type RunFiles = components["RunFileList"];

@@ -38,6 +38,7 @@ const RUN_READS = {
   listRunFiles: (run) => [`/runs/${run.id}/files`],
   readRunFile: (run) => [`/runs/${run.id}/files/${run.file}`],
   getRunGraph: (run) => [`/runs/${run.id}/graph`],
+  getRunTrace: (run) => [`/runs/${run.id}/trace`],
   getRunBrowser: (run) => [`/runs/${run.id}/browser`],
   getRunComputer: (run) => [`/runs/${run.id}/computer`],
   getRunLearning: (run) => [`/runs/${run.id}/learning`],
@@ -312,6 +313,8 @@ test("no planted secret in a run's words shows on any run read route: a run hand
             continue;
           }
           sources.push({ where: `GET ${one} (${res.status})`, text: res.text });
+          // A withheld run's trace is refused, as its graph is: none of its spans is served.
+          if (/withheld|Withheld/.test(kind) && operation === "getRunTrace") assert.equal(res.status, 403, `${one}: a withheld run's trace is refused`);
           // A withheld run's graph is refused (403), or it has none (404, an agentic run's): never served.
           if (/withheld|Withheld/.test(kind) && operation === "getRunGraph") assert.ok((kind === "workflowWithheld" ? [403] : [403, 404]).includes(res.status), `${one}: a withheld run's graph is never served: ${res.status}`);
         }
