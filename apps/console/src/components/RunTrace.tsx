@@ -663,11 +663,15 @@ export function RunTrace({ run, read, version, live, panel, now: fixed, open = n
   const firstFailed = spans.find((s) => s.status === "failed");
   const counts: Record<SpanKind, number> = { all: spans.length, model: totals!.requests, tool: totals!.calls, failed: totals!.failed };
   const share = totals!.tokens ? cacheShare(totals!.tokens) : null;
-  // Beside an open panel the table is half as wide: its Size column (the panel says it) and its time axis (the overview
-  // draws it) show from the widest screens on.
-  const narrow = selected ? "xl:hidden 2xl:table-cell" : "";
+  // Beside an open panel (from `xl`) the table has what the panel leaves of the page, so two of its columns show by the
+  // width of the pane the table is in, never the window's: the time axis (the overview draws it) once the rest fits
+  // beside it, and Size (the panel says it) once all of them do. A window's width says nothing of the pane's: at 1536
+  // wide the pane is 740, and the whole table needs some 920. Under `xl` the panel is under the table, which is as wide
+  // as with none open.
+  const axisShown = selected ? "md:max-xl:table-cell @4xl:table-cell" : "md:table-cell";
+  const sizeShown = selected ? "hidden max-xl:table-cell @5xl:table-cell" : "";
   // The Call column takes what is left of the table; where the time axis shows beside it, the two share it.
-  const callWidth = selected ? "w-full md:w-[30%] xl:w-full 2xl:w-[30%]" : "w-full md:w-[30%]";
+  const callWidth = selected ? "w-full md:max-xl:w-[30%] @4xl:w-[30%]" : "w-full md:w-[30%]";
   const priced = totals!.cost.requests;
   const zoomedIn = range !== WHOLE;
   const filtered = kind !== "all" || query.trim() !== "" || zoomedIn;
@@ -679,7 +683,7 @@ export function RunTrace({ run, read, version, live, panel, now: fixed, open = n
     // spinner's hidden words) is then placed against the pane and scrolls with it. Placed against the page instead, one
     // far down the pane's content made the whole page scroll, with nothing under it.
     <div {...panel} data-scroll-pane className="relative min-h-0 flex-1 overflow-auto xl:flex xl:overflow-hidden short:flex-none short:overflow-visible">
-      <section aria-label="Trace" className="relative min-w-0 space-y-4 px-5 py-6 md:px-8 xl:min-h-0 xl:flex-1 xl:overflow-auto">
+      <section aria-label="Trace" className="relative min-w-0 space-y-4 px-5 py-6 @container md:px-8 xl:min-h-0 xl:flex-1 xl:overflow-auto">
         {trace.model_requests === "not_recorded" && (
           <Banner tone="info" title="This run's harness keeps no record of each model request">The trace shows its tool calls. The run's cost and how many requests it made are on its Timeline's usage line.</Banner>
         )}
@@ -750,14 +754,17 @@ export function RunTrace({ run, read, version, live, panel, now: fixed, open = n
               </div>
             </section>
 
-            <div className="overflow-x-auto border bg-card xl:overflow-visible">
+            {/* `relative`: a cell's hidden words ("None" for a dash) are placed out of the flow, and placed against this box
+                they scroll with the table. Placed against the pane, the ones scrolled out of view made the pane itself
+                scroll sideways under `xl`, over nothing. */}
+            <div className="relative overflow-x-auto border bg-card xl:overflow-visible">
               <table className="w-full text-small">
                 <caption className="sr-only">The run's model requests and tool calls. The arrow keys move from row to row; Enter opens a row's details.</caption>
                 <thead>
                   <tr>
                     <th scope="col" className={cn(TH, "caps text-left text-label font-normal text-muted-foreground")}>Call</th>
                     {SORTS.map((s) => (
-                      <th key={s.id} scope="col" aria-sort={sort === s.id ? (s.id === "started" ? "ascending" : "descending") : "none"} className={cn(TH, "whitespace-nowrap", s.right ? "text-right" : "text-left", s.id === "tokens" && narrow)}>
+                      <th key={s.id} scope="col" aria-sort={sort === s.id ? (s.id === "started" ? "ascending" : "descending") : "none"} className={cn(TH, "whitespace-nowrap", s.right ? "text-right" : "text-left", s.id === "tokens" && sizeShown)}>
                         <button type="button" onClick={() => setSort(sort === s.id ? "started" : s.id)} title={s.id === "started" ? "In the order they started" : `Sort by ${s.label.toLowerCase()}, most first`}
                           className={cn("caps -my-1.5 inline-flex min-h-6 items-center gap-1 py-1.5 text-label hover:text-foreground", sort === s.id ? "text-foreground" : "text-muted-foreground")}>
                           {s.label}{sort === s.id && s.id !== "started" && <ArrowDown className="size-3" aria-hidden />}
@@ -765,7 +772,7 @@ export function RunTrace({ run, read, version, live, panel, now: fixed, open = n
                       </th>
                     )).flatMap((cell, i) => (i === 0 ? [cell, (
                       // Each row's bar on the part of the run that shows: the Started and Duration cells beside it say the same in figures.
-                      <th key="axis" scope="col" data-axis className={cn(TH, "hidden w-[30%] min-w-56 md:table-cell", narrow)}>
+                      <th key="axis" scope="col" data-axis className={cn(TH, "hidden w-[30%] min-w-56", axisShown)}>
                         <span className="sr-only">On the time axis</span>
                         <span aria-hidden className="relative block h-4 overflow-hidden">
                           {rowMarks.map((m) => <span key={m.left} className={cn("absolute top-0 whitespace-nowrap font-mono text-label font-normal text-muted-foreground", m.left > 85 ? "-translate-x-full pr-1" : "pl-1")} style={{ left: `${m.left}%` }}>{m.label}</span>)}
@@ -793,14 +800,14 @@ export function RunTrace({ run, read, version, live, panel, now: fixed, open = n
                           </button>
                         </td>
                         <td className="whitespace-nowrap px-3 font-mono text-muted-foreground">{offset(Date.parse(span.started_at) - window.from)}</td>
-                        <td aria-hidden data-axis className={cn("hidden px-3 py-0 md:table-cell", narrow)}>
+                        <td aria-hidden data-axis className={cn("hidden px-3 py-0", axisShown)}>
                           <span className="relative block h-control-sm overflow-hidden">
                             {rowMarks.map((m) => <span key={m.left} className="absolute inset-y-0 w-px bg-border" style={{ left: `${m.left}%` }} />)}
                             {where.off === null && <span data-bar className={cn("trace-mark absolute top-1/2 h-2.5 min-w-0.5 -translate-y-1/2", mark(span))} style={{ left: `${where.left}%`, width: `${where.width}%` }} />}
                           </span>
                         </td>
                         <td id={`${uid}-d${i}`} className="whitespace-nowrap px-3 text-right font-mono">{ms !== null ? duration(ms) : NONE}</td>
-                        <td className={cn("whitespace-nowrap px-3 text-right font-mono text-muted-foreground", narrow)}>{orNone(sizeWords(span))}</td>
+                        <td className={cn("whitespace-nowrap px-3 text-right font-mono text-muted-foreground", sizeShown)}>{orNone(sizeWords(span))}</td>
                         <td className="whitespace-nowrap px-3 text-right font-mono">{orNone(costWords(span, trace))}</td>
                         <td id={`${uid}-s${i}`} className="px-3"><Chip tone={STATUS[span.status].tone}>{STATUS[span.status].word}</Chip></td>
                       </tr>

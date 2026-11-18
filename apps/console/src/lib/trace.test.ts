@@ -262,6 +262,32 @@ describe("what stands out in how a run used its cache and its tools", () => {
     // The run's first request reads nothing from cache and is not one: nothing was written before it.
     expect(findings(TRACE, TRACE_END).some((f) => f.id === "cache-reset")).toBe(false);
   });
+  it("a subagent's first request reads nothing from cache by design and is not said; a later one of its conversation is", () => {
+    // Two subagents, each a conversation of its own: its requests name the call that started it (the 38.6 s script
+    // call_10, from +0:50.8; the search call_12). Each starts fresh on the run's model, after the run wrote its cache.
+    const sub = (id: string, by: string, from: number, tokens: [number, number, number, number]): TraceSpan =>
+      ({ ...span("m:0:2"), id, parent_id: `t:0:${by}`, started_at: new Date(TRACE_START + from).toISOString(), ended_at: new Date(TRACE_START + from + 3000).toISOString(), tokens: { input: tokens[0], cache_read: tokens[1], cache_write: tokens[2], output: tokens[3] } });
+    const first = sub("m:1:1", "call_10", 55_000, [3000, 0, 4000, 100]);
+    const second = sub("m:1:2", "call_10", 60_000, [200, 7000, 800, 90]);
+    const other = sub("m:2:1", "call_12", 100_000, [2500, 0, 3500, 60]);
+    const reset = (spans: TraceSpan[]) => findings({ ...TRACE, spans: [...TRACE.spans, ...spans] }, TRACE_END).find((f) => f.id === "cache-reset");
+    // Every one of them read from cache but the two that opened a conversation: nothing to say.
+    expect(reset([first, second, other])).toBeUndefined();
+    // The first subagent's third request, 65.0 s in (61.6 s after the trace's first span at 3.4 s), reads nothing though
+    // its own conversation wrote 4,800 tokens: 7,500 + 0 + 500 = 8,000 tokens sent fresh.
+    const third = sub("m:1:3", "call_10", 65_000, [7500, 0, 500, 80]);
+    const found = reset([first, second, third, other])!;
+    expect([found.span, found.title, found.detail]).toEqual(["m:1:3", "A request read nothing from cache at +1:01.6", "Earlier requests to claude-sonnet-5-5 wrote to the cache. This one sent its whole input fresh: 8,000 tokens."]);
+    // A conversation's request to another model reads nothing from that model's cache, which nothing wrote: not said.
+    expect(reset([first, second, { ...third, name: "claude-haiku-5-5" }, other])).toBeUndefined();
+  });
+  it("a workflow's trace does not say which requests are of one conversation, so no request is said to have read nothing", () => {
+    // The sample's fourth request reading nothing, as above, in a workflow run: each node is a conversation of its own
+    // and the trace does not tell them apart, so the finding is left out, never guessed.
+    const spans = TRACE.spans.map((s) => (s.id === "m:0:19" ? { ...s, tokens: { input: 48_818, cache_read: 0, cache_write: 9240, output: 734 } } : s));
+    expect(findings({ ...TRACE, spans, model_requests: "tokens_only" }, TRACE_END).some((f) => f.id === "cache-reset")).toBe(false);
+    expect(findings({ ...TRACE, spans }, TRACE_END).some((f) => f.id === "cache-reset")).toBe(true);
+  });
   it("calls with the same shown arguments are not called repeats: the trace keeps one field of a call's arguments", () => {
     // Three writes to one path show the same head and may each have written something else.
     const again = (n: number): TraceSpan => ({ ...span("t:0:call_11"), id: `t:0:again_${n}`, tool_use_id: `again_${n}` });
