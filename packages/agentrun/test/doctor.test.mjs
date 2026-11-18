@@ -232,6 +232,15 @@ test("Service: not installed warns, stopped fails, lingering off warns with its 
   const notInstalled = await doctor(bare);
   assert.equal(notInstalled.check("service").status, "warn");
   assert.deepEqual(notInstalled.check("service").fix, ["agentrun service install"]);
+  // Another data directory: the service the fix installs is that one's, not ~/.agentrun's.
+  const elsewhereData = join(bare.home, "srv-agentrun");
+  mkdirSync(elsewhereData);
+  writeFileSync(join(elsewhereData, ".server.json"), JSON.stringify({ base_url: BASE, pid: 4242, token_file: join(elsewhereData, ".token") }), { mode: 0o600 });
+  const otherData = await doctor({ home: bare.home, data: elsewhereData });
+  assert.deepEqual(otherData.check("service").fix, [`agentrun service install --data ${elsewhereData}`]);
+  const noCommand = homeOf({ service: false, program: false });
+  const otherNoCommand = await doctor({ home: noCommand.home, data: elsewhereData });
+  assert.deepEqual(otherNoCommand.check("service").fix, [`${INSTALL_COMMAND} -s -- --no-start  (installs the command alone)`, `Then: agentrun service install --data ${elsewhereData}`]);
 
   const { home, data } = homeOf();
   const linger = await doctor({ home, data, exec: execOf((command) => (command === "loginctl" ? { stdout: "no\n" } : undefined)) });

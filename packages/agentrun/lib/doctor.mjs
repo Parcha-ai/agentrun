@@ -205,8 +205,12 @@ export async function doctorOf({
   } else {
     const why = manager.available();
     const background = existsSync(join(root, "agentrun.pid"));
+    // The service of the data directory checked: its --data, as startFix gives it. The installer alone sets up ~/.agentrun.
+    const serviceFix = existsSync(program) ? [`agentrun service install${dataFlag}`]
+      : dataFlag ? [`${INSTALL_COMMAND} -s -- --no-start  (installs the command alone)`, `Then: agentrun service install${dataFlag}`]
+      : [`${INSTALL_COMMAND}  (installs it as a service)`];
     if (why !== undefined) add("service", "Service", "info", `Not a service: ${why}.${background ? " The installer started AgentRun in the background; agentrun stop stops it." : ""}`);
-    else add("service", "Service", "warn", "AgentRun is not installed as a service: it stops when its terminal closes or this machine restarts.", { fix: [existsSync(program) ? "agentrun service install" : `${INSTALL_COMMAND}  (installs it as a service)`], docs: DOCS.launcher });
+    else add("service", "Service", "warn", "AgentRun is not installed as a service: it stops when its terminal closes or this machine restarts.", { fix: serviceFix, docs: DOCS.launcher });
   }
 
   // 4. Address: who can open it.
