@@ -114,6 +114,18 @@ test("a scheduled try that throws is said in the log, never an unhandled rejecti
   assert.deepEqual(rejected, [], "no unhandled rejection");
 });
 
+test("a try's bound is refused at or past the claim it holds its message by (60 s), at zero, or in part of a millisecond (a timer's is whole): no try outlives its claim", async (t) => {
+  for (const timeoutMs of [0, -1, 60_000, 90_000, Number.NaN, 1500.5]) {
+    assert.throws(() => new Webhooks({}, randomBytes(32), () => undefined, { timeoutMs }), RangeError, `bound ${timeoutMs}`);
+  }
+  // The server's option reaches the same check: one it is given is never dropped for the default. Each start is refused
+  // before serve() registers its own cleanup, so its data is in a scratch directory the file removes.
+  for (const webhookTimeoutMs of [0, Number.NaN, 1500.5]) {
+    const data = join(await scratch(t), "agents");
+    await assert.rejects(serve(t, { ...PRIVATE_OK, data, webhookTimeoutMs }), RangeError, `the server's bound ${webhookTimeoutMs}`);
+  }
+});
+
 describe("the outbound webhook: the outbox, its tries and its durability", { concurrency: CASES_AT_ONCE }, () => {
   test("a run whose end cannot be read holds back no other run's notice: the next run's run.ended is told, the unreadable one is said once, and told once it reads", async (t) => {
     const hook = await receiver(t);
@@ -216,9 +228,12 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     const held = new Promise((resolve) => { release = resolve; });
     // The log is filled before the redelivery starts, so a single attempt pushes the first out while the redelivery
     // waits: the wait stays far inside the server's fetch timeout. The redelivery is answered only when released.
+    // The try's bound is 45 s here, not 15: this case asserts the answer of a send made while another is held, and a CI
+    // host that stalls past 15 s wakes with that send's timer due before its answer is read (Node runs timers before
+    // I/O), so the send reads no answer. A merge group's run stalled about 20 s: this file's 3 to 7 s cases took 23 to 29.
     const redelivery = ATTEMPTS_KEPT + 1;
     const hook = await receiver(t, (n) => (n === redelivery ? held.then(() => 200) : 200));
-    const { api, data } = await serve(t, PRIVATE_OK);
+    const { api, data } = await serve(t, { ...PRIVATE_OK, webhookTimeoutMs: 45_000 });
     assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
     assert.equal((await api("POST", "/settings/webhook/test")).body.status_code, 200);
     const id = hook.got[0].headers["webhook-id"];
