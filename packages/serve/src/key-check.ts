@@ -49,6 +49,9 @@ export const KEY_CHECKS: Record<string, (key: string, env: NodeJS.ProcessEnv) =>
   // in NOT_CHECKED.
   anthropic: (key, env) => ({ url: `${base(env.ANTHROPIC_BASE_URL, "https://api.anthropic.com")}/v1/models?limit=1`, headers: { "x-api-key": key, "anthropic-version": "2023-06-01" } }),
   openrouter: (key) => ({ url: "https://openrouter.ai/api/v1/key", headers: { authorization: `Bearer ${key}` } }),
+  // Particle bills inference tokens; its authenticated model listing performs no generation
+  // (https://docs.particle.ai/models, https://docs.particle.ai/pricing).
+  particle: (key) => ({ url: "https://api.particle.ai/v1/models", headers: { authorization: `Bearer ${key}` } }),
 };
 
 /** A key not checked, by key id, and why: OpenAI answers 401 (missing_scope) to a restricted key that works but may not

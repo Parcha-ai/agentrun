@@ -77,7 +77,7 @@ export const COMMANDS = [
         "name": "Idempotency-Key",
         "type": "string",
         "required": false,
-        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first"
+        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route."
       }
     ],
     "bodyFlags": [
@@ -860,7 +860,7 @@ export const COMMANDS = [
         "name": "Idempotency-Key",
         "type": "string",
         "required": false,
-        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first"
+        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route."
       }
     ],
     "bodyFlags": [
@@ -2051,7 +2051,7 @@ export const COMMANDS = [
         "name": "Idempotency-Key",
         "type": "string",
         "required": false,
-        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first"
+        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route."
       }
     ],
     "bodyFlags": [
@@ -2435,7 +2435,7 @@ export const COMMANDS = [
         "name": "Idempotency-Key",
         "type": "string",
         "required": false,
-        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first"
+        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route."
       }
     ],
     "bodyFlags": [
@@ -2593,7 +2593,7 @@ export const COMMANDS = [
         "name": "Idempotency-Key",
         "type": "string",
         "required": false,
-        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first"
+        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route."
       }
     ],
     "bodyFlags": [
@@ -3188,7 +3188,7 @@ export const COMMANDS = [
         "name": "Idempotency-Key",
         "type": "string",
         "required": false,
-        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first"
+        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route."
       }
     ],
     "bodyFlags": [],
@@ -3362,7 +3362,7 @@ export const COMMANDS = [
         "name": "Idempotency-Key",
         "type": "string",
         "required": false,
-        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first"
+        "description": "Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first answer with `Idempotent-Replayed: true`; another body is `409 idempotency_mismatch`; a retry while the first is in flight is `409 idempotency_in_progress`. Keys are scoped to the credential's account and the route."
       }
     ],
     "bodyFlags": [

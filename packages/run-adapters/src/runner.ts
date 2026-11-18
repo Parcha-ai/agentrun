@@ -161,9 +161,29 @@ const positive = (value: number, name: string): number => {
  *  refused answer, a misconfigured model) would be sent turns forever, on microtasks no timer can interrupt. */
 export const NO_PROGRESS_TURNS = 3;
 
+/** A request whose answer billed more input than the bound its hold was priced on (InFlight.inputTokensMax): the cap's
+ *  one failure that matters, a hold too small. Its model; that bound and what it billed (input, cache reads and cache
+ *  writes together, as `inputAfter` reads a bill), in tokens; what was held for it and, when its answer was priced, what
+ *  it billed, in USD. */
+export type HoldShort = { model: string; boundTokens: number; billedTokens: number; heldUsd: number; billedUsd?: number };
+
 /** What a paid request tells a host, beside its session's key and label. A `request_end` carries how its path saw the
- *  request end (`ended`, booking.ts), when the path said. */
-export type ModelPortEvent = { type: "request_start"; turn: number; model: string; host?: string } | { type: "request_end"; turn: number; usage: ModelUsage; host?: string; ended?: Ended };
+ *  request end (`ended`, booking.ts), when the path said, and `holdShort` when it billed past its hold's bound. */
+export type ModelPortEvent = { type: "request_start"; turn: number; model: string; host?: string } | { type: "request_end"; turn: number; usage: ModelUsage; host?: string; ended?: Ended; holdShort?: HoldShort };
+
+/** `usage` against the bound its request's hold was priced on (`flight`'s inputTokensMax; `hold`, what was held): a
+ *  HoldShort when it billed more input than that bound. Undefined when it billed at or under it, or when there is nothing
+ *  to compare: no bound, no hold (no cap priced it), a request held at $0 whatever its input (billed to a plan or on a
+ *  free model, `unpriced`), or a usage with no input count (one cut, or one whose answer reported none). */
+const holdShortOf = (usage: ModelUsage, flight: InFlight | undefined, hold: number | undefined, unpriced: boolean): HoldShort | undefined => {
+  const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);
+  const input = count(usage.input);
+  const bound = count(flight?.inputTokensMax);
+  if (!flight || bound === undefined || hold === undefined || unpriced || usage.billing === "plan" || usage.cut || usage.givenBack || input === undefined) return undefined;
+  const billed = input + (count(usage.cacheRead) ?? 0) + (count(usage.cacheWrite) ?? 0);
+  if (billed <= bound) return undefined;
+  return { model: flight.model, boundTokens: bound, billedTokens: billed, heldUsd: hold, ...(typeof usage.usd === "number" && Number.isFinite(usage.usd) ? { billedUsd: usage.usd } : {}) };
+};
 
 export interface ModelPortOptions {
   /** The session's key: what `beforeRequest` and every event carry. */
@@ -360,8 +380,8 @@ export const answeredUnpriced = (data: { usd?: unknown; rule?: unknown }): boole
 export type SessionCost = { usd: number | null; soFarUsd: number; unpriced: number; atMost?: number };
 
 /** A request's booking its own write could not keep, as it would have been written and told: its runner.turn, and the
- *  request_end its host was never sent. */
-type Handed = { data: SessionRecord["data"]; usage: ModelUsage; ended?: Ended };
+ *  request_end its host was never sent (with its `holdShort`, when it billed past its hold's bound). */
+type Handed = { data: SessionRecord["data"]; usage: ModelUsage; ended?: Ended; holdShort?: HoldShort };
 /** The bookings of each session scope (SessionWriter.scope) in this process, across its claims: each request a booking
  *  admitted and has not seen answer (`flying`, settled once its afterRequest has written or failed to), and each answered
  *  request whose runner.turn the store refused (`refused`: a claim lost as the request answered). The scope's next
@@ -556,6 +576,8 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       // The turn this request was admitted as (its ticket; without one, the earliest still in flight).
       const turn = ticket?.turn ?? open[0]?.turn ?? turns;
       const at = open.findIndex((f) => f.turn === turn);
+      // As it was admitted: the bound its hold was priced on (holdShortOf).
+      const flight = at >= 0 ? open[at] : undefined;
       if (at >= 0) open.splice(at, 1);
       // A cost that never came in (a response cut short): at what the host held for the request, else unknown. One its
       // client stopped part way at what the host counts it at by what streamed (one token a byte), never more than that.
@@ -589,6 +611,9 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       const data: SessionRecord["data"] = { turn, usd: usage.usd, ...tokensOf(usage), ...(usage.givenBack ? { givenBack: true } : {}), ...(usage.estimated ? { estimated: true } : {}), ...(usage.tableUsd === undefined ? {} : { tableUsd: usage.tableUsd }), ...(usage.billing ? { billing: usage.billing } : {}), ...(usage.providerIds ? { providerIds: usage.providerIds } : {}), ...(stopped === undefined ? {} : { heldUsd: Math.min(hold!, stopped), stopped: true }), ...(booking ? { bookedUsd: booking.usd, rule: booking.rule } : {}), ...(ended?.end === "nothing" && ended.label === "refused" && ended.reason ? { refusal: ended.reason } : {}), ...(ended?.end === "answered" && ended.label === "error" && ended.reason ? { providerError: ended.reason } : {}), ...(note ? { note } : {}) };
       // Marked so, for a reader to say why it cost nothing (a run on free models: "$0 · free model").
       if (free) data.free = true;
+      // Billed past the bound its hold was priced on: told with its end, for the host's warn line, here or, its write
+      // refused, by the next booking that writes it (handoffs). Its booking is as above.
+      const holdShort = holdShortOf(usage, flight, hold, plan || free);
       try {
         // A runner.turn with the ids holds what a carried response record of this turn would: that one is dropped. A
         // stopped one keeps the figure it counts at (`heldUsd`), so a later process counts it the same.
@@ -598,7 +623,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       } catch (error) {
         // Refused (its claim lost as it answered, say): the booking is handed to the session's next booking in this
         // process, which writes it at its bookCut, never cutting a request that answered (handoffs).
-        if (scope !== undefined) handoffOf(scope).refused.set(turn, { data, usage, ...(ended ? { ended } : {}) });
+        if (scope !== undefined) handoffOf(scope).refused.set(turn, { data, usage, ...(ended ? { ended } : {}), ...(holdShort ? { holdShort } : {}) });
         settle?.();
         // A paid request whose cost can't be kept: the attempt stops, saying so, rather than spend on uncounted. Asked
         // with the request's own host label, as its admission was: a stop that holds only the harness's own requests (a
@@ -613,7 +638,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
       const hosted = hosts.get(turn);
       // Awaited: a host that marks the request's end on its record writes it before the booking counts as settled, so a
       // run's end never lands ahead of the mark that says its request was cut.
-      await emit({ type: "request_end", turn, usage, ...(hosted === undefined ? {} : { host: hosted }), ...(ended ? { ended } : {}) });
+      await emit({ type: "request_end", turn, usage, ...(hosted === undefined ? {} : { host: hosted }), ...(ended ? { ended } : {}), ...(holdShort ? { holdShort } : {}) });
     },
   };
   // One booking of the cut requests at a time: a call made while one is writing waits for it, never books them again.
@@ -666,7 +691,7 @@ function bookingFor(writer: SessionWriter, options: ModelPortOptions & { records
         if (turns === inherited.length && open.length === 0) spentUsd = sessionSpendOf([...now, ...booked]).spentUsd;
         for (const one of taken) {
           const hosted = hosts.get(one.turn);
-          await emit({ type: "request_end", turn: one.turn, usage: one.usage, ...(hosted === undefined ? {} : { host: hosted }), ...(one.ended ? { ended: one.ended } : {}) });
+          await emit({ type: "request_end", turn: one.turn, usage: one.usage, ...(hosted === undefined ? {} : { host: hosted }), ...(one.ended ? { ended: one.ended } : {}), ...(one.holdShort ? { holdShort: one.holdShort } : {}) });
         }
       }
       handoffDone(scope);

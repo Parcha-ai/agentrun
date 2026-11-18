@@ -173,7 +173,7 @@ function SpanPanel({ span, trace, run, from, now, reveal, onPick, onClose }: { s
     ["Span", span.id],
   ];
   return (
-    <aside ref={panel} aria-label="Call details" onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } }} className="border-t bg-card p-5 xl:w-2/5 xl:max-w-lg xl:shrink-0 xl:overflow-auto xl:border-l xl:border-t-0">
+    <aside ref={panel} aria-label="Call details" onKeyDown={(e) => { if (e.key === "Escape") { e.stopPropagation(); onClose(); } }} className="relative border-t bg-card p-5 xl:w-2/5 xl:max-w-lg xl:shrink-0 xl:overflow-auto xl:border-l xl:border-t-0">
       <div className="flex items-start gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
@@ -541,8 +541,11 @@ export function RunTrace({ run, read, version, live, now: fixed, open = null, vi
   const priced = totals!.cost.requests;
 
   return (
-    <div data-scroll-pane className="min-h-0 flex-1 overflow-auto xl:flex xl:overflow-hidden short:flex-none short:overflow-visible">
-      <section aria-label="Trace" className="min-w-0 space-y-4 px-5 py-6 md:px-8 xl:min-h-0 xl:flex-1 xl:overflow-auto">
+    // Each pane that scrolls is `relative`: what is placed out of the flow inside it (a Segmented's hidden radios, a
+    // spinner's hidden words) is then placed against the pane and scrolls with it. Placed against the page instead, one
+    // far down the pane's content made the whole page scroll, with nothing under it.
+    <div data-scroll-pane className="relative min-h-0 flex-1 overflow-auto xl:flex xl:overflow-hidden short:flex-none short:overflow-visible">
+      <section aria-label="Trace" className="relative min-w-0 space-y-4 px-5 py-6 md:px-8 xl:min-h-0 xl:flex-1 xl:overflow-auto">
         {trace.model_requests === "not_recorded" && (
           <Banner tone="info" title="This run's harness keeps no record of each model request">The trace shows its tool calls. The run's cost and how many requests it made are on its Timeline's usage line.</Banner>
         )}

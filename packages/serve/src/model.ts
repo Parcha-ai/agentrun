@@ -13,7 +13,7 @@ import type { ThinkingLevelMap } from "./port-models.js";
 import { DEFAULT_HARNESS, PLAN_HARNESSES } from "./harness.js";
 import { HARNESS_MODULES_ENV, HARNESS_TABLE_ENV, type HarnessEntry, harnessOf } from "./harness-table.js";
 import type { Revision } from "./agent-rows.js";
-import { gatewayBase } from "./provider.js";
+import { gatewayBase, modelGatewayBase } from "./provider.js";
 import { modelFormWhy } from "./model-form.js";
 // Leaves, which the key rows below read as this module loads, in any import order (wires.ts, adapter-facts.ts).
 import { ADAPTER_FACTS } from "./adapter-facts.js";
@@ -69,6 +69,8 @@ export const MODEL_NODES = ["agent", "decide", "extract", "report"] as const;
 export const MODEL_KEYS: readonly { id: string; label: string; field: string; model: string; harnesses: readonly string[]; byVendor?: Readonly<Record<string, string>> }[] = Object.freeze([
   { id: "anthropic", label: "Anthropic", field: "ANTHROPIC_API_KEY", model: "anthropic/claude-sonnet-5-5", harnesses: onVendor("anthropic") },
   { id: "openai", label: "OpenAI", field: "OPENAI_API_KEY", model: "openai/gpt-6.1-sol", harnesses: onVendor("openai") },
+  // Particle's direct API is Chat Completions; the adapter harnesses need Messages or HTTP Responses.
+  { id: "particle", label: "Particle", field: "PARTICLE_API_KEY", model: "particle/particle-1", harnesses: [DEFAULT_HARNESS] },
   // OpenRouter serves both wires: every harness runs on its key, an adapter harness on its wire's vendor's model there.
   { id: "openrouter", label: "OpenRouter", field: "OPENROUTER_API_KEY", model: "openrouter/openai/gpt-6.1-sol", harnesses: [DEFAULT_HARNESS, ...ADAPTER_FACTS.map((facts) => facts.id)], byVendor: { anthropic: "anthropic/claude-sonnet-5.5", openai: "openai/gpt-6.1-sol" } },
 ]);
@@ -216,7 +218,7 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | PinnedMo
     // A gateway its key may not go to (the one base rule, gatewayBase) runs no model, in its words: capabilities read it
     // not ready, a save warns, and a run is refused before its process starts, so the key is never handed to one.
     try {
-      gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL);
+      modelGatewayBase(env.AGENT_MODEL_BASE_URL);
     } catch (error) {
       return { why: (error as Error).message, host: true, needs: "key" };
     }
@@ -268,7 +270,7 @@ async function pinnedChoice(env: NodeJS.ProcessEnv, { pinned, ref }: PinnedModel
   if (!env.AGENT_MODEL_BASE_URL) return { why: "This run started on the model gateway, and AGENT_MODEL_BASE_URL names none here.", host: true, needs: "key" };
   // The one base rule (gatewayBase) holds for a pinned run as for any: its key never goes to a gateway it may not.
   try {
-    gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL);
+    modelGatewayBase(env.AGENT_MODEL_BASE_URL);
   } catch (error) {
     return { why: (error as Error).message, host: true, needs: "key" };
   }
@@ -312,6 +314,7 @@ export const PROVIDER_KEYS: Readonly<Record<string, readonly string[]>> = {
   opencode: ["OPENCODE_API_KEY"],
   "opencode-go": ["OPENCODE_API_KEY"],
   openrouter: ["OPENROUTER_API_KEY"],
+  particle: ["PARTICLE_API_KEY"],
   "qwen-token-plan": ["QWEN_TOKEN_PLAN_API_KEY"],
   "qwen-token-plan-cn": ["QWEN_TOKEN_PLAN_CN_API_KEY"],
   "qwen-token-plan-individual": ["QWEN_TOKEN_PLAN_API_KEY"],
@@ -456,7 +459,7 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | PinnedMode
   // One base rule for every harness (provider.ts' gatewayBase): one trailing /v1 off, then the API under <base>/v1, so
   // <gw>/api and <gw>/api/v1 both reach <gw>/api/v1/responses and <gw>/api/v1/messages, as OpenRouter serves them. pi-ai's
   // Responses client takes the base with its /v1, its Messages client adds /v1/messages itself.
-  const base = gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL!);
+  const base = modelGatewayBase(env.AGENT_MODEL_BASE_URL!);
   const baseUrl = `${base}/v1`;
   const [{ openAIResponsesApi }, { anthropicMessagesApi }] = await Promise.all([import("@earendil-works/pi-ai/api/openai-responses.lazy"), import("@earendil-works/pi-ai/api/anthropic-messages.lazy")]);
   const catalog = await catalogPrices();

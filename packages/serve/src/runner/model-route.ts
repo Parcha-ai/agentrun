@@ -53,8 +53,9 @@ export interface ModelRoute {
    *  wire that carries its reasoning (Responses), also whether it reasons, its window, its output ceiling, and the effort
    *  each thinking level asks for (`thinkingLevelMap`: a level mapped to null sends no effort, so pi's thinking off asks
    *  a model that takes no "none" for none, gpt-6.1-sol's case). On the route's own translation, a model that reasons
-   *  asks its level by name (LEVELS_BY_NAME: `adaptiveThinking`), so the run's effort reaches it. */
-  readonly like?: { readonly reasoning?: boolean; readonly contextWindow?: number; readonly maxTokens?: number; readonly input?: readonly string[]; readonly inputLimits?: unknown; readonly developerRole?: boolean; readonly adaptiveThinking?: boolean; readonly thinkingLevelMap?: ThinkingLevelMap };
+   *  asks its level by name (LEVELS_BY_NAME: `adaptiveThinking`), so the run's effort reaches it; Particle's also keeps
+   *  its window and ceiling, and marks its Messages hop as carrying Chat Completions (`translatedChatCompletions`). */
+  readonly like?: { readonly reasoning?: boolean; readonly contextWindow?: number; readonly maxTokens?: number; readonly input?: readonly string[]; readonly inputLimits?: unknown; readonly developerRole?: boolean; readonly adaptiveThinking?: boolean; readonly thinkingLevelMap?: ThinkingLevelMap; readonly translatedChatCompletions?: boolean };
   /** A request's price from its usage (the proxy's booking reads it): pi-ai's calculateCost, tiers included. */
   readonly price?: (model: string, usage: RouteUsage) => number | null;
   /** The upstream fetch: the route's own, for a model that does not speak Messages. Absent: the network. */
@@ -74,7 +75,7 @@ type PiModel = { id: string; provider: string; api: string; baseUrl?: string; co
 const MESSAGES_ONLY: readonly Wire[] = ["anthropic-messages"];
 type PiModels = { getModel(provider: string, id: string): unknown; streamSimple(model: never, context: never, options?: never): AsyncIterable<PiEvent> };
 type PiEvent = { type: string; contentIndex?: number; delta?: string; partial?: { content?: { type: string; id?: string; name?: string }[] }; toolCall?: { id: string; name: string; arguments: unknown }; reason?: string; message?: PiMessage; error?: PiMessage };
-type PiMessage = { usage?: RouteUsage; stopReason?: string; errorMessage?: string; content?: { type: string; text?: string; thinking?: string }[] };
+type PiMessage = { usage?: RouteUsage & { reasoning?: number }; stopReason?: string; errorMessage?: string; content?: { type: string; text?: string; thinking?: string }[] };
 
 /** The route of `model` ("provider/model-id"; undefined for the host's model of `tier`; a claimed run's pin, sent as
  *  pinned: chooseModel's PinnedModel), resolved from `env` as main resolves a run's model, on a wire of `wires` (the
@@ -127,8 +128,10 @@ export async function routeOf(model: string | PinnedModel | undefined, env: Node
   // The translation writes an answer's cost in its usage only where pi-ai read the provider's own (OpenRouter's): the
   // proxy reads it on ROUTE_ORIGIN (statesUsageCost). A model that reasons is given to pi's session as one that asks its
   // thinking level by name (LEVELS_BY_NAME), which the translation hands to pi-ai (levelOf): the run's effort reaches the
-  // model, mapped and clamped by its own catalog entry.
-  return { ...route, ...(target.reasoning ? { like: { ...sees, ...LEVELS_BY_NAME } } : {}), provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, redact ?? secretRedactor(runnerSecrets(env)), upstream, env) };
+  // model, mapped and clamped by its own catalog entry. Direct Particle states no cost (its usage is priced from the
+  // catalog), and its session also takes the model's window and ceiling and replays unsigned reasoning.
+  const like = target.provider === "particle" ? { ...settings, ...LEVELS_BY_NAME, translatedChatCompletions: true } : target.reasoning ? { ...sees, ...LEVELS_BY_NAME } : undefined;
+  return { ...route, ...(like ? { like } : {}), provider: { api: "anthropic-messages", origin: ROUTE_ORIGIN, credential: () => "model-route" }, fetch: messagesFetch(models as unknown as PiModels, target, redact ?? secretRedactor(runnerSecrets(env)), upstream, env) };
 }
 
 /** Whether pi-ai sends `target`'s requests to OpenRouter (pi-ai's own test, utils/openrouter-cost.js isOpenRouterModel). */
@@ -166,6 +169,9 @@ function tapped(upstream: typeof fetch | undefined): { fetch: typeof fetch; kept
  *  as one the model proxy sends there does; a request to any other provider carries none. */
 export function messagesFetch(models: PiModels, target: PiModel, redact: Redact = keepText, upstream?: typeof fetch, env: NodeJS.ProcessEnv = process.env): typeof fetch {
   const attribution = piOnOpenRouter(target) ? openRouterAttribution(env) : {};
+  const particle = target.provider === "particle";
+  // Side requests without a Pi session id retain affinity for this route's lifetime.
+  const cacheSession = particle ? randomUUID() : undefined;
   // A tool call's id as Messages carries it (letters, digits, _ and -), and back to the provider's own on its result.
   const providerIds = new Map<string, string>();
   const messagesId = (id: string): string => {
@@ -180,11 +186,14 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
     // result of its history as text, and its calls read from its reply. A request with no tools goes as it is.
     const asText = target.toolsAs === "text" && (built.tools?.length ?? 0) > 0;
     const context = asText ? toolsAsText(built) : built;
-    // On OpenRouter, each answer's end is kept as it streams by, for a rate limit it ends in (limitedWords).
-    const tap = piOnOpenRouter(target) ? tapped(upstream) : undefined;
+    // Keep each OpenRouter or Particle answer's end for structured failures inside a successful HTTP stream.
+    const tap = piOnOpenRouter(target) || particle ? tapped(upstream) : undefined;
     const sendWith = tap?.fetch ?? upstream;
     const level = levelOf(body);
-    const streamOptions = { ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(level ? { reasoning: level } : {}), ...(init.signal ? { signal: init.signal } : {}), ...(sendWith ? { fetch: sendWith } : {}), ...(Object.keys(attribution).length ? { headers: attribution } : {}) };
+    // Particle's cache affinity: the session's id (the Messages hop's metadata.user_id), else this route's own; an
+    // empty id is a caller that asked for no cache hint.
+    const affinity = !particle ? {} : body.metadata?.user_id === "" ? { cacheRetention: "none" } : { sessionId: body.metadata?.user_id || cacheSession };
+    const streamOptions = { ...affinity, ...(body.max_tokens ? { maxTokens: body.max_tokens } : {}), ...(level ? { reasoning: level } : {}), ...(init.signal ? { signal: init.signal } : {}), ...(sendWith ? { fetch: sendWith } : {}), ...(Object.keys(attribution).length ? { headers: attribution } : {}) };
     const events = models.streamSimple(target as never, context as never, streamOptions as never);
     const encoder = new TextEncoder();
     const stream = new ReadableStream<Uint8Array>({
@@ -208,10 +217,10 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
         // status) goes as its words alone: the proxy books that as an answer cut short, at an unknown cost. Whatever the
         // model wrote that this translation held is sent before either (sendHeld), so an error with no usage after the
         // model began is never read as a refusal.
-        const sendError = (words: string, used?: { input: number; output: number; cacheRead?: number; cacheWrite?: number }, cost?: number) => {
+        const sendError = (words: string, used?: { input: number; output: number; cacheRead?: number; cacheWrite?: number; reasoning?: number }, cost?: number) => {
           const failed = tap ? streamErrorOf(tap.kept()) : undefined;
           if (failed === undefined) return sendWords(words);
-          const tokens = used ? { input_tokens: used.input, output_tokens: used.output, cache_read_input_tokens: used.cacheRead ?? 0, cache_creation_input_tokens: used.cacheWrite ?? 0 } : undefined;
+          const tokens = used ? { input_tokens: used.input, output_tokens: used.output, cache_read_input_tokens: used.cacheRead ?? 0, cache_creation_input_tokens: used.cacheWrite ?? 0, ...(used.reasoning === undefined ? {} : { output_tokens_details: { thinking_tokens: used.reasoning } }) } : undefined;
           if ((tokens && tokens.input_tokens + tokens.output_tokens + tokens.cache_read_input_tokens + tokens.cache_creation_input_tokens > 0) || cost !== undefined) {
             send({ type: "message_delta", delta: { stop_reason: null, stop_sequence: null }, usage: { ...(tokens ?? { input_tokens: 0, output_tokens: 0 }), ...(cost === undefined ? {} : { cost }) } });
           }
@@ -220,8 +229,8 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
         send({ type: "message_start", message: { id: `msg_${Date.now().toString(36)}`, type: "message", role: "assistant", model: body.model ?? target.id, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
         // Messages blocks are numbered as sent. A thinking block is sent too, so the model's reasoning reaches the run's
         // record as a Timeline row; its text goes through the run's one redactor, so a held key the model quoted in its
-        // thinking is cut before pi's session journals it, not only at read. It carries no signature here, which the bridge
-        // back (contextOf) drops from a later turn's request, so none is needed and the cut thinking is never read as context.
+        // thinking is cut before pi's session journals it, not only at read. It carries no signature here. Particle
+        // preserves this redacted text for its native tool continuation; other translated providers drop it.
         const blockOf = new Map<number, number>();
         const sentJson = new Set<number>();
         let blocks = 0;
@@ -308,9 +317,9 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
                 sendError(redact(message.errorMessage ?? event.reason ?? "the model's request failed"), message.usage, reportedOf(message.usage));
                 break;
               }
-              const used = message.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+              const used: NonNullable<PiMessage["usage"]> = message.usage ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
               const cost = reportedOf(message.usage);
-              send({ type: "message_delta", delta: { stop_reason: stopReasonOf(event.reason ?? message.stopReason), stop_sequence: null }, usage: { input_tokens: used.input, output_tokens: used.output, cache_read_input_tokens: used.cacheRead, cache_creation_input_tokens: used.cacheWrite, ...(cost === undefined ? {} : { cost }) } });
+              send({ type: "message_delta", delta: { stop_reason: stopReasonOf(event.reason ?? message.stopReason), stop_sequence: null }, usage: { input_tokens: used.input, output_tokens: used.output, cache_read_input_tokens: used.cacheRead, cache_creation_input_tokens: used.cacheWrite, ...(used.reasoning === undefined ? {} : { output_tokens_details: { thinking_tokens: used.reasoning } }), ...(cost === undefined ? {} : { cost }) } });
               send({ type: "message_stop" });
             }
           }
@@ -419,12 +428,13 @@ export function messagesFetch(models: PiModels, target: PiModel, redact: Redact 
 /** pi-ai's stop reason as Messages says it. */
 const stopReasonOf = (reason: string | undefined): string => (reason === "toolUse" ? "tool_use" : reason === "length" ? "max_tokens" : "end_turn");
 
-type MessagesBlock = { type: string; text?: string; id?: string; name?: string; input?: unknown; tool_use_id?: string; content?: string | MessagesBlock[]; is_error?: boolean; source?: { type?: string; media_type?: string; data?: string } };
+type MessagesBlock = { type: string; text?: string; thinking?: string; id?: string; name?: string; input?: unknown; tool_use_id?: string; content?: string | MessagesBlock[]; is_error?: boolean; source?: { type?: string; media_type?: string; data?: string } };
 type MessagesRequest = {
   model?: string;
   max_tokens?: number;
   thinking?: { type?: string };
   output_config?: { effort?: unknown };
+  metadata?: { user_id?: string };
   system?: string | MessagesBlock[];
   messages?: { role: "user" | "assistant"; content: string | MessagesBlock[] }[];
   tools?: { name: string; description?: string; input_schema?: unknown }[];
@@ -478,6 +488,9 @@ function contextOf(body: MessagesRequest, target: PiModel, providerId: (id: stri
     if (message.role === "assistant") {
       const content = blocks.flatMap((block): Part[] => {
         if (block.type === "text") return [{ type: "text", text: block.text ?? "" }];
+        // Retain Particle's native reasoning alongside the assistant tool call on continuation. The Messages
+        // hop has already redacted this text; restore only the field name, never a foreign provider's signature.
+        if (target.provider === "particle" && block.type === "thinking") return [{ type: "thinking", thinking: block.thinking ?? "", thinkingSignature: "reasoning_content" }];
         if (block.type === "tool_use") {
           named.set(block.id ?? "", block.name ?? "");
           return [{ type: "toolCall", id: providerId(block.id ?? ""), name: block.name ?? "", arguments: (block.input ?? {}) as object }];
