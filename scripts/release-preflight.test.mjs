@@ -116,8 +116,8 @@ test('a failed TypeScript floor rerun replaces stale success evidence', async ()
 test('release plan binds the exact verified tarballs in dependency order', () => fixture(async root => {
   const plan = await preflight(root);
   assert.deepEqual(plan.packages.map(pkg => pkg.directory), releasePackages);
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/pi-browser', '@parcha/agentrun-decisions', '@parcha/agentrun-computer', '@parcha/agentrun-client', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/agentrun-harness-codex', '@parcha/agentrun-serve', '@parcha/agentrun']);
-  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-pi-browser-${version}.tgz`, `parcha-agentrun-decisions-${version}.tgz`, `parcha-agentrun-computer-${version}.tgz`, `parcha-agentrun-client-${version}.tgz`, `parcha-agentrun-kernel-${version}.tgz`, `parcha-agentrun-harness-claude-${version}.tgz`, `parcha-agentrun-harness-codex-${version}.tgz`, `parcha-agentrun-serve-${version}.tgz`, 'parcha-agentrun-0.3.0.tgz']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/pi-browser', '@parcha/agentrun-decisions', '@parcha/agentrun-computer', '@parcha/agentrun-client', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/agentrun-harness-codex', '@parcha/agentrun-harness-acp', '@parcha/agentrun-serve', '@parcha/agentrun']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.filename), [`parcha-agentrun-dsl-${version}.tgz`, `parcha-agentrun-jev-${version}.tgz`, `parcha-pi-browser-${version}.tgz`, `parcha-agentrun-decisions-${version}.tgz`, `parcha-agentrun-computer-${version}.tgz`, `parcha-agentrun-client-${version}.tgz`, `parcha-agentrun-kernel-${version}.tgz`, `parcha-agentrun-harness-claude-${version}.tgz`, `parcha-agentrun-harness-codex-${version}.tgz`, `parcha-agentrun-harness-acp-${version}.tgz`, `parcha-agentrun-serve-${version}.tgz`, 'parcha-agentrun-0.3.0.tgz']);
   assert.ok(plan.packages.every(pkg => /^sha512-/.test(pkg.integrity) && /^[a-f0-9]{64}$/.test(pkg.sha256)));
 }));
 test('unlicensed source and inconsistent tags fail before publication', () => fixture(async root => {
@@ -227,7 +227,7 @@ test('Apache release preserves the approved root license and notices in every ar
   await recordPackages(root);
   const plan = await preflight(root);
   assert.equal(plan.license, 'Apache-2.0');
-  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/pi-browser', '@parcha/agentrun-decisions', '@parcha/agentrun-computer', '@parcha/agentrun-client', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/agentrun-harness-codex', '@parcha/agentrun-serve', '@parcha/agentrun']);
+  assert.deepEqual(plan.packages.map(pkg => pkg.name), ['@parcha/agentrun-dsl', '@parcha/agentrun-jev', '@parcha/pi-browser', '@parcha/agentrun-decisions', '@parcha/agentrun-computer', '@parcha/agentrun-client', '@parcha/agentrun-kernel', '@parcha/agentrun-harness-claude', '@parcha/agentrun-harness-codex', '@parcha/agentrun-harness-acp', '@parcha/agentrun-serve', '@parcha/agentrun']);
   await writeFile(join(root, 'packages/pi-browser/NOTICE'), `${notice}\nThird-party notice kept after the repository's.\n`);
   await recordPackages(root);
   assert.equal((await preflight(root)).packages.length, releasePackages.length, 'a published package may append third-party notices to the root NOTICE');
@@ -262,7 +262,7 @@ test('the publish set is the explicit release map minus the held packages, and a
 });
 
 test('publication order is dependency order, fixed by the release map and not by directory listing', () => {
-  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi-browser', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'serve', 'agentrun'], 'dsl before jev, the packages that depend on none of them after, then serve (@parcha/agentrun-serve), which depends on the packages before it, and the npx command, which depends on serve, last');
+  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi-browser', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'serve', 'agentrun'], 'dsl before jev, the packages that depend on none of them after, then serve (@parcha/agentrun-serve), which depends on the packages before it, and the npx command, which depends on serve, last');
   const names = new Map(listedPackages.map(directory => [releasePackageNames[directory], directory]));
   for (const directory of listedPackages) {
     for (const dependency of Object.keys(repoManifest(directory).dependencies ?? {})) {
