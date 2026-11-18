@@ -43,7 +43,7 @@ import { homePath, hostOwnedOf, type OwnedReadAt } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
 import { HARNESS_MODULES_ENV, HARNESS_TABLE_ENV, harnessIds, harnessModulesEnv, harnessOf, harnessTable } from "./harness-table.js";
-import { HarnessInstall, type HarnessInstaller, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
+import { claudeCliIn, HarnessInstall, type HarnessInstaller, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
 import { DEFAULT_PORT, healthOf, hostMemory, maxRunsOf, runsThatFit } from "./host.js";
 import { DEFAULT_HOST, listenOn, minFreeMibOf, takeOver, urlOf } from "./listen-first.js";
 import { IMPORT_ASKED, type ImportCandidate, MAX_CANDIDATES } from "./import.js";
@@ -113,6 +113,7 @@ import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, NOT_SET_UP, type Rev
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
 import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, type SecretRequest, secretsWritableFields, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { ChatGPTPlan, planOf, PlanSignInRefused, SIGN_OUT_UNCONFIRMED, withPlan } from "./chatgpt-plan.js";
+import { CLAUDE_LOGIN_ROUTES, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "./claude-login.js";
 import { bootSealKey, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
@@ -619,6 +620,11 @@ export const ROUTES: readonly Route[] = [
   { method: "DELETE", pattern: /^\/settings\/chatgpt$/, name: "signOutChatGPT" },
   { method: "POST", pattern: /^\/settings\/chatgpt\/sign-in$/, name: "startChatGPTSignIn" },
   { method: "POST", pattern: /^\/settings\/chatgpt\/sign-in\/finish$/, name: "finishChatGPTSignIn" },
+  // Claude Code's login on this machine (claude-login.ts): the owner's session's alone; 404 by name while switched off.
+  { method: "GET", pattern: /^\/settings\/claude-login$/, name: "getClaudeLogin" },
+  { method: "PUT", pattern: /^\/settings\/claude-login$/, name: "turnOnClaudeLogin" },
+  { method: "DELETE", pattern: /^\/settings\/claude-login$/, name: "turnOffClaudeLogin" },
+  { method: "POST", pattern: /^\/settings\/claude-login\/login$/, name: "startClaudeLogin" },
   { method: "GET", pattern: /^\/settings\/mcp-servers$/, name: "listMcpServers" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/preview$/, name: "previewMcpServer" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/composio\/tools$/, name: "listComposioTools" },
@@ -767,7 +773,7 @@ export function offersEnvOf(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 /** What of `env` a write can change that the harnesses' offers are made from: each secret but the tool keys' fields (a
  *  saved key is one of those; the rest of the environment is the server's start's). Held to tell whether a write needs
  *  the offers probed again, never shown. */
-const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] => [...SECRET_NAMES.filter((name) => !TOOL_FIELDS.includes(name)).map((name) => env[name]), planOf(env)?.state, planOf(env)?.models.join(" ")];
+const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] => [...SECRET_NAMES.filter((name) => !TOOL_FIELDS.includes(name)).map((name) => env[name]), planOf(env)?.state, planOf(env)?.models.join(" "), claudeLoginOf(env)?.dir];
 
 /** A sign-in step's answer; its refusal (a stale or bad pasted address, no sign-in waiting, OpenAI's no) a 400 in words. */
 async function planStep<T>(step: () => Promise<T>): Promise<T> {
@@ -1194,7 +1200,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const plan = new ChatGPTPlan({ store, sealKey: seal.key, log: (fields) => (log ? log(logLine("chatgpt", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("chatgpt", fields)}\n`)), changed: () => keysChanged() });
   await plan.load();
   stops.push(async () => plan.close());
-  let env = withPlan(own(withSecrets(base, "all", storedKeys)), plan);
+  // Claude Code's login on this machine (claude-login.ts): env carries where it is while the owner has it on, so
+  // claude-agent's model checks see a model without a key. Unset, its switch follows the listen address: there on
+  // loopback, off past it. A setting kept where the mode is now off or refused goes first.
+  const loginOff = claudeLoginSwitchedOff(base, options.host ?? DEFAULT_HOST);
+  const loginRefused = whyNotOneOwner({ apiOnly: options.apiOnly === true, tokens: tokens.length });
+  await dropRefusedLogin(store.settings, loginOff ?? loginRefused, (line) => (log ? log(logLine("claude_login", { line })) : void process.stderr.write(`agentrun-serve: ${line}\n`)));
+  let claudeLogin = loginOf(await claudeLoginSetting(store.settings), data, base);
+  let env = withClaudeLogin(withPlan(own(withSecrets(base, "all", storedKeys)), plan), claudeLogin);
   let offers!: HarnessCapability[];
   let caps!: ReturnType<typeof capabilitiesWith>;
   // Whether a revision that names no model runs (needsOf): made from env alone, so remade with it, before the caps.
@@ -1229,7 +1242,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // serverSecrets live, store-view), and a list builds a listing cut of other keys again (cutOfNow). A failed run's error words
     // name a refused key by the keys and settings, so those listings are built again.
     await lister?.keysChanged();
-    env = withPlan(own(withSecrets(base, "all", storedKeys)), plan);
+    env = withClaudeLogin(withPlan(own(withSecrets(base, "all", storedKeys)), plan), claudeLogin);
     const mine = ++needsAsked;
     const next = await needsOf(env);
     if (mine === needsAsked) needs = next;
@@ -1242,6 +1255,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const was = plan.state;
     if ((await plan.load()).state !== was) await keysChanged();
   };
+  /** What Claude Code's login routes use: a turn on or off reads the setting again, then env, as a key's save does. A
+   *  sign-in this server starts opens a browser on its machine, so only where the console is on loopback here. */
+  const loginDeps = (): ClaudeLoginDeps => ({
+    settings: store.settings,
+    data,
+    env: base,
+    pinned: async () => claudeCliIn(installDirOf(data, LOGIN_HARNESS), (await import("@parcha/agentrun-harness-claude")).claudeAgentPlatform()),
+    refused: loginRefused,
+    sameMachine: isLoopback(host) && !options.publicUrl,
+    claude: () => import("@parcha/agentrun-harness-claude"),
+    changed: async () => {
+      claudeLogin = loginOf(await claudeLoginSetting(store.settings), data, base);
+      await keysChanged();
+    },
+  });
   // The boxes a place may name, read once from the computers runs execute on (place-offers.ts): AGENTRUN_BOXES lists
   // them, docker alone when it is not set; docker by its probe, daytona and modal by their providers' keys, read as a
   // run's claim reads them. Under --faux, `fauxDocker` stands in for Docker's answer, and nothing asks Docker.
@@ -2344,7 +2372,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       });
     };
     const monid = (revision as { monidPin?: MonidPinBody | null }).monidPin ?? undefined;
-    const blockers = await blockersOf(env, shape, settings.get(), { capped, boxes: boxOffers, computerReady, shellOf, offers, mcp: revision.kind === "agentic" ? pinnedTools : mcpTools, monid, decisionPrice });
+    // Claude Code's login on this machine is a runner place's alone: a sandbox run is checked for a key, as it runs.
+    const blockers = await blockersOf(envAtPlace(env, shape.place), shape, settings.get(), { capped, boxes: boxOffers, computerReady, shellOf, offers, mcp: revision.kind === "agentic" ? pinnedTools : mcpTools, monid, decisionPrice });
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     // Each blocker as a 422 names its issue: its field, reason and message, and the fix when it has one.
@@ -2455,7 +2484,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const listing = await mcpListingOf(revision, previous?.mcpPin);
     const mcp = listing.tools;
     const { monid, warnings: usage = [] } = (await monidPinOf(revision, previous)) ?? {};
-    const blockers = await blockersOf(env, shape, settings.get(), { boxes: boxOffers, computerReady, shellOf, offers, mcp, monid });
+    const blockers = await blockersOf(envAtPlace(env, shape.place), shape, settings.get(), { boxes: boxOffers, computerReady, shellOf, offers, mcp, monid });
     // An agent's default cap caps each run started without one of its own, and a web tool resolves by the cap: what a cap
     // alone keeps from running under the definition's own picks, whatever this host's settings, would keep every such run
     // from running, so the save is refused, not each run (claude-agent's or codex's own search, picked, under a cap).
@@ -3427,6 +3456,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (!matching.length) throw new ApiError("not_found", path.startsWith("/v2/") ? `no route /v2${path}: /v2 is in it twice. A path an answer gives (upload.url, a Location) starts at the server's root: send it to the server's address, not after the /v2 base.` : `no route ${path}`);
     const found = matching.find((r) => r.method === req.method || (req.method === "HEAD" && r.method === "GET"));
     if (!found) throw new ApiError("method_not_allowed", `${req.method} is not a method of ${path}`, {}, { allow: [...new Set(matching.map((r) => r.method))].join(", ") });
+    if (CLAUDE_LOGIN_ROUTES.has(found.name) && loginOff) throw new ApiError("not_found", claudeLoginRouteOff(found.name, loginOff));
     if (found.name === "getCapabilities") {
       // features.computers: the computer kinds this server offers now (computers.ts), read at each answer, since turning
       // Archil on or off, or saving a key, changes them. So does a shell on the runner (bash on Archil's serverless exec
@@ -4220,6 +4250,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "signOutChatGPT": {
         const { revoked } = await plan.signOut();
         return send(res, 200, revoked ? { revoked } : { revoked, message: SIGN_OUT_UNCONFIRMED });
+      }
+      // Claude Code's login on this machine (claude-login.ts): only its status is read, by asking the CLI.
+      case "getClaudeLogin":
+      case "turnOnClaudeLogin":
+      case "turnOffClaudeLogin":
+      case "startClaudeLogin": {
+        const body = found.name === "turnOnClaudeLogin" ? await bodyOf(req) : undefined;
+        const deps = loginDeps();
+        try {
+          const view = found.name === "getClaudeLogin" ? await claudeLoginView(deps) : found.name === "turnOnClaudeLogin" ? await turnOnClaudeLogin(deps, body) : found.name === "turnOffClaudeLogin" ? await turnOffClaudeLogin(deps) : await startLoginHere(deps);
+          return send(res, 200, view, { "cache-control": "no-store" });
+        } catch (error) {
+          if (error instanceof ClaudeLoginRefused) throw new ApiError(error.code, error.message);
+          throw error;
+        }
       }
       // Never through `idempotent`: its record keeps the body, and a body may hold a credential.
       case "listMcpServers":

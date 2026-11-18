@@ -274,7 +274,7 @@ test("a server with no model key runs codex and pi on a person's ChatGPT plan: s
     const cost = done.view.cost;
     const booked = turns.filter((turn) => turn.givenBack !== true && turn.unsent !== true);
     const tokens = booked.reduce((sum, turn) => sum + ["input", "output", "cacheRead", "cacheWrite"].reduce((n, key) => n + (turn.usage?.[key] ?? 0), 0), 0);
-    assert.deepEqual(cost.plan, { requests: booked.length, tokens }, `${id}: ${JSON.stringify(cost)}`);
+    assert.deepEqual(cost.plan, { requests: booked.length, tokens, on: "chatgpt" }, `${id}: ${JSON.stringify(cost)}`);
     assert.equal(typeof cost.usd, "number", `${id}: a plan run's dollars are known: ${JSON.stringify(cost)}`);
     assert.equal("unpriced" in cost, false, `${id}: ${JSON.stringify(cost)}`);
   }

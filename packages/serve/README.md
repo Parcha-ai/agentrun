@@ -1216,6 +1216,42 @@ A run on the plan books its tokens and no dollars (`cost.plan`). Eligible usage 
 Manage usage in your ChatGPT settings. A sign-in is for the person who runs this server: don't share it or let others
 run agents on it.
 
+### On Claude Code's login on this machine
+
+On a server one person runs on their own machine, Claude Agent can run on that person's Claude plan through the Claude
+Code CLI's own login. The CLI holds the login and calls Anthropic itself. AgentRun never reads, copies, stores or relays
+the login. It tells the CLI where the login is and asks it `claude auth status`, nothing else. Settings → Model keys
+has the row **Use Claude Code's login on this machine**, over these routes:
+
+- `PUT /v2/settings/claude-login` `{"only_me": true, "place": "agentrun"}` turns it on. `only_me` is the owner's word
+  that they alone run agents on this server. `place` is where the login is: `agentrun` (the default) is AgentRun's own
+  login directory in the data folder, which you sign in once; `machine` is this machine's own Claude Code login
+  (`~/.claude`), which you opt into by name. A server where more than one person can start runs (more than one API
+  token, the API-only profile) refuses it with `403` and one line saying why, and a turn-on saved before is dropped
+  when such a server starts.
+- `GET /v2/settings/claude-login` says `state`: `off`, `signed_in` (with the `account` the CLI names: method, email,
+  organization, plan), `signed_out`, `no_cli` (claude-agent's first run installs the pinned CLI), `unknown`, or
+  `other_machine`. `command` is the line that signs the CLI in at the login's place, for a terminal on the server's
+  machine. Where the console is on that machine (a server on loopback with no public address), `can_start` is true and
+  `POST /v2/settings/claude-login/login` starts the pinned CLI's own `auth login`, which opens a browser there.
+- `DELETE /v2/settings/claude-login` turns it off. The login stays as the CLI keeps it.
+
+While it is on, a claude-agent run on an `anthropic/<model>` model goes on the login: its CLI gets no
+`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN` or key, no model proxy runs, and the CLI's sandbox denies its commands
+reads of the login. A model named on a gateway or OpenRouter keeps its key, and so does a run started with its own
+`model_key`. With no key at all, claude-agent's default
+model is `anthropic/claude-sonnet-5-5`. A run whose login is signed out fails at its start and says so. It never
+switches to a key. The run books its tokens and no dollars (`cost.plan`, `on: "claude_code"`), and the plan's own limits
+apply. Only a run in a runner place, on the machine the mode was turned on for, goes on the login. A run placed in a
+sandbox, or on another machine, uses the keys.
+
+The mode exists only on a server that listens on loopback (a local install, or one behind a local proxy). A server
+bound to any other address, such as all interfaces in a container or on a hosting service, has it off
+with nothing to set. `AGENTRUN_CLAUDE_CODE_LOGIN` overrides the default. `off` turns the mode off anywhere. `on` makes
+it available past loopback, but a server with more than one API token still refuses it, and so does the API-only
+profile. While the mode is off, the row is gone and every route above answers `404` naming its operation. A turn-on
+saved earlier is dropped when the server starts, and claude-agent runs on the model keys.
+
 ## Tools
 
 A revision names its tools from one closed table (`src/tools.ts`): each name is how the run's process binds it and the

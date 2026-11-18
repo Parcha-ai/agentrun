@@ -502,6 +502,7 @@ export type Cost = {
   plan?: {
     requests: number;
     tokens: number;
+    on: "chatgpt" | "claude_code";
   };
 };
 
@@ -2692,6 +2693,21 @@ export type GetChatGPTSignInResponse = {
   models?: Array<string>;
 };
 
+/** Claude Code's login on this machine: on or off, and what its CLI says of it (GET /settings/claude-login). */
+export type GetClaudeLoginResponse = {
+  state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+  place: "agentrun" | "machine";
+  command: string;
+  can_start: boolean;
+  refused?: string;
+  account?: {
+    method?: string;
+    email?: string;
+    organization?: string;
+    plan?: string;
+  };
+};
+
 /** This server's email account: its address, servers and who signs in, never its password (GET /settings/email). */
 export type GetEmailAccountResponse = {
   configured: boolean;
@@ -3123,6 +3139,21 @@ export type StartChatGPTSignInResponse = {
   expires_at: string;
 };
 
+/** Start the Claude Code CLI's own sign-in on this machine (POST /settings/claude-login/login). */
+export type StartClaudeLoginResponse = {
+  state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+  place: "agentrun" | "machine";
+  command: string;
+  can_start: boolean;
+  refused?: string;
+  account?: {
+    method?: string;
+    email?: string;
+    organization?: string;
+    plan?: string;
+  };
+};
+
 /** Start signing in to an MCP server with OAuth: the page the owner opens (POST /settings/mcp-servers/{name}/oauth/start). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
 export type StartMcpOAuthBody = {
   url: string;
@@ -3187,6 +3218,40 @@ export type TestWorkspaceArchilResponse = {
 } | {
   ok: false;
   why: string;
+};
+
+/** Turn off Claude Code's login on this machine (DELETE /settings/claude-login). */
+export type TurnOffClaudeLoginResponse = {
+  state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+  place: "agentrun" | "machine";
+  command: string;
+  can_start: boolean;
+  refused?: string;
+  account?: {
+    method?: string;
+    email?: string;
+    organization?: string;
+    plan?: string;
+  };
+};
+
+/** Turn on Claude Code's login on this machine for claude-agent's runs (PUT /settings/claude-login). */
+export type TurnOnClaudeLoginBody = {
+  place?: "agentrun" | "machine";
+  only_me: true;
+};
+export type TurnOnClaudeLoginResponse = {
+  state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+  place: "agentrun" | "machine";
+  command: string;
+  can_start: boolean;
+  refused?: string;
+  account?: {
+    method?: string;
+    email?: string;
+    organization?: string;
+    plan?: string;
+  };
 };
 
 /** Forget a saved MCP server and its credential (DELETE /settings/mcp-servers/{name}). */
@@ -5729,6 +5794,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   finishChatGPTSignIn: {"method":"POST","path":"/settings/chatgpt/sign-in/finish","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getCalendar: {"method":"GET","path":"/settings/calendar","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getChatGPTSignIn: {"method":"GET","path":"/settings/chatgpt","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getClaudeLogin: {"method":"GET","path":"/settings/claude-login","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getEmailAccount: {"method":"GET","path":"/settings/email","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getGitHubConnection: {"method":"GET","path":"/integrations/github","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getWorkspaceArchil: {"method":"GET","path":"/workspace/archil","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5748,11 +5814,14 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   saveEmailAccount: {"method":"PUT","path":"/settings/email","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   signOutChatGPT: {"method":"DELETE","path":"/settings/chatgpt","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   startChatGPTSignIn: {"method":"POST","path":"/settings/chatgpt/sign-in","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  startClaudeLogin: {"method":"POST","path":"/settings/claude-login/login","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   startMcpOAuth: {"method":"POST","path":"/settings/mcp-servers/{name}/oauth/start","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["url","scopes.[]","client_id"],"tagged":false},
   testCalendar: {"method":"POST","path":"/settings/calendar/test","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   testComputer: {"method":"POST","path":"/computers/{provider}/test","pathParams":["provider"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   testEmailAccount: {"method":"POST","path":"/settings/email/test","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   testWorkspaceArchil: {"method":"POST","path":"/workspace/archil/test","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  turnOffClaudeLogin: {"method":"DELETE","path":"/settings/claude-login","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  turnOnClaudeLogin: {"method":"PUT","path":"/settings/claude-login","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteMcpServer: {"method":"DELETE","path":"/settings/mcp-servers/{name}","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getMcpServer: {"method":"GET","path":"/settings/mcp-servers/{name}","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listMcpServers: {"method":"GET","path":"/settings/mcp-servers","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5960,6 +6029,8 @@ export function resources(call: Call) {
       getCalendar: (options?: RequestOptions): Promise<GetCalendarResponse> => call("getCalendar", [], undefined, undefined, options),
       /** This server's ChatGPT sign-in: its state, who and which plan, never a token (GET /settings/chatgpt). */
       getChatGptsignIn: (options?: RequestOptions): Promise<GetChatGPTSignInResponse> => call("getChatGPTSignIn", [], undefined, undefined, options),
+      /** Claude Code's login on this machine: on or off, and what its CLI says of it (GET /settings/claude-login). */
+      getClaudeLogin: (options?: RequestOptions): Promise<GetClaudeLoginResponse> => call("getClaudeLogin", [], undefined, undefined, options),
       /** This server's email account: its address, servers and who signs in, never its password (GET /settings/email). */
       getEmailAccount: (options?: RequestOptions): Promise<GetEmailAccountResponse> => call("getEmailAccount", [], undefined, undefined, options),
       /** Whether a GitHub App is connected, and if so its id, slug and installations, never a secret (GET /integrations/github). */
@@ -5994,6 +6065,8 @@ export function resources(call: Call) {
       signOutChatGpt: (options?: RequestOptions): Promise<SignOutChatGPTResponse> => call("signOutChatGPT", [], undefined, undefined, options),
       /** Start signing in with ChatGPT: the link to open (POST /settings/chatgpt/sign-in). */
       startChatGptsignIn: (options?: RequestOptions): Promise<StartChatGPTSignInResponse> => call("startChatGPTSignIn", [], undefined, undefined, options),
+      /** Start the Claude Code CLI's own sign-in on this machine (POST /settings/claude-login/login). */
+      startClaudeLogin: (options?: RequestOptions): Promise<StartClaudeLoginResponse> => call("startClaudeLogin", [], undefined, undefined, options),
       /** Read the calendar and say what it holds (POST /settings/calendar/test). */
       testCalendar: (body?: TestCalendarBody, options?: RequestOptions): Promise<TestCalendarResponse> => call("testCalendar", [], body, undefined, options),
       /** Test a computer provider's account with its saved keys (POST /computers/{provider}/test). */
@@ -6002,6 +6075,10 @@ export function resources(call: Call) {
       testEmailAccount: (body?: TestEmailAccountBody, options?: RequestOptions): Promise<TestEmailAccountResponse> => call("testEmailAccount", [], body, undefined, options),
       /** Test the Archil account key at its region's control plane (POST /workspace/archil/test). */
       testWorkspaceArchil: (options?: RequestOptions): Promise<TestWorkspaceArchilResponse> => call("testWorkspaceArchil", [], undefined, undefined, options),
+      /** Turn off Claude Code's login on this machine (DELETE /settings/claude-login). */
+      turnOffClaudeLogin: (options?: RequestOptions): Promise<TurnOffClaudeLoginResponse> => call("turnOffClaudeLogin", [], undefined, undefined, options),
+      /** Turn on Claude Code's login on this machine for claude-agent's runs (PUT /settings/claude-login). */
+      turnOnClaudeLogin: (body: TurnOnClaudeLoginBody, options?: RequestOptions): Promise<TurnOnClaudeLoginResponse> => call("turnOnClaudeLogin", [], body, undefined, options),
     },
     mcpServers: {
       /** Forget a saved MCP server and its credential (DELETE /settings/mcp-servers/{name}). */

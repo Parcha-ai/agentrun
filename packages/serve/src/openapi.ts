@@ -290,6 +290,23 @@ const CHATGPT_SIGN_IN = {
     models: { type: "array", items: { type: "string" }, description: "With `signed_in`: the plan's models, read from OpenAI at the sign-in, each named `chatgpt/<model-id>` in a revision." },
   },
 };
+/** GET /settings/claude-login's answer (claude-login.ts ClaudeLoginView): what Claude Code's CLI says of its login, never
+ *  a token. */
+const CLAUDE_LOGIN = {
+  type: "object", additionalProperties: false, required: ["state", "place", "command", "can_start"],
+  properties: {
+    state: { enum: ["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"], description: "`off`: not turned on. `other_machine`: turned on for another machine than this server's. Else what the CLI says: `signed_in`, `signed_out`, `no_cli` (no Claude Code CLI here yet: claude-agent's first run installs the pinned one), `unknown` (it gave no answer)." },
+    place: { enum: ["agentrun", "machine"], description: "Where the login is: `agentrun`, AgentRun's own directory in its data (the default); `machine`, this machine's own Claude Code login (~/.claude), which the owner opts into." },
+    command: { type: "string", description: "The line that signs the CLI in at `place`, for a terminal on this machine." },
+    can_start: { type: "boolean", description: "Whether POST /settings/claude-login/login can start the CLI's sign-in here: the server is bound to loopback with no public address, so the browser it opens is on this machine." },
+    refused: { type: "string", description: "Why the mode can't be turned on here, in one line: more than one person can start runs on this server." },
+    account: {
+      type: "object", additionalProperties: false,
+      properties: { method: { type: "string" }, email: { type: "string" }, organization: { type: "string" }, plan: { type: "string" } },
+      description: "With `signed_in`: what the CLI's status says of the account (its sign-in method, email, organization and plan), for display.",
+    },
+  },
+};
 /** GET /settings/tool-keys's answer (tool-keys.ts): each key's fields by name and where each is set, never a value. */
 const TOOL_KEYS_VIEW = closed({
   keys: {
@@ -2394,6 +2411,43 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "chatgpt/1",
     },
   },
+  "/settings/claude-login": {
+    get: {
+      operationId: "getClaudeLogin", tags: ["local"], summary: "Claude Code's login on this machine: on or off, and what its CLI says of it",
+      description: "With the mode on, claude-agent runs on a person's own Claude plan through the Claude Code CLI on this server's machine: the CLI holds the login and calls Anthropic itself, and AgentRun only asks it `claude auth status`. Such runs cost no dollars here; the plan's own limits apply. 404 not_found, naming the operation, when the server's AGENTRUN_CLAUDE_CODE_LOGIN is `off`. The owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "200": json(CLAUDE_LOGIN, "The mode and its login."), ...errors(401, 403, 404, 429, 500) },
+      "x-agentrun-serve": "claudelogin/1",
+    },
+    put: {
+      operationId: "turnOnClaudeLogin", tags: ["local"], summary: "Turn on Claude Code's login on this machine for claude-agent's runs",
+      description: "Runs claude-agent on the login at `place` (default `agentrun`), on this machine's runner only. 403 forbidden in one line where more than one person can start runs (more than one API token, the API-only profile); 422 input_invalid without `only_me` true. A model a revision names on a gateway or OpenRouter still runs on its key. 404 not_found, naming the operation, when AGENTRUN_CLAUDE_CODE_LOGIN is `off`. A secret write: the owner's signed-in session alone (ownerSession).",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["only_me"], properties: { place: { enum: ["agentrun", "machine"], description: "Where the login is (see the answer's `place`)." }, only_me: { const: true, description: "The owner's word that they alone run agents on this server, since its runs would use their Claude plan." } } } } } },
+      responses: { "200": json(CLAUDE_LOGIN, "Turned on."), ...errors(401, 403, 404, 415, 422, 429, 500) },
+      "x-agentrun-serve": "claudelogin/1",
+    },
+    delete: {
+      operationId: "turnOffClaudeLogin", tags: ["local"], summary: "Turn off Claude Code's login on this machine",
+      description: "claude-agent runs on the model keys again. The login stays as the CLI keeps it: nothing here signs it out. 404 not_found, naming the operation, when AGENTRUN_CLAUDE_CODE_LOGIN is `off`. A secret write: the owner's signed-in session alone (ownerSession).",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "200": json(CLAUDE_LOGIN, "Turned off."), ...errors(401, 403, 404, 429, 500) },
+      "x-agentrun-serve": "claudelogin/1",
+    },
+  },
+  "/settings/claude-login/login": {
+    post: {
+      operationId: "startClaudeLogin", tags: ["local"], summary: "Start the Claude Code CLI's own sign-in on this machine",
+      description: "Runs the CLI's `auth login` at the login's place; the CLI opens a browser on this machine and keeps what it gets. Nothing of the sign-in passes through AgentRun. 403 forbidden where the browser would not be the person's (a server not on loopback, or with a public address): run the answer's `command` in a terminal there. 409 agent_not_runnable when the mode is off, was turned on for another machine, or no CLI is here yet. 404 not_found, naming the operation, when AGENTRUN_CLAUDE_CODE_LOGIN is `off`. A secret write: the owner's signed-in session alone (ownerSession).",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "200": json(CLAUDE_LOGIN, "The sign-in started."), ...errors(401, 403, 404, 409, 429, 500) },
+      "x-agentrun-serve": "claudelogin/1",
+    },
+  },
   "/auth/session": {
     get: {
       operationId: "getAuthSession", tags: ["local"], summary: "Whether this browser has accounts, is signed in, and may save a secret",
@@ -3063,12 +3117,13 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     learning_usd: { type: ["number", "null"], minimum: 0, description: "On the run read (GET /v2/runs/{run_id}) alone, where `usd` is the run's own spend, the job's: what learning spent for it, on the agent's own model route. Its look-back turn (a compile turn asked in it left out), its grades, its audit shadow's cost (the agent on its input with learning off), and its share of its workflow revision's learning spend: the compile turn that drafted that revision and its check's replay runs, spread over the first `compile_after` runs the revision serves (GET /agents/{agent_id}/learning/cost `bill.revisions`). A compile turn is never in the `usd` or `learning_usd` of the run whose session asked it: it is its revision's (a recompile's, its recompiled revision's), or, when every draft failed its checks, on no run (`bill.unattributed_usd`). A look-back that compiles nothing is this run's alone. 0 for a replay or shadow run, whose spend is on the runs it serves. As booked (float noise rounded off at 1e-12, as `usd` is); null while the run or its shadow is at work, or a part is unknown: never $0 for unknown.", "x-agentrun-serve": "allin/1" },
     all_in_usd: { type: ["number", "null"], minimum: 0, description: "On the run read alone: `usd` and `learning_usd` together, what the run cost its owner all in. 0 for a replay or shadow run. Over every run of an agent, these and the cost route's `bill.unattributed_usd` add up to its `bill.booked_usd`. Null when either is, or `usd` is only a bound (`upper_bound`).", "x-agentrun-serve": "allin/1" },
     plan: {
-      type: "object", additionalProperties: false, required: ["requests", "tokens"],
+      type: "object", additionalProperties: false, required: ["requests", "tokens", "on"],
       properties: {
-        requests: { type: "integer", minimum: 1, description: "How many of its model requests were billed to the ChatGPT plan." },
+        requests: { type: "integer", minimum: 1, description: "How many of its model requests were billed to the plan." },
         tokens: { type: "integer", minimum: 0, description: "The tokens those requests used: input, output and cache reads and writes." },
+        on: { enum: ["chatgpt", "claude_code"], description: "Which plan: `chatgpt`, the server's ChatGPT sign-in; `claude_code`, Claude Code's login on this machine (claude-agent, GET /settings/claude-login)." },
       },
-      description: "Set when the run made a model request on the server's ChatGPT plan (a `chatgpt/<id>` model). Those requests cost no dollars here: they are in neither `usd` nor `unpriced`, so a run whose only unpriced requests were on the plan has a known `usd`. The plan's own limits apply to them.",
+      description: "Set when the run made a model request on a person's plan: the server's ChatGPT plan (a `chatgpt/<id>` model), or their Claude plan through Claude Code's login on this machine. Those requests cost no dollars here: they are in neither `usd` nor `unpriced`, so a run whose only unpriced requests were on the plan has a known `usd`. The plan's own limits apply to them.",
       "x-agentrun-serve": "chatgpt/1",
     },
   },
