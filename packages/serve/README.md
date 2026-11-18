@@ -4004,7 +4004,8 @@ carries no cost at all, as from a provider that does not price the model. The te
   `GET /v2/capabilities` says `run_isolation: "uid"`.
 - A platform that strips the image's file capabilities, or starts it with `no-new-privileges` (Docker's
   `security_opt: no-new-privileges:true`, Kubernetes' `allowPrivilegeEscalation: false`), leaves the helper unable to
-  switch: the runner then refuses to claim, saying so and naming the setting. `AGENTRUN_RUN_USER=same` runs every run as
+  switch, or unable to start (a spawn `EPERM`): the runner then refuses to claim, saying so and naming the setting, and
+  stays up claiming nothing until it is stopped, so the container keeps running. `AGENTRUN_RUN_USER=same` runs every run as
   the runner's own user instead, still each in a process of its own, said on the runner's log at its start. Runners in
   containers of their own on one `/data` volume each take slots from an `AGENTRUN_RUN_SLOT_FIRST` of their own
   (`deploy/compose.yaml`: 0 and 128). A runner told to hold more runs (`--loops`, `AGENTRUN_MAX_RUNS`) than the slots
