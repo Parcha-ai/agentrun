@@ -2502,6 +2502,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return pinned && { monid: pinned.pin, warnings: pinned.warnings.map(({ tool, message }) => ({ field: `definition.tools[${tools.indexOf(tool)}]`, reason: PRICED_BY_USAGE, message })) };
   }
 
+  /** The tools an agentic definition that names none is given where it runs (`place`): in a box, the box's shell tools
+   *  (NEW_AGENT_TOOLS); elsewhere none named, the runner's own. One rule for a new agent (createAgentOf) and for an apply
+   *  with agent_id of a package that names none (applyWith), whose agent is where its fresh apply put it. */
+  const defaultToolsAt = (place: unknown): readonly string[] | undefined => (isObject(place) && place.mode === "sandbox" ? NEW_AGENT_TOOLS : undefined);
+
+  /** The definition an apply with agent_id writes onto agent `entry` from its package's `definition`: its id, name and
+   *  description are the agent's own, kept from its creation; a package that names no tools gets those its agent's place
+   *  gives one (defaultToolsAt: the shell tools in the box its fresh apply put it in), as a fresh apply would. */
+  const updateDefinition = (entry: AgentEntry, definition: Json): Json => {
+    const kept = Object.fromEntries(Object.entries(definition).filter(([key]) => key !== "name" && key !== "description"));
+    const current = (entry.revision?.body ?? {}) as { place?: unknown };
+    const tools = kept.tools === undefined && kept.workflow === undefined && kept.computer === undefined ? defaultToolsAt(kept.place ?? current.place) : undefined;
+    return tools ? { ...kept, tools: [...tools] } : kept;
+  };
+
   /** POST /agents' body made into its agent, as that route makes one, with what this host still lacks for it. A new agent
    *  that names no place is given this server's box (place.ts defaultPlaceOf), stamped on its revision, when it names no
    *  tools (it gets bash) or a tool that needs a shell; one whose tools need none, or that names a tool the box refuses
@@ -2511,11 +2526,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const definition = checkDefinitionBody(body, { harnesses });
     const named = Array.isArray(definition.definition.tools) ? definition.definition.tools : [];
     const place = fallbackPlace("agentic", definition.definition.tools === undefined ? NEW_AGENT_TOOLS : named);
+    const tools = defaultToolsAt(place);
     const entry = await agents.create(definition, async (revision) => {
       const saved = await saveable(revision);
       warnings = saved.warnings;
       return saved.stamp;
-    }, place.mode === "sandbox" ? { place, tools: NEW_AGENT_TOOLS } : undefined, template);
+    }, place.mode === "sandbox" && tools ? { place, tools } : undefined, template);
     return { entry, warnings };
   }
 
@@ -2648,12 +2664,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** The template applies with agent_id in flight on this server, by agent id: each one's turn settled (applyTemplate). */
   const applying = new Map<string, Promise<void>>();
 
+  /** A trigger write an update made on its agent's condition (TriggerOwn.onAgent) that found no such trigger there:
+   *  false, for one a PATCH moved to another agent (or a delete removed) meanwhile; any other failure as it is. */
+  const movedAway = (error: unknown): false => {
+    if (error instanceof ApiError && error.code === "not_found") return false;
+    throw error;
+  };
   /** applyTemplate's work, in its turn on the agent where it has agent_id. */
   async function applyWith(template: Package, body: Json) {
     const { parameters, grants: asked, servers: picks, model: override, choice, approvals, agentId } = applyBodyOf(template, body);
     // With agent_id, the apply writes a new revision of that agent (one this template made) in place of making another:
     // everything below checks the package as a fresh apply does, through the same code.
     const onto = agentId === undefined ? undefined : await templateAgentOf(agentId, template);
+    // An update's triggers are reconciled by name with the ones the agent has (below), read with the agent: each write to
+    // one is made only while it is still this agent's (TriggerOwn.onAgent), so one a PATCH moves away meanwhile is left.
+    const had = onto ? await store.triggers.list(onto.agent.id) : [];
     if (onto && options.templateApplyRead) await options.templateApplyRead(onto.agent.id);
     // A model choice's own keys are needed as the package's are: missing, the apply is refused and nothing is made.
     const missing = [...new Set([...template.secrets, ...(choice?.secrets ?? [])])].filter((name) => !secret(name, storedKeys));
@@ -2718,39 +2743,36 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (refusedTriggers.length) throw invalid(refusedTriggers);
     // POST /agents' and POST /triggers' own body limit: parameters filled in more than once can grow a package past it.
     for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
-    // An update's triggers are reconciled by name with the ones the agent has (below), read before its revision is written.
-    const had = onto ? await store.triggers.list(onto.agent.id) : [];
-    // The package's triggers by name, as this apply makes them (a feed it left empty is not made, so not kept either).
+    // The package's triggers by name, as this apply makes them (a feed it left empty is not made, so not listed either).
     const listed = new Set(made.triggers.flatMap((trigger, i) => (emptyFeeds.has(i) ? [] : [String(trigger.name).trim()])));
-    // The triggers to remove: each name the last apply recorded (its package's, and those it had still to remove) that
-    // this package no longer has, where the agent still has one by that name. Recorded on the revision before any is
-    // removed, so a removal that fails is done by the next apply, whose record no longer names one already gone. The edge:
-    // a trigger the owner made with the very name of a dropped one still pending is the package's, and is removed.
-    const recorded = new Set([...(onto?.template?.triggers ?? []), ...(onto?.template?.removing ?? [])]);
-    const removing = [...new Set(had.map((row) => row.name))].filter((name) => recorded.has(name) && !listed.has(name)).sort();
+    // The triggers to remove: each of the agent's that an apply of this package marked as its own (TriggerRow.templateId)
+    // and whose name the package no longer lists. A trigger the owner made, one a PATCH moved here from another agent (or
+    // away and back), and one made before the mark was kept carry none, and are left. One whose removal fails keeps its
+    // mark, so the next update removes it.
+    const removing = had.filter((row) => row.templateId === pkg.id && !listed.has(row.name));
     const hadByName = new Map(had.map((row) => [row.name, row]));
-    // A Composio trigger the update keeps by name is checked here, before the revision is written, as its PATCH will be:
-    // its server, event and config made its instance on Composio, so a change to one (a sealed key too) refuses the apply
-    // with nothing changed. A sealed value the package sends again as it is (filled in from a parameter, in the clear) is
-    // left out of the PATCH (ComposioTriggers.resent), so the trigger keeps it sealed. Neither the PATCH nor a refusal
-    // holds the value.
+    // A Composio trigger the update keeps by name whose fixed part is unchanged (its server, event and config, each sealed
+    // value the package sends again, filled in from a parameter in the clear, the same as the one sealed:
+    // ComposioTriggers.resent) is changed in place, its sealed values left out of the PATCH so it keeps them sealed. One
+    // whose fixed part changed (another key too) is made again, as one of another kind is (below): its instance on
+    // Composio was made from that part. Read before the revision is written; neither holds a sealed value.
     const resent = new Map<number, Source>();
+    const remade = new Set<number>();
     for (const [i, trigger] of made.triggers.entries()) {
       const was = emptyFeeds.has(i) ? undefined : hadByName.get(String(trigger.name).trim());
       if (!was || !isObject(trigger.source) || trigger.source.kind !== "composio" || !isObject(was.source) || was.source.kind !== "composio") continue;
       try {
         resent.set(i, composioTriggers.resent(was.source as Source, was.id, trigger.source as Source));
       } catch (error) {
-        if (!(error instanceof ApiError && error.code === "input_invalid" && error.extra.fields)) throw error;
-        const message = `The ${pkg.name} template's trigger ${was.name} is a Composio trigger, and this apply changes its server, event or config (a sealed key counts), which made its instance on Composio and can't change: nothing was changed. To change it, delete that trigger, then apply the template again with agent_id, which makes it anew.`;
-        throw invalid(error.extra.fields.map((f) => ({ ...f, field: `triggers.${i}.${f.field}`, message })));
+        if (!(error instanceof ApiError && error.code === "input_invalid")) throw error;
+        remade.add(i);
       }
     }
     // The agent keeps where it came from (the package on the revision the apply writes): the package's id, version and,
-    // imported, its SHA; a keyed digest of the parameters it was given (never the parameters: one may be a credential), its
-    // triggers' names and the ones it is removing, which a later apply reads.
+    // imported, its SHA; and a keyed digest of the parameters it was given (never the parameters: one may be a credential).
+    // Which triggers are the package's is on each trigger (its mark), not here.
     const digest = parametersDigest(sealKey, stable(parameters));
-    const origin: TemplatePackage = { id: pkg.id, version: pkg.version, sha: pkg.origin?.sha ?? null, parameters_digest: digest, triggers: made.triggers.map((trigger) => String(trigger.name).trim()), ...(removing.length ? { removing } : {}) };
+    const origin: TemplatePackage = { id: pkg.id, version: pkg.version, sha: pkg.origin?.sha ?? null, parameters_digest: digest };
     // A fresh apply of what already made a live agent here (the same package and parameters) still makes one, and says
     // which is there: an apply with its agent_id updates that one instead. Read before this apply's agent is made.
     const twins: InputIssue[] = onto ? [] : (await agents.list())
@@ -2760,15 +2782,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // agent's own, kept from its creation), but what the package owns and leaves out is gone (fromPackage); only onto the
     // revision it read, else 412 with nothing changed. A fresh apply makes the agent as POST /agents does.
     const { entry, warnings } = onto
-      ? await reviseAgentOf(onto, { ...made.agent, definition: Object.fromEntries(Object.entries(made.agent.definition as Json).filter(([key]) => key !== "name" && key !== "description")) }, { template: origin, fromPackage: true, ifCurrent: onto.revision?.id ?? null }).catch((error: unknown) => {
+      ? await reviseAgentOf(onto, { ...made.agent, definition: updateDefinition(onto, made.agent.definition as Json) }, { template: origin, fromPackage: true, ifCurrent: onto.revision?.id ?? null }).catch((error: unknown) => {
         if (error instanceof ApiError && error.code === "precondition_failed") throw new ApiError("precondition_failed", `The agent ${onto.agent.id} changed while this apply of the ${pkg.name} template read it (an edit, or another apply, wrote a revision): nothing was changed. Apply it with agent_id again to update the agent as it is now.`);
         throw error;
       })
       : await createAgentOf(made.agent, origin);
     // An update's triggers are reconciled by name with the ones the agent has: the package's trigger of a name the agent
     // has (of the same kind) is changed in place, keeping its id, a feed's seen items, a webhook's secret and whether the
-    // owner turned it off; a new name is made; one the package had last time and has no more is removed. A trigger the
-    // owner added to the agent is never the package's: only names its last apply recorded are removed (`removing`).
+    // owner turned it off; a new name is made; one the package marked and no longer lists is removed (`removing`). Each
+    // trigger the apply makes or keeps is marked as the package's; each write to one the agent had is made only while it
+    // is still the agent's: one a PATCH moved away meanwhile is neither changed nor removed, and its name is made anew.
     const ids: string[] = [];
     // The triggers this apply made (never one it changed in place): what a refusal's undo removes.
     const madeNow: string[] = [];
@@ -2783,18 +2806,26 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       for (const [i, trigger] of made.triggers.entries()) {
         if (emptyFeeds.has(i)) continue;
         const aimed: Json = { ...trigger, target: { ...(trigger.target as Json), agent_id: entry.agent.id } };
-        const was = hadByName.get(String(trigger.name).trim());
+        let was = hadByName.get(String(trigger.name).trim());
+        const own = { templateId: pkg.id, onAgent: entry.agent.id };
         try {
-          if (was && isObject(trigger.source) && isObject(was.source) && was.source.kind === trigger.source.kind) {
+          if (was && isObject(trigger.source) && isObject(was.source) && was.source.kind === trigger.source.kind && !remade.has(i)) {
             const { enabled: _owners, ...patch } = aimed;
             const source = resent.get(i);
-            await triggers.update(was.id, source ? { ...patch, source } : patch);
-            ids.push(was.id);
-            continue;
+            if (await triggers.update(was.id, source ? { ...patch, source } : patch, own).then(() => true, movedAway)) {
+              ids.push(was.id);
+              continue;
+            }
+            was = undefined;
           }
-          // Of another kind now: a trigger's source kind is fixed, so the old one goes and the new one is made.
-          if (was) await triggers.remove(was.id);
-          const { id: madeId, secret } = await triggers.create(aimed);
+          // Of another kind now (a trigger's source kind is fixed), or a Composio one whose fixed part changed: the old one
+          // goes, then the new one is made, off where the owner turned the old one off. The old one's instance on Composio
+          // goes first: one Composio did not delete leaves the new one unmade, so two instances never watch, and the
+          // apply fails with its revision standing, as a refused trigger's does.
+          const left = was ? await triggers.remove(was.id, own).catch(movedAway) : false;
+          if (left === false) was = undefined;
+          else if (isObject(left) && isObject(left.composio) && left.composio.done === false) throw new ApiError("upstream_failed", `The ${pkg.name} template's trigger ${String(trigger.name).trim()} changed, so its old Composio trigger instance must go before the new one is made, and Composio didn't delete it: the new one was not made. ${String(left.composio.note ?? "")} Then apply again.`.trim());
+          const { id: madeId, secret } = await triggers.create(was && !was.enabled ? { ...aimed, enabled: false } : aimed, { templateId: pkg.id });
           ids.push(madeId);
           madeNow.push(madeId);
           if (secret) secrets.push({ trigger_id: madeId, secret });
@@ -2807,9 +2838,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           throw error;
         }
       }
-      // Each trigger the package had last time, or had still to remove, and has no more.
-      const dropped = new Set(removing);
-      for (const row of had) if (dropped.has(row.name)) await triggers.remove(row.id);
+      // Each trigger the package marked and no longer lists, while it is still the agent's.
+      for (const row of removing) await triggers.remove(row.id, { onAgent: entry.agent.id }).catch(movedAway);
     } catch (error) {
       // An update's revision and the triggers it changed stand; what it made is removed. A fresh apply is undone whole.
       for (const id of madeNow.reverse()) {

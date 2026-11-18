@@ -346,7 +346,7 @@ export class Triggers {
     return { firings: (await this.store.triggers.firings(id)).map(firingView) };
   }
 
-  async create(body: Json) {
+  async create(body: Json, own: TriggerOwn = {}) {
     const now = this.clock.now();
     const { issues, source, target, settings } = readBody(this.adapters, body, now);
     // Checked as its runs are given it: the input, then the line saying what fired it (a name the trigger may yet take).
@@ -365,7 +365,7 @@ export class Triggers {
       try {
         // Its secrets are kept before the trigger is: one whose secret cannot be kept makes none.
         const minted = await this.mint(kept, id);
-        const row = await this.store.triggers.create({ id, agentId, name, enabled, source: kept, target, nextAt: enabled ? nextAfter(this.adapter(kept), kept, now) : null, catchupWindowS: settings.catchup_window_s ?? CATCHUP_WINDOW_S, ...(typeof settings.max_active_runs === "number" ? { maxActiveRuns: settings.max_active_runs } : {}) }, this.scopesOf(kept));
+        const row = await this.store.triggers.create({ id, agentId, name, enabled, source: kept, target, nextAt: enabled ? nextAfter(this.adapter(kept), kept, now) : null, catchupWindowS: settings.catchup_window_s ?? CATCHUP_WINDOW_S, ...(typeof settings.max_active_runs === "number" ? { maxActiveRuns: settings.max_active_runs } : {}), ...(own.templateId !== undefined ? { templateId: own.templateId } : {}) }, this.scopesOf(kept));
         return { row, minted };
       } catch (error) {
         throw (await this.scopeTaken(error, kept, id)) ?? (await this.archivedRefusal(error)) ?? nameTaken(error, name);
@@ -515,20 +515,20 @@ export class Triggers {
   /** PATCH: any of name, enabled, source, target, catchup_window_s and max_active_runs. Enabled again, or its source changed, a trigger goes on from now: a
    *  paused range is skipped, never caught up. Only the fields named change, applied to the trigger as it stands once
    *  the target's check is done: an edit made meanwhile keeps its own. */
-  async update(id: string, body: Json) {
+  async update(id: string, body: Json, own: TriggerOwn = {}) {
     // A source is written only on the row it was checked against (its updatedAt): another write meanwhile (the
     // after-start seal's, a poll's next time) checks it again on the row as it is then, so a source read before a seal
     // never writes the clear value back over it.
     for (let tries = 1; ; tries++) {
-      const done = await this.updateOnce(id, body, tries < SOURCE_EDIT_TRIES);
+      const done = await this.updateOnce(id, body, tries < SOURCE_EDIT_TRIES, own);
       if (done) return done;
     }
   }
 
   /** One try of `update`: undefined when its source write was refused because the trigger changed since it was read and
    *  `retry` (try again); refused on the last try, precondition_failed. */
-  private async updateOnce(id: string, body: Json, retry: boolean) {
-    const was = await this.need(id);
+  private async updateOnce(id: string, body: Json, retry: boolean, own: TriggerOwn) {
+    const was = await this.need(id, own.onAgent);
     const issues = unknownFields(body, WRITABLE);
     let source = body.source === undefined ? undefined : sourceOf(this.adapters, body.source, this.clock.now(), issues);
     const target = body.target === undefined ? undefined : targetOf(body.target, issues);
@@ -541,7 +541,7 @@ export class Triggers {
     if (body.enabled !== undefined && typeof body.enabled !== "boolean") issues.push({ field: "enabled", reason: "wrong_type", message: "enabled is true or false" });
     if (target) issues.push(...(await this.deps.targetIssues(this.given(typeof body.name === "string" ? body.name.trim() : was.name, source ?? was.source, target, this.clock.now()))));
     if (issues.length || (body.source !== undefined && !source) || (body.target !== undefined && !target)) throw invalid(issues);
-    const trigger = await this.need(id);
+    const trigger = await this.need(id, own.onAgent);
     if (source && source.kind !== trigger.source.kind) throw invalid([{ field: "source.kind", reason: "not_allowed", message: "A trigger's source kind is fixed: make a new trigger for another." }]);
     // What its sender keeps of it stays as it was made (Composio's instance): only what reads it here changes.
     const upstream = this.deps.upstream?.(trigger.source.kind);
@@ -566,16 +566,20 @@ export class Triggers {
     // A polled source turned on again starts over: a poll still running from before is not its own any more.
     const polls = enabled && adapter.poll !== undefined && (!trigger.enabled || source !== undefined);
     if (polls && !trigger.enabled) this.restarts.set(id, (this.restarts.get(id) ?? 0) + 1);
+    // Moved to another agent, it is no package's (its mark cleared in the same write): a template update of the agent it
+    // left, or of the one it was moved back to, never takes it for one of its own. Kept in place by an apply, it is marked.
     const patch: TriggerPatch = {
-      ...(agentId !== trigger.agentId ? { agentId } : {}),
+      ...(agentId !== trigger.agentId ? { agentId, templateId: null } : own.templateId !== undefined ? { templateId: own.templateId } : {}),
       ...(typeof body.name === "string" ? { name: body.name.trim() } : {}), ...(source ? { source } : {}), ...(target ? { target } : {}),
       ...(settings.catchup_window_s !== undefined ? { catchupWindowS: settings.catchup_window_s } : {}),
       ...(settings.max_active_runs !== undefined ? { maxActiveRuns: settings.max_active_runs } : {}), ...again, enabled, nextAt: next,
     };
-    const row = await this.store.triggers.update(id, patch, enabled ? this.scopesOf(scopeSource) : [], source ? { ifUpdatedAt: trigger.updatedAt, ifSource: trigger.source } : undefined).catch(async (error: unknown) => {
+    const conditions = { ...(source ? { ifUpdatedAt: trigger.updatedAt, ifSource: trigger.source } : {}), ...(own.onAgent !== undefined ? { ifAgent: own.onAgent } : {}) };
+    const row = await this.store.triggers.update(id, patch, enabled ? this.scopesOf(scopeSource) : [], Object.keys(conditions).length ? conditions : undefined).catch(async (error: unknown) => {
       throw (await this.scopeTaken(error, scopeSource, trigger.id)) ?? (await this.archivedRefusal(error)) ?? nameTaken(error, patch.name ?? trigger.name);
     });
-    if (!row && source && (await this.store.triggers.get(id))) {
+    const still = !row && source ? await this.store.triggers.get(id) : undefined;
+    if (still && (own.onAgent === undefined || still.agentId === own.onAgent)) {
       if (retry) return undefined;
       throw new ApiError("precondition_failed", "the trigger kept changing while this edit was checked: read it again, then send the edit again");
     }
@@ -593,9 +597,11 @@ export class Triggers {
   }
 
   /** The trigger deleted, and what its sender keeps of it removed after (said, when it could not be: the delete holds). */
-  async remove(id: string): Promise<Json | undefined> {
-    const trigger = await this.need(id);
-    await this.store.triggers.remove(id);
+  async remove(id: string, own: Pick<TriggerOwn, "onAgent"> = {}): Promise<Json | undefined> {
+    const trigger = await this.need(id, own.onAgent);
+    // On its agent's condition, compared in the delete: one moved to another agent meanwhile is left, and its sender's
+    // part with it.
+    if ((await this.store.triggers.remove(id, own.onAgent !== undefined ? { ifAgent: own.onAgent } : undefined)) === false && own.onAgent !== undefined) throw new ApiError("not_found", `no trigger ${id} on the agent ${own.onAgent}`);
     if (this.adapter(trigger.source)?.settings?.scope === "trigger") await this.deps.settings(trigger.source.kind)?.remove(id);
     await this.arm();
     return this.deps.upstream?.(trigger.source.kind)?.removed(trigger.source, id);
@@ -1109,9 +1115,9 @@ export class Triggers {
     return (await this.store.triggers.all()).map(asTrigger);
   }
 
-  private async need(id: string): Promise<Trigger> {
+  private async need(id: string, onAgent?: string): Promise<Trigger> {
     const row = await this.store.triggers.get(id);
-    if (!row) throw new ApiError("not_found", `no trigger ${id}`);
+    if (!row || (onAgent !== undefined && row.agentId !== onAgent)) throw new ApiError("not_found", onAgent !== undefined && row ? `no trigger ${id} on the agent ${onAgent}` : `no trigger ${id}`);
     return asTrigger(row);
   }
 
@@ -1238,6 +1244,14 @@ export class Triggers {
 
 /** A trigger row as the engine reads it: its source and target of their types (create and PATCH check them). */
 const asTrigger = (row: TriggerRow): Trigger => row as Trigger;
+/** What a template apply alone gives a trigger write, never an API body: `templateId`, the package mark it makes the
+ *  trigger with or sets on one it keeps in place (TriggerRow.templateId); `onAgent`, the agent it read the trigger on, so
+ *  the write (an update, a removal) is made only while the trigger is still that agent's, compared in the store's
+ *  statement: one moved to another agent meanwhile is not_found, and nothing is written. */
+export interface TriggerOwn {
+  readonly templateId?: string;
+  readonly onAgent?: string;
+}
 /** Whether `adapter`'s triggers each get a secret it mints. */
 const mints = (adapter: TriggerAdapter) => adapter.settings?.scope === "trigger" && Object.values(adapter.settings.fields).some((f) => f.mint);
 /** A time a Date holds: past it (about the year 275760) a next time is none. */
