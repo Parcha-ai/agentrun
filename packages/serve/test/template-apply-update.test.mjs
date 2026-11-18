@@ -444,8 +444,8 @@ test("a trigger's package mark is the apply's to set: each trigger an apply make
   assert.equal(await markOf(second, now.weekly.id), made.template, "weekly, made, is the package's");
 });
 
-test("no client writes a trigger's package mark: POST /triggers and PATCH /triggers/{id} naming template_id are refused 422, and so is a package whose trigger names it", { timeout: 90_000 }, async (t) => {
-  const server = await served(t, { templates: await templates(t, V1, { extra: { claims: CLAIMS } }) });
+test("no client writes a trigger's package mark: POST /triggers and PATCH /triggers/{id} naming template_id are refused 422, and a package whose trigger names it is no valid package", { timeout: 90_000 }, async (t) => {
+  const server = await served(t);
   const made = await applied(server.api, "digest", { parameters: { topic: "cats" } });
   const posted = await server.api("POST", "/triggers", { ...ownerTrigger("mine", made.agent_id), template_id: made.template });
   assert.equal(posted.status, 422, `POST /triggers with template_id: ${JSON.stringify(posted.body)}`);
@@ -455,10 +455,9 @@ test("no client writes a trigger's package mark: POST /triggers and PATCH /trigg
   assert.equal(patched.status, 422, `PATCH with template_id: ${JSON.stringify(patched.body)}`);
   assert.match(JSON.stringify(patched.body), /template_id/);
   assert.equal(await markOf(server, daily.id), made.template, "the mark is as the apply set it");
-  const claims = await server.api("POST", "/templates/claims/apply", {});
-  assert.equal(claims.status, 422, `a package's trigger naming template_id is refused: ${JSON.stringify(claims.body)}`);
-  assert.match(JSON.stringify(claims.body), /template_id/);
-  assert.deepEqual((await server.api("GET", "/triggers")).body.triggers.filter((one) => one.name === "claimed"), [], "no trigger made from it");
+  // A package's trigger is checked as POST /triggers checks its body when the package is read: one naming template_id is
+  // refused there, so no apply of it is ever made.
+  await assert.rejects(serve(t, { templates: await templates(t, V1, { extra: { claims: CLAIMS } }), runner: false }), /claims is not a valid package:[^]*triggers\[0\]\.template_id: The body keeps no field template_id/);
 });
 
 test("a trigger moved to another agent while an update holds its read of the agent is neither changed nor removed by it: the package's own is made again on its agent", { timeout: 120_000 }, async (t) => {
