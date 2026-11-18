@@ -74,6 +74,21 @@ test('the section is the version\'s, as the fold left it: every line under its h
   assert.throws(() => changelogSection('# Changelog\n\n## Unreleased\n\n## 0.1.0-beta.44 (2026-11-18)\n\n## 0.1.0-beta.43 (2026-11-17)\n\n- x\n', '0.1.0-beta.44'), /section for 0\.1\.0-beta\.44 is empty/);
 });
 
+test('the section the notes and the post read carries no fragment marker: a marker after a line\'s words goes, a line of markers alone goes with them, and the rest is as written', () => {
+  const marked = changelog
+    .replace('- The Cloudflare relay no longer answers a create with a bare 500 when its container is slow to start.', '$& <!-- changes/relay-500.md -->')
+    .replace('    - Upgrading: delete `guard` from every learned workflow.', '$&\n    <!-- changes/learning-guards.md --> <!-- changes/learning-loop.md -->')
+    .replace('- Keep the same data folder and start command, and change only the image. Upgrade the server first, then the runners.', '$& <!-- changes/upgrade.md -->');
+  assert.notEqual(marked, changelog);
+  for (const version of ['0.1.0-beta.43', '0.1.0-beta.41']) {
+    const section = changelogSection(marked, version);
+    assert.doesNotMatch(section, /<!--|-->/, version);
+    assert.equal(section, changelogSection(changelog, version), `${version} reads as it did before the markers`);
+  }
+  assert.equal(highlights(changelogSection(marked, '0.1.0-beta.41')).lines[0], 'Keep the same data folder and start command, and change only the image. Upgrade the server first, then the runners.');
+  assert.doesNotMatch(releaseNotes({ section: changelogSection(marked, '0.1.0-beta.43'), install: '## Install\n\n- x', tag: 'v0.1.0-beta.43', repository: 'o/r' }), /<!--/);
+});
+
 test('the notes of a section the fold gave a breaking change show the Breaking heading with its bullet under it, in a release pull request\'s section and in a plain one', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'agentrun-release-notes-fold-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
@@ -97,6 +112,8 @@ test('the notes of a section the fold gave a breaking change show the Breaking h
   await fragments();
   await fold(dir, '0.1.0-beta.45', '2026-11-18', { previous: null });
   assert.equal(await notes('0.1.0-beta.45'), '**Breaking:**\n\n- Late break.\n\n**Changes:**\n\n- Late fix.\n\n## Install\n\n- x\n');
+  // The changelog holds each folded bullet's marker; the notes made from it hold none.
+  assert.equal((await readFile(join(dir, 'CHANGELOG.md'), 'utf8')).match(/^- Late fix\. <!-- changes\/late-fix\.md -->$/gm)?.length, 2, 'beta.41\'s and beta.45\'s');
 });
 
 test('the install lines name the npm version, the launcher\'s, the Python client\'s, and the image tag with its platforms', () => {
