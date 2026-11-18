@@ -8,7 +8,7 @@
 // sealed at the next start. An Idempotency-Key's record keeps a keyed digest of the body and the masked answer; one an
 // older server wrote is scrubbed at the start.
 import assert from "node:assert/strict";
-import { createHmac, randomBytes, randomInt } from "node:crypto";
+import { randomBytes, randomInt } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
@@ -341,8 +341,9 @@ test("the API document: a composio source's sealed_config is read-only, and conf
   }
 });
 
-/** A package whose composio trigger takes HubSpot's developer key from a parameter, under a fresh templates folder. */
-async function keyPackage(t, { noted = false, event = DEAL_STAGE } = {}) {
+/** A package whose composio trigger takes HubSpot's developer key from a parameter, under a fresh templates folder;
+ *  `dropped`, the package with that trigger gone from it. */
+async function keyPackage(t, { noted = false, event = DEAL_STAGE, dropped = false } = {}) {
   const root = join(await scratch(t), "templates");
   const dir = join(root, "deals");
   mkdirSync(dir, { recursive: true });
@@ -360,7 +361,7 @@ mcp:
     toolkit: hubspot
     tools: [HUBSPOT_LIST_DEALS]
     required: true
-triggers:
+${dropped ? "" : `triggers:
   - name: deal-stage
     source:
       kind: composio
@@ -370,7 +371,7 @@ triggers:
         app_id: "\${parameters.app_id}"
         developer_api_key: \${parameters.developer_api_key}
     target: { kind: start_run, input: { content: "Note the deal's new stage${noted ? " for \${parameters.team}" : ""}." } }
----
+`}---
 Note the deal's new stage with mcp:hubspot/HUBSPOT_LIST_DEALS.
 `);
   return root;
@@ -400,10 +401,10 @@ test("a template's composio trigger whose key comes from a parameter: the apply'
 const DEAL_CREATED = { ...DEAL_STAGE, slug: "HUBSPOT_DEAL_CREATED_TRIGGER", name: "Deal Created", description: "Triggered when a deal is made." };
 
 /** A server with the `deals` package (keyPackage: `noted`, its trigger's input names a `team` parameter; `event`, its
- *  trigger's event) and a saved HubSpot Composio server; every log line kept. Given `data` and `composio`, a second server
+ *  trigger's event; `dropped`, its trigger gone) and a saved HubSpot Composio server; every log line kept. Given `data` and `composio`, a second server
  *  on the first one's store and Composio (the package as it is now, its MCP server saved already). */
-async function dealsServer(t, { noted = false, event = DEAL_STAGE, data, composio, fail } = {}) {
-  const root = await keyPackage(t, { noted, event });
+async function dealsServer(t, { noted = false, event = DEAL_STAGE, dropped = false, data, composio, fail } = {}) {
+  const root = await keyPackage(t, { noted, event, dropped });
   if (!composio) {
     composio = await startFakeComposio({ toolkits: { hubspot: { no_auth: false, tools: TOOLS } }, authConfigs: { hubspot: [{ id: "ac_managed", is_composio_managed: true }] }, active: ["hubspot"], triggerTypes: { hubspot: [DEAL_STAGE, DEAL_CREATED] }, ...(fail ? { fail } : {}) });
     t.after(() => composio.close());
@@ -426,22 +427,6 @@ const standing = async (api, agentId) => ({
 const blanked = (text, keys) => keys.reduce((said, key) => said.replaceAll(key, "<key>"), text);
 /** Composio's trigger instances, by id, with the config each watches with. */
 const instancesOf = (composio) => [...composio.instances.values()].map((one) => ({ id: one.id, slug: one.trigger_name ?? one.slug, config: one.trigger_config }));
-/** A delivery of Composio's for `instance`, signed with the project subscription's secret as Composio signs (Standard
- *  Webhooks), POSTed to the hook `hook` names: its answer. */
-async function delivered(baseUrl, hook, instance, secret) {
-  const body = JSON.stringify({ id: `msg_${randomBytes(6).toString("hex")}`, type: "composio.trigger.message", metadata: { log_id: "log_1", trigger_slug: DEAL_STAGE.slug, trigger_id: instance, connected_account_id: "ca_fake", auth_config_id: "ac_managed", user_id: "agentrun-qa" }, data: { deal: "42", stage: "won" }, timestamp: new Date().toISOString() });
-  const id = `msg_${randomBytes(8).toString("hex")}`;
-  const at = Math.floor(Date.now() / 1000);
-  const signature = `v1,${createHmac("sha256", Buffer.from(secret, "utf8")).update(`${id}.${at}.${body}`).digest("base64")}`;
-  const res = await fetch(`${baseUrl}/hooks/composio/${hook}`, { method: "POST", headers: { "content-type": "application/json", "webhook-id": id, "webhook-timestamp": String(at), "webhook-signature": signature }, body });
-  const text = await res.text();
-  try {
-    return { status: res.status, body: JSON.parse(text) };
-  } catch {
-    return { status: res.status, body: text };
-  }
-}
-
 test("a template's composio trigger with a key from a parameter, applied again with agent_id and the same parameters: 200, the same trigger, its config still sealed, and no file holds the key", async (t) => {
   const { server, composio, lines } = await dealsServer(t);
   const key = fakeKey();
@@ -486,24 +471,21 @@ test("a template's composio trigger applied again with agent_id and another key 
   assert.deepEqual(filesUnder(server.data).filter((path) => [key, other].some((one) => readFileSync(path).includes(one))), [], "no file under the data directory holds either key in the clear");
 });
 
-test("a template's composio trigger whose old instance Composio fails to remove is not made again: the update fails with its revision standing, no second instance, and Composio's words, which quote the key, are said nowhere", async (t) => {
+test("a template's composio trigger whose old instance Composio fails to remove is not made again: the update fails with its revision standing, the old trigger and its sealed key as they were, no second instance, and Composio's words, which quote the key, are said nowhere", async (t) => {
   const key = fakeKey();
   const other = fakeKey();
   const { server, composio, lines } = await dealsServer(t, { fail: { method: "DELETE", path: (path) => path.includes("/trigger_instances/manage/"), status: 500, times: 1, body: { error: { message: `could not delete the instance watching with ${key}` } } } });
   const first = await server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key } });
   assert.equal(first.status, 201, JSON.stringify(first.body));
   const before = (await server.api("GET", `/agents/${first.body.agent_id}`)).body.revision;
-  const { hook } = (await server.api("GET", `/triggers/${first.body.trigger_ids[0]}`)).body.source;
-  const [{ id: oldInstance }] = instancesOf(composio);
   const failed = await server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: other }, agent_id: first.body.agent_id });
   assert.ok(failed.status >= 400, `Composio kept the old instance, so the update fails: ${failed.status} ${blanked(JSON.stringify(failed.body), [key, other])}`);
   assert.equal(composio.calls.filter((call) => call.method === "POST" && call.path.endsWith("/upsert") && call.body?.trigger_config?.developer_api_key === other).length, 0, "the new one was never asked for");
   assert.deepEqual(instancesOf(composio).map((one) => one.config), [{ app_id: "4242", developer_api_key: key }], "never two instances watching");
   assert.notEqual((await server.api("GET", `/agents/${first.body.agent_id}`)).body.revision, before, "the revision stands, as with a refused trigger");
-  // The old trigger is gone here; its instance, which Composio kept, may still send: a delivery for it starts no run.
-  assert.equal((await server.api("GET", `/triggers/${first.body.trigger_ids[0]}`)).status, 404, "the old trigger is removed here, its instance left at Composio");
-  const late = await delivered(server.baseUrl, hook, oldInstance, composio.subscriptions[0].secret);
-  assert.deepEqual([late.status, late.body], [200, { ok: "ignored" }], `a delivery for the old instance starts no run: ${JSON.stringify(late.body)}`);
+  // Composio kept its instance, so the old trigger is kept here as it was: the row, its sealed key and its package mark.
+  assert.equal((await server.api("GET", `/triggers/${first.body.trigger_ids[0]}`)).status, 200, "the old trigger stays here, as its instance stays at Composio");
+  assert.equal((await sealedRowsOf(server.store, first.body.trigger_ids[0])).length, 1, "with its sealed key");
   for (const [said, what] of [[JSON.stringify(failed.body), "the answer"], [lines.join("\n"), "the log"]]) assert.ok(![key, other].some((one) => said.includes(one)), `${what} holds no key`);
   assert.deepEqual(filesUnder(server.data).filter((path) => [key, other].some((one) => readFileSync(path).includes(one))), [], "no file holds either key");
 });
@@ -1327,3 +1309,50 @@ test("with Composio down, the start still serves, says once by a code that the s
   assert.equal((await again.api("GET", `/triggers/${id}`)).body.source.config.hub_value, value, "the trigger is left as it was, for the next start");
 });
 
+
+test("a template's composio trigger the owner turned off, whose old instance Composio fails to remove as another key makes it again: 424 with the old trigger as it was (off, marked, its key sealed); applied again once that instance is gone, the new one is off", async (t) => {
+  const key = fakeKey();
+  const other = fakeKey();
+  const { server, composio } = await dealsServer(t, { fail: { method: "DELETE", path: (path) => path.includes("/trigger_instances/manage/"), status: 500, times: 1 } });
+  const first = await server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key } });
+  assert.equal(first.status, 201, JSON.stringify(first.body));
+  const [old] = first.body.trigger_ids;
+  const [{ id: oldInstance }] = instancesOf(composio);
+  assert.equal((await server.api("PATCH", `/triggers/${old}`, { enabled: false })).status, 200, "the owner turns it off");
+  const failed = await server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: other }, agent_id: first.body.agent_id });
+  assert.equal(failed.status, 424, `Composio kept the old instance: ${failed.status} ${blanked(JSON.stringify(failed.body), [key, other])}`);
+  const kept = await server.api("GET", `/triggers/${old}`);
+  assert.deepEqual([kept.status, kept.body.enabled, (await server.store.triggers.get(old))?.templateId, (await sealedRowsOf(server.store, old)).length], [200, false, first.body.template, 1], "after the 424 the old trigger is as it was: there, off, the package's, its key sealed");
+  // The owner removes the instance at Composio, as the 424 says, and applies again: the old trigger's off carries.
+  composio.instances.delete(oldInstance);
+  const again = await server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: other }, agent_id: first.body.agent_id });
+  assert.equal(again.status, 200, `applied again: ${again.status} ${blanked(JSON.stringify(again.body), [key, other])}`);
+  const [made] = again.body.trigger_ids;
+  assert.notEqual(made, old, "made again");
+  assert.equal((await server.api("GET", `/triggers/${old}`)).status, 404, "the old one gone now");
+  assert.equal((await server.api("GET", `/triggers/${made}`)).body.enabled, false, "the owner's off stays off through the 424 and the retry");
+});
+
+test("a template's composio trigger the package drops, whose instance Composio fails to remove: the update is 200 with a warning naming the trigger and what is left at Composio; the trigger stays, marked, and the next update removes it", async (t) => {
+  const key = fakeKey();
+  const first = await dealsServer(t, { fail: { method: "DELETE", path: (path) => path.includes("/trigger_instances/manage/"), status: 500, times: 1 } });
+  const applied = await first.server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key } });
+  assert.equal(applied.status, 201, JSON.stringify(applied.body));
+  const [old] = applied.body.trigger_ids;
+  const [{ id: instance }] = instancesOf(first.composio);
+  await first.server.stop();
+  const second = await dealsServer(t, { dropped: true, data: first.server.data, composio: first.composio });
+  const dropped = await second.server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key }, agent_id: applied.body.agent_id });
+  assert.equal(dropped.status, 200, `${dropped.status} ${blanked(JSON.stringify(dropped.body), [key])}`);
+  assert.ok(!JSON.stringify(dropped.body).includes(key), "the answer holds no key");
+  const said = (dropped.body.warnings ?? []).filter((one) => one.message.includes(old));
+  assert.equal(said.length, 1, `the answer names the trigger whose Composio instance is left: ${JSON.stringify(dropped.body.warnings)}`);
+  assert.match(said[0].message, /deal-stage/);
+  assert.match(said[0].message, new RegExp(`Composio didn't delete the trigger instance ${instance}`));
+  assert.deepEqual([(await second.server.api("GET", `/triggers/${old}`)).status, (await second.server.store.triggers.get(old))?.templateId], [200, applied.body.template], "the trigger stays, the package's, for the next update to remove");
+  const again = await second.server.api("POST", "/templates/deals/apply", { parameters: { app_id: "4242", developer_api_key: key }, agent_id: applied.body.agent_id });
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.ok(!(again.body.warnings ?? []).some((one) => one.message.includes(old)), `nothing left to say: ${JSON.stringify(again.body.warnings)}`);
+  assert.equal((await second.server.api("GET", `/triggers/${old}`)).status, 404, "the next update removed it");
+  assert.deepEqual(instancesOf(first.composio), [], "and its instance at Composio");
+});

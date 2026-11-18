@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { agent, scratch, serve, withEnv } from "./support.mjs";
-import { fakeClock, firings } from "./trigger-support.mjs";
+import { fakeClock, firings, until } from "./trigger-support.mjs";
 import { feed, pull, T0 } from "./feed-support.mjs";
 
 /** The repository's open pull requests, by its parameters (every feed URL is answered by the test's fake feed). */
@@ -657,4 +657,32 @@ test("an update in place keeps an every_s schedule's grid when the package's sch
   assert.equal(after.daily.next_at, before.daily.next_at, "daily's next time as it was");
   assert.equal(after.slow.source.every_s, 7200, "slow is 0.2.0's schedule");
   assert.notEqual(after.slow.next_at, before.slow.next_at, "slow, its schedule changed, is on its new grid");
+});
+
+test("a feed trigger whose package gives no every_s, updated with only the agent's words changed, keeps its next time and is not polled again; its feed changed, it polls at once", { timeout: 120_000 }, async (t) => {
+  // new-pr with no every_s: the trigger keeps the default (900), which the package never says.
+  const WATCH = `  - name: new-pr
+    source: { kind: feed, urls: ["${PULLS}"] }
+    target: { kind: start_run, input: { content: "Say who opened it." } }`;
+  const acme = await feed(t, { format: "json-list", items: [pull(1, "One")] });
+  const other = await feed(t, { format: "json-list", items: [pull(2, "Two")] });
+  const route = (url) => (url.includes("/repos/acme/other/") ? other.url : acme.url);
+  const clock = fakeClock(T0);
+  const first = await serve(t, { templates: await templates(t, { version: "0.1.0", triggers: [WATCH] }), runner: false, triggerClock: clock, feedsAt: route });
+  const made = await applied(first.api, "digest", { parameters: { topic: "cats" } });
+  const before = (await triggersOf(first.api, made.agent_id))["new-pr"];
+  assert.equal(before.source.every_s, 900, "made with the default every_s");
+  await firings(first.api, before.id, 1);
+  const polled = acme.requests().length;
+  assert.ok(polled >= 1, "its first poll read the feed");
+  await first.stop();
+
+  const second = await serve(t, { data: first.data, templates: await templates(t, { version: "0.2.0", instructions: "Write a short piece about ${parameters.topic}.", triggers: [WATCH] }), runner: false, triggerClock: clock, feedsAt: route });
+  await updated(second.api, "digest", { parameters: { topic: "cats" }, agent_id: made.agent_id }, "0.2.0 changes the agent's words alone");
+  const kept = (await triggersOf(second.api, made.agent_id))["new-pr"];
+  assert.deepEqual([kept.id, kept.next_at, kept.source.every_s], [before.id, before.next_at, 900], "the same trigger, its next time and every_s as they were");
+  // Its feed changed (another repository): polled at once. Once that poll is read, the words-only update made none.
+  await updated(second.api, "digest", { parameters: { topic: "cats", repo: "other" }, agent_id: made.agent_id }, "the feed's repository changes");
+  assert.ok(await until(() => other.requests().length > 0), "the changed feed is polled at once");
+  assert.equal(acme.requests().length, polled, "the update that changed the agent's words alone polled no feed");
 });
