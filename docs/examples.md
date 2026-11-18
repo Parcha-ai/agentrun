@@ -54,6 +54,7 @@ After `npm ci --ignore-scripts` and `npm run build`:
 | --- | --- | --- |
 | [Support answers](support-quickstart.md) | `npm run demo:support` | Connect your search tool and agent; check an answer before returning it. |
 | [Typed research](authoring.md) | `npm run demo` | Reuse one research component across questions and stop when evidence is missing. |
+| [Read a public page with Browser Use](tutorials/monid-browser-use.md) | Start a run in the AgentRun console | Grant Browser Use through Monid and extract a heading from a public page. |
 | [Rank a list](../examples/rank-candidates.mjs) | `npm run demo:rank` | Score candidates against your brief, drop duplicates, cap each bucket, keep the top k; call it from another workflow. |
 | [Standalone TypeScript app](../examples/starter/README.md) | Follow the app's install steps, then `npm test` and `npm start` | Build outside this checkout with public package imports. |
 
