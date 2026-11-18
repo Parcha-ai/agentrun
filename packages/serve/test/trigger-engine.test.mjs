@@ -840,3 +840,37 @@ test("an edit of a polled source that lands while an old poll writes its cursor 
   assert.deepEqual([view.enabled, view.disabled, view.source.url], [true, null, "b"], "on, on the edited source: the old poll's stop was the old source's");
   assert.equal(view.last_check.message, "Watching b.");
 });
+
+test("a trigger's adapter settings go before its row, on a DELETE and on an agent delete's second half: a settings remove that fails leaves the row, so the next remove finds the trigger and removes both", async (t) => {
+  // The adapter's settings by scope (a trigger's id): what the server keeps sealed in trigger_settings.
+  const kept = new Map();
+  const gate = { fails: 0 };
+  const settings = {
+    mint: async (scope, field) => {
+      const value = `minted-${scope}-${field}-0123456789abcdef0123456789abcdef`;
+      kept.set(scope, { ...kept.get(scope), [field]: value });
+      return value;
+    },
+    set: async (scope, field, value) => void kept.set(scope, { ...kept.get(scope), [field]: value }),
+    get: (scope, field) => kept.get(scope)?.[field],
+    remove: async (scope) => {
+      if (gate.fails > 0) {
+        gate.fails -= 1;
+        throw new Error("the store did not answer");
+      }
+      kept.delete(scope);
+    },
+  };
+  const { store, triggers } = await engine(t, { settings: () => settings });
+  await run9(store);
+  for (const [how, remove] of [["DELETE /triggers/{id}", (id) => triggers.remove(id)], ["an agent delete's removeHere", (id) => triggers.removeHere(id)]]) {
+    const hook = await triggers.create({ name: `inbox ${how}`, source: { kind: "webhook" }, target: toRun9 });
+    assert.ok(kept.has(hook.id), `${how}: its signing secret is kept in its settings`);
+    gate.fails = 1;
+    await assert.rejects(remove(hook.id), /did not answer/);
+    assert.ok(await store.triggers.get(hook.id), `${how}: the row is kept while its settings are, so the next remove finds them`);
+    await remove(hook.id);
+    assert.equal(kept.has(hook.id), false, `${how}: its settings are gone`);
+    assert.equal(await store.triggers.get(hook.id), undefined, `${how}: and its row`);
+  }
+});

@@ -196,7 +196,7 @@ export async function handedSignInReadsBack(store: Pick<Store, "signIns">, sealK
     const pointer = open(sealKey, run.agentId, row.provider, row.pointerSealed);
     if (pointer !== undefined) known.add(pointerHash(pointer));
   }
-  for (const provider of ["browserbase", "kernel"] as const) {
+  for (const provider of VENDORS) {
     for (const tomb of await store.signIns.tombstones(run.agentId, provider)) {
       const pointer = open(sealKey, run.agentId, provider, tomb.pointerSealed);
       if (pointer !== undefined) known.add(pointerHash(pointer));
@@ -291,6 +291,8 @@ const settleFor = (provider: string): number => (provider === "browserbase" ? BR
 
 /** A browser the server keeps a sign-in for; a local Chrome keeps none. */
 export type Vendor = "browserbase" | "kernel";
+/** Every vendor a sign-in is kept at, for a walk over an agent's tombstones. */
+const VENDORS: readonly Vendor[] = ["browserbase", "kernel"];
 /** A saved sign-in as GET /agents/{id} shows it (the v2 SignIn), never its pointer: its key, provider, state, holder and
  *  verified_at, and its one secret's metadata under `secret` (sign-ins-secrets.ts signInSecretMeta). */
 export type SignInView = { key: string; provider: Vendor; state: "ready" | "held" | "unreadable"; held_by: string | null; verified_at: string | null; secret: SecretMeta };
@@ -388,5 +390,33 @@ export function signInsOverStore(store: SignInsStore, sealKey: Buffer, vendors: 
     view: (agentId: string) => signInViews(store, sealKey, agentId),
     ...signInReads(store, sealKey),
     forget: (agentId: string, key: string) => forgetSignInView(store, sealKey, vendors, agentId, key),
+    /** Every saved sign-in of a deleted agent (agent-delete.ts), once no run of it is going, forgotten here and its object
+     *  deleted at the vendor. Each live sign-in moves to a tombstone first (forgetSignIn's hold check; one forgotten
+     *  meanwhile is passed by), and then every tombstone of the agent's, which stays until the agent's row goes, is
+     *  deleted at its vendor (a 404 there is gone already). So a vendor delete that failed, or a stop after the move, is
+     *  done again by the next call. Throws `unavailable` naming each vendor that did not delete, the tombstones kept. A
+     *  tombstone whose pointer does not open under this server's seal key is passed by: no call of this server's can
+     *  delete its object. */
+    forgetAll: async (agentId: string): Promise<void> => {
+      for (const row of await store.signIns.list(agentId)) {
+        checkParts(agentId, row.provider);
+        const pointer = open(sealKey, agentId, row.provider, row.pointerSealed);
+        try {
+          await store.signIns.forget(agentId, row.provider, pointer === undefined ? { heldUnreadable: true } : { hash: pointerHash(pointer) });
+        } catch (error) {
+          if (!(error instanceof SignInMissing)) throw error;
+        }
+      }
+      const failed: string[] = [];
+      for (const provider of VENDORS) {
+        for (const tomb of await store.signIns.tombstones(agentId, provider)) {
+          const pointer = open(sealKey, agentId, provider, tomb.pointerSealed);
+          if (pointer === undefined) continue;
+          const error = await vendors.remove(provider, pointer).then(() => undefined, (e: Error) => e);
+          if (error) failed.push(`${provider} (${error.message})`);
+        }
+      }
+      if (failed.length) throw new ApiError("unavailable", `The agent ${agentId}'s saved sign-in${failed.length === 1 ? " is" : "s are"} not deleted at ${failed.join(", ")} yet.`, { retry_after_ms: 5_000 });
+    },
   };
 }
