@@ -509,7 +509,7 @@ into the console.
 
 **Self-host on Railway.**
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/agentrun)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/agentrun-1)
 
 The button deploys the published template: the image, a volume at `/data`, a domain, and the token and seal key made
 for you. About $5 a month on Railway's Hobby plan, which includes $5 of usage; agents get no shell. When it's live, open

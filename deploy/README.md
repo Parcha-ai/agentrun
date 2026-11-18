@@ -74,7 +74,7 @@ Hobby plan is $5 a month and includes $5 of usage. Use Hobby or above, because t
 Claude Code and Codex (about 1 GB, installed onto the volume on first use).
 
 <!-- railway-button: publish-and-walk.sh prints this line's replacement once the template is published -->
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/agentrun?utm_medium=integration&utm_source=button&utm_campaign=agentrun)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/agentrun-1?utm_medium=integration&utm_source=button&utm_campaign=agentrun)
 
 Once you click, Railway shows the service's variables, all filled in: the token and the seal key are made for you, and
 there's nothing to type. Railway pulls the image, mounts a volume at `/data` and gives the service an `up.railway.app` domain.
