@@ -24,7 +24,7 @@ import { STEADY_LEASE } from "./runner-support.mjs";
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { computerRoute, computerViewOf } = await import("../dist/computer-routes.js");
 const { computerHoldOf, holdWords } = await import("../dist/computer-commands.js");
-const { onComputerHold } = await import("../dist/runner/computer-journal.js");
+const { heardComputerHold, onComputerHold } = await import("../dist/runner/computer-journal.js");
 const { computerHold, heldHands } = await import("../dist/workspace/computer-hold.js");
 const { browserHandBack, handBackTarget } = await import("../dist/browser-commands.js");
 const { runEntries, runTimeline } = await import("../dist/store-reads/journal.js");
@@ -430,6 +430,26 @@ test("the runner's change signal (onComputerHold): a take-over row, then a hand-
   await world.route("handBackRunComputer");
   await world.ended();
   assert.equal(seen.length, 3);
+});
+
+test("a change a run's own process committed (Held.computerHold) is signalled on its runner as data: its state, end and cut words; anything else is dropped", () => {
+  const seen = [];
+  const off = onComputerHold("run-9", (event) => seen.push(event));
+  const cut = (text) => text.replaceAll("not-a-secret", "[cut]");
+  for (const change of [
+    { state: "person", message: "You took over the desktop not-a-secret" },
+    { state: "agent", ended: "given", message: "You handed the desktop back", extra: 1 },
+    { state: "driving" },
+    { state: "agent", ended: "lost" },
+    { state: "person", message: 7 },
+    null,
+    "person",
+  ]) heardComputerHold("run-9", change, cut);
+  off();
+  assert.deepEqual(seen, [
+    { state: "person", message: "You took over the desktop [cut]" },
+    { state: "agent", ended: "given", message: "You handed the desktop back" },
+  ]);
 });
 
 test("a browser ask answered through /computer/hand-back is the one answer the /browser path reads: the agent's hand-over entry says done, and /browser's different answer is 409", async (t) => {

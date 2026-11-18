@@ -9,6 +9,7 @@ import type { PlanReader } from "../chatgpt-plan.js";
 import type { Tier } from "../model.js";
 import type { RunSignIn } from "../sign-ins-store.js";
 import type { LiveHandover } from "../browser-live.js";
+import type { ComputerHoldChange } from "./computer-journal.js";
 import type { ApprovalPrice, ToolEffect } from "../tool-gate.js";
 import type { OpenedAccount } from "../email/account.js";
 import type { SavedCalendar } from "../calendar/address.js";
@@ -93,6 +94,9 @@ export interface Held {
   /** A browser session's viewer handed over, and taken back (browser-live.ts). */
   liveViewerPut(handover: LiveHandover): Promise<boolean>;
   liveViewerDrop(tag?: string): Promise<void>;
+  /** A change of the claim's computer's hold, committed to the run's journal here: signalled on the runner, whose live
+   *  view of the computer tells its open viewer (computer-journal.ts heardComputerHold). */
+  computerHold(change: ComputerHoldChange): Promise<void>;
   /** The MCP credentials run `from` was handed, sealed again for run `id`, a run this one starts (promotion.ts,
    *  audit.ts): none unless `from` is the claim's own run. */
   handOn(from: string, id: string): Promise<Uint8Array | undefined>;

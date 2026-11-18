@@ -75,8 +75,9 @@ export interface JournalEntry {
 
 type Data = Record<string, unknown>;
 const dataOf = (entry: JournalEntry): Data => (entry.data && typeof entry.data === "object" ? (entry.data as Data) : {});
-const STATES: readonly string[] = ["agent", "pending", "person"];
-const ENDS: readonly string[] = ["given", "answered", "idle", "away", "released"];
+/** Who may drive, and how a take may end, as a journal entry (or a run's own process) may say them. */
+export const STATES: readonly string[] = ["agent", "pending", "person"];
+export const ENDS: readonly string[] = ["given", "answered", "idle", "away", "released"];
 const OUTCOMES: readonly string[] = ["done", "cancelled", "expired"];
 
 /** The hold as the run's journal has it. */
