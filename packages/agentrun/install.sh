@@ -479,6 +479,8 @@ start_background() {
   say "AgentRun is running at $url"
   say "It runs in the background until this machine or container stops. $(shown_shim) stop stops it; its log is $log."
   [ -z "$public" ] || tailnet serve 7340 "$public" || exit 1
+  # With no owner yet, its setup page in the browser, the code filled in (or the link, where no browser opens).
+  "$shim" open --setup-only || true
 }
 
 # tailscale.mjs of the version installed, on its Node: `address PORT`, `serve PORT URL` or `off`.
@@ -535,9 +537,12 @@ vps_install() {
   vps_docker
   command -v openssl > /dev/null 2>&1 || vps_apt install openssl
 
-  if ! docker image inspect "$image" > /dev/null 2>&1; then
-    say "Pulling $image ..."
-    docker pull -q "$image" > /dev/null || fail "could not pull $image"
+  # Pulled on every run, so a tag that moves (an --image like :beta) is the registry's now, not what an earlier run left;
+  # a tag already current pulls nothing. An image no registry has (built here) is used as it is.
+  say "Pulling $image ..."
+  if ! docker pull -q "$image" > /dev/null; then
+    docker image inspect "$image" > /dev/null 2>&1 || fail "could not pull $image"
+    say "Could not pull $image, so the copy already on this server runs."
   fi
 
   # Where it is reached: every address with --public; else the tailnet's https address when Tailscale is logged in, or

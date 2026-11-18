@@ -208,17 +208,22 @@ if [ "$mode" = container ]; then
   bash -c "curl -fsS '$(base)/health'"
   echo
 
-  step "an older version, $older, which has no agentrun stop: the installer stops the AgentRun it started itself"
-  before=$(pid)
+  # The store the new server made can be a later schema than $older's server knows, and a server refuses a later store,
+  # as it should. So $older starts on a store of its own, the new one set aside, as on a machine that ran $older first;
+  # the next step has the installer stop it alone ($older has no agentrun stop) and upgrade that store.
+  step "an older version, $older, which has no agentrun stop, on a store of its own"
+  "$agentrun" stop
+  down 30
+  running "$first" && die "agentrun stop left pid $first running"
+  mkdir -p /tmp/newer-store
+  mv "$HOME"/.agentrun/store.sqlite* /tmp/newer-store/
   piped_install 300 /tmp/older.log --version "$older"
-  grep -q "Stopping the AgentRun started in the background before (pid $first)" /tmp/older.log || die "the installer did not stop pid $first"
-  healthy 10 "$before"
-  running "$first" && die "the AgentRun started first (pid $first) still runs beside $older"
+  healthy 10
   second=$(cat "$pidfile")
   [ "$second" != "$first" ] || die "the pid file still names $first"
   grep -qF "/lib/$older/" "$agentrun" || die "agentrun does not run $older: $(tail -n 1 "$agentrun")"
 
-  step "the installer again: stops the AgentRun $older runs, and starts the new install"
+  step "the installer again: stops the AgentRun $older runs itself, and starts the new install on $older's store"
   before=$(pid)
   piped_install 300 /tmp/again.log "$@"
   grep -q "Stopping the AgentRun started in the background before (pid $second)" /tmp/again.log || die "the installer did not stop pid $second"

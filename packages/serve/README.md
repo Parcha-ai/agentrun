@@ -81,7 +81,7 @@ An edit is a new revision: `PUT $AGENTRUN_BASE_URL/agents/calc/definition` with
 | `--data DIR` | `~/.local/share/agentrun/agents` | The agent store (`DIR/store.sqlite`) and its runs (`DIR/disk/agents/<agent>/runs/<id>/`). The token is `DIR/.token`, mode 0600, made once and kept, unless `AGENTRUN_TOKEN` gives it: then a `DIR/.token` from an earlier start is removed. |
 | `--listen ADDR` | `127.0.0.1` | The address to listen on. On any other, every `Host` name is served and the token is the only lock: put TLS in front of it. |
 | `--port N` | the first free port from `7340` | The port. `0` is any free port. |
-| `--open` | off | Open the console in this machine's browser once the server listens; not in CI, nor on Linux with no display. |
+| `--open` | off | Open the console in this machine's browser once the server listens; not in CI, nor on Linux with no display. While the server has no owner it opens the setup page instead, with the setup code filled in when setup takes one. |
 | `--faux MODULE` | none | Answer every model request from the module's default export (below). |
 | `--faux-browser MODULE` | none | With `--faux` only: the `browser` tool's provider and driver from the module's default export, a fake browser with no vendor and no key ([below](#the-faux-model)). The console's real-browser tests run on it. |
 | `--allow-host NAME` | none | Another `Host` name to accept on a loopback address, on any port. Repeat it. |
@@ -748,7 +748,10 @@ size its provider makes it, and is never given them. A value the Docker provider
 the provider's words.
 
 **A lost sandbox.** A run's sandbox can be lost mid-run: its vendor deleted it (from its own console or API), or no
-longer has it. The tool call that finds it lost fails in the provider's words. The run's next tool call starts a new
+longer has it. The tool call in flight when the loss is confirmed fails with code `gone`: `the computer <name> was lost
+while this call ran, and it was not run again: <the provider's words>. A new computer starts at the next call.` It is
+never sent again, to the new sandbox or anywhere, so a command that is not safe to repeat runs at most once. Whatever it
+wrote to the run's folder before the loss stays there. The run's next tool call starts a new
 sandbox under the same claim and runs there, also when the lost one was kept through a park. A start that fails is
 tried again at the next tool call, under the same request, and does not count. In Mode 2 the new sandbox mounts the run's folder again with a new mount
 credential, and the lost one's credential is removed. The run's folder is kept; what was on the lost sandbox outside it
@@ -2243,12 +2246,13 @@ the webhook was set is never sent.
 
 ```json
 { "type": "run.needs_input", "timestamp": "2026-11-01T12:00:00.000Z",
-  "data": { "run_id": "…", "agent_id": "triage", "status": "input_required", "title": "…",
+  "data": { "run_id": "…", "agent_id": "triage", "agent_name": "Triage", "status": "input_required", "title": "…",
             "url": "https://agents.example.com/#/runs/…", "pending": { "kind": "question" } } }
 ```
 
-A message is thin: ids, the status, the title and a link to the run on the page; never a tool's arguments, an output
-or an input, which the API reads (`GET /v2/runs/{id}`). The title is the run's own, as the store holds it: a trigger's
+A message is thin: ids, the agent's name, the status, the title and a link to the run on the page; never a tool's
+arguments, an output or an input, which the API reads (`GET /v2/runs/{id}`). `agent_name` is the agent's name as the
+message is built (a rename after it is not sent again), or its id when it has none. The title is the run's own, as the store holds it: a trigger's
 run is titled from its trigger, `<Source> <name>` and the event when its source names one ("Webhook reviews:
 pull_request opened"), never from its input; a workflow run's from its agent's name and its input; any other run's
 from its input. `pending.kind` is `question` (an `ask_person`),
@@ -2318,8 +2322,10 @@ one `missed` firing with their count, and the schedule goes on from now; the lat
 no older than the trigger's `catchup_window_s` (default an hour; 0, never), marked `catch_up`. A
 firing while the last run is active (working, or parked waiting on a person) is skipped with why, never queued,
 because a firing queued behind a parked run would wait as long as the person does. A firing whose run is refused is `failed`, and a webhook set on this server
-gets a `trigger.failed` message for it (`data: {trigger_id, name, firing_key, nominal_at, error, auto_paused}`, its
-`webhook-id` made from the firing's key, so a restart never sends it twice). Five failed firings in a row turn the
+gets a `trigger.failed` message for it (`data: {trigger_id, name, agent_id, agent_name, firing_key, nominal_at, error,
+auto_paused}`, its `webhook-id` made from the firing's key, so a restart never sends it twice). `agent_id` is the agent
+the trigger runs as, which every trigger has: a `start_run` target's agent, or the agent of the run a `message_run`
+target names; `agent_name` is that agent's name as the message is built, or its id when it has none. Five failed firings in a row turn the
 trigger off (`disabled: {reason: "auto_paused"}`); a firing that starts its run resets the count, and so does turning
 it on again. Run now (below) works on an auto-paused trigger too, and counts toward the streak like any firing: one that
 starts its run resets it, one that fails adds to it. A trigger whose cron line or zone no longer reads here (after an
@@ -2988,6 +2994,22 @@ OPENROUTER_API_KEY (401: User not found): set it where AgentRun starts, or save 
 harness, with the provider's first sentence only.
 Every request to OpenRouter carries AgentRun's app attribution (`HTTP-Referer: https://github.com/Parcha-ai/agentrun`, `X-OpenRouter-Title: AgentRun`), so a self-hosted server's usage on its own key counts toward AgentRun's listing on OpenRouter; `AGENTRUN_OPENROUTER_ATTRIBUTION=off` where AgentRun starts sends none.
 
+**Claude Code through a gateway.** Set `ANTHROPIC_BASE_URL` to a gateway that speaks Anthropic Messages, such as
+LiteLLM's `/v1/messages`, and `ANTHROPIC_API_KEY` to the key it wants, or any placeholder when it adds its own. No
+Anthropic key is needed, and capabilities show claude-agent ready. The base follows `AGENT_MODEL_BASE_URL`'s rules: https,
+or plain http to this machine only, with one trailing `/v1` dropped. The gateway must:
+
+- take `POST <base>/v1/messages` (Claude Code adds `?beta=true`) with the key in `x-api-key`, never as a bearer token, and
+  accept the `anthropic-version` and `anthropic-beta` headers the pinned CLI sends;
+- accept Anthropic's own model ids (`claude-haiku-5-5`, with dashes);
+- report each answer's usage: the run is booked from it at serve's catalog price for that id. When the gateway's
+  response carries a positive `x-litellm-response-cost` (LiteLLM's), that figure is booked instead, with the catalog's
+  kept beside it; a missing, malformed or zero figure (LiteLLM writes 0 on a streamed answer) leaves the catalog price.
+
+AgentRun asks Anthropic's token count only on `api.anthropic.com`, so through a gateway a run's `max_cost_usd` holds each
+request at a bound from its size instead. The same setting routes pi's Anthropic models (above). Contract test:
+`test/gateway-contract.test.mjs` ("claude-agent through ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY").
+
 `claude-agent` loads the revision's skills itself: the model is shown each as `agentrun:<name>`, loads one with the Skill
 tool and reads its other files with `read_skill_file`, and the system prompt holds the instructions alone. A skill the
 adapter does not take (a name that is not lowercase letters, digits and dashes, a `SKILL.md` without front matter giving
@@ -3274,6 +3296,11 @@ connection handoffs use the shared coding-agent selector and target this server'
 CLAUDE.md or AGENTS.md and its skill folders, and each session becomes a run you can read but not continue. Nothing leaves
 this machine, and the values of key-shaped environment variables are cut out of what it writes. Run it again and it takes
 only what it has not taken already. Sessions written in the last 10 minutes wait for the next import.
+
+A run's cost is what its source recorded (Claude Code's and pi's). A session its source did not price, such as a Codex
+session, keeps the model catalog's estimate for its tokens beside an unknown cost, and every place that shows a run's
+cost reads that estimate, as an estimate: the run (`cost.usd`, basis `estimate`), its usage row, `GET /stats` and its
+analytics, and `GET /usage`. A session on a model the catalog does not price stays unknown.
 
 - `--dry-run` lists what it would import and writes nothing.
 - `--from claude-code,codex,pi` picks the sources.
@@ -4004,7 +4031,11 @@ carries no cost at all, as from a provider that does not price the model. The te
   `GET /v2/capabilities` says `run_isolation: "uid"`.
 - A platform that strips the image's file capabilities, or starts it with `no-new-privileges` (Docker's
   `security_opt: no-new-privileges:true`, Kubernetes' `allowPrivilegeEscalation: false`), leaves the helper unable to
-  switch: the runner then refuses to claim, saying so and naming the setting. `AGENTRUN_RUN_USER=same` runs every run as
+  switch, or unable to start (a spawn `EPERM`): the runner then refuses to claim, saying so and naming the setting, and
+  stays up claiming nothing, with no heartbeat (`runner --check` says it is not alive), until it is stopped, so the
+  container keeps running. The server still serves its console and API (`GET /v2/health` reads the store and the disk,
+  not a runner, and `GET /v2/capabilities` says `run_isolation: "process"`), and its runs wait queued until the setting
+  is fixed and the server restarts. `AGENTRUN_RUN_USER=same` runs every run as
   the runner's own user instead, still each in a process of its own, said on the runner's log at its start. Runners in
   containers of their own on one `/data` volume each take slots from an `AGENTRUN_RUN_SLOT_FIRST` of their own
   (`deploy/compose.yaml`: 0 and 128). A runner told to hold more runs (`--loops`, `AGENTRUN_MAX_RUNS`) than the slots

@@ -18,7 +18,8 @@
 // `lapsed`), and the run's tools and model are told (run-tools.ts, the adapter loop's computer note).
 //
 // A sandbox the claim made can be lost mid-run (its vendor deleted it, or no longer has it): the call that finds it lost
-// fails, and the next call of the run's tools starts a new one in its place under this claim (lostAware), its folder
+// fails, saying so and that it was not run again (code gone, computer-lost.ts lostInCallWords), and is never sent to the
+// new one; the next call of the run's tools starts a new one in its place under this claim (lostAware), its folder
 // mounted again (Mode 2: a new mount credential, the lost one's removed), said on the run's timeline, up to `recreates`
 // times a claim; the loss after that ends the run, code computer_unavailable. A provider error that is not a loss (a 5xx,
 // a timeout) starts nothing. A desktop, a phone, a paired computer and the agent's own are never started again so.
@@ -42,7 +43,7 @@ import { isBrowserProvider, ownerFilter, releaseOlder, RUN_LABEL, runLabels } fr
 import { type RecordInput, type Recording, type RecordWatch, startRecording } from "../computer-record.js";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
 import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions, settingOptions } from "../computer-keys.js";
-import { LOST_RECREATES, lostEnd, lostRecreatedWords } from "../computer-lost.js";
+import { LOST_RECREATES, lostEnd, lostInCallWords, lostRecreatedWords } from "../computer-lost.js";
 import { inToolCall, stopRun } from "../paid-calls.js";
 import { getSealedKey } from "../server-keys.js";
 import type { Store } from "../store/index.js";
@@ -469,6 +470,10 @@ async function providerLaunch(
  *  package's hosted deletedSaid: "the computer <name> (<id>) was deleted: <vendor> no longer has it"). */
 const DELETED_SAID = /^the computer \S+ \(\S+\) was deleted: /;
 
+/** Whether `error` says the computer that answered it is gone (its connection ended, or its vendor deleted it), as a call
+ *  in flight on one another call found lost answers. */
+const lossSaid = (error: ComputerError): boolean => error.code === "gone" || (error.code === "not_found" && DELETED_SAID.test(error.message));
+
 /** What a sandbox the claim made needs to be started again once its provider lost it (lostAware). */
 type Renewal = {
   readonly provider: ComputerProvider;
@@ -488,14 +493,17 @@ type Renewal = {
 /**
  * `first`, a sandbox the claim made through its provider (or took back from the run's park), held so its loss is not the
  * run's: a call it answers deleted (the hosted connection's own words, DELETED_SAID), or gone with its provider
- * confirming it no longer has it (attach answers not_found or gone), marks it lost, and that call answers as it did. The
+ * confirming it no longer has it (attach answers not_found or gone), marks it lost, and that call fails code gone in
+ * lostInCallWords (the computer was lost while it ran, and it was not run again), never not_found: a caller that reads
+ * not_found as a program or file not there (the shell's fallback from bash to sh) would send it again, to the new one. The
  * next call made inside one of the run's tool calls starts a new one in its place (`renewal.remake`, one at a time
  * however many calls ask) and goes to it: the lost one let go, the run's Timeline told (`started`). Each new one is the
  * claim's, under its epoch: a later claim lets it go as it lets any of the run's older computers go. A start that fails
  * answers its words and counts for nothing: the next call tries again under the same request, so a retry finds what an
  * earlier try made. Gone with the provider still reporting the machine, or its read failing (a 5xx, a timeout), is not
- * lost: the call's own answer stands, and so does a read that comes back after another call already replaced the one it
- * asked about. A loss once `renewal.max` new ones were started ends the run at once (`renewal.stop`, computer-lost.ts
+ * lost: the call's own answer stands. A call in flight on one another call found lost (or already replaced) is cut by the
+ * same loss: an answer that says gone fails in lostInCallWords too, and any other answer stands; neither marks the new
+ * one lost. A loss once `renewal.max` new ones were started ends the run at once (`renewal.stop`, computer-lost.ts
  * lostEnd's words, code computer_unavailable), the call that found it answering those words, as every later call does.
  * A call outside a tool call (the run's end sweeping its scratch, the owner's computer channel) gets the loss's own
  * answer and starts nothing.
@@ -519,12 +527,16 @@ function lostAware(first: ProviderComputer, renewal: Renewal): ProviderComputer 
     const found = await renewal.provider.attach({ id: held.ref.id }).catch(() => undefined);
     return found !== undefined && !found.ok && (found.error.code === "not_found" || found.error.code === "gone");
   };
-  /** `why`, the current one's loss: past the bound, the run's end, at once. */
-  const lose = async (why: ComputerError): Promise<ComputerError> => {
+  /** The answer of a call in flight on `held` when it was lost, `why` its own: inside one of the run's tool calls, gone in
+   *  lostInCallWords; outside one (the run's end, the owner's computer channel), `why` itself, as every later call
+   *  outside one answers the loss. */
+  const cutBy = (held: ProviderComputer, why: ComputerError): ComputerError => (renewal.may() ? { code: "gone", message: lostInCallWords(held.ref.name, why.message) } : why);
+  /** `why`, the current one's (`held`'s) loss, as the call that found it answers: past the bound, the run's end, at once. */
+  const lose = async (held: ProviderComputer, why: ComputerError): Promise<ComputerError> => {
     if (made < renewal.max) {
       lost = why;
       letGo = false;
-      return why;
+      return cutBy(held, why);
     }
     spent = { code: "not_found", message: lostEnd(renewal.max, why.message) };
     await renewal.stop(spent.message);
@@ -564,11 +576,17 @@ function lostAware(first: ProviderComputer, renewal: Renewal): ProviderComputer 
       }
       const held = current;
       const answered = await held.client.call(method, params, options);
-      if (answered.ok || held !== current || lost || spent) return answered;
+      if (answered.ok || spent) return answered;
+      // Another call found `held` lost, or replaced it, while this one was in flight on it (a command's stdout and stderr
+      // read side by side): an answer that says gone is this call's cut by the same loss, never sent again either. Any
+      // other answer stands, and starts nothing.
+      if (held !== current || lost) return lossSaid(answered.error) ? { ok: false, error: cutBy(held, answered.error) } : answered;
       const gone = await goneFrom(held, answered.error);
-      // Read back after another call replaced it, or found it lost, or the run ended: this answer alone stands.
-      if (!gone || held !== current || lost || spent) return answered;
-      return { ok: false, error: await lose(answered.error) };
+      if (!gone) return answered;
+      // Read back after another call replaced it, or found it lost, or the run ended: cut by that loss, nothing more.
+      if (spent) return answered;
+      if (held !== current || lost) return { ok: false, error: cutBy(held, answered.error) };
+      return { ok: false, error: await lose(held, answered.error) };
     },
     close() {
       current.client.close();

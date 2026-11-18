@@ -13,11 +13,11 @@ import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { runMetricsOf, timelineOf } from "../dist/timeline/index.js";
-import { agentIdOf, candidatesOf, importCommand, MAX_RUN_BYTES, MAX_SESSION_BYTES, planImport, runImport } from "../dist/import.js";
+import { agentIdOf, candidatesOf, importCommand, importedInstructions, MAX_RUN_BYTES, MAX_SESSION_BYTES, planImport, runImport } from "../dist/import.js";
 import { ACTIVE_GAP_MS, readSession } from "../dist/import-sources.js";
 import { summaryLines } from "../dist/import-summary.js";
 import { openSqliteStore } from "../dist/store/index.js";
-import { listRuns } from "../dist/store-reads/runs.js";
+import { costOfRun, listRuns } from "../dist/store-reads/runs.js";
 import { runEntries } from "../dist/store-reads/journal.js";
 import { toolKeysOverStore } from "../dist/tool-keys-store.js";
 import { at as minute, claudeSession, claudeSubagent, codexSession, piSession, sessionId, writeSession } from "./fixtures/import-sessions.mjs";
@@ -123,7 +123,7 @@ test("each project is one agent with a revision per harness, its CLAUDE.md or AG
   assert.equal(claude.model, "anthropic/claude-sonnet-5");
   assert.match(claude.instructions, /^Keep the site fast\./);
   assert.equal(codex.harness, "codex");
-  assert.equal(codex.model, "openai/gpt-sol-6.1");
+  assert.equal(codex.model, undefined, "a model no catalog here lists is not pinned: the agent runs on the server's default");
   assert.equal(codex.instructions, "Run the tests before a commit.\n");
   assert.deepEqual(Object.keys(claude.skills).sort(), ["deploy/SKILL.md", "deploy/steps.md", "review/SKILL.md"]);
   // The latest session (Codex's) names the current revision.
@@ -262,7 +262,7 @@ test("a link, a binary file, an oversized SKILL.md and a folder with no SKILL.md
   assert.equal(why[join(h.notes, ".pi", "skills")], "a link: not followed", "a skill folder that is itself a link");
   const kept = (await agentOf(store, report.agents[0].id)).revisions[0].body.skills;
   assert.deepEqual(Object.keys(kept).sort(), ["deploy/SKILL.md", "deploy/steps.md", "review/SKILL.md"]);
-  assert.equal((await agentOf(store, report.agents[1].id)).revisions[0].body.instructions, "");
+  assert.equal((await agentOf(store, report.agents[1].id)).revisions[0].body.instructions, importedInstructions("field-notes", "pi"), "a linked AGENTS.md is not read: the agent gets the import's own instructions");
   for (const file of keptUnder(data)) assert.ok(!file[1].includes("OUTSIDE-MARKER"), "a link's target is never read");
 });
 
@@ -1322,8 +1322,9 @@ test("a run its source did not price gets the catalog's estimate at its own prov
   });
   const priced = [];
   for (const run of runs) {
-    const { costUsdEst, costBasis } = await storedMetrics(store, run.id);
-    priced.push([run.importedFrom.source, run.costUsd ?? null, costUsdEst ?? null, costBasis ?? null]);
+    // The stored cost (the row's column), never the estimate beside it: that is what a read shows (costOfRun).
+    const { costUsd, metrics: { costUsdEst, costBasis } } = await store.runs.get(run.id);
+    priced.push([run.importedFrom.source, costUsd, costUsdEst ?? null, costBasis ?? null]);
   }
   const codex = await listPrice("openai", "gpt-6.1-sol", { input: 300 + 100, cacheRead: 600 + 900, output: 40 + 25 });
   const claude = await listPrice("anthropic", "claude-sonnet-5", { input: 3 + 5, cacheRead: 1000 + 1300, cacheWrite: 200 + 100, output: 50 + 30 });
@@ -1338,6 +1339,65 @@ test("a run its source did not price gets the catalog's estimate at its own prov
     ["codex", null, null, null],
     ["pi", null, 0, "catalog"],
   ]);
+});
+
+test("an imported session its source did not price reads the catalog's estimate wherever its cost is read (the run, its usage row, the stats and analytics, the usage report), a recorded cost reads as recorded, and one with no estimate stays unknown", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "metered");
+  mkdirSync(project, { recursive: true });
+  // A Codex session on a model the catalog prices; one on a model it does not list; a Claude Code session its source priced.
+  codexSession(h.at, project, 71, { model: "gpt-6.1-sol" });
+  codexSession(h.at, project, 72);
+  claudeSession(h.at, project, 73);
+  const data = join(root, "agents");
+  const writer = await openData(data);
+  await runImport(writer, await planImport(options(h)), options(h));
+  await writer.close();
+  const store = await openData(data, "runner");
+  t.after(async () => await store.close());
+  const [estimated, unpriced, recorded] = (await store.runs.list({})).sort((a, b) => a.importedFrom.session.localeCompare(b.importedFrom.session));
+  const { costUsdEst } = estimated.metrics;
+  assert.ok(typeof costUsdEst === "number" && costUsdEst > 0, "the import kept the catalog's estimate");
+  assert.deepEqual([estimated.costUsd, unpriced.costUsd, recorded.costUsd], [null, null, 0.0421], "the stored cost is the source's, never the estimate");
+
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => server.close());
+  const api = client(server.baseUrl, server.token);
+  const costOf = async (id) => {
+    const { cost } = (await api("GET", `/runs/${id}`)).body;
+    return { usd: cost.usd, basis: cost.basis, ...(cost.so_far_usd !== undefined ? { so_far_usd: cost.so_far_usd } : {}) };
+  };
+  assert.deepEqual(await costOf(estimated.id), { usd: costUsdEst, basis: "estimate" }, "the catalog's estimate, read as an estimate");
+  assert.deepEqual(await costOf(recorded.id), { usd: 0.0421, basis: "estimate" });
+  assert.deepEqual(await costOf(unpriced.id), { usd: null, basis: "estimate" }, "no estimate: unknown, never 0");
+  const listed = (await api("GET", `/agents/${estimated.agentId}/runs`)).body.runs;
+  assert.deepEqual(Object.fromEntries(listed.map((r) => [r.run_id, r.cost.usd])), { [estimated.id]: costUsdEst, [unpriced.id]: null, [recorded.id]: 0.0421 }, "the list reads each run's cost as its read does");
+
+  // Each run's usage row says the cost its run reads.
+  const usageOf = async (id) => (await api("GET", `/runs/${id}/timeline`)).body.rows.findLast((r) => r.kind === "usage");
+  const [rowEstimated, rowUnpriced, rowRecorded] = [await usageOf(estimated.id), await usageOf(unpriced.id), await usageOf(recorded.id)];
+  assert.deepEqual([rowEstimated.usage.usd, rowEstimated.usage.so_far_usd, rowEstimated.usage.unpriced], [costUsdEst, undefined, undefined]);
+  // The catalog's estimate says it is one, as the run's own cost does ("est."); a recorded cost says none.
+  assert.match(rowEstimated.summary, new RegExp(`^Cost: \\$${costUsdEst.toFixed(4).replace(".", "\\.")} est\\. over \\d+ model requests?$`));
+  assert.deepEqual([rowRecorded.usage.usd, rowRecorded.usage.so_far_usd], [0.0421, undefined]);
+  assert.match(rowRecorded.summary, /^Cost: \$0\.0421 over \d+ model requests?$/, "a recorded cost reads exact, with no est.");
+  assert.deepEqual([rowUnpriced.usage.usd, rowUnpriced.usage.so_far_usd], [null, undefined]);
+  assert.match(rowUnpriced.summary, /^Cost: unknown over \d+ model requests?$/);
+
+  // The stats and analytics Mission Control reads: the estimate summed with the recorded cost, the unpriced run unknown.
+  const both = Math.round((costUsdEst + 0.0421) * 1e6) / 1e6;
+  const stats = (await api("GET", "/stats")).body;
+  assert.deepEqual(stats.cost, { usd: both, basis: "estimate", unknown_runs: 1 });
+  assert.deepEqual([stats.analytics.totals.cost_usd, stats.analytics.totals.unknown_cost_runs], [both, 1]);
+  const codex = stats.analytics.by_harness_effort.filter((g) => g.harness === "codex");
+  assert.deepEqual([codex.reduce((sum, g) => sum + (g.cost_usd ?? 0), 0), codex.reduce((sum, g) => sum + g.unknown_cost_runs, 0)], [costUsdEst, 1]);
+  assert.deepEqual(stats.analytics.by_source.map((g) => [g.source, g.cost_usd, g.unknown_cost_runs]).sort(), [["claude-code", 0.0421, 0], ["codex", costUsdEst, 1]]);
+  const usage = (await api("GET", "/usage?group_by=agent&from=2026-01-01T00:00:00Z&to=2027-01-01T00:00:00Z")).body;
+  assert.deepEqual([usage.total_usd, usage.unpriced_runs, usage.basis], [both, 1, "estimate"]);
+
+  // The one rule every reader goes through: a recorded cost wins over an estimate kept beside it, a recorded $0 included.
+  assert.deepEqual([{ costUsd: 0.5, metrics: { costUsdEst: 0.9 } }, { costUsd: 0, metrics: { costUsdEst: 0.9 } }, { costUsd: null, metrics: { costUsdEst: 0.9 } }, { costUsd: null, metrics: {} }, { costUsd: null, metrics: null }].map(costOfRun), [0.5, 0, 0.9, null, null]);
 });
 
 test("import ends with the summary of every session found, read again from the store once held; a dry run prints the same from what it would import; hours are local", { timeout: 60_000 }, async (t) => {
@@ -1382,6 +1442,39 @@ test("the summary says unknown where it has no data", () => {
     "Open http://127.0.0.1:7340/",
   ]);
   assert.deepEqual(summaryLines([], "http://127.0.0.1:7340").slice(0, 4), ["Found 0 sessions", "Imported into 0 agents (one per project)", "+ tokens unknown · agent time unknown", "+ Busiest hour: unknown · top tool: unknown"]);
+});
+
+test("an imported agent runs as imported: a project with no instructions file gets the import's own, and a coding app's own model (one no catalog lists) is not pinned, while a listed one is", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const [build, docs] = ["nightly-build", "docs-site"].map((name) => join(at, "code", name));
+  for (const dir of [build, docs]) mkdirSync(dir, { recursive: true });
+  // The Codex app's own model, which no key here reaches; and one OpenAI lists.
+  codexSession(at, build, 231, { model: "gpt-6.1-codex" });
+  codexSession(at, docs, 232, { model: "gpt-6.1-sol" });
+  const data = join(root, "agents");
+  const store = await openData(data);
+  t.after(async () => await store.close());
+  const env = { PATH: "/usr/bin" };
+  const opts = { home: at, env, all: true };
+  const report = await runImport(store, await planImport(opts), opts);
+  assert.deepEqual(report.modelsLeftOut, [{ cwd: build, source: "codex", model: "openai/gpt-6.1-codex" }], "the report names the model it did not pin, and only that one");
+  const current = async (cwd) => (await agentOf(store, agentIdOf(cwd))).revisions.find((r) => r.current).body;
+  const built = await current(build);
+  assert.equal(built.model, undefined);
+  assert.equal(built.instructions, importedInstructions("nightly-build", "codex"));
+  assert.equal(built.instructions, "You work on the project nightly-build. Your past runs are its Codex sessions, imported. Read the project's files before you change them, and say what you changed.");
+  assert.equal((await current(docs)).model, "openai/gpt-6.1-sol");
+  // What a run's start checks (runnable.ts), on a server with OpenRouter's key alone: nothing keeps either from running.
+  const { blockersOf } = await import("../dist/runnable.js");
+  for (const body of [built, await current(docs)]) {
+    const blockers = await blockersOf({ PATH: "/usr/bin", HOME: at, OPENROUTER_API_KEY: "fake-test-key" }, { kind: "agentic", ...body });
+    assert.deepEqual(blockers.map((b) => b.message), [], JSON.stringify(body));
+  }
+  // The CLI says which model it did not keep, for which project, in a fresh data directory.
+  const lines = [];
+  assert.equal(await importCommand(["--data", join(root, "again"), "--all"], "usage", { home: at, env, out: (line) => lines.push(line) }), 0);
+  assert.deepEqual(lines.filter((line) => line.startsWith("model not kept: ")), [`model not kept: ${build} (codex) ran on openai/gpt-6.1-codex, which no model catalog here lists; its agent runs on the server's default model until you pick one`]);
 });
 
 test("the CLI's own note is never the person's turn: a session holding only notes is passed over without --all, and a note before the first prompt is not the run's title", async (t) => {
@@ -1622,7 +1715,7 @@ async function measuredAndImported(t, write) {
   await runImport(store, await planImport(options(h)), options(h));
   const runs = [];
   for (const run of await rowsOf(store)) runs.push({ run, metrics: await storedMetrics(store, run.id) });
-  return { measured, found: plan.found.length, runs, imported: runs.reduce((n, { metrics: m }) => n + m.input + m.cacheRead + m.cacheWrite + m.output, 0) };
+  return { store, measured, found: plan.found.length, runs, imported: runs.reduce((n, { metrics: m }) => n + m.input + m.cacheRead + m.cacheWrite + m.output, 0) };
 }
 
 test("a Codex thread resumed in a new file of the same id is one run, in the project of its first file: each file's requests and its child's once, as the dry run counts them, whatever the files' names", async (t) => {
@@ -1834,7 +1927,7 @@ test("a subagent's failed request with zero tokens is a request of known zero to
 
 test("a moved Claude Code session whose copy adds work it could not price has an unknown cost and the catalog's estimate, never the original's total, in either folder order", async (t) => {
   for (const moved of ["-a-moved", "~z-moved"]) {
-    const { runs } = await measuredAndImported(t, (home, project) => {
+    const { store, runs } = await measuredAndImported(t, (home, project) => {
       const file = claudeSession(home, project, 203, { cost: 1 });
       const base = { sessionId: sessionId(203), cwd: project, isSidechain: false, userType: "external", version: "2.1.0" };
       writeSession(join(home, ".claude", "projects", moved, `${sessionId(203)}.jsonl`), [
@@ -1844,7 +1937,8 @@ test("a moved Claude Code session whose copy adds work it could not price has an
         { type: "cost-state", sessionId: sessionId(203), totalCostUSD: 1.25, hasUnknownModelCost: true, timestamp: minute(31) },
       ]);
     });
-    assert.deepEqual(runs.map(({ run, metrics }) => [run.costUsd ?? null, typeof metrics.costUsdEst, metrics.costBasis]), [[null, "number", "catalog"]], moved);
+    const stored = await Promise.all(runs.map(async ({ run }) => (await store.runs.get(run.id)).costUsd));
+    assert.deepEqual(runs.map(({ metrics }, i) => [stored[i], typeof metrics.costUsdEst, metrics.costBasis]), [[null, "number", "catalog"]], moved);
   }
 });
 

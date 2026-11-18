@@ -1,11 +1,12 @@
 import { agentHash } from "@/components/AgentPage";
-import { ArrowLeft, Blocks, CalendarClock, Copy, GitPullRequest, KeyRound, Pause, Pencil, Play, Plus, Rss, Trash2, Webhook, Zap } from "lucide-react";
+import { ArrowLeft, Blocks, CalendarClock, GitPullRequest, KeyRound, Pause, Pencil, Play, Plus, Rss, Trash2, Webhook, Zap } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { AcceptEditor, ConditionList, EVENT_HINTS, Said } from "@/components/AcceptEditor";
 import { ProblemCard } from "@/components/Problem";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
+import { CopyButton } from "@/components/ui/copy-button";
 import { Field as UiField, formColumnsClass, Input, Textarea } from "@/components/ui/field";
 import type { Agent } from "@/lib/agentForm";
 import { agentsByName } from "@/lib/agents";
@@ -593,24 +594,6 @@ function ScheduleForm({ v2, go, trigger, minEvery, now = Date.now }: FormProps &
         <Button type="button" size="lg" variant="ghost" onClick={() => go(trigger ? hashOf(trigger.id) : "#/triggers")}>Cancel</Button>
       </div>
     </form>
-  );
-}
-
-/** Writes `text` to the clipboard and says Copied beside it. The clipboard needs a secure page: with none, or a write
- *  the browser refuses, it says to select the text instead. */
-function CopyButton({ text, label }: { text: string; label: string }) {
-  const [said, setSaid] = useState<string | null>(null);
-  const manual = "The browser won't copy here. Select it and copy it.";
-  const copy = () => {
-    const clip = typeof navigator !== "undefined" ? navigator.clipboard : undefined;
-    if (!clip?.writeText) { setSaid(manual); return; }
-    clip.writeText(text).then(() => setSaid("Copied"), () => setSaid(manual));
-  };
-  return (
-    <span className="inline-flex flex-wrap items-center gap-2">
-      <Button type="button" size="sm" onClick={copy}><Copy aria-hidden /> {label}</Button>
-      {said && <span className="font-mono text-label text-muted-foreground" role="status">{said}</span>}
-    </span>
   );
 }
 

@@ -72,7 +72,7 @@ import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
 import { type RunMoment, type State, type Status } from "./run-view.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, prepareLaunch, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
-import { cutOfNow, factsOverStore, listedItem, momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { builtOfNow, factsOverStore, listedItem, momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { createLister } from "./run-listing.js";
 import { HELD_WAITS } from "./runner/journal-kinds.js";
 import { type ServedTimelineDeps, servedTimelineRows } from "./run-timeline-served.js";
@@ -1277,7 +1277,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   });
   const keysChanged = async () => {
     // A run's learning, view, list and timeline row are cut of the keys saved now by the run view at read time (it reads
-    // serverSecrets live, store-view), and a list builds a listing cut of other keys again (cutOfNow). A failed run's error words
+    // serverSecrets live, store-view), and a list builds a listing cut of other keys again (builtOfNow). A failed run's error words
     // name a refused key by the keys and settings, so those listings are built again.
     await lister.keysChanged();
     env = withClaudeLogin(withPlan(own(withSecrets(base, "all", storedKeys)), plan), claudeLogin);
@@ -3317,8 +3317,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const secrets = serverSecrets();
     const runs: Record<string, unknown>[] = [];
     for (const { row, agentArchivedAt, listing, listMark, behind } of page.rows) {
-      // One cut of other secrets (a secret saved since, or the server's own keys at another start) is built again too.
-      const kept = listing === null || behind || !cutOfNow(listing, secrets) ? await listNow(row.id, listMark) : listing;
+      // One cut of other secrets (a secret saved since, or the server's own keys at another start), or built under another
+      // listing format (a server before this one), is built again too: at most the page's `limit` builds, and each writes
+      // its listing back, so the next list finds it current.
+      const kept = listing === null || behind || !builtOfNow(listing, secrets) ? await listNow(row.id, listMark) : listing;
       // A run whose status moved between the two reads is left off this page, never shown under a status it has left.
       if (kept && (status === null || kept.item.status === status)) runs.push(listedItem(kept, origin, row.archivedAt ?? agentArchivedAt, secrets));
     }
@@ -5159,12 +5161,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  status input_required and idle, a message continues it) and not have ended: its view says which. */
   const stopRow = (row: RunRow) => row.state === "stopped" && row.outcome === "stopped" && row.importedFrom === null;
   const endOf = (row: RunRow) => ({ id: row.id, state: final(row) ? row.state : "running", ...(final(row) && row.endedAt !== null ? { endedAt: new Date(row.endedAt).toISOString() } : {}), ...(stopRow(row) ? { stop: true } : {}) });
+  /** Agent `agentId`'s name as the store holds it now, for a webhook notice: its id when it has none, or is gone. */
+  const agentNameOf = async (agentId: string): Promise<string> => (await store.agents.get(agentId))?.name || agentId;
   /** The run as the store holds it now, with its notice (the run list's own view of it); null when there is no such run. */
   const endNotice = async (id: string) => {
     const row = await store.runs.get(id);
     const summary = row && (await summaryOverStore(store, id, viewDepsFor(ownOriginOf())));
     if (!row || !summary) return null;
-    return { ...endOf(row), notice: { run_id: id, agent_id: row.agentId, status: String(summary.status), title: typeof summary.title === "string" ? summary.title : "" } };
+    return { ...endOf(row), notice: { run_id: id, agent_id: row.agentId, agent_name: await agentNameOf(row.agentId), status: String(summary.status), title: typeof summary.title === "string" ? summary.title : "" } };
   };
   /** The run-end read's look at a run: its end from its row alone when it has none, or one told already; else its
    *  endNotice. The run's view redacts the run's words (its title, its output) on every build, and the newest runs are
@@ -5205,7 +5209,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // whose card is withheld is a question. A run idle on nothing named (its harness ended its turn on its own) names no kind.
     const kind = typeof card === "string" && waitKinds.has(card) ? card : view.state === "waiting" ? "question" : undefined;
     const wait = kind === undefined ? undefined : ({ kind } as NonNullable<RunNotice["pending"]>);
-    const notice: RunNotice = { run_id: row.id, agent_id: row.agentId, status: "input_required", title: typeof view.title === "string" ? view.title : "", ...(wait ? { pending: wait } : {}) };
+    const notice: RunNotice = { run_id: row.id, agent_id: row.agentId, agent_name: await agentNameOf(row.agentId), status: "input_required", title: typeof view.title === "string" ? view.title : "", ...(wait ? { pending: wait } : {}) };
     if (!(await toldAll(row.id, waitSubscribers.map((tell) => () => tell(notice, wait, marker))))) return false;
     readWaits.set(row.id, seen);
     return true;

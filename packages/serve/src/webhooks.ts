@@ -91,8 +91,9 @@ const WAITS_KEPT = 20;
  *  refused the write, so the caller tells it again; `off`, no webhook set, or one a 410 turned off, so nothing is to be
  *  sent; `closed`, the server is stopping. */
 export type Emitted = "queued" | "unsaved" | "off" | "closed";
-/** What a notice says of its run: never its tools' arguments, its output or its input, which a receiver reads through the API. */
-export type RunNotice = { run_id: string; agent_id: string; status: string; title: string; pending?: { kind: "question" | "approval" | "stopped" | "budget" | "browser" | "computer" } };
+/** What a notice says of its run: never its tools' arguments, its output or its input, which a receiver reads through the API.
+ *  `agent_name`: its agent's name as the notice is built (server.ts agentNameOf), its id when the agent has no name. */
+export type RunNotice = { run_id: string; agent_id: string; agent_name: string; status: string; title: string; pending?: { kind: "question" | "approval" | "stopped" | "budget" | "browser" | "computer" } };
 /** The webhook as the store keeps it, but its secret: `secret_at`, when the secret was made (the same URL keeps it);
  *  `secret_scope`, the scope its secret is sealed under in trigger_settings, one of its own for each secret made, so the
  *  setting names the one secret that signs for its URL, and the two go live in the setting's one write. */
@@ -348,7 +349,7 @@ export class Webhooks {
     }
     if (ends && !this.due(marker, config)) return "queued";
     const id = `msg_${createHash("sha256").update(`${run.run_id}\n${type}\n${marker}`).digest("hex").slice(0, 32)}`;
-    const data = { run_id: run.run_id, agent_id: run.agent_id, status: run.status, title: run.title, url: `${this.base}/#/runs/${encodeURIComponent(run.run_id)}`, ...(run.pending ? { pending: run.pending } : {}) };
+    const data = { run_id: run.run_id, agent_id: run.agent_id, agent_name: run.agent_name, status: run.status, title: run.title, url: `${this.base}/#/runs/${encodeURIComponent(run.run_id)}`, ...(run.pending ? { pending: run.pending } : {}) };
     // A new wait goes beside the run's earlier waits and replaces its end (one after an end is a continued run's, past that
     // end); an end replaces the run's last end and keeps its waits.
     const told = ends ? { runId: run.run_id, marker: `${ENDED}${marker}`, replacing: ENDED } : { runId: run.run_id, marker: `${WAIT}${marker}`, replacing: ENDED };

@@ -117,9 +117,9 @@ machine. It starts AgentRun as a service of this user (launchd on macOS, systemd
 the terminal closes and starts again at login. Where there is no service manager, such as a container, it starts
 AgentRun in the background and says so. Either way it returns once AgentRun answers and prints
 `AgentRun is running at <address>`. Its data is in `~/.agentrun`, and it takes the first free port from 7340 on
-loopback. If it fails, read the lines it printed and explain the error without quoting a token. Give the person the
-address and wait until they say it opens in their browser; a request from here does not show that. They set the owner
-password on the first visit.
+loopback. If it fails, read the lines it printed and explain the error without quoting a token. On a computer with a
+browser it ends by opening the setup page there, where they set the owner password; otherwise open it for them (below).
+Wait until they say the password is set; a request from here does not show that.
 
 The command is now `~/.agentrun/bin/agentrun`. The installer adds `~/.agentrun/bin` to PATH in the shell's startup
 file (`~/.zshrc`, `~/.bashrc`, `~/.bash_profile` on macOS, fish's `conf.d`, else `~/.profile`), which only a new
@@ -137,13 +137,13 @@ Continue in a session on that machine, or an SSH session they already use. With 
 `curl -fsSL https://agentrun.ai/install | sh -s -- --tailscale`: it installs AgentRun as a service, shares it on their
 own tailnet only (`tailscale serve`, never Funnel) and prints its `https://<machine>.<tailnet DNS name>/` address. When
 Tailscale is missing or signed out, or Linux needs operator rights, it prints the steps and the command to run again;
-pass them on, and never run `sudo` or `tailscale up` for them. It asks for a setup code (below).
+pass them on, and never run `sudo` or `tailscale up` for them. It asks for a setup code: open its page (below).
 On a Linux server they rent (Ubuntu or Debian, as root), run `curl -fsSL https://agentrun.ai/install | sh -s -- --vps`
 instead. It runs AgentRun in Docker, gives its agents a shell, keeps it private the same way and prints the setup code.
 
 ### A hosted service
 
-- **Railway:** they open https://railway.com/deploy/agentrun and deploy it from their own Railway account with one
+- **Railway:** they open https://railway.com/deploy/agentrun-1 and deploy it from their own Railway account with one
   click. The template sets up the image, a volume at `/data` and a public domain, and makes the API token and the seal
   key for them. Never create the service yourself with a Railway CLI.
 - **Render:** they open https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun and confirm the plan
@@ -151,16 +151,30 @@ instead. It runs AgentRun in Docker, gives its agents a shell, keeps it private 
 - **AgentRun Cloud:** hosted for you, by request. They request access at https://console.agentrun.ai/ and follow its
   onboarding; the steps below don't apply. For team onboarding, offer https://calendly.com/d/dtwn-dsp-nx5/agentrun.
 
-### The setup code
+### Open the setup page
 
-A server at a public address asks for a **setup code** before the first password; say where it is with the address.
-On Railway, the service's **Variables** tab holds `AGENTRUN_TOKEN`, and on Render its **Environment** tab does; they
-paste its value into **Setup code**. Elsewhere, the
-server's log has `Set up this server: <address>/setup#code=<code>`: read it privately and give them the newest such
-link. Never put the API token (`AGENTRUN_TOKEN`, or `.token` in the data folder) in the chat. The link works **once**
-and **expires 30 minutes** after it was printed. Then they press **Get a new code**, or you send
-`curl -sS -X POST "$CONSOLE_ADDRESS/v2/setup/code"` (it never returns the code) and read the newest line. A server
-that answers that with 404 has no such button: restarting it prints a new code.
+Open the setup page in the person's browser yourself, with the code filled in: never send a link for them to click
+while you can open it, and never a command that prints or fetches the code.
+
+1. Find the link. Where the installer or `~/.agentrun/bin/agentrun service` started AgentRun, run
+   `~/.agentrun/bin/agentrun open` on that machine: it opens the page with a code that is still good, or prints the
+   link where no browser opens. Otherwise read the server's log privately (`journalctl --user -u <unit>`, `docker logs
+   <container>`, the terminal it runs in): the newest `Set up this server: <address>/setup#code=<code>` (a server at a
+   public address; the code fills in **Setup code**). With no such line, the server is on loopback and needs no code:
+   the link is the console address followed by `setup`.
+2. Open it in a browser they are looking at: `open "<link>"` (macOS), `xdg-open "<link>"` (Linux) or `start ""
+   "<link>"` (Windows) when this session runs on their computer, where the installer has already opened it; else your
+   client's browser or preview tool. Only when you have neither, send the link itself as the first line.
+3. Say it is open and sets the owner password. A link with a code works **once** and **expires 30 minutes** after it
+   was printed: give that clock time with its time zone when you can tell.
+
+The setup link is not the API token: it works once and briefly, so it may go to an opener, a browser tool or the chat.
+Never the API token (`AGENTRUN_TOKEN`, or `.token` in the data folder). On Railway or Render, whose log you may not
+read, open the console address and say where the value for **Setup code** is: they paste `AGENTRUN_TOKEN` there
+themselves. On Railway, the service's **Variables** tab holds `AGENTRUN_TOKEN`, and on Render its **Environment** tab
+does. An expired code: they press **Get a new code**, or you send `curl -sS -X POST "$CONSOLE_ADDRESS/v2/setup/code"`
+(it never returns the code), read the newest line and open it. A server that answers that with 404 has no such button:
+restarting it prints a new code.
 
 ## 4. Look for the agents they already run
 
@@ -263,6 +277,9 @@ Where AgentRun runs in the background, run `~/.agentrun/bin/agentrun stop`, then
 front of `sh`: `curl -fsSL https://agentrun.ai/install | AGENT_MODEL_BASE_URL=http://localhost:11434/v1
 AGENT_MODEL_GATEWAY_IDS=bare AGENT_MODEL=<tag> AGENT_MODEL_PRICE=0,0,0 sh`. Then confirm `models.ready` in the
 capabilities.
+
+Claude Code through a gateway they already run (LiteLLM, say): restart the server with `ANTHROPIC_BASE_URL=<gateway>
+ANTHROPIC_API_KEY=<its key, or any placeholder when it adds its own>`; the gateway must take Anthropic Messages at `/v1/messages`.
 
 ## 7. Create the first agent and run it
 

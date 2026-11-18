@@ -132,27 +132,12 @@ test('the GitHub release is published once every publish job passed, from the fo
   assert.ok(stepAt('github-release', /^node scripts\/release-notes\.mjs /) < stepAt('github-release', /^node scripts\/release-github\.mjs /));
   assert.equal(publish.run, 'node scripts/release-github.mjs --tag "$RELEASE_TAG" --notes "${{ runner.temp }}/notes.md"');
   assert.equal(publish.env.GH_TOKEN, '${{ github.token }}');
-  assert.equal(release.outputs.url, `\${{ steps.${publish.id}.outputs.url }}`);
   assert.doesNotMatch(raw, /gh release create|git tag|git push/, 'nothing creates or moves a tag');
 });
 
-test('the release is posted to Slack with the stars notification\'s token and a channel variable, and a Slack failure never fails the release', () => {
-  const stars = parse(readFileSync(new URL('../.github/workflows/stars-to-slack.yml', import.meta.url), 'utf8'));
-  const slack = jobs.slack;
-  assert.deepEqual(needs('slack'), ['github-release']);
-  assert.equal(slack.if, jobs.publish.if);
-  assert.equal(slack['continue-on-error'], true, 'its failure leaves the run green');
-  assert.equal(slack.environment, undefined);
-  assert.deepEqual(slack.permissions, { contents: 'read' });
-  pinned(slack.steps);
-  const post = slack.steps[stepAt('slack', /^node scripts\/release-slack\.mjs /)];
-  assert.equal(post['continue-on-error'], true);
-  assert.equal(post.env.SLACK_BOT_TOKEN, stars.jobs.notify.steps[0].env.SLACK_BOT_TOKEN, 'the same bot token secret, no new one');
-  assert.equal(post.env.SLACK_BOT_TOKEN, '${{ secrets.SLACK_STARS_BOT_TOKEN }}');
-  assert.equal(post.env.SLACK_CHANNEL, '${{ vars.SLACK_RELEASES_CHANNEL }}');
-  assert.equal(post.env.RELEASE_URL, '${{ needs.github-release.outputs.url }}');
-  assert.equal(post.run, 'node scripts/release-slack.mjs --tag "$RELEASE_TAG" --url "$RELEASE_URL" --changelog "${{ runner.temp }}/changelog/CHANGELOG.md"');
-  assert.equal(slack.steps[stepAt('slack', /^actions\/download-artifact@/)].with.name, 'release-changelog');
+test('the release posts nowhere on its own: no job reads a Slack secret or variable', () => {
+  assert.equal(jobs.slack, undefined);
+  assert.doesNotMatch(raw, /SLACK_|slack\.com|release-slack/, 'the person who cut the release posts its summary (docs/releasing.md)');
 });
 
 test('the website import pull request is opened after the GitHub release with the website App\'s token, and never fails or blocks the release', async () => {

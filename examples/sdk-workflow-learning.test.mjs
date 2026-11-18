@@ -69,7 +69,7 @@ function demoFixture({ held = false } = {}) {
     if (path.endsWith('/learning')) {
       const ready = (counts.get('fixture-on') ?? 0) >= 5;
       return Response.json({ main: ready ? 'promoted' : 'seed', corrections: '',
-        workflows: ready ? [{ name: 'release-brief', file: 'workflows/release-brief/workflow.json', status: held ? 'pending' : 'active', run: 'practice' }] : [] });
+        workflows: ready ? [{ name: 'release-brief', file: 'workflows/release-brief/workflow.json', status: held ? 'pending' : 'checking', run: 'practice' }] : [] });
     }
     throw new Error(`Unexpected ${options?.method}: ${path}`);
   };

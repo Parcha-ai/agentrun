@@ -459,6 +459,14 @@ export type RunSummary = {
     id: string;
     firing_key: string;
   } | null;
+  served?: {
+    workflow: string | null;
+    digest: string | null;
+  };
+  handed_back?: {
+    workflow: string | null;
+    digest: string | null;
+  };
 };
 
 export type RunStatus = "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
@@ -748,6 +756,14 @@ export type Run = {
   } | null;
   audit_of?: string | null;
   path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
+  served?: {
+    workflow: string | null;
+    digest: string | null;
+  };
+  handed_back?: {
+    workflow: string | null;
+    digest: string | null;
+  };
 };
 
 export type RunResult = {
@@ -1479,6 +1495,7 @@ export type ListLearningPromotionsResponse = {
       alone_min: number;
       attempt: 1 | 2;
       agree_on?: Array<string>;
+      grader?: string;
       n?: number;
       agreed?: number;
       alone?: number;
@@ -1503,6 +1520,7 @@ export type ListLearningPromotionsResponse = {
         draft?: string;
         escalated?: string;
         failed?: true;
+        differs_on?: string;
       }>;
       stopped?: true;
     };
@@ -1563,6 +1581,7 @@ export type ListLearningPromotionsResponse = {
         alone_min: number;
         attempt: 1 | 2;
         agree_on?: Array<string>;
+        grader?: string;
         n?: number;
         agreed?: number;
         alone?: number;
@@ -1587,6 +1606,7 @@ export type ListLearningPromotionsResponse = {
           draft?: string;
           escalated?: string;
           failed?: true;
+          differs_on?: string;
         }>;
         stopped?: true;
       } | null;

@@ -126,8 +126,10 @@ export type Target = { kind: "start_run"; agent_id: string; input: Json; max_cos
 type Trigger = Omit<TriggerRow, "source" | "target"> & { source: Source; target: Target };
 /** What the webhook did with a trigger.failed message (webhooks.ts emitTrigger). */
 type Told = "queued" | "unsaved" | "off" | "closed";
-/** What a trigger.failed webhook message says (webhooks.ts). */
-export type TriggerFailed = { trigger_id: string; name: string; firing_key: string; nominal_at: string; error: { code: string; message: string }; auto_paused: boolean };
+/** What a trigger.failed webhook message says (webhooks.ts). `agent_id`: the agent the trigger runs as (its row's: a
+ *  start_run's agent, or the agent of the run a message_run names), so every trigger has one; `agent_name`, that agent's
+ *  name as the message is built, its id when it has none (an agent no longer in the store). */
+export type TriggerFailed = { trigger_id: string; name: string; agent_id: string; agent_name: string; firing_key: string; nominal_at: string; error: { code: string; message: string }; auto_paused: boolean };
 /** A run's provenance, kept with its launch row: the trigger that started it, and the firing. `name`: the trigger's name as
  *  it was at the firing, put on the run so its Timeline row names the trigger without a store read (runs.ts
  *  servedTriggerRow); a rename pushes the new name (server.ts triggerChanged). */
@@ -1159,7 +1161,8 @@ export class Triggers {
     const firing = await this.store.triggers.firing(triggerId, key);
     const trigger = await this.find(triggerId);
     if (!firing || !trigger || firing.status !== "failed" || firing.notified) return;
-    const told = await this.deps.notify({ trigger_id: trigger.id, name: trigger.name, firing_key: key, nominal_at: second(firing.nominalAt), error: firing.error ?? { code: "internal", message: "" }, auto_paused: firing.paused }, key);
+    const agentName = (await this.store.agents.get(trigger.agentId))?.name || trigger.agentId;
+    const told = await this.deps.notify({ trigger_id: trigger.id, name: trigger.name, agent_id: trigger.agentId, agent_name: agentName, firing_key: key, nominal_at: second(firing.nominalAt), error: firing.error ?? { code: "internal", message: "" }, auto_paused: firing.paused }, key);
     // A mark that does not land (the outbox's write failed) is tried again at the next tick, under the same key, which
     // the outbox holds once: a restart then finds it marked.
     if (told === "queued" || told === "off") await this.store.triggers.settle(triggerId, key, { notified: true });

@@ -6,6 +6,7 @@ import { money } from "@parcha/agentrun-kernel/kernel/cap";
 import { refusedText } from "../refusal-words.js";
 import type { AlsoRow, Claim, Command, Journal } from "../store/store.js";
 import type { Redact } from "./redact.js";
+import type { Compared, GraderReply } from "../learn/promote.js";
 
 // The store's own: a claim (its epoch fences every write made under it; `until` in epoch ms) and a command row (taken_at
 // set once, by the loop's journal commit that applies it or by the runner's refusal, with `refused` its reason).
@@ -58,8 +59,13 @@ export type EndOfRunTurn = (input: {
    *  earlier claim (or this one) started, readable before `ask`, so a step that skips or is cut never asks, and still
    *  closes that look-back with its first ask's figures. Undefined when none asked it, or the loop keeps no record (pi's). */
   keptOf?(round: number): EndOfRunKept | undefined;
+  /** A replay run's or an audit shadow's grader (learn/promote.ts): its fast model's name (`grader`), and one request to
+   *  it (`grade`), sent through the run's own session on its one cap, booked as the run's spend; a refusal of that cap
+   *  never parks the run (`refused`). Absent when the run has no grader route (no fast model, or agree_on named). */
+  readonly grader?: string;
+  grade?(request: { readonly system: string; readonly user: string }): Promise<GraderReply>;
   readonly signal: AbortSignal;
-}) => Promise<{ readonly also: readonly AlsoRow[] } | undefined>;
+}) => Promise<{ readonly also: readonly AlsoRow[]; readonly compared?: Compared } | undefined>;
 
 /** How a loop's start() ended. The run's own outcome (state, cost) is already in the journal's last commit. */
 export type LoopEnd =

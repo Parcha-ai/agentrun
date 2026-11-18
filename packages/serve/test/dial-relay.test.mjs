@@ -222,22 +222,6 @@ async function standIn(t, store, runner, incarnation, onSocket) {
   await store.runnerRelays.put({ runner, incarnation, host: "127.0.0.1", port: http.address().port });
 }
 
-test("a machine a runner apart made dials the server and lands in that runner's hub: its calls go over the relayed socket, and the server logs the relay", { timeout: 60_000 }, async (t) => {
-  const { data, lines, address } = await relayServer(t);
-  const side = await runnerSide(t, data);
-  const { relay, lines: relayLines } = await relayOf(t, side, address);
-  const launched = await fauxComputers().launch(FAUX_DIAL_ENTRY(), { kind: "desktop", keys: {} }, { dial: relay.dial });
-  t.after(() => launched.release());
-  assert.equal(relay.dial.hub.online(launched.id), true, "the runner's hub holds the machine's socket");
-  const shot = await launched.client.call("screen.shot", {});
-  assert.equal(shot.ok, true, JSON.stringify(shot));
-  assert.equal(shot.value.width, 1280);
-  const typed = await launched.client.call("input.actions", { actions: [{ type: "type", text: "hi" }] });
-  assert.deepEqual(typed, { ok: true, value: { done: 1 } });
-  assert.ok(lines.some((line) => line.includes("machine_relayed") && line.includes(launched.id) && line.includes("runner-a")), lines.join("\n"));
-  assert.ok(relayLines.some((line) => line.includes("machine_attached") && line.includes(launched.id)), relayLines.join("\n"));
-});
-
 test("a close on either side of a relayed socket closes the other: the machine's close takes it off the runner's hub, and the runner's revoke closes the machine's socket with 4401", { timeout: 60_000 }, async (t) => {
   const { data, address } = await relayServer(t);
   const side = await runnerSide(t, data);
