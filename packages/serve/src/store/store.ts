@@ -1225,18 +1225,49 @@ export interface MintedTokenRow {
   /** When it was revoked (the machine's delete); null while it is good. */
   readonly revokedAt: number | null;
   readonly createdAt: number;
+  /** The runner in a process of its own that minted it, whose attach listener takes the machine's socket (dial-relay.ts),
+   *  and that runner's incarnation then; both null for a token the server's own process minted. */
+  readonly runner: string | null;
+  readonly incarnation: string | null;
 }
 
 /** The tokens minted for hosted machines that dial this server (a dial provider's create, spec/computer/attach.md). */
 export interface MintedTokens {
-  /** Keeps the token's SHA-256 for `machine`, replacing one minted for it before. Rows past their end go in the same write. */
-  mint(token: Pick<MintedTokenRow, "machine" | "kind" | "os" | "arch" | "expiresAt"> & { readonly tokenSha256: string }): Promise<void>;
+  /** Keeps the token's SHA-256 for `machine`, replacing one minted for it before. Rows past their end go in the same write.
+   *  `runner` and `incarnation`: a runner in a process of its own minting it (dial-relay.ts). */
+  mint(token: Pick<MintedTokenRow, "machine" | "kind" | "os" | "arch" | "expiresAt"> & { readonly tokenSha256: string; readonly runner?: string; readonly incarnation?: string }): Promise<void>;
   /** The row whose token has this SHA-256, while it is good: neither revoked nor past its end. */
   byToken(tokenSha256: string): Promise<MintedTokenRow | undefined>;
   /** The machine's row, good or not; undefined when it has none (never minted, or gone past its end). */
   get(machine: string): Promise<MintedTokenRow | undefined>;
   /** Revokes the machine's token. False when it had none good. */
   revoke(machine: string): Promise<boolean>;
+}
+
+/** Where a runner in a process of its own takes the dials relayed to it (store schema `runner_relays`, dial-relay.ts): its
+ *  attach listener's host and port, under the runner's name and its incarnation (its process since its start), and when
+ *  it last said it was there. */
+export interface RunnerRelayRow {
+  readonly runner: string;
+  readonly incarnation: string;
+  /** The host the server reaches it at: loopback, or the runner's live host (live-reach.ts). */
+  readonly host: string;
+  readonly port: number;
+  readonly seenAt: number;
+}
+
+/** The runners' attach listeners (dial-relay.ts). */
+export interface RunnerRelays {
+  /** Keeps `row` for its runner, replacing any earlier incarnation's, seen now. */
+  put(row: Omit<RunnerRelayRow, "seenAt">): Promise<void>;
+  /** Marks the runner's row seen now, while it is still this incarnation's. False when it is not. */
+  seen(runner: string, incarnation: string): Promise<boolean>;
+  /** The runner's row, whichever incarnation's, or undefined. */
+  get(runner: string): Promise<RunnerRelayRow | undefined>;
+  /** Every runner's row. */
+  list(): Promise<RunnerRelayRow[]>;
+  /** The runner's row gone, while it is still this incarnation's. */
+  remove(runner: string, incarnation: string): Promise<void>;
 }
 
 /** A template package imported from GitHub (store schema `imported_templates`, POST /v2/templates/import): its id
@@ -1458,6 +1489,8 @@ export interface Store {
   readonly pairedComputers: PairedComputers;
   /** The tokens minted for hosted machines that dial this server, each kept as its SHA-256. */
   readonly mintedTokens: MintedTokens;
+  /** Where each runner in a process of its own takes the dials relayed to it. */
+  readonly runnerRelays: RunnerRelays;
   /** The template packages imported from GitHub, their files kept as read. */
   readonly importedTemplates: ImportedTemplates;
   /** Each trigger source's sealed settings (design 2.1): a value per adapter, scope and field. */

@@ -236,12 +236,18 @@ two processes in the container: the server with `--no-runner`, and one runner on
 `GET /v2/health`. Each has its own store connection, so a busy runner never holds up the API. If either exits, the other
 stops and the container exits non-zero. Give the image other arguments and it runs that one command, as given:
 `runner --data /data --name runner-1` is a runner, and server options alone (no `server-and-runner`) are a server with
-its runner in its own process, which a [paired computer](#a-persons-own-computer) needs, and so does a computer
-provider whose machines dial the server (Fly Machines and Cloudflare; the computer package's `connectOf`, which also
-says dial for E2B, Daytona or Modal made with `connect: "dial"`, which serve doesn't set): a runner apart refuses its
-create, naming that fix. Such a server says it sooner: in `GET /v2/computers`, each dial provider's row carries
-`runs_refused` with that fix, and its Test connection in Settings → Computers fails in the same words (it would pass
-in the server's process, where every run would then fail).
+its runner in its own process, which a [paired computer](#a-persons-own-computer) needs.
+
+A computer provider whose machines dial the server (Fly Machines and Cloudflare; the computer package's `connectOf`,
+which also says dial for E2B, Daytona or Modal made with `connect: "dial"`) works under a runner apart that knows the
+server's public address, `AGENTRUN_PUBLIC_URL` (the image gives both processes the same environment). The machine dials
+the server, and the server relays its socket to the runner that made it: the runner keeps its own attach hub on a
+private listener (loopback; across hosts, its `AGENTRUN_RUNNER_LIVE_HOST`, which the server's `AGENTRUN_RUNNER_HOSTS`
+must list), and the server reaches it only with a proof under the seal key for that machine's token, that runner and a
+time within 10 seconds, taken once. A runner apart with no public address refuses such a create, naming the fix above,
+and the server says it sooner: in `GET /v2/computers`, each dial provider's row carries `runs_refused` with that fix,
+and its Test connection in Settings → Computers fails in the same words. With a runner that relays, `runs_refused` is
+null.
 
 The token is in the log of the start that made it. A `docker stop` reaches both processes. The runner gives a busy run
 6 s (`--drain-timeout 6s`) to finish its turn, so a busy `docker stop` ends in about 7.5 s, inside Docker's default 10 s

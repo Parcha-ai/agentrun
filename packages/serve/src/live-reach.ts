@@ -61,14 +61,49 @@ export function runnerLiveOf(env: { readonly AGENTRUN_RUNNER_LIVE_HOST?: string 
   return { host, bind: bind && (isLiveHost(bind) || bind === "0.0.0.0") ? bind : host, key: proofKey(sealKey) };
 }
 
-/** Whether `req` carries a good, fresh proof for viewer `viewerId` under `live`'s key. */
-export function provenFor(req: Pick<IncomingMessage, "headers">, live: Pick<RunnerLive, "key">, viewerId: string, now: number = Date.now()): boolean {
+/** Whether `req` carries a good, fresh proof for viewer `viewerId` under `live`'s key: its time within `windowMs` of
+ *  the endpoint's clock (LIVE_PROOF_MS by default). */
+export function provenFor(req: Pick<IncomingMessage, "headers">, live: Pick<RunnerLive, "key">, viewerId: string, now: number = Date.now(), windowMs: number = LIVE_PROOF_MS): boolean {
   const said = req.headers[LIVE_PROOF_HEADER];
   const match = typeof said === "string" ? /^(\d{1,16})\.([0-9a-f]{64})$/.exec(said) : null;
   if (!match) return false;
   const at = Number(match[1]);
-  if (!Number.isSafeInteger(at) || Math.abs(now - at) > LIVE_PROOF_MS) return false;
+  if (!Number.isSafeInteger(at) || Math.abs(now - at) > windowMs) return false;
   const want = Buffer.from(mac(live.key, viewerId, at), "hex");
   const got = Buffer.from(match[2]!, "hex");
   return got.length === want.length && timingSafeEqual(got, want);
+}
+
+// A dial relayed to its runner (dial-relay.ts): a machine a runner in a process of its own made dials the server's
+// attach route, and the server proxies its socket to that runner's attach listener with the same proof, under the same
+// key, over a subject of its own. The subject binds the machine's token (its SHA-256), the runner the token's row names
+// and that runner's incarnation (its process since its start), so a proof opens that one token's socket on that one
+// runner and nowhere else. Its window is RELAY_PROOF_MS, and the runner takes each proof once (relayProofs).
+
+/** How far a relay's proof's time may be from the runner's clock: the one hop's time, and no more. */
+export const RELAY_PROOF_MS = 10_000;
+
+/** What a relay's proof binds: the machine's token (its SHA-256), the runner its row names, and that runner's
+ *  incarnation. A viewer's id has no newline, so no relay subject is ever a viewer's. */
+export type RelayTo = { readonly tokenSha256: string; readonly runner: string; readonly incarnation: string };
+const relaySubject = (to: RelayTo): string => `attach relay\n${to.tokenSha256}\n${to.runner}\n${to.incarnation}`;
+
+/** The server's proof for relaying the dial of token `to.tokenSha256` to runner `to.runner`, at `at` (ms). */
+export const relayProof = (reach: Pick<LiveReach, "key">, to: RelayTo, at: number = Date.now()): string => liveProof(reach, relaySubject(to), at);
+
+/** The proof's key, from the seal key, for a runner's attach listener (whatever host it answers on). */
+export const relayKeyOf = (sealKey: Buffer): Pick<LiveReach, "key"> => ({ key: proofKey(sealKey) });
+
+/** A runner's check of the relay's proofs: good, fresh (RELAY_PROOF_MS) and for `to`, and never one it took before, so
+ *  a proof read off the hop opens no second socket. */
+export function relayProofs(live: Pick<LiveReach, "key">, now: () => number = Date.now): (req: Pick<IncomingMessage, "headers">, to: RelayTo) => boolean {
+  const taken = new Map<string, number>();
+  return (req, to) => {
+    const at = now();
+    for (const [proof, until] of taken) if (until < at) taken.delete(proof);
+    const said = req.headers[LIVE_PROOF_HEADER];
+    if (typeof said !== "string" || taken.has(said) || !provenFor(req, live, relaySubject(to), at, RELAY_PROOF_MS)) return false;
+    taken.set(said, at + 2 * RELAY_PROOF_MS);
+    return true;
+  };
 }
