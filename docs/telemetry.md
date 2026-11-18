@@ -3,9 +3,9 @@
 AgentRun's server counts how many servers run, so the project knows whether it is used and which versions are. The
 counts are anonymous, and one setting turns them off.
 
-**On from the first release after 0.1.0-beta.44**, whose changelog says so. Releases up to beta.44 send nothing: their
-key (`TELEMETRY_KEY` in [`packages/serve/src/telemetry.ts`](../packages/serve/src/telemetry.ts)) is empty. The first start
-that can send only prints the notice below.
+**The counts are on.** The release that turned them on says so in its changelog; every release before it sends
+nothing, since its key (`TELEMETRY_KEY` in [`packages/serve/src/telemetry.ts`](../packages/serve/src/telemetry.ts)) is
+empty. The first start that can send only prints the notice below.
 
 ## Turn it off
 
