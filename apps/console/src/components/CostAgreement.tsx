@@ -80,8 +80,11 @@ export function CostAgreement({ cost, revisions, width: fixed }: { cost: Learnin
     const words = m.revision ? `${m.label} ${percent(m.share)}` : `The agent ${level(m.usd)}`;
     const wide = words.length * 6.7;
     const anchor = m.revision ? "middle" as const : "end" as const;
-    const lx = m.revision ? px[i]! + (m.audits ? DODGE / 2 : 0) : px[i]! + 6;
-    const [x0, x1] = m.revision ? [lx - wide / 2, lx + wide / 2] : [lx - wide, lx];
+    // Where the label wants to stand, then moved so its whole width is on the chart: a long name near an edge is never cut.
+    const want = m.revision ? px[i]! + (m.audits ? DODGE / 2 : 0) : px[i]! + 6;
+    const [left, right] = m.revision ? [wide / 2, wide / 2] : [wide, 0];
+    const lx = Math.max(left + 2, Math.min(want, width - right - 2));
+    const [x0, x1] = [lx - left, lx + right];
     let ly = Math.min(y(m.hi), m.audits ? y(m.audits.hi) : Infinity) - 10;
     while (placed.some((t) => x0 < t.x1 + 6 && x1 > t.x0 - 6 && Math.abs(t.y - ly) < 13)) ly -= 13;
     placed.push({ x0, x1, y: ly });

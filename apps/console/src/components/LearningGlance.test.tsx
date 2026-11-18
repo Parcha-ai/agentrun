@@ -97,6 +97,19 @@ describe("CostAgreement", () => {
     expect(xs[1]!).toBeLessThan(xs[0]!);
     expect(host.textContent).toContain("Revisions that cost nearly the same are drawn side by side");
   });
+  it("keeps a long label's whole width on a narrow chart, never cut at an edge", () => {
+    // Two workflows, so each label carries its workflow's name; the first is long and its point is far left.
+    const named = [{ ...REVISIONS[1]!, workflow: "support-triage-priority", label: "support-triage-priority v1" }, { ...REVISIONS[0]!, label: "sort-invoice v1" }];
+    const host = draw(createElement(CostAgreement, { cost: COST, revisions: named, width: 300 }));
+    const labels = [...host.querySelectorAll("svg[aria-hidden] text")].filter((t) => /v1 \d+%$|^The agent/.test(t.textContent ?? ""));
+    expect(labels).toHaveLength(3);
+    for (const t of labels) {
+      const wide = (t.textContent ?? "").length * 6.7, x = Number(t.getAttribute("x")), anchor = t.getAttribute("text-anchor");
+      const [x0, x1] = anchor === "middle" ? [x - wide / 2, x + wide / 2] : anchor === "end" ? [x - wide, x] : [x, x + wide];
+      expect(x0, t.textContent ?? "").toBeGreaterThanOrEqual(0);
+      expect(x1, t.textContent ?? "").toBeLessThanOrEqual(300);
+    }
+  });
   it("leaves the agent off the log axis when a run cost it nothing before takeover, and still draws the revisions", () => {
     const free: LearningCost = { ...COST, summary: { ...COST.summary, before: { runs: 20, mean_usd: 0 } } };
     const host = draw(createElement(CostAgreement, { cost: free, revisions: REVISIONS, width: 560 }));

@@ -149,6 +149,18 @@ describe("marks that would sit on each other", () => {
     // The pair's middle stays at 100, 36px between them, the cheaper one still on the left.
     expect([at[2], at[1]]).toEqual([82, 118]);
   });
+  it("joins two spread pairs that would then touch, so every final gap holds", () => {
+    const { at } = placeApart([{ x: 100 }, { x: 101 }, { x: 137 }, { x: 138 }], 36, 0, 700);
+    for (let i = 1; i < at.length; i++) expect(at[i]! - at[i - 1]!).toBeGreaterThanOrEqual(36 - 1e-6);
+    // The four stand about their common middle, 119.
+    expect((at[0]! + at[3]!) / 2).toBeCloseTo(119, 6);
+  });
+  it("shrinks the gap when the line is too short for every place, so none leaves it", () => {
+    const { at } = placeApart(Array.from({ length: 8 }, (_, i) => ({ x: 100 + i })), 36, 60, 280);
+    expect(Math.min(...at)).toBeGreaterThanOrEqual(60);
+    expect(Math.max(...at)).toBeLessThanOrEqual(280 + 1e-6);
+    for (let i = 1; i < at.length; i++) expect(at[i]! - at[i - 1]!).toBeCloseTo(220 / 7, 6);
+  });
   it("keeps a moved run on the plot, and says nothing moved when every place has room", () => {
     expect(placeApart([{ x: 62 }, { x: 64 }, { x: 66 }], 36, 60, 700).at).toEqual([60, 96, 132]);
     expect(placeApart([{ x: 100 }, { x: 200 }], 36, 60, 700)).toEqual({ at: [100, 200], moved: false });

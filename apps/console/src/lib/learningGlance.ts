@@ -157,27 +157,36 @@ export function logAxis(values: readonly number[], room = 1.7): { lo: number; hi
   return { lo, hi, ticks };
 }
 
-/** Places on a line (`x`, in px) with those that may move (`fixed` false) kept at least `gap` apart: a run of places
- *  closer than that is spread about its own middle, in the order it had, and kept within `lo` to `hi`. A fixed place
- *  never moves and is no part of a run. `moved`: whether any place changed. */
+/** Places on a line (`x`, in px) with those that may move (`fixed` false) kept at least `gap` apart and within `lo` to
+ *  `hi`: places closer than the gap are spread about their own middle, in the order they had; a spread run that would
+ *  then touch its neighbour joins it and the two are spread together, until every final gap holds. When the line is too
+ *  short for them all at `gap`, the gap shrinks to what fits, so none leaves the line. A fixed place never moves and is
+ *  no part of a run. `moved`: whether any place changed. */
 export function placeApart(places: readonly { x: number; fixed?: boolean }[], gap: number, lo: number, hi: number): { at: number[]; moved: boolean } {
   const at = places.map((p) => p.x);
-  const free = places.map((p, i) => ({ i, x: p.x, fixed: !!p.fixed })).filter((p) => !p.fixed).sort((a, b) => a.x - b.x);
-  // Runs of neighbours closer than the gap, each spread evenly about the mean of its members.
-  let run: typeof free = [];
-  const settle = () => {
-    if (run.length > 1) {
-      const mid = run.reduce((sum, p) => sum + p.x, 0) / run.length;
-      const first = Math.min(Math.max(mid - ((run.length - 1) * gap) / 2, lo), Math.max(lo, hi - (run.length - 1) * gap));
-      run.forEach((p, k) => { at[p.i] = first + k * gap; });
+  const free = places.map((p, i) => ({ i, x: p.x })).filter((p) => !places[p.i]!.fixed).sort((a, b) => a.x - b.x);
+  if (free.length > 1) {
+    const room = Math.max(0, hi - lo);
+    const step = Math.min(gap, room / (free.length - 1));
+    // Each run: its members' indexes into `free`, spread `step` apart about the mean of where they wanted to be, kept on
+    // the line. Runs start as one place each and join while two stand closer than a step.
+    type Run = { from: number; to: number; first: number };
+    const lay = (from: number, to: number): Run => {
+      const n = to - from + 1;
+      let sum = 0;
+      for (let k = from; k <= to; k++) sum += free[k]!.x;
+      return { from, to, first: Math.min(Math.max(sum / n - ((n - 1) * step) / 2, lo), hi - (n - 1) * step) };
+    };
+    const lastOf = (r: Run) => r.first + (r.to - r.from) * step;
+    const runs: Run[] = [];
+    for (let k = 0; k < free.length; k++) {
+      let run = lay(k, k);
+      while (runs.length && run.first - lastOf(runs.at(-1)!) < step - 1e-9) run = lay(runs.pop()!.from, run.to);
+      runs.push(run);
     }
-    run = [];
-  };
-  for (const p of free) {
-    // A place joins the run while it is closer than the gap to where the run's last member will stand at the least.
-    if (run.length && p.x - run.at(-1)!.x >= gap) settle();
-    run.push(p);
+    for (const run of runs) for (let k = run.from; k <= run.to; k++) at[free[k]!.i] = run.first + (k - run.from) * step;
+  } else if (free.length === 1) {
+    at[free[0]!.i] = Math.min(Math.max(free[0]!.x, lo), Math.max(lo, hi));
   }
-  settle();
   return { at, moved: at.some((v, i) => Math.abs(v - places[i]!.x) > 0.5) };
 }
