@@ -108,15 +108,18 @@ export const relayProof = (reach: Pick<LiveReach, "key">, to: RelayTo, at: numbe
 export const relayKeyOf = (sealKey: Buffer): Pick<LiveReach, "key"> => ({ key: proofKey(sealKey) });
 
 /** A runner's check of the relay's proofs: good, fresh (RELAY_PROOF_MS) and for `to`, and never one it took before, so
- *  a proof read off the hop opens no second socket. */
+ *  a proof read off the hop opens no second socket. A proof is taken once by its MAC, not by the header as sent: the
+ *  time reads as a number, so `0<ms>.<mac>` is the same signed proof as `<ms>.<mac>`, while the MAC (lower-case hex
+ *  only) has one spelling for each subject and time. */
 export function relayProofs(live: Pick<LiveReach, "key">, now: () => number = Date.now): (req: Pick<IncomingMessage, "headers">, to: RelayTo) => boolean {
   const taken = new Map<string, number>();
   return (req, to) => {
     const at = now();
     for (const [proof, until] of taken) if (until < at) taken.delete(proof);
     const said = req.headers[LIVE_PROOF_HEADER];
-    if (typeof said !== "string" || taken.has(said) || !provenFor(req, live, relaySubject(to), at, RELAY_PROOF_MS)) return false;
-    taken.set(said, at + 2 * RELAY_PROOF_MS);
+    const signed = typeof said === "string" ? said.slice(said.indexOf(".") + 1) : undefined;
+    if (signed === undefined || taken.has(signed) || !provenFor(req, live, relaySubject(to), at, RELAY_PROOF_MS)) return false;
+    taken.set(signed, at + 2 * RELAY_PROOF_MS);
     return true;
   };
 }
