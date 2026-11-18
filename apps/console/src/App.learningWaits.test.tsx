@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { ANALYTICS } from "@/components/AgentAnalytics.sample";
 
-// Mission Control's Needs you lists each active agent whose learned items wait for the owner's OK, from GET /v2/agents
+// Mission Control's Needs you lists each active agent whose learned workflows wait for the owner's OK, from GET /v2/agents
 // (each agent's `learning.pending`): absent or 0 lists nothing, and an archived agent is not listed.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
@@ -40,7 +40,7 @@ const wait = async (ok: () => boolean, what: string, ms = 4000) => {
   expect(ok(), what).toBe(true);
 };
 
-describe("Mission Control's Needs you, learned items waiting", () => {
+describe("Mission Control's Needs you, learned workflows waiting", () => {
   it("lists the active agent whose items wait, linked to its Learning tab; not one at 0, without the field, or archived", async () => {
     serve();
     location.hash = "#/";
@@ -50,11 +50,11 @@ describe("Mission Control's Needs you, learned items waiting", () => {
     const needs = () => host.querySelector('section[aria-label="Needs you"]');
     await wait(() => !!needs()?.querySelector('a[href="#/agents/qa-learn/learning"]'), "Needs you with QA learn's waiting items");
     expect(needs()!.querySelector("h2")?.textContent).toBe("Needs you · 2");
-    expect(needs()!.querySelector('a[href="#/agents/qa-learn/learning"]')!.closest("li")?.textContent).toContain("2 learned items wait for your OK");
+    expect(needs()!.querySelector('a[href="#/agents/qa-learn/learning"]')!.closest("li")?.textContent).toContain("2 learned workflows wait for your OK");
     for (const id of ["calc", "off", "gone"]) expect(needs()!.querySelector(`a[href="#/agents/${id}/learning"]`), id).toBeNull();
   });
 
-  it("a run that ends leaving learned items shows them at Mission Control's next read, with the page left open", async () => {
+  it("a run that ends leaving learned workflows shows them at Mission Control's next read, with the page left open", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"], shouldAdvanceTime: true });
     let pending = 0;
     serve(() => [agent("qa-learn", "QA learn", { learning: { pending } })]);
@@ -70,6 +70,6 @@ describe("Mission Control's Needs you, learned items waiting", () => {
     pending = 3;
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
     await wait(() => !!row(), "Needs you with QA learn's 3 waiting items after the next read");
-    expect(row()!.closest("li")?.textContent).toContain("3 learned items wait for your OK");
+    expect(row()!.closest("li")?.textContent).toContain("3 learned workflows wait for your OK");
   });
 });

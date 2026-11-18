@@ -107,8 +107,9 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 		{ name: "modalApp", option: "app", default: "agentrun" },
 		{ name: "modalConnect", option: "connect" },
 	]);
-	// How E2B's and Modal's machines are reached: the provider's exec unless a server's settings say dial.
+	// How E2B's, Modal's and Daytona's machines are reached: the provider's exec unless a server's settings say dial.
 	assert.deepEqual(extra.e2b.settings, [{ name: "e2bConnect", option: "connect" }]);
+	assert.deepEqual(extra.daytona.settings, [{ name: "daytonaConnect", option: "connect" }]);
 	assert.deepEqual([extra.docker.prepareImage, extra.docker.local], [true, true]);
 	// Agent37 registers the published box image in the key's workspace before the first create; its computers are remote.
 	assert.deepEqual([extra.agent37.prepareImage, extra.agent37.local], [true, undefined]);
@@ -142,7 +143,7 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	// Fly Machines start from the box image's registry tag, which Fly pulls at each create.
 	assert.deepEqual([extra.fly.prepareImage, extra.fly.local], [true, undefined]);
 	for (const [id, fields] of Object.entries(extra)) {
-		if (id !== "modal" && id !== "e2b") assert.equal(fields.settings, undefined, id);
+		if (!["modal", "e2b", "daytona"].includes(id)) assert.equal(fields.settings, undefined, id);
 		if (!["docker", "agent37", "modal", "e2b", "boxd", "morph", "cloudflare", "fly"].includes(id)) assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
 		if (id !== "phone-harness" && id !== "orgo") assert.equal(fields.ledger, undefined, id);
 		if (!["local-chrome", "browserbase", "kernel", "phone-harness"].includes(id)) assert.equal(fields.hostEnv, undefined, id);

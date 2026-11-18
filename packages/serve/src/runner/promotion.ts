@@ -63,7 +63,7 @@ import { readSnapshot } from "../learn/folder.js";
 import { type FirstChoice, fits, laidFor, type Promoted, type ReplayOutcome, servedOf, type Serving, workflowDigest } from "./workflow-first.js";
 import type { LearningFolder } from "../learn/folder.js";
 import { excerptShown } from "../learn/secrets.js";
-import { dslRefusalOf } from "../learn/skills.js";
+import { dslRefusalOf } from "../learn/workflow-draft.js";
 import type { Shown } from "../learning.js";
 import { workflowsAt } from "./learning-seed.js";
 
@@ -76,6 +76,9 @@ export const REPLAY_LAUNCH_GRACE_MS = 5 * 60 * 1000;
 
 export interface PromotionDeps {
   readonly store: Store;
+  /** Why model spend beside the claimed run is skipped (claim-secrets.ts claimSpendOff): a replay check starts runs with
+   *  no caller's key. Absent: it runs. */
+  readonly spendOff?: (what: string) => string | undefined;
   readonly agentId: string;
   /** The run being claimed: never one of its own check's inputs. Absent: no run is claimed (a person's replay, and its
    *  read): no run served first to keep, none whose per_run MCP credentials a replay is handed. */
@@ -256,7 +259,7 @@ async function servingNow(deps: PromotionDeps, workflow: LearnedWorkflow, digest
 export const DSL_REFUSES = "this release's workflow DSL refuses it";
 
 /** `serving` as it serves this run, once a serving revision this release's workflow DSL refuses is held. The refusal is of
- *  the text alone (learn/skills.ts dslRefusalOf: the DSL's own validation, no tool list), never of a host setting (a tool
+ *  the text alone (learn/workflow-draft.ts dslRefusalOf: the DSL's own validation, no tool list), never of a host setting (a tool
  *  gated, denied or missing, no adapter), which the run's own check still refuses as before. The hold is a promotion
  *  record of its digest, `hold` by its reason alone ("this release's workflow DSL refuses it: <code> at <path>: <its
  *  words>", cut of the host's secrets as a check's texts are), written only while the digest's newest record is still the
@@ -391,6 +394,10 @@ async function checkInputs(deps: Pick<PromotionDeps, "store" | "agentId" | "runI
  *  it fits), it is decided at once: never promoted, it stops with nothing checked (stopUnchecked). */
 async function startCheck(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string): Promise<void> {
   const { store, agentId, log } = deps;
+  // Its replay runs are runs the runner starts, on no caller's key: skipped where the claimed run brought its own key or
+  // the server holds none (claimSpendOff).
+  const off = deps.spendOff?.("A learned workflow's replay check");
+  if (off) return void log(`workflow-first: ${off} ${workflow.name} at ${digest} is not checked and does not serve this run`);
   // Only the learning folder's newest revision is checked: a run pinned to an older commit lays an older text.
   const newest = deps.newest ? await deps.newest(workflow.name) : undefined;
   if (newest !== undefined && newest !== digest) {
@@ -686,6 +693,7 @@ async function startReplay(deps: PromotionDeps, workflow: LearnedWorkflow, diges
  *  this claim created. */
 async function relaunch(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, record: PromotionRecord): Promise<number> {
   const { store } = deps;
+  if (deps.spendOff?.("A replay")) return 0;
   const since = (deps.now ?? Date.now)() - Date.parse(record.at);
   const launch = record.launch;
   if (!launch || since <= REPLAY_LAUNCH_GRACE_MS || since > REPLAY_DEADLINE_MS) return 0;
@@ -836,7 +844,7 @@ export async function askReplay(ask: ReplayAsk, name: string, digest: string, in
   const { inputs: picked } = await checkInputs({ store: ask.store, agentId: ask.agentId }, found.workflow, { of: last ?? [], n: typeof inputs === "number" ? inputs : last ? 0 : loop.compile_after });
   if (!picked.length) throw new ReplayRefused("conflict", `${name} at ${digest} has no input to replay on: none of ${typeof inputs === "number" ? `the agent's newest ${plural(inputs, "completed run")}` : last ? "the runs it was last checked on" : "the agent's last completed runs"} has an input it fits. Nothing was started.`);
   const { launch, revisionId } = await ask.launchOf(picked[0]!.launch.input as Json);
-  if (!launch.learning || launch.learning.notesOnly) throw new ReplayRefused("conflict", `A replay runs ${name} as a run of the agent that learns does, and the agent's runs do not take learned workflows here (its learning is off, notes only, or this server's is off).`);
+  if (!launch.learning || launch.learning.noWorkflows) throw new ReplayRefused("conflict", `A replay runs ${name} as a run of the agent that learns does, and the agent's runs do not take learned workflows here (its learning is off, it takes no workflows, or this server's is off).`);
   const deps: PromotionDeps = { store: ask.store, agentId: ask.agentId, revisionId, launch: { ...launch, learning: { ...launch.learning, seed: found.commit } }, context: ask.context, log: ask.log, shown: ask.shown, ...(ask.now ? { now: ask.now } : {}) };
   const bar: CheckBar = { compile_after: loop.compile_after, agree_min: loop.agree_min, alone_min: loop.alone_min, attempt: attemptOf(records, name, digest) };
   const said = `checking it on ${plural(picked.length, "input")} of the agent's own runs, as its owner asked`;

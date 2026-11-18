@@ -17,7 +17,7 @@ for(const runtime of ['claude-code','codex'])test(`${runtime} grades retain the 
  const connected=await api('POST','/native/connect',{project:f.project,runtime});assert.equal(connected.status,200,JSON.stringify(connected.body));
  const id=connected.body.agent.agent_id;
  assert.equal((await api('POST',`/agents/${id}/native/verify`,{})).status,200);
- assert.equal((await api('PUT',`/agents/${id}/definition`,{definition:{instructions:'',learning:'notes'}})).status,200);
+ assert.equal((await api('PUT',`/agents/${id}/definition`,{definition:{instructions:'',learning:true}})).status,200);
  const started=await api('POST',`/agents/${id}/runs`,{input:{content:'Answer once from the source session.'}});assert.equal(started.status,202,JSON.stringify(started.body));
  const run=started.body.run_id;await follow(api,run,['completed']);
  const before=await store.runs.get(run),calls=await f.calls();

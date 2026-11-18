@@ -17,7 +17,7 @@ import type { Context } from "@earendil-works/chord/context";
 import { type CommitResult, type ConversationId, type EntryRecord, ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
 import type { KernelHooks, ToolCall } from "./conformance/subject.js";
 import { KINDS } from "./journal-kinds.js";
-import { type Command, cutAtLimit, type HeldState, type Journal, type LoopDeps } from "./loop-contract.js";
+import { type Command, cutAtLimit, cutByCap, type HeldState, type Journal, type LoopDeps } from "./loop-contract.js";
 import { PI_STOP } from "./pi-stop.js";
 import type { Staged } from "../store/store.js";
 
@@ -220,8 +220,11 @@ export function cutLast(entries: readonly EntryRecord[]): string | undefined {
   // The newest model answer: pi's assistant entry, or a CLI record's model message (its turn_end's stop reason).
   const last = [...entries].reverse().find((entry) => entry.kind === "pi.assistant" || (entry.kind === KINDS.message && (entry.data as { role?: unknown } | undefined)?.role === "model"));
   if (last?.kind === KINDS.message) {
-    const said = last.data as { stopReason?: string; outputTokens?: number };
-    return said.stopReason === "length" ? cutAtLimit(said.outputTokens) : undefined;
+    const said = last.data as { stopReason?: string; outputTokens?: number; capCut?: { capUsd?: unknown; raiseToUsd?: unknown } };
+    if (said.stopReason !== "length") return undefined;
+    // Cut at the output the run's cap limited it to: the cap's cut, named with the cap that lets it finish.
+    const { capUsd, raiseToUsd } = said.capCut ?? {};
+    return typeof capUsd === "number" && Number.isFinite(capUsd) && typeof raiseToUsd === "number" && Number.isFinite(raiseToUsd) ? cutByCap({ capUsd, raiseToUsd }, said.outputTokens) : cutAtLimit(said.outputTokens);
   }
   const message = (last as { model?: { stopReason?: string; usage?: { output?: number } }[] } | undefined)?.model?.[0];
   return message?.stopReason === PI_STOP.length ? cutAtLimit(message.usage?.output) : undefined;

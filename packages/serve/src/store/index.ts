@@ -1,14 +1,14 @@
 // The one store (design 2.1), for the cutover: nothing on main imports it until then.
-export { AgentArchived, AnswerTaken, CommandTaken, endedReason, ExternalBodyConflict, FINAL_STATES, Fenced, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, RevisionMoved, RunFinal, SchemaVersionUnknown, SignInHandedTo, SignInMissing, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreFromEarlierVersion, StoreLaunchMissing, StoreOwned, StoreWorkerLost, STORE_WRITE_DEADLINE_MS, stoppedByPerson, TriggerFull } from "./store.js";
+export { AgentArchived, AgentDeleting, AnswerTaken, CommandTaken, endedReason, ExternalBodyConflict, FINAL_STATES, Fenced, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, RevisionMoved, RunFinal, SchemaVersionUnknown, SignInHandedTo, SignInMissing, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreFromEarlierVersion, StoreLaunchMissing, StoreOwned, StoreWorkerLost, STORE_WRITE_DEADLINE_MS, stoppedByPerson, TriggerFull, TriggersLeft } from "./store.js";
 export type {
   ConstraintRule,
   AgentRow, Agents, AlsoRow, ChannelPost, Claim, Command, ComputerLedger, ComputerLedgerRow, Firing, FiringChange, FiringRow, FiringStatus, FiringStreak, Journal, Live, LiveRow, Mcp, McpCredentialMark, McpRemoved, McpOauth, McpOauthPendingRow, McpPinRow,
   McpServerRow, McpServerStamp, McpServerWrite, MintedTokenRow, MintedTokens, NewFiring, NewPairedComputer, NewRevision, NewTrigger, PairedComputerRow, PairedComputers, ReleasedState, RevisionRow, RunPatch, RunRow, Runs, RunState, SealedKeyRow, SealedKeys, SealedPlane, SealedSecretRow, SealedSecrets, SettingRow, Settings, Staged,
   StagedTake, Store, StoreRole, TemplatePackage, Templates, TriggerDef, TriggerPatch, TriggerRow, Triggers, TriggerScope, TriggerSettingRow,
-  TriggerSettings, Channels, ChannelAttemptRow, ChannelPostRow, ChannelToldRow, ImportedFrom, ImportSource, ImportRunInput, JournalReads, RunLabels, RunOrigin, RunOutcome, RunLaunchInput, RunLaunchRow, Learning,
+  TriggerSettings, Channels, ChannelAttemptRow, ChannelPostRow, ChannelToldRow, ImportedFrom, ImportSource, ImportRunInput, JournalReads, RunLabels, RunOrigin, RunOutcome, RunLaunchInput, RunLaunchRow, LaunchSealed, LaunchSealedWrite, Learning,
   LearningProposal, LiveViewerRow, LiveViewers, SignIns, SignInRow, SignInTombstoneRow, UpdatedRun, ViewerKind,
 } from "./store.js";
-export { aadOf, type McpCredential, type OpenedMcpCredential, openMcpCredential, openRunMcpAuth, type RunMcpAuth, sealColumn, type SealedAt, sealedAt, sealMcpCredential, sealRunMcpAuth, unsealColumn } from "./seal.js";
+export { aadOf, type McpCredential, type OpenedMcpCredential, openMcpCredential, openRunLaunch, openRunMcpAuth, type RunLaunchSecrets, type RunMcpAuth, type RunModelKey, sealColumn, type SealedAt, sealedAt, sealMcpCredential, sealRunLaunch, sealRunMcpAuth, unsealColumn } from "./seal.js";
 export {
   AgentBodyInvalid, type AgenticBody, bodyOf, canonical, isObject, isSkillPath, type PromptVariant,
   type ModelTiers, type MonidPinBody, type RevisionBodyInput, type RevisionComputer, type RevisionPlace, sha256, type ToolSettings, type WorkflowBody,

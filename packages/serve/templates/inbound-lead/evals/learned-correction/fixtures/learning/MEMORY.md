@@ -1,1 +1,0 @@
-- [We don't sell to agencies](no-agencies.md) — agencies are never customers, even ones that build for fintechs

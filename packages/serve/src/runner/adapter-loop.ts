@@ -52,7 +52,7 @@ const outputRetried = (entries: readonly { readonly kind?: string; readonly data
 import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, type EndOfRunAnswer, type EndOfRunKept, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, stopEnd, type StopReason } from "./loop-contract.js";
 import { ASKED_BECAUSE, deniedText as setToDenyText, ENDED_WHILE_WAITING, refusedText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
-import { answerText, REFLECT_NOTE_ONLY, REFLECT_PREFIX, reflectRequestId, underLearning, WRITES } from "./end-of-run.js";
+import { answerText, REFLECT_PREFIX, reflectRequestId } from "./end-of-run.js";
 import { agentEntriesOf, approvalOf, BOOKING_WRITE_MS, CLOSE_MS, CUT_STEP_MS, END_PATCH_MS, END_PATCH_UNKNOWN, PARK_SIBLINGS_MS, readAgain, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, lastAnswerText, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
 import { outputMiss, outputRetryWords } from "../answer-json.js";
 import type { PiRun, PiSessionIO, PreIntentAnswer, PreIntentCall } from "./adapters/pi.js";
@@ -71,8 +71,8 @@ import { DECISION_SESSION, FIT_TOLERANCE, freeModel, freeRequestsIn, freeWrapUpD
 import { PORT_PROVIDER, portModels, type PortModels, tierProvider } from "../port-models.js";
 
 /** The run's cap's config, as its spec gives it: the kernel runCap's options but its sessions (the loop's own), and
- *  `beside`, what was spent beside the run's sessions on its behalf (Store.learning.spentBeside: its learning runs'
- *  grades), which every gate of the run reads with its sessions' spend (runBooking's sessions.beside, overCap, the
+ *  `beside`, what was spent beside the run's sessions on its behalf (learning-end.ts shadowBesideOf: its audit's shadow
+ *  run), which every gate of the run reads with its sessions' spend (runBooking's sessions.beside, overCap, the
  *  wrap-ups). None: nothing is. */
 export type RunCapConfig = Omit<RunCapOptions, "sessions"> & { beside?(): Promise<number | null> };
 import { bookedIn, type PaidBooking } from "../paid-calls.js";
@@ -151,6 +151,9 @@ export interface AdapterRunSpec {
    *  run, its model requests, its paid tool calls and its decisions, is admitted and booked through it. An uncapped run
    *  gives capUsd: () => undefined. */
   readonly runCap: RunCapConfig;
+  /** This claim's model-request retry policy over the loop's defaults. A provider whose failed request may already be
+   *  billed can disable automatic retries for every conversation in the claim, including its subagents. */
+  readonly retry?: Partial<ConversationRetryPolicy>;
   /** The run's cap, when it has one (filled from the run's launch): its figure, and what a refusal does to the run (the
    *  kernel cap's parkOf: parked with a pending budget for a refusal a raise could fix, else failed in its words), at the
    *  cap the run is held to when it parks (`capUsd`: the newest raise's, else the launch's), which its pending budget
@@ -184,10 +187,10 @@ export interface AdapterRunSpec {
    *  them): it wins over LoopDeps.endOfRun and is asked where that one is, in the end turn while the claim is held, before
    *  a tool host's beforeRelease and the run's release, its rows in the end's commit. */
   readonly endOfRun?: EndOfRunTurn;
-  /** What the claim laid of the run's learning seed (runner/learning-seed.ts): the learned skills and workflows it was
-   *  given, by name. The loop writes it on the root (KINDS.learningLaid) as this claim opens. Absent for a run that does
-   *  not learn. */
-  readonly learningLaid?: { readonly skills: readonly string[]; readonly workflows: readonly string[] };
+  /** What the claim laid of the run's learning seed (runner/learning-seed.ts): the learned workflows it was given, by
+   *  name. The loop writes it on the root (KINDS.learningLaid) as this claim opens. Absent for a run that does not
+   *  learn. */
+  readonly learningLaid?: { readonly workflows: readonly string[] };
   /** The run's work folder, as its file tools resolve a path: what the end-of-run turn's refusal under work/.learning/
    *  reads an absolute path against. Absent: a relative path, or the box's, still counts. */
   readonly workRoot?: string;
@@ -255,6 +258,10 @@ export interface AdapterRunSpec {
    *  the session through the loop's gate, a command row makes them fresh again, and the pass's end lets them go. Absent:
    *  the run grants no MCP tool. */
   readonly mcp?: ClaimMcp;
+  /** The run's model key holder (claim-secrets.ts claimModelKey), which its model routes read at each request: a command
+   *  row opens it from the run's launch again before the command reaches the session, so a message's key (a replacement,
+   *  or a run's first) is the one its next request carries. Absent: no gateway here, and the routes read the server's keys. */
+  readonly modelKey?: { fresh(): Promise<void> };
   /** The JSON Schema the run's final answer's last json block meets (its revision's definition.output_schema). An answer
    *  that misses it is asked again once, in the same session under the same cap (the output contract's retry); absent:
    *  the run's answer is never checked here. */
@@ -719,7 +726,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
   let chain: Promise<void> = Promise.resolve();
   const inTurn = (work: () => Promise<void>): Promise<void> => (chain = chain.then(work, work));
   /** What was said since the last boundary as a model message; at a turn's end, with the cut its adapter reported. */
-  const flushText = (cut?: { stopReason?: "length"; outputTokens?: number }, atRequest = false) => {
+  const flushText = (cut?: { stopReason?: "length"; outputTokens?: number; capCut?: { capUsd: number; raiseToUsd: number } }, atRequest = false) => {
     // Taken at the boundary, not when its write's turn comes: text said after it is the next message's.
     const said = text;
     text = "";
@@ -730,7 +737,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
       const joined = flushedAtRequest && said.trim() === "";
       flushedAtRequest = atRequest;
       if (joined) return;
-      const length = cut?.stopReason === "length" ? { stopReason: "length" as const, ...(cut.outputTokens === undefined ? {} : { outputTokens: cut.outputTokens }) } : {};
+      const length = cut?.stopReason === "length" ? { stopReason: "length" as const, ...(cut.outputTokens === undefined ? {} : { outputTokens: cut.outputTokens }), ...(cut.capCut === undefined ? {} : { capCut: { capUsd: cut.capCut.capUsd, raiseToUsd: cut.capCut.raiseToUsd } }) } : {};
       await append(KINDS.message, { role: "model", text: said, ...length });
     });
   };
@@ -991,8 +998,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** The current pass ended in a park that keeps its computer (keepAtPark), for this cause, until its release reads it. */
   let parkedNow: ParkCause | undefined;
   /** From the end-of-run step's start (or a claim that found its turn open: lookingBackOpen, from its session's open)
-   *  until the claim ends: a steer is left for the end, writes and edits under work/.learning/ are refused
-   *  (REFLECT_NOTE_ONLY), and every request is learning's, never the job's: the cap's wrap-up note is never told to it,
+   *  until the claim ends: a steer is left for the end, and every request is learning's, never the job's: the cap's wrap-up note is never told to it,
    *  and a refusal of one never parks the run (learningRefused). Held between the step's asks too: a turn a takeover
    *  resumed may send its next request while the step still reads an earlier answer. */
   let reflecting = false;
@@ -1637,7 +1643,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         /** The root a phase is making, awaited before the owed writes are read. */
         let rootMaking: Promise<unknown> | undefined;
         harness = await Harness.open(gate.journal, {
-          models: () => models, registry, settings: { restartLimit, retry, stream }, onReport: () => {},
+          models: () => models, registry, settings: () => ({ restartLimit, retry: { ...retry, ...specNow?.retry }, stream }), onReport: () => {},
           // A tool host's onConversation, in each agent conversation's creating commit (the spec's, once it is known: the
           // root is created when the session opens, after the spec).
           conversationCreated: async (tx, record) => {
@@ -1944,7 +1950,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // earlier session's, a grade's), summed as overCap sums them; null while any is unknown. Read at the claim and again
         // after each request is admitted (the note is placed before its own request's admission, so it reads the last).
         const restOf = async (): Promise<number | null> => {
-          // And what was spent beside the run on its behalf (its learning runs' grades).
+          // And what was spent beside the run on its behalf (its audit's shadow run).
           const beside = await besideNow();
           if (beside === null) return null;
           let rest = beside;
@@ -2567,7 +2573,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // What this claim laid of the run's learning seed, once per claim: the newest is what the run was given.
         if (restarts === 0 && spec.learningLaid) {
           const [journalOf, rootOf, laid] = [harness, root, spec.learningLaid];
-          await journalOf.commit((tx) => tx.appendEntry(rootOf.id, { kind: KINDS.learningLaid, data: { skills: [...laid.skills], workflows: [...laid.workflows] } as unknown as JsonValue }), context);
+          await journalOf.commit((tx) => tx.appendEntry(rootOf.id, { kind: KINDS.learningLaid, data: { workflows: [...laid.workflows] } as unknown as JsonValue }), context);
         }
         // Reopened by a person's follow-up (runs.reopen, or the end's own reopen): a fresh reopen is a claim whose journal's
         // root ends on an end entry, with no input of the root in flight. Then any turn its session still reads open is one
@@ -3140,8 +3146,6 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // An MCP tool is asked about by its catalog name (`mcp:<server>/<tool>`), as its settings and its card name it.
       const tool = mcp?.catalogOf(call.tool) ?? call.tool;
       const kernelCall: ToolCall = { callId: call.callId, tool: tool as never, args: call.args };
-      // The end-of-run turn's notes are kept only from its answer: a write there is refused before its intent.
-      if (reflecting && WRITES.has(call.tool) && underLearning(spec.workRoot, call.args)) return { deny: REFLECT_NOTE_ONLY };
       await hooks.beforeIntent(kernelCall);
       // The cap's wrap-up, the same way: once the run has taken its share of the cap, every call the model makes is refused
       // in its fixed words, and the model answers from what it has. A call a running tool makes is that tool's, let through.
@@ -4043,7 +4047,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     async command(command) {
       // A command row resumes a loop that may have sat past a token's life: its MCP credentials are made fresh again
       // before its next model request.
-      if (command.kind === "steer" || command.kind === "approve" || command.kind === "deny" || command.kind === "raise") mcpStale = true;
+      if (command.kind === "steer" || command.kind === "approve" || command.kind === "deny" || command.kind === "raise") {
+        mcpStale = true;
+        // The run's own model key, read again from its launch before the command reaches the session: the message's key
+        // was written with its command row, so the next request's credential (which the model proxy reads before its
+        // beforeRequest hook) is the message's, a first key or a replacement. Fail-closed: a read that keeps failing
+        // throws here, before the command is taken, so the runner delivers it again at its next poll and the session
+        // never runs the message on the key held before it.
+        await specNow?.modelKey?.fresh();
+      }
       if (command.kind === "steer") return steer(command);
       if (command.kind === "approve" || command.kind === "deny") {
         // An answer names its approval: the asked call's id. One that names no call waiting for its answer (an old

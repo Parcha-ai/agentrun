@@ -18,7 +18,7 @@ describe("App Learning Dojo", () => {
       if (u.pathname === "/v2/setup/import") return json({ offer: false });
       if (u.pathname === "/v2/capabilities") return json({ harnesses: [], models: { ready: false, needs: "key" }, features: { learning: "on", messages: { steer: false, answer: true, follow_up: true, steer_workflow_runs: false } } });
       if (u.pathname === "/v2/agents") return json({ agents: u.searchParams.has("archived") ? [] : [{ agent_id: "support agent", kind: "agentic", revision: "1", revisions: 1, archived_at: null, definition: { version: 1, name: "Support agent", learning: true, tools: [], skills: [] } }], next_cursor: null });
-      if (u.pathname === "/v2/agents/support%20agent/learning") return json({ agent: "support agent", main: null, index: "", notes: { items: [], total: 0, next_cursor: null }, skills: [], workflows: [], log: { items: [], total: 0, next_cursor: null }, counts: { merged: 3, dropped: { empty: 1 }, in_progress: 0 } });
+      if (u.pathname === "/v2/agents/support%20agent/learning") return json({ agent: "support agent", main: null, corrections: "", workflows: [], log: { items: [], total: 0, next_cursor: null }, counts: { merged: 3, dropped: { empty: 1 }, in_progress: 0 } });
       return json({ error: { code: "not_found", message: "No route", retryable: false } }, 404);
     });
     location.hash = "#/dojo";

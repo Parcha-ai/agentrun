@@ -85,6 +85,8 @@ export async function forgetAgentComputer(store: { settings: Pick<Store["setting
 
 type Holding = { settings: Pick<Store["settings"], "get" | "putIfAbsent" | "replaceIf" | "removeIf"> };
 const holdKey = (agentId: string): string => `agent_computer_hold:${agentId}`;
+/** The settings key of the hold on an agent's own computer (gone with the agent's delete: agent-delete.ts). */
+export const agentComputerHoldKey = holdKey;
 
 /** How long a hold that is letting go (its run detaching the computer at its end, or this server deleting it) keeps every
  *  other run off: the most a provider's detach or delete is waited on. A holder that died while letting go is taken over

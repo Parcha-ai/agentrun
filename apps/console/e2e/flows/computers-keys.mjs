@@ -1,6 +1,6 @@
 // Settings → Computers, as served under --faux's computers (packages/serve/src/faux-computers.ts): Faux sandbox needs
 // FAUX_SANDBOX_KEY, so it is not ready until a key is pasted; once saved it is Ready and its Test connection passes with
-// the server's detail. Faux broken has no key and its test fails with the server's why. The pasted value is a fake made
+// the server's detail. Faux broken has no key, so it offers no Test connection: there is no account to test. The pasted value is a fake made
 // here, never printed, and never in the page once saved. The server seals it under its own random seal key.
 import { randomBytes } from "node:crypto";
 import { check } from "../harness.mjs";
@@ -44,14 +44,9 @@ export default {
     await passed.waitFor();
     check(/^Passed · .+ · Faux sandbox: the faux account answered/.test(await passed.innerText()), `Faux sandbox's test reads ${JSON.stringify(await passed.innerText())}`);
 
-    // Faux broken: no key; its test fails in the server's words.
+    // Faux broken: no key, so no Test connection (its Ready or Not ready says whether it answers).
     const broken = row("Faux broken");
     check((await broken.innerText()).includes("No key."), "Faux broken doesn't say it takes no key");
-    await broken.getByRole("button", { name: "Test connection", exact: true }).click();
-    const failed = broken.locator("[data-test]");
-    await failed.waitFor();
-    // The server's words as it sends them: its own sentence, with the vendor's error in it.
-    const said = await failed.innerText();
-    check(said.startsWith("Failed · ") && said.includes("faux-broken is --faux's broken provider: it never answers"), `Faux broken's test reads ${JSON.stringify(said)}`);
+    check(await broken.getByRole("button", { name: "Test connection", exact: true }).count() === 0, "Faux broken offers Test connection with no key to test");
   },
 };

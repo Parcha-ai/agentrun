@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { create, DaytonaProvider } from "../dist/daytona.js";
-import { checkLifetime, DAYTONA, kindRefusals, mountsOf } from "../dist/index.js";
+import { AttachHub, checkLifetime, DAYTONA, kindRefusals, MemoryMachineTokens, mountsOf } from "../dist/index.js";
 import { fakeHost } from "./fake-host.mjs";
 
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -715,6 +715,66 @@ test("create() under open or a list asks Daytona for the sandbox's network (netw
 		assert.equal(body.networkBlockAll, blocked, JSON.stringify(network));
 		assert.equal(body.labels[`${COMPUTER}.network`], form, JSON.stringify(network));
 	}
+});
+
+/** A dial provider's server in tests: http on 127.0.0.1, which a dial provider takes in tests alone, its tokens and hub. */
+const dialOf = () => ({ url: "http://127.0.0.1:8080", tokens: new MemoryMachineTokens(), hub: new AttachHub({ helloMs: 1_000 }) });
+const BOOT_NAMES = ["AGENTRUN_ATTACH_TOKEN", "AGENTRUN_ATTACH_URL", "AGENTRUN_DAEMON_SHA256", "AGENTRUN_DAEMON_URL", "AGENTRUN_INIT_ARGS"];
+
+test("connect dial: create sends the boot env as the sandbox's env and its network on, from the snapshot named, and the host has no exec and no upload", async () => {
+	const rec = refusedCreate();
+	const dial = dialOf();
+	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: rec.fetch, timeouts: TIMEOUTS, connect: "dial", dial });
+	assert.equal(provider.host.facts.connect, "dial");
+	assert.equal(provider.host.exec, undefined, "no exec");
+	assert.equal(provider.host.upload, undefined, "no upload");
+	const made = await provider.create({ ...SPEC, image: "agentrun-archil-0123456789ab" }, { requestId: "r-dial" });
+	assert.equal(made.error?.code, "invalid", "a create Daytona refused made nothing");
+	const body = posted(rec);
+	assert.equal(body.snapshot, "agentrun-archil-0123456789ab");
+	assert.deepEqual(Object.keys(body.env).sort(), BOOT_NAMES);
+	assert.equal(body.env.AGENTRUN_ATTACH_URL, "ws://127.0.0.1:8080/v2/computers/attach");
+	assert.equal(body.env.AGENTRUN_DAEMON_URL, "http://127.0.0.1:8080/v2/computers/daemon?arch=amd64");
+	assert.match(body.env.AGENTRUN_ATTACH_TOKEN, /^art_[0-9a-f]{64}$/);
+	assert.match(body.env.AGENTRUN_INIT_ARGS, /^--deadline \S+ --user 2510:2510 --own-network --max-deadline \S+$/);
+	assert.equal(body.networkBlockAll, false, "its root reaches the server; its tools' network none is init's");
+	assert.equal(dial.tokens.check(body.env.AGENTRUN_ATTACH_TOKEN), undefined, "a create Daytona refused has its token revoked");
+	assert.equal(rec.requests.some((r) => r.url.startsWith(TOOLBOX)), false, "nothing goes through the toolbox");
+	// Exec stays the default: no env, the network as the spec says, and the toolbox's exec and upload.
+	const plain = setup({ "GET /api/sandbox": { body: { items: [] } }, "POST /api/sandbox": { status: 400, body: { statusCode: 400, message: "snapshot not found" } } });
+	await plain.provider.create(SPEC, { requestId: "r-exec" });
+	assert.deepEqual(posted(plain.rec).env, {});
+	assert.equal(posted(plain.rec).networkBlockAll, true);
+	assert.equal(plain.provider.host.facts.connect, undefined);
+	assert.equal(typeof plain.provider.host.exec, "function");
+	assert.equal(typeof plain.provider.host.upload, "function");
+});
+
+test("connect dial: no Archil mount, no GPU and not Daytona's default snapshot, each refused in words; labels refused as on exec; no value but exec or dial", () => {
+	const { provider, rec } = setup({}, { connect: "dial", dial: dialOf(), archilEgress: EGRESS });
+	const caps = provider.capabilities();
+	assert.equal(caps.kind, "linux");
+	assert.equal(caps.daemon, "child", "init is agentrun-dial's child, and agentrun-dial the toolbox's entrypoint session's");
+	assert.deepEqual(caps.mount, [], "no Archil mount on dial, even with an egress");
+	assert.equal(caps.gpu, undefined, "no GPU on dial");
+	assert.deepEqual(caps.vendorAgentPorts, [2280], "the toolbox still runs, and its port is still blocked");
+	const mount = provider.check(ARCHIL_SPEC);
+	assert.deepEqual(mount.map(({ field }) => field), ["mount"]);
+	assert.match(mount[0].message, /Daytona's machines dial this server, and a machine that dials takes no Archil mount yet/);
+	const gpu = provider.check({ ...SPEC, image: "default", gpu: GPU });
+	assert.ok(gpu.length > 0 && gpu.every(({ field }) => field === "gpu"), JSON.stringify(gpu));
+	assert.ok(gpu.some(({ message }) => /a Daytona computer that dials this server takes no GPU: daytona-gpu holds no agentrun-dial/.test(message)), JSON.stringify(gpu));
+	assert.deepEqual(provider.check({ ...SPEC, labels: { "agentrun.computer.deadline": "never" } }).map(({ field }) => field), ["labels"]);
+	assert.deepEqual(provider.check(SPEC), []);
+	const plain = provider.check({ ...SPEC, image: "default" });
+	assert.deepEqual(plain.map(({ field }) => field), ["image"], "Daytona's default snapshot holds no agentrun-dial");
+	assert.match(plain[0].message, /Daytona's default snapshot has none, so it would never dial/);
+	assert.throws(() => setup({}, { connect: "ssh" }), /connect is how Daytona reaches its machines, "exec" \(the default\) or "dial", not "ssh"/);
+	assert.equal(rec.requests.length, 0);
+});
+
+test("Daytona's descriptor declares the connect setting, with no default of its own: a server's settings pass it to create() as connect, else the provider's exec holds", () => {
+	assert.deepEqual(DAYTONA.settings, [{ name: "daytonaConnect", option: "connect" }]);
 });
 
 test("the provider writes nowhere but its results, and reads no environment: its source has no console, no stdio and no process.env", () => {

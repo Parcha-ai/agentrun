@@ -12,7 +12,7 @@ const json = (body: unknown) => new Response(JSON.stringify(body), { headers: { 
 const connector: RemoteConnector = {
   connector_id: "source/one", label: "Development laptop", status: "online", last_seen_at: "2026-11-12T20:00:00Z", created_at: "2026-11-12T19:00:00Z",
   capabilities: { observe: true, native_execution: true },
-  targets: [{ target_id: "target-1", agent_id: "reviewer/one", name: "Review profile", runtime: "codex", machine_id: "source-machine", state: "ready", issues: [], capabilities: { launch: true, notes: true, skills: true, workflows: false, approval: "native", usage: true } }],
+  targets: [{ target_id: "target-1", agent_id: "reviewer/one", name: "Review profile", runtime: "codex", machine_id: "source-machine", state: "ready", issues: [], capabilities: { launch: true, learning: true, workflows: false, approval: "native", usage: true } }],
 };
 const buttons = (text: string) => [...document.querySelectorAll("button")].filter((button) => button.textContent === text);
 

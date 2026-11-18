@@ -233,9 +233,13 @@ export interface RunLaunchRow {
 }
 
 /** A message's new launch secrets (runs.command, runs.reopen): `launchSealed` replaces the run's launch `sealed` in the
- *  command's own transaction, so the runner that takes the command reads them, and a run already final takes neither. */
+ *  command's own transaction, so the runner that takes the command reads them, and a run already final takes neither.
+ *  Given as a function, it is called inside that transaction with the sealed bytes the launch holds then (null when none:
+ *  a run whose end erased them), and its answer is written (null erases): a message that hands one secret keeps the
+ *  others the run holds, with no read outside the write that could bring back what an end erased. */
+export type LaunchSealed = Uint8Array | ((current: Uint8Array | null) => Uint8Array | null);
 export interface LaunchSealedWrite {
-  readonly launchSealed?: Uint8Array;
+  readonly launchSealed?: LaunchSealed;
 }
 
 /** A run imported from another harness's session: an ended run with where it came from, its launch (built from the
@@ -270,16 +274,9 @@ export interface ImportRunInput {
 export type AlsoRow =
   | { readonly table: "channel_posts"; readonly row: ChannelPost }
   | { readonly table: "channel_told"; readonly row: { channel: string; marker: string } }
-  /** What the run's end-of-run turn kept: the turn and the proposal checked from it (the run's agent is the row's), and
-   *  its `round` (absent: 1): the run's first end is round 1, each end after a follow-up opened it again the next. */
-  | { readonly table: "learning_proposals"; readonly row: { turn: unknown; proposal: unknown; round?: number } }
-  /** The learning run that grades and merges the kept proposal: a queued run `id` of the run's agent and revision. Started
-   *  once: the same id staged again (an end replayed after a crash) adds nothing. */
-  /** `model`: the grade model (gradeModelOf, as the server resolves it), on the learning run's launch; none, the agent's own.
-   *  `round`: the round it grades (absent: 1), named in its launch. `capUsd`: what the run's cap leaves once everything it
-   *  spent is counted (learning-end.ts gradeCapOf), the learning run's own cap (its launch's max_cost_usd), so its grade
-   *  never takes the run past its cap; absent for an uncapped run, whose grade is capped by nothing. */
-  | { readonly table: "learning_run"; readonly row: { id: string; model?: string; round?: number; capUsd?: number } };
+  /** What the run's end-of-run step kept: the turn and how its learning ended (the run's agent is the row's), and its
+   *  `round` (absent: 1): the run's first end is round 1, each end after a follow-up opened it again the next. */
+  | { readonly table: "learning_proposals"; readonly row: { turn: unknown; proposal: unknown; round?: number } };
 
 /** A run's kept learning (learning_proposals): what its end-of-run turn asked and answered, and the proposal checked from it. */
 export interface LearningProposal {
@@ -300,9 +297,6 @@ export interface Learning {
   proposal(runId: string, round?: number): Promise<LearningProposal | undefined>;
   /** The agent's kept proposals (each round of a run one), newest first. */
   proposals(agentId: string, options?: { limit?: number }): Promise<LearningProposal[]>;
-  /** The agent's kept proposals whose learning run (its grade) has not ended: queued, running or parked. Every one of
-   *  them, however many proposals were kept since, newest first. */
-  grading(agentId: string): Promise<LearningProposal[]>;
   /** Everything agent `agentId`'s runs' learning kept, in two reads whatever the number of its runs: every round of every
    *  run's kept proposal (oldest round first within a run), and the rows of the learning runs they name (as runs.get
    *  reads one; a learning run named and never written has none). An agent-wide read's, never a read a run. */
@@ -312,12 +306,6 @@ export interface Learning {
    *  before it was proposed ended when it was kept; a proposal ended when its learning run ended (ended or failed), whose
    *  row keeps the grade's spend as its cost. One still waiting for its grade is none of them. */
   spend(window: { from: number; to: number }): Promise<LearningSpend[]>;
-  /** What was spent beside run `runId` on its behalf, the one figure every cap gate of the run reads with its own
-   *  sessions (and its grade's cap, learning-end.ts gradeCapOf): each learning run its rounds queued (`beforeRound`: only
-   *  those of the rounds before it), one that ended at its cost, one not ended at its own cap (the most its grade may
-   *  take), and one that ended at an unknown cost at that cap too, the most it could have taken. Null: unknown (one with
-   *  neither). 0 for a run that queued none. */
-  spentBeside(runId: string, options?: { beforeRound?: number }): Promise<number | null>;
 }
 
 /** One run's learning end as GET /usage's learning meter counts it (Learning.spend). */
@@ -558,9 +546,11 @@ export interface NewTrigger {
 }
 /** A trigger's fields changed; the ones absent stay. */
 /** `agentId`: the agent it belongs to, which follows its target (a PATCH may aim it at another agent's run or agent). */
-/** A trigger update's options: `ifUpdatedAt`, a compare-and-set: written only while the row's updatedAt is still this one
- *  (the read the patch was made from), undefined otherwise, as when there is no such trigger. */
-export type TriggerUpdateOptions = { readonly ifUpdatedAt?: number };
+/** A trigger update's options: a compare-and-set, written only while the row is still the read the patch was made from,
+ *  undefined otherwise, as when there is no such trigger. `ifUpdatedAt`: the row's updatedAt is still this one.
+ *  `ifSource`: its source is still this one, as the store keeps it; two writes in one millisecond share an updatedAt, so a
+ *  write that must never land over another source write (a seal, an edit) gives both. */
+export type TriggerUpdateOptions = { readonly ifUpdatedAt?: number; readonly ifSource?: unknown };
 export type TriggerPatch = Partial<Pick<TriggerRow, "agentId" | "name" | "enabled" | "source" | "target" | "nextAt" | "catchupWindowS" | "failuresInARow" | "disabled" | "maxActiveRuns">>;
 /** A firing's new state. Out of due, a firing keeps no retry, wait, payload nor the reason its last try gave (unless given). */
 export interface FiringChange {
@@ -589,6 +579,27 @@ export class AgentArchived extends Error {
   override name = "AgentArchived";
   constructor(readonly agentId: string) {
     super(`the agent ${agentId} is archived`);
+  }
+}
+
+/** A run of an agent being deleted, or a follow-up that would open one of its runs again: refused, nothing written. An
+ *  agent another system owns is never archived here (its archive route is refused), so its archive time is the mark its
+ *  delete leaves (DELETE /agents/{id}, agent-delete.ts): from that commit runs.create, runs.createInline, runs.reopen and
+ *  triggers.fire refuse it, each in the transaction that would start the run, and a restart keeps the mark. */
+export class AgentDeleting extends Error {
+  override name = "AgentDeleting";
+  constructor(readonly agentId: string) {
+    super(`the agent ${agentId} is being deleted`);
+  }
+}
+
+/** An agent's removal refused while a trigger of it is left (Agents.remove): a trigger keeps things outside its row (its
+ *  registration upstream, its adapter settings) that only the trigger engine removes, so its row never goes with the
+ *  agent's. Nothing written. */
+export class TriggersLeft extends Error {
+  override name = "TriggersLeft";
+  constructor(readonly agentId: string, readonly triggerIds: readonly string[]) {
+    super(`agent ${agentId} still has triggers (${triggerIds.join(", ")}): each is removed first, by the trigger engine`);
   }
 }
 
@@ -633,6 +644,11 @@ export interface Agents {
    *  the revision still has none, and the pin it has then is the answer, so two first runs at once agree on one. Null when
    *  there is no such revision. */
   pinOnce(revisionId: string, pin: unknown): Promise<unknown>;
+  /** The agent's own rows gone, in one transaction (the last write of DELETE /agents/{id}, agent-delete.ts): its learning
+   *  rows and kept proposals, its sign-ins and their tombstones, its revisions and the agent. Only once it has no run and
+   *  no trigger left (runs.remove and the trigger engine's remove each first): refused while a run is (StoreConstraint)
+   *  or a trigger is (TriggersLeft), read under the agent row's lock, nothing written. An agent with no row is no write. */
+  remove(agentId: string): Promise<void>;
 }
 
 export interface Templates {
@@ -652,11 +668,12 @@ export interface Triggers {
   all(): Promise<TriggerRow[]>;
   /** The trigger and, while it is enabled, its scope rows (`scopes`), in one transaction: a scope another enabled trigger
    *  holds is refused (StoreConstraint on trigger_scopes), nothing written; one made on for an archived agent too
-   *  (AgentArchived). */
+   *  (AgentArchived), and one made at all, off too, for an agent being deleted (AgentDeleting). */
   create(trigger: NewTrigger, scopes?: readonly TriggerScope[]): Promise<TriggerRow>;
   /** The fields given changed, `updatedAt` set: undefined when there is no such trigger. With `scopes`, its scope rows
    *  rewritten in the same transaction (none while it is off); a patch that turns it off drops them. One that leaves it
-   *  on for an archived agent, turned on or moved there, is refused (AgentArchived), nothing written. */
+   *  on for an archived agent, turned on or moved there, is refused (AgentArchived), nothing written; one that turns it
+   *  on, or moves it at all, to an agent being deleted, too (AgentDeleting). */
   update(id: string, patch: TriggerPatch, scopes?: readonly TriggerScope[], options?: TriggerUpdateOptions): Promise<TriggerRow | undefined>;
   /** The trigger, its scope rows and its firings gone. */
   remove(id: string): Promise<void>;
@@ -735,6 +752,16 @@ export interface Runs {
   list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; limit?: number }): Promise<RunRow[]>;
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;
+  /** Every run of agent `agentId` with its state, oldest first, its built-in learning runs included (which list leaves
+   *  out): what deleting the agent stops and removes. */
+  every(agentId: string): Promise<{ id: string; state: RunState }[]>;
+  /** The run's rows gone, in one transaction: its journal, commands, origin, launch, live view and viewers, its channel
+   *  posts with their tries and what each channel was told of it, its kept learning, its changes in the run-change feed,
+   *  a trigger's conversation that names it, and the run (a firing or trigger that names it keeps no run: ON DELETE SET
+   *  NULL). Only a final run: one that is not is refused (StoreConstraint), nothing written, so no runner's claim is ever
+   *  on a run that goes. A run with no row is no write. From then a late write under an old claim of it is Fenced and
+   *  writes nothing (its row is gone), and a command for it is RunFinal. */
+  remove(runId: string): Promise<void>;
   /** A person's follow-up to a run that ended completed, or that a person stopped: in one transaction, the run goes back to running with no runner
    *  (released, so a runner claims it at once by the claimable rule's released branch), its end's own fields cleared
    *  (ended_at, summary, outcome, its waits) and everything it did kept (its epoch, its journal, its cost and metrics,

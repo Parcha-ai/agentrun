@@ -11,9 +11,9 @@ import { backfillNativeCommandOwners, nativeCommandOwner, validConnectorId } fro
 import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
-import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, MINTED_TOKENS, NATIVE_COMMANDS_INDEX, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, MINTED_TOKENS, NATIVE_COMMANDS_INDEX, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION } from "../schema.js";
 import {
-  AgentArchived, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, type AgentRow, type Agents,
+  AgentArchived, AgentDeleting, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
   type JournalReads, type LaunchSealedWrite, type RunLabels, type UpdatedRun,
   type ReleasedState, type RunState, type SecureRewriteOptions, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
@@ -33,7 +33,7 @@ import { cleanText, type Dialect, settledBody } from "../dialect.js";
 import { inMemory } from "./memory.js";
 import { Connection, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
 import { applyRunPatch, EXACT_COST_USD, NOT_A_LEARNING_RUN, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
-import { readLaunch, readLearningStarts, writeLaunch } from "./run-launch.js";
+import { readLaunch, readLearningStarts, writeLaunch, writeLaunchSealed } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
 import { aadOf, sealedAt } from "../seal.js";
 
@@ -233,11 +233,29 @@ const EARLIER_ROOT_FILES = ["mcp-servers.json", "triggers.json", "tool-keys.json
 function earlierVersionIn(dataDir: string): string[] {
   if (!existsSync(dataDir)) return [];
   const found: string[] = [];
-  const isFile = (path: string) => statSync(path, { throwIfNoEntry: false })?.isFile() === true;
+  // A path the server may not look into is not an earlier version's: that version wrote its files as the server's own
+  // user. A disk mounted as the data directory has one such, lost+found (root's, mode 700).
+  const stat = (path: string) => {
+    try {
+      return statSync(path, { throwIfNoEntry: false });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EACCES") return undefined;
+      throw error;
+    }
+  };
+  const isFile = (path: string) => stat(path)?.isFile() === true;
   // A directory linked in counts as one (stat follows the link), as the server's check of old homes reads them: an
   // earlier version's home or run kept elsewhere and linked in is still the earlier version's.
-  const isDir = (path: string) => statSync(path, { throwIfNoEntry: false })?.isDirectory() === true;
-  const dirsIn = (path: string) => (isDir(path) ? readdirSync(path).filter((name) => isDir(join(path, name))) : []);
+  const isDir = (path: string) => stat(path)?.isDirectory() === true;
+  const dirsIn = (path: string) => {
+    if (!isDir(path)) return [];
+    try {
+      return readdirSync(path).filter((name) => isDir(join(path, name)));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EACCES") return [];
+      throw error;
+    }
+  };
   const store = join(dataDir, STORE_FILE);
   if (isFile(store) && !isThisVersionsStore(store)) found.push(STORE_FILE);
   for (const name of EARLIER_ROOT_FILES) if (isFile(join(dataDir, name))) found.push(name);
@@ -532,6 +550,15 @@ class SqliteStore implements Store {
     const refuseArchived = async (tx: SqliteExecutor, agentId: string) => {
       if ((await tx.get<{ archived_at: number | null }>("SELECT archived_at FROM agents WHERE id = ?", agentId))?.archived_at != null) throw new AgentArchived(agentId);
     };
+    /** Refused (AgentDeleting) when agent `agentId` is being deleted: another system's agent with an archive time, which
+     *  only its delete writes (AgentDeleting). The agent's row is held first (a writer's row lock, as the archive's UPDATE
+     *  takes it), so on Postgres a delete's archive that commits first is read here, and one that commits after waits for
+     *  this run to be in the store, where the delete's listing of the agent's runs finds it. */
+    const refuseDeleting = async (tx: SqliteExecutor, agentId: string) => {
+      await d.lockRow(tx, "agents", "id", agentId);
+      const agent = await tx.get<{ archived_at: number | null; external_ref: string | null }>("SELECT archived_at, external_ref FROM agents WHERE id = ?", agentId);
+      if (agent?.archived_at != null && agent.external_ref != null) throw new AgentDeleting(agentId);
+    };
     /** Inserts the trigger, or (on its name for the agent) changes it in place, keeping its id; then its scope rows, only
      *  while it is enabled. `insertOnly` (an apply's new agent): no ON CONFLICT, and the package check keeps the names
      *  distinct, so the store's one name per agent is never what refuses an apply (templates.apply below). */
@@ -635,6 +662,27 @@ class SqliteStore implements Store {
         });
         return row?.mcp_pin == null ? null : JSON.parse(row.mcp_pin);
       },
+      remove: async (agentId) => {
+        await db.transaction(async (tx) => {
+          await d.lockRow(tx, "agents", "id", agentId);
+          if (await tx.get<{ id: string }>("SELECT id FROM runs WHERE agent_id = ? LIMIT 1", agentId)) throw new StoreConstraint(`agent ${agentId} still has runs: each is removed first (runs.remove)`);
+          // A trigger is never removed with the agent: what it keeps outside its row (a registration upstream, its adapter
+          // settings) goes only through the trigger engine. One made past the delete's listing (it is refused once the
+          // agent is marked, triggers.create; this is read under the agent row's lock, which that refusal takes too)
+          // keeps the agent for the next delete to remove whole.
+          const left = await tx.all<{ id: string }>("SELECT id FROM triggers WHERE agent_id = ? ORDER BY id", agentId);
+          if (left.length) throw new TriggersLeft(agentId, left.map((one) => one.id));
+          await tx.run("DELETE FROM learning_proposals WHERE agent_id = ?", agentId);
+          await tx.run("DELETE FROM learning WHERE agent_id = ?", agentId);
+          await tx.run("DELETE FROM sign_ins WHERE agent_id = ?", agentId);
+          await tx.run("DELETE FROM sign_in_tombstones WHERE agent_id = ?", agentId);
+          // Its revisions in one statement (a revision's parent is the same agent's, checked at the statement's end), the
+          // agent's pointer at its current one cleared first.
+          await tx.run("UPDATE agents SET current_revision = NULL WHERE id = ?", agentId);
+          await tx.run("DELETE FROM revisions WHERE agent_id = ?", agentId);
+          await tx.run("DELETE FROM agents WHERE id = ?", agentId);
+        });
+      },
     };
 
     this.templates = {
@@ -680,6 +728,9 @@ class SqliteStore implements Store {
         const row = await db.transaction(async (tx) => {
           // A trigger belongs to an agent the store holds: refused in words, never a bare foreign-key failure.
           if (!(await tx.get<{ id: string }>("SELECT id FROM agents WHERE id = ?", t.agentId))) throw new StoreConstraint(`no agent ${t.agentId}: a trigger belongs to an agent the store holds`);
+          // None for an agent being deleted, off too: an off trigger may hold a registration upstream (Composio's) that
+          // the delete, having listed the agent's triggers already, would never remove.
+          await refuseDeleting(tx, t.agentId);
           if (t.enabled) await refuseArchived(tx, t.agentId);
           const made = await tx.get<TriggerRecord>(
             `INSERT INTO triggers (id, agent_id, name, enabled, source, target, next_at, catchup_window_s, max_active_runs, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${TRIGGER_COLUMNS}`,
@@ -693,11 +744,17 @@ class SqliteStore implements Store {
       update: async (id, patch, scopes, options) => {
         const { set, params } = triggerSet(patch, now());
         // A compare-and-set (options.ifUpdatedAt): no row is changed once the trigger was updated or deleted since that read.
-        const unchanged = options?.ifUpdatedAt === undefined ? "" : " AND updated_at = ?";
-        const since = options?.ifUpdatedAt === undefined ? [] : [options.ifUpdatedAt];
+        // Its source too (options.ifSource, compared as the JSON text the store wrote): one millisecond's writes share an
+        // updated_at, never a source.
+        const unchanged = `${options?.ifUpdatedAt === undefined ? "" : " AND updated_at = ?"}${options?.ifSource === undefined ? "" : " AND source = ?"}`;
+        const since = [...(options?.ifUpdatedAt === undefined ? [] : [options.ifUpdatedAt]), ...(options?.ifSource === undefined ? [] : [json(options.ifSource)])];
         const row = await db.transaction(async (tx) => {
           // Moved to another agent (its target re-aimed): one the store holds, refused in words otherwise.
           if (patch.agentId !== undefined && !(await tx.get<{ id: string }>("SELECT id FROM agents WHERE id = ?", patch.agentId))) throw new StoreConstraint(`no agent ${patch.agentId}: a trigger belongs to an agent the store holds`);
+          // Never moved to an agent being deleted, off too, nor turned on for one: read (and its row held) before the
+          // trigger's row is written, in the agent-then-trigger order its archive and its removal take.
+          const to = patch.agentId ?? (await tx.get<{ agent_id: string }>("SELECT agent_id FROM triggers WHERE id = ?", id))?.agent_id;
+          if (to !== undefined && (patch.agentId !== undefined || patch.enabled === true)) await refuseDeleting(tx, to);
           const changed = await tx.get<TriggerRecord>(`UPDATE triggers SET ${set} WHERE id = ?${unchanged} RETURNING ${TRIGGER_COLUMNS}`, ...params, id, ...since);
           // Never left on for an archived agent (turned on, or moved there on): the whole update is undone.
           if (changed?.enabled === 1) await refuseArchived(tx, changed.agent_id);
@@ -912,19 +969,17 @@ class SqliteStore implements Store {
         // sign_in_handed is not written here: the runner writes it at its claim (runs.update under the epoch fence).
         const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, labels, started_at) VALUES (?, ?, ?, 'queued', 0, ?, ?) RETURNING ${RUN_COLUMNS}`;
         const labelled = labelsColumn(labels);
-        if (origin || launch) {
-          // The run, its origin and its launch row in one transaction: the key -> run link holds even if the kept response
-          // never lands, and a run never exists without the launch it was started with.
-          return this.#queued(await db.transaction(async (tx) => {
-            const at = now();
-            const row = await tx.get<RunRecord>(insert, id, agentId, revisionId, labelled, at);
-            if (origin) await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", origin.key, id, origin.fingerprint ?? null, at);
-            if (launch) await writeLaunch(tx, id, launch, at);
-            return runOf(row!);
-          }));
-        }
-        const [result] = await db.write([{ sql: insert, params: [id, agentId, revisionId, labelled, now()] }]);
-        return this.#queued(runOf(result!.rows[0] as RunRecord));
+        // The run, its origin and its launch row in one transaction: the key -> run link holds even if the kept response
+        // never lands, and a run never exists without the launch it was started with. Never a run of an agent being
+        // deleted: its mark is read here, in the transaction that would start the run.
+        return this.#queued(await db.transaction(async (tx) => {
+          const at = now();
+          await refuseDeleting(tx, agentId);
+          const row = await tx.get<RunRecord>(insert, id, agentId, revisionId, labelled, at);
+          if (origin) await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", origin.key, id, origin.fingerprint ?? null, at);
+          if (launch) await writeLaunch(tx, id, launch, at);
+          return runOf(row!);
+        }));
       },
       createInline: async ({ agent, revision, run, launch }) => {
         const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, labels, started_at) VALUES (?, ?, ?, 'queued', 0, ?, ?) RETURNING ${RUN_COLUMNS}`;
@@ -936,6 +991,8 @@ class SqliteStore implements Store {
           await tx.run(`${d.insertOrIgnore} INTO agents (id, name, description, created_at, external_ref) VALUES (?, ?, ?, ?, ?)${d.onConflictIgnore}`,
             agent.id, agent.name, agent.description ?? null, at, agent.ref);
           const mapped = (await tx.get<{ id: string; current_revision: string | null }>("SELECT id, current_revision FROM agents WHERE external_ref = ?", agent.ref))!;
+          // An agent being deleted takes no run, nor a revision: the reference names it until its delete commits.
+          await refuseDeleting(tx, mapped.id);
           // The revision, one per version: a version already stored keeps its body (a different body is refused); a new
           // version is written, made current, and brings the agent's name and description up to it (the source is the truth).
           const existing = await tx.get<{ id: string; body: string }>("SELECT id, body FROM revisions WHERE agent_id = ? AND external_version = ?", mapped.id, revision.version);
@@ -1004,14 +1061,40 @@ class SqliteStore implements Store {
         // Archiving an archived run keeps its first time: a second archive is a no-op, never a new time.
         await db.write([archived ? { sql: "UPDATE runs SET archived_at = COALESCE(archived_at, ?) WHERE id = ?", params: [now(), runId] } : { sql: "UPDATE runs SET archived_at = NULL WHERE id = ?", params: [runId] }]);
       },
+      every: async (agentId) => db.all<{ id: string; state: RunState }>("SELECT id, state FROM runs WHERE agent_id = ? ORDER BY started_at, id", agentId),
+      remove: async (runId) => {
+        await db.transaction(async (tx) => {
+          // Held as a run's end holds it: a write under a claim of it is either in before this, or finds no row.
+          await d.lockRow(tx, "runs", "id", runId, "update");
+          const run = await tx.get<{ state: RunState }>("SELECT state FROM runs WHERE id = ?", runId);
+          if (!run) return;
+          if (!(FINAL_STATES as readonly string[]).includes(run.state)) throw new StoreConstraint(`run ${runId} is ${run.state}: only a final run is removed`);
+          for (const table of PI_TABLES) await tx.run(`DELETE FROM ${table} WHERE run_id = ?`, runId);
+          await tx.run("DELETE FROM commands WHERE run_id = ?", runId);
+          await tx.run("DELETE FROM run_origins WHERE run_id = ?", runId);
+          await tx.run("DELETE FROM run_launch WHERE run_id = ?", runId);
+          await tx.run("DELETE FROM run_live WHERE run_id = ?", runId);
+          await tx.run("DELETE FROM computer_viewers WHERE run_id = ?", runId);
+          await tx.run("DELETE FROM channel_attempts WHERE post_id IN (SELECT id FROM channel_posts WHERE run_id = ?)", runId);
+          await tx.run("DELETE FROM channel_posts WHERE run_id = ?", runId);
+          await tx.run("DELETE FROM channel_told WHERE run_id = ?", runId);
+          await tx.run("DELETE FROM learning_proposals WHERE run_id = ?", runId);
+          await tx.run("DELETE FROM trigger_conversations WHERE run_id = ?", runId);
+          await tx.run("DELETE FROM run_changes WHERE run_id = ?", runId);
+          await tx.run("DELETE FROM runs WHERE id = ?", runId);
+        });
+      },
       reopen: async (runId, { kind, body = null }, { launchSealed } = {}) => {
         const command = await db.transaction(async (tx) => {
+          // Never a run of an agent being deleted opened again (its mark, read in this transaction).
+          const of = await tx.get<{ agent_id: string }>("SELECT agent_id FROM runs WHERE id = ?", runId);
+          if (of) await refuseDeleting(tx, of.agent_id);
           // Back to running, released: the epoch, the journal, cost_usd and metrics stay (its next turn is booked on what it
           // spent); the end's own fields go. Only an agentic run that ended completed, not imported, not a learning run.
           const reopened = await tx.runCounted(`UPDATE runs SET ${REOPEN_SET} WHERE id = ? AND ${reopenableWhere(d)}`, runId);
           if (reopened === 0) throw new RunFinal(runId);
           // The message's launch secrets, with it: the claim that runs its turn reads them.
-          if (launchSealed) await tx.run("UPDATE run_launch SET sealed = ? WHERE run_id = ?", launchSealed, runId);
+          if (launchSealed) await writeLaunchSealed(tx, runId, launchSealed);
           await lockCommandsOf(tx, runId);
           const row = await tx.get<CommandRecord>(`INSERT INTO commands (run_id, kind, body, created_at) VALUES (?, ?, ?, ?) RETURNING ${COMMAND_COLUMNS}`, runId, kind, json(body), now());
           return commandOf(row!);
@@ -1301,11 +1384,6 @@ class SqliteStore implements Store {
           `SELECT ${PROPOSAL_COLUMNS} FROM learning_proposals WHERE agent_id = ? ORDER BY created_at DESC, run_id DESC, round DESC LIMIT ?`,
           agentId, limit,
         )).map(proposalOf),
-      grading: async (agentId) =>
-        (await db.all<ProposalRecord>(
-          `SELECT ${PROPOSAL_COLUMNS} FROM learning_proposals WHERE agent_id = ? AND learning_run_id IN (SELECT id FROM runs WHERE state NOT IN (${FINAL})) ORDER BY created_at DESC, run_id DESC, round DESC`,
-          agentId,
-        )).map(proposalOf),
       kept: async (agentId) => {
         const proposals = (await db.all<ProposalRecord>(`SELECT ${PROPOSAL_COLUMNS} FROM learning_proposals WHERE agent_id = ? ORDER BY run_id, round`, agentId)).map(proposalOf);
         const learningRuns = (await db.all<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs WHERE id IN (SELECT learning_run_id FROM learning_proposals WHERE agent_id = ? AND learning_run_id IS NOT NULL)`, agentId)).map(runOf);
@@ -1330,31 +1408,6 @@ class SqliteStore implements Store {
           const kept = JSON.parse(row.proposal) as { state?: unknown } | null;
           return kept?.state === "proposed" ? [] : [{ agentId: row.agent_id, at: row.created_at, costUsd: 0 }];
         });
-      },
-      spentBeside: async (runId, { beforeRound } = {}) => {
-        type BesideRecord = { state: RunState | null; cost_usd: number | null; body: string | null };
-        const rows = await db.all<BesideRecord>(
-          `SELECT lr.state, ${EXACT_COST_USD("lr")} AS cost_usd, rl.body
-             FROM learning_proposals lp
-             LEFT JOIN runs lr ON lr.id = lp.learning_run_id
-             LEFT JOIN run_launch rl ON rl.run_id = lp.learning_run_id
-            WHERE lp.run_id = ? AND lp.learning_run_id IS NOT NULL${beforeRound === undefined ? "" : " AND lp.round < ?"}`,
-          ...(beforeRound === undefined ? [runId] : [runId, beforeRound]),
-        );
-        const figure = (usd: unknown): usd is number => typeof usd === "number" && Number.isFinite(usd) && usd >= 0;
-        let spent = 0;
-        for (const row of rows) {
-          // A learning run named and never written spent nothing.
-          if (row.state === null) continue;
-          if (FINAL_STATES.includes(row.state) && figure(row.cost_usd)) {
-            spent += row.cost_usd;
-            continue;
-          }
-          const cap = row.body === null ? undefined : (JSON.parse(row.body) as { max_cost_usd?: unknown } | null)?.max_cost_usd;
-          if (!figure(cap)) return null;
-          spent += cap;
-        }
-        return spent;
       },
     };
 
@@ -2001,7 +2054,7 @@ class SqliteStore implements Store {
         expect: { kind: "final", runId },
       });
       // The message's launch secrets, in the command's own write: written only when the command is (a final run refuses both).
-      if (launchSealed) await tx.run("UPDATE run_launch SET sealed = ? WHERE run_id = ?", launchSealed, runId);
+      if (launchSealed) await writeLaunchSealed(tx, runId, launchSealed);
       return inserted;
     });
     wakeCommands(this.where, { runId, what: "written" });

@@ -34,11 +34,11 @@ export function NoModelBanner({ needs, settings, model, source, chatgpt = false 
           ) : settings ? (
             <>
               <a href="#/settings/keys" className="underline underline-offset-2">Add a key in Settings → Model keys</a> (one OpenRouter key
-              gives every harness its model), and it takes effect at once. Or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY or
-              OPENAI_API_KEY where AgentRun starts, and restart.
+              gives every harness its model), and it takes effect at once. Or set OPENROUTER_API_KEY, ANTHROPIC_API_KEY,
+              OPENAI_API_KEY or PARTICLE_API_KEY where AgentRun starts, and restart.
             </>
           ) : (
-            "Set OPENROUTER_API_KEY (one key gives every harness its model), or ANTHROPIC_API_KEY or OPENAI_API_KEY, and restart."
+            "Set OPENROUTER_API_KEY (one key gives every harness its model), ANTHROPIC_API_KEY, OPENAI_API_KEY or PARTICLE_API_KEY, and restart."
           )}
         </>
       )}

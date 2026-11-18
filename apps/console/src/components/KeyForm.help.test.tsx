@@ -6,7 +6,7 @@ import type { ToolKey } from "@/lib/v2";
 
 // A model provider's key form (Mission Control's "Add a model key" card and Settings → Model keys share it) says where to
 // get a key and what one looks like, so someone with no key yet is not left at a bare variable name. Keyed on the served
-// key row's id (serve's MODEL_KEYS: anthropic, openai, openrouter). Any other row gets neither, and still renders.
+// key row's id (serve's MODEL_KEYS). Any other row gets neither, and still renders.
 // The format hints are built here at run time, never written as a key-shaped literal.
 const shape = (...parts: string[]) => [...parts, "…"].join("-");
 const row = (id: string, label: string, field: string): ToolKey => ({ id: id as ToolKey["id"], kind: "model", label, fields: [{ name: field, set: false, source: null }], secrets: [], check: null, unlocks: [], harnesses: ["pi"] });
@@ -19,6 +19,7 @@ describe("KeyForm, where to get a model provider's key", () => {
     ["anthropic", "Anthropic", "ANTHROPIC_API_KEY", "https://console.anthropic.com/settings/keys", shape("sk", "ant")],
     ["openai", "OpenAI", "OPENAI_API_KEY", "https://platform.openai.com/api-keys", shape("sk")],
     ["openrouter", "OpenRouter", "OPENROUTER_API_KEY", "https://openrouter.ai/keys", shape("sk", "or")],
+    ["particle", "Particle", "PARTICLE_API_KEY", "https://platform.particle.ai/", shape("pai")],
   ])("%s: names the provider, links to its keys page in a new tab, and shows a key's shape", (id, label, field, url, hint) => {
     const h = html(row(id, label, field));
     expect(h).toContain(label);

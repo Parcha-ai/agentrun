@@ -1,36 +1,27 @@
-// What the learning tests share: an agent that learns, a run followed until its learning ended (its end-of-run turn on the
-// runner, then its learning run's grade and merge), and git in the test's own hands to read
-// the agent's folder.
+// What the learning tests share: an agent that learns, a run followed until its learning ended (its end-of-run step on
+// the runner: its owner's correction appended, its compile turn checked and committed), and git in the test's own hands
+// to read the agent's folder.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { mergedNote } from "../dist/learn/notes.js";
 import { agentFolderOf } from "../dist/files.js";
 import { learningRepair } from "../dist/learn/folder.js";
-import { gradedItems, gradePrompt, parseVerdict, UNREADABLE_REASON } from "../dist/learn/index.js";
 import { learningFolderOf } from "../dist/learning.js";
 import { localWorkspace } from "../dist/workspace/index.js";
 import { openSqliteStore } from "../dist/store/index.js";
-import { agent, follow, runDir } from "./support.mjs";
+import { agent, follow } from "./support.mjs";
 
-/** A run's new note as main keeps it once merged: with the host's `origin: you` line when it keeps the user's own words
- *  (the run's, the default, adds none). */
-export const onMain = (text, origin = "run") => mergedNote(text, { origin });
-
-/** The faux model and faux harness that plan an end-of-run turn's notes (fixtures/faux-learn.mjs). */
+/** The faux model and faux harness learning's tests run on (fixtures/faux-learn.mjs). */
 export const LEARN = new URL("./fixtures/faux-learn.mjs", import.meta.url).pathname;
-/** What every run that learns is told first under `# Learned`, notes or none: that it learns, and how. */
-export const KEEPS = "You learn from your runs. When this run ends you are asked what to keep for later runs, anything the person asked you to remember included, and only your answer then is kept: a file you write is not. So when the person asks you to remember something, don't put it in a file or say you can't: tell them in one short sentence at the start of your reply that you will keep it for later runs. When what they asked sets how your reply starts or ends, follow it from your reply's first line to its last and leave that sentence out. A secret (a password, key or token) is never kept, so say so instead.";
-/** What `# Learned` says after KEEPS when the run starts with no note. */
+/** What every run whose owner corrected it is told first under `# Learned` (learning.ts laidLearned). */
+export const CORRECTIONS_INTRO = "Your owner's standing corrections from earlier runs, one per line. Follow each one that applies.";
+/** What `# Learned` says when the owner corrected nothing yet. */
 export const NOTHING_YET = "Nothing learned yet.";
 export const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-/** An agent with learning on and no tool: its end-of-run turn answers with the notes `plan` ([file, text] pairs) holds,
- *  planned after its instructions. Its learning is `"notes"` unless `learning` says otherwise: a notes job looks back at
- *  every end, while a `learning: true` job's agent run looks back only on its owner's feedback. */
-export const learner = (id, { plan, once = false, instructions = "Answer the question.", learning = "notes", ...extra } = {}) =>
-  agent(id, { learning, instructions: [instructions, ...(plan ? [`Learn${once ? " once" : ""}: ${JSON.stringify(plan)}`] : [])].join("\n"), ...extra });
+/** An agent with learning on (`learning`, true unless given) and no tool. */
+export const learner = (id, { instructions = "Answer the question.", learning = true, ...extra } = {}) => agent(id, { learning, instructions, ...extra });
 
 export async function made(api, definition) {
   const res = await api("POST", "/agents", definition);
@@ -44,12 +35,10 @@ export async function started(api, id, content = "Go.", extra = {}) {
   return run.body.run_id;
 }
 
-/** A run's learning while it is under way: seeded, its end-of-run turn asked, then what the turn wrote kept as its
- *  proposal (proposed) until the runner's learning run grades and merges it or drops it. */
-const UNDER_WAY = ["seeded", "reflecting", "proposed"];
-/** The run followed until it ended (`until`), then until its learning ended: merged or dropped, its learning run's end
- *  read with it (the runner's learning run, runner/learning-loop.ts, grades and merges a proposal). Its view and its
- *  rows, the run's learning row among them. */
+/** A run's learning while it is under way: seeded, then its end-of-run step (reflecting) until it merged or dropped. */
+const UNDER_WAY = ["seeded", "reflecting"];
+/** The run followed until it ended (`until`), then until its learning ended: merged or dropped. Its view and its rows,
+ *  the run's learning row among them. */
 export async function ended(api, runId, until = ["completed"]) {
   await follow(api, runId, until, { deadlineMs: 90_000 });
   for (let i = 0; UNDER_WAY.includes((await api("GET", `/runs/${runId}`)).body.learning?.state); i++) {
@@ -59,32 +48,15 @@ export async function ended(api, runId, until = ["completed"]) {
   return { view: (await api("GET", `/runs/${runId}`)).body, rows: (await follow(api, runId, until)).rows };
 }
 
-/** A run of `learning: true` agent `id` that its owner gave feedback on: its first round ends with no look-back (no
- *  feedback yet), then a grade with words (`label`) opens its look-back round, followed until its learning ended (as
+/** A run of agent `id` that its owner corrected: its first round ends, then a grade with words (`label`) opens its
+ *  feedback round, whose end appends the words to corrections.md as one line, followed until its learning ended (as
  *  `ended` reads it). */
-export async function fedBack(api, id, { content = "Go.", label = "Keep what this run learned." } = {}) {
+export async function fedBack(api, id, { content = "Go.", label = "Keep the summary to three lines." } = {}) {
   const runId = await started(api, id, content);
   await ended(api, runId);
   const graded = await api("PUT", `/runs/${runId}/grade`, { correct: true, label });
-  assert.deepEqual([graded.status, graded.body.feedback], [200, "look_back"], JSON.stringify(graded.body));
+  assert.deepEqual([graded.status, graded.body.feedback], [200, "correction"], JSON.stringify(graded.body));
   return ended(api, runId);
-}
-
-/** A grade as the runner's learning run makes it (runner/learning-loop.ts), on a faux grader `reply` (a faux module's
- *  default export, called in this process as the faux model is): the prompt (gradePrompt) over `input`, the answer read
- *  (parseVerdict), and asked once more when it can't be read. The verdict, or `failed` when the grader fails. */
-export async function gradeOnFaux(reply, input) {
-  const prompt = gradePrompt({ run: input.runId, instructions: input.instructions, active: input.active, superseded: input.superseded, proposed: input.proposed, ...(input.files?.length ? { files: input.files } : {}), ...(input.asked ? { asked: input.asked } : {}), ...(input.triggered ? { triggered: input.triggered } : {}) });
-  const items = gradedItems(input.proposed, input.files ?? []);
-  const faux = { model: "faux", message: (text, extra = {}) => ({ text, ...extra }) };
-  let verdict;
-  for (let ask = 0; ask < 2; ask++) {
-    const answer = await reply({ messages: [{ role: "user", content: prompt }] }, faux);
-    if (answer.stopReason === "error") return { failed: new Error(answer.errorMessage ?? "the faux grader failed") };
-    verdict = parseVerdict(answer.text, items);
-    if (verdict.reason !== UNREADABLE_REASON || verdict.items.length) break;
-  }
-  return { verdict };
 }
 
 /** `read` over the server's store: the test's own handle on it (server.store), else one opened on the server's data
@@ -108,18 +80,6 @@ export async function entriesOf(server, runId, kinds) {
   return all.filter((entry) => kinds.includes(entry.kind)).map((entry) => ({ kind: entry.kind, ...entry.data }));
 }
 
-/** Everything run `runId`'s learning run keeps in the one store, as one text: its kept learning (learning_proposals: the
- *  turn and the proposal) and every record of its learning run's journal (entries, tasks and submissions), for a scan that
- *  a value is nowhere learning keeps it. */
-export async function learningKept(server, runId) {
-  const { journalRecords } = await import("../dist/runner/journal-reader.js");
-  const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
-  return overStore(server, async (store) => {
-    const kept = await store.learning.proposal(runId);
-    const journal = kept?.learningRunId ? await journalRecords(store.readJournal(kept.learningRunId), BACKGROUND_CONTEXT) : null;
-    return JSON.stringify({ kept, journal });
-  });
-}
 
 /** Why a CLI harness's learned_workflow case waits (claude-agent, codex, opencode): on the switch a CLI harness's host
  *  tools, learned_workflow among them, land with tl-untangle's cli-tools-builder (b697d0e9bc). pi's cases, the tool's
@@ -218,22 +178,8 @@ export const objects = (repo) => spawnSync("git", ["cat-file", "--batch-all-obje
 
 /** The agent's learning folder: `learning/` in its folder on the disk, as files.ts agentFolderOf names it. */
 export const repoOf = (data, agentId) => join(agentFolderOf(data, agentId), "learning");
-export const copyOf = (data, runId) => join(runDir(data, runId), "work", ".learning");
 /** The commits on main that name run `runId` in a Run-Id trailer. */
 export const mergesOf = (repo, runId) => git(repo, ["log", "--format=%H %(trailers:key=Run-Id,valueonly)", "main"]).split("\n").filter((entry) => entry.split(" ")[1] === runId);
-
-/** What a prompt holds under `# Learned` after KEEPS, to the end of the run's instructions (pi's system prompt closes
- *  them with `</instructions>`): as the run's pin keeps it (`section`). Undefined when there is no `# Learned` that
- *  opens with KEEPS, or it says nothing is learned yet. */
-export const learnedIn = (prompt) => {
-  const head = `\n# Learned\n\n${KEEPS}\n\n`;
-  const at = prompt.indexOf(head);
-  if (at < 0) return undefined;
-  const section = /^([\s\S]*?)(?:\n<\/instructions>|$)/.exec(prompt.slice(at + head.length))[1];
-  return section === NOTHING_YET ? undefined : section;
-};
-/** The notes a section under `# Learned` gives whole, in order, by their headings, `## <name> (<file>)`. */
-export const wholeIn = (section) => [...(section ?? "").matchAll(/^## .* \(([A-Za-z0-9][A-Za-z0-9._-]*\.md)\)$/gm)].map((match) => match[1]);
 
 /** The end-of-run turn's own rows, and the run's learning rows. */
 export const reflectRows = (rows) => rows.filter((row) => row.agent_label === "learning" && row.kind !== "learning");

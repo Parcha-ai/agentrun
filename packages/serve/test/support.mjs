@@ -311,10 +311,10 @@ after(async () => {
 });
 /** A store for a server a test starts with startServe (`{ ...options, store: await triggerStore() }`), as serve() gives its
  *  own: the triggers' rows, a trigger's agent put there first. `of`: the same store again for a restart on the same data. */
-export async function triggerStore(of) {
+export async function triggerStore(of, { now } = {}) {
   if (of) return of;
   const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-store-"));
-  const store = await openSqliteStore({ file: join(dir, "store.sqlite"), role: "server" });
+  const store = await openSqliteStore({ file: join(dir, "store.sqlite"), role: "server", ...(now ? { now } : {}) });
   loose.push({ store, dir });
   return withAgents(store);
 }

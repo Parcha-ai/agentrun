@@ -74,15 +74,19 @@ const ADDRESS = /^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)[^?#]*(\?[^#]*)?(#.*)?$/is;
 /** Whether query or fragment `part` (with its leading ? or #) has a parameter with a value named like a credential. */
 const credentialParam = (part: string | undefined): boolean => part !== undefined && [...new URLSearchParams(part.slice(1))].some(([name, given]) => given !== "" && secretConfigName(name));
 
+/** An address in any scheme with an '@' after its scheme:// and before any whitespace: a user part, read so whatever a
+ *  password holds (a raw '/', '?' or '#' that would end the authority early, as in mongodb://u:pa/ss@h) is still one. */
+const USER_PART = /^[a-z][a-z0-9+.-]*:\/\/\S*@/i;
+
 /** Whether `value` is an address, in any scheme (https, postgres, redis, amqp, mongodb+srv...), that carries a
- *  credential: a user part (user:pass@, :pass@, or a token alone as in https://TOKEN@host: any userinfo), or a query or
- *  fragment parameter with a value whose name is a credential's (secretConfigName: ?token=, ?api_key=, #access_token=).
- *  Such a value is sealed whole, whatever its field's name. Conservative: a user name with no secret (ssh://git@host)
- *  is sealed too. */
+ *  credential: a user part (user:pass@, :pass@, or a token alone as in https://TOKEN@host: any '@' after scheme://
+ *  before whitespace), or a query or fragment parameter with a value whose name is a credential's (secretConfigName:
+ *  ?token=, ?api_key=, #access_token=). Such a value is sealed whole, whatever its field's name. Conservative: a user
+ *  name with no secret (ssh://git@host), or an '@' in a path or query (?email=a@b), is sealed too. */
 export const credentialUrl = (value: string): boolean => {
+  if (USER_PART.test(value)) return true;
   const parts = ADDRESS.exec(value);
-  if (!parts) return false;
-  return parts[1]!.includes("@") || credentialParam(parts[2]) || credentialParam(parts[3]);
+  return parts !== null && (credentialParam(parts[2]) || credentialParam(parts[3]));
 };
 
 /** Whether `value` is one a credential's field seals: a string, not empty, or a number (its decimal text is what is

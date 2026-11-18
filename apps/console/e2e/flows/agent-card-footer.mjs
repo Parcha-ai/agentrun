@@ -3,7 +3,7 @@
 // right edge, and every whole action control the same height with rounded outer corners. A class
 // list says what was asked of the layout; only the laid-out boxes say what came of it. Six agents made through the API,
 // their list read through the page with counts no fresh server has (11 revisions, 4 runs with 3 live, 17 runs and one
-// learned item waiting), as an agent that has been used for a while reads. E2E_SHOTS=<dir> also saves each width's page.
+// learned workflow waiting), as an agent that has been used for a while reads. E2E_SHOTS=<dir> also saves each width's page.
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { check, serverAnswer } from "../harness.mjs";
@@ -82,7 +82,7 @@ export default {
       await page.setViewportSize({ width, height: 1000 });
       await page.goto(`${base}/#/agents`);
       await page.getByText(`${AGENTS.length} agents`).waitFor();
-      await page.getByRole("button", { name: /learned item waits/ }).waitFor();
+      await page.getByRole("button", { name: /learned workflow waits/ }).waitFor();
       await page.evaluate(() => document.fonts.ready);
       if (shots) await page.screenshot({ path: join(shots, `agents-${width}.png`), fullPage: true });
       const cards = await page.evaluate(measure);

@@ -11,7 +11,7 @@ import { CALL_RESULT_CHARS, CAPS, TRIGGER_SOURCES } from "./timeline/index.js";
 import { EMAIL_SCOPES, PASSWORD_MAX, SCOPED_TOOLS, SEND_CAP } from "./email/names.js";
 import { PAYLOAD_KEPT_BYTES, type TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
-import { NOTE_ORIGINS, NOTE_STATUSES, NOTE_TYPES } from "./learn/index.js";
+import { CORRECTIONS_CAP } from "./learn/index.js";
 import { ERROR_STATUS } from "./errors.js";
 import { TAKE_OVER_MINUTES } from "./computer-routes.js";
 import { HOLD_MAX_MINUTES, HOLD_MINUTES } from "./computer-held.js";
@@ -19,15 +19,14 @@ import { CALL_MS, PROTOCOL_METHODS } from "./computer-channel.js";
 import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
 import { HARNESS_ID_PATTERN, HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES, RUN_LEARNING_USE } from "./learning.js";
-import { BATCH_CELL_MAX, BATCH_ROWS_MAX } from "./learning-batch.js";
 import { AUDIT_DEFAULTS, AUDIT_MAX } from "./learning-setting.js";
 import { AFTER_STATES, CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_WINDOW, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS } from "./learning-cost.js";
 import { FEEDBACK_ROUNDS, FEEDBACK_STATUSES } from "./runner/feedback-round.js";
-import { EVAL_JOBS_MAX, EVAL_TEXT_MAX, EVALS_KEPT } from "./learning-evals.js";
 import { COMPILE_AFTER_MAX } from "./learning-setting.js";
 import { LOOP_COMPILES_MAX } from "./store-reads/loop.js";
 import { GRADE_SOURCES, GRADES_KEPT, LABEL_MAX } from "./learn/promote.js";
 import { MODEL_SOURCES, THINKING_LEVELS } from "./model.js";
+import { MAX_MODEL_KEY_CHARS } from "./run-model-key.js";
 import { BOX_IDS, BOX_NETWORKS, BOX_STATES } from "./place-offers.js";
 import { PLACE_MODES } from "./place.js";
 import { TOOL_KEYS, UNREADABLE } from "./tool-keys.js";
@@ -170,7 +169,7 @@ const STATS = closed({
       runs: { ...COUNT, description: "Runs that tried to learn: each with a `learning` block. A run with learning off, a workflow's or an imported one has none." },
       merged: COUNT,
       dropped: { type: "object", additionalProperties: COUNT, propertyNames: { enum: [...LEARNING_REASONS] }, description: "The dropped runs, by reason (Run.learning.reason): only reasons with one run or more." },
-      in_progress: { ...COUNT, description: "Seeded, reflecting or proposed: runs this server holds." },
+      in_progress: { ...COUNT, description: "Seeded or reflecting: runs this server holds." },
     }, "How the runs that tried to learn fared, over the runs not archived that `from`, `to` and `agent` pick, as `analytics` counts them."),
     "x-agentrun-serve": "learning/1",
   },
@@ -225,6 +224,46 @@ const RUN_GRAPH = {
       type: "object", additionalProperties: false, required: ["cost_usd", "decisions", "effects", "elapsed_ms"],
       properties: { cost_usd: { type: ["number", "null"], description: "Null when any part is unknown." }, decisions: { type: "integer" }, effects: { type: "integer" }, elapsed_ms: { type: ["integer", "null"] } },
     },
+  },
+};
+/** GET /runs/{run_id}/trace's answer (run-trace.ts). */
+const RUN_TRACE = {
+  type: "object", additionalProperties: false, required: ["run_id", "model_requests", "spans", "dropped"],
+  properties: {
+    run_id: ref("schemas/Id"),
+    model_requests: { enum: ["priced", "tokens_only", "not_recorded"], description: "What the run's record keeps of its model requests. `priced`: each is a span with its tokens and its cost. `tokens_only`: a workflow run. Each model node's request is a span with its tokens and no cost, since the run's cost is its booking's; each decision (a judge's, a route's, a verify's request) is a span with its own cost. `not_recorded`: the harness's record keeps no request (a CLI harness), so the spans are its tool calls alone; the run's cost and request count are on its Timeline's usage row." },
+    spans: {
+      type: "array", description: "Each model request that answered (a workflow's decisions among them) and each tool call, in the order they started.",
+      items: {
+        type: "object", additionalProperties: false,
+        required: ["id", "kind", "parent_id", "name", "agent_label", "started_at", "ended_at", "status", "stop_reason", "tokens", "usd", "decision", "charged", "not_metered", "tool_use_id", "input_preview", "result_preview", "result_size_bytes"],
+        properties: {
+          id: { type: "string", description: "The span's id in this trace, the same on every read of the run." },
+          kind: { enum: ["model", "tool"] },
+          parent_id: { type: ["string", "null"], description: "The span this one ran under: for a tool call, the model request that called it, or the call it nested in; for a subagent's model request, the call that started the subagent. Null at the top." },
+          name: { type: "string", description: "A model request's model, as its answer names it (a decision's, the model its provider answered with, else the provider); a tool call's tool, as its Timeline rows name it." },
+          agent_label: { type: ["string", "null"], description: "The subagent the span ran in, as the Timeline labels it; a workflow decision's node." },
+          started_at: ref("schemas/Timestamp"),
+          ended_at: { type: ["string", "null"], format: "date-time", description: "Null while a tool call runs or waits, and for a span whose end the record does not keep: a model request with no duration, a call cut with no result." },
+          status: { enum: ["ok", "failed", "refused", "interrupted", "waiting", "running"], description: "`waiting`: a tool call held for its owner's approval, which has not run. `running`: a tool call with no result yet. `refused`: a call refused before it ran (a deny). `interrupted`: a request or a call cut before its end, or a call whose approval was withdrawn with its run. A model request is a span once it answered, so it is never waiting or running." },
+          stop_reason: { type: ["string", "null"], description: "A model request's stop reason, as pi names it (`stop`, `toolUse`, `length`, `error`, `aborted`, `deferred`, `pending`). Null on a tool call." },
+          tokens: {
+            type: ["object", "null"], additionalProperties: false, required: ["input", "cache_read", "cache_write", "output"],
+            description: "A model request's tokens. Null when its answer reported none (a request cut before its end), and on a tool call.",
+            properties: { input: { type: "integer", description: "Input tokens not read from cache. A decision's receipt keeps its input whole, so all of it is here." }, cache_read: { type: "integer" }, cache_write: { type: "integer" }, output: { type: "integer" }, reasoning: { type: "integer", description: "The thinking tokens among `output`, where the provider reports them." } },
+          },
+          usd: { type: ["number", "null"], description: "A model request's cost; for a tool call, the sum of the charges booked under it (a browser session's time, a paid tool's fee). Null when it is not known (a request cut before its end, a charge of an unknown amount, a request of a run whose `model_requests` is `tokens_only`), and on a call nothing was charged under (`charged`). A computer's own time is its provider's to bill and is in no span." },
+          decision: { type: "boolean", description: "A workflow decision's request (a judge's, a route's, a verify's), which has a cost of its own whatever `model_requests` says of the run's other requests. False on every other span." },
+          charged: { type: "boolean", description: "Whether anything was charged under a tool call (a browser session's time, a paid tool's fee): `usd` is their sum. False on a model request." },
+          not_metered: { type: "boolean", description: "A tool call whose tool has no price set: it ran outside the run's cost." },
+          tool_use_id: { type: ["string", "null"], description: "A tool call's id, as its Timeline rows carry it. Null on a model request." },
+          input_preview: { type: ["string", "null"], description: "A tool call's arguments, as its Timeline row shows them." },
+          result_preview: { type: ["string", "null"], description: "A tool call's output's head, as its Timeline row shows it." },
+          result_size_bytes: { type: ["integer", "null"], description: "The size of a tool call's whole output." },
+        },
+      },
+    },
+    dropped: { type: "integer", description: "Spans left out past the 2,000 one read serves: the run's first 2,000 are served." },
   },
 };
 /** POST /workflows/validate's answer: the DSL's validateWorkflow (code not run), and what a save would refuse. */
@@ -287,6 +326,23 @@ const CHATGPT_SIGN_IN = {
     authorize_url: { type: "string", format: "uri", description: "With `pending`: the link that sign-in opens." },
     expires_at: { type: "string", format: "date-time", description: "With `pending`: when that sign-in stops waiting, as its start answered." },
     models: { type: "array", items: { type: "string" }, description: "With `signed_in`: the plan's models, read from OpenAI at the sign-in, each named `chatgpt/<model-id>` in a revision." },
+  },
+};
+/** GET /settings/claude-login's answer (claude-login.ts ClaudeLoginView): what Claude Code's CLI says of its login, never
+ *  a token. */
+const CLAUDE_LOGIN = {
+  type: "object", additionalProperties: false, required: ["state", "place", "command", "can_start"],
+  properties: {
+    state: { enum: ["off", "other_machine", "signed_in", "signed_out", "no_cli", "unknown"], description: "`off`: not turned on. `other_machine`: turned on for another machine than this server's. Else what the CLI says: `signed_in`, `signed_out`, `no_cli` (no Claude Code CLI here yet: claude-agent's first run installs the pinned one), `unknown` (it gave no answer)." },
+    place: { enum: ["agentrun", "machine"], description: "Where the login is: `agentrun`, AgentRun's own directory in its data (the default); `machine`, this machine's own Claude Code login (~/.claude), which the owner opts into." },
+    command: { type: "string", description: "The line that signs the CLI in at `place`, for a terminal on this machine." },
+    can_start: { type: "boolean", description: "Whether POST /settings/claude-login/login can start the CLI's sign-in here: the server is bound to loopback with no public address, so the browser it opens is on this machine." },
+    refused: { type: "string", description: "Why the mode can't be turned on here, in one line: more than one person can start runs on this server." },
+    account: {
+      type: "object", additionalProperties: false,
+      properties: { method: { type: "string" }, email: { type: "string" }, organization: { type: "string" }, plan: { type: "string" } },
+      description: "With `signed_in`: what the CLI's status says of the account (its sign-in method, email, organization and plan), for display.",
+    },
   },
 };
 /** GET /settings/tool-keys's answer (tool-keys.ts): each key's fields by name and where each is set, never a value. */
@@ -611,11 +667,10 @@ const LEARNING_REASON = {
   enum: [...LEARNING_REASONS, null],
   description: [
     "Set only when `state` is `dropped`, from a closed list; a new reason is announced before it ships.",
-    "`seed_failed`: the agent's learning folder could not be read or made, or its notes copied, so the run started with nothing learned.",
-    "`no_budget`: the run's cap left no room for the end-of-run turn, or refused its request, or left none for the grade of what the turn kept, which is then never run (its `detail` says which). `unknown_cost`: a capped run whose spend is unknown.",
-    "`cancelled`: a person cancelled the run. `crashed`: the run's process went. `reflect_timeout`, `reflect_failed`: the end-of-run turn did not end in time, or ended on an error.",
-    "`empty`: the turn's answer gave no note, or the run was not asked its end-of-run turn because its only tool work was its learned workflows, each answering, with nothing said after its first message (its `detail` says so). `unparsed`: it gave notes out of format (no ```note block, one not closed or named twice), and none was kept. `propose_failed`: what it answered could not be checked. `checker`: the checks refused it, at its end or at the merge, and nothing was written to git.",
-    "`grader`: the grader's verdict was not to keep them. `grade_failed`: the grader gave no verdict, or the grade or the merge failed.",
+    "`seed_failed`: the agent's learning folder could not be read or made, so the run started with nothing learned.",
+    "`no_budget`: the run's cap left no room for the compile turn, or refused its request. `unknown_cost`: a capped run whose spend is unknown.",
+    "`cancelled`: a person cancelled the run. `crashed`: the run's process went. `reflect_failed`: the compile turn ended on an error.",
+    "`empty`: the compile turn kept no workflow and the owner gave no correction, or the run was not asked its compile turn because its only tool work was its learned workflows, each answering, with nothing said after its first message (its `detail` says so). `checker`: the checks (or the workflow's dry run) refused it, or the owner's correction would pass corrections.md's cap, and nothing was written to git.",
     "`use`: the run was started with `learning: \"use\"`: it started from what its agent learned and keeps nothing, so it was never asked its end-of-run turn.",
   ].join(" "),
 };
@@ -623,147 +678,89 @@ const LEARNING_REASON = {
 const NULL_STRING = { type: ["string", "null"] };
 const MARK = { "x-agentrun-serve": "learning/1" };
 const PAGE = (item: Json, description: string) => closed({ items: { type: "array", items: item }, total: { ...COUNT, description: "How many there are in all, at the commit the page was read at." }, next_cursor: { ...NULL_STRING, description: "The next page, read at the same commit of main as this one: opaque. Null on the last." } }, description);
-const LEARNING_NOTE_REQUIRED = closed({
-  file: { type: "string", description: "The note's file name, `<slug>.md`, at the folder's top; `[redacted]` when it holds one of the host's secrets as they are now (its route still answers the real name)." },
-  name: { type: "string" }, description: { type: "string" }, type: { enum: [...NOTE_TYPES] },
-  status: { enum: [...NOTE_STATUSES], description: "Absent from the note's front matter: active. Only an active note is in MEMORY.md. `pending`: a rule the grader held as risky, the user's or the run's own, to wait for its owner's OK; no run reads it." },
-  origin: { enum: [...NOTE_ORIGINS], description: "`you`: kept from what the user asked in their own words; `run`: what the run worked out (absent from older notes: `run`)." },
-  superseded_by: { ...NULL_STRING, description: "The note that superseded it, on a superseded note; `[redacted]` as `file` is." },
-  text: { type: "string", description: "The note's whole file, front matter included." },
-  etag: { type: "string", description: "The note's version on main, the same ETag as `GET .../learning/files/{file}` answers: send it as `If-Match` to edit or retire the version shown, and a 412 means it changed since.", "x-agentrun-serve": "learning/2" },
-  runs: closed({
-    given: { ...COUNT, description: "How many of the agent's runs were given this note: named in the run's # Learned section, whole or as an index line (each run's `given`)." },
-    read: { ...COUNT, description: "How many of the agent's runs opened this note's file with the read tool (each run's `read`). 0 when none did." },
-  }, "This note's runs, counted over the agent's runs the server knows (held ones from memory, ended ones from the learning ledger): given it, and read it. Whether a run applied a note is not measured."),
-});
-/** When a retired note, skill or draft was retired, and by whom: on a retired one alone. */
+/** When a retired workflow draft was retired, and by whom: on a retired one alone. */
 const RETIRED = {
   type: "object", additionalProperties: false, required: ["at", "by"],
   properties: {
     at: { type: "string", format: "date-time", description: "When: the commit that retired it; for `host`, the newest commit on its file." },
-    by: { enum: ["person", "run", "host"], description: "`person`: its owner, in the console or with POST .../retire (the time of that retire; an edit since moves it not); `run`: anything else that set it; `host`: no one retired it, a skill's SKILL.md or a draft's README.md whose front matter can't be read (it reads no way, or its status is none the host writes) reads retired, so no run is given it (`why`). Fix the file, then restore it." },
+    by: { enum: ["person", "run", "host"], description: "`person`: its owner, in the console or with POST .../retire (the time of that retire); `run`: anything else that set it; `host`: no one retired it, a draft's README.md whose front matter can't be read (it reads no way, or its status is none the host writes) reads retired, so no run is given it (`why`). Fix the file, then restore it." },
     from: { enum: ["active", "pending"], description: "With `by: person` or `run`: the status POST .../restore gives it back, as its retire recorded it (`retired_from` in its front matter): `active`, or `pending`, waiting for its owner's OK again, so a retire and a restore never skip that OK. One whose retire recorded none reads `pending`. Absent with `by: host`." },
     why: { const: "unreadable", description: "With `by: host` alone: why it reads retired." },
   },
   description: "When and by whom it was retired, and what its restore gives back; absent unless `status` is `retired`. POST .../restore puts it back in the status it had before its retire (`from`).",
 };
-/** The newest change to a note, skill or draft, from the newest commit on its file. */
+/** The newest change to a draft, from the newest commit on its README.md. */
 const LAST_CHANGE = closed({
-  kind: { enum: ["approved", "edited", "created", "retired", "restored", "learned", "superseded"], description: "What the change was: a person's approval, edit, creation, retire or restore (named by its commit), `superseded`, a note a person's approval or restore of another superseded, or `learned`, a run's merge." },
+  kind: { enum: ["approved", "edited", "created", "retired", "restored", "learned"], description: "What the change was: a person's approval, edit, creation, retire or restore (named by its commit), or `learned`, a run's merge." },
   by: { enum: ["person", "run"], description: "`person`: its owner, in the console or through the API; `run`: a run's merge." },
   at: { type: "string", format: "date-time", description: "When: the commit's time." },
-}, "The item's last change: the newest commit on its file (a note's file, a skill's SKILL.md, a draft's README.md), a person's (named by its subject's fixed prefix, `learning: <kind> by a person: `) or a run's merge (its Run-Id: `learned`). Absent when that commit is neither (the folder's own first commit, or one made outside the server).");
-const LEARNING_NOTE = { ...LEARNING_NOTE_REQUIRED, properties: { ...LEARNING_NOTE_REQUIRED.properties, retired: RETIRED, last_change: LAST_CHANGE } };
-const LEARNING_BY = { oneOf: [closed({ run: { type: "string" } }), { type: "object", additionalProperties: false, required: ["user"], properties: { user: { type: "boolean", const: true }, via: { type: "string", description: "On an approval: how it came, `console` (the owner's signed-in page)." } } }], description: "A run's merge (its commit's `Run-Id` trailer), or a person's edit, creation, retirement or approval through this API (`Changed-By: user`, and `Approved-Via` on an approval)." };
+}, "The draft's last change: the newest commit on its README.md, a person's (named by its subject's fixed prefix, `learning: <kind> by a person: `) or a run's merge (its Run-Id: `learned`). Absent when that commit is neither (the folder's own first commit, or one made outside the server).");
+const LEARNING_BY = { oneOf: [closed({ run: { type: "string" } }), { type: "object", additionalProperties: false, required: ["user"], properties: { user: { type: "boolean", const: true }, via: { type: "string", description: "On an approval: how it came, `console` (the owner's signed-in page)." } } }], description: "A run's merge (its commit's `Run-Id` trailer), or a person's edit, retirement or approval through this API (`Changed-By: user`, and `Approved-Via` on an approval)." };
 const LEARNING_CHANGE = closed({
   by: LEARNING_BY,
   commit: { type: "string" }, at: { type: "string", format: "date-time" },
-  reason: { type: "string", description: "A merge's: the grader's reason. A person's: what was done, `edited by a person: <file>`." },
-  files: { type: "array", items: { type: "string" }, description: "The files the commit changed, MEMORY.md among them; a name holding one of the host's secrets reads `[redacted]`." },
+  reason: { type: "string", description: "A merge's: what it kept. A person's: what was done, `edited by a person: corrections.md`." },
+  files: { type: "array", items: { type: "string" }, description: "The files the commit changed; a name holding one of the host's secrets reads `[redacted]`." },
 });
 const LEARNING_COUNTS = closed({
   merged: COUNT,
   dropped: { type: "object", additionalProperties: COUNT, propertyNames: { enum: [...LEARNING_REASONS] }, description: "By reason (Run.learning.reason): only reasons with one run or more." },
-  in_progress: { ...COUNT, description: "Seeded, reflecting or proposed: runs this server holds." },
+  in_progress: { ...COUNT, description: "Seeded or reflecting: runs this server holds." },
 }, "How the agent's runs that tried to learn fared, archived runs left out: GET /stats' `learning` with `agent`, less `runs`, counted as it counts them, from the runs this server holds and its learning ledger, no run's files opened.");
 /** One side of an agent's impact (learning-run.ts learningImpact). */
 const IMPACT_SIDE = (side: "before" | "after") => closed({
-  runs: { ...COUNT, description: side === "before" ? "The completed runs that started before the agent's first learned item (a note, a skill or a workflow)." : "The completed runs that started from at least one learned item: an active note, a learned skill they were offered, or a learned workflow their learned_workflow tool could run." },
-  median_duration_s: { type: "number", minimum: 0, description: "Their median time to the answer, in seconds to a tenth: from the run's start to the moment its job's answer was final, before it looks back (a run that does not look back: to its end)." },
+  runs: { ...COUNT, description: side === "before" ? "The completed runs that started before the agent's first learned item (a correction or a workflow)." : "The completed runs that started from at least one learned item: a correction in corrections.md, or a learned workflow their learned_workflow tool could run." },
+  median_duration_s: { type: "number", minimum: 0, description: "Their median time to the answer, in seconds to a tenth: from the run's start to the moment its job's answer was final, before its end-of-run step (a run that does not learn: to its end)." },
   median_cost_usd: { type: ["number", "null"], minimum: 0, description: "The median of the job's own cost, without its end-of-run turn, over the `cost_runs` whose cost is known, rounded to 1e-6; null when none is." },
   cost_runs: { ...COUNT, description: "Of `runs`, those whose job's cost is known: the ones `median_cost_usd` is the median of." },
-  median_learning_usd: { type: ["number", "null"], minimum: 0, description: "The median of what learning itself cost a run, its end-of-run turn and its grade (the grade's is on GET /usage's `learning` meter), over the runs that learn whose learning cost is known, rounded to 1e-6; null when none is (a side of runs with learning off)." },
+  median_learning_usd: { type: ["number", "null"], minimum: 0, description: "The median of what learning itself cost a run, its compile turn, over the runs that learn whose learning cost is known, rounded to 1e-6; null when none is (a side of runs with learning off)." },
 });
-/** A skill or a workflow draft the agent learned, as the agent's learning lists it (learning-routes.ts learnedAt). */
-const LEARNED_ITEM = (kind: "skill" | "workflow") => ({
+/** A workflow draft the agent learned, as the agent's learning lists it (learning-routes.ts workflowView). */
+const LEARNED_WORKFLOW = {
   type: "object", additionalProperties: false,
-  required: ["name", "file", ...(kind === "workflow" ? ["readme"] : []), "description", "status", "run", "bytes", "etag"],
+  required: ["name", "file", "readme", "description", "status", "run", "bytes", "etag"],
   properties: {
-    name: { type: "string", description: `The ${kind}'s folder name; \`[redacted]\` when it holds one of the host's secrets as they are now.` },
-    file: { type: "string", description: kind === "skill" ? "Its SKILL.md, `skills/<name>/SKILL.md`: GET .../learning/files/{file}, percent-encoded, reads it." : "Its draft, `workflows/<name>/workflow.json`: GET .../learning/files/{file}, percent-encoded, reads it as JSON." },
-    ...(kind === "workflow" ? { readme: { type: "string", description: "Its README.md, which the server writes from the description the run gave: the file that says whether it waits, and the one an approval names." } } : {}),
-    description: { type: "string", description: `What its ${kind === "skill" ? "SKILL.md" : "README.md"}'s front matter says it is for, cut of the host's secrets.` },
-    status: { enum: ["active", "pending", "retired"], description: `\`pending\`: the grader held it as risky to wait for its owner's OK (\`status: pending\` in its ${kind === "skill" ? "SKILL.md" : "README.md"}), and no run is given it until it is approved (POST .../learning/files/{file}/approve on its ${kind === "skill" ? "SKILL.md" : "README.md"}). \`retired\`: a person retired it (POST .../learning/files/{file}/retire on its ${kind === "skill" ? "SKILL.md" : "README.md"}), and no later run is given it.` },
+    name: { type: "string", description: "The workflow's folder name; `[redacted]` when it holds one of the host's secrets as they are now." },
+    file: { type: "string", description: "Its draft, `workflows/<name>/workflow.json`: GET .../learning/files/{file}, percent-encoded, reads it as JSON." },
+    readme: { type: "string", description: "Its README.md, which the server writes from the description the run gave: the file that says whether it waits, and the one an approval names." },
+    description: { type: "string", description: "What its README.md's front matter says it is for, cut of the host's secrets." },
+    status: { enum: ["active", "pending", "retired"], description: "`pending`: it waits for its owner's OK (`status: pending` in its README.md: a draft that calls a tool with no price), and no run is given it until it is approved (POST .../learning/files/{file}/approve on its README.md). `retired`: a person retired it (POST .../learning/files/{file}/retire on its README.md), and no later run is given it." },
     run: { ...NULL_STRING, description: "The run whose merge last changed it; null when no merge names one." },
-    bytes: { ...COUNT, description: `The size of its ${kind === "skill" ? "SKILL.md" : "workflow.json"} on main.` },
-    etag: { type: "string", description: `The version of its ${kind === "skill" ? "SKILL.md" : "README.md"} on main, as its file's GET answers it: an approval sends it as If-Match.` },
+    bytes: { ...COUNT, description: "The size of its workflow.json on main." },
+    etag: { type: "string", description: "The version of its README.md on main, as its file's GET answers it: an approval sends it as If-Match." },
     retired: RETIRED,
     last_change: LAST_CHANGE,
   },
   "x-agentrun-serve": "learning/3",
-});
+};
 const AGENT_LEARNING = closed({
   agent: { type: "string" },
   main: { ...NULL_STRING, description: "Main's head commit; null while the agent has no learning folder (its learning was never on), when every page is empty." },
-  index: { type: "string", description: "MEMORY.md on main: what the agent's next run reads, one line per active note, built by the server." },
-  notes: PAGE(LEARNING_NOTE, "The first 50 notes: active first, then by their newest change, newest first. GET .../learning/notes for more."),
-  skills: { type: "array", items: LEARNED_ITEM("skill"), description: "Every skill on main, `skills/<name>/SKILL.md`, by name: what a later run is given as a skill once it is active. Empty when there is none.", "x-agentrun-serve": "learning/3" },
-  workflows: { type: "array", items: LEARNED_ITEM("workflow"), description: "Every workflow draft on main, `workflows/<name>/workflow.json` with its README.md, by name. Empty when there is none.", "x-agentrun-serve": "learning/3" },
+  corrections: { type: "string", description: "corrections.md on main, cut of the host's secrets: what the agent's next run is given whole under # Learned, one line per correction its owner gave. Empty when there is none. GET .../learning/corrections reads it with its ETag; PUT writes it.", "x-agentrun-serve": "learning/4" },
+  workflows: { type: "array", items: LEARNED_WORKFLOW, description: "Every workflow draft on main, `workflows/<name>/workflow.json` with its README.md, by name. Empty when there is none.", "x-agentrun-serve": "learning/3" },
   log: PAGE(LEARNING_CHANGE, "The first 20 changes on main, newest first. GET .../learning/log for more."),
   counts: LEARNING_COUNTS,
   impact: {
     oneOf: [closed({ before: IMPACT_SIDE("before"), after: IMPACT_SIDE("after") }), { type: "null" }],
-    description: "What learning changed for the agent: its completed agentic runs that started from at least one learned item, an active note, a learned skill they were offered or a learned workflow they could run (`after`), against those that started before its first item (`before`: before the earlier of its first merge and the start of its first run that started from one, so a person's first note counts too). A later run with learning off, or seeded with no item (every note, skill and workflow retired), an imported and an archived run are on neither side. Null unless both sides count 2 runs or more: say it \"on N runs\", N `after.runs`. Read from the runs' rows and the learning ledger, no run's files opened.",
+    description: "What learning changed for the agent: its completed agentic runs that started from at least one learned item, a correction or a learned workflow they could run (`after`), against those that started before its first item (`before`: before the earlier of its first merge and the start of its first run that started from one, so a person's first correction counts too). A later run with learning off, or seeded with no item (no correction, every workflow retired), an imported and an archived run are on neither side. Null unless both sides count 2 runs or more: say it \"on N runs\", N `after.runs`. Read from the runs' rows and the learning ledger, no run's files opened.",
     "x-agentrun-serve": "learning/2",
   },
 });
+/** GET and PUT /agents/{agent_id}/learning/corrections (learning-routes.ts correctionsView). */
+const CORRECTIONS = closed({
+  text: { type: "string", description: "corrections.md's whole text on main, cut of the host's secrets; empty when there is none." },
+  etag: { type: "string", description: "Its version on main, the same as the ETag header: a PUT sends it as If-Match." },
+  cap_bytes: { type: "integer", const: CORRECTIONS_CAP, description: "The most bytes the file holds: a correction or an edit past it is refused." },
+});
 const PROBLEM = { type: "object", additionalProperties: false, required: ["rule", "detail"], properties: { rule: { type: "string" }, path: { type: "string" }, detail: { type: "string" } } };
-const VERDICT_ITEM = {
-  type: "object", additionalProperties: false, required: ["file", "keep", "why"],
-  properties: {
-    file: { type: "string", description: "The new note's file name; `[redacted]` when it holds one of the host's secrets as they are now." },
-    keep: { type: "boolean", description: "Whether the rubric keeps the note: true for one that waits for the owner's OK too." },
-    pending: { type: "boolean", const: true, description: "Present on a note kept to wait for the owner's OK: a risky rule, the user's or the run's own (its question is Risky)." },
-    origin: { enum: [...NOTE_ORIGINS], description: "On a kept note: `you`, from what the user asked in their own words, or `run`." },
-    question: { type: "string", description: "The rubric's question the note failed (General, Planted, Secret, Duplicate or Contradicts) when it is not kept, or Risky when it waits." },
-    why: { type: "string", description: "One sentence, the grader's, cut of the host's secrets." },
-  },
-};
-/** A note's file name, as a run's learning names one. */
-const NOTE_NAME_FILE = { type: "string", description: "The note's file name, `<slug>.md`, in the agent's learning folder (GET /agents/{agent_id}/learning/files/{file}); `[redacted]` when it holds one of the host's secrets as they are now." };
-/** The notes a run read and learned, on its learning block (runs.ts, learning.ts notesView): each present only when it
- *  holds a note. */
-const LEARNING_NOTES: Record<string, Json> = {
-  given: {
-    type: "array", minItems: 1,
-    items: closed({ file: NOTE_NAME_FILE, name: { type: "string", description: "The note's front-matter `name`, cut of the host's secrets as they are now." } }),
-    description: "The notes this run started with: every active note its # Learned section names, given whole or as an index line naming its file in `.learning/`, as it was seeded. Absent when the run started with nothing learned. Whether the run applied a note is not measured.",
-    "x-agentrun-serve": "learning/2",
-  },
-  read: {
-    type: "array", minItems: 1,
-    items: closed({ file: NOTE_NAME_FILE, name: { type: "string", description: "The note's front-matter `name`, cut of the host's secrets as they are now." } }),
-    description: "The notes this run read from `.learning/` in its working directory, in the order it first read each: every `read` call of its job (on any harness) whose result was a success and that names a note the run started from. A note read another way, through a command (`bash`'s `cat .learning/<file>`, say), is not counted. MEMORY.md, the index every run gets in its instructions, is not one; nor is a read the run's end-of-run turn made. Found once, as the run settles, and kept with the run: absent while it runs (a follow-up included) and when it read none. Absent when the run opened no note file.",
-    "x-agentrun-serve": "learning/2",
-  },
-  learned: {
-    type: "array", minItems: 1,
-    items: closed({ file: NOTE_NAME_FILE, name: { type: "string", description: "The note's front-matter `name`, cut of the host's secrets as they are now." }, supersedes: { type: "array", items: NOTE_NAME_FILE, description: "The older notes it replaced, each now `superseded` by it; empty when it replaced none." } }),
-    description: "The notes this run's learning added to the agent's learning folder: present once `state` is `merged`, absent otherwise.",
-    "x-agentrun-serve": "learning/2",
-  },
-  skills: {
-    type: "array", minItems: 1,
-    items: { type: "object", additionalProperties: false, required: ["file", "name"], properties: { file: { type: "string", description: "Its SKILL.md, `skills/<name>/SKILL.md`; `[redacted]` when it holds one of the host's secrets as they are now." }, name: { type: "string", description: "The skill's folder name, `[redacted]` as `file` is." }, pending: { type: "boolean", const: true, description: "Present while it waits for the owner's OK: no run is given it until approved." } } },
-    description: "The skill this run's learning added or changed: present once `state` is `merged` and it kept one, absent otherwise.",
-    "x-agentrun-serve": "learning/3",
-  },
+/** A workflow draft a run's merge wrote, as its learning names it (learning.ts filesView). */
+const MERGED_WORKFLOW = { type: "object", additionalProperties: false, required: ["file", "name"], properties: { file: { type: "string", description: "Its draft, `workflows/<name>/workflow.json`; `[redacted]` when it holds one of the host's secrets as they are now." }, name: { type: "string", description: "The workflow's folder name, `[redacted]` as `file` is." }, pending: { type: "boolean", const: true, description: "Present while it waits for the owner's OK." } } };
+/** The workflow draft a run's learning merged, on its learning block: present only when it merged one. */
+const RUN_WORKFLOWS: Record<string, Json> = {
   workflows: {
-    type: "array", minItems: 1,
-    items: { type: "object", additionalProperties: false, required: ["file", "name"], properties: { file: { type: "string", description: "Its draft, `workflows/<name>/workflow.json`; `[redacted]` when it holds one of the host's secrets as they are now." }, name: { type: "string", description: "The workflow's folder name, `[redacted]` as `file` is." }, pending: { type: "boolean", const: true, description: "Present while it waits for the owner's OK." } } },
+    type: "array", minItems: 1, items: MERGED_WORKFLOW,
     description: "The workflow draft this run's learning added or changed: present once `state` is `merged` and it kept one, absent otherwise.",
     "x-agentrun-serve": "learning/3",
-  },
-};
-/** A run's learning block, past its read and learned notes: the notes its merge holds for the owner's OK. The run's
- *  learning whole (RUN_LEARNING) says the same as a list that is always there. */
-const RUN_NOTES: Record<string, Json> = {
-  ...LEARNING_NOTES,
-  pending: {
-    type: "array", minItems: 1,
-    items: closed({ file: NOTE_NAME_FILE, name: { type: "string", description: "The note's front-matter `name`, cut of the host's secrets as they are now." } }),
-    description: "The notes this run's merge holds for the owner's OK (status `pending` in the folder: a risky rule, the user's or the run's own), in no index and read by no run until approved, never among `learned`: present once `state` is `merged` and one waits, absent otherwise.",
-    "x-agentrun-serve": "learning/2",
   },
 };
 /** `properties` as a closed object, its `optional` ones left out of `required`. */
@@ -1221,7 +1218,7 @@ const GRADE_FIELDS = {
   path: { enum: [...RUN_PATHS], description: "The path the run took, read from its record when it was graded." },
   workflow: { ...NULL_STRING, description: "The learned workflow that served it, when one did." },
   workflow_digest: { ...NULL_STRING, description: "That workflow's digest (the first 16 hex of its workflow.json's sha256), when it was served first." },
-  feedback: { enum: [...FEEDBACK_ROUNDS, null], description: "What the grade asked of the run's learning, a round the run opened again on (no turn of the job's: its end-of-run turn alone, learning spend): `look_back`, a run the agent finished graded with a `label`, a look-back on it. null: nothing more (a grade of a run its learned workflow answered alone, right or wrong, is kept and costs $0: the workflow's graded hold reads it), or a run that does not learn or that can't be opened again. Kept with the grade once the round opened, so a later read still says it." },
+  feedback: { enum: [...FEEDBACK_ROUNDS, null], description: "What the grade asked of the run's learning, a round the run opened again on (no turn of the job's: its end-of-run step alone, learning spend): `correction`, a run the agent finished graded with a `label`, whose words are appended to its agent's corrections.md as one line. null: nothing more (a grade of a run its learned workflow answered alone, right or wrong, is kept and costs $0: the workflow's graded hold reads it), or a run that does not learn or that can't be opened again. Kept with the grade once the round opened, so a later read still says it." },
 };
 const RUN_LEARNING = {
   oneOf: [
@@ -1230,25 +1227,20 @@ const RUN_LEARNING = {
       detail: { ...NULL_STRING, maxLength: 300, description: "Run.learning's detail, the same words: at most 300 characters, cut of the host's secrets as they are now before it is cut short." }, at: { type: "string", format: "date-time" },
       seed: { ...NULL_STRING, description: "The commit of main the run started from; null when its seed failed." },
       merged: { ...NULL_STRING, description: "Its merge commit on main, once merged." },
-      pending: { type: "array", items: closed({ file: { type: "string" }, name: { type: "string" } }), description: "The merge's notes that wait for the owner's OK (status `pending` on main), in no index and read by no run until approved; empty when none." },
-      verdict: { oneOf: [closed({ merge: { type: "boolean" }, reason: { type: "string" }, items: { type: "array", items: VERDICT_ITEM, description: "One for each new note the run proposed." } }), { type: "null" }], description: "The grader's, once it judged; null when no grade ran." },
-      problems: { type: "array", items: PROBLEM, description: "The checker's, when the reason is `checker`; otherwise, the items the checks left out while the rest went on to the grader (on a merge, a grader's drop or a grade that failed)." },
+      workflows: { type: "array", items: MERGED_WORKFLOW, description: "The workflow draft its merge wrote, `pending` while it waits for the owner's OK; empty when none." },
+      corrections: { ...COUNT, description: "How many lines of its owner's words its merge added to corrections.md: 1 when a correction was kept, else 0." },
+      problems: { type: "array", items: PROBLEM, description: "The checker's, when the reason is `checker`; on a merge, what the checks refused of a part that was not kept (an owner's correction past the cap, say) while the rest merged." },
       compiled: { oneOf: [closed({
         workflow: { type: "string", description: "The learned workflow the compile turn wrote: the agent's whole job, or a revision of the one it has." },
-        from_notes: { type: "array", items: { type: "string" }, description: "The notes it absorbed, by file name: once merged, each carries `compiled_into: <workflow>` in its front matter and is still served on the by-hand path." },
         attempts: { type: "array", items: closed({ ok: { type: "boolean" }, errors: { type: "array", items: { type: "string" }, description: "What the static checks and the dry run refused of this attempt, sent back to the model for the next one." } }), description: "Each attempt in order: the first, then a retry for each refusal, at most 4." },
         digest: { type: ["string", "null"], description: "The kept draft's digest (the first 16 hex of its workflow.json's sha256): what a run serving it records as `workflow_digest`, and its promotion records' `digest`; null when no attempt passed." },
         promoted: { type: ["boolean", "null"], description: "Whether the kept draft serves the agent's runs, from its promotion records (GET /agents/{agent_id}/learning/promotions): true once promoted, false while held, null while it is checked, before its first claim decides it, or when no attempt passed." },
-      }), { type: "null" }], description: "The run's compile turn, when its end-of-run look-back wrote the agent's job as a learned workflow (the agent kept enough notes or ran the job enough, and has none yet; or its workflow handed a run back, cost more than by hand, or its promotion held it); null when the run compiled nothing." },
+      }), { type: "null" }], description: "The run's compile turn, when its end-of-run step wrote the agent's job as a learned workflow (the agent has its `compile_after` completed runs and no learned workflow yet, or its workflow's promotion held it, once per hold); null when the run compiled nothing." },
       draft_errors: { type: "array", items: { type: "string" }, description: "What the checks refused of a compiled draft that never passed after its retries, cut of the host's secrets; empty when none." },
-      cost_usd: closed({ grade: { type: ["number", "null"], description: "The grade's, outside the run (GET /usage's `learning` meter); null before a grade ran, or when its cost is unknown. The end-of-run turn's cost is in the run's own totals." } }),
-      tokens: closed({ grade: { oneOf: [closed({ input: COUNT, cache_read: COUNT, cache_write: COUNT, output: COUNT }), { type: "null" }], description: "The grade's tokens; `input` excludes cached input." } }),
       used: closed({
-        skills: { type: "array", items: closed({ name: { type: "string" }, read: { type: "boolean" } }), description: "Each learned skill the run was offered, and whether its job read the skill's SKILL.md (a read of `.agents/skills/<name>/SKILL.md`, read_skill_file on it, or a harness's own Skill tool on it; the end-of-run turn's reads not counted). A name holding one of the host's secrets reads `[redacted]`." },
         workflows: { type: "array", items: closed({ name: { type: "string" }, calls: COUNT, failed: COUNT }), description: "Each learned workflow the run's job called (`learned_workflow`), by the name its calls gave: how many calls, and how many of them failed. A name holding one of the host's secrets reads `[redacted]`." },
-      }, "What the run's job did with the learned skills and workflows it was offered, apart from `skills` and `workflows`, the ones it learned."),
+      }, "What the run's job did with the learned workflows it was offered, apart from `workflows`, the one it learned."),
     }, {
-      ...LEARNING_NOTES,
       graded: { ...closedWith({ ...GRADE_FIELDS, feedback_status: { enum: [...FEEDBACK_STATUSES, null], description: "How the round the grade opened (`feedback`) stands, read from its run's journal and its steer's row (no clock compared): `running` until it settles; `ended`, its run took the grade's words and ended after them; `not_run`, its run ended before it took them (its claim refused, say), so the round never ran: grade it again to ask once more. null for a grade that opened none." } }, {}), description: "The run's grade (PUT /runs/{run_id}/grade), as its agent keeps it and the PUT answered it, never its `expected`: the newest, since a later grade replaces it, and how the round it opened stands. Absent when it has none kept." },
     }),
     { type: "null" },
@@ -1256,8 +1248,8 @@ const RUN_LEARNING = {
   description: "The run's learning whole. Null for a run that does not learn.",
 };
 const LEARNING_DIFF = closed({
-  base: { ...NULL_STRING, description: "A merged run's merge's parent; else the commit the run's proposal was checked against (its seed)." },
-  head: { ...NULL_STRING, description: "A merged run's merge commit; null before (the proposal is in the run's own folder, not a commit)." },
+  base: { ...NULL_STRING, description: "A merged run's merge's parent; else the commit the run started from (its seed)." },
+  head: { ...NULL_STRING, description: "A merged run's merge commit; null when it merged nothing." },
   files: {
     type: "array",
     items: {
@@ -1269,20 +1261,20 @@ const LEARNING_DIFF = closed({
       },
     },
   },
-}, "What the run proposed: once merged, its merge commit against its parent, MEMORY.md and superseded notes included; before, its new notes against its seed; a run that proposed nothing, no file.");
+}, "What the run merged: its merge commit against its parent; a run that merged nothing, no file, against its seed.");
 const AGENT_ID = ref("parameters/AgentId");
-const NOTE_PARAM = { name: "file", in: "path", required: true, description: "A note's file name at the folder's top (`<slug>.md`), percent-encoded; on a read, `MEMORY.md` too, and a skill's `skills/<name>/SKILL.md` or a draft's `workflows/<name>/workflow.json` or `README.md`, its slashes percent-encoded (`skills%2F<name>%2FSKILL.md`); on an approval, a skill's SKILL.md or a draft's README.md. Any other name is 400, and so is a skill's or a draft's file on an edit, which is for notes; on a retire, a skill's SKILL.md or a draft's README.md too; a path with a bare `/` is no route (404).", schema: { type: "string" } };
-const ETAG = { ETag: { description: "The note's version on main: its git blob id, quoted. If-Match on a write takes it.", schema: { type: "string" } }, "X-Content-Type-Options": ref("headers/NoSniff") };
-const NOTE_TEXT = (description: string, json = false) => ({ description, headers: ETAG, content: { "text/markdown": { schema: { type: "string" } }, ...(json ? { "application/json": { schema: {}, description: "A draft's workflow.json, as it is on main." } } : {}) } });
-const PRECONDITION_REQUIRED = { description: "`precondition_required`: the write names no version it read: If-Match with the note's ETag (an edit or a retire), or If-None-Match: * (a new note). If-Match: * is not one.", content: { "application/json": { schema: ref("schemas/Error") } } };
-const IF_MATCH = { name: "If-Match", in: "header", required: false, description: "The note's ETag, as a GET answered it: an edit or a retire lands only on that version, else 412.", schema: { type: "string" } };
-const WRITE_ERRORS = { ...errors(400, 401, 403, 404, 412, 429, 500), "428": PRECONDITION_REQUIRED };
+const FILE_PARAM = { name: "file", in: "path", required: true, description: "A file of the agent's learning folder, its slashes percent-encoded (`workflows%2F<name>%2FREADME.md`): on a read, a draft's `workflows/<name>/workflow.json` or `README.md`; on an approval, a retire or a restore, a draft's README.md. Any other name is 400, corrections.md included: it is read and written on `/agents/{agent_id}/learning/corrections`; a path with a bare `/` is no route (404).", schema: { type: "string" } };
+const ETAG = { ETag: { description: "The file's version on main: its git blob id, quoted. If-Match on a write takes it.", schema: { type: "string" } }, "X-Content-Type-Options": ref("headers/NoSniff") };
+const FILE_TEXT = (description: string, json = false) => ({ description, headers: ETAG, content: { "text/markdown": { schema: { type: "string" } }, ...(json ? { "application/json": { schema: {}, description: "A draft's workflow.json, as it is on main." } } : {}) } });
+const PRECONDITION_REQUIRED = { description: "`precondition_required`: the write names no version it read: If-Match with the file's ETag. If-Match: * is not one.", content: { "application/json": { schema: ref("schemas/Error") } } };
+const IF_MATCH = { name: "If-Match", in: "header", required: false, description: "The file's ETag, as a GET answered it: the write lands only on that version, else 412.", schema: { type: "string" } };
+const WRITE_ERRORS = { ...errors(400, 401, 403, 404, 409, 412, 429, 500), "428": PRECONDITION_REQUIRED };
 /** Why every learning route of an agent may answer 403: what it learned is cut of the agent's own sign-in pointers, and
  *  withheld when one of them can't be read here. */
-const SIGN_IN_WITHHELD = "Every text is cut of the agent's own browser sign-in pointers too, live or forgotten, and a note holding one is refused as one holding a host secret; when one of them does not open on this server (its seal key changed or is missing, or the sign-in is damaged), every learning route of the agent answers 403 `forbidden`, so nothing is shown over a shorter list.";
-const WRITE_DESCRIPTION = "As a person, with no grader: one host commit on main in the agent's queue, `learning: <edited|created|retired> by a person: <file>` with a `Changed-By: user` trailer, MEMORY.md rebuilt from the active notes, and the folder's files brought in line. A note that fails the structural checks a run's notes pass (front matter, the 4 KB cap, UTF-8, hidden characters, text shaped like a secret or holding one of the host's) is 400 `bad_request` with `problems`, and nothing is written; so is an index past 200 lines. MEMORY.md is 400: the server builds it. Answers the note as it now is, with its new ETag. An archived agent's notes are written as its definition is. " + SIGN_IN_WITHHELD;
+const SIGN_IN_WITHHELD = "Every text is cut of the agent's own browser sign-in pointers too, live or forgotten, and a write holding one is refused as one holding a host secret; when one of them does not open on this server (its seal key changed or is missing, or the sign-in is damaged), every learning route of the agent answers 403 `forbidden`, so nothing is shown over a shorter list.";
+const WRITE_DESCRIPTION = "As a person: one host commit on main in the agent's queue, `learning: <approved|retired|restored> by a person: <file>` with a `Changed-By: user` trailer. Answers the file as it now is, with its new ETag. An archived agent's learning is written as its definition is. " + SIGN_IN_WITHHELD;
 /** GET /agents/{agent_id}/learning/cost (learning-cost.ts, store-reads/learning.ts agentCostOverStore). */
-const COST_USD = (description: string) => ({ type: ["number", "null"], minimum: 0, description: `${description} Rounded to 1e-6; null when unknown, never 0 for unknown.` });
+const COST_USD = (description: string) => ({ type: ["number", "null"], minimum: 0, description: `${description} As booked (its float noise rounded off at 1e-12, the precision of a run's own cost): a decision's sub-micro-dollar cost is in it; null when unknown, never 0 for unknown.` });
 const COST_MEAN = (description: string) => ({ oneOf: [closed({ runs: { ...COUNT, minimum: 1, description: "How many runs the mean is over." }, mean_usd: { type: "number", minimum: 0, description: "Their mean, rounded to 1e-6." } }), { type: "null" }], description });
 const COST_RUN = closed({
   n: { type: "integer", minimum: 1, description: "The run's number among the agent's runs counted here, oldest first: 1 is its first." },
@@ -1291,9 +1283,9 @@ const COST_RUN = closed({
   path: { enum: [...RUN_PATHS], description: "The path the run took: `workflow`, a learned workflow finished it alone (its job's only tool calls were learned_workflow calls, each answering, and nothing was said after its first message, so it was not asked to look back); `handed_back`, a learned workflow ran and the agent went on (it failed or escalated, or the agent worked on after it); `agent`, no learned workflow ran; `replay`, a replay run: a learned workflow's new revision run alone on one of the agent's graded inputs, at workflow cost, to decide whether it serves first (its cost is learning's, shown as its own run); `audit`, never a row here: a shadow run auditing a served run is no run of the series, its cost that run's `learning_usd`." },
   workflow: { ...NULL_STRING, description: "The learned workflow the job called last, by name; null when it called none." },
   learned_revision: { ...NULL_STRING, description: "The commit of the agent's learning folder the run started from: the learned revision that served it. Null for a run that does not learn." },
-  cost_usd: COST_USD("The job's own cost: what the run had cost when its answer was final, before it looked back; for a run that did not look back, its whole cost."),
+  cost_usd: COST_USD("The job's own cost: what the run had cost when its answer was final, before its compile turn; for a run that was asked none, its whole cost."),
   cost_upper_bound: { type: "boolean", description: "The run's stored cost is only a bound (its row's `costAtMostUsd`: a model request cut at its cap hold): `cost_usd` and `total_usd` are null, never a known cost. `summary` counts such a run as `at_most`, not `unknown`." },
-  learning_usd: COST_USD("What learning cost for the run: its end-of-run look-back and the grade of what it proposed, outside the run. 0 for a run that does not learn or kept nothing to grade; a grade still running adds nothing yet. An audit's shadow run of it is its learning too: null while that shadow is queued or running, never $0."),
+  learning_usd: COST_USD("What learning cost for the run: its compile turn. 0 for a run that does not learn or was not asked one. An audit's shadow run of it is its learning too: null while that shadow is queued or running, never $0."),
   total_usd: COST_USD("The run's all-in cost, `cost_usd` and `learning_usd` together; null when either is."),
 });
 const LEARNING_COST = closed({
@@ -1328,28 +1320,42 @@ const LEARNING_COST = closed({
       agree_min: { type: "number", minimum: 0, maximum: 1, description: "The agreement bar it passed (the definition's `learning.agree_min`): `agreed` over `alone` at least this. Passing it says the workflow agreed with the agent that often, never that it is as accurate." },
     }), { type: "null" }], description: "The check the serving promotion was decided on: the current champion of the learned workflow the newest served run ran. Null when none serves." },
   }, "What the series shows, over every run it counts, `limit` aside."),
+  bill: closed({
+    baseline: COST_MEAN("The agent for one run: the mean own cost (`cost_usd`, learning left out) of the `agent` runs started before the agent's first run on a served path (`workflow`, `handed_back`, or an audit's shadow run), read from the run records (every one with none yet), each known exactly; null when there is none."),
+    promoted: { oneOf: [closed({ n: { type: "integer", minimum: 1, description: "Its place on the bill's index." }, run_id: { type: "string" }, at: DATE_TIME }), { type: "null" }], description: "The first run that does a job started at or after the agent's first run on a served path (`at`: when that run started); null before one." },
+    points: { type: "array", items: closed({
+      n: { type: "integer", minimum: 1, description: "The run's place among the agent's runs that do a job (`agent`, `workflow` and `handed_back`), oldest first: a `replay` checks a revision and a shadow audits a run, so neither is on the index." },
+      run_id: { type: "string" },
+      actual_usd: { type: "number", minimum: 0, description: "Booked to this run, every run before it included: each run all in (`total_usd`: its own cost, its compile turn and its audit shadow), and each replay run's cost at the run that does a job it followed. As booked (float noise rounded off at 1e-12)." },
+      agent_usd: { type: ["number", "null"], minimum: 0, description: "The agent for all of it: `baseline` times the runs shown to here. Null with no baseline." },
+    }), description: "One a run that does a job whose all-in cost is known exactly, every one: a run whose cost is unknown or only a bound is on neither line and counted in `withheld` (its number skipped)." },
+    break_even: { oneOf: [closed({ n: { type: "integer", minimum: 1 }, run_id: { type: "string" } }), { type: "null" }], description: "The first run from `promoted` on after which `actual_usd` is never again over `agent_usd`, `booked_usd` against the line at the last point included: learning has paid for itself there. Null while it has not (`gap_usd` says by how much), and before a run on a served path." },
+    gap_usd: { type: ["number", "null"], description: "While `break_even` is null: `booked_usd` less `agent_usd` at the last point (over 0: the bill is that much over the agent for all of it), spend booked after that point included. Null with a break-even, with no baseline or no run." },
+    withheld: { ...COUNT, description: "Runs (replays included) whose cost is unknown or only a bound: on neither line." },
+    booked_usd: { type: "number", minimum: 0, description: "The booked total: every priced run's cost (0 with none). Spend with no point to join (a replay after a run of unknown cost) is carried to the next point's `actual_usd`, and is in this when no point follows (or when there is no point at all: replays whose job runs were archived). With every run's GET /runs/{id} `cost.all_in_usd`, the sum of those and `unattributed_usd` is this." },
+    revisions: { type: "array", items: closed({
+      workflow: { type: "string", description: "The learned workflow, by name." },
+      digest: { type: "string", description: "The revision: the first 16 hex characters of its workflow.json's sha256." },
+      compile_usd: COST_USD("What the compile turns that drafted it cost: each ran at the end of a run, in its session, and is that run's learning spend no more, but this revision's. A recompile's turn is its recompiled revision's. 0 when none on record drafted it."),
+      check_usd: COST_USD("What its check cost: its replay runs (the first draft's check or the one recompile's, each revision its own)."),
+      spend_usd: COST_USD("Its learning spend: `compile_usd` and `check_usd` together."),
+      k: { type: "integer", minimum: 1, description: "The served runs its spend is spread over: its check's `compile_after`." },
+      served: { ...COUNT, description: "How many of those it has served (`workflow` or `handed_back` at this digest), at most `k`." },
+      attributed_usd: COST_USD("What they carry: spend over k each in whole micro-dollars (a micro-dollar more on the first ones, and the sub-micro-dollar rest on the k-th, so the split is exact), on their GET /runs/{id} `cost.learning_usd`."),
+      unattributed_usd: COST_USD("The rest: on no run until it serves `k` runs; for a `stopped` revision, on none ever."),
+      state: { enum: ["checking", "serving", "stopped"], description: "`checking`: its check is at work; `serving`: it is its workflow's champion; `stopped`: held or replaced, so nothing more will carry it." },
+    }), description: "Each revision of the agent's learned workflows its promotion records name, in the order first recorded, and how its learning spend is passed on to the runs it serves." },
+    unattributed_usd: COST_USD("What no run carries: `booked_usd` less every run's GET /runs/{id} `cost.all_in_usd`. A revision's spend its served runs have not carried yet (each revision's `unattributed_usd`), a compile whose drafts all failed its checks or that the spend cap stopped (it drafted no revision to serve), and the spend of a revision whose promotion records aged out of the kept history land here, never nowhere. Null while any run's cost or learning is unknown, or a run is `withheld`."),
+    holds: { type: "array", items: closed({
+      n: { type: ["integer", "null"], minimum: 1, description: "The first run that does a job started at or after the hold, by its place on the bill's index (as `points` number them), placed by the server over every run, `limit` aside. Null when none has started since." },
+      at: DATE_TIME,
+      workflow: { type: "string", description: "The learned workflow held, by name." },
+      by: { enum: ["audit", "check", "dsl"], description: "What held it: `audit`, its audits disagreed past the hold bar; `check`, a new revision's check held it (its draft failed its checks, or its replays fell short); `dsl`, this release's workflow DSL refused the serving revision (a hold with neither `audit` nor `check`, its `reason` the DSL's)." },
+      reason: { type: "string", description: "The hold record's reason, in the server's words." },
+    }), description: "Each hold the agent's promotion records keep, oldest first, at the run it bore on." },
+  }, "The owner's bill, booked dollars only (each request at the price it was billed, cached tokens at their cached price), over every run, `limit` aside: the cumulative cost run after run against the agent doing all of it, and where learning pays for itself."),
 });
 
-const EVAL_TEXT = (description: string, example: string) => ({ type: "string", minLength: 1, maxLength: EVAL_TEXT_MAX, description, example });
-const EVAL_IN = {
-  name: EVAL_TEXT("What ran the test, one line: a bench's name and set, a script's.", "invoice bench, sealed test"),
-  n: { type: "integer", minimum: 1, maximum: EVAL_JOBS_MAX, description: "The held-out jobs the test counted: jobs the agent never learned from." },
-  correct: { type: "integer", minimum: 0, maximum: EVAL_JOBS_MAX, description: "How many of the `n` jobs the agent with what it learned got right: 0 to `n`." },
-};
-const EVAL_IN_OPTIONAL = {
-  label_source: { ...EVAL_TEXT("Where the right answers came from, one line; null (or absent) when not said.", "teacher labels, 87% strict vs people"), type: ["string", "null"] },
-  cost_per_task_usd: { type: ["number", "null"], minimum: 0, description: "The agent with what it learned: its mean cost a task, in USD; null (or absent) when not counted." },
-  baseline_cost_per_task_usd: { type: ["number", "null"], minimum: 0, description: "The agent by hand (learning off): its mean cost a task, in USD; null (or absent) when not counted." },
-  learned_revision: { type: ["string", "null"], pattern: "^[0-9a-f]{7,64}$", description: "The learning folder's commit the test ran from; null (or absent) when not said." },
-};
-const LEARNING_EVAL = closed({
-  id: { type: "string" },
-  ...EVAL_IN,
-  ...EVAL_IN_OPTIONAL,
-  accuracy: { type: "number", minimum: 0, maximum: 1, description: "`correct` over `n`, to four places: the server's." },
-  ci: { type: "array", items: { type: "number", minimum: 0, maximum: 1 }, minItems: 2, maxItems: 2, description: "The 95% Wilson interval around `accuracy`, [low, high], to four places: the server's, from `n` and `correct`." },
-  recorded_at: { type: "string", format: "date-time" },
-}, "One recorded held-out test of the agent: its counts as posted, and the accuracy and 95% Wilson interval the server computed from them.");
 /** PUT /runs/{run_id}/grade and GET /agents/{agent_id}/learning/promotions (learn/promote.ts, runner/promotion.ts). */
 const GRADE = closedWith(GRADE_FIELDS, { expected: { type: "object", description: "The fields a right answer's JSON holds, when the grade gave them." } });
 const REPLAY_SCORE = {
@@ -1368,6 +1374,24 @@ const REPLAY_OUTCOMES = closed({
   failed: { ...COUNT, description: "Replay runs a step failed in, or still at work past the replay's deadline: no evidence either way, never scored." },
   skipped_write: { ...COUNT, description: "Replay runs stopped at a write (an MCP tool its server does not mark read-only, or any tool not known to read) that the graded run's recording does not have with the same arguments: a replay never runs a write, so these are neither scored nor wrong; a replay whose every input was skipped holds the revision." },
 }, "How many of its replay runs ended each way: what each run did.");
+/** A compiled draft's one check (learn/promote.ts CheckRecord): its bar while it replays, its numbers once decided. */
+const PROMOTION_CHECK = closedWith({
+  compile_after: { type: "integer", minimum: 1, description: "The agent definition's `learning.compile_after` when the check began: how many of the agent's newest completed runs it read inputs from." },
+  agree_min: { type: "number", minimum: 0, maximum: 1, description: "The bar on agreement: of the inputs it answered alone, the least share that must say what the agent's recorded answer said." },
+  alone_min: { type: "number", minimum: 0, maximum: 1, description: "The bar on answering alone: the least share of the inputs it ran on that it must answer with no escalate and no failed step." },
+  attempt: { enum: [1, 2], description: "1: the compile's first check. 2: the check of its one recompile, after the first held it; held again, it stops (`stopped`)." },
+}, {
+  n: { ...COUNT, description: "The inputs it ran on (a replay stopped at a write is none; one never created, or not ended, by the check's deadline counts, as failed). 0 with nothing to run on: never promoted, it stops (`stopped`) and `reason` says why." },
+  agreed: { ...COUNT, description: "How many of them it answered alone with the agent's recorded answer." },
+  alone: { ...COUNT, description: "How many of them it answered alone. Promoted when `alone`/`n` >= `alone_min` and `agreed`/`alone` >= `agree_min`." },
+  of: { type: "array", items: { type: "string" }, description: "The agent's runs whose inputs it ran on, newest first." },
+  cost_usd: { type: ["number", "null"], minimum: 0, description: "What its replay runs cost together; null when one's cost is unknown." },
+  outcomes: { ...REPLAY_OUTCOMES, description: "How each input it ran on came out, one per input: a replay run never created, or not ended, by the check's deadline is `failed`." },
+  unstarted: { ...COUNT, minimum: 1, description: "How many of its replay runs were never created by the check's deadline (the server stopped after reserving them, say), each a `failed` input. Left out when none. Every one: its replay's read is `failed`." },
+  skipped_tools: SKIPPED_TOOLS,
+  disagreements: { type: "array", items: closedWith({ run: { type: "string" }, input: { type: "string", description: "The run's input, as text or JSON, cut at 1200 characters." }, agent: NULL_STRING }, { draft: { type: "string", description: "What it answered instead." }, escalated: { type: "string", description: "Why it handed the input back." }, failed: { const: true, description: "A step failed on it, or its run was still at work past the check's deadline, or never created by then." } }), description: "On a hold: each input it did not agree on, which the agent's next run reads as data in its one recompile." },
+  stopped: { const: true, description: "The recompile's check held it too, or there was nothing to check it on (no input of the agent's it takes, or every input skipped at a write: `n` 0, `reason` starting \"nothing to check it on\", which asks no recompile): nothing compiles again until a hold or its owner acts; the agent keeps the runs." },
+});
 const PROMOTION = closedWith({
   workflow: { type: "string" },
   digest: { type: "string", description: "The revision the record decides: the first 16 hex of its workflow.json's sha256." },
@@ -1375,23 +1399,7 @@ const PROMOTION = closedWith({
   decided: { enum: ["promote", "hold", "replaying"], description: "`promote`: it serves first on the runs it fits. `hold`: it does not; the champion (the revision promoted last) takes them, else the agent, until a new revision. A hold with `audit` is its audits' (a serving revision: at least the definition's `learning.hold_disagree` of its newest `learning.hold_window` audit rows, GET .../learning/audits, disagreed); one with `check`, its check's; one with neither, this release's workflow DSL refused the serving revision (`reason` names the DSL's code and where; its runs handed back to the agent): the agent's next run recompiles it once. `replaying`: its check's replay runs are at work; the champion serves meanwhile, else the agent. One revision of a workflow is checked at a time, and a running check finishes." },
   reason: { type: "string", description: "Why, in words, with the numbers." },
 }, {
-  check: closedWith({
-    compile_after: { type: "integer", minimum: 1, description: "The agent definition's `learning.compile_after` when the check began: how many of the agent's newest completed runs it read inputs from." },
-    agree_min: { type: "number", minimum: 0, maximum: 1, description: "The bar on agreement: of the inputs it answered alone, the least share that must say what the agent's recorded answer said." },
-    alone_min: { type: "number", minimum: 0, maximum: 1, description: "The bar on answering alone: the least share of the inputs it ran on that it must answer with no escalate and no failed step." },
-    attempt: { enum: [1, 2], description: "1: the compile's first check. 2: the check of its one recompile, after the first held it; held again, it stops (`stopped`)." },
-  }, {
-    n: { ...COUNT, description: "The inputs it ran on (a replay stopped at a write is none; one never created, or not ended, by the check's deadline counts, as failed). 0 with nothing to run on: never promoted, it stops (`stopped`) and `reason` says why." },
-    agreed: { ...COUNT, description: "How many of them it answered alone with the agent's recorded answer." },
-    alone: { ...COUNT, description: "How many of them it answered alone. Promoted when `alone`/`n` >= `alone_min` and `agreed`/`alone` >= `agree_min`." },
-    of: { type: "array", items: { type: "string" }, description: "The agent's runs whose inputs it ran on, newest first." },
-    cost_usd: { type: ["number", "null"], minimum: 0, description: "What its replay runs cost together; null when one's cost is unknown." },
-    outcomes: { ...REPLAY_OUTCOMES, description: "How each input it ran on came out, one per input: a replay run never created, or not ended, by the check's deadline is `failed`." },
-    unstarted: { ...COUNT, minimum: 1, description: "How many of its replay runs were never created by the check's deadline (the server stopped after reserving them, say), each a `failed` input. Left out when none. Every one: its replay's read is `failed`." },
-    skipped_tools: SKIPPED_TOOLS,
-    disagreements: { type: "array", items: closedWith({ run: { type: "string" }, input: { type: "string", description: "The run's input, as text or JSON, cut at 1200 characters." }, agent: NULL_STRING }, { draft: { type: "string", description: "What it answered instead." }, escalated: { type: "string", description: "Why it handed the input back." }, failed: { const: true, description: "A step failed on it, or its run was still at work past the check's deadline, or never created by then." } }), description: "On a hold: each input it did not agree on, which the agent's next run reads as data in its one recompile." },
-    stopped: { const: true, description: "The recompile's check held it too, or there was nothing to check it on (no input of the agent's it takes, or every input skipped at a write: `n` 0, `reason` starting \"nothing to check it on\", which asks no recompile): nothing compiles again until a hold or its owner acts; the agent keeps the runs." },
-  }),
+  check: PROMOTION_CHECK,
   runs: { type: "array", items: { type: "string" }, description: "Its replay runs (path `replay`)." },
   inputs: { type: "array", items: { type: "string" }, description: "On a replaying record: the graded run each of `runs` replays, in the same order. Its runs are reserved before they are created; one not created a few minutes on is created by the next claim." },
   replay_id: { type: "string", description: "The replay's id, on its replaying record and the one that decided it: GET .../revisions/{digest}/replays/{replay_id} reads it, whether a run's claim or its owner started it." },
@@ -1424,6 +1432,18 @@ const SERVING = closed({
   audit: { anyOf: [AUDIT_LINE, { type: "null" }], description: "Its audit line: the serving (else the newest) revision's newest audit rows against the hold bar; null when no revision has a record." },
   audits_off: { ...NULL_STRING, description: "Why none of the agent's runs is audited, e.g. `audits off: send_email can write`: its definition can call a tool that is not read-only (an MCP tool its server lists without `readOnlyHint`, or a built-in other than web_fetch, web_search, pdf_pages and llm, its computer's tools among them), which a shadow run would call a second time. Null when every tool it can call only reads: its served runs are audited." },
   not_auditable: { ...COUNT, description: "Of the serving revision's newest `learning.stop_window` served runs, those a trigger started: never audited (a shadow run gets none of a trigger's context, and could answer where it answers). 0 when none serves." },
+  champion: { anyOf: [closed({
+    digest: { type: "string", description: "The champion's revision: `digest` above." },
+    commit: { ...NULL_STRING, description: "The learning commit its text was read at: the newest its promotion records name that holds it, else the folder's main. Read by its recorded digest, never by paging the workflow's history. Null when no commit read holds it." },
+    nodes: { anyOf: [{ type: "array", items: closed({
+      path: { type: "string", description: "Where the node is in its parent: a chain's step by its index (`0`, `1`), any other child by its field (`2.body`); `root` for a root that is no chain." },
+      kind: { type: "string", description: "Its node kind (`extract`, `decide`, `call`, `loop`, `escalate`, ...)." },
+      label: { type: "string", description: "Its label; its kind when it has none." },
+      tier: { type: ["string", "null"], enum: ["fast", "agent", null], description: "The tier its model step runs on: `fast`, or `agent` for the agent's own model. Null for a node that calls no model tier (a call, a loop, an escalate, a decision node's own provider)." },
+      checks: { type: "array", items: closed({ on: { enum: ["when", "until"], description: "`when`: the node runs only when the predicate holds. `until`: a loop stops once it holds." }, predicate: { type: "object", description: "The predicate as the workflow holds it (the DSL's predicate: `field_equals`, `exists`, `not`, `and`, `or`, ...)." } }), description: "The checks it runs in code." },
+    }) }, { type: "null" }], description: "Each node of its workflow.json, depth first, a chain's steps in order and the chain itself left out. Null when its text could not be read." },
+    check: { anyOf: [PROMOTION_CHECK, { type: "null" }], description: "The check it was promoted on: its promote record's `check`. Null when it was promoted with none." },
+  }), { type: "null" }], description: "The revision that serves first, as a person reads it: its nodes with their tiers and code checks, and the check it was promoted on. Kept while a newer revision is checked (`replaying`). Null when none serves (`digest` null)." },
 });
 const AUDIT_ROW = closedWith({
   run: { type: "string", description: "The served run." },
@@ -1441,44 +1461,6 @@ const AUDIT_ROW = closedWith({
   skipped: { const: "no allowance", description: "No shadow was started: the served run's cap left less than a run's smallest cap ($0.01), or what it spent under it is not known. `agreed` is null: not counted." },
   parked: { const: true, description: "The shadow came to wait on a person (an approval its tool settings ask, a question, a raise of its cap: what the served run's cap left) and ended there at once, no one asked, so it has no answer. `agreed` is null: not counted." },
 });
-const BATCH_LESSONS = closed({ notes: { type: "array", items: { type: "string" } }, skills: { type: "array", items: { type: "string" } }, workflows: { type: "array", items: { type: "string" } } });
-const BATCH_ROW = closedWith(
-  { n: { type: "integer", minimum: 1, description: "The row's number, 1 the first: rows run in this order." }, state: { enum: ["pending", "running", "done", "failed"], description: "`done`: the run answered, was told the reference, and that turn completed and its learning settled; `failed`: its run failed, was cancelled or waited on a person, its review was not sent, or its review's turn did not complete (`error` says). A row is failed only once its run has stopped." }, reference: { type: "string", description: "The reference answer, as the person gave it." } },
-  {
-    run_id: { type: "string", description: "The row's run: its page has the timeline, the answer and the learning." },
-    answer: { ...NULL_STRING, description: "The run's answer as compared (the `answer_field` of a JSON answer when the batch names one), cut at 2000 characters (compared whole: the review quotes it to 2000 characters and says when it was cut); null when it gave none." },
-    right: { type: "boolean", description: "Whether the answer equals the reference once trimmed, case-folded and whitespace-collapsed (two numbers by value). A display: the learning grade is the judge." },
-    reviewed: { type: "boolean", description: "The reference was sent to the run as a review, once." },
-    path: { enum: RUN_PATHS.filter((path) => path !== "replay" && path !== "audit"), description: "The path the run's job took, read when it answered, before its review (GET /agents/{agent_id}/learning/cost's `path`): whoever wrote its answer." },
-    cost_usd: COST_USD("The job's own cost."), learning_usd: COST_USD("What learning cost for the run."), total_usd: COST_USD("Their sum; for a failed row, what its run cost."),
-    learned: { ...BATCH_LESSONS, description: "The notes, skills and workflow drafts the run's learning kept, by name." },
-    merged: { ...NULL_STRING, description: "The commit of the agent's learning folder its learning last merged (its job's round or its review's)." },
-    error: { type: "string", description: "Why a failed row failed." },
-  },
-);
-const BATCH_HEAD = {
-  id: { type: "string" }, agent_id: { type: "string" }, created_at: DATE_TIME, ended_at: { ...DATE_TIME, type: ["string", "null"] },
-  status: { enum: ["running", "completed", "cancelled", "stopped"], description: "`completed`: every row ran; `cancelled`: a person's cancel; `stopped`: the batch could not go on (`stopped` says why, or `error` for the server's own failure)." },
-  stopped: { enum: ["cap", "cost_unknown", "learning_off", null], description: "Why a batch stopped before its last row: `cap`, the cap's room does not cover another row (the mean total of the rows done); `cost_unknown`, a row's cost is not known, and a cap is never guessed at; `learning_off`, the agent no longer learns here (its learning, or the server's, was turned off: `error` says which), checked before every row, so no row runs unlearned." },
-  inputs: { type: "array", items: { type: "string" }, description: "The columns each run is given, as {column: value}." },
-  answer: { type: "string", description: "The column holding the reference answer: never given to the run before its answer." },
-  answer_field: { ...NULL_STRING, description: "The dotted path in a JSON answer the reference is compared to; null: the whole answer." },
-  effort: { ...NULL_STRING, description: "The runs' effort, when the batch names one." },
-  max_cost_usd: { type: "number", exclusiveMinimum: 0, description: "Caps what the batch's runs spend: each row's run (its job, its look-back and its review's turn) is capped at what is left, and a row starts only when what is left covers the mean total of the rows done. The grades of what the runs learned are booked into the batch's cost and shown, but no cap stops a grade (as on every run), so the batch's cost can pass the cap by its last grades." },
-  total: { ...COUNT, description: "The rows." }, finished: { ...COUNT, description: "Rows done or failed." },
-  right: { ...COUNT, description: "Done rows whose answer is the reference." }, wrong: { ...COUNT, description: "Done rows whose answer is not." }, failed: { ...COUNT, description: "Failed rows." },
-  spent_usd: { type: "number", minimum: 0, description: "The finished rows' total cost." }, unknown_cost_rows: { ...COUNT, description: "Finished rows whose cost is not known (the batch stops on the first)." },
-  paths: closed({ agent: COUNT, handed_back: COUNT, workflow: COUNT }, "Done rows by the path their run took."),
-  lessons: { ...BATCH_LESSONS, description: "What the batch's learning kept, each name once." },
-  revisions: { type: "array", items: closed({ row: { type: "integer", minimum: 1 }, commit: NULL_STRING, workflows: { type: "array", items: { type: "string" } } }), description: "The merges that touched learned workflows, in order, one per merge (a row's job and its review each learn in a round of their own): the row whose learning made it, that merge's commit of the agent's learning folder, and the workflows it added or changed." },
-  cost_usd: { type: ["number", "null"], minimum: 0, description: "The batch's cost so far; in a progress read, the row in flight's too, as its row will book it: its run's cost so far and its learning's, grades that ended included. Null when a finished row's cost, or the row in flight's, is not known: the known part is never shown as the whole." },
-  remaining_usd: { type: ["number", "null"], minimum: 0, description: "What is left of the cap: `max_cost_usd` less `spent_usd`; null when a finished row's cost is not known." },
-};
-const LEARNING_BATCH_SUMMARY = closedWith(BATCH_HEAD, { error: { type: "string", description: "The server's own failure that stopped the batch." } });
-const LEARNING_BATCH = closedWith({ ...BATCH_HEAD, current: { type: ["integer", "null"], minimum: 1, description: "The row whose run is in flight." }, rows: { type: "array", items: BATCH_ROW } }, { error: { type: "string" } });
-const BATCH_ID = { name: "batch_id", in: "path", required: true, schema: { type: "string", pattern: "^lb_[0-9a-f]{16}$" } };
-const BATCH_MARK = { "x-agentrun-serve": "learningbatch/1" };
-
 const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/runs/{run_id}/grade": {
     put: {
@@ -1486,14 +1468,14 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: `A person's feedback or an eval's label on a run that ended, kept for its agent (one grade a run: a later one replaces it; the newest ${GRADES_KEPT} are kept). Promotion reads none: a revision's check is scored against the agent's own recorded answers. A replay run is never graded. The run's path never changes on a grade: a grade of a run its learned workflow answered alone, right or wrong, is kept and nothing more ($0); a run the agent finished, graded with a \`label\`, opens again on a look-back on it. That round asks the agent no turn of the job's, only its end-of-run turn, and its spend is the run's learning (\`feedback\`).`,
       parameters: [ref("parameters/RunId")],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["correct"], properties: { correct: { type: "boolean" }, expected: { type: "object", description: "The fields a right answer's JSON holds." }, source: { enum: [...GRADE_SOURCES], default: "feedback" }, label: { type: "string", maxLength: LABEL_MAX, description: "The grade's words (a teacher's label, a reviewer's note): what the run's look-back reads." } } } } } },
-      responses: { "200": json(GRADE, "The run's grade."), ...errors(400, 401, 404, 429, 500) },
+      responses: { "200": json(GRADE, "The run's grade."), ...errors(400, 401, 404, 409, 429, 500) },
       "x-agentrun-serve": "promotion/1",
     },
   },
   "/agents/{agent_id}/learning/loop": {
     get: {
       operationId: "getLearningLoop", tags: ["agents"], summary: "The self-learning loop's own record: each compile turn",
-      description: `What the console's Learning tab tells of the loop beside the cost series. \`compiles\`: the agent's compile turns, newest first (the newest ${LOOP_COMPILES_MAX}): the workflow a run's compile turn wrote, the notes it absorbed, each attempt and what the checks refused, its draft's digest and whether that revision was promoted; a follow-up's round compiles on its own, so a run can list one turn a round; a turn whose draft never passed is listed with its \`draft_errors\`, never silent. Aggregates and the checks' own words only: no input or answer. Each text cut of the host's secrets and of its run's handed values; a run whose handed values can't be read here shows no error text (\`withheld\`).`,
+      description: `What the console's Learning tab tells of the loop beside the cost series. \`compiles\`: the agent's compile turns, newest first (the newest ${LOOP_COMPILES_MAX}): the workflow a run's compile turn wrote, each attempt and what the checks refused, its draft's digest and whether that revision was promoted; a follow-up's round compiles on its own, so a run can list one turn a round; a turn whose draft never passed is listed with its \`draft_errors\`, never silent. Aggregates and the checks' own words only: no input or answer. Each text cut of the host's secrets and of its run's handed values; a run whose handed values can't be read here shows no error text (\`withheld\`).`,
       parameters: [AGENT_ID],
       responses: { "200": json(closed({
         agent: { type: "string" },
@@ -1503,7 +1485,6 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
           round: { type: "integer", minimum: 1, description: "The run's round that compiled it: 1 its first end, more for an end after a follow-up opened it again." },
           at: DATE_TIME,
           workflow: { ...NULL_STRING, description: "The workflow it wrote or revised; null when no attempt named one." },
-          from_notes: { type: "array", items: { type: "string" }, description: "The notes it absorbed, by file name (each marked \`compiled_into\` once it merged)." },
           attempts: { type: "array", items: closed({ ok: { type: "boolean" }, errors: { type: "array", items: { type: "string" } } }), description: "Each attempt in order: whether its checks and dry run passed, and what they refused." },
           digest: { ...NULL_STRING, description: "The kept draft's digest; null when none passed." },
           promoted: { type: ["boolean", "null"], description: "Whether that revision was promoted, as its records say now: true promoted, false held, null undecided or none passed. It may no longer serve: the promotions read's \`serving\` says which revision does." },
@@ -1534,8 +1515,8 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   "/agents/{agent_id}/learning": {
     get: {
-      operationId: "getAgentLearning", tags: ["agents"], summary: "What the agent has learned: its index, notes, log of changes and counts",
-      description: "Read at main's head with git's plumbing; every text cut of the host's secrets as they are now, and a file name holding one `[redacted]` whole. An agent whose learning was never on has no folder: `main` null and every page empty. An archived agent's is readable." + " " + SIGN_IN_WITHHELD,
+      operationId: "getAgentLearning", tags: ["agents"], summary: "What the agent has learned: its corrections, workflow drafts, log of changes and counts",
+      description: "Read at main's head with git's plumbing; every text cut of the host's secrets as they are now, and a file name holding one `[redacted]` whole. An agent whose learning was never on has no folder: `main` null, `corrections` empty and every page empty. An archived agent's is readable." + " " + SIGN_IN_WITHHELD,
       parameters: [AGENT_ID], responses: { "200": json(AGENT_LEARNING, "The agent's learning."), ...errors(401, 403, 404, 429, 500) }, ...MARK,
     },
   },
@@ -1552,62 +1533,6 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "learningcost/1",
     },
   },
-  "/agents/{agent_id}/learning/batches": {
-    post: {
-      operationId: "createLearningBatch", tags: ["agents"], summary: "Learn from rows: run the agent on each in order, with learning on, and tell it the reference answer after each",
-      description: `Rows with the columns to give the agent (\`inputs\`) and the one that holds the reference answer (\`answer\`; never given to the run before it answers). The server runs the agent on each row in order, one at a time (what a row teaches is what the next is given), as POST /agents/{agent_id}/runs does with \`input\` = {column: value}; when a run has answered and its learning has settled, it is sent a review, \`Review: the reference answer is "X"; you answered "Y".\`, the same words right or wrong (an answer past 2000 characters quoted to there, the review saying it was cut), as a message to the finished run, which looks back again. Progress is kept by the server, never the page: read it at GET .../batches/{batch_id}. One batch runs at a time per agent (409 agent_not_runnable otherwise), and the agent's current revision must say learning (409 otherwise). \`max_cost_usd\` is required and caps the runs: each row's run (job, look-back, review turn) is capped at what is left (no request passes a cap, a cache miss included), and a row starts only when what is left covers the mean total of the rows done; the grades of what they learned are booked and shown but uncapped, as on every run. The loop stops \`cap\` there, and \`cost_unknown\` when a row's cost is not known. At most ${BATCH_ROWS_MAX} rows, each cell at most ${BATCH_CELL_MAX} characters, the whole body under the body limit. A batch still running when the server stopped takes up at its first unfinished row when it starts again.`,
-      parameters: [AGENT_ID],
-      requestBody: { required: true, content: { "application/json": { schema: closedWith(
-        { inputs: { type: "array", items: { type: "string" }, minItems: 1, description: "The columns each run is given." }, answer: { type: "string", description: "The column holding the reference answer." }, rows: { type: "array", minItems: 1, maxItems: BATCH_ROWS_MAX, items: { type: "object", additionalProperties: { type: "string" } }, description: "Each row: {column: text}, with every input column and the answer column." }, max_cost_usd: { type: "number", exclusiveMinimum: 0, description: "Caps what the batch's runs spend (job, look-back, review turn); grades are booked and shown, uncapped." } },
-        { answer_field: { type: "string", description: "A dotted path into a JSON answer to compare, such as result.code; absent: the whole answer." }, effort: { type: "string", description: "The runs' effort, as a run's." } }) } } },
-      responses: { "202": { ...json(LEARNING_BATCH, "The batch, started."), headers: { Location: { schema: { type: "string" } } } }, ...errors(400, 401, 403, 404, 409, 413, 422, 429, 500) }, ...BATCH_MARK,
-    },
-    get: {
-      operationId: "listLearningBatches", tags: ["agents"], summary: "The agent's learning batches, latest first",
-      description: "The latest 20, each as its header (no rows). Every text is cut as the agent's learning reads are: 403 when they are withheld.",
-      parameters: [AGENT_ID], responses: { "200": json(closed({ batches: { type: "array", items: LEARNING_BATCH_SUMMARY } }), "The batches."), ...errors(401, 403, 404, 429, 500) }, ...BATCH_MARK,
-    },
-  },
-  "/agents/{agent_id}/learning/batches/{batch_id}": {
-    get: {
-      operationId: "getLearningBatch", tags: ["agents"], summary: "A learning batch's progress: rows done, right or wrong, lessons, workflow revisions, cost, the path each run took",
-      description: "Read from the store: it holds after a page reload or a server restart (a running batch takes up again). Each row's input is not repeated here: its run holds it. Every text (an answer, a reference, an error, a lesson's name) is cut of the server's secrets and the agent's sign-in pointers as they are now, as GET /agents/{agent_id}/learning cuts them, and withheld the same way (403) when one of the agent's sign-ins can't be read here.",
-      parameters: [AGENT_ID, BATCH_ID], responses: { "200": json(LEARNING_BATCH, "The batch."), ...errors(401, 403, 404, 429, 500) }, ...BATCH_MARK,
-    },
-  },
-  "/agents/{agent_id}/learning/batches/{batch_id}/cancel": {
-    post: {
-      operationId: "cancelLearningBatch", tags: ["agents"], summary: "Cancel a running learning batch",
-      description: "Cancels the run in flight and ends the loop; rows done stay done, and the row in flight is failed. A batch that already ended is answered as it is. Answers the batch once its loop has ended, cut as a read is; a 403 (withheld) answers a cancel that stood.",
-      parameters: [AGENT_ID, BATCH_ID], responses: { "200": json(LEARNING_BATCH, "The batch."), ...errors(401, 403, 404, 429, 500) }, ...BATCH_MARK,
-    },
-  },
-  "/agents/{agent_id}/learning/evals": {
-    get: {
-      operationId: "listLearningEvals", tags: ["agents"], summary: "The agent's eval records: the latest, and every one kept, newest first",
-      description: `What the console's Learning tab heads with: the latest record of a test on held-out jobs (jobs the agent never learned from), its accuracy with the 95% Wilson interval and the cost a task with learning against by hand. Only ever what was posted (POST below): never computed from the agent's own runs, which are the jobs it learned from. Append-only, the latest ${EVALS_KEPT} kept.`,
-      parameters: [AGENT_ID], responses: { "200": json(closed({ agent: { type: "string" }, latest: { anyOf: [LEARNING_EVAL, { type: "null" }], description: "The latest record: the one the console shows; null when none is recorded." }, evals: { type: "array", items: LEARNING_EVAL, maxItems: EVALS_KEPT, description: "Newest recorded first." } }), "The agent's eval records."), ...errors(401, 404, 429, 500) }, ...MARK,
-    },
-    post: {
-      operationId: "recordLearningEval", tags: ["agents"], summary: "Record a held-out test of the agent: its counts and the cost a task, with learning and by hand",
-      description: `Post the counts of a test run on held-out jobs (jobs the agent never learned from): \`n\` jobs, \`correct\` of them right, the cost a task with learning and by hand, where the labels came from. The server computes \`accuracy\` and its 95% Wilson interval \`ci\`; a body that sends either is refused. Only a held-out test belongs here: numbers from the jobs the agent learned on read as held-out on the console. Aggregates only: no rows, no inputs. Appended, the latest first; the latest ${EVALS_KEPT} kept. A field that is missing or wrong is 422 input_invalid by field, and nothing is kept. With Idempotency-Key, a retry answers the first request's record.`,
-      parameters: [AGENT_ID, ref("parameters/IdempotencyKey")],
-      requestBody: { required: true, content: { "application/json": { schema: closedWith(EVAL_IN, EVAL_IN_OPTIONAL) } } },
-      responses: { "201": { description: "Recorded.", headers: { "Idempotent-Replayed": ref("headers/IdempotentReplayed") }, content: { "application/json": { schema: LEARNING_EVAL } } }, ...errors(400, 401, 404, 422, 429, 500) }, ...MARK,
-    },
-  },
-  "/agents/{agent_id}/learning/notes": {
-    get: {
-      operationId: "listLearningNotes", tags: ["agents"], summary: "A page of the agent's notes",
-      parameters: [
-        AGENT_ID,
-        { name: "cursor", in: "query", required: false, description: "`next_cursor` from the previous page: opaque, read at the commit the first page was.", schema: { type: "string" } },
-        { name: "limit", in: "query", required: false, description: "At most 200.", schema: { type: "integer", minimum: 1, maximum: 200, default: 50 } },
-        { name: "status", in: "query", required: false, description: "Only notes with this status.", schema: { enum: [...NOTE_STATUSES] } },
-      ],
-      responses: { "200": json(PAGE(LEARNING_NOTE, "Active first, then newest first."), "One page of notes."), ...errors(400, 401, 403, 404, 429, 500) }, ...MARK,
-    },
-  },
   "/agents/{agent_id}/learning/log": {
     get: {
       operationId: "listLearningLog", tags: ["agents"], summary: "A page of the changes on the agent's main, newest first",
@@ -1619,52 +1544,62 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
       responses: { "200": json(PAGE(LEARNING_CHANGE, "Newest first."), "One page of changes."), ...errors(400, 401, 403, 404, 429, 500) }, ...MARK,
     },
   },
-  "/agents/{agent_id}/learning/files/{file}": {
+  "/agents/{agent_id}/learning/corrections": {
     get: {
-      operationId: "readLearningFile", tags: ["agents"], summary: "One note (or MEMORY.md, a skill's SKILL.md or a draft's file) on main, as text, with its ETag",
-      description: "A note, MEMORY.md, a SKILL.md and a README.md are `text/markdown`; a draft's workflow.json is `application/json`.",
-      parameters: [AGENT_ID, NOTE_PARAM], responses: { "200": NOTE_TEXT("The file's text, cut of the host's secrets.", true), ...errors(400, 401, 403, 404, 429, 500) }, ...MARK,
+      operationId: "getLearningCorrections", tags: ["agents"], summary: "The agent's corrections.md on main, with its ETag",
+      description: `The owner's corrections, one line each, as every later run is given them whole under # Learned in its instructions. A run's feedback appends one line (the owner's words, checked as every write is); a person edits the file whole with PUT. Cut of the host's secrets as they are now. An agent with none answers \`text\` empty. At most ${CORRECTIONS_CAP} bytes. ${SIGN_IN_WITHHELD}`,
+      parameters: [AGENT_ID],
+      responses: { "200": { ...json(CORRECTIONS, "corrections.md as it is on main."), headers: ETAG }, ...errors(401, 403, 404, 429, 500) },
+      "x-agentrun-serve": "learning/4",
     },
     put: {
-      operationId: "writeLearningFile", tags: ["agents"], summary: "Edit a note (If-Match) or create one (If-None-Match: *)",
-      description: `The body is the note's whole text, front matter included; a person may set any field, \`status\` too (an active note is in the index), except that a note waiting for its owner's OK stays waiting: an edit of a \`pending\` note that drops or changes its status is 400 \`bad_request\` with the rule \`status\`, and only an approval makes it active. With neither header, 428. ${WRITE_DESCRIPTION}`,
-      parameters: [AGENT_ID, NOTE_PARAM, IF_MATCH, { name: "If-None-Match", in: "header", required: false, description: "`*`: create the note, only if the name is not taken, else 412.", schema: { type: "string", const: "*" } }],
+      operationId: "putLearningCorrections", tags: ["agents"], summary: "Replace the agent's corrections.md (If-Match)",
+      description: `The body is the file's whole text. One host commit on main in the agent's queue, \`learning: edited by a person: corrections.md\` with a \`Changed-By: user\` trailer; every later run is given it. Under If-Match with the ETag a GET answered: none (or \`*\`) is 428, a stale one 412 (a run's correction or another edit landed since). Text past ${CORRECTIONS_CAP} bytes, text shaped like a secret or holding one of the host's values, a hidden character or one that is not UTF-8 is 422 by field \`text\`, the rule named, never the value, and nothing is written. Answers the file as it now is, with its new ETag. ${SIGN_IN_WITHHELD}`,
+      parameters: [AGENT_ID, { ...IF_MATCH, required: true }],
       requestBody: {
         required: true,
-        description: "The note's whole text: as text, or as JSON `{text}`, the form the console's page sends under its session (a write from the page is JSON from its own origin). A JSON body that is not an object is 400; a missing or wrong `text`, or another field, is 422 by field.",
+        description: "The file's whole text: as text, or as JSON `{text}`, the form the console's page sends under its session.",
         content: {
           "text/markdown": { schema: { type: "string" } }, "text/plain": { schema: { type: "string" } },
-          "application/json": { schema: closed({ text: { type: "string", description: "The note's whole text, front matter included." } }) },
+          "application/json": { schema: closed({ text: { type: "string", description: "corrections.md's whole text." } }) },
         },
       },
-      responses: { "200": NOTE_TEXT("Edited: the note as it now is."), "201": NOTE_TEXT("Created: the note."), ...WRITE_ERRORS, ...errors(413, 415, 422) }, ...MARK,
+      responses: { "200": { ...json(CORRECTIONS, "corrections.md as it now is."), headers: ETAG }, ...WRITE_ERRORS, ...errors(413, 415, 422) },
+      "x-agentrun-serve": "learning/4",
+    },
+  },
+  "/agents/{agent_id}/learning/files/{file}": {
+    get: {
+      operationId: "readLearningFile", tags: ["agents"], summary: "One file of a learned workflow on main (its workflow.json or README.md), as text, with its ETag",
+      description: "corrections.md and a README.md are `text/markdown`; a draft's workflow.json is `application/json`.",
+      parameters: [AGENT_ID, FILE_PARAM], responses: { "200": FILE_TEXT("The file's text, cut of the host's secrets.", true), ...errors(400, 401, 403, 404, 429, 500) }, ...MARK,
     },
   },
   "/agents/{agent_id}/learning/files/{file}/retire": {
     post: {
-      operationId: "retireLearningFile", tags: ["agents"], summary: "Retire a note, a skill or a workflow draft: out of every later run, kept in history",
-      description: `A learned skill (its \`skills/<name>/SKILL.md\`) or a workflow draft (its \`workflows/<name>/README.md\`; its workflow.json is 400) is retired the same way: \`status: retired\` last in its front matter, one host commit \`learning: retired by a person: <file>\` that changes that file alone, listed \`retired\`, and no later run is given it; one already retired is answered as it is. Sets \`status: retired\` (and drops \`superseded_by\`), on an active note or one that waits for its owner's OK (\`pending\`); any other note is answered as it is. A retire is how a person revokes a note, so only its format is checked: its front matter as retired, and the 4 KB cap with the status line on top (400 \`bad_request\` with \`problems\` otherwise). A secret shape or one of the host's values in its name or text never blocks it; the answer is cut of them. ${WRITE_DESCRIPTION}`,
-      parameters: [AGENT_ID, NOTE_PARAM, IF_MATCH], responses: { "200": NOTE_TEXT("The note, retired."), ...WRITE_ERRORS }, ...MARK,
+      operationId: "retireLearningFile", tags: ["agents"], summary: "Retire a workflow draft: out of every later run, kept in history",
+      description: `A workflow draft is retired by its \`workflows/<name>/README.md\` (its workflow.json is 400): \`status: retired\` last in its front matter, one host commit \`learning: retired by a person: <file>\` that changes that file alone, listed \`retired\`, and no later run is given it; one already retired is answered as it is. Only its format is checked; a secret shape or one of the host's values never blocks a retire, and the answer is cut of them. ${WRITE_DESCRIPTION}`,
+      parameters: [AGENT_ID, FILE_PARAM, IF_MATCH], responses: { "200": FILE_TEXT("The README.md, retired."), ...WRITE_ERRORS }, ...MARK,
     },
   },
   "/agents/{agent_id}/learning/files/{file}/approve": {
     post: {
-      operationId: "approveLearningFile", tags: ["agents"], summary: "Approve a note, a skill or a workflow draft that waits for its owner's OK",
-      description: `A skill (its SKILL.md) or a workflow draft (its README.md) that waits is made active the same way, by the same session, in one commit that drops its \`status: pending\` line and changes nothing else: every later run is given it. Makes a pending note active: in MEMORY.md, read by every later run, and each note it supersedes that is active still marked superseded. One host commit on main, \`learning: approved by a person: <file>\`, with the trailers \`Changed-By: user\` and \`Approved-Via: console\`; the log shows it as \`by: {user: true, via: "console"}\` at the commit's time, and never the note's text. Only the owner, signed in with their password, approves: the route takes the console's password session alone, from this server's own origin with a JSON body (as every page write), and answers 403 \`forbidden\` to every token, the server's own included, since an agent's MCP client, the MCP endpoint's tools or a script may hold one, to a run's door token, and to every request on a server with accounts off, whose page cookie the token mints (\`capabilities.learning.approve\` is false there, with \`approve_needs: "password"\`); with no credential at all it is 401, as every route. A run that uses bash on the host runs as the server's user and can read its files, so for untrusted tasks use the sandbox. A note that is not pending is 400 \`bad_request\`. Under If-Match, as a retire: a stale ETag is 412, none 428.`,
+      operationId: "approveLearningFile", tags: ["agents"], summary: "Approve a workflow draft that waits for its owner's OK",
+      description: `A workflow draft (its README.md) that waits is made active in one commit that drops its \`status: pending\` line and changes nothing else: every later run is given it. One host commit on main, \`learning: approved by a person: <file>\`, with the trailers \`Changed-By: user\` and \`Approved-Via: console\`; the log shows it as \`by: {user: true, via: "console"}\` at the commit's time. Only the owner, signed in with their password, approves: the route takes the console's password session alone, from this server's own origin with a JSON body (as every page write), and answers 403 \`forbidden\` to every token, the server's own included, since an agent's MCP client, the MCP endpoint's tools or a script may hold one, to a run's door token, and to every request on a server with accounts off, whose page cookie the token mints (\`capabilities.learning.approve\` is false there, with \`approve_needs: "password"\`); with no credential at all it is 401, as every route. A run that uses bash on the host runs as the server's user and can read its files, so for untrusted tasks use the sandbox. A draft that is not pending is 400 \`bad_request\`. Under If-Match, as a retire: a stale ETag is 412, none 428.`,
       // The owner's password session alone (ownerSession), never the document's bearer, with the empty JSON body every
       // page write sends: a client generated from this document sends what the route takes.
       security: [{ ownerSession: [] }],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, maxProperties: 0 } } } },
-      parameters: [AGENT_ID, NOTE_PARAM, IF_MATCH], responses: { "200": NOTE_TEXT("The note, approved."), ...WRITE_ERRORS }, ...MARK,
+      parameters: [AGENT_ID, FILE_PARAM, IF_MATCH], responses: { "200": FILE_TEXT("The README.md, approved."), ...WRITE_ERRORS }, ...MARK,
     },
   },
   "/agents/{agent_id}/learning/files/{file}/restore": {
     post: {
-      operationId: "restoreLearningFile", tags: ["agents"], summary: "Restore a retired note, skill or workflow draft to the status it had before its retire",
-      description: "A retired note, skill (its SKILL.md) or workflow draft (its README.md) goes back to the status its retire recorded (`retired.from`): active, given to every later run again, or waiting for its owner's OK again (a retire that recorded none restores it waiting): a restore is never an approval. In one commit on main (`learning: restored by a person: <file>`, Changed-By: user) with MEMORY.md rebuilt. The text is checked again as a new note or skill is (a secret's shape, the host's own values, a hidden character, its format), so a value a retire took out of every run never comes back: such a note stays retired, and the answer names the rule, never the value. Only a retired one is restored (else 400). The owner's password session alone, as an approval.",
+      operationId: "restoreLearningFile", tags: ["agents"], summary: "Restore a retired workflow draft to the status it had before its retire",
+      description: "A retired workflow draft (its README.md) goes back to the status its retire recorded (`retired.from`): active, given to every later run again, or waiting for its owner's OK again (a retire that recorded none restores it waiting): a restore is never an approval. In one commit on main (`learning: restored by a person: <file>`, Changed-By: user). Its files are checked again as a run's draft is (a secret's shape, the host's own values, a hidden character, its format, its workflow against the agent's tools and gate), so a value a retire took out of every run never comes back: such a draft stays retired, and the answer names the rule, never the value. Only a retired one is restored (else 400). The owner's password session alone, as an approval.",
       security: [{ ownerSession: [] }],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, maxProperties: 0 } } } },
-      parameters: [AGENT_ID, NOTE_PARAM, IF_MATCH], responses: { "200": NOTE_TEXT("The note, restored."), ...WRITE_ERRORS }, ...MARK,
+      parameters: [AGENT_ID, FILE_PARAM, IF_MATCH], responses: { "200": FILE_TEXT("The README.md, restored."), ...WRITE_ERRORS }, ...MARK,
     },
   },
   "/agents/{agent_id}/learning/workflows/{name}/revisions": {
@@ -1674,20 +1609,10 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
       parameters: [AGENT_ID, { name: "name", in: "path", required: true, description: "The learned workflow's folder name, `workflows/<name>/`: lowercase letters, digits, dashes and underscores.", schema: { type: "string" } }, { name: "limit", in: "query", required: false, description: "The latest revisions to answer. At most 50.", schema: { type: "integer", minimum: 1, maximum: 50, default: 20 } }],
       responses: { "200": json(closed({
         name: { type: "string" },
-        revisions: { type: "array", items: closed({ commit: { type: "string" }, at: { type: "string", format: "date-time" }, by: LEARNING_BY, reason: { type: "string", description: "A merge's: the grader's reason. A person's: what was done." }, text: { type: ["string", "null"], description: "The workflow's workflow.json at this commit, cut of the host's secrets; null when the commit holds no such file." }, digest: { type: ["string", "null"], description: "That workflow.json's digest, the first 16 hex of its sha256 (read before any cut): the one a run's metrics (`workflow_digest`), its guard rows and the promotion records name. Null when the commit holds no such file." } }), description: "Oldest first." },
+        revisions: { type: "array", items: closed({ commit: { type: "string" }, at: { type: "string", format: "date-time" }, by: LEARNING_BY, reason: { type: "string", description: "A merge's: what it kept. A person's: what was done." }, text: { type: ["string", "null"], description: "The workflow's workflow.json at this commit, cut of the host's secrets; null when the commit holds no such file." }, digest: { type: ["string", "null"], description: "That workflow.json's digest, the first 16 hex of its sha256 (read before any cut): the one a run's metrics (`workflow_digest`), its guard rows and the promotion records name. Null when the commit holds no such file." } }), description: "Oldest first." },
         total: { ...COUNT, description: "How many commits in the log changed this workflow's workflow.json, `limit` aside." },
         truncated: { type: "boolean", description: "The agent's log is cut at its latest 200 changes, so older revisions may exist." },
       }), "The workflow's revisions."), ...errors(400, 401, 403, 404, 429, 500) }, ...MARK,
-    },
-  },
-  "/agents/{agent_id}/learning/workflows/{name}/promote": {
-    post: {
-      operationId: "promoteLearnedWorkflow", tags: ["agents"], summary: "Make a learned workflow an agent of its own: a workflow agent that runs with no agent loop",
-      description: "Makes a new agent, as POST /agents makes one, whose revision is a workflow revision of the learned workflow's `workflow.json`: its runs run the workflow's nodes alone, with no agentic turn around them, and its output is the workflow's. Only an active workflow is made an agent: one that waits for its owner's OK, or that a person retired, is 409 `learned_not_active`, and nothing is made. Its files are checked again as a restore checks them (a secret's shape, the host's own values as they are now, a hidden character), and its workflow as the learning checker checks a run's draft against the agent's tools and its gate (the DSL's validation with no code run, no code node, no shell or executor call, no call node on a tool the agent does not have or that is set to ask or deny): any of those is 400 `bad_request` with `problems`, and nothing is made. Then the checks every workflow revision's save makes (422 by field, or 409 `agent_not_runnable`). The new agent's tools are the ones its call nodes call, and it keeps the source agent's policy as it is now (its own `tool_settings`, its `approvals`, its default cap `max_cost_usd`), never more. Its name is `name`, else the workflow's own; its id is the workflow's name, with `-2`, `-3` and on past an agent's id or name already here. The learned workflow stays in the folder, unchanged. With Idempotency-Key, a retry answers the agent the first request made. Only the owner, signed in with their password, makes one: the console's password session alone, from this server's own origin with a JSON body, as an approval; every token is 403 `forbidden`. " + SIGN_IN_WITHHELD,
-      security: [{ ownerSession: [] }],
-      parameters: [AGENT_ID, { name: "name", in: "path", required: true, description: "The learned workflow's folder name, `workflows/<name>/`: lowercase letters, digits, dashes and underscores.", schema: { type: "string" } }, ref("parameters/IdempotencyKey")],
-      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: { name: { type: "string", minLength: 1, maxLength: 200, description: "The new agent's name; absent, the workflow's own." } } } } } },
-      responses: { "201": { description: "The new agent, with what this host still lacks for it to run (`warnings`).", headers: { Location: ref("headers/Location"), "Idempotent-Replayed": ref("headers/IdempotentReplayed") }, content: { "application/json": { schema: ref("schemas/Agent") } } }, ...errors(400, 401, 403, 404, 409, 422, 429, 500) }, ...MARK,
     },
   },
   "/agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays": {
@@ -1777,6 +1702,16 @@ const RPC_ANSWER = {
 const FILE_LIST = { type: "object", additionalProperties: false, required: ["files", "next_cursor"], properties: { files: { type: "array", items: ref("schemas/File") }, next_cursor: { type: ["string", "null"] } } };
 
 const EXTENSIONS: Record<string, Record<string, Json>> = {
+  "/agents/{agent_id}": {
+    delete: {
+      operationId: "deleteAgent", tags: ["agents"], summary: "Delete an agent another system owns",
+      description:
+        "Deletes an agent made by an inline run (`POST /runs` with `external`) whole: its runs and everything kept of them (journals, launch records, messages, files), its triggers, its learning, its saved sign-ins, its own computer and disk, its revisions and the agent. A run whose launch named an Archil disk (`archil_disk`, the caller's) has its own folder there deleted; the disk and everything else on it are kept, and a disk Archil says is gone has nothing left to delete. Shared things (MCP servers, keys, computers) are kept. In order: the agent refuses new runs (a mark in the store that outlives a restart: a run, an inline run, a trigger's firing, an SDK run or a message that would open one of its runs again is `409 agent_not_runnable`, as is a new trigger of it, off too, a trigger moved to it or turned on, and a write to its home or learning), and its runs still going are cancelled and waited for; then its learning (its learning folder, and its promotions and grades); then the rest. `204` when it is gone; a second `DELETE` is `404`. An agent made here is `409 agent_not_external`: archive it instead. `409 runs_in_flight` (a run did not end in time, or only its application ends it) and `409 learning_busy` (learning work in flight; each names what in `details.runs`) leave the agent refusing runs, as does `503 unavailable` while something it owns elsewhere is not deleted there yet: a trigger's registration upstream (Composio), a saved sign-in at its vendor, its own computer at its provider, its Archil disk (Archil failing or not reached, a run of another agent on it, or Archil off on this server), or a run's folder on a disk its launch named (Archil failing, a computer still holding the folder, or Archil off), or a trigger that reached the agent after its triggers were removed. Each is deleted there before the record here that names it, so none is left behind: send the `DELETE` again, which also finishes a delete that stopped part way.",
+      parameters: [AGENT_ID],
+      responses: { "204": { description: "Deleted." }, ...errors(401, 404, 409, 429, 500, 503) },
+      "x-agentrun-serve": "agentdelete/1",
+    },
+  },
   "/files": {
     get: {
       operationId: "listFiles", tags: ["files"], summary: "This server's uploads, newest first",
@@ -1915,6 +1850,14 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "The revision's workflow and its graph, each node's state (a map's items, a route's branch taken), the decisions with their receipts, the calls with their input and output, and the totals. Readable while the run goes. 404 for an agentic run. 403 `forbidden` while this server can't read the browser sign-in the run was handed (its seal key changed or is missing): what its nodes said could repeat the sign-in's pointer, so none of it is served until the sign-in opens again.",
       parameters: [ref("parameters/RunId")],
       responses: { "200": json(RUN_GRAPH, "The run's graph as it stands."), ...errors(401, 403, 404, 429, 500) },
+    },
+  },
+  "/runs/{run_id}/trace": {
+    get: {
+      operationId: "getRunTrace", tags: ["runs"], summary: "A run's trace: each model request and tool call, with its time, tokens and cost",
+      description: "Each model request that answered and each tool call of the run as one span: when it started and ended, how it ended, a request's model, tokens (input, cache read, cache write, output) and cost, and a call's tool, the head of its arguments and output, and what was charged under it. Readable while the run goes: read it again to see new spans. Its words are the run's Timeline's, cut the same way. 403 `forbidden` while this server can't read the browser sign-in the run was handed, as its graph answers. A trace says only what the run's record keeps: see `model_requests`.",
+      parameters: [ref("parameters/RunId")],
+      responses: { "200": json(RUN_TRACE, "The run's spans as they stand."), ...errors(401, 403, 404, 429, 500) },
     },
   },
   "/runs/{run_id}/browser": {
@@ -2340,6 +2283,43 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "chatgpt/1",
     },
   },
+  "/settings/claude-login": {
+    get: {
+      operationId: "getClaudeLogin", tags: ["local"], summary: "Claude Code's login on this machine: on or off, and what its CLI says of it",
+      description: "With the mode on, claude-agent runs on a person's own Claude plan through the Claude Code CLI on this server's machine: the CLI holds the login and calls Anthropic itself, and AgentRun only asks it `claude auth status`. Such runs cost no dollars here; the plan's own limits apply. 404 not_found, naming the operation, when the server's AGENTRUN_CLAUDE_CODE_LOGIN is `off`. The owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "200": json(CLAUDE_LOGIN, "The mode and its login."), ...errors(401, 403, 404, 429, 500) },
+      "x-agentrun-serve": "claudelogin/1",
+    },
+    put: {
+      operationId: "turnOnClaudeLogin", tags: ["local"], summary: "Turn on Claude Code's login on this machine for claude-agent's runs",
+      description: "Runs claude-agent on the login at `place` (default `agentrun`), on this machine's runner only. 403 forbidden in one line where more than one person can start runs (more than one API token, the API-only profile); 422 input_invalid without `only_me` true. A model a revision names on a gateway or OpenRouter still runs on its key. 404 not_found, naming the operation, when AGENTRUN_CLAUDE_CODE_LOGIN is `off`. A secret write: the owner's signed-in session alone (ownerSession).",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["only_me"], properties: { place: { enum: ["agentrun", "machine"], description: "Where the login is (see the answer's `place`)." }, only_me: { const: true, description: "The owner's word that they alone run agents on this server, since its runs would use their Claude plan." } } } } } },
+      responses: { "200": json(CLAUDE_LOGIN, "Turned on."), ...errors(401, 403, 404, 415, 422, 429, 500) },
+      "x-agentrun-serve": "claudelogin/1",
+    },
+    delete: {
+      operationId: "turnOffClaudeLogin", tags: ["local"], summary: "Turn off Claude Code's login on this machine",
+      description: "claude-agent runs on the model keys again. The login stays as the CLI keeps it: nothing here signs it out. 404 not_found, naming the operation, when AGENTRUN_CLAUDE_CODE_LOGIN is `off`. A secret write: the owner's signed-in session alone (ownerSession).",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "200": json(CLAUDE_LOGIN, "Turned off."), ...errors(401, 403, 404, 429, 500) },
+      "x-agentrun-serve": "claudelogin/1",
+    },
+  },
+  "/settings/claude-login/login": {
+    post: {
+      operationId: "startClaudeLogin", tags: ["local"], summary: "Start the Claude Code CLI's own sign-in on this machine",
+      description: "Runs the CLI's `auth login` at the login's place; the CLI opens a browser on this machine and keeps what it gets. Nothing of the sign-in passes through AgentRun. 403 forbidden where the browser would not be the person's (a server not on loopback, or with a public address): run the answer's `command` in a terminal there. 409 agent_not_runnable when the mode is off, was turned on for another machine, or no CLI is here yet. 404 not_found, naming the operation, when AGENTRUN_CLAUDE_CODE_LOGIN is `off`. A secret write: the owner's signed-in session alone (ownerSession).",
+      "x-agentrun-secret": true,
+      security: [{ ownerSession: [] }],
+      responses: { "200": json(CLAUDE_LOGIN, "The sign-in started."), ...errors(401, 403, 404, 409, 429, 500) },
+      "x-agentrun-serve": "claudelogin/1",
+    },
+  },
   "/auth/session": {
     get: {
       operationId: "getAuthSession", tags: ["local"], summary: "Whether this browser has accounts, is signed in, and may save a secret",
@@ -2599,14 +2579,14 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       description: `The raw body becomes the file, whole: written to a temporary file beside it and renamed over it (the workspace's mode, inside the owner-only 0700 home folder), the directories on the way made. Of two writes of one file at once, each lands whole and the last wins. A body over \`capabilities.home.max_file_bytes\` is \`413 payload_too_large\`. ${HOME_PATHS} ${HOME_WRITES}`,
       parameters: [ref("parameters/AgentId"), HOME_PATH],
       requestBody: { required: true, content: RAW },
-      responses: { "200": json(HOME_FILE, "The file, as the list shows it."), ...errors(400, 401, 403, 404, 413, 429, 500, 501) },
+      responses: { "200": json(HOME_FILE, "The file, as the list shows it."), ...errors(400, 401, 403, 404, 409, 413, 429, 500, 501) },
       "x-agentrun-serve": "home/1",
     },
     delete: {
       operationId: "deleteHomeFile", tags: ["agents"], summary: "Delete one file of the agent's home",
       description: `Removes the file; a directory it leaves empty stays. A file that is not there is \`404 not_found\`. ${HOME_PATHS} ${HOME_WRITES}`,
       parameters: [ref("parameters/AgentId"), HOME_PATH],
-      responses: { "204": { description: "The file is gone." }, ...errors(400, 401, 403, 404, 429, 500, 501) },
+      responses: { "204": { description: "The file is gone." }, ...errors(400, 401, 403, 404, 409, 429, 500, 501) },
       "x-agentrun-serve": "home/1",
     },
   },
@@ -2825,21 +2805,21 @@ const LEARNING_NULL = "Null for a run that does not learn: its agent's `learning
 const LEARNING = {
   oneOf: [
     closedWith({
-      state: { enum: [...LEARNING_STATES], description: "`seeded` when the run started from what its agent learned; `reflecting` while its end-of-run turn runs, and until what it wrote is checked (after the run ended, so it may still read `reflecting` once the run reads completed or failed); `proposed` once the new notes passed the checks, while they are graded; `merged` once they are on the folder's main; `dropped` when learning was skipped or refused, with `reason`." },
+      state: { enum: [...LEARNING_STATES], description: "`seeded` when the run started from what its agent learned; `reflecting` while its end-of-run step runs (its compile turn, its owner's correction), and until what it wrote is checked (after the run ended, so it may still read `reflecting` once the run reads completed or failed); `merged` once what it kept is on the folder's main; `dropped` when learning was skipped or refused, with `reason`." },
       reason: LEARNING_REASON,
-      detail: { type: ["string", "null"], maxLength: 300, description: "Where the run's learning stands, in one sentence in a person's words (at most 300 characters, ending in an ellipsis when cut; a note's name or the grader's reason in it is cut of the host's secrets as they are now before it is cut short, so none is shown in part), the same as its timeline row says: \"Started from 2 notes.\", \"Looking back on this run…\", \"Checking 1 new note…\", \"Learned: <note's name> (replaces 1 older note)\", \"Learned: <note's name>. Waiting for your OK: <note's name>.\", \"Nothing new to remember from this run.\", \"Not kept: <the grader's reason, its first sentence>\", \"Not kept: its notes weren't in the expected format.\", \"Not kept: learning stopped (<why>).\" and so on. Never a secret or a value from the input, cut of the host's secrets as they are now. For a person: a client that acts on it reads `state` and `reason`, whose codes do not change." },
+      detail: { type: ["string", "null"], maxLength: 300, description: "Where the run's learning stands, in one sentence in a person's words (at most 300 characters, ending in an ellipsis when cut; a workflow's name in it is cut of the host's secrets as they are now before it is cut short, so none is shown in part), the same as its timeline row says: \"Started from 2 corrections and 1 workflow.\", \"Keeping what this run learned…\", \"Learned the workflow <name>.\", \"Kept your correction.\", \"Waiting for your OK: workflow <name>.\", \"Nothing new to keep from this run.\", \"Not kept: it didn't pass the checks (<rules>).\", \"Not kept: learning stopped (<why>).\" and so on. Never a secret or a value from the input, cut of the host's secrets as they are now. For a person: a client that acts on it reads `state` and `reason`, whose codes do not change." },
       at: { type: "string", format: "date-time", description: "When the state last changed." },
-    }, RUN_NOTES),
+    }, RUN_WORKFLOWS),
     { type: "null" },
   ],
-  description: `What the run learns from and what it learned: a run of an agent whose \`learning\` is true starts from its active notes, whole, in its instructions within the learning budget (past it, the index and the notes changed last, whole), and from the notes in \`.learning/\` in its working directory. Once it answers or fails, the server asks the same harness one more turn, under the run's cap, which answers with the notes it would keep (no tool is needed, and nothing the run writes in \`.learning/\` counts); what it answers is checked, graded by one grader (on the server's grade model or strong tier, else the agent's own model), and merged into the folder, or dropped. ${LEARNING_NULL}`,
+  description: `What the run learns from and what it learned: a run of an agent whose \`learning\` is true starts from its agent's corrections.md, whole, under # Learned in its instructions, and from its learned workflows, which its learned_workflow tool runs. Once it answers, the server may ask the same harness one compile turn, under the run's cap, that writes the job as a learned workflow (checked statically and by a dry run, retried on a refusal), and a correction its owner gives as feedback is appended to corrections.md; what passes the checks is committed to the folder's main, or dropped. ${LEARNING_NULL}`,
   "x-agentrun-serve": "learning/1",
 };
 const LEARNING_SHORT = {
   oneOf: [closedWith({
     state: { enum: [...LEARNING_STATES] }, reason: LEARNING_REASON,
-    detail: { type: ["string", "null"], maxLength: 140, description: "Run.learning's detail, in the same words, cut short: at most 140 characters, ending in an ellipsis when cut (a grader's long reason). Cut of the host's secrets first, so none is ever shown in part.", "x-agentrun-serve": "learning/2" },
-  }, RUN_NOTES), { type: "null" }],
+    detail: { type: ["string", "null"], maxLength: 140, description: "Run.learning's detail, in the same words, cut short: at most 140 characters, ending in an ellipsis when cut. Cut of the host's secrets first, so none is ever shown in part.", "x-agentrun-serve": "learning/2" },
+  }, RUN_WORKFLOWS), { type: "null" }],
   description: `The run's learning, in short (GET /runs/{run_id} has it whole, with its whole detail and its time). ${LEARNING_NULL}`,
   "x-agentrun-serve": "learning/1",
 };
@@ -2988,26 +2968,39 @@ const MCP_RUN_AUTH: Json = {
   "x-agentrun-serve": "mcpperrun/1",
 };
 
+/** runmodelkey/1: the run's own model key (run-model-key.ts), such as a LiteLLM virtual key minted for it. */
+const RUN_MODEL_KEY: Json = {
+  type: "string", minLength: 1, maxLength: MAX_MODEL_KEY_CHARS, pattern: "^[^\\s\\x00-\\x1f\\x7f]+$",
+  // Not x-agentrun-secret, as mcp_auth: a key for this run alone, handed by whoever may start it, never kept for others.
+  description: `The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run compile turn). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased by the write that ends the run's turn; never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 at \`model_key\` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 \`model_key_required\`, never a failure at its first model call.`,
+  "x-agentrun-serve": "runmodelkey/1",
+};
+
 const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   Limits: {
     free_model_requests: { type: "integer", minimum: 1, description: "The most requests on free models a run makes: a free model's catalog price is all zeros, so a dollar cap cannot stop it. AGENTRUN_FREE_MODEL_REQUESTS, else 60. The request after that many is not sent, and the run ends `failed`, its error `spend_cap_reached`: \"Not sent: this run reached its 60-request limit for free models.\" (the number is this one). Every free model's request counts, the run's own, its subagents', its side calls and any cut by a crash, capped or not; a paid request, a paid tool call and a workflow decision never do. ChatGPT-plan requests don't count.", "x-agentrun-serve": "freerequests/1" },
   },
   MessageCreate: {
+    model_key: { ...RUN_MODEL_KEY, description: `${RUN_MODEL_KEY.description as string} On a message it replaces the run's key from the run's next model request on, a turn still going included, and it is the first key of a run that started on the server's (mint one per turn); a message without one keeps the key the run holds, which is none once its last turn ended: then, where the server holds no key for the run's model, the message is 422 \`model_key_required\` and nothing is written.` },
     mcp_auth: { ...MCP_RUN_AUTH, description: `${MCP_RUN_AUTH.description as string} Replaces the run's handed credentials in the message's own write (a follow-up that opens an ended run again hands its turn's), so the turn the message starts calls with them. A run handed none calls a per_run server's tools refused, nothing sent.` },
   },
   Cost: {
     ...SO_FAR,
+    learning_usd: { type: ["number", "null"], minimum: 0, description: "On the run read (GET /v2/runs/{run_id}) alone, where `usd` is the run's own spend, the job's: what learning spent for it, on the agent's own model route. Its audit shadow's cost (the agent on its input with learning off) and its share of its workflow revision's learning spend: the compile turn that drafted that revision and its check's replay runs, spread over the first `compile_after` runs the revision serves (GET /agents/{agent_id}/learning/cost `bill.revisions`). A compile turn is never in the `usd` or `learning_usd` of the run whose session asked it: it is its revision's (a recompile's, its recompiled revision's), or, when it kept no draft (every draft failed its checks, or the cap stopped it), on no run (`bill.unattributed_usd`). 0 for a replay or shadow run, whose spend is on the runs it serves. As booked (float noise rounded off at 1e-12, as `usd` is); null while the run or its shadow is at work, or a part is unknown: never $0 for unknown.", "x-agentrun-serve": "allin/1" },
+    all_in_usd: { type: ["number", "null"], minimum: 0, description: "On the run read alone: `usd` and `learning_usd` together, what the run cost its owner all in. 0 for a replay or shadow run. Over every run of an agent, these and the cost route's `bill.unattributed_usd` add up to its `bill.booked_usd`. Null when either is, or `usd` is only a bound (`upper_bound`).", "x-agentrun-serve": "allin/1" },
     plan: {
-      type: "object", additionalProperties: false, required: ["requests", "tokens"],
+      type: "object", additionalProperties: false, required: ["requests", "tokens", "on"],
       properties: {
-        requests: { type: "integer", minimum: 1, description: "How many of its model requests were billed to the ChatGPT plan." },
+        requests: { type: "integer", minimum: 1, description: "How many of its model requests were billed to the plan." },
         tokens: { type: "integer", minimum: 0, description: "The tokens those requests used: input, output and cache reads and writes." },
+        on: { enum: ["chatgpt", "claude_code"], description: "Which plan: `chatgpt`, the server's ChatGPT sign-in; `claude_code`, Claude Code's login on this machine (claude-agent, GET /settings/claude-login)." },
       },
-      description: "Set when the run made a model request on the server's ChatGPT plan (a `chatgpt/<id>` model). Those requests cost no dollars here: they are in neither `usd` nor `unpriced`, so a run whose only unpriced requests were on the plan has a known `usd`. The plan's own limits apply to them.",
+      description: "Set when the run made a model request on a person's plan: the server's ChatGPT plan (a `chatgpt/<id>` model), or their Claude plan through Claude Code's login on this machine. Those requests cost no dollars here: they are in neither `usd` nor `unpriced`, so a run whose only unpriced requests were on the plan has a known `usd`. The plan's own limits apply to them.",
       "x-agentrun-serve": "chatgpt/1",
     },
   },
   RunCreate: {
+    model_key: RUN_MODEL_KEY,
     mcp_auth: { ...MCP_RUN_AUTH, description: `${MCP_RUN_AUTH.description as string} Each names a saved MCP server whose \`auth.type\` is per_run (422 at \`mcp_auth.<server>\` otherwise, no run made). Sealed into the run's launch for its life, read at each claim, and erased by the write that ends it; never in its saved body, its timeline, its view or an Idempotency-Key's fingerprint (a retry with a new credential answers the first request's run).` },
     labels: { ...RUN_LABELS, description: `The caller's own labels for the run: at most ${MAX_LABELS} keys, each 1 to 63 letters, digits, \`.\`, \`_\`, \`-\` or \`/\` starting with a letter or a digit; each value text of 1 to ${MAX_LABEL_VALUE} characters with no control character. Kept on the run as given, served on every read of it (\`labels\` on Run and RunSummary) and matched by GET /runs' \`label\`; set once, at the start. The server reads nothing else from them: put no secret in one. Another shape is 422 under \`labels\` or \`labels.<key>\`. Absent: none.` },
     workflow_first: {
@@ -3015,7 +3008,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "Whether a run of an agent that learns may start on one of its learned workflows. On (absent or true), a run whose input fits exactly one active learned workflow (its input schema has a required field, and the run's input passes it) runs that workflow first, with no turn of the agent's model: its answer is the run's answer, and if it hands the job back (it escalates, a step fails), the same run goes on with the agent, given what the workflow found. The run keeps which path it took: `workflow`, `handed_back` or `agent`. false: the agent takes the run from its first turn.",
       "x-agentrun-serve": "workflowfirst/1",
     },
-    learning: { enum: [RUN_LEARNING_USE], description: "`use`: the run starts from what its agent learned (its notes, learned skills and learned workflows, as a run that learns is given them), whatever its agent's `learning` says, and keeps nothing: no end-of-run turn, no proposal, no grade and no merge, at its end or after a follow-up. Its `learning` reads `seeded` while it runs, then `dropped` with reason `use`. So many runs of one agent read one learned state, frozen (a held-out evaluation). On a server whose learning is off it is given nothing, as every run there. Absent: the agent's own (`learning: true` learns). 422 not_an_option for anything else.", "x-agentrun-serve": "learning/1" },
+    learning: { enum: [RUN_LEARNING_USE], description: "`use`: the run starts from what its agent learned (its corrections and learned workflows, as a run that learns is given them), whatever its agent's `learning` says, and keeps nothing: no compile turn, no correction and no merge, at its end or after a follow-up. Its `learning` reads `seeded` while it runs, then `dropped` with reason `use`. So many runs of one agent read one learned state, frozen (a held-out evaluation). On a server whose learning is off it is given nothing, as every run there. Absent: the agent's own (`learning: true` learns). 422 not_an_option for anything else.", "x-agentrun-serve": "learning/1" },
     repo: {
       type: "string", pattern: "^[^/\\s]+/[^/\\s]+$",
       description: "The GitHub repository (`owner/name`) this run reaches: the one its GitHub App token is made for, so its github MCP calls are scoped to it. It must be one the agent is bound to (a repository its GitHub triggers' `accept` names on `/repository/full_name`); another is 422 at `repo` in words naming the repositories it is bound to. Absent: the agent's repository when it is bound to exactly one and the first message names none; otherwise the repository a `https://github.com/<owner>/<repo>` URL in the first message names. A run a trigger starts takes its repository from its event, and `repo` there is 422.",
@@ -3089,7 +3082,12 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "imported/1",
     },
     trigger: RUN_TRIGGER,
-    audit_of: { ...NULL_STRING, description: "On the run read: a shadow run's served run. A run a promoted learned workflow answered alone (path `workflow`) may be audited (the agent definition's `learning.audit_every`): its shadow, the same agent on the same input with learning off, started at the served run's end and capped at what the served run's cap left, is no row of the run list, and its cost is in the served run's `cost.usd` (null while the shadow is queued or running: never $0) and the agent's learning cost (GET /agents/{agent_id}/learning/audits). Null for any other run.", "x-agentrun-serve": "promotion/1" },
+    audit_of: { ...NULL_STRING, description: "On the run read: a shadow run's served run. A run a promoted learned workflow answered alone (path `workflow`; a run it handed back is never drawn) may be audited (the agent definition's `learning.audit_every`): its shadow, the same agent on the same input with learning off, started at the served run's end and capped at what the served run's cap left, is no row of any run list and sends no webhook, and its cost is in the served run's `cost.learning_usd` and `cost.all_in_usd` (null while the shadow is queued or running: never $0), never in its `cost.usd`, and in the agent's learning cost (GET /agents/{agent_id}/learning/audits). Null for any other run.", "x-agentrun-serve": "promotion/1" },
+    path: {
+      oneOf: [{ enum: [...RUN_PATHS] }, { type: "null" }],
+      description: "On the run read (GET /v2/runs/{run_id}): the path the run took, as its end recorded it. `agent`: no learned workflow ran (every run of an agent that does not learn); `workflow`: a learned workflow served it first and its answer stands, `result.final_answer` that answer as the workflow gave it; `handed_back`: a learned workflow served it first and handed back (an escalate node said it could not, a step failed) or the agent answered after it, `result.final_answer` the agent's; `replay`: a check's run of a new revision on one of the agent's graded inputs; `audit`: an audit's shadow run (`audit_of`), the agent on a served run's input with learning off. A host's run list holds no `audit` run, and its webhooks never name one. Null while the run has not ended, for a workflow revision's run, and for a run that learns whose end recorded no path.",
+      "x-agentrun-serve": "allin/1",
+    },
   },
   InputIssue: {
     code: { type: "string", description: "A workflow definition's issue: the DSL's validation code (`STATE_PATH_UNPRODUCED`, say), with `field` the path to it under `definition.workflow`.", "x-agentrun-serve": "validate/1" },
@@ -3153,7 +3151,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     learned_nodes: {
       type: "array",
       items: { type: "object", additionalProperties: false, required: ["label", "kind", "status", "duration_ms"], properties: { label: { type: "string" }, kind: { type: "string", description: "The node's kind, as the workflow DSL names it (`extract`, `agent`, `call`, ...)." }, status: { type: "string", description: "How the node ended: `ok`, `failed` or `escalated`. Why a node failed is never shown: its text may hold part of a secret." }, duration_ms: { type: "number" }, model: { type: "string", description: "A model node's (agent, decide, extract, report): the model it ran on, as the run's model route names it. Absent on a call node." }, tier: { type: "string", description: "The tier the model node named (`fast`, `strong`); absent for none, which runs on the run's own model." } } },
-      description: "On a learned workflow call's `tool_result` row alone (`tool_name` learned_workflow): each of the workflow's nodes that ran, in the order they ended, at most 64. Absent on every other row.",
+      description: "On a learned workflow call's `tool_result` row alone (`tool_name` learned_workflow): each of the workflow's nodes that ran, in the order they ended, at most 64. A learned workflow's nodes write no rows of their own (no `decision` row: a workflow revision's run alone has those; a decision node, `judge` or `pick` say, is an item here), so this list is the whole of them on the timeline. A served run (GET /runs/{id} `path` `workflow` or `handed_back`) reads in this order: its `user_message`, the learned_workflow `tool_use` and this `tool_result` with its items, then, served alone (`workflow`), the `final_answer` row that is the workflow's answer (`result.final_answer`) and the `usage` row; after a hand-back (`handed_back`), a `phase` row, the agent's own rows, its `final_answer` and the `usage` row. Each model node runs on the run's own model route (its tier's model when it names one), on the run's own key and cap. Absent on every other row.",
       "x-agentrun-serve": "learnednodes/1",
     },
     computer_calls: {
@@ -3211,7 +3209,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
   },
   ErrorBody: {
-    problems: { type: "array", items: PROBLEM, description: "`bad_request` from a write of a learning note only: each structural check it fails, printable (never a secret).", "x-agentrun-serve": "learning/1" },
+    problems: { type: "array", items: PROBLEM, description: "`bad_request` from a write of a learned workflow draft only (its approval or restore): each check it fails, printable (never a secret).", "x-agentrun-serve": "learning/1" },
   },
   RunFile: {
     unreadable: { type: "boolean", const: true, description: "Present when this server cannot read the file: a tool in the run's box created it private (owner-only). Reading it answers 403 `system_file_forbidden` with `details.reason` `unreadable`.", "x-agentrun-serve": "unreadable/1" },
@@ -3248,7 +3246,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     tool_settings: { ...AGENT_TOOL_SETTINGS, description: "The agent's own tool settings (web_search's, web_fetch's and browser's provider, any tool's permission, an MCP server's wildcard mcp:<server>/*, an MCP tool's pin, bash's policy), over the server's (GET /settings/tools), except a deny set on the server, which is absolute: the tool is refused on this server whatever this agent sets; absent, the server's. A pin is not over the server's: both hold. A grant in tools names the capability, never a provider.", "x-agentrun-serve": "providers/1" },
     approvals: { enum: ["ask", "never"], default: "ask", description: "Whether the agent's runs ask a person or run unattended. `ask`, the default: a tool set to ask parks the run for an approval, as its tool settings say. `never`: the agent runs unattended, and each tool that would ask is allowed instead, decided by the tool gate at each call, so a tool granted later and an MCP tool (`mcp:<server>/<tool>`, which asks by default) are covered on every harness. It never lifts a deny, whether set on this server or in the agent's own tool_settings, nor a pin, nor anything else the gate refuses before it decides between running and asking. A workflow's call node on a tool set to ask runs under `never`. Absent on a request: ask. An edit that leaves it out asks, so no edit makes an agent unattended by saying nothing. Every answer names it.", "x-agentrun-serve": "unattended/1" },
-    learning: { oneOf: [{ enum: [true, false, "notes"] }, { type: "object", additionalProperties: false, properties: {
+    learning: { oneOf: [{ type: "boolean" }, { type: "object", additionalProperties: false, properties: {
       compile_after: { type: "integer", minimum: 1, maximum: 200, default: 20, description: "The job compiles into a learned workflow once the agent has this many completed runs of its own." },
       agree_min: { type: "number", minimum: 0, maximum: 1, default: 0.8, description: "The draft's one check replays it on the inputs of those runs: promoted only when, of the inputs it answered alone, at least this share say what the agent's own recorded answer said." },
       alone_min: { type: "number", minimum: 0, maximum: 1, default: 0.7, description: "...and only when it answered at least this share of them alone (no escalate, no failed step). Under either bar it is recompiled once with the inputs it did not agree on, checked the same way, then promoted or stopped: nothing compiles again." },
@@ -3258,7 +3256,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       hold_window: { type: "integer", minimum: 1, maximum: AUDIT_MAX, default: AUDIT_DEFAULTS.hold_window, description: "The audit rows of the serving revision the hold rule reads: its newest this many (an owner's grade on a served run is one too)." },
       hold_disagree: { type: "integer", minimum: 1, maximum: AUDIT_MAX, default: AUDIT_DEFAULTS.hold_disagree, description: "When at least this many of those rows disagree, the workflow stops serving (a hold, source `audit`) and is recompiled once with them as data, then checked again: promoted serves again, otherwise it stops. At most `hold_window`." },
       stop_window: { type: "integer", minimum: 1, maximum: AUDIT_MAX, default: AUDIT_DEFAULTS.stop_window, description: "A second hold within this many served runs of the first stops the workflow for good, asking no compile." },
-    } }], default: false, description: "Whether an agentic revision's runs learn, and what: `true`, notes, skills and learned workflows; an object, the same with the loop's numbers set on it (`compile_after`, `agree_min`, `alone_min`, `audit_every`, `audit_every_later`, `audit_later_after`, `hold_window`, `hold_disagree`, `stop_window`, each optional: one left out is its default; `true` is every default); `\"notes\"`, notes and skills alone (a run is never given a learned workflow nor asked to draft one); `false`, nothing. A run that learns starts from what its agent has learned, its notes in its instructions under `# Learned` (each whole within the server's learning budget, else the index and the notes changed last, whole) and in `.learning/` in its working directory, and once it answers or fails is asked one more turn to add notes there, which are checked, graded and merged. Kept when a definition says so, true, false, `\"notes\"` or an object (its numbers in one order); a number out of range or an unknown key is a 422 `wrong_type`; absent, off, and an answer shows none. An edit that leaves it out keeps the agent's. A workflow revision keeps none. On a server whose learning is off (`capabilities.features.learning`), no run learns, whatever this says.", "x-agentrun-serve": "learning/1" },
+    } }], default: false, description: "Whether an agentic revision's runs learn: `true`, its owner's corrections and learned workflows; an object, the same with the loop's numbers set on it (`compile_after`, `agree_min`, `alone_min`, `audit_every`, `audit_every_later`, `audit_later_after`, `hold_window`, `hold_disagree`, `stop_window`, each optional: one left out is its default; `true` is every default); `false`, nothing. A run that learns starts from what its agent has learned, its corrections.md whole in its instructions under `# Learned` and its learned workflows behind its learned_workflow tool; once its job is due, it is asked one compile turn that writes the job as a learned workflow, checked and committed. Kept when a definition says so, true, false or an object (its numbers in one order); a number out of range or an unknown key is a 422 `wrong_type`; absent, off, and an answer shows none. An edit that leaves it out keeps the agent's. A workflow revision keeps none. On a server whose learning is off (`capabilities.features.learning`), no run learns, whatever this says.", "x-agentrun-serve": "learning/1" },
     checkout: { enum: ["pull_request", "none"], description: "What the server checks out in each run's folder before its first turn, an agentic definition's alone. `pull_request`: the pull request the run's GitHub event names (a GitHub trigger's firing: its repository, number, head and base), at its head, detached, in `repo/`, with its base and their merge base fetched beside it (refs `pr/head`, `pr/base`, `pr/merge-base`). The fetch is the server's own, one command on the run's folder, with an installation token of the server's GitHub App narrowed to that repository and `contents: read`, which the agent never holds: it is never in the folder, the checkout's git config, its remote's URL, the agent's environment or the log. With no App, or one not installed there, the fetch is anonymous, which a public repository answers. The run's system prompt says what was checked out, or why nothing was (no pull request named, the fetch failed), so it can read the change another way, such as the GitHub MCP. The checkout is removed when the run's claim ends. An edit that leaves it out keeps the agent's; `none` clears it. A template sets it from its manifest's `checkout`.", "x-agentrun-serve": "checkout/1" },
   },
   AgentCreate: {
@@ -3287,7 +3285,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       type: "object", additionalProperties: false, required: ["pending"],
       description: "For an agent that learns (its current revision `learning: true`, on a server whose learning is on): what waits on it. Absent for any other agent.",
       properties: {
-        pending: { type: "integer", minimum: 0, description: "How many of its learned items wait for its owner's OK: notes, skills and workflow drafts held with `status: pending` on its learning folder's main (approve them on GET /agents/{agent_id}/learning)." },
+        pending: { type: "integer", minimum: 0, description: "How many of its learned workflow drafts wait for its owner's OK: held with `status: pending` on its learning folder's main (approve them on GET /agents/{agent_id}/learning)." },
       },
       "x-agentrun-serve": "serve/1",
     },
@@ -3328,14 +3326,13 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   Capabilities: {
     learning: {
-      type: "object", additionalProperties: false, required: ["grade_model", "pending", "approve"],
+      type: "object", additionalProperties: false, required: ["pending", "approve"],
       properties: {
-        grade_model: { type: ["string", "null"], description: "The model that grades what a run proposes to learn: `--grade-model` (AGENTRUN_SERVE_GRADE_MODEL), else the strong tier (AGENT_MODEL_STRONG), named as the strong tier takes one; null when the server names none, and each run is graded on its agent's own model." },
-        pending: { type: "boolean", const: true, description: "A risky rule, one a run's user asked for or one the run worked out (to trust a site or a seller, skip or loosen an approval or a check, or send money or data somewhere), is kept to wait for its owner's OK: committed as a note with status `pending`, in no MEMORY.md and read by no run. Its owner approves it (POST /agents/{agent_id}/learning/files/{file}/approve) or retires it." },
-        approve: { type: "boolean", description: "Whether this caller can approve a note that waits for its owner's OK: true only for the owner's password session in the console. A token (the server's own included), a run, and every caller on a server with accounts off (AGENTRUN_ACCOUNTS=0) read false." },
+        pending: { type: "boolean", const: true, description: "A learned workflow draft that calls a tool with no price is kept to wait for its owner's OK: committed with `status: pending` in its README.md, and given to no run. Its owner approves it (POST /agents/{agent_id}/learning/files/{file}/approve) or retires it." },
+        approve: { type: "boolean", description: "Whether this caller can approve a workflow draft that waits for its owner's OK: true only for the owner's password session in the console. A token (the server's own included), a run, and every caller on a server with accounts off (AGENTRUN_ACCOUNTS=0) read false." },
         approve_needs: { type: "string", enum: ["password"], description: "Present when `approve` is false: what approving needs, the owner's password sign-in (set one in Settings, or sign in with it)." },
       },
-      description: "How this server judges what a run proposes to learn, and who approves what waits.",
+      description: "Who approves what a run's learning holds for its owner's OK.",
       "x-agentrun-serve": "learning/1",
     },
     places: {
@@ -3435,7 +3432,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     fast: { type: ["string", "null"], description: "`provider/model` of the fast tier, when one is fixed.", "x-agentrun-serve": "serve/1" },
     strong: { type: ["string", "null"], description: "`provider/model` of the strong tier, when one is fixed.", "x-agentrun-serve": "serve/1" },
     route_prefix: { type: ["string", "null"], description: "With `source` `gateway`, the routing prefix this server puts before the gateway's model ids (`agent-model`): every tier's model and every harness's `default_model` here is the prefix, a slash and the gateway's own id. Null with any other source, where ids are shown whole.", "x-agentrun-serve": "model/2" },
-    ready: { type: "boolean", description: "Whether a revision that names no model runs here: the host names a default (`AGENT_MODEL`), or a model provider's key is here, saved (`PUT /settings/tool-keys/{key_id}`, a `model` key) or the server's own, and gives its default model, the first of anthropic, openai, openrouter that has one.", "x-agentrun-serve": "toolkeys/1" },
+    ready: { type: "boolean", description: "Whether a revision that names no model runs here: the host names a default (`AGENT_MODEL`), or a model provider's key is here, saved (`PUT /settings/tool-keys/{key_id}`, a `model` key) or the server's own, and gives its default model, the first of anthropic, openai, particle, openrouter that has one (Particle runs on Pi).", "x-agentrun-serve": "toolkeys/1" },
     needs: { enum: ["key", "model", null], description: "When `ready` is false, what would make it true: `key`, a model provider's key (none is here, or the default model's provider has none); `model`, another default model (`AGENT_MODEL` names one this server does not know). Null when ready.", "x-agentrun-serve": "toolkeys/1" },
     priced: { type: ["boolean", "null"], description: "Whether that model has a price here, which a run's `max_cost_usd` needs: false for a gateway model (`source` `gateway`) with no `AGENT_MODEL_PRICE` that pi-ai's catalog does not list in any form, whose answers' cost is unknown; a run with `max_cost_usd` on it is refused (409 agent_not_runnable, on `definition.model`), and one without runs with its cost unknown, never $0. Null while `ready` is false: no model, nothing to price.", "x-agentrun-serve": "pricing/1" },
   },
@@ -3634,7 +3631,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
       unsupported.push(`${method.toUpperCase()} ${path}`);
     }
   }
-  // The console's password session, the one credential approving a note takes (approveLearningFile).
+  // The console's password session, the one credential approving a workflow draft takes (approveLearningFile).
   ((doc.components as Json).securitySchemes as Record<string, Json>).ownerSession = {
     type: "apiKey", in: "cookie", name: "agentrun-<port>",
     description: "The owner's console session: the cookie `agentrun-<port>`, this server's port (the document as served names it), that the console sets when the owner signs in with their password (accounts on). Sent from this server's own origin; a token never stands for it.",
@@ -3936,6 +3933,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     composio_not_connected: closedWith({ server: { type: "string" }, user_id: { type: "string", description: "The Composio user the server runs as." } }, { connect_url: { type: "string", format: "uri", description: "Composio's page to connect the account." } }),
     composio_account_ambiguous: closed({ server: { type: "string" }, user_id: { type: "string", description: "The Composio user the server runs as." }, accounts: { type: "array", items: closed({ id: { type: "string", description: "Composio's id for the connected account." }, created_at: { type: "string", description: "When it was connected, as Composio says." } }), description: "The user's ACTIVE accounts for the toolkit, oldest first." } }),
     composio_in_use: closed({ triggers: { type: "array", items: closed({ id: { type: "string" }, name: { type: "string" } }), description: "The composio triggers that use it." } }),
+    runs_in_flight: closed({ runs: { type: "array", items: { type: "string" }, description: "The agent's runs not ended (DELETE /agents/{agent_id})." } }),
+    learning_busy: closed({ runs: { type: "array", items: { type: "string" }, description: "What of the agent's learning is at work (DELETE /agents/{agent_id}): each run of it not ended (its compile turn, a check's replay or an audit's shadow among them), by its id." } }),
   };
   const extensions: string[] = [];
   for (const [path, item] of Object.entries(EXTENSIONS)) {

@@ -553,7 +553,7 @@ test("a server whose output ends with no \"Open \" line gives no address", async
 
 // The repository's Node rule, at the top of the bin and not behind a main-module guard (Node 20 has none, and a guarded
 // check there would pass by doing nothing): an older Node gets one line saying what to install, and exit 1.
-test("on a Node below the package's engines floor the bin says, in one line, the floor it needs, and exits 1 before it loads anything", () => {
+test("on a Node below the package's engines floor the bin says, in one line, the floor it needs and the installer's command, and exits 1 before it loads anything", () => {
   // The floor the line names is the package's engines.node, never a number of its own (it once said 22.19 and 24.2).
   const engines = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).engines.node;
   const [, needMajor, needMinor, needPatch] = /^>=(\d+)\.(\d+)\.(\d+)$/.exec(engines).map(Number);
@@ -563,7 +563,7 @@ test("on a Node below the package's engines floor the bin says, in one line, the
   // The patch counts: a Node on the floor's minor below its patch lacks the security fixes, and is refused too.
   for (const node of ["20.20.0", "22.23.5", "23.11.0", "24.2.0", "24.11.0", "24.21.0", `${needMajor}.${needMinor - 1}.9`, `${needMajor}.${needMinor}.0`, `${needMajor}.${needMinor}.${needPatch - 1}`]) {
     const run = spawnSync(process.execPath, ["--import", fakeNode(node), BIN, "--help"], { encoding: "utf8" });
-    assert.deepEqual([run.status, run.stdout, run.stderr], [1, "", `AgentRun needs Node.js ${floor} or newer; you have v${node}.\n`], node);
+    assert.deepEqual([run.status, run.stdout, run.stderr], [1, "", `AgentRun needs Node.js ${floor} or newer; you have v${node}. To install AgentRun with a Node.js of its own, run: curl -fsSL https://agentrun.ai/install | sh\n`], node);
   }
   // At the floor itself, and past it on a later patch, the check passes: the bin goes on and prints its usage.
   for (const node of [floor, `${needMajor}.${needMinor}.${needPatch + 7}`, `${needMajor}.${needMinor + 1}.0`]) {
@@ -574,26 +574,50 @@ test("on a Node below the package's engines floor the bin says, in one line, the
 });
 
 // Exercise the actual onboarding recipes, without npm installs, real servers or model credentials.
-function setupRecipe(source = false) {
-  const file = source ? "../../serve/skills/agentrun-serve/SKILL.md" : "../../../docs/SKILL.md";
-  const skill = readFileSync(new URL(file, import.meta.url), "utf8");
-  const step = [...skill.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1])
-    .find((block) => source ? block.includes("node packages/serve/dist/cli.js") : block.includes("npx --yes @parcha/agentrun@0.4 --no-open"));
+function setupRecipe() {
+  const skill = readFileSync(new URL("../../serve/skills/agentrun-serve/SKILL.md", import.meta.url), "utf8");
+  const step = [...skill.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1]).find((block) => block.includes("node packages/serve/dist/cli.js"));
   assert.ok(step, "the skill has its server-start recipe");
   return step;
 }
 const setupSkill = () => readFileSync(new URL("../../../docs/SKILL.md", import.meta.url), "utf8");
 const skillSection = (skill, title) => skill.split(/^## /m).find((part) => part.startsWith(`${title}\n`)) ?? "";
 const shellBlocks = (text) => [...text.matchAll(/```sh\n([\s\S]*?)```/g)].map((m) => m[1]);
-// The website serves this file byte for byte, so the Node version it names is checked here, against the launcher's own
-// engines floor: the site cannot correct it.
-test("the setup skill names the launcher's engines floor wherever it names a Node version", () => {
-  const floor = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).engines.node.replace(/^>=/, "");
-  const named = (text) => [...text.matchAll(/\b(?:Node(?:\.js)?|nvm install|node --version`?[^.\n]*?)\s+v?(\d+(?:\.\d+){1,2})\b/gi)].map((m) => m[1]);
-  assert.deepEqual(named("needs Node.js 22.19 or newer; `nvm install 24.2`; `node --version` must be 22.19"), ["22.19", "24.2", "22.19"], "the pattern reads each way a version is written");
-  const versions = named(setupSkill());
-  assert.ok(versions.length >= 2, `the skill names the Node it needs: ${versions}`);
-  assert.deepEqual([...new Set(versions)], [floor], `every Node version the skill names is ${floor}`);
+// The website serves this file with the release's install.sh, so the prompt starts AgentRun with that installer, which
+// brings its own Node, and every later command is the one it installs: no Node check, no nvm, no npx.
+test("the setup skill installs with the installer and runs the command it installs", (t) => {
+  const skill = setupSkill();
+  const here = skillSection(skill, "3. Start it where they chose").split(/^### /m).find((part) => part.startsWith("This computer\n"));
+  const [look, install, ...more] = shellBlocks(here);
+  assert.equal(install, "curl -fsSL https://agentrun.ai/install | sh\n", "this computer's one command is the installer");
+  assert.deepEqual(more, []);
+  // A server started before the installer existed (npx) has no ~/.agentrun/bin/agentrun: its record finds it.
+  assert.match(look, /~\/\.agentrun\/\.server\.json/);
+  assert.doesNotMatch(look, /agentrun\/bin|\| sh/, "the reuse check needs no installed command and installs nothing");
+  const f = setupFixture(t, { curl: 'echo "curl $*"' });
+  assert.equal(f.run(look, { HOME: f.dir }).status, 1, "no record: nothing to reuse");
+  mkdirSync(join(f.dir, ".agentrun"));
+  const record = join(f.dir, ".agentrun", ".server.json");
+  writeFileSync(record, `${JSON.stringify({ base_url: "http://127.0.0.1:7341/v2", pid: 42 }, null, 2)}\n`);
+  const home = { HOME: f.dir };
+  assert.equal(f.run(look, home).stdout, "curl -fsS --max-time 3 http://127.0.0.1:7341/v2/health\n");
+  assert.match(here, /When `~\/\.agentrun\/bin\/agentrun` is missing, install the command alone, which\s+leaves that server running: `curl -fsSL https:\/\/agentrun\.ai\/install \| sh -s -- --no-start`/);
+  assert.match(here, /`~\/\.agentrun\/bin\/agentrun service restart`/);
+  assert.match(here, /`~\/\.agentrun\/bin\/agentrun stop` stops it and the installer line starts it again/);
+  assert.match(here, /in this session always write the full path/, "the PATH line the installer adds reaches only a new terminal");
+  assert.doesNotMatch(skill, /\bnpx\b|\bnvm\b|node --version|Node(\.js)? \d/, "no Node check and no npx");
+  assert.doesNotMatch(skill, /<!-- (INSTALLER|RAILWAY|WORKAROUND)\b/, "no marker left");
+  const commands = [...skill.matchAll(/(?:^|[\s`(])((?:~\/\.agentrun\/bin\/)?agentrun) (agents|runs|server|native|import|service|login|stop)\b/gm)].map((m) => m[1]);
+  assert.ok(commands.length >= 10, `${commands.length} commands`);
+  assert.deepEqual([...new Set(commands)], ["~/.agentrun/bin/agentrun"], "every command is the installed one, by its full path");
+});
+test("the setup skill's Railway step is the published template's button, with the token from its Variables tab", () => {
+  const skill = setupSkill();
+  const hosted = skillSection(skill, "3. Start it where they chose");
+  assert.match(hosted, /\*\*Railway:\*\* they open https:\/\/railway\.com\/deploy\/agentrun/);
+  assert.match(hosted, /never create the service yourself with a Railway CLI/i);
+  assert.doesNotMatch(skill, /ghcr\.io|RAILWAY_PUBLIC_DOMAIN|PORT=7340/, "no hand-made service");
+  assert.match(hosted, /On Railway, the service's \*\*Variables\*\* tab holds `AGENTRUN_TOKEN`/);
 });
 // Every choice the setup prompt offers, as the question tool's call: its header, its question and its options' labels.
 // A choice written as chat text is the failure these tests exist for: models answer a prose list in prose, skip the
@@ -690,24 +714,27 @@ test("the setup skill asks where AgentRun should run before any install, with a 
   assert.match(bring, /need no model key/);
   assert.match(bring, /It is a real run of that job: it may\s+post or write wherever the job does\./, "the first run of a found job is named as a real run");
 });
-// The first agent on a fresh server: with no place it went to the Docker box and sat queued for minutes, and on a local
-// model its reasoning ran into the answer. Until the server's first-run fix ships, the definition names both.
-test("the setup skill's model step offers ChatGPT, a capped key, then a local model only when one is pulled, and its first agent runs on the runner", () => {
+// The server runs an agent whose tools need no shell (`tools: []`) on the runner, and never asks an unlisted gateway model
+// to stop reasoning, so the first agent's definition names neither a place nor a thinking level. With no tools named it
+// would get bash and the Docker box, and wait for a container. A local model reaches a service through
+// `service install --env`; only Ollama has been walked.
+test("the setup skill's model step offers ChatGPT, a capped key, then a local Ollama model on the service, and its first agent is the template's alone", () => {
   const skill = setupSkill();
   const model = skillSection(skill, "6. Connect a model");
   assert.match(model, /Never start a model download\./);
   assert.match(model, /offer it only when a model with tool calling is already pulled/);
-  for (const env of ["AGENT_MODEL_BASE_URL=http://localhost:11434/v1", "AGENT_MODEL_GATEWAY_IDS=bare", "AGENT_MODEL=<tag>", "AGENT_MODEL_PRICE=0,0,0"]) assert.ok(model.includes(env), env);
+  const [install] = shellBlocks(model);
+  assert.equal(install, "~/.agentrun/bin/agentrun service install --env AGENT_MODEL_BASE_URL=http://localhost:11434/v1 --env AGENT_MODEL_GATEWAY_IDS=bare --env AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0\n");
+  assert.doesNotMatch(skill, /LM Studio|localhost:1234/);
   assert.match(model, /https:\/\/openrouter\.ai\/keys, create a key, set its credit limit/);
   assert.match(model, /Claude\s+Max, Ultra\s+and Team plans include monthly API credits/);
   assert.doesNotMatch(skill, /(Sign in|Continue) with Claude/i);
   const first = skillSection(skill, "7. Create the first agent and run it");
   const create = shellBlocks(first).find((block) => block.includes("agents create"));
   const definition = JSON.parse(create.match(/--body '(.+)'/)[1]).definition;
-  assert.deepEqual(definition.place, { mode: "runner" });
-  assert.deepEqual(definition.tools, undefined, "no tools named: a no-tool agent");
-  assert.equal(first.match(/<!-- WORKAROUND: drop after the serve first-run fix -->/g)?.length, 2, "the workaround is marked where it starts and ends");
-  assert.match(first, /On a local model, add\s+`"thinking":"low"`/);
+  assert.deepEqual(Object.keys(definition).sort(), ["harness", "id", "instructions", "max_cost_usd", "name", "tools"], "no place or thinking");
+  assert.deepEqual(definition.tools, [], "no tools: an agent that needs no shell runs on the runner");
+  assert.equal(definition.max_cost_usd, 0.25);
 });
 test("the setup skill names a hosted cloud session before the questions, and its check prints names, never values", (t) => {
   const skill = setupSkill();
@@ -801,11 +828,11 @@ esac`,
   ], "each agent job with its schedule and runtime; no other job, and none that only contains a runtime's name");
   assert.doesNotMatch(`${run.stdout}${run.stderr}`, /private-fixture/, "no prompt, key, environment value or unrelated job is returned");
 });
-for (const source of [false, true]) test(`the ${source ? "source-server" : "setup"} skill's start step reports failure promptly and preserves its error in a private log`, { timeout: 30_000 }, (t) => {
-    const log = source ? "serve.log" : "agentrun.log";
-    const commands = { npm: "exit 0", [source ? "node" : "npx"]: "echo 'launch failed; credential: private-fixture-value' >&2\nexit 1" };
+test("the source-server skill's start step reports failure promptly and preserves its error in a private log", { timeout: 30_000 }, (t) => {
+    const log = "serve.log";
+    const commands = { npm: "exit 0", node: "echo 'launch failed; credential: private-fixture-value' >&2\nexit 1" };
     const f = setupFixture(t, commands);
-    const run = f.run(setupRecipe(source));
+    const run = f.run(setupRecipe());
     assert.notEqual(run.signal, "SIGTERM", `the step ended on its own: ${run.stdout}${run.stderr}`);
     assert.equal(run.status, 1, "the failed launch is not reported as success");
     assert.match(`${run.stdout}${run.stderr}`, /AgentRun did not start; inspect its private/, "it says where to diagnose the failure");
@@ -816,7 +843,7 @@ for (const source of [false, true]) test(`the ${source ? "source-server" : "setu
 test("the source-server setup recipe stops on failed installation or build before launching a server", (t) => {
   for (const phase of ["ci", "run"]) {
     const f = setupFixture(t, { npm: `test "$1" != "${phase}"`, node: "touch launched\nexit 1" });
-    assert.equal(f.run(setupRecipe(true)).status, 1);
+    assert.equal(f.run(setupRecipe()).status, 1);
     assert.equal(existsSync(join(f.dir, "launched")), false, `${phase} failure never launches stale output`);
   }
 });
@@ -828,7 +855,7 @@ test("the source-server setup recipe bounds startup and health waits while the c
       sleep: "exit 0",
       curl: "echo attempt >> health-attempts\nexit 1",
     });
-    const run = f.run(setupRecipe(true));
+    const run = f.run(setupRecipe());
     assert.equal(run.signal, null, "the bounded recipe ended on its own");
     assert.equal(run.status, 1);
     assert.match(run.stdout, announce ? /did not become healthy/ : /did not start/);

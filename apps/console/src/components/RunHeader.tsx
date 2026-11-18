@@ -7,10 +7,11 @@ import { ScheduleChip } from "@/components/ScheduleChip";
 import { StatusBadge } from "@/components/StatusBadge";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
+import { pageToolbarClass } from "@/components/ui/toolbar";
+import { cn } from "@/lib/utils";
 import { goBack } from "@/lib/back";
 import { ManageUsage } from "@/components/ChatGPTSignIn";
-import { PLAN_NO_DOLLARS } from "@/lib/chatgpt";
-import { costOfCap, isEstimate, planOf, runEnded, runLabel, soFar, soFarNote, when, runTitle } from "@/lib/format";
+import { costOfCap, isEstimate, planNoDollars, planOf, runEnded, runLabel, soFar, soFarNote, when, runTitle } from "@/lib/format";
 import { NO_MESSAGES, runState } from "@/lib/runState";
 import type { RaiseAnswer, Run } from "@/lib/v2";
 import { runPlaceWords } from "@/lib/place";
@@ -23,7 +24,8 @@ export type RunActions = { onStop?: () => void; onCancel?: () => void; onArchive
 /** The cost's hover note: a known estimate is not a bill; a cost known so far is not the whole cost. */
 const costTitle = (c: Run["cost"], ended: boolean): string | undefined => {
   const known = soFar(c);
-  const plan = planOf(c) ? PLAN_NO_DOLLARS : undefined;
+  const used = planOf(c);
+  const plan = used ? planNoDollars(used) : undefined;
   if (known) return plan ? `${soFarNote(known, { ended })} ${plan}` : soFarNote(known, { ended });
   if (c && c.usd !== null && isEstimate(c)) return plan ? `A local estimate, not a bill. ${plan}` : "A local estimate, not a bill";
   return plan;
@@ -49,9 +51,12 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
   const [raising, setRaising] = useState(false);
   const budget = run.pending?.kind === "budget" ? run.pending : null;
   const onPlan = !!planOf(run.cost);
+  // ChatGPT's usage page is for a ChatGPT plan's run only.
+  const chatGPTPlan = onPlan && planOf(run.cost)?.on !== "claude_code";
   return (
-    <header className="border-b px-5 py-4 max-sm:py-3 md:px-8">
-      <nav className="caps flex min-w-0 items-center gap-2 text-label text-muted-foreground" aria-label="Breadcrumb">
+    <header>
+      {/* The breadcrumb is the page's top bar, so its edge is level with the one under the navigation's logo. */}
+      <nav className={cn(pageToolbarClass, "caps min-w-0 gap-2 px-5 text-label text-muted-foreground md:px-8")} aria-label="Breadcrumb">
         {/* Back where the person came from in the console (the runs list, the agent's page), else to the run's agent. */}
         <button type="button" aria-label="Back" title="Back" onClick={() => goBack(agentHash(run.agent_id))} className="-m-1.5 shrink-0 p-1.5 hover:text-foreground">
           <ArrowLeft className="size-3.5" aria-hidden />
@@ -60,9 +65,10 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
         <span aria-hidden>/</span>
         <span className="truncate">Run {runLabel(run.run_id)}</span>
       </nav>
+      <div data-title-block className="border-b px-5 py-4 max-sm:py-3 md:px-8">
       {/* On a phone the title's column and the facts' box step aside (display: contents), so the facts and the actions
           share one wrapping row under a two-line title. 640 px and up keep the column and the actions beside it. */}
-      <div data-phone-row className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 max-sm:mt-2 max-sm:flex-row max-sm:flex-wrap max-sm:items-center max-sm:gap-x-3 max-sm:gap-y-2 sm:flex-row sm:flex-wrap">
+      <div data-phone-row className="flex flex-col items-start gap-x-6 gap-y-3 max-sm:mt-2 max-sm:flex-row max-sm:flex-wrap max-sm:items-center max-sm:gap-x-3 max-sm:gap-y-2 sm:flex-row sm:flex-wrap">
         {/* The title's column keeps 16rem to itself (sm:basis-64): when the actions would squeeze it below that, they wrap onto
             their own row (a Playground's half page at 1500 px, four actions while the run works). */}
         <div className="min-w-0 flex-1 self-stretch max-sm:contents sm:basis-64">
@@ -80,7 +86,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
             {/* A run on the ChatGPT plan says so, with where its usage is managed: ChatGPT's settings, in a new tab. The
                 graph's totals are dollars alone, so a workflow on the plan reads its run's cost (tokens, the plan). */}
             {costText !== undefined && !onPlan ? <span className="font-mono" title="The run's decisions and model calls, as the providers priced them">{costOfCap(run.cost, cap, { text: costText })}</span>
-              : <span className="font-mono" title={costTitle(run.cost, runEnded(run.status))}>{costOfCap(run.cost, cap, { ended: runEnded(run.status) })}{onPlan && <> · <ManageUsage /></>}</span>}
+              : <span className="font-mono" title={costTitle(run.cost, runEnded(run.status))}>{costOfCap(run.cost, cap, { ended: runEnded(run.status) })}{chatGPTPlan && <> · <ManageUsage /></>}</span>}
             <LearningChips run={run} link />
             <ScheduleChip run={run} />
           </div>
@@ -124,6 +130,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
           <RaiseCap key={budget ? `${run.run_id}:${budget.at}` : `${run.run_id}:working`} cap={cap!} suggested={suggestedCap(budget)} least={leastCap(budget)} paused={!!budget} onRaise={actions.onRaiseCap!} />
         </div>
       )}
+      </div>
     </header>
   );
 }

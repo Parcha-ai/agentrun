@@ -119,7 +119,7 @@ export type ClaimSide = {
   /** The computer an earlier claim of the run kept at its park (computer-kept.ts), attached again in place of a launch,
    *  or undefined to launch one. Asked first: a computer attached again mounts what it mounted, so no mount is made for
    *  it, and its mount reads back under `epoch`, the claim epoch its labels carry. Never throws. Absent: always a launch. */
-  reattach?(entry: ProviderEntry, spec: { readonly kind: ComputerSettingKind; readonly keys: Readonly<Record<string, string>>; readonly configuration: KindCapabilities; readonly persistent?: true; readonly signal?: AbortSignal }): Promise<(LaunchedComputer & { readonly epoch: number }) | undefined>;
+  reattach?(entry: ProviderEntry, spec: { readonly kind: ComputerSettingKind; readonly keys: Readonly<Record<string, string>>; readonly configuration: KindCapabilities; readonly gpu?: GpuSpec; readonly persistent?: true; readonly signal?: AbortSignal }): Promise<(LaunchedComputer & { readonly epoch: number }) | undefined>;
 };
 
 /** A narrow port of the kernel's hands a computer fills: files, exec and processes where the folder is mounted; a
@@ -439,7 +439,7 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
     ports,
     async start({ workspace, check, signal }) {
       // A computer kept at the run's park, attached again: it mounts what it mounted, read back under its own epoch.
-      const again = await side.reattach?.(entry, { kind, keys, configuration, ...(persistent ? { persistent: true as const } : {}), ...(signal ? { signal } : {}) });
+      const again = await side.reattach?.(entry, { kind, keys, configuration, ...(gpu ? { gpu: { type: gpu.type, count: gpu.count } } : {}), ...(persistent ? { persistent: true as const } : {}), ...(signal ? { signal } : {}) });
       const mount = mounts && !again ? await workspace.mountSpec() : undefined;
       let launched: LaunchedComputer;
       try {

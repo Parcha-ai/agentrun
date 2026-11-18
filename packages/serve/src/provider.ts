@@ -9,7 +9,11 @@
 //   openai-responses: the gateway at AGENT_MODEL_BASE_URL's base with its key (AGENT_MODEL_API_KEY, or none), the model
 //     as model.ts chose it; OpenAI with its key, OpenAI's id; or OpenRouter's Responses API (openRouterOnly, or a model
 //     the run names on it, `openrouter/openai/<model-id>`), the model's whole id. Each key goes as a bearer token.
+//   claude-agent on Claude Code's login on this machine (claude-login.ts), when the owner turned it on: an Anthropic
+//     model goes on the person's plan, from the CLI itself, with no key of ours and no proxy (`login`).
 import type { Wire } from "@parcha/agentrun-kernel";
+import type { ClaudeAgentLogin } from "@parcha/agentrun-harness-claude";
+import { CLAUDE_LOGIN_PROVIDER, onClaudeLogin, claudeLoginOf } from "./claude-login.js";
 import { chooseModel, FAUX_ENV, hostModel, MODEL_PROVIDER, type ModelNeeds, type ModelRef } from "./model.js";
 import { WIRES } from "./wires.js";
 import { modelFormWhy } from "./model-form.js";
@@ -70,6 +74,26 @@ export function gatewayBase(setting: string, value: string): string {
   return `${url.origin}${url.pathname.replace(/\/+$/, "").replace(/\/v1$/, "")}`;
 }
 
+/** The generic gateway must speak HTTP Responses (or Messages). Particle exposes Chat Completions
+ * and a WebSocket-only Responses subset, so a direct API base is not a compatible gateway. */
+export function modelGatewayBase(value: string): string {
+  const base = gatewayBase("AGENT_MODEL_BASE_URL", value);
+  if (["api.particle.ai", "us.api.particle.ai"].includes(new URL(base).hostname)) {
+    throw new HarnessUnavailable("Particle uses Chat Completions here: remove AGENT_MODEL_BASE_URL, save PARTICLE_API_KEY and select particle/particle-1 with Pi. Particle does not support HTTP POST /v1/responses.");
+  }
+  return base;
+}
+
+/** Whether `base` (a gatewayBase answer) is on the origin of serve's own gateway (AGENT_MODEL_BASE_URL): there a run's own
+ *  model key (run-model-key.ts) is sent, so the endpoint needs no standing key of the server's. */
+function onServeGateway(env: NodeJS.ProcessEnv, base: string): boolean {
+  if (!env.AGENT_MODEL_BASE_URL) return false;
+  try {
+    return new URL(gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL)).origin === new URL(base).origin;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Whether `wire` reaches its vendor's models here only through OpenRouter: OPENROUTER_API_KEY is set and none of the
@@ -107,7 +131,9 @@ export function anthropicModelId(model: ModelRef): string {
  *  vendor, a key that is not set (its `keys` name the ones that would fix it), or an endpoint a key may not go to. */
 /** `billing: "plan"`: a ChatGPT plan's route (chatgpt-plan.ts), billed to the plan, never priced here; its credential is
  *  the plan's token, asked at each request, and `refused` tells the plan OpenAI answered 401 to one it sent. */
-export type Provider = { origin: string; credential: () => string | Promise<string>; auth: "bearer" | "x-api-key"; modelId: string; priceModel: ModelRef; billing?: "plan"; refused?: (credential: string) => Promise<void> };
+/** `login`: claude-agent on Claude Code's login on this machine (claude-login.ts): billed to the person's plan, its CLI
+ *  calling Anthropic itself; `origin` and `credential` are never read (no proxy, no key). */
+export type Provider = { origin: string; credential: () => string | Promise<string>; auth: "bearer" | "x-api-key"; modelId: string; priceModel: ModelRef; billing?: "plan"; refused?: (credential: string) => Promise<void>; login?: ClaudeAgentLogin };
 
 /** OpenRouter's key, read per request, refused by name where it is not set. */
 function openRouterKey(env: NodeJS.ProcessEnv, who: string, named: string): () => string {
@@ -117,7 +143,7 @@ function openRouterKey(env: NodeJS.ProcessEnv, who: string, named: string): () =
 
 /** Serve's gateway (AGENT_MODEL_BASE_URL) on either wire: its base, its key (AGENT_MODEL_API_KEY, or none) as a bearer
  *  token, the model id as model.ts chose it, priced as runModels prices it. */
-const gatewayProvider = (env: NodeJS.ProcessEnv, model: ModelRef): Provider => ({ origin: gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL!), credential: () => env.AGENT_MODEL_API_KEY || "none", auth: "bearer", modelId: model.modelId, priceModel: model });
+const gatewayProvider = (env: NodeJS.ProcessEnv, model: ModelRef): Provider => ({ origin: modelGatewayBase(env.AGENT_MODEL_BASE_URL!), credential: () => env.AGENT_MODEL_API_KEY || "none", auth: "bearer", modelId: model.modelId, priceModel: model });
 
 export function providerFor(wire: Wire, env: NodeJS.ProcessEnv, model: ModelRef, who: string): Provider {
   const named = `${model.provider}/${model.modelId}`;
@@ -131,11 +157,16 @@ export function providerFor(wire: Wire, env: NodeJS.ProcessEnv, model: ModelRef,
     }
     if (model.provider !== "anthropic") throw new HarnessUnavailable(`${who} runs Anthropic models; the run's model is ${named}.`);
     const own = anthropicModelId(model);
+    // Claude Code's login on this machine, turned on here: claude-agent's Anthropic model goes on it, whatever key is set.
+    const login = onClaudeLogin(env, who) ? claudeLoginOf(env) : undefined;
+    if (login) return { origin: ANTHROPIC_ORIGIN, credential: () => "", auth: "x-api-key", modelId: own, priceModel: { provider: CLAUDE_LOGIN_PROVIDER, modelId: own }, billing: "plan", login };
     if (openRouterOnly(wire, env)) return { origin: OPENROUTER_BASE, credential: openRouterKey(env, who, named), auth: "bearer", modelId: own, priceModel: { provider: "openrouter", modelId: `anthropic/${openRouterName(own)}` } };
     // The endpoint first: one it refuses is the reason, and no key would fix it (no `keys`). An endpoint the host names
     // takes Anthropic's key alone: OpenRouter's never goes there.
     const origin = env.ANTHROPIC_BASE_URL ? gatewayBase("ANTHROPIC_BASE_URL", env.ANTHROPIC_BASE_URL) : ANTHROPIC_ORIGIN;
-    if (!env.ANTHROPIC_API_KEY) throw env.ANTHROPIC_BASE_URL ? new HarnessUnavailable(`${who} needs ANTHROPIC_API_KEY.`, undefined, ["ANTHROPIC_API_KEY"]) : new HarnessUnavailable(`${who} needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY.`, undefined, ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]);
+    // An endpoint on serve's own gateway's origin takes each run's own key where the server holds none (run-model-key.ts):
+    // the harness runs here with no standing key, and a run with no key to spend is refused at its start.
+    if (!env.ANTHROPIC_API_KEY && !onServeGateway(env, origin)) throw env.ANTHROPIC_BASE_URL ? new HarnessUnavailable(`${who} needs ANTHROPIC_API_KEY.`, undefined, ["ANTHROPIC_API_KEY"]) : new HarnessUnavailable(`${who} needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY.`, undefined, ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"]);
     return { origin, credential: () => env.ANTHROPIC_API_KEY ?? "", auth: "x-api-key", modelId: own, priceModel: { provider: "anthropic", modelId: own } };
   }
   // A ChatGPT plan's model: OpenAI's Responses API on the plan's token, whatever else is set.

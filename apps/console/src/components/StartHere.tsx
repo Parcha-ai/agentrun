@@ -73,7 +73,7 @@ export function StartHere({ harnesses, tools, onTry, imported = 0, keySettings =
                   <p className="mt-1 font-mono text-label text-muted-foreground">{t.shows}</p>
                   <p className="mt-2 flex-1 text-lead leading-relaxed text-muted-foreground">{t.description}</p>
                   {offer.ok
-                    ? <Button type="button" variant={t.id === "hello" ? "solid" : "outline"} size="sm" className="mt-4 self-start" disabled={trying !== null} onClick={() => void tryIt(t)}>{trying === t.id ? "Starting…" : "Try it"}</Button>
+                    ? <Button type="button" size="sm" className="mt-4 self-start" disabled={trying !== null} onClick={() => void tryIt(t)}>{trying === t.id ? "Starting…" : "Try it"}</Button>
                     : <p className="mt-4 font-mono text-small text-muted-foreground">{offer.reason}</p>}
                 </li>
               );

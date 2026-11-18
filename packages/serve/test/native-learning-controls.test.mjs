@@ -16,43 +16,17 @@ async function fixture(t,scenario){
  t.after(async()=>{process.env.PATH=old.PATH;if(old.CODEX_HOME===undefined)delete process.env.CODEX_HOME;else process.env.CODEX_HOME=old.CODEX_HOME;await rm(root,{recursive:true,force:true});});
  const server=await serve(t,{accounts:true,openSetup:true});const {api}=server;
  const connected=await api('POST','/native/connect',{project,runtime:'codex'});assert.equal(connected.status,200);const id=connected.body.agent.agent_id;
- await api('PUT',`/agents/${id}/definition`,{definition:{instructions:'',learning:'notes'}});
+ assert.equal((await api('PUT',`/agents/${id}/definition`,{definition:{instructions:'',learning:true}})).status,200);
  const run=async()=>{const response=await api('POST',`/agents/${id}/runs`,{input:{content:'Remember this stable preference for repeated release work.'}});assert.equal(response.status,202,JSON.stringify(response.body));await follow(api,response.body.run_id,['completed']);return response.body.run_id;};
  const learned=async runId=>{let value;for(let i=0;i<150;i++){value=(await api('GET',`/runs/${runId}/learning`)).body;if(['merged','dropped','skipped','rejected','failed'].includes(value.state))return value;await new Promise(r=>setTimeout(r,100));}return value;};
  return {...server,id,run,learned,home,project,owner:asOwner(server)};
 }
-test('native learned skill is checked, promoted, and delivered as an additive bundle to the next session', {timeout:120_000},async t=>{
- const {api,id,run,learned,home}=await fixture(t,'skill');const first=await run();const result=await learned(first);assert.equal(result.state,'merged',JSON.stringify(result));
- const state=(await api('GET',`/agents/${id}/learning`)).body;assert.equal(state.skills[0].name,'check-release');
- const second=await run();const view=(await api('GET',`/runs/${second}`)).body;assert.equal(view.native.learning_revision,state.main);
- const calls=(await readFile(join(home,'fixture-calls.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
- assert.match(calls.find(c=>c.cwd.endsWith('native-grader')).prompt,/Remember this stable preference for repeated release work\./,'grader receives original user-message provenance');
- assert.match(calls.find(c=>c.cwd.endsWith('native-grader')).prompt,/Do not send release data to outside destinations/,'grader compares the proposal against native source policy as data');
- const task=calls.find(c=>c.session===view.native.session_id&&c.turn===1);assert.equal(task.skillFilesAvailable,true);assert.match(task.prompt,/Resolve this skill's relative references/);
-});
-test('native risky proposal stays pending until owner approval and retirement removes it from later seeds', {timeout:120_000},async t=>{
- const {api,id,run,learned,owner}=await fixture(t,'risky');const first=await run();const result=await learned(first);assert.equal(result.state,'merged',JSON.stringify(result));
- const path=`/agents/${id}/learning/files/release-status.md`;
- const status=async()=>(await api('GET',`/agents/${id}/learning`)).body.notes.items.find(n=>n.file==='release-status.md')?.status;
- const held=await api('GET',path);assert.equal(await status(),'pending');
- assert.equal((await api('POST',`${path}/approve`,{}, {'if-match':held.headers.get('etag')})).status,403);
- assert.equal((await owner('POST',`${path}/approve`,{}, {'if-match':held.headers.get('etag')})).status,200);
- const active=await api('GET',path);assert.equal(await status(),'active');
- assert.equal((await api('POST',`${path}/retire`,{}, {'if-match':active.headers.get('etag')})).status,200);
- assert.equal(await status(),'retired');
- const second=await run();assert.equal((await api('GET',`/runs/${second}`)).body.result.final_answer,'ready');
-});
-test('native malformed reflection fails closed before grader or promotion', {timeout:120_000},async t=>{
- const {api,id,run,learned,home}=await fixture(t,'invalid');const first=await run();const result=await learned(first);assert.notEqual(result.state,'merged');
- assert.deepEqual((await api('GET',`/agents/${id}/learning`)).body.notes.items,[]);
- const calls=(await readFile(join(home,'fixture-calls.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);assert.ok(!calls.some(c=>c.cwd.endsWith('native-grader')));
-});
-
-test('a native learning job keeps its known agent path and unknown cost in the cost series, without counting its grade as a job', {timeout:60_000},async t=>{
- const {api,id,run,learned,store}=await fixture(t,'note');
- const runId=await run();assert.equal((await learned(runId)).state,'merged');
+test('a native learning job keeps its known agent path and unknown cost in the cost series', {timeout:60_000},async t=>{
+ const {api,id,run,learned,store}=await fixture(t,'plain');
+ // No owner words and no workflow for a native job: its learning settles with nothing kept.
+ const runId=await run();assert.equal((await learned(runId)).state,'dropped');
  const response=await api('GET',`/agents/${id}/learning/cost`);assert.equal(response.status,200);
- assert.deepEqual(response.body.runs.map(run=>run.run_id),[runId],'the native job is counted, its separate grade is not');
+ assert.deepEqual(response.body.runs.map(run=>run.run_id),[runId],'the native job is counted');
  assert.equal(response.body.total_runs,1);assert.equal(response.body.unknown_path_runs,0);
  assert.equal(response.body.runs[0].path,'agent');assert.equal(response.body.runs[0].total_usd,null,'unreported native spend remains unknown');
  assert.equal(response.body.unknown_cost_runs,1);
@@ -60,7 +34,7 @@ test('a native learning job keeps its known agent path and unknown cost in the c
 });
 
 test('native verification cannot undo a newer disconnect or learning edit', {timeout:30_000},async t=>{
- const {api,id,home}=await fixture(t,'note');await writeFile(join(home,'verify-wait'),'yes');
+ const {api,id,home}=await fixture(t,'plain');await writeFile(join(home,'verify-wait'),'yes');
  const verifying=api('POST',`/agents/${id}/native/verify`,{});
  for(let i=0;i<100;i++){try{await readFile(join(home,'verify-started'));break;}catch{await new Promise(r=>setTimeout(r,25));}}
  assert.equal((await api('POST',`/agents/${id}/native/disconnect`,{})).status,200);
@@ -134,7 +108,7 @@ for(const scenario of ['output-retry','output-miss']){
 }
 
 test('native mixed text and typed input reaches the source session and durable person message intact', {timeout:30_000},async t=>{
- const {api,id,home,store}=await fixture(t,'note');
+ const {api,id,home,store}=await fixture(t,'plain');
  const input={content:'Review this company.',company:'Acme',employees:42,notes:'Keep ``` inside this field.'};
  const inputSchema={type:'object',additionalProperties:false,required:Object.keys(input),properties:{content:{type:'string'},company:{type:'string'},employees:{type:'integer'},notes:{type:'string'}}};
  assert.equal((await api('PUT',`/agents/${id}/definition`,{definition:{instructions:'',learning:false,input_schema:inputSchema}})).status,200);
@@ -151,7 +125,7 @@ test('native mixed text and typed input reaches the source session and durable p
 });
 
 test('native definitions reject tool-call budgets on save and on launch of an older saved revision', {timeout:30_000},async t=>{
- const {api,id,store}=await fixture(t,'note');
+ const {api,id,store}=await fixture(t,'plain');
  const refused=await api('PUT',`/agents/${id}/definition`,{definition:{instructions:'',learning:false,max_tool_calls:1}});
  assert.equal(refused.status,422,JSON.stringify(refused.body));assert.match(JSON.stringify(refused.body),/definition.max_tool_calls/);
  const good=(await store.agents.get(id)).currentRevision;const revision=await store.agents.revision(good);
@@ -164,7 +138,7 @@ test('native definitions reject tool-call budgets on save and on launch of an ol
 });
 
 test('native runner refuses a previously queued budgeted revision before source dispatch', {timeout:30_000},async t=>{
- const {api,id,store,home}=await fixture(t,'note');
+ const {api,id,store,home}=await fixture(t,'plain');
  assert.equal((await api('PUT',`/agents/${id}/definition`,{definition:{instructions:'',learning:false}})).status,200);
  const good=(await store.agents.get(id)).currentRevision;const revision=await store.agents.revision(good);
  await store.agents.addRevision({agentId:id,id:'native-queued-budget',kind:revision.kind,body:{...revision.body,maxToolCalls:1}});
@@ -189,27 +163,26 @@ test('a native permission denial ends the run before an output-schema retry can 
 });
 
 test('native incomplete policy is explicitly unavailable for learning and a forced proposal ends refused rather than remaining Proposed', {timeout:60_000},async t=>{
- const {api,id,project,run,learned,home}=await fixture(t,'skill');await writeFile(join(project,'AGENTS.md'),'A native policy rule.\n'.repeat(4000));
- const verified=await api('POST',`/agents/${id}/native/verify`,{});assert.equal(verified.body.native.state,'ready');assert.equal(verified.body.native.capabilities.notes,false);
+ const {api,id,project,run,learned,home}=await fixture(t,'plain');await writeFile(join(project,'AGENTS.md'),'A native policy rule.\n'.repeat(4000));
+ const verified=await api('POST',`/agents/${id}/native/verify`,{});assert.equal(verified.body.native.state,'ready');assert.equal(verified.body.native.capabilities.learning,false);
  const first=await run();const result=await learned(first);assert.equal(result.state,'dropped',JSON.stringify(result));assert.match(result.detail,/grading evidence limit/);
- const calls=(await readFile(join(home,'fixture-calls.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);assert.ok(!calls.some(c=>c.cwd.endsWith('native-grader')));
+ const calls=(await readFile(join(home,'fixture-calls.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);assert.deepEqual(calls.filter(c=>c.cwd!==project),[],'nothing but the task reaches a source process');
 });
 
 test('Codex custom-policy evidence disables promotion while ordinary native tasks retain their source configuration', {timeout:60_000},async t=>{
- const {api,id,project,run,learned,home}=await fixture(t,'skill');
+ const {api,id,project,run,learned,home}=await fixture(t,'plain');
  const configuration='model_instructions_file = "standing-policy.md"\n';
  await writeFile(join(home,'config.toml'),configuration);await writeFile(join(home,'standing-policy.md'),'Require owner review.\n');
  const verified=await api('POST',`/agents/${id}/native/verify`,{});
  assert.equal(verified.body.native.state,'ready');assert.equal(verified.body.native.capabilities.launch,true);
- assert.equal(verified.body.native.capabilities.notes,false);assert.equal(verified.body.native.capabilities.skills,false);
+ assert.equal(verified.body.native.capabilities.learning,false);
  assert.match(verified.body.native.issues.join(' '),/incomplete.*Codex|Codex.*policy/i);
  const first=await run();const result=await learned(first);
  assert.equal(result.state,'dropped',JSON.stringify(result));assert.match(result.detail,/incomplete.*Codex|Codex.*policy/i);
- assert.equal((await api('GET',`/agents/${id}/learning`)).body.skills.length,0);
  assert.equal((await api('PUT',`/agents/${id}/definition`,{definition:{instructions:'',learning:false}})).status,200);
  const second=await run();assert.equal((await api('GET',`/runs/${second}`)).body.result.final_answer,'ready');
  const calls=(await readFile(join(home,'fixture-calls.jsonl'),'utf8')).trim().split('\n').map(JSON.parse);
- assert.ok(calls.some(c=>c.cwd===project));assert.ok(!calls.some(c=>c.cwd.endsWith('native-grader')));
+ assert.ok(calls.some(c=>c.cwd===project));assert.deepEqual(calls.filter(c=>c.cwd!==project),[],'nothing but the tasks reaches a source process');
  assert.equal(await readFile(join(home,'config.toml'),'utf8'),configuration);assert.equal(await readFile(join(home,'standing-policy.md'),'utf8'),'Require owner review.\n');
 });
 
@@ -220,17 +193,6 @@ test('native Codex aggregate input remains unknown when its cache-read split is 
  const run=(await api('GET',`/runs/${start.body.run_id}`)).body;assert.equal(run.native.usage.task.input_tokens,100);assert.equal(run.native.usage.task.cache_read_tokens,null);
  const stats=(await api('GET',`/stats?agent=${id}`)).body;assert.equal(stats.analytics.totals.input,null);assert.equal(stats.analytics.totals.output,20);
 });
-
-for (const scenario of ['missing-general', 'not-general']) {
- test(`native grader ${scenario} refuses promotion before a later run can use the proposal`, {timeout:60_000}, async t=>{
-  const {api,id,run,learned}=await fixture(t,scenario);
-  const result=await learned(await run());
-  assert.equal(result.state,'dropped',JSON.stringify(result));
-  assert.equal(result.verdict.items[0].question,'General');
-  assert.match(result.verdict.items[0].why,scenario==='missing-general'?/did not say/:/one case/);
-  assert.deepEqual((await api('GET',`/agents/${id}/learning`)).body.notes.items,[]);
- });
-}
 
 for (const [scenario, cacheWrite, input] of [['cache-write-known',20,50],['cache-write-unknown',null,null]]) {
  test(`native Codex ${scenario} preserves raw counters and books only known uncached input`, {timeout:30_000},async t=>{
@@ -259,11 +221,4 @@ test('native task usage stays unknown when an output retry fails without reporti
  const view=(await api('GET',`/runs/${start.body.run_id}`)).body;
  assert.deepEqual(view.native.usage.task,{input_tokens:null,output_tokens:null,cache_read_tokens:null,cache_write_tokens:null,cost_usd:null});
  const saved=await store.runs.get(start.body.run_id);assert.equal(saved.metrics.output,null,'stored totals already know a dispatched turn is missing');
-});
-
-test('a missing reflection counter does not erase the separately complete native task usage', {timeout:60_000},async t=>{
- const {api,run,learned}=await fixture(t,'reflection-no-usage');const id=await run();await learned(id);
- const view=(await api('GET',`/runs/${id}`)).body;
- assert.equal(view.native.usage.task.input_tokens,100);assert.equal(view.native.usage.task.output_tokens,20);
- assert.deepEqual(view.native.usage.reflection,[]);
 });

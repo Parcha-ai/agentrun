@@ -160,10 +160,12 @@ test("the recorded stream's usage is booked from response.completed, read as JSO
   assert.deepEqual(reports, [{ input: 13902, output: 5, cacheRead: 0, cacheWrite: 0, usd: 13907 / 1e6, estimated: true }]);
 });
 
-test('cached and cache-write tokens are booked apart from input, which OpenAI counts them in; reasoning is in output', () => {
+test('cached and cache-write tokens are booked apart from input, which OpenAI counts them in; reasoning is in output, and said apart', () => {
   const usage = { input_tokens: 13902, input_tokens_details: { cached_tokens: 9000, cache_write_tokens: 400 }, output_tokens: 120, output_tokens_details: { reasoning_tokens: 80 }, total_tokens: 14022 };
-  assert.deepEqual(usageOf(sse([{ type: 'response.created', response: { usage: null } }, completed(usage)])), { input: 4502, output: 120, cacheRead: 9000, cacheWrite: 400 });
-  assert.deepEqual(usageOf(sse([{ type: 'response.incomplete', response: { usage } }])), { input: 4502, output: 120, cacheRead: 9000, cacheWrite: 400 }, 'a response cut at its output limit was paid');
+  const read = usageOf(sse([{ type: 'response.created', response: { usage: null } }, completed(usage)]));
+  assert.deepEqual(read, { input: 4502, output: 120, cacheRead: 9000, cacheWrite: 400, reasoning: 80 });
+  assert.equal(read.input + read.cacheRead + read.cacheWrite, usage.input_tokens, 'its whole billed input is input_tokens, never less');
+  assert.deepEqual(usageOf(sse([{ type: 'response.incomplete', response: { usage } }])), { input: 4502, output: 120, cacheRead: 9000, cacheWrite: 400, reasoning: 80 }, 'a response cut at its output limit was paid');
 });
 
 test('a completed event longer than the window the proxy keeps (its encrypted reasoning) is still booked, not unknown', async () => {

@@ -1,9 +1,8 @@
 // An agent's cost per run (GET /agents/{id}/learning/cost) and its learning view (GET /agents/{id}/learning) read the
-// store a fixed number of times whatever the number of its runs: its runs' launches, every round its runs' learning kept
-// and the learning runs those name, one read each, never a read a run. The store has one connection (SQLite's worker), so
-// a read a run queues every other read behind it: a 478-run agent's tab took minutes, and the agent's own page with it.
-// A settled run's journal is read once and kept (its notes read, what its claims laid, its learning run's end), so a read
-// after the first reads no journal at all.
+// store a fixed number of times whatever the number of its runs: its runs' launches and every round its runs' learning
+// kept, one read each, never a read a run. The store has one connection (SQLite's worker), so a read a run queues every
+// other read behind it: a 478-run agent's tab took minutes, and the agent's own page with it. A settled run's journal is
+// read once and kept (what its claims laid), so a read after the first reads no journal at all.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { storeOn, T0 } from "./store-helpers.mjs";
@@ -33,12 +32,12 @@ function counted(store) {
   return { store: wrap(store, ""), rows: () => sum((at) => !at.startsWith("readJournal")), journal: () => sum((at) => at.startsWith("readJournal")), reset: () => calls.clear() };
 }
 
-const GIVEN = { given: [{ file: "a.md", name: "Alpha" }], seed: "a".repeat(40), section: "# Learned\n", seedNotes: 1, workflows: ["classify"] };
+const GIVEN = { seed: "a".repeat(40), section: "# Learned\n- Be brief.\n", workflows: ["classify"] };
 const iso = (ms) => new Date(ms).toISOString();
 
 /** An agent with `n` ended runs: a quarter by hand first, then runs its learned workflow served (one in four handed
- *  back) between replays; each given a note and offered the workflow, each looked back, one in five proposed something a
- *  learning run graded. */
+ *  back) between replays; each given the corrections and offered the workflow, one in five kept a correction (merged),
+ *  the rest nothing. */
 async function agentWith(t, n) {
   const { store, clock } = await storeOn(t);
   await store.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Go.", tools: ["read"], learning: true } });
@@ -49,11 +48,10 @@ async function agentWith(t, n) {
     await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Go." }, title: id, place: { mode: "runner" }, learning: GIVEN } });
     const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
     const answered = { answered_at: iso(start + 20_000), job_cost_usd: path === "agent" ? 1 : 0.3, look_back_usd: 0.01 };
-    const graded = i % 5 === 0;
-    const kept = graded ? { state: "proposed", proposal: { notes: [] }, detail: "proposed", ...answered } : { state: "dropped", reason: "empty", detail: "Nothing to keep.", ...answered };
-    const also = [{ table: "learning_proposals", row: { turn: {}, proposal: kept } }, ...(graded ? [{ table: "learning_run", row: { id: `${id}-learning` } }] : [])];
+    const merged = i % 5 === 0;
+    const kept = merged ? { state: "merged", merged: "b".repeat(40), corrections: 1, detail: "Kept a correction.", ...answered } : { state: "dropped", reason: "empty", detail: "Nothing to keep.", ...answered };
+    const also = [{ table: "learning_proposals", row: { turn: {}, proposal: kept } }];
     await store.runs.update(claim, { state: "ended", costUsd: answered.job_cost_usd + 0.01, metrics: { path, workflow: path === "agent" ? null : "classify" }, endedAt: start + 30_000 }, { also });
-    if (graded) await store.runs.update(await store.claim(`${id}-learning`, "runner-b", { leaseMs: 60_000 }), { state: "ended", costUsd: 0.02 });
   }
   return store;
 }
@@ -76,7 +74,7 @@ test("the learning view reads the store's rows as often for 300 runs as for 30, 
   for (const n of [30, 300]) {
     const c = counted(await agentWith(t, n));
     const view = await agentLearningOverStore(c.store, "agent-1");
-    assert.equal(view.notes.get("a.md")?.given, n, "every run counted");
+    assert.deepEqual([view.counts.merged, view.counts.dropped.empty], [Math.ceil(n / 5), n - Math.ceil(n / 5)], "every run counted");
     first[n] = c.rows();
     c.reset();
     await agentLearningOverStore(c.store, "agent-1");
