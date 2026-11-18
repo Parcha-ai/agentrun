@@ -962,15 +962,17 @@ export const runsInRunner = (harness: string, launch: Pick<RunLaunch, "sdk" | "n
  *  user alone reads, which no slot's user is given. A workflow run on a server with a documents directory (launch
  *  .documents): its reads and its writes (a pdf_pages call's pages) are rooted there, a folder the server's user holds.
  *  A run on Claude Code's login on this machine (claude-login.ts loginForRun): its CLI reads and refreshes the login in
- *  the server's own folder. */
-export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data" | "env">, harness: string, launch: RunLaunch, runId: string): Promise<boolean> {
+ *  the server's own folder. A run its caller handed a model key (model_key) runs on that key and never on the login
+ *  (cli-run-spec.ts), so it is a process of its own like any other. */
+export async function staysInRunner(deps: Pick<AdapterSpecDeps, "store" | "data" | "env" | "sealKey">, harness: string, launch: RunLaunch, runId: string): Promise<boolean> {
   if (runsInRunner(harness, launch)) return true;
   if (launch.documents !== undefined) {
     const run = await deps.store.runs.get(runId);
     const revision = run ? await deps.store.agents.revision(run.revisionId) : undefined;
     if (revision && isWorkflowRevision(revision)) return true;
   }
-  return (await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, harness, launch.place)) !== undefined;
+  if ((await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, harness, launch.place)) === undefined) return false;
+  return (await openRunModelKey({ store: deps.store, sealKey: deps.sealKey }, runId)) === undefined;
 }
 
 /** The runner's loop factory where each run is a process of its own: a ChildLoop per claim, but for a run that stays in

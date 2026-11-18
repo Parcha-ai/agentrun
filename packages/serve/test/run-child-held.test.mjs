@@ -23,6 +23,7 @@ import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
 // Namespaces: a name the runner does not export reads as undefined, and its assertion says what is missing.
 const host = await import("../dist/runner/run-child-host.js");
 const live = await import("../dist/live-reach.js");
+const { sealRunLaunch } = await import("../dist/store/index.js");
 const { Channel } = await import("../dist/runner/run-channel.js");
 
 const KEY = randomBytes(32);
@@ -168,16 +169,20 @@ test("a run that runs no agent's code here stays in its runner: a learning run, 
   for (const harness of ["pi", "claude-agent", "codex"]) assert.equal(host.runsInRunner(harness, {}), false, harness);
 });
 
-test("a run whose agent works on what the server's user alone reads stays in its runner: a workflow run on a server's documents directory, a run on Claude Code's login on this machine", async (t) => {
+test("a run whose agent works on what the server's user alone reads stays in its runner: a workflow run on a server's documents directory, a run on Claude Code's login on this machine (not one on its caller's own model key)", async (t) => {
   assert.equal(typeof host.staysInRunner, "function", "the runner says, per run, which runs stay in it");
   const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-stays-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
   const runner = { mode: "runner" };
+  const sealKey = randomBytes(32);
+  // A run its caller handed a model key (model_key): sealed on its launch as the server seals it.
+  const modelKeyed = sealRunLaunch(sealKey, "run-keyed", { model: { key: "sk-fake-run-own", origin: "https://gateway.invalid" } });
   const deps = (kind, login) => ({
     data,
     env: {},
+    sealKey,
     store: {
-      runs: { get: async (id) => ({ id, agentId: "agent-own", revisionId: "rev-own" }) },
+      runs: { get: async (id) => ({ id, agentId: "agent-own", revisionId: "rev-own" }), launch: async (id) => ({ sealed: id === "run-keyed" ? modelKeyed : null }) },
       agents: { revision: async () => ({ id: "rev-own", kind, body: {} }) },
       settings: { get: async (key) => (key === "claude_login" && login ? { v: 1, place: "agentrun", host: hostname(), only_me: true } : null) },
     },
@@ -186,6 +191,7 @@ test("a run whose agent works on what the server's user alone reads stays in its
   assert.equal(await host.staysInRunner(deps("workflow"), "pi", { input: {}, place: runner }, "run-own"), false, "a workflow run with no documents directory (rooted at /tmp) is a process of its own");
   assert.equal(await host.staysInRunner(deps("agentic"), "pi", { input: {}, place: runner, documents: data }, "run-own"), false, "an agentic run, which never reads the documents directory");
   assert.equal(await host.staysInRunner(deps("agentic", true), "claude-agent", { input: {}, place: runner }, "run-own"), true, "a claude-agent run on this machine's Claude Code login");
+  assert.equal(await host.staysInRunner(deps("agentic", true), "claude-agent", { input: {}, place: runner }, "run-keyed"), false, "a claude-agent run on its caller's own model key, which its CLI runs on instead of the login (cli-run-spec.ts)");
   assert.equal(await host.staysInRunner(deps("agentic", true), "codex", { input: {}, place: runner }, "run-own"), false, "a harness the login is not for");
   assert.equal(await host.staysInRunner(deps("agentic"), "claude-agent", { input: {}, place: runner }, "run-own"), false, "a claude-agent run on model keys, the login off");
   assert.equal(await host.staysInRunner(deps("agentic"), "learning", { input: {}, place: runner }, "run-own"), true, "runsInRunner's runs too");
