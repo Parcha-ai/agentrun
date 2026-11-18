@@ -720,8 +720,9 @@ const CASES: readonly Case[] = [
       await w.start("runner-a", { script: [{ call: "slow" }, { sayLastSteer: true }], tools, hooks: quiet });
       await w.began(slowStarted, "the slow tool to start");
       const steer = await sendCommand(w.server, RUN, { kind: "steer", body: { text: "check the totals" } });
-      // One command poll and then some: the steer reaches the loop while the tool runs.
-      await sleep(TIMING.commandPollMs * 4);
+      // The tool goes on once the loop has answered the steer: the turn in flight has it, never a timer (as in
+      // message-mid-turn-kept). A steer that reaches a CLI only after the tool's end is the next turn by its facts.
+      await until(() => w.answered(steer.id), "the steer placed by the loop mid-turn");
       letSlowGo();
       await w.ended("ended");
       const { calls, messages } = await w.read();
