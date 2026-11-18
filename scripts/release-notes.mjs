@@ -5,20 +5,21 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { isVersionHeading, pythonVersionOf } from './changes.mjs';
+import { isVersionHeading, pythonVersionOf, withoutMarkers } from './changes.mjs';
 import { isMain } from './is-main.mjs';
 
 // GitHub refuses a release body over 125,000 characters; the notes stay under it with room to spare.
 export const MAX_BODY = 120_000;
 
-/** The lines of `version`'s section of a changelog's text, its heading left out and blank lines trimmed. Throws when it has none or it is empty. */
+/** The lines of `version`'s section of a changelog's text, its heading left out, the fold's fragment markers taken out (`withoutMarkers`)
+ *  and blank lines trimmed: what the release notes and the Slack post show. Throws when it has none or it is empty. */
 export function changelogSection(text, version) {
   const lines = text.replace(/\r\n/g, '\n').split('\n');
   const at = lines.findIndex(line => isVersionHeading(line, version));
   if (at < 0) throw new Error(`CHANGELOG.md has no section for ${version}`);
   let end = lines.findIndex((line, index) => index > at && /^## /.test(line));
   if (end < 0) end = lines.length;
-  const section = lines.slice(at + 1, end).join('\n').trim();
+  const section = withoutMarkers(lines.slice(at + 1, end).join('\n')).trim();
   if (!section) throw new Error(`CHANGELOG.md's section for ${version} is empty`);
   return section;
 }
