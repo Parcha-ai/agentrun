@@ -28,8 +28,10 @@ Many services publish a hosted MCP server. Check the service's docs for its MCP 
 
 1. In the console, open **Settings → MCP servers** and add a server. Linear and Notion are listed as presets.
 2. Paste the service's MCP address and choose **Sign in with OAuth**.
-3. Sign in on the service's page. AgentRun keeps the tokens, sealed, and refreshes them.
-4. Check the tool list the form shows, then save.
+3. Choose **Sign in**, and sign in on the service's page. Signing in saves the server: AgentRun lists its tools and
+   keeps the tokens, sealed, and refreshes them. There is no separate Save.
+4. Back in **Settings → MCP servers**, open the saved server's tool list and check it before you give any tool to an
+   agent.
 
 Only the owner's signed-in console session can save a credential; the API token cannot. If the service does not let
 apps register themselves, the form asks for the client ID and secret of an OAuth app you create with that service.
