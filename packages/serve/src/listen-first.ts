@@ -48,23 +48,33 @@ export async function listenOn(server: Server, host: string, first: number, next
   }
 }
 
-/** The URL a listening `server` on `host` is reached at on this machine: an address of every interface at its loopback one. */
+// A container network's bridge (Docker's, a VM's) is this machine's alone: no other machine reaches it there.
+const BRIDGES = /^(docker|br-|veth|virbr|cni|flannel|vmnet|bridge\d)/;
+const inContainer = () => existsSync("/.dockerenv") || existsSync("/run/.containerenv");
+
 /** Where a server listening on every address (`host` 0.0.0.0 or ::) at `port` is reached from another machine: this
  *  machine's own IPv4 addresses, loopback, link-local and container bridges left out, at most three. None for a server on one address, and
- *  none in a container, whose addresses are its own network's, not the ones its host publishes the port on. */
-const BRIDGES = /^(docker|br-|veth|virbr|cni|flannel|vmnet|bridge\d)/;
-
+ *  none in a container, whose addresses are its own network's, not the ones its host publishes the port on. The
+ *  addresses are read (`interfaces`) only for a server that prints them, and one whose machine cannot list them prints
+ *  none: the links are a convenience, never a reason not to start. */
 export function elsewhereOf(
   host: string,
   port: number,
-  { interfaces = networkInterfaces(), container = existsSync("/.dockerenv") || existsSync("/run/.containerenv") }: { interfaces?: ReturnType<typeof networkInterfaces>; container?: boolean } = {},
+  { interfaces = networkInterfaces, container = inContainer }: { interfaces?: () => ReturnType<typeof networkInterfaces>; container?: () => boolean } = {},
 ): string[] {
-  if ((host !== "0.0.0.0" && host !== "::") || container) return [];
-  // A container network's bridge (Docker's, a VM's) is this machine's alone: no other machine reaches it there.
-  const addresses = Object.entries(interfaces).filter(([name]) => !BRIDGES.test(name)).flatMap(([, list]) => (list ?? []).filter((one) => one.family === "IPv4" && !one.internal && !one.address.startsWith("169.254.")).map((one) => one.address));
+  if (host !== "0.0.0.0" && host !== "::") return [];
+  let found: ReturnType<typeof networkInterfaces>;
+  try {
+    if (container()) return [];
+    found = interfaces();
+  } catch {
+    return [];
+  }
+  const addresses = Object.entries(found).filter(([name]) => !BRIDGES.test(name)).flatMap(([, list]) => (list ?? []).filter((one) => one.family === "IPv4" && !one.internal && !one.address.startsWith("169.254.")).map((one) => one.address));
   return [...new Set(addresses)].slice(0, 3).map((address) => `http://${address}:${port}`);
 }
 
+/** The URL a listening `server` on `host` is reached at on this machine: an address of every interface at its loopback one. */
 export function urlOf(server: Server, host: string): string {
   const shown = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
   return `http://${shown.includes(":") ? `[${shown}]` : shown}:${(server.address() as AddressInfo).port}`;
