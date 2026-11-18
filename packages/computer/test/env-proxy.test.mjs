@@ -1,10 +1,10 @@
-// The proxy variables for the two vendor clients Node's own proxy support never reaches (env-proxy.ts): E2B's SDK, which
+// The process's proxy for the two vendor clients Node's own proxy support never reaches (env-proxy.ts): E2B's SDK, which
 // fetches through its own undici Agent, and Morph's SSH gateway, plain TCP. A local CONNECT proxy counts the tunnels
-// each asks for: with HTTPS_PROXY set, the vendor call goes through it; with NO_PROXY naming the host, to loopback, or
-// with no proxy set, none does. Every other provider's calls (fetch, Node's WebSocket, gRPC) are serve's installer's,
+// each asks for: with HTTPS_PROXY installed into Node, the vendor call goes through it; with NO_PROXY naming the host, to
+// loopback, or with none installed (HTTPS_PROXY in the environment alone included), none does. Every other provider's calls (fetch, Node's WebSocket, gRPC) are serve's installer's,
 // tested in packages/serve/test/env-proxy.test.mjs.
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
+import { createServer, setGlobalProxyFromEnv } from "node:http";
 import { connect, createServer as createNetServer } from "node:net";
 import test from "node:test";
 import { fakeMorph } from "./fake-morph.mjs";
@@ -42,6 +42,16 @@ async function connectProxy(t, forward = {}) {
 		return new Promise((resolve) => server.close(resolve));
 	});
 	return { url: `http://127.0.0.1:${server.address().port}`, tunnels };
+}
+
+/** The proxy values installed into Node for this process while fn runs, as serve installs them; none when values is undefined. */
+async function withInstalledProxy(values, fn) {
+	const restore = values === undefined ? () => {} : setGlobalProxyFromEnv(values);
+	try {
+		return await fn();
+	} finally {
+		restore();
+	}
 }
 
 /** process.env's proxy variables as given (the rest of them unset) while fn runs. */
@@ -140,17 +150,33 @@ test("Morph's SSH gateway goes through HTTPS_PROXY's CONNECT tunnel, with the pr
 	const login = new URL(proxy.url);
 	login.username = "lane";
 	login.password = "p@ss";
-	await withProxyEnv({ HTTPS_PROXY: login.href }, async () => {
+	await withInstalledProxy({ HTTPS_PROXY: login.href }, async () => {
 		assert.equal(await exec({ sshHost: "ssh.morph.test" }), 0, "the exec ran through the tunnel");
 	});
 	assert.deepEqual([...new Set(proxy.tunnels.map(({ target }) => target))], [gateway]);
 	assert.equal(proxy.tunnels[0].auth, `Basic ${Buffer.from("lane:p@ss").toString("base64")}`);
 	proxy.tunnels.length = 0;
-	for (const env of [{ HTTPS_PROXY: proxy.url }, {}]) {
-		await withProxyEnv(env, async () => assert.equal(await exec({}), 0, "the gateway on 127.0.0.1, direct"));
+	for (const values of [{ HTTPS_PROXY: proxy.url }, undefined]) {
+		await withInstalledProxy(values, async () => assert.equal(await exec({}), 0, "the gateway on 127.0.0.1, direct"));
 	}
-	await withProxyEnv({ HTTPS_PROXY: proxy.url, NO_PROXY: ".morph.test" }, async () => {
+	await withInstalledProxy({ HTTPS_PROXY: proxy.url, NO_PROXY: ".morph.test" }, async () => {
 		await assert.rejects(exec({ sshHost: "ssh.morph.test" }), /ssh\.morph\.test/, "direct to a name that never resolves");
+	});
+	assert.deepEqual(proxy.tunnels, []);
+});
+
+test("the library reads no environment: HTTPS_PROXY set but no proxy installed into Node, E2B and Morph go direct, as fetch does", async (t) => {
+	const fake = await fakeMorph();
+	t.after(() => fake.sshd.close());
+	const snapshot = fake.rest.snapshot({}).id;
+	const proxy = await connectProxy(t, { [`ssh.morph.test:${fake.sshd.port}`]: fake.sshd.port });
+	await withProxyEnv({ HTTPS_PROXY: proxy.url, https_proxy: proxy.url }, async () => {
+		assert.equal(connectionOptions({ apiKey: "fake-test-key", domain: "e2b.test" }).proxy, undefined);
+		const { host } = new MorphProvider({ ...fake.options, sshHost: "ssh.morph.test" });
+		const machine = await host.create({ name: "computer-0123456789ab", image: snapshot, labels: { "agentrun.computer": "1", "agentrun.computer.name": "computer-0123456789ab" }, lifetimeMs: 600_500, egress: false }, CTX);
+		await assert.rejects(host.exec(machine.id, ["true"], CTX), /ssh\.morph\.test/, "direct to a name that never resolves");
+		// Installed, the same call takes the proxy: E2B's option names it.
+		await withInstalledProxy({ HTTPS_PROXY: proxy.url }, async () => assert.equal(connectionOptions({ apiKey: "fake-test-key", domain: "e2b.test" }).proxy, `${proxy.url}/`));
 	});
 	assert.deepEqual(proxy.tunnels, []);
 });
@@ -163,7 +189,7 @@ test("a proxy that refuses the tunnel fails Morph's exec in words that name the 
 	const login = new URL(proxy.url);
 	login.username = "lane";
 	login.password = "not-a-secret";
-	await withProxyEnv({ HTTPS_PROXY: login.href }, async () => {
+	await withInstalledProxy({ HTTPS_PROXY: login.href }, async () => {
 		const { host } = new MorphProvider({ ...fake.options, sshHost: "ssh.morph.test" });
 		const machine = await host.create({ name: "computer-0123456789ab", image: snapshot, labels: { "agentrun.computer": "1", "agentrun.computer.name": "computer-0123456789ab" }, lifetimeMs: 600_500, egress: false }, CTX);
 		const error = await host.exec(machine.id, ["true"], CTX).then(() => assert.fail("it ran"), (thrown) => thrown);

@@ -1,24 +1,38 @@
-// The standard proxy variables for the two vendor clients Node's own proxy support never reaches: E2B's SDK, whose
-// fetch is its own undici Agent (it takes a `proxy` URL instead), and Morph's SSH gateway, plain TCP to port 22, which
-// rides an HTTP CONNECT tunnel. Every other vendor call (fetch, Node's global WebSocket, https) goes through the proxy
-// once serve installs it for the process (packages/serve/src/env-proxy.ts). The variables are read as Node reads them:
-// https_proxy or HTTPS_PROXY for a TLS target, http_proxy or HTTP_PROXY for a plain one, lowercase first; no_proxy or
-// NO_PROXY lists the hosts that go direct (a host, host:port, .suffix, *.suffix, or * for all), and so does this
-// machine's loopback, always. None set: no proxy, the path as it was.
+// The process's proxy for the two vendor clients Node's own proxy support never reaches: E2B's SDK, whose fetch is its
+// own undici Agent (it takes a `proxy` URL instead), and Morph's SSH gateway, plain TCP to port 22, which rides an HTTP
+// CONNECT tunnel. The library reads no environment (README, Settings): the proxy is the one the process installed into
+// Node, by --use-env-proxy / NODE_USE_ENV_PROXY or http.setGlobalProxyFromEnv (serve calls it,
+// packages/serve/src/env-proxy.ts), which Node keeps as https.globalAgent's proxyEnv and which global fetch, Node's
+// WebSocket and https already use. Nothing installed: no proxy, the path as it was. Its variables are read as Node
+// reads them: https_proxy or HTTPS_PROXY for a TLS target, http_proxy or HTTP_PROXY for a plain one, lowercase first;
+// no_proxy or NO_PROXY lists the hosts that go direct (a host, host:port, .suffix, *.suffix, or * for all), and so
+// does this machine's loopback, always.
+import https from "node:https";
 import { connect as tcp, type Socket } from "node:net";
 import { connect as tls } from "node:tls";
+
+/** The proxy variables as the process installed them into Node. */
+export type ProxyEnv = Readonly<Record<string, string | undefined>>;
 
 const LOOPBACK = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|::1)$/;
 /** The most a proxy's answer to CONNECT may hold before its headers end; more is refused. */
 const MAX_ANSWER_BYTES = 16 * 1024;
 
+/**
+ * The proxy variables Node's https global agent holds when the process installed a proxy; none when it didn't. Read
+ * from the module object at each call: installing replaces https.globalAgent, and a named import keeps the old one.
+ */
+export function installedProxy(): ProxyEnv {
+	return (https.globalAgent as unknown as { options?: { proxyEnv?: ProxyEnv } }).options?.proxyEnv ?? {};
+}
+
 /** The proxy URL the variables name for a TLS target, or a plain one. */
-const proxyOf = (secure: boolean, env: NodeJS.ProcessEnv) => {
+const proxyOf = (secure: boolean, env: ProxyEnv) => {
 	const given = secure ? env.https_proxy || env.HTTPS_PROXY : env.http_proxy || env.HTTP_PROXY;
 	return given && URL.canParse(given) ? new URL(given) : undefined;
 };
 /** NO_PROXY's entries, lowercase. */
-const noProxy = (env: NodeJS.ProcessEnv) => (env.no_proxy || env.NO_PROXY || "").split(",").map((entry) => entry.trim().toLowerCase());
+const noProxy = (env: ProxyEnv) => (env.no_proxy || env.NO_PROXY || "").split(",").map((entry) => entry.trim().toLowerCase());
 /** Whether a .suffix or *.suffix entry covers host (the suffix's own name included). */
 const covers = (entry: string, host: string) => {
 	const suffix = entry.startsWith("*.") ? entry.slice(1) : entry.startsWith(".") ? entry : undefined;
@@ -26,7 +40,7 @@ const covers = (entry: string, host: string) => {
 };
 
 /** The proxy a call to target goes through, or undefined when it goes direct. */
-export function proxyFor(target: URL, env: NodeJS.ProcessEnv = process.env): URL | undefined {
+export function proxyFor(target: URL, env: ProxyEnv = installedProxy()): URL | undefined {
 	const secure = target.protocol === "https:" || target.protocol === "wss:";
 	const host = target.hostname.toLowerCase();
 	const hostPort = `${host}:${target.port || (secure ? "443" : "80")}`;
@@ -40,7 +54,7 @@ export function proxyFor(target: URL, env: NodeJS.ProcessEnv = process.env): URL
  * that exempts some of them (api.<domain> alone) leaves the proxy on for all, since the hosts it doesn't exempt may
  * have no other way out.
  */
-export function proxyForDomain(domain: string, env: NodeJS.ProcessEnv = process.env): URL | undefined {
+export function proxyForDomain(domain: string, env: ProxyEnv = installedProxy()): URL | undefined {
 	const host = domain.toLowerCase();
 	if (LOOPBACK.test(host) || noProxy(env).some((entry) => entry === "*" || covers(entry, host))) return undefined;
 	return proxyOf(true, env);

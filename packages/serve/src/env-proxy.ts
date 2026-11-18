@@ -6,8 +6,8 @@
 // Node's http.setGlobalProxyFromEnv covers fetch, Node's global WebSocket (both undici's global dispatcher) and
 // http(s).request on the global agent. gRPC (@grpc/grpc-js, under Modal's and boxd's SDKs) reads only its own lowercase
 // names, so grpc_proxy and no_grpc_proxy are set from the same values, each unless already set. The two
-// clients none of this reaches, E2B's SDK and Morph's SSH gateway, read the same variables through
-// @parcha/agentrun-computer's env-proxy.ts. This machine's loopback and the server's own public address
+// clients none of this reaches, E2B's SDK and Morph's SSH gateway, take the proxy installed here from Node's https
+// global agent through @parcha/agentrun-computer's env-proxy.ts, which reads no environment. This machine's loopback and the server's own public address
 // (AGENTRUN_PUBLIC_URL, RENDER_EXTERNAL_URL: where dialing computers reach the attach hub) always go direct.
 import * as http from "node:http";
 

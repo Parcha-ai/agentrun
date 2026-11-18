@@ -11,6 +11,7 @@ import test from "node:test";
 
 const INSTALL = new URL("../dist/env-proxy.js", import.meta.url).href;
 const ORGO_CHANNEL = new URL("../../computer/dist/orgo-channel.js", import.meta.url).href;
+const E2B = new URL("../../computer/dist/e2b.js", import.meta.url).href;
 const VENDORS = ["api.kernel.test:443", "orgo.test:443", "api.modal.test:443"];
 
 /** A server on loopback, its open connections ended when the test is (a box's port watcher may hold one). */
@@ -59,7 +60,9 @@ await bounded(() => orgoTerminalChannel({ rest, workspace: async () => ({ ok: tr
 await bounded(async () => (await modalClient({ tokenId: "fake-test-key", tokenSecret: "not-a-secret", serverUrl: "https://api.modal.test:443" })).apps.fromName("agentrun-proxy-test"));
 await bounded(() => fetch(new URL("/own", process.env.AGENTRUN_PUBLIC_URL)));
 await bounded(() => fetch(process.env.LOOPBACK_URL + "/loopback"));
-console.log(JSON.stringify({ grpc_proxy: process.env.grpc_proxy ?? null, no_grpc_proxy: process.env.no_grpc_proxy ?? null }));
+const { connectionOptions } = await import(${JSON.stringify(E2B)});
+const e2b_proxy = connectionOptions({ apiKey: "fake-test-key", domain: "e2b.test" }).proxy ?? null;
+console.log(JSON.stringify({ grpc_proxy: process.env.grpc_proxy ?? null, no_grpc_proxy: process.env.no_grpc_proxy ?? null, e2b_proxy }));
 process.exit(0);
 `;
 
@@ -84,6 +87,7 @@ test("with HTTPS_PROXY set, a fetch provider, a WebSocket one and a gRPC SDK eac
 	assert.ok(loopback.got.includes("/loopback"), "loopback went direct");
 	assert.equal(printed.grpc_proxy, proxy.url, "gRPC's own variable names the same proxy");
 	assert.deepEqual(printed.no_grpc_proxy.split(","), ["localhost", "127.0.0.1", "::1", "[::1]", "serve.own.test"]);
+	assert.equal(printed.e2b_proxy, `${proxy.url}/`, "E2B's SDK, which Node's install doesn't reach, is handed the installed proxy");
 });
 
 test("lowercase https_proxy is read too, and NO_PROXY's hosts go direct for every client kind, gRPC's included", async (t) => {
@@ -92,16 +96,17 @@ test("lowercase https_proxy is read too, and NO_PROXY's hosts go direct for ever
 	const printed = await child({ https_proxy: proxy.url, NO_PROXY: "api.kernel.test, .orgo.test,*.modal.test", LOOPBACK_URL: loopback.url });
 	assert.deepEqual(proxy.tunnels, []);
 	assert.deepEqual(printed.no_grpc_proxy.split(","), ["api.kernel.test", ".orgo.test", ".modal.test", "localhost", "127.0.0.1", "::1", "[::1]", "serve.own.test"]);
+	assert.equal(printed.e2b_proxy, `${proxy.url}/`, "lowercase https_proxy installed; NO_PROXY doesn't exempt e2b.test");
 	// gRPC reads a lowercase https_proxy by itself, and its list has no "*": an empty entry, a suffix of every host, says it.
 	const all = await countingProxy(t);
-	assert.deepEqual(await child({ https_proxy: all.url, NO_PROXY: "*", LOOPBACK_URL: loopback.url }), { grpc_proxy: null, no_grpc_proxy: "," });
+	assert.deepEqual(await child({ https_proxy: all.url, NO_PROXY: "*", LOOPBACK_URL: loopback.url }), { grpc_proxy: null, no_grpc_proxy: ",", e2b_proxy: null });
 	assert.deepEqual(all.tunnels, [], "* is every host direct");
 });
 
 test("no proxy set: nothing goes through one and the environment is left as it was", async (t) => {
 	const proxy = await countingProxy(t);
 	const loopback = await loopbackServer(t);
-	assert.deepEqual(await child({ LOOPBACK_URL: loopback.url, NO_PROXY: "anything" }), { grpc_proxy: null, no_grpc_proxy: null });
+	assert.deepEqual(await child({ LOOPBACK_URL: loopback.url, NO_PROXY: "anything" }), { grpc_proxy: null, no_grpc_proxy: null, e2b_proxy: null });
 	assert.deepEqual(proxy.tunnels, []);
 	assert.ok(loopback.got.includes("/loopback"));
 });

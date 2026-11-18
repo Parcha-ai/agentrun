@@ -811,7 +811,9 @@ The package README's [Conformance](README.md#conformance) section has the JSON s
   the proxy's CONNECT tunnel (the proxy must allow CONNECT to port 22). Loopback and the server's own public address
   always go direct. Archil's SDK builds its own undici Agent with no proxy option, so the Archil mount can't use one.
   Unset, nothing changes. A provider of yours that calls out with `fetch` or the global `WebSocket` needs nothing more;
-  one whose client brings its own HTTP stack or a raw socket reads the same variables through `src/env-proxy.ts`.
+  one whose client brings its own HTTP stack or a raw socket takes the same proxy through `src/env-proxy.ts`, which
+  reads no environment: it follows the proxy the process installed into Node (`--use-env-proxy`, `NODE_USE_ENV_PROXY`
+  or `http.setGlobalProxyFromEnv`), so a process that installed none has E2B and Morph go direct, as its `fetch` does.
 
 ### The live sweep
 

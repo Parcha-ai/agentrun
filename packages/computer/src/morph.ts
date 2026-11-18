@@ -198,8 +198,8 @@ class MorphHost implements MachineHost {
 	}
 
 	/**
-	 * A TCP connection to the gateway, through the proxy's CONNECT tunnel when the proxy variables name one for it
-	 * (env-proxy.ts). No host key is pinned: Morph publishes none, and both SDKs take any (paramiko's AutoAddPolicy). The
+	 * A TCP connection to the gateway, through the proxy's CONNECT tunnel when the proxy the process installed into Node
+	 * applies to it (env-proxy.ts). No host key is pinned: Morph publishes none, and both SDKs take any (paramiko's AutoAddPolicy). The
 	 * login is a public key, so a host posing as the gateway learns no credential.
 	 */
 	#tunnel(): SshTunnel {
