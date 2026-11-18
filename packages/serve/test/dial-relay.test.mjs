@@ -362,6 +362,25 @@ test("the runner's attach listener answers nothing without the server's proof, o
   const proof = relayProof(key, to);
   assert.equal(await tried(proof), 101, "the server's proof for this token, runner and incarnation opens it");
   assert.equal(await tried(proof), 401, "the same proof again (a captured one) opens no second socket");
+  assert.equal(await tried(`0${proof}`), 401, "the same proof with a leading zero on its time opens no second socket");
+  assert.equal(await tried(`00${proof}`), 401, "the same proof with two leading zeros on its time opens no second socket");
+});
+
+test("the runner takes a relay proof once under any spelling of its time: one taken plain is refused with one or two leading zeros, one taken with a leading zero is refused plain, and a proof at another time is still taken", async () => {
+  const { relayProof, relayProofs, relayKeyOf, LIVE_PROOF_HEADER: header } = await proofs();
+  const key = relayKeyOf(randomBytes(32));
+  const to = { tokenSha256: sha256Hex("art_respelled"), runner: "runner-a", incarnation: "inc-a" };
+  const at = 1_800_000_000_000;
+  const taker = relayProofs(key, () => at);
+  const proven = (req) => taker(req, to);
+  const said = (proof) => ({ headers: { [header]: proof } });
+  const proof = relayProof(key, to, at);
+  assert.equal(proven(said(proof)), true, "the server's proof is taken");
+  assert.equal(proven(said(`0${proof}`)), false, "taken plain, then resent with a leading zero on its time");
+  assert.equal(proven(said(`00${proof}`)), false, "taken plain, then resent with two leading zeros on its time");
+  const later = relayProof(key, to, at - 1);
+  assert.equal(proven(said(`0${later}`)), true, "a proof at another time is taken, here with a leading zero first");
+  assert.equal(proven(said(later)), false, "taken with a leading zero, then resent plain");
 });
 
 test("the runner's attach listener refuses, with the server's proof, a token whose row names another runner, and one the server's own process minted", { timeout: 60_000 }, async (t) => {
