@@ -14,8 +14,11 @@ import { agent, follow, journalOf, scratch, serve, withEnv } from "./support.mjs
 
 const HOLD_LOOP = new URL("./fixtures/faux-loop-hold.mjs", import.meta.url).pathname;
 const ENV = "AGENTRUN_FREE_MODEL_REQUESTS";
-/** A short lease, so a crashed runner's claim runs out soon (cap-never-passed.test.mjs's). */
-const CRASHABLE = { leaseMs: 1_500, renewEveryMs: 300, stopMarginMs: 300, pollMs: 20, commandPollMs: 30 };
+/** A lease short enough that a crashed runner's claim runs out soon, and long enough that a slow flush on CI (the lease
+ *  renewal waits behind it on the store's one worker) never loses the live runner's claim before the crash: a lost
+ *  claim books the request in flight cut, and a cut request is counted (kernel cap free.ts), so the note would come one
+ *  request early. 1.5 s was lost on CI behind a flush of 1.1 s or more. */
+const CRASHABLE = { leaseMs: 4_000, renewEveryMs: 300, stopMarginMs: 300, pollMs: 20, commandPollMs: 30 };
 /** The words with `left` requests left (kernel cap free.ts). */
 const WORDS = (left) => `${left} free-model requests left in this run, this one included: finish now with your answer.`;
 /** The text between the tags the proxy places the note in. */
