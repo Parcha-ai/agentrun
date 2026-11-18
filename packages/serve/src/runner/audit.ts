@@ -12,8 +12,9 @@
 //     shadow) of an agent every tool of which only reads (learn/audit.ts auditWriterOf, the replay's readOnlyHint rule): a
 //     shadow never writes again.
 //   settleAudits: each open started line (no result row yet) whose two runs, read by id, ended writes its row (agreed:
-//     the audited answer, its `turn`'s, and the shadow's say the same, learn/promote.ts sameAnswer; a follow-up's answer
-//     since is never read), oldest served run first; then, rows added or not, the hold rule reads the serving revisions'
+//     the audited answer, its `turn`'s, and the shadow's say the same, learn/promote.ts sameAnswer, on the served run's
+//     revision's agree_on as the check compares, learning-setting.ts agreeOnOf; a follow-up's answer since is never
+//     read), oldest served run first; then, rows added or not, the hold rule reads the serving revisions'
 //     rows: a hold is a function of the ledger alone.
 //   applyHold: at least hold_disagree disagreements in the newest hold_window rows of the digest's current promotion
 //     hold the workflow (a promotion hold carrying `audit`, with those rows, each text cut of the host's secrets before
@@ -24,7 +25,7 @@
 // Every number is the agent definition's (learning-setting.ts auditLoopOf). Nothing here fails a claim: a failure is logged.
 import { BACKGROUND_CONTEXT, type Context } from "@earendil-works/chord/context";
 import { overCapMessage } from "@parcha/agentrun-kernel/kernel/cap";
-import { auditLoopOf, type AuditLoop } from "../learning-setting.js";
+import { agreeOnOf, auditLoopOf, type AuditLoop } from "../learning-setting.js";
 import { launchBody, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { runEntries } from "../store-reads/journal.js";
 import { runPathOverStore } from "../store-reads/learning.js";
@@ -87,6 +88,18 @@ export async function auditLoopOfRevision(store: Pick<Store, "agents">, revision
     return auditLoopOf(((await store.agents.revision(revisionId))?.body as { learning?: unknown } | undefined)?.learning);
   } catch {
     return auditLoopOf(undefined);
+  }
+}
+
+/** The answer fields an audit of a run of revision `revisionId` compares on, as its check does (learning-setting.ts
+ *  agreeOnOf: its agree_on, else its output schema's decision fields); undefined, the whole answer (also when the
+ *  revision cannot be read). */
+async function agreeOnOfRevision(store: Pick<Store, "agents">, revisionId: string): Promise<readonly string[] | undefined> {
+  try {
+    const body = (await store.agents.revision(revisionId))?.body as { learning?: unknown; outputSchema?: unknown } | undefined;
+    return agreeOnOf(body?.learning, body?.outputSchema)?.agree_on;
+  } catch {
+    return undefined;
   }
 }
 
@@ -249,10 +262,12 @@ export async function settleAudits(deps: AuditDeps): Promise<void> {
     rows.sort((a, b) => a.at - b.at || (a.row.run < b.row.run ? -1 : a.row.run > b.row.run ? 1 : 0));
     const { all, added } = rows.length ? await addLines(deps, rows.map(({ row }) => row), async (row) => {
       const shadow = await store.runs.get(row.shadow_run!);
-      if (shadow?.state !== "ended" || !(await store.runs.get(row.run))) return null;
+      const served = await store.runs.get(row.run);
+      if (shadow?.state !== "ended" || !served) return null;
       // The audited answer (the row's turn), never the run's newest: a follow-up since may have answered again.
       const [a, b] = [await auditedAnswer(deps, row), await answerOf(store, row.shadow_run!, deps.context)];
-      return a === null || b === null ? null : sameAnswer(a, b);
+      // Compared on the fields the served run's revision says carry the decision, as its check compared.
+      return a === null || b === null ? null : sameAnswer(a, b, await agreeOnOfRevision(store, served.revisionId));
     }) : { all: lines, added: [] };
     const written = rowsOf(added);
     if (written.length) log(`workflow-first: ${written.length} audit row${written.length === 1 ? "" : "s"} written (${written.filter((row) => row.agreed === false).length} disagreeing)`);

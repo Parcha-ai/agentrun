@@ -122,12 +122,16 @@ export interface AuditHold {
   readonly stopped?: true;
 }
 
-/** The bar a compiled draft's check was started with: the agent definition's loop numbers then (learning-setting.ts), and
- *  which check of the compile it is (`attempt`: 1, the first draft's; 2, the one recompile's, after which it stops). */
+/** The bar a compiled draft's check was started with: the agent definition's loop numbers then (learning-setting.ts), the
+ *  answer fields it compares on and where they came from (`agree_on`, `agree_from`: the definition's list or its output
+ *  schema's decision fields; absent, the whole answer), and which check of the compile it is (`attempt`: 1, the first
+ *  draft's; 2, the one recompile's, after which it stops). */
 export interface CheckBar {
   readonly compile_after: number;
   readonly agree_min: number;
   readonly alone_min: number;
+  readonly agree_on?: readonly string[];
+  readonly agree_from?: "definition" | "schema";
   readonly attempt: 1 | 2;
 }
 
@@ -409,8 +413,20 @@ function same(a: unknown, b: unknown): boolean {
   return ka.length === kb.length && ka.every((key) => same((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]));
 }
 
-/** Whether two answers say the same: equal as JSON values, else as trimmed text. */
-export const sameAnswer = (a: string | null, b: string | null): boolean => a !== null && b !== null && same(valueOf(a), valueOf(b));
+const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+
+/** Whether two answers say the same: equal as JSON values, else as trimmed text. On `on` (the revision's agree_on,
+ *  learning-setting.ts agreeOnOf): both values JSON objects, each key of `on` in both with equal values; anything else
+ *  (a key missing on either side, an array, text) disagrees. */
+export function sameAnswer(a: string | null, b: string | null, on?: readonly string[]): boolean {
+  if (a === null || b === null) return false;
+  const [va, vb] = [valueOf(a), valueOf(b)];
+  if (!on?.length) return same(va, vb);
+  return isObject(va) && isObject(vb) && on.every((key) => Object.hasOwn(va, key) && Object.hasOwn(vb, key) && same(va[key], vb[key]));
+}
+
+/** The fields a check or an audit compared on, in words: "mcc", "mcc and riskTier", "mcc, riskTier and siteStatus". */
+export const fieldsWords = (on: readonly string[]): string => (on.length < 2 ? on.join("") : `${on.slice(0, -1).join(", ")} and ${on.at(-1)}`);
 
 /** A grade as the API answers it (PUT /runs/{id}/grade; GET /runs/{id}/learning's `graded`, without `expected`). */
 export const gradeView = (grade: Grade) => ({

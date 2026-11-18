@@ -106,7 +106,17 @@ them). A first compile's earns the one recompile, as a check's hold does; a reco
 A new revision is checked once before it serves (`runner/promotion.ts` startCheck, settleCheck). The first run that
 lays it replays it on the inputs of the agent's last `compile_after` completed runs it fits (one replay run each, at
 workflow cost, one check at a time), and the agent takes the runs meanwhile. Each input is scored against the agent's
-own recorded answer to it (`sameAnswer`): no grade and no teacher is read. Of the inputs it ran on, `alone` is the share
+own recorded answer to it (`sameAnswer`): no grade and no teacher is read. The two answers are compared on the fields
+that say the decision (`learning-setting.ts` agreeOnOf): the definition's `learning.agree_on` (the answer's top-level
+JSON keys, e.g. `["mcc", "riskTier"]`), else its `output_schema`'s top-level properties that are an `enum`, a `const` or
+`type: boolean` (never numbers, arrays or free text: a confidence or a rationale two real runs never repeat); on those,
+both answers' values (bare JSON, a whole fence, or the last fenced json block) must be JSON objects holding each key with
+equal values, and anything else disagrees. With neither, the whole answer is compared, equal as JSON or as trimmed text,
+and a hold that answered some inputs alone and agreed on none says "its answers never matched the agent's word for word;
+name the fields that carry the decision (learning.agree_on)". The record keeps `check.agree_on` and `check.agree_from`
+(`definition` or `schema`) when it compared fields, and its reason says "said what the agent said on mcc and riskTier".
+No grader turn decides it: one would cost a model call on every check row and add a model's variance to a gate, where a
+declared or structural rule is free and exact. Of the inputs it ran on, `alone` is the share
 it answered with no escalate and no failed step (a replay obeys an escalate, so an input one of them hands back is no
 answer alone), and `agreement` the share of those that say what the agent said. A newer revision that comes while a
 check runs waits and records nothing; the claim after the running check is decided starts the newest. It is promoted
@@ -154,7 +164,8 @@ served run's own spend). While the shadow is queued or running the served run's 
 the shadow ends. Each claim of a run that learns first settles the open audits (started lines with no row yet), reading
 each one's two runs by id, never a window of newest runs: once both ended it writes the row `{run, shadow_run, workflow,
 digest, promoted_at, source: "shadow", agreed, served_cost, shadow_cost, turn, at}`, `agreed` by `sameAnswer` of the
-shadow's answer and the served run's answer row `turn`, read from the run by that id (null when either answer is
+shadow's answer and the served run's answer row `turn`, compared on the served run's revision's fields as its check
+compares (its `learning.agree_on`, else its output schema's decision fields, else whole), read from the run by that id (null when either answer is
 missing or a run is gone, never counted): a follow-up's answer since is never the one compared, for the verdict or a
 hold's disagreement. An owner's grade of a run the workflow answered alone is a row too (`source: "grade"`, `agreed` the
 grade, `turn` the answer graded). `promoted_at` names the promotion the line counts for: the `at` of the

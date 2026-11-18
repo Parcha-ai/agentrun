@@ -93,7 +93,8 @@ function Decided({ record }: { record: Promotion }) {
         <span className="font-mono text-label text-muted-foreground">{record.digest.slice(0, 7)}</span>
       </div>
       <p className="mt-1 break-words text-small text-muted-foreground">{replayLine(record)}</p>
-      {record.check?.n ? record.reason && <p className="mt-0.5 line-clamp-2 break-words text-small text-muted-foreground">{record.reason}</p> : null}
+      {/* Whole, never clamped: a hold's reason ends with what to do (name the fields its answers are compared on). */}
+      {record.check?.n ? record.reason && <p className="mt-0.5 break-words text-small text-muted-foreground">{record.reason}</p> : null}
       <Meta at={record.at} />
     </div>
   );

@@ -261,6 +261,7 @@ export type DefinitionInput = {
     compile_after?: number;
     agree_min?: number;
     alone_min?: number;
+    agree_on?: Array<string>;
     audit_every?: number;
     audit_every_later?: number;
     audit_later_after?: number;
@@ -1477,6 +1478,8 @@ export type ListLearningPromotionsResponse = {
       agree_min: number;
       alone_min: number;
       attempt: 1 | 2;
+      agree_on?: Array<string>;
+      agree_from?: "definition" | "schema";
       n?: number;
       agreed?: number;
       alone?: number;
@@ -1560,6 +1563,8 @@ export type ListLearningPromotionsResponse = {
         agree_min: number;
         alone_min: number;
         attempt: 1 | 2;
+        agree_on?: Array<string>;
+        agree_from?: "definition" | "schema";
         n?: number;
         agreed?: number;
         alone?: number;

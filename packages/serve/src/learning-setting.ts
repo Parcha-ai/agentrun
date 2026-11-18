@@ -11,12 +11,16 @@
 //   hold_window, hold_disagree: it stops serving (a hold) when its last hold_window audit rows hold at least
 //     hold_disagree disagreements;
 //   stop_window: a second hold within this many served runs of the first stops it for good.
+// Both compare two answers (learn/promote.ts sameAnswer) on agree_on, the answer's top-level JSON keys that say the
+// decision (agreeOnOf): the definition's list, else its output_schema's top-level enum, const and boolean fields, else
+// the whole answer.
 
-/** The loop's numbers as a definition may set them (each optional: its default stands in). */
+/** The loop's settings as a definition may set them (each optional: its default stands in). */
 export interface LearningLoop {
   readonly compile_after?: number;
   readonly agree_min?: number;
   readonly alone_min?: number;
+  readonly agree_on?: readonly string[];
   readonly audit_every?: number;
   readonly audit_every_later?: number;
   readonly audit_later_after?: number;
@@ -24,8 +28,14 @@ export interface LearningLoop {
   readonly hold_disagree?: number;
   readonly stop_window?: number;
 }
-/** The check's numbers (runner/promotion.ts): what a check record keeps of the loop. */
-export type CheckLoop = Required<Pick<LearningLoop, "compile_after" | "agree_min" | "alone_min">>;
+/** The fields two answers are compared on, and where the list came from: the definition's `learning.agree_on`, or its
+ *  output schema's decision fields. Absent: the whole answer. */
+export interface AgreeOn {
+  readonly agree_on: readonly string[];
+  readonly agree_from: "definition" | "schema";
+}
+/** The check's numbers (runner/promotion.ts): what a check record keeps of the loop, with the fields it compares on. */
+export type CheckLoop = Required<Pick<LearningLoop, "compile_after" | "agree_min" | "alone_min">> & Partial<AgreeOn>;
 /** The audit's numbers (runner/audit.ts). */
 export type AuditLoop = Required<Pick<LearningLoop, "audit_every" | "audit_every_later" | "audit_later_after" | "hold_window" | "hold_disagree" | "stop_window">>;
 /** A definition's `learning`, as kept on an agentic revision. */
@@ -41,7 +51,10 @@ export const AUDIT_DEFAULTS: AuditLoop = { audit_every: 10, audit_every_later: 2
 export const AUDIT_MAX = 1_000;
 
 const AUDIT_KEYS = ["audit_every", "audit_every_later", "audit_later_after", "hold_window", "hold_disagree", "stop_window"] as const;
-const LOOP_KEYS = ["compile_after", "agree_min", "alone_min", ...AUDIT_KEYS] as const;
+const LOOP_KEYS = ["compile_after", "agree_min", "alone_min", "agree_on", ...AUDIT_KEYS] as const;
+/** The most keys agree_on names, and the most characters of each. */
+export const AGREE_ON_MAX = 16;
+export const AGREE_ON_KEY_MAX = 64;
 /** Each audit number's words, for its 422. */
 const AUDIT_WORDS: Record<(typeof AUDIT_KEYS)[number], string> = {
   audit_every: "audits 1 in this many served runs",
@@ -57,15 +70,39 @@ const isLoop = (value: unknown): value is LearningLoop => value !== null && type
 /** Whether `learning` has the agent's runs learn (true, or an object): never false or absent. */
 export const learnsOf = (learning: unknown): boolean => learning === true || isLoop(learning);
 
-/** The loop's numbers for a revision's `learning`: its object's, each one it leaves out at its default. */
-export function loopOf(learning: unknown): CheckLoop {
+/** A JSON Schema of one field that says a decision: an `enum`, a `const` or `type: "boolean"`. Never a number (a
+ *  confidence two runs never repeat), an array (compared in order) or free text. */
+const decisionField = (schema: unknown): boolean =>
+  isLoop(schema) && (Array.isArray((schema as Record<string, unknown>).enum) || "const" in schema || (schema as Record<string, unknown>).type === "boolean");
+
+/** The fields a revision's two answers are compared on: its `learning.agree_on`, else its `outputSchema`'s top-level
+ *  properties that say a decision (decisionField), in the schema's order; undefined when neither names one (the whole
+ *  answer is compared). */
+export function agreeOnOf(learning: unknown, outputSchema?: unknown): AgreeOn | undefined {
+  if (isLoop(learning) && learning.agree_on?.length) return { agree_on: [...learning.agree_on], agree_from: "definition" };
+  const properties = isLoop(outputSchema) ? (outputSchema as Record<string, unknown>).properties : undefined;
+  if (!isLoop(properties)) return undefined;
+  const fields = Object.entries(properties).filter(([, field]) => decisionField(field)).map(([key]) => key);
+  return fields.length ? { agree_on: fields, agree_from: "schema" } : undefined;
+}
+
+/** The loop's numbers for a revision's `learning`: its object's, each one it leaves out at its default; with the fields
+ *  its answers are compared on (agreeOnOf, from `learning` and the revision's `outputSchema`) when any. */
+export function loopOf(learning: unknown, outputSchema?: unknown): CheckLoop {
   const set = isLoop(learning) ? learning : {};
   return {
     compile_after: set.compile_after ?? COMPILE_AFTER_DEFAULT,
     agree_min: set.agree_min ?? AGREE_MIN_DEFAULT,
     alone_min: set.alone_min ?? ALONE_MIN_DEFAULT,
+    ...agreeOnOf(learning, outputSchema),
   };
 }
+
+/** The check's numbers (loopOf) of a revision's body: its `learning` and its `outputSchema`. */
+export const loopOfBody = (body: unknown): CheckLoop => {
+  const { learning, outputSchema } = (isLoop(body) ? body : {}) as { learning?: unknown; outputSchema?: unknown };
+  return loopOf(learning, outputSchema);
+};
 
 /** The audit's numbers for a revision's `learning`: its object's, each one it leaves out at its default (AUDIT_DEFAULTS). */
 export function auditLoopOf(learning: unknown): AuditLoop {
@@ -80,6 +117,9 @@ export function learningSettingIssue(value: unknown, at = "learning"): string | 
   if (!isLoop(value)) return `${at} is true, false or an object of the loop's numbers ({${LOOP_KEYS.map((key) => `${key}?`).join(", ")}}, on with those set)`;
   const other = Object.keys(value).find((key) => !(LOOP_KEYS as readonly string[]).includes(key));
   if (other !== undefined) return `${at}.${other} is not one of the loop's numbers: ${LOOP_KEYS.join(", ")}`;
+  const on = (value as Record<string, unknown>).agree_on;
+  const key = (one: unknown) => typeof one === "string" && one.length >= 1 && one.length <= AGREE_ON_KEY_MAX;
+  if (on !== undefined && !(Array.isArray(on) && on.length >= 1 && on.length <= AGREE_ON_MAX && on.every(key) && new Set(on).size === on.length)) return `${at}.agree_on is a list of 1 to ${AGREE_ON_MAX} distinct top-level answer keys, each 1 to ${AGREE_ON_KEY_MAX} characters`;
   const { compile_after: after, agree_min: agree, alone_min: alone } = value as Record<string, unknown>;
   if (after !== undefined && !(Number.isInteger(after) && (after as number) >= 1 && (after as number) <= COMPILE_AFTER_MAX)) return `${at}.compile_after is a whole number of completed runs from 1 to ${COMPILE_AFTER_MAX}`;
   for (const [key, share] of [["agree_min", agree], ["alone_min", alone]] as const) {
@@ -94,9 +134,9 @@ export function learningSettingIssue(value: unknown, at = "learning"): string | 
   return undefined;
 }
 
-/** A valid `learning` as a revision keeps it: an object's numbers in one order, so two definitions that say the same are
- *  one body. */
+/** A valid `learning` as a revision keeps it: an object's keys in one order, so two definitions that say the same are
+ *  one body (agree_on's list as its owner gave it: its order is theirs). */
 export function learningSettingOf(value: LearningSetting): LearningSetting {
   if (!isLoop(value)) return value;
-  return Object.fromEntries(LOOP_KEYS.flatMap((key) => (value[key] !== undefined ? [[key, value[key]]] : []))) as LearningLoop;
+  return Object.fromEntries(LOOP_KEYS.flatMap((key) => (value[key] !== undefined ? [[key, key === "agree_on" ? [...value.agree_on!] : value[key]]] : []))) as LearningLoop;
 }

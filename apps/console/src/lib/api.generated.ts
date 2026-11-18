@@ -450,6 +450,7 @@ export interface components {
       compile_after?: number;
       agree_min?: number;
       alone_min?: number;
+      agree_on?: string[];
       audit_every?: number;
       audit_every_later?: number;
       audit_later_after?: number;
@@ -3636,6 +3637,8 @@ export interface operations {
           agree_min: number;
           alone_min: number;
           attempt: 1 | 2;
+          agree_on?: string[];
+          agree_from?: "definition" | "schema";
           n?: number;
           agreed?: number;
           alone?: number;
@@ -3719,6 +3722,8 @@ export interface operations {
             agree_min: number;
             alone_min: number;
             attempt: 1 | 2;
+            agree_on?: string[];
+            agree_from?: "definition" | "schema";
             n?: number;
             agreed?: number;
             alone?: number;

@@ -79,6 +79,10 @@ describe("a revision's standing and numbers", () => {
     expect(replayLine(record({ decided: "hold", check: { ...CHECK, n: 0, agreed: 0, alone: 0, outcomes: undefined, stopped: true }, reason: "nothing to check it on: it stops" }))).toBe("nothing to check it on: it stops");
     expect(replayLine(record({ check: undefined, reason: "held on its served runs" }))).toBe("held on its served runs");
   });
+  it("names the answer fields a check compared on (learning.agree_on, or the output schema's)", () => {
+    expect(replayLine(record({ check: { ...CHECK, agree_on: ["mcc", "riskTier"], agree_from: "definition" } }))).toBe("Checked on 20 inputs of the agent's own runs: 18 answered alone (90%, 70% needed), 17 of those said what the agent said on mcc and riskTier (94%, 80% needed), 2 handed back");
+    expect(replayLine(record({ check: { ...CHECK, agree_on: ["riskTier", "siteLive", "kind"], agree_from: "schema" } }))).toContain("said what the agent said on riskTier, siteLive and kind (94%");
+  });
   it("says what a promotion was decided on: checked on n inputs and how many alone, nothing for a check that ran on none; only a checked one is proven", () => {
     const checked = record({ check: { ...CHECK, n: 18, alone: 9 } });
     const none = record({ decided: "hold", check: { ...CHECK, n: 0, agreed: 0, alone: 0, stopped: true }, reason: "nothing to check it on: it stops" });
