@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
   blobOid, DIFFS_DIR, FolderBusy, STDIN_MAX, folderTestHooks, forgetBodies, commitChange, learningInit, learningRepair, nextSnapshot, parseRead,
-  readLearning, readRunDiff, readSnapshot, SCRIPT_FILE, SNAPSHOT_FILE, snapshotOfRead, writeLearning,
+  readLearning, readRunDiff, readSnapshot, runMergeOf, SCRIPT_FILE, SNAPSHOT_FILE, snapshotOfRead, writeLearning,
 } from "../dist/learn/folder.js";
 import { learningCommit } from "../dist/learn/commit.js";
 import { held, readmeOf, released, restoredLearned, retiredLearned } from "../dist/learn/workflow-draft.js";
@@ -373,6 +373,39 @@ export function folderSuite(backend, make) {
     // Another round of the run is its own merge.
     const round = await commitChange(ws, before, { by: { run: "run-once", reason: "Round two.", round: 2 }, writes: [{ path: CORRECTIONS, text: `${UNITS}${SOURCES}` }] });
     assert.equal(round.landed, true, JSON.stringify(round));
+    await matchesMain(ws);
+  });
+
+  test(`${backend}: a stop between a run's merge and its diff file (main and the run's ref moved, no diff): the merge is read back with its diff rebuilt from the run's ref, and merging the round again names it with its files`, async () => {
+    const { ws } = await make();
+    await learningInit(ws);
+    const cut = async (runId) => {
+      const old = await readSnapshot(ws);
+      folderTestHooks.env = { AGENTRUN_LEARNING_FAIL: "before-diff" };
+      try {
+        await assert.rejects(commitChange(ws, old, { by: { run: runId, reason: "Cut." }, writes: draft(runId) }), /before the diff/);
+      } finally {
+        folderTestHooks.env = undefined;
+      }
+      const moved = (await gitMain(ws)).main;
+      assert.notEqual(moved, old.main, "the commit landed: main moved");
+      assert.equal(await readRunDiff(ws, runId), undefined, "no diff file");
+      return { old, moved };
+    };
+    // Read back once the snapshot is main's again (a later write or a read rebuilt it): the learning end's own read.
+    const first = await cut("run-cut");
+    await learningRepair(ws);
+    const back = await runMergeOf(ws, "run-cut");
+    assert.deepEqual([back?.merge, back?.parent, back?.files.map((f) => [f.path, f.status])], [first.moved, first.old.main, [["workflows/run-cut/README.md", "added"], ["workflows/run-cut/workflow.json", "added"]]]);
+    assert.deepEqual(await readRunDiff(ws, "run-cut"), back, "the rebuilt diff is kept");
+    assert.equal(await runMergeOf(ws, "run-cut", 2), undefined, "a round that never merged");
+    assert.equal(await runMergeOf(ws, "run-never"), undefined, "a run that never merged");
+    // Merged again (a reclaimed run's compile drafted again) before any rebuild, the old snapshot still in place: the
+    // script names the first merge and writes its diff.
+    const second = await cut("run-cut2");
+    const again = await learningCommit(ws, { runId: "run-cut2", reason: "Cut.", files: draft("run-cut2", { v: 2 }) });
+    assert.deepEqual([again.ok, again.already, again.commit, again.files], [true, true, second.moved, ["workflows/run-cut2/README.md", "workflows/run-cut2/workflow.json"]], JSON.stringify(again));
+    assert.equal((await readRunDiff(ws, "run-cut2"))?.parent, second.old.main);
     await matchesMain(ws);
   });
 

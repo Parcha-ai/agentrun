@@ -543,6 +543,11 @@ export async function readRunDiff(ws: Workspace, run: string): Promise<RunDiff |
   return diff;
 }
 
+/** Run `runId`'s merge of `round` (readRunDiff), or undefined when it never merged here. */
+export async function runMergeOf(ws: Workspace, runId: string, round = 1): Promise<RunDiff | undefined> {
+  return readRunDiff(ws, runDiffKey(runId, round));
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // Writing: the script, one exec a write.
 

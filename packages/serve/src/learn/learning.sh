@@ -270,6 +270,7 @@ commit() {
     cat "$tmp/cas" >&2
     exit 2
   fi
+  [ "${AGENTRUN_LEARNING_FAIL:-}" = before-diff ] && die "failed before the diff, as the test asked"
   if ! check_out "$new"; then
     cat "$tmp/checkout" >&2
     printf '%s\n' "$new"
