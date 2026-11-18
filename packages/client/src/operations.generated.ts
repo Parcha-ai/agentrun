@@ -99,6 +99,10 @@ export type Agent = {
     version: string;
     sha: string | null;
   } | null;
+  run_blockers?: {
+    message: string;
+    fields: Array<InputIssue>;
+  } | null;
   warnings?: Array<InputIssue>;
 };
 

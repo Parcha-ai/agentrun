@@ -20,6 +20,7 @@ __all__ = [
     "AgentNativeStatusRemote",
     "AgentNativeStatusSelector",
     "AgentOwnComputer",
+    "AgentRunBlockers",
     "AgentRuns",
     "AgentTemplate",
     "AgentToolsItem",
@@ -315,6 +316,7 @@ __all__ = [
     "GetAgentResponseNativeStatusRemote",
     "GetAgentResponseNativeStatusSelector",
     "GetAgentResponseOwnComputer",
+    "GetAgentResponseRunBlockers",
     "GetAgentResponseRuns",
     "GetAgentResponseTemplate",
     "GetAgentResponseToolsItem",
@@ -1059,6 +1061,7 @@ class Agent(_AgentRequired, total=False):
     mcp_pin: dict[str, AgentMcpPinValue] | None
     own_computer: AgentOwnComputer | None
     template: AgentTemplate | None
+    run_blockers: AgentRunBlockers | None
     warnings: list[InputIssue]
 
 
@@ -1468,6 +1471,11 @@ class AgentTemplate(TypedDict):
     id: str
     version: str
     sha: str | None
+
+
+class AgentRunBlockers(TypedDict):
+    message: str
+    fields: list[InputIssue]
 
 
 class _InputIssueRequired(TypedDict):
@@ -1952,6 +1960,7 @@ class GetAgentResponse(_GetAgentResponseRequired, total=False):
     mcp_pin: dict[str, GetAgentResponseMcpPinValue] | None
     own_computer: GetAgentResponseOwnComputer | None
     template: GetAgentResponseTemplate | None
+    run_blockers: GetAgentResponseRunBlockers | None
     warnings: list[InputIssue]
 
 
@@ -2072,6 +2081,11 @@ class GetAgentResponseTemplate(TypedDict):
     id: str
     version: str
     sha: str | None
+
+
+class GetAgentResponseRunBlockers(TypedDict):
+    message: str
+    fields: list[InputIssue]
 
 
 class GetAgentArchilResponse(TypedDict):

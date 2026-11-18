@@ -1594,6 +1594,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // A capped start prices each OpenRouter Decisions model a workflow pins (runnable.ts) from OpenRouter's public catalog,
   // read once for this server (and again after a read that failed), through the faux one under --faux.
   let pricing: Promise<{ priceOf(model: string): Promise<unknown> }> | undefined;
+  const readPrices = new Map<string, unknown>();
   const decisionPrice = async (model: string): Promise<unknown> => {
     const making = (pricing ??= (async () => {
       const [{ openrouterProvider }, faux] = await Promise.all([import("@parcha/agentrun-decisions"), fauxFetch(fauxEnvOf(options), FAUX_OPENROUTER_ENV)]);
@@ -1601,8 +1602,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     })());
     // One that could not be made is made again next time: a rejection is never kept.
     const provider = await making.catch((error: unknown) => { if (pricing === making) pricing = undefined; throw error; });
-    return provider.priceOf(model);
+    const price = await provider.priceOf(model);
+    readPrices.set(model, price);
+    return price;
   };
+  /** A decision model's price as a save or a start last read it from the catalog (null: the catalog lists none), and
+   *  never a read of the catalog of its own: what a GET, which waits on no other service, prices by. A model none has
+   *  priced answers PRICE_NOT_READ, which blockersOf takes for a price (no blocker): whether its run is refused is not
+   *  known until a start asks. */
+  const PRICE_NOT_READ = { notRead: true } as const;
+  const readDecisionPrice = async (model: string): Promise<unknown> => (readPrices.has(model) ? readPrices.get(model) : PRICE_NOT_READ);
   // The run write half (runs-over-store): the server INSERTs a queued run and its launch (startRun), and writes command
   // rows (message/stop/cancel/raise/approve/archive) a run's runner reads and applies. No per-run process, no HTTP door,
   // no box relay here — a runner (its own process, sharing only this store) claims and runs every run. The leaves a start
@@ -2449,14 +2458,37 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   // ---- runs -----------------------------------------------------------------------------------------------------------
 
+  /** Why a run of the agent's current revision started now with no overrides would be refused (409 agent_not_runnable),
+   *  as the run's own check says it (runnable, at the place the run resolves to): its message and fields, for the agent
+   *  page to show before Run. Null when nothing keeps it from running, for an agent with no revision or archived (its
+   *  page says so), or when the check is not one a read makes: a native or SDK agent's (which launches or asks its
+   *  backend), and a revision whose MCP tools its first run pins (pinFirst writes the pin; until then a read would warn
+   *  of a pin the run makes). A read asks no other service, so it prices by readDecisionPrice. */
+  async function runBlockersOf(entry: AgentEntry): Promise<{ message: string; fields: InputIssue[] } | null> {
+    const revision = entry.revision as unknown as Revision | undefined;
+    if (!revision || entry.agent.archivedAt) return null;
+    const body = revision.body as AgenticBody & Partial<WorkflowBody>;
+    if (nativeOf(body) || sdkOf(body)) return null;
+    const tools = revision.kind === "agentic" ? (body.tools ?? []) : [];
+    if (!(revision as { mcpPin?: unknown }).mcpPin && tools.some((tool) => mcpToolOf(tool))) return null;
+    try {
+      await runnable(revision, resolvePlace(body.place as Place | undefined, fallbackPlace(revision.kind, tools)), { capped: body.maxCostUsd !== undefined, price: readDecisionPrice });
+      return null;
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "agent_not_runnable") return { message: error.message, fields: error.extra.fields ?? [] };
+      return null;
+    }
+  }
+
   /** A workflow revision's shape as runnable.ts checks it: its workflow, tools, harness, place and tool settings. */
   const workflowShape = ({ workflow, tools, harness, place, toolSettings, approvals }: { workflow: unknown; tools?: readonly string[]; harness?: string; place?: RevisionShape["place"]; toolSettings?: RevisionShape["toolSettings"]; approvals?: "never" }): RevisionShape => ({ kind: "workflow", workflow, tools: tools ?? [], ...(harness ? { harness } : {}), ...(place ? { place } : {}), ...(toolSettings ? { toolSettings } : {}), ...(approvals === "never" ? { approvals } : {}) });
   const shapeOf = (revision: Revision): RevisionShape => (revision.kind === "agentic" ? { kind: "agentic", ...revision.body } : workflowShape(revision.body));
 
   /** What keeps `revision` from running here at `place` (its own, else this host's default), checked before anything
    *  starts with the checks a save makes (runnable.ts): one a save refused, or one a setting of this host fixes that it
-   *  does not have yet. `capped`: the run has a spend cap, which a web tool's resolution reads (tool-plane.ts). */
-  async function runnable(revision: Revision, place: Place, { capped = false }: { capped?: boolean } = {}): Promise<void> {
+   *  does not have yet. `capped`: the run has a spend cap, which a web tool's resolution reads (tool-plane.ts). `price`:
+   *  what prices an OpenRouter decision model under that cap; a start's reads OpenRouter's catalog (decisionPrice). */
+  async function runnable(revision: Revision, place: Place, { capped = false, price = decisionPrice }: { capped?: boolean; price?: (model: string) => Promise<unknown> } = {}): Promise<void> {
     if (sdkOf(revision.body)) throw new ApiError("agent_not_runnable", "This agent runs in its backend SDK. Call its SDK wrapper to start a task; AgentRun does not launch its tools or credentials.");
     const native = nativeOf(revision.body);
     if (native) {
@@ -2499,7 +2531,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     };
     const monid = (revision as { monidPin?: MonidPinBody | null }).monidPin ?? undefined;
     // Claude Code's login on this machine is a runner place's alone: a sandbox run is checked for a key, as it runs.
-    const blockers = await blockersOf(envAtPlace(env, shape.place), shape, settings.get(), { capped, boxes: boxOffers, computerReady, shellOf, offers, mcp: revision.kind === "agentic" ? pinnedTools : mcpTools, monid, decisionPrice });
+    const blockers = await blockersOf(envAtPlace(env, shape.place), shape, settings.get(), { capped, boxes: boxOffers, computerReady, shellOf, offers, mcp: revision.kind === "agentic" ? pinnedTools : mcpTools, monid, decisionPrice: price });
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     // Each blocker as a 422 names its issue: its field, reason and message, and the fix when it has one.
@@ -4017,7 +4049,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           return tool ? toolEffect(tool.annotations) : undefined;
         };
         const tools = revision && tooling ? agentTools(env, settings.get(), tooling, caps.tools.map((tool) => tool.name), await shellOfRevision(revision), effectOf) : [];
-        return send(res, 200, { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), tools }, { etag: etagOf(entry) });
+        return send(res, 200, { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), tools, run_blockers: await runBlockersOf(entry) }, { etag: etagOf(entry) });
       }
       case "updateDefinition": {
         const entry = await needAgent(id);

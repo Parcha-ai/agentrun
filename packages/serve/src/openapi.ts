@@ -3376,6 +3376,17 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "The template package the agent was applied from (POST /templates/{template}/apply), as its first revision keeps it; null for an agent made otherwise.",
       ...TEMPLATE_MARK,
     },
+    run_blockers: {
+      oneOf: [
+        closed({
+          message: { type: "string", description: "The refusal's message, as the start's 409 gives it." },
+          fields: { type: "array", items: ref("schemas/InputIssue"), description: "Each thing that refuses the run, as the start's 409 lists it under `fields`; empty when the refusal names none." },
+        }),
+        { type: "null" },
+      ],
+      description: "On GET /agents/{agent_id} alone: what would refuse a run of the agent's current revision started now with no overrides (POST /agents/{agent_id}/runs' 409 agent_not_runnable), said before anyone starts one; null when nothing would. Always null for an archived agent, a native or SDK agent, and a revision whose MCP tools its first run pins. The read asks no other service: under the agent's own `max_cost_usd`, an OpenRouter decision model's missing price is named only once a save or a start has read OpenRouter's catalog, so null is no promise that a start is accepted. Absent from every other answer.",
+      "x-agentrun-serve": "runblockers/1",
+    },
     warnings: { type: "array", items: ref("schemas/InputIssue"), description: "What this host still lacks for the agent to run, as a create (POST /agents) or a commit (PUT .../definition) answers it, the same shape apply's warnings take. Absent from every other answer (GET and list never send it).", "x-agentrun-serve": "warnings/1" },
   },
   Capabilities: {
