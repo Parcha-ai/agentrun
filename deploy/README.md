@@ -122,7 +122,7 @@ Where you open it:
   [DNS settings](https://login.tailscale.com/admin/dns). Tailscale's Personal plan is free.
 - **No Tailscale, or logged out.** The server's loopback only. The installer prints the steps (install Tailscale, then
   `tailscale up`) and the command to run again, and exits 0. It never installs Tailscale or logs in for you. Until
-  then, open it over SSH: `ssh -N -L 7340:127.0.0.1:7340 root@<server>`, then `http://127.0.0.1:7340/`.
+  then, open it through an SSH tunnel: the installer prints the one `ssh -N -L` line to run on your computer.
 - **`--public`.** Every address of the server, port 7340, over plain HTTP, at `http://<its IPv4 address>:7340/`. Behind
   NAT, name the address: `curl -fsSL https://agentrun.ai/install | AGENTRUN_PUBLIC_URL=http://<address>:7340/ sh -s --
   --vps --public`. Before it starts, the installer says what this exposes. Anyone who reaches the address reaches the

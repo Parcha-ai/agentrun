@@ -19,6 +19,7 @@ dir=/opt/agentrun
 api=http://127.0.0.1:7340/v2
 again='curl -fsSL https://agentrun.ai/install | sh -s -- --vps'
 fake=/var/run/tailscale/fake
+everywhere=0.0.0.0
 logs=$(mktemp -d)
 image=()
 [ "${1:-}" != --build ] || image=(--image agentrun-vps:local)
@@ -189,7 +190,7 @@ calls=$(wc -l < "$fake/calls")
 piped_install 600 "$logs/5.log" --vps --public "${image[@]}"
 said "$logs/5.log" "--public: AgentRun listens on every address of this server, port 7340, over plain HTTP, at http://$address:7340/"
 said "$logs/5.log" "the setup code, your password and the API"
-[ "$(bound)" = 0.0.0.0:7340 ] || die "the port is published at $(bound)"
+[ "$(bound)" = "$everywhere:7340" ] || die "the port is published at $(bound)"
 [ "$(wc -l < "$fake/calls")" = "$calls" ] || die "--public ran tailscale"
 [ "$(status_of "http://$address:7340/v2/agents")" = 401 ] || die "the API answered with no token"
 jq -e '.setup_code == true' <<< "$(curl -fsS "http://$address:7340/v2/auth/session")" > /dev/null || die "the first visit takes no setup code: an open server"

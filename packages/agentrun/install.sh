@@ -520,6 +520,7 @@ add_to_path() {
 vps_install() {
   vps_dir=/opt/agentrun
   port=7340
+  loopback=http://127.0.0.1:7340 # key-gate: loopback-rule the server it starts, on the loopback of this server
   again="curl -fsSL https://agentrun.ai/install | sh -s -- --vps${vps_public:+ --public}"
   [ "$(uname -s)" = Linux ] || fail "--vps sets up a Linux server; this is $(uname -s)"
   [ "$(id -u)" = 0 ] || fail "--vps installs Docker and writes $vps_dir, so it runs as root: curl -fsSL https://agentrun.ai/install | sudo sh -s -- --vps${vps_public:+ --public}"
@@ -541,7 +542,7 @@ vps_install() {
 
   # Where it is reached: every address with --public; else the tailnet's https address when Tailscale is logged in, or
   # this server's loopback, with the steps to add Tailscale said.
-  bind=127.0.0.1 # key-gate: loopback-rule the port is published on this server's loopback unless --public
+  bind=127.0.0.1 # key-gate: loopback-rule the port is published on the loopback of this server unless --public
   trusted=
   if [ -n "$vps_public" ]; then
     bind=0.0.0.0
@@ -560,7 +561,7 @@ vps_install() {
       # tailscale serve reaches the server through Docker's bridge, a private range, and names each visitor.
       trusted=uniquelocal
     else
-      url=http://127.0.0.1:$port/ # key-gate: loopback-rule the server's address on this server alone
+      url=$loopback/
     fi
   fi
 
@@ -575,7 +576,7 @@ vps_install() {
   # Its first visit must ask for the setup code: a server that would take a password from anyone is stopped.
   host=${url#*://}
   host=${host%%/*}
-  session=$(curl -fsS --max-time 10 -H "Host: $host" "http://127.0.0.1:$port/v2/auth/session") || session=
+  session=$(curl -fsS --max-time 10 -H "Host: $host" "$loopback/v2/auth/session") || session=
   owned=
   case $session in
     *'"password_set":true'* | *'"password_set": true'*) owned=1 ;;
@@ -593,13 +594,13 @@ vps_install() {
   say ""
   say "AgentRun $release is running at $url"
   if [ "$bind" != 0.0.0.0 ] && [ -z "$trusted" ]; then
-    say "It is on this server only. From your computer: ssh -N -L $port:127.0.0.1:$port root@<this server>, then open $url"
+    say "It is on this server only. From your computer: ssh -N -L $port:127.0.0.1:$port root@<this server>, then open $url" # key-gate: loopback-rule the ssh tunnel line to the loopback port
   fi
   if [ -n "$owned" ]; then
     say "This server has its owner: sign in at $url"
   else
     # A good code is kept and a new one printed only when the last is expired or spent (POST /v2/setup/code).
-    curl -fsS --max-time 10 -X POST -H "Host: $host" "http://127.0.0.1:$port/v2/setup/code" > /dev/null 2>&1 || true
+    curl -fsS --max-time 10 -X POST -H "Host: $host" "$loopback/v2/setup/code" > /dev/null 2>&1 || true
     line=
     waited=0
     while [ -z "$line" ] && [ "$waited" -lt 10 ]; do
