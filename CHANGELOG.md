@@ -33,6 +33,10 @@ Learning
 
 - A learned workflow's check and its shadow audit can compare two answers on the fields that carry the decision instead of word for word: a definition's `learning` takes `agree_on`, dotted paths into the answer's JSON object (`["verdict.decision"]`, `["mcc", "riskTier"]`; 1 to 16 paths, a bad one a 422 under `definition.learning`). Each path must resolve to equal values in both answers; one missing on either side disagrees. Left out, the whole answer is compared as before, and a check that agreed on none says to name the fields. The kyb template declares `verdict.decision` and inbound-lead `next_step.action`, and a template's `learning` takes the same object, each path a required field of its output schema. The check record keeps `agree_on`, the console's check line says "compared the whole answer" when there was none, and the TypeScript and Python clients' types carry it (Python 0.3.14). <!-- changes/learning-agree-on.md --> (#3182)
 
+Agents and templates
+
+- An imported agent runs as imported. A project with no CLAUDE.md or AGENTS.md gets short instructions of the import's own, and a Codex session's model is kept only when a model catalog here lists it; otherwise the agent runs on the server's default model for its harness, and the import says so for each one. Before, both made every run of the agent refused 409 `agent_not_runnable`. An agent imported earlier keeps its revision: set its model and instructions on its page, or import again into a new data folder (#3155).
+
 Console
 
 - The agent editor's Computer step has a Recording switch for a desktop, a phone or a browser, with a note that a recording holds everything on the screen, what a person types after taking over and any password shown included. A switch of provider, or to another kind that records, keeps it on; a switch to a sandbox or to no computer turns it off and says so. Before, any switch dropped `record`. A server without ffmpeg refuses the save, in words the step shows (#3194).
