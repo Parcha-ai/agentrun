@@ -14,6 +14,7 @@ import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
 import { rowUnlocks, TOOL_KEYS, unlockedBy } from "../dist/tool-keys.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
+import { installGoose, needsGoose } from "./fixtures/goose-installed.mjs";
 import { agent, call, client, cookieOf, FAUX, follow, harnessData, printed, scratch, serve, startServe, storeBytes, withEnv } from "./support.mjs";
 
 const LAUNCHER = new URL("../launcher/agentrun-serve", import.meta.url).pathname;
@@ -197,6 +198,19 @@ test("before any model key is saved, a model key's row names every harness the k
       await meetsDocument(api, view);
     });
   }
+});
+
+test("Goose installed and verified, Anthropic's and OpenRouter's rows name it among the harnesses their key runs; the rest never do", { skip: needsGoose, timeout: 120_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: sealKey(), AGENTRUN_SERVE_CODEX_STANDIN: await codexStandIn(t) }, [...KEYS, ...HARNESS_VARS]);
+  withMemory(t, ROOMY_MIB);
+  const { api } = await serve(t, { data: installGoose(join(await scratch(t), "agents")), harnesses: true });
+  const caps = (await api("GET", "/capabilities")).body;
+  const goose = caps.harnesses.find((offer) => offer.id === "goose");
+  assert.equal(goose?.available, false, "listed, and runs nothing for want of a model key");
+  const view = (await api("GET", "/settings/tool-keys")).body;
+  // The rows of an uninstalled Goose (OWN, the case above), with goose last where its key runs it.
+  assert.deepEqual(Object.fromEntries(view.keys.filter((key) => key.kind === "model").map((key) => [key.id, key.harnesses])), { ...OWN, anthropic: [...OWN.anthropic, "goose"], openrouter: [...OWN.openrouter, "goose"] }, JSON.stringify(goose));
+  await meetsDocument(api, view);
 });
 
 test("PUT refuses with 422 an unknown key or field, an empty value, a control character, over 1 KiB, or another body field, and keeps nothing; no answer holds the value", async (t) => {
