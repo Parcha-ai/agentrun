@@ -18,7 +18,7 @@ import { reflectRanges } from "../runner/end-of-run.js";
 import { journalEntries, journalRecords, recordOf } from "../runner/journal-reader.js";
 import { endedAnswer, KINDS } from "../runner/journal-kinds.js";
 import { bookedSpend, cliModelWorked, costIsBooked, costWordsOf } from "../runner/metrics.js";
-import type { Store } from "../store/store.js";
+import type { RunRow, Store } from "../store/store.js";
 import { costOfRun } from "./runs.js";
 import { mcpNameOf, mcpToolName } from "../tool-names.js";
 import { Turns } from "../turns.js";
@@ -243,20 +243,25 @@ export async function runTimeline(store: Store, runId: string, context: Context,
   const priced = booked ? bookedUsage(rendered, entries, options) : withFreeUsage(rendered, entries);
   // An imported run's usage row says the cost its run reads (costOfRun), never a sum of its transcript's unpriced requests.
   const run = await store.runs.get(runId);
-  const rows = run?.importedFrom ? importedUsage(priced, costOfRun(run), options) : priced;
+  const rows = run?.importedFrom ? importedUsage(priced, run, options) : priced;
   return labelled(reflect, withComputerCalls(withLearnedNodes(await datedRows(store, runId, catalogNamed(rows, catalog)), entries, options.redact), entries, options.redact));
 }
 
 /** An imported run's `rows` with its usage row in its run's cost (store-reads/runs.ts costOfRun): what its source
  *  recorded, else the catalog's estimate the import kept beside it, else unknown. The renderer's row sums the transcript's
  *  requests, which a source that priced the session as a whole (Claude Code) or not at all (Codex) left unpriced, so it
- *  read "$0 known, 4 not priced" beside a run whose cost is known. A row that already says the run's cost is kept. */
-function importedUsage(rows: readonly TimelineEvent[], usd: number | null, options: TimelineOptions): TimelineEvent[] {
+ *  read "$0 known, 4 not priced" beside a run whose cost is known. The catalog's estimate (the source recorded none, its
+ *  stored cost null) is said as one, "$0.0016 est.", as the run's cost reads in the console; a recorded cost is said
+ *  exact. A row that already says the run's recorded cost, or a free model's $0, is kept. */
+function importedUsage(rows: readonly TimelineEvent[], run: Pick<RunRow, "costUsd" | "metrics">, options: TimelineOptions): TimelineEvent[] {
+  const usd = costOfRun(run);
+  const estimated = run.costUsd === null && usd !== null;
   const at = rows.findLastIndex((row) => row.kind === "usage");
   const row = rows[at];
   const requests = row?.usage?.requests;
-  if (!row?.usage || typeof requests !== "number" || (row.usage.usd === usd && row.usage.so_far_usd === undefined)) return [...rows];
-  const spent = usd === null ? "unknown" : usd === 0 ? "$0" : `$${usd.toFixed(4)}`;
+  if (!row?.usage || typeof requests !== "number") return [...rows];
+  if (row.usage.usd === usd && row.usage.so_far_usd === undefined && (!estimated || row.usage.free === true)) return [...rows];
+  const spent = usd === null ? "unknown" : `${usd === 0 ? "$0" : `$${usd.toFixed(4)}`}${estimated ? " est." : ""}`;
   const notMetered = row.usage.not_metered ?? 0;
   const summary = `${costLabel(options.ended === true)}: ${spent} over ${requests} model request${requests === 1 ? "" : "s"}${toolCallWords(0, notMetered)}`;
   const usage = { usd, requests, ...(notMetered ? { not_metered: notMetered } : {}) };
