@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.0-beta.44 (2026-11-17)
+
+- An agent whose computer is a browser can record its runs: `computer: {"kind": "browser", ..., "record": true}` makes a video of each browser session's page, `recordings/<computer>.mp4` with one file per session, under the same caps, pause and stop rules as a desktop's or a phone's, listed in the run read's `recordings` and served by the files route. A browser with `record: true` was refused with 422 before.
+    - The video is the live view's own CDP screencast of the session, shared with a person's viewer (one screencast per session, never a second); each frame is stamped as it comes, so a page that sits still does not shorten the video.
+    - `@parcha/pi-browser`'s live view takes a host's watch of a session's frames, with or without a viewer: `liveView.watch(tag, { frame, ended })`. A viewer that joins a stream already running is sent the page, any dialog and the newest frame.
+
 ## 0.1.0-beta.39 (2026-11-16)
 
 - A template eval case can fake the web: `web: unavailable` in its `case.yaml` fails every `web_search` with the words a rate-limited free search answers with and every `web_fetch` as a page that never answers, and `web: <fixture file>` answers each search from the first answer whose `query` (a regular expression) matches and each page from the answer for its exact URL, else the fixture's default. No call reaches the network, the calls show in the run's timeline and the graders' tool calls, so `tool_used` counts them, and the fixture is checked whole before any run.

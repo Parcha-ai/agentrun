@@ -96,18 +96,19 @@ class Demo(unittest.TestCase):
         whole = client.runs.timeline(followed["run_id"])
         self.assertEqual(rows, {row["id"]: row for row in whole["rows"]}, "the followed rows are the timeline's")
 
-        # A learning note read with its version, and written over with that version as If-Match.
+        # An agent's corrections read with their version, and replaced with that version as If-Match.
         learner: Any = {"definition": {**AGENT["definition"], "id": "learner", "learning": True}}
         self.assertEqual(client.agents.create(learner)["agent_id"], "learner")
-        note = "---\nname: policies\ndescription: Where the policies are.\n---\nLook in policies/.\n"
-        client.learning.write("learner", "policies.md", note, if_none_match="*", body_type="text/markdown")
-        read = client.learning.read("learner", "policies.md")
-        self.assertIsInstance(read, Tagged)
-        self.assertEqual(read.body, note)
-        self.assertRegex(read.etag or "", r'^"[0-9a-f]+"$')
-        written = client.learning.write("learner", "policies.md", note.replace("policies/", "docs/policies/"), if_match=read.etag, body_type="text/markdown")
-        self.assertNotEqual(written.etag, read.etag, "the write answers the note's new version")
-        self.assertTrue(re.match(r'^"[0-9a-f]+"$', written.etag or ""))
+        empty = client.learning.corrections("learner")
+        self.assertIsInstance(empty, Tagged)
+        self.assertEqual(empty.body["text"], "")
+        self.assertRegex(empty.body["etag"], r'^"[0-9a-f]+"$')
+        corrections = "- Look in policies/ first.\n"
+        written = client.learning.write_corrections("learner", {"text": corrections}, if_match=empty.body["etag"])
+        self.assertEqual(written.body["text"], corrections)
+        self.assertNotEqual(written.body["etag"], empty.body["etag"], "the write answers the file's new version")
+        self.assertTrue(re.match(r'^"[0-9a-f]+"$', written.body["etag"]))
+        self.assertEqual(client.learning.corrections("learner").body["text"], corrections)
 
 
 if __name__ == "__main__":

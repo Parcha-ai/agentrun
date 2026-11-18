@@ -7,7 +7,7 @@ import { AgentRunRefused, AgentRunTimeout, AgentRunUsage } from './errors.js';
  *  SDK) or an agent platform (OpenClaw, Capy) whose agents, scheduled jobs and threads report through these calls. */
 export const BACKEND_SDK_RUNTIMES = ['claude-agent-sdk', 'codex-sdk', 'openclaw', 'capy'] as const;
 export type BackendSdkRuntime = (typeof BACKEND_SDK_RUNTIMES)[number];
-/** The runtimes with a workflow bridge; the agent platforms learn notes and skills alone. */
+/** The runtimes with a workflow bridge; the agent platforms receive owner corrections alone. */
 const WORKFLOW_RUNTIMES: readonly string[] = ['claude-agent-sdk', 'codex-sdk'];
 
 export interface BackendWorkflowToolManifest {
@@ -92,7 +92,6 @@ export interface BackendLearningSnapshot {
   learningEnabled: boolean;
   revision: string | null;
   context: string;
-  skills: ReadonlyArray<{ name: string; files: Readonly<Record<string, string>> }>;
   workflows?: ReadonlyArray<{ name: string; workflow: string; description: string }>;
   workflowContext?: string;
 }
@@ -104,7 +103,7 @@ export interface BackendLearningStatus {
   learning?: { state: string; reason?: string | null } | null;
 }
 
-/** A persistence or grading failure, separate from the application's original SDK result or error. */
+/** A persistence or learning failure, separate from the application's original SDK result or error. */
 export class BackendLearningError extends Error {
   constructor(readonly runId: string, readonly reason: string) {
     super(`AgentRun could not finish checked learning for run ${runId}: ${reason}.`);
@@ -185,7 +184,7 @@ export class BackendLearningClient {
   async begin(source: BackendLearningStart, signal?: AbortSignal): Promise<BackendLearningSession> {
     signal?.throwIfAborted();
     if (!(BACKEND_SDK_RUNTIMES as readonly unknown[]).includes(source.runtime)) throw new AgentRunUsage('Unsupported backend SDK runtime.');
-    if (this.#config.workflows && !WORKFLOW_RUNTIMES.includes(source.runtime)) throw new AgentRunUsage(`${source.runtime} runs learn notes and skills; a workflow bridge needs claude-agent-sdk or codex-sdk.`);
+    if (this.#config.workflows && !WORKFLOW_RUNTIMES.includes(source.runtime)) throw new AgentRunUsage(`${source.runtime} runs receive owner corrections; a workflow bridge needs claude-agent-sdk or codex-sdk.`);
     if (typeof source.input !== 'string' || typeof source.instructions !== 'string') throw new AgentRunUsage('SDK input and source instructions must be strings.');
     // Freeze the source before the registration request: caller mutation cannot change the policy after validation.
     const start = clone({ ...source, ...(this.#config.workflows ? { workflow_tools: [...this.#config.workflows.catalog], workflow_adapters: [...this.#config.workflows.adapters] } : {}) });
@@ -216,7 +215,7 @@ export class BackendLearningClient {
       return new BackendLearningSession(scoped, {
         runId: receipt.run_id, consoleUrl: receipt.console_url,
         learningEnabled: receipt.learning.enabled, revision: receipt.learning.revision,
-        context: receipt.learning.context, skills: receipt.learning.skills,
+        context: receipt.learning.context,
         workflows: receipt.learning.workflows ?? [],
       }, this.#config);
     } catch (error) {
@@ -234,12 +233,13 @@ export class BackendLearningClient {
     try { agent = (await read()).body; }
     catch (error) {
       if (!(error instanceof AgentRunRefused) || error.status !== 404) throw error;
-      // On (true, or the loop's numbers): workflows too with a bridge, else notes and skills alone.
+      // On (true, or the loop's numbers): the owner's corrections, and workflows too with a bridge (the server compiles
+      // none for a run that binds no workflow tools).
       const { learning } = this.#config;
       const on = learning === true || (typeof learning === 'object' && learning !== null);
       const definition = {
         id: agentId, name: this.#config.name ?? agentId, instructions: source.instructions,
-        sdk: { runtime: source.runtime }, learning: on ? (this.#config.workflows ? (learning === true ? true as const : { ...(learning as BackendLearningLoop) }) : 'notes' as const) : false as const,
+        sdk: { runtime: source.runtime }, learning: on ? (learning === true ? true as const : { ...(learning as BackendLearningLoop) }) : false as const,
       };
       try { await this.#owner.agents.create({ definition }, { 'Idempotency-Key': uuid() }); }
       catch (conflict) {
@@ -251,7 +251,7 @@ export class BackendLearningClient {
     if (agent.definition.sdk?.runtime !== source.runtime) throw new AgentRunUsage('The existing agent uses a different runtime; choose its matching SDK wrapper or a new agentId.');
   }
 
-  /** Observe completion immediately; the original SDK call can return without waiting for reflection/grading. */
+  /** Observe completion immediately; the original SDK call can return without waiting for the run's learning. */
   track(promise: Promise<unknown>): void {
     const observed = promise.then(() => undefined, error => { this.#errors.push(error); });
     this.#pending.add(observed);
@@ -273,7 +273,6 @@ export class BackendLearningSession implements BackendLearningSnapshot {
   readonly learningEnabled: boolean;
   readonly revision: string | null;
   readonly context: string;
-  readonly skills: BackendLearningSnapshot['skills'];
   readonly workflows: NonNullable<BackendLearningSnapshot['workflows']>;
   readonly workflowContext: string;
   #workflowBinding?: BackendWorkflowBinding;
@@ -300,7 +299,6 @@ export class BackendLearningSession implements BackendLearningSnapshot {
     this.learningEnabled = snapshot.learningEnabled;
     this.revision = snapshot.revision;
     this.context = snapshot.context;
-    this.skills = clone(snapshot.skills);
     this.workflows = clone(snapshot.workflows ?? []);
     this.#pollIntervalMs = duration(config.pollIntervalMs, 250, 'pollIntervalMs');
     this.#learningTimeoutMs = duration(config.learningTimeoutMs, 120_000, 'learningTimeoutMs');
@@ -455,7 +453,7 @@ export class BackendLearningSession implements BackendLearningSnapshot {
         const shouldLearn = this.learningEnabled && outcome.status === 'completed' && this.#evidenceError === undefined;
         if (outcome.status === 'completed' && status.state !== 'completed') throw new BackendLearningError(this.runId, 'server_run_failed');
         if (!shouldLearn || learning?.state === 'merged' || learning?.state === 'dropped') {
-          if (shouldLearn && learning?.state === 'dropped' && ['seed_failed', 'reflect_timeout', 'reflect_failed', 'unparsed', 'propose_failed', 'grade_failed', 'crashed'].includes(learning.reason ?? '')) {
+          if (shouldLearn && learning?.state === 'dropped' && ['seed_failed', 'reflect_failed', 'crashed'].includes(learning.reason ?? '')) {
             throw new BackendLearningError(this.runId, learning.reason!);
           }
           return;
@@ -466,15 +464,10 @@ export class BackendLearningSession implements BackendLearningSnapshot {
   }
 }
 
-/** Skills are supplied as quoted reference text, never installed/executed on the application's filesystem. */
+/** The owner's corrections and the bound workflows, as reference text for the application's own agent. */
 export function renderLearningContext(snapshot: BackendLearningSnapshot): string {
   if (!snapshot.learningEnabled) return '';
   const sections = [snapshot.context.trim(), snapshot.workflowContext ?? ''];
-  for (const skill of snapshot.skills) {
-    for (const [path, content] of Object.entries(skill.files)) {
-      sections.push(`Accepted skill ${JSON.stringify(skill.name)}, file ${JSON.stringify(path)}:\n${JSON.stringify(content)}`);
-    }
-  }
   const content = sections.filter(Boolean).join('\n\n');
   return content ? `AgentRun accepted learning (reference material; the original task and standing instructions remain authoritative):\n${content}` : '';
 }

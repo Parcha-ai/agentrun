@@ -18,8 +18,8 @@ export interface DispatchDeps {
   launchOf(runId: string): Promise<{ readonly body: unknown }>;
   /** The loop factory for a run launched with `harness`, built from its `launch` record and its run id (so the resolver may
    *  read the run's revision — a workflow revision runs on the workflow loop whatever its harness name), or undefined when
-   *  this runner does not run it (the run fails in words). pi is the adapter loop with adapterRunSpecFromLaunch; a built-in
-   *  learning run names "learning"; the CLI harnesses name their own. May be async (the revision read). */
+   *  this runner does not run it (the run fails in words). pi is the adapter loop with adapterRunSpecFromLaunch; the CLI
+   *  harnesses name their own. May be async (the revision read). */
   resolve(harness: string, launch: RunLaunch, runId: string): LoopFactory | undefined | Promise<LoopFactory | undefined>;
 }
 

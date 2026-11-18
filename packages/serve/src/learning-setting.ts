@@ -1,4 +1,4 @@
-// An agent definition's `learning`: true, false, "notes", or an object, which is on (as true) with the loop's numbers set
+// An agent definition's `learning`: true, false, or an object, which is on (as true) with the loop's numbers set
 // on it. Every number of the loop lives here, on the agent, each with a default: none is an engine constant.
 //   compile_after (N): the agent's job compiles into a workflow once it has this many completed agent runs;
 //   agree_min (A): the compiled draft is checked once on the inputs of those N runs, and promoted only when, of the inputs
@@ -29,7 +29,7 @@ export type CheckLoop = Required<Pick<LearningLoop, "compile_after" | "agree_min
 /** The audit's numbers (runner/audit.ts). */
 export type AuditLoop = Required<Pick<LearningLoop, "audit_every" | "audit_every_later" | "audit_later_after" | "hold_window" | "hold_disagree" | "stop_window">>;
 /** A definition's `learning`, as kept on an agentic revision. */
-export type LearningSetting = boolean | "notes" | LearningLoop;
+export type LearningSetting = boolean | LearningLoop;
 
 export const COMPILE_AFTER_DEFAULT = 20;
 export const AGREE_MIN_DEFAULT = 0.8;
@@ -54,8 +54,8 @@ const AUDIT_WORDS: Record<(typeof AUDIT_KEYS)[number], string> = {
 
 const isLoop = (value: unknown): value is LearningLoop => value !== null && typeof value === "object" && !Array.isArray(value);
 
-/** Whether `learning` has the agent's runs learn workflows too (true, or an object): never "notes", false or absent. */
-export const learnsWorkflowsOf = (learning: unknown): boolean => learning === true || isLoop(learning);
+/** Whether `learning` has the agent's runs learn (true, or an object): never false or absent. */
+export const learnsOf = (learning: unknown): boolean => learning === true || isLoop(learning);
 
 /** The loop's numbers for a revision's `learning`: its object's, each one it leaves out at its default. */
 export function loopOf(learning: unknown): CheckLoop {
@@ -74,10 +74,10 @@ export function auditLoopOf(learning: unknown): AuditLoop {
 }
 
 /** What is wrong with a definition's `learning`, in words naming the field (`at` its path), or undefined when it is one
- *  of true, false, "notes" or an object of the loop's numbers. */
+ *  of true, false or an object of the loop's numbers. */
 export function learningSettingIssue(value: unknown, at = "learning"): string | undefined {
-  if (typeof value === "boolean" || value === "notes") return undefined;
-  if (!isLoop(value)) return `${at} is true, false, "notes" or an object of the loop's numbers ({${LOOP_KEYS.map((key) => `${key}?`).join(", ")}}, on with those set)`;
+  if (typeof value === "boolean") return undefined;
+  if (!isLoop(value)) return `${at} is true, false or an object of the loop's numbers ({${LOOP_KEYS.map((key) => `${key}?`).join(", ")}}, on with those set)`;
   const other = Object.keys(value).find((key) => !(LOOP_KEYS as readonly string[]).includes(key));
   if (other !== undefined) return `${at}.${other} is not one of the loop's numbers: ${LOOP_KEYS.join(", ")}`;
   const { compile_after: after, agree_min: agree, alone_min: alone } = value as Record<string, unknown>;

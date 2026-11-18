@@ -106,38 +106,34 @@ test("asked again for a run whose end-of-run turn already answered, the step is 
   assert.deepEqual(turns, [INPUT, "What did you learn?"], "the CLI was asked once");
 });
 
-test("an unparsed answer is asked again once: the runner's reflect hook on a CLI run re-asks in the same session, says why, and proposes the second answer", async (t) => {
+test("a draft the checks refuse is asked again in the same session: the runner's reflect hook on a CLI run says why, and commits the second draft", async (t) => {
   const { createReflectHook } = await import("../dist/runner/reflect-hook.js");
-  const { parseReflection } = await import("../dist/learn/index.js");
-  const skill = (fence) => `${fence}skill find-policies\n---\nname: find-policies\ndescription: Find a store's refund policy\n---\n# Find policies\n\nOpen /policies/ first.\n${fence}`;
+  const flow = JSON.stringify({ v: 2, name: "find-policies", schemas: {}, root: { node: "chain", steps: [] } });
+  const block = `\`\`\`\`workflow find-policies\n---\ndescription: Find a store's refund policy\n---\n${flow}\n\`\`\`\``;
   const opened = await stores({ runners: 1 });
   await queue(opened.server, "run-1");
   const turns = [];
+  const checks = [{ errors: ["workflows/find-policies/workflow.json: its dry run failed"] }];
+  const committed = [];
   const hook = createReflectHook({
     facts: async () => ({ learns: true, costUsd: 0 }),
-    promptFacts: async () => ({ active: 0, tools: [] }),
-    asked: async () => ({ asked: [INPUT] }),
-    check: async ({ turn }) => {
-      const parsed = parseReflection(turn.answer);
-      if (!parsed.ok) return parsed.reason === "empty" ? { state: "dropped", reason: "empty" } : { state: "dropped", reason: "unparsed", detail: parsed.detail };
-      return { state: "proposed", notes: parsed.notes.length, skills: parsed.skills?.length ?? 0, workflows: 0, proposal: { skills: parsed.skills } };
-    },
-    newRunId: () => "run-1-learning",
+    feedback: async () => [],
+    correctionRefused: async () => [],
+    compileFacts: async () => ({ mode: "new", reference: "REF", traces: [], tools: [], judges: false }),
+    checkDraft: async ({ draft }) => checks.shift() ?? { errors: [], kept: { name: draft.name, files: [{ path: "workflows/find-policies/workflow.json", text: flow }] }, digest: "d1" },
+    commit: async (input) => (committed.push(input), { ok: true, commit: "c1" }),
   });
-  // The first answer opens its skill with three backticks (out of format), the second with four.
-  const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop: loopWith(turns, hook, [skill("```"), skill("````")]), name: "runner-a", ...TIMING });
+  const runner = startRunner({ store: observed(opened.runners[0], recorder()), createLoop: loopWith(turns, hook, [block, block]), name: "runner-a", ...TIMING });
   t.after(() => runner.close());
   await ended(opened.server);
-  // The learning run it queued is claimed by the same runner, whenever it is: once it has ended, run-1's turns are still
-  // only run-1's (#2343 review: it must never count in them).
-  await until(async () => (await opened.server.runs.get("run-1-learning"))?.state === "ended", "the learning run ran too", 10_000);
-  assert.equal(turns.length, 3,`the job, the end-of-run turn and its one re-ask: ${JSON.stringify(turns)}`);
-  assert.match(turns[2], /^Your answer could not be read: a skill's block must open with four backticks/, "the re-ask says why, in the parser's words");
+  assert.equal(turns.length, 3, `the job, the compile turn and its one re-ask: ${JSON.stringify(turns)}`);
+  assert.match(turns[1], /^One more turn: write this agent's job as a learned workflow\./);
+  assert.match(turns[2], /^Your workflow draft did not pass the checks \(attempt 2 of 4\)/, "the re-ask says why, in the checks' words");
+  assert.match(turns[2], /its dry run failed/);
   const kept = await opened.server.learning.proposal("run-1");
-  assert.equal(kept?.proposal?.state, "proposed", JSON.stringify(kept?.proposal));
-  assert.equal(kept.proposal.skills, 1, "the skill is proposed");
-  assert.equal(kept.turn.answer, skill("````"), "the turn kept is the second answer");
-  assert.ok(await opened.server.runs.get("run-1-learning"), "one learning run queued");
+  assert.equal(kept?.proposal?.state, "merged", JSON.stringify(kept?.proposal));
+  assert.deepEqual(kept.proposal.compiled.attempts.map((attempt) => attempt.ok), [false, true]);
+  assert.deepEqual(committed.map(({ draft }) => draft?.name), ["find-policies"], "the second draft is committed, once");
 });
 
 /** A CLI stand-in whose session survives its runner: what it was sent and what it finished are in the session's own
@@ -190,7 +186,7 @@ function durableCli(log, hold) {
   };
 }
 
-test("a CLI feedback round whose runner died mid look-back: the next claim settles that turn, never recovers it as the job's, and asks it again once (#2668)", async (t) => {
+test("a CLI feedback round whose runner died mid end-of-run turn: the next claim settles that turn, never recovers it as the job's, and asks it again once (#2668)", async (t) => {
   const opened = await stores({ runners: 2 });
   await queue(opened.server, "run-1");
   const log = { sent: [], recovered: [], settled: [] };
@@ -219,10 +215,10 @@ test("a CLI feedback round whose runner died mid look-back: the next claim settl
     await second?.close();
   });
   const once = await ended(opened.server);
-  // A grade's look-back round: the run opens again on its words, and the claim goes to its end-of-run turn alone.
+  // A grade's correction round: the run opens again on its words, and the claim goes to its end-of-run step alone.
   round = 2;
-  await opened.server.runs.reopen("run-1", { kind: "steer", body: { text: "Wrong: the answer is 41.", feedback: { round: "look_back", correct: false } } });
-  await until(async () => log.sent.some((text) => /graded/.test(text)), "the round's look-back was sent", 10_000);
+  await opened.server.runs.reopen("run-1", { kind: "steer", body: { text: "Wrong: the answer is 41.", feedback: { round: "correction", correct: false } } });
+  await until(async () => log.sent.some((text) => /graded/.test(text)), "the round's end-of-run turn was sent", 10_000);
   first.kill();
   // The first claim's lease runs out for the next runner at once.
   opened.clock.skewMs += 60_000;

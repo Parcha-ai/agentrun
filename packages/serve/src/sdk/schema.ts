@@ -60,9 +60,8 @@ const errors = Object.fromEntries(
 const learning = object({
   enabled: { type: "boolean" },
   revision: { type: ["string", "null"] },
-  context: text,
-  skills: { type: "array", items: object({ name: text, files: { type: "object", additionalProperties: text } }) },
-  workflows: { type: "array", items: object({ name: text, workflow: text, description: text }), description: "Approved, capability-compatible workflows pinned to this run; empty without a backend workflow bridge or when learning is notes-only or Off." },
+  context: { ...text, description: "The agent's corrections.md as the run reads it under # Learned; empty when Off or nothing is learned yet." },
+  workflows: { type: "array", items: object({ name: text, workflow: text, description: text }), description: "Active, capability-compatible learned workflows pinned to this run; empty without a backend workflow bridge or when learning is Off." },
 });
 export const SDK_PATHS = {
   "/agents/{agent_id}/sdk-runs": {
@@ -113,7 +112,7 @@ export const SDK_PATHS = {
       operationId: "getSdkRun",
       summary: "Read SDK run and learning state",
       description:
-        "Use the scoped token returned by startSdkRun. A completed task can still have proposed learning awaiting its separate grader. The learning field is the ordinary run learning view.",
+        "Use the scoped token returned by startSdkRun. A completed task can still be reflecting while its compile turn runs. The learning field is the ordinary run learning view.",
       parameters: [id("run_id")],
       responses: {
         200: response(

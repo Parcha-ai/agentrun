@@ -42,6 +42,8 @@ describe("StartHere", () => {
     for (const name of ["Hello, AgentRun", "Summarize a web page", "Plan a task"]) expect(host.textContent).toContain(name);
     const tries = [...host.querySelectorAll("button")].filter((b) => b.textContent === "Try it");
     expect(tries).toHaveLength(3);
+    // No card is singled out: every Try it is the same button.
+    expect(new Set(tries.map((t) => t.className)).size).toBe(1);
     await act(async () => tries[1]!.click());
     expect(tried).toEqual(["web"]);
     expect(host.textContent).toContain("Starting…");

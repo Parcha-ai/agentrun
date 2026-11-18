@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import { workflowShape } from "@/lib/workflowDoc";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { buildAgentPrompt, editAgentPrompt, runAgentPrompt } from "@/lib/codingAgentPrompts";
+import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 
 export type AgentsListActions = { onOpen?: (id: string) => void; onEdit?: (id: string) => void; onNew?: () => void; onRuns?: (id: string) => void; onLearning?: (id: string) => void; onArchive?: (id: string, archive: boolean) => void };
 
@@ -24,8 +25,8 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
   const shown = (agents ?? []).filter((a) => `${a.definition.name} ${a.definition.description ?? ""}`.toLowerCase().includes(q.toLowerCase()));
   return (
     <section className="flex min-h-full flex-col">
-      <header className="flex min-h-12 flex-wrap items-center justify-between gap-3 border-b px-5 py-2">
-        <h1 className="caps flex items-center gap-2 text-body font-semibold"><Brain className="size-4" aria-hidden />{archived ? "Archived agents" : "Connected agents"}</h1>
+      <header className={cn(pageToolbarClass, "flex-wrap justify-between gap-3 px-5")}>
+        <h1 className={pageTitleClass}><Brain className="size-4" aria-hidden />{archived ? "Archived agents" : "Connected agents"}</h1>
         <div className="ml-auto flex flex-wrap items-center justify-end gap-2">{handoff}{!archived && <CodingAgentAction variant="primary" label="Build an agent" prompt={buildAgentPrompt(location.origin)} playgroundHref="#/playground?operation=create-agent" />}</div>
       </header>
       <div className="p-5 md:p-6">
@@ -64,7 +65,7 @@ function AgentCard({ agent: a, actions }: { agent: Agent; actions: AgentsListAct
   const archived = !!a.archived_at;
   const native = nativeReadinessOf(a);
   const sdk = backendSdkOf(a.definition);
-  // Its learned items that wait for its owner's OK (the list's own read: each agent's `learning.pending`); nothing at 0.
+  // Its learned workflows that wait for its owner's OK (the list's own read: each agent's `learning.pending`); nothing at 0.
   const waiting = waitingOf(a);
   return (
     <li className={cn("flex flex-col border p-5 transition-colors hover:border-border-strong", archived && "opacity-70")}>

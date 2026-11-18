@@ -1,7 +1,7 @@
 # Learning bench job: release notes for one repo's successive tags (acme/lantern, a Slack bot), each step's PRs pasted
 # with no GitHub access, as the template's evals/learned-style pastes them. 01 teaches the owner's wording ("agent",
 # not "bot"), learned from feedback on a past draft; 05 changes it ("assistant", never "agent" or "bot"), and 06-08's
-# graders check the new word, so a learned note that was never superseded fails them.
+# graders check the new word, so a learned correction that was never replaced fails them.
 template: release-notes
 parameters: { owner: acme, repo: lantern, groups: "Slack, Admin, Status" }
 grants: []

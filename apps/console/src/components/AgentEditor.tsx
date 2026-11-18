@@ -33,6 +33,7 @@ import type { ToolSettings } from "@/lib/v2";
 import { callNodeTools, SERVER_DENY, serverDenies, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
 import { useUnsavedChangesGuard } from "@/lib/useUnsavedChangesGuard";
 import { cn } from "@/lib/utils";
+import { pageToolbarClass } from "@/components/ui/toolbar";
 import { type Approvals, NEVER_ASK_LINE } from "@/lib/v2";
 
 /** A revision as GET /v2/agents/{id}/revisions lists it; `definition` is what it holds (a workflow revision's workflow). */
@@ -288,7 +289,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex flex-wrap items-center gap-3 border-b px-5 py-4 md:px-8">
+      <header className={cn(pageToolbarClass, "flex-wrap gap-3 px-5 md:px-8")}>
         <Button size="icon" variant="ghost" aria-label="Back to agents" onClick={onBack}><ArrowLeft aria-hidden /></Button>
         <h1 className="min-w-0 flex-1 truncate font-mono text-xl font-semibold" title={creating ? undefined : d!.name}>{creating ? "New agent" : d!.name}</h1>
         <CodingAgentAction label="Use your agent" prompt={sourceOwned && agent

@@ -34,6 +34,12 @@ Route: `POST /agents`.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
+### `agentrun agents delete-agent AGENT_ID`
+
+Delete an agent another system owns.
+
+Route: `DELETE /agents/{agent_id}`.
+
 ### `agentrun agents delete-agent-archil AGENT_ID`
 
 Remove an agent's own Archil disk, and everything on it.
@@ -313,36 +319,11 @@ Route: `PUT /agents/{agent_id}/home/files/{path}`. PATH keeps its slashes.
 
 ## learning
 
-### `agentrun learning batch AGENT_ID BATCH_ID`
+### `agentrun learning corrections AGENT_ID`
 
-A learning batch's progress: rows done, right or wrong, lessons, workflow revisions, cost, the path each run took.
+The agent's corrections.md on main, with its ETag.
 
-Route: `GET /agents/{agent_id}/learning/batches/{batch_id}`.
-
-### `agentrun learning batch-cancel AGENT_ID BATCH_ID`
-
-Cancel a running learning batch.
-
-Route: `POST /agents/{agent_id}/learning/batches/{batch_id}/cancel`.
-
-### `agentrun learning batch-start AGENT_ID`
-
-Learn from rows: run the agent on each in order, with learning on, and tell it the reference answer after each.
-
-Route: `POST /agents/{agent_id}/learning/batches`.
-
-- `--answer STRING` (string, required): The column holding the reference answer.
-- `--max-cost-usd NUMBER` (number, required): Caps what the batch's runs spend (job, look-back, review turn); grades are booked and shown, uncapped.
-- `--answer-field STRING` (string): A dotted path into a JSON answer to compare, such as result.code; absent: the whole answer.
-- `--effort STRING` (string): The runs' effort, as a run's.
-- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
-- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
-
-### `agentrun learning batches AGENT_ID`
-
-The agent's learning batches, latest first.
-
-Route: `GET /agents/{agent_id}/learning/batches`.
+Route: `GET /agents/{agent_id}/learning/corrections`.
 
 ### `agentrun learning cost AGENT_ID`
 
@@ -353,15 +334,9 @@ Route: `GET /agents/{agent_id}/learning/cost`.
 - `--limit INTEGER` (integer): The latest runs to answer, each keeping its number. At most 10000.
 - `--format json|csv` (string, one of these): `csv`: the runs as CSV, columns n, run_id, started_at, path, workflow, learned_revision, cost_usd, cost_upper_bound, learning_usd, total_usd.
 
-### `agentrun learning evals AGENT_ID`
-
-The agent's eval records: the latest, and every one kept, newest first.
-
-Route: `GET /agents/{agent_id}/learning/evals`.
-
 ### `agentrun learning get AGENT_ID`
 
-What the agent has learned: its index, notes, log of changes and counts.
+What the agent has learned: its corrections, workflow drafts, log of changes and counts.
 
 Route: `GET /agents/{agent_id}/learning`.
 
@@ -375,39 +350,11 @@ Route: `GET /agents/{agent_id}/learning/log`.
 - `--limit INTEGER` (integer): At most 200.
 - `--all` (boolean, this CLI's own): every page: follows next_cursor and prints one list, its next_cursor null; stops past 1000 pages, exit 1
 
-### `agentrun learning notes AGENT_ID`
-
-A page of the agent's notes.
-
-Route: `GET /agents/{agent_id}/learning/notes`.
-
-- `--cursor STRING` (string): `next_cursor` from the previous page: opaque, read at the commit the first page was.
-- `--limit INTEGER` (integer): At most 200.
-- `--status active|superseded|retired|pending` (string, one of these): Only notes with this status.
-- `--all` (boolean, this CLI's own): every page: follows next_cursor and prints one list, its next_cursor null; stops past 1000 pages, exit 1
-
 ### `agentrun learning read AGENT_ID FILE`
 
-One note (or MEMORY.md, a skill's SKILL.md or a draft's file) on main, as text, with its ETag.
+One file of a learned workflow on main (its workflow.json or README.md), as text, with its ETag.
 
 Route: `GET /agents/{agent_id}/learning/files/{file}`.
-
-### `agentrun learning record-eval AGENT_ID`
-
-Record a held-out test of the agent: its counts and the cost a task, with learning and by hand.
-
-Route: `POST /agents/{agent_id}/learning/evals`.
-
-- `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first
-- `--name STRING` (string, required): What ran the test, one line: a bench's name and set, a script's.
-- `--n INTEGER` (integer, required): The held-out jobs the test counted: jobs the agent never learned from.
-- `--correct INTEGER` (integer, required): How many of the `n` jobs the agent with what it learned got right: 0 to `n`.
-- `--label-source STRING` (string): Where the right answers came from, one line; null (or absent) when not said.
-- `--cost-per-task-usd NUMBER` (number): The agent with what it learned: its mean cost a task, in USD; null (or absent) when not counted.
-- `--baseline-cost-per-task-usd NUMBER` (number): The agent by hand (learning off): its mean cost a task, in USD; null (or absent) when not counted.
-- `--learned-revision STRING` (string): The learning folder's commit the test ran from; null (or absent) when not said.
-- `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
-- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
 ### `agentrun learning replay AGENT_ID NAME DIGEST REPLAY_ID`
 
@@ -417,11 +364,11 @@ Route: `GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/repl
 
 ### `agentrun learning retire AGENT_ID FILE`
 
-Retire a note, a skill or a workflow draft: out of every later run, kept in history.
+Retire a workflow draft: out of every later run, kept in history.
 
 Route: `POST /agents/{agent_id}/learning/files/{file}/retire`. It prints the answer's bytes as they are.
 
-- `--if-match STRING` (string): The note's ETag, as a GET answered it: an edit or a retire lands only on that version, else 412.
+- `--if-match STRING` (string): The file's ETag, as a GET answered it: the write lands only on that version, else 412.
 
 ### `agentrun learning workflow-revisions AGENT_ID NAME`
 
@@ -431,15 +378,14 @@ Route: `GET /agents/{agent_id}/learning/workflows/{name}/revisions`.
 
 - `--limit INTEGER` (integer): The latest revisions to answer. At most 50.
 
-### `agentrun learning write AGENT_ID FILE`
+### `agentrun learning write-corrections AGENT_ID`
 
-Edit a note (If-Match) or create one (If-None-Match: *).
+Replace the agent's corrections.md (If-Match).
 
-Route: `PUT /agents/{agent_id}/learning/files/{file}`. It prints the answer's bytes as they are.
+Route: `PUT /agents/{agent_id}/learning/corrections`.
 
-- `--if-match STRING` (string): The note's ETag, as a GET answered it: an edit or a retire lands only on that version, else 412.
-- `--if-none-match STRING` (string): `*`: create the note, only if the name is not taken, else 412.
-- `--text STRING` (string, required): The note's whole text, front matter included.
+- `--if-match STRING` (string, required): The file's ETag, as a GET answered it: the write lands only on that version, else 412.
+- `--text STRING` (string, required): corrections.md's whole text.
 - `--body JSON|@FILE|-` (text/markdown, text/plain, application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of text/markdown, text/plain, application/json; any other than JSON is sent as given.
 
@@ -671,9 +617,9 @@ Route: `POST /runs`.
 - `--effort low|medium|high` (string, one of these): How hard a run works. It sets the model's thinking level, and adds a short note on how to work right after the agent's instructions, on every harness: low answers directly, medium plans briefly and checks once, high plans each part, fills the gaps and reviews. A run started with none thinks at its agent revision's own thinking level, else the host's default, and gets no note.
 - `--max-cost-usd NUMBER` (number): This run's cap, for every turn of it. Default the definition's `max_cost_usd`, else the effort default.
 - `--quote-id STRING` (string): Run at a quote's terms. A different `effort` or `max_cost_usd` than the quote's is `409 quote_invalid`.
-- `--model-key STRING` (string): The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run look-back). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased by the write that ends the run's turn; never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 at `model_key` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 `model_key_required`, never a failure at its first model call.
+- `--model-key STRING` (string): The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run compile turn). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased by the write that ends the run's turn; never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 at `model_key` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 `model_key_required`, never a failure at its first model call.
 - `--workflow-first` (boolean): Whether a run of an agent that learns may start on one of its learned workflows. On (absent or true), a run whose input fits exactly one active learned workflow (its input schema has a required field, and the run's input passes it) runs that workflow first, with no turn of the agent's model: its answer is the run's answer, and if it hands the job back (it escalates, a step fails), the same run goes on with the agent, given what the workflow found. The run keeps which path it took: `workflow`, `handed_back` or `agent`. false: the agent takes the run from its first turn.
-- `--learning use` (string, one of these): `use`: the run starts from what its agent learned (its notes, learned skills and learned workflows, as a run that learns is given them), whatever its agent's `learning` says, and keeps nothing: no end-of-run turn, no proposal, no grade and no merge, at its end or after a follow-up. Its `learning` reads `seeded` while it runs, then `dropped` with reason `use`. So many runs of one agent read one learned state, frozen (a held-out evaluation). On a server whose learning is off it is given nothing, as every run there. Absent: the agent's own (`learning: true` learns). 422 not_an_option for anything else.
+- `--learning use` (string, one of these): `use`: the run starts from what its agent learned (its corrections and learned workflows, as a run that learns is given them), whatever its agent's `learning` says, and keeps nothing: no compile turn, no correction and no merge, at its end or after a follow-up. Its `learning` reads `seeded` while it runs, then `dropped` with reason `use`. So many runs of one agent read one learned state, frozen (a held-out evaluation). On a server whose learning is off it is given nothing, as every run there. Absent: the agent's own (`learning: true` learns). 422 not_an_option for anything else.
 - `--repo STRING` (string): The GitHub repository (`owner/name`) this run reaches: the one its GitHub App token is made for, so its github MCP calls are scoped to it. It must be one the agent is bound to (a repository its GitHub triggers' `accept` names on `/repository/full_name`); another is 422 at `repo` in words naming the repositories it is bound to. Absent: the agent's repository when it is bound to exactly one and the first message names none; otherwise the repository a `https://github.com/<owner>/<repo>` URL in the first message names. A run a trigger starts takes its repository from its event, and `repo` there is 422.
 - `--hold` (boolean): true: the run claims its computer and holds it for its owner. Its agent waits until POST /runs/{run_id}/start; meanwhile POST /runs/{run_id}/computer/call sends the computer protocol calls, to set a task up. After the agent's end the run keeps the computer, for the owner's calls (to check what the agent left), until POST /runs/{run_id}/computer/release; then it ends as its agent did. A stop (POST /runs/{run_id}/stop) ends the agent and keeps the computer the same way, and the run ends stopped at the release; a cancel ends the run at once and lets the computer go. Each wait lets the computer go after `hold_minutes` with no call from the owner: before the start, the run then ends cancelled. The run read's `computer.held` says where the hold is. Only for an agent whose computer is a sandbox, a desktop or a phone, never a workflow (422 `hold` not_an_option otherwise). A run that loses its runner, or whose harness restarts after a fault, loses the computer it held: it fails, and `computer.held.why` is `lost`.
 - `--hold-minutes INTEGER` (integer): With `hold: true`: how long the held computer waits with no call from its owner, before the start and after the agent's end. Absent: 30. Above 120, or without hold, is 422.
@@ -755,7 +701,7 @@ Route: `POST /runs/{run_id}/messages`.
 
 - `--idempotency-key STRING` (string): Makes a create safe to retry. The same key and body within `limits.idempotency_ttl_s` replays the first
 - `--content STRING` (string, required): At most `limits.max_message_chars`. Not only whitespace.
-- `--model-key STRING` (string): The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run look-back). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased by the write that ends the run's turn; never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 at `model_key` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 `model_key_required`, never a failure at its first model call. On a message it replaces the run's key from the run's next model request on, a turn still going included, and it is the first key of a run that started on the server's (mint one per turn); a message without one keeps the key the run holds, which is none once its last turn ended: then, where the server holds no key for the run's model, the message is 422 `model_key_required` and nothing is written.
+- `--model-key STRING` (string): The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run compile turn). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased by the write that ends the run's turn; never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 at `model_key` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 `model_key_required`, never a failure at its first model call. On a message it replaces the run's key from the run's next model request on, a turn still going included, and it is the first key of a run that started on the server's (mint one per turn); a message without one keeps the key the run holds, which is none once its last turn ended: then, where the server holds no key for the run's model, the message is 422 `model_key_required` and nothing is written.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
@@ -800,9 +746,9 @@ Route: `POST /agents/{agent_id}/runs`.
 - `--effort low|medium|high` (string, one of these): How hard a run works. It sets the model's thinking level, and adds a short note on how to work right after the agent's instructions, on every harness: low answers directly, medium plans briefly and checks once, high plans each part, fills the gaps and reviews. A run started with none thinks at its agent revision's own thinking level, else the host's default, and gets no note.
 - `--max-cost-usd NUMBER` (number): This run's cap, for every turn of it. Default the definition's `max_cost_usd`, else the effort default.
 - `--quote-id STRING` (string): Run at a quote's terms. A different `effort` or `max_cost_usd` than the quote's is `409 quote_invalid`.
-- `--model-key STRING` (string): The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run look-back). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased by the write that ends the run's turn; never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 at `model_key` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 `model_key_required`, never a failure at its first model call.
+- `--model-key STRING` (string): The run's own model key: a key for the model gateway at AGENT_MODEL_BASE_URL, such as a LiteLLM virtual key minted for this run, which every model request tied to the run carries in place of the server's own key (its turns, its subagents, its learned workflows' nodes, a workflow's model nodes, its end-of-run compile turn). AgentRun never mints, lists or revokes it. Sealed into the run's launch bound to the gateway's origin, read at each claim (a reclaim after a crash among them), erased by the write that ends the run's turn; never in its saved body, its timeline, its view, a log or an Idempotency-Key's fingerprint (a retry with a new key answers the first request's run, its first key kept). The harness, its tools and its sandbox never see it. 422 at `model_key` when the run's model never goes to that gateway (no AGENT_MODEL_BASE_URL here, a native run, or a model routed elsewhere). Absent, the run spends on the server's key for its route; where the server holds none (no AGENT_MODEL_API_KEY, none saved in Settings), a start without it is 422 `model_key_required`, never a failure at its first model call.
 - `--workflow-first` (boolean): Whether a run of an agent that learns may start on one of its learned workflows. On (absent or true), a run whose input fits exactly one active learned workflow (its input schema has a required field, and the run's input passes it) runs that workflow first, with no turn of the agent's model: its answer is the run's answer, and if it hands the job back (it escalates, a step fails), the same run goes on with the agent, given what the workflow found. The run keeps which path it took: `workflow`, `handed_back` or `agent`. false: the agent takes the run from its first turn.
-- `--learning use` (string, one of these): `use`: the run starts from what its agent learned (its notes, learned skills and learned workflows, as a run that learns is given them), whatever its agent's `learning` says, and keeps nothing: no end-of-run turn, no proposal, no grade and no merge, at its end or after a follow-up. Its `learning` reads `seeded` while it runs, then `dropped` with reason `use`. So many runs of one agent read one learned state, frozen (a held-out evaluation). On a server whose learning is off it is given nothing, as every run there. Absent: the agent's own (`learning: true` learns). 422 not_an_option for anything else.
+- `--learning use` (string, one of these): `use`: the run starts from what its agent learned (its corrections and learned workflows, as a run that learns is given them), whatever its agent's `learning` says, and keeps nothing: no compile turn, no correction and no merge, at its end or after a follow-up. Its `learning` reads `seeded` while it runs, then `dropped` with reason `use`. So many runs of one agent read one learned state, frozen (a held-out evaluation). On a server whose learning is off it is given nothing, as every run there. Absent: the agent's own (`learning: true` learns). 422 not_an_option for anything else.
 - `--repo STRING` (string): The GitHub repository (`owner/name`) this run reaches: the one its GitHub App token is made for, so its github MCP calls are scoped to it. It must be one the agent is bound to (a repository its GitHub triggers' `accept` names on `/repository/full_name`); another is 422 at `repo` in words naming the repositories it is bound to. Absent: the agent's repository when it is bound to exactly one and the first message names none; otherwise the repository a `https://github.com/<owner>/<repo>` URL in the first message names. A run a trigger starts takes its repository from its event, and `repo` there is 422.
 - `--hold` (boolean): true: the run claims its computer and holds it for its owner. Its agent waits until POST /runs/{run_id}/start; meanwhile POST /runs/{run_id}/computer/call sends the computer protocol calls, to set a task up. After the agent's end the run keeps the computer, for the owner's calls (to check what the agent left), until POST /runs/{run_id}/computer/release; then it ends as its agent did. A stop (POST /runs/{run_id}/stop) ends the agent and keeps the computer the same way, and the run ends stopped at the release; a cancel ends the run at once and lets the computer go. Each wait lets the computer go after `hold_minutes` with no call from the owner: before the start, the run then ends cancelled. The run read's `computer.held` says where the hold is. Only for an agent whose computer is a sandbox, a desktop or a phone, never a workflow (422 `hold` not_an_option otherwise). A run that loses its runner, or whose harness restarts after a fault, loses the computer it held: it fails, and `computer.held.why` is `lost`.
 - `--hold-minutes INTEGER` (integer): With `hold: true`: how long the held computer waits with no call from its owner, before the start and after the agent's end. Absent: 30. Above 120, or without hold, is 422.
@@ -847,6 +793,12 @@ Route: `GET /runs/{run_id}/timeline`.
 - `--calls whole` (string, one of these): `whole`: each `tool_use` row carries its call's arguments (`tool_input`) and each `tool_result` row the head of its output to 8000 characters (`tool_result_text`; a web call's every url, only its long texts cut), both through the run's redaction, for a reader that grades the run (a template eval). Its rows are another page sequence: a cursor (`after`, `Last-Event-ID`) from one read goes with the same `calls`.
 - `--last-event-id STRING` (string): SSE reconnect. Same meaning as `after`, and wins over it.
 - `--follow` (boolean, this CLI's own): the timeline as it changes, one page per line (NDJSON), until the run ends; resumes a dropped connection
+
+### `agentrun runs trace RUN_ID`
+
+A run's trace: each model request and tool call, with its time, tokens and cost.
+
+Route: `GET /runs/{run_id}/trace`.
 
 ### `agentrun runs unarchive RUN_ID`
 
@@ -951,8 +903,10 @@ Install AgentRun as a service of this user and start it: it keeps running after 
 
 Route: none, it runs on this machine.
 
-- `--port N` (string, this CLI's own): the port to listen on (default: the first free from 7340)
+- `--port N` (string, this CLI's own): the port to listen on (default: the first free from 7340; 7340 with --tailscale)
 - `--data DIR` (string, this CLI's own): the data directory (default ~/.agentrun)
+- `--tailscale` (boolean, this CLI's own): also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off
+- `--env KEY=VALUE` (string, this CLI's own): a local model's variable for the server (AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_PRICE), kept until KEY= removes it; repeatable
 
 ### `agentrun service logs`
 
@@ -989,7 +943,7 @@ Route: none, it runs on this machine.
 
 ### `agentrun service uninstall`
 
-Stop the service and remove it; the data directory stays.
+Stop the service and remove it, and the tailscale serve entry --tailscale added; the data directory stays.
 
 Route: none, it runs on this machine.
 

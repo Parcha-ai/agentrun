@@ -67,7 +67,7 @@ test("an unknown platform is refused at registration and names the accepted runt
 });
 
 for (const runtime of ["openclaw", "capy"]) {
-  test(`${runtime} learns notes and skills: a start with workflow_tools is refused, with nothing recorded`, async (t) => {
+  test(`${runtime} receives owner corrections: a start with workflow_tools is refused, with nothing recorded`, async (t) => {
     const { api } = await serve(t, { runner: false });
     const id = `${runtime}-workflows`;
     await register(api, id, runtime);
@@ -75,7 +75,7 @@ for (const runtime of ["openclaw", "capy"]) {
     const tools = [{ name: "mcp:backend/status", description: "Read status.", input_schema: { type: "object" }, permission: "allow" }];
     const refused = await api("POST", `/agents/${id}/sdk-runs`, { ...start, workflow_tools: tools }, headers(`${runtime}-wf`));
     assert.equal(refused.status, 422, JSON.stringify(refused.body));
-    assert.match(JSON.stringify(refused.body), /notes and skills/);
+    assert.match(JSON.stringify(refused.body), /owner corrections/);
     assert.equal((await api("GET", `/agents/${id}/runs`)).body.runs?.length ?? 0, 0, "a refused start records no run");
     const plain = await api("POST", `/agents/${id}/sdk-runs`, start, headers(`${runtime}-plain`));
     assert.equal(plain.status, 201, "the same start without a catalog is accepted");

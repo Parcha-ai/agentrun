@@ -79,7 +79,7 @@ export async function servedTimelineRows(deps: ServedTimelineDeps, store: Store,
       const receipts = await decisionsOverStore(snapshot, runId, context).catch(() => null);
       const decisionShown = { redact: (text: string) => redacted(text, values), hold: 6 * values.reduce((most, value) => Math.max(most, value.length), 0) + 16 };
       const own = receipts === null || receipts.length ? withDecisions(rows, receipts, decisionShown, { ended }) : rows;
-      // The run's learning end, once its learning was proposed, merged or dropped (runLearningEnd).
+      // The run's learning end, once its learning merged or dropped (runLearningEnd).
       const end = await runLearningEnd(snapshot, runId);
       // Each trigger the rows name, read once for this read: its name now, or none for one gone.
       const names = new Map<string, string | undefined>();

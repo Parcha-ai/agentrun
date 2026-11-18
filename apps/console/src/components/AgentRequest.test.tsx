@@ -480,7 +480,7 @@ describe("AgentRequest complete JSON definition edits", () => {
 
   it.each([
     ["JSON", true, false],
-    ["a Form round trip", "notes", true],
+    ["a Form round trip", { compile_after: 5 }, true],
   ] as const)("resets deleted learning and spend caps from %s, with the saved settings still cleared after a reload", async (_label, learning, form) => {
     let stored: Agent = { ...existing, definition: { ...existing.definition, learning, max_cost_usd: 2.5 } };
     const answer = (call: Call) => {
@@ -527,7 +527,7 @@ describe("AgentRequest complete JSON definition edits", () => {
   });
 
   it.each([false, true])("treats an explicit zero cap as saved when the server omits it, but still sends a changed positive cap (Form roundtrip %s)", async (throughForm) => {
-    let stored: Agent = { ...existing, definition: { ...existing.definition, learning: "notes", max_cost_usd: 2.5 } };
+    let stored: Agent = { ...existing, definition: { ...existing.definition, learning: { compile_after: 5 }, max_cost_usd: 2.5 } };
     const answer = (call: Call) => {
       if (call.method === "GET") return json(stored, 200, `"${stored.revision}"`);
       const definition = { ...(call.body as { definition: Agent["definition"] }).definition };
@@ -546,7 +546,7 @@ describe("AgentRequest complete JSON definition edits", () => {
     expect(button("Send request").disabled).toBe(false);
     await send();
     expect(writes()).toHaveLength(1);
-    expect(writes()[0].body).toMatchObject({ definition: { version: 6, learning: "notes", max_cost_usd: 0 } });
+    expect(writes()[0].body).toMatchObject({ definition: { version: 6, learning: { compile_after: 5 }, max_cost_usd: 0 } });
     expect(writes()[0].headers.get("if-match")).toBe('"rev-three"');
     expect(stored.revisions).toBe(6);
     expect(stored.definition).not.toHaveProperty("max_cost_usd");
@@ -563,7 +563,7 @@ describe("AgentRequest complete JSON definition edits", () => {
     expect(button("Send request").disabled).toBe(false);
     await send();
     expect(writes()).toHaveLength(2);
-    expect(writes()[1].body).toMatchObject({ definition: { version: 7, learning: "notes", max_cost_usd: 1.25 } });
+    expect(writes()[1].body).toMatchObject({ definition: { version: 7, learning: { compile_after: 5 }, max_cost_usd: 1.25 } });
     expect(writes()[1].headers.get("if-match")).toBe('"rev-6"');
     expect(stored.definition.max_cost_usd).toBe(1.25);
     expect(button("Send request").disabled).toBe(true);
@@ -572,7 +572,7 @@ describe("AgentRequest complete JSON definition edits", () => {
   });
 
   it.each(["learning", "max_cost_usd"] as const)("resets deleted %s without resetting the other saved setting", async (key) => {
-    const stored: Agent = { ...existing, definition: { ...existing.definition, learning: "notes", max_cost_usd: 2.5 } };
+    const stored: Agent = { ...existing, definition: { ...existing.definition, learning: { compile_after: 5 }, max_cost_usd: 2.5 } };
     await mount({ operation: "edit-agent", agentId: stored.agent_id }, call => call.method === "GET" ? json(stored, 200, '"rev-three"') : json({ ...stored, definition: (call.body as { definition: Agent["definition"] }).definition, revisions: 6 }, 200, '"rev-six"'));
     await act(async () => button("JSON").click());
     const edited = JSON.parse(control("Request JSON").value);
@@ -580,15 +580,15 @@ describe("AgentRequest complete JSON definition edits", () => {
     edited.definition.instructions = "An independent setting reset.";
     type(control("Request JSON"), JSON.stringify(edited));
     await send();
-    expect(writes()[0].body).toMatchObject({ definition: { version: 6, learning: key === "learning" ? false : "notes", max_cost_usd: key === "max_cost_usd" ? 0 : 2.5 } });
+    expect(writes()[0].body).toMatchObject({ definition: { version: 6, learning: key === "learning" ? false : { compile_after: 5 }, max_cost_usd: key === "max_cost_usd" ? 0 : 2.5 } });
   });
 
   it("keeps explicit learning and spend settings when only instructions change", async () => {
-    const stored: Agent = { ...existing, definition: { ...existing.definition, learning: "notes", max_cost_usd: 2.5 } };
+    const stored: Agent = { ...existing, definition: { ...existing.definition, learning: { compile_after: 5 }, max_cost_usd: 2.5 } };
     await mount({ operation: "edit-agent", agentId: stored.agent_id }, call => call.method === "GET" ? json(stored, 200, '"rev-three"') : json({ ...stored, definition: (call.body as { definition: Agent["definition"] }).definition, revisions: 6 }, 200, '"rev-six"'));
     type(control("Instructions"), "Keep the explicit learning and spend settings.");
     await send();
-    expect(writes()[0].body).toMatchObject({ definition: { version: 6, learning: "notes", max_cost_usd: 2.5 } });
+    expect(writes()[0].body).toMatchObject({ definition: { version: 6, learning: { compile_after: 5 }, max_cost_usd: 2.5 } });
   });
 });
 
@@ -837,12 +837,12 @@ describe("AgentRequest requested revision kind", () => {
     await mount({ operation: "edit-agent", agentId: existing.agent_id }, server.answer);
     await editJSON(definition => {
       delete definition.workflow;
-      Object.assign(definition, { instructions: "Investigate the ticket.", model: "anthropic/example-model-next", thinking: "high", learning: "notes", input_schema: { type: "object" }, output_schema: { type: "string" }, checkout: "pull_request" });
+      Object.assign(definition, { instructions: "Investigate the ticket.", model: "anthropic/example-model-next", thinking: "high", learning: { compile_after: 5 }, input_schema: { type: "object" }, output_schema: { type: "string" }, checkout: "pull_request" });
     });
     if (form) await act(async () => button("Form").click());
     await send();
     expect(server.outcomes, JSON.stringify(writes()[0]?.body)).toEqual([200]);
-    expect(writes()[0].body).toMatchObject({ definition: { version: 6, instructions: "Investigate the ticket.", model: "anthropic/example-model-next", thinking: "high", harness: "codex", learning: "notes", checkout: "pull_request", computer: { kind: "desktop", provider: "e2b" }, max_cost_usd: 2.5 } });
+    expect(writes()[0].body).toMatchObject({ definition: { version: 6, instructions: "Investigate the ticket.", model: "anthropic/example-model-next", thinking: "high", harness: "codex", learning: { compile_after: 5 }, checkout: "pull_request", computer: { kind: "desktop", provider: "e2b" }, max_cost_usd: 2.5 } });
     expect(server.current().kind).toBe("agentic");
     expect(server.current().definition).not.toHaveProperty("workflow");
     expect(button("Send request").disabled).toBe(true);

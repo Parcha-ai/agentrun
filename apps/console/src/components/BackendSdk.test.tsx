@@ -16,7 +16,7 @@ vi.mock('./CodingAgentAction', () => ({ CodingAgentAction: ({ label, prompt, pla
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ''; });
 const agent = (runtime: BackendSdkRuntime): Agent => ({ agent_id: 'backend', kind: 'agentic', revision: 'r1', revisions: 1, archived_at: null,
-  definition: { version: 1, name: 'Release backend', instructions: 'Report accurately.', sdk: { runtime }, tools: [], skills: [], learning: 'notes' }, runs: { count: 0, live: 0 } });
+  definition: { version: 1, name: 'Release backend', instructions: 'Report accurately.', sdk: { runtime }, tools: [], skills: [], learning: true }, runs: { count: 0, live: 0 } });
 const settle = async () => { for (let n = 0; n < 5; n++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); }); };
 const show = (element: React.ReactElement) => {
   const host = document.body.appendChild(document.createElement('div'));

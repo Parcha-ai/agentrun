@@ -16,7 +16,6 @@ import { agentFolderOf } from "../dist/files.js";
 import * as learning from "../dist/learning.js";
 import { LEARNED_WORKFLOW_TOOL, learnedWorkflowDescription, learnedWorkflowTool } from "../dist/learned-workflow.js";
 import { MODEL_KEYS } from "../dist/model.js";
-import { localWorkspace } from "../dist/workspace/index.js";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { entriesOf, git, resnap } from "./learn-support.mjs";
 import { agent, answerFlow, follow, scratch, serve, withEnv } from "./support.mjs";
@@ -218,17 +217,17 @@ test("R8 (guard) learned_workflow's description and input schema are as LS-07 tr
   assert.match(pathless.map((p) => p.detail).join("; "), /its output names no path: a learned workflow's output is the value at output\.path/);
 });
 
-test("R9 no run is offered fewer learned workflows for where its harness's requests go: the pin keeps no workflows_off, and the per-harness route code is gone", async (t) => {
+test("R9 no run is offered fewer learned workflows for where its harness's requests go: a run's start chooses them from its seed alone, and the per-harness route code is gone", async (t) => {
   for (const name of ["learnedRoute", "learnedWorkflowsOff", "learnedOriginOk"]) assert.equal(adapters[name], undefined, `adapters.ts exports no ${name}`);
   const data = join(await scratch(t), "agents");
   mkdirSync(data, { recursive: true });
   await folderWith(data, "pinned", flowFiles("answer", answerFlow()));
-  const runDir = join(await scratch(t), "run");
-  mkdirSync(join(runDir, "work"), { recursive: true });
   const seed = await learning.seedOf(data, "pinned");
-  // A caller that still says why it would withhold them is not heard: every learned workflow is the run's.
-  const pin = await learning.pinSeed(runDir, localWorkspace(join(runDir, "work")), seed, { budget: 8000, read: false, shown: learning.secretsShown([]), workflowsOff: "a reason no run is refused for any more" });
-  assert.deepEqual([pin.workflows, "workflows_off" in pin, pin.workflows_left_out], [["answer"], false, undefined], JSON.stringify(pin));
+  // The choice takes the seed and the host's secrets, nothing about a harness or its route: every learned workflow is
+  // the run's.
+  assert.equal(learning.chooseWorkflows.length, 2);
+  const chosen = learning.chooseWorkflows(seed, learning.secretsShown([]));
+  assert.deepEqual([chosen.flows.map(({ name }) => name), chosen.left], [["answer"], []], JSON.stringify(chosen));
 });
 
 test("R10 (guard) the harness's next request after a node request on the same model is priced against the harness's own previous request, never the node's", { timeout: 180_000 }, async (t) => {

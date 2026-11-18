@@ -11,6 +11,11 @@
  * CLI's behavior; none reaches the child unless it is listed here.
  */
 
+import { type ClaudeAgentLogin, loginEnv } from './login.js';
+
+/** What never reaches a CLI that runs on a person's login: a model URL, key or token of any kind. */
+export const LOGIN_UNSET: readonly string[] = Object.freeze(['ANTHROPIC_BASE_URL', 'ANTHROPIC_AUTH_TOKEN', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_CUSTOM_HEADERS', 'CLAUDE_CODE_USE_BEDROCK', 'CLAUDE_CODE_USE_VERTEX']);
+
 /** The `PATH` of the CLI and its commands in the VM: the image's, never the Function's. */
 export const VM_PATH = '/usr/local/bin:/usr/bin:/bin';
 
@@ -29,14 +34,19 @@ export interface DurableEnvOptions {
   tmpDir: string;
   /** The XDG cache in the VM (`dirs.cache`). */
   cacheDir: string;
-  /** Where the CLI sends model requests: the VM's model port (`SessionMachine.modelUrl`). */
-  baseUrl: string;
+  /** Where the CLI sends model requests: the VM's model port (`SessionMachine.modelUrl`). None with `login`. */
+  baseUrl?: string;
   /**
    * The key the CLI sends (`ANTHROPIC_AUTH_TOKEN`, so `authorization: Bearer
    * <key>`): the attach's model key (`SessionMachine.modelKey`). The relay
-   * admits a model request only with it, from the CLI's own process.
+   * admits a model request only with it, from the CLI's own process. None with `login`.
    */
-  token: string;
+  token?: string;
+  /**
+   * The person's own login the CLI runs on, in place of the model port: the CLI calls Anthropic itself with it, and the
+   * environment has no model URL or key at all (login.ts).
+   */
+  login?: ClaudeAgentLogin;
   /** The model, as the CLI's main and alias models. */
   model: string;
   /** The model for the CLI's small background calls (titles, summaries). Default `model`. */
@@ -86,6 +96,12 @@ export function durableEnv(options: DurableEnvOptions): Record<string, string> {
   const { home, model } = options;
   const small = options.smallModel ?? model;
   const env: Record<string, string> = { ...(options.extra ?? {}) };
+  if (options.login) {
+    // On a login, no model URL, key or token reaches the CLI, the app's own variables included: its login is its only one.
+    for (const name of Object.keys(env)) if (LOGIN_UNSET.includes(name)) delete env[name];
+  } else if (options.baseUrl === undefined || options.token === undefined) {
+    throw new Error('agentrun-harness-claude: the CLI needs its model port and key, or a login');
+  }
   Object.assign(env, {
     PATH: VM_PATH,
     HOME: home,
@@ -96,8 +112,7 @@ export function durableEnv(options: DurableEnvOptions): Record<string, string> {
     XDG_CACHE_HOME: options.cacheDir,
     XDG_DATA_HOME: `${home}/.local/share`,
     XDG_STATE_HOME: `${home}/.local/state`,
-    ANTHROPIC_BASE_URL: options.baseUrl,
-    ANTHROPIC_AUTH_TOKEN: options.token,
+    ...(options.login ? loginEnv(options.login) : { ANTHROPIC_BASE_URL: options.baseUrl, ANTHROPIC_AUTH_TOKEN: options.token }),
     ANTHROPIC_DEFAULT_OPUS_MODEL: model,
     ANTHROPIC_DEFAULT_SONNET_MODEL: model,
     ANTHROPIC_DEFAULT_HAIKU_MODEL: small,

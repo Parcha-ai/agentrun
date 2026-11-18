@@ -1,5 +1,5 @@
 // A first visit to a fresh Render server at its plain address (#2222): RENDER_EXTERNAL_URL and no AGENTRUN_PUBLIC_URL,
-// render.yaml's trusted proxies, no owner. The page opens setup, asking for the setup code, never the password's sign-in.
+// no trusted proxy (render.yaml sets none), no owner. The page opens setup, asking for the setup code, never the password's sign-in.
 // Its first session reads are answered by a gateway's 502 page, as Render's edge answers while a fresh service starts
 // (measured on a one-click create: 502 text/html from about 13 s to 84 s, then the server's JSON): the page says the
 // server is starting, never "Sign in", asks again on its own, and opens setup once the server answers.
@@ -8,7 +8,7 @@ import { check, PASSWORD, signedIn } from "../harness.mjs";
 
 export default {
   name: "setup-render",
-  server: { env: { RENDER_EXTERNAL_URL: "https://agentrun-e2e.example.test", AGENTRUN_TRUSTED_PROXIES: "uniquelocal" } },
+  server: { env: { RENDER_EXTERNAL_URL: "https://agentrun-e2e.example.test" } },
   // The page reports the 502s this flow answers itself; it checks that they are the only errors (below).
   allowsErrors: true,
   async run({ server, page, errors, origin }) {

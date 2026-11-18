@@ -16,7 +16,7 @@ Use `"capy"` for a Capy thread. One agent belongs to one runtime: a run that nam
 
 ## Report each run
 
-1. **Start.** `POST /v2/agents/{agent_id}/sdk-runs` with an `Idempotency-Key` header (one per run; a retry with the same key and body returns the same run) and `{runtime, input, instructions, model?}`. The response holds `run_id`, a `token` scoped to that run, and the `learning` to apply (context, skills and workflows; empty while learning is off).
+1. **Start.** `POST /v2/agents/{agent_id}/sdk-runs` with an `Idempotency-Key` header (one per run; a retry with the same key and body returns the same run) and `{runtime, input, instructions, model?}`. The response holds `run_id`, a `token` scoped to that run, and the `learning` to apply (owner corrections and workflows; empty while learning is off).
 2. **Events.** `POST /v2/sdk-runs/{run_id}/events` with the run token: `{sequence, events}`, sequences contiguous from 1, at most 100 events per batch. Event types are `text`, `session` (the platform's own session or thread id) and `tool` (`started`, then `completed` or `failed`, with the same `id`).
 3. **Complete.** `POST /v2/sdk-runs/{run_id}/complete` with the run token: `{status: "completed" | "failed" | "cancelled", answer, session_id?, usage?}`. `answer` is required for every status; send `""` when there is no answer to report. Usage fields are `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_write_tokens` and `cost_usd`, each optional. Set `evidence_complete: false` when some of the trace was not sent: the result is kept, and nothing is learned from it.
 
@@ -32,7 +32,7 @@ curl -sS "$AGENTRUN_BASE_URL/sdk-runs/$id/complete" -H "Authorization: Bearer $t
   -d '{"status": "completed", "answer": "Digest ready.", "usage": {"input_tokens": 1200, "output_tokens": 300}}'
 ```
 
-Learning on such an agent is notes and skills. A learned workflow needs a backend workflow bridge (the SDK wrappers' local MCP `learned_workflow` server), which the platforms don't have, so a start that carries `workflow_tools` is refused (422), and an agent set to full learning learns notes and skills.
+Such an agent receives owner corrections when learning is enabled. A learned workflow needs a backend workflow bridge (the SDK wrappers' local MCP `learned_workflow` server), which the platforms don't have, so a start that carries `workflow_tools` is refused (422), and an agent set to full learning receives owner corrections.
 
 From TypeScript, `BackendLearningClient` in `@parcha/agentrun-client` makes the same calls (`begin`, then the session's events and completion) and accepts `openclaw` and `capy` as runtimes.
 

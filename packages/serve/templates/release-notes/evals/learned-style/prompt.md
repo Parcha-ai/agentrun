@@ -1,5 +1,5 @@
 ---
-description: "The owner's preference \"agent, not bot\" lives only in a seeded learned note, never in the message; PR titles and bodies say bot throughout, and the draft never does. Pass: 3 of 3."
+description: "The owner's preference \"agent, not bot\" lives only in a seeded correction, never in the message; PR titles and bodies say bot throughout, and the draft never does. Pass: 3 of 3."
 runs: 3
 max_cost_usd: 0.15
 ---

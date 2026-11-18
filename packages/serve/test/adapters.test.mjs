@@ -337,7 +337,7 @@ test("npx is told by where serve's files are: under npm's _npx cache, not a proj
 });
 
 test("OpenCode's skills are checked as it is handed them: a skill set at its 1 MiB limit as written, which servedSkill's quotes put past it, is refused by the check, so systemOf never hands it on to grow past the limit in opencodeOf", async () => {
-  const [{ builtinHarness }, { servedSkill }, { SKILL_BYTES }] = await Promise.all([import("../dist/harness-table.js"), import("../dist/learn/skills.js"), import("@parcha/agentrun-kernel")]);
+  const [{ builtinHarness }, { servedSkill }, { SKILL_BYTES }] = await Promise.all([import("../dist/harness-table.js"), import("../dist/learn/workflow-draft.js"), import("@parcha/agentrun-kernel")]);
   const check = await builtinHarness("opencode").skillCheck();
   const head = "---\nname: big\ndescription: A large reference\n---\n";
   const at = [{ name: "big", files: { "SKILL.md": head + "x".repeat(SKILL_BYTES - Buffer.byteLength(head)) } }];

@@ -9,7 +9,8 @@
 //  - each child runs in its own process group, which kill() and close() end whole, and dies with this process: started
 //    with a watch on its parent (./host's parentWatched, inside the host's confinement), so a host that is SIGKILLed,
 //    and runs no close, leaves no CLI behind;
-//  - the model proxy (@parcha/agentrun-kernel/host, with the Anthropic policy) starts with the machine and stops with it.
+//  - the model proxy (@parcha/agentrun-kernel/host, with the Anthropic policy) starts with the machine and stops with it;
+//    a machine whose CLI runs on a person's own login (login.ts) has none.
 import { spawn as spawnChild, type ChildProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdirSync } from "node:fs";
@@ -46,8 +47,9 @@ export interface LocalMachineOptions {
   confine?: ConfineChild;
   /** How a child is tied to this process (default what the machine supports; tests force the shim). */
   parentWatch?: ParentWatch;
-  /** The model proxy: the runner's hooks, the provider's price, and the session's tools and limits. */
-  proxy: {
+  /** The model proxy: the runner's hooks, the provider's price, and the session's tools and limits. None when the CLI
+   *  runs on a person's own login (login.ts): the machine then starts no proxy, and holds no model URL or key. */
+  proxy?: {
     hooks: ModelProxyHooks;
     tools: readonly string[];
     /** The CLI's own tools the session has (`Skill`, with skills; `WebSearch`), offered beside its tools. */
@@ -162,7 +164,8 @@ const inside = (path: string, base: string): boolean => path === base || path.st
 export function localMachine(options: LocalMachineOptions): AcquireMachine {
   const from = options.env ?? process.env;
   return async ({ ctx, model }) => {
-    if (!model) throw new Error("agentrun-harness-claude: the harness gave the machine no model route");
+    if (options.proxy && !model) throw new Error("agentrun-harness-claude: the harness gave the machine no model route");
+    if (!options.proxy && model) throw new Error("agentrun-harness-claude: a machine with no model proxy takes no model route");
     const base = normalize(options.dir);
     if (!isAbsolute(base)) throw new Error("agentrun-harness-claude: the session directory must be an absolute path");
     mkdirSync(base, { recursive: true, mode: 0o700 });
@@ -173,40 +176,42 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
     // git stops at the session's directory and, for a workspace outside it, at the workspace's parent.
     const ceiling = [base, ...(inside(root, base) ? [] : [dirname(root)])].join(":");
 
-    const route = model.options;
     const key = randomBytes(32).toString("base64url");
     // What the provider does with a token count (a free route it may not serve), said once per session, a status only.
     let counted = false;
     // Whether the provider has refused the session's key (one paid 401): said once.
     let refused = false;
-    const proxy = await startModelProxy({
+    const route = model?.options;
+    const po = options.proxy;
+    // No proxy on a person's own login: the CLI calls its provider itself.
+    const proxy = !po || !route ? undefined : await startModelProxy({
       policy: anthropicPolicy({
         model: route.models.model,
         ...(route.models.smallModel ? { smallModel: route.models.smallModel } : {}),
-        tools: options.proxy.tools,
-        ...(options.proxy.builtins?.length ? { builtins: options.proxy.builtins } : {}),
-        ...(options.proxy.maxOutputTokens ? { maxOutputTokens: options.proxy.maxOutputTokens } : {}),
-        ...(options.proxy.webSearch ? { webSearch: true, ...(options.proxy.webSearchAllowance !== undefined ? { webSearchAllowance: options.proxy.webSearchAllowance } : {}) } : {}),
-        ...(options.proxy.auth ? { auth: options.proxy.auth } : {}),
-        ...(options.proxy.toolSearch ? { toolSearch: true } : {}),
-        onThinkingDisabled: ({ model: main }) => options.proxy.log?.("claude-agent: thinking.disabled", { model: main }),
+        tools: po.tools,
+        ...(po.builtins?.length ? { builtins: po.builtins } : {}),
+        ...(po.maxOutputTokens ? { maxOutputTokens: po.maxOutputTokens } : {}),
+        ...(po.webSearch ? { webSearch: true, ...(po.webSearchAllowance !== undefined ? { webSearchAllowance: po.webSearchAllowance } : {}) } : {}),
+        ...(po.auth ? { auth: po.auth } : {}),
+        ...(po.toolSearch ? { toolSearch: true } : {}),
+        onThinkingDisabled: ({ model: main }) => po.log?.("claude-agent: thinking.disabled", { model: main }),
       }),
-      hooks: options.proxy.hooks,
+      hooks: po.hooks,
       model: route.models.model,
       origin: route.target,
       credential: async () => (await route.credential()) ?? "",
-      ...(options.proxy.price ? { price: withWebSearches(options.proxy.price) } : {}),
-      ...(options.proxy.headers ? { headers: options.proxy.headers } : {}),
-      ...(options.proxy.log ? { log: options.proxy.log } : {}),
+      ...(po.price ? { price: withWebSearches(po.price) } : {}),
+      ...(po.headers ? { headers: po.headers } : {}),
+      ...(po.log ? { log: po.log } : {}),
       // The provider stopped the turn's answer on its content filter: no retry of it can pass, so the turn ends at once.
       onFiltered: (message) => ctx.halt?.(new Error(message)),
       onResponse: ({ path, status }) => {
         if (path !== "/v1/messages/count_tokens" || counted) return;
         counted = true;
-        options.proxy.log?.("claude-agent: the provider answered count_tokens", { status });
+        po.log?.("claude-agent: the provider answered count_tokens", { status });
       },
       fetch: async (input, init) => {
-        const answer = await (options.proxy.fetch ?? fetch)(input, init);
+        const answer = await (po.fetch ?? fetch)(input, init);
         // A paid request the provider answers 401 is the key refused: said to the harness once, with the provider's words
         // (what of its body comes within REFUSAL_WAIT_MS, never waiting on one that does not end).
         if (answer.status === 401 && route.onKeyRefused && !refused && new URL(String(input instanceof Request ? input.url : input)).pathname.endsWith("/v1/messages")) {
@@ -232,8 +237,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
       root,
       dirs,
       signal: lost.signal,
-      modelUrl: proxy.url,
-      modelKey: key,
+      ...(proxy ? { modelUrl: proxy.url, modelKey: key } : {}),
       notes: [],
       from,
       start,
@@ -246,7 +250,7 @@ export function localMachine(options: LocalMachineOptions): AcquireMachine {
         for (const proc of children) proc.kill("SIGKILL");
         await Promise.all([...children].map((p) => p.exited));
         lost.abort();
-        await proxy.close();
+        await proxy?.close();
       },
     };
     return brandMachine(machine);

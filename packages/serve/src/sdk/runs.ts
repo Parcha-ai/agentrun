@@ -9,12 +9,11 @@ import type { AgentEntry } from "../agents-store.js";
 import { uuidv7 } from "../agents-store.js";
 import { launchBody, type RunLaunch } from "../run-launch.js";
 import { learningStartFor, type StartDeps } from "../runs-over-store.js";
-import { learnsWorkflowsOf } from "../learning-setting.js";
-import { chooseWorkflows, type LearnedWorkflow, chooseSkills, learningFolderOf, readerOf, seedFrom, secretsShown } from "../learning.js";
-import { NATIVE_GRADE_INSTRUCTION_BYTES } from "../learn/grade.js";
+import { chooseWorkflows, type LearnedWorkflow, learningFolderOf, seedAt, secretsShown } from "../learning.js";
+import { INSTRUCTION_EVIDENCE_BYTES } from "../native/instructions.js";
 import { secretRedactor } from "../runner/redact.js";
 import { redactedOutput } from "../key-refusal.js";
-import { decodedStrings, draftProblems, servedSkill } from "../learn/skills.js";
+import { decodedStrings, draftProblems } from "../learn/workflow-draft.js";
 
 import { sdkWorkflowManifest, sdkDraftTools } from "./workflows.js";
 
@@ -53,16 +52,15 @@ export type SdkInbox = {
   created_at: number;
   expires_at: number;
   batches: { sequence: number; events: SdkEvent[] }[];
-  /** Exact approved skill files delivered by the start receipt; absent on older SDK runs. */
-  learning_skills?: SdkSeedSkill[];
   /** Exact approved executable workflows delivered by the start receipt. */
   learning_workflows?: LearnedWorkflow[];
   completion?: SdkCompletion;
   /** Internal terminal admission fence. No later evidence can be newly acknowledged after this CAS wins. */
   closed?: "expired" | "failed" | "cancelled";
 };
-type SdkSeedSkill = { name: string; files: Record<string, string> };
 const keyOf = (id: string) => `sdk-run:${id}`;
+/** The settings key an SDK run's record is kept under (the run's delete with its agent's: agent-delete.ts). */
+export const sdkRunKey = keyOf;
 const TEXT_LIMIT = 128_000,
   BATCH_LIMIT = 256_000,
   TOTAL_LIMIT = 4_000_000;
@@ -200,7 +198,7 @@ export class SdkRuns {
     body: Record<string, unknown>,
     deps: StartDeps,
     origin: RunOrigin | undefined,
-    checkGrade: (model: string) => Promise<void>,
+    compile: { readonly model?: string; check(model: string): Promise<void> },
     consoleOrigin: string,
   ) {
     only(body, ["runtime", "input", "instructions", "model", "workflow_tools", "workflow_adapters"]);
@@ -213,9 +211,9 @@ export class SdkRuns {
     if (entry.agent.archivedAt !== null) throw new ApiError("agent_archived", "This SDK agent is archived.");
     if (body.runtime !== binding.runtime) refuse("The SDK runtime must match the registered agent.");
     // A learned workflow runs through a wrapper's local MCP bridge. A platform runtime has none, so accepting its
-    // catalog would pin workflows nothing on that platform can execute: it learns notes and skills instead.
+    // catalog would pin workflows nothing on that platform can execute: it receives owner corrections instead.
     if (workflow && !SDK_WORKFLOW_RUNTIMES.includes(binding.runtime))
-      refuse(`${binding.runtime} runs learn notes and skills; workflow_tools needs a backend workflow bridge (claude-agent-sdk or codex-sdk).`);
+      refuse(`${binding.runtime} runs receive owner corrections; workflow_tools needs a backend workflow bridge (claude-agent-sdk or codex-sdk).`);
     const input = text(body.input, "input"),
       instructions = text(body.instructions, "instructions");
     const model = body.model === undefined ? undefined : text(body.model, "model", 256);
@@ -236,32 +234,28 @@ export class SdkRuns {
         "agent_not_runnable",
         "AgentRun cannot enforce a spend cap on an external SDK. Configure the budget in the backend SDK and remove this managed run cap.",
       );
-    const learning = await learningStartFor(
-      deps,
-      entry,
-      pinned.revision,
-      { ...revisionBody, ...(!workflow && learnsWorkflowsOf(revisionBody.learning) ? { learning: "notes" } : {}) } as never,
-      { content: cleanedInput },
-    );
+    const learning = await learningStartFor(deps, entry, pinned.revision, revisionBody as never, {
+      noWorkflows: !workflow,
+      ...(compile.model ? { model: compile.model } : {}),
+    });
     if (learning) {
-      if (Buffer.byteLength(instructions) > NATIVE_GRADE_INSTRUCTION_BYTES)
+      if (Buffer.byteLength(instructions) > INSTRUCTION_EVIDENCE_BYTES)
         refuse(
-          "Original SDK instructions exceed the 64 KiB grading evidence limit. Keep learning off or provide a complete policy within that limit.",
+          "Original SDK instructions exceed the 64 KiB learning evidence limit. Keep learning off or provide a complete policy within that limit.",
         );
-      if (!learning.gradeModel)
+      if (!learning.model)
         throw new ApiError(
           "agent_not_runnable",
-          "Self-improving SDK runs need a server grading model and its model key. Configure the grading model or turn self-improving off.",
+          "Self-improving SDK runs need a server model and its model key to compile workflows. Configure the model or turn self-improving off.",
         );
-      await checkGrade(learning.gradeModel);
+      await compile.check(learning.model);
       if (learning.seedFailed)
         throw new ApiError(
           "unavailable",
           "The learning seed could not be read. Retry after restoring the agent learning folder.",
         );
     }
-    const skills = learning ? await this.selectedSkills(entry.agent.id, learning.seed) : [];
-    const workflows = learning && !learning.notesOnly && workflow ? await this.selectedWorkflows(entry.agent.id, learning.seed, workflow) : [];
+    const workflows = learning && !learning.noWorkflows && workflow ? await this.selectedWorkflows(entry.agent.id, learning.seed, workflow) : [];
     const cleaned = this.clean({ instructions, ...(model ? { model } : {}) });
     const runId = uuidv7();
     const launch: RunLaunch = {
@@ -275,7 +269,7 @@ export class SdkRuns {
         instructions: cleaned.instructions,
         ...(cleaned.model ? { model: cleaned.model } : {}),
       },
-      ...(learning ? { learning: { ...learning, skills: skills.map((skill) => skill.name), workflows: workflows.map((flow) => flow.name) } } : {}),
+      ...(learning ? { learning: { ...learning, workflows: workflows.map((flow) => flow.name) } } : {}),
     };
     const now = Date.now();
     await this.store.settings.put(keyOf(runId), {
@@ -283,7 +277,6 @@ export class SdkRuns {
       created_at: now,
       expires_at: now + 3_600_000,
       batches: [],
-      learning_skills: skills,
       learning_workflows: workflows,
     } satisfies SdkInbox);
     try {
@@ -301,18 +294,7 @@ export class SdkRuns {
     const run = await this.store.runs.get(runId);
     if (!run) throw new ApiError("not_found", "SDK run not found.");
     const launch = (await this.store.runs.launch(runId)).body as unknown as RunLaunch;
-    let inbox = await sdkInbox(this.store, runId);
-    if (inbox.learning_skills === undefined) {
-      // Older runs did not persist their delivered files. Pin a receipt from their original
-      // commit now; do not claim these reconstructed files were supplied on an earlier attempt.
-      const skills = launch.learning ? await this.selectedSkills(run.agentId, launch.learning.seed) : [];
-      await this.modify(runId, (row) =>
-        row.learning_skills === undefined ? { ...row, learning_skills: skills } : row,
-      );
-      inbox = await sdkInbox(this.store, runId);
-    }
-    const skills = inbox.learning_skills ?? [];
-    // Older SDK receipts never included executable workflows. Do not retroactively deliver one.
+    const inbox = await sdkInbox(this.store, runId);
     const workflows = inbox.learning_workflows ?? [];
     const shown = secretsShown(this.secrets(), { local: true });
     if (
@@ -320,15 +302,7 @@ export class SdkRuns {
       workflows.some((flow) => {
         const decoded = decodedStrings(flow.workflow);
         return shown.holds(flow.name) || shown.holds(flow.description) || shown.holds(flow.workflow) || decoded === "too_deep" || decoded.some(shown.holds);
-      }) ||
-      skills.some(
-        (skill) =>
-          shown.holds(skill.name) ||
-          Object.entries(skill.files).some(
-            ([path, text]) =>
-              shown.holds(path) || shown.holds(text) || (path === "SKILL.md" && shown.holds(servedSkill(text))),
-          ),
-      )
+      })
     )
       throw new ApiError(
         "unavailable",
@@ -343,7 +317,6 @@ export class SdkRuns {
         enabled: !!launch.learning,
         revision: launch.learning?.seed ?? null,
         context: launch.learning?.section ?? "",
-        skills,
         workflows,
       },
     };
@@ -351,7 +324,7 @@ export class SdkRuns {
   private async selectedWorkflows(agentId: string, revision: string | null, binding: NonNullable<ReturnType<typeof sdkWorkflowManifest>>): Promise<LearnedWorkflow[]> {
     const folder = learningFolderOf(this.data, agentId);
     try {
-      const seed = await seedFrom(revision, readerOf(folder.workspace));
+      const seed = await seedAt(folder.workspace, revision);
       const { flows } = chooseWorkflows(seed, secretsShown(this.secrets(), { local: true }));
       const dsl = await import("@parcha/agentrun-dsl");
       const { tools, gated, deniedBy } = sdkDraftTools(binding.workflow_tools);
@@ -363,16 +336,6 @@ export class SdkRuns {
         return true;
       });
     } finally { await folder.end(); }
-  }
-  private async selectedSkills(agentId: string, revision: string | null): Promise<SdkSeedSkill[]> {
-    const folder = learningFolderOf(this.data, agentId);
-    try {
-      const seed = await seedFrom(revision, readerOf(folder.workspace));
-      const { taken } = await chooseSkills(folder.workspace, seed, [], secretsShown(this.secrets(), { local: true }));
-      return taken.map((skill) => ({ name: skill.name, files: { ...skill.files } }));
-    } finally {
-      await folder.end();
-    }
   }
   private async modify(runId: string, change: (row: SdkInbox) => SdkInbox, limit = TOTAL_LIMIT): Promise<void> {
     for (let retry = 0; retry < 20; retry++) {

@@ -23,7 +23,7 @@ export type NeedsYouProps = {
   failedAll?: number;
   /** Runs at work now. */
   live: readonly Run[];
-  /** The active agents whose learned items wait for the owner's OK (GET /v2/agents, each one's `learning.pending` above
+  /** The active agents whose learned workflows wait for the owner's OK (GET /v2/agents, each one's `learning.pending` above
    *  0), each with how many: approved on its Learning tab. */
   learning?: readonly { agent_id: string; name: string; pending: number }[];
   agentName: (id: string) => string;

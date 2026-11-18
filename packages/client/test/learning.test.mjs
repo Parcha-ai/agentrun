@@ -17,7 +17,7 @@ function service(options = {}) {
     if (path === '/v2/agents' && init.method === 'POST') { exists = true; return json({ agent_id: 'backend' }, 201); }
     if (path === '/v2/agents/backend/sdk-runs') return options.startError
       ? json({ error: { code: 'agent_not_runnable' } }, 422)
-      : json({ run_id: 'sdk-run', agent_id: 'backend', token: 'scoped-token', console_url: 'https://console.example/#/runs/sdk-run', learning: { enabled: options.enabled ?? false, revision: 'seed-revision', context: 'Approved note.', skills: [{ name: 'lookup', files: { 'SKILL.md': 'Read the lookup first.' } }] } });
+      : json({ run_id: 'sdk-run', agent_id: 'backend', token: 'scoped-token', console_url: 'https://console.example/#/runs/sdk-run', learning: { enabled: options.enabled ?? false, revision: 'seed-revision', context: '- Read the lookup first.' } });
     if (path === '/v2/sdk-runs/sdk-run/events') return options.eventsError
       ? json({ error: { code: 'unavailable' } }, 503)
       : json({ accepted: true });
@@ -39,7 +39,7 @@ test('registers only missing agents with explicit opt-in; leaves existing owner 
   await begin(client);
   const creations = server.requests.filter(r => r.path === '/v2/agents');
   assert.equal(creations.length, 1);
-  assert.deepEqual(creations[0].body, { definition: { id: 'backend', name: 'backend', instructions: 'Backend policy', sdk: { runtime: 'codex-sdk' }, learning: 'notes' } });
+  assert.deepEqual(creations[0].body, { definition: { id: 'backend', name: 'backend', instructions: 'Backend policy', sdk: { runtime: 'codex-sdk' }, learning: true } });
   assert.equal(server.requests.some(r => r.method === 'PUT' || r.method === 'PATCH'), false);
   const defaults = service({ exists: false });
   await begin(new BackendLearningClient(defaults.config));
@@ -79,8 +79,8 @@ test('sends original source separately, uses only scoped run credentials, and se
   await assert.rejects(session.event({ type: 'text', text: 'Too late' }), /after completion/);
 });
 
-test('flush waits for the independent learning verdict after SDK execution completes', async () => {
-  const server = service({ enabled: true, status: n => ({ run_id: 'sdk-run', state: 'completed', learning: { state: n < 3 ? 'proposed' : 'merged', reason: null } }) });
+test('flush waits for the run\'s learning to close after SDK execution completes', async () => {
+  const server = service({ enabled: true, status: n => ({ run_id: 'sdk-run', state: 'completed', learning: { state: n < 3 ? 'reflecting' : 'merged', reason: null } }) });
   const client = new BackendLearningClient(server.config);
   const session = await begin(client);
   client.track(session.complete({ status: 'completed', answer: 'Done' }));
@@ -126,11 +126,11 @@ test('an oversized result preserves successful task status with an explicit plac
 });
 
 test('learning failures and timeouts surface through flush, while legitimate rejected proposals do not', async () => {
-  for (const reason of ['grade_failed', 'checker']) {
+  for (const reason of ['reflect_failed', 'checker']) {
     const server = service({ enabled: true, status: () => ({ run_id: 'sdk-run', state: 'completed', learning: { state: 'dropped', reason } }) });
     const client = new BackendLearningClient(server.config);
     client.track((await begin(client)).complete({ status: 'completed', answer: 'Done' }));
-    if (reason === 'grade_failed') await assert.rejects(client.flushLearning(), /grade_failed/);
+    if (reason === 'reflect_failed') await assert.rejects(client.flushLearning(), /reflect_failed/);
     else await client.flushLearning();
   }
   const server = service({ status: () => ({ run_id: 'sdk-run', state: 'processing' }) });
@@ -140,13 +140,13 @@ test('learning failures and timeouts surface through flush, while legitimate rej
   assert.equal(server.requests.filter(r => r.path.endsWith('/complete')).length, 1);
 });
 
-test('context rendering includes accepted skills only when self-improving is enabled', () => {
-  const snapshot = { learningEnabled: true, revision: 'rev', context: 'Accepted note', skills: [{ name: 'lookup', files: { 'SKILL.md': 'Use lookup', 'references/schema.txt': 'Schema' } }] };
+test('context rendering includes the corrections and workflow context only when self-improving is enabled', () => {
+  const snapshot = { learningEnabled: true, revision: 'rev', context: '- Keep the report short.', workflowContext: 'Workflow release-status is bound.' };
   const text = renderLearningContext(snapshot);
-  assert.match(text, /Accepted note/);
-  assert.match(text, /Use lookup/);
-  assert.match(text, /references\/schema.txt/);
+  assert.match(text, /Keep the report short/);
+  assert.match(text, /Workflow release-status is bound/);
   assert.equal(renderLearningContext({ ...snapshot, learningEnabled: false }), '');
+  assert.equal(renderLearningContext({ ...snapshot, context: '', workflowContext: '' }), '', 'nothing learned: no context');
 });
 
 for (const runtime of ['openclaw', 'capy']) test(`${runtime} is a backend runtime: registered and started under its own name`, async () => {
@@ -168,6 +168,6 @@ test('an unknown backend runtime is refused before any request', async () => {
 for (const runtime of ['openclaw', 'capy']) test(`${runtime} with a workflow bridge is refused before any request`, async () => {
   const server = service({ runtime });
   const workflows = { catalog: [], adapters: [] };
-  await assert.rejects(new BackendLearningClient({ ...server.config, workflows }).begin({ runtime, input: 'x', instructions: 'y' }), /notes and skills/);
+  await assert.rejects(new BackendLearningClient({ ...server.config, workflows }).begin({ runtime, input: 'x', instructions: 'y' }), /owner corrections/);
   assert.equal(server.requests.length, 0);
 });
