@@ -116,14 +116,16 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
       const content = (given as { content?: unknown }).content;
       const handed = previous && entry.revision?.kind === "agentic" && typeof content === "string" ? await previousResultOf(store, deps, trigger) : "";
       const input = handed ? { ...given, content: `${content}${handed}` } : given;
-      // The target's cap, else the agent's default as it stands now: a run a trigger starts is never uncapped (capped).
+      // The target's cap, else the agent's default as it stands now: a run a trigger starts is never uncapped (capped),
+      // but a connected agent's, which its own CLI's limits keep and AgentRun can't cap (NATIVE_CAP_UNSUPPORTED).
+      const native = Boolean(nativeOf(entry.revision?.body));
       const run = await startRun(
         store,
         deps.start,
         entry,
         { input, ...(target.max_cost_usd !== undefined ? { max_cost_usd: target.max_cost_usd } : {}), ...(target.effort ? { effort: target.effort } : {}) },
         // Titled from the trigger (the engine's titleOf: "<Source> <name>"), never from its input, a sender's markup.
-        { trigger, origin: { key: trigger.firing_key }, capped: true, from, ...(title ? { title } : {}) },
+        { trigger, origin: { key: trigger.firing_key }, capped: !native, from, ...(title ? { title } : {}) },
       );
       return { run_id: run.id };
     },

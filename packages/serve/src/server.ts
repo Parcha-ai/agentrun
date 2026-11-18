@@ -3219,6 +3219,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** A run of `entry`'s agent from a create's body, checked as POST /agents/{id}/runs checks it: that route's, and a
    *  trigger's firing's, which names itself as the run's `trigger`. Under `origin`, a key that already started a run
    *  gets that run (the agent store's run_origins). */
+  /** `capped`: the run must have a cap (a trigger's), its own or else its agent's default. */
   /** `from`: who the run's first message is from when the person did not write it (a trigger's firing). */
   async function startRunOf(entry: AgentEntry, body: Json, options: StartOptions = {}): Promise<RunRow> {
     // Every check the old start made, in the same order and words, now lives in the run write half (runs-over-store.startRun,

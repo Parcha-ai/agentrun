@@ -487,8 +487,6 @@ export interface StartOptions {
   /** The run's title when its starter names one (a trigger's: "<Source> <name>"), else it is made from its input. */
   readonly title?: string;
   readonly origin?: RunOrigin;
-  /** The run must have a cap (a trigger's), its own or else its agent's default. A native run needs none: it takes no cap
-   *  (StartDeps.runnable refuses one). */
   readonly capped?: boolean;
   readonly from?: MessageOrigin;
 }
@@ -668,7 +666,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   if (wrong.length) throw deps.told(invalid(await deps.explainRun(wrong, body, revision)));
   // The run's own cap, else the agent's default: the caller chose its own.
   const cap = typeof body.max_cost_usd === "number" ? body.max_cost_usd : rbody.maxCostUsd;
-  if (capped && cap === undefined && !native) throw invalid([{ field: "max_cost_usd", reason: "missing", message: "Every run a trigger starts is capped: give the trigger's target a max_cost_usd or set the agent's." }]);
+  if (capped && cap === undefined) throw invalid([{ field: "max_cost_usd", reason: "missing", message: "Every run a trigger starts is capped: give the trigger's target a max_cost_usd or set the agent's." }]);
   const place = resolvePlace(rbody.place as Place | undefined, deps.fallbackPlace(revision.kind, revision.kind === "agentic" ? (rbody.tools ?? []) : []));
   // Checked as pinned: an earlier revision with no pin is pinned now, once (StartDeps.pinFirst); one that could not be, as
   // its server could not be listed, is refused with the rest (runnable).
