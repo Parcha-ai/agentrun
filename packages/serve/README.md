@@ -1172,8 +1172,8 @@ not advertised. AgentRun sends native tools and `reasoning_effort`; it does not 
 its measured text-tools caching workaround. Existing `openrouter/particle-ai/particle-1` definitions and the code-review
 template keep their OpenRouter route.
 
-Supported scope is Pi agentic runs, workflow model nodes (including nested learned workflows) and learning grades
-through Pi's existing local proxy. Codex, Claude Agent and OpenCode do not support this direct provider. Particle's
+Supported scope is Pi agentic runs and workflow model nodes (including nested learned workflows) through Pi's
+existing local proxy. Codex, Claude Agent and OpenCode do not support this direct provider. Particle's
 [Responses API](https://docs.particle.ai/responses) is WebSocket-only; it does not implement HTTP `POST /v1/responses`.
 Pointing `AGENT_MODEL_BASE_URL` at Particle's global or US API is therefore refused with setup instructions. This
 integration currently uses the global endpoint and regular service only; it does not expose regional routing, Flex,

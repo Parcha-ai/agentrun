@@ -11,7 +11,7 @@ estimates, not Particle's account bill. Missing or malformed usage fails with un
 do not silently resend a paid request. Pi claims with a Particle route disable automatic conversation retries,
 including mixed-provider claims with a Particle subagent tier.
 
-The direct route supports Pi, workflow model nodes (including nested learned workflows) and grades. Side calls inherit
+The direct route supports Pi and workflow model nodes (including nested learned workflows). Side calls inherit
 the live port's model metadata; calls with no conversation ID use route-local cache affinity. HTTP Responses gateways
 and CLI harnesses are unsupported; configuring Particle as `AGENT_MODEL_BASE_URL` is refused with setup instructions.
 Live validation requires a key and explicit spend authorization; see the server README's Direct Particle-1 section.
