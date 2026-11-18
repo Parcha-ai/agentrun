@@ -4,11 +4,12 @@
 // the runner lends, `io.writer`): the agent over stdio in a private HOME, the host's tools, exactly those `spec.tools`
 // names, as one loopback MCP server, and each permission request for a tool of the agent's own through the host's gate.
 // Its model is the agent's: a plan-billed agent's requests never reach the host, so the adapter bounds the run itself
-// (the recipe's maxTurns and maxToolCalls); a proxy-billed one's go through the host's proxy (the `proxy` option, S3).
+// (the recipe's maxTurns and maxToolCalls); a proxy-billed one's go through the host's proxy (the `proxy` option), which
+// asks the session's booking (`io.models`) before each paid request and books it once it answers.
 import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import { toolSchemaProblems } from "@parcha/agentrun-kernel";
-import type { AdapterEvent, AdapterSession, AgentAdapter, GateCall, TurnStatus } from "@parcha/agentrun-kernel";
+import type { AdapterEvent, AdapterSession, AgentAdapter, GateCall, ModelPort, TurnStatus } from "@parcha/agentrun-kernel";
 import { abortedOutcome, openDrive, pendingSubmissions, SessionHalt, type Drive } from "@parcha/agentrun-kernel/kernel";
 import { bridgeTool, recoveryNote, settleTurn, transcriptOf } from "@parcha/agentrun-kernel/process";
 import { serialWriter, type ParentWatch } from "@parcha/agentrun-kernel/host";
@@ -31,15 +32,29 @@ export interface AcpAdapterOptions {
   parentWatch?: ParentWatch;
   /** The environment the child's allowlist (PATH, LANG, TZ) reads. Default process.env. */
   env?: Readonly<Record<string, string | undefined>>;
-  /** Proxy billing: what each agent process gets to reach the host's model proxy, closed with it. Required for a recipe
-   *  billed `proxy`; the proxy itself is the host's (S3). */
-  proxy?: () => Promise<{ env: Record<string, string>; close(): Promise<void> }>;
+  /** Proxy billing: what each agent process gets to reach the host's model proxy (its variables), closed with it, started
+   *  on the session's booking. Required for a recipe billed `proxy` (Goose's is `gooseProxy`). */
+  proxy?: AcpProxy;
   /** How long an MCP call waits for the agent's tool_call that announces it. Default 10 s. */
   callIdWaitMs?: number;
   /** How long the agent may take to start and open its session. Default 60 s. */
   startMs?: number;
   log?: (message: string, fields?: Record<string, unknown>) => void;
 }
+
+/** What a proxy-billed agent process's proxy is started for: its session's booking and tools, and its drive's stop. */
+export interface AcpProxySession {
+  /** The session's booking (`SessionIO.models`): every paid request is asked about before it leaves and booked once it
+   *  answers, the runner's cap and books for every harness. */
+  readonly models: ModelPort;
+  /** The host's tools, by the names the session has them under. */
+  readonly tools: readonly string[];
+  /** Ends the agent's drive: its turn ends failed in `reason`'s words. */
+  halt(reason: unknown): void;
+}
+
+/** A proxy for one agent process: the variables that point it at the proxy, and the proxy's close. */
+export type AcpProxy = (session: AcpProxySession) => Promise<{ env: Record<string, string>; close(): Promise<void> }>;
 
 /** The adapter's event for a harness live event, if it has one. */
 function adapterEvent(event: unknown): AdapterEvent | undefined {
@@ -94,7 +109,7 @@ export function acpAdapter(options: AcpAdapterOptions): AgentAdapter {
         ...(options.confine ? { confine: options.confine } : {}),
         ...(options.parentWatch ? { parentWatch: options.parentWatch } : {}),
         ...(options.env ? { env: options.env } : {}),
-        ...(options.proxy ? { proxy: options.proxy } : {}),
+        ...(options.proxy ? { proxy: (drive: { halt(reason: unknown): void }) => options.proxy!({ models: io.models, tools: spec.tools.map((tool) => tool.name), halt: drive.halt }) } : {}),
         ...(options.callIdWaitMs !== undefined ? { callIdWaitMs: options.callIdWaitMs } : {}),
         ...(options.startMs !== undefined ? { startMs: options.startMs } : {}),
         ...(options.log ? { log: options.log } : {}),

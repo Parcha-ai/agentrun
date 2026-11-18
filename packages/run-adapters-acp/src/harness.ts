@@ -75,8 +75,9 @@ export interface AcpHarnessOptions {
   env?: Readonly<Record<string, string | undefined>>;
   /** The host's gate (SessionIO.gate). Absent: every call runs. */
   gate?: (call: GateCall) => Promise<GateAnswer>;
-  /** Proxy billing: what each agent process gets to reach the host's model proxy (its variables), closed with it. */
-  proxy?: () => Promise<{ env: Record<string, string>; close(): Promise<void> }>;
+  /** Proxy billing: what each agent process gets to reach the host's model proxy (its variables), closed with it.
+   *  `halt` ends the drive the process serves. */
+  proxy?: (drive: { halt(reason: unknown): void }) => Promise<{ env: Record<string, string>; close(): Promise<void> }>;
   callIdWaitMs?: number;
   startMs?: number;
   log?: (message: string, fields?: Record<string, unknown>) => void;
@@ -435,7 +436,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     try {
       if (recipe.billing.kind === "proxy") {
         if (!options.proxy) throw new Error("acp: proxy billing needs the adapter's proxy option");
-        proxy = await options.proxy();
+        proxy = await options.proxy({ halt: (reason) => ctx.halt?.(reason) });
         // A stop while the proxy started: the drive's end ran before there was a proxy to close. It is closed here, and
         // the agent is never started.
         if (signal.aborted) {
