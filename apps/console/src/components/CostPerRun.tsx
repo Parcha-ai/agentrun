@@ -260,13 +260,15 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
               ? <circle key={p.run_id} cx={x(p.at)} cy={y(p.total_usd)} r={i === active ? 0 : 2.5} className="fill-none stroke-muted-foreground" strokeWidth={1.25} />
               : <circle key={p.run_id} cx={x(p.at)} cy={y(p.total_usd)} r={i === active ? 0 : 3} className={cn(pathOf(p.path).fill)} fillOpacity={0.65} />)}
             {before && <path d={`M${M.left},${y(before.mean_usd)}H${M.left + plotW}`} className="stroke-muted-foreground" strokeWidth={1.5} strokeDasharray="6 4" />}
+            {/* The takeover on the left edge of its run's slot, as its promotion's flag line and the mix's line: one line for
+                one moment, never half a run off the P beside it. The level after starts there too. */}
             {takeover && (
-              <g>
-                <path d={`M${x(takeover.n)},${T - 4}V${T + H}`} className="stroke-chart-workflow" strokeWidth={1.5} />
-                <Label x={x(takeover.n) + (markerLeft ? -6 : 6)} y={T + 6} anchor={markerLeft ? "end" : "start"}>Workflow took over, run {takeover.n}</Label>
+              <g data-testid="takeover">
+                <path d={`M${x(takeover.n) - slot / 2},${T - 4}V${T + H}`} className="stroke-chart-workflow" strokeWidth={1.5} />
+                <Label x={x(takeover.n) - slot / 2 + (markerLeft ? -6 : 6)} y={T + 6} anchor={markerLeft ? "end" : "start"}>Workflow took over, run {takeover.n}</Label>
               </g>
             )}
-            {afterFrom !== null && s.after && <path d={`M${x(afterFrom)},${y(s.after.mean_usd)}H${M.left + plotW}`} className="stroke-foreground" strokeWidth={1} strokeDasharray="2 3" />}
+            {afterFrom !== null && s.after && <path d={`M${x(afterFrom) - slot / 2},${y(s.after.mean_usd)}H${M.left + plotW}`} className="stroke-foreground" strokeWidth={1} strokeDasharray="2 3" />}
             <path d={line} fill="none" className="stroke-foreground" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
             {levels.map((l) => (
               <text key={l.key} data-testid="level-label" x={M.left + plotW + 6} y={l.at} dy="0.32em" className={cn("text-label", l.key === "after" ? "fill-foreground font-semibold" : "fill-muted-foreground")}>{l.words}</text>

@@ -343,6 +343,19 @@ describe("the loop on the cost chart", () => {
     expect(rows[1]).toContain("21P Promotedsort-invoicea12596cChecked on 20 inputs of the agent's own runs: 18 answered alone (90%, 70% needed), 17 of those said what the agent said (94%, 80% needed), 2 handed back");
     expect(text(host)).toContain("Markers: New revision · run 18");
   });
+  it("draws the takeover and its promotion as one line: both on the left edge of the takeover run's slot, as the mix does", () => {
+    // The takeover is the bill's promoted run (21 here): its line and the P flag's line are one, never half a run apart.
+    const host = draw(sample, true, 900, promotions);
+    const xOf = (d: string | null | undefined) => Number(/^M([\d.]+),/.exec(d ?? "")?.[1]);
+    const takeover = xOf(host.querySelector('[data-testid="takeover"] path')?.getAttribute("d"));
+    const promote = xOf(host.querySelector('[data-testid="marker-promote"] path')?.getAttribute("d"));
+    expect(Number.isFinite(takeover)).toBe(true);
+    expect(Math.abs(takeover - promote)).toBeLessThan(0.11);
+    // Left of run 21's own dot, never on it.
+    const dots = [...host.querySelectorAll<SVGCircleElement>("svg[aria-hidden] circle[r='3']")].map((c) => Number(c.getAttribute("cx")));
+    const run21 = dots[sample.runs.filter((r) => r.total_usd !== null && r.path !== "replay").findIndex((r) => r.n === 21)]!;
+    expect(takeover).toBeLessThan(run21);
+  });
   it("draws no marker lane without records", () => {
     const host = draw(sample);
     expect(host.querySelector('[data-testid="marker-promote"]')).toBeNull();
