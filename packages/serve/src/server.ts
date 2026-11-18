@@ -415,6 +415,9 @@ export type ServeOptions = {
   /** A test's seam: awaited at each step's point of DELETE /agents/{id} (agent-delete.ts AgentDeleteStep), so a throw
    *  there stops the delete as a crash would. */
   agentDeleteAt?: (step: AgentDeleteStep, agentId: string) => void | Promise<void>;
+  /** A test's seam: awaited with a request's path and answer once its work under an Idempotency-Key is done, before the
+   *  answer is kept, so a test can hold a request there while a DELETE /agents/{id} runs. */
+  beforeKeep?: (path: string, answer: unknown) => void | Promise<void>;
   /** How long DELETE /agents/{id} waits for the agent's cancelled runs to end (default 30 s), then 409 runs_in_flight. */
   agentDeleteWaitMs?: number;
   /** A test's seam: the folder the template packages are read from, in place of the package's own (templates.ts). */
@@ -2263,13 +2266,28 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       .then((done) => (done ? log?.(logLine("agent_computer", { agent: agentId, ...("deleted" in done ? { deleted: done.deleted } : { failed: done.failed }) })) : undefined))
       .catch((error: unknown) => log?.(logLine("agent_computer", { agent: agentId, failed: error instanceof Error ? error.message : String(error) })));
   };
-  /** The answers kept under idempotency keys (the in-memory map and its file) that `names` picks, by the request's path and
-   *  the answer's body, dropped and the file written again: a deleted agent's and its runs' (agent-delete.ts). The file is
-   *  written every time, dropped or not: a save that failed before left the file holding answers memory no longer has,
+  /** The runs and agents a delete forgot the kept answers of (forgetKept), as "run:<id>" or "agent:<id>", with when: kept
+   *  as long as a request under a key could still be at work (IDEMPOTENCY_TTL_S). */
+  const forgotten = new Map<string, number>();
+  /** Whether a kept answer, by its request's path and its body, names run or agent `id`. */
+  const namesForgotten = (kind: "run" | "agent", id: string, path: string, body: unknown): boolean =>
+    path.startsWith(`/${kind}s/${id}/`) || (isObject(body) && body[kind === "run" ? "run_id" : "agent_id"] === id);
+  /** Whether an answer, by its request's path and its body, names a run or an agent a delete forgot. */
+  const keptForgotten = (path: string, body: unknown): boolean => {
+    const named = /^\/(runs|agents)\/([^/]+)\//.exec(path);
+    if (named && forgotten.has(`${named[1] === "runs" ? "run" : "agent"}:${named[2]}`)) return true;
+    if (!isObject(body)) return false;
+    return (typeof body.run_id === "string" && forgotten.has(`run:${body.run_id}`)) || (typeof body.agent_id === "string" && forgotten.has(`agent:${body.agent_id}`));
+  };
+  /** The answers kept under idempotency keys (the in-memory map and its file) that name run or agent `id`, by the request's
+   *  path and the answer's body, dropped and the file written again: a deleted agent's and its runs' (agent-delete.ts). The
+   *  file is written every time, dropped or not: a save that failed before left the file holding answers memory no longer has,
    *  so a retry that found nothing to drop still writes it (a restart in between reads them from the file again). A
-   *  failed write throws, and the delete stops before the rows that name them go. */
-  const forgetKept = async (names: (path: string, body: unknown) => boolean): Promise<void> => {
-    for (const [slot, one] of idempotency) if (names(slot.slice(0, slot.indexOf("\n")), one.answer?.body)) idempotency.delete(slot);
+   *  failed write throws, and the delete stops before the rows that name them go. The run or agent is noted as forgotten
+   *  first (`forgotten`): a request under a key still at work when this passed keeps no answer naming it (idempotent). */
+  const forgetKept = async (kind: "run" | "agent", id: string): Promise<void> => {
+    forgotten.set(`${kind}:${id}`, Date.now());
+    for (const [slot, one] of idempotency) if (namesForgotten(kind, id, slot.slice(0, slot.indexOf("\n")), one.answer?.body)) idempotency.delete(slot);
     await keep();
   };
   const deleteInTurn = oneAtATime();
@@ -2351,13 +2369,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       await store.settings.remove(sdkRunKey(runId));
       await store.settings.remove(waitEndedKey(runId));
       await store.settings.remove(runDiskKey(runId));
-      await forgetKept((path, body) => path.startsWith(`/runs/${runId}/`) || (isObject(body) && body.run_id === runId));
+      await forgetKept("run", runId);
     },
     forgetAgent: async (agentId) => {
       // The agent's folder (its runs' folders, its home, its learning folder) and its scratch folder.
       await rm(agentFolder(data, agentId), { recursive: true, force: true });
       await rm(join(data, "scratch", agentDirName(agentId)), { recursive: true, force: true });
-      await forgetKept((path, body) => path.startsWith(`/agents/${agentId}/`) || (isObject(body) && body.agent_id === agentId));
+      await forgetKept("agent", agentId);
     },
     waitMs: options.agentDeleteWaitMs ?? 30_000,
     pollMs: 200,
@@ -2395,6 +2413,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const fingerprint = fingerprintOf(text);
     const now = Date.now();
     for (const [k, v] of idempotency) if (now - v.at > IDEMPOTENCY_TTL_S * 1000) idempotency.delete(k);
+    for (const [k, at] of forgotten) if (now - at > IDEMPOTENCY_TTL_S * 1000) forgotten.delete(k);
     const known = idempotency.get(slot);
     if (known) {
       if (known.fingerprint !== fingerprint) throw mismatch();
@@ -2409,6 +2428,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     } catch (error) {
       idempotency.delete(slot);
       throw error;
+    }
+    await options.beforeKeep?.(path, answer.body);
+    // A DELETE /agents/{id} that forgot the run or agent this answer names while the work was in flight (forgetKept): the
+    // key keeps no answer, so it never replays a deleted run, even after a restart. The request's own answer is given.
+    // Read and dropped with no wait in between, so no sweep comes between them.
+    if (keptForgotten(path, answer.body)) {
+      idempotency.delete(slot);
+      return answer;
     }
     // The work happened, so the key keeps its answer in memory even when the file write fails: a retry replays it
     // instead of doing the work twice. Only a restart before the next good save loses it, and a run's create not even
@@ -4009,13 +4036,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           ...(typeof m.workflow === "string" ? { workflow: m.workflow } : {}), ...(typeof m.workflow_digest === "string" ? { digest: m.workflow_digest } : {}),
           ...(typeof m.workflow_promotion === "number" ? { promotion: m.workflow_promotion } : {}),
         };
-        // Kept with what it asks of the run's learning (runner/feedback-round.ts): nothing, or a look-back.
-        // Its feedback round is a turn with no caller's model key: on the server's key for the run's route, else not opened.
-        const kept = gradeView(await keepGrade(store, row.agentId, grade, typeof body.label === "string" ? body.label : undefined, (launch) => !serverKeyMissing(env, { kind: "agentic", model: launch.model, native: Boolean(launch.native) })));
-        // A grade of a run its learned workflow answered alone is an audit row too (runner/audit.ts gradeRow): the hold rule
-        // reads it with the shadows'. A row not written now is logged, never the grade refused.
-        const said = (line: string) => log?.(logLine("audit", { run: row.id, said: line }));
-        await gradeRow({ store, agentId: row.agentId, revisionId: row.revisionId, context: ctx, folder: () => learningFolderOf(data, row.agentId), shown: () => learningShown(row.agentId), log: said }, row, body.correct).catch((error) => said(`the grade wrote no audit row (${(error as Error)?.message ?? error})`));
+        // The grade and its audit row are written to the agent's learning in its delete turn (agentWrite): a grade whose body
+        // came in while a DELETE ran waits for it and finds the agent gone, so nothing is written after its learning went.
+        const kept = await agentWrite(row.agentId, async () => {
+          // Kept with what it asks of the run's learning (runner/feedback-round.ts): nothing, or a look-back.
+          // Its feedback round is a turn with no caller's model key: on the server's key for the run's route, else not opened.
+          const graded = gradeView(await keepGrade(store, row.agentId, grade, typeof body.label === "string" ? body.label : undefined, (launch) => !serverKeyMissing(env, { kind: "agentic", model: launch.model, native: Boolean(launch.native) })));
+          // A grade of a run its learned workflow answered alone is an audit row too (runner/audit.ts gradeRow): the hold rule
+          // reads it with the shadows'. A row not written now is logged, never the grade refused.
+          const said = (line: string) => log?.(logLine("audit", { run: row.id, said: line }));
+          await gradeRow({ store, agentId: row.agentId, revisionId: row.revisionId, context: ctx, folder: () => learningFolderOf(data, row.agentId), shown: () => learningShown(row.agentId), log: said }, row, grade.correct).catch((error) => said(`the grade wrote no audit row (${(error as Error)?.message ?? error})`));
+          return graded;
+        });
         // Its workflow's name cut as GET /runs/{id}/learning cuts it (learningShown); withheld whole when that cut can't be
         // read (the grade is kept by then: never a shorter cut, never a refusal of a grade it kept).
         const shown = await learningShown(row.agentId).catch(() => undefined);
@@ -4170,13 +4202,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await needAgent(id);
         if (!homeWrites) throw new ApiError("unsupported_here", HOME_WRITES_OFF);
         const rel = homePath(second!, id, true);
-        const home = await homeWorkspace(id, false);
-        if (!home) throw new ApiError("not_found", "no such file");
-        // A file alone: a folder is refused by the listing; a link (never listed) by the Workspace's remove (ESCAPE).
-        if ((await entryAt(home, rel))?.kind === "dir") throw new ApiError("invalid_file_path", "the path names a directory, or runs through a file");
-        await home.remove(rel).catch((error: unknown) => {
-          if (isWorkspaceError(error, "NOT_FOUND")) throw new ApiError("not_found", "no such file");
-          homeRefusal(error);
+        // A remove is a write to the agent's home: in its delete turn (agentWrite), as a file's write is.
+        await agentWrite(id, async () => {
+          const home = await homeWorkspace(id, false);
+          if (!home) throw new ApiError("not_found", "no such file");
+          // A file alone: a folder is refused by the listing; a link (never listed) by the Workspace's remove (ESCAPE).
+          if ((await entryAt(home, rel))?.kind === "dir") throw new ApiError("invalid_file_path", "the path names a directory, or runs through a file");
+          await home.remove(rel).catch((error: unknown) => {
+            if (isWorkspaceError(error, "NOT_FOUND")) throw new ApiError("not_found", "no such file");
+            homeRefusal(error);
+          });
         });
         res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
         return void res.end();
@@ -4568,7 +4603,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await batches.read(id, second!));
       case "cancelLearningBatch":
         await needAgent(id);
-        return send(res, 200, await batches.cancel(id, second!));
+        // A cancel writes the batch's header: in the agent's delete turn (agentWrite), as every write to its learning is.
+        return send(res, 200, await agentWrite(id, () => batches.cancel(id, second!)));
       case "listLearningEvals": {
         await needAgent(id);
         // The agent's eval records (learning-evals.ts), newest first, the latest the one shown: only ever what was posted.
@@ -4657,7 +4693,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // Its replay runs are started by no caller, with no model key: none to spend on a server that holds none.
         const keyless = noServerKeyFor(env, "An owner's replay");
         if (keyless) throw new ApiError("not_continuable", keyless);
-        const started = await replayAsked(() => askReplay(replayAskOf(entry), name!, digest!, inputs as "held" | number));
+        // Reserved in the agent's promotions record, in its delete turn (agentWrite), as every write to its learning is.
+        const started = await agentWrite(id, () => replayAsked(() => askReplay(replayAskOf(entry), name!, digest!, inputs as "held" | number)));
         return send(res, 202, started, { location: `/v2/agents/${encodeURIComponent(id)}/learning/workflows/${encodeURIComponent(name!)}/revisions/${encodeURIComponent(digest!)}/replays/${started.replay}` });
       }
       case "getLearnedWorkflowReplay": {

@@ -791,3 +791,77 @@ test("an agent being deleted takes no write to its home or its learning: 409 age
   assert.deepEqual([written.status, written.body.error?.code], [404, "not_found"], JSON.stringify(written.body));
   assert.ok(!existsSync(join(data, "disk", "agents", agentDir(agentId))), "nothing of the agent is left on the disk");
 });
+
+/** `promise`, or a failure in words once `ms` have passed: a hold a test waits for that never comes fails the test then. */
+const within = (promise, ms, what) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${what}: not within ${ms} ms`)), ms).unref())]);
+
+test("a run's grade and a home file's delete sent once the agent's learning is deleted wait for the DELETE and find the agent gone: no grade or audit row is written back", { timeout: 180_000 }, async (t) => {
+  const gate = { armed: false };
+  const { api, data, store } = await serve(t, {
+    agentDeleteAt: async (at) => {
+      if (at !== "after_step_2" || !gate.armed) return;
+      gate.armed = false;
+      gate.reached();
+      await gate.held;
+    },
+  });
+  const { agentId, runId } = await finishedAgent(api);
+  const homeFile = (name) => ["/agents", agentId, "home", "files", name].join("/");
+  assert.equal((await api("PUT", homeFile("notes.md"), "kept notes")).status, 200);
+
+  // The DELETE held after step 2: its learning is gone, its runs and folders are not yet.
+  gate.armed = true;
+  const reached = new Promise((resolve) => (gate.reached = resolve));
+  gate.held = new Promise((resolve) => (gate.release = resolve));
+  const deleting = api("DELETE", `/agents/${agentId}`);
+  await within(reached, 60_000, "the DELETE reached the end of step 2");
+  const grading = api("PUT", `/runs/${runId}/grade`, { correct: true });
+  const removing = api("DELETE", homeFile("notes.md"));
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  gate.release();
+  const [deleted, graded, removed] = await Promise.all([deleting, grading, removing]);
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  assert.deepEqual([graded.status, graded.body.error?.code], [404, "not_found"], `the grade: ${JSON.stringify(graded.body)}`);
+  assert.deepEqual([removed.status, removed.body.error?.code], [404, "not_found"], `the home file's delete: ${JSON.stringify(removed.body)}`);
+  assert.deepEqual(await recordsOf(store, agentId), [], "no grade record of the deleted agent");
+  assert.ok(!existsSync(join(data, "disk", "agents", agentDir(agentId))), "nothing of the agent is left on the disk, no audit row");
+});
+
+test("an inline run's answer still being made when a DELETE forgets its run is not kept: its Idempotency-Key starts a new run, never the deleted one, after a restart too", { timeout: 180_000 }, async (t) => {
+  const hold = { armed: true };
+  const reached = new Promise((resolve) => (hold.reached = resolve));
+  hold.held = new Promise((resolve) => (hold.release = resolve));
+  const first = await serve(t, {
+    beforeKeep: async (path, answer) => {
+      if (path !== "/runs" || !hold.armed) return;
+      hold.armed = false;
+      hold.reached(answer);
+      await hold.held;
+    },
+  });
+  // The run is made and its answer built; the request is held before its answer is kept, while the DELETE runs.
+  const posting = first.api("POST", "/runs", inline("What is six times seven?"), { "idempotency-key": "in-flight" });
+  const answer = await within(reached, 60_000, "the POST reached its answer's keep");
+  await follow(first.api, answer.run_id, ["completed"]);
+  const deleted = await first.api("DELETE", `/agents/${answer.agent_id}`);
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  hold.release();
+  const made = await posting;
+  assert.equal(made.status, 202, JSON.stringify(made.body));
+  assert.equal(made.body.run_id, answer.run_id, "the request's own answer, given all the same");
+
+  const again = await first.api("POST", "/runs", inline("What is six times seven?"), { "idempotency-key": "in-flight" });
+  assert.equal(again.status, 202, JSON.stringify(again.body));
+  assert.equal(again.headers.get("idempotent-replayed"), null, "not a replay of the deleted run's answer");
+  assert.notEqual(again.body.run_id, answer.run_id, "a new run");
+  assert.notEqual(again.body.agent_id, answer.agent_id, "of a new agent");
+  await follow(first.api, again.body.run_id, ["completed"]);
+  await first.stop();
+
+  // After a restart the key replays the new run, the one it kept, never the deleted one.
+  const { api } = await serve(t, { data: first.data });
+  const later = await api("POST", "/runs", inline("What is six times seven?"), { "idempotency-key": "in-flight" });
+  assert.equal(later.status, 202, JSON.stringify(later.body));
+  assert.equal(later.headers.get("idempotent-replayed"), "true");
+  assert.equal(later.body.run_id, again.body.run_id, "the new run, kept under the key");
+});

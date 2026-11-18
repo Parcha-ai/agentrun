@@ -3038,7 +3038,9 @@ delete what it sent. `DELETE /v2/agents/{id}` deletes such an agent whole, in th
    is refused) and its triggers are turned off in the same write, so the refusal outlives a restart. From then a run of
    it, an inline run of its reference, a trigger's firing, an SDK run and a message that would open one of its finished
    runs again are `409 agent_not_runnable`, saying it is being deleted; so is a new trigger of it (off too), a trigger
-   moved to it or one of its turned on, and a write to its home or its learning. Each of its learning batches still
+   moved to it or one of its turned on, and a write to its home or its learning (a home file's write or delete, a note,
+   an eval, a run's grade, a learning batch's create or cancel, a replay). Such a write sent while a `DELETE` runs waits
+   for it, then finds the agent gone (`404`), so none lands after its learning went. Each of its learning batches still
    running is cancelled, and each of its runs still going, its learning runs included, is cancelled as
    `POST /runs/{id}/cancel` cancels it, and the delete waits until every one has ended.
 2. Its learning is deleted by the learning module: every file of its learning folder, then its promotions, grades,
@@ -3046,7 +3048,8 @@ delete what it sent. `DELETE /v2/agents/{id}` deletes such an agent whole, in th
    that work in `details.runs`.
 3. The rest: its triggers (and what each registered at its source), its saved sign-ins (and each object at its vendor),
    its own computer, its Archil disk, each run with everything kept of it (its journal, launch record, messages, origin,
-   live view, channel posts, kept learning, files and scratch folders, and the answers kept under its idempotency keys),
+   live view, channel posts, kept learning, files and scratch folders, and the answers kept under its idempotency keys;
+   a request still at work under a key when its run went keeps no answer, so a key never replays a deleted run),
    its revisions and the agent. A run whose launch named an Archil disk (`archil_disk`, the caller's) kept its folder
    there, under the agent's own folder: that folder is deleted on the disk, and the disk and everything else on it are
    kept; a disk Archil says is gone has nothing left to delete. Shared things are kept: MCP servers, keys, paired computers and uploads. What the agent owns elsewhere is
