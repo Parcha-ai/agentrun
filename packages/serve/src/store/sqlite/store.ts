@@ -11,7 +11,7 @@ import { backfillNativeCommandOwners, nativeCommandOwner, validConnectorId } fro
 import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
-import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, NATIVE_COMMANDS_INDEX, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, NATIVE_COMMANDS_INDEX, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
   AgentArchived, AgentDeleting, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -63,6 +63,7 @@ type CommandRecord = { id: number; run_id: string; kind: string; body: string; c
 type TriggerRecord = {
   id: string; agent_id: string; name: string; enabled: number; source: string; target: string; next_at: number | null; last_run_id: string | null;
   catchup_window_s: number | null; failures_in_a_row: number; disabled: string | null; max_active_runs: number | null; created_at: number; updated_at: number;
+  template_id: string | null;
 };
 type FiringRecord = {
   trigger_id: string; key: string; by: string | null; nominal_at: number | null; status: FiringStatus; at: number; run_id: string | null; reason: string | null;
@@ -98,6 +99,7 @@ const TRIGGER_PATCH: { [K in keyof TriggerPatch]-?: (value: NonNullable<TriggerP
   failuresInARow: (v) => ["failures_in_a_row", v ?? 0],
   disabled: (v) => ["disabled", v === null ? null : json(v)],
   maxActiveRuns: (v) => ["max_active_runs", v],
+  templateId: (v) => ["template_id", v],
 };
 /** `patch`'s columns, `updated_at` with them: the SET clause and its values. */
 function triggerSet(patch: TriggerPatch, at: number): { set: string; params: SqliteValue[] } {
@@ -109,7 +111,7 @@ function triggerSet(patch: TriggerPatch, at: number): { set: string; params: Sql
 const AGENT_COLUMNS = "id, name, description, current_revision, created_at, archived_at, external_ref";
 const REVISION_COLUMNS = "id, agent_id, parent_id, kind, body, skills, note, package, created_at, external_version, mcp_pin, monid_pin";
 const COMMAND_COLUMNS = "id, run_id, kind, body, created_at, taken_at, refused, tries";
-const TRIGGER_COLUMNS = "id, agent_id, name, enabled, source, target, next_at, last_run_id, catchup_window_s, failures_in_a_row, disabled, max_active_runs, created_at, updated_at";
+const TRIGGER_COLUMNS = "id, agent_id, name, enabled, source, target, next_at, last_run_id, catchup_window_s, failures_in_a_row, disabled, max_active_runs, created_at, updated_at, template_id";
 const FINAL = FINAL_STATES.map((state) => `'${state}'`).join(", ");
 /** Taken (Dialect.lockKey) by every insert of a run's command row, before it: the run's rows commit in id order, as
  *  SQLite's one writer commits them. On Postgres an id is taken at the insert and the row is seen at its commit, so two
@@ -157,7 +159,7 @@ const commandOf = (r: CommandRecord): Command => ({ id: r.id, runId: r.run_id, k
 const triggerOf = (r: TriggerRecord): TriggerRow => ({
   id: r.id, agentId: r.agent_id, name: r.name, enabled: r.enabled === 1, source: JSON.parse(r.source), target: JSON.parse(r.target), nextAt: r.next_at, lastRunId: r.last_run_id,
   catchupWindowS: r.catchup_window_s, failuresInARow: r.failures_in_a_row, disabled: r.disabled === null ? null : JSON.parse(r.disabled), maxActiveRuns: r.max_active_runs,
-  createdAt: r.created_at, updatedAt: r.updated_at,
+  createdAt: r.created_at, updatedAt: r.updated_at, templateId: r.template_id ?? null,
 });
 const json = (value: unknown): string => JSON.stringify(value ?? null);
 /** A UTF-16 surrogate standing alone (in `u` mode a whole pair is one code point, so only a lone half matches). */
@@ -361,6 +363,13 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     if (!runColumns.has("labels")) {
       if (role === "runner") throw new Error("Start the AgentRun server to add each run's labels before opening a runner. The runner does not upgrade this store.");
       await connection.write([{ sql: RUNS_LABELS }], { full: true });
+    }
+    // An earlier build of this version kept no package mark on a trigger (schema.ts TRIGGERS_TEMPLATE_ID): the server adds
+    // the column, nullable, every trigger made before reading as no package's. A runner reads each trigger through it, so
+    // it waits for that server.
+    if (!(await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('triggers')")).some((column) => column.name === "template_id")) {
+      if (role === "runner") throw new Error("Start the AgentRun server to add each trigger's package mark before opening a runner. The runner does not upgrade this store.");
+      await connection.write([{ sql: TRIGGERS_TEMPLATE_ID }], { full: true });
     }
     // The per-run viewer table was renamed browser_viewers → computer_viewers (schema.ts). Its rows are ephemeral, so none
     // migrate; the server drops a stale browser_viewers an earlier build of this version left, so none lingers beside it.
@@ -757,8 +766,8 @@ class SqliteStore implements Store {
           await refuseDeleting(tx, t.agentId);
           if (t.enabled) await refuseArchived(tx, t.agentId);
           const made = await tx.get<TriggerRecord>(
-            `INSERT INTO triggers (id, agent_id, name, enabled, source, target, next_at, catchup_window_s, max_active_runs, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${TRIGGER_COLUMNS}`,
-            t.id, t.agentId, t.name, t.enabled ? 1 : 0, json(t.source), json(t.target), t.nextAt, t.catchupWindowS, t.maxActiveRuns ?? null, at, at,
+            `INSERT INTO triggers (id, agent_id, name, enabled, source, target, next_at, catchup_window_s, max_active_runs, created_at, updated_at, template_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${TRIGGER_COLUMNS}`,
+            t.id, t.agentId, t.name, t.enabled ? 1 : 0, json(t.source), json(t.target), t.nextAt, t.catchupWindowS, t.maxActiveRuns ?? null, at, at, t.templateId ?? null,
           );
           if (t.enabled) await writeScopes(tx, t.id, scopes);
           return made;
@@ -769,9 +778,9 @@ class SqliteStore implements Store {
         const { set, params } = triggerSet(patch, now());
         // A compare-and-set (options.ifUpdatedAt): no row is changed once the trigger was updated or deleted since that read.
         // Its source too (options.ifSource, compared as the JSON text the store wrote): one millisecond's writes share an
-        // updated_at, never a source.
-        const unchanged = `${options?.ifUpdatedAt === undefined ? "" : " AND updated_at = ?"}${options?.ifSource === undefined ? "" : " AND source = ?"}`;
-        const since = [...(options?.ifUpdatedAt === undefined ? [] : [options.ifUpdatedAt]), ...(options?.ifSource === undefined ? [] : [json(options.ifSource)])];
+        // updated_at, never a source. Its agent too (options.ifAgent): none is changed once the trigger was moved to another.
+        const unchanged = `${options?.ifUpdatedAt === undefined ? "" : " AND updated_at = ?"}${options?.ifSource === undefined ? "" : " AND source = ?"}${options?.ifAgent === undefined ? "" : " AND agent_id = ?"}`;
+        const since = [...(options?.ifUpdatedAt === undefined ? [] : [options.ifUpdatedAt]), ...(options?.ifSource === undefined ? [] : [json(options.ifSource)]), ...(options?.ifAgent === undefined ? [] : [options.ifAgent])];
         const row = await db.transaction(async (tx) => {
           // Moved to another agent (its target re-aimed): one the store holds, refused in words otherwise.
           if (patch.agentId !== undefined && !(await tx.get<{ id: string }>("SELECT id FROM agents WHERE id = ?", patch.agentId))) throw new StoreConstraint(`no agent ${patch.agentId}: a trigger belongs to an agent the store holds`);
@@ -789,8 +798,10 @@ class SqliteStore implements Store {
         return row && triggerOf(row);
       },
       scoped: async (kind, scope) => (await db.all<{ trigger_id: string }>("SELECT trigger_id FROM trigger_scopes WHERE kind = ? AND scope = ?", kind, scope)).map((r) => r.trigger_id),
-      remove: async (id) => {
-        await db.write([{ sql: "DELETE FROM triggers WHERE id = ?", params: [id] }]);
+      remove: async (id, options) => {
+        // On its agent's condition (options.ifAgent), compared in the same statement: one moved to another is left.
+        const [done] = await db.write([options?.ifAgent === undefined ? { sql: "DELETE FROM triggers WHERE id = ?", params: [id] } : { sql: "DELETE FROM triggers WHERE id = ? AND agent_id = ?", params: [id, options.ifAgent] }]);
+        return done!.changes > 0;
       },
       record: async (triggerId, firings, { patch, room } = {}) =>
         db.transaction(async (tx) => {

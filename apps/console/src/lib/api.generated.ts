@@ -1304,6 +1304,7 @@ export interface operations {
       parameters?: Record<string, unknown>;
       servers?: Record<string, string>;
       grants?: string[];
+      agent_id?: string;
       overrides?: {
         model?: string;
         choice?: string;
