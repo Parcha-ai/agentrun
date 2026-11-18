@@ -202,7 +202,7 @@ test("a hello that is not what the computer paired as is closed: another kind wi
 	const mac = new Mac();
 	const wrongKind = await dial(hub, pairedFor(phone), mac);
 	assert.equal(wrongKind.accepted.ok, false);
-	assert.match(wrongKind.accepted.error.message, /paired as a android android and now says macos desktop: pair it again/);
+	assert.match(wrongKind.accepted.error.message, /paired as a android android on arm64 and now says macos desktop on arm64: pair it again/);
 	assert.equal(wrongKind.serve.closed.code, ATTACH_CLOSE.mismatch);
 	class Old extends Mac {
 		hello() {
@@ -214,6 +214,39 @@ test("a hello that is not what the computer paired as is closed: another kind wi
 	assert.match(old.accepted.error.message, /speaks protocol 0\.1, and this server 0\.2: update the driver on Test Mac \(the download is on the console's Computers page\)$/);
 	assert.equal(redials(old.serve.closed.code), false, "a driver of another protocol stops dialing until it is updated");
 	assert.equal(hub.online("c-1"), false);
+});
+
+test("a paired computer's token on another machine: another arch or os is closed with mismatch and stops dialing; the same os and arch replaces the live socket", async () => {
+	const hub = new AttachHub();
+	const box = new FakeUiDriver({ os: "linux", kind: "desktop", groups: DESKTOP });
+	const paired = { ...pairedFor(box, "cmp-box"), hello: { ...box.hello(), arch: "amd64" } };
+	class OtherArch extends FakeUiDriver {
+		hello() {
+			return { ...super.hello(), arch: "arm64" };
+		}
+	}
+	const otherArch = await dial(hub, paired, new OtherArch({ os: "linux", kind: "desktop", groups: DESKTOP }));
+	assert.equal(otherArch.accepted.ok, false);
+	assert.equal(otherArch.accepted.error.message, "Test Mac paired as a linux desktop on amd64 and now says linux desktop on arm64: pair it again");
+	assert.equal(otherArch.serve.closed.code, ATTACH_CLOSE.mismatch);
+	assert.equal(redials(otherArch.serve.closed.code), false, "a machine the token was not paired on stops dialing");
+	class Amd64 extends FakeUiDriver {
+		hello() {
+			return { ...super.hello(), arch: "amd64" };
+		}
+	}
+	const otherOs = await dial(hub, paired, new Amd64({ groups: DESKTOP }));
+	assert.equal(otherOs.accepted.error.message, "Test Mac paired as a linux desktop on amd64 and now says macos desktop on amd64: pair it again");
+	assert.equal(otherOs.serve.closed.code, ATTACH_CLOSE.mismatch);
+	assert.equal(hub.online(paired.id), false);
+	// A copy on a machine of the same os and arch says the same hello: nothing in it tells the two apart, so the newer
+	// dial takes the computer and the older socket is closed with replaced (and dials again).
+	const first = await dial(hub, paired, new Amd64({ os: "linux", kind: "desktop", groups: DESKTOP }));
+	assert.equal(first.accepted.ok, true);
+	const copy = await dial(hub, paired, new Amd64({ os: "linux", kind: "desktop", groups: DESKTOP }));
+	assert.equal(copy.accepted.ok, true);
+	assert.equal(first.serve.closed.code, ATTACH_CLOSE.replaced);
+	assert.equal(redials(ATTACH_CLOSE.replaced), true);
 });
 
 test("a desktop whose hello lacks the pointer and keys is closed at connect with protocol, naming its os, its kind and the groups, and stops dialing", async () => {
