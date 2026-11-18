@@ -390,12 +390,28 @@ test("service install --env on macOS: the LaunchAgent's EnvironmentVariables, ke
   assert.deepEqual(plistEnv(plist), { PATH: "/opt/homebrew/bin:/usr/bin", ...MODEL_VARS, AGENT_MODEL: "a&b<c>" });
 });
 
+test("service install --env: the start-time switches go into the unit at 1, stay through a re-install beside the model's, and KEY= removes one", async () => {
+  const { home, exec, get } = linuxHome();
+  const { io } = ioOf();
+  const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: { PATH: "/usr/bin" }, exec, io, fail, get, waitMs: 5_000 });
+  const file = join(home, ".config", "systemd", "user", UNIT);
+  assert.equal(await service.install({ env: ["AGENTRUN_MCP_ALLOW_LOOPBACK=1", "AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1"] }), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", AGENTRUN_MCP_ALLOW_LOOPBACK: "1", AGENTRUN_WEBHOOK_PRIVATE_TARGETS: "1" });
+  assert.equal(await service.install({ env: ["AGENT_MODEL=qwen3:8b"] }), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", AGENTRUN_MCP_ALLOW_LOOPBACK: "1", AGENTRUN_WEBHOOK_PRIVATE_TARGETS: "1", AGENT_MODEL: "qwen3:8b" });
+  assert.equal(await service.install({ env: ["AGENTRUN_WEBHOOK_PRIVATE_TARGETS="] }), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", AGENTRUN_MCP_ALLOW_LOOPBACK: "1", AGENT_MODEL: "qwen3:8b" });
+  // The server reads a switch as on at 1 alone: any other value would leave it off, so it is refused.
+  await assert.rejects(service.install({ env: ["AGENTRUN_MCP_ALLOW_LOOPBACK=true"] }), (error) => error.code === 2 && /AGENTRUN_MCP_ALLOW_LOOPBACK takes 1 \(on\) or nothing \(off\), not true/.test(error.message));
+  assert.equal(unitEnv(readFileSync(file, "utf8")).AGENTRUN_MCP_ALLOW_LOOPBACK, "1");
+});
+
 test("service install --env refuses any other variable by name, and a pair with no =, before it writes anything", async () => {
   const { home, exec, get } = linuxHome();
   const { io } = ioOf();
   const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, exec, io, fail, get, waitMs: 5_000 });
   for (const [pair, said] of [
-    ["OPENROUTER_API_KEY=sk-or-x", /--env takes AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL or AGENT_MODEL_PRICE, not OPENROUTER_API_KEY: a key goes in the console/],
+    ["OPENROUTER_API_KEY=sk-or-x", /--env takes AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_PRICE, AGENTRUN_MCP_ALLOW_LOOPBACK or AGENTRUN_WEBHOOK_PRIVATE_TARGETS, not OPENROUTER_API_KEY: a key goes in the console/],
     ["PATH=/x", /not PATH/],
     ["AGENT_MODEL", /--env takes KEY=VALUE, not AGENT_MODEL/],
     ["AGENT_MODEL=a\nb", /AGENT_MODEL's value has a line break/],

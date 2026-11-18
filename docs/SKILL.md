@@ -100,6 +100,12 @@ receiver on it?" Recommendation: Not now because it is the safer default and a r
 - Not now (Recommended): runs and the webhook reach nothing local to it.
 - Yes, only me: start the server with `AGENTRUN_MCP_ALLOW_LOOPBACK=1` and `AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` set.
 
+On **Yes, only me**, once the installer has started AgentRun as a service, save both in it; it restarts with them and
+keeps them: `~/.agentrun/bin/agentrun service install --env AGENTRUN_MCP_ALLOW_LOOPBACK=1 --env
+AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1`. Where it runs in the background instead, run `~/.agentrun/bin/agentrun stop`, then
+the installer with both in front of `sh`. On `--vps`, which runs AgentRun in Docker, leave them off. Then check that
+`/v2/capabilities` shows `on: true` for both under `switches`.
+
 ### This computer
 
 First look for a server that already runs here: `AGENTRUN_BASE_URL` is set, or the server `~/.agentrun` records
