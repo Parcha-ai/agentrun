@@ -337,12 +337,14 @@ async function findKeys(plan: Plan, add: (keys: readonly string[]) => void, cut:
   }
   const toRead = onProgress ? plan.projects.flatMap((p) => byRun(p.sessions)).filter((files) => !held(files[0]!)).length : 0;
   let readSoFar = 0;
+  onProgress?.("keys", 0, toRead);
   for (const project of plan.projects) {
     for (const files of byRun(project.sessions)) {
       if (signal?.aborted) break;
       const listed = files[0]!;
       if (held(listed)) continue;
       onProgress?.("keys", readSoFar++, toRead);
+      if (signal?.aborted) break;
       // Its own count of records seen: the import's, shared across its files, is the write's to keep.
       const seen = new Set<string>();
       const parts: Session[] = [];
@@ -1135,6 +1137,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
   const known = await findKeys(plan, add, text, (listed) => held.get(`${listed.source}:${listed.id}`) !== undefined, options.signal, options.onProgress);
   const toTake = options.onProgress ? plan.projects.reduce((n, p) => n + byRun(p.sessions).length, 0) : 0;
   let written = 0;
+  if (!options.signal?.aborted) options.onProgress?.("write", 0, toTake);
   const scannedAs = known.stamps;
   const epoch0 = new Date(0).toISOString();
   for (const project of plan.projects) {

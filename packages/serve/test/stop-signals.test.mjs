@@ -99,10 +99,10 @@ test("a command's stop: the first signal says its line and aborts, a repeat with
   stop.hook();
   assert.equal(process.emit("SIGINT"), true);
   assert.equal(stop.signal.aborted, true);
-  clock = REPEAT_MS - 1;
+  clock = REPEAT_MS;
   process.emit("SIGTERM");
   assert.deepEqual([said, codes], [["stopping"], []], "the launcher's copy of the first signal is not a second stop");
-  clock = REPEAT_MS;
+  clock = REPEAT_MS + 1;
   process.emit("SIGINT");
   assert.deepEqual([said, codes], [["stopping"], [130]]);
   stop.unhook();

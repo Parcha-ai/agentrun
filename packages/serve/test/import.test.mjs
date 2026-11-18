@@ -1486,6 +1486,7 @@ test("the summary says what this import took: new sessions out of every agent, n
   assert.equal(second({ sessions: 1, agents: 1 }), "Imported 1 session into 1 of 3 agents (one per project)");
   assert.equal(second({ sessions: 0, agents: 0 }), "Nothing new to import: all 3 sessions are in 3 agents already");
   assert.equal(second({ sessions: 2, agents: 2, stopped: true }), "Stopped: imported 2 sessions into 2 of 3 agents before Ctrl+C; run the import again for the rest");
+  assert.equal(second({ sessions: 0, agents: 0, stopped: true }), "Stopped: imported 0 sessions into 0 agents before Ctrl+C; run the import again for the rest");
   assert.equal(summaryLines([], open, { sessions: 0, agents: 0 })[1], "Nothing to import");
   assert.equal(second(undefined), "Would import into 3 agents (one per project)", "a dry run says what it would take");
 });
@@ -1559,8 +1560,10 @@ test("a Ctrl+C once the sessions are saved still gets the whole summary: the imp
     if (held === undefined) held = process.emit("SIGINT");
     lines.push(line);
   };
+  const said = t.mock.method(console, "error", () => undefined);
   const code = await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out, progress: { show: () => undefined, done: () => undefined } });
   assert.equal(held, true, "the import's own listener takes a Ctrl+C until its last line is printed");
+  assert.deepEqual(said.mock.calls.map((call) => call.arguments[0]).filter((line) => line.startsWith("agentrun-serve import: ")), ["agentrun-serve import: stopping; a session being saved is finished first, what is saved stays, and the summary follows (Ctrl+C again to quit now)"]);
   assert.equal(code, 130, "a Ctrl+C the import took is in its exit code");
   assert.equal(process.listenerCount("SIGINT"), 0, "its Ctrl+C listener is gone once it ends");
   assert.equal(process.listenerCount("SIGTERM"), 0);

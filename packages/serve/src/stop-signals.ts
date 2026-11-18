@@ -50,14 +50,14 @@ export function stopOnSignals(deps: StopDeps, { repeatMs = REPEAT_MS, marginMs =
 }
 
 /** The stop of a command that ends by itself once asked (import, eval-template), on SIGINT and SIGTERM from `hook` to
- *  `unhook`: the first signal runs `asked` (its line) and aborts `signal`; a repeat within `REPEAT_MS` is that same
- *  stop; a later one exits 130 at once. The clock and the exit default to the process's. */
+ *  `unhook`: the first signal runs `asked` (its line) and aborts `signal`; a repeat up to `REPEAT_MS` after it is that
+ *  same stop; a later one exits 130 at once. The clock and the exit default to the process's. */
 export function stopOnce(asked: () => void, { now = Date.now, exit = (code: number): void => process.exit(code) } = {}): { signal: AbortSignal; hook: () => void; unhook: () => void } {
   const stop = new AbortController();
   let stoppedAt = 0;
   const onStop = () => {
     if (stop.signal.aborted) {
-      if (now() - stoppedAt >= REPEAT_MS) exit(130);
+      if (now() - stoppedAt > REPEAT_MS) exit(130);
       return;
     }
     stoppedAt = now();
