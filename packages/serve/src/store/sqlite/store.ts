@@ -15,7 +15,7 @@ import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TO
 import {
   AgentArchived, AgentDeleting, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
-  type JournalReads, type LaunchSealedWrite, type RunLabels, type UpdatedRun,
+  type JournalReads, type KeptListing, type LaunchSealedWrite, type RunLabels, type UpdatedRun,
   type ReleasedState, type RunState, type SecureRewriteOptions, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type LearningSpend, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpRemoved, type McpServerRow, type McpServerWrite,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings, type Channels, type ChannelAttemptRow, type ChannelPostRow,
@@ -1105,7 +1105,7 @@ class SqliteStore implements Store {
         return {
           rows: rows.slice(0, limit).map((row) => ({
             row: runOf(row), agentArchivedAt: row.agent_archived_at, listStatus: row.list_status, listMark: Number(row.list_mark), behind: Boolean(Number(row.behind)),
-            listing: row.listing === null ? null : (JSON.parse(row.listing) as { item: Record<string, unknown>; cut: string }),
+            listing: row.listing === null ? null : (JSON.parse(row.listing) as KeptListing),
           })),
           more: rows.length > limit,
         };
@@ -1134,10 +1134,10 @@ class SqliteStore implements Store {
         );
         return rows.map((row) => ({ id: row.id, mark: Number(row.mark), held: Boolean(Number(row.held)) }));
       },
-      putListing: async (runId, mark, { item, cut, status, live, until, flags }) => {
+      putListing: async (runId, mark, { item, cut, format, status, live, until, flags }) => {
         const [result] = await db.write([{
           sql: "UPDATE runs SET listing = ?, list_status = ?, listing_mark = ?, listing_live = ?, listing_until = ?, listing_flags = ? WHERE id = ? AND list_mark = ? RETURNING id",
-          params: [json({ item, cut }), status, mark, live ? 1 : 0, until, flags, runId, mark],
+          params: [json({ item, cut, format }), status, mark, live ? 1 : 0, until, flags, runId, mark],
         }]);
         return (result?.rows.length ?? 0) > 0;
       },
