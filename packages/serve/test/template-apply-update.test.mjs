@@ -211,7 +211,10 @@ test("an update reconciles triggers by name: the same name changed in place (a f
   assert.equal(after["new-pr"].target.input.content, "Say who opened it, and what it changes.", "new-pr has 0.2.0's input");
   assert.equal((await second.api("GET", `/triggers/${before.daily.id}`)).status, 404, "daily is gone");
   assert.deepEqual(again.trigger_ids, [after["new-pr"].id, after.weekly.id], "the answer lists its triggers in the package's order");
-  // Its seen items held: the one new pull request fires, and there is no second "watching from now".
+  // Its source unchanged, the update leaves its next poll where it was (never one at once): at that time, its seen items
+  // held, the one new pull request fires, and there is no second "watching from now".
+  assert.equal(after["new-pr"].next_at, before["new-pr"].next_at, "new-pr's next poll as it was");
+  clock.to(after["new-pr"].next_at);
   const shown = await firings(second.api, before["new-pr"].id, 2);
   assert.equal(shown.filter((f) => /from now/.test(f.reason ?? "")).length, 1, `new-pr kept its seen items: ${JSON.stringify(shown)}`);
   assert.equal(shown[0].status, "started", JSON.stringify(shown));
