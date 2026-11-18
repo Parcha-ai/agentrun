@@ -190,6 +190,11 @@ while you can open it, and never a command that prints or fetches the code.
 2. Open it in a browser they are looking at: `open "<link>"` (macOS), `xdg-open "<link>"` (Linux) or `start ""
    "<link>"` (Windows) when this session runs on their computer, where the installer has already opened it; else your
    client's browser or preview tool. Only when you have neither, send the link itself as the first line.
+   On a remote machine (step 1's `SSH_CONNECTION`, Codespaces, Ona), their browser reaches AgentRun only through a port
+   forward: send the one command for their own computer, `ssh -L 7340:127.0.0.1:<port> <user>@<host>`, with this
+   machine's port, then open `http://127.0.0.1:7340/` (and `setup` after it) there. Codespaces and Ona forward the port
+   themselves. Never expose it any other way: no change to the machine's web server or reverse proxy (Traefik, nginx,
+   Caddy; other apps share it), no new route, DNS name or firewall rule, and no `sudo`.
 3. Say it is open and sets the owner password. A link with a code works **once** and **expires 30 minutes** after it
    was printed: give that clock time with its time zone when you can tell.
 
