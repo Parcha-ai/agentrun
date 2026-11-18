@@ -1112,8 +1112,9 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         const keyed = (await openRunModelKey({ store: deps.store, sealKey: deps.sealKey }, claim.runId)) !== undefined;
         const toProcess = keyed ? [withoutModelKeys({ ...claimed }), withoutModelKeys({ ...ofRevision })] : [claimed, ofRevision];
         // The saved gateway's key, kept off the claim's tool keys (claimSecrets), is handed for the run's model routes alone,
-        // as a run in this process reads it from its environment by name; none to a run that brings its own key.
-        const gatewayKey = savedGateway && !keyed ? claimEnv[GATEWAY_KEY_ENV] || undefined : undefined;
+        // read as the server's model keys are (savedModelKeys, over the claim's environment the gateway was laid over), as a
+        // run in this process reads it from its environment by name; none to a run that brings its own key.
+        const gatewayKey = savedGateway ? (keyed ? {} : await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }))[GATEWAY_KEY_ENV] || undefined : undefined;
         const handed = (name: string): string | undefined => (name === GATEWAY_KEY_ENV && savedGateway ? gatewayKey : toProcess.map((from) => from[name]).find((value): value is string => typeof value === "string" && value !== ""));
         const keys = encode(SECRET_NAMES.flatMap((name) => {
           const value = handed(name);
