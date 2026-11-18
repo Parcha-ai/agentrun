@@ -8,6 +8,7 @@ import { Slider } from "@/components/ui/slider";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { Chip } from "@/components/ui/chip";
 import { ReplayRevision, replayable } from "@/components/ReplayRevision";
+import { givenToRuns } from "@/lib/learning";
 import { recordOf, replayLine, standingOf, stoppedOf } from "@/lib/learningLoop";
 import type { Client } from "@/lib/client";
 import { runLabel, when } from "@/lib/format";
@@ -26,10 +27,10 @@ const LIMIT = 50;
 /** How long a step stays up while playing. */
 export const STEP_MS = 1800;
 
-/** The learned workflows in use (`workflows`: the tab's list), one replay at a time, the first by default. Nothing when
- *  none is active. `v2` is read when it shows, and again on Try again. */
+/** The learned workflows in use (`workflows`: the tab's list, those given to runs: neither pending nor retired), one replay
+ *  at a time, the first by default. Nothing when none is. `v2` is read when it shows, and again on Try again. */
 export function WorkflowReplay({ v2, agentId, workflows, promotions = [], serving = [], cost = null, onReplayed }: { v2: Client; agentId: string; workflows: { name: string; status: string }[]; promotions?: readonly Promotion[]; serving?: readonly Serving[]; cost?: Pick<LearningCost, "workflows"> | null; onReplayed?: () => void }) {
-  const active = workflows.filter((w) => w.status === "active").map((w) => w.name);
+  const active = workflows.filter((w) => givenToRuns(w.status)).map((w) => w.name);
   const [picked, setPicked] = useState<string | null>(null);
   const name = picked !== null && active.includes(picked) ? picked : (active[0] ?? null);
   if (name === null) return null;

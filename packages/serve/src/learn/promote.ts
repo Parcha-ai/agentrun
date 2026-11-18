@@ -314,6 +314,25 @@ export function servingOf(records: readonly PromotionRecord[]): { workflow: stri
   });
 }
 
+/** Where a learned workflow stands, the one word both the promotions read (`serving[].state`) and the learning view
+ *  (`workflows[].status`, a draft neither pending nor retired) say: `checking`, its newest record is a check at work, or
+ *  it has no record yet (the first claim that lays it and takes its input starts its check; an older revision that
+ *  serves keeps serving meanwhile, else the agent takes the runs); `serving`, a revision serves (championOf) and the
+ *  money rule lets it run first; `stopped`, the money rule stopped its champion running first (`costStop`, at the
+ *  champion's digest: no record says so, the agent takes its runs), or none serves and its newest record is a hold that
+ *  stops it (a recompile's check, a second audit hold, nothing to check it on); `held`, else. */
+export type ServingState = "serving" | "checking" | "held" | "stopped";
+/** Whether the money rule stops `workflow` at `digest` from running first: runner/workflow-first.ts costStopOf over the
+ *  agent's runs, the decision a run's claim reads (workflowFirstOf). */
+export type CostStop = (workflow: string, digest: string) => boolean;
+export function servingStateOf(records: readonly PromotionRecord[], workflow: string, costStop: CostStop): ServingState {
+  const newest = records.findLast((one) => one.workflow === workflow);
+  if (newest === undefined || newest.decided === "replaying") return "checking";
+  const champion = championOf(records, workflow);
+  if (champion) return costStop(workflow, champion.digest) ? "stopped" : "serving";
+  return newest.decided === "hold" && (newest.check?.stopped || newest.audit?.stopped) ? "stopped" : "held";
+}
+
 /** The promotions list as it leaves (GET /agents/{id}/learning/promotions): the records and what serves (servingOf), every
  *  text in them cut by `shown` (learning.ts secretsShown, as the other learning reads cut theirs), at any depth and under
  *  any field, so a field added later is cut too: a workflow's name whole (`shown.name`), any other text of its part

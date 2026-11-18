@@ -213,7 +213,8 @@ export async function activeOf(api, agentId) {
   const said = typeof view.corrections === "string" ? view.corrections : "";
   const corrections = said.trim() ? { [CORRECTIONS_FILE]: sha(said) } : {};
   const workflows = {};
-  for (const w of view.workflows ?? []) if (w.status === "active") workflows[w.name] = sha(await text(w.file));
+  // Given to runs: neither pending nor retired (serving, checking, held or stopped, as the promotions read says it).
+  for (const w of view.workflows ?? []) if (w.status !== "pending" && w.status !== "retired") workflows[w.name] = sha(await text(w.file));
   const pending = (view.workflows ?? []).filter((w) => w.status === "pending").map((w) => w.readme ?? w.file);
   return { corrections, correction_lines: correctionLines(said), workflows, pending };
 }

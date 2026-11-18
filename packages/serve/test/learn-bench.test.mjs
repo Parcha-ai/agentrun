@@ -116,12 +116,12 @@ test("a known $0 stays $0; only a completed run that booked no request reads unk
 test("the active and pending items: corrections.md's lines, the active workflows by name, the pending ones by file", async () => {
   const flow = (name, status) => ({ name, status, file: `workflows/${name}/workflow.json`, readme: `workflows/${name}/README.md` });
   const api = async (method, path) => {
-    if (path.endsWith("/learning")) return { status: 200, body: { corrections: "- One.\n- Two.\n", workflows: [flow("sort", "active"), flow("file", "pending")] }, headers: new Headers() };
+    if (path.endsWith("/learning")) return { status: 200, body: { corrections: "- One.\n- Two.\n", workflows: [flow("sort", "serving"), flow("route", "stopped"), flow("file", "pending"), flow("gone", "retired")] }, headers: new Headers() };
     if (path.includes("/learning/files/")) return { status: 200, body: "{}", headers: new Headers() };
     return { status: 404, body: null, headers: new Headers() };
   };
   const got = await bench.activeOf(api, "a");
-  assert.deepEqual([Object.keys(got.corrections), got.correction_lines, Object.keys(got.workflows)], [["corrections.md"], 2, ["sort"]]);
+  assert.deepEqual([Object.keys(got.corrections), got.correction_lines, Object.keys(got.workflows)], [["corrections.md"], 2, ["sort", "route"]]);
   assert.deepEqual(got.pending, ["workflows/file/README.md"]);
 });
 

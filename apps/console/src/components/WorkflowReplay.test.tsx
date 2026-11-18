@@ -110,7 +110,7 @@ describe("the replay of an agent's learned workflows", () => {
     expect(none.textContent).toBe("");
     expect(v2.learnedWorkflowRevisions).not.toHaveBeenCalled();
     act(() => root!.unmount());
-    const host = mount(createElement(WorkflowReplay, { v2, agentId: "a", workflows: [{ name: "old", status: "retired" }, { name: "sorter", status: "active" }] }));
+    const host = mount(createElement(WorkflowReplay, { v2, agentId: "a", workflows: [{ name: "old", status: "retired" }, { name: "sorter", status: "serving" }] }));
     await flush();
     expect(v2.learnedWorkflowRevisions).toHaveBeenCalledWith("a", "sorter", 50);
     expect(host.textContent).toContain("Learned workflow");
@@ -121,7 +121,7 @@ describe("the replay of an agent's learned workflows", () => {
   it("names a failed read and reads again on Try again", async () => {
     let fail = true;
     const v2 = client(async () => { if (fail) throw new ClientError(503, "unavailable", "The folder is busy.", true); return read(REVS); });
-    const host = mount(createElement(WorkflowReplay, { v2, agentId: "a", workflows: [{ name: "sorter", status: "active" }] }));
+    const host = mount(createElement(WorkflowReplay, { v2, agentId: "a", workflows: [{ name: "sorter", status: "serving" }] }));
     await flush();
     expect(host.textContent).toContain("Try again");
     fail = false;

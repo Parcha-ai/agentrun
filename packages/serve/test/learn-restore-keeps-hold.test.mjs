@@ -66,7 +66,7 @@ test("a held draft retired and restored waits for its owner's OK again: never ac
   assert.doesNotMatch(git(repo, ["log", "-1", "--format=%B", "main"]), /Approved-Via/, "a restore is no approval");
   const approved = await approve(README("share-files"));
   assert.equal(approved.status, 200, approved.text);
-  assert.equal((await flowOf("share-files")).status, "active");
+  assert.equal((await flowOf("share-files")).status, "checking", "given to runs, not serving until its check promotes it");
   assert.deepEqual((await laid()).sort(), ["answer-in-tables", "share-files"]);
 });
 
@@ -76,7 +76,7 @@ test("an active draft retired and restored is active again: its retire recorded 
   assert.equal((await flowOf("answer-in-tables")).retired?.from, "active");
   assert.deepEqual(await laid(), []);
   assert.equal((await restore(README("answer-in-tables"))).status, 200);
-  assert.equal((await flowOf("answer-in-tables")).status, "active");
+  assert.equal((await flowOf("answer-in-tables")).status, "checking");
   assert.deepEqual(await laid(), ["answer-in-tables"]);
 });
 

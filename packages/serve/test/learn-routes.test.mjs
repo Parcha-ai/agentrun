@@ -69,7 +69,7 @@ test("a person sees what the agent learned and controls it: the view, the log by
   assert.equal(view.main, main1);
   assert.equal(view.corrections, "");
   const size = (path) => Number(git(repo, ["cat-file", "-s", `main:${path}`]));
-  assert.deepEqual(view.workflows, [{ name: "answer", file: FLOW, readme: README, description: DESCRIPTION, status: "active", run: one, bytes: size(FLOW), etag: blob(README), last_change: { kind: "learned", by: "run", at: view.workflows[0]?.last_change?.at } }]);
+  assert.deepEqual(view.workflows, [{ name: "answer", file: FLOW, readme: README, description: DESCRIPTION, status: "checking", run: one, bytes: size(FLOW), etag: blob(README), last_change: { kind: "learned", by: "run", at: view.workflows[0]?.last_change?.at } }]);
   assert.ok(!Number.isNaN(Date.parse(view.workflows[0].last_change.at)));
   assert.deepEqual(view.log.items.map((item) => [item.by, item.commit, item.files]), [[{ run: one }, main1, [README, FLOW]]]);
   assert.equal(view.log.total, 1);
