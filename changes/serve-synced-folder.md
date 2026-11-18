@@ -1,0 +1,10 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun-computer
+kind: feature
+---
+In Mode 2, a sandbox or desktop whose provider takes no Archil mount here, or whose image has no Archil client, now holds the run's folder as a synced folder instead of being refused: hosted Daytona (no `DAYTONA_ARCHIL_EGRESS`), a Daytona sandbox with an egress but no `AGENTRUN_DAYTONA_SNAPSHOT`, and Daytona's and Modal's GPU computers. The runner keeps the folder on the run's Archil disk as it does today, pushes it into the computer's `/workspace` when the run claims it, and lands each change on the disk before the call that made it answers.
+- A folder over 20000 entries or 2 GiB refuses the claim before anything is rented, in words naming its size and the cap. A change the disk refuses fails its call with "`<method>` ran, but the run's folder could not be made durable: ...", and is sent again at the next change.
+- The folder's modes and links are kept beside it, in `runs/<run>/sync.json`, since the disk's file API keeps neither.
+- A kept computer attached again by a new runner is read back whole. At release a final sync runs before the computer goes; if it fails, the release says "writes since the last sync may be lost".
+- The claim reads each provider as the run's start does (the keys that turn on its mounts, and whether its image is named here), so it holds the folder the start said it would.
+- Conformance: `mount.sync-durable`, `mount.sync-push`, `mount.sync-delete` and `mount.sync-cap` check a provider's synced folder (need `mount:sync`). `FolderSync.adopt(held)` starts a sync of a folder whose copy in the computer may be newer than the sink's.

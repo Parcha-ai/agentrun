@@ -300,3 +300,16 @@ test("a file grown since the listing past the bytes a sync reads fails, kind lim
 		assert.deepEqual(sink.calls.filter(([method]) => method === "put"), []);
 	}
 });
+
+test("adopt: a kept computer's folder with no manifest; the next sync puts every file it holds, removes what the sink holds beyond them, and writes the modes and links", async () => {
+	const state = { entries: [file("a"), dir("d"), { ...file("b"), mode: 0o600 }, link("l", "a")] };
+	const sink = fakeSink();
+	const sync = new FolderSync(scripted(state), sink);
+	sync.adopt([["a", "file"], ["d", "dir"], ["d/x", "file"], ["gone", "file"]]);
+	// Every file, the sink's copy of a included, and every directory, as nothing of the computer's copy is known.
+	assert.deepEqual(await sync.sync(), { ok: true, value: { put: 2, mkdir: 1, removed: 2, meta: true } });
+	assert.deepEqual(sink.calls.slice(0, 3).sort(), [["mkdir", "d"], ["put", "a", "A"], ["put", "b", "A"]]);
+	assert.deepEqual(sink.calls.slice(3, 5).sort(), [["remove", "d/x", "file"], ["remove", "gone", "file"]], "removed once every put landed");
+	assert.deepEqual(sink.calls[5], ["meta", { modes: { b: 0o600 }, links: { l: "a" } }]);
+	assert.deepEqual(await sync.sync(), { ok: true, value: { put: 0, mkdir: 0, removed: 0, meta: false } }, "settled");
+});

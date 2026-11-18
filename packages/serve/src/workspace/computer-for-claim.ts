@@ -37,7 +37,7 @@
 // id and the agent's), found again by its owner at each later claim and attached under the new claim, and detached, not
 // deleted, at the run's end. A run that finds it held by another run still going is refused, naming that run.
 import { randomUUID } from "node:crypto";
-import type { BrowserSpec, ComputerClient, ComputerConnection, ComputerError, ComputerOwner, ComputerProvider, ComputerSpec, DaemonMethod, DaemonMethods, HelloResult, MountReadBack, Result, ScreenWatch, ScreenWatchHandlers, WatchOptions } from "@parcha/agentrun-computer";
+import type { BrowserSpec, ComputerClient, ComputerConnection, ComputerError, ComputerOwner, ComputerProvider, ComputerSpec, DaemonMethod, DaemonMethods, HelloResult, MountKind, MountReadBack, Result, ScreenWatch, ScreenWatchHandlers, WatchOptions } from "@parcha/agentrun-computer";
 import { isBrowserProvider, ownerFilter, releaseOlder, RUN_LABEL, runLabels } from "@parcha/agentrun-computer";
 import { type RecordInput, type Recording, type RecordWatch, startRecording } from "../computer-record.js";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
@@ -52,8 +52,9 @@ import { type AttachedComputers, pairedProvider, withPaired } from "./attached-c
 import { computerHold, type HeldComputer, heldHands } from "./computer-hold.js";
 import { deleteKept, endKept, KEEP_MS, type Kept, type ParkCause, type ParkedEnd, readKept, takeKept, writeKept } from "./computer-kept.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
-import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, resolveComputer } from "./resolve-computer.js";
+import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer } from "./resolve-computer.js";
 import type { RunComputer, RunHold } from "./run-tools.js";
+import { pushFolder, storedFolder } from "./synced-folder.js";
 import type { Workspace } from "./workspace.js";
 
 /** What the claim knows of the run: its id, the claim's epoch, and where its computer setting is (the launch's own, else
@@ -772,7 +773,10 @@ export async function computerForClaim(
   const table = deps.keyTable ?? KEY_TABLE;
   // The paired computers, each one more provider of the registry (attached-computers.ts): a setting names one by its id.
   const paired = deps.attached ? await deps.attached.rows() : [];
-  const kinds = withPaired(deps.kinds, paired);
+  const keyOf = deps.keyOf ?? (async (name: string) => (deps.sealKey ? await getSealedKey(store, deps.sealKey, name) : undefined));
+  // Each provider as this server has it (registryHere: the mounts its keys turn on, and whether the operator names its
+  // image), as a run's start reads it, so the claim holds the folder the start said it would.
+  const kinds = await registryHere(withPaired(deps.kinds, paired), keyOf);
   /** The computer this claim started (one per claim): its ref id tags its live view, and its watch feeds it. */
   let made: { readonly id: string; readonly machine?: string; readonly watch?: WatchOf; readonly gone?: () => Promise<boolean> } | undefined;
   /** The provider entry it was started from: a phone's platform where the computer did not say it. */
@@ -825,16 +829,22 @@ export async function computerForClaim(
   /** How a sandbox of `provider` this claim holds is started again once its provider lost it (lostAware): made from
    *  `specNow` (the lost one's spec, or for one taken back from the park this claim's own, read when it is needed), under
    *  this claim's labels and its own request (the claim's, then which new one), so a retry of it under this epoch finds
-   *  the one it made. Where it mounts the run's folder (`mounts`), the lost one's mount credential is removed (Mode 2) and
-   *  a new mount asked for, which is read back before the new one serves a call. */
-  const renewalOf = (provider: ComputerProvider, entry: ProviderEntry, specNow: () => Promise<ComputerSpec>, mounts: boolean): Renewal => ({
+   *  the one it made. Where it holds the run's folder (`folder`), the new one holds it too, read back before it serves a
+   *  call: a mount's credential of the lost one removed (Mode 2) and a new one asked for; a synced folder pushed in again
+   *  from the disk (synced-folder.ts), whose sync goes on from there (the claim's FolderSync lists the new one). */
+  const renewalOf = (provider: ComputerProvider, entry: ProviderEntry, specNow: () => Promise<ComputerSpec>, folder: MountKind | undefined): Renewal => ({
     provider,
     max: deps.recreates ?? LOST_RECREATES,
     async remake(times) {
       deps.onStarting?.({ provider: entry.label, kind: "sandbox" });
       const spec = await specNow();
       let mount: ComputerSpec["mount"];
-      if (mounts) {
+      // The store is read whole before anything is made, so a folder over a cap rents nothing.
+      const store = folder === "sync" ? deps.workspace.syncStore?.() : undefined;
+      if (folder === "sync" && !store) throw new Error("this runner keeps no synced folder for the run");
+      const stored = store ? await storedFolder(store) : undefined;
+      if (folder === "sync") mount = { kind: "sync" };
+      else if (folder !== undefined) {
         await deps.revokeMount?.();
         mount = await deps.workspace.mountSpec();
       }
@@ -850,7 +860,8 @@ export async function computerForClaim(
       const again = providerComputer(provider, ref, connected.value);
       if (mount) {
         try {
-          await deps.workspace.attach({ id: ref.id, client: again.client, readBack: () => again.readBack() }, { ...deps.check, epoch: deps.check.epoch ?? launch.epoch });
+          if (store && stored) await pushFolder(store, again.client, stored, deps.signal);
+          await deps.workspace.attach({ id: ref.id, client: again.client, readBack: () => again.readBack() }, { ...deps.check, epoch: deps.check.epoch ?? launch.epoch, ...(store ? { sync: true as const } : {}) });
         } catch (error) {
           await again.release().catch(() => undefined);
           throw error;
@@ -868,14 +879,14 @@ export async function computerForClaim(
     may: () => inToolCall() && deps.signal?.aborted !== true,
   });
   const side: ClaimSide = {
-    keysOf: providerKeys(kinds, deps.keyOf ?? (async (name) => (deps.sealKey ? await getSealedKey(store, deps.sealKey, name) : undefined))),
+    keysOf: providerKeys(kinds, keyOf),
     answers: deps.answers ?? (async () => false),
     ...(deps.daemon ? { daemon: deps.daemon } : {}),
     // The computer an earlier claim kept at the run's park, when it is this setting's (its provider and kind) and its
     // time is not over: taken off its row first (computer-kept.ts takeKept), so its end and this claim never both have it,
     // then attached and connected again. Its mount, where it has one, stays the one it was made with: its credential is
     // this claim's from here (inheritMount). Never the agent's own computer, a paired one or --faux's.
-    async reattach(entry, { kind, keys, configuration, gpu, persistent, signal }) {
+    async reattach(entry, { kind, keys, configuration, folder, gpu, persistent, signal }) {
       const record = kept;
       kept = undefined;
       if (!record || !store.settings || persistent || paired.some((row) => row.id === entry.id)) return undefined;
@@ -893,7 +904,7 @@ export async function computerForClaim(
         deps.inheritMount?.();
         // A sandbox taken back is started again when it is lost as one this claim made (lostAware): the new one is this
         // claim's, made from this claim's spec, its folder mounted.
-        const again = record.kind === "sandbox" ? lostAware(taken, renewalOf(provider, entry, () => specOf(entry, provider, kind, configuration, deps.signal, gpu), true)) : taken;
+        const again = record.kind === "sandbox" ? lostAware(taken, renewalOf(provider, entry, () => specOf(entry, provider, kind, configuration, deps.signal, gpu), folder)) : taken;
         keepable = { provider, entry: entry.id, kind: record.kind, computer: again, epoch: record.epoch };
         ownKind = record.kind;
         const screen = record.kind === "sandbox" ? undefined : record.kind;
@@ -958,7 +969,7 @@ export async function computerForClaim(
         // A sandbox the claim made is started again when its provider loses it mid-run (lostAware): never a paired
         // computer, nor a desktop or a phone (a person may hold or watch it), nor the agent's own (persistent, above).
         const { releasedOlder } = fresh;
-        const held = kind === "sandbox" && !pairedRow ? lostAware(fresh, renewalOf(provider, entry, async () => spec, mount !== undefined)) : fresh;
+        const held = kind === "sandbox" && !pairedRow ? lostAware(fresh, renewalOf(provider, entry, async () => spec, mount?.kind)) : fresh;
         launched = held;
         if (!pairedRow) ownKind = kind as MadeKind;
         if (!pairedRow && (kind === "desktop" || kind === "phone" || kind === "sandbox")) keepable = { provider, entry: entry.id, kind, computer: held, epoch: launch.epoch };
