@@ -110,9 +110,11 @@ export type TriggerUpstream = {
   turned(source: Source, id: string, on: boolean): Promise<Json | undefined>;
   /** The trigger `id` of `source`, deleted here: removed there, with what it keeps here for it (a sealed config). */
   removed(source: Source, id: string): Promise<Json | undefined>;
-  /** The trigger `id` of `source`, still here: removed there alone, what it keeps here for it left (`forgotten` drops
-   *  that once the trigger is gone). Undefined when it is gone there; what could not be done, said. */
-  removedThere(source: Source, id: string): Promise<Json | undefined>;
+  /** The trigger `id` of `source`, still here: removed there, then `here` (its delete here) in the same step, so no other
+   *  trigger's removal there reads it as still holding what they share; what it keeps here for it is left (`forgotten`
+   *  drops that once the trigger is gone). Undefined when it is gone there and `here` is done; what could not be done
+   *  there, said, with `here` not run. A refusal of `here`'s is thrown. */
+  removedThere(source: Source, id: string, here: () => Promise<void>): Promise<Json | undefined>;
   /** What it keeps here for the trigger `id` of `source` (a sealed config), dropped once the trigger is gone here. */
   forgotten(source: Source, id: string): Promise<void>;
 };
@@ -639,10 +641,11 @@ export class Triggers {
       await this.dropHere(trigger);
       return upstream?.removed(trigger.source, id);
     }
-    const said = await upstream?.removedThere(trigger.source, id);
+    const here = () => this.dropHere(trigger, own.onAgent);
+    if (!upstream) return void (await here());
+    const said = await upstream.removedThere(trigger.source, id, here);
     if (said !== undefined) return said;
-    await this.dropHere(trigger, own.onAgent);
-    await upstream?.forgotten(trigger.source, id);
+    await upstream.forgotten(trigger.source, id);
     return undefined;
   }
 

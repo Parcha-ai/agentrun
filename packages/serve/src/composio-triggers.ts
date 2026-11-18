@@ -12,7 +12,8 @@
 //   resuming and deleting follow on Composio once the change holds here, and so does the server turning a trigger off
 //   itself (triggers.ts); what Composio could not do is said, with what to do by hand.
 // - One project's steps run one at a time (serial): a create's setup, its save here and its undo, a pause, a delete, a
-//   rotate, the subscription's delete and the saved server's delete. Each reads the triggers holding what it would undo,
+//   rotate, the subscription's delete and the saved server's delete; a template update's removal (removedThere) deletes
+//   its trigger here in the same step, once Composio is done. Each reads the triggers holding what it would undo,
 //   turn off or delete as they are then, so it never removes what another holds, a pause or resume sets the instance as
 //   its triggers now stand, and a create re-reads its saved server before it saves, so no trigger outlives its server.
 // - A config field named like a credential (trigger-composio.ts sealedConfigFields) is sealed at the create, each under
@@ -253,8 +254,8 @@ export class ComposioTriggers implements TriggerUpstream {
     return this.leftThere(source, id, values);
   }
 
-  async removedThere(source: Source, id: string): Promise<Json | undefined> {
-    return this.leftThere(source, id, this.sealedValues([{ id, source }]));
+  async removedThere(source: Source, id: string, here: () => Promise<void>): Promise<Json | undefined> {
+    return this.leftThere(source, id, this.sealedValues([{ id, source }]), here);
   }
 
   async forgotten(source: Source, id: string): Promise<void> {
@@ -263,24 +264,34 @@ export class ComposioTriggers implements TriggerUpstream {
 
   /** The trigger `id`'s instance on Composio deleted, or turned off while other triggers hold it (none of them on), or
    *  kept (one of them on): undefined when that is done, else what is left there, said. `values`: its sealed config's,
-   *  withheld from Composio's words. */
-  private async leftThere(source: Source, id: string, values: readonly string[]): Promise<Json | undefined> {
+   *  withheld from Composio's words. `here`, once that is done, in the same step of the project's: the trigger's delete
+   *  here, so the next removal of a trigger sharing the instance reads the holders without it (two removals at once
+   *  never each keep the instance for the other); its refusal is thrown, never said as Composio's. */
+  private async leftThere(source: Source, id: string, values: readonly string[], here?: () => Promise<void>): Promise<Json | undefined> {
     const instance = instanceOf(source);
     let left = "delete" as Left;
-    try {
-      // Kept while another trigger holds it, and off once none of those is on, as a pause leaves it.
-      const credential = await this.deps.credential(String(source.server), "field");
-      await this.serial(credential.key, async () => this.leave(this.ask(credential, "nothing was changed", values), instance, (left = await this.leftWith(instance, id))));
-      return undefined;
-    } catch (error) {
-      const said = String((error as Error)?.message ?? error);
-      if (left === "off") {
-        this.deps.say({ condition: "composio_instance_not_turned", trigger: id, instance, on: "false", error: said });
-        return { composio: { done: false, note: `Composio didn't turn the trigger instance ${instance} off, and no trigger left that holds it is on: turn it off there yourself: ${DASHBOARD}` } };
-      }
-      this.deps.say({ condition: "composio_instance_not_removed", trigger: id, instance, error: said });
-      return { composio: { done: false, note: `Composio didn't delete the trigger instance ${instance}: remove it there yourself: ${DASHBOARD}` } };
+    let failed = undefined as { error: unknown } | undefined;
+    // Kept while another trigger holds it, and off once none of those is on, as a pause leaves it.
+    const credential = await this.deps.credential(String(source.server), "field").catch((error: unknown) => void (failed = { error }));
+    if (credential) {
+      await this.serial(credential.key, async () => {
+        try {
+          await this.leave(this.ask(credential, "nothing was changed", values), instance, (left = await this.leftWith(instance, id)));
+        } catch (error) {
+          failed = { error };
+          return;
+        }
+        await here?.();
+      });
     }
+    if (failed === undefined) return undefined;
+    const said = String((failed.error as Error)?.message ?? failed.error);
+    if (left === "off") {
+      this.deps.say({ condition: "composio_instance_not_turned", trigger: id, instance, on: "false", error: said });
+      return { composio: { done: false, note: `Composio didn't turn the trigger instance ${instance} off, and no trigger left that holds it is on: turn it off there yourself: ${DASHBOARD}` } };
+    }
+    this.deps.say({ condition: "composio_instance_not_removed", trigger: id, instance, error: said });
+    return { composio: { done: false, note: `Composio didn't delete the trigger instance ${instance}: remove it there yourself: ${DASHBOARD}` } };
   }
 
   // ---- the routes of a saved Composio server ---------------------------------------------------------------------------
