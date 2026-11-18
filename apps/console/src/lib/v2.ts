@@ -198,6 +198,15 @@ export type WebhookAttempt = Answer<"listWebhookDeliveries">["attempts"][number]
 /** `capabilities.features.webhooks`. */
 export type WebhooksFeature = NonNullable<components["Features"]["webhooks"]>;
 
+/** Slack (GET /v2/settings/slack, a serve extension): its URL's last four characters, never the URL, and its events. */
+export type Slack = Answer<"getSlack">;
+/** A PUT's body: the URL (a secret write, the owner's session alone), the events, or both. */
+export type SlackBody = Body<"saveSlack">;
+/** One try of a Slack message (GET .../deliveries, newest first). */
+export type SlackAttempt = Answer<"listSlackDeliveries">["attempts"][number];
+/** `capabilities.features.slack`. */
+export type SlackFeature = NonNullable<components["Features"]["slack"]>;
+
 /** The server's email account (GET /v2/settings/email): its address, servers and who signs in, never its password. */
 export type EmailAccount = Answer<"getEmailAccount">;
 /** A PUT's body: a preset (gmail, fastmail, icloud) or other with its own servers, the address and the password. */
