@@ -931,6 +931,14 @@ export interface components {
     } | null;
     audit_of?: string | null;
     path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
+    served?: {
+      workflow: string | null;
+      digest: string | null;
+    };
+    handed_back?: {
+      workflow: string | null;
+      digest: string | null;
+    };
   };
   RunCreate: {
     input: Record<string, unknown>;
@@ -1136,6 +1144,14 @@ export interface components {
       id: string;
       firing_key: string;
     } | null;
+    served?: {
+      workflow: string | null;
+      digest: string | null;
+    };
+    handed_back?: {
+      workflow: string | null;
+      digest: string | null;
+    };
   };
   SecretMeta: {
     name: string;

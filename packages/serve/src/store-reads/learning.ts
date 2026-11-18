@@ -291,7 +291,7 @@ type LedgerRow = Pick<RunRecord, "id" | "metrics" | "startedAt" | "costUsd" | "c
 const metricOf = (row: Pick<LedgerRow, "metrics">) => (row.metrics ?? {}) as { path?: unknown; workflow?: unknown; workflow_digest?: unknown };
 /** The revision a run ran (metrics.workflow and metrics.workflow_digest, workflow-first.ts pathMetrics), undefined when it
  *  names none: two workflows of the same text share a digest, so a revision is never its digest alone. */
-const revisionOfRow = (row: LedgerRow): { workflow: string; digest: string } | undefined => {
+const revisionOfRow = (row: Pick<LedgerRow, "metrics">): { workflow: string; digest: string } | undefined => {
   const { workflow, workflow_digest: digest } = metricOf(row);
   return typeof workflow === "string" && typeof digest === "string" ? { workflow, digest } : undefined;
 };
@@ -577,6 +577,23 @@ function pathOfRow(metrics: unknown, started: RunLaunch["learning"]): { path: Ru
   const path = named ? (m.path as RunPath) : "agent";
   return { path, workflow: path === "agent" || typeof m.workflow !== "string" ? null : offeredName(m.workflow, started?.workflows) };
 }
+
+/** The learned workflow a run's views name (GET /runs/{id} and each runs list row), read off its record as the cost per run
+ *  reads it (pathOfRow, revisionOfRow: costRunOf's own read, so the run views and GET .../learning/cost never disagree):
+ *  `served` on a run a learned workflow answered alone (path `workflow`), `handed_back` on one it ran first and handed
+ *  back to the agent (path `handed_back`), each with the workflow (only one its launch offered, else null) and the
+ *  revision that ran (its digest, null when its record names none). Nothing for any other run: one by the agent, a
+ *  replay (a check's run, which serves no one), an audit's shadow, a run not ended, a workflow revision's run, and a run
+ *  that learns whose record names no path. */
+export function servedViewOf(run: Pick<RunRecord, "metrics" | "state">, kind: string, started: RunLaunch["learning"]): { served?: ServedBy; handed_back?: ServedBy } {
+  if (kind === "workflow" || !FINAL_STATES.includes(run.state)) return {};
+  const placed = pathOfRow(run.metrics, started);
+  if (placed?.path !== "workflow" && placed?.path !== "handed_back") return {};
+  const by: ServedBy = { workflow: placed.workflow, digest: revisionOfRow(run)?.digest ?? null };
+  return placed.path === "workflow" ? { served: by } : { handed_back: by };
+}
+/** A learned workflow that served a run (servedViewOf): its name and the revision's digest. */
+export type ServedBy = { workflow: string | null; digest: string | null };
 
 /** What a run's claims laid of the workflows it was offered (laidOf over its journal): read once for a settled run and kept
  *  by its epoch (settledLaid), else read now. */
