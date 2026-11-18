@@ -1,5 +1,6 @@
 import { Listbox, ListboxButton, ListboxOption, ListboxOptions } from "@headlessui/react";
 import { Check, ChevronDown } from "lucide-react";
+import { Fragment } from "react";
 import { Chip } from "@/components/ui/chip";
 import { useFieldWiring } from "@/components/ui/field";
 import { cn } from "@/lib/utils";
@@ -27,17 +28,21 @@ export function Picker({ value, onChange, options, label, id, className, disable
   const wiring = useFieldWiring();
   return (
     <Listbox value={value} onChange={onChange} disabled={disabled} name={name}>
-      <ListboxButton id={id ?? wiring?.id} autoFocus={autoFocus} aria-label={label} aria-describedby={wiring?.describedBy} aria-invalid={wiring?.invalid || undefined} data-value={value}
-        className={cn("flex min-w-0 items-center justify-between gap-2 border border-input bg-background text-left font-mono hover:border-foreground/60 focus-visible:outline-offset-0 disabled:opacity-60 data-[open]:border-foreground",
-          small ? "h-control-sm px-2 text-small" : "h-control-md px-3 text-body", className)}>
-        {steady
-          // Every option's words share one grid cell with the picked ones: the cell, and so the field, is as wide as the longest.
-          ? <span className="grid min-w-0">
-              {options.map((o) => <span key={o.value} data-picker-sizer="" aria-hidden className="invisible col-start-1 row-start-1 h-0 min-w-0 truncate">{o.label}</span>)}
-              <span className={cn("col-start-1 row-start-1 min-w-0 truncate", !picked && "text-muted-foreground")}>{picked?.label ?? placeholder ?? ""}</span>
-            </span>
-          : <span className={cn("min-w-0 truncate", !picked && "text-muted-foreground")}>{picked?.label ?? placeholder ?? ""}</span>}
-        <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+      {/* Headless UI writes its own aria-describedby (from its Description, which the console doesn't use) over one given
+          to ListboxButton, unset or not; on the button it renders as a Fragment's child, the Field's is kept. */}
+      <ListboxButton as={Fragment} id={id ?? wiring?.id} autoFocus={autoFocus} aria-label={label} aria-invalid={wiring?.invalid || undefined} data-value={value}>
+        <button type="button" aria-describedby={wiring?.describedBy}
+          className={cn("flex min-w-0 items-center justify-between gap-2 border border-input bg-background text-left font-mono hover:border-foreground/60 focus-visible:outline-offset-0 disabled:opacity-60 data-[open]:border-foreground",
+            small ? "h-control-sm px-2 text-small" : "h-control-md px-3 text-body", className)}>
+          {steady
+            // Every option's words share one grid cell with the picked ones: the cell, and so the field, is as wide as the longest.
+            ? <span className="grid min-w-0">
+                {options.map((o) => <span key={o.value} data-picker-sizer="" aria-hidden className="invisible col-start-1 row-start-1 h-0 min-w-0 truncate">{o.label}</span>)}
+                <span className={cn("col-start-1 row-start-1 min-w-0 truncate", !picked && "text-muted-foreground")}>{picked?.label ?? placeholder ?? ""}</span>
+              </span>
+            : <span className={cn("min-w-0 truncate", !picked && "text-muted-foreground")}>{picked?.label ?? placeholder ?? ""}</span>}
+          <ChevronDown className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+        </button>
       </ListboxButton>
       <ListboxOptions anchor="bottom start" data-picker-list=""
         className={cn("z-popover max-h-72 overflow-auto border border-border-strong bg-background py-1 font-mono text-body shadow-float outline-none [--anchor-gap:2px] [--anchor-padding:8px]",
