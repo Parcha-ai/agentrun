@@ -3641,8 +3641,9 @@ and says how its figure was reached.
   its side calls) and `unmetered` (those that reported no tokens: refused, cut or never answered). Read from each
   answer's usage as the provider or gateway reported it: OpenAI's Responses `usage.input_tokens` and `output_tokens`,
   Anthropic's Messages `usage` with its cache reads and writes, streamed or whole. Absent while the run has booked no
-  model request and stored none. The model proxy forwards only those two APIs (`/v1/responses`, `/v1/messages`); no
-  harness here sends Chat Completions through it.
+  model request and stored none; a native or SDK run reports its whole task's tokens at its end, with no request
+  count, and none while any count is unknown. The model proxy forwards only those two APIs (`/v1/responses`,
+  `/v1/messages`); no harness here sends Chat Completions through it.
 - `basis`: `reported` when every request priced had its provider's or gateway's own figure (LiteLLM's
   `x-litellm-response-cost` header, OpenRouter's usage `cost`); `estimate` when any was priced from a price table (the
   model catalog, `AGENT_MODEL_PRICE`, a cut request counted at its hold); `unpriced` when no request was priced (none sent,
@@ -3651,8 +3652,8 @@ and says how its figure was reached.
   session's catalog estimate where its source priced none ([importing your sessions](#importing-your-sessions)). LiteLLM writes no
   cost into a streamed answer's headers, so a run whose answers stream through LiteLLM reads `estimate`.
 - `GET /stats` (`cost.basis`) and `GET /usage` (`basis`) say the same words over the runs they sum: `estimate` when any
-  run's is, else `reported` when any run's is, else `unpriced`. A run that ended before its end stored its basis counts
-  as `estimate` when it cost anything.
+  run's is, else `reported` when any run's is, else `unpriced`. A run whose end stored no basis (one that ended before
+  this, or a workflow run: its run read still says its basis from its booking) counts as `estimate` when it cost anything.
 
 The console shows the tokens beside the run's cost, and the figure says its basis: `$0.0042 est.`, `$0.0042 reported`.
 

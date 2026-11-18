@@ -528,11 +528,15 @@ function basisOfView(run: StoreRun, words: { readonly usd: number | null; readon
 
 /** A run's tokens as its cost says them: its model requests' input (cached input apart), output, cache reads and writes,
  *  how many requests it booked, and how many of those reported no tokens (`unmetered`). From its booking while it booked a
- *  request; else from the metrics its end stored (a native or imported run's); undefined when neither says. */
+ *  request; else from the metrics its end stored (an imported run's); undefined when neither says. A native or SDK run
+ *  books one record for its whole task (`aggregate`), not one per request, so its tokens are its stored metrics' alone,
+ *  with its request count unknown (left out), and none while any count is unknown (stored null), never a 0 for one. */
 function tokensOfView(run: StoreRun): Record<string, number> | undefined {
   const booked = run.model;
-  if (booked.requests > 0) return { input: booked.tokens.input, output: booked.tokens.output, cache_read: booked.tokens.cacheRead, cache_write: booked.tokens.cacheWrite, requests: booked.requests, unmetered: booked.unmetered };
+  const aggregate = run.native !== undefined || run.sdk !== undefined;
+  if (booked.requests > 0 && !aggregate) return { input: booked.tokens.input, output: booked.tokens.output, cache_read: booked.tokens.cacheRead, cache_write: booked.tokens.cacheWrite, requests: booked.requests, unmetered: booked.unmetered };
   const stored = (run.row.state === "running" ? undefined : run.runRow.metrics) as Partial<Record<"input" | "output" | "cacheRead" | "cacheWrite" | "requests" | "unmetered", unknown>> | null | undefined;
+  if ([stored?.input, stored?.output, stored?.cacheRead, stored?.cacheWrite].some((value) => value === null)) return undefined;
   const count = (value: unknown) => (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined);
   const [input, output] = [count(stored?.input), count(stored?.output)];
   if (input === undefined || output === undefined) return undefined;

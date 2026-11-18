@@ -24,7 +24,8 @@ import { WORKFLOW_FIRST, WORKFLOW_FIRST_CALL } from "./workflow-first.js";
  *  what is known of an unknown cost, takes the parts through costOfParts, never `usd` and `known` alone. */
 /** `priced`: of its requests with a known figure (a plan's aside, which cost no dollars), how many the provider or its
  *  gateway priced (`reported`: the proxy's reportedCostOf or usageCostOf, its runner.turn keeping the table's figure beside
- *  it as `tableUsd`) and how many a price table did (`estimated`: its runner.turn's `estimated`, or a cut request's hold).
+ *  it as `tableUsd`) and how many a price table did (`estimated`: its runner.turn's `estimated`, or a cut request's hold,
+ *  or a native or SDK task's `aggregate` booking, its harness's own figure).
  *  A figure that is neither ($0 for a request refused or never sent, a charge settled through the cap) counts in neither. */
 export type BookedSpend = { readonly usd: number | null; readonly known: number; readonly bounded: number; readonly unpriced: number; readonly atMost: number; readonly requests: number; readonly unmetered: number; readonly models: Readonly<Record<string, number>>; readonly tokens: { input: number; output: number; cacheRead: number; cacheWrite: number }; readonly priced: { readonly reported: number; readonly estimated: number }; readonly free?: true };
 
@@ -124,7 +125,7 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
     }
     if (e.kind !== RUNNER_RECORDS.turn) continue;
     if (rebooked(booked, typeof (e.data as { turn?: unknown } | undefined)?.turn === "number" ? turnOf(e) : undefined)) continue;
-    const d = (e.data ?? {}) as { usd?: unknown; bookedUsd?: unknown; rule?: unknown; cut?: unknown; atMost?: unknown; givenBack?: unknown; unsent?: unknown; free?: unknown; billing?: unknown; estimated?: unknown; tableUsd?: unknown; usage?: Partial<Record<keyof typeof tokens, unknown>> };
+    const d = (e.data ?? {}) as { usd?: unknown; bookedUsd?: unknown; rule?: unknown; cut?: unknown; atMost?: unknown; givenBack?: unknown; unsent?: unknown; free?: unknown; billing?: unknown; estimated?: unknown; aggregate?: unknown; tableUsd?: unknown; usage?: Partial<Record<keyof typeof tokens, unknown>> };
     if (d.givenBack === true || d.unsent === true) continue;
     requests += 1;
     count(e);
@@ -137,9 +138,11 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
     else if (own.atMost) (bounded += own.usd), (atMost += 1);
     else known += own.usd;
     // How its figure was reached (costBasisOf): a price table's (the proxy's `estimated`, or a hold), or the provider's own
-    // (the proxy keeps the table's figure beside a reported one, `tableUsd`). A plan's request costs no dollars: neither.
+    // (the proxy keeps the table's figure beside a reported one, `tableUsd`). A native or SDK task's one booking for the whole
+    // task (`aggregate`, native-loop.ts and sdk-loop.ts) carries its harness's own figure, an estimate. A plan's request
+    // costs no dollars: neither.
     if (own.usd !== null && d.billing !== "plan") {
-      if (own.atMost || d.estimated === true) estimated += 1;
+      if (own.atMost || d.estimated === true || d.aggregate === true) estimated += 1;
       else if (d.tableUsd !== undefined) reported += 1;
     }
     // The booking keeps a request's usage only when it reported some (runner.ts tokensOf): one with none is unmetered.

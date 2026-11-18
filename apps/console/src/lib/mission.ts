@@ -87,7 +87,10 @@ export function cachedShare(t: Analytics["totals"]): number | null {
   const input = t.input + t.cache_read + t.cache_write;
   return input ? t.cache_read / input : null;
 }
-/** A group's cost with the store's basis (the page's), said as costParts says it: never $0 for a cost not known. */
+/** A group's cost with the store's basis (the page's), said as costParts says it: never $0 for a cost not known. The
+ *  analytics' runs are among the runs GET /v2/stats sums (archived ones out of both), so a store that reads `reported`
+ *  priced every one of a group's runs that way; a store that reads `estimate` labels each group `est.`, the cautious word
+ *  for a group that may be all reported, until the API says a group's own basis. */
 export const groupCost = (g: AnalyticsGroup, basis: MissionView["cost"]["basis"]) => costParts({ usd: g.cost_usd, basis, unknownRuns: g.unknown_cost_runs });
 /** What a token sum leaves out, said so a partial figure never reads as complete: "tokens from 3 of 5 runs". */
 export const coverage = (g: Pick<AnalyticsGroup, "runs" | "runs_with_metrics">) => (g.runs_with_metrics < g.runs ? `tokens from ${g.runs_with_metrics} of ${g.runs} runs` : undefined);
