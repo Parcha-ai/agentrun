@@ -4,7 +4,46 @@
 
 ## 0.1.0-beta.46 (2026-11-18)
 
-- A learned workflow's check and its shadow audit compare two answers on the fields that carry the decision, not word for word. A definition's `learning` takes `agree_on`, dotted paths into the answer's JSON object (e.g. `["verdict.decision"]` or `["mcc", "riskTier"]`; 1 to 16 distinct paths, each up to 128 characters and 8 non-empty segments, kept in the order given; a bad one is a 422 under `definition.learning`): each path must resolve in both answers to equal values, and a path missing on either side disagrees. Left out, the whole answer is compared as before, and a check that agreed on none says to name the fields. The kyb template declares `verdict.decision` and inbound-lead `next_step.action`; a template's `learning` takes the same object, each path a required field of its output schema. The check record keeps `agree_on`, and its reason says "said what the agent said on mcc and riskTier"; the console's check line says "compared the whole answer" when there was none. <!-- changes/learning-agree-on.md -->
+This release keeps a runner whose run isolation is refused up and refusing runs, so a Render or Railway server no longer restarts in a loop. A learned workflow's check can compare answers on the fields that carry the decision instead of word for word, the agent editor's Computer step gets a Recording switch that a change of provider keeps, and the run page's Dev tools tab reads as a browser's network panel does. The store doesn't change, so going back to beta.45 is the image alone.
+
+**Upgrading and going back:**
+
+- The store doesn't change (SQLite version 13, Postgres migration 0019): beta.46 opens a beta.45 data folder as it is, and going back to beta.45 is the image or the package alone. From beta.44 or older, beta.45's notes hold first: its store move is one beta.44 refuses, so back up before you upgrade.
+- A Render or Railway server that runs the image without `AGENTRUN_RUN_USER=same` and can't start the runner's run-as helper (spawn `EPERM`) now stays up and refuses runs, saying to set `AGENTRUN_RUN_USER=same`; on beta.45 its container stopped and restarted in a loop. Both templates set it; a server deployed from either before beta.45 needs it added (#R46PR).
+
+**Breaking:**
+
+- None.
+
+**Known issues:**
+
+- Under the image's default command, no run can use a paired computer, a paired Linux sandbox included. Start the image with the server's options alone for one.
+- A runner of its own started on a Postgres store before its server has upgraded it says to start on a new, empty data folder. Don't: start the server first, which upgrades the store in place, then the runner.
+- A learned workflow refused for a host setting (a tool gated, denied or missing) still reads `serving`, while every run it is given hands back to the agent. A workflow this release's DSL refuses is held.
+- For up to about 10 minutes after the release is published, an install can fail while npm shows the new packages one by one. Try again a few minutes later.
+- An API token's `GET /v2/settings/calendar` is refused 403 in the words for saving a secret. Reading the calendar's settings takes the owner's signed-in session in the console, as saving them does.
+
+**Changes:**
+
+Runs and the server
+
+- A refused run isolation leaves the runner up, claiming nothing, instead of ending it: a helper the host won't start (spawn `EPERM`) is refused in the same words as one that can't switch, naming the error and `AGENTRUN_RUN_USER=same`. The image's `runner` process says why and stays up until it is stopped, where its exit stopped the container, and a server with its runner in its own process serves on with no runner (#R46PR).
+
+Learning
+
+- A learned workflow's check and its shadow audit can compare two answers on the fields that carry the decision instead of word for word: a definition's `learning` takes `agree_on`, dotted paths into the answer's JSON object (`["verdict.decision"]`, `["mcc", "riskTier"]`; 1 to 16 paths, a bad one a 422 under `definition.learning`). Each path must resolve to equal values in both answers; one missing on either side disagrees. Left out, the whole answer is compared as before, and a check that agreed on none says to name the fields. The kyb template declares `verdict.decision` and inbound-lead `next_step.action`, and a template's `learning` takes the same object, each path a required field of its output schema. The check record keeps `agree_on`, the console's check line says "compared the whole answer" when there was none, and the TypeScript and Python clients' types carry it (Python 0.3.14). <!-- changes/learning-agree-on.md --> (#3182)
+
+Console
+
+- The agent editor's Computer step has a Recording switch for a desktop, a phone or a browser, with a note that a recording holds everything on the screen, what a person types after taking over and any password shown included. A switch of provider, or to another kind that records, keeps it on; a switch to a sandbox or to no computer turns it off and says so. Before, any switch dropped `record`. A server without ffmpeg refuses the save, in words the step shows (#3194).
+- The run page's Dev tools tab reads as a browser's network panel does: each row carries its bar on the time axis under a compact overview, a zoom or a drag across the overview lists only the calls in that part of the run, a call's panel has a Timing section, and the Breakdown view opens with the run's vitals (first answer, first tool call, largest input, most calls at once, longest pause). The table is one stop for the Tab key, its rows moved through with the arrow keys, and it reads under a forced-colours theme and to a screen reader (#3189).
+
+Docs and release
+
+- The server README's Particle-1 section records a live pass against Particle's API: a saved key, a plain run, tool calls after the model's reasoning, a follow-up, a cancel, a capped run and a workflow's model nodes, each priced run's cost equal to its tokens at list price. Not yet seen live: a rate limit or server error from Particle, and the estimate against Particle's own bill (#3190).
+- A release no longer posts to Slack on its own: whoever cuts it posts its summary once the release page is out, in the shape `docs/releasing.md` gives (what you can do now, three lines before you upgrade, the install lines and the notes link). <!-- changes/release-post-by-hand.md --> (#R46PR)
+- beta.45's changelogs now tell the four changes its tag carried past its release pull request's fold as its release page did, under 0.1.0-beta.45, with a known issue for a Render or Railway upgrade to it (#R46PR).
+- Tests: the steer-mid-turn test's failure names the steer's outcome and what the model was handed, and a relay test that read the server's log before the line was written is deleted (#3192, #R46PR).
 
 ## 0.1.0-beta.45 (2026-11-18)
 
