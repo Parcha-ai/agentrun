@@ -233,6 +233,9 @@ test("the saved key is sealed with its origin: read beside an address of another
   const deps = { store, sealKey, env: {}, changed: async () => {} };
   await saveGateway(deps, { base_url: "https://a.example/v1", api_key: CANARY, models: { default: "m-1" } });
   assert.equal((await readSavedGateway(store, sealKey)).key, CANARY, "with its own origin's address: handed on");
+  // The scan of every stored secret (a run's write-time redactor) holds the key itself, not only the JSON it is sealed in.
+  const { storeSecrets } = await import("../dist/runner/store-secrets.js");
+  assert.ok((await storeSecrets(store, sealKey)).includes(CANARY), "the stored-secret scan lists the key itself");
   // Moving to B writes B's key, then B's address. Caught between the two (or with the second failed): A's address, B's key.
   await putSealedKey(store, sealKey, (await import("../dist/model-gateway.js")).GATEWAY_KEY_ROW, JSON.stringify({ v: 1, origin: "https://b.example", key: WRONG }));
   const between = await readSavedGateway(store, sealKey);

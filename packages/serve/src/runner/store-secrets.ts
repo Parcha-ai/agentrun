@@ -15,6 +15,7 @@ import { CHATGPT_PLAN_ROW } from "../chatgpt-plan.js";
 import { calendarRowSecrets } from "../calendar/address.js";
 import { CALENDAR_ROW } from "../calendar/names.js";
 import { accountRowSecrets, EMAIL_ACCOUNT_ROW } from "../email/account.js";
+import { GATEWAY_KEY_ROW, gatewayKeyRowSecrets } from "../model-gateway.js";
 import { unseal } from "../sealing.js";
 import { besideTheStore, ServerSecrets } from "../server-secrets.js";
 import { SLACK_CHANNEL, slackUrlForms } from "../slack-url.js";
@@ -107,7 +108,7 @@ function secretsOf(row: SealedSecretRow, plain: string, adapters: readonly Trigg
     case "run_launch":
       return { listed: plain.trimStart().startsWith("{") ? launchSecrets(plain) : [plain], whole: [] };
     case "sealed_keys":
-      return { listed: row.where.name === CHATGPT_PLAN_ROW ? planSecrets(plain) : row.where.name === EMAIL_ACCOUNT_ROW ? accountRowSecrets(plain) : row.where.name === CALENDAR_ROW ? calendarRowSecrets(plain) : [plain], whole: [] };
+      return { listed: row.where.name === CHATGPT_PLAN_ROW ? planSecrets(plain) : row.where.name === EMAIL_ACCOUNT_ROW ? accountRowSecrets(plain) : row.where.name === CALENDAR_ROW ? calendarRowSecrets(plain) : row.where.name === GATEWAY_KEY_ROW ? gatewayKeyRowSecrets(plain) : [plain], whole: [] };
     default:
       return { listed: [plain], whole: [] };
   }

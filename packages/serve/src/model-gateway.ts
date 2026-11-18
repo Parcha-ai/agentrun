@@ -93,7 +93,11 @@ type BoundKey = { readonly origin: string; readonly key: string };
  *  of this shape (never a key without the origin it was saved for). */
 async function openGatewayKey(store: { readonly sealedKeys: Pick<SealedKeys, "get"> }, sealKey: Buffer | undefined): Promise<BoundKey | undefined> {
   const opened = sealKey ? await getSealedKey(store, sealKey, GATEWAY_KEY_ROW) : undefined;
-  if (opened === undefined) return undefined;
+  return opened === undefined ? undefined : boundKeyOf(opened);
+}
+
+/** The key's row opened, read as its shape; undefined for one that is not (no key). */
+function boundKeyOf(opened: string): BoundKey | undefined {
   try {
     const parsed: unknown = JSON.parse(opened);
     if (isObject(parsed) && parsed.v === 1 && typeof parsed.origin === "string" && typeof parsed.key === "string" && parsed.key.length) return { origin: parsed.origin, key: parsed.key };
@@ -102,6 +106,14 @@ async function openGatewayKey(store: { readonly sealedKeys: Pick<SealedKeys, "ge
   }
   return undefined;
 }
+
+/** The secrets of the key's row as opened, for the scan of every stored secret (runner/store-secrets.ts): the key itself,
+ *  which is what a gateway's reply or a tool's output could quote, never the JSON it is sealed in alone. A row not of
+ *  this shape is one secret whole. */
+export const gatewayKeyRowSecrets = (opened: string): string[] => {
+  const bound = boundKeyOf(opened);
+  return bound ? [bound.key] : [opened];
+};
 
 /** The origin of an address the one rule takes, or undefined for one it refuses. */
 const originIfValid = (base: string): string | undefined => (baseProblem("base_url", base) ? undefined : originOf(base));
