@@ -258,6 +258,20 @@ for (let i = 0; (await api("GET", `/runs/${run.run_id}`)).body.state !== "workin
   if (i > 300) stop("the held turn never worked");
   await sleep(100);
 }
+// The held turn's process is up (a process of a slot's uid) before anything is read: a run that is working may not have
+// it yet, and a scan before it reads none of what it holds.
+const slotUid = (pid) => {
+  try {
+    const uid = Number(/^Uid:\s+(\d+)/m.exec(readFileSync(`/proc/${pid}/status`, "utf8"))?.[1]);
+    return uid >= FIRST_RUN_ID && uid < FIRST_RUN_ID + SLOTS;
+  } catch {
+    return false;
+  }
+};
+for (let i = 0; !readdirSync("/proc").some((p) => /^\d+$/.test(p) && slotUid(p)); i++) {
+  if (i > 300) stop("the held turn's process never started: a scan without it reads nothing of a turn");
+  await sleep(100);
+}
 await sleep(500);
 // With no seal key handed (--seal-file), the one the server made in the data directory is a canary too: this check runs
 // as the server's uid, which reads it.
@@ -290,17 +304,22 @@ for (const pid of pids) {
   try {
     fds = readdirSync(`/proc/${pid}/fd`);
   } catch {}
+  const targets = new Map();
   for (const fd of fds) {
-    let target;
     try {
-      target = readlinkSync(`/proc/${pid}/fd/${fd}`);
-    } catch {
-      continue;
-    }
+      targets.set(fd, readlinkSync(`/proc/${pid}/fd/${fd}`));
+    } catch {}
+  }
+  const ends = new Map();
+  for (const target of targets.values()) ends.set(target, (ends.get(target) ?? 0) + 1);
+  for (const [fd, target] of targets) {
     const launcherPipe = /agentrun-serve\.[^/]+\/secrets/.test(target);
     if (launcherPipe && pid !== "1") fail(`pid ${pid} (${what}) holds the launcher's pipe on fd ${fd}`);
     if (launcherPipe) pid1Pipe = true;
     if (!target.startsWith("pipe:") && !target.endsWith(" (deleted)")) continue;
+    // A pipe whose both ends the process holds is its own (Node's event loop keeps its signal lock as one byte in such
+    // a pipe): read, it would lose that byte and never take the lock again. Nothing it hands another process is there.
+    if (target.startsWith("pipe:") && ends.get(target) > 1) continue;
     try {
       const own = openSync(`/proc/${pid}/fd/${fd}`, constants.O_RDONLY | constants.O_NONBLOCK);
       const chunk = Buffer.alloc(65_536);
