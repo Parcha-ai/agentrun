@@ -257,7 +257,7 @@ function liveOf(runRow: RunRow, now: number): boolean {
  *  runner's commit that lands while it is built is in all of it or in none. What is read through the server's own handles
  *  (the run's cut, which reads the agent's sign-ins, and the learning statuses of its folder) is read outside the snapshot,
  *  before and after it: neither is part of the run's moment, and neither may wait on the snapshot's connection. */
-async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<(StoreRun & { readonly shownEnd: RunLearning | null }) | undefined> {
+async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<(StoreRun & { readonly shownEnd: Learning | null }) | undefined> {
   // The run's one cut (run-cut.ts): the pointers it was handed read back and every secret this server never shows, so a
   // run whose words could repeat one is cut of it, rows and all, or withheld when this server cannot read back what it
   // was handed (rowShown's choke point). The snapshot renders under it, so it is read first, and read again after: the cut
