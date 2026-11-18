@@ -3490,7 +3490,8 @@ A person reads and changes an agent's learning through this server's own routes 
 with the token, an archived agent's too:
 
 - `GET /agents/{agent_id}/learning`: `main`'s head, `corrections.md` as `corrections`, the learned workflows (each its
-  name, files, description, status and `etag`), the first 20 changes on `main` (newest first, each `by: {run}` from its
+  name, files, description, status and `etag`; `status` is one word: `pending` or `retired` as its `README.md` says,
+  else where it stands as `.../learning/promotions` says it: `serving`, `checking`, `held` or `stopped`), the first 20 changes on `main` (newest first, each `by: {run}` from its
   `Run-Id` trailer or `{user: true}`, with its commit, time, reason and files), how the agent's runs that tried to learn
   fared (`merged`, `dropped` by reason, `in_progress`), counted as `GET /stats` counts them, and `impact`, what
   learning changed: the agent's completed runs that started from at least one learned item (a correction, or a learned

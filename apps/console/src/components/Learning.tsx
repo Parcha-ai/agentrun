@@ -20,7 +20,7 @@ import { type Client, ClientError } from "@/lib/client";
 import { markdown, runLabel, when, runTitle as shownTitle } from "@/lib/format";
 import {
   type AgentLearning, APPROVE_SIGN_IN, type Approval, approval, bytesOf, CHANGED, changeWords, correctionLines, corrections, counted, dropKind, dropWords,
-  impactBase, impactWords, type LastChange, type LearnedItem, type LearningProblem, learningWords, RESTORE_SIGN_IN, restores, type Retired, runsWord, shownImpact, took, tookChange, UNREADABLE_RETIRED,
+  givenToRuns, impactBase, impactWords, type LastChange, type LearnedItem, type LearningProblem, learningWords, RESTORE_SIGN_IN, restores, type Retired, runsWord, shownImpact, took, tookChange, UNREADABLE_RETIRED,
 } from "@/lib/learning";
 import { learningPerRun } from "@/lib/learningBill";
 import { backendSdkOf } from "@/lib/backendSdk";
@@ -208,7 +208,7 @@ function LearningView({ agent, v2, server, onAgent, onChanged }: LearningProps) 
           <Panel title="Learning">{switchRow(false)}</Panel>
           <LoopFeed loop={loop} promotions={promotions} serving={serving} cost={cost} />
           <NotKept runs={runs} />
-          <NextRun corrections={lines.length} workflows={workflows.filter((w) => w.status === "active").map((w) => w.name)} off={!on || server === "off"} />
+          <NextRun corrections={lines.length} workflows={workflows.filter((w) => givenToRuns(w.status))} off={!on || server === "off"} />
         </aside>
       </div>
     </div>
@@ -461,6 +461,14 @@ function CorrectionsEditor({ v2, agentId, onDone }: { v2: Client; agentId: strin
  *  waits for the owner's OK (Approve where this caller approves), and its graph, read when it is opened. Approve and
  *  Retire (after a confirm) are made on its README, at the version listed. A run changes it; a person approves or
  *  retires it, never edits it. */
+/** Where a workflow given to runs stands, as the server's `status` says it (the promotions read's own word). */
+const STANDS: Partial<Record<LearnedItem["status"], { word: string; tone: "success" | "active" | "warning" | "muted"; title: string }>> = {
+  serving: { word: "Serving", tone: "success", title: "It runs first on the runs it fits." },
+  checking: { word: "Checking", tone: "active", title: "Its check on the agent's own runs decides whether it serves; the agent takes the runs meanwhile." },
+  held: { word: "Held", tone: "warning", title: "It does not serve: its newest check or audit held it." },
+  stopped: { word: "Stopped", tone: "muted", title: "It does not serve, and nothing compiles again until a new revision lands." },
+};
+
 function LearnedCard({ item, v2, agentId, readOnly, runs, approves, onChanged, refreshHolds }: { item: LearnedItem; v2: Client; agentId: string; readOnly: boolean; runs: Map<string, Run>; approves?: Approval; onChanged: () => void | Promise<void>; refreshHolds: RefreshHolds }) {
   const [open, setOpen] = useRefreshState(refreshHolds);
   const [text, setText] = useState<string | null>(null);
@@ -506,6 +514,7 @@ function LearnedCard({ item, v2, agentId, readOnly, runs, approves, onChanged, r
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="min-w-0 break-words font-mono text-lead font-semibold leading-snug">{item.name}</h3>
             {waits && <Chip tone="warning"><Hourglass className="size-3" aria-hidden />Waits for your OK</Chip>}
+            {STANDS[item.status] && <Chip tone={STANDS[item.status]!.tone} title={STANDS[item.status]!.title}>{STANDS[item.status]!.word}</Chip>}
           </div>
           {item.description && <p className="mt-1 text-body text-muted-foreground">{item.description}</p>}
           {waits && approves === "password" && <p className="mt-2 font-mono text-label text-muted-foreground">{APPROVE_SIGN_IN}</p>}
@@ -744,16 +753,17 @@ function NotKept({ runs }: { runs: Run[] }) {
   );
 }
 
-/** What the next run is given: corrections.md whole (its lines counted) and the agent's active workflows by name (one
- *  that waits for its owner's OK is given to no run). `off`: learning is off, for the agent or on this server, and the
- *  next run gets neither. Read-only. */
-function NextRun({ corrections: lines, workflows, off }: { corrections: number; workflows: string[]; off: boolean }) {
+/** What the next run is given: corrections.md whole (its lines counted) and the agent's workflows given to runs, by name
+ *  with where each stands (`serving`, `checking`, `held`, `stopped`: only a serving one runs first; one that waits for
+ *  its owner's OK is given to no run). `off`: learning is off, for the agent or on this server, and the next run gets
+ *  neither. Read-only. */
+function NextRun({ corrections: lines, workflows, off }: { corrections: number; workflows: { name: string; status: string }[]; off: boolean }) {
   const given = off ? [] : [...(lines ? [corrections(lines)] : []), ...(workflows.length ? [counted(workflows.length, "workflow")] : [])];
   return (
     <section className="border" aria-label="What the next run is given">
       <h2 className="caps border-b px-4 py-3 text-small font-semibold">What the next run is given</h2>
       <p className="px-4 py-3 text-body text-muted-foreground">{off ? "Learning is off: the next run gets no corrections or workflows." : given.length ? `${given.join(" and ")}.` : "Nothing yet."}</p>
-      {!off && workflows.length > 0 && <p className="break-words border-t px-4 py-3 font-mono text-small leading-[1.7]">Active workflows: {workflows.join(", ")}</p>}
+      {!off && workflows.length > 0 && <p className="break-words border-t px-4 py-3 font-mono text-small leading-[1.7]">Workflows: {workflows.map((w) => `${w.name} (${w.status})`).join(", ")}</p>}
     </section>
   );
 }

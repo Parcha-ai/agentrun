@@ -20,7 +20,7 @@ const agent = (learning?: boolean, extra: Partial<Agent["definition"]> = {}): Ag
 const TEXT = "# Learned\n\n- Open /policies/refund-policy before anything else.\n- Keep the answer to three lines.\n";
 const DRAFT_FILE = "workflows/check-refunds/workflow.json";
 const README_FILE = "workflows/check-refunds/README.md";
-const flow = (status: LearnedItem["status"] = "active", extra: Partial<LearnedItem> = {}): LearnedItem => ({ name: "check-refunds", file: DRAFT_FILE, readme: README_FILE, description: "Checks a store's refund window", status, run: "run-a", bytes: 640, etag: '"readme-v1"', ...extra });
+const flow = (status: LearnedItem["status"] = "serving", extra: Partial<LearnedItem> = {}): LearnedItem => ({ name: "check-refunds", file: DRAFT_FILE, readme: README_FILE, description: "Checks a store's refund window", status, run: "run-a", bytes: 640, etag: '"readme-v1"', ...extra });
 const view = (extra: Partial<AgentLearning> = {}): AgentLearning => ({
   agent: "refunds", main: "c3", corrections: TEXT, workflows: [],
   log: { items: [{ by: { run: "run-a" }, commit: "c1", at: "2026-11-03T16:52:10Z", reason: "A correction from a grade.", files: ["corrections.md"] }], total: 1, next_cursor: null },
@@ -772,7 +772,7 @@ describe("the Learning tab's workflows", () => {
 
   it("says Approved by you or Restored by you when the server names it, and a person's change in the log alone gives no by-line", async () => {
     const AT = "2026-11-05T19:30:00Z";
-    const t = await open(agent(true), { learning: async () => view({ workflows: [flow("active", { last_change: { kind: "approved", by: "person", at: AT } }), flow("active", { name: "restored-flow", file: "workflows/restored-flow/workflow.json", readme: "workflows/restored-flow/README.md", last_change: { kind: "restored", by: "person", at: AT } }), flow("active", { name: "plain-flow", file: "workflows/plain-flow/workflow.json", readme: "workflows/plain-flow/README.md" })] }) });
+    const t = await open(agent(true), { learning: async () => view({ workflows: [flow("serving", { last_change: { kind: "approved", by: "person", at: AT } }), flow("serving", { name: "restored-flow", file: "workflows/restored-flow/workflow.json", readme: "workflows/restored-flow/README.md", last_change: { kind: "restored", by: "person", at: AT } }), flow("serving", { name: "plain-flow", file: "workflows/plain-flow/workflow.json", readme: "workflows/plain-flow/README.md" })] }) });
     expect(t.card("check-refunds")!.textContent).toMatch(/Approved by you · \S/);
     expect(t.card("restored-flow")!.textContent).toMatch(/Restored by you · \S/);
     expect(t.card("plain-flow")!.textContent).not.toMatch(/by you/);
@@ -811,8 +811,16 @@ describe("what the next run is given", () => {
     const t = await open(agent(true), { learning: async () => view({ workflows: [flow(), flow("pending", { name: "waits-flow", file: "workflows/waits-flow/workflow.json", readme: "workflows/waits-flow/README.md" })] }) });
     const panel = t.host.querySelector('section[aria-label="What the next run is given"]')!;
     expect(panel.textContent).toContain("2 corrections and 1 workflow.");
-    expect(panel.textContent).toContain("Active workflows: check-refunds");
+    expect(panel.textContent).toContain("Workflows: check-refunds (serving)");
     expect(panel.textContent).not.toContain("waits-flow");
+  });
+  it("says where each workflow stands, as the server says it: one whose check held and stopped never reads as serving", async () => {
+    const stopped = flow("stopped", { name: "stopped-flow", file: "workflows/stopped-flow/workflow.json", readme: "workflows/stopped-flow/README.md" });
+    const t = await open(agent(true), { learning: async () => view({ workflows: [flow(), stopped] }) });
+    expect(t.card("check-refunds")!.textContent).toContain("Serving");
+    expect(t.card("stopped-flow")!.textContent).toContain("Stopped");
+    expect(t.card("stopped-flow")!.textContent).not.toContain("Serving");
+    expect(t.host.querySelector('section[aria-label="What the next run is given"]')!.textContent).toContain("Workflows: check-refunds (serving), stopped-flow (stopped)");
   });
   it("says the next run gets nothing when learning is off, for the agent or on this server", async () => {
     const t = await open(agent(false));

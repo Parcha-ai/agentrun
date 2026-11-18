@@ -15,7 +15,7 @@ import type { McpPin } from "../mcp-gateway.js";
 import type { RunLaunch } from "../run-launch.js";
 import { pinAnnotations, toolClassOf, toolWord } from "./replay-calls.js";
 import { AUDITS_FILE, type FolderChange, type FolderRead, readLearning } from "./folder.js";
-import { type PromotionRecord, promotionStartOf, servingOf } from "./promote.js";
+import { type PromotionRecord, promotionStartOf, servingOf, type ServingState, servingStateOf } from "./promote.js";
 
 export { AUDITS_FILE };
 
@@ -210,11 +210,11 @@ export function auditLineOf(rows: readonly AuditRow[], workflow: string, digest:
 }
 
 /** What the promotions read says of each learned workflow beside what serves (learn/promote.ts servingOf, in its order):
- *  `state` (`checking`, its newest record is a check at work; `serving`, a revision serves; `stopped`, its newest record
- *  is a hold that stops it; `held`, else), its newest decided check's numbers, and its audit line over the rows of the
- *  serving (else the newest) revision's newest promotion (the ones the hold rule counts). */
+ *  `state` (learn/promote.ts servingStateOf, the word the learning view's `status` says too), its newest decided check's
+ *  numbers, and its audit line over the rows of the serving (else the newest) revision's newest promotion (the ones the
+ *  hold rule counts). */
 export type ServingLine = {
-  readonly state: "serving" | "checking" | "held" | "stopped";
+  readonly state: ServingState;
   readonly check: { readonly n: number; readonly agreed: number; readonly alone: number; readonly attempt: 1 | 2 } | null;
   readonly audit: AuditLine | null;
 };
@@ -222,14 +222,10 @@ export function servingLinesOf(records: readonly PromotionRecord[], rows: readon
   return servingOf(records).map(({ workflow, digest }) => {
     const own = records.filter((one) => one.workflow === workflow);
     const newest = own.at(-1);
-    const state = newest?.decided === "replaying" ? "checking"
-      : digest !== null ? "serving"
-      : newest?.decided === "hold" && (newest.check?.stopped || newest.audit?.stopped) ? "stopped"
-      : "held";
     const checked = own.findLast((one) => one.check?.n !== undefined)?.check;
     const at = digest ?? newest?.digest;
     return {
-      state,
+      state: servingStateOf(records, workflow),
       check: checked ? { n: checked.n!, agreed: checked.agreed ?? 0, alone: checked.alone ?? 0, attempt: checked.attempt } : null,
       audit: at === undefined ? null : auditLineOf(rows, workflow, at, promotionStartOf(records, workflow, at)?.at ?? null, loop),
     };

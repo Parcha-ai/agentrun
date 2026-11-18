@@ -99,7 +99,7 @@ import { gradeRow, notAuditableOf } from "./runner/audit.js";
 import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf } from "./learn/audit.js";
 import { auditLoopOf, COMPILE_AFTER_MAX } from "./learning-setting.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
-import { championOf, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown, servingOf, shownDeep } from "./learn/promote.js";
+import { championOf, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown, servingOf, servingStateOf, shownDeep } from "./learn/promote.js";
 import { workflowNodesOf } from "./learn/workflow-nodes.js";
 import { deleteLearning } from "./learn/delete.js";
 import { runModelRef } from "./model.js";
@@ -4674,7 +4674,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // The agent's learning view: its corrections, workflows and log from its learning folder; its run-fared counts and
         // its impact over the one store (agentLearningOverStore), from each run's launch, journal and learning end.
         const { counts, impact } = await agentLearningOverStore(store, id);
-        return send(res, 200, await agentLearning(data, id, await learningShown(id), counts, impact));
+        // Each workflow's status past its README.md's: where it stands as GET .../learning/promotions says it (servingStateOf
+        // over the same records), so the view never says a workflow serves that never did.
+        const records = await promotionsOf(store.settings, id);
+        return send(res, 200, await agentLearning(data, id, await learningShown(id), counts, impact, (workflow) => servingStateOf(records, workflow)));
       }
       case "getLearningCost": {
         await needAgent(id);
