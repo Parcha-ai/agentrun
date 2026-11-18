@@ -117,7 +117,7 @@ export interface Held {
    *  what the run's learning must never keep is every secret the runner holds, which no run's process is given. Its
    *  turns are asked through `input.ask`, the run's own session; `input.keptOf` is read once, for the round the runner
    *  reads. */
-  endOfRun(input: HeldEndOfRunInput): Promise<{ readonly also: readonly AlsoRow[] } | undefined>;
+  endOfRun(input: HeldEndOfRunInput): Promise<Awaited<ReturnType<EndOfRunTurn>>>;
   /** The claim's learned first choice (learned-first.ts learnedFirst), run by the runner over the workflows it reads at the
    *  claim's seed: `laid` says only whether the process's seed lay laid any (false: none is laid). Its audits, promotion
    *  and replay reads are the runner's. */

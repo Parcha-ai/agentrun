@@ -3638,6 +3638,7 @@ export interface operations {
           alone_min: number;
           attempt: 1 | 2;
           agree_on?: string[];
+          grader?: string;
           n?: number;
           agreed?: number;
           alone?: number;
@@ -3662,6 +3663,7 @@ export interface operations {
             draft?: string;
             escalated?: string;
             failed?: true;
+            differs_on?: string;
           }[];
           stopped?: true;
         };
@@ -3722,6 +3724,7 @@ export interface operations {
             alone_min: number;
             attempt: 1 | 2;
             agree_on?: string[];
+            grader?: string;
             n?: number;
             agreed?: number;
             alone?: number;
@@ -3746,6 +3749,7 @@ export interface operations {
               draft?: string;
               escalated?: string;
               failed?: true;
+              differs_on?: string;
             }[];
             stopped?: true;
           } | null;

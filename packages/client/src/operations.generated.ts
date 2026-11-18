@@ -1479,6 +1479,7 @@ export type ListLearningPromotionsResponse = {
       alone_min: number;
       attempt: 1 | 2;
       agree_on?: Array<string>;
+      grader?: string;
       n?: number;
       agreed?: number;
       alone?: number;
@@ -1503,6 +1504,7 @@ export type ListLearningPromotionsResponse = {
         draft?: string;
         escalated?: string;
         failed?: true;
+        differs_on?: string;
       }>;
       stopped?: true;
     };
@@ -1563,6 +1565,7 @@ export type ListLearningPromotionsResponse = {
         alone_min: number;
         attempt: 1 | 2;
         agree_on?: Array<string>;
+        grader?: string;
         n?: number;
         agreed?: number;
         alone?: number;
@@ -1587,6 +1590,7 @@ export type ListLearningPromotionsResponse = {
           draft?: string;
           escalated?: string;
           failed?: true;
+          differs_on?: string;
         }>;
         stopped?: true;
       } | null;

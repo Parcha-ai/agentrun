@@ -3657,6 +3657,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     reflecting = true;
     try {
       const rows = await step({ runId: claim.runId, agentId: spec.agentId, claim, outcome, signal: deps.signal, ask: (prompt, opts) => askEndOfRun(claim, over, prompt, opts.deadlineMs, opts.again === true, opts.round ?? 1, opts.keep, opts.step), keptOf: await keptOf(claim) });
+      // A replay's or a shadow's grader verdict (runner/compare-end.ts), on its root before its end: its metrics carry it
+      // (workflow-first.ts pathMetrics), where the check and the audit read it.
+      const on = harness;
+      if (rows?.compared && !cut() && on) await on.commit((tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: KINDS.compared, data: rows.compared as unknown as JsonValue }), context);
       return cut() ?? { kind: "rows", also: rows?.also ?? [] };
     } catch (error) {
       return cut() ?? (console.warn(`[runner] ${claim.runId}: its end-of-run step failed: ${said(error)}`), { kind: "rows", also: [] });
