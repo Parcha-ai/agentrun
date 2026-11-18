@@ -223,7 +223,7 @@ const dataOf = (args, home) => {
 };
 
 /** The server a data directory's record names, and whether it answers /health ok: `{ url, health, record }`. */
-export async function healthOf(data, { fetch: get = fetch, since = 0 } = {}) {
+async function healthOf(data, { fetch: get = fetch, since = 0 } = {}) {
   const file = join(data, ".server.json");
   let record;
   try {

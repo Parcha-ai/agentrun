@@ -23,7 +23,7 @@ const fresh = () => {
 
 /** A home with an AgentRun: its data directory's record and token, the installer's command, and (unless `service` is
  *  false) a systemd user unit for it, serving `serviceData` when given. */
-function homeOf({ record = true, service = true, serviceData, program = true, env = {} } = {}) {
+function homeOf({ record = true, service = true, serviceData, program = true, env = {}, args = [] } = {}) {
   const home = fresh();
   const data = join(home, ".agentrun");
   mkdirSync(join(data, "bin"), { recursive: true });
@@ -33,7 +33,7 @@ function homeOf({ record = true, service = true, serviceData, program = true, en
   if (service) {
     const unit = join(home, ".config", "systemd", "user", "agentrun.service");
     mkdirSync(join(unit, ".."), { recursive: true });
-    writeFileSync(unit, unitText({ program: join(data, "bin", "agentrun"), args: ["--no-open", ...(serviceData ? ["--data", serviceData] : [])], path: "/usr/bin:/bin", log: join(data, "logs", "agentrun.log"), env }));
+    writeFileSync(unit, unitText({ program: join(data, "bin", "agentrun"), args: ["--no-open", ...(serviceData ? ["--data", serviceData] : []), ...args], path: "/usr/bin:/bin", log: join(data, "logs", "agentrun.log"), env }));
   }
   return { home, data };
 }
@@ -41,7 +41,7 @@ function homeOf({ record = true, service = true, serviceData, program = true, en
 const HEALTHY_CAPS = {
   server: { name: "@parcha/agentrun-serve", version: "9.9.9" },
   models: { source: "providers", default: "anthropic/claude-test", ready: true, needs: null },
-  harnesses: [{ id: "pi", available: true }, { id: "claude-agent", available: true }],
+  harnesses: [{ id: "pi", available: true, default_model: "anthropic/claude-test" }, { id: "claude-agent", available: true, default_model: "anthropic/claude-test" }],
   places: { boxes: [{ id: "docker", available: true, state: "ready" }] },
   features: { triggers: { public_url: false } },
   switches: {
@@ -157,6 +157,39 @@ test("Server: none recorded is exit 3, its checks skipped, with how to start it"
   assert.equal(down.check("service").status, "fail");
 });
 
+test("Server: a record that is refused (unreadable as private, or an address with a user, a query or another scheme) is exit 1, and nothing is sent anywhere", async () => {
+  const { home, data } = homeOf();
+  const server = serverOf();
+  const refused = await doctor({ home, data, server, readRecord: (file) => { throw new Error(`${file} is not a private file of yours (a regular file you own, mode 0600); refusing it.`); } });
+  assert.equal(refused.report.exit, 1);
+  assert.equal(refused.report.server, null);
+  assert.equal(refused.check("server").status, "fail");
+  assert.match(refused.check("server").summary, /is not a private file of yours .*refusing it: nothing is sent to the address it names\./);
+  assert.match(refused.check("server").fix[0], /mode 0600/);
+  for (const id of ["address", "owner", "models", "harnesses", "switches"]) {
+    assert.equal(refused.check(id).status, "skip", id);
+    assert.match(refused.check(id).summary, /the server record is refused/, id);
+  }
+  assert.deepEqual(server.requests, []);
+
+  for (const base_url of ["http://someone:secret@127.0.0.1:7340/v2", "http://127.0.0.1:7340/v2?to=elsewhere", "file:///etc/passwd", "ftp://127.0.0.1/v2"]) {
+    const odd = homeOf();
+    writeFileSync(join(odd.data, ".server.json"), JSON.stringify({ base_url, pid: 4242, token_file: join(odd.data, ".token") }), { mode: 0o600 });
+    const asked = serverOf();
+    const run = await doctor({ ...odd, server: asked });
+    assert.equal(run.report.exit, 1, base_url);
+    assert.match(run.check("server").summary, /is not a server record .*refusing it/, base_url);
+    assert.deepEqual(asked.requests, [], base_url);
+    assert.ok(!run.text.includes("secret"), "the record's password is not echoed");
+  }
+
+  const broken = homeOf();
+  writeFileSync(join(broken.data, ".server.json"), "{not json", { mode: 0o600 });
+  const garbled = await doctor({ ...broken, server: serverOf() });
+  assert.equal(garbled.report.exit, 1);
+  assert.match(garbled.check("server").summary, /is not valid JSON/);
+});
+
 test("Server: a failing /v2/health is exit 1, with the disk to free", async () => {
   const { home, data } = homeOf();
   const run = await doctor({ home, data, server: serverOf({ health: { status: 503, body: { status: "failing", checks: { store: "ok", disk: "below_floor" } } } }) });
@@ -221,16 +254,35 @@ test("Address: loopback from a remote session warns with a tunnel and the tailne
   const byUnit = await doctor({ ...named, env: {}, readToken: () => undefined });
   assert.equal(byUnit.check("address").status, "ok");
 
+  // --allow-host only names the Host names it accepts: nothing forwards to it, so a remote session still gets the tunnel.
+  const allowed = homeOf({ args: ["--allow-host", "agentrun.example.test"] });
+  const byAllowHost = await doctor({ ...allowed, env: { SSH_CONNECTION: "203.0.113.5 50000 198.51.100.7 22" }, readToken: () => undefined });
+  assert.equal(byAllowHost.check("address").status, "warn");
+  assert.ok(byAllowHost.check("address").fix.some((f) => f.includes("ssh -L 7340:localhost:7340")));
+
   assert.equal((await doctor({ home, data })).check("address").status, "ok");
 });
 
-test("Owner: no password warns and names where the setup link is, never the code; no accounts is info", async () => {
+test("Owner: no password warns with agentrun open as the fix, never the code; setup with no code adds its page; no accounts is info", async () => {
   const { home, data } = homeOf();
   const unset = await doctor({ home, data, server: serverOf({ session: { status: 200, body: { accounts: true, password_set: false, setup_code: true } } }) });
   const owner = unset.check("owner");
   assert.equal(owner.status, "warn");
-  assert.ok(owner.fix.some((f) => f.includes("Set up this server:") && f.includes(join(home, ".agentrun", "logs", "agentrun.log"))));
+  assert.deepEqual(owner.fix, ["agentrun open  (opens the setup page with its code filled in; where no browser opens, it prints the link)"]);
+  assert.doesNotMatch(unset.text, /Set up this server:|#code=/);
   assert.equal(unset.report.exit, 0);
+  // The doctor asks for no setup code itself: a new one is a POST, and every request is a GET.
+  assertReadOnly(unset);
+
+  const open = await doctor({ home, data, server: serverOf({ session: { status: 200, body: { accounts: true, password_set: false, setup_code: false } } }) });
+  assert.deepEqual(open.check("owner").fix, ["agentrun open  (opens the setup page; where no browser opens, it prints the link)", "Or open http://127.0.0.1:7340/setup in a browser that reaches this server: its setup takes no code"]);
+
+  const elsewhere = homeOf({ service: false });
+  const other = join(elsewhere.home, "other");
+  mkdirSync(other);
+  writeFileSync(join(other, ".server.json"), JSON.stringify({ base_url: BASE, pid: 4242, token_file: join(other, ".token") }), { mode: 0o600 });
+  const withData = await doctor({ home: elsewhere.home, data: other, server: serverOf({ session: { status: 200, body: { accounts: true, password_set: false, setup_code: true } } }) });
+  assert.ok(withData.check("owner").fix[0].startsWith(`agentrun open --data ${other}  (`), withData.check("owner").fix[0]);
 
   const noAccounts = await doctor({ home, data, server: serverOf({ session: { status: 404, body: { error: { code: "not_found" } } } }) });
   assert.equal(noAccounts.check("owner").status, "info");
@@ -254,9 +306,19 @@ test("Models: none ready fails with the console's Model keys and the gateway's v
   assert.match(harnesses.summary, /claude-agent needs ANTHROPIC_API_KEY/);
   assert.doesNotMatch(harnesses.summary, /claude-agent: claude-agent|\.;/);
 
-  const some = await doctor({ home, data, server: serverOf({ caps: { status: 200, body: { ...HEALTHY_CAPS, harnesses: [{ id: "pi", available: true }, caps.harnesses[1]] } } }) });
+  const some = await doctor({ home, data, server: serverOf({ caps: { status: 200, body: { ...HEALTHY_CAPS, harnesses: [{ id: "pi", available: true, default_model: "anthropic/claude-test" }, caps.harnesses[1]] } } }) });
   assert.equal(some.check("harnesses").status, "info");
   assert.deepEqual(some.check("harnesses").details, { ready: ["pi"], not_ready: { "claude-agent": "claude-agent needs ANTHROPIC_API_KEY or OPENROUTER_API_KEY." } });
+
+  // A harness that runs here with no default model (pi with no key: available, default_model null) is not ready, and
+  // its reason is kept; one from a server that does not list default_model goes by available.
+  const keyless = { id: "pi", available: true, default_model: null, reason: "pi has no model here: add a model key (Settings → Model keys).", needs: ["key"] };
+  const noDefault = await doctor({ home, data, server: serverOf({ caps: { status: 200, body: { ...HEALTHY_CAPS, harnesses: [keyless, { id: "codex", available: true }] } } }) });
+  assert.equal(noDefault.check("harnesses").status, "info");
+  assert.deepEqual(noDefault.check("harnesses").details, { ready: ["codex"], not_ready: { pi: keyless.reason } });
+  assert.match(noDefault.check("harnesses").summary, /Ready: codex\. Not ready: pi has no model here: add a model key/);
+  const onlyKeyless = await doctor({ home, data, server: serverOf({ caps: { status: 200, body: { ...HEALTHY_CAPS, harnesses: [keyless] } } }) });
+  assert.equal(onlyKeyless.check("harnesses").status, "fail");
 
   const wrongModel = await doctor({ home, data, server: serverOf({ caps: { status: 200, body: { ...caps, models: { ...caps.models, needs: "model" } } } }) });
   assert.match(wrongModel.check("models").fix[0], /AGENT_MODEL names a model/);
@@ -348,6 +410,16 @@ test("through the CLI: --json's shape and exit codes, the token sent only to cap
     assert.equal(request.method, "GET");
     assert.equal(request.authorization, request.url === "/v2/capabilities" ? `Bearer ${CANARY}` : undefined, request.url);
   }
+
+  // A record another user could have written (group- and world-readable here) is refused: nothing goes to its address.
+  const loose = fresh();
+  writeFileSync(join(loose, ".server.json"), `${JSON.stringify({ base_url: `http://127.0.0.1:${server.address().port}/v2`, pid: process.pid, token_file: join(loose, ".token") })}\n`, { mode: 0o644 });
+  writeFileSync(join(loose, ".token"), `${CANARY}\n`, { mode: 0o600 });
+  const asked = seen.length;
+  const refused = await cli(["doctor", "--data", loose], env);
+  assert.equal(refused.code, 1, refused.err);
+  assert.match(refused.out, /^fail  Server .*is not a private file of yours.*nothing is sent to the address it names/m);
+  assert.equal(seen.length, asked, "a refused record's address was sent a request");
 
   const none = await cli(["doctor", "--data", fresh()], env);
   assert.equal(none.code, 3);

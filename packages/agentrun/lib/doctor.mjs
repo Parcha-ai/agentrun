@@ -1,15 +1,16 @@
 // `agentrun doctor`: how this AgentRun is set up, checked in one go, each problem with what to change. It reads and never
 // writes: no file is changed, nothing is started or stopped, and every request is a GET. The server is the one the data
-// directory's record names (DIR/.server.json, as `agentrun service status` reads it: service.mjs healthOf); its routes
-// that take no credential (/v2/health, /v2/auth/session) come first, and capabilities are read with the server's own
-// token (DIR/.token) only where that file is there. No token, key, setup code or other secret is ever printed: the token
-// goes in a header to this machine's own server and nowhere else, and the log that holds the setup link is named, never
-// read.
+// directory's record names (DIR/.server.json), read as every CLI command reads it (cli.mjs targetOf): a private file of
+// this user's, its base_url an http or https URL with no query, fragment, user or password; a record that fails that is
+// refused and nothing is asked of the address it names. Its routes that take no credential (/v2/health,
+// /v2/auth/session) come first, and capabilities are read with the server's own token (DIR/.token) only where that file
+// is there. No token, key, setup code or other secret is ever printed: the token goes in a header to this machine's own
+// server and nowhere else, and the setup link is left to `agentrun open`.
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
-import { healthOf, INSTALL_COMMAND, managerOf } from "./service.mjs";
+import { INSTALL_COMMAND, managerOf } from "./service.mjs";
 
 const OWN = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 const REPO = "https://github.com/Parcha-ai/agentrun/blob/main/packages";
@@ -40,9 +41,31 @@ export function meetsFloor(version, engines) {
   return true;
 }
 
+/** A record's base_url as the CLI takes one (cli.mjs baseOf): http or https, with no query, fragment, user or password,
+ *  any of which would carry a request elsewhere. The base without its trailing slashes, or undefined. */
+const baseOfRecord = (record) => {
+  const given = record?.base_url;
+  if (typeof given !== "string" || !URL.canParse(given)) return undefined;
+  const url = new URL(given);
+  return /^https?:$/.test(url.protocol) && !/[?#]/.test(given) && !url.username && !url.password ? given.replace(/\/+$/, "") : undefined;
+};
+
+/** A file's text, or undefined when there is none: what doctorOf reads the record with when its caller gives no
+ *  `readRecord`. The CLI gives its private-file check (cli.mjs privateFile); without one, no token is read either
+ *  (`readToken`'s default), so an address this read takes from another user's file is sent nothing secret. */
+const plainText = (file) => {
+  try {
+    return readFileSync(file, "utf8");
+  } catch (error) {
+    if (error.code === "ENOENT") return undefined;
+    throw error;
+  }
+};
+
 /** Every check, from what this machine and its server say. Each dependency can be replaced (tests): `exec` has
- *  spawnSync's shape, `get` fetch's, `readToken` returns the server's token or undefined (and may throw, which skips the
- *  capabilities read). */
+ *  spawnSync's shape, `get` fetch's, `readRecord` returns a file's text or undefined when there is none (and throws to
+ *  refuse it: no request is sent then), `readToken` returns the server's token or undefined (and may throw, which skips
+ *  the capabilities read). */
 export async function doctorOf({
   data,
   env = process.env,
@@ -54,6 +77,7 @@ export async function doctorOf({
   get = fetch,
   nodeVersion = process.versions.node,
   engines = OWN.engines.node,
+  readRecord = plainText,
   readToken = () => undefined,
 }) {
   data = resolve(data ?? join(home, ".agentrun"));
@@ -80,13 +104,26 @@ export async function doctorOf({
     add("node", "Node", "warn", `This command runs on Node.js v${nodeVersion}, but the node on PATH is v${pathVersion}, older than ${floor}: npx @parcha/agentrun refuses to start on it.`, { fix: nodeFix, docs: DOCS.launcher });
   } else add("node", "Node", "ok", `Node.js v${nodeVersion} (AgentRun needs ${floor} or newer).`);
 
-  // 2. Server: the record's address, /v2/health there.
+  // 2. Server: the record's address, checked before anything is sent to it, then /v2/health there.
+  const recordFile = join(data, ".server.json");
   let record;
+  let refused;
   try {
-    record = JSON.parse(readFileSync(join(data, ".server.json"), "utf8"));
-  } catch {}
-  const health = await healthOf(data, { fetch: get });
-  const base = typeof record?.base_url === "string" && URL.canParse(record.base_url) ? record.base_url.replace(/\/+$/, "") : undefined;
+    const text = readRecord(recordFile);
+    if (text !== undefined) record = JSON.parse(text);
+  } catch (error) {
+    refused = error instanceof SyntaxError ? `${recordFile} is not valid JSON` : error.message.replace(/\.$/, "");
+  }
+  const base = refused === undefined && record !== undefined ? baseOfRecord(record) : undefined;
+  if (refused === undefined && record !== undefined && base === undefined) refused = `${recordFile} is not a server record (base_url an http or https URL with no query, fragment, user or password); refusing it`;
+  if (refused !== undefined) record = undefined;
+  const health = {};
+  if (base) {
+    health.url = `${new URL(base).origin}/`;
+    const answer = await getJson(`${base}/health`);
+    health.health = answer.status === 0 ? `not answering (${answer.error})` : answer.status === 200 && answer.body?.status === "ok" ? "ok" : `${answer.status} ${answer.body?.status ?? ""}`.trim();
+    health.checks = answer.body?.checks;
+  }
   const answering = health.health !== undefined && !health.health.startsWith("not answering");
   const program = join(root, "bin", "agentrun");
   const manager = managerOf({ platform, home, uid, user, env, exec, fail: (_code, message) => new Error(message) });
@@ -118,7 +155,12 @@ export async function doctorOf({
   }
   const version = caps?.server?.version;
 
-  if (health.health === "ok") add("server", "Server", "ok", `${health.url} answers /v2/health ok${version ? `, version ${version}` : ""}.`, { details: { url: health.url, version: version ?? null } });
+  if (refused !== undefined) {
+    add("server", "Server", "fail", `${refused}: nothing is sent to the address it names.`, {
+      fix: [`ls -l ${recordFile}: it must be a regular file you own, mode 0600, that no one else can write. If it is not yours, remove it; then start AgentRun again (it writes a new one)`],
+      docs: DOCS.launcher,
+    });
+  } else if (health.health === "ok") add("server", "Server", "ok", `${health.url} answers /v2/health ok${version ? `, version ${version}` : ""}.`, { details: { url: health.url, version: version ?? null } });
   else if (answering) {
     const why = Object.entries(health.checks ?? {}).filter(([, value]) => value !== "ok").map(([name, value]) => `${name} ${value}`).join(", ");
     const fix = [];
@@ -130,7 +172,7 @@ export async function doctorOf({
     const where = base ? `The server recorded in ${join(data, ".server.json")} (${health.url}) is ${health.health}.` : `No AgentRun server is running for ${data} (no ${join(data, ".server.json")}).`;
     add("server", "Server", "fail", where, { fix: startFix, docs: DOCS.launcher });
   }
-  const skip = (id, title) => add(id, title, "skip", "No server answering to ask.");
+  const skip = (id, title) => add(id, title, "skip", refused !== undefined ? "Not checked: the server record is refused (Server, above)." : "No server answering to ask.");
   const noCaps = (id, title) => add(id, title, "skip", `Not checked: ${capsWhy}.`);
 
   // 3. Service: installed? running? lingering?
@@ -155,8 +197,9 @@ export async function doctorOf({
   else {
     const at = new URL(base);
     const port = at.port || (at.protocol === "https:" ? "443" : "80");
-    // A public address or another Host name: from capabilities, else from the service's own settings and the tailnet record.
-    const named = installed && (/AGENTRUN_PUBLIC_URL=/.test(unitText) || unitArgs.includes("--allow-host"));
+    // Something that forwards to it: a public address (capabilities, else the service's own settings) or the tailnet
+    // record. --allow-host is not one: it only names the Host names the server accepts, and forwards nothing.
+    const named = installed && /AGENTRUN_PUBLIC_URL=/.test(unitText);
     let tailnet;
     try {
       // The tailnet entry the launcher added serves the service's port: this server's only when it is the service's.
@@ -165,7 +208,7 @@ export async function doctorOf({
     const reachable = caps?.features?.triggers?.public_url === true || named || typeof tailnet?.url === "string";
     const remote = Boolean(env.SSH_CONNECTION || env.SSH_TTY) || (platform === "linux" && !env.DISPLAY && !env.WAYLAND_DISPLAY);
     if (!LOOPBACK.test(at.hostname)) add("address", "Address", "ok", `It listens at ${at.host}, which other machines that reach this one can open; the token and the password are its only lock, so put TLS in front of it.`);
-    else if (reachable) add("address", "Address", "ok", `It listens on loopback (${at.host}) and is served at a name of its own${typeof tailnet?.url === "string" ? ` (${tailnet.url}, on your tailnet)` : " (AGENTRUN_PUBLIC_URL or --allow-host)"}.`);
+    else if (reachable) add("address", "Address", "ok", `It listens on loopback (${at.host}) and is served at a name of its own${typeof tailnet?.url === "string" ? ` (${tailnet.url}, on your tailnet)` : " (AGENTRUN_PUBLIC_URL)"}.`);
     else if (!remote) add("address", "Address", "ok", `It listens on loopback (${at.host}): a browser on this machine opens it.`);
     else {
       const fix = [`From your own computer, a tunnel: ssh -L ${port}:localhost:${port} <this machine>, then open http://localhost:${port}/`];
@@ -191,13 +234,12 @@ export async function doctorOf({
     const session = await getJson(`${base}/auth/session`);
     if (session.status === 200 && session.body?.password_set === true) add("owner", "Owner", "ok", "The console's password is set.");
     else if (session.status === 200 && session.body?.password_set === false) {
-      const log = join(root, "logs", "agentrun.log");
-      add("owner", "Owner", "warn", "No password yet: whoever opens the console first sets it. Set it now.", {
-        fix: installed
-          ? [`Open the setup link: the newest "Set up this server:" line in ${log}`, "agentrun service logs --lines 200 | grep 'Set up this server'"]
-          : [`Open the setup link: the newest "Set up this server:" line where AgentRun started (its terminal, or ${log} when the installer started it)`],
-        docs: DOCS.password,
-      });
+      // agentrun open opens the setup page (its code filled in when setup takes one) or, where no browser opens, prints
+      // its link. The doctor itself asks for no code: a new one is a POST.
+      const coded = session.body?.setup_code !== false;
+      const fix = [`agentrun open${dataFlag}  (opens the setup page${coded ? " with its code filled in" : ""}; where no browser opens, it prints the link)`];
+      if (!coded) fix.push(`Or open ${health.url}setup in a browser that reaches this server: its setup takes no code`);
+      add("owner", "Owner", "warn", "No password yet: whoever opens the console first sets it. Set it now.", { fix, docs: DOCS.password });
     } else if (session.status === 404) add("owner", "Owner", "info", "This server has no accounts (AGENTRUN_ACCOUNTS=0): its token opens the console.");
     else add("owner", "Owner", "skip", `GET /v2/auth/session answered ${session.status || session.error}.`);
   }
@@ -220,8 +262,12 @@ export async function doctorOf({
       add("models", "Models", "fail", `No model is ready (it needs ${models.needs === "model" ? "another model" : "a model key"}): no run can start.`, { fix, docs: DOCS.models, details: { source: models.source ?? null, needs: models.needs ?? null } });
     }
     const harnesses = Array.isArray(caps.harnesses) ? caps.harnesses : [];
-    const ready = harnesses.filter((h) => h.available).map((h) => h.id);
-    const not = harnesses.filter((h) => !h.available);
+    // Ready: it runs here and has a model to run a definition that names none. One that runs here with no default model
+    // (default_model null: pi with no key) is not, and its reason says why. A server from before default_model was
+    // listed leaves it out: available alone says it then.
+    const runs = (h) => h.available === true && h.default_model !== null;
+    const ready = harnesses.filter(runs).map((h) => h.id);
+    const not = harnesses.filter((h) => !runs(h));
     // A reason that starts with its harness's name is said as it is.
     const notWords = not.map((h) => { const why = String(h.reason ?? "not available").replace(/\.$/, ""); return why.startsWith(h.id) ? why : `${h.id}: ${why}`; });
     const details = { ready, not_ready: Object.fromEntries(not.map((h) => [h.id, h.reason ?? null])) };
@@ -258,7 +304,7 @@ export async function doctorOf({
     else add("docker", "Docker", "warn", `docker info does not answer${said ? ` (${said})` : ""}: an agent that needs a computer (bash, files) fails to start.`, { fix: dockerFix(said), docs: DOCS.docker });
   }
 
-  const exit = !answering ? 3 : checks.some((c) => c.status === "fail") ? 1 : 0;
+  const exit = refused !== undefined ? 1 : !answering ? 3 : checks.some((c) => c.status === "fail") ? 1 : 0;
   return { data, launcher: OWN.version, server: answering ? { url: health.url, version: version ?? null } : null, exit, checks };
 }
 
@@ -291,7 +337,7 @@ export const DOCTOR = {
       if (record && !record.token_file) return vars.AGENTRUN_API_KEY || undefined;
       return cli.privateFile(join(data, ".token"))?.trim() || undefined;
     };
-    const report = await doctorOf({ data: values.data, env, readToken });
+    const report = await doctorOf({ data: values.data, env, readRecord: cli.privateFile, readToken });
     io.stdout.write(values.json ? `${JSON.stringify(report, null, 2)}\n` : textOf(report));
     return report.exit;
   },
