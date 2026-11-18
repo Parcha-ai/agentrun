@@ -66,6 +66,17 @@ Tailscale's operator may change what it serves, it prints the one `sudo tailscal
 users, unlimited user devices ([pricing](https://tailscale.com/pricing)). The https address needs MagicDNS and HTTPS
 certificates turned on in your tailnet's [DNS settings](https://login.tailscale.com/admin/dns).
 
+On a Linux server you rent (Ubuntu or Debian, as root), `--vps` sets up AgentRun in Docker Compose instead, with a
+shell for its agents in Docker sandboxes, on your tailnet when Tailscale is logged in and on the server's loopback
+otherwise:
+
+```sh
+curl -fsSL https://agentrun.ai/install | sh -s -- --vps
+```
+
+[Deploying AgentRun](https://github.com/Parcha-ai/agentrun/blob/main/deploy/README.md#one-command-on-a-server-you-rent)
+says what it installs and writes, and what `--public` exposes.
+
 The server binds its port first and says so; this command then names the address on stderr at once, and prints its line
 on stdout once the server is ready, which on a cold, slow disk can take minutes. A start that fails says why on stderr:
 the step that failed, how the server ended (its exit code or signal, or still running after 60 seconds without printing

@@ -89,6 +89,57 @@ secrets over a one-character alphabet (always `7340` and `0`), and model keys ar
 Railway's default draining time applies, so a redeploy stops the server without the runner's 31 s stop. A run in flight
 then picks up again after the restart.
 
+## One command on a server you rent
+
+On a fresh Linux server (Ubuntu or Debian, x64 or arm64), logged in as root:
+
+```sh
+curl -fsSL https://agentrun.ai/install | sh -s -- --vps
+```
+
+Its agents get a shell in Docker sandboxes, and it stays private. In order, it:
+
+1. Picks the release: the server image `ghcr.io/parcha-ai/agentrun-server:v<version>` that the latest `@parcha/agentrun`
+   depends on. `--version V` picks another release; `--image IMAGE` names an image.
+2. Uses the Docker already on the server, if it is Docker Engine 26 or later with the compose plugin, and never changes
+   it. With no Docker, it installs Docker Engine and the compose plugin from Docker's apt repository, as
+   [Docker's install guide](https://docs.docker.com/engine/install/ubuntu/) does.
+3. Writes `/opt/agentrun` (mode 700): `compose.yaml`, written again on every run, and `.env` (mode 600), whose
+   `AGENTRUN_TOKEN` and `AGENTRUN_SEAL_KEY` it makes once with `openssl rand` and then keeps. Lines you add to `.env` (a
+   model key, `AGENTRUN_BOX_ALLOW`) stay, and so does a `compose.override.yaml` of your own beside it.
+4. Starts it with `docker compose up` and waits for its health check. If the first visit would not ask for the setup
+   code, it stops the server and says so.
+5. Prints the address, the setup link with its code, and the line that reads the code again later:
+   `cd /opt/agentrun && docker compose logs agentrun | grep 'Set up this server' | tail -n 1`.
+
+Running it again upgrades to the release it names and keeps the token, the seal key and the data volume.
+
+Where you open it:
+
+- **Tailscale logged in.** On your own tailnet only, at `https://<server>.<tailnet DNS name>/`, through `tailscale serve`,
+  never Funnel, as `--tailscale` does on your own computer. The installer runs that step from the server's image with
+  the server's `tailscale` and its socket. The address needs MagicDNS and HTTPS certificates on in your tailnet's
+  [DNS settings](https://login.tailscale.com/admin/dns). Tailscale's Personal plan is free.
+- **No Tailscale, or logged out.** The server's loopback only. The installer prints the steps (install Tailscale, then
+  `tailscale up`) and the command to run again, and exits 0. It never installs Tailscale or logs in for you. Until
+  then, open it over SSH: `ssh -N -L 7340:127.0.0.1:7340 root@<server>`, then `http://127.0.0.1:7340/`.
+- **`--public`.** Every address of the server, port 7340, over plain HTTP, at `http://<its IPv4 address>:7340/`. Behind
+  NAT, name the address: `curl -fsSL https://agentrun.ai/install | AGENTRUN_PUBLIC_URL=http://<address>:7340/ sh -s --
+  --vps --public`. Before it starts, the installer says what this exposes. Anyone who reaches the address reaches the
+  console and the API, and the setup code, your password and the token cross the network unencrypted. A later run
+  without `--public` makes it private again.
+
+The server's container gets the server's Docker socket, so a run's computer can be a Docker sandbox: a container beside
+it with no socket, every capability dropped, no network but its egress proxy (`AGENTRUN_BOX_ALLOW`, by default the
+package registries and GitHub), and only its run's folder of the data volume. Whatever reaches that socket is root on
+the server, and the AgentRun server reaches it. Keep the server for AgentRun alone, with no other services, keys or
+data on it.
+
+It runs on 1 GB of memory, with room for a run or two at once; 2 GB holds more. At the providers' prices when this was
+written, a Hetzner Cloud CPX02 (1 vCPU, 1 GB, 20 GB) is from €5.49 a month before VAT
+([pricing](https://www.hetzner.com/cloud/regular-performance)), and a DigitalOcean Basic Droplet (1 vCPU, 1 GiB, 25
+GiB) is $6 a month ([pricing](https://www.digitalocean.com/pricing/droplets)). The $4 Droplet's 512 MiB is too little.
+
 ## The first visit's setup code
 
 A server at a public address (`AGENTRUN_PUBLIC_URL`, or Render's own) asks for a setup code before it takes the first
@@ -98,6 +149,7 @@ password. The console says where to look and never shows the code. It is in one 
 | --- | --- |
 | Render | The service's **Environment** tab: paste the value of `AGENTRUN_TOKEN` as the code. Or its **Logs** tab: the line below. |
 | Railway | The service's **Variables** tab: paste the value of `AGENTRUN_TOKEN` as the code. Or the deployment's **Deploy Logs**: the line below. |
+| A server you rent (`--vps`) | The installer prints it. Later: `cd /opt/agentrun && docker compose logs agentrun \| grep 'Set up this server' \| tail -n 1`. Or `AGENTRUN_TOKEN` in `/opt/agentrun/.env`. |
 | Docker | `docker logs agentrun` (compose: `docker compose logs`, which needs no service name: it is `server` in `deploy/compose.yaml` and `agentrun` in the root `compose.yaml`): the newest line `Set up this server: <address>/setup#code=<code>`. Open its link, or paste the code. |
 | Any | The API token stands in for the code: `AGENTRUN_TOKEN`, or `/data/.token` when the server made its own. |
 
