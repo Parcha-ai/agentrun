@@ -124,7 +124,7 @@ test("agree_on round-trips through the definition PUT; a bad one is a 422 naming
   assert.deepEqual((await api("GET", "/agents/mcc")).body.definition.learning, { compile_after: 5, agree_on: ["riskTier", "mcc"] });
   const wrong = await api("PUT", "/agents/mcc/definition", { definition: { name: "mcc", instructions: "Classify the merchant.", skills: [], tools: [], learning: { agree_on: ["mcc", "mcc"] } } });
   assert.equal(wrong.status, 422, JSON.stringify(wrong.body));
-  assert.deepEqual(wrong.body.error.fields.map((f) => [f.field, f.reason, f.message]), [["definition.learning", "wrong_type", "definition.learning.agree_on is a list of 1 to 16 distinct top-level answer keys, each 1 to 64 characters"]]);
+  assert.deepEqual(wrong.body.error.fields.map((f) => [f.field, f.reason, f.message]), [["definition.learning", "wrong_type", "definition.learning.agree_on is a list of 1 to 16 distinct top-level answer keys, each 1 to 64 characters, e.g. true"]], "the 422's words name agree_on, then the field's example");
 });
 
 test("a record written with agree_on reads back with it (the promotions read keeps what the check compared)", async () => {
