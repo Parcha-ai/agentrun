@@ -681,6 +681,11 @@ setting:
 - **E2B, `E2B_SANDBOX_URL`** (`ambientProblem` in `src/e2b.ts`). The SDK sends every sandbox call to it when it is set,
   and no option clears it, so the provider refuses to start while it is set. It only reads.
 
+A proxy isn't read from the environment either. E2B's SDK and Morph's SSH gateway, the two clients Node's own proxy
+doesn't reach, follow the one the process installed into Node (`--use-env-proxy`, `NODE_USE_ENV_PROXY` or
+`http.setGlobalProxyFromEnv`, which serve calls at start), as `fetch` does: `src/env-proxy.ts` reads it from Node's
+`https.globalAgent`. A process that installed none has them go direct.
+
 `scripts/check-env.mjs` holds the library to this: it reads every file under `src/` outside `src/conformance/`, those
 in its directories (`src/docker/`) included, with TypeScript's parser and fails on any use of `process.env` (dotted,
 bracketed, destructured, aliased, through `globalThis` or an import of `node:process`) but these two, each by its

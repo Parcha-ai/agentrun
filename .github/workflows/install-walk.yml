@@ -5,6 +5,8 @@ name: Install walk
 # systemd user session; a macOS runner with launchd in its Aqua session. On a pull request or push it installs this
 # checkout's launcher, packed; after a release, the published one. The container also walks --tailscale with a fake
 # tailscale (packages/agentrun/test/fake-tailscale.sh): no tailnet, no secret. No model is called. Not a required check.
+# The vps job walks --vps as root on a runner whose Docker it purges first (packages/agentrun/test/vps-walk.sh): the
+# release's published image, then, on a pull request or push, this checkout's, with a faux model (no key).
 
 on:
   pull_request:
@@ -15,6 +17,8 @@ on:
       - 'packages/agentrun/bin/agentrun.mjs'
       - 'packages/agentrun/test/install-walk.sh'
       - 'packages/agentrun/test/fake-tailscale.sh'
+      - 'packages/agentrun/test/vps-walk.sh'
+      - 'packages/agentrun/test/vps-faux-shell.mjs'
       - '.github/workflows/install-walk.yml'
   push:
     branches: [main]
@@ -25,6 +29,8 @@ on:
       - 'packages/agentrun/bin/agentrun.mjs'
       - 'packages/agentrun/test/install-walk.sh'
       - 'packages/agentrun/test/fake-tailscale.sh'
+      - 'packages/agentrun/test/vps-walk.sh'
+      - 'packages/agentrun/test/vps-faux-shell.mjs'
       - '.github/workflows/install-walk.yml'
   workflow_run:
     workflows: ['Publish verified beta']
@@ -52,7 +58,7 @@ jobs:
         with:
           node-version: '24.22.3'
       - name: shellcheck
-        run: shellcheck --severity=warning -s sh packages/agentrun/install.sh packages/agentrun/test/fake-tailscale.sh && shellcheck --severity=warning packages/agentrun/test/install-walk.sh
+        run: shellcheck --severity=warning -s sh packages/agentrun/install.sh packages/agentrun/test/fake-tailscale.sh && shellcheck --severity=warning packages/agentrun/test/install-walk.sh packages/agentrun/test/vps-walk.sh
       # After a release the walk installs what npm serves; otherwise this checkout's launcher.
       - name: Pack
         id: pack
@@ -98,6 +104,18 @@ jobs:
           # takes the installer's choice, the newest on the floor's major line.
           NODE_PIN: ${{ runner.arch == 'X64' && '1' || '' }}
         run: packages/agentrun/test/install-walk.sh container ${PACKAGE:+--package /tmp/launcher/$PACKAGE}
+
+  vps:
+    name: VPS, Docker Compose as root (--vps)
+    needs: pack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Walk
+        env:
+          BUILD: ${{ github.event_name != 'workflow_run' && '--build' || '' }}
+        run: sudo packages/agentrun/test/vps-walk.sh $BUILD
 
   linux:
     name: Linux, systemd user service
