@@ -72,6 +72,8 @@ function fakeOpenAI(t) {
         o.refreshes += 1;
         const sent = form.get("refresh_token");
         if (o.refreshDelayMs) await new Promise((resolve) => setTimeout(resolve, o.refreshDelayMs));
+        // `holdRefresh`: a promise the refresh waits on before it answers, so a test acts while it is out.
+        if (o.holdRefresh) await o.holdRefresh;
         // `failNext`: the next refresh answered with that status (a fault at OpenAI), its token unspent. `dropNext`: the
         // next one's connection lost after it was sent, no answer read.
         if (o.failNext) {
@@ -498,13 +500,21 @@ test(`the renewal lease across two processes on one ${STORE_KIND} store, on the 
   assert.notEqual(openai.issued.at(-1).access, seated.access);
   assert.equal(openai.refreshes, refreshesBefore + 4);
 
-  // The owner signs out while a renewal is out: the row stays gone, whatever the renewal got.
+  // The owner signs out while a renewal is out: the row stays gone, whatever the renewal got. The refresh is held at
+  // OpenAI until the sign-out is done, so the sign-out always lands while it is out (a sleep raced the refresh).
   await seat(-1_000);
-  openai.refreshDelayMs = 300;
+  let release;
+  openai.holdRefresh = new Promise((resolve) => { release = resolve; });
+  const refreshesBeforeSignOut = openai.refreshes;
   const renewing = new two.ChatGPTPlan({ store: runnerStore, sealKey }).token();
   renewing.catch(() => undefined);
-  await new Promise((resolve) => setTimeout(resolve, 100));
-  await new one.ChatGPTPlan({ store: serverStore, sealKey }).signOut();
+  try {
+    await until(() => openai.refreshes > refreshesBeforeSignOut, "the renewal at OpenAI");
+    await new one.ChatGPTPlan({ store: serverStore, sealKey }).signOut();
+  } finally {
+    openai.holdRefresh = undefined;
+    release();
+  }
   await assert.rejects(renewing, (error) => error instanceof two.PlanUnavailable && /not signed in/.test(error.message));
   assert.equal(await runnerStore.sealedKeys.get(PLAN_ROW), undefined, "the row stays gone");
   assert.equal(await serverStore.sealedKeys.get(PLAN_ROW), undefined);
