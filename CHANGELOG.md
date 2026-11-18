@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.0-beta.46 (2026-11-18)
+
+- A learned workflow's check and its shadow audit compare two answers on the fields that carry the decision, not word for word. A definition's `learning` takes `agree_on`, dotted paths into the answer's JSON object (e.g. `["verdict.decision"]` or `["mcc", "riskTier"]`; 1 to 16 distinct paths, each up to 128 characters and 8 non-empty segments, kept in the order given; a bad one is a 422 under `definition.learning`): each path must resolve in both answers to equal values, and a path missing on either side disagrees. Left out, the whole answer is compared as before, and a check that agreed on none says to name the fields. The kyb template declares `verdict.decision` and inbound-lead `next_step.action`; a template's `learning` takes the same object, each path a required field of its output schema. The check record keeps `agree_on`, and its reason says "said what the agent said on mcc and riskTier"; the console's check line says "compared the whole answer" when there was none. <!-- changes/learning-agree-on.md -->
+
 ## 0.1.0-beta.45 (2026-11-18)
 
 This release runs each run in a process of its own. In the Docker image each run is also a user of its own, so its tools can't read another run's folder or the store. A local install runs every run as the user who started the server. The image now starts the server and its runner as two processes, and run lists read one row per run, so a list costs the same at ten runs and at thousands. Learning comes down to two things an agent keeps: its owner's corrections and its compiled workflow. Computers without an Archil mount hold a run's folder as a synced folder, a Linux box of your own pairs as a computer, and a dial computer can be a desktop. Claude Agent can run on Claude Code's own login on a server one person runs, `install.sh --vps` sets AgentRun up on a rented Linux server, an agent another system owns can be deleted, a template can update the agent it made, and a run's page has a Dev tools tab with the run's trace.
@@ -30,6 +34,7 @@ This release runs each run in a process of its own. In the Docker image each run
 - Learning cost: a cost run has `digest`, `took_over` and `audited` in place of `learned_revision`, and a replay run's `n` is null. `GET /agents/{id}/learning`'s `impact` sides are `runs` and `median_duration_s` only: read a run's cost before and after learning from the cost read's `summary`, and what learning costs a run from `bill.learning_usd` (#3166).
 - `@parcha/agentrun-computer`: `ARCHIL_MOUNT_LABEL` is `MOUNT_LABEL`; `RecordedArchil`, `recordedArchil` and `readArchilMount` are `RecordedFolder`, `recordedFolder` and `readMount`; `syncingClient(client, sync)` takes the sync it runs, `archilSync(client)` for an Archil mount (#3118).
 - Tool keys: `GET /v2/settings/tool-keys` (`listToolKeys`) names a key row's harnesses by harness id: `items[].harnesses` is an array of strings, no longer only the four built-in names, since a harness its owner installs (`goose`) is named there once it is installed. The TypeScript and Python clients and the console say `string[]`; a caller that switched over `pi`, `claude-agent`, `codex` and `opencode` handles any other id too. <!-- changes/tool-keys-harnesses-ids.md --> (#3176)
+- `GET /v2/agents/{id}/learning` says of each workflow whether it serves: `workflows[].status` is `serving`, `checking`, `held` or `stopped` (the state `GET .../learning/promotions` gives it, from the same records; one with no promotion record yet reads `checking`; a champion the cost rule stopped running first reads `stopped` in both, never `serving`), else `pending` or `retired` as its README.md says. `active` is gone: a reader that tested `status === "active"` for a workflow given to runs tests that it is neither `pending` nor `retired`. <!-- changes/learning-view-status.md -->
 
 **Known issues:**
 
@@ -97,6 +102,11 @@ Docs and release
 - A node with an unknown key reads "unknown key(s) for an agent node" (it said "a agent"); the CLI's flag help and the command reference give a flag's whole first paragraph and write `*/*` as itself. <!-- changes/site-audit-docs-wording.md --> (#3110)
 - The changelog fold puts a breaking change under a **Breaking:** heading, and knows a fragment a section holds by its marker, not by its words. beta.44's changelogs on main now carry its seven late changes as its release page told them. <!-- changes/fold-breaking-heading.md --> (#3138, #3139)
 - Tests: four flaky tests deleted and the four real bugs under them fixed; a computer-deps test takes its Docker answer from the test, not the CI host; CI's Postgres job keeps its database on tmpfs; and three CLI tests hold one claim each (#3165, #3171, #3177, #3183).
+- A Linux box with no display pairs with `computerd pair` as a sandbox, and in Mode 2 holds a run's folder as a synced folder in its `/workspace`: serve pushes the folder in at the claim, syncs each change back before the call that made it answers and once more at release, all through the claim's epoch fence, and the next run on the box finds its folder. Its network is `open`; any other is refused. Mode 1 runs a sandbox only on Docker, as before. <!-- changes/paired-linux-sandbox.md -->
+  - `/workspace` is a directory of computerd's user's own, mode 0700, never a link, made once as root with the tmpfiles.d line in spec/computer/attach.md (`d /workspace 0700 <user> <user> -`). A claim refuses a box whose `/workspace` is missing, a link, not a directory, another user's or open to others, in words naming that fix, and lets the box go. Each claim first ends every program an earlier run left running there and empties it of that run's files.
+  - The synced folder writes only under `/workspace` and never through a link: init extracts the push opening each name `O_NOFOLLOW`.
+  - `attachedProvider` gives a Linux box daemon `child`, `mount: ["sync"]` and no vendor agent ports, and reads its folder back as `{ kind: "sync", epoch }`.
+  - A desktop or a phone named as a sandbox computer is refused saying only a Linux box paired with no display can be one.
 
 ## 0.1.0-beta.44 (2026-11-17)
 
