@@ -92,13 +92,10 @@ export async function auditLoopOfRevision(store: Pick<Store, "agents">, revision
 }
 
 /** The answer paths an audit of a run of revision `revisionId` compares on, as its check does (learning-setting.ts
- *  agreeOnOf: its agree_on); undefined, the whole answer (also when the revision cannot be read). */
+ *  agreeOnOf: its agree_on); undefined, the whole answer. A read that fails throws: settleAudits leaves the row to a
+ *  later claim, never comparing on the whole answer an agent that named its fields (#3182 review). */
 async function agreeOnOfRevision(store: Pick<Store, "agents">, revisionId: string): Promise<readonly string[] | undefined> {
-  try {
-    return agreeOnOf(((await store.agents.revision(revisionId))?.body as { learning?: unknown } | undefined)?.learning);
-  } catch {
-    return undefined;
-  }
+  return agreeOnOf(((await store.agents.revision(revisionId))?.body as { learning?: unknown } | undefined)?.learning);
 }
 
 /** The served runs of `workflow` (at `digest` when given) that `keep` keeps too, the newest `n` of them (lastRunsOf: the

@@ -233,12 +233,14 @@ export class PackageError extends Error {
 }
 
 /** Why an agree_on path is not a required field of the answer's JSON Schema at every level, in words; undefined when it
- *  is (each segment a property of an object schema's `properties`, named in its `required`). */
+ *  is (each segment a property of an object schema's `properties`, named in its `required`, and each parent typed
+ *  `object` alone: one that may be null or another type holds no path, even on two identical answers). */
 function undeclaredPath(schema: Json, path: string): string | undefined {
   let node: unknown = schema;
   const segments = pathSegments(path);
   for (const [i, segment] of segments.entries()) {
     const of = i ? segments.slice(0, i).join(".") : "the answer";
+    if (!(isObject(node) && node.type === "object")) return `does not make ${of} an object only: an answer may give it as null or another type, and a path through it never resolves`;
     const properties = isObject(node) && isObject(node.properties) ? node.properties : undefined;
     if (!properties || !Object.hasOwn(properties, segment)) return `does not declare: ${segment} is no property of ${of}`;
     const required = (node as Json).required;
