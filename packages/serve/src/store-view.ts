@@ -355,12 +355,21 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // The run's cap as it stands, through the one reader the runner's gate reads too (capNowOf): a raise taken shows in the
   // run's cost.cap_usd and its budget card, never the old cap.
   const capUsd = capNowOf(launch?.maxCostUsd, records.entries);
+  // The run's command rows, read once for what needs them: a stop or a cancel asked for, a hand-over's answers, and the
+  // person's messages not yet taken.
+  let commandRows: Awaited<ReturnType<Store["commands"]>> | undefined;
+  const commandsNow = async () => (commandRows ??= await store.commands(runId, 0));
   // A person's stop of an agentic run (stoppedByPerson: its row reads running, readRun) is main's stop mark: the run is
-  // stopped while no message is newer than the stop (statusOf: input_required and idle), and a message reopens it.
+  // stopped while no message is newer than the stop (statusOf: input_required and idle), and a message reopens it. A stop
+  // asked for and not yet taken is the mark too, from the 202 on, as a cancel's row is (`cancelling` below): the runner
+  // takes the stop row in the commit that ends the run stopped, and cuts the turn before it, so between the two a read
+  // would otherwise see the cut turn's input_required with nothing pending.
+  const stopAsked = !terminal && row.kind === "agentic" && runRow.importedFrom === null &&
+    (await commandsNow()).some((command) => command.kind === "stop" && command.takenAt === null && command.refused === null);
   const meta: RunViewMeta = {
     ...(capUsd !== undefined ? { max_cost_usd: capUsd } : {}),
     ...(Object.keys(answers).length ? { approvals: answers } : {}),
-    ...(stoppedByPerson(runRow, row.kind) ? { stopped_after: usersOf(rows) } : {}),
+    ...(stoppedByPerson(runRow, row.kind) || stopAsked ? { stopped_after: usersOf(rows) } : {}),
   };
   // The budget card the run shows while it stands parked at its cap, from its journal's agentrun.budget park (none once a
   // raise clears it). Read over the same meta cap and rows the card's figures and time come from.
@@ -371,10 +380,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const paused = pausedOf(runRow, records.entries);
   // The browser hand-over the agent waits on (E2c's reader over the run's hand-over entries and hand-back commands), read
   // against the server's clock. Only a run with a hand-over entry fetches its commands, so a run with none reads none and
-  // makes no extra store read.
-  // The run's command rows, read once for what needs them: a hand-over's answers, and the person's messages not yet taken.
-  let commandRows: Awaited<ReturnType<Store["commands"]>> | undefined;
-  const commandsNow = async () => (commandRows ??= await store.commands(runId, 0));
+  // makes no extra store read beyond the one a running run's stop and cancel already make.
   const browserAsk = records.entries.some((e) => e.kind === BROWSER_HANDOVER_KIND)
     ? browserAskOf(records.entries as unknown as Parameters<typeof browserAskOf>[0], await commandsNow(), deps.now?.() ?? Date.now())
     : undefined;
