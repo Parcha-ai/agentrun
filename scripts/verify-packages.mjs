@@ -600,7 +600,17 @@ import { createAdapterLoop, MAX_RESTARTS, registerHarnessConformance, suiteHostT
 const runner: RunnerHarness = { record: 'loop', adapter: async (launch: HarnessLaunch) => { throw new Error('not in this check: ' + launch.model); } };
 export const entries: HarnessTableModule['entries'] = (builtins: Readonly<Record<string, HarnessEntry>>, kit: HarnessModuleKit) => ({
   mine: { ...builtins.pi, label: 'Mine', runner },
-  theirs: kit.acpEntry({ facts: builtins['claude-agent']!.facts!, recipe: (launch: ModuleLaunch) => ({ model: launch.model }), proxy: () => undefined }),
+  theirs: kit.acpEntry({
+    facts: builtins['claude-agent']!.facts!,
+    recipe: (launch: ModuleLaunch) => ({ id: 'theirs', command: '/opt/theirs/bin/agent', args: ['acp', '--model', launch.model], declares: { load: true, mcp: 'http' }, billing: { kind: 'proxy' } }),
+    proxy: () => async () => ({ env: {}, close: async () => {} }),
+  }),
+  unfinished: kit.acpEntry({
+    facts: builtins['claude-agent']!.facts!,
+    // @ts-expect-error a recipe names its id, command, declares and billing
+    recipe: (launch: ModuleLaunch) => ({ model: launch.model }),
+    proxy: () => async () => ({ env: {}, close: async () => {} }),
+  }),
 });
 const subject: ConformanceSubject = { name: 'mine', createLoop: () => createAdapterLoop(async () => { throw new Error('not in this check'); }, { restartLimit: MAX_RESTARTS }) };
 void [subject, suiteHostTools({}), registerHarnessConformance as (subject: ConformanceSubject, options: { test: TestFunction }) => void];
