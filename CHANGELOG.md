@@ -9,7 +9,7 @@ This release keeps a runner whose run isolation is refused up and refusing runs,
 **Upgrading and going back:**
 
 - The store doesn't change (SQLite version 13, Postgres migration 0019): beta.46 opens a beta.45 data folder as it is, and going back to beta.45 is the image or the package alone. From beta.44 or older, beta.45's notes hold first: its store move is one beta.44 refuses, so back up before you upgrade.
-- A Render or Railway server that runs the image without `AGENTRUN_RUN_USER=same` and can't start the runner's run-as helper (spawn `EPERM`) now stays up and refuses runs, saying to set `AGENTRUN_RUN_USER=same`; on beta.45 its container stopped and restarted in a loop. Both templates set it; a server deployed from either before beta.45 needs it added (#R46PR).
+- A Render or Railway server that runs the image without `AGENTRUN_RUN_USER=same` and can't start the runner's run-as helper (spawn `EPERM`) now stays up and refuses runs, saying to set `AGENTRUN_RUN_USER=same`; on beta.45 its container stopped and restarted in a loop. Both templates set it; a server deployed from either before beta.45 needs it added.
 
 **Breaking:**
 
@@ -27,7 +27,7 @@ This release keeps a runner whose run isolation is refused up and refusing runs,
 
 Runs and the server
 
-- A refused run isolation leaves the runner up, claiming nothing, instead of ending it: a helper the host won't start (spawn `EPERM`) is refused in the same words as one that can't switch, naming the error and `AGENTRUN_RUN_USER=same`. The image's `runner` process says why and stays up until it is stopped, where its exit stopped the container, and a server with its runner in its own process serves on with no runner (#R46PR).
+- A refused run isolation leaves the runner up, claiming nothing, instead of ending it: a helper the host won't start (spawn `EPERM`) is refused in the same words as one that can't switch, naming the error and `AGENTRUN_RUN_USER=same`. The image's `runner` process says why and stays up until it is stopped, where its exit stopped the container, and a server with its runner in its own process serves on with no runner.
 
 Learning
 
@@ -45,9 +45,9 @@ Console
 Docs and release
 
 - The server README's Particle-1 section records a live pass against Particle's API: a saved key, a plain run, tool calls after the model's reasoning, a follow-up, a cancel, a capped run and a workflow's model nodes, each priced run's cost equal to its tokens at list price. Not yet seen live: a rate limit or server error from Particle, and the estimate against Particle's own bill (#3190).
-- A release no longer posts to Slack on its own: whoever cuts it posts its summary once the release page is out, in the shape `docs/releasing.md` gives (what you can do now, three lines before you upgrade, the install lines and the notes link). <!-- changes/release-post-by-hand.md --> (#R46PR)
-- beta.45's changelogs now tell the four changes its tag carried past its release pull request's fold as its release page did, under 0.1.0-beta.45, with a known issue for a Render or Railway upgrade to it (#R46PR).
-- Tests: the steer-mid-turn test's failure names the steer's outcome and what the model was handed, and a relay test that read the server's log before the line was written is deleted (#3192, #R46PR).
+- A release no longer posts to Slack on its own: whoever cuts it posts its summary once the release page is out, in the shape `docs/releasing.md` gives (what you can do now, three lines before you upgrade, the install lines and the notes link). <!-- changes/release-post-by-hand.md -->
+- beta.45's changelogs now tell the four changes its tag carried past its release pull request's fold as its release page did, under 0.1.0-beta.45, with a known issue for a Render or Railway upgrade to it.
+- Tests: the steer-mid-turn test's failure names the steer's outcome and what the model was handed, and a relay test that read the server's log before the line was written is deleted (#3192).
 
 ## 0.1.0-beta.45 (2026-11-18)
 
