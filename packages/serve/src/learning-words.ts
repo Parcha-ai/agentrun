@@ -7,7 +7,7 @@
 // found only whole, so a part of it kept would show for good. A run's learning keeps the parts its words are made of
 // (`workflows`, `corrections`, `problems`), and each read says them again (wordsOf): every part cut of the host's secrets
 // as they are then, and only then the words cut short (DETAIL_MAX for a run, LIST_DETAIL for a list's row).
-import { CAPS, type Problem } from "./learn/index.js";
+import { CAPS, CORRECTIONS_FILE, type Problem } from "./learn/index.js";
 import type { LearnedFile, Learning } from "./learning.js";
 
 /** `n` of `one`, said as a person says it: "1 correction", "2 corrections". */
@@ -49,6 +49,10 @@ const wordOf = (problem: Pick<Problem, "rule">) => RULE_WORDS[problem.rule] ?? p
 /** What a person must not see stored at all: a secret, or what hides text. */
 const MUST_NOT_STORE = new Set(["secret_value", "secret_shape", "invisible_unicode"]);
 const rulesIn = (problems: readonly Pick<Problem, "rule">[]) => [...new Set(problems.map(wordOf))].join("; ");
+/** The problem that says corrections.md had no room for the owner's correction (learn/corrections.ts' cap), if any: the
+ *  one `too_large` that is not a workflow's. */
+export const correctionsCapOf = <P extends Pick<Problem, "rule" | "path" | "detail">>(problems: readonly P[]): P | undefined =>
+  problems.find((problem) => problem.rule === "too_large" && problem.path === CORRECTIONS_FILE && typeof problem.detail === "string");
 
 /** Why learning stopped, said plainly: the cause inside "Not kept: learning stopped (...)". */
 export const STOPPED = {
@@ -79,14 +83,17 @@ export const said = {
   askedCompileAgain: "Writing the workflow again: the checks sent back what they refused.",
   /** What it learned: its workflow by name and the corrections it added; then what waits for the owner's OK, by name;
    *  then what the checks refused beside it. A merge that only holds things for the OK says that alone. */
-  merged: (files: readonly Pick<LearnedFile, "name" | "pending">[] = [], corrections = 0, checked: readonly Pick<Problem, "rule">[] = []) => {
+  merged: (files: readonly Pick<LearnedFile, "name" | "pending">[] = [], corrections = 0, checked: readonly Pick<Problem, "rule" | "path" | "detail">[] = []) => {
     const flat = (name: string) => name.replace(/\s+/g, " ").trim();
     const held = files.filter((file) => file.pending).map((file) => `workflow ${flat(file.name)}`);
     const waiting = held.length ? `Waiting for your OK: ${held.join("; ")}.` : "";
     const made = files.filter((file) => !file.pending).map((file) => `the workflow ${flat(file.name)}`);
     const added = corrections ? (corrections === 1 ? "your correction" : `${corrections} of your corrections`) : "";
     const kept = [made.length ? `Learned ${listed(made)}` : "", added ? `Kept ${added}` : ""].filter(Boolean).join(". ");
-    const refused = checked.length ? said.checker(checked) : "";
+    // A correction corrections.md had no room for is said in the cap's words, never as a workflow over its cap.
+    const cap = correctionsCapOf(checked);
+    const rest = checked.filter((problem) => problem !== cap);
+    const refused = [cap ? said.correctionsFull(cap.detail) : "", rest.length ? said.checker(rest) : ""].filter(Boolean).join(" ");
     const base = [kept ? `${kept}.` : "", waiting].filter(Boolean).join(" ");
     return [base, refused].filter(Boolean).join(" ");
   },

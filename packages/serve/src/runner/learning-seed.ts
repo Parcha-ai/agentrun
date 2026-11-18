@@ -23,23 +23,31 @@ export type LaidSeed = { readonly seed: Seed; readonly workflows: readonly Learn
  *  workflow it handed the tool; none when nothing was read. */
 export const laidOf = (laid: LaidSeed | undefined): { workflows: string[] } => ({ workflows: (laid?.workflows ?? []).map(({ name }) => name) });
 
-/** The run's seed and its learned workflows. Undefined when the seed could not be read: the run starts with none. Never
- *  throws. */
+const message = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/** The run's seed and its learned workflows. Undefined when the seed could not be read: the run starts with none. A
+ *  secrets read (or a choice) that fails after the seed was read answers the seed with no learned workflow. Never
+ *  throws: a learning fault never stops a run. */
 export async function layLearningSeed(lay: LearningSeedLay): Promise<LaidSeed | undefined> {
   let seed: Seed;
   const folder = lay.folder();
   try {
     seed = await seedAt(folder.workspace, lay.seed);
   } catch (error) {
-    lay.log(`the run starts with no learned workflow: ${error instanceof Error ? error.message : String(error)}`);
+    lay.log(`the run starts with no learned workflow: ${message(error)}`);
     return undefined;
   } finally {
     await folder.end().catch(() => undefined);
   }
   if (lay.workflows === false) return { seed, workflows: [] };
-  const { flows, left } = chooseWorkflows(seed, await lay.shown());
-  for (const name of left) lay.log(`starts without the learned workflow ${name} its agent learned: it is over what is left of the learned workflows' budget, or holds a secret`);
-  return { seed, workflows: flows };
+  try {
+    const { flows, left } = chooseWorkflows(seed, await lay.shown());
+    for (const name of left) lay.log(`starts without the learned workflow ${name} its agent learned: it is over what is left of the learned workflows' budget, or holds a secret`);
+    return { seed, workflows: flows };
+  } catch (error) {
+    lay.log(`the run starts with no learned workflow: ${message(error)}`);
+    return { seed, workflows: [] };
+  }
 }
 
 /** The learned workflows the folder held active at `commit`, as a claim's read hands them to the learned_workflow tool

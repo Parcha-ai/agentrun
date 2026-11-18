@@ -14,7 +14,7 @@ import { cutStrings } from "../key-refusal.js";
 import { type Problem, redactSecrets } from "../learn/index.js";
 import { type CompileAsk, type CompiledRecord, compileTurn, type DraftChecked } from "../learn/compile.js";
 import type { LearnedFile } from "../learning.js";
-import { said, STOPPED } from "../learning-words.js";
+import { correctionsCapOf, said, STOPPED } from "../learning-words.js";
 import type { AlsoRow, EndOfRunKept, EndOfRunTurn } from "./loop-contract.js";
 
 /** A turn the spend cap refused (the cap's refusal words, cap.ts CAP_REFUSAL_PREFIX). */
@@ -211,6 +211,6 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
 /** Why a correction (or a merge) was refused, in a person's words: the cap's own sentence when the cap refused it, else
  *  the checks'. */
 function correctionWords(problems: readonly Problem[]): string {
-  const cap = problems.find((problem) => problem.rule === "too_large" && problem.path === "corrections.md");
+  const cap = correctionsCapOf(problems);
   return cap ? said.correctionsFull(cap.detail) : problems.length ? said.checker(problems) : said.stopped(STOPPED.notChecked);
 }
