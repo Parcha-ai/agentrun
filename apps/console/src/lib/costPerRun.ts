@@ -15,16 +15,26 @@ export const pathOf = (path: RunPath) => PATHS.find((p) => p.path === path)!;
 
 /** A run on the chart's run axis, which numbers the runs that do a job (`n`, as the bill does): `at`, where it stands. */
 export type Placed = CostRun & { at: number };
-/** Each run where it stands on the run axis: a run that does a job at its number; a replay, which does none and has no
- *  number, half a run after the job it followed (before any job read, half a run before the first), so it is drawn
- *  between two jobs and never numbered as one. */
+/** Each run where it stands on the run axis: a run that does a job at its number; the replays between two jobs, which do
+ *  none and have no number, spread evenly across the gap (k of m at job + (k+1)/(m+1)), so each is drawn and hovered on
+ *  its own and none is numbered as a job. Before the first job read and after the last, the gap is the half a run the
+ *  plot shows. */
 export function placed(runs: readonly CostRun[]): Placed[] {
-  const first = runs.find((r) => r.path !== "replay" && r.n !== null)?.n ?? 1;
-  let last: number | null = null;
-  return runs.map((r) => {
-    if (r.path !== "replay" && r.n !== null) { last = r.n; return { ...r, at: r.n }; }
-    return { ...r, at: last === null ? first - 0.5 : last + 0.5 };
-  });
+  const job = (r: CostRun) => r.path !== "replay" && r.n !== null;
+  const first = runs.find(job)?.n ?? 1;
+  const last = runs.findLast(job)?.n ?? first;
+  const out: Placed[] = [];
+  let gap: CostRun[] = [];
+  let from = first - 0.5;
+  const lay = (to: number) => { gap.forEach((r, k) => out.push({ ...r, at: from + ((to - from) * (k + 1)) / (gap.length + 1) })); gap = []; };
+  for (const r of runs) {
+    if (!job(r)) { gap.push(r); continue; }
+    lay(r.n!);
+    from = r.n!;
+    out.push({ ...r, at: r.n! });
+  }
+  lay(last + 0.5);
+  return out;
 }
 
 /** A run the chart plots: one whose all-in cost is known, where it stands on the run axis. */
