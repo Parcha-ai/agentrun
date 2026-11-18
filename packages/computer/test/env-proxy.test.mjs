@@ -5,24 +5,24 @@
 // tested in packages/serve/test/env-proxy.test.mjs.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
-import { connect } from "node:net";
+import { connect, createServer as createNetServer } from "node:net";
 import test from "node:test";
 import { fakeMorph } from "./fake-morph.mjs";
 
-const { proxyFor } = await import("../dist/env-proxy.js");
+const { proxyFor, proxyForDomain, tunnelThrough } = await import("../dist/env-proxy.js");
 const { connectionOptions } = await import("../dist/e2b.js");
 const { MorphProvider } = await import("../dist/morph.js");
 
 const CTX = { timeoutMs: 10_000 };
 const PROXY_VARS = ["HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy", "NO_PROXY", "no_proxy"];
 
-/** A CONNECT proxy on loopback: every tunnel asked for, with its Proxy-Authorization; a target in forward is piped to that loopback port, any other answered 502. */
+/**
+ * A CONNECT proxy on loopback: every tunnel asked for, with its Proxy-Authorization; a target in forward is piped to
+ * that loopback port, any other answered 502. A plain request is no tunnel (a box's port watcher sends one): 502.
+ */
 async function connectProxy(t, forward = {}) {
 	const tunnels = [];
-	const server = createServer((req, res) => {
-		tunnels.push({ target: `${req.method} ${req.url}` });
-		res.writeHead(502).end();
-	});
+	const server = createServer((req, res) => res.writeHead(502).end());
 	server.on("connect", (req, socket, head) => {
 		tunnels.push({ target: req.url, auth: req.headers["proxy-authorization"] });
 		const port = forward[req.url];
@@ -79,6 +79,33 @@ test("proxyFor reads the variables as Node does: https_proxy then HTTPS_PROXY fo
 	assert.equal(via("https://api.e2b.app", { HTTPS_PROXY: proxy, no_proxy: "other", NO_PROXY: "api.e2b.app" }), `${proxy}/`, "no_proxy first, as Node reads it");
 });
 
+test("proxyForDomain, for a client with one proxy for every host under a domain: direct only when NO_PROXY exempts them all", () => {
+	const proxy = "http://proxy.example:3128";
+	const via = (domain, env) => proxyForDomain(domain, env)?.href;
+	assert.equal(via("e2b.app", {}), undefined);
+	for (const noProxy of [".e2b.app", "*.e2b.app", ".app", "other, .E2B.app", "*"]) assert.equal(via("e2b.app", { HTTPS_PROXY: proxy, NO_PROXY: noProxy }), undefined, noProxy);
+	// api.e2b.app alone leaves each sandbox's host to the proxy, so the one proxy stays on for all.
+	for (const noProxy of ["api.e2b.app", "e2b.app", "49983-sbx.e2b.app", "other"]) assert.equal(via("e2b.app", { HTTPS_PROXY: proxy, NO_PROXY: noProxy }), `${proxy}/`, noProxy);
+	assert.equal(via("localhost", { HTTPS_PROXY: proxy }), undefined, "loopback");
+});
+
+test("a proxy whose answer to CONNECT runs past 16 KiB with no end of its headers is refused", async (t) => {
+	const sockets = new Set();
+	const server = createNetServer((socket) => {
+		sockets.add(socket);
+		socket.on("error", () => {});
+		socket.once("data", () => socket.write(`HTTP/1.1 200 OK\r\nX-Pad: ${"a".repeat(20_000)}`));
+	});
+	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+	t.after(() => {
+		for (const socket of sockets) socket.destroy();
+		return new Promise((resolve) => server.close(resolve));
+	});
+	const { socket, opened } = tunnelThrough(new URL(`http://127.0.0.1:${server.address().port}`), "ssh.morph.test", 22);
+	await assert.rejects(opened, /more than 16384 bytes and no end of its headers/);
+	assert.ok(socket.destroyed);
+});
+
 test("E2B's real SDK sends its API call through HTTPS_PROXY's CONNECT tunnel; with NO_PROXY naming the domain, or no proxy, none", async (t) => {
 	const sdk = await import("e2b").catch(() => undefined);
 	if (sdk === undefined) return t.skip("the e2b package is not installed here");
@@ -89,6 +116,7 @@ test("E2B's real SDK sends its API call through HTTPS_PROXY's CONNECT tunnel; wi
 	assert.ok(proxy.tunnels.length > 0, "a tunnel was asked for");
 	assert.deepEqual([...new Set(proxy.tunnels.map(({ target }) => target))], ["api.e2b.test:443"]);
 	proxy.tunnels.length = 0;
+	assert.equal(options({ HTTPS_PROXY: proxy.url, NO_PROXY: "api.e2b.test" }).proxy, `${proxy.url}/`, "the API alone exempt: the sandboxes' hosts still need the proxy");
 	for (const env of [{ HTTPS_PROXY: proxy.url, NO_PROXY: ".e2b.test" }, {}]) {
 		assert.equal(options(env).proxy, undefined);
 		await getInfo(env);

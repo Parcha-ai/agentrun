@@ -92,9 +92,10 @@ test("lowercase https_proxy is read too, and NO_PROXY's hosts go direct for ever
 	const printed = await child({ https_proxy: proxy.url, NO_PROXY: "api.kernel.test, .orgo.test,*.modal.test", LOOPBACK_URL: loopback.url });
 	assert.deepEqual(proxy.tunnels, []);
 	assert.deepEqual(printed.no_grpc_proxy.split(","), ["api.kernel.test", ".orgo.test", ".modal.test", "localhost", "127.0.0.1", "::1", "[::1]", "serve.own.test"]);
+	// gRPC reads a lowercase https_proxy by itself, and its list has no "*": an empty entry, a suffix of every host, says it.
 	const all = await countingProxy(t);
-	assert.deepEqual(await child({ HTTPS_PROXY: all.url, NO_PROXY: "*", LOOPBACK_URL: loopback.url }), { grpc_proxy: null, no_grpc_proxy: null }, "* is everything direct, which gRPC's list cannot say");
-	assert.deepEqual(all.tunnels, []);
+	assert.deepEqual(await child({ https_proxy: all.url, NO_PROXY: "*", LOOPBACK_URL: loopback.url }), { grpc_proxy: null, no_grpc_proxy: "," });
+	assert.deepEqual(all.tunnels, [], "* is every host direct");
 });
 
 test("no proxy set: nothing goes through one and the environment is left as it was", async (t) => {

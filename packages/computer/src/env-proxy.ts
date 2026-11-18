@@ -9,22 +9,41 @@ import { connect as tcp, type Socket } from "node:net";
 import { connect as tls } from "node:tls";
 
 const LOOPBACK = /^(?:localhost|127(?:\.\d{1,3}){3}|\[::1\]|::1)$/;
+/** The most a proxy's answer to CONNECT may hold before its headers end; more is refused. */
+const MAX_ANSWER_BYTES = 16 * 1024;
+
+/** The proxy URL the variables name for a TLS target, or a plain one. */
+const proxyOf = (secure: boolean, env: NodeJS.ProcessEnv) => {
+	const given = secure ? env.https_proxy || env.HTTPS_PROXY : env.http_proxy || env.HTTP_PROXY;
+	return given && URL.canParse(given) ? new URL(given) : undefined;
+};
+/** NO_PROXY's entries, lowercase. */
+const noProxy = (env: NodeJS.ProcessEnv) => (env.no_proxy || env.NO_PROXY || "").split(",").map((entry) => entry.trim().toLowerCase());
+/** Whether a .suffix or *.suffix entry covers host (the suffix's own name included). */
+const covers = (entry: string, host: string) => {
+	const suffix = entry.startsWith("*.") ? entry.slice(1) : entry.startsWith(".") ? entry : undefined;
+	return suffix !== undefined && (host.endsWith(suffix) || host === suffix.slice(1));
+};
 
 /** The proxy a call to target goes through, or undefined when it goes direct. */
 export function proxyFor(target: URL, env: NodeJS.ProcessEnv = process.env): URL | undefined {
 	const secure = target.protocol === "https:" || target.protocol === "wss:";
-	const given = secure ? env.https_proxy || env.HTTPS_PROXY : env.http_proxy || env.HTTP_PROXY;
-	if (!given || !URL.canParse(given)) return undefined;
 	const host = target.hostname.toLowerCase();
-	if (LOOPBACK.test(host)) return undefined;
 	const hostPort = `${host}:${target.port || (secure ? "443" : "80")}`;
-	for (const raw of (env.no_proxy || env.NO_PROXY || "").split(",")) {
-		const entry = raw.trim().toLowerCase();
-		if (entry === "*" || entry === host || entry === hostPort) return undefined;
-		const suffix = entry.startsWith("*.") ? entry.slice(1) : entry.startsWith(".") ? entry : undefined;
-		if (suffix !== undefined && (host.endsWith(suffix) || host === suffix.slice(1))) return undefined;
-	}
-	return new URL(given);
+	if (LOOPBACK.test(host) || noProxy(env).some((entry) => entry === "*" || entry === host || entry === hostPort || covers(entry, host))) return undefined;
+	return proxyOf(secure, env);
+}
+
+/**
+ * The one proxy for a client that sends every call under domain (domain and each name below it) through the same one,
+ * as E2B's SDK does: undefined only when NO_PROXY exempts them all ("*", or a .suffix entry covering domain). A list
+ * that exempts some of them (api.<domain> alone) leaves the proxy on for all, since the hosts it doesn't exempt may
+ * have no other way out.
+ */
+export function proxyForDomain(domain: string, env: NodeJS.ProcessEnv = process.env): URL | undefined {
+	const host = domain.toLowerCase();
+	if (LOOPBACK.test(host) || noProxy(env).some((entry) => entry === "*" || covers(entry, host))) return undefined;
+	return proxyOf(true, env);
 }
 
 /**
@@ -50,6 +69,7 @@ export function tunnelThrough(proxy: URL, host: string, port: number): { socket:
 			for (let chunk: Buffer | null; (chunk = socket.read() as Buffer | null) !== null; ) {
 				head = Buffer.concat([head, chunk]);
 				const end = head.indexOf("\r\n\r\n");
+				if (end < 0 && head.length > MAX_ANSWER_BYTES) return settle(new Error(`the proxy ${proxy.host} answered CONNECT ${host}:${port} with more than ${MAX_ANSWER_BYTES} bytes and no end of its headers`));
 				if (end < 0) continue;
 				const status = /^HTTP\/1\.[01] (\d{3})/.exec(head.subarray(0, end).toString("latin1"))?.[1];
 				if (status !== "200") return settle(new Error(`the proxy ${proxy.host} answered ${status ?? "no HTTP status"} to CONNECT ${host}:${port}`));

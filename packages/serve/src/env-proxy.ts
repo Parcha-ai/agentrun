@@ -5,7 +5,7 @@
 //
 // Node's http.setGlobalProxyFromEnv covers fetch, Node's global WebSocket (both undici's global dispatcher) and
 // http(s).request on the global agent. gRPC (@grpc/grpc-js, under Modal's and boxd's SDKs) reads only its own lowercase
-// names, so grpc_proxy and no_grpc_proxy are set from the same values, unless grpc_proxy is already set. The two
+// names, so grpc_proxy and no_grpc_proxy are set from the same values, each unless already set. The two
 // clients none of this reaches, E2B's SDK and Morph's SSH gateway, read the same variables through
 // @parcha/agentrun-computer's env-proxy.ts. This machine's loopback and the server's own public address
 // (AGENTRUN_PUBLIC_URL, RENDER_EXTERNAL_URL: where dialing computers reach the attach hub) always go direct.
@@ -17,17 +17,21 @@ type SetGlobalProxyFromEnv = (env: Record<string, string>) => () => void;
 export function installEnvProxy(env: NodeJS.ProcessEnv = process.env): void {
   const https = env.https_proxy || env.HTTPS_PROXY;
   const plain = env.http_proxy || env.HTTP_PROXY;
+  if (!https && !plain) return;
   const given = (env.no_proxy || env.NO_PROXY || "").split(",").map((entry) => entry.trim()).filter(Boolean);
-  // "*": every host direct, so nothing to install (undici takes "*" only as the whole list, and gRPC's has none).
-  if ((!https && !plain) || given.includes("*")) return;
+  // grpc-js reads grpc_proxy (else a lowercase https_proxy or http_proxy) and no_grpc_proxy (else no_proxy) when it opens
+  // a channel, each no_grpc_proxy entry a suffix of the host, with no "*". Set in process.env, they reach this process's
+  // children too. A name already set is left as it is.
+  if (given.includes("*")) {
+    // Every host direct: nothing to install (undici takes "*" only as the whole list). gRPC gets an empty entry, which
+    // is a suffix of every host, so a lowercase https_proxy it reads by itself is not used either.
+    env.no_grpc_proxy ||= ",";
+    return;
+  }
   const own = [env.AGENTRUN_PUBLIC_URL, env.RENDER_EXTERNAL_URL].flatMap((url) => (url && URL.canParse(url) ? [new URL(url).hostname] : []));
   const direct = [...given, "localhost", "127.0.0.1", "::1", "[::1]", ...own];
   const setGlobalProxyFromEnv = (http as unknown as { setGlobalProxyFromEnv: SetGlobalProxyFromEnv }).setGlobalProxyFromEnv;
   setGlobalProxyFromEnv({ ...(https ? { HTTPS_PROXY: https } : {}), ...(plain ? { HTTP_PROXY: plain } : {}), NO_PROXY: direct.join(",") });
-  // grpc-js reads these when it opens a channel, and matches each no_grpc_proxy entry as a suffix of the host. Set in
-  // process.env, they reach this process's children too, naming the same proxy.
-  if (!env.grpc_proxy) {
-    env.grpc_proxy = https || plain;
-    env.no_grpc_proxy ||= direct.map((entry) => entry.replace(/^\*\./, ".")).join(",");
-  }
+  env.grpc_proxy ||= https || plain;
+  env.no_grpc_proxy ||= direct.map((entry) => entry.replace(/^\*\./, ".")).join(",");
 }
