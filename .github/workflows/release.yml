@@ -462,8 +462,6 @@ jobs:
       RELEASE_TAG: ${{ inputs.tag }}
       IMAGE: ghcr.io/parcha-ai/agentrun-server
       PLATFORMS: linux/amd64,linux/arm64
-    outputs:
-      url: ${{ steps.release.outputs.url }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -481,43 +479,9 @@ jobs:
       - name: Write the notes
         run: node scripts/release-notes.mjs --tag "$RELEASE_TAG" --changelog "${{ runner.temp }}/changelog/CHANGELOG.md" --image "$IMAGE:$RELEASE_TAG" --platforms "$PLATFORMS" --out "${{ runner.temp }}/notes.md"
       - name: Publish the release on its tag
-        id: release
         env:
           GH_TOKEN: ${{ github.token }}
         run: node scripts/release-github.mjs --tag "$RELEASE_TAG" --notes "${{ runner.temp }}/notes.md"
-
-  # The release post, through the star notifications' Slack path: their bot token (the secret SLACK_STARS_BOT_TOKEN) and the
-  # channel in the repository variable SLACK_RELEASES_CHANNEL. Either unset is one line; a failed post is a warning, and the
-  # job continues on error, so Slack never fails a release.
-  slack:
-    needs: github-release
-    if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
-    continue-on-error: true
-    runs-on: ubuntu-latest
-    timeout-minutes: 5
-    permissions:
-      contents: read
-    env:
-      RELEASE_TAG: ${{ inputs.tag }}
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ inputs.tag }}
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: '24.22.3'
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: release-changelog
-          path: ${{ runner.temp }}/changelog
-      - name: Post the release to Slack
-        continue-on-error: true
-        env:
-          SLACK_BOT_TOKEN: ${{ secrets.SLACK_STARS_BOT_TOKEN }}
-          SLACK_CHANNEL: ${{ vars.SLACK_RELEASES_CHANNEL }}
-          RELEASE_URL: ${{ needs.github-release.outputs.url }}
-        run: node scripts/release-slack.mjs --tag "$RELEASE_TAG" --url "$RELEASE_URL" --changelog "${{ runner.temp }}/changelog/CHANGELOG.md"
 
   # The website's import pull request, once the packages are published and the GitHub prerelease is out: the website's own
   # scripts/import-content.py, run in its checkout of main against this tag, then scripts/release-website.mjs commits the

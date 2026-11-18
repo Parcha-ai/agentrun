@@ -3,7 +3,8 @@
 // isolation a host gives chosen and refused in words, the channel's store bound to the claim, a frame the channel never
 // sends ending the run, and the store's files the server's alone.
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import childProcess, { spawn } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
 import { randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { lstat, rm } from "node:fs/promises";
@@ -189,6 +190,27 @@ test("a host gives uid isolation when the helper can switch, process isolation w
   await assert.rejects(runIsolationOf({ AGENTRUN_RUN_USER: "root" }, 8, log, able), (error) => error instanceof RunIsolationRefused && /AGENTRUN_RUN_USER=root is not a setting/.test(error.message));
   await assert.rejects(runIsolationOf({ AGENTRUN_RUN_SLOT_FIRST: "256" }, 8, log, able), (error) => error instanceof RunIsolationRefused && /AGENTRUN_RUN_SLOT_FIRST=256/.test(error.message));
   await assert.rejects(runIsolationOf({ AGENTRUN_RUN_SLOT_FIRST: "-1" }, 8, log, able), RunIsolationRefused);
+});
+
+test("a host that won't let the runner start its helper (spawn EPERM, thrown at once) is refused in words naming the error and AGENTRUN_RUN_USER=same, never a raw throw, and with same the helper is never started", async (t) => {
+  const helper = helperOf(t, 0);
+  const started = [];
+  // Node throws a spawn error other than EACCES, EAGAIN, EMFILE, ENFILE and ENOENT from execFile itself, before any
+  // callback: a Render container's EPERM is one.
+  const mocked = t.mock.method(childProcess, "execFile", (file) => {
+    started.push(file);
+    throw Object.assign(new Error("spawn EPERM"), { code: "EPERM", errno: -1, syscall: "spawn", path: file });
+  });
+  syncBuiltinESMExports();
+  t.after(() => (mocked.mock.restore(), syncBuiltinESMExports()));
+  const refused = await runIsolationOf({}, 8, () => {}, helper).then(() => null, (error) => error);
+  assert.ok(refused instanceof RunIsolationRefused, `refused in words, not thrown: ${refused?.stack ?? refused}`);
+  assert.match(refused.message, /^This runner will not claim runs: it cannot start a run as a user of its own \(spawn EPERM\)/);
+  assert.match(refused.message, /set AGENTRUN_RUN_USER=same/);
+  assert.deepEqual(started, [helper], "the check tried the helper once");
+  started.length = 0;
+  assert.deepEqual(await runIsolationOf({ AGENTRUN_RUN_USER: "same" }, 8, () => {}, helper), { kind: "process", why: "AGENTRUN_RUN_USER=same" });
+  assert.deepEqual(started, [], "AGENTRUN_RUN_USER=same never starts the helper");
 });
 
 // ---------------------------------------------------------------------------------------------------------------------

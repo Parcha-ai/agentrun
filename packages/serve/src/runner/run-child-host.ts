@@ -98,12 +98,19 @@ export class RunIsolationRefused extends Error {
   override name = "RunIsolationRefused";
 }
 
+/** The helper run once: its exit code and output, never a rejection. A spawn error Node throws from execFile itself
+ *  (EPERM, say, where a platform forbids the helper's file capabilities; only EACCES, EAGAIN, EMFILE, ENFILE and ENOENT
+ *  come to the callback) is `code` -1 with the error's words as `stderr`, so every caller reads it as the failure it is. */
 const execText = (file: string, args: readonly string[], timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> =>
   new Promise((resolve) => {
-    execFile(file, args, { timeout: timeoutMs, encoding: "utf8" }, (error, stdout, stderr) => {
-      const code = error ? (typeof (error as { code?: unknown }).code === "number" ? ((error as { code: number }).code) : 1) : 0;
-      resolve({ code, stdout: String(stdout), stderr: String(stderr || (error && !stderr ? error.message : "")) });
-    });
+    try {
+      execFile(file, args, { timeout: timeoutMs, encoding: "utf8" }, (error, stdout, stderr) => {
+        const code = error ? (typeof (error as { code?: unknown }).code === "number" ? ((error as { code: number }).code) : 1) : 0;
+        resolve({ code, stdout: String(stdout), stderr: String(stderr || (error && !stderr ? error.message : "")) });
+      });
+    } catch (error) {
+      resolve({ code: -1, stdout: "", stderr: (error as Error)?.message ?? String(error) });
+    }
   });
 
 /** This host's isolation for `loops` runs at once, by `env` and the helper: the helper's own check that it can switch

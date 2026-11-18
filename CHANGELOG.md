@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+## 0.1.0-beta.46 (2026-11-18)
+
+This release keeps a runner whose run isolation is refused up and refusing runs, so a Render or Railway server no longer restarts in a loop. A learned workflow's check can compare answers on the fields that carry the decision instead of word for word, the agent editor's Computer step gets a Recording switch that a change of provider keeps, and the run page's Dev tools tab reads as a browser's network panel does. The store doesn't change, so going back to beta.45 is the image alone.
+
+**Upgrading and going back:**
+
+- The store doesn't change (SQLite version 13, Postgres migration 0019): beta.46 opens a beta.45 data folder as it is, and going back to beta.45 is the image or the package alone. From beta.44 or older, beta.45's notes hold first: its store move is one beta.44 refuses, so back up before you upgrade.
+- A Render or Railway server that runs the image without `AGENTRUN_RUN_USER=same` and can't start the runner's run-as helper (spawn `EPERM`) now stays up and refuses runs, saying to set `AGENTRUN_RUN_USER=same`; on beta.45 its container stopped and restarted in a loop. Both templates set it; a server deployed from either before beta.45 needs it added.
+
+**Breaking:**
+
+- None.
+
+**Known issues:**
+
+- Under the image's default command, no run can use a paired computer, a paired Linux sandbox included. Start the image with the server's options alone for one.
+- A runner of its own started on a Postgres store before its server has upgraded it says to start on a new, empty data folder. Don't: start the server first, which upgrades the store in place, then the runner.
+- A learned workflow refused for a host setting (a tool gated, denied or missing) still reads `serving`, while every run it is given hands back to the agent. A workflow this release's DSL refuses is held.
+- For up to about 10 minutes after the release is published, an install can fail while npm shows the new packages one by one. Try again a few minutes later.
+- An API token's `GET /v2/settings/calendar` is refused 403 in the words for saving a secret. Reading the calendar's settings takes the owner's signed-in session in the console, as saving them does.
+
+**Changes:**
+
+Runs and the server
+
+- A host that won't let the runner start a run as a user of its own (a spawn `EPERM`, as on Render) leaves the server up: the runner says why and claims no runs (`AGENTRUN_RUN_USER=same` lets it), instead of stopping the container. Any refusal of the runner's isolation does this, in the image's two processes and in a server with its runner in its own process. The server still serves its console and API, and its runs wait queued until the setting is fixed and the server restarts.
+
+Learning
+
+- A learned workflow's check and its shadow audit can compare two answers on the fields that carry the decision instead of word for word: a definition's `learning` takes `agree_on`, dotted paths into the answer's JSON object (`["verdict.decision"]`, `["mcc", "riskTier"]`; 1 to 16 paths, a bad one a 422 under `definition.learning`). Each path must resolve to equal values in both answers; one missing on either side disagrees. Left out, the whole answer is compared as before, and a check that agreed on none says to name the fields. The kyb template declares `verdict.decision` and inbound-lead `next_step.action`, and a template's `learning` takes the same object, each path a required field of its output schema. The check record keeps `agree_on`, the console's check line says "compared the whole answer" when there was none, and the TypeScript and Python clients' types carry it (Python 0.3.14). <!-- changes/learning-agree-on.md --> (#3182)
+
+Agents and templates
+
+- An imported agent runs as imported. A project with no CLAUDE.md or AGENTS.md gets short instructions of the import's own, and a Codex session's model is kept only when a model catalog here lists it; otherwise the agent runs on the server's default model for its harness, and the import says so for each one. Before, both made every run of the agent refused 409 `agent_not_runnable`. An agent imported earlier keeps its revision: set its model and instructions on its page, or import again into a new data folder (#3155).
+
+Console
+
+- The agent editor's Computer step has a Recording switch for a desktop, a phone or a browser, with a note that a recording holds everything on the screen, what a person types after taking over and any password shown included. A switch of provider, or to another kind that records, keeps it on; a switch to a sandbox or to no computer turns it off and says so. Before, any switch dropped `record`. A server without ffmpeg refuses the save, in words the step shows (#3194).
+- The run page's Dev tools tab reads as a browser's network panel does: each row carries its bar on the time axis under a compact overview, a zoom or a drag across the overview lists only the calls in that part of the run, a call's panel has a Timing section, and the Breakdown view opens with the run's vitals (first answer, first tool call, largest input, most calls at once, longest pause). The table is one stop for the Tab key, its rows moved through with the arrow keys, and it reads under a forced-colours theme and to a screen reader (#3189).
+
+Docs and release
+
+- The server README's Particle-1 section records a live pass against Particle's API: a saved key, a plain run, tool calls after the model's reasoning, a follow-up, a cancel, a capped run and a workflow's model nodes, each priced run's cost equal to its tokens at list price. Not yet seen live: a rate limit or server error from Particle, and the estimate against Particle's own bill (#3190).
+- A release no longer posts to Slack on its own: whoever cuts it posts its summary once the release page is out, in the shape `docs/releasing.md` gives (what you can do now, three lines before you upgrade, the install lines and the notes link). <!-- changes/release-post-by-hand.md -->
+- beta.45's changelogs now tell the four changes its tag carried past its release pull request's fold as its release page did, under 0.1.0-beta.45, with a known issue for a Render or Railway upgrade to it.
+- Tests: the steer-mid-turn test's failure names the steer's outcome and what the model was handed, and a relay test that read the server's log before the line was written is deleted (#3192).
+
 ## 0.1.0-beta.45 (2026-11-18)
 
 This release runs each run in a process of its own. In the Docker image each run is also a user of its own, so its tools can't read another run's folder or the store. A local install runs every run as the user who started the server. The image now starts the server and its runner as two processes, and run lists read one row per run, so a list costs the same at ten runs and at thousands. Learning comes down to two things an agent keeps: its owner's corrections and its compiled workflow. Computers without an Archil mount hold a run's folder as a synced folder, a Linux box of your own pairs as a computer, and a dial computer can be a desktop. Claude Agent can run on Claude Code's own login on a server one person runs, `install.sh --vps` sets AgentRun up on a rented Linux server, an agent another system owns can be deleted, a template can update the agent it made, and a run's page has a Dev tools tab with the run's trace.
@@ -30,9 +77,11 @@ This release runs each run in a process of its own. In the Docker image each run
 - Learning cost: a cost run has `digest`, `took_over` and `audited` in place of `learned_revision`, and a replay run's `n` is null. `GET /agents/{id}/learning`'s `impact` sides are `runs` and `median_duration_s` only: read a run's cost before and after learning from the cost read's `summary`, and what learning costs a run from `bill.learning_usd` (#3166).
 - `@parcha/agentrun-computer`: `ARCHIL_MOUNT_LABEL` is `MOUNT_LABEL`; `RecordedArchil`, `recordedArchil` and `readArchilMount` are `RecordedFolder`, `recordedFolder` and `readMount`; `syncingClient(client, sync)` takes the sync it runs, `archilSync(client)` for an Archil mount (#3118).
 - Tool keys: `GET /v2/settings/tool-keys` (`listToolKeys`) names a key row's harnesses by harness id: `items[].harnesses` is an array of strings, no longer only the four built-in names, since a harness its owner installs (`goose`) is named there once it is installed. The TypeScript and Python clients and the console say `string[]`; a caller that switched over `pi`, `claude-agent`, `codex` and `opencode` handles any other id too. <!-- changes/tool-keys-harnesses-ids.md --> (#3176)
+- `GET /v2/agents/{id}/learning`: each workflow's `status` is now `serving`, `checking`, `held` or `stopped` (the state `GET .../learning/promotions` gives it), else `pending` or `retired`. `active` is gone: a reader that tested `status === "active"` for a workflow given to runs tests that it is neither `pending` nor `retired` (#3179). <!-- changes/learning-view-status.md -->
 
 **Known issues:**
 
+- Upgrading an existing Render or Railway server without `AGENTRUN_RUN_USER=same` stops the container (it restarts in a loop) instead of refusing runs. Add the variable before you upgrade. beta.46 makes it refuse as described.
 - Under the image's default command, no run can use a paired computer. Start the image with the server's options alone for one.
 - A runner of its own started on a Postgres store before its server has upgraded it says to start on a new, empty data folder. Don't: start the server first, which upgrades the store in place, then the runner.
 - A learned workflow refused for a host setting (a tool gated, denied or missing) still reads `serving`, while every run it is given hands back to the agent. A workflow this release's DSL refuses is held, as in beta.44.
@@ -58,6 +107,7 @@ Learning
 
 - An agent learns two things now: its owner's corrections and its compiled workflow. Notes, learned skills, the end-of-run look-back turn and the learning grader are gone. An owner's words after a run (a grade's words, or a message after the job's first) become one line of the agent's `corrections.md` with no model turn, and every run reads that file whole. Read and replace it with `GET` and `PUT /v2/agents/{agent_id}/learning/corrections` (CLI `agentrun learning corrections` and `write-corrections`). A compiled workflow is committed once its checks and dry run pass; its one promotion check against the agent's own answers decides whether it serves. <!-- changes/delete-notes.md --> (#3097)
 - The Learning tab tells one story: one run numbering, one takeover (the run the server marks `took_over`), one cheaper ratio, and one figure for what learning costs a run, the bill's `learning_usd`. Answer times show to a tenth under 10 seconds, the levels and the bill's labels sit right of the plot, and the captions say compile turn and audit shadow run. <!-- changes/learning-tab-one-story.md --> (#3166)
+- The learning view says of each workflow whether it serves: `serving`, `checking` (no promotion record yet), `held` or `stopped` (a champion the cost rule stopped running first reads `stopped`, never `serving`) (#3179).
 
 Agents and templates
 
@@ -69,7 +119,7 @@ Models and harnesses
 
 - Claude Agent can run on Claude Code's own login on the same machine, on a self-hosted server one person runs: `PUT /v2/settings/claude-login` with `only_me: true`, or the console's Settings → Model keys row "Use Claude Code's login on this machine". The CLI keeps the login and calls Anthropic itself; AgentRun only asks it `claude auth status` and never reads, stores or relays the login. A run on it books its tokens and no dollars (`cost.plan.on: "claude_code"`). A server where more than one person can start runs refuses the mode, it is off by default on a server that listens beyond loopback, and `AGENTRUN_CLAUDE_CODE_LOGIN=off` removes it. <!-- changes/claude-code-login.md --> (#3124, #3126)
 - Particle-1 runs directly on Particle's own API with pi: `particle/particle-1` and `PARTICLE_API_KEY`, in Settings → Model keys and the model picker, for pi runs and workflow model nodes. Costs are list-price estimates; the OpenRouter route stays as it was. The Compose files pass `PARTICLE_API_KEY` through (#3149).
-- Goose 1.59.2 is a harness (`goose`) on the ACP adapter (`gooseAdapter`), on the server's Anthropic key as `claude-agent` is, with each Goose process on a model proxy of its own, so the run's cap and books hold as they do for Claude Code. Its owner installs it with `agentrun harness install goose` (`agentrun-serve install-harness goose`), never a run: the install checks the pinned archive's and the binary's sha256, puts the binary in place read-only, and names each failure with the command to try again. Restart AgentRun after installing it; until then an agent on goose saves with a warning and its runs are refused, naming `HARNESS_NOT_INSTALLED` and the install command. <!-- changes/goose-install-and-harness-row.md --> (#3150, #3176)
+- Goose 1.59.2 is a harness (`goose`) on the ACP adapter (`gooseAdapter`), on the server's Anthropic key as `claude-agent` is, with each Goose process on a model proxy of its own, so the run's cap and books hold as they do for Claude Code. Its owner installs it with `agentrun harness install goose` (`agentrun-serve install-harness goose`), never a run: the install checks the pinned archive's and the binary's sha256, puts the binary in place read-only, and names each failure with the command to try again. Restart AgentRun after installing it; until then an agent on goose saves with a warning and its runs are refused, naming `HARNESS_NOT_INSTALLED` and the install command. (#3150, #3176) In the image only; an npm install has no Goose until its adapter package is published. <!-- changes/goose-install-and-harness-row.md -->
 - The console's API playground names an agent's model with the agent editor's Model picker, for the form's harness (#3164).
 
 Computers
@@ -81,6 +131,8 @@ Computers
 - A dial computer can be a desktop on E2B, Fly Machines, Cloudflare, Modal and Daytona: the box image's `agentrun-dial` starts its display, and until it answers the computer is a linux one whose screen and input calls are refused in words. The box image's recipe changed, so its name moved with its hash. <!-- changes/computer-desktop-over-dial.md --> (#3167)
 - A computer whose machines dial the server (Fly Machines, Cloudflare, and E2B, Daytona or Modal set to dial) works under a runner in a process of its own, the image's default included: the machine dials the server as before, and the server relays its socket to the runner that made it. Give the runner the server's public address, `AGENTRUN_PUBLIC_URL` (the image passes the environment to both); across hosts, also its `AGENTRUN_RUNNER_LIVE_HOST`, listed in the server's `AGENTRUN_RUNNER_HOSTS`. A dial whose runner is gone or restarted is answered 503 in words naming its run, and the run makes a new machine at its next claim. A runner started beside its server in the image no longer gets the server's own API tokens. <!-- changes/dial-relay.md --> (#3170)
 - The server and the runner make every computer provider's vendor call through the standard `HTTPS_PROXY` (or `HTTP_PROXY`), with `NO_PROXY`'s hosts, loopback and the server's own public address direct. Unset, nothing changes. The Archil mount still connects direct. <!-- changes/computer-https-proxy.md --> (#3157)
+- A Linux box with no display pairs with `computerd pair` as a sandbox, and in Mode 2 holds a run's folder as a synced folder in its `/workspace`; the next run on the box finds its folder. Its network is `open` (#3178). <!-- changes/paired-linux-sandbox.md -->
+- An API-only server (`AGENTRUN_API_ONLY=1`) serves `GET /v2/computers` and `GET /v2/workspace/archil` with its token, so a backend in front of it can read which computer providers are ready and whether runs' folders are on Archil. Both name keys and whether each is saved, never a value; their writes stay refused there (#3184).
 
 Setup
 
@@ -97,6 +149,7 @@ Docs and release
 - A node with an unknown key reads "unknown key(s) for an agent node" (it said "a agent"); the CLI's flag help and the command reference give a flag's whole first paragraph and write `*/*` as itself. <!-- changes/site-audit-docs-wording.md --> (#3110)
 - The changelog fold puts a breaking change under a **Breaking:** heading, and knows a fragment a section holds by its marker, not by its words. beta.44's changelogs on main now carry its seven late changes as its release page told them. <!-- changes/fold-breaking-heading.md --> (#3138, #3139)
 - Tests: four flaky tests deleted and the four real bugs under them fixed; a computer-deps test takes its Docker answer from the test, not the CI host; CI's Postgres job keeps its database on tmpfs; and three CLI tests hold one claim each (#3165, #3171, #3177, #3183).
+- The fake calendar answers and counts only its own paths, so a host process that polls loopback listeners no longer fails a test that counts the calendar's reads (#3181).
 
 ## 0.1.0-beta.44 (2026-11-17)
 
