@@ -108,15 +108,17 @@ const pctOf = (v: number) => `${Math.round(v * 100)}%`;
 const fieldsWords = (on: readonly string[]) => (on.length < 2 ? on.join("") : `${on.slice(0, -1).join(", ")} and ${on.at(-1)}`);
 
 /** A record's numbers in one line: "Checked on 20 inputs of the agent's own runs: 18 answered alone (90%, 70% needed),
- *  16 of those said what the agent said on mcc and riskTier (89%, 80% needed)" (the fields its check compared on, when
- *  any). A record its check ran on no input says its reason. */
+ *  16 of those said what the agent said on verdict.decision (89%, 80% needed)", naming the fields its check compared on
+ *  (learning.agree_on), or "(89%, 80% needed; compared the whole answer)" with none. A record its check ran on no input
+ *  says its reason. */
 export function replayLine(record: Promotion): string {
   const c = record.check;
   if (!c?.n) return record.reason;
   const alone = c.alone ?? 0;
   const agreed = c.agreed ?? 0;
   const on = c.agree_on?.length ? ` on ${fieldsWords(c.agree_on)}` : "";
-  return `Checked on ${c.n} ${c.n === 1 ? "input" : "inputs"} of the agent's own runs: ${alone} answered alone (${pctOf(alone / c.n)}, ${pctOf(c.alone_min)} needed), ${agreed} of those said what the agent said${on} (${alone ? pctOf(agreed / alone) : "0%"}, ${pctOf(c.agree_min)} needed)${c.outcomes?.handed_back ? `, ${c.outcomes.handed_back} handed back` : ""}`;
+  const whole = c.agree_on?.length ? "" : "; compared the whole answer";
+  return `Checked on ${c.n} ${c.n === 1 ? "input" : "inputs"} of the agent's own runs: ${alone} answered alone (${pctOf(alone / c.n)}, ${pctOf(c.alone_min)} needed), ${agreed} of those said what the agent said${on} (${alone ? pctOf(agreed / alone) : "0%"}, ${pctOf(c.agree_min)} needed${whole})${c.outcomes?.handed_back ? `, ${c.outcomes.handed_back} handed back` : ""}`;
 }
 
 /** Where the loop stands, as the story strip says it: each stage's state and its words, and what happens next. */

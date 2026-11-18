@@ -23,7 +23,8 @@ inputs:
   registration_number: { type: string, required: false, title: "Registration number", description: "Optional. The company number in its registry, as the applicant gave it.", maxLength: 100 }
   reason: { type: string, required: false, title: "Why it is checked", description: "Optional. vendor, customer or investment. Left out: unspecified.", enum: [vendor, customer, investment] }
 budget: { per_run_usd: 5.00 }
-learning: true
+# Learning on, its check and audit comparing two answers on the verdict's decision alone (never the rationale or report).
+learning: { agree_on: [verdict.decision] }
 output: { schema: kyb.schema.json }
 ---
 You are a business due diligence (KYB) analyst. Someone is about to sign, pay or onboard a company and needs to know who

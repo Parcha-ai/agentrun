@@ -45,7 +45,7 @@
 import type { Context } from "@earendil-works/chord/context";
 import type { LearnedWorkflow } from "../learning.js";
 import { LEARNING_LABEL } from "../learning.js";
-import { loopOf, loopOfBody } from "../learning-setting.js";
+import { loopOf } from "../learning-setting.js";
 import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
 import { launchBody, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { uuidv7 } from "../runs-over-store.js";
@@ -323,11 +323,12 @@ async function decide(deps: PromotionDeps, workflow: LearnedWorkflow, digest: st
 }
 
 /** The loop's numbers (learning-setting.ts) of the revision the claim runs: its definition's `learning`, each one it
- *  leaves out at its default, and the answer fields its check compares on (its agree_on, else its output schema's
- *  decision fields) (a revision that cannot be read: every default, the whole answer). */
+ *  leaves out at its default, and the answer paths its check compares on (its agree_on; none, the whole answer) (a
+ *  revision that cannot be read: every default, the whole answer). */
 async function loopOfRevision(deps: Pick<PromotionDeps, "store" | "revisionId">) {
   try {
-    return loopOfBody((await deps.store.agents.revision(deps.revisionId))?.body);
+    const revision = await deps.store.agents.revision(deps.revisionId);
+    return loopOf((revision?.body as { learning?: unknown } | undefined)?.learning);
   } catch {
     return loopOf(undefined);
   }
@@ -548,8 +549,7 @@ export async function decideCheck(deps: PromotionDeps, name: string, digest: str
   const now = deps.now ?? Date.now;
   const ran = read.rows.filter((row) => row.outcome !== "skipped_write");
   const alone = (row: CheckRow) => row.outcome === "answered";
-  // Compared on the bar's agree_on when it names fields (the definition's, or its output schema's decision fields), else
-  // the whole answer.
+  // Compared on the bar's agree_on when it names paths (the definition's), else the whole answer.
   const agrees = (row: CheckRow) => alone(row) && sameAnswer(row.answer, row.agent, bar.agree_on);
   const score = { n: ran.length, agreed: ran.filter(agrees).length, alone: ran.filter(alone).length };
   const ok = checkPasses(score, bar);

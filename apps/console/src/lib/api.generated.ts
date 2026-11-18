@@ -3363,7 +3363,7 @@ export interface operations {
         budget: {
           per_run_usd: number;
         } | null;
-        learning: boolean;
+        learning: boolean | Record<string, unknown>;
         approvals_default: "ask" | "never";
         triggers: Record<string, unknown>[];
         skills: string[];
@@ -3638,7 +3638,6 @@ export interface operations {
           alone_min: number;
           attempt: 1 | 2;
           agree_on?: string[];
-          agree_from?: "definition" | "schema";
           n?: number;
           agreed?: number;
           alone?: number;
@@ -3723,7 +3722,6 @@ export interface operations {
             alone_min: number;
             attempt: 1 | 2;
             agree_on?: string[];
-            agree_from?: "definition" | "schema";
             n?: number;
             agreed?: number;
             alone?: number;
@@ -3934,7 +3932,7 @@ export interface operations {
         budget: {
           per_run_usd: number;
         } | null;
-        learning: boolean;
+        learning: boolean | Record<string, unknown>;
         approvals_default: "ask" | "never";
         triggers: Record<string, unknown>[];
         skills: string[];

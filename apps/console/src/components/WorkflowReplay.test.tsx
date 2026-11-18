@@ -145,7 +145,7 @@ describe("the workflow card: standing", () => {
     expect(standing()).toContain("approved by its owner");
     act(() => (host.querySelector('button[aria-label="Previous revision"]') as HTMLButtonElement).click());
     expect(standing()).toContain("Served");
-    expect(standing()).toContain("Checked on 20 inputs of the agent's own runs: 18 answered alone (90%, 70% needed), 17 of those said what the agent said (94%, 80% needed), 2 handed back");
+    expect(standing()).toContain("Checked on 20 inputs of the agent's own runs: 18 answered alone (90%, 70% needed), 17 of those said what the agent said (94%, 80% needed; compared the whole answer), 2 handed back");
   });
 
   // One promoted on its check says how many inputs it was decided on, in green; one held because its check had nothing

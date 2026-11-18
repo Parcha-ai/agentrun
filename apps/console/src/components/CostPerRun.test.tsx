@@ -352,7 +352,7 @@ describe("the loop on the cost chart", () => {
     expect([...host.querySelectorAll('[data-testid^="marker-"]:not([data-testid^="marker-key"]):not([data-testid="marker-table"])')].map((g) => g.getAttribute("data-testid"))).toEqual(["marker-revision", "marker-promote"]);
     expect(host.querySelector('[data-testid="marker-key-promote"]')?.textContent).toBe("PPromoted 1");
     const rows = [...host.querySelectorAll('[data-testid="marker-table"] tbody tr')].map((r) => r.textContent);
-    expect(rows[1]).toContain("21P Promotedsort-invoicea12596cChecked on 20 inputs of the agent's own runs: 18 answered alone (90%, 70% needed), 17 of those said what the agent said (94%, 80% needed), 2 handed back");
+    expect(rows[1]).toContain("21P Promotedsort-invoicea12596cChecked on 20 inputs of the agent's own runs: 18 answered alone (90%, 70% needed), 17 of those said what the agent said (94%, 80% needed; compared the whole answer), 2 handed back");
     expect(text(host)).toContain("Markers: New revision · run 18");
   });
   it("draws the takeover and its promotion as one line: both on the left edge of the takeover run's slot, as the mix does", () => {

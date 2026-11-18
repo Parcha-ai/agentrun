@@ -2214,7 +2214,6 @@ class _ListLearningPromotionsResponsePromotionsItemCheckRequired(TypedDict):
 
 class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsResponsePromotionsItemCheckRequired, total=False):
     agree_on: list[str]
-    agree_from: Literal["definition", "schema"]
     n: int
     agreed: int
     alone: int
@@ -2330,7 +2329,6 @@ class _ListLearningPromotionsResponseServingItemChampionCheckRequired(TypedDict)
 
 class ListLearningPromotionsResponseServingItemChampionCheck(_ListLearningPromotionsResponseServingItemChampionCheckRequired, total=False):
     agree_on: list[str]
-    agree_from: Literal["definition", "schema"]
     n: int
     agreed: int
     alone: int
@@ -6316,7 +6314,7 @@ class ImportTemplateResponseTemplate(TypedDict):
     input_schema: dict[str, Any] | None
     secrets: list[str]
     budget: ImportTemplateResponseTemplateBudget | None
-    learning: bool
+    learning: bool | dict[str, Any]
     approvals_default: Literal["ask", "never"]
     triggers: list[dict[str, Any]]
     skills: list[str]
@@ -6437,7 +6435,7 @@ class ListTemplatesResponseTemplatesItem(TypedDict):
     input_schema: dict[str, Any] | None
     secrets: list[str]
     budget: ListTemplatesResponseTemplatesItemBudget | None
-    learning: bool
+    learning: bool | dict[str, Any]
     approvals_default: Literal["ask", "never"]
     triggers: list[dict[str, Any]]
     skills: list[str]

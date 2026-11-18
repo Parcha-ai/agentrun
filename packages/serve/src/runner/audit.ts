@@ -91,13 +91,11 @@ export async function auditLoopOfRevision(store: Pick<Store, "agents">, revision
   }
 }
 
-/** The answer fields an audit of a run of revision `revisionId` compares on, as its check does (learning-setting.ts
- *  agreeOnOf: its agree_on, else its output schema's decision fields); undefined, the whole answer (also when the
- *  revision cannot be read). */
+/** The answer paths an audit of a run of revision `revisionId` compares on, as its check does (learning-setting.ts
+ *  agreeOnOf: its agree_on); undefined, the whole answer (also when the revision cannot be read). */
 async function agreeOnOfRevision(store: Pick<Store, "agents">, revisionId: string): Promise<readonly string[] | undefined> {
   try {
-    const body = (await store.agents.revision(revisionId))?.body as { learning?: unknown; outputSchema?: unknown } | undefined;
-    return agreeOnOf(body?.learning, body?.outputSchema)?.agree_on;
+    return agreeOnOf(((await store.agents.revision(revisionId))?.body as { learning?: unknown } | undefined)?.learning);
   } catch {
     return undefined;
   }
