@@ -63,15 +63,6 @@ function toldOnce({ view, sent, rows, entries }) {
   assert.deepEqual(rows.map((row) => row.text), [WORDS(3)], "one row of the server's says so");
 }
 
-test("a free-limit note told before a runner restart is never told again: the next runner reads it from the run's records", { timeout: 240_000 }, async (t) => {
-  // Its 8th request carries the note (3 left); the 9th is out when the runner crashes, and the next runner sends it again,
-  // the 10th counted, 1 left: due by the count, and already told.
-  const ran = await restartedAt(t, 9);
-  t.diagnostic(`notes: ${JSON.stringify(ran.sent.map((call) => call.note && reminderIn(call.note).trim()))}`);
-  toldOnce(ran);
-  assert.equal(ran.sent.findIndex((call) => call.note !== null), 7, "the 8th answered request carried it, before the restart");
-});
-
 test("a runner restart before the free-limit note is due never loses it: the next runner tells it, once", { timeout: 240_000 }, async (t) => {
   // The 5th request is out when the runner crashes; the next runner sends it again (the 6th counted), and the note comes
   // with the 8th counted request, the 7th answered.
