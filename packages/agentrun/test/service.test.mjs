@@ -7,7 +7,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { LABEL, UNIT, INSTALL_COMMAND, managerOf, plistArgs, plistText, serviceOf, systemdWord, systemdWords, unitArgs, unitText } from "../lib/service.mjs";
+import { LABEL, UNIT, INSTALL_COMMAND, managerOf, plistArgs, plistEnv, plistText, serviceOf, systemdWord, systemdWords, unitArgs, unitEnv, unitText } from "../lib/service.mjs";
 import { removeAtEnd } from "./support.mjs";
 
 const PACKAGE = new URL("..", import.meta.url).pathname;
@@ -194,6 +194,71 @@ test("a server that never answers ok: the wait ends, says its state and the log'
   assert.match(err.join(""), /did not answer \/health ok within 0\.6 s \(503 starting\)\. Its state: active \(running\), pid 7\.\n.*\n  first\n  AgentRun did not start: the port is taken\./);
 });
 
+const MODEL_ENV = ["AGENT_MODEL_BASE_URL=http://localhost:11434/v1", "AGENT_MODEL_GATEWAY_IDS=bare", "AGENT_MODEL=qwen3:8b", "AGENT_MODEL_PRICE=0,0,0"];
+const MODEL_VARS = Object.fromEntries(MODEL_ENV.map((pair) => [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)]));
+
+test("service install --env: the local model's variables go into the systemd unit, stay through a re-install, and KEY= removes one", async () => {
+  const { home, exec, get } = linuxHome();
+  const { io } = ioOf();
+  const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: { PATH: "/usr/bin" }, exec, io, fail, get, waitMs: 5_000 });
+  const file = join(home, ".config", "systemd", "user", UNIT);
+  assert.equal(await service.install({ port: "7345", env: MODEL_ENV }), 0);
+  let unit = readFileSync(file, "utf8");
+  assert.match(unit, /^Environment=PATH=\/usr\/bin\nEnvironment=AGENT_MODEL_BASE_URL=http:\/\/localhost:11434\/v1\nEnvironment=AGENT_MODEL_GATEWAY_IDS=bare\nEnvironment=AGENT_MODEL=qwen3:8b\nEnvironment=AGENT_MODEL_PRICE=0,0,0$/m);
+  assert.deepEqual(unitEnv(unit), { PATH: "/usr/bin", ...MODEL_VARS });
+  // A re-install with no --env keeps them; one --env changes that variable alone, and the port named before stays.
+  assert.equal(await service.install({ env: ["AGENT_MODEL=llama3.2 big"] }), 0);
+  unit = readFileSync(file, "utf8");
+  assert.deepEqual(unitEnv(unit), { PATH: "/usr/bin", ...MODEL_VARS, AGENT_MODEL: "llama3.2 big" });
+  assert.deepEqual(unitArgs(unit).slice(1), ["--no-open", "--port", "7345"]);
+  assert.equal(await service.install({}), 0);
+  assert.equal(unitEnv(readFileSync(file, "utf8")).AGENT_MODEL, "llama3.2 big");
+  assert.equal(await service.install({ env: ["AGENT_MODEL=", "AGENT_MODEL_PRICE="] }), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", AGENT_MODEL_BASE_URL: "http://localhost:11434/v1", AGENT_MODEL_GATEWAY_IDS: "bare" });
+  // A restart runs the unit as it is.
+  const before = readFileSync(file, "utf8");
+  assert.equal(await service.restart(), 0);
+  assert.equal(readFileSync(file, "utf8"), before);
+});
+
+test("service install --env on macOS: the LaunchAgent's EnvironmentVariables, kept through a re-install", async () => {
+  const home = fresh();
+  mkdirSync(join(home, ".agentrun", "bin"), { recursive: true });
+  writeFileSync(join(home, ".agentrun", "bin", "agentrun"), "#!/bin/sh\n", { mode: 0o755 });
+  const { exec } = execOf((command, args) => {
+    if (args[0] === "print") return args[1] === "gui/501" ? {} : { status: 113 };
+    if (args[0] === "bootstrap") writeFileSync(join(home, ".agentrun", ".server.json"), JSON.stringify({ base_url: "http://127.0.0.1:7340/v2", pid: process.pid }));
+    return {};
+  });
+  const get = async () => ({ ok: true, status: 200, json: async () => ({ status: "ok" }) });
+  const { io } = ioOf();
+  const service = serviceOf({ platform: "darwin", home, uid: 501, user: "a", env: { PATH: "/opt/homebrew/bin:/usr/bin" }, exec, io, fail, get, waitMs: 5_000 });
+  const file = join(home, "Library", "LaunchAgents", `${LABEL}.plist`);
+  assert.equal(await service.install({ env: MODEL_ENV }), 0);
+  let plist = readFileSync(file, "utf8");
+  assert.match(plist, /<key>AGENT_MODEL_BASE_URL<\/key>\s*<string>http:\/\/localhost:11434\/v1<\/string>/);
+  assert.deepEqual(plistEnv(plist), { PATH: "/opt/homebrew/bin:/usr/bin", ...MODEL_VARS });
+  assert.equal(await service.install({ env: ["AGENT_MODEL=a&b<c>"] }), 0);
+  plist = readFileSync(file, "utf8");
+  assert.match(plist, /<string>a&amp;b&lt;c&gt;<\/string>/);
+  assert.deepEqual(plistEnv(plist), { PATH: "/opt/homebrew/bin:/usr/bin", ...MODEL_VARS, AGENT_MODEL: "a&b<c>" });
+});
+
+test("service install --env refuses any other variable by name, and a pair with no =, before it writes anything", async () => {
+  const { home, exec, get } = linuxHome();
+  const { io } = ioOf();
+  const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, exec, io, fail, get, waitMs: 5_000 });
+  for (const [pair, said] of [
+    ["OPENROUTER_API_KEY=sk-or-x", /--env takes AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL or AGENT_MODEL_PRICE, not OPENROUTER_API_KEY: a key goes in the console/],
+    ["PATH=/x", /not PATH/],
+    ["AGENT_MODEL", /--env takes KEY=VALUE, not AGENT_MODEL/],
+    ["AGENT_MODEL=a\nb", /AGENT_MODEL's value has a line break/],
+  ]) {
+    await assert.rejects(service.install({ env: [pair] }), (error) => error.code === 2 && said.test(error.message), pair);
+  }
+  assert.equal(existsSync(join(home, ".config", "systemd", "user", UNIT)), false);
+});
+
 test("service install refuses without the installer's command, or without a service manager; status says not installed, exit 3", async () => {
   const home = fresh();
   const { exec } = execOf();
@@ -359,6 +424,10 @@ test("the bin: --version prints the version; help lists service and stop; each v
   writeFileSync(join(home, ".agentrun", "bin", "agentrun"), "");
   assert.match(bin(["service", "install"], home).stderr, /can't run as a service here: this user has no systemd user session/);
   assert.match(bin(["service", "logs", "--help"]).stdout, /--follow +and keep printing what comes \(-f\)/);
+  assert.match(bin(["service", "install", "--help"]).stdout, /--env KEY=VALUE +a local model's variable/);
+  const secret = bin(["service", "install", "--env", "AGENT_MODEL=x", "--env", "OPENROUTER_API_KEY=x"], home);
+  assert.equal(secret.status, 2);
+  assert.match(secret.stderr, /not OPENROUTER_API_KEY/);
   assert.equal(bin(["service", "nope"]).status, 2);
 });
 

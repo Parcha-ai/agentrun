@@ -16,6 +16,7 @@ afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.in
 type Cost = Run["cost"];
 const ON_PLAN: Cost = { usd: 0, basis: "estimate", charge_state: null, cap_usd: null, plan: { requests: 3, tokens: 41_230, on: "chatgpt" } };
 const MIXED: Cost = { usd: 0.0123, basis: "estimate", charge_state: null, cap_usd: null, plan: { requests: 2, tokens: 9_000, on: "chatgpt" } };
+const ON_CLAUDE: Cost = { ...ON_PLAN, plan: { requests: 3, tokens: 41_230, on: "claude_code" } };
 const run = (c: Cost): Run => ({ sha: null, updated_at: "2026-11-15T11:01:00Z", poll_after_ms: 0, place: { mode: "runner" },
   run_id: "r1", agent_id: "hello", agent_version: 1, revision: "rv1", kind: "agentic", status: "completed", state: "idle", title: "Say hello",
   created_at: "2026-11-15T11:01:00Z", ended_at: "2026-11-15T11:02:00Z", result: null, error: null, archived_at: null, cost: c });
@@ -58,5 +59,20 @@ describe("a run's cost on a ChatGPT plan", () => {
     const header = host.querySelector("header")!;
     expect(header.textContent).toContain("41.2K tokens · Using ChatGPT plan");
     expect(header.textContent).not.toContain("$0.0000");
+  });
+});
+
+describe("a run's cost on Claude Code's login", () => {
+  it("says its tokens and your Claude plan, no dollars, and no link to ChatGPT", () => {
+    expect(cost(ON_CLAUDE)).toBe("41.2K tokens · On your Claude plan");
+    expect(cost({ ...ON_CLAUDE, usd: 0.0123 })).toBe("$0.01 est. + your Claude plan");
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(RunHeader, { run: run(ON_CLAUDE), agentName: "Hello" })));
+    const header = host.querySelector("header")!;
+    expect(header.textContent).toContain("41.2K tokens · On your Claude plan");
+    expect(header.textContent).not.toMatch(/\$0\.00|ChatGPT|Manage usage/);
+    const shown = [...header.querySelectorAll("[title]")].map((e) => e.getAttribute("title")).join(" ");
+    expect(shown).toContain("Requests on your Claude plan through Claude Code's login cost no dollars here");
   });
 });
