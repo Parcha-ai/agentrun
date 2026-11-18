@@ -14,7 +14,7 @@ import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
+import { PROVIDERS, providerFor, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { putSealedKey } from "../dist/server-keys.js";
 import { archilClaim, archilWorkspace, computerForClaim, computerProviderMakers } from "../dist/workspace/index.js";
 import { agentDiskStore, archilControlFake } from "./archil-control-fake.mjs";
@@ -62,7 +62,7 @@ test("computerProviderMakers builds each provider through the computer package's
 
 /** A Mode 2 claim of a sandbox on `provider` on the fakes, on the real registry: its saved keys and the Archil account key
  *  sealed, a fake control API, a fake disk. */
-async function archilSandbox(t, provider = "modal", { existing = [], saved = PROVIDER_KEYS[provider], named = {} } = {}) {
+async function archilSandbox(t, provider = "modal", { existing = [], saved = PROVIDER_KEYS[provider], named = {}, settings, checked = false } = {}) {
   const control = await archilControlFake({ existing });
   t.after(() => control.close());
   const { store } = await storeOn(t);
@@ -76,21 +76,36 @@ async function archilSandbox(t, provider = "modal", { existing = [], saved = PRO
   const scratch = realpathSync(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-archil-sandbox-")));
   dirs.push(scratch);
   // A synced folder reads back as one under the claim's epoch; an Archil mount as the mount it was given.
-  const computer = fakeComputer(scratch, provider === "daytona" && !named.AGENTRUN_DAYTONA_SNAPSHOT ? { readBack: { kind: "sync", epoch: 3 } } : {});
+  const synced = (provider === "daytona" && !named.AGENTRUN_DAYTONA_SNAPSHOT) || settings?.modalConnect === "dial";
+  const computer = fakeComputer(scratch, synced ? { readBack: { kind: "sync", epoch: 3 } } : {});
   const record = { loaded: [], created: [], released: [] };
+  // `checked`: each spec is first held to the check of the provider the computer package builds from the same options,
+  // as its create holds it before any vendor call.
+  let real;
   const stand = {
     id: provider, version: "0", capabilities: () => ({ lifetime: "vendor", mount: "archil" }), check: () => [],
     list: async () => ({ ok: true, value: [] }),
-    create: async (spec) => (record.created.push(spec), { ok: true, value: { id: "d1", name: "d1" } }),
+    create: async (spec) => {
+      record.created.push(spec);
+      const problems = real ? real.check(spec) : [];
+      if (problems.length > 0) return { ok: false, error: { code: "invalid", message: problems.map((one) => one.message).join("; ") } };
+      return { ok: true, value: { id: "d1", name: "d1" } };
+    },
     connect: async () => ({ ok: true, value: { client: computer.client, hello: { version: "0", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] }, close: async () => {} } }),
     attach: async () => ({ ok: true, value: { id: "d1", name: "d1", spec: { image: "i", user: "1000:1000", network: "none" } } }),
     release: async (ref, how) => (record.released.push([ref.id, how]), { ok: true, value: undefined }),
     // Modal's and E2B's descriptors declare prepareImage: their computers start from the box image (E2B's public template).
     ...(provider === "modal" || provider === "e2b" ? { prepareImage: async () => ({ ok: true, value: PREPARED_IMAGE }) } : {}),
   };
-  const providers = computerProviderMakers({ load: async (id, options) => (record.loaded.push([id, options]), stand) });
+  const providers = computerProviderMakers({
+    load: async (id, options) => {
+      record.loaded.push([id, options]);
+      if (checked) real = await providerFor(id, options);
+      return stand;
+    },
+  });
   const run = () => computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "sandbox", provider } }, store, {
-    mode: 2, kinds: REAL_KINDS, sealKey, providers,
+    mode: 2, kinds: REAL_KINDS, sealKey, providers, ...(settings ? { settings } : {}),
     spec: () => ({ image: "agentrun/computer:test", lifetimeMs: 60_000, network: "none" }),
     workspace, check: { readBackOf, epoch: 3 }, revokeMount: () => claim.revoke(),
   });
@@ -187,6 +202,17 @@ test("a Mode 2 Daytona sandbox on the real registry holds the run's folder as a 
     await answer.release();
     assert.deepEqual(record.released, [["d1", "delete"]]);
   }
+});
+
+test("a Mode 2 Modal run whose machines dial this server (modalConnect dial) gets a synced folder, not a refusal: no Archil mount its provider refuses, no token minted", async (t) => {
+  const { run, record, control } = await archilSandbox(t, "modal", { settings: { modalConnect: "dial" }, checked: true });
+  const answer = await run();
+  assert.deepEqual(record.loaded, [["modal", { ...PROVIDER_KEYS.modal.options, connect: "dial" }]], "built on dial");
+  assert.deepEqual(record.created[0].mount, { kind: "sync" }, "a synced folder, which a machine that dials takes");
+  assert.equal(answer.computer.check.sync, true);
+  assert.equal(control.users.size, 0, "no token minted");
+  await answer.release();
+  assert.deepEqual(record.released, [["d1", "delete"]]);
 });
 
 test("a Mode 2 Daytona sandbox with DAYTONA_ARCHIL_EGRESS and AGENTRUN_DAYTONA_SNAPSHOT saved takes the same Archil path: its provider built with archilEgress, the Archil mount with the minted token", async (t) => {

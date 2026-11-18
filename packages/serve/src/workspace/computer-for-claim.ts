@@ -41,7 +41,7 @@ import type { BrowserSpec, ComputerClient, ComputerConnection, ComputerError, Co
 import { isBrowserProvider, ownerFilter, releaseOlder, RUN_LABEL, runLabels } from "@parcha/agentrun-computer";
 import { type RecordInput, type Recording, type RecordWatch, startRecording } from "../computer-record.js";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
-import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions } from "../computer-keys.js";
+import { KEY_TABLE, type KeyTable, type ProviderSettings, providerOptions, settingOptions } from "../computer-keys.js";
 import { LOST_RECREATES, lostEnd, lostRecreatedWords } from "../computer-lost.js";
 import { inToolCall, stopRun } from "../paid-calls.js";
 import { getSealedKey } from "../server-keys.js";
@@ -787,9 +787,10 @@ export async function computerForClaim(
   // The paired computers, each one more provider of the registry (attached-computers.ts): a setting names one by its id.
   const paired = deps.attached ? await deps.attached.rows() : [];
   const keyOf = deps.keyOf ?? (async (name: string) => (deps.sealKey ? await getSealedKey(store, deps.sealKey, name) : undefined));
-  // Each provider as this server has it (registryHere: the mounts its keys turn on, and whether the operator names its
-  // image), as a run's start reads it, so the claim holds the folder the start said it would.
-  const kinds = await registryHere(withPaired(deps.kinds, paired), keyOf);
+  // Each provider as this server has it (registryHere: the mounts its keys turn on, whether the operator names its
+  // image, and no Archil mount where its settings make its machines dial this server), as a run's start reads it, so the
+  // claim holds the folder the start said it would.
+  const kinds = await registryHere(withPaired(deps.kinds, paired), keyOf, (provider) => settingOptions(provider, deps.settings ?? {}, table));
   /** The computer this claim started (one per claim): its ref id tags its live view, and its watch feeds it. */
   let made: { readonly id: string; readonly machine?: string; readonly watch?: WatchOf; readonly gone?: () => Promise<boolean> } | undefined;
   /** The provider entry it was started from: a phone's platform where the computer did not say it. */

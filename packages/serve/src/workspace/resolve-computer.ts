@@ -20,7 +20,7 @@
 // command there would run on the server itself. runShellOf reads it off a setting before anything starts (the tool
 // plane shows bash unavailable by it), and the claim's runTools takes the same rule over the computer it started.
 import { hostToolDefs, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
-import { type BrowserFeatures, type BrowserFile, type BrowserSpec, type ComputerClient, type ComputerSettingKind, configurationOf, type GpuSpec, type Group, type HelloResult, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, mountsOf, type ProviderEntry, type Result, syncingClient } from "@parcha/agentrun-computer";
+import { type BrowserFeatures, type BrowserFile, type BrowserSpec, type ComputerClient, type ComputerSettingKind, configurationOf, connectOf, type GpuSpec, type Group, type HelloResult, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, mountsOf, type ProviderEntry, type Result, syncingClient } from "@parcha/agentrun-computer";
 import { type DockerDaemon, noDockerWords } from "../docker-daemon.js";
 import { gpuRefused } from "../gpu-words.js";
 import { recordedClient } from "../computer-calls.js";
@@ -145,6 +145,9 @@ export const providerKeys = (registry: Pick<KindRegistry, "PROVIDERS">, keyOf: (
 /** What a provider is on this server beside its descriptor: the mounts the operator's keys turn on, and whether the
  *  operator names its image here. */
 type HereFields = {
+  readonly label?: string;
+  /** Whether its machines dial this server: always, or as its connect option says (the computer package's connectOf). */
+  readonly connect?: "dial" | "either";
   readonly mounts: readonly string[];
   readonly unmounted?: Readonly<Partial<Record<string, string>>>;
   readonly mountsWith?: Readonly<Partial<Record<string, string>>>;
@@ -159,25 +162,45 @@ type HereFields = {
  *  mount where DAYTONA_ARCHIL_EGRESS names a self-hosted target's Archil egress relay), and imageNamed where its
  *  descriptor's imageEnv names its image here (Daytona's AGENTRUN_DAYTONA_SNAPSHOT). Any other entry as it is. Every
  *  reader of an entry's mounts (Settings → Computers, the claim, a run's start, its shell) reads this, so the
- *  provider made with those keys and the server agree on what it mounts. */
-export function entryHere<Entry extends HereFields>(entry: Entry, set: (name: string) => boolean): Entry {
+ *  provider made with those keys and the server agree on what it mounts. `options`: the create() options its server
+ *  settings give (computer-keys.ts settingOptions): where its machines dial this server by them (dialsBy), it takes no
+ *  Archil mount (withoutArchil), so its folder is synced where Archil's would be. */
+export function entryHere<Entry extends HereFields>(entry: Entry, set: (name: string) => boolean, options: Readonly<Record<string, unknown>> = {}): Entry {
   const keyed = entry.mountsWith === undefined ? undefined : mountsOf(entry as unknown as Parameters<typeof mountsOf>[0], set);
   const named = entry.imageEnv !== undefined && set(entry.imageEnv);
-  if (keyed === undefined && !named) return entry;
-  return { ...entry, ...keyed, ...(named ? { imageNamed: true as const } : {}) };
+  const here = keyed === undefined && !named ? entry : { ...entry, ...keyed, ...(named ? { imageNamed: true as const } : {}) };
+  return dialsBy(entry, options) ? withoutArchil(here) : here;
+}
+
+/** Whether a computer of `entry` made with `options` dials this server (the computer package's connectOf). A connect it
+ *  doesn't know is the provider's to refuse, in its words, when it is made: here it is read as exec. */
+function dialsBy(entry: HereFields, options: Readonly<Record<string, unknown>>): boolean {
+  if (entry.connect === undefined) return false;
+  try {
+    return connectOf({ label: entry.label ?? "", connect: entry.connect }, options) === "dial";
+  } catch {
+    return false;
+  }
+}
+
+/** `entry` with no Archil mount, saying why: a machine that dials this server takes none (the computer package's
+ *  HostedProvider drops it from its capabilities on dial and refuses one in check()). */
+function withoutArchil<Entry extends HereFields>(entry: Entry): Entry {
+  if (!entry.mounts.includes("archil")) return entry;
+  const archil = `${entry.label ?? "its provider"}'s machines dial this server, and a machine that dials takes no Archil mount`;
+  return { ...entry, mounts: entry.mounts.filter((kind) => kind !== "archil"), unmounted: { ...entry.unmounted, archil } };
 }
 
 /** The names entryHere reads of `entry`: the keys of its mountsWith, and its imageEnv. */
 const hereNames = (entry: HereFields): string[] => [...Object.values(entry.mountsWith ?? {}).filter((name): name is string => typeof name === "string"), ...(entry.imageEnv === undefined ? [] : [entry.imageEnv])];
 
 /** `registry` with each provider as this server has it (entryHere), reading only the names an entry's mountsWith or
- *  imageEnv names, by `valueOf` (key-meta.ts keyReader: the environment's value, else the saved key). A value of
- *  whitespace alone is none. */
-export async function registryHere<Registry extends { readonly PROVIDERS: readonly ProviderEntry[] }>(registry: Registry, valueOf: (name: string) => Promise<string | undefined>): Promise<Registry> {
+ *  imageEnv names, by `valueOf` (key-meta.ts keyReader: the environment's value, else the saved key), and the options
+ *  its server settings give, by `optionsOf` (settingOptions; absent: none). A value of whitespace alone is none. */
+export async function registryHere<Registry extends { readonly PROVIDERS: readonly ProviderEntry[] }>(registry: Registry, valueOf: (name: string) => Promise<string | undefined>, optionsOf?: (provider: string) => Readonly<Record<string, unknown>>): Promise<Registry> {
   const names = [...new Set(registry.PROVIDERS.flatMap(hereNames))];
-  if (names.length === 0) return registry;
   const set = new Set((await Promise.all(names.map(async (name) => ((await valueOf(name))?.trim() ? name : "")))).filter((name) => name !== ""));
-  return { ...registry, PROVIDERS: registry.PROVIDERS.map((entry) => entryHere(entry, (name) => set.has(name))) };
+  return { ...registry, PROVIDERS: registry.PROVIDERS.map((entry) => entryHere(entry, (name) => set.has(name), optionsOf?.(entry.id))) };
 }
 
 /** Whether a computer of `entry` that mounts the owner's Archil disk has Archil's image in the owner's vendor account:
@@ -302,7 +325,11 @@ export function shellPlaceOf(mounts: boolean, mode: 1 | 2): ShellPlace {
  *  the mode's folder. A phone and a browser never do. `gpuMounts`: folderKindOf's. */
 function folderOf(kind: ComputerSettingKind, entry: ProviderEntry, serving: readonly KindCapabilities[], mode: 1 | 2, gpuMounts?: readonly string[]): MountKind | undefined {
   const shell = serving.some((one) => one.groups.includes("files") && one.groups.includes("exec"));
-  return (kind === "sandbox" || kind === "desktop") && shell ? folderKindOf(entry, mode, gpuMounts) : undefined;
+  if (!((kind === "sandbox" || kind === "desktop") && shell)) return undefined;
+  // Configurations made on dial by their own options (the provider's are its settings' and theirs) take no Archil mount
+  // either, as entryHere's settings' dial.
+  const dialed = serving.every((one) => dialsBy(entry, one.options ?? {}));
+  return folderKindOf(dialed ? withoutArchil(entry) : entry, mode, gpuMounts);
 }
 
 /** The configurations of `entry` that serve `kind`. */

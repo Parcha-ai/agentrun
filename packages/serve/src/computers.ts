@@ -302,8 +302,9 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     const slots = listed.PROVIDERS.flatMap((provider) => provider.keys.map((key) => ({ secret: secretName("computer", provider.id, key.name), env: key.name, row: key.name })));
     const metas = new Map((await keyMetaOf(store, slots, env)).map((meta) => [meta.name, meta]));
     const saved = new Set(slots.filter((slot) => metas.get(slot.secret)!.set).map((slot) => slot.env));
-    // Each provider as this server has it: the mounts its saved keys turn on, and whether this server names its image.
-    const kinds = { ...listed, PROVIDERS: listed.PROVIDERS.map((provider) => entryHere(provider, (name) => saved.has(name) || envValue(env, name) !== undefined)) } as KindRegistry;
+    // Each provider as this server has it: the mounts its saved keys turn on, whether this server names its image, and no
+    // Archil mount where its settings make its machines dial this server.
+    const kinds = { ...listed, PROVIDERS: listed.PROVIDERS.map((provider) => entryHere(provider, (name) => saved.has(name) || envValue(env, name) !== undefined, settingOptions(provider.id, settings, keyTable))) } as KindRegistry;
     const choice = (setting: ComputerSetting): ShellChoice => shellChoiceOf(setting, mode === "disk" ? 2 : 1, kinds as never);
     // Under this server's AGENTRUN_BOX_ALLOW none, a computer that needs a network is refused at a
     // run's start and its claim (resolve-computer.ts noNetworkRefusal), so it is never ready here, whatever its keys.
@@ -430,7 +431,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     if (!listed) return `this agent's computer names the provider ${computer.provider}, which this server does not have: set its computer in Settings → Computers`;
     // The keys set here, saved or the environment's: what the provider is made with, and what turns its mounts on.
     const set = new Set([...(await sealedKeyNames(store)), ...listed.keys.filter((key) => envValue(env, key.name) !== undefined).map((key) => key.name)]);
-    const provider = entryHere(listed, (name) => set.has(name) || envValue(env, name) !== undefined);
+    const provider = entryHere(listed, (name) => set.has(name) || envValue(env, name) !== undefined, settingOptions(listed.id, settings, keyTable));
     if (!provider.kinds.includes(computer.kind)) {
       const words = [...new Set(provider.capabilities.flatMap((capabilities) => kinds.servingRefusals(capabilities, computer.kind)))];
       return `${provider.label} does not serve a ${computer.kind} computer${words.length ? ` (${words.join("; ")})` : ""}: set this agent's computer to one it serves (Settings → Computers)`;
