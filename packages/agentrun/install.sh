@@ -737,6 +737,15 @@ vps_files() {
     printf 'AGENTRUN_PUBLIC_URL=%s\n' "$url"
     printf 'AGENTRUN_TRUSTED_PROXIES=%s\n' "$trusted"
     printf 'DOCKER_GID=%s\n' "$gid"
+    # The usage counts' switches (docs/telemetry.md) set where this runs reach the server, which reads .env alone, and
+    # under CI it is off. A line .env already has for one stays as it is.
+    for name in AGENTRUN_TELEMETRY DO_NOT_TRACK; do
+      [ -f "$env_file" ] && grep -q -E "^$name=" "$env_file" && continue
+      eval "value=\${$name:-}"
+      [ "$name" = AGENTRUN_TELEMETRY ] && [ -z "$value" ] && [ -n "${CI:-}" ] && value=0
+      case $value in '' | *[!A-Za-z0-9]*) continue ;; esac
+      printf '%s=%s\n' "$name" "$value"
+    done
   } > "$work/env"
   chmod 600 "$work/env"
   mv -f "$work/env" "$env_file"

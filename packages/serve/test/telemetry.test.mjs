@@ -108,6 +108,47 @@ test("the first completed run is said once; runs are kept as a count and sent as
   assert.deepEqual([0, 1, 10, 11, 100, 101, 5000].map(runsRange), ["0", "1-10", "1-10", "11-100", "11-100", "101+", "101+"]);
 });
 
+test("a first run that completes during the notice's start is held: said at the next start, or after that start's first heartbeat, never before", async () => {
+  // The next start says it, after server_started, once.
+  const data = await scratch();
+  const r = receiver();
+  const first = start(data, r);
+  assert.equal(first.notice, TELEMETRY_NOTICE);
+  first.runEnded("ended");
+  first.runEnded("ended");
+  await first.close();
+  assert.deepEqual(r.got, []);
+  assert.equal(JSON.parse(await readFile(join(data, TELEMETRY_FILE), "utf8")).first_run_held, true);
+  await start(data, r).close();
+  assert.deepEqual(r.got.map(({ body }) => [body.event, body.properties.runs]), [["server_started", "1-10"], ["first_run_completed", "1-10"]]);
+  const kept = JSON.parse(await readFile(join(data, TELEMETRY_FILE), "utf8"));
+  assert.equal(kept.first_run_sent, true);
+  assert.equal(kept.first_run_held, undefined);
+  const later = start(data, r);
+  later.runEnded("ended");
+  await later.close();
+  assert.deepEqual(r.got.slice(2).map(({ body }) => body.event), ["server_started"]);
+
+  // A notice's start left running says it after its first heartbeat; a run completing after that is said at once.
+  const up = await scratch();
+  const u = receiver();
+  const running = start(up, u, { heartbeatMs: 40 });
+  running.runEnded("ended");
+  await wait(10);
+  assert.deepEqual(u.got, []);
+  await wait(80);
+  await running.close();
+  assert.deepEqual(u.got.slice(0, 2).map(({ body }) => body.event), ["heartbeat", "first_run_completed"]);
+  assert.equal(u.got.filter(({ body }) => body.event === "first_run_completed").length, 1);
+  const fresh = await scratch();
+  const f = receiver();
+  const past = start(fresh, f, { heartbeatMs: 20 });
+  await wait(50);
+  past.runEnded("ended");
+  await past.close();
+  assert.equal(f.got.at(-1).body.event, "first_run_completed");
+});
+
 test("debug prints each event at every start and sends none", async () => {
   const data = await scratch();
   const r = receiver();

@@ -266,6 +266,17 @@ else
   [ "$(systemctl --user is-enabled "$target")" = enabled ] || die "the unit is not enabled, so it would not start at login or boot"
   systemctl --user status "$target" --no-pager | head -n 5
 fi
+# Under CI the service this checkout's launcher installs sends no usage counts (docs/telemetry.md): the service never
+# sees CI, so the install writes AGENTRUN_TELEMETRY=0 into it. A published launcher before that change writes none.
+case " $* " in
+  *" --package "*)
+    if [ "$(uname -s)" = Darwin ]; then
+      [ "$(plutil -extract EnvironmentVariables.AGENTRUN_TELEMETRY raw "$HOME/Library/LaunchAgents/ai.agentrun.server.plist")" = 0 ] || die "the LaunchAgent has no AGENTRUN_TELEMETRY=0 under CI"
+    else
+      grep -qx 'Environment=AGENTRUN_TELEMETRY=0' "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/agentrun.service" || die "the unit has no AGENTRUN_TELEMETRY=0 under CI"
+    fi
+    ;;
+esac
 
 step "a new shell, as after closing the terminal: still running"
 bash -c "curl -fsS '$(base)/health'"

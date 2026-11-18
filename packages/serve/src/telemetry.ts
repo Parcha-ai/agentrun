@@ -62,6 +62,8 @@ interface State {
   noticed_at?: string;
   runs: number;
   first_run_sent?: boolean;
+  /** The first run completed during the start that printed the notice: said at the next start or that start's heartbeat. */
+  first_run_held?: boolean;
 }
 
 /** The kept state, or a new one when the file is missing or not what this wrote. */
@@ -74,6 +76,7 @@ function readState(file: string): State {
         runs: typeof kept.runs === "number" && Number.isInteger(kept.runs) && kept.runs >= 0 ? kept.runs : 0,
         ...(typeof kept.noticed_at === "string" ? { noticed_at: kept.noticed_at } : {}),
         ...(kept.first_run_sent === true ? { first_run_sent: true } : {}),
+        ...(kept.first_run_held === true ? { first_run_held: true } : {}),
       };
     }
   } catch {
@@ -179,9 +182,26 @@ export function startTelemetry(o: TelemetryOptions): Telemetry {
     );
   };
 
-  if (!first) emit("server_started");
+  // The start that printed the notice sends nothing until its first heartbeat, a day later: a first run that completes
+  // before then is kept as held and said with that heartbeat, or at the next start, whichever comes first.
+  let holding = first;
+  const sayHeld = (): void => {
+    if (!state.first_run_held || state.first_run_sent) return;
+    state.first_run_sent = true;
+    delete state.first_run_held;
+    keepLater();
+    emit("first_run_completed");
+  };
+  if (!first) {
+    emit("server_started");
+    sayHeld();
+  }
   // A server that stays up is counted by its heartbeat, the first start's too: a day after the notice.
-  const beat = setInterval(() => emit("heartbeat"), o.heartbeatMs ?? HEARTBEAT_MS);
+  const beat = setInterval(() => {
+    holding = false;
+    emit("heartbeat");
+    sayHeld();
+  }, o.heartbeatMs ?? HEARTBEAT_MS);
   beat.unref();
 
   return {
@@ -189,10 +209,12 @@ export function startTelemetry(o: TelemetryOptions): Telemetry {
     ...(first ? { notice: TELEMETRY_NOTICE } : {}),
     runEnded(status) {
       state.runs += 1;
-      const completed = status === "ended" && !state.first_run_sent;
-      if (completed) state.first_run_sent = true;
+      const completed = status === "ended" && !state.first_run_sent && !state.first_run_held;
+      const held = completed && holding;
+      if (held) state.first_run_held = true;
+      else if (completed) state.first_run_sent = true;
       keepLater();
-      if (completed) emit("first_run_completed");
+      if (completed && !held) emit("first_run_completed");
     },
     close: () => (clearInterval(beat), writing ?? Promise.resolve()),
   };

@@ -18,7 +18,8 @@ name="agentrun-image-smoke-$$"
 loopback=127.0.0.1
 cleanup() { docker rm -f -v "$name" >/dev/null 2>&1 || true; }
 trap cleanup EXIT INT TERM
-docker run -d --name "$name" -p "$loopback::7340" "$@" "$image" >/dev/null
+# A smoke's server is ours: it sends no usage counts (docs/telemetry.md), unless the arguments say otherwise.
+docker run -d --name "$name" -p "$loopback::7340" -e AGENTRUN_TELEMETRY=0 "$@" "$image" >/dev/null
 port=$(docker port "$name" 7340/tcp | sed -n "s/^$loopback:\([0-9][0-9]*\)\$/\1/p" | head -n 1)
 [ -n "$port" ] || { echo "image smoke: no loopback port for $name" >&2; exit 1; }
 if ! node - "http://$loopback:$port" "${IMAGE_SMOKE_WAIT_S:-60}" "${IMAGE_SMOKE_CODEX:-}" <<'EOF'

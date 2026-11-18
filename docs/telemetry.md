@@ -18,6 +18,12 @@ DO_NOT_TRACK=1
 
 With `npx @parcha/agentrun`, set it in the shell. In a container, set it in the service's environment.
 
+- Installed as a service: the service never sees your shell, so give the setting to the install, which writes it into
+  the service: `curl -fsSL https://agentrun.ai/install | AGENTRUN_TELEMETRY=0 sh`. On a service already installed:
+  `agentrun service install --env AGENTRUN_TELEMETRY=0`.
+- On a server set up with `--vps`: `curl -fsSL https://agentrun.ai/install | AGENTRUN_TELEMETRY=0 sh -s -- --vps`, or
+  add `AGENTRUN_TELEMETRY=0` to `/opt/agentrun/.env` and run the installer again.
+
 It is also off, with nothing to set:
 
 - in CI (`CI` is set)
@@ -41,10 +47,11 @@ the notice: the first start that can send after it still prints the notice and s
 | --- | --- |
 | `server_started` | The server starts, from its second start on |
 | `heartbeat` | Every 24 hours while the server runs |
-| `first_run_completed` | Once per data directory, when its first run completes |
+| `first_run_completed` | Once per data directory, when its first run completes (held at the notice's start: see below) |
 
-The start that first could send prints a notice on stderr and sends nothing at that start. A server left running sends
-its first heartbeat 24 hours after the notice.
+The start that first could send prints a notice on stderr and sends nothing until its first heartbeat, 24 hours
+later. A first run that completes before then is said with that heartbeat, or at the next start, whichever comes
+first.
 
 ## What an event holds
 

@@ -41,7 +41,9 @@ first stops the AgentRun it started in the background itself, whatever version t
 as Ollama's, `agentrun service install --env AGENT_MODEL_BASE_URL=<its /v1 address> --env AGENT_MODEL_GATEWAY_IDS=bare --env
 AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0` writes those variables into the
 service and restarts it. They stay through restarts, upgrades and later installs, and `--env KEY=` removes one. `--env`
-takes those four names alone: model keys go in the console, never in a service file. On Linux, a user's
+takes those four names and the usage counts' two switches alone: model keys go in the console, never in a service file.
+The service never sees the shell that installed it, so `AGENTRUN_TELEMETRY` or `DO_NOT_TRACK` set there is written into
+it, and under `CI` it gets `AGENTRUN_TELEMETRY=0` ([anonymous usage counts](../../docs/telemetry.md)). On Linux, a user's
 services stop at logout unless lingering is on: `install` and `status` print the one `sudo loginctl enable-linger` line
 when it is off. To remove AgentRun, run `agentrun service uninstall`, then delete `~/.agentrun/bin`, `~/.agentrun/lib`,
 `~/.agentrun/node` and the `PATH` line; the rest of `~/.agentrun` is your data.

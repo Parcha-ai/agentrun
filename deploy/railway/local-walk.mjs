@@ -57,7 +57,8 @@ async function main() {
   const mountPath = Object.values(service.volumeMounts)[0].mountPath;
   const base = `https://${DOMAIN}`;
   try {
-    const env = renderVariables(service, { domain: DOMAIN });
+    // The walk's server is ours: it sends no usage counts (docs/telemetry.md). The template itself leaves them on.
+    const env = { ...renderVariables(service, { domain: DOMAIN }), AGENTRUN_TELEMETRY: "0" };
     const envFile = join(work, "env");
     writeFileSync(envFile, Object.entries(env).map(([k, v]) => `${k}=${v}\n`).join(""), { mode: 0o600 });
     const have = () => { try { return docker("image", "inspect", "-f", "{{.Id}}", image); } catch { return ""; } };

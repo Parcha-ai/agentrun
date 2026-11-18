@@ -113,6 +113,11 @@ export const unitEnv = (text) =>
 /** The variables `service install --env` sets: a local model's (AGENT_MODEL_BASE_URL in front of a gateway such as
  *  Ollama's). Never a key: a unit file is plain text, and keys are sealed in the console. */
 export const MODEL_ENV = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_GATEWAY_IDS", "AGENT_MODEL", "AGENT_MODEL_PRICE"];
+/** The usage counts' switches (docs/telemetry.md). A service never sees the shell that installed it, so `service install`
+ *  writes these into it as that shell set them, and AGENTRUN_TELEMETRY=0 when it runs under CI. `--env` sets them too. */
+export const TELEMETRY_ENV = ["AGENTRUN_TELEMETRY", "DO_NOT_TRACK"];
+/** Everything `--env` may set, and what an installed service keeps through a re-install. */
+const SERVICE_ENV = [...MODEL_ENV, ...TELEMETRY_ENV];
 
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
@@ -312,7 +317,7 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
         const at = pair.indexOf("=");
         if (at < 1) throw fail(2, `--env takes KEY=VALUE, not ${pair}.`);
         const key = pair.slice(0, at);
-        if (!MODEL_ENV.includes(key)) throw fail(2, `--env takes ${MODEL_ENV.slice(0, -1).join(", ")} or ${MODEL_ENV.at(-1)}, not ${key}: a key goes in the console (Settings → Model keys), never in a service file.`);
+        if (!SERVICE_ENV.includes(key)) throw fail(2, `--env takes ${SERVICE_ENV.slice(0, -1).join(", ")} or ${SERVICE_ENV.at(-1)}, not ${key}: a key goes in the console (Settings → Model keys), never in a service file.`);
         if (/[\0-\x1f]/.test(pair)) throw fail(2, `${key}'s value has a line break or another control character.`);
         return [key, pair.slice(at + 1)];
       });
@@ -320,8 +325,11 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
       if (!existsSync(program)) throw fail(1, `AgentRun's service runs the installed command, ${program}, and it is not there. Install it first: ${INSTALL_COMMAND}`);
       const why = manager.available();
       if (why !== undefined) throw fail(1, `AgentRun can't run as a service here: ${why}. Start it in a terminal with ${program}.`);
-      // An installed service keeps its local model's variables; --env KEY=VALUE sets one, KEY= removes it.
-      const model = installed() ? Object.fromEntries(Object.entries(manager.env(readFileSync(manager.file, "utf8"))).filter(([key]) => MODEL_ENV.includes(key))) : {};
+      // An installed service keeps its local model's variables and its usage counts' switches; the switches set in this
+      // shell reach it (and under CI, AGENTRUN_TELEMETRY=0), then --env KEY=VALUE sets one and KEY= removes it.
+      const model = installed() ? Object.fromEntries(Object.entries(manager.env(readFileSync(manager.file, "utf8"))).filter(([key]) => SERVICE_ENV.includes(key))) : {};
+      for (const key of TELEMETRY_ENV) if ((env[key] ?? "") !== "" && !/[\0-\x1f]/.test(env[key])) model[key] = env[key];
+      if (env.CI && model.AGENTRUN_TELEMETRY === undefined) model.AGENTRUN_TELEMETRY = "0";
       for (const [key, value] of changes) {
         if (value === "") delete model[key];
         else model[key] = value;
@@ -489,7 +497,7 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
 }
 
 const VERBS = [
-  ["install", "Install AgentRun as a service of this user and start it: it keeps running after the terminal closes and starts again at login", [["--port N", "the port to listen on (default: the first free from 7340; 7340 with --tailscale)"], ["--data DIR", "the data directory (default ~/.agentrun)"], ["--tailscale", "also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off"], ["--env KEY=VALUE", `a local model's variable for the server (${MODEL_ENV.join(", ")}), kept until KEY= removes it; repeatable`]], { port: { type: "string" }, tailscale: { type: "boolean" }, env: { type: "string", multiple: true } }],
+  ["install", "Install AgentRun as a service of this user and start it: it keeps running after the terminal closes and starts again at login", [["--port N", "the port to listen on (default: the first free from 7340; 7340 with --tailscale)"], ["--data DIR", "the data directory (default ~/.agentrun)"], ["--tailscale", "also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off"], ["--env KEY=VALUE", `a local model's variable for the server (${MODEL_ENV.join(", ")}), or the usage counts' switch (${TELEMETRY_ENV.join(", ")}), kept until KEY= removes it; repeatable`]], { port: { type: "string" }, tailscale: { type: "boolean" }, env: { type: "string", multiple: true } }],
   ["status", "Say whether the service is installed and running, the console's address and its health (exit 0 healthy, 1 not, 3 not installed)", [], {}],
   ["start", "Start the service and wait until it answers", [], {}],
   ["stop", "Stop the service (it starts again at the next login)", [], {}],

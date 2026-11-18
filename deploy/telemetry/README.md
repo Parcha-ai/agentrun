@@ -12,14 +12,16 @@ It also checks that `wrangler.json`'s key and route match the server's `TELEMETR
 
 ## Deploy
 
-From this folder, signed in to the Cloudflare account that holds the agentrun.ai zone:
+From `deploy/telemetry`, signed in to the Cloudflare account that holds the agentrun.ai zone (`npx wrangler@4.164.0 login`
+first if not), one line:
 
 ```sh
-npx wrangler deploy
+npx wrangler@4.164.0 deploy
 ```
 
-The `custom_domain` route makes the `telemetry.agentrun.ai` record and its certificate. That's the one write on the zone.
-Workers Free covers it: each server sends one or two events a day.
+The `custom_domain` route makes the `telemetry.agentrun.ai` record and its certificate: the one write on the zone. With
+more than one account on the login, wrangler asks which. Workers Free covers it: each server sends one or two events a
+day. `npx wrangler@4.164.0 deploy --dry-run --outdir /tmp/agentrun-telemetry` bundles it and writes nothing anywhere.
 
 Check it: `curl -s -o /dev/null -w '%{http_code}\n' https://telemetry.agentrun.ai/` answers 404, and a GET of
-`/i/v0/e/` answers 405.
+`https://telemetry.agentrun.ai/i/v0/e/` answers 405.
