@@ -261,15 +261,13 @@ export function costSplit(spans: readonly TraceSpan[]): { parts: { name: string;
   return known ? { parts, total } : null;
 }
 
-/** The longest head of a call's arguments two calls are compared by: the served Timeline cuts one at 500 characters. */
-const REPEAT_HEAD_MAX = 480;
-
 /** One thing about the run worth a look, with the span it is about. */
 export type Finding = { id: string; title: string; detail: string; span?: string; bad?: boolean };
 /** What stands out in a trace, most pressing first: what failed, the call and the request that took the longest, the
  *  request that cost the most, how much input came from cache, a request that read none of it after the cache was
- *  written, calls repeated with the same arguments, the largest result (it becomes input to every request after it),
- *  and time spent between calls. Each is a figure of the trace, never advice. */
+ *  written, the largest result (it becomes input to every request after it), and time spent between calls. (Calls
+ *  repeated with the same arguments are not found: the trace keeps one field of a call's arguments, not all of them.)
+ *  Each is a figure of the trace, never advice. */
 export function findings(trace: Pick<RunTrace, "spans" | "model_requests">, now: number): Finding[] {
   const { spans } = trace;
   const totals = traceTotals(trace, now);
@@ -299,22 +297,12 @@ export function findings(trace: Pick<RunTrace, "spans" | "model_requests">, now:
   const sized = [...spans].filter((s) => s.kind === "model" && s.tokens).sort((a, b) => at(a.started_at) - at(b.started_at));
   const fresh = sized.find((s, i) => s.tokens!.cache_read === 0 && inputTokens(s.tokens!) > 0 && sized.slice(0, i).some((earlier) => earlier.name === s.name && earlier.tokens!.cache_write + earlier.tokens!.cache_read > 0));
   if (fresh) out.push({ id: "cache-reset", span: fresh.id, title: `A request read nothing from cache at ${offset(at(fresh.started_at) - traceWindow(spans, now).from)}`, detail: `Earlier requests to ${fresh.name} wrote to the cache. This one sent its whole input fresh: ${inputTokens(fresh.tokens!).toLocaleString("en-US")} tokens.` });
-  // Calls to one tool whose arguments are the same, by the head the trace keeps (a head cut at its limit may hide a
-  // difference, so one that long is not compared). Three or more: a call made twice is often a check before and after
-  // a change. The tool and arguments called most often.
-  const same = new Map<string, TraceSpan[]>();
-  for (const s of spans) if (s.kind === "tool" && s.input_preview && s.input_preview.length < REPEAT_HEAD_MAX) same.set(`${s.name}\n${s.input_preview}`, [...(same.get(`${s.name}\n${s.input_preview}`) ?? []), s]);
-  const repeated = [...same.values()].filter((group) => group.length > 2).sort((a, b) => b.length - a.length)[0];
-  if (repeated) out.push({ id: "repeated", span: repeated[1]!.id, title: `${repeated.length} calls to ${repeated[0]!.name} had the same arguments`, detail: `${repeated[0]!.input_preview!.length > 90 ? `${repeated[0]!.input_preview!.slice(0, 90)}…` : repeated[0]!.input_preview!}${repeated.some((s) => s.status === "failed") ? ` · ${repeated.filter((s) => s.status === "failed").length} failed` : ""}` });
   const largest = spans.filter((s) => s.kind === "tool" && (s.result_size_bytes ?? 0) >= 8 * 1024).sort((a, b) => b.result_size_bytes! - a.result_size_bytes!)[0];
   if (largest) out.push({ id: "largest", span: largest.id, title: `Largest result: ${largest.name}`, detail: `${Math.round(largest.result_size_bytes! / 1024).toLocaleString("en-US")} KB, which is input to every request after it.` });
   if (totals.time.wall > 0 && totals.time.other / totals.time.wall >= 0.25) out.push({ id: "between", title: `${percent(totals.time.other / totals.time.wall)} of the run was between calls`, detail: `${duration(totals.time.other)} with no model answering and no tool running: waiting for a person or its turn, or the harness working.` });
   if (totals.cost.charges.unknown > 0) out.push({ id: "unknown-charges", title: `${totals.cost.charges.unknown} charge${totals.cost.charges.unknown === 1 ? "" : "s"} of an unknown amount`, detail: "The run's cost is unknown until each is priced." });
   return out;
 }
-
-/** Whether two spans are of one conversation, as far as the trace says: the run's own, or one subagent's. */
-const together = (a: TraceSpan, b: TraceSpan) => (a.agent_label ?? null) === (b.agent_label ?? null);
 
 /** A span's time in three parts, as a browser's network panel splits a request's: what it waited before it started,
  *  how long it ran, and how long what came next took to start. Each part is a difference of two times the trace
@@ -323,19 +311,37 @@ const together = (a: TraceSpan, b: TraceSpan) => (a.agent_label ?? null) === (b.
  *    conversation started. (Time held for a person's approval is in the wait where the trace knows how long the call
  *    itself ran, and in the call's own time where it does not.)
  *  - A model request waited from the end of the last thing of its conversation before it, and after it its first call
- *    started. */
+ *    started.
+ *  Two of the parts name a span by `parent_id` and are exact. The other two (a call's next request, what a request
+ *  waited on) need to know which spans are of one conversation. The trace says that only where each request is a
+ *  span of a pi run (`priced`): a subagent's requests name the call that started it, the run's own name none, and a
+ *  call is of the conversation of the request it ran under. A workflow's nodes are conversations the trace does not
+ *  tell apart, so there those two parts are left out, never guessed. */
 export type Timing = { before: { ms: number; since: TraceSpan } | null; ran: number | null; then: { ms: number; until: TraceSpan } | null };
-export function timing(span: TraceSpan, spans: readonly TraceSpan[], now: number): Timing {
+export function timing(span: TraceSpan, trace: Pick<RunTrace, "spans" | "model_requests">, now: number): Timing {
+  const { spans } = trace;
+  const byId = new Map(spans.map((s) => [s.id, s]));
+  /** A span's conversation: the call that started it ("" for the run's own), read off the request it is or ran under.
+   *  Null where the trace does not say. */
+  const conversation = (s: TraceSpan): string | null => {
+    if (trace.model_requests !== "priced") return null;
+    let top: TraceSpan | undefined = s;
+    for (let up = 0; top?.kind === "tool" && up < 8; up++) top = top.parent_id ? byId.get(top.parent_id) : undefined;
+    return top?.kind === "model" && !top.decision ? top.parent_id ?? "" : null;
+  };
+  const own = conversation(span);
+  const together = (s: TraceSpan) => own !== null && conversation(s) === own;
   const start = at(span.started_at);
   const end = span.ended_at ? at(span.ended_at) : null;
   const ended = (s: TraceSpan) => (s.ended_at ? at(s.ended_at) : null);
   let since: TraceSpan | undefined;
   let until: TraceSpan | undefined;
   if (span.kind === "tool") {
-    since = span.parent_id ? spans.find((s) => s.id === span.parent_id && ended(s) !== null && ended(s)! <= start) : undefined;
-    if (end !== null) until = spans.filter((s) => s.kind === "model" && s.id !== span.parent_id && together(s, span) && at(s.started_at) >= end).sort((a, b) => at(a.started_at) - at(b.started_at))[0];
+    const parent = span.parent_id ? byId.get(span.parent_id) : undefined;
+    since = parent && ended(parent) !== null && ended(parent)! <= start ? parent : undefined;
+    if (end !== null) until = spans.filter((s) => s.kind === "model" && s.id !== span.parent_id && together(s) && at(s.started_at) >= end).sort((a, b) => at(a.started_at) - at(b.started_at))[0];
   } else {
-    since = spans.filter((s) => s.id !== span.id && together(s, span) && ended(s) !== null && ended(s)! <= start).sort((a, b) => ended(b)! - ended(a)!)[0];
+    since = spans.filter((s) => s.id !== span.id && together(s) && ended(s) !== null && ended(s)! <= start).sort((a, b) => ended(b)! - ended(a)!)[0];
     if (end !== null) until = spans.filter((s) => s.parent_id === span.id && at(s.started_at) >= end).sort((a, b) => at(a.started_at) - at(b.started_at))[0];
   }
   return {
@@ -345,7 +351,8 @@ export function timing(span: TraceSpan, spans: readonly TraceSpan[], now: number
   };
 }
 
-/** The figures every run has, so one run reads against another: how soon it first answered and first acted, the most
+/** The figures every run has, so one run reads against another: how soon a model first answered (a request that
+ *  failed is no answer) and it first acted, the most
  *  it sent a model at once, how many calls it ran side by side, and its longest pause. Each is read off the trace; one
  *  the trace cannot say is null. `at`: ms since the trace began. */
 export type Vitals = {
@@ -360,7 +367,8 @@ export function vitals(spans: readonly TraceSpan[], now: number): Vitals {
   const started = [...spans].sort((a, b) => at(a.started_at) - at(b.started_at));
   const requests = started.filter((s) => s.kind === "model");
   const calls = started.filter((s) => s.kind === "tool");
-  const answered = requests.filter((s) => s.ended_at).sort((a, b) => at(a.ended_at!) - at(b.ended_at!))[0];
+  // A request that failed or was cut has an end and no answer: the first answer is the first that ended well.
+  const answered = requests.filter((s) => s.ended_at && s.status === "ok").sort((a, b) => at(a.ended_at!) - at(b.ended_at!))[0];
   const sized = requests.filter((s) => s.tokens);
   const largest = [...sized].sort((a, b) => inputTokens(b.tokens!) - inputTokens(a.tokens!))[0];
   // Calls side by side: each start adds one and each end takes one, an end before a start at the same moment.

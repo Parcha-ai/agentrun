@@ -91,24 +91,42 @@ describe("the part of the run the table's time axis shows", () => {
 
 describe("a span's time in three parts", () => {
   it("a tool call: from its request's answer to its start, its run, and to the next request's start", () => {
-    const t = timing(span("t:0:call_08"), TRACE.spans, TRACE_END);
+    const t = timing(span("t:0:call_08"), TRACE, TRACE_END);
     expect([t.before!.ms, t.before!.since.id, t.ran, t.then!.ms, t.then!.until.id]).toEqual([200, "m:0:16", 12_400, 200, "m:0:19"]);
   });
   it("a model request: from the end of the last thing before it, its answer, and to its first call's start", () => {
     // The second request started at 14.9 s: the slowest of the three searches ended at 14.6 s. Its fetches began at 18.0 s, 200 ms after its answer.
-    const t = timing(span("m:0:9"), TRACE.spans, TRACE_END);
+    const t = timing(span("m:0:9"), TRACE, TRACE_END);
     expect([t.before!.ms, t.before!.since.id, t.ran, t.then!.ms, t.then!.until.tool_use_id]).toEqual([300, "t:0:call_03", 2900, 200, "call_05"]);
   });
   it("a part the trace cannot say is left out: nothing before the first request, nothing after the last, no next for a call still going", () => {
-    expect(timing(span("m:0:2"), TRACE.spans, TRACE_END).before).toBeNull();
-    expect(timing(span("m:0:40"), TRACE.spans, TRACE_END).then).toBeNull();
+    expect(timing(span("m:0:2"), TRACE, TRACE_END).before).toBeNull();
+    expect(timing(span("m:0:40"), TRACE, TRACE_END).then).toBeNull();
     const waiting = TRACE_LIVE.spans.find((s) => s.status === "waiting")!;
-    const t = timing(waiting, TRACE_LIVE.spans, TRACE_LIVE_NOW);
+    const t = timing(waiting, TRACE_LIVE, TRACE_LIVE_NOW);
     expect([t.before!.ms, t.ran, t.then]).toEqual([400, 11_400, null]);
   });
-  it("a subagent's spans are not read against the run's own", () => {
-    const sub = { ...span("m:0:9"), id: "m:1:1", agent_label: "researcher" };
-    expect(timing(sub, [...TRACE.spans, sub], TRACE_END).before).toBeNull();
+  it("a subagent's spans are not read against the run's own, whatever label they carry: its requests name the call that started it", () => {
+    // A subagent the fourth call started, with no label, as the run's own spans have none: one request from 9.0 s to
+    // 10.0 s, a call of its own, and a second request. They overlap the run's own searches (8.5 s to 14.6 s).
+    const sub = (id: string, from: number, to: number, more: Partial<TraceSpan>): TraceSpan => ({ ...span("m:0:9"), id, agent_label: null, started_at: new Date(TRACE_START + from).toISOString(), ended_at: new Date(TRACE_START + to).toISOString(), ...more });
+    const [first, call, second] = [sub("m:1:1", 9000, 10_000, { parent_id: "t:0:call_04" }), sub("t:1:x", 10_100, 10_400, { kind: "tool", name: "read", parent_id: "m:1:1", tokens: null, usd: null }), sub("m:1:2", 10_500, 11_000, { parent_id: "t:0:call_04" })];
+    const trace = { ...TRACE, spans: [...TRACE.spans, first, call, second] };
+    // The subagent's first request waited on nothing of its own conversation: not on the run's skill call, which ended at 8.404 s.
+    expect(timing(first, trace, TRACE_END).before).toBeNull();
+    // Its call's next request is the subagent's second, 100 ms on: not the run's own at 14.9 s.
+    expect([timing(call, trace, TRACE_END).then!.ms, timing(call, trace, TRACE_END).then!.until.id]).toEqual([100, "m:1:2"]);
+    expect([timing(second, trace, TRACE_END).before!.ms, timing(second, trace, TRACE_END).before!.since.id]).toEqual([100, "t:1:x"]);
+    // And the run's own second request still waited on its own slowest search, not on the subagent's request that ended at 11.0 s.
+    expect(timing(span("m:0:9"), trace, TRACE_END).before!.since.id).toBe("t:0:call_03");
+  });
+  it("where the trace does not tell conversations apart (a workflow's nodes), the two parts that need it are left out", () => {
+    const flow = { ...TRACE, model_requests: "tokens_only" as const };
+    // The exact parts stay: a call's wait since its own request's answer, and a request's first call.
+    const call = timing(span("t:0:call_08"), flow, TRACE_END);
+    expect([call.before!.since.id, call.then]).toEqual(["m:0:16", null]);
+    const request = timing(span("m:0:9"), flow, TRACE_END);
+    expect([request.before, request.then!.until.tool_use_id]).toEqual([null, "call_05"]);
   });
 });
 
@@ -130,6 +148,13 @@ describe("the figures every run has", () => {
     expect([v.firstAnswer, v.largestInput, v.longestPause]).toEqual([null, null, null]);
     expect(v.atOnce).toEqual({ calls: 1, at: 0 });
     expect(vitals([], TRACE_END)).toEqual({ firstAnswer: null, firstCall: null, largestInput: null, atOnce: null, longestPause: null });
+  });
+  it("a request that failed is no answer: the first answer is the first request that ended well", () => {
+    // The first request failed at 8.2 s; the second answered at 17.8 s, 14.4 s after the window's start.
+    const spans = TRACE.spans.map((s) => (s.id === "m:0:2" ? { ...s, status: "failed" as const } : s));
+    const v = vitals(spans, TRACE_END);
+    expect([v.firstAnswer!.ms, v.firstAnswer!.span.id]).toEqual([14_400, "m:0:9"]);
+    expect(vitals(spans.filter((s) => s.id === "m:0:2"), TRACE_END).firstAnswer).toBeNull();
   });
 });
 
@@ -237,17 +262,10 @@ describe("what stands out in how a run used its cache and its tools", () => {
     // The run's first request reads nothing from cache and is not one: nothing was written before it.
     expect(findings(TRACE, TRACE_END).some((f) => f.id === "cache-reset")).toBe(false);
   });
-  it("three or more calls to one tool with the same arguments are said; two are not, and a head too long to compare is left out", () => {
-    const again = (n: number, input: string, more: Partial<TraceSpan> = {}): TraceSpan => ({ ...span("t:0:call_05"), id: `t:0:again_${n}`, tool_use_id: `again_${n}`, input_preview: input, ...more });
-    const url = '{"url":"https://registry.example/companies/NF-204418"}';
-    // The sample fetches that address once; two more fetches of it make three.
-    const thrice = findings({ ...TRACE, spans: [...TRACE.spans, again(1, url), again(2, url, { status: "failed" })] }, TRACE_END).find((f) => f.id === "repeated")!;
-    expect([thrice.title, thrice.detail, thrice.span]).toEqual(["3 calls to web_fetch had the same arguments", `${url} · 1 failed`, "t:0:again_1"]);
-    expect(findings({ ...TRACE, spans: [...TRACE.spans, again(1, url)] }, TRACE_END).some((f) => f.id === "repeated")).toBe(false);
-    // A CLI run that tests, edits and tests again made the same call twice: not a finding.
-    expect(findings(TRACE_CLI, TRACE_END).some((f) => f.id === "repeated")).toBe(false);
-    const long = "x".repeat(480);
-    expect(findings({ ...TRACE, spans: [...TRACE.spans, again(1, long), again(2, long), again(3, long)] }, TRACE_END).some((f) => f.id === "repeated")).toBe(false);
+  it("calls with the same shown arguments are not called repeats: the trace keeps one field of a call's arguments", () => {
+    // Three writes to one path show the same head and may each have written something else.
+    const again = (n: number): TraceSpan => ({ ...span("t:0:call_11"), id: `t:0:again_${n}`, tool_use_id: `again_${n}` });
+    expect(findings({ ...TRACE, spans: [...TRACE.spans, again(1), again(2)] }, TRACE_END).map((f) => f.id)).toEqual(findings(TRACE, TRACE_END).map((f) => f.id));
   });
 });
 

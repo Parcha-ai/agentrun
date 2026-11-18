@@ -188,7 +188,7 @@ function Overview({ marks, view, onView, children }: { marks: { left: number; la
 /** A span's time in three parts (lib/trace `timing`): what it waited before it started, how long it ran, and how long
  *  what came next took to start. Shown where the trace carries a part beside the span's own time. */
 function Timing({ span, trace, now, onPick }: { span: TraceSpan; trace: Trace; now: number; onPick: (id: string) => void }) {
-  const t = useMemo(() => timing(span, trace.spans, now), [span, trace, now]);
+  const t = useMemo(() => timing(span, trace, now), [span, trace, now]);
   if (!t.before && !t.then) return null;
   const model = span.kind === "model";
   const parts: { id: string; word: string; ms: number; tone: string; about?: string; to?: TraceSpan }[] = [
@@ -635,8 +635,10 @@ export function RunTrace({ run, read, version, live, panel, now: fixed, open = n
   };
   const say = (span: TraceSpan) => `${KIND_WORD[span.kind]} ${span.name}, ${STATUS[span.status].word.toLowerCase()}, ${spanMs(span, now) !== null ? duration(spanMs(span, now)!) : "no duration"}, at ${offset(Date.parse(span.started_at) - window.from)}`;
   /** The table is one stop for the keyboard: the arrows, Page Up and Down, Home and End move from row to row. With a
-   *  panel open, it follows the row the keyboard is on, as a browser's network panel does. */
+   *  panel open, it follows the row the keyboard is on, as a browser's network panel does, and Escape closes it. */
   const moveRow = (e: KeyboardEvent<HTMLTableSectionElement>) => {
+    // Escape closes the open panel from the table too: the keyboard is here while the panel follows it.
+    if (e.key === "Escape" && selected) { e.preventDefault(); opener.current = rowButton(stop ?? "") ?? opener.current; close(); return; }
     const step = e.key === "ArrowDown" ? 1 : e.key === "ArrowUp" ? -1 : e.key === "PageDown" ? 10 : e.key === "PageUp" ? -10 : e.key === "Home" ? -listed.length : e.key === "End" ? listed.length : 0;
     if (!step || !listed.length) return;
     e.preventDefault();

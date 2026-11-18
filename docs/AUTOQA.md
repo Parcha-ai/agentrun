@@ -124,7 +124,8 @@ Each row: entry point, then what makes it pass.
     request with `tokens` and `usd`, whose `usd` sum to the run's `cost.usd`, and one `tool` span per call whose
     `parent_id` is the request that made it. In the console the run's Dev tools tab lists the same spans, each with
     its bar on the time axis; a row opens its panel. The table is one stop for the Tab key: the arrow keys move from
-    row to row, Enter opens a row's panel, Tab goes into it and Escape closes it and returns to the row. Zoom in lists
+    row to row, Enter opens a row's panel, Tab goes into it and Escape closes it, from the table or the panel, and
+    returns to the row. Zoom in lists
     only the calls that ran in the part of the run that shows, and says how many.
 
 ## Subsystems

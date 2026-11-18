@@ -251,6 +251,15 @@ describe("the Dev tools tab", () => {
     expect(panel(host)!.querySelector("h2")!.textContent).toBe("write");
     expect(stops()).toHaveLength(1);
     expect(stops()[0]).toBe(document.activeElement);
+    // Escape closes the panel from the table, where the keyboard is, and leaves it on its row.
+    const row = document.activeElement;
+    await key("Escape");
+    expect(panel(host)).toBeNull();
+    expect(document.activeElement).toBe(row);
+    // With no panel open, Escape is not the table's to take.
+    const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    await act(async () => { body.dispatchEvent(escape); });
+    expect(escape.defaultPrevented).toBe(false);
   });
 
   it("a row's name is what it shows, and the cells beside it say how long it took and how it ended", async () => {
