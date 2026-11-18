@@ -11,7 +11,7 @@ import { extname, join, sep } from "node:path";
 import type { Owner } from "./owner.js";
 import { fileURLToPath } from "node:url";
 import { ApiError } from "./errors.js";
-import { hostRefusedPage } from "./host-check.js";
+import { hostRefusedPage, movedPage } from "./host-check.js";
 
 // img-src names Google's favicon service and the four hosts it redirects to: the console's Keys page shows a provider's
 // icon from it (apps/console/src/components/ProviderIcon.tsx), sent with no referrer. Everything else is this origin's.
@@ -94,6 +94,14 @@ function send(req: IncomingMessage, res: ServerResponse, status: number, type: s
 }
 /** A browser's answer for a Host the server refuses (host-check.ts): 403, a fixed page under the console's CSP. */
 export const sendHostRefused = (req: IncomingMessage, res: ServerResponse) => send(req, res, 403, HTML, hostRefusedPage(req.socket.localPort ?? 0));
+/** Whether `raw` is the console's own page, or one of the addresses that send a browser to it (MOVED). */
+export const consoleEntry = (raw: string) => raw === "/" || MOVED.has(raw);
+/** A browser's answer for the console under the server's earlier public address (public-address.ts): 308 to the new one,
+ *  `to`, whose console takes the link's #fragment along (a browser keeps it across a redirect). no-store, so no browser
+ *  keeps the redirect: the address may change back. */
+export const sendMoved = (res: ServerResponse, to: string) => (res.writeHead(308, { ...SECURITY, location: `${to}/`, "content-length": 0 }), void res.end());
+/** A browser's answer for any other page under the earlier public address: 403, a fixed page that links to `to`. */
+export const sendMovedPage = (req: IncomingMessage, res: ServerResponse, to: string) => send(req, res, 403, HTML, movedPage(to));
 const refuse = (req: IncomingMessage, res: ServerResponse, error: ApiError) =>
   send(req, res, error.status, "application/json", JSON.stringify(error.body(String(res.getHeader("x-request-id") ?? ""))), error.headers);
 
