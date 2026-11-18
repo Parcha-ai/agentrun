@@ -6,7 +6,7 @@
 // is 404. A fresh apply (no agent_id) of a template whose same parameters already made a live agent still makes another,
 // with a warning naming the one there.
 import assert from "node:assert/strict";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { agent, scratch, serve } from "./support.mjs";
@@ -39,10 +39,34 @@ ${triggers.length ? `triggers:\n${triggers.join("\n")}\n` : ""}---
 ${instructions}
 `;
 
-/** A templates folder holding digest at `digest` and the plain package `other`. */
-async function templates(t, digest) {
+/** keyed: one credential-named parameter, which the agent's own words never hold. */
+const KEYED = `---
+name: keyed
+version: 1.0.0
+description: Calls a service with the owner's token.
+parameters:
+  api_token: { type: string, description: "the service's token" }
+---
+Call the service with the token you are given.
+`;
+/** shaped 1.0.0: a typed input, a budget and learning; shaped 2.0.0 has none of them. */
+const shaped = (v1) => `---
+name: shaped
+version: ${v1 ? "1.0.0" : "2.0.0"}
+description: Answers about a project.
+${v1 ? `inputs:
+  project: { type: string, description: "the project" }
+budget: { per_run_usd: 0.40 }
+learning: true
+` : ""}---
+Answer about the project.
+`;
+
+/** A templates folder holding digest at `digest`, the plain package `other`, keyed, and shaped (1.0.0, or 2.0.0 with
+ *  `v1` false). */
+async function templates(t, digest, { v1 = true } = {}) {
   const root = join(await scratch(t), "templates");
-  for (const [name, text] of [["digest", manifest(digest)], ["other", manifest({ name: "other", version: "1.0.0" })]]) {
+  for (const [name, text] of [["digest", manifest(digest)], ["other", manifest({ name: "other", version: "1.0.0" })], ["keyed", KEYED], ["shaped", shaped(v1)]]) {
     mkdirSync(join(root, name), { recursive: true });
     writeFileSync(join(root, name, "agent.md"), text);
   }
@@ -51,10 +75,33 @@ async function templates(t, digest) {
 
 /** A server serving digest 0.1.0 and other, with no runner; every feed URL answered by an empty fake feed, so nothing
  *  reaches GitHub. */
-async function served(t) {
+async function served(t, extra = {}) {
   const quiet = await feed(t, { format: "json-list", items: [] });
-  return serve(t, { templates: await templates(t, V1), runner: false, feedsAt: () => quiet.url });
+  return serve(t, { templates: await templates(t, V1), runner: false, feedsAt: () => quiet.url, ...extra });
 }
+
+/** Every file under `dir`, recursively. */
+const filesUnder = (dir) => readdirSync(dir).flatMap((name) => {
+  const path = join(dir, name);
+  return statSync(path).isDirectory() ? filesUnder(path) : [path];
+});
+
+/** A hold on the first update's read of its agent (ServeOptions templateApplyRead): `held` settles once the update has
+ *  read the agent and waits there, `release` lets it go on. */
+function readHold() {
+  let release, held;
+  const gate = new Promise((resolve) => (release = resolve));
+  const reached = new Promise((resolve) => (held = resolve));
+  let armed = true;
+  const seam = async () => {
+    if (!armed) return;
+    armed = false;
+    held();
+    await gate;
+  };
+  return { seam, reached, release: () => release() };
+}
+const after = (ms, value) => new Promise((resolve) => setTimeout(() => resolve(value), ms));
 
 /** A fresh apply of `name`: 201, its answer. */
 async function applied(api, name, body) {
@@ -180,4 +227,100 @@ test("a fresh apply of a template whose same parameters already made a live agen
   const third = await applied(api, "digest", { parameters: { topic: "cats" } });
   const named = third.warnings.filter((w) => w.field === "agent_id").map((w) => [w.message.includes(first.agent_id), w.message.includes(second.agent_id)]);
   assert.deepEqual(named, [[false, true]], "an archived one is not live: only the second is named");
+});
+
+test("an apply keeps no parameter in the store, only a keyed digest of them, and the duplicate warning still tells equal parameters from different ones", { timeout: 60_000 }, async (t) => {
+  const server = await served(t);
+  const { api } = server;
+  const token = `tok-${"7f3a".repeat(8)}`;
+  const first = await applied(api, "keyed", { parameters: { api_token: token } });
+  const twin = await applied(api, "keyed", { parameters: { api_token: token } });
+  assert.deepEqual(twin.warnings.filter((w) => w.field === "agent_id").map((w) => w.message.includes(first.agent_id)), [true], "the same parameters: the warning names the agent there");
+  const other = await applied(api, "keyed", { parameters: { api_token: `tok-${"9c1d".repeat(8)}` } });
+  assert.deepEqual(other.warnings.filter((w) => w.field === "agent_id"), [], "another token: no warning");
+  const [row] = await server.store.agents.revisions(first.agent_id);
+  assert.equal(row.package.parameters, undefined, `the revision keeps no parameter: ${JSON.stringify(row.package)}`);
+  assert.match(row.package.parameters_digest ?? "", /^[A-Za-z0-9_-]{43}$/, "it keeps a digest of them");
+  const holding = filesUnder(server.data).filter((path) => readFileSync(path).includes(token));
+  assert.deepEqual(holding, [], "no file under the data directory holds the token");
+});
+
+test("an update replaces what the package owns: an input schema, a budget and learning the new version drops are gone from the agent", { timeout: 90_000 }, async (t) => {
+  const quiet = await feed(t, { format: "json-list", items: [] });
+  const first = await serve(t, { templates: await templates(t, V1), runner: false, feedsAt: () => quiet.url });
+  const made = await applied(first.api, "shaped", { parameters: {} });
+  const before = (await first.api("GET", `/agents/${made.agent_id}`)).body.definition;
+  assert.ok(before.input_schema && before.max_cost_usd === 0.4 && before.learning === true, `1.0.0 has them: ${JSON.stringify(before)}`);
+  await first.stop();
+  const second = await serve(t, { data: first.data, templates: await templates(t, V1, { v1: false }), runner: false, feedsAt: () => quiet.url });
+  await updated(second.api, "shaped", { parameters: {}, agent_id: made.agent_id }, "an apply with agent_id updates the agent");
+  const now = (await second.api("GET", `/agents/${made.agent_id}`)).body.definition;
+  assert.deepEqual([now.input_schema, now.max_cost_usd, now.learning], [undefined, undefined, undefined], `2.0.0 drops the input schema, the budget and learning, and the agent has none of them: ${JSON.stringify(now)}`);
+});
+
+test("a dropped trigger whose removal failed is removed by the next update", { timeout: 120_000 }, async (t) => {
+  const quiet = await feed(t, { format: "json-list", items: [] });
+  const first = await serve(t, { templates: await templates(t, V1), runner: false, feedsAt: () => quiet.url });
+  const made = await applied(first.api, "digest", { parameters: { topic: "cats" } });
+  const daily = (await triggersOf(first.api, made.agent_id)).daily;
+  await first.stop();
+  // A second handle on the store for the trigger engine, whose first removal fails before it removes anything.
+  const { openSqliteStore } = await import("../dist/store/index.js");
+  const store = await openSqliteStore({ dataDir: first.data, role: "runner" });
+  t.after(() => store.close().catch(() => {}));
+  let failNext = true;
+  const triggers = new Proxy(store.triggers, {
+    get(target, name) {
+      const value = Reflect.get(target, name, target);
+      if (typeof value !== "function") return value;
+      if (name !== "remove") return value.bind(target);
+      return async (...args) => {
+        if (failNext) {
+          failNext = false;
+          throw new Error("the store failed the removal");
+        }
+        return value.apply(target, args);
+      };
+    },
+  });
+  const second = await serve(t, { data: first.data, templates: await templates(t, V2), runner: false, feedsAt: () => quiet.url, store: { agents: store.agents, runs: store.runs, triggers } });
+  const failed = await second.api("POST", "/templates/digest/apply", { parameters: { topic: "cats" }, agent_id: made.agent_id });
+  assert.ok(failed.status >= 500, `the removal failed, and the update with it: ${failed.status} ${JSON.stringify(failed.body)}`);
+  assert.equal((await second.api("GET", `/triggers/${daily.id}`)).status, 200, "daily outlived the failed removal");
+  await updated(second.api, "digest", { parameters: { topic: "cats" }, agent_id: made.agent_id }, "the update again");
+  assert.equal((await second.api("GET", `/triggers/${daily.id}`)).status, 404, "the retry removes daily, which the package dropped");
+  assert.deepEqual(Object.keys(await triggersOf(second.api, made.agent_id)).sort(), ["new-pr", "weekly"]);
+});
+
+test("overlapping updates of one agent run one after the other: the second waits, and the agent ends with one apply's revision and that apply's triggers", { timeout: 90_000 }, async (t) => {
+  const hold = readHold();
+  const { api } = await served(t, { templateApplyRead: hold.seam });
+  const made = await applied(api, "digest", { parameters: { topic: "cats" } });
+  const a = api("POST", "/templates/digest/apply", { parameters: { topic: "dogs" }, agent_id: made.agent_id });
+  await Promise.race([hold.reached, a]);
+  const b = api("POST", "/templates/digest/apply", { parameters: { topic: "birds" }, agent_id: made.agent_id });
+  const early = await Promise.race([b.then(() => "done"), after(750, "waiting")]);
+  hold.release();
+  const [first, second] = await Promise.all([a, b]);
+  assert.equal(early, "waiting", "the second update waits while the first holds the agent");
+  assert.deepEqual([first.status, second.status], [200, 200], JSON.stringify([first.body, second.body]));
+  const read = (await api("GET", `/agents/${made.agent_id}`)).body;
+  assert.match(read.definition.instructions, /birds/, "the later apply's revision");
+  assert.equal((await triggersOf(api, made.agent_id)).daily.target.input.content, "Today's note on birds.", "with that apply's triggers, never the other's");
+});
+
+test("an update whose read of the agent went stale before it wrote answers 412 and changes no trigger", { timeout: 90_000 }, async (t) => {
+  const hold = readHold();
+  const { api } = await served(t, { templateApplyRead: hold.seam });
+  const made = await applied(api, "digest", { parameters: { topic: "cats" } });
+  const a = api("POST", "/templates/digest/apply", { parameters: { topic: "dogs" }, agent_id: made.agent_id });
+  await Promise.race([hold.reached, a]);
+  const edit = await api("PUT", `/agents/${made.agent_id}/definition`, { definition: { instructions: "The owner's own words." } });
+  assert.equal(edit.status, 200, JSON.stringify(edit.body));
+  hold.release();
+  const stale = await a;
+  assert.equal(stale.status, 412, `an update whose read went stale answers 412: ${stale.status} ${JSON.stringify(stale.body)}`);
+  assert.equal(stale.body.error.code, "precondition_failed");
+  assert.equal((await api("GET", `/agents/${made.agent_id}`)).body.definition.instructions, "The owner's own words.", "the owner's edit stands");
+  assert.equal((await triggersOf(api, made.agent_id)).daily.target.input.content, "Today's note on cats.", "no trigger changed");
 });
