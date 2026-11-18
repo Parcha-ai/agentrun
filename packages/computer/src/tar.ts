@@ -98,13 +98,21 @@ function pax(body: Buffer): Record<string, string> {
 /**
  * An archive read as its bytes come: push() takes a chunk and answers the entries it finished, each whole. Bytes are
  * joined only once an entry's are all here, so a large body is copied once. Throws in words on a header whose checksum
- * is wrong; finish() throws where the bytes end inside an entry.
+ * is wrong; finish() throws where the bytes end inside an entry. `take`, where given, is asked for each entry's size at
+ * its header, before its bytes are held: false throws in words, so a reader never holds more than `take` allows.
  */
 export class TarReader {
 	#parts: Buffer[] = [];
 	#length = 0;
 	#next: { path?: string; linkpath?: string; size?: number } = {};
 	#ended = false;
+	readonly #take: ((bytes: number) => boolean) | undefined;
+	/** Whether the header held now was given to take. */
+	#taken = false;
+
+	constructor(options: { take?: (bytes: number) => boolean } = {}) {
+		this.#take = options.take;
+	}
 
 	/** The first n bytes held, joined, or undefined while fewer are here. */
 	#peek(n: number): Buffer | undefined {
@@ -140,11 +148,14 @@ export class TarReader {
 			const flag = text(head, 156, 1) || "0";
 			const size = flag === "x" || flag === "g" || flag === "L" || flag === "K" ? number(head, 124, 12) : (this.#next.size ?? number(head, 124, 12));
 			if (!sized(size)) throw new Error(`the archive has a header whose size is no count of bytes (${JSON.stringify(text(head, 0, 100))})`);
+			if (!this.#taken && this.#take !== undefined && !this.#take(size)) throw new Error(`the archive has an entry of ${size} bytes, more than may be read (${JSON.stringify(this.#next.path ?? text(head, 0, 100))})`);
+			this.#taken = true;
 			const whole = this.#peek(BLOCK + size + ((BLOCK - (size % BLOCK)) % BLOCK));
 			if (whole === undefined) return entries;
 			const body = Buffer.from(whole.subarray(BLOCK, BLOCK + size));
 			const block = Buffer.from(head);
 			this.#drop(whole.length);
+			this.#taken = false;
 			const entry = this.#entry(block, flag, body);
 			if (entry !== undefined) entries.push(entry);
 		}
@@ -188,9 +199,9 @@ export function untar(bytes: Uint8Array): TarEntry[] {
 	return entries;
 }
 
-/** The entries of an archive as its chunks come, each whole. Throws in words on an archive it cannot read. */
-export async function* untarStream(chunks: AsyncIterable<Uint8Array>): AsyncGenerator<TarEntry> {
-	const reader = new TarReader();
+/** The entries of an archive as its chunks come, each whole (`take` as TarReader's). Throws in words on an archive it cannot read. */
+export async function* untarStream(chunks: AsyncIterable<Uint8Array>, options: { take?: (bytes: number) => boolean } = {}): AsyncGenerator<TarEntry> {
+	const reader = new TarReader(options);
 	for await (const chunk of chunks) yield* reader.push(chunk);
 	reader.finish();
 }

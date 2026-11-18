@@ -128,3 +128,16 @@ test("a size that is no count of bytes, in a header or a pax record, is refused 
 		assert.throws(() => untar(archive), new RegExp(`^Error: the archive has a pax size that is no count of bytes \\("${size}"\\)$`), size);
 	}
 });
+
+test("take is asked once for each entry's size, at its header, before its bytes are held; false refuses the archive in words", () => {
+	const asked = [];
+	const reader = new TarReader({ take: (bytes) => (asked.push(bytes), bytes < 100) });
+	const two = Buffer.concat([header("a.txt", "2"), padded(Buffer.from("hi"))]);
+	// a.txt's body comes a byte at a time: its size is asked for once, not at each push.
+	assert.deepEqual(reader.push(two.subarray(0, 513)), []);
+	assert.deepEqual(reader.push(two.subarray(513, 514)), []);
+	assert.deepEqual(reader.push(two.subarray(514)).map((entry) => [entry.name, String(entry.body)]), [["a.txt", "hi"]]);
+	// A header of 3 GiB is refused with only its header here.
+	assert.throws(() => reader.push(header("big.bin", (3 * 1024 ** 3).toString(8))), /^Error: the archive has an entry of 3221225472 bytes, more than may be read \("big\.bin"\)$/);
+	assert.deepEqual(asked, [2, 3 * 1024 ** 3]);
+});

@@ -9,7 +9,7 @@
 // ones last put there (that re-read, a touch) are not put again. While a directory the computer's user can't read hides
 // what the sink holds under it (files.list lists one without what it holds), a sync writes nothing and fails in words.
 import { createHash } from "node:crypto";
-import { pullTarStream, readFile } from "./files.js";
+import { pullTarStream } from "./files.js";
 import { WORKSPACE } from "./mount.js";
 import { type ComputerClient, type FileEntry, MAX_CHUNK_BYTES, MAX_LIST_DEPTH, MAX_LIST_ENTRIES } from "./protocol.js";
 import { type ComputerErrorCode, fail, ok, type Result } from "./result.js";
@@ -233,6 +233,14 @@ export class FolderSync {
 		const trees = [...newDirs].filter((dir) => !newDirs.has(parentOf(dir)) && files.some(([path]) => under(path, dir)));
 		const inTree = (path: string) => trees.some((dir) => under(path, dir));
 
+		// The bytes this sync may still read: each body takes its size before it is held, so a file grown since the listing
+		// never makes a sync hold more than SYNC_MAX_BYTES.
+		let left = SYNC_MAX_BYTES;
+		const take = (bytes: number): boolean => {
+			if (bytes > left) return false;
+			left -= bytes;
+			return true;
+		};
 		// The puts, IN_FLIGHT pulls at once and IN_FLIGHT puts at once; each advances its entry once it answered.
 		const pulls = new Slots(IN_FLIGHT);
 		const puts = new Slots(IN_FLIGHT);
@@ -255,11 +263,11 @@ export class FolderSync {
 		const tasks: Promise<void>[] = [];
 		for (const dir of trees) {
 			const wanted = new Map(files.filter(([path]) => under(path, dir)));
-			tasks.push(pulls.run(() => this.#pullTree(dir, wanted, puts, put, failed, signal)));
+			tasks.push(pulls.run(() => this.#pullTree(dir, wanted, puts, put, failed, take, signal)));
 		}
 		for (const [path, entry] of files) {
 			if (inTree(path)) continue;
-			tasks.push(pulls.run(() => this.#pullFile(path, entry, put, failed, signal)));
+			tasks.push(pulls.run(() => this.#pullFile(path, entry, put, failed, take, signal)));
 		}
 		await Promise.all(tasks);
 
@@ -353,39 +361,62 @@ export class FolderSync {
 		return dirs.filter((_, index) => !listed[index]);
 	}
 
-	/** One changed file: files.read up to MAX_CHUNK_BYTES, a tar.pull of it above that. */
-	async #pullFile(path: string, entry: FileEntry, put: (path: string, body: Uint8Array, entry: FileEntry) => Promise<void>, failed: (code: ComputerErrorCode, words: string) => void, signal?: AbortSignal): Promise<void> {
+	/**
+	 * One changed file: one files.read where it was listed at MAX_CHUNK_BYTES or less and reads whole in it, else a
+	 * tar.pull of it, whose header gives its size before its bytes come. Each body takes its bytes (`take`) before it is
+	 * kept; one that would pass what is left of the sync's bytes fails, kind limit.
+	 */
+	async #pullFile(
+		path: string,
+		entry: FileEntry,
+		put: (path: string, body: Uint8Array, entry: FileEntry) => Promise<void>,
+		failed: (code: ComputerErrorCode, words: string) => void,
+		take: (bytes: number) => boolean,
+		signal?: AbortSignal,
+	): Promise<void> {
 		const at = `${this.#root}/${path}`;
+		const over = `${path}: it grew since the listing past what is left of the ${SYNC_MAX_BYTES} bytes a sync reads`;
 		if (entry.size <= MAX_CHUNK_BYTES) {
-			const read = await readFile(this.#client, at, signal ? { signal } : {});
+			const read = await this.#client.call("files.read", { path: at, offset: 0, length: MAX_CHUNK_BYTES }, signal ? { signal } : {});
 			if (!read.ok) return void failed(read.error.code, `${path}: ${read.error.message}`);
-			return put(path, read.value, entry);
+			const body = Buffer.from(read.value.data, "base64");
+			// One that grew past a chunk since the listing is read as a tar, below.
+			if (read.value.eof || body.length === 0) return take(body.length) ? put(path, body, entry) : void failed("limit", over);
 		}
 		const pulled = pullTarStream(this.#client, at, signal ? { signal } : {});
 		let body: Uint8Array | undefined;
+		let refused = false;
+		const taking = (bytes: number) => take(bytes) || ((refused = true), false);
 		try {
-			for await (const one of untarStream(pulled.chunks)) if (one.type === "file" && body === undefined) body = one.body ?? new Uint8Array();
+			for await (const one of untarStream(pulled.chunks, { take: taking })) if (one.type === "file" && body === undefined) body = one.body ?? new Uint8Array();
 		} catch (error) {
 			const done = await pulled.done;
+			if (refused) return void failed("limit", over);
 			return void failed(done.ok ? "refused" : done.error.code, `${path}: ${error instanceof Error ? error.message : String(error)}`);
 		}
 		if (body === undefined) return void failed("refused", `${path}: its tar held no file`);
 		return put(path, body, entry);
 	}
 
-	/** A new directory's tree as one tar.pull: each file of it the listing has (`wanted`) put as it comes. */
+	/**
+	 * A new directory's tree as one tar.pull: each file of it the listing has (`wanted`) put as it comes. Each entry takes
+	 * its bytes (`take`) at its header, before they are held; one past what is left of the sync's bytes fails it, kind limit.
+	 */
 	async #pullTree(
 		dir: string,
 		wanted: ReadonlyMap<string, FileEntry>,
 		puts: Slots,
 		put: (path: string, body: Uint8Array, entry: FileEntry) => Promise<void>,
 		failed: (code: ComputerErrorCode, words: string) => void,
+		take: (bytes: number) => boolean,
 		signal?: AbortSignal,
 	): Promise<void> {
 		const pulled = pullTarStream(this.#client, `${this.#root}/${dir}`, signal ? { signal } : {});
 		const writing: Promise<void>[] = [];
+		let refused = false;
+		const taking = (bytes: number) => take(bytes) || ((refused = true), false);
 		try {
-			for await (const one of untarStream(pulled.chunks)) {
+			for await (const one of untarStream(pulled.chunks, { take: taking })) {
 				const name = one.name.replace(/^(?:\.\/)+/, "").replace(/\/+$/, "");
 				if (one.type !== "file" || name === "") continue;
 				const path = `${dir}/${name}`;
@@ -398,6 +429,7 @@ export class FolderSync {
 		} catch (error) {
 			await Promise.all(writing);
 			const done = await pulled.done;
+			if (refused) return void failed("limit", `${dir}/: its files grew since the listing past what is left of the ${SYNC_MAX_BYTES} bytes a sync reads`);
 			return void failed(done.ok ? "refused" : done.error.code, `${dir}/: ${error instanceof Error ? error.message : String(error)}`);
 		}
 		// A file listed but not in the tar was removed or replaced since: the next sync sees what it is now.

@@ -39,7 +39,7 @@ function daytona(options = {}) {
 		requests.push(String(url));
 		return new Response(JSON.stringify({ statusCode: 401, message: "Invalid credentials" }), { status: 401, headers: { "content-type": "application/json" } });
 	};
-	return { requests, provider: new DaytonaProvider({ apiKey: "daytona_fake_computer_key_0123456789", apiUrl: "https://api.daytona.test/api", daemonPath: DAEMON, fetch, timeouts: TIMEOUTS, ...options }) };
+	return { requests, provider: new DaytonaProvider({ apiKey: "fake-test-key", apiUrl: "https://api.daytona.test/api", daemonPath: DAEMON, fetch, timeouts: TIMEOUTS, ...options }) };
 }
 
 test("Daytona takes a synced folder, its GPU computers too, under the run's claim epoch; no request is made", () => {

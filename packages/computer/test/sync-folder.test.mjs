@@ -245,3 +245,58 @@ test("a sink that fails a put: the sync fails in words, deletes and meta wait, a
 		["remove", "a", "file"],
 	]);
 });
+
+/** A ustar header of a file of `size` bytes, without its bytes. */
+const fileHeader = (name, size) => {
+	const block = Buffer.alloc(512);
+	block.write(name, 0, "utf8");
+	block.write("0000644\0", 100, "ascii");
+	block.write(`${size.toString(8).padStart(11, "0")}\0`, 124, "ascii");
+	block.write("0", 156, "ascii");
+	block.write("ustar\u000000", 257, "ascii");
+	block.fill(0x20, 148, 156);
+	let sum = 0;
+	for (const byte of block) sum += byte;
+	block.write(`${sum.toString(8).padStart(6, "0")}\0 `, 148, "ascii");
+	return block;
+};
+
+test("a file grown since the listing past the bytes a sync reads fails, kind limit, at its tar header, before its bytes are held", async () => {
+	const huge = SYNC_MAX_BYTES + 1;
+	for (const [entries, words] of [
+		// Listed past a chunk: a tar.pull of it.
+		[[file("big", 1024 ** 2)], `big: it grew since the listing past what is left of the ${SYNC_MAX_BYTES} bytes a sync reads`],
+		// Listed at a byte, and read past a chunk now: a tar.pull of it too.
+		[[file("small", 1)], `small: it grew since the listing past what is left of the ${SYNC_MAX_BYTES} bytes a sync reads`],
+		// A new directory's tree.
+		[[dir("d"), file("d/f", 1)], `d/: its files grew since the listing past what is left of the ${SYNC_MAX_BYTES} bytes a sync reads`],
+	]) {
+		let listed = [];
+		const reads = [];
+		const client = {
+			async call(method, params) {
+				if (method === "files.list" && params.path === "/workspace") return { ok: true, value: { entries: listed, truncated: false } };
+				if (method === "files.list") return { ok: true, value: { entries: listed.filter((entry) => entry.path.startsWith(`${params.path}/`)), truncated: false } };
+				// A chunk, then its end at the second (a read of the whole file would read it whole).
+				if (method === "files.read") return { ok: true, value: { data: Buffer.alloc(params.length).toString("base64"), size: huge, eof: params.offset > 0 } };
+				if (method === "tar.pull.begin") return { ok: true, value: { id: "t" } };
+				if (method === "tar.pull.end") return { ok: true, value: {} };
+				if (method === "tar.pull.read") {
+					// The header, then zeros, as the file's bytes would come, for 8 reads (a cut archive, where nothing refuses it).
+					reads.push(params.id);
+					const name = entries[0].type === "dir" ? "./f" : entries[0].path.slice("/workspace/".length);
+					return { ok: true, value: { data: (reads.length === 1 ? fileHeader(name, huge) : Buffer.alloc(512 * 1024)).toString("base64"), eof: reads.length === 8 } };
+				}
+				return { ok: false, error: { code: "unsupported", message: method } };
+			},
+			close() {},
+		};
+		const sink = fakeSink();
+		const sync = new FolderSync(client, sink);
+		assert.deepEqual(await sync.baseline(), { ok: true, value: undefined });
+		listed = entries;
+		assert.deepEqual(await sync.sync(), { ok: false, error: { code: "limit", message: `1 of the folder's changes did not land, and are sent again at the next sync: ${words}` } });
+		assert.equal(reads.length, 1, "no read past the header");
+		assert.deepEqual(sink.calls.filter(([method]) => method === "put"), []);
+	}
+});

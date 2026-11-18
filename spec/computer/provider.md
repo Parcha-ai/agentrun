@@ -182,7 +182,9 @@ the computer's own `files` and `exec` calls, so no FUSE is needed and a GPU host
   racy rule). Bytes that equal the ones last put are not put again. A write that leaves both the size and the mtime as
   they were is not seen.
 - Over `SYNC_MAX_ENTRIES` (20,000) entries or `SYNC_MAX_BYTES` (2 GiB), a sync fails with code `limit`. The entry cap
-  is checked as each page arrives, so no listing past it is held.
+  is checked as each page arrives, so no listing past it is held. The byte cap holds for what a sync reads too: each
+  body takes its size (a tar entry's at its header) before it is held, so a file grown since the listing fails the
+  sync with `limit` and is never read whole.
 
 ## prepareImage
 
