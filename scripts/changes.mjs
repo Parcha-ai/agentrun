@@ -99,13 +99,6 @@ async function heldChangelog(root, file) {
   return manifest !== null && JSON.parse(manifest).private === true;
 }
 
-/** Appends `bullets` to the Unreleased section of `lines`, in place, after the section's own entries: what the fold does to a held package's changelog. */
-function appendToUnreleased(lines, bullets) {
-  const unreleased = lines.findIndex(unreleasedHeading);
-  const keeps = lines.slice(unreleased + 1, sectionEnd(lines, unreleased)).some(line => line.trim());
-  lines.splice(sectionEnd(lines, unreleased), 0, ...(keeps ? [] : ['']), ...bullets);
-}
-
 /** The fragments that were in changes/ at `mergeBase` and are gone from the working tree: the ones a fold deleted. */
 async function removedFragments(root, mergeBase, known) {
   const listed = (await git(root, ['ls-tree', '--name-only', mergeBase, 'changes/'])).split('\n').map(line => line.replace(/^changes\//, '')).filter(name => name.endsWith('.md') && name !== 'README.md');
@@ -120,24 +113,24 @@ async function removedFragments(root, mergeBase, known) {
 
 /**
  * Whether the held package's changelog at `path` changed only by the fold: its Unreleased section is exactly what `was` becomes when
- * the bullets of the fragments this change deleted, which name that package, are appended in the fold's order. Any other change to
- * it is an edit.
+ * the bullets of the fragments this change deleted, which name that package, are placed in the fold's order (`placeBullets`). Any
+ * other change to it is an edit.
  */
 async function foldedIntoHeld(root, path, was, is, removed, directories) {
   if (!await heldChangelog(root, path) || !(was ?? '').split('\n').some(unreleasedHeading)) return false;
-  const bullets = [];
+  const folded = [];
   for (const fragment of [...removed].sort(foldOrder)) {
     const files = await Promise.all(fragment.packages.map(name => changelogFor(root, directories, name)));
-    if (files.includes(path)) bullets.push(bulletOf(fragment.body));
+    if (files.includes(path)) folded.push(fragment);
   }
-  if (bullets.length === 0) return false;
-  return heldSection(was, bullets) === unreleasedSection(is ?? '');
+  if (folded.length === 0) return false;
+  return heldSection(was, folded) === unreleasedSection(is ?? '');
 }
 
-/** The Unreleased section a held changelog has when `bullets` are appended to `was`'s, as the fold writes it. */
-function heldSection(was, bullets) {
+/** The Unreleased section a held changelog has when the fold adds `fragments` (in the fold's order) to `was`'s. */
+function heldSection(was, fragments) {
   const lines = was.split('\n');
-  appendToUnreleased(lines, bullets);
+  placeBullets(lines, lines.findIndex(unreleasedHeading), fragments);
   while (lines.at(-1) === '') lines.pop();
   return unreleasedSection(`${lines.join('\n')}\n`);
 }
@@ -145,7 +138,7 @@ function heldSection(was, bullets) {
 /**
  * The changelogs whose Unreleased section differs from `base`'s. An edit that leaves the section empty is the release's fold
  * (it moved the bullets into the version's section), whatever else the change or its merge group adds. So is a held package's changelog whose
- * Unreleased section is exactly its old text with the fragments the change deleted appended; any other edit is refused.
+ * Unreleased section is exactly its old text with the fragments the change deleted placed as the fold places them; any other edit is refused.
  */
 export async function unreleasedEdits(root, base) {
   const mergeBase = (await git(root, ['merge-base', base, 'HEAD'])).trim();
@@ -182,14 +175,53 @@ const sectionEnd = (lines, heading) => {
   return end;
 };
 
-/** What one fold does to a published changelog with no section for `version` yet, in place: `bullets` join the Unreleased section's
- *  own entries, the section is renamed `## <version> (<date>)`, and an empty Unreleased opens above it. */
-function datedSection(lines, version, date, bullets) {
+/** A block's heading inside a section, as a release pull request writes them: "**Breaking:**", "**Changes:**" (release-notes.mjs reads them alike). */
+const blockLabel = /^\*\*([^*]+?):?\*\*:?\s*$/;
+const isBreakingLabel = line => /^breaking$/i.test(blockLabel.exec(line)?.[1]?.trim() ?? '');
+
+/**
+ * Puts the bullets of `fragments` (in the fold's order) into the section headed at `lines[heading]`, in place: the one place every fold
+ * path writes bullets. A breaking change goes under the section's **Breaking:** heading, after what that block holds. A section without
+ * one gets it at its top, ahead of every other entry, and what the section holds then goes under **Changes:** unless it opens with a
+ * heading of its own. Every other bullet goes at the section's end, under a new **Changes:** heading when the section's last block is
+ * Breaking. A fold with no breaking change writes what it always did.
+ */
+function placeBullets(lines, heading, fragments) {
+  const bulletsOf = breaking => fragments.filter(fragment => (fragment.kind === 'breaking') === breaking).map(fragment => bulletOf(fragment.body));
+  const breaking = bulletsOf(true);
+  const rest = bulletsOf(false);
+  const labels = () => {
+    const at = [];
+    for (let index = heading + 1; index < sectionEnd(lines, heading); index++) if (blockLabel.test(lines[index])) at.push(index);
+    return at;
+  };
+  if (rest.length) {
+    const end = sectionEnd(lines, heading);
+    const last = labels().at(-1);
+    const opening = end === heading + 1 ? [''] : last !== undefined && isBreakingLabel(lines[last]) ? ['', '**Changes:**', ''] : [];
+    lines.splice(end, 0, ...opening, ...rest);
+  }
+  if (!breaking.length) return;
+  const block = labels().find(at => isBreakingLabel(lines[at]));
+  if (block !== undefined) {
+    let end = labels().find(at => at > block) ?? sectionEnd(lines, heading);
+    while (end > block + 1 && lines[end - 1].trim() === '') end--;
+    lines.splice(end, 0, ...(end === block + 1 ? [''] : []), ...breaking);
+    return;
+  }
+  const end = sectionEnd(lines, heading);
+  let first = heading + 1;
+  while (first < end && !lines[first].trim()) first++;
+  const after = first === end ? [] : blockLabel.test(lines[first]) ? [''] : ['', '**Changes:**', ''];
+  lines.splice(heading + 1, first - heading - 1, '', '**Breaking:**', '', ...breaking, ...after);
+}
+
+/** What one fold does to a published changelog with no section for `version` yet, in place: the Unreleased section is renamed
+ *  `## <version> (<date>)`, an empty Unreleased opens above it, and `fragments` join the entries it held (`placeBullets`). */
+function datedSection(lines, version, date, fragments) {
   const unreleased = lines.findIndex(unreleasedHeading);
-  const held = lines.slice(unreleased + 1, sectionEnd(lines, unreleased)).some(line => line.trim());
-  lines.splice(sectionEnd(lines, unreleased), 0, ...(held ? [] : ['']), ...bullets);
-  const heading = lines[unreleased];
-  lines.splice(unreleased, 1, heading, '', `## ${version} (${date})`);
+  lines.splice(unreleased + 1, 0, '', `## ${version} (${date})`);
+  placeBullets(lines, unreleased + 2, fragments);
 }
 
 /** The date in the heading of `version`'s section ("## 0.1.0-beta.13 (2026-10-20)" or "## 0.1.0-beta.13, 2026-10-20"), or undefined. */
@@ -240,25 +272,28 @@ function sectionHolds(lines, version, bullet) {
 }
 
 /**
- * Puts `bullets` into the published changelog `lines`, in place, under `version`'s section: at its end when it has one, else in a new
- * section `## <version> (<date>)` right below the Unreleased section and below `newer`'s section when that follows it. Never takes
- * what Unreleased holds: that belongs to the release being folded.
+ * Puts the bullets of `fragments` into the published changelog `lines`, in place, under `version`'s section (`placeBullets`): the
+ * section it has, else a new section `## <version> (<date>)` right below the Unreleased section and below `newer`'s section when that
+ * follows it. Never takes what Unreleased holds: that belongs to the release being folded.
  */
-function addToSection(lines, version, date, bullets, newer) {
+function addToSection(lines, version, date, fragments, newer) {
   const existing = lines.findIndex(line => isVersionHeading(line, version));
-  if (existing >= 0) { lines.splice(sectionEnd(lines, existing), 0, ...bullets); return; }
+  if (existing >= 0) { placeBullets(lines, existing, fragments); return; }
   const unreleased = lines.findIndex(unreleasedHeading);
   assert.ok(unreleased >= 0, `the changelog has no Unreleased heading to put ${version}'s section under`);
   const next = from => { const at = lines.findIndex((line, index) => index > from && /^## /.test(line)); return at < 0 ? lines.length : at; };
   let at = next(unreleased);
   if (at < lines.length && isVersionHeading(lines[at], newer)) at = next(at);
-  lines.splice(at, 0, ...(lines[at - 1] === '' ? [] : ['']), `## ${version} (${date})`, '', ...bullets, '');
+  const blank = lines[at - 1] === '' ? [] : [''];
+  lines.splice(at, 0, ...blank, `## ${version} (${date})`, '');
+  placeBullets(lines, at + blank.length, fragments);
 }
 
 /**
  * Folds the release into the changelogs. Every changelog is visited: one whose Unreleased section holds bullets or that gets
  * fragments has that section renamed `## <version> (<date>)`, with the fragments' bullets after its own, and a new empty
- * Unreleased section opened above it. The root changelog is dated also when it holds nothing and the release has fragments. A
+ * Unreleased section opened above it. A breaking fragment's bullet goes under the section's **Breaking:** heading, which the fold
+ * opens at the section's top when the section has none (`placeBullets`). The root changelog is dated also when it holds nothing and the release has fragments. A
  * fragment goes to its package's own changelog, else the root. A changelog with neither held bullets nor fragments is untouched;
  * one that already has the version's section gets the fragments' bullets appended to it. A held package (its manifest says
  * `"private": true`) ships nothing in this release, so its changelog is never dated: its fragments' bullets are appended to its
@@ -335,7 +370,7 @@ export async function fold(root, version, date, options = {}) {
   // never appends a bullet twice.
   const writes = [];
   for (const [file, { now, before }] of targets) {
-    let bullets = now.map(fragment => bulletOf(fragment.body));
+    let entries = now;
     const original = await readFile(join(root, file), 'utf8');
     const lines = original.split('\n');
     const unreleased = lines.findIndex(unreleasedHeading);
@@ -343,20 +378,20 @@ export async function fold(root, version, date, options = {}) {
       // A package this release does not publish gets no version section: its fragments join what its Unreleased section holds.
       if (now.length + before.length === 0) continue;
       assert.ok(unreleased >= 0, `${file} has no Unreleased heading to add to`);
-      appendToUnreleased(lines, [...before, ...now].sort(foldOrder).map(fragment => bulletOf(fragment.body)));
+      placeBullets(lines, unreleased, [...before, ...now].sort(foldOrder));
     } else {
       let touched = false;
-      if (before.length) { addToSection(lines, previous.version, previousDate, [...before].sort(foldOrder).map(fragment => bulletOf(fragment.body)), version); touched = true; }
+      if (before.length) { addToSection(lines, previous.version, previousDate, [...before].sort(foldOrder), version); touched = true; }
       const existing = lines.findIndex(line => isVersionHeading(line, version));
       const at = lines.findIndex(unreleasedHeading);
       if (existing >= 0) {
-        if (bullets.length) { lines.splice(sectionEnd(lines, existing), 0, ...bullets); touched = true; }
-      } else if (at >= 0 || bullets.length) {
+        if (entries.length) { placeBullets(lines, existing, entries); touched = true; }
+      } else if (at >= 0 || entries.length) {
         assert.ok(at >= 0, `${file} has no Unreleased heading to fold`);
         const held = lines.slice(at + 1, sectionEnd(lines, at)).some(line => line.trim());
         // The root always gets the version's section (the release preflight requires it), also when every change is a package's.
-        if (file === 'CHANGELOG.md' && !held && bullets.length === 0 && current.size > 0) bullets = ['- Package changes only; see the package changelogs.'];
-        if (held || bullets.length) { datedSection(lines, version, date, bullets); touched = true; }
+        if (file === 'CHANGELOG.md' && !held && entries.length === 0 && current.size > 0) entries = [{ kind: 'docs', body: 'Package changes only; see the package changelogs.' }];
+        if (held || entries.length) { datedSection(lines, version, date, entries); touched = true; }
       }
       if (!touched) continue;
     }
