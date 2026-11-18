@@ -60,7 +60,8 @@ test("each workflow's status says whether it serves: promoted serving, held twic
 // runs cost as much as the agent by hand: no promotion record says so, yet the agent takes its runs. Its status, the
 // promotions read's state and the cost read's state say the same: it does not serve.
 test("a promoted workflow the money rule stopped reads stopped, never serving, in the learning view and the promotions read", { timeout: 60_000 }, async (t) => {
-  const { api, data, store } = await serve(t, { learning: "on" });
+  // No runner beside the server: the test claims and ends each seeded run itself (one beside would claim it first).
+  const { api, data, store } = await serve(t, { learning: "on", runner: false });
   await made(api, learner("costly"));
   await seedOf(data, "costly");
   const repo = join(agentFolderOf(data, "costly"), "learning");
