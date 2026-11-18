@@ -68,9 +68,9 @@ export async function demonstrateWorkflows({ runtime, createBackend,
       learned = await client.learning.get(agentId);
       if (learned.workflows.some(workflow => workflow.status === 'pending'))
         throw new Error('A workflow needs owner review. Inspect Learning Dojo; the demo never auto-approves it.');
-      if (learned.workflows.some(workflow => workflow.status === 'active' && workflow.run)) break;
+      if (learned.workflows.some(workflow => workflow.status === 'serving' && workflow.run)) break;
     }
-    const accepted = learned.workflows.filter(workflow => workflow.status === 'active' && workflow.run);
+    const accepted = learned.workflows.filter(workflow => workflow.status === 'serving' && workflow.run);
     assert.ok(accepted.length, 'No checked workflow was accepted after the ordinary practice cadence. Inspect Learning Dojo before running more paid tasks.');
     const workflowFiles = [];
     for (const item of accepted) {

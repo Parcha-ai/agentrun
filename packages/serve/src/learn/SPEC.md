@@ -33,7 +33,7 @@ picks, ranks or summarizes it: the cap keeps it whole.
 - An owner's feedback on a run (a grade's words, or a message they sent after the job's first) appends one line, at
   the run's end, in the same commit as anything the run compiled (`LearningChange.correction`). The run is a feedback
   round, `correction`.
-- A person replaces the file whole over v2 (`PUT /api/v2/agents/{id}/learning/corrections`, under the ETag its GET
+- A person replaces the file whole over v2 (`PUT /v2/agents/{id}/learning/corrections`, under the ETag its GET
   gave); an empty body empties it.
 - Over `CORRECTIONS_CAP`, 2048 bytes, a write is refused whole, never cut, and the run's learning says why. So is one
   holding what must never be stored (below).

@@ -33,7 +33,8 @@ machine or container stops, and `agentrun stop` stops it (a SIGTERM, then a SIGK
 after 45 seconds). Either way the installer returns once AgentRun answers, and prints its address. `sh -s -- --no-start`
 installs only, `--version V` installs another version, `--node-version V` installs that Node.js (at least the floor),
 and `--service` fails where there is no service manager. Running it again upgrades, or installs an older version, and
-first stops the AgentRun it started in the background itself, whatever version that is.
+first stops the AgentRun it started in the background itself, whatever version that is. An older version does not start on
+a store a later one has upgraded: its server says so and exits, and the store is left as it was.
 
 `agentrun service status` prints the console's address and its health. `start`, `stop`, `restart`, `logs [--follow]`,
 `upgrade [--version V]` (the installer again, then a restart) and `uninstall` (the data stays) do what they say, and
