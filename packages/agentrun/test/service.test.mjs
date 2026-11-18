@@ -241,6 +241,19 @@ test("agentrun open --data on another server never fills in the service log's co
 });
 
 // A crash or a forced stop leaves .server.json behind: its address answers nothing, so there is nothing to open.
+// /v2/health answers 503 when free disk is below its floor, while the console and sign-in still work: a server that
+// answers is opened whatever its check says, and the check is said beside it.
+test("agentrun open on a server whose health check fails (low disk, 503) still opens it, and says what the check answered", async () => {
+  const box = setupHome({ session: { accounts: true, password_set: true, signed_in: false, setup_code: false } });
+  writeFileSync(join(box.home, ".agentrun", ".server.json"), JSON.stringify({ base_url: "http://127.0.0.1:7345/v2", pid: process.pid }));
+  const answered = box.get;
+  const get = async (url, init) => (url.endsWith("/health") ? { ok: false, status: 503, json: async () => ({ status: "degraded", checks: { store: "ok", disk: "low" } }) } : answered(url, init));
+  const { out, io } = ioOf();
+  assert.equal(await serviceOf({ platform: "darwin", home: box.home, uid: 501, user: "a", env: {}, exec: box.exec, io, fail, get, launch: box.launch }).open({}), 0);
+  assert.deepEqual(box.calls.filter((call) => call.startsWith("open ")), ["open http://127.0.0.1:7345/"]);
+  assert.match(out.join(""), /Its health check answers 503 degraded \(disk: low\); agentrun service status says more\./);
+});
+
 test("agentrun open on a record no server answers says no AgentRun answers, exit 1, and opens nothing", async () => {
   const box = setupHome();
   writeFileSync(join(box.home, ".agentrun", ".server.json"), JSON.stringify({ base_url: "http://127.0.0.1:7345/v2", pid: process.pid }));

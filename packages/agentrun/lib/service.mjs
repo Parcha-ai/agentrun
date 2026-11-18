@@ -232,9 +232,9 @@ async function healthOf(data, { fetch: get = fetch, since = 0 } = {}) {
   try {
     const response = await get(`${record.base_url.replace(/\/+$/, "")}/health`, { signal: AbortSignal.timeout(3_000) });
     const body = await response.json().catch(() => ({}));
-    return { url, health: response.ok && body?.status === "ok" ? "ok" : `${response.status} ${body?.status ?? ""}`.trim(), checks: body?.checks };
+    return { url, answered: true, health: response.ok && body?.status === "ok" ? "ok" : `${response.status} ${body?.status ?? ""}`.trim(), checks: body?.checks };
   } catch (error) {
-    return { url, health: `not answering (${error?.cause?.code ?? error?.name})` };
+    return { url, answered: false, health: `not answering (${error?.cause?.code ?? error?.name})` };
   }
 }
 
@@ -344,10 +344,16 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
    *  so only for the data folder that log is for: another server prints its own elsewhere. Exit 0, or 1 when no server
    *  answers. */
   async function openPage(data, { setupOnly = false, url = undefined } = {}) {
+    let unwell;
     if (url === undefined) {
-      // A record a crash or a forced stop left behind names an address no server answers.
+      // A record a crash or a forced stop left behind names an address no server answers. A server that answers with a
+      // failed check (low disk is a 503) still serves its console and its setup page: it opens, and the check is said.
       const now = await healthOf(data, { fetch: get });
-      if (now.health === "ok") url = now.url;
+      if (now.answered) url = now.url;
+      if (now.answered && now.health !== "ok") {
+        const failing = Object.entries(now.checks ?? {}).filter(([, value]) => value !== "ok").map(([name, value]) => `${name}: ${value}`);
+        unwell = failing.length ? `${now.health} (${failing.join(", ")})` : now.health;
+      }
     }
     if (!url) {
       if (setupOnly) return 0;
@@ -364,6 +370,7 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
         return undefined;
       }
     };
+    if (unwell) say(`Its health check answers ${unwell}; agentrun service status says more.`);
     const logged = resolve(data) === (installed() ? dataOf(argsNow(), home) : resolve(root));
     const session = await ask("/auth/session");
     let link;
