@@ -1340,6 +1340,61 @@ test("a run its source did not price gets the catalog's estimate at its own prov
   ]);
 });
 
+test("an imported session its source did not price reads the catalog's estimate wherever its cost is read (the run, its usage row, the stats and analytics, the usage report), a recorded cost reads as recorded, and one with no estimate stays unknown", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const h = { at: join(root, "home"), temp: join(root, "tmp") };
+  const project = join(h.at, "code", "metered");
+  mkdirSync(project, { recursive: true });
+  // A Codex session on a model the catalog prices; one on a model it does not list; a Claude Code session its source priced.
+  codexSession(h.at, project, 71, { model: "gpt-6.1-sol" });
+  codexSession(h.at, project, 72);
+  claudeSession(h.at, project, 73);
+  const data = join(root, "agents");
+  const writer = await openData(data);
+  await runImport(writer, await planImport(options(h)), options(h));
+  await writer.close();
+  const store = await openData(data, "runner");
+  t.after(async () => await store.close());
+  const [estimated, unpriced, recorded] = (await store.runs.list({})).sort((a, b) => a.importedFrom.session.localeCompare(b.importedFrom.session));
+  const { costUsdEst } = estimated.metrics;
+  assert.ok(typeof costUsdEst === "number" && costUsdEst > 0, "the import kept the catalog's estimate");
+  assert.deepEqual([estimated.costUsd, unpriced.costUsd, recorded.costUsd], [null, null, 0.0421], "the stored cost is the source's, never the estimate");
+
+  const server = await startServe({ data, port: 0, faux: FAUX, drainTimeout: "5s" });
+  t.after(() => server.close());
+  const api = client(server.baseUrl, server.token);
+  const costOf = async (id) => {
+    const { cost } = (await api("GET", `/runs/${id}`)).body;
+    return { usd: cost.usd, basis: cost.basis, ...(cost.so_far_usd !== undefined ? { so_far_usd: cost.so_far_usd } : {}) };
+  };
+  assert.deepEqual(await costOf(estimated.id), { usd: costUsdEst, basis: "estimate" }, "the catalog's estimate, read as an estimate");
+  assert.deepEqual(await costOf(recorded.id), { usd: 0.0421, basis: "estimate" });
+  assert.deepEqual(await costOf(unpriced.id), { usd: null, basis: "estimate" }, "no estimate: unknown, never 0");
+  const listed = (await api("GET", `/agents/${estimated.agentId}/runs`)).body.runs;
+  assert.deepEqual(Object.fromEntries(listed.map((r) => [r.run_id, r.cost.usd])), { [estimated.id]: costUsdEst, [unpriced.id]: null, [recorded.id]: 0.0421 }, "the list reads each run's cost as its read does");
+
+  // Each run's usage row says the cost its run reads.
+  const usageOf = async (id) => (await api("GET", `/runs/${id}/timeline`)).body.rows.findLast((r) => r.kind === "usage");
+  const [rowEstimated, rowUnpriced, rowRecorded] = [await usageOf(estimated.id), await usageOf(unpriced.id), await usageOf(recorded.id)];
+  assert.deepEqual([rowEstimated.usage.usd, rowEstimated.usage.so_far_usd, rowEstimated.usage.unpriced], [costUsdEst, undefined, undefined]);
+  assert.match(rowEstimated.summary, new RegExp(`^Cost: \\$${costUsdEst.toFixed(4).replace(".", "\\.")} over \\d+ model requests?$`));
+  assert.deepEqual([rowRecorded.usage.usd, rowRecorded.usage.so_far_usd], [0.0421, undefined]);
+  assert.match(rowRecorded.summary, /^Cost: \$0\.0421 over \d+ model requests?$/);
+  assert.deepEqual([rowUnpriced.usage.usd, rowUnpriced.usage.so_far_usd], [null, undefined]);
+  assert.match(rowUnpriced.summary, /^Cost: unknown over \d+ model requests?$/);
+
+  // The stats and analytics Mission Control reads: the estimate summed with the recorded cost, the unpriced run unknown.
+  const both = Math.round((costUsdEst + 0.0421) * 1e6) / 1e6;
+  const stats = (await api("GET", "/stats")).body;
+  assert.deepEqual(stats.cost, { usd: both, basis: "estimate", unknown_runs: 1 });
+  assert.deepEqual([stats.analytics.totals.cost_usd, stats.analytics.totals.unknown_cost_runs], [both, 1]);
+  const codex = stats.analytics.by_harness_effort.filter((g) => g.harness === "codex");
+  assert.deepEqual([codex.reduce((sum, g) => sum + (g.cost_usd ?? 0), 0), codex.reduce((sum, g) => sum + g.unknown_cost_runs, 0)], [costUsdEst, 1]);
+  assert.deepEqual(stats.analytics.by_source.map((g) => [g.source, g.cost_usd, g.unknown_cost_runs]).sort(), [["claude-code", 0.0421, 0], ["codex", costUsdEst, 1]]);
+  const usage = (await api("GET", "/usage?group_by=agent&from=2026-01-01T00:00:00Z&to=2027-01-01T00:00:00Z")).body;
+  assert.deepEqual([usage.total_usd, usage.unpriced_runs, usage.basis], [both, 1, "estimate"]);
+});
+
 test("import ends with the summary of every session found, read again from the store once held; a dry run prints the same from what it would import; hours are local", { timeout: 60_000 }, async (t) => {
   const root = await scratch(t);
   const at = join(root, "home");
