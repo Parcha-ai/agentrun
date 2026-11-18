@@ -975,3 +975,84 @@ describe("the Screen tab's recording", () => {
     expect(exports).toEqual([]);
   });
 });
+
+// A finished run's recording plays where its live screen was: a muted, inline <video> of the run files route's file (the
+// Export's URL with no download flag), sized as the live view is; with several, a picker in the header. A run still
+// going keeps its live view.
+describe("the Screen tab plays a finished run's recording", () => {
+  const done = { ...f.run, status: "completed", state: "idle" } as Run;
+  const rec = (path: string, finished = true) => ({ path, computer: "desk", seconds: 12.5, bytes: 4096, finished });
+  const URL_OF = (path: string) => `/v2/runs/${RUN}/files/${path}`;
+  async function played(run: Run, read: () => Promise<RunComputer>, fileUrl: ((path: string) => string) | null = URL_OF) {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    await act(async () => {
+      root!.render(createElement(RunDetail, { run, agentName: "rec", messages: messageFeatures, harnessSteers: true, rows: [], files: [], actions: {}, readComputer: read, computerEvery: 20, tab: "screen", ...(fileUrl ? { fileUrl } : {}) } as never));
+    });
+    await settle();
+    const panel = host.querySelector('section[aria-label="Screen"]') as HTMLElement;
+    return { panel, video: () => panel.querySelector("video"), exports: () => [...panel.querySelectorAll("a[download]")] as HTMLAnchorElement[] };
+  }
+  const closedDesktop = async () => ({ state: "none", kind: "desktop", hold: "agent", session: "closed" }) as RunComputer;
+  const onDesktop = (recordings: ReturnType<typeof rec>[], run: Run = done) => ({ ...run, computer: { kind: "desktop", provider: "docker", state: "ready" }, recordings }) as Run;
+
+  it("a finished desktop run plays its one recording from the file route, inline, muted, and keeps Export", async () => {
+    const p = await played(onDesktop([rec("recordings/desk.mp4")]), closedDesktop);
+    const video = p.video();
+    expect(video, "a player where the live screen was").toBeTruthy();
+    expect(video!.getAttribute("src")).toBe(URL_OF("recordings/desk.mp4"));
+    expect(video!.hasAttribute("controls")).toBe(true);
+    expect(video!.muted).toBe(true);
+    expect(video!.hasAttribute("playsinline")).toBe(true);
+    expect(video!.getAttribute("preload")).toBe("metadata");
+    expect(video!.className).toContain("aspect-[16/10]");
+    expect(p.panel.textContent).not.toContain("closed when the run ended");
+    expect(p.exports().map((a) => a.getAttribute("href"))).toEqual([`${URL_OF("recordings/desk.mp4")}?download=1`]);
+  });
+
+  it("a finished phone run's player is framed as the phone is, at the height below it", async () => {
+    const rect = (top: number, height: number) => ({ top, bottom: top + height, left: 0, right: 0, width: 0, height, x: 0, y: top, toJSON() {} }) as DOMRect;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      if (this.tagName === "VIDEO") return rect(350, 0);
+      if (this.hasAttribute("data-scroll-pane")) return rect(200, 600);
+      return rect(0, 0);
+    });
+    vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) { return this.hasAttribute("data-scroll-pane") ? 600 : 0; });
+    const run = { ...done, computer: { kind: "phone", provider: "phone-harness", state: "ready" }, recordings: [rec("recordings/phone.mp4")] } as Run;
+    const p = await played(run, async () => ({ state: "none", kind: "phone", hold: "agent", session: "closed" }));
+    const video = p.video();
+    expect(video!.getAttribute("src")).toBe(URL_OF("recordings/phone.mp4"));
+    expect(video!.className).toContain("aspect-[9/19]");
+    expect(video!.style.height).toBe(`${600 - 150 - 32}px`);
+  });
+
+  it("with several recordings, a picker in the header plays the one picked; every Export stays", async () => {
+    const p = await played(onDesktop([rec("recordings/desk.mp4"), rec("recordings/desk-2.mp4")]), closedDesktop);
+    expect(p.video()!.getAttribute("src")).toBe(URL_OF("recordings/desk.mp4"));
+    const picker = p.panel.querySelector('header [role="radiogroup"]') as HTMLElement;
+    expect(picker, "the picker sits in the header").toBeTruthy();
+    const second = [...picker.querySelectorAll("input")][1] as HTMLInputElement;
+    await act(async () => { second.click(); });
+    expect(p.video()!.getAttribute("src")).toBe(URL_OF("recordings/desk-2.mp4"));
+    expect(p.exports()).toHaveLength(2);
+  });
+
+  it("one finished recording has no picker, and one still being written is not played", async () => {
+    const p = await played(onDesktop([rec("recordings/desk.mp4"), rec("recordings/desk-2.mp4", false)]), closedDesktop);
+    expect(p.video()!.getAttribute("src")).toBe(URL_OF("recordings/desk.mp4"));
+    expect(p.panel.querySelector('[role="radiogroup"]')).toBeNull();
+  });
+
+  it("a run still going keeps its live view and its Recording chip: no player", async () => {
+    const p = await played(onDesktop([rec("recordings/desk.mp4"), rec("recordings/desk-2.mp4", false)], working), async () => ({ state: "live", kind: "desktop", viewer: VIEWER, hold: "agent" }));
+    expect(p.video()).toBeNull();
+    expect(p.panel.querySelector("iframe")).toBeTruthy();
+    expect(p.panel.textContent).toContain("Recording");
+  });
+
+  it("a finished run with no file route says its words, with no player", async () => {
+    const p = await played(onDesktop([rec("recordings/desk.mp4")]), closedDesktop, null);
+    expect(p.video()).toBeNull();
+    expect(p.panel.textContent).toContain("The desktop closed when the run ended.");
+  });
+});

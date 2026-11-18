@@ -2,6 +2,7 @@ import { Download, Globe, Maximize2, Minimize2, Monitor, Smartphone, Terminal } 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
+import { Segmented } from "@/components/ui/segmented";
 import { ClientError } from "@/lib/client";
 import { METERED } from "@/lib/computers";
 import { bytes } from "@/lib/format";
@@ -163,7 +164,8 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
   onTake?: () => Promise<string | null>;
   onHand?: () => Promise<string | null>;
   /** The run read's `recordings` (its agent's computer.record): "Recording" shows while one is being written, and each
-   *  finished one is exported through the run files route (`fileUrl`, a path's URL there) with ?download=1. */
+   *  finished one is exported through the run files route (`fileUrl`, a path's URL there) with ?download=1. A run that
+   *  can no longer open its computer plays a finished one where its live screen was (the same URL, inline). */
   recordings?: readonly RunRecording[];
   fileUrl?: (path: string) => string;
 }) {
@@ -198,12 +200,19 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
   const wasFull = useRef(false);
   const showing = Boolean(live && src);
   useEffect(() => { if (!showing) setFull(false); }, [showing]);
+  // A run that can no longer open its computer plays its recording where the live screen was: a finished file, through
+  // the run files route inline (Export's URL without ?download=1), muted; with several, the one picked in the header.
+  const done = recordings.filter((r) => r.finished);
+  const [picked, setPicked] = useState(0);
+  const reel = !opens && !live && screen?.state !== "signed_out" && fileUrl ? done[Math.min(picked, done.length - 1)] : undefined;
+  const player = useRef<HTMLVideoElement | null>(null);
   // A phone is tall: its frame takes the height the run page shows below it (phoneHeight), so the whole phone is on
-  // screen at once, its bottom (the keyboard, the nav bar) never under the composer.
+  // screen at once, its bottom (the keyboard, the nav bar) never under the composer. Its recording's player is sized so too.
   const [phoneH, setPhoneH] = useState<number | undefined>(undefined);
+  const sized = showing || !!reel;
   useLayoutEffect(() => {
-    const el = frame.current;
-    if (kind !== "phone" || full || !showing || !el) return;
+    const el = frame.current ?? player.current;
+    if (kind !== "phone" || full || !sized || !el) return;
     const pane = el.closest<HTMLElement>("[data-scroll-pane]");
     const fit = () => setPhoneH(phoneHeight(roomBelow(el, pane), window.innerHeight));
     fit();
@@ -212,7 +221,7 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
     if (pane) for (const box of [pane, ...pane.children]) watch?.observe(box);
     window.addEventListener("resize", fit);
     return () => { watch?.disconnect(); window.removeEventListener("resize", fit); };
-  }, [kind, full, showing, said, metered, session.current.n]);
+  }, [kind, full, sized, said, metered, session.current.n]);
   // While it fills the window it is a modal dialog: focus moves into its bar, Tab stays among its bar and the viewer, and
   // closing puts the focus back on the button that opened it (when the screen is still up).
   useEffect(() => {
@@ -250,6 +259,9 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
       try { inner?.removeEventListener("keydown", onInnerKey, true); } catch { /* the viewer's page went away */ }
     };
   }, [full, session.current.n]);
+  // The live view's box, and its recording's: a desktop's shape, or a phone's frame at the height below it.
+  const screenBox = kind === "phone" ? cn("mx-auto block aspect-[9/19] max-w-full bg-background", phoneH === undefined && "h-[70vh]") : "block aspect-[16/10] w-full bg-background";
+  const screenHeight = kind === "phone" && phoneH !== undefined ? { height: `${phoneH}px` } : undefined;
   const who = live ? (kind === "browser" ? "browser · take over in the view below" : `${DRIVES[live.hold]} · ${kind}`) : "";
   const hands = controls && (controls.hold === "person"
     ? <Button size="sm" variant="solid" disabled={busy} onClick={() => void act(onHand)}>Hand back</Button>
@@ -268,6 +280,10 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
             which says who has it; the served hold doesn't follow that take, so it isn't said here. */}
         <span className="flex-1 font-mono text-small text-muted-foreground">{who}</span>
         {recordings.some((r) => !r.finished) && <Chip tone="active" title="A video of this screen is being recorded">Recording</Chip>}
+        {reel && done.length > 1 && (
+          <Segmented size="sm" label="Recording to play" name={`recording-${runId}`} value={String(done.indexOf(reel))} onChange={(i) => setPicked(Number(i))}
+            options={done.map((r, i) => ({ value: String(i), label: String(i + 1), title: r.path }))} />
+        )}
         {fileUrl && recordings.filter((r) => r.finished).map((r, i, done) => (
           <a key={r.path} href={`${fileUrl(r.path)}?download=1`} download className={buttonVariants({ variant: "ghost", size: "sm" })} aria-label={`Export ${r.path} (${bytes(r.bytes)})`}>
             <Download aria-hidden /> Export{done.length > 1 ? ` ${i + 1}` : ""}
@@ -292,9 +308,11 @@ export function ScreenPanel({ runId, screen, machine, opens, followUp, metered, 
             )}
             {/* A refused Take over or Hand back, said where the person is looking. */}
             {full && said && <p className="border-b px-4 py-2 text-small text-warning-text" role="alert">{said}</p>}
-            <iframe ref={frame} key={session.current.n} src={src} title="The run's screen" referrerPolicy="no-referrer" sandbox="allow-forms allow-scripts allow-same-origin" className={full ? "block min-h-0 w-full flex-1 bg-background" : kind === "phone" ? cn("mx-auto block aspect-[9/19] max-w-full bg-background", phoneH === undefined && "h-[70vh]") : "block aspect-[16/10] w-full bg-background"} style={!full && kind === "phone" && phoneH !== undefined ? { height: `${phoneH}px` } : undefined} />
+            <iframe ref={frame} key={session.current.n} src={src} title="The run's screen" referrerPolicy="no-referrer" sandbox="allow-forms allow-scripts allow-same-origin" className={full ? "block min-h-0 w-full flex-1 bg-background" : screenBox} style={full ? undefined : screenHeight} />
           </div>
-        : <p className="px-4 py-12 text-center font-mono text-body text-muted-foreground">{words(kind, screen, machine, opens, followUp, waitsFor, keptUntil)}</p>}
+        : reel && fileUrl
+          ? <video ref={player} src={fileUrl(reel.path)} controls muted playsInline preload="metadata" aria-label={`The run's recording, ${reel.path}`} className={screenBox} style={screenHeight} />
+          : <p className="px-4 py-12 text-center font-mono text-body text-muted-foreground">{words(kind, screen, machine, opens, followUp, waitsFor, keptUntil)}</p>}
     </section>
   );
 }
