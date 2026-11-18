@@ -323,15 +323,12 @@ async function decide(deps: PromotionDeps, workflow: LearnedWorkflow, digest: st
 }
 
 /** The loop's numbers (learning-setting.ts) of the revision the claim runs: its definition's `learning`, each one it
- *  leaves out at its default, and the answer paths its check compares on (its agree_on; none, the whole answer) (a
- *  revision that cannot be read: every default, the whole answer). */
+ *  leaves out at its default, and the answer paths its check compares on (its agree_on; none, the whole answer). A read
+ *  that fails throws: no check is saved on defaults (a bar with no agree_on would compare the whole answer for the
+ *  check's life); the claim's gate leaves the run to its agent and the next claim reads it again (#3182 review). */
 async function loopOfRevision(deps: Pick<PromotionDeps, "store" | "revisionId">) {
-  try {
-    const revision = await deps.store.agents.revision(deps.revisionId);
-    return loopOf((revision?.body as { learning?: unknown } | undefined)?.learning);
-  } catch {
-    return loopOf(undefined);
-  }
+  const revision = await deps.store.agents.revision(deps.revisionId);
+  return loopOf((revision?.body as { learning?: unknown } | undefined)?.learning);
 }
 
 /** Which check of a compile a new revision's is: 2 when the workflow's newest record of another revision is a first
