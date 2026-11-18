@@ -24,7 +24,7 @@ async function open(agent: Agent) {
   return host.querySelector('[aria-label="Runs refused"]');
 }
 
-const IMPORTED = {
+const IMPORTED: NonNullable<Agent["run_blockers"]> = {
   message: "definition.instructions is empty: an agentic revision needs instructions. On codex, a model is <provider>/<model id>, like openrouter/openai/gpt-6.1-sol: openai/gpt-6.1-codex is not a model codex runs here.",
   fields: [
     { field: "definition.instructions", reason: "too_short", message: "definition.instructions is empty: an agentic revision needs instructions." },

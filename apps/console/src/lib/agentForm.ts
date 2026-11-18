@@ -22,8 +22,8 @@ export type SaveWarning = { field: string; reason: string; message: string };
 /** `warnings`: on a create's or an edit's answer only (never on a read of the agent); the console keeps a create's for
  *  the agent's page that opens after it (client.ts). */
 /** The console's agent, and of the served agent (GET /v2/agents/{id}, generated) its `sign_ins`, which only that read
- *  carries (a list's agents and a write's answer have none). */
-export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; native_status?: NativeBinding; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[]; /** What keeps a run started now from starting (GET /v2/agents/{id} alone): the run's own 409 agent_not_runnable, said before Run. */ run_blockers?: { message: string; fields: SaveWarning[] } | null; learning?: { pending: number } } & Partial<Pick<ServedAgent, "sign_ins" | "template">>;
+ *  carries (a list's agents and a write's answer have none), as its `run_blockers`. */
+export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; native_status?: NativeBinding; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[]; learning?: { pending: number } } & Partial<Pick<ServedAgent, "sign_ins" | "template" | "run_blockers">>;
 export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd" | "approvals">> & { workflowText?: string; maxCostText?: string; place?: Place; computer?: Computer };
 
 /** The body of a definition edit: the current definition with the edited fields; name and
