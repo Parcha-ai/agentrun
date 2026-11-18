@@ -2,7 +2,8 @@
 // to the claim it holds, whatever the process names. A GitHub token of the run's own pull request's repository alone,
 // contents read; decision and tier keys of the claim's learned workflows alone, as the runner chose them; the settings of
 // the server's shared configuration and the claim's own rows, never another run's; its viewers' address under its own
-// run's proof key, never the runners' shared one. And the channel lets go of a function it handed once the other side's
+// run's proof key, never the runners' shared one; no channel post; the computer it made let go by the runner at the
+// claim's release. Which runs stay in the runner. And the channel lets go of a function it handed once the other side's
 // stand-in for it is gone. No key, no network: a fake GitHub on loopback, dummy keys.
 import assert from "node:assert/strict";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
@@ -139,6 +140,39 @@ test("the settings a run's process reads are the server's shared configuration a
   assert.equal(await call("settings.get", ["tool-settings"]), "{}");
   assert.deepEqual((await call("settings.all", [])).map(({ key }) => key), ["tool-settings", "sdk-run:run-own", "learning.promotions.agent-own"]);
   assert.ok(lines.some((line) => /asked the store for settings\.get, which a run's process may not/.test(line)), lines.join("\n"));
+});
+
+test("a run's process reads no channel post: a webhook post, its own run's or another's, is refused unread", async () => {
+  const asked = [];
+  const store = { channels: { get: async (id) => (asked.push(id), { id, runId: "run-other", body: { title: "another run's" } }) } };
+  const bound = { claim: { runId: "run-own", epoch: 1 }, agentId: "agent-own", revisionId: "rev-own" };
+  const lines = [];
+  await assert.rejects(host.storeCall(store, "channels.get", ["post-1"], bound, (line) => void lines.push(line)), /may not call the store's channels\.get/);
+  assert.deepEqual(asked, [], "a refused read reached the store");
+  assert.ok(lines.some((line) => /asked the store for channels\.get, which a run's process may not/.test(line)), lines.join("\n"));
+});
+
+test("a run that runs no agent's code here stays in its runner: a learning run, an SDK backend run and a native run; any other run is a process of its own", () => {
+  assert.equal(typeof host.runsInRunner, "function", "the runner says which runs stay in it");
+  assert.equal(host.runsInRunner("learning", {}), true, "a learning run");
+  assert.equal(host.runsInRunner("claude-agent", { sdk: { runtime: "claude-agent-sdk", instructions: "Policy." } }), true, "an SDK backend run");
+  assert.equal(host.runsInRunner("pi", { native: { runtime: "claude-code", remote: { connector_id: "c-1" } } }), true, "a native run");
+  for (const harness of ["pi", "claude-agent", "codex"]) assert.equal(host.runsInRunner(harness, {}), false, harness);
+});
+
+test("the computer the runner made for a run is released by the runner at the claim's release, whatever its process did: once, as the run's end", async (t) => {
+  const { store } = await storeOn(t);
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "held-computer-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const released = [];
+  const deps = { store, sealKey: KEY, env: {}, data, computerForClaim: async () => ({ release: async (why) => void released.push(why ?? "released") }) };
+  const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch: { input: { content: "Hello." } }, revision: { kind: "agentic", body: {} }, claimed: {} };
+  const side = host.heldFor(deps, reads, (text) => text, () => {});
+  const got = await side.held.computer({ hadComputer: async () => false });
+  assert.equal(typeof got.release, "function");
+  // The run's process ends (a crash, a broken channel) without calling the computer's release.
+  await side.release();
+  assert.deepEqual(released, ["ended"], "the runner let the computer go at the claim's release");
 });
 
 test("a run's process is handed its runner's live address with its own run's proof key: a proof for its run's viewers holds, one for another run's or under the runners' shared key does not", async (t) => {

@@ -491,7 +491,6 @@ const STORE_CALLS: ReadonlyMap<string, Check> = new Map<string, Check>([
   ["learning.proposals", ownAgent],
   ["learning.list", ownAgent],
   ["learning.get", always],
-  ["channels.get", always],
   ["computerLedger.book", ownClaim],
   ["computerLedger.list", ownRun],
   ["live.put", ownClaim],
@@ -774,6 +773,10 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         } as never,
       );
       releases.push(() => ws.end());
+      // The computer let go by this runner at the claim's release too, before its folder: a process that crashed or broke
+      // its channel never calls its release. Idempotent with the process's own release and with its park (which keeps it).
+      const claimed = got as { release?: (why?: "ended") => Promise<void> } | undefined;
+      if (typeof claimed?.release === "function") releases.push(() => claimed.release!("ended"));
       return got;
     },
     archil: async () => {
@@ -926,10 +929,16 @@ export interface ChildLoopsOptions {
 /** The node and module a run's process starts with. */
 export const childArgv = (): string[] => [process.execPath, "--import", new URL("../secrets.js", import.meta.url).pathname, new URL("./run-child.js", import.meta.url).pathname];
 
-/** The runner's loop factory where each run is a process of its own: a ChildLoop per claim. A built-in learning run (its
- *  launch names harness "learning") stays in the runner: it runs no agent's code or tool (its grade is one ask through
- *  the runner's model route), and its one write is the merge into the agent's learning folder, which no run's process
- *  may write. */
+/** Whether a run stays in its runner's process rather than one of its own: one that runs no agent's code or tool here.
+ *  A built-in learning run (its launch names harness "learning"): its grade is one ask through the runner's model route,
+ *  and its one write is the merge into the agent's learning folder, which no run's process may write. An SDK backend
+ *  run (launch.sdk): its agent runs in the caller's application, and its loop here reads the evidence it posts and closes
+ *  its inbox. A native run (launch.native): its agent is the source machine's own sign-in, reached through the server's
+ *  connectors, whose rows are the server's. */
+export const runsInRunner = (harness: string, launch: Pick<RunLaunch, "sdk" | "native">): boolean => harness === "learning" || Boolean(launch.sdk) || Boolean(launch.native);
+
+/** The runner's loop factory where each run is a process of its own: a ChildLoop per claim, but for a run that stays in
+ *  the runner (runsInRunner). */
 export function childLoops(options: ChildLoopsOptions): LoopFactory {
   // Each slot locked on the data directory too: another runner on it whose range overlaps this one's never runs a run
   // on a slot this one holds.
@@ -938,7 +947,7 @@ export function childLoops(options: ChildLoopsOptions): LoopFactory {
   const here = resolveRunnerLoop(options.deps);
   return createDispatchLoop({
     launchOf: (runId) => options.deps.store.runs.launch(runId),
-    resolve: (harness, launch, runId) => (harness === "learning" ? here(harness, launch, runId) : own),
+    resolve: (harness, launch, runId) => (runsInRunner(harness, launch) ? here(harness, launch, runId) : own),
   });
 }
 

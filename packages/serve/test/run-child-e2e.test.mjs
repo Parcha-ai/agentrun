@@ -1,6 +1,7 @@
 // Runs in processes of their own, end to end through the API, as the CLI's start runs them (run-child-host.ts
 // childLoops): an upload named at a run's start is in its work folder before its process starts; a priced MCP tool's
-// call from a run's process is held and booked under its run's cap; a slot whose reap does not hold is retired before
+// call from a run's process is held and booked under its run's cap; an SDK backend run past its deadline is closed by its
+// runner and ends; a slot whose reap does not hold is retired before
 // any run of it starts; and the server started with its runner beside it (serveWithRunner, the image's start) runs each
 // run in a process of its own. image-custody.sh shows the same as the image's users.
 import assert from "node:assert/strict";
@@ -74,6 +75,28 @@ test("a priced MCP tool called from a run's process is held under its run's cap 
   const charge = rows.find((row) => row.kind === "phase" && row.tool_name === "mcp:fake/paid");
   assert.deepEqual([charge?.summary, charge?.usage?.usd], ["Tool cost: fake charged $0.0500 for mcp:fake/paid", 0.05], JSON.stringify(rows.filter((row) => row.kind === "phase")));
   assert.equal((await api("GET", `/runs/${runId}`)).body.cost?.usd, 0.05, "the run's cost is the tool's");
+});
+
+test("an SDK backend run whose deadline passed is closed by its runner and ends failed: its inbox closed, never claimed again and again", { timeout: 90_000 }, async (t) => {
+  const lines = [];
+  const server = await serve(t, { childRuns: { log: (line) => void lines.push(line) } });
+  const { api, store } = server;
+  const definition = { id: "sdk-close", name: "SDK close", instructions: "Use application policy.", sdk: { runtime: "claude-agent-sdk" }, learning: false, tools: [] };
+  assert.equal((await whenFree(() => api("POST", "/agents", { definition }))).status, 201);
+  const sdkRun = await api("POST", "/agents/sdk-close/sdk-runs", { runtime: "claude-agent-sdk", input: "A paid application task.", instructions: "Keep the whole application policy." }, { "Idempotency-Key": "close" });
+  assert.equal(sdkRun.status, 201, JSON.stringify(sdkRun.body));
+  const id = sdkRun.body.run_id;
+  const key = `sdk-run:${id}`;
+  // Its deadline moved to the past, as a backend that never completes it reaches.
+  for (let tries = 0; ; tries++) {
+    const row = await store.settings.get(key);
+    if (await store.settings.replaceIf(key, row, { ...row, expires_at: Date.now() - 1_000 })) break;
+    assert.ok(tries < 20, "the inbox kept changing");
+  }
+  const { last } = await follow(api, id, ["failed"], { deadlineMs: 60_000 }).catch((error) => assert.fail(`${error.message}; ${lines.filter((line) => line.includes("may not")).join("\n")}`));
+  assert.equal(last.status, "failed");
+  assert.equal((await store.settings.get(key)).closed, "expired");
+  assert.deepEqual(lines.filter((line) => line.includes("a run's process may not")), [], "no store call refused");
 });
 
 test("a slot whose reap does not end every process of its user is retired before any run starts on it: the helper is never asked to run the run there", { timeout: 60_000 }, async (t) => {
