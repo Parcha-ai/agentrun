@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { TRACE, TRACE_CLI, TRACE_END, TRACE_LIVE, TRACE_LIVE_NOW, TRACE_START, TRACE_USD } from "@/components/RunTrace.sample";
-import { byModel, byTool, costSplit, duration, findings, keeps, lane, offset, ordered, percent, percentile, spanMs, ticks, traceTotals, traceWindow, usd } from "@/lib/trace";
+import { between, byModel, byTool, costSplit, duration, findings, keeps, lane, offset, ordered, panned, percent, percentile, place, spanMs, ticks, timing, traceTotals, traceWindow, usd, vitals, WHOLE, zoomed } from "@/lib/trace";
 import type { TraceSpan } from "@/lib/v2";
 
 // The Dev tools tab's figures over the sample trace (RunTrace.sample.ts): each expected value here is worked out by hand
@@ -48,6 +48,88 @@ describe("where spans sit on the time axis", () => {
     expect(ticks(900).map((t) => t.label)).toEqual(["0.0s", "0.2s", "0.4s", "0.6s", "0.8s"]);
     expect(ticks(5 * 3_600_000).at(-1)!.label).toBe("5:00:00");
     expect(ticks(0)).toEqual([{ left: 0, label: "0:00" }]);
+  });
+});
+
+describe("the part of the run the table's time axis shows", () => {
+  const window = { from: TRACE_START + 3400, ms: 224_500 };
+  it("a zoom shows half as much about its middle, or about a place given; it stays inside the run and never under a 64th of it", () => {
+    expect(zoomed(WHOLE, 2)).toEqual({ from: 0.25, to: 0.75 });
+    expect(zoomed(WHOLE, 2, 0.1)).toEqual({ from: 0, to: 0.5 });
+    expect(zoomed(WHOLE, 2, 0.95)).toEqual({ from: 0.5, to: 1 });
+    // Out again past the whole run is the whole run, the very one: "is it zoomed" is one comparison.
+    expect(zoomed({ from: 0.25, to: 0.75 }, 0.5)).toBe(WHOLE);
+    expect(zoomed({ from: 0.5, to: 0.5 + 1 / 64 }, 2)).toEqual({ from: 0.5, to: 0.5 + 1 / 64 });
+  });
+  it("a move goes by a share of what shows and stops at the run's edges; a drag picks between two places in either order", () => {
+    expect(panned({ from: 0.25, to: 0.75 }, 0.5)).toEqual({ from: 0.5, to: 1 });
+    expect(panned({ from: 0.5, to: 1 }, 0.5)).toEqual({ from: 0.5, to: 1 });
+    expect(panned({ from: 0.25, to: 0.5 }, -2)).toEqual({ from: 0, to: 0.25 });
+    expect(between(0.75, 0.25)).toEqual({ from: 0.25, to: 0.75 });
+  });
+  it("a span's place in what shows: cut at an edge it runs past, and none for one wholly outside", () => {
+    // The long shell command runs from 54.2 s to 92.8 s of the sample; the window begins at 3.4 s and is 224.5 s long.
+    const bash = span("t:0:call_10");
+    const whole = place(bash, window, WHOLE, TRACE_END);
+    expect(whole.off).toBeNull();
+    expect((whole as { left: number }).left).toBeCloseTo((50_800 / 224_500) * 100, 9);
+    expect((whole as { width: number }).width).toBeCloseTo((38_600 / 224_500) * 100, 9);
+    // The middle half shows 59.525 s to 171.775 s: the command began before it, so its bar starts at the left edge
+    // and is what is left of it, 33.275 s of 112.25 s.
+    const cut = place(bash, window, { from: 0.25, to: 0.75 }, TRACE_END) as { left: number; width: number; off: null };
+    expect(cut.left).toBe(0);
+    expect(cut.width).toBeCloseTo((33_275 / 112_250) * 100, 9);
+    expect(place(span("t:0:call_01"), window, { from: 0.25, to: 0.75 }, TRACE_END)).toEqual({ off: "before" });
+    expect(place(span("m:0:40"), window, { from: 0.25, to: 0.75 }, TRACE_END)).toEqual({ off: "after" });
+  });
+  it("its marks name the time since the run began, wherever the part that shows begins", () => {
+    // The middle half of the sample: 56.125 s to 168.375 s, marked every 30 s from the first round time in it.
+    expect(ticks(112_250, 4, 56_125).map((t) => t.label)).toEqual(["1:00", "1:30", "2:00", "2:30"]);
+    expect(ticks(112_250, 4, 56_125)[0]!.left).toBeCloseTo((3875 / 112_250) * 100, 9);
+  });
+});
+
+describe("a span's time in three parts", () => {
+  it("a tool call: from its request's answer to its start, its run, and to the next request's start", () => {
+    const t = timing(span("t:0:call_08"), TRACE.spans, TRACE_END);
+    expect([t.before!.ms, t.before!.since.id, t.ran, t.then!.ms, t.then!.until.id]).toEqual([200, "m:0:16", 12_400, 200, "m:0:19"]);
+  });
+  it("a model request: from the end of the last thing before it, its answer, and to its first call's start", () => {
+    // The second request started at 14.9 s: the slowest of the three searches ended at 14.6 s. Its fetches began at 18.0 s, 200 ms after its answer.
+    const t = timing(span("m:0:9"), TRACE.spans, TRACE_END);
+    expect([t.before!.ms, t.before!.since.id, t.ran, t.then!.ms, t.then!.until.tool_use_id]).toEqual([300, "t:0:call_03", 2900, 200, "call_05"]);
+  });
+  it("a part the trace cannot say is left out: nothing before the first request, nothing after the last, no next for a call still going", () => {
+    expect(timing(span("m:0:2"), TRACE.spans, TRACE_END).before).toBeNull();
+    expect(timing(span("m:0:40"), TRACE.spans, TRACE_END).then).toBeNull();
+    const waiting = TRACE_LIVE.spans.find((s) => s.status === "waiting")!;
+    const t = timing(waiting, TRACE_LIVE.spans, TRACE_LIVE_NOW);
+    expect([t.before!.ms, t.ran, t.then]).toEqual([400, 11_400, null]);
+  });
+  it("a subagent's spans are not read against the run's own", () => {
+    const sub = { ...span("m:0:9"), id: "m:1:1", agent_label: "researcher" };
+    expect(timing(sub, [...TRACE.spans, sub], TRACE_END).before).toBeNull();
+  });
+});
+
+describe("the figures every run has", () => {
+  it("how soon it first answered and first acted, its largest input, its calls at once and its longest pause", () => {
+    const v = vitals(TRACE.spans, TRACE_END);
+    // From the window's start at 3.4 s: the first request answered at 8.2 s and the first call began at 8.4 s.
+    expect([v.firstAnswer!.ms, v.firstAnswer!.span.id]).toEqual([4800, "m:0:2"]);
+    expect([v.firstCall!.ms, v.firstCall!.span.id]).toEqual([5000, "t:0:call_01"]);
+    // The last request's input: 2 fresh, 85,712 read from cache, 6,886 written.
+    expect([v.largestInput!.tokens, v.largestInput!.nth, v.largestInput!.of]).toEqual([92_600, 8, 8]);
+    // Three searches ran together from 8.6 s; the skill call before them had ended.
+    expect(v.atOnce).toEqual({ calls: 3, at: 5200 });
+    // The longest stretch with nothing going: from the last search's end at 14.6 s to the next request at 14.9 s.
+    expect([v.longestPause!.ms, v.longestPause!.at, v.longestPause!.after.id]).toEqual([300, 11_200, "t:0:call_03"]);
+  });
+  it("a trace with no request has no first answer and no input; one call alone has no pause", () => {
+    const v = vitals(TRACE_CLI.spans.slice(0, 1), TRACE_END);
+    expect([v.firstAnswer, v.largestInput, v.longestPause]).toEqual([null, null, null]);
+    expect(v.atOnce).toEqual({ calls: 1, at: 0 });
+    expect(vitals([], TRACE_END)).toEqual({ firstAnswer: null, firstCall: null, largestInput: null, atOnce: null, longestPause: null });
   });
 });
 
@@ -143,6 +225,29 @@ describe("what stands out", () => {
     const idle: TraceSpan[] = [{ ...span("t:0:call_01"), started_at: new Date(TRACE_START).toISOString(), ended_at: new Date(TRACE_START + 1000).toISOString() }, { ...span("t:0:call_11"), started_at: new Date(TRACE_START + 9000).toISOString(), ended_at: new Date(TRACE_START + 10_000).toISOString() }];
     expect(findings({ spans: idle, model_requests: "not_recorded" }, TRACE_END).find((f) => f.id === "between")!.title).toBe("80% of the run was between calls");
     expect(findings(TRACE_CLI, TRACE_END).map((f) => f.id)).toEqual(["failed", "slowest-call"]);
+  });
+});
+
+describe("what stands out in how a run used its cache and its tools", () => {
+  it("a request that read nothing from cache after the cache was written is said, with what it sent fresh", () => {
+    // The fourth request of the sample, with nothing read from cache: its 48,816 cached tokens sent fresh instead.
+    const spans = TRACE.spans.map((s) => (s.id === "m:0:19" ? { ...s, tokens: { input: 48_818, cache_read: 0, cache_write: 9240, output: 734 } } : s));
+    const found = findings({ ...TRACE, spans }, TRACE_END).find((f) => f.id === "cache-reset")!;
+    expect([found.title, found.detail, found.span]).toEqual(["A request read nothing from cache at +0:36.0", "Earlier requests to claude-sonnet-5-5 wrote to the cache. This one sent its whole input fresh: 58,058 tokens.", "m:0:19"]);
+    // The run's first request reads nothing from cache and is not one: nothing was written before it.
+    expect(findings(TRACE, TRACE_END).some((f) => f.id === "cache-reset")).toBe(false);
+  });
+  it("three or more calls to one tool with the same arguments are said; two are not, and a head too long to compare is left out", () => {
+    const again = (n: number, input: string, more: Partial<TraceSpan> = {}): TraceSpan => ({ ...span("t:0:call_05"), id: `t:0:again_${n}`, tool_use_id: `again_${n}`, input_preview: input, ...more });
+    const url = '{"url":"https://registry.example/companies/NF-204418"}';
+    // The sample fetches that address once; two more fetches of it make three.
+    const thrice = findings({ ...TRACE, spans: [...TRACE.spans, again(1, url), again(2, url, { status: "failed" })] }, TRACE_END).find((f) => f.id === "repeated")!;
+    expect([thrice.title, thrice.detail, thrice.span]).toEqual(["3 calls to web_fetch had the same arguments", `${url} · 1 failed`, "t:0:again_1"]);
+    expect(findings({ ...TRACE, spans: [...TRACE.spans, again(1, url)] }, TRACE_END).some((f) => f.id === "repeated")).toBe(false);
+    // A CLI run that tests, edits and tests again made the same call twice: not a finding.
+    expect(findings(TRACE_CLI, TRACE_END).some((f) => f.id === "repeated")).toBe(false);
+    const long = "x".repeat(480);
+    expect(findings({ ...TRACE, spans: [...TRACE.spans, again(1, long), again(2, long), again(3, long)] }, TRACE_END).some((f) => f.id === "repeated")).toBe(false);
   });
 });
 
