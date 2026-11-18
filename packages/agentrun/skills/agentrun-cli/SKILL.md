@@ -134,6 +134,7 @@ Two clients call the same API from code, with the same server and token. `@parch
 - `agentrun agents`: archive, connect-native, create, delete-agent-archil, disconnect-native, discover-native, forget-sign-in, get, get-agent-archil, get-learning-loop, get-native, list, list-learning-audits, list-learning-promotions, runs, unarchive, update, verify-native
 - `agentrun connectors`: complete-remote-command, enroll-remote-connector, import-remote-history, import-remote-target, list-remote-connectors, poll-remote-connector, register-remote-connector, remote-command-events, revoke-remote-connector
 - `agentrun files`: create, delete, get, list, upload
+- `agentrun harness`: install
 - `agentrun home`: delete, list, read, write
 - `agentrun learning`: batch, batch-cancel, batch-start, batches, cost, evals, get, log, notes, read, record-eval, replay, retire, workflow-revisions, write
 - `agentrun local`: create-pairing, delete-composio-subscription, delete-computer, delete-workspace-archil, disconnect-git-hub, get-git-hub-connection, get-workspace-archil, list-composio-events, list-composio-triggers, list-computer-choices, list-computers, receive-hook-composio, rotate-composio-secret, test-computer, test-workspace-archil

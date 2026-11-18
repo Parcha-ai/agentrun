@@ -280,6 +280,16 @@ Route: `PUT /files/{file_id}`.
 - `--body JSON|@FILE|-` (application/octet-stream, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/octet-stream; any other than JSON is sent as given.
 
+## harness
+
+### `agentrun harness install HARNESS`
+
+Install a harness AgentRun runs only once its owner installs it (goose), then restart AgentRun.
+
+Route: none, it runs on this machine.
+
+- `--data DIR` (string, this CLI's own): the data directory of the AgentRun it is for (default ~/.agentrun, where npx @parcha/agentrun keeps it)
+
 ## home
 
 ### `agentrun home delete AGENT_ID PATH`

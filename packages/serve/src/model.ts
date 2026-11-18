@@ -16,7 +16,7 @@ import type { Revision } from "./agent-rows.js";
 import { gatewayBase } from "./provider.js";
 import { modelFormWhy } from "./model-form.js";
 // Leaves, which the key rows below read as this module loads, in any import order (wires.ts, adapter-facts.ts).
-import { ADAPTER_FACTS } from "./adapter-facts.js";
+import { adapterFactsOf, EVERY_ADAPTER_FACTS } from "./adapter-facts.js";
 import { WIRES } from "./wires.js";
 import { authContextOf } from "./secrets.js";
 import { EXPIRED, PLAN_DEFAULT_MODEL, PLAN_ORIGIN, PLAN_PROVIDER, planOf, signedIn, SIGNED_OUT } from "./chatgpt-plan.js";
@@ -69,17 +69,18 @@ export const MODEL_KEYS: readonly { id: string; label: string; field: string; mo
   { id: "anthropic", label: "Anthropic", field: "ANTHROPIC_API_KEY", model: "anthropic/claude-sonnet-5-5", harnesses: onVendor("anthropic") },
   { id: "openai", label: "OpenAI", field: "OPENAI_API_KEY", model: "openai/gpt-6.1-sol", harnesses: onVendor("openai") },
   // OpenRouter serves both wires: every harness runs on its key, an adapter harness on its wire's vendor's model there.
-  { id: "openrouter", label: "OpenRouter", field: "OPENROUTER_API_KEY", model: "openrouter/openai/gpt-6.1-sol", harnesses: [DEFAULT_HARNESS, ...ADAPTER_FACTS.map((facts) => facts.id)], byVendor: { anthropic: "anthropic/claude-sonnet-5.5", openai: "openai/gpt-6.1-sol" } },
+  { id: "openrouter", label: "OpenRouter", field: "OPENROUTER_API_KEY", model: "openrouter/openai/gpt-6.1-sol", harnesses: [DEFAULT_HARNESS, ...EVERY_ADAPTER_FACTS.map((facts) => facts.id)], byVendor: { anthropic: "anthropic/claude-sonnet-5.5", openai: "openai/gpt-6.1-sol" } },
 ]);
 
-/** pi, and the adapter harnesses whose wire (their facts') runs `vendor`'s models: those that talk to its own API. */
+/** pi, and the adapter harnesses whose wire (their facts') runs `vendor`'s models: those that talk to its own API (Goose
+ *  among them where its package is; a key's row in the API names the built-in ones alone, tool-keys.ts). */
 function onVendor(vendor: string): readonly string[] {
-  return [DEFAULT_HARNESS, ...ADAPTER_FACTS.filter((facts) => WIRES[facts.wire].vendor === vendor).map((facts) => facts.id)];
+  return [DEFAULT_HARNESS, ...EVERY_ADAPTER_FACTS.filter((facts) => WIRES[facts.wire].vendor === vendor).map((facts) => facts.id)];
 }
 
 /** `row`'s default for `harness`: the one for its wire's vendor (`byVendor`, OpenRouter's), else the row's. */
 const rowModel = (row: (typeof MODEL_KEYS)[number], harness: string): string => {
-  const facts = ADAPTER_FACTS.find((f) => f.id === harness);
+  const facts = adapterFactsOf(harness);
   return (facts && row.byVendor?.[WIRES[facts.wire].vendor]) ?? row.model;
 };
 

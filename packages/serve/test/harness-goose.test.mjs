@@ -64,12 +64,15 @@ test("goose is one entry of the table: Goose, on Anthropic's Messages, its promi
   assert.ok(goose.hidden(mismatched).includes(`agentrun harness install goose --data ${data}`), goose.hidden(mismatched));
 });
 
-test("on the default data directory the command names no --data", async (t) => {
+test("on the agentrun command's own data directory (~/.agentrun, where npx @parcha/agentrun keeps it) the command names no --data; on any other, it does", async (t) => {
   const home = await scratch(t);
-  const env = { HOME: home, XDG_DATA_HOME: "" };
-  const reason = harnessOf(env, "goose").hidden(env);
+  const own = { HOME: home, [DATA_ENV]: join(home, ".agentrun") };
+  const reason = harnessOf(own, "goose").hidden(own);
   assert.match(reason, /HARNESS_NOT_INSTALLED/);
   assert.match(reason, /agentrun harness install goose(?! --data)/);
+  // The server's own default (~/.local/share/agentrun/agents) is not the command's: named.
+  const serverDefault = { HOME: home, XDG_DATA_HOME: "" };
+  assert.ok(harnessOf(serverDefault, "goose").hidden(serverDefault).includes(`agentrun harness install goose --data ${join(home, ".local", "share", "agentrun", "agents")}`));
 });
 
 test("a harness module may not name goose: a built-in harness", async (t) => {
@@ -138,6 +141,6 @@ test("a run on the real Goose through serve's runner: its model's requests reach
   assert.ok(asked.length >= 1, "Goose's model was asked");
   assert.ok(asked.every((r) => r.headers["x-api-key"] === "fake-test-key" && r.body.model === MODEL), "the host's key, the native id");
   assert.deepEqual(fake.requests.filter((r) => r.path !== "/v1/messages").map((r) => `${r.method} ${r.path}`), [], "no other request reached the origin");
-  assert.ok(rows.some((r) => r.kind === "message" && /GOOSE_RAN/.test(JSON.stringify(r))), "the run's answer is the model's");
+  assert.ok(rows.some((r) => r.kind === "final_answer" && r.text === "GOOSE_RAN"), `the run's answer is the model's: ${JSON.stringify(rows).slice(0, 4000)}`);
   assert.equal(rows.findLast((r) => r.kind === "usage")?.usage?.requests, asked.length, "each request booked once");
 });

@@ -31,6 +31,7 @@ surviveClosedPipes();
 const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--open] [--faux MODULE] [--faux-browser MODULE] [--faux-github] [--allow-host NAME ...] [--max-runs N] [--drain-timeout D] [--documents DIR] [--allow-code-nodes] [--learning on|off] [--learning-budget BYTES] [--grade-model MODEL] [--no-runner] [--harness-module MODULE ...]
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
+       agentrun-serve install-harness goose [--data DIR]
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL | --on-data DIR] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
        agentrun-serve runner --data DIR [--loops N] [--drain-timeout D] [--name NAME]
@@ -160,6 +161,42 @@ if (process.argv[2] === "reset-password") {
   resetPassword(target);
   console.log(`The password is cleared and every browser is signed out (${target}). The next visit to the page sets a new one.`);
   process.exit(0);
+}
+
+// A harness its owner installs (harness-goose.ts: Goose, the one there is), never a run: its pinned archive downloaded,
+// checked and unpacked into DIR/harnesses/<name> (harness-archive.ts). 0 once it is there (now or already), 1 when the
+// install failed (its code and the command to try again), 2 for a name it does not install. No provider key is read.
+if (process.argv[2] === "install-harness") {
+  const usage = (message: string): never => (console.error(`agentrun-serve install-harness: ${message}\n\n${USAGE}`), process.exit(2));
+  const read = () => {
+    try {
+      return parseArgs({ args: process.argv.slice(3), options: { data: { type: "string" } }, allowPositionals: true });
+    } catch (error) {
+      return usage((error as Error).message);
+    }
+  };
+  const { values, positionals } = read();
+  const { GOOSE_ID, installGoose } = await import("./harness-goose.js");
+  if (positionals.length !== 1) usage(`it takes one harness: ${GOOSE_ID}.`);
+  if (positionals[0] !== GOOSE_ID) usage(`it installs ${GOOSE_ID}, not ${positionals[0]}: claude-agent and codex install on first use, and pi and opencode come with AgentRun.`);
+  const [{ ArchiveInstallFailed }, { acpPackage, ACP_PACKAGE }] = await Promise.all([import("./harness-archive.js"), import("./acp-package.js")]);
+  if (!acpPackage()) {
+    console.error(`Goose's adapter (${ACP_PACKAGE}) is not installed beside this server, so it has no pinned release to install.`);
+    process.exit(1);
+  }
+  const data = resolve(values.data ?? defaultData());
+  try {
+    const said = { downloaded: "the archive is downloaded and its sha256 matches the pin", unpacked: "unpacked", verified: "the binary's sha256 matches the pin" } as const;
+    const { version, installed, binary } = await installGoose(data, { onStep: (step) => console.error(`Goose: ${said[step]}`) });
+    console.log(installed === "already"
+      ? `Goose ${version} is installed in ${dirname(binary)} (already: the pinned binary is there, so nothing was downloaded).`
+      : `Goose ${version} is installed in ${dirname(binary)} (now). Restart AgentRun to pick it up.`);
+    process.exit(0);
+  } catch (error) {
+    if (!(error instanceof ArchiveInstallFailed)) throw error;
+    console.error(error.message);
+    process.exit(1);
+  }
 }
 
 // A template package folder checked by the one validator the server runs on the packages it ships (templates.ts): what
