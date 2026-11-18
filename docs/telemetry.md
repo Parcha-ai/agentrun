@@ -3,9 +3,8 @@
 AgentRun's server counts how many servers run, so the project knows whether it is used and which versions are. The
 counts are anonymous, and one setting turns them off.
 
-**This release sends nothing.** The code is in place and the receiver's key is not set (`TELEMETRY_KEY` in
-[`packages/serve/src/telemetry.ts`](../packages/serve/src/telemetry.ts)). The release that sets it says so in its
-changelog.
+**The counts are on from the release after 0.1.0-beta.44.** That release and every earlier one send nothing. A server
+prints a notice at the first start that could send, and sends nothing at that start.
 
 ## Turn it off
 
@@ -21,6 +20,7 @@ With `npx @parcha/agentrun`, set it in the shell. In a container, set it in the 
 It is also off, with nothing to set:
 
 - in CI (`CI` is set)
+- under a test runner (`NODE_TEST_CONTEXT` is set, as `node --test` sets it for a server a test starts)
 - under `--faux`
 - in every command but the server's start (`import`, `eval-template`, `runner`, the CLI)
 

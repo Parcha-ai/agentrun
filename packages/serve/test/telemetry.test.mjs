@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as wait } from "node:timers/promises";
 import { test } from "node:test";
-import { runsRange, startTelemetry, TELEMETRY_FILE, TELEMETRY_KEY, TELEMETRY_NOTICE, telemetryMode } from "../dist/telemetry.js";
+import { runsRange, startTelemetry, TELEMETRY_FILE, TELEMETRY_KEY, TELEMETRY_NOTICE, TELEMETRY_URL, telemetryMode } from "../dist/telemetry.js";
 
 /** A stand-in for the project key: any text that is not empty turns sending on. */
 const KEY = "test";
@@ -35,6 +35,18 @@ test("the operator's setting, DO_NOT_TRACK, CI and --faux each turn it off; a bu
 
 test("this build's key is a PostHog project key or empty, never anything else", () => {
   assert.match(TELEMETRY_KEY, /^(phc_[A-Za-z0-9]+)?$/);
+});
+
+test("this build sends: with nothing set the counts are on, to the project's own name, and each way off still wins", () => {
+  assert.equal(telemetryMode({}), "on");
+  assert.equal(new URL(TELEMETRY_URL).origin, "https://telemetry.agentrun.ai");
+  assert.equal(telemetryMode({ AGENTRUN_TELEMETRY: "0" }), "off_setting");
+  assert.equal(telemetryMode({ DO_NOT_TRACK: "1" }), "off_do_not_track");
+  assert.equal(telemetryMode({ CI: "true" }), "off_ci");
+  // A server a test starts inherits node --test's mark, so this repository's own suites are never counted.
+  assert.equal(telemetryMode({ NODE_TEST_CONTEXT: "child-v8" }), "off_test");
+  assert.equal(telemetryMode({ NODE_TEST_CONTEXT: "child-v8", AGENTRUN_TELEMETRY: "debug" }), "off_test");
+  assert.equal(telemetryMode({}, { faux: true }), "off_faux");
 });
 
 test("turned off, it writes no file, sends nothing and prints no notice", async () => {

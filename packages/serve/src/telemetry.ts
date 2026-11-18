@@ -2,7 +2,7 @@
 // first run completed. Each event holds a random id made for this data directory, the server's version, the platform,
 // and how many runs ended here as a range. It never holds a prompt, a workflow, a key, a name, a path or an address.
 //
-// Off with AGENTRUN_TELEMETRY=0 or DO_NOT_TRACK=1, in CI, and under --faux. The start that first could send prints one
+// Off with AGENTRUN_TELEMETRY=0 or DO_NOT_TRACK=1, in CI, under a test runner, and under --faux. The start that first could send prints one
 // notice and sends nothing at its start, so a person reads how to turn it off before anything leaves the machine.
 // AGENTRUN_TELEMETRY=debug prints every event and sends none; it never stands in for that notice.
 // Sending never delays a start, a run or a stop, and a send that fails is dropped without a word. A run's end is counted
@@ -15,8 +15,9 @@ import { tempOf, writeDurableSync } from "./server-fs.js";
 
 /** Where events go: PostHog's capture route, behind this project's own name. */
 export const TELEMETRY_URL = "https://telemetry.agentrun.ai/i/v0/e/";
-/** The project's write-only key, public by design. Empty: this build sends nothing and prints no notice. */
-export const TELEMETRY_KEY = "";
+/** The project's write-only key, public by design: it can add an event and read nothing. Empty would send nothing and
+ *  print no notice. */
+export const TELEMETRY_KEY = "phc_kz3ieB34X89r2bv6gLbdeXDiNNn78KiAPRCZCxMzUBuA";
 /** The file in the data directory that keeps the id, when the notice was printed and how many runs ended. */
 export const TELEMETRY_FILE = ".telemetry.json";
 /** How often a running server says it still runs. */
@@ -39,17 +40,19 @@ export interface TelemetryEvent {
 export type RunsRange = "0" | "1-10" | "11-100" | "101+";
 
 /** Why nothing is sent, or "on" / "debug" (events printed to stderr, none sent). */
-export type TelemetryMode = "on" | "debug" | "off_setting" | "off_do_not_track" | "off_ci" | "off_faux" | "off_no_key";
+export type TelemetryMode = "on" | "debug" | "off_setting" | "off_do_not_track" | "off_ci" | "off_test" | "off_faux" | "off_no_key";
 
 const OFF = new Set(["0", "false", "off", "no"]);
 
-/** What this start does, from its environment: the operator's own setting first, then DO_NOT_TRACK, CI and --faux. */
+/** What this start does, from its environment: the operator's own setting first, then DO_NOT_TRACK, CI, a test runner
+ *  (node --test's NODE_TEST_CONTEXT, which a server a test starts inherits) and --faux. */
 export function telemetryMode(env: NodeJS.ProcessEnv, o: { faux?: boolean; key?: string } = {}): TelemetryMode {
   const setting = (env.AGENTRUN_TELEMETRY ?? "").trim().toLowerCase();
   if (OFF.has(setting)) return "off_setting";
   const dnt = (env.DO_NOT_TRACK ?? "").trim().toLowerCase();
   if (dnt !== "" && !OFF.has(dnt)) return "off_do_not_track";
   if (env.CI) return "off_ci";
+  if (env.NODE_TEST_CONTEXT) return "off_test";
   if (o.faux) return "off_faux";
   if (setting === "debug") return "debug";
   return (o.key ?? TELEMETRY_KEY) === "" ? "off_no_key" : "on";
