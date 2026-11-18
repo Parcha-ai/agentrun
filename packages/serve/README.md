@@ -2789,6 +2789,10 @@ serves these routes alone:
 - an agent's Archil disk (`GET` and `DELETE /agents/{id}/archil`);
 - the [delete of an agent another system owns](#deleting-an-agent-another-system-owns) (`DELETE /agents/{id}`), for
   the backend whose inline runs made it;
+- the computer settings' two reads, for a backend to check before it launches: `GET /computers` (each provider, its
+  key names and whether each is saved, and whether it is ready) and `GET /workspace/archil` (whether runs' folders are
+  on Archil, and whether its account key is saved). Neither answers a key's value. Their writes, tests and key choices
+  are the console's, refused here;
 - `GET /capabilities`, `GET /health` and `GET /usage`.
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
