@@ -154,6 +154,8 @@ function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs:
     route: async (env, needs) => {
       const { nativeOptions, priceOf } = await import("./adapters.js");
       const provider = providerFor(wire, env, needs.model, id);
+      // A person's Claude Code login is its CLI's alone: no request of serve's own goes on it.
+      if (provider.login) throw new HarnessUnavailable(`${id} runs on Claude Code's login on this machine, which only its CLI uses: this request needs a model key.`);
       const policy = facts.policy({ model: provider.modelId, tools: [], auth: provider.auth, ...nativeOptions(facts, env), ...(provider.billing === "plan" ? { plan: true } : {}) });
       return { api: wire, options: { policy, model: provider.modelId, origin: provider.origin, credential: async () => provider.credential(), price: priceOf({ ...needs, model: provider.priceModel }) } };
     },

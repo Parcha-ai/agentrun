@@ -26,7 +26,8 @@ const incomplete = (reason) => ({ type: 'response.incomplete', response: { statu
 /** A Responses stream, its events as data alone (no `event:` lines): `text`, then its last event, `end`. */
 const stream = (text, end) => [{ type: 'response.output_text.delta', item_id: 'm_0', output_index: 0, content_index: 0, delta: text }, end].map((e) => `data: ${JSON.stringify(e)}\n\n`).join('');
 
-async function turnOn(t, end) {
+/** One turn whose answer ends with `end`, its request admitted with `ticket` (the host's admission). */
+async function turnOn(t, end, ticket = { turn: 0 }) {
   const dir = mkdtempSync(join(ROOT, 'n-'));
   const sent = [];
   const booked = [];
@@ -37,7 +38,7 @@ async function turnOn(t, end) {
   const adapter = codexAdapter({ model: 'luna-test', provider: { origin: 'https://provider.invalid', credential: () => 'k' }, price: () => 0.001, sessionsDir: join(dir, 'sessions'), standIn: { command: process.execPath, args: [FAKE], env: { FAKE_CODEX_MODEL: 'responses' } }, fetch });
   const store = memorySessionStore();
   const events = [];
-  const models = { beforeRequest: async () => ({ turn: 0 }), afterRequest: async (request) => void booked.push(request) };
+  const models = { beforeRequest: async () => ticket, afterRequest: async (request) => void booked.push(request) };
   const session = await adapter.open({ key: 's1', label: 'root', system: [], tools: [], context: 'fresh' }, { writer: await store.open('s1'), models, signal: new AbortController().signal, onEvent: (event) => events.push(event) });
   t.after(() => session.close());
   await session.send('go');
@@ -55,6 +56,13 @@ test('an answer cut at its output limit ends the turn at once: one request, book
   const json = JSON.stringify(records);
   assert.match(json, /"type":"message","role":"assistant","text":"The answer is"/, "the cut text in the session's records");
   assert.match(json, /"type":"turn","status":"completed","stopReason":"length","outputTokens":7/, "the turn's end in the session's records says it was cut");
+});
+
+test("an answer cut at the output the run's cap limited it to says so on its turn_end: the cap, and the least cap that sends it whole", { timeout: 60_000 }, async (t) => {
+  const { outcome, events, records } = await turnOn(t, incomplete('max_output_tokens'), { turn: 0, outputTokensMax: 7, capCut: { capUsd: 0.5, raiseToUsd: 1.83 } });
+  assert.deepEqual(outcome, { status: 'completed' });
+  assert.deepEqual(events.filter((event) => event.type === 'turn_end'), [{ type: 'turn_end', status: 'completed', stopReason: 'length', outputTokens: 7, capCut: { capUsd: 0.5, raiseToUsd: 1.83 } }]);
+  assert.match(JSON.stringify(records), /"type":"turn","status":"completed","stopReason":"length","outputTokens":7,"capCut":\{"capUsd":0.5,"raiseToUsd":1.83\}/, "the turn's end in the session's records says the cap cut it");
 });
 
 test('a content-filter stop stays filtered: the turn fails in the filter words, never a cut', { timeout: 60_000 }, async (t) => {

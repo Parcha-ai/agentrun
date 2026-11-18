@@ -9,7 +9,11 @@
 //   openai-responses: the gateway at AGENT_MODEL_BASE_URL's base with its key (AGENT_MODEL_API_KEY, or none), the model
 //     as model.ts chose it; OpenAI with its key, OpenAI's id; or OpenRouter's Responses API (openRouterOnly, or a model
 //     the run names on it, `openrouter/openai/<model-id>`), the model's whole id. Each key goes as a bearer token.
+//   claude-agent on Claude Code's login on this machine (claude-login.ts), when the owner turned it on: an Anthropic
+//     model goes on the person's plan, from the CLI itself, with no key of ours and no proxy (`login`).
 import type { Wire } from "@parcha/agentrun-kernel";
+import type { ClaudeAgentLogin } from "@parcha/agentrun-harness-claude";
+import { CLAUDE_LOGIN_PROVIDER, onClaudeLogin, claudeLoginOf } from "./claude-login.js";
 import { chooseModel, FAUX_ENV, hostModel, MODEL_PROVIDER, type ModelNeeds, type ModelRef } from "./model.js";
 import { WIRES } from "./wires.js";
 import { modelFormWhy } from "./model-form.js";
@@ -118,7 +122,9 @@ export function anthropicModelId(model: ModelRef): string {
  *  vendor, a key that is not set (its `keys` name the ones that would fix it), or an endpoint a key may not go to. */
 /** `billing: "plan"`: a ChatGPT plan's route (chatgpt-plan.ts), billed to the plan, never priced here; its credential is
  *  the plan's token, asked at each request, and `refused` tells the plan OpenAI answered 401 to one it sent. */
-export type Provider = { origin: string; credential: () => string | Promise<string>; auth: "bearer" | "x-api-key"; modelId: string; priceModel: ModelRef; billing?: "plan"; refused?: (credential: string) => Promise<void> };
+/** `login`: claude-agent on Claude Code's login on this machine (claude-login.ts): billed to the person's plan, its CLI
+ *  calling Anthropic itself; `origin` and `credential` are never read (no proxy, no key). */
+export type Provider = { origin: string; credential: () => string | Promise<string>; auth: "bearer" | "x-api-key"; modelId: string; priceModel: ModelRef; billing?: "plan"; refused?: (credential: string) => Promise<void>; login?: ClaudeAgentLogin };
 
 /** OpenRouter's key, read per request, refused by name where it is not set. */
 function openRouterKey(env: NodeJS.ProcessEnv, who: string, named: string): () => string {
@@ -142,6 +148,9 @@ export function providerFor(wire: Wire, env: NodeJS.ProcessEnv, model: ModelRef,
     }
     if (model.provider !== "anthropic") throw new HarnessUnavailable(`${who} runs Anthropic models; the run's model is ${named}.`);
     const own = anthropicModelId(model);
+    // Claude Code's login on this machine, turned on here: claude-agent's Anthropic model goes on it, whatever key is set.
+    const login = onClaudeLogin(env, who) ? claudeLoginOf(env) : undefined;
+    if (login) return { origin: ANTHROPIC_ORIGIN, credential: () => "", auth: "x-api-key", modelId: own, priceModel: { provider: CLAUDE_LOGIN_PROVIDER, modelId: own }, billing: "plan", login };
     if (openRouterOnly(wire, env)) return { origin: OPENROUTER_BASE, credential: openRouterKey(env, who, named), auth: "bearer", modelId: own, priceModel: { provider: "openrouter", modelId: `anthropic/${openRouterName(own)}` } };
     // The endpoint first: one it refuses is the reason, and no key would fix it (no `keys`). An endpoint the host names
     // takes Anthropic's key alone: OpenRouter's never goes there.
