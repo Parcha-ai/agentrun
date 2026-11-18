@@ -287,8 +287,10 @@ On **Local model**, only on this computer, give the service the model; it restar
 
 Where AgentRun runs in the background, run `~/.agentrun/bin/agentrun stop`, then the installer with the same four in
 front of `sh`: `curl -fsSL https://agentrun.ai/install | AGENT_MODEL_BASE_URL=http://localhost:11434/v1
-AGENT_MODEL_GATEWAY_IDS=bare AGENT_MODEL=<tag> AGENT_MODEL_PRICE=0,0,0 sh`. Then confirm `models.ready` in the
-capabilities.
+AGENT_MODEL_GATEWAY_IDS=bare AGENT_MODEL=<tag> AGENT_MODEL_PRICE=0,0,0 sh`. A background start keeps only what that
+line sets, so on **Yes, only me** (step 3) put `AGENTRUN_MCP_ALLOW_LOOPBACK=1 AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` in
+front of `sh` too. Then confirm `models.ready` in the capabilities, and on **Yes, only me** both switches `on: true`
+under `switches`.
 
 Claude Code through a gateway they already run (LiteLLM, say): restart the server with `ANTHROPIC_BASE_URL=<gateway>
 ANTHROPIC_API_KEY=<its key, or any placeholder when it adds its own>`; the gateway must take Anthropic Messages at `/v1/messages`.
