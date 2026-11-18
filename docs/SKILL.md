@@ -138,6 +138,8 @@ Continue in a session on that machine, or an SSH session they already use. With 
 own tailnet only (`tailscale serve`, never Funnel) and prints its `https://<machine>.<tailnet DNS name>/` address. When
 Tailscale is missing or signed out, or Linux needs operator rights, it prints the steps and the command to run again;
 pass them on, and never run `sudo` or `tailscale up` for them. It asks for a setup code (below).
+On a Linux server they rent (Ubuntu or Debian, as root), run `curl -fsSL https://agentrun.ai/install | sh -s -- --vps`
+instead. It runs AgentRun in Docker, gives its agents a shell, keeps it private the same way and prints the setup code.
 
 ### A hosted service
 

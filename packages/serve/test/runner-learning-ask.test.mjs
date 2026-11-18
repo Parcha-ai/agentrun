@@ -10,7 +10,7 @@ import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { sessionSpendOf } from "@parcha/agentrun-kernel";
 import { agentWithRevision, storeOn } from "./store-helpers.mjs";
 
-const { bookedAsk, SDK_ASK_SESSION } = await import("../dist/runner/sdk-ask.js");
+const { AskOverCap, bookedAsk, SDK_ASK_SESSION } = await import("../dist/runner/sdk-ask.js");
 const { journalSessions } = await import("../dist/runner/sessions.js");
 const { bookedSpend } = await import("../dist/runner/metrics.js");
 const { runEntries } = await import("../dist/store-reads/journal.js");
@@ -22,6 +22,8 @@ const ANSWER = "````workflow find-policies\n{}\n````";
 const USED = { input: 1_200, output: 40 };
 const USD = (USED.input * 3 + USED.output * 15) / 1e6;
 const eight = (usd) => Math.round(usd * 1e8) / 1e8;
+/** A run with no cap: only its limit of requests on free models holds, and its spend outside the ask is none. */
+const UNCAPPED = { capUsd: undefined, beside: async () => 0, freeRequests: 100 };
 
 const sse = (events) => new Response(events.map((event) => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), { status: 200, headers: { "content-type": "text/event-stream" } });
 /** The model's provider: every request it gets is recorded, and answered with ANSWER at USED. */
@@ -67,7 +69,7 @@ async function askedOnce(t, wire = {}) {
     model: MODEL,
     price,
     fetch: (wire.origin ?? origin)(sent),
-  });
+  }, UNCAPPED);
   const answer = await ask({ prompt: "Write the job as a workflow.", maxTokens: 16_000 }, new AbortController().signal, { journal: () => store.journal(claim), flush: () => store.flush() });
   return { answer, sent, store };
 }
@@ -90,15 +92,39 @@ test("an ask a restart cut after it was booked: the next attempt's answer carrie
   const sent = [];
   const route = { provider: { api: "anthropic-messages", origin: "https://model.invalid", credential: () => `not-a-secret-${"x"}` }, model: MODEL, price, fetch: origin(sent) };
   const dead = await store.claim("run-1", "runner-dead", { leaseMs: 60_000 });
-  await bookedAsk(route)({ prompt: "Write the job as a workflow.", maxTokens: 16_000 }, new AbortController().signal, { journal: () => store.journal(dead), flush: () => store.flush() });
+  await bookedAsk(route, UNCAPPED)({ prompt: "Write the job as a workflow.", maxTokens: 16_000 }, new AbortController().signal, { journal: () => store.journal(dead), flush: () => store.flush() });
   // The earlier runner is gone: its lease runs out, and the next one claims the run.
   clock.now += 120_000;
   const next = await store.claim("run-1", "runner-b", { leaseMs: 60_000 });
   assert.ok(next, "the next attempt claims the run");
-  const answer = await bookedAsk(route)({ prompt: "Write the job as a workflow.", maxTokens: 16_000 }, new AbortController().signal, { journal: () => store.journal(next), flush: () => store.flush() });
+  const answer = await bookedAsk(route, UNCAPPED)({ prompt: "Write the job as a workflow.", maxTokens: 16_000 }, new AbortController().signal, { journal: () => store.journal(next), flush: () => store.flush() });
   assert.equal(sent.length, 2);
   assert.equal(eight(answer.usd), eight(USD), "the answer's dollars are its own request's");
   assert.equal(eight((await inRecords(store, "run-1")).spent), eight(2 * USD), "the records hold both requests");
+});
+
+test("an ask the run's cap refuses is never sent: AskOverCap in the cap's words, carrying what its session booked before it, and its session's spend unchanged", async (t) => {
+  const { store } = await storeOn(t);
+  await agentWithRevision(store);
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  const sent = [];
+  const route = { provider: { api: "anthropic-messages", origin: "https://model.invalid", credential: () => `not-a-secret-${"x"}` }, model: MODEL, price, fetch: origin(sent), cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 64_000 };
+  const run = { journal: () => store.journal(claim), flush: () => store.flush() };
+  const ask = { prompt: "Write the job as a workflow.", maxTokens: 16_000 };
+  // An earlier ask of the session, sent and booked.
+  await bookedAsk(route, UNCAPPED)(ask, new AbortController().signal, run);
+  // $0.25 spent beside the session under a $0.30 cap: its whole 16,000-token output at $15 a million ($0.24) cannot fit.
+  const refused = await bookedAsk(route, { capUsd: 0.30, beside: async () => 0.25, freeRequests: 100 })(ask, new AbortController().signal, run).then(() => undefined, (error) => error);
+  assert.ok(refused instanceof AskOverCap, `refused by the cap: ${refused}`);
+  assert.match(refused.message, /^spend_cap_reached(?: \([^)]*\))?: /, "the cap's words");
+  assert.equal(sent.length, 1, "the refused ask never reached the provider");
+  assert.deepEqual({ usd: eight(refused.booked.usd), turns: refused.booked.turns }, { usd: eight(USD), turns: 1 }, "what the session booked before it");
+  assert.equal(eight((await inRecords(store, "run-1")).spent), eight(USD), "nothing booked for the refused ask");
+  // The same spend under a cap with room for it: sent and booked.
+  const fits = await bookedAsk(route, { capUsd: 1, beside: async () => 0.25, freeRequests: 100 })(ask, new AbortController().signal, run);
+  assert.equal(sent.length, 2);
+  assert.equal(eight(fits.usd), eight(USD));
 });
 
 /** A gateway's Responses stream: ANSWER at USED, its connection left open `lingerMs` after its completion event and its
