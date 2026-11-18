@@ -203,6 +203,31 @@ test("every provider's descriptor declares network beside mounts: the network fo
 	assert.deepEqual(index.descriptorOf("orgo").network, ["none"]);
 });
 
+test("whether a provider's machines dial the server is its descriptor's connect, read by connectOf without building one, and is what its built host's facts.connect says", async () => {
+	const { connectOf, descriptorOf } = index;
+	// Read from the descriptors alone: Fly and Cloudflare always dial; E2B, Daytona and Modal dial where their connect
+	// option (a server setting) says dial, and reach their machines through the vendor's exec otherwise.
+	assert.deepEqual(providerIds.filter((id) => connectOf(descriptorOf(id)) === "dial"), ["cloudflare", "fly"]);
+	assert.deepEqual(providerIds.filter((id) => connectOf(descriptorOf(id), { connect: "dial" }) === "dial" && connectOf(descriptorOf(id)) === "exec"), ["daytona", "modal", "e2b"]);
+	for (const id of providerIds) {
+		const either = descriptorOf(id).connect === "either";
+		// A provider's own connect setting is the only way to choose: one with none ignores a connect it is given.
+		assert.equal(either, (descriptorOf(id).settings ?? []).some((setting) => setting.option === "connect"), `${id}: connect "either" exactly where a setting fills its connect option`);
+	}
+	assert.throws(() => connectOf(descriptorOf("e2b"), { connect: "ssh" }), /^Error: connect is how E2B reaches its machines, "exec" \(the default\) or "dial", not "ssh"$/);
+	// The built hosts agree: the one answer hosted/provider.ts reads (facts.connect) comes from connectOf.
+	const built = [
+		["fly", { apiToken: "fake-test-key", app: "fake-app" }],
+		["cloudflare", { relayUrl: "https://relay.example.com", relayToken: "fake-test-key" }],
+		["daytona", { apiKey: "fake-test-key" }],
+		["daytona", { apiKey: "fake-test-key", connect: "dial" }],
+	];
+	for (const [id, options] of built) {
+		const provider = await providerFor(id, { daemonPath: DAEMON, ...options });
+		assert.equal(provider.host.facts.connect ?? "exec", connectOf(descriptorOf(id), options), `${id} ${JSON.stringify(options.connect ?? "")}`);
+	}
+});
+
 test("providerFor() names the known ids for an id it does not know", async () => {
 	for (const id of ["nope", "constructor", "__proto__", "toString", ""]) {
 		await assert.rejects(providerFor(id, {}), (error) => {

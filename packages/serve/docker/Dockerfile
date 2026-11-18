@@ -1,9 +1,10 @@
 # AgentRun's one image, the server and its runners, built from a checkout of this repository (from its root):
 #   docker build -f packages/serve/docker/Dockerfile -t agentrun-server .
 # One image for both, so a runner always knows the schema of the store its server set up. The default command is the
-# server with one runner beside it; with runners of their own, the server takes --no-runner and each runner is the same
-# image given `runner --data /data --name <name> [--loops N]` (deploy/README.md, and deploy/compose.yaml for a server and
-# two runners on one store). Everything they keep is under /data: mount one volume there, the same one in each.
+# server and one runner beside it, two processes in one container (docker/start.sh); with runners of their own, the
+# server takes --no-runner and each runner is the same image given `runner --data /data --name <name> [--loops N]`
+# (deploy/README.md, and deploy/compose.yaml for a server and two runners on one store). Everything they keep is under
+# /data: mount one volume there, the same one in each.
 # The base is pinned by digest (a multi-arch index); the dependencies by the workspace's package-lock.json, dev ones
 # included: the pi packages the server loads are the workspace's development dependencies, peers of its packages.
 # Node is 24.22.3, Node's November 2026 security release, installed from nodejs.org by install-node.sh, which verifies
@@ -195,7 +196,11 @@ USER node
 ENV NODE_ENV=production
 EXPOSE 7340
 VOLUME ["/data"]
-ENTRYPOINT ["/opt/agentrun/packages/serve/launcher/agentrun-serve", "--", "/usr/bin/tini", "--", "node", "/opt/agentrun/packages/serve/dist/cli.js"]
-# A busy run gets 6 s to finish its turn on SIGTERM, so a stop (about 1.5 s more) ends inside Docker's default 10 s
-# grace; a turn cut off resumes at the next start.
-CMD ["--data", "/data", "--listen", "0.0.0.0", "--port", "7340", "--drain-timeout", "6s"]
+# The launcher hands the secrets over its pipe; tini is PID 1; docker/start.sh runs the command. `server-and-runner` and
+# the server's options: the server with --no-runner and a runner beside it, each a process of its own, so the runner's
+# journal writes never queue the API's reads; one ending ends the container, non-zero. Any other command (`runner ...`,
+# `reset-password ...`, server options alone) is that one process, as given.
+ENTRYPOINT ["/opt/agentrun/packages/serve/launcher/agentrun-serve", "--", "/usr/bin/tini", "--", "/bin/sh", "/opt/agentrun/packages/serve/docker/start.sh"]
+# SIGTERM reaches both. The runner gives a busy run 6 s to finish its turn, so a stop (about 1.5 s more) ends inside
+# Docker's default 10 s grace; a turn cut off resumes at the next start.
+CMD ["server-and-runner", "--data", "/data", "--listen", "0.0.0.0", "--port", "7340", "--drain-timeout", "6s"]

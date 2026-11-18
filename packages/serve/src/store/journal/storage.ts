@@ -382,6 +382,9 @@ export class RunStorage implements Journal {
           `INSERT INTO ${T.metadata} (run_id, next_id, next_seq) VALUES (?, ?, ?) ON CONFLICT (run_id) DO UPDATE SET next_id = excluded.next_id, next_seq = excluded.next_seq`,
           this.#runId, String(Math.max(Number(metadata.next_id), candidateNextId)), next,
         );
+        // What the run's list shows may have moved with what this commit stored (a turn, an ask, a request's cost): its
+        // listing is behind from this commit on (store/schema.ts RUN_LISTING_COLUMNS), in this commit's transaction.
+        await tx.run("UPDATE runs SET list_mark = list_mark + 1 WHERE id = ?", this.#runId);
         // The run patch's fenced UPDATE (0 rows: Fenced), then its rows (store/sqlite/run-patch.ts, as runs.update writes
         // them), then the takes.
         const now = this.#now();

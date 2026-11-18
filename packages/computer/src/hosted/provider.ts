@@ -137,7 +137,8 @@ export interface HostedOptions {
 	 * Given to the helper's mount and revoke. Unset or empty, the client reaches Archil as the machine's network allows.
 	 */
 	archilEgress?: string;
-	/** What a host whose facts.connect is "dial" needs: create refuses without it, before any call to the vendor. */
+	/** What a host whose facts.connect is "dial" needs: create refuses without it, before any call to the vendor, in words
+	 *  that name serve's one-process start (a runner apart from the server has none). */
 	dial?: HostedDial;
 }
 
@@ -483,7 +484,11 @@ export class HostedProvider implements ComputerProvider {
 	 */
 	#dialed(): { attach: string; daemon: string; dial: HostedDial } | { problem: string } {
 		if (this.#dial === undefined) {
-			return { problem: `${this.#label} machines dial in to this server, and this process has no attach hub: start them from serve's own process` };
+			// No dial: a runner in a process of its own (serve's runner subcommand, the image's server-and-runner). The fix is
+			// the one a paired computer's refusal names (serve's workspace/attached-computers.ts ONE_PROCESS_FIX).
+			return {
+				problem: `${this.#label} machines dial in to this server, and this runner runs in a process of its own, with no attach hub to take their socket: start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)`,
+			};
 		}
 		const url = this.#dial.url;
 		const at = URL.canParse(url ?? "") ? new URL(url as string) : undefined;
