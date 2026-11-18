@@ -5,10 +5,10 @@ import { AgentRunRefused, AgentRunTimeout, AgentRunUsage } from './errors.js';
 
 /** Where a backend SDK run comes from. The run itself stays in the backend: an SDK library (Claude Agent SDK, Codex
  *  SDK) or an agent platform (OpenClaw, Capy) whose agents, scheduled jobs and threads report through these calls. */
-export const BACKEND_SDK_RUNTIMES = ['claude-agent-sdk', 'codex-sdk', 'openclaw', 'capy'] as const;
+export const BACKEND_SDK_RUNTIMES = ['claude-agent-sdk', 'codex-sdk', 'openclaw', 'capy', 'openai-agents-sdk', 'langgraph'] as const;
 export type BackendSdkRuntime = (typeof BACKEND_SDK_RUNTIMES)[number];
 /** The runtimes with a workflow bridge; the agent platforms receive owner corrections alone. */
-const WORKFLOW_RUNTIMES: readonly string[] = ['claude-agent-sdk', 'codex-sdk'];
+const WORKFLOW_RUNTIMES: readonly string[] = ['claude-agent-sdk', 'codex-sdk', 'openai-agents-sdk', 'langgraph'];
 
 export interface BackendWorkflowToolManifest {
   name: string;
@@ -184,7 +184,7 @@ export class BackendLearningClient {
   async begin(source: BackendLearningStart, signal?: AbortSignal): Promise<BackendLearningSession> {
     signal?.throwIfAborted();
     if (!(BACKEND_SDK_RUNTIMES as readonly unknown[]).includes(source.runtime)) throw new AgentRunUsage('Unsupported backend SDK runtime.');
-    if (this.#config.workflows && !WORKFLOW_RUNTIMES.includes(source.runtime)) throw new AgentRunUsage(`${source.runtime} runs receive owner corrections; a workflow bridge needs claude-agent-sdk or codex-sdk.`);
+    if (this.#config.workflows && !WORKFLOW_RUNTIMES.includes(source.runtime)) throw new AgentRunUsage(`${source.runtime} runs receive owner corrections; a workflow bridge needs a supported SDK wrapper.`);
     if (typeof source.input !== 'string' || typeof source.instructions !== 'string') throw new AgentRunUsage('SDK input and source instructions must be strings.');
     // Freeze the source before the registration request: caller mutation cannot change the policy after validation.
     const start = clone({ ...source, ...(this.#config.workflows ? { workflow_tools: [...this.#config.workflows.catalog], workflow_adapters: [...this.#config.workflows.adapters] } : {}) });

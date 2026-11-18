@@ -1,6 +1,6 @@
 # Learn workflows without replacing your backend SDK
 
-The [Claude Agent SDK](claude-sdk-learning.md) and [Codex SDK](codex-sdk-learning.md) wrappers can supply more than the owner's corrections. With an explicit MCP bridge, an accepted workflow can call your backend's existing tool callbacks on a later request. Your application still starts the job, owns its native SDK client, and supplies its tool permissions and credentials.
+The [Claude Agent SDK](claude-sdk-learning.md), [Codex SDK](codex-sdk-learning.md), and [JavaScript framework](framework-sdk-learning.md) wrappers can supply more than the owner's corrections. With an explicit MCP bridge, an accepted workflow can call your backend's existing tool callbacks on a later request. Your application still starts the job, owns its native SDK client, and supplies its tool permissions and credentials.
 
 This requires the client and server from the same reviewed development checkout. Build the DSL and client packages, and install their checkout versions alongside `@modelcontextprotocol/sdk` in your backend. Your backend imports the DSL interpreter and supplies its inspection, execution and schema-resolution functions through the bridge's required `engine` option. The client stays an API surface and imports no workflow engine. The MCP entry point uses the MCP SDK; the basic wrappers do not require a bridge.
 

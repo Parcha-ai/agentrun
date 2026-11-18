@@ -3008,7 +3008,9 @@ export const COMMANDS = [
           "claude-agent-sdk",
           "codex-sdk",
           "openclaw",
-          "capy"
+          "capy",
+          "openai-agents-sdk",
+          "langgraph"
         ],
         "required": true,
         "description": ""

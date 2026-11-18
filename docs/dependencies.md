@@ -26,7 +26,7 @@ Read from the packages' own source, their manifests declaring no license: `openc
 
 AgentRun's own license is declared in its package manifests, separately from this third-party inventory. This table records package metadata, not an approval to redistribute. The release owner must confirm source rights, inspect applicable license texts, and preserve required notices.
 
-Optional peer/dependency names absent from this lockfile: `encoding`, `react`, `bufferutil`, `utf-8-validate`, `kerberos`, `@smithy/hash-node`, `@cfworker/json-schema`, `pg-native`. These are not counted as inventoried packages; adding them requires regenerating this inventory.
+Optional peer/dependency names absent from this lockfile: `encoding`, `react`, `bufferutil`, `utf-8-validate`, `kerberos`, `@smithy/hash-node`, `pg-native`. These are not counted as inventoried packages; adding them requires regenerating this inventory.
 
 ## Locked packages
 
