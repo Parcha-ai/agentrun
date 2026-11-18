@@ -38,8 +38,8 @@ first stops the AgentRun it started in the background itself, whatever version t
 `agentrun service status` prints the console's address and its health. `start`, `stop`, `restart`, `logs [--follow]`,
 `upgrade [--version V]` (the installer again, then a restart) and `uninstall` (the data stays) do what they say, and
 `agentrun service install [--port N] [--data DIR]` installs the service after a `--no-start`. For a local model, such
-as Ollama's, `agentrun service install --env AGENT_MODEL_BASE_URL=http://localhost:11434/v1 --env
-AGENT_MODEL_GATEWAY_IDS=bare --env AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0` writes those variables into the
+as Ollama's, `agentrun service install --env AGENT_MODEL_BASE_URL=<its /v1 address> --env AGENT_MODEL_GATEWAY_IDS=bare --env
+AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0` writes those variables into the
 service and restarts it. They stay through restarts, upgrades and later installs, and `--env KEY=` removes one. `--env`
 takes those four names alone: model keys go in the console, never in a service file. On Linux, a user's
 services stop at logout unless lingering is on: `install` and `status` print the one `sudo loginctl enable-linger` line

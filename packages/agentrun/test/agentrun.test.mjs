@@ -597,8 +597,10 @@ test("the setup skill installs with the installer and runs the command it instal
   const f = setupFixture(t, { curl: 'echo "curl $*"' });
   assert.equal(f.run(look, { HOME: f.dir }).status, 1, "no record: nothing to reuse");
   mkdirSync(join(f.dir, ".agentrun"));
-  writeFileSync(join(f.dir, ".agentrun", ".server.json"), `${JSON.stringify({ base_url: "http://127.0.0.1:7341/v2", pid: 42 }, null, 2)}\n`); // key-gate: loopback-rule a fixture record
-  assert.equal(f.run(look, { HOME: f.dir }).stdout, "curl -fsS --max-time 3 http://127.0.0.1:7341/v2/health\n"); // key-gate: loopback-rule the fixture's address
+  const record = join(f.dir, ".agentrun", ".server.json");
+  writeFileSync(record, `${JSON.stringify({ base_url: "http://127.0.0.1:7341/v2", pid: 42 }, null, 2)}\n`);
+  const home = { HOME: f.dir };
+  assert.equal(f.run(look, home).stdout, "curl -fsS --max-time 3 http://127.0.0.1:7341/v2/health\n");
   assert.match(here, /When `~\/\.agentrun\/bin\/agentrun` is missing, install the command alone, which\s+leaves that server running: `curl -fsSL https:\/\/agentrun\.ai\/install \| sh -s -- --no-start`/);
   assert.match(here, /`~\/\.agentrun\/bin\/agentrun service restart`/);
   assert.match(here, /`~\/\.agentrun\/bin\/agentrun stop` stops it and the installer line starts it again/);
