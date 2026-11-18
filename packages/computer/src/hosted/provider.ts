@@ -529,18 +529,19 @@ export class HostedProvider implements ComputerProvider {
 
 	/**
 	 * The server's words for a refusal of the machine's dial (MachineTokens refused), or undefined: while none is kept, and
-	 * when the token store errs or does not answer within requestMs (the wait goes on to createMs as before).
+	 * when the token store errs, or does not answer within ms or before signal aborts (the wait goes on to createMs as before).
 	 */
-	async #dialRefused(name: string): Promise<string | undefined> {
+	async #dialRefused(name: string, ms: number, signal?: AbortSignal): Promise<string | undefined> {
 		const dial = this.#dial;
 		if (dial === undefined) return undefined;
-		let timer: ReturnType<typeof setTimeout> | undefined;
+		const done = new AbortController();
 		try {
-			return await Promise.race([dial.tokens.refused(name), new Promise<undefined>((done) => (timer = setTimeout(done, this.#timeouts.requestMs, undefined)))]);
+			const bound = pause(ms, signal ? AbortSignal.any([signal, done.signal]) : done.signal).then(() => undefined);
+			return await Promise.race([dial.tokens.refused(name), bound]);
 		} catch {
 			return undefined;
 		} finally {
-			clearTimeout(timer);
+			done.abort();
 		}
 	}
 
@@ -1187,22 +1188,31 @@ export class HostedProvider implements ComputerProvider {
 	 * A dial machine's first connection: its socket waited for in the hub, from its start, within createMs. One that never
 	 * dials (a server it cannot reach, a daemon whose sha256 it refused, a hello the hub refused) fails timeout, naming the
 	 * address it was given. One the server refused in words (a relay to this runner it could not make, MachineTokens
-	 * refused) fails refused in those words at the next poll. Create then deletes it.
+	 * refused) fails refused in those words as the read answers. The read, one at a time, bounded by requestMs, the time
+	 * left and the signal, holds no poll of the hub back, and the hub is read once more before a timeout: a socket there
+	 * wins. Create then deletes one that failed.
 	 */
 	async #whenDialed(ref: ComputerRef, signal?: AbortSignal): Promise<Opened> {
-		const { createMs } = this.#timeouts;
+		const { createMs, requestMs } = this.#timeouts;
 		const until = Date.now() + createMs;
+		let reading: Promise<string | undefined> | undefined;
 		for (;;) {
 			const opened = await this.#open(ref, signal);
 			if (opened.ok) return opened;
-			const refused = await this.#dialRefused(ref.name);
-			if (refused !== undefined) return this.#fail("refused", `the server refused ${refused}`);
-			if (Date.now() + this.#startPollMs() >= until) {
+			const left = until - Date.now();
+			if (left <= 0) {
 				const dialed = this.#dialed();
 				const to = "problem" in dialed ? "this server" : dialed.attach;
 				return this.#fail("timeout", `${ref.name} did not dial ${to} within ${seconds(createMs)}: the machine must reach that address, and run agentrun-dial (the box image's entrypoint while AGENTRUN_ATTACH_URL is set)`);
 			}
-			await pause(this.#startPollMs(), signal);
+			const polled = pause(Math.min(this.#startPollMs(), left), signal).then(() => false as const);
+			reading ??= this.#dialRefused(ref.name, Math.min(requestMs, left), signal);
+			const read = await Promise.race([reading, polled]);
+			if (read !== false) {
+				reading = undefined;
+				if (read !== undefined) return this.#fail("refused", `the server refused ${read}`);
+				await polled;
+			}
 			if (signal?.aborted) return this.#fail("aborted", `create was aborted while it waited for ${ref.name} to dial`);
 		}
 	}
