@@ -575,15 +575,14 @@ test("(r4) a shadow that stops on its cap is `parked`: no verdict, never counted
   assert.deepEqual([held.decided, held.audit.disagreements.map((one) => one.served)], ["hold", ["wide-1"]], JSON.stringify(held));
 });
 
-// learning.agree_on: the audit compares the served answer and its shadow's on the dotted paths that say the decision, as
-// the check does. The agent (so each shadow) answers as a real model does, prose then a fenced json block with a
-// rationale the workflow's answer never repeats: no disagreement on agree_on, a declared field that differs still holds.
-// The workflow's Answer schema (answerFlow) takes {answer, sure}; `verdict` rides beside them, the nested field compared.
-const SHADOW_SAYS = `Six sevens.\n\n\`\`\`json\n${JSON.stringify({ answer: 42, sure: true, verdict: { answer: 42, note: "six times seven" }, why: "six times seven is forty-two" })}\n\`\`\``;
-const NESTED = { answer: 42, sure: true, verdict: { answer: 42, note: "computed" } };
-const NESTED_WRONG = { answer: 42, sure: true, verdict: { answer: 41, note: "computed" } };
-test("(agree_on) a served answer that differs from its shadow's only in its rationale is no disagreement on verdict.answer and sure; a declared field that differs holds", { timeout: 300_000 }, async (t) => {
-  const w = await world(t, { learning: { audit_every: 1, hold_window: 1, hold_disagree: 1, agree_on: ["verdict.answer", "sure"] }, says: () => SHADOW_SAYS, submit: (text) => (text.includes("Wrong question") ? NESTED_WRONG : NESTED) });
+// learning.agree_on: the audit compares the served answer and its shadow's on the paths that say the decision, as the
+// check does (learn/promote.ts sameAnswer; nested paths are pinned in learn-agree-on.test.mjs: this workflow's answer is
+// its Answer schema's {answer, sure}, nothing beside them). The agent (so each shadow) answers as a real model does,
+// prose then a fenced json block with a rationale the workflow's answer never repeats: no disagreement on agree_on, a
+// declared field that differs still holds.
+const SHADOW_SAYS = `Six sevens.\n\n\`\`\`json\n${JSON.stringify({ answer: 42, sure: true, why: "six times seven is forty-two" })}\n\`\`\``;
+test("(agree_on) a served answer that differs from its shadow's only in its rationale is no disagreement on answer and sure; a declared field that differs holds", { timeout: 300_000 }, async (t) => {
+  const w = await world(t, { learning: { audit_every: 1, hold_window: 1, hold_disagree: 1, agree_on: ["answer", "sure"] }, says: () => SHADOW_SAYS, submit: (text) => (text.includes("Wrong question") ? WRONG : { answer: 42, sure: true }) });
   const served = await w.start("same-1", "What is six times seven");
   assert.equal(served.metrics?.path, "workflow", JSON.stringify(served.metrics));
   const next = await w.start("same-next", "What is seven times six");
@@ -600,8 +599,8 @@ test("(agree_on) a served answer that differs from its shadow's only in its rati
 // No agree_on: the whole answer, whatever the output schema says (no field is picked from it: a schema's enum can be an
 // echo of the owner's setting, not the decision). The same rationale-only difference is a disagreement, and it holds.
 test("(agree_on) with an output schema of enum and boolean fields and no agree_on, the audit compares the whole answer: a rationale-only difference disagrees", { timeout: 300_000 }, async (t) => {
-  const outputSchema = { type: "object", properties: { verdict: { type: "object", properties: { answer: { enum: [41, 42] } } }, sure: { type: "boolean" }, why: { type: "string" } } };
-  const w = await world(t, { learning: { audit_every: 1, hold_window: 1, hold_disagree: 1 }, outputSchema, says: () => SHADOW_SAYS, submit: () => NESTED });
+  const outputSchema = { type: "object", properties: { answer: { enum: [41, 42] }, sure: { type: "boolean" }, why: { type: "string" } } };
+  const w = await world(t, { learning: { audit_every: 1, hold_window: 1, hold_disagree: 1 }, outputSchema, says: () => SHADOW_SAYS, submit: () => ({ answer: 42, sure: true }) });
   const served = await w.start("same-1", "What is six times seven");
   assert.equal(served.metrics?.path, "workflow", JSON.stringify(served.metrics));
   const next = await w.start("same-next", "What is seven times six");
