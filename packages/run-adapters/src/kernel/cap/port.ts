@@ -7,7 +7,7 @@ import type { BeforeRequest } from "../../runner.js";
 import { CapRefused } from "./errors.js";
 import { inputBound, pricingOf } from "./price.js";
 import { capRule, isFigure } from "./rule.js";
-import { SPEND_CAP_REACHED, unmeasured } from "./words.js";
+import { raiseFigure, SPEND_CAP_REACHED, unmeasured } from "./words.js";
 import type { CapModel, ModelCapRequest } from "./types.js";
 
 /** The cap's refusal as the runner takes it: its words, its code, and what the run's end is decided from (parkOf): for
@@ -98,7 +98,10 @@ export function beforeRequestOf(options: BeforeRequestOptions): BeforeRequest {
         const sized: ModelCapRequest = { ...asked, inputTokens: input };
         const keepUsd = options.keepBackUsd?.(request, sized);
         const judged = capRule.judge(sized, { capUsd, spentUsd, heldUsd, ...(keepUsd === undefined ? {} : { keepUsd }) });
-        return { holdUsd: judged.heldUsd, ...(judged.outputTokensMax === undefined ? {} : { outputTokensMax: judged.outputTokensMax }), stoppedUsd: judged.stoppedUsd };
+        // Sent with less output than it asks: a cut at that limit is the cap's, said with the cap and the least cap that
+        // sends it whole (beside what the run had spent and held as it was admitted).
+        const capCut = judged.outputTokensMax !== undefined && judged.uncutUsd !== undefined && spentUsd !== null && heldUsd !== null ? { capUsd, raiseToUsd: raiseFigure(capUsd, spentUsd + heldUsd + judged.uncutUsd) } : undefined;
+        return { holdUsd: judged.heldUsd, ...(judged.outputTokensMax === undefined ? {} : { outputTokensMax: judged.outputTokensMax }), stoppedUsd: judged.stoppedUsd, ...(capCut ? { capCut } : {}) };
       } catch (error) {
         // Its words, and what the run's end is decided from (parkOf): for good, or for room with its figures.
         if (error instanceof CapRefused) return refusalOf(error);

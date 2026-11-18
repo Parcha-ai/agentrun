@@ -22,7 +22,7 @@ import { type CapModel, type CapRefused, checkRaise, followUpOf, freeModelReques
 import { type AdapterFacts, type HostTool, PLAN_LIMIT_WORDS, type SessionSpec } from "@parcha/agentrun-kernel";
 import type { AdapterNeeds } from "../adapters.js";
 import { confineOf, noNewPrivsPrefix, standsIn, thinkingFor } from "../adapters.js";
-import { claimSettled, installDirOf, installForClaim, installingWords } from "../harness-install.js";
+import { claimSettled, claudeCliIn, installDirOf, installForClaim, installingWords } from "../harness-install.js";
 import { HarnessUnavailable } from "../provider.js";
 import type { Approvals } from "../approvals.js";
 import { effortGuidance } from "../effort-guidance.js";
@@ -75,6 +75,7 @@ import { pastRunsOverStore, runPathOverStore } from "../store-reads/learning.js"
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
 import { planBeforeRun, PLAN_PROVIDER } from "../chatgpt-plan.js";
+import { CLAUDE_LOGIN_PROVIDER, loginBeforeRun, loginCli, loginForRun, withClaudeLogin } from "../claude-login.js";
 import { heldSpecOf } from "./held-run.js";
 import { loopComputerOf } from "./computer-channel.js";
 import { githubAppAccess } from "./github-app.js";
@@ -152,7 +153,7 @@ type CapPrice = { input: number; output: number; cacheRead: number; cacheWrite: 
 function chosenCapModel(entry: HarnessEntry, env: NodeJS.ProcessEnv, chosen: Awaited<ReturnType<typeof modelsOf>>, wire: string): CapModel {
   const priced = entry.priceModel(env, chosen.model);
   const listed = chosen.models.getModel(priced.provider, priced.modelId) as { cost?: Partial<CapPrice>; maxTokens?: number } | undefined;
-  return capModelOf(priced.modelId, wire, listed, chosen.unpriced.has(priced.modelId) || listed === undefined, priced.provider === PLAN_PROVIDER);
+  return capModelOf(priced.modelId, wire, listed, chosen.unpriced.has(priced.modelId) || listed === undefined, priced.provider === PLAN_PROVIDER || priced.provider === CLAUDE_LOGIN_PROVIDER);
 }
 
 /** The model a run of the CLI harness `entry` on `ref` (a revision's model; none, this host's default for it) is capped
@@ -468,9 +469,17 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
     holdClaimed(redact, claimed);
     if (runKey) holdRunKey(redact, runKey);
   }
-  const env = cliRunEnv(deps.env, deps.data, claimed, launch.plane, runKey);
+  // Claude Code's login on this machine, where the owner turned it on for claude-agent here (claude-login.ts): the run
+  // carries only where it is, and its CLI says it is signed in before the run starts. A run that brought its own key
+  // runs on that key, and a run in a sandbox place on the model keys.
+  const login = keyed ? undefined : await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, name, launch.place);
+  const env = withClaudeLogin(cliRunEnv(deps.env, deps.data, claimed, launch.plane, runKey), login);
   const chosen = await modelsOf(entry, env, modelAskOf(launch.model, body.model));
   await planBeforeRun(env, chosen.model);
+  if (login && entry.priceModel(env, chosen.model).provider === CLAUDE_LOGIN_PROVIDER) {
+    const claude = await import("@parcha/agentrun-harness-claude");
+    await loginBeforeRun(login, loginCli(claudeCliIn(installDirOf(deps.data, name!), claude.claudeAgentPlatform()), env), (cli, at) => claude.claudeLoginStatus(cli, at, env.PATH ? { path: env.PATH } : {}));
+  }
   // The CLI's own process (the Claude CLI, Codex, OpenCode) starts under the no_new_privs pi's commands start under
   // (adapters.ts' noNewPrivsPrefix): on Linux, setpriv --no-new-privs, so a setuid program or file capability it
   // or a command it runs reaches grants nothing; none on macOS. Where setpriv is not usable the run is refused, in pi's words.

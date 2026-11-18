@@ -267,6 +267,7 @@ export interface components {
     plan?: {
       requests: number;
       tokens: number;
+      on: "chatgpt" | "claude_code";
     };
   };
   Definition: unknown & components["DefinitionInput"];
@@ -2388,6 +2389,22 @@ export interface operations {
       authorize_url?: string;
       expires_at?: string;
       models?: string[];
+    };
+  };
+  getClaudeLogin: {
+    body: never;
+    answer: {
+      state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+      place: "agentrun" | "machine";
+      command: string;
+      can_start: boolean;
+      refused?: string;
+      account?: {
+        method?: string;
+        email?: string;
+        organization?: string;
+        plan?: string;
+      };
     };
   };
   getComputerDaemon: {
@@ -5463,6 +5480,22 @@ export interface operations {
       expires_at: string;
     };
   };
+  startClaudeLogin: {
+    body: never;
+    answer: {
+      state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+      place: "agentrun" | "machine";
+      command: string;
+      can_start: boolean;
+      refused?: string;
+      account?: {
+        method?: string;
+        email?: string;
+        organization?: string;
+        plan?: string;
+      };
+    };
+  };
   startLearnedWorkflowReplay: {
     body: {
       inputs?: "held" | number;
@@ -5607,6 +5640,41 @@ export interface operations {
     } | {
       ok: false;
       why: string;
+    };
+  };
+  turnOffClaudeLogin: {
+    body: never;
+    answer: {
+      state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+      place: "agentrun" | "machine";
+      command: string;
+      can_start: boolean;
+      refused?: string;
+      account?: {
+        method?: string;
+        email?: string;
+        organization?: string;
+        plan?: string;
+      };
+    };
+  };
+  turnOnClaudeLogin: {
+    body: {
+      place?: "agentrun" | "machine";
+      only_me: true;
+    };
+    answer: {
+      state: "off" | "other_machine" | "signed_in" | "signed_out" | "no_cli" | "unknown";
+      place: "agentrun" | "machine";
+      command: string;
+      can_start: boolean;
+      refused?: string;
+      account?: {
+        method?: string;
+        email?: string;
+        organization?: string;
+        plan?: string;
+      };
     };
   };
   unarchiveAgent: {
