@@ -23,6 +23,7 @@
 // now. A failed firing queues a trigger.failed webhook message.
 import { createHash, randomBytes } from "node:crypto";
 import { type MessageOrigin, TRIGGER_LABELS, type TriggerSource } from "./timeline/index.js";
+import { agentDeleting } from "./agents.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { EFFORTS } from "./model.js";
 import { AgentArchived, type FiringRow, type NewFiring, type Store, StoreConstraint, TriggerFull, type TriggerPatch, type TriggerRow } from "./store/index.js";
@@ -355,6 +356,9 @@ export class Triggers {
     const agentId = await this.agentOf(target);
     const id = `trg_${randomBytes(12).toString("hex")}`;
     const enabled = body.enabled !== false;
+    // None for an agent being deleted, off too, told before anything is minted or registered upstream (the store's own
+    // refusal is the backstop): the delete has listed its triggers already.
+    await this.needNotDeleting(agentId);
     if (enabled) await this.needAvailable(source.kind);
     // Never made on for an archived agent: told before anything is minted (the store's own refusal is the backstop).
     if (enabled) await this.needAgentOn(agentId);
@@ -465,6 +469,13 @@ export class Triggers {
     if (agent?.archivedAt != null) throw new ApiError("agent_archived", archivedDetail(agent.name));
   }
 
+  /** Refused (409 agent_not_runnable, agents.ts agentDeleting) when agent `agentId` is being deleted: another system's
+   *  agent with an archive time, which only its delete writes (agent-delete.ts). */
+  private async needNotDeleting(agentId: string): Promise<void> {
+    const agent = await this.store.agents.get(agentId);
+    if (agent?.archivedAt != null && agent.externalRef != null) throw agentDeleting(agentId);
+  }
+
   /** The store's refusal of a trigger left on for an archived agent (an archive that committed past needAgentOn) as the
    *  same 409; undefined for any other error. */
   private async archivedRefusal(error: unknown): Promise<ApiError | undefined> {
@@ -561,6 +572,8 @@ export class Triggers {
     // A trigger belongs to its target's agent: aimed at another agent (or another agent's run), it moves to that agent,
     // whose one name per trigger and list of triggers it joins.
     const agentId = target ? await this.agentOf(target) : trigger.agentId;
+    // Moved to an agent being deleted, off too, or turned on for one: never (the store's own refusal is the backstop).
+    if (agentId !== trigger.agentId || (enabled && !trigger.enabled)) await this.needNotDeleting(agentId);
     // Turned on, or aimed elsewhere while on: never for an archived agent (the store's own refusal is the backstop).
     if (enabled && (!trigger.enabled || target)) await this.needAgentOn(agentId);
     // A polled source turned on again starts over: a poll still running from before is not its own any more.
@@ -595,10 +608,42 @@ export class Triggers {
   /** The trigger deleted, and what its sender keeps of it removed after (said, when it could not be: the delete holds). */
   async remove(id: string): Promise<Json | undefined> {
     const trigger = await this.need(id);
-    await this.store.triggers.remove(id);
-    if (this.adapter(trigger.source)?.settings?.scope === "trigger") await this.deps.settings(trigger.source.kind)?.remove(id);
-    await this.arm();
+    await this.dropHere(trigger);
     return this.deps.upstream?.(trigger.source.kind)?.removed(trigger.source, id);
+  }
+
+  /** A deleted agent's trigger (agent-delete.ts), its first half: what its sender keeps of it removed there, the trigger
+   *  kept here, so a failure, or a stop before the second half (removeHere), leaves the row that names what is left to
+   *  remove for the next delete to find. Throws `unavailable` with what could not be done there. */
+  async removeThere(id: string): Promise<void> {
+    const trigger = await this.need(id);
+    const said = await this.deps.upstream?.(trigger.source.kind)?.removed(trigger.source, id);
+    if (said === undefined) return;
+    const notes = isObject(said) ? Object.values(said).flatMap((one) => (isObject(one) && typeof one.note === "string" ? [one.note] : [])) : [];
+    throw new ApiError("unavailable", `What ${trigger.source.kind} keeps of the trigger ${id} is not removed there yet${notes.length ? ` (${notes.join(" ")})` : ""}.`, { retry_after_ms: 5_000 });
+  }
+
+  /** The second half's first part, once removeThere is done: the trigger's adapter settings removed, its row kept. */
+  async removeSettings(id: string): Promise<void> {
+    await this.dropSettings(await this.need(id));
+  }
+
+  /** The second half, once removeThere is done: the trigger deleted here, its adapter settings and then its row. */
+  async removeHere(id: string): Promise<void> {
+    await this.dropHere(await this.need(id));
+  }
+
+  /** A trigger's adapter settings (a webhook's secret, a poll's cursor) removed; nothing else of it. */
+  private async dropSettings(trigger: Trigger): Promise<void> {
+    if (this.adapter(trigger.source)?.settings?.scope === "trigger") await this.deps.settings(trigger.source.kind)?.remove(trigger.id);
+  }
+
+  /** Its settings first, then its row: the settings have no link to the row, so a failure or a stop between the two
+   *  leaves the row, which the next remove finds, never settings with no trigger left to name them. */
+  private async dropHere(trigger: Trigger): Promise<void> {
+    await this.dropSettings(trigger);
+    await this.store.triggers.remove(trigger.id);
+    await this.arm();
   }
 
   /** Run now: one firing per Idempotency-Key, driven before the answer. `created` false: the key's firing, as it stands. */

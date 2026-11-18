@@ -1,6 +1,8 @@
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import type { MouseEvent } from "react";
+import { PLAN_NO_DOLLARS } from "./chatgpt";
+import { LOGIN_NO_DOLLARS } from "./claudeLogin";
 import type { Cost } from "./v2";
 
 /** The tags DOMPurify keeps: its own allowed-tag config, read once through its uponSanitizeElement hook (the tag list is
@@ -100,13 +102,14 @@ export const chargeWords = (u: { usd: number | null; so_far_usd?: number; unpric
  *  whole cost; a run that has ended (`ended`) says what is known without "so far" ("$0.0123 known · 1 not priced"), as its
  *  usage row says its cost. Never a billed amount, never an invented zero. A run on the server's ChatGPT plan alone says
  *  its tokens ("41.2K tokens · Using ChatGPT plan"), never "$0.00"; one that also spent dollars says them, then "+ ChatGPT
- *  plan". A run whose every model request went to a free model (`free`: its known price is $0 for every token) says why
- *  its cost is $0 (FREE_COST). */
+ *  plan". A run on Claude Code's login says "on your Claude plan" in the same places. A run whose every model request went
+ *  to a free model (`free`: its known price is $0 for every token) says why its cost is $0 (FREE_COST). */
 export function cost(c: Cost | null | undefined, { ended = false }: { ended?: boolean } = {}): string {
   const plan = planOf(c);
-  if (plan && c?.usd === 0) return `${compact(plan.tokens)} tokens · Using ChatGPT plan`;
+  const claude = plan?.on === "claude_code";
+  if (plan && c?.usd === 0) return `${compact(plan.tokens)} tokens · ${claude ? "On your Claude plan" : "Using ChatGPT plan"}`;
   const words = dollarWords(c, ended);
-  return plan ? `${words} + ChatGPT plan` : words;
+  return plan ? `${words} + ${claude ? "your Claude plan" : "ChatGPT plan"}` : words;
 }
 function dollarWords(c: Cost | null | undefined, ended: boolean): string {
   const known = soFar(c);
@@ -117,10 +120,13 @@ function dollarWords(c: Cost | null | undefined, ended: boolean): string {
   return `${atMost(c)}${dollars(c.usd)}${est(c)}`;
 }
 
-/** What a run used on the server's ChatGPT plan (chatgpt/1 `cost.plan`): its requests there and their tokens, which cost
- *  no dollars here; undefined for a run that made none. A run on the plan alone says its tokens, never "$0.00" (cost). */
-export const planOf = (c: Cost | null | undefined): { requests: number; tokens: number } | undefined =>
+/** What a run used on a person's plan (chatgpt/1 `cost.plan`): its requests there, their tokens, and which plan (`on`:
+ *  the ChatGPT sign-in, or Claude Code's login), which cost no dollars here; undefined for a run that made none. A run on
+ *  the plan alone says its tokens, never "$0.00" (cost). */
+export const planOf = (c: Cost | null | undefined): { requests: number; tokens: number; on?: "chatgpt" | "claude_code" } | undefined =>
   c?.plan && c.plan.requests > 0 ? c.plan : undefined;
+/** The hover words for a run's plan requests: no dollars here, the plan's own limits. */
+export const planNoDollars = (plan: { on?: string }): string => (plan.on === "claude_code" ? LOGIN_NO_DOLLARS : PLAN_NO_DOLLARS);
 
 /** 1,284 / 12.9K / 4.2M. */
 export function compact(n: number): string {

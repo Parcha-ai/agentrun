@@ -34,6 +34,12 @@ Route: `POST /agents`.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
+### `agentrun agents delete-agent AGENT_ID`
+
+Delete an agent another system owns.
+
+Route: `DELETE /agents/{agent_id}`.
+
 ### `agentrun agents delete-agent-archil AGENT_ID`
 
 Remove an agent's own Archil disk, and everything on it.
@@ -954,6 +960,7 @@ Route: none, it runs on this machine.
 - `--port N` (string, this CLI's own): the port to listen on (default: the first free from 7340; 7340 with --tailscale)
 - `--data DIR` (string, this CLI's own): the data directory (default ~/.agentrun)
 - `--tailscale` (boolean, this CLI's own): also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off
+- `--env KEY=VALUE` (string, this CLI's own): a local model's variable for the server (AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_PRICE), kept until KEY= removes it; repeatable
 
 ### `agentrun service logs`
 
