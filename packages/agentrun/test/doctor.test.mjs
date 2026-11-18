@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { main } from "../lib/cli.mjs";
 import { doctorOf, meetsFloor, textOf } from "../lib/doctor.mjs";
-import { INSTALL_COMMAND, unitText } from "../lib/service.mjs";
+import { INSTALL_COMMAND, LABEL, plistText, unitText } from "../lib/service.mjs";
 import { removeAtEnd } from "./support.mjs";
 
 const CANARY = "doctor-canary-token-7f3a9c0e1b2d4f6a8c0e2b4d6f8a0c2e";
@@ -281,6 +281,16 @@ test("Address: loopback from a remote session warns with a tunnel and the tailne
   const named = homeOf({ env: { AGENTRUN_PUBLIC_URL: "https://agentrun.example.test" } });
   const byUnit = await doctor({ ...named, env: {}, readToken: () => undefined });
   assert.equal(byUnit.check("address").status, "ok");
+
+  // On macOS the service is a launchd plist, which holds the public URL as a key and a string, not a line.
+  const mac = homeOf({ service: false });
+  const plist = join(mac.home, "Library", "LaunchAgents", `${LABEL}.plist`);
+  mkdirSync(join(plist, ".."), { recursive: true });
+  writeFileSync(plist, plistText({ program: join(mac.data, "bin", "agentrun"), args: ["--no-open"], path: "/usr/bin:/bin", log: join(mac.data, "logs", "agentrun.log"), env: { AGENTRUN_PUBLIC_URL: "https://agentrun.example.test" } }));
+  const launchd = execOf((command, args) => (command === "launchctl" && args[0] === "print" ? { stdout: "state = running\npid = 4242\n" } : undefined));
+  const onMac = await doctor({ ...mac, platform: "darwin", env: { SSH_CONNECTION: "203.0.113.5 50000 198.51.100.7 22" }, exec: launchd, readToken: () => undefined });
+  assert.equal(onMac.check("service").status, "ok", onMac.check("service").summary);
+  assert.equal(onMac.check("address").status, "ok", onMac.check("address").summary);
 
   // A stopped service's settings say nothing of the server that answers: a public URL in its unit counts only while it runs.
   const stoppedExec = execOf((command, args) => (command === "systemctl" && args.includes("show") && !args.includes("show-environment") ? { stdout: "ActiveState=inactive\nSubState=dead\nMainPID=0\n" } : undefined));

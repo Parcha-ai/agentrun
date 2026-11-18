@@ -218,7 +218,8 @@ export async function doctorOf({
     // runs) or the tailnet entry, when it forwards to this server's port. --allow-host is not one: it only names the Host
     // names the server accepts, and forwards nothing. A stopped service's settings say nothing of a server started
     // another way.
-    const named = serviceState?.active === true && /AGENTRUN_PUBLIC_URL=/.test(unitText);
+    // The setting as the service's own file holds it: a systemd Environment= line or a launchd plist's key and string.
+    const named = serviceState?.active === true && Boolean(manager.env(unitText).AGENTRUN_PUBLIC_URL);
     let tailnet;
     try {
       // The tailnet entry the launcher added ({url, proxy}) is the service's; it counts when its proxy is this port.
