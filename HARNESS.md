@@ -120,6 +120,11 @@ starts a fake ACP agent whose model is the suite's script. It needs no binary, n
 before any real agent is in it. `examples/harness-module/test/subject.mjs` is the whole subject. Keep it in a module of
 its own: the suite's process cases start a second runner process that imports it.
 
+`./conformance` is for your tests alone. `registerHarnessConformance` starts the suite's runner process from your test
+process, and that runner has test hooks that read the environment. Import `@parcha/agentrun-serve/conformance` only
+from test files, never from your module's own code: the server loads your module, and the suite must never run inside
+a server.
+
 What the fake can't prove is your recipe and your proxy on a real agent. That is the [live run](#a-live-run).
 
 ### What passing looks like
