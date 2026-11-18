@@ -392,6 +392,7 @@ const WATCH = `---
 name: watch
 version: 1.0.0
 description: Watches vendors' status feeds.
+budget: { per_run_usd: 0.25 }
 parameters:
   status_feeds: { type: array, items: { type: string }, required: false, default: [], description: "each vendor's status feed" }
 triggers:
@@ -406,6 +407,7 @@ const CLAIMS = `---
 name: claims
 version: 1.0.0
 description: Names a mark on its trigger.
+budget: { per_run_usd: 0.25 }
 triggers:
   - name: claimed
     template_id: digest

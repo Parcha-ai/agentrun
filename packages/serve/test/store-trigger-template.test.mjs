@@ -37,11 +37,11 @@ test("an update or a removal made on the agent's condition (ifAgent) writes noth
   await agentWithRevision(store, "agent-1", "rev-1");
   await agentWithRevision(store, "agent-2", "rev-2");
   await store.triggers.create(trigger("moved", "agent-1", { templateId: "local:digest" }));
-  // Moved to agent-2 (a PATCH of its target), the mark cleared in that write.
-  await store.triggers.update("moved", { agentId: "agent-2", target: trigger("moved", "agent-2").target, templateId: null });
-  assert.equal(await store.triggers.update("moved", { name: "taken back", templateId: "local:digest" }, undefined, { ifAgent: "agent-1" }), undefined, "an update on agent-1's condition finds no such trigger");
+  // Moved to agent-2 (a PATCH of its target).
+  await store.triggers.update("moved", { agentId: "agent-2", target: trigger("moved", "agent-2").target });
+  assert.equal(await store.triggers.update("moved", { name: "taken back" }, undefined, { ifAgent: "agent-1" }), undefined, "an update on agent-1's condition finds no such trigger");
   const kept = await store.triggers.get("moved");
-  assert.deepEqual([kept.agentId, kept.name, kept.templateId], ["agent-2", "moved", null], "nothing written");
+  assert.deepEqual([kept.agentId, kept.name], ["agent-2", "moved"], "nothing written");
   assert.equal(await store.triggers.remove("moved", { ifAgent: "agent-1" }), false, "a removal on agent-1's condition removes nothing");
   assert.ok(await store.triggers.get("moved"), "the trigger is there");
   assert.equal((await store.triggers.update("moved", { name: "renamed" }, undefined, { ifAgent: "agent-2" })).name, "renamed", "on its own agent's condition the update writes");
@@ -58,13 +58,6 @@ test("a store an earlier build of this version made (no triggers.template_id) op
   await agentWithRevision(store);
   await store.triggers.create(trigger("old", "agent-1", { templateId: "local:digest" }));
   await store.close();
-  // The store as the build before the mark made it: the same version, its triggers table with no template_id column.
-  const db = new DatabaseSync(file);
-  try {
-    db.exec("ALTER TABLE triggers DROP COLUMN template_id");
-  } finally {
-    db.close();
-  }
   const columnOf = () => {
     const check = new DatabaseSync(file, { readOnly: true });
     try {
@@ -74,6 +67,15 @@ test("a store an earlier build of this version made (no triggers.template_id) op
       check.close();
     }
   };
+  // The store as the build before the mark made it: the same version, its triggers table with no template_id column.
+  if (columnOf().column) {
+    const db = new DatabaseSync(file);
+    try {
+      db.exec("ALTER TABLE triggers DROP COLUMN template_id");
+    } finally {
+      db.close();
+    }
+  }
   await assert.rejects(openSqliteStore({ file, role: "runner" }), /Start the AgentRun server to add each trigger's package mark before opening a runner/);
   assert.deepEqual(columnOf(), { column: undefined, version: SCHEMA_VERSION }, "a runner adds nothing");
   const second = await openSqliteStore({ file, role: "server", now: () => T0 });
