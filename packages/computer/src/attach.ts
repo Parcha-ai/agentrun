@@ -518,17 +518,24 @@ async function endPrograms(client: ComputerClient, name: string, signal?: AbortS
 }
 
 /** Everything in `name`'s /workspace removed, the folder itself kept (only root makes one): each entry of its first
- *  level, a directory with what it holds, a link removed and never followed (files.remove). */
+ *  level, a directory with what it holds, a link removed and never followed (files.remove). A truncated listing is
+ *  listed again until a pass removes nothing: what it holds then (a name a remove can't find, as one that is not UTF-8
+ *  reaches the wire changed) refuses the box in words. */
 async function emptyWorkspace(client: ComputerClient, name: string, signal?: AbortSignal): Promise<Result<void>> {
 	const options = signal ? { signal } : {};
+	const words = (message: string) => `emptying ${WORKSPACE} on ${name} of an earlier run's folder: ${message}`;
 	for (;;) {
 		const listed = await client.call("files.list", { path: WORKSPACE }, options);
-		if (!listed.ok) return fail(listed.error.code, `emptying ${WORKSPACE} on ${name} of an earlier run's folder: ${listed.error.message}`);
+		if (!listed.ok) return fail(listed.error.code, words(listed.error.message));
+		const left: string[] = [];
 		for (const entry of listed.value.entries) {
 			const removed = await client.call("files.remove", { path: entry.path, recursive: true }, options);
-			if (!removed.ok && removed.error.code !== "not_found") return fail(removed.error.code, `emptying ${WORKSPACE} on ${name} of an earlier run's folder: ${removed.error.message}`);
+			if (removed.ok) continue;
+			if (removed.error.code !== "not_found") return fail(removed.error.code, words(removed.error.message));
+			left.push(`${entry.path}: ${removed.error.message}`);
 		}
 		if (!listed.value.truncated) return ok(undefined);
+		if (left.length === listed.value.entries.length) return fail("refused", words(`${left.length} entries could not be removed (first: ${left[0] ?? "none listed"})`));
 	}
 }
 

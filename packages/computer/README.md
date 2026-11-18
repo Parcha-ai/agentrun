@@ -208,7 +208,8 @@ extension](#the-protocol-extension-kind-daemon-modes-screen-input-apps-lifetime)
   attach dials with it, unpair deletes it ([attach.md, A Linux box](../../spec/computer/attach.md#a-linux-box)). A box
   with a display pairs as a desktop; one with none (a `linux` hello) pairs as a sandbox that holds a run's folder as a
   synced folder in its `/workspace`, a directory of init's user's own, mode 0700, never a link, made once as root with
-  a tmpfiles.d line.
+  a tmpfiles.d line. A run's shell can read and write everything that user can, so make it a user of its own
+  (`useradd --system --create-home agentrun`, no lingering, no crontab), never a person's login user.
 - Init is a child subreaper (PID 1 in Docker is one anyway) and reaps every orphan. It also sweeps, on each SIGCHLD and
   once a second: a child of its own that is not one of its guards can only be an orphan whose guard died (a program can
   kill its own guard, since both run as the same user), so it is killed with everything under it. A process orphaned by

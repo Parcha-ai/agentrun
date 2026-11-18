@@ -100,13 +100,24 @@ code for the token, and `computerd attach` dials. A box with an X display (`DISP
 `desktop`, with its shell and files. A box with none says `linux` and pairs as a `sandbox`, which holds a run's folder
 as a synced folder in its `/workspace` (Mode 2; Mode 1 runs a sandbox only on Docker):
 
+- **A user of its own.** A run's shell runs as computerd's user and can read and write everything that user can, not
+  only `/workspace`. The synced folder writes only under `/workspace`; the agent's own commands don't stop there. So
+  run computerd as a user made for it, never a person's login user. Make it once, as root:
+
+  ```
+  useradd --system --create-home agentrun
+  ```
+
+  A run can also leave things under that user that outlive the programs a claim ends: a crontab, systemd `--user`
+  units, a line in `~/.bashrc`. A user with no lingering (never `loginctl enable-linger agentrun`) and no crontab is
+  how you keep runs from persisting. Every example below runs as `agentrun`.
 - **`/workspace`** is a directory of init's user's own, mode `0700`, never a link. Make it once, as root, with a
-  tmpfiles.d line, which makes the directory with that owner and mode, sets them again on one that is there, and makes
-  it again at each boot:
+  tmpfiles.d line naming that user, which makes the directory with that owner and mode, sets them again on one that
+  is there, and makes it again at each boot:
 
   ```
   # /etc/tmpfiles.d/agentrun.conf
-  d /workspace 0700 ada ada -
+  d /workspace 0700 agentrun agentrun -
   ```
 
   then `systemd-tmpfiles --create /etc/tmpfiles.d/agentrun.conf`. A claim reads it from inside, as init's user, and
@@ -114,7 +125,8 @@ as a synced folder in its `/workspace` (Mode 2; Mode 1 runs a sandbox only on Do
   in words naming this fix. The box is let go, and nothing is written.
 - **Each claim** ends every program computerd still runs (an earlier run's, left when its hold ended at its deadline:
   KILL to its process group, waited for up to 5 s, the box refused if one outlives it), empties `/workspace` of what
-  an earlier run left (each entry removed, a link never followed), then pushes the run's folder in. Each change goes back to the run's folder before the call that made it answers, and once
+  an earlier run left (each entry removed, a link never followed; the box refused, in words naming what was left, when
+  one can't be), then pushes the run's folder in. Each change goes back to the run's folder before the call that made it answers, and once
   more at release, through the claim's epoch fence: a run that has lost the box can't write the folder. The next run
   on the box finds its folder as the run's folder holds it, never as the box was left.
 - **Only under `/workspace`.** On a person's own machine the synced folder writes only under its workspace directory,
@@ -124,7 +136,7 @@ as a synced folder in its `/workspace` (Mode 2; Mode 1 runs a sandbox only on Do
 - **Its network** is `open`, the box's own. A sandbox setting with network `none` or an allow list is refused, as for
   every paired computer.
 
-1. **Init.** As the box's user, with an empty capability bounding set, which init needs to start as a user who can't
+1. **Init.** As `agentrun`, with an empty capability bounding set, which init needs to start as a user who can't
    empty it (a system unit's `CapabilityBoundingSet=`; a user unit can't set it): `computerd init --deadline
    2100-01-01T00:00:00Z`, with `AGENTRUN_COMPUTERD_SOCKET` naming a socket in a directory of that user's alone (0700).
 2. **Pair.** With init running, as the same user: `computerd pair https://agentrun.example.com --name build-box`,
@@ -144,7 +156,7 @@ as a synced folder in its `/workspace` (Mode 2; Mode 1 runs a sandbox only on Do
 4. **Unpair.** `computerd unpair` deletes the file. Removing the computer on the server takes the owner's session
    (**Remove** on the Computers page): the machine's token can't, so unpair says so.
 
-As systemd system units, both running as the box's user, the token passed through its file and never `Environment=`:
+As systemd system units, both running as `agentrun`, the token passed through its file and never `Environment=`:
 
 ```ini
 # /etc/systemd/system/agentrun-computerd.service
@@ -153,7 +165,7 @@ Description=AgentRun computer daemon (computerd init)
 After=display-manager.service
 
 [Service]
-User=ada
+User=agentrun
 CapabilityBoundingSet=
 NoNewPrivileges=yes
 RuntimeDirectory=agentrun
@@ -177,7 +189,7 @@ After=agentrun-computerd.service network-online.target
 Wants=network-online.target
 
 [Service]
-User=ada
+User=agentrun
 NoNewPrivileges=yes
 Environment=AGENTRUN_COMPUTERD_SOCKET=/run/agentrun/computerd.sock
 Environment=AGENTRUN_ATTACH_URL=wss://agentrun.example.com/v2/computers/attach
@@ -190,7 +202,7 @@ WantedBy=graphical.target
 ```
 
 On a box with no display, leave out `After=display-manager.service`, `DISPLAY` and `XAUTHORITY`, and want both from
-`multi-user.target`. Start the first, run `computerd pair` as `ada` with the same `AGENTRUN_COMPUTERD_SOCKET`, then
+`multi-user.target`. Start the first, run `computerd pair` as `agentrun` with the same `AGENTRUN_COMPUTERD_SOCKET`, then
 enable the second.
 Attach's exits 2 to 5 (a missing or refused token file, a removed computer, a `hello` it wasn't paired as, another
 protocol version) wait for a person; any other exit dials again.

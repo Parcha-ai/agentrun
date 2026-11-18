@@ -469,7 +469,9 @@ const LINUX = { protocol: PROTOCOL_VERSION, version: "0.2.0", os: "linux", kind:
 const SYNCED = { image: "attached", lifetimeMs: 60_000, network: "open", mount: { kind: "sync" }, labels: { "agentrun.run": "r1", "agentrun.epoch": "3" } };
 
 /** A Linux box's computerd on `computer`'s end, scripted: it runs as uid 1000, its /workspace is `box.workspace` ({ type,
- *  uid, mode }, or none), holding the names in `box.entries`; each files call is recorded with its path. */
+ *  uid, mode }, or none), holding the names in `box.entries` (its listing truncated when `box.truncated`, and a remove
+ *  finding none of them when `box.unreachable`, as for a name that is not UTF-8 and reaches the wire changed); each
+ *  files call is recorded with its path. */
 function linuxBox(computer, box) {
 	computer.onText((text) => {
 		const { id, method, params } = JSON.parse(text);
@@ -485,7 +487,10 @@ function linuxBox(computer, box) {
 		if (method === "process.list") return reply({ processes: box.programs.map((one) => ({ pid: 40, argv: ["sleep", "1000"], argvClipped: false, pty: false, startedAt: 0, endedAt: one.running ? null : 1, exitCode: null, signal: null, ...one })), truncated: false, next: box.programs.length });
 		if (method === "process.signal") return program.stubborn ? reply({}) : ((program.running = false), reply({}));
 		if (method === "process.wait") return reply({ running: program.running, exitCode: null, signal: program.running ? null : "KILL" });
-		if (method === "files.list") return reply({ entries: box.entries.map((name) => ({ path: `/workspace/${name}`, type: "file", size: 0, mode: 0o644, mtimeMs: 0, uid: 1000, gid: 1000 })), truncated: false });
+		// A loop of listings never yields to a timer here (each answer is a microtask), so the fake bounds it.
+		if (method === "files.list" && box.calls.filter((call) => call.startsWith("files.list")).length > 50) return refuse("limit", "listed /workspace 50 times: emptying it would go on forever");
+		if (method === "files.list") return reply({ entries: box.entries.map((name) => ({ path: `/workspace/${name}`, type: "file", size: 0, mode: 0o644, mtimeMs: 0, uid: 1000, gid: 1000 })), truncated: box.truncated === true });
+		if (method === "files.remove" && box.unreachable) return refuse("not_found", `lstat ${params.path}: no such file or directory`);
 		if (method === "files.remove") {
 			box.entries = box.entries.filter((name) => `/workspace/${name}` !== params.path);
 			return reply({});
@@ -566,6 +571,22 @@ test("a paired Linux box is a sandbox that takes the run's folder as a synced fo
 	assert.equal((await provider.attach({ id: plain.id })).value.spec.mount, undefined);
 	assert.deepEqual(box.calls, []);
 	hub.revoke(paired.id, "the test is over");
+});
+
+test("a paired Linux box whose truncated /workspace listing holds nothing a remove can reach is refused in words naming what was left, and the hold let go", async () => {
+	const hub = new AttachHub();
+	const paired = { id: "c-box", name: "lab", hello: LINUX, labels: {} };
+	const provider = attachedProvider(paired, hub);
+	const [serve, computer] = socketPair();
+	const box = { workspace: { type: "dir", uid: 1000, mode: 0o700 }, entries: ["a", "b"], truncated: true, unreachable: true, calls: [], programs: [], stat: Promise.resolve() };
+	linuxBox(computer, box);
+	assert.equal((await hub.accept(paired, serve)).ok, true);
+	const answer = await provider.create(SYNCED, req());
+	const claimed = hub.claimed(paired.id);
+	hub.revoke(paired.id, "the test is over");
+	assert.deepEqual(answer.error, { code: "refused", message: "emptying /workspace on lab of an earlier run's folder: 2 entries could not be removed (first: /workspace/a: lstat /workspace/a: no such file or directory)" });
+	assert.equal(claimed, undefined, "the hold is let go");
+	assert.equal(box.calls.filter((call) => call === "files.list /workspace").length, 1, "a pass that removes nothing ends it");
 });
 
 test("redial delays double from 1 s to 60 s, less up to a fifth; idle, replaced and going away redial", () => {
