@@ -1,7 +1,7 @@
 // The store's half of DELETE /v2/agents/{agent_id} (agent-delete.ts), on SQLite and on Postgres alike: the mark a delete
 // leaves (another system's agent with an archive time, which only its delete writes) refuses a run's start and a run's
-// reopening in the transaction that would write it (AgentDeleting); runs.every names every run of the agent, its learning
-// runs included; runs.remove takes a final run's rows and refuses one not final; agents.remove takes the agent's rows once
+// reopening in the transaction that would write it (AgentDeleting); runs.every names every run of the agent;
+// runs.remove takes a final run's rows and refuses one not final; agents.remove takes the agent's rows once
 // it has no run, and refuses before. A runner's late write under a claim of a removed run writes nothing.
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -86,27 +86,24 @@ test("the delete's mark refuses a trigger of the agent made, off or on, moved to
   assert.equal(await store.agents.get(AGENT), undefined, "then removed");
 });
 
-test("runs.every names the agent's learning runs; runs.remove refuses a run not final and removes a final one's rows; agents.remove refuses while a run remains, then removes the agent; a late write under a removed run's claim writes nothing", async (t) => {
+test("runs.every names every run of the agent; runs.remove refuses a run not final and removes a final one's rows; agents.remove refuses while a run remains, then removes the agent; a late write under a removed run's claim writes nothing", async (t) => {
   const { store } = await storeOn(t);
   await store.runs.createInline(inline("run-a", "key-a"));
-  // Its end keeps its learning and queues the learning run that grades it.
-  const stale = await end(store, "run-a", { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: { state: "proposed", proposal: { notes: [] }, detail: "proposed" } } }, { table: "learning_run", row: { id: "run-a-learning" } }] });
+  // Its end keeps its learning.
+  const stale = await end(store, "run-a", { state: "ended" }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: { state: "dropped", reason: "empty", detail: "Nothing new to keep from this run." } } }] });
   await store.runs.createInline(inline("run-b"));
   await store.command("run-b", { kind: "cancel", body: {} });
   await store.triggers.create({ id: "trig-9", agentId: AGENT, name: "nightly", enabled: false, source: { kind: "schedule", every_s: 600 }, target: { kind: "start_run", agent_id: AGENT, input: { content: "Answer." } }, nextAt: null, catchupWindowS: 0 });
 
   const every = await store.runs.every(AGENT);
-  assert.deepEqual(every.map((run) => run.id).sort(), ["run-a", "run-a-learning", "run-b"], "its learning run too");
-  assert.deepEqual((await store.runs.list({ agentId: AGENT })).map((run) => run.id).sort(), ["run-a", "run-b"], "which the list leaves out");
+  assert.deepEqual(every.map((run) => run.id).sort(), ["run-a", "run-b"]);
 
   await assert.rejects(store.runs.remove("run-b"), StoreConstraint, "a queued run is not removed");
-  await assert.rejects(store.runs.remove("run-a-learning"), StoreConstraint, "nor a queued learning run");
   await assert.rejects(store.agents.remove(AGENT), StoreConstraint, "an agent with runs is not removed");
   assert.equal((await store.runs.get("run-b")).state, "queued", "nothing written");
   assert.ok(await store.agents.get(AGENT));
 
   await end(store, "run-b", { state: "stopped", outcome: "cancelled" });
-  await end(store, "run-a-learning");
   for (const run of every) await store.runs.remove(run.id);
   for (const run of every) assert.equal(await store.runs.get(run.id), undefined, `run ${run.id} is gone`);
   assert.equal(await store.runOfOrigin("key-a"), undefined, "its origin is gone");
