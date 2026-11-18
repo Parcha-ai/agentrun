@@ -44,7 +44,7 @@ import { type Section, Shell } from "@/components/Shell";
 import { SessionUnread, SignIn } from "@/components/SignIn";
 import { Banner } from "@/components/ui/banner";
 import { Button } from "@/components/ui/button";
-import { type AuthMode, authMode, noAccounts, setupTakesCode, signInProblem, takeSetupCode } from "@/lib/auth";
+import { type AuthMode, authMode, newCodeProblem, noAccounts, setupCodeRenewed, setupTakesCode, signInProblem, takeSetupCode } from "@/lib/auth";
 import { approvalRefusal } from "@/lib/approval";
 import { computerRefusal } from "@/lib/computerAsk";
 import { stepsBack, trackHistory } from "@/lib/back";
@@ -63,6 +63,8 @@ import { githubReturnOf } from "@/lib/github";
 import { addOf, signInOf } from "@/lib/mcp";
 import { toolChoices, toolGates } from "@/lib/toolSettings";
 import type { HandBackOutcome, Run, RunStatus } from "@/lib/v2";
+import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
+import { cn } from "@/lib/utils";
 
 /** How often the console reads capabilities again while no model is ready for execution. */
 const MODEL_CHECK_MS = 10_000;
@@ -171,6 +173,7 @@ const IMPORT_READ_TRIES = 30;
 function importLine(s: ImportState): string {
   if (s.state === "running") return "Importing this machine's sessions: agents appear as they arrive.";
   if (s.state === "stopped") return "The import of this machine's sessions stopped. It goes on when the server starts again.";
+  if (s.state === "failed") return "The import of this machine's sessions was given up before it finished. The server's log says why.";
   const runs = `${s.runs.toLocaleString("en-US")} session${s.runs === 1 ? "" : "s"}`;
   return `Imported ${runs} into ${s.agents.toLocaleString("en-US")} agent${s.agents === 1 ? "" : "s"}${s.skipped ? `; ${s.skipped.toLocaleString("en-US")} left out` : ""}.`;
 }
@@ -266,8 +269,8 @@ export function App() {
     );
     return () => { live = false; clearTimeout(timer); };
   }, [v2, sessionTry]); // eslint-disable-line react-hooks/exhaustive-deps
-  // Setup's box, offered at once where the server can import this machine's sessions (on loopback, before an owner), its
-  // counts read until the server has them. A read that fails once the box shows leaves it, its count unknown; one that
+  // Setup's list, offered at once where the server can import this machine's sessions (on loopback, before an owner), its
+  // projects read until the server has them. A read that fails once the offer shows leaves it, its projects unknown; one that
   // fails before it shows (a 5xx, the network) is tried again at the next poll while setup is open, so a passing failure
   // never hides the offer. A 404 or a 403 is the server offering none: no box, and no more reads.
   const [offer, setOffer] = useState<ImportOffer | null>(null);
@@ -294,12 +297,19 @@ export function App() {
   if (auth === null) return <ConnectionProvider connection={connection}><Starting /></ConnectionProvider>;
   if (auth !== "signed_in") {
     return (
-      <SignIn key={auth} mode={auth} code={setupCode} codeNeeded={codeNeeded} offer={offer} problem={signedOutElsewhere && auth === "sign_in" ? "You were signed out. Sign in to go on." : null} onSubmit={async (password, code, importSessions) => {
-        try { await (auth === "setup" ? v2.setup(password, code, importSessions) : v2.signIn(password)); setSignedOutElsewhere(false); setAuth("signed_in"); return null; }
+      <SignIn key={auth} mode={auth} code={setupCode} codeNeeded={codeNeeded} offer={offer} problem={signedOutElsewhere && auth === "sign_in" ? "You were signed out. Sign in to go on." : null} onSubmit={async (password, code, importProjects) => {
+        try { await (auth === "setup" ? v2.setup(password, code, importProjects) : v2.signIn(password)); setSignedOutElsewhere(false); setAuth("signed_in"); return null; }
         catch (e) {
           // Another browser set the owner up first: the page reads the session again, which now asks to sign in.
           if (e instanceof ClientError && e.status === 403 && auth === "setup") { await readSession().catch(() => {}); }
           return e instanceof ClientError ? signInProblem(e) : e instanceof Error ? e.message : String(e);
+        }
+      }} onNewCode={async () => {
+        try { return setupCodeRenewed(window.location.hostname, await v2.setupCode()); }
+        catch (e) {
+          // Another browser set the owner up first: the page reads the session again, which now asks to sign in.
+          if (e instanceof ClientError && e.status === 403) await readSession().catch(() => {});
+          throw new Error(e instanceof ClientError ? newCodeProblem(e) : e instanceof Error ? e.message : String(e));
         }
       }} />
     );
@@ -739,10 +749,10 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
         ? <SchedulesPage v2={v2} view={{ trigger: where.trigger, kind: where.kind, edit: where.edit }} go={go} agentName={agentName} minEvery={caps?.features?.triggers?.min_every_s} failuresToPause={caps?.features?.triggers?.failures_to_pause} publicUrl={caps?.features?.triggers?.public_url} />
         : where.section === "playground"
         ? <section className="flex h-full min-h-0 flex-col">
-            <header className="flex min-h-12 shrink-0 items-center gap-2 border-b px-5"><Code className="size-4" aria-hidden /><h1 className="caps text-body font-semibold">API playground</h1></header>
+            <header className={cn(pageToolbarClass, "gap-2 px-5")}><h1 className={pageTitleClass}><Code className="size-4" aria-hidden />API playground</h1></header>
             <div className="flex flex-wrap items-center gap-3 border-b px-6 py-4">
               <label className="sr-only" htmlFor="api-operation">API operation</label>
-              <Picker id="api-operation" label="API operation" value={where.operation ?? "run"} onChange={(operation) => {
+              <Picker id="api-operation" label="API operation" steady value={where.operation ?? "run"} onChange={(operation) => {
                 const target = playgroundTarget;
                 const params = new URLSearchParams();
                 if (operation !== "run") params.set("operation", operation);

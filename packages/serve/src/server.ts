@@ -12,9 +12,9 @@ import { isNativeRuntime } from "./native/runtimes.js";
 import { connectNative, launchNative, updateNative, verifyConnection } from "./native/connection.js";
 // The /v2 API over the agent store in a data directory: the contract agentrun.v2/0, served on loopback with a bearer
 // token.
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, createHmac, randomBytes } from "node:crypto";
 import { chmod, lstat, mkdir, readFile, realpath, rename, stat, writeFile } from "node:fs/promises";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
@@ -38,19 +38,20 @@ import { FAUX_BROWSER_ENV, NODE_TOOLS, shellTools, toolingOf, toolOf, toolsView 
 import { ApiError, type InputIssue, invalid, sentence, unsupported } from "./errors.js";
 import { deref, explain } from "./explain.js";
 import { HOME_HOST_OWNED } from "./files.js";
-import { DATA_ENV, readJson, syncDir, TOKEN_FILE, writeDurable } from "./server-fs.js";
+import { DATA_ENV, syncDir, TOKEN_FILE, writeDurable } from "./server-fs.js";
 import { homePath, hostOwnedOf, type OwnedReadAt } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
-import { HARNESS_TABLE_ENV, harnessOf } from "./harness-table.js";
+import { HARNESS_MODULES_ENV, HARNESS_TABLE_ENV, harnessIds, harnessModulesEnv, harnessOf, harnessTable } from "./harness-table.js";
 import { HarnessInstall, type HarnessInstaller, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
-import { DEFAULT_PORT, healthOf, hostMemory, maxRunsOf, MIN_FREE_MIB, runsThatFit } from "./host.js";
-import { IMPORT_ASKED } from "./import.js";
+import { DEFAULT_PORT, healthOf, hostMemory, maxRunsOf, runsThatFit } from "./host.js";
+import { DEFAULT_HOST, listenOn, minFreeMibOf, takeOver, urlOf } from "./listen-first.js";
+import { IMPORT_ASKED, type ImportCandidate, MAX_CANDIDATES } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
 import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, learningFolderOf, type LearningMode, learningOf, learnsOf, RUN_LEARNING_USE, seedOf } from "./learning.js";
 import { askReplay, type ReplayAsk, ReplayRefused, replayView } from "./runner/promotion.js";
-import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, promotable, readNote, secretsShown, sendNote, statusesOf, workflowRevisions, writeNote } from "./learning-routes.js";
+import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, promotable, readNote, secretsShown, sendNote, statusesOf, workflowAtDigest, workflowRevisions, writeNote } from "./learning-routes.js";
 import type { DraftDecisions } from "./learn/skills.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
@@ -70,13 +71,14 @@ import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
 import { type RunMoment, type State, type Status } from "./run-view.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, prepareLaunch, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
-import { factsOverStore, momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { factsOverStore, momentOverStore, settledStatusOf, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { HELD_WAITS } from "./runner/journal-kinds.js";
 import { servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunDiff, servedRunLearning } from "./run-learning-served.js";
 import { agentPointers, WITHHELD_LEARNING } from "./handed-values.js";
 import { runCutValues } from "./run-cut.js";
 import { readLaunchBody } from "./run-launch.js";
+import { modelKeyMisfit, modelKeyOf, modelKeyRequired, noServerKeyFor, runModelOrigin, serverKeyMissing } from "./run-model-key.js";
 import { listRunFiles as listRunFilesOverStore, readRunFile as readRunFileOverStore, runGraphView, type RunReadsDeps, runTimelines } from "./run-reads-over-store.js";
 import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { labelFilter, labelsIssues } from "./run-labels.js";
@@ -87,14 +89,15 @@ import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type RunMcpAuth, type RunRow, sealRunMcpAuth, type Store, StoreLaunchMissing, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type LaunchSealed, openRunLaunch, type RunMcpAuth, type RunRow, sealRunLaunch, type Store, StoreLaunchMissing, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
 import { agentDeleting, answerOf, logged } from "./agents.js";
 import { keepGrade } from "./runner/feedback-round.js";
 import { gradeRow, notAuditableOf } from "./runner/audit.js";
 import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf } from "./learn/audit.js";
 import { auditLoopOf, COMPILE_AFTER_MAX } from "./learning-setting.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
-import { type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown, servingOf } from "./learn/promote.js";
+import { championOf, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown, servingOf, shownDeep } from "./learn/promote.js";
+import { workflowNodesOf } from "./learn/workflow-nodes.js";
 import { runModelRef } from "./model.js";
 import { REDACTED } from "./secret-cut.js";
 // The v2 run statuses, as the run view names them (run-view.ts Status), for the list filter's validation. */
@@ -115,7 +118,7 @@ import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
 import { agentLoopOverStore } from "./store-reads/loop.js";
 import { printable } from "./learn/index.js";
-import { agentCostOverStore, agentLearningOverStore, allInOf, costRunOf, learningCountsOverStore, learningSpendOverStore, runLearningEnd, shadowSpendOf } from "./store-reads/learning.js";
+import { agentCostOverStore, agentLearningOverStore, allInOf, costRunOf, learningCountsOverStore, learningSpendOverStore, runAllInOverStore, runLearningEnd, shadowSpendOf } from "./store-reads/learning.js";
 import { figuresOf, LearningBatches, type RunSnap } from "./learning-batch.js";
 import { costCsv, learningCostQuery, RUN_PATHS } from "./learning-cost.js";
 import { evalOf, evalsOf, recordEval } from "./learning-evals.js";
@@ -146,7 +149,8 @@ import { GITHUB_API } from "./github.js";
 import { bindingOf, REPO_NAME } from "./run-repo.js";
 import { HookCut, receivePush } from "./push-handler.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
-import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
+import { shownTrigger, TRIGGER_ADAPTERS } from "./trigger-adapters.js";
+import { SEALED_FIELD, SEALED_MASK } from "./trigger-composio.js";
 import { webhook } from "./trigger-webhook.js";
 import { SCHEME_NAMES } from "./trigger-signatures.js";
 import { permissionFrom, pinnedEffect, toolEffect } from "./tool-gate.js";
@@ -202,6 +206,12 @@ const IDEMPOTENCY_FILE = ".idempotency.json";
  *  computer kind; `browser`, the browser's own), then its page, files or WebSocket. Both are served by the same code. */
 const LIVE_PATH = /^\/v2\/runs\/([^/]+)\/(computer|browser)\/live(\/.*)$/;
 const MAX_BODY = 1 << 20;
+/** The starts that may begin setup's import without ending it (a worker that failed, a process that ended) before the
+ *  owner's yes is dropped: an import that fails the same way each time is not taken up at every start for good. */
+const IMPORT_STARTS = 3;
+/** The heap of the worker that counts or imports this machine's sessions. A run is read whole, at most MAX_RUN_BYTES of
+ *  files (import.ts), which this holds several times over. */
+const IMPORT_HEAP_MB = 2048;
 const MAX_MESSAGE = 20_000;
 const MAX_WAIT_MS = 25_000;
 const PAGE_ROWS = 500;
@@ -269,6 +279,9 @@ export type ServeOptions = {
   /** When the port is taken at the listen, the next one that is not, of the 100 from it: the port is found by listening,
    *  so one another process takes at the same moment is passed over. Without it a taken port fails the start. */
   nextFreePort?: boolean;
+  /** A server already listening (listen-first.ts, the CLI's early bind), answering that it is warming: the start takes it
+   *  over where it would have listened, and `port`, `nextFreePort` and `host` are then only what it was bound with. */
+  listener?: Server;
   /** A read-only directory of documents a workflow's `pdf_pages` calls read by file name (`--documents`); default
    *  AGENTRUN_SERVE_DOCUMENTS. */
   documents?: string;
@@ -328,6 +341,9 @@ export type ServeOptions = {
   /** A module of harness table entries merged over the built-in ones (harness-table.ts HARNESS_TABLE_ENV): a test's
    *  stand-ins for the harnesses. */
   harnessTable?: string;
+  /** The owner's harness modules (harness-table.ts HARNESS_MODULES_ENV): packages or paths, each exporting a
+   *  HarnessTableModule whose entries add harnesses of their own, for this server and its runs. Never a built-in one. */
+  harnessModules?: readonly string[];
   /** With `faux` only: Docker answers, so docker is available, and nothing asks Docker (place-offers.ts). */
   fauxDocker?: boolean;
   /** For tests: the lock each harness's first use installs by (harness-install.ts), by harness, with the package.json it
@@ -419,10 +435,12 @@ export type ServeOptions = {
  *  harness's, which scripts the harnesses with or without it. */
 const FAUX_SWITCHES = [["fauxBrowser", FAUX_BROWSER_ENV], ["fauxWeb", FAUX_WEB_ENV], ["fauxJev", FAUX_JEV_ENV], ["fauxParallel", FAUX_PARALLEL_ENV], ["fauxOpenrouter", FAUX_OPENROUTER_ENV], ["fauxMonid", FAUX_MONID_ENV], ["fauxUpstream", FAUX_UPSTREAM_ENV], ["fauxExa", FAUX_EXA_ENV], ["fauxMountinfo", FAUX_MOUNTINFO_ENV]] as const;
 
-/** The test switches a run's process gets, each module path resolved: empty outside tests. A test's in-process runner
- *  takes the same (test/support.mjs startInProcessRunner). */
+/** The switches a run's process gets, each module path resolved: the owner's harness modules (harnessModules), and the test
+ *  switches, which are empty outside tests. A test's in-process runner takes the same (test/support.mjs
+ *  startInProcessRunner). */
 export function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {};
+  // The owner's harness modules too (not a test switch): a run's process reads the same table as the server.
+  const env: NodeJS.ProcessEnv = { ...harnessModulesEnv(options.harnessModules ?? [], options.data), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}) };
   if (!options.faux) return env;
   env[FAUX_ENV] = resolve(options.faux);
   for (const [option, name] of FAUX_SWITCHES) if (options[option]) env[name] = resolve(options[option]);
@@ -829,7 +847,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     runtimes: ["runner"],
     /** The harnesses a revision may name (`definition.harness`), whether this server runs each, and how many at once. */
     // `keys`, what a model key would unlock, is the key rows' (listToolKeys), never served here.
-    harnesses: harnesses.map(({ keys: _keys, ...offer }) => ({ ...offer, max_concurrent_runs: Math.min(maxRuns, runsThatFit(offer.id, memory)) })),
+    harnesses: harnesses.map(({ keys: _keys, ...offer }) => ({ ...offer, max_concurrent_runs: Math.min(maxRuns, runsThatFit(offer.id, memory, env)) })),
     /** The places a revision may name (`definition.place`), this host's default, and whether this server has each box. */
     places: placesOf(boxes, boxAllowOf(env)),
     models,
@@ -889,8 +907,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
        *  (tool-keys-store.ts), never in the clear. */
       tool_keys: { routes: true, at_rest: "sealed" },
       /** /settings/mcp-servers: remote MCP servers previewed and saved, each credential sealed under the server's seal key,
-       *  which always exists (seal-key.ts), so MCP credentials are always kept sealed. */
-      mcp_client: { transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: "sealed", harnesses: [...HARNESSES] },
+       *  which always exists (seal-key.ts), so MCP credentials are always kept sealed. Every harness of the table runs a
+       *  grant (runnable.ts takes one on any), a module's among them. */
+      mcp_client: { transports: ["streamable-http"], auth: [...MCP_AUTH_TYPES], at_rest: "sealed", harnesses: [...harnessIds(env)] },
       /** This server's learning switch (`--learning`): on, a run learns when its agent says `learning: true`; off, none does. */
       learning,
       /** /settings/webhook: one URL POSTed, signed by the Standard Webhooks spec, when a run needs its person and when it
@@ -950,6 +969,9 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // A harness table module is the server's to name, from `harnessTable` alone, for itself and its runs: one in its own
   // environment (an operator's export, a leftover) never loads, wherever the server reads its environment.
   delete process.env[HARNESS_TABLE_ENV];
+  // So is the harness modules list, from `harnessModules` alone (an operator names them with --harness-module or
+  // AGENTRUN_SERVE_HARNESS_MODULES, which the CLI reads into the option).
+  delete process.env[HARNESS_MODULES_ENV];
   await mkdir(resolve(options.data), { recursive: true, mode: 0o700 });
   // Canonical once, here: a computer's mount source below it must then be its own canonical path, through no link.
   const data = await realpath(resolve(options.data));
@@ -977,8 +999,8 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const learningBudget = learningBudgetOf(process.env, options.learningBudget);
   // A limit on a run's requests on free models that is no whole number above 0 stops the start, naming its variable.
   freeModelRequestsOf(process.env);
-  const minFreeMib = process.env.AGENTRUN_MIN_FREE_MB ? Number(process.env.AGENTRUN_MIN_FREE_MB) : MIN_FREE_MIB;
-  if (!(Number.isFinite(minFreeMib) && minFreeMib >= 0)) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
+  const minFreeMib = minFreeMibOf(process.env);
+  if (minFreeMib === undefined) throw new Error("AGENTRUN_MIN_FREE_MB is a number of MiB, 0 or more");
   const minFreeBytes = options.minFreeBytes ?? minFreeMib * 2 ** 20;
   // The template packages, each checked whole (templates.ts readPackage): a broken one stops the start.
   const templates = readPackages(options.templates);
@@ -1038,7 +1060,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // shown nowhere.
   let secretStores: ServerSecrets | undefined;
   let triggerSettings: Map<string, SealedSettingsOverStore> = new Map();
-  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}) };
+  const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}), ...harnessModulesEnv(options.harnessModules ?? [], data) };
+  // The table, loaded once here: a harness module that is missing, names a built-in harness or gives half an entry refuses
+  // the start, in words, before anything else opens.
+  // The harness ids a definition may name here: the table's, the built-in ones and those the modules add.
+  const harnesses = harnessIds(base);
   // The one store (module A), opened here as this data root's single owner, before the settings layers that read it: its
   // owner lock holds the store to this server (the data root's own lock follows), and it refuses a data directory an
   // earlier version wrote, in words, to start fresh (no oldHomes/oldLayout checks, no migration). Every agent, run, setting and sign-in is a row; the
@@ -1121,6 +1147,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   // Aborted as close() begins: a key's check still waiting on its provider stops waiting, and its save stores nothing.
   const stopping = new AbortController();
+  /** The after-start seal by the events' schemas (composio-triggers.ts sealMarked), drained by stop. */
+  let schemaSealed: Promise<unknown> = Promise.resolve();
   // This server's saved keys, read by name: handed to its own reading and its own runs, never shared with another server.
   const storedKeys: StoredKeys = (name) => toolKeys.value(name);
   // A stored key that does not open is said once at the start, never a refusal to start.
@@ -1364,6 +1392,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
   const runComputerOf = (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => runComputerRead(store, runId, view, { context: ctx });
+  /** The run read's path and costs (A8, store-reads/learning.ts runAllInOverStore): `path`; `cost.usd` its own spend, the
+   *  job's (its look-back and compile turns are learning's), null while unknown; what learning spent for it
+   *  (`learning_usd`) and the two (`all_in_usd`). A cost known only as a bound keeps its bound, and all-in is unknown. */
+  const allInViewOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
+    const cost = (view.cost ?? {}) as { usd?: unknown; upper_bound?: unknown };
+    const own = typeof cost.usd === "number" && cost.upper_bound !== true ? cost.usd : null;
+    const all = await runAllInOverStore(store, runId, own);
+    if (!all) return {};
+    // A bound stays the view's bound. Otherwise usd is the job's (runCostOf's cost_usd, the same figure the cost series
+    // gives): known as it answered even when its look-back's cost is not; the row's while the run is at work.
+    return { path: all.path, cost: { ...cost, ...(cost.upper_bound === true ? {} : { usd: all.usd }), learning_usd: all.learning_usd, all_in_usd: all.all_in_usd } };
+  };
   // The agents accessor the routes call, over the one store (module A): the agents-store functions, with the run-row reads
   // the server makes (store-reads) under `.store`. `.request` is a thin pass-through — the store runs its own transactions,
   // so a call needs no outer serialization. The old Agents class and its per-agent home store are gone.
@@ -1555,6 +1595,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const entry = await needAgent(agentId);
       if (entry.agent.archivedAt) return { learns: false, why: "it is archived." };
       if (learning === "off") return { learns: false, why: "this server's learning is off (--learning)." };
+      // A batch starts runs and sends their follow-ups with no caller's model key: none to spend on a server with none.
+      const off = noServerKeyFor(env, "Learning from a CSV");
+      if (off) return { learns: false, why: off };
       if (entry.revision?.kind !== "agentic" || !learnsOf((entry.revision.body as { learning?: unknown }).learning)) return { learns: false, why: "its current revision does not say learning: true. Turn learning on first." };
       return { learns: true };
     },
@@ -1674,10 +1717,24 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   // Answered keys are kept in the data directory for the retention capabilities state, and written before the answer
   // is sent, so a client that retries after a restart gets the first answer back.
+  // A key's fingerprint is an HMAC of its request's body (stable JSON) under a key derived from the server's seal key:
+  // never the body, nor a bare digest of it, since a body can hold a credential (a composio trigger's config) and a short
+  // or guessable one could be found from a bare digest by hashing guesses. A trigger create's answer is kept as a read
+  // answers it (replayed). Entries live IDEMPOTENCY_TTL_S (a day), so one an older server wrote (the body itself as its
+  // fingerprint, a composio key in its answer) can outlive an upgrade: the start rewrites each (below, after the trigger
+  // engine), and says how many alone.
+  const fingerprintKey = createHmac("sha256", sealKey).update("agentrun-serve idempotency fingerprint").digest();
+  const fingerprintOf = (text: string) => createHmac("sha256", fingerprintKey).update(text).digest("hex");
   type Kept = { fingerprint: string; at: number; answer?: { status: number; body: unknown; headers: Record<string, string> } };
+  /** A kept answer as its replay sends it, by the route its key was used on: a trigger create's (POST /triggers) with its
+   *  source as a read answers it now (shownTrigger); every other route's as it was, a run's input above all. */
+  const replayed = (path: string, body: unknown): unknown => (path === "/triggers" ? shownTrigger(body) : body);
   const keptFile = join(data, IDEMPOTENCY_FILE);
   const kept = JSON.parse(await readFile(keptFile, "utf8").catch(() => "null")) as { entries?: [string, Kept][] } | null;
   const idempotency = new Map<string, Kept>((kept?.entries ?? []).filter(([, v]) => v?.answer && Date.now() - v.at <= IDEMPOTENCY_TTL_S * 1000));
+  /** How many entries the file held that the start did not keep (expired, or never answered): the file is written again
+   *  without them at the start, so no body an older server kept stays on disk past it. */
+  const keptDropped = (kept?.entries?.length ?? 0) - idempotency.size;
   // A failed save rejects only its own caller: the next save starts from a settled chain and writes every kept key.
   let saving: Promise<void> = Promise.resolve();
   const keep = () =>
@@ -1688,7 +1745,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await writeFile(`${keptFile}.partial`, JSON.stringify({ version: 1, entries }), { mode: 0o600 });
         await rename(`${keptFile}.partial`, keptFile);
       }));
-  const host = options.host ?? "127.0.0.1";
+  const host = options.host ?? DEFAULT_HOST;
   // Open setup (no code) only where no one else reaches the port: a loopback listener. Bound to any other address
   // (0.0.0.0 in the image, a LAN address), the first visit takes the printed code even with no public address.
   const openSetup = options.openSetup === true && isLoopback(host);
@@ -1810,6 +1867,116 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     signal: stopping.signal,
     say: (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`)),
   });
+  // A composio trigger kept with a credential of its config in the clear (saved before the config was sealed) is sealed
+  // before the first request: no answer shows it from this start on.
+  // All of it under the store's secureRewrite, so no file of the store keeps the rows' old bytes (the key): when it can't
+  // finish the scrub (a reader held the log back), it is said by a code alone and the next start finishes it.
+  const sealing = options.store ?? store;
+  const sealKept = () => composioTriggers.sealKept(async (id, source) => void (await sealing.triggers.update(id, { source })));
+  await (sealing === store && store.secureRewrite ? store.secureRewrite(sealKept) : sealKept().then((rewritten) => ({ rewritten, left: undefined })))
+    .then(({ left }) => {
+      if (!left) return;
+      const line = logLine("store", { condition: "store_scrub_not_done", reason: left });
+      if (log) log(line);
+      else process.stderr.write(`agentrun-serve: ${line}\n`);
+    })
+    .catch((error: Error) => void process.stderr.write(`agentrun-serve: sealing the composio triggers' config: ${error.message}\n`));
+  // Then, not waited on: a trigger kept with a value in the clear in a field only its event's schema marks, sealed once
+  // the schemas are read from Composio (composio-triggers.ts sealMarked). Drained by stop before the store closes.
+  /** Trigger `id`'s create answer kept under an Idempotency-Key, its fields `source` now seals (sealed_config) masked: the
+   *  after-start seal by the events' schemas finds fields the name rule (shownTrigger, at the start's rewrite of the
+   *  records) does not, and a replay must not hand one back. The file is written again when one changed. */
+  const cachedMasked = async (id: string, source: Record<string, unknown>) => {
+    if (maskCached(id, source).length) await keep();
+  };
+  /** The records kept under an Idempotency-Key (their slots) that answered trigger `id`'s create with a field `source`
+   *  keeps sealed still in the clear, each masked in the map now (not saved: the caller saves). */
+  function maskCached(id: string, source: Record<string, unknown>): string[] {
+    const fields = Array.isArray(source[SEALED_FIELD]) ? (source[SEALED_FIELD] as unknown[]).filter((name): name is string => typeof name === "string") : [];
+    const changed: string[] = [];
+    for (const [slot, v] of idempotency) {
+      const body = v.answer?.body;
+      if (!v.answer || !isObject(body) || body.id !== id || !isObject(body.source) || !isObject(body.source.config)) continue;
+      const config: Record<string, unknown> = { ...body.source.config };
+      const hit = fields.filter((name) => Object.hasOwn(config, name) && config[name] !== SEALED_MASK);
+      if (!hit.length) continue;
+      for (const name of hit) config[name] = SEALED_MASK;
+      idempotency.set(slot, { ...v, answer: { ...v.answer, body: { ...body, source: { ...body.source, config, [SEALED_FIELD]: fields } } } });
+      changed.push(slot);
+    }
+    return changed;
+  }
+  /** The records answering trigger `id`'s create once the trigger is gone (deleted, or not read): no trigger is left to
+   *  say which of its fields are sealed, so every field of each answer's config is masked in the map (not saved: the
+   *  caller saves). A replay of a deleted trigger's create needs none of its values. */
+  function maskCachedGone(id: string): string[] {
+    const changed: string[] = [];
+    for (const [slot, v] of idempotency) {
+      const body = v.answer?.body;
+      if (!v.answer || !isObject(body) || body.id !== id || !isObject(body.source) || !isObject(body.source.config)) continue;
+      const names = Object.keys(body.source.config);
+      if (names.every((name) => (body.source as { config: Record<string, unknown> }).config[name] === SEALED_MASK)) continue;
+      const config = Object.fromEntries(names.map((name) => [name, SEALED_MASK]));
+      idempotency.set(slot, { ...v, answer: { ...v.answer, body: { ...body, source: { ...body.source, config, [SEALED_FIELD]: names } } } });
+      changed.push(slot);
+    }
+    return changed;
+  }
+  const idempotencySaid = (fields: Record<string, string>) => {
+    const line = logLine("idempotency", fields);
+    if (log) log(line);
+    else process.stderr.write(`agentrun-serve: ${line}\n`);
+  };
+  const scrubSaid = ({ left }: { left?: string }) => {
+    if (!left) return;
+    const line = logLine("store", { condition: "store_scrub_not_done", reason: left });
+    if (log) log(line);
+    else process.stderr.write(`agentrun-serve: ${line}\n`);
+  };
+  schemaSealed = composioTriggers
+    // Compare-and-set on the updatedAt the trigger was read at; and no VACUUM while serving (the marker stays, the next
+    // start's scrub runs it before it serves).
+    .sealMarked(async (id, source, updatedAt, read) => {
+      const written = (await sealing.triggers.update(id, { source }, undefined, updatedAt === undefined ? { ifSource: read } : { ifUpdatedAt: updatedAt, ifSource: read })) !== undefined;
+      // Once the trigger is written its seal stands: a failed save of the cached answers is said, never thrown (the seal
+      // would be undone with the value's one copy). The map holds them masked already, so the next save writes them so.
+      if (written) await cachedMasked(id, source).catch((error: NodeJS.ErrnoException) => idempotencySaid({ condition: "idempotency_not_saved", trigger: id, error: typeof error?.code === "string" ? error.code : "error" }));
+      return written;
+    }, async (work) => (sealing === store && store.secureRewrite ? scrubSaid(await store.secureRewrite(work, { vacuum: false })) : void (await work())))
+    .catch((error: Error) => void (stopping.signal.aborted || process.stderr.write(`agentrun-serve: sealing the composio triggers' config by their events' schemas: ${error.message}\n`)));
+  // Each Idempotency-Key record an older server wrote, rewritten before the first request: its fingerprint keyed (the body
+  // it held as its fingerprint is gone) and its answer as a read answers it now. Said with how many alone.
+  {
+    // Each record rewritten, counted once whichever of the two passes below rewrote it.
+    const scrubbed = new Set<string>();
+    // Each cached create answer checked against its trigger as stored, whatever its field's name: a field sealed since
+    // (by its event's schema, whose save of this file failed before a restart) is masked before the first request.
+    const answered = new Set<string>();
+    for (const [slot, v] of idempotency) {
+      const body = v.answer?.body;
+      if (slot.startsWith("/triggers\n") && isObject(body) && typeof body.id === "string") answered.add(body.id);
+    }
+    for (const id of answered) {
+      const row = await sealing.triggers.get(id).catch(() => undefined);
+      // A trigger gone (deleted before this start, by a server that did not mask its answers at the delete) or not read:
+      // every field of its cached answers is masked, as no trigger is left to say which are sealed.
+      const slots = row && isObject(row.source) ? maskCached(id, row.source as Record<string, unknown>) : row ? [] : maskCachedGone(id);
+      for (const slot of slots) scrubbed.add(slot);
+    }
+    for (const [slot, v] of idempotency) {
+      const fingerprint = /^[0-9a-f]{64}$/.test(String(v.fingerprint)) ? v.fingerprint : fingerprintOf(String(v.fingerprint));
+      const answer = v.answer && { ...v.answer, body: replayed(slot.slice(0, slot.indexOf("\n")), v.answer.body) };
+      if (fingerprint === v.fingerprint && JSON.stringify(answer?.body) === JSON.stringify(v.answer?.body)) continue;
+      idempotency.set(slot, { ...v, fingerprint, ...(answer ? { answer } : {}) });
+      scrubbed.add(slot);
+    }
+    if (scrubbed.size || keptDropped > 0) await keep().catch((error: Error) => void process.stderr.write(`agentrun-serve: idempotency save: ${error.message}\n`));
+    if (scrubbed.size) {
+      const line = logLine("idempotency", { condition: "idempotency_records_scrubbed", count: scrubbed.size });
+      if (log) log(line);
+      else process.stderr.write(`agentrun-serve: ${line}\n`);
+    }
+  }
   /** What a save refused while Composio triggers use the server says to do once they are gone (composio-triggers.ts inUse). */
   const SAVE_AFTER_TRIGGERS = "then save the server again";
   /** What a save over a preset server left at Composio (ComposioDropped), removed there with the key it was made with, in
@@ -1844,19 +2011,22 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   let closing = false;
   const workers = new Map<Worker, { task: ImportTask["task"]; exit: Promise<unknown> }>();
   // Once the server closes, no worker starts: a setup still being answered then leaves its yes for the next start.
-  const onWorker = (task: ImportTask["task"]): Promise<ImportAnswer> =>
+  const onWorker = (task: ImportTask["task"], projects?: readonly string[]): Promise<ImportAnswer> =>
     closing ? Promise.resolve({ stopped: true }) : new Promise((answered, failed) => {
       const worker = new Worker(new URL("./import-worker.js", import.meta.url), {
         // The secrets this process holds (secrets.ts keeps them out of every environment, so the worker's has none), in the
         // worker's memory alone: what the import cuts out of everything it writes. The keys saved on the Tool keys page are
         // not passed; the worker reads them from the store over the port (sealed rows it opens with the seal key among these
         // secrets), the same cut as the CLI's import, where a saved key and the server's own of the same name may differ.
-        workerData: { task, data, home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), secrets: Object.fromEntries(SECRET_NAMES.flatMap((name) => { const value = name === SEAL_KEY_ENV ? seal.text : secret(name); return value === undefined ? [] : [[name, value]]; })) } satisfies ImportTask,
+        workerData: { task, data, ...(projects ? { projects } : {}), home: options.sessionsHome?.home ?? homedir(), ...(options.sessionsHome?.temp ? { temp: options.sessionsHome.temp } : {}), secrets: Object.fromEntries(SECRET_NAMES.flatMap((name) => { const value = name === SEAL_KEY_ENV ? seal.text : secret(name); return value === undefined ? [] : [[name, value]]; })) } satisfies ImportTask,
         // Started from a string (node --input-type=module -e, as a test or a `--` command may), the server's flags are given again
         // without that string and its type: a worker started from a file with them is refused. Otherwise the worker
         // inherits them as Node passes them on, which leaves out the flags a worker may not take (on Node 24 a test
         // runner's child holds many).
         ...(process.execArgv.some((arg) => arg.startsWith("--input-type")) ? { execArgv: workerArgs(process.execArgv) } : {}),
+        // Its own heap, at most IMPORT_HEAP_MB whatever the machine's memory: an import that needs more ends as a failed
+        // worker (said, and counted: IMPORT_STARTS), never as a process the system ends for the memory it took.
+        resourceLimits: { maxOldGenerationSizeMb: IMPORT_HEAP_MB },
       });
       workers.set(worker, { task, exit: once(worker, "exit").catch(() => undefined) });
       let answer: ImportAnswer | undefined;
@@ -1877,12 +2047,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     });
   // The count of what setup would import: started once (at start, or by the page's first read), read as it stands. One
   // stopped (by close, or by setup) starts again on the next read; one that failed stays failed.
-  let count: { state: "counting" } | { state: "counted"; projects: number; sessions: number } | { state: "failed" } | undefined;
+  let count: { state: "counting" } | { state: "counted"; projects: number; sessions: number; candidates: ImportCandidate[] } | { state: "failed" } | undefined;
   const countSessions = () => {
     if (count) return;
     count = { state: "counting" };
     onWorker("plan").then(
-      (answer) => void (count = "sessions" in answer ? { state: "counted", projects: answer.projects, sessions: answer.sessions } : undefined),
+      (answer) => void (count = "sessions" in answer ? { state: "counted", projects: answer.projects, sessions: answer.sessions, candidates: answer.candidates } : undefined),
       (error: unknown) => {
         count = { state: "failed" };
         process.stderr.write(`agentrun-serve: the count of this machine's sessions failed: ${(error as Error).message}\n`);
@@ -1891,25 +2061,60 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   const stopCount = () => { for (const [worker, { task }] of workers) if (task === "plan") worker.postMessage("stop"); };
   // The owner's yes, kept until the import ends: a server stopped (or killed) mid-import goes on with it at its next start.
+  // With it: the projects chosen (none named: every project), what earlier starts took, and how many starts began the
+  // import and neither ended it nor were stopped (`starts`).
   const importAsked = join(data, IMPORT_ASKED);
+  type Asked = { projects?: string[]; agents: string[]; runs: number; starts: number };
+  /** The yes as kept, or undefined when it cannot be read as one (a file that will not open, text that is no JSON
+   *  object, `projects` that is no list of ids): never taken for "every project", which only an empty file or one that
+   *  names no projects means. */
+  const askedOf = async (): Promise<Asked | undefined> => {
+    const text = await readFile(importAsked, "utf8").catch(() => undefined);
+    if (text === undefined) return undefined;
+    // The yes as an earlier version's setup wrote it is empty: every project, and no earlier start took anything.
+    if (!text.trim()) return { agents: [], runs: 0, starts: 0 };
+    let kept: { projects?: unknown; agents?: unknown; runs?: unknown; starts?: unknown };
+    try { kept = JSON.parse(text); } catch { return undefined; }
+    if (typeof kept !== "object" || kept === null || Array.isArray(kept)) return undefined;
+    const ids = (value: unknown) => (Array.isArray(value) && value.every((id) => typeof id === "string") ? (value as string[]) : undefined);
+    const projects = ids(kept.projects);
+    if (kept.projects !== undefined && !projects) return undefined;
+    return { ...(projects ? { projects } : {}), agents: ids(kept.agents) ?? [], runs: typeof kept.runs === "number" ? kept.runs : 0, starts: typeof kept.starts === "number" ? kept.starts : 0 };
+  };
   let importing: Promise<void> | undefined;
-  /** The import at setup as the owner's console reads it: running, done with what it took, or stopped (the next start
-   *  goes on with it). */
-  let importState: { state: "running" } | { state: "done"; agents: number; runs: number; skipped: number } | { state: "stopped" } | undefined;
+  /** The import at setup as the owner's console reads it: running, done with what it took, stopped (the next start
+   *  goes on with it), or failed (IMPORT_STARTS starts did not end it: given up, never tried again on its own). */
+  let importState: { state: "running" } | { state: "done"; agents: number; runs: number; skipped: number } | { state: "stopped" } | { state: "failed" } | undefined;
   /** Never rejects: whatever stops it (the store held past its wait, a file) is said on stderr, and the server goes on. */
   const importAtSetup = () =>
     (importing ??= (async () => {
       importState = { state: "running" };
+      // An import that fails, or ends the process, the same way at every start would be taken up at every start for good:
+      // after IMPORT_STARTS such starts the yes is dropped, and said.
+      const giveUp = async (why: string) => {
+        await rm(importAsked, { force: true }).catch(() => undefined);
+        importState = { state: "failed" };
+        process.stderr.write(`agentrun-serve: the import at setup was given up (${why}): run the import command where the sessions are to try again\n`);
+      };
+      let asked: Asked | undefined;
       try {
-        const answer = await onWorker("import");
-        if (!("took" in answer)) return void (importState = { state: "stopped" });
+        asked = await askedOf();
+        // A choice that cannot be read is never widened to every project: nothing is imported.
+        if (!asked) return await giveUp("the record of which projects to import could not be read");
+        if (asked.starts >= IMPORT_STARTS) return await giveUp(`${IMPORT_STARTS} starts did not end it: the server ended during each`);
+        // This start counted before its worker runs, so one the process does not outlive is counted too.
+        await writeDurable(importAsked, JSON.stringify({ ...asked, starts: asked.starts + 1 }));
+        const answer = await onWorker("import", asked.projects);
+        // Stopped by the server's close, before it took anything or between two sessions: not a start that failed.
+        if (!("took" in answer)) {
+          await writeDurable(importAsked, JSON.stringify(asked));
+          return void (importState = { state: "stopped" });
+        }
         // The whole import, every start's part of it: what earlier starts took is kept with the owner's yes.
-        // The yes as setup wrote it is empty: no earlier start took anything.
-        const before = (await readJson(importAsked)) as { agents?: unknown; runs?: unknown } | null;
-        const agents = [...new Set([...(Array.isArray(before?.agents) ? before.agents.filter((id): id is string => typeof id === "string") : []), ...answer.took.agents])];
-        const runs = (typeof before?.runs === "number" ? before.runs : 0) + answer.took.runs;
+        const agents = [...new Set([...asked.agents, ...answer.took.agents])];
+        const runs = asked.runs + answer.took.runs;
         if (answer.stopped) {
-          await writeDurable(importAsked, JSON.stringify({ agents, runs }));
+          await writeDurable(importAsked, JSON.stringify({ ...asked, agents, runs }));
           return void (importState = { state: "stopped" });
         }
         await rm(importAsked, { force: true });
@@ -1917,8 +2122,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         importState = { state: "done", ...took };
         process.stdout.write(`${logLine("import", took)}\n`);
       } catch (error) {
-        importState = { state: "stopped" };
-        if (!closing) process.stderr.write(`agentrun-serve: the import at setup stopped (the next start goes on with it): ${(error as Error).message}\n`);
+        // A worker the close ended is no failed start; another failure is, and the last one allowed gives the import up.
+        if (closing) {
+          importState = { state: "stopped" };
+          if (asked) await writeDurable(importAsked, JSON.stringify(asked)).catch(() => undefined);
+        } else if (asked && asked.starts + 1 >= IMPORT_STARTS) await giveUp(`${IMPORT_STARTS} starts did not end it: ${(error as Error).message}`);
+        else {
+          importState = { state: "stopped" };
+          process.stderr.write(`agentrun-serve: the import at setup stopped (the next start goes on with it): ${(error as Error).message}\n`);
+        }
       }
     })());
 
@@ -2145,7 +2357,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (key === undefined) return work();
     if (typeof key !== "string" || key.length < 1 || key.length > 255) throw new ApiError("bad_request", "Idempotency-Key is 1 to 255 characters");
     const slot = `${path}\n${key}`;
-    const fingerprint = stable(body);
+    const text = stable(body);
+    const fingerprint = fingerprintOf(text);
     const now = Date.now();
     for (const [k, v] of idempotency) if (now - v.at > IDEMPOTENCY_TTL_S * 1000) idempotency.delete(k);
     const known = idempotency.get(slot);
@@ -2157,7 +2370,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     idempotency.set(slot, { fingerprint, at: now });
     let answer: { status: number; body: unknown; headers?: Record<string, string> };
     try {
-      answer = await work({ key: `idk_${sha256Hex(slot).slice(0, 32)}`, fingerprint: sha256Hex(fingerprint) });
+      // The run's origin keeps the SHA-256 it always has: a run the store made under a key before this start compares to it.
+      answer = await work({ key: `idk_${sha256Hex(slot).slice(0, 32)}`, fingerprint: sha256Hex(text) });
     } catch (error) {
       idempotency.delete(slot);
       throw error;
@@ -2165,7 +2379,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The work happened, so the key keeps its answer in memory even when the file write fails: a retry replays it
     // instead of doing the work twice. Only a restart before the next good save loses it, and a run's create not even
     // then: the store keeps its run under the key's origin.
-    idempotency.set(slot, { fingerprint, at: now, answer: { status: answer.status, body: answer.body, headers: answer.headers ?? {} } });
+    idempotency.set(slot, { fingerprint, at: now, answer: { status: answer.status, body: replayed(path, answer.body), headers: answer.headers ?? {} } });
     await keep().catch((error: Error) => void process.stderr.write(`agentrun-serve: idempotency save: ${error.message}\n`));
     return answer;
   }
@@ -2242,7 +2456,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }
 
   /** Where a revision of `kind` naming `tools` and no place runs here: the place a new agent would be saved with. */
-  const fallbackPlace = (kind: "agentic" | "workflow", tools: readonly unknown[]): Place => defaultPlaceOf(kind, tools, boxOffers, (tool) => toolOf(tool)?.runnerOnly === true);
+  const fallbackPlace = (kind: "agentic" | "workflow", tools: readonly unknown[]): Place => defaultPlaceOf(kind, tools, boxOffers, toolOf);
 
   /** What a save of `revision` pins of the MCP tools it grants (an agentic revision's: a workflow's nodes bind none): each
    *  granted server listed once, now, with its saved credential (McpServersOverStore.pinListing), as `tools` each server's
@@ -2322,7 +2536,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     if (sdkOf(body)) return { warnings: [], stamp: {} };
     // An agent on a harness that installs on first use starts its install, if it is not in yet: its first run waits for less.
-    const install = revision.kind === "agentic" ? installs[harnessOfBody(body)] : undefined;
+    const harnessId = revision.kind === "agentic" ? harnessOfBody(body) : undefined;
+    const install = harnessId !== undefined && Object.hasOwn(installs, harnessId) ? installs[harnessId] : undefined;
     if (install) {
       void install.ensure().catch((error: Error) => log?.(logLine("harness_install_failed", { harness: install.entry.id, message: error.message })));
     }
@@ -2367,18 +2582,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }
 
   /** POST /agents' body made into its agent, as that route makes one, with what this host still lacks for it. A new agent
-   *  that names no place is given this server's box (place.ts newAgentPlace), stamped on its revision; one that names a
-   *  tool the box refuses (browser) keeps the runner. */
+   *  that names no place is given this server's box (place.ts defaultPlaceOf), stamped on its revision, when it names no
+   *  tools (it gets bash) or a tool that needs a shell; one whose tools need none, or that names a tool the box refuses
+   *  (browser), keeps the runner. */
   async function createAgentOf(body: Json, template?: TemplatePackage): Promise<{ entry: AgentEntry; warnings: InputIssue[] }> {
     let warnings: InputIssue[] = [];
-    const definition = checkDefinitionBody(body);
+    const definition = checkDefinitionBody(body, { harnesses });
     const named = Array.isArray(definition.definition.tools) ? definition.definition.tools : [];
-    const fresh = named.some((tool) => typeof tool === "string" && toolOf(tool)?.runnerOnly) ? { reason: "" } : newAgentPlace(boxOffers);
+    const place = fallbackPlace("agentic", definition.definition.tools === undefined ? NEW_AGENT_TOOLS : named);
     const entry = await agents.create(definition, async (revision) => {
       const saved = await saveable(revision);
       warnings = saved.warnings;
       return saved.stamp;
-    }, "place" in fresh ? { place: fresh.place, tools: NEW_AGENT_TOOLS } : undefined, template);
+    }, place.mode === "sandbox" ? { place, tools: NEW_AGENT_TOOLS } : undefined, template);
     return { entry, warnings };
   }
 
@@ -2635,34 +2851,82 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  at the public URL or the server's own address. */
   const linkOrigin = (req: IncomingMessage): string => (options.publicUrl ?? (req.headers.host ? ownOrigin(req) : url)).replace(/\/+$/, "");
 
-  /** A run body's `mcp_auth` taken out of it, before anything else reads the body: the credentials a run's caller hands
-   *  its per_run MCP servers for this run alone (mcp-probe.ts mcpAuthOf). They never reach the run's saved body, its
-   *  timeline, an idempotency fingerprint (a retry with a fresh credential replays its first answer) or a log: only the
-   *  seal `sealer` makes, which seals them for the run's id into its launch row (store/seal.ts sealRunMcpAuth), bound to
-   *  each server's origin then. The request calls `sealer` only for new work, inside its idempotent work: there each
-   *  entry must name a saved per_run server, else 422, nothing written. A retry its key already answered replays that
-   *  answer even when the server has since changed or gone, since it does no new work. */
-  function handedMcpAuth(body: Json): { body: Json; sealer: () => Promise<((runId: string) => Uint8Array) | undefined> } {
-    if (body.mcp_auth === undefined) return { body, sealer: async () => undefined };
-    const { mcp_auth, ...rest } = body;
-    const sealer = async () => {
+  /** A run body's launch secrets taken out of it, before anything else reads the body: `mcp_auth`, the credentials a run's
+   *  caller hands its per_run MCP servers for this run alone (mcp-probe.ts mcpAuthOf), and `model_key`, the run's own model
+   *  key (run-model-key.ts), such as a LiteLLM virtual key minted for it. They never reach the run's saved body, its
+   *  timeline, an idempotency fingerprint (a retry with a fresh credential or key replays its first answer) or a log: only
+   *  the seal made of them, sealed for the run's id into its launch row (store/seal.ts sealRunLaunch), each MCP credential
+   *  bound to its server's origin then and the model key to the gateway's (AGENT_MODEL_BASE_URL). `handed` is called only
+   *  for new work, inside the request's idempotent work: there each mcp_auth entry must name a saved per_run server, and
+   *  the model key must be text, else 422, nothing written. A retry its key already answered replays that answer even
+   *  when the server has since changed or gone, since it does no new work. */
+  function handedLaunchSecrets(body: Json): { body: Json; handed: () => Promise<{ mcp?: RunMcpAuth; model?: string }> } {
+    if (body.mcp_auth === undefined && body.model_key === undefined) return { body, handed: async () => ({}) };
+    const { mcp_auth, model_key, ...rest } = body;
+    const handed = async () => {
       const issues: InputIssue[] = [];
-      const handed = mcpAuthOf(mcp_auth, issues);
+      const mcp = mcp_auth === undefined ? undefined : mcpAuthOf(mcp_auth, issues);
       const auth: Record<string, RunMcpAuth[string]> = {};
-      for (const [server, headers] of Object.entries(handed ?? {})) {
+      for (const [server, headers] of Object.entries(mcp ?? {})) {
         const row = await getMcpServer(store, server);
         if (row?.auth !== "per_run") issues.push({ field: `mcp_auth.${server}`, reason: "not_an_option", message: row ? `The MCP server ${server} keeps its own credential (auth ${row.auth}): only a per_run server takes one from a run.` : `No MCP server ${server} is saved here.` });
         else auth[server] = { headers, origin: new URL(row.url).origin };
       }
+      const model = model_key === undefined ? undefined : modelKeyOf(model_key, issues);
       if (issues.length) throw invalid(issues);
-      return (runId: string) => sealRunMcpAuth(sealKey, runId, auth);
+      return { ...(mcp_auth !== undefined ? { mcp: auth } : {}), ...(model !== undefined ? { model } : {}) };
     };
-    return { body: rest, sealer };
+    return { body: rest, handed };
+  }
+
+  /** The 422 for a model key where the run's model never takes it (run-model-key.ts modelKeyMisfit), at `model_key`. */
+  const misfit = (why: string) => invalid([{ field: "model_key", reason: "not_an_option", message: why }]);
+
+  /** A start's launch seal of `handed` (handedLaunchSecrets), made once the start prepared the run's launch: a model key
+   *  where the run's model never takes it is refused (modelKeyMisfit), and a start that hands other secrets but no key
+   *  is refused where the server holds no key for the run's route (serverKeyMissing). Undefined when nothing is handed:
+   *  the start's own check (runs-over-store keyedOrRefused) refuses that one where it has no key to spend. */
+  function startSeal(handed: { mcp?: RunMcpAuth; model?: string }): StartOptions["sealed"] {
+    if (handed.mcp === undefined && handed.model === undefined) return undefined;
+    return (runId, launch, kind) => {
+      const target = { kind, model: launch.model, native: Boolean(launch.native) };
+      if (handed.model !== undefined) {
+        const why = modelKeyMisfit(env, target);
+        if (why) throw misfit(why);
+      } else if (serverKeyMissing(env, target)) throw modelKeyRequired(false);
+      const origin = runModelOrigin(env);
+      return sealRunLaunch(sealKey, runId, { ...(handed.mcp ? { mcp: handed.mcp } : {}), ...(handed.model !== undefined && origin ? { model: { key: handed.model, origin } } : {}) });
+    };
+  }
+
+  /** A message's launch secrets for run `run` (its kind and launch as stored): what it hands replaces that part of the
+   *  run's, inside the write that takes the message (store LaunchSealed: a function of what the launch holds then), and a
+   *  part it does not hand is kept as the run holds it (none after its turn's end erased it). A model key is refused
+   *  where the run's model never takes it. One is required where the server holds no key for the run's route and the
+   *  run holds none when the message is written (its last turn ended): 422 model_key_required from inside that write,
+   *  which then writes nothing, so a turn never starts with no key to spend. */
+  async function messageSeal(run: { id: string; kind: string }, handed: { mcp?: RunMcpAuth; model?: string }): Promise<LaunchSealed | undefined> {
+    const launch = readLaunchBody((await store.runs.launch(run.id)).body);
+    const target = { kind: run.kind, model: launch?.model, native: Boolean(launch?.native) };
+    if (handed.model !== undefined) {
+      const why = modelKeyMisfit(env, target);
+      if (why) throw misfit(why);
+    }
+    const needsKey = handed.model === undefined && serverKeyMissing(env, target);
+    if (handed.mcp === undefined && handed.model === undefined && !needsKey) return undefined;
+    const origin = runModelOrigin(env);
+    return (current) => {
+      const held = current === null ? {} : (openRunLaunch(sealKey, run.id, current) ?? {});
+      const mcp = handed.mcp ?? held.mcp;
+      const model = handed.model !== undefined && origin ? { key: handed.model, origin } : held.model;
+      if (!model && needsKey) throw modelKeyRequired(true);
+      return sealRunLaunch(sealKey, run.id, { ...(mcp ? { mcp } : {}), ...(model ? { model } : {}) });
+    };
   }
 
   async function createRun(req: IncomingMessage, agentId: string) {
     const entry = await needRunnableAgent(agentId);
-    const { body, sealer } = handedMcpAuth(await bodyOf(req));
+    const { body, handed } = handedLaunchSecrets(await bodyOf(req));
     return idempotent(req, `/agents/${agentId}/runs`, body, async (origin) => {
       // A run the store started under this key, though no answer was kept (its server went down first): that run, as it is now.
       const first = origin && (await agents.request(() => agents.store.runOfOrigin(origin.key)));
@@ -2671,7 +2935,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
         return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
       }
-      const seal = await sealer();
+      const seal = startSeal(await handed());
       const run = await startRunOf(entry, body, { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}) });
       // Its view from the store: the run and its launch were inserted in one transaction, so the view reads it whole.
       return { status: 202, body: await viewOverStore(store, run.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${run.id}` } };
@@ -2684,7 +2948,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  Its first run makes the agent, a version's first run its revision; a later run of the version reuses both
    *  (runs-over-store startInline). The answer is POST /agents/{agent_id}/runs' own: 202 and the run. */
   async function createInlineRun(req: IncomingMessage) {
-    const { body, sealer } = handedMcpAuth(await bodyOf(req));
+    const { body, handed } = handedLaunchSecrets(await bodyOf(req));
     if (isObject(body.definition) && body.definition.native !== undefined) throw new ApiError("input_invalid", "Native references are registered only through /native/connect on the source machine; an inline definition cannot create one.");
     const { external, definition, skills, note, revision: pinned, ...run } = body;
     const given = { definition, ...(skills !== undefined ? { skills } : {}), ...(note !== undefined ? { note } : {}) };
@@ -2692,12 +2956,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       ...externalIssues(external),
       ...(pinned !== undefined ? [{ field: "revision", reason: "not_allowed", message: "An inline run pins no revision: it runs the revision of its external version.", fix: "Remove revision." }] : []),
       ...runBodyIssues(run),
-      ...definitionBodyIssues(given),
+      ...definitionBodyIssues(given, { harnesses }),
       // The agent's id is this server's, one per external reference, and its version is the reference's.
       ...(["id", "version"] as const).flatMap((key) => (isObject(definition) && definition[key] !== undefined ? [{ field: `definition.${key}`, reason: "not_allowed", message: `An inline agent's ${key} is its external reference's: the definition names none.`, fix: `Remove definition.${key}.` }] : [])),
     ];
     if (issues.length) throw invalid(issues);
-    const checked = checkDefinitionBody(given);
+    const checked = checkDefinitionBody(given, { harnesses });
     const made = makeRevision(checked.definition, checked.skills ?? {}, checked.note);
     // A version's first run is its save: refused where POST /agents refuses the definition (one this host can never run),
     // its MCP tools pinned as a save pins them (a server down keeps the agent's current pin when this version grants nothing
@@ -2724,7 +2988,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const headers: Record<string, string> = { location: `/v2/runs/${first.runId}`, "idempotent-replayed": "true" };
         return { status: 202, body: await viewOverStore(store, first.runId, viewDepsFor(linkOrigin(req))), headers };
       }
-      const seal = await sealer();
+      const seal = startSeal(await handed());
       const started = await startInline(store, startDeps, inline, run, { ...(origin ? { origin } : {}), ...(seal ? { sealed: seal } : {}) });
       return { status: 202, body: await viewOverStore(store, started.id, viewDepsFor(linkOrigin(req))), headers: { location: `/v2/runs/${started.id}` } };
     });
@@ -2815,8 +3079,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // An audit's shadow run is no row of the list (learn/audit.ts): it is read by id, and its cost is its served run's.
     let rows = (await listRunsOverStore(store, { ...filter, ...(labels ? { labels } : {}) }, ctx)).filter((row) => Boolean(row.archivedAt) === archived && !isShadowRun(row.id));
     if (status !== null) {
-      // The v2 status is the run view's (store-view over the journal), per row.
-      const statuses = await Promise.all(rows.map((row) => viewOverStore(store, row.id, vd).then((v) => v?.status as Status | undefined)));
+      // The v2 status is the run view's (store-view over the journal), per row; a settled run's is its row's (settledStatusOf),
+      // so only the runs still going are read over their journals.
+      const statuses = await Promise.all(rows.map((row) => settledStatusOf(row.state) ?? viewOverStore(store, row.id, vd).then((v) => v?.status as Status | undefined)));
       rows = rows.filter((_, i) => statuses[i] === (status as Status));
     }
     // summaryOverStore reads each run's view (its version, status, cost and learning among them); no versions map is needed.
@@ -3034,7 +3299,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return { password: body.password as string, body };
   }
 
-  /** POST /v2/setup, POST /v2/auth/sign-in, POST /v2/auth/sign-out, POST /v2/auth/sign-out-everywhere and GET
+  /** POST /v2/setup, POST /v2/setup/code, POST /v2/auth/sign-in, POST /v2/auth/sign-out, POST /v2/auth/sign-out-everywhere and GET
    *  /v2/auth/session, answered before any credential: their own checks are the setup code (or the token), the password,
    *  and the session. */
   async function ownerRoute(req: IncomingMessage, res: ServerResponse, path: string, me: Owner): Promise<void> {
@@ -3046,11 +3311,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (byToken && !bearer(req.headers.authorization, req)) throw new ApiError("unauthenticated", "the Bearer here is the server's token, or none", {}, { "www-authenticate": "Bearer" });
         if (!byToken) fromPage(req);
         const { password, body } = await passwordIn(req, ["password", "code", "import"]);
-        if (body.import !== undefined && typeof body.import !== "boolean") throw invalid([{ field: "import", reason: "wrong_type", message: "import is true or false" }]);
-        if (body.import === true && !offersImport) throw invalid([{ field: "import", reason: "not_allowed", message: "Only a server on this machine (no public address, on loopback) imports its sessions at setup: run the import command where they are." }]);
+        // The owner's choice: the projects to import, by the ids the offer named them with (GET /v2/setup/import's
+        // candidates); `true` is every project, as before; `false`, none named or the field left out is no import.
+        const named = Array.isArray(body.import) ? (body.import as unknown[]) : undefined;
+        if (body.import !== undefined && typeof body.import !== "boolean" && !(named && named.length <= MAX_CANDIDATES && named.every((id) => typeof id === "string" && /^imp-[0-9a-f]{32}$/.test(id))))
+          throw invalid([{ field: "import", reason: "wrong_type", message: `import is true, false, or at most ${MAX_CANDIDATES} of the project ids GET /v2/setup/import names` }]);
+        const chosen = named ? [...new Set(named as string[])] : undefined;
+        const takes = body.import === true || (chosen !== undefined && chosen.length > 0);
+        if (takes && !offersImport) throw invalid([{ field: "import", reason: "not_allowed", message: "Only a server on this machine (no public address, on loopback) imports its sessions at setup: run the import command where they are." }]);
         // The owner's yes, on the box ticked, is kept with the owner: written durably before the password, so a setup that
         // cannot keep it sets no owner and can be tried again, and taken back if the password is not written.
-        const along = body.import === true ? { keep: () => writeDurable(importAsked, ""), drop: () => rm(importAsked, { force: true }) } : undefined;
+        const along = takes ? { keep: () => writeDurable(importAsked, chosen ? JSON.stringify({ projects: chosen }) : ""), drop: () => rm(importAsked, { force: true }) } : undefined;
         // The server's API token stands in for the code in the code field too (on Render it is in the Environment tab, the
         // code only in the log), compared as the header is, in constant time; a wrong one counts as a wrong code.
         const tokenAsCode = typeof body.code === "string" && body.code !== "" && bearer(`Bearer ${body.code}`, req);
@@ -3063,20 +3334,33 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         viewers.recheck();
         // The count is for the offer, now answered: it stops.
         stopCount();
-        // Only on the box ticked: the owner, now set, asked for it. It runs after the answer; agents arrive as it goes.
-        if (body.import === true) void importAtSetup();
-        return send(res, 201, { signed_in: true, ...(body.import === true ? { importing: true } : {}) }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
+        // Only on a choice made: the owner, now set, asked for it. It runs after the answer; agents arrive as it goes.
+        if (takes) void importAtSetup();
+        return send(res, 201, { signed_in: true, ...(takes ? { importing: true } : {}) }, { "set-cookie": ownerCookie(req, me.session(), SESSION_S) });
+      }
+      // A setup code to use, asked for with no credential (the person at the Setup code field, or whoever started the
+      // server for them): a new one goes to the log only when the last is expired or spent; one still good is kept, so
+      // this request never voids a link someone holds. The answer says which and when it runs out, never the code.
+      // No origin check and no rate limit, unlike setup and sign-in: the documented caller is a bare curl, the answer
+      // holds nothing secret, and all a caller gets is at most one log line per code's 30 minutes. Counting asks with
+      // sign-in tries would let one visitor behind a shared proxy hold the button shut for everyone.
+      case "/setup/code": {
+        if (me.hasPassword()) throw new ApiError("forbidden", "this server has its owner: sign in");
+        const code = me.renewSetupCode();
+        if (!code) throw new ApiError("forbidden", "no setup code to give: this server's setup takes no code, or its password is being set now");
+        return send(res, 200, { printed: code.printed, expires_at: new Date(code.until).toISOString() });
       }
       case "/setup/import": {
         // No offer is an answer, `{ offer: false }`, never a 404: the console reads this on its first page, and a browser
         // logs every 404 as an error.
         // Before the owner is set, to the setup page: none on a server that cannot import, else that it can (202 while it
-        // counts), and then how many projects and sessions it would, or null for each when the count failed.
+        // counts), and then how many projects and sessions it would and the projects to choose from (`candidates`, the
+        // latest active first, at most MAX_CANDIDATES), or null for each count when the count failed.
         if (!me.hasPassword()) {
           pageRead(req);
           if (!offersImport) return send(res, 200, { offer: false });
           countSessions();
-          if (count?.state === "counted") return send(res, 200, { projects: count.projects, sessions: count.sessions });
+          if (count?.state === "counted") return send(res, 200, { projects: count.projects, sessions: count.sessions, candidates: count.candidates });
           if (count?.state === "failed") return send(res, 200, { projects: null, sessions: null });
           return send(res, 202, { counting: true });
         }
@@ -3164,14 +3448,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const bodies = new WeakMap<IncomingMessage, Json>();
   /** The check of a whole body a route makes before anything else, by operation, for the body sent: what a suggested
    *  value must pass. PUT .../definition's contract body (the definition itself) has none here. */
-  const definitionCheck = (creating: boolean) => (body: unknown) => definitionBodyIssues(isObject(body) ? body : {}, { creating });
+  const definitionCheck = (creating: boolean) => (body: unknown) => definitionBodyIssues(isObject(body) ? body : {}, { creating, harnesses });
   const BODY_CHECKS: Record<string, (sent: Json) => ((body: unknown) => readonly InputIssue[]) | undefined> = {
     createAgent: () => definitionCheck(true),
     updateDefinition: (sent) => ("definition" in sent ? definitionCheck(false) : undefined),
     // POST /runs' agent, given inline, is POST /agents' body inside its own: checked as that one is.
     createInlineRun: () => (body: unknown) => {
       const { definition, skills, note } = isObject(body) ? body : {};
-      return definitionBodyIssues({ definition, ...(skills !== undefined ? { skills } : {}), ...(note !== undefined ? { note } : {}) });
+      return definitionBodyIssues({ definition, ...(skills !== undefined ? { skills } : {}), ...(note !== undefined ? { note } : {}) }, { harnesses });
     },
   };
 
@@ -3504,7 +3788,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           warnings = saved.warnings;
           return saved.stamp;
         };
-        const edited = await agents.commit(entry, checkDefinitionBody(contract ? { definition: body } : body, { creating: false }), { check, contract, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
+        const edited = await agents.commit(entry, checkDefinitionBody(contract ? { definition: body } : body, { creating: false, harnesses }), { check, contract, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
         reconcileComputer(id);
         return send(res, 200, { ...agentView(edited, linkOrigin(req), await agentExtra(edited)), warnings }, { etag: etagOf(edited) });
       }
@@ -3604,7 +3888,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "getRun": {
         const view = await viewOverStore(store, id, runReadDepsFor(linkOrigin(req)));
         if (!view) throw new ApiError("not_found", `no run ${id}`);
-        return send(res, 200, { ...view, ...(await runComputerOf(id, view)) });
+        return send(res, 200, { ...view, ...(await runComputerOf(id, view)), ...(await allInViewOf(id, view)) });
       }
       case "getTimeline":
         await needRun(id);
@@ -3614,16 +3898,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "sendMessage": {
         const run = await needRun(id);
         if (run.kind === "workflow") throw unsupported("messages.steer_workflow_runs", "A workflow run takes no messages here: its workflow runs to its end, or a cancel ends it.");
-        const { body, sealer } = handedMcpAuth(await bodyOf(req));
+        const { body, handed } = handedLaunchSecrets(await bodyOf(req));
         const answer = await idempotent(req, `/runs/${id}/messages`, body, async () => {
-          const seal = await sealer();
+          const seal = await messageSeal(run, await handed());
           const extra = unknownFields(body, ["content"]);
           if (extra.length) throw invalid(extra);
           const content = body.content;
           if (typeof content !== "string" || !/\S/.test(content)) throw invalid([{ field: "content", reason: content === undefined ? "missing" : "wrong_type", message: "content is a non-empty string" }]);
           if (content.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);
-          // Its mcp_auth replaces the run's handed credentials in the steer's own write, so the turn it starts uses them.
-          const { mode, messageId } = await message(store, run, content, { ...(seal ? { launchSealed: seal(run.id) } : {}), ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}) });
+          // Its mcp_auth and model_key replace the run's in the steer's own write, so the turn it starts uses them.
+          const { mode, messageId } = await message(store, run, content, { ...(seal ? { launchSealed: seal } : {}), ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}) });
           // The run's state after the command row is written (the run view): the runner applies the steer; the client polls.
           const { status, state } = await runStatusState(run.id);
           return { status: 202, body: { run_id: run.id, message_id: messageId, mode, status, state, poll_after_ms: 1000 } };
@@ -3692,7 +3976,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           ...(typeof m.workflow_promotion === "number" ? { promotion: m.workflow_promotion } : {}),
         };
         // Kept with what it asks of the run's learning (runner/feedback-round.ts): nothing, or a look-back.
-        const kept = gradeView(await keepGrade(store, row.agentId, grade, typeof body.label === "string" ? body.label : undefined));
+        // Its feedback round is a turn with no caller's model key: on the server's key for the run's route, else not opened.
+        const kept = gradeView(await keepGrade(store, row.agentId, grade, typeof body.label === "string" ? body.label : undefined, (launch) => !serverKeyMissing(env, { kind: "agentic", model: launch.model, native: Boolean(launch.native) })));
         // A grade of a run its learned workflow answered alone is an audit row too (runner/audit.ts gradeRow): the hold rule
         // reads it with the shadows'. A row not written now is logged, never the grade refused.
         const said = (line: string) => log?.(logLine("audit", { run: row.id, said: line }));
@@ -4166,7 +4451,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const read = await agentCostOverStore(store, id, limit);
         // Each workflow's name as the other learning reads show it: one that holds a secret or a sign-in's value is cut.
         const shown = await learningShown(id);
-        const cost = { ...read, runs: read.runs.map((run) => (run.workflow === null ? run : { ...run, workflow: shown.name(run.workflow) })), workflows: read.workflows.map((one) => ({ ...one, workflow: shown.name(one.workflow) })) };
+        const cost = { ...read, runs: read.runs.map((run) => (run.workflow === null ? run : { ...run, workflow: shown.name(run.workflow) })), workflows: read.workflows.map((one) => ({ ...one, workflow: shown.name(one.workflow) })), bill: { ...read.bill, revisions: read.bill.revisions.map((one) => ({ ...one, workflow: shown.name(one.workflow) })), holds: read.bill.holds.map((one) => ({ ...one, workflow: shown.name(one.workflow), reason: shown.text(one.reason) })) } };
         if (csv) {
           res.writeHead(200, { "content-type": "text/csv; charset=utf-8", "cache-control": "no-store", "x-content-type-options": "nosniff", "content-disposition": `attachment; filename="${id}-cost-per-run.csv"` });
           return void res.end(costCsv(cost.runs));
@@ -4189,9 +4474,26 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // rule startAudit reads); and how many of the serving revision's runs a trigger started (never audited).
         const writer = auditWriterOf(entry.revision ?? undefined);
         const auditsOff = writer === undefined ? null : shown.text(auditsOffWords(writer));
+        // The champion's own revision, read by its recorded digest at the learning commits its records name (newest
+        // first), then main: never by paging the workflow's history. Its nodes with their tiers and code checks, and the
+        // check it was promoted on; nodes null when no commit read holds its text (or the folder can't be read now).
+        const championRead = async (workflow: string, digest: string) => {
+          const champion = championOf(records, workflow);
+          const record = champion?.digest === digest ? champion : undefined;
+          const commits = records.filter((one) => one.workflow === workflow && one.digest === digest && one.commit).map((one) => one.commit!).reverse();
+          const read = await workflowAtDigest(data, id, workflow, digest, commits).catch(() => undefined);
+          let doc: unknown;
+          try {
+            doc = read ? JSON.parse(read.text) : undefined;
+          } catch {
+            doc = undefined;
+          }
+          return shownDeep({ digest, commit: read?.commit ?? null, nodes: doc === undefined ? null : workflowNodesOf(doc), check: record?.check ?? null }, shown);
+        };
         const serving = await Promise.all(servingOf(records).map(async (one, i) => ({
           ...shownRead.serving[i]!, ...lines[i]!, audits_off: auditsOff,
           not_auditable: one.digest === null ? 0 : await notAuditableOf(store, id, one.workflow, one.digest, loop).catch(() => 0),
+          champion: one.digest === null ? null : await championRead(one.workflow, one.digest),
         })));
         return send(res, 200, { agent: id, promotions: shownRead.promotions, serving });
       }
@@ -4303,6 +4605,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           throw new ApiError("bad_request", `inputs is "held" (the runs the revision was last checked on, the default) or a whole number from 1 to ${COMPILE_AFTER_MAX}: that many of the agent's newest completed runs.`);
         }
         const [, , name, digest] = found.pattern.exec(path)!.map((part) => decodeURIComponent(part));
+        // Its replay runs are started by no caller, with no model key: none to spend on a server that holds none.
+        const keyless = noServerKeyFor(env, "An owner's replay");
+        if (keyless) throw new ApiError("not_continuable", keyless);
         const started = await replayAsked(() => askReplay(replayAskOf(entry), name!, digest!, inputs as "held" | number));
         return send(res, 202, started, { location: `/v2/agents/${encodeURIComponent(id)}/learning/workflows/${encodeURIComponent(name!)}/revisions/${encodeURIComponent(digest!)}/replays/${started.replay}` });
       }
@@ -4416,6 +4721,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "deleteTrigger": {
         // Deleted here whatever its sender says; what could not be removed there is answered (Composio's instance).
         const said = await triggers.remove(id);
+        // Its cached create answers are masked now and saved, so no later start has to find the trigger to mask them. A
+        // failed save is said by a code; the map is masked already, so a replay is too.
+        if (maskCachedGone(id).length) await keep().catch((error: NodeJS.ErrnoException) => idempotencySaid({ condition: "idempotency_not_saved", trigger: id, error: typeof error?.code === "string" ? error.code : "error" }));
         if (said) return send(res, 200, { deleted: true, ...(said as Record<string, unknown>) });
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
       }
@@ -4469,7 +4777,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   })();
 
   let names: Set<string> | undefined;
-  const server = createServer((req, res) => {
+  // The listener: the CLI's, bound early and answering warming until the takeover below (listen-first.ts), or a new one.
+  const server = options.listener ?? createServer();
+  const onRequest = (req: IncomingMessage, res: ServerResponse) => {
     const requestId = `req_${randomBytes(8).toString("hex")}`;
     res.setHeader("x-request-id", requestId);
     if (log && !quiet) {
@@ -4511,7 +4821,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // MCP endpoint, the token-less hooks or the token check read anything of the request.
     if (options.apiOnly && !servedApiOnly(ROUTES, req.method, raw)) return fail(new ApiError("not_found", apiOnlyRefusal(raw)));
     // Before the page: its cookie must not stand in for the token on the owner's own routes, nor on the MCP endpoint.
-    if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
+    if (owner && (raw === "/v2/setup" || raw === "/v2/setup/import" || raw === "/v2/setup/code" || raw.startsWith("/v2/auth/"))) return void ownerRoute(req, res, raw.slice(3), owner).catch(fail);
     if (raw === MCP_PATH) return void mcp(req, res).catch(fail);
     if (raw === "/llms.txt") return void answerLlms(req, res).catch(fail);
     if (raw === "/skills/agentrun-serve/SKILL.md") return void answerSkill(req, res).catch(fail);
@@ -4523,13 +4833,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const viewing = LIVE_PATH.exec(raw);
     if (viewing) return ID.test(viewing[1]!) ? void liveRoute(req, res, viewing[1]!, viewing[2] as LiveFamily, viewing[3]!).catch(fail) : fail(new ApiError("not_found", "no run's live view at that address"));
     route(req, res, url, raw.slice(3)).catch(fail);
-  });
+  };
   // A request's headers come within 10 s, whatever its route: nothing sends more than a few kilobytes of them. Its body
   // keeps Node's 5-minute request timeout, which an upload of a large file needs; the token-less hook route has its own
   // 30 s for its body (push-handler.ts HOOK_BODY_MS), so dribbling senders hold no socket for long.
   server.headersTimeout = 10_000;
   // The one upgrade this server takes: a run's live computer viewer's WebSocket (browser-live.ts). Every other is refused.
-  server.on("upgrade", (req: IncomingMessage, socket: Duplex, head: Buffer) => {
+  const onUpgrade = (req: IncomingMessage, socket: Duplex, head: Buffer) => {
     socket.on("error", () => socket.destroy());
     const raw = (req.url ?? "/").split("?")[0]!;
     const viewing = LIVE_PATH.exec(raw);
@@ -4576,25 +4886,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       viewers.watch(socket, admitted);
       proxyLiveUpgrade(req, socket, head, handover, viewing[3]!, () => { piping = true; }, reach);
     })().catch(() => (piping ? void socket.destroy() : deny("500 Internal Server Error")));
-  });
-  const first = options.port ?? DEFAULT_PORT;
-  const last = options.nextFreePort && first !== 0 ? Math.min(first + 99, 65_535) : first;
-  for (let port = first; ; port++) {
-    try {
-      // Each attempt takes off both its handlers when it ends, so a taken port leaves no listener behind.
-      await new Promise<void>((done, reject) => {
-        const onError = (error: Error) => (server.off("listening", onListening), reject(error));
-        const onListening = () => (server.off("error", onError), done());
-        server.once("error", onError);
-        server.once("listening", onListening);
-        server.listen(port, host);
-      });
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EADDRINUSE") throw error;
-      if (port < last) continue;
-      throw last > first ? Object.assign(new Error(`every port from ${first} to ${last} on ${host} is taken`), { code: "EADDRINUSE" }) : error;
-    }
+  };
+  // The CLI's early listener answers with this server's routes from here on, where a new one would start to listen.
+  if (options.listener) takeOver(server, onRequest, onUpgrade);
+  else {
+    server.on("request", onRequest);
+    server.on("upgrade", onUpgrade);
+    await listenOn(server, host, options.port ?? DEFAULT_PORT, options.nextFreePort === true);
   }
   // The tool keys the server is started with, each checked once against its provider, in the background, once it
   // listens: a start that fails sends no check, and the start never waits on one. Capabilities are made again as each
@@ -4604,11 +4902,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // listen hands back no close to stop them.
   if (offersImport && existsSync(importAsked)) void importAtSetup();
   else if (offersImport && options.countSessions && owner && !owner.hasPassword()) countSessions();
-  const address = server.address() as AddressInfo;
   if (isLoopback(host)) names = loopbackNames(host, options.allowHosts, options.publicUrl);
   // An address of every interface is reached on this machine at its loopback one.
-  const shown = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
-  const url = `http://${shown.includes(":") ? `[${shown}]` : shown}:${address.port}`;
+  const url = urlOf(server, host);
   owner?.attach(options.publicUrl ?? url);
   webhooks.attach(options.publicUrl ?? url);
   // A local install is the one server an MCP server's URL may be on loopback for (anywhere else, loopback is this machine's
@@ -4724,6 +5020,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   /** A run's end, told once the run reads final. False when it is not done (a read that failed, or its notice not saved). */
   const tellEnd = async (id: string): Promise<boolean> => {
+    // An audit's shadow run is no host's run (learn/audit.ts): it sends no notice of any kind; its cost reaches a host as
+    // the audited run's cost.learning_usd alone.
+    if (isShadowRun(id)) return true;
     const now = await endNotice(id).catch((error: Error) => (sayUnread(id, error.message), undefined));
     if (now === undefined) return false;
     // A person's stop of an agentic run ends its row but not the run: it reads input_required (pending kind stopped), so
@@ -4839,7 +5138,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const rows = await store.runs.list({});
     // An end catchUp cannot read, or whose notice the store refused, is said there and left for each read to try
     // (endsLeft): it is before the feed's head, so no change of the feed brings it back.
-    const unsaved = await webhooks.catchUp(rows.filter((row) => !row.importedFrom).map(endOf), (id) => endNotice(id).catch((error: Error) => (endsLeft.add(id), Promise.reject(error))));
+    const unsaved = await webhooks.catchUp(rows.filter((row) => !row.importedFrom && !isShadowRun(row.id)).map(endOf), (id) => endNotice(id).catch((error: Error) => (endsLeft.add(id), Promise.reject(error))));
     for (const id of unsaved) endsLeft.add(id);
     // A run that stands at a person's stop waits too (tellWait reads its view: one its stop ended reads no wait).
     for (const row of rows) if (!closing && (letGo(row) || stopRow(row)) && !(await tellWait(row).catch((error: Error) => (sayUnread(row.id, error.message), false)))) waitsLeft.add(row.id);
@@ -4872,6 +5171,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     await Promise.all([...workers.values()].map((w) => w.exit));
     await importing;
+    await schemaSealed;
     await installStopped;
     await observationStopped;
     // The ends' follower stops before the webhooks it feeds and the store it reads.
@@ -4896,7 +5196,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   return {
     url,
     baseUrl: `${url}/v2`,
-    port: address.port,
+    port: (server.address() as AddressInfo).port,
     token,
     tokenIds: tokens.map((entry) => entry.id),
     tokenFile,

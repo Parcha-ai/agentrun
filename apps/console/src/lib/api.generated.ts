@@ -167,7 +167,13 @@ export interface components {
       allow: string[];
     };
     harnesses?: {
-      id: "pi" | "claude-agent" | "codex" | "opencode";
+      id: string;
+      label: string;
+      promises: {
+        resume: "exact" | "load" | "restart";
+        tool_gate: "every_call" | "permission" | "config";
+        billing: "proxy" | "plan";
+      };
       available: boolean;
       free_models: {
         id: string;
@@ -194,7 +200,7 @@ export interface components {
       available: boolean;
       reason?: string;
       missing?: string[];
-      harnesses: ("pi" | "claude-agent" | "codex" | "opencode")[];
+      harnesses: string[];
       providers?: string[];
       provider?: string;
       default_provider?: string;
@@ -256,6 +262,8 @@ export interface components {
     so_far_usd?: number;
     unpriced?: number;
     upper_bound?: true;
+    learning_usd?: number | null;
+    all_in_usd?: number | null;
     plan?: {
       requests: number;
       tokens: number;
@@ -317,7 +325,7 @@ export interface components {
       strong?: string;
     };
     thinking?: "low" | "medium" | "high" | "xhigh" | "max";
-    harness?: "pi" | "claude-agent" | "codex" | "opencode";
+    harness?: string;
     place?: {
       mode: "runner";
     } | {
@@ -473,7 +481,7 @@ export interface components {
       detail: string;
     }[];
   };
-  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "learned_not_active" | "replay_conflict" | "agent_not_external" | "runs_in_flight" | "learning_busy";
+  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "learned_not_active" | "replay_conflict" | "model_key_required";
   ExternalRef: {
     source: string;
     kind: string;
@@ -686,6 +694,7 @@ export interface components {
   };
   MessageCreate: {
     content: string;
+    model_key?: string;
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
     }>;
@@ -943,6 +952,7 @@ export interface components {
       firing_key: string;
     } | null;
     audit_of?: string | null;
+    path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
   };
   RunCreate: {
     input: Record<string, unknown>;
@@ -950,6 +960,7 @@ export interface components {
     effort?: components["Effort"];
     max_cost_usd?: number;
     quote_id?: string;
+    model_key?: string;
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
     }>;
@@ -973,6 +984,7 @@ export interface components {
     effort?: components["Effort"];
     max_cost_usd?: number;
     quote_id?: string;
+    model_key?: string;
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
     }>;
@@ -1726,6 +1738,7 @@ export interface operations {
           })[];
         }[];
         instance_id?: string;
+        sealed_config?: string[];
         hook?: string;
         move_subscription?: true;
       } | {
@@ -1854,6 +1867,7 @@ export interface operations {
           })[];
         }[];
         instance_id?: string;
+        sealed_config?: string[];
         hook?: string;
         move_subscription?: true;
       } | {
@@ -1966,10 +1980,6 @@ export interface operations {
       secret_set?: true;
       note?: string;
     };
-  };
-  deleteAgent: {
-    body: never;
-    answer: never;
   };
   deleteAgentArchil: {
     body: never;
@@ -2419,9 +2429,9 @@ export interface operations {
   getHealth: {
     body: never;
     answer: {
-      status: "ok" | "failing";
+      status: "ok" | "failing" | "warming";
       checks: {
-        store: "ok" | "does_not_open";
+        store: "ok" | "does_not_open" | "opening";
         disk: "ok" | "below_floor" | "cannot_check";
       };
     };
@@ -2580,6 +2590,50 @@ export interface operations {
           alone: number;
           agree_min: number;
         } | null;
+      };
+      bill: {
+        baseline: {
+          runs: number;
+          mean_usd: number;
+        } | null;
+        promoted: {
+          n: number;
+          run_id: string;
+          at: string;
+        } | null;
+        points: {
+          n: number;
+          run_id: string;
+          actual_usd: number;
+          agent_usd: number | null;
+        }[];
+        break_even: {
+          n: number;
+          run_id: string;
+        } | null;
+        gap_usd: number | null;
+        withheld: number;
+        booked_usd: number;
+        revisions: {
+          workflow: string;
+          digest: string;
+          compile_usd: number | null;
+          check_usd: number | null;
+          spend_usd: number | null;
+          k: number;
+          served: number;
+          attributed_usd: number | null;
+          unattributed_usd: number | null;
+          state: "checking" | "serving" | "stopped";
+        }[];
+        unattributed_usd: number | null;
+        holds: {
+          n: number | null;
+          at: string;
+          workflow: string;
+          by: "audit" | "check" | "dsl";
+          reason: string;
+        }[];
       };
     };
   };
@@ -3222,6 +3276,7 @@ export interface operations {
           })[];
         }[];
         instance_id?: string;
+        sealed_config?: string[];
         hook?: string;
         move_subscription?: true;
       } | {
@@ -3623,6 +3678,7 @@ export interface operations {
         description: string;
         config: Record<string, unknown>;
         polled: boolean;
+        sealed: string[];
         instructions?: string;
       }[];
     };
@@ -4034,6 +4090,52 @@ export interface operations {
         } | null;
         audits_off: string | null;
         not_auditable: number;
+        champion: {
+          digest: string;
+          commit: string | null;
+          nodes: {
+            path: string;
+            kind: string;
+            label: string;
+            tier: "fast" | "agent" | null;
+            checks: {
+              on: "when" | "until";
+              predicate: Record<string, unknown>;
+            }[];
+          }[] | null;
+          check: {
+            compile_after: number;
+            agree_min: number;
+            alone_min: number;
+            attempt: 1 | 2;
+            n?: number;
+            agreed?: number;
+            alone?: number;
+            of?: string[];
+            cost_usd?: number | null;
+            outcomes?: {
+              answered: number;
+              handed_back: number;
+              failed: number;
+              skipped_write: number;
+            };
+            unstarted?: number;
+            skipped_tools?: {
+              tool: string;
+              inputs: number;
+              no_read_only_hint: boolean;
+            }[];
+            disagreements?: {
+              run: string;
+              input: string;
+              agent: string | null;
+              draft?: string;
+              escalated?: string;
+              failed?: true;
+            }[];
+            stopped?: true;
+          } | null;
+        } | null;
       }[];
     };
   };
@@ -4352,6 +4454,7 @@ export interface operations {
             })[];
           }[];
           instance_id?: string;
+          sealed_config?: string[];
           hook?: string;
           move_subscription?: true;
         } | {
@@ -5582,6 +5685,7 @@ export interface operations {
           })[];
         }[];
         instance_id?: string;
+        sealed_config?: string[];
         hook?: string;
         move_subscription?: true;
       } | {
@@ -5710,6 +5814,7 @@ export interface operations {
           })[];
         }[];
         instance_id?: string;
+        sealed_config?: string[];
         hook?: string;
         move_subscription?: true;
       } | {

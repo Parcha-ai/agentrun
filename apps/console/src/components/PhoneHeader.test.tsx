@@ -150,7 +150,9 @@ describe("the run page's header on a phone", () => {
   it("tighter, a two-line title, and the actions in the facts' row", () => {
     const host = mount(createElement(RunHeader, { run, agentName: "Invoice checker", actions: { onArchive: () => {} } }));
     const header = host.querySelector("header")!;
-    expect(classes(header)).toContain("max-sm:py-3");
+    // The breadcrumb is the page's top bar (48px, level with the navigation's logo row); the title block is under it.
+    expect(classes(header.querySelector('nav[aria-label="Breadcrumb"]'))).toEqual(expect.arrayContaining(["min-h-12", "py-1.5", "border-b"]));
+    expect(classes(header.querySelector("[data-title-block]"))).toContain("max-sm:py-3");
     // main's title is two lines at every width (line-clamp-2); the phone only shrinks its type.
     expect(classes(header.querySelector("h1"))).toEqual(expect.arrayContaining(["max-sm:text-lg", "line-clamp-2"]));
     expect(wide(header.querySelector("h1"))).toContain("text-2xl");

@@ -85,7 +85,7 @@ export function decodeFrame(message: Uint8Array): { w: number; h: number; jpeg: 
 /** What stream.ts gives the server: one session's page, shown and driven over its browser's DevTools socket. */
 export type StreamHandlers = {
   /** The latest frame only. `ack` tells the browser to send the next: call it after the frame was sent to the viewer, or at once to drop it
-   *  (the viewer is slow). No frame is kept after the handler returns, and none is ever written anywhere. */
+   *  (the viewer is slow). No frame is kept after the handler returns, and the stream writes none anywhere. */
   frame(jpeg: Buffer, page: { w: number; h: number }, ack: () => void): void;
   page(page: { url: string; title: string }): void;
   /** The browser has no page to follow: none when the stream starts, or its last one closed. A page that opens next is announced by `page`. */

@@ -7,7 +7,7 @@ import type { AgentLearning, LearningChange, LearningDiff, LearningNote, RunLear
 import type { ComposioTools, McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, ChatGPTSignOut, ChatGPTStart, ChatGPTView, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningCost, LearningEvals, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, LearningBatch, LearningBatchHead, LearningBatchStart, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
+import type { ApiError, ChatGPTSignOut, ChatGPTStart, ChatGPTView, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningAudits, LearningCost, LearningEvals, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, LearningBatch, LearningBatchHead, LearningBatchStart, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Webhook, WebhookAttempt, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
@@ -37,10 +37,15 @@ export const problemOf = (e: unknown) => (e instanceof ClientError ? `${e.code}:
  *  workflow ("" for the document itself). */
 export type WorkflowCheck = { ok: boolean; issues: { path: string; code: string; message: string }[]; warnings: (string | { path?: string; message: string })[] };
 
+/** A project the server found on its machine, for the owner to choose at setup: the id setup sends back, its folder, how
+ *  many sessions an import would take from it, from which tools, and when the latest of them ended. */
+export type ImportCandidate = { id: string; name: string; path: string; sessions: number; sources: string[]; last_active: string | null };
 /** `GET /v2/setup/import`'s answer. Before the owner is set: the server can import, still counting (202), then its counts
- *  (null for each when the count failed). After: the import's state. `{ offer: false }`: none, either way. */
-export type ImportOffer = { counting: true } | { projects: number | null; sessions: number | null };
-export type ImportState = { state: "running" } | { state: "done"; agents: number; runs: number; skipped: number } | { state: "stopped" };
+ *  (null for each when the count failed) and the projects to choose from (`candidates`, the latest active first; the
+ *  server names at most 500). After: the import's state (`failed`: given up before it finished).
+ *  `{ offer: false }`: none, either way. */
+export type ImportOffer = { counting: true } | { projects: number | null; sessions: number | null; candidates?: ImportCandidate[] };
+export type ImportState = { state: "running" } | { state: "done"; agents: number; runs: number; skipped: number } | { state: "stopped" } | { state: "failed" };
 export type SetupImport = ImportOffer | ImportState;
 type NoOffer = { offer: false };
 
@@ -57,9 +62,13 @@ const runsQuery = (limit: number, cursor: string | null | undefined, { status, a
 };
 
 /** `limits`: this server's own (the largest upload, null for none, and the most files a run names). */
+/** One harness as capabilities list it: its id (a built-in one, or one the server's harness modules add), its label and what
+ *  it promises (absent from a server older than the harness table's), whether it runs here and why not. */
+export type HarnessOfferView = { id: string; label?: string; promises?: { resume: "exact" | "load" | "restart"; tool_gate: "every_call" | "permission" | "config"; billing: "proxy" | "plan" }; available: boolean; reason?: string; steer?: boolean };
+
 /** `models.ready`: whether an agent that names no model runs here; when not, `needs` says what would make it: a model
  *  provider's key, or another default model. */
-export type Capabilities = { harnesses: { id: string; available: boolean; reason?: string; steer?: boolean }[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; mcp_client?: McpClientFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number; failures_to_pause?: number; public_url?: boolean } }; limits: { max_upload_bytes: number | null; max_files_per_run: number; free_model_requests?: number }; models: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" | "chatgpt" } };
+export type Capabilities = { harnesses: HarnessOfferView[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; mcp_client?: McpClientFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number; failures_to_pause?: number; public_url?: boolean } }; limits: { max_upload_bytes: number | null; max_files_per_run: number; free_model_requests?: number }; models: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" | "chatgpt" } };
 export type Client = ReturnType<typeof createClient>;
 
 /** The paths whose 401 is the answer to signing in (a wrong password, a wrong setup code), not a session that ended. */
@@ -116,12 +125,12 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     /** The session, on a server with accounts or without (`accounts`), with whether it may write a secret. */
     session: () => callTagged<SessionSecrets>("GET", "/auth/session").then((r) => ({ status: r.status, body: r.body as unknown })),
     signIn: (password: string) => call<{ signed_in: boolean }>("POST", "/auth/sign-in", { body: { password } }),
-    /** Sets the owner's password. `importSessions`: the owner ticked setup's box, so the server imports this machine's
-     *  sessions once the password is set; never sent otherwise. */
-    setup: (password: string, code?: string, importSessions = false) =>
-      call<{ signed_in: boolean; importing?: boolean }>("POST", "/setup", { body: { password, ...(code ? { code } : {}), ...(importSessions ? { import: true } : {}) } }),
-    /** `GET /v2/setup/import` (a serve extension, on a server on this machine only): before the owner is set, how many
-     *  sessions setup's box would import; after, to the signed-in owner, how the import asked for at setup stands. Null
+    /** Sets the owner's password. `importProjects`: the projects the owner ticked in setup's list (their candidates'
+     *  ids), which the server imports once the password is set; with none ticked nothing is sent, and nothing imported. */
+    setup: (password: string, code?: string, importProjects: readonly string[] = []) =>
+      call<{ signed_in: boolean; importing?: boolean }>("POST", "/setup", { body: { password, ...(code ? { code } : {}), ...(importProjects.length ? { import: [...importProjects] } : {}) } }),
+    /** `GET /v2/setup/import` (a serve extension, on a server on this machine only): before the owner is set, the
+     *  projects setup's list offers and how many sessions they hold; after, to the signed-in owner, how the import asked for at setup stands. Null
      *  where the server offers none (`{ offer: false }`, or a 404: a server without accounts has no such route, and once
      *  the owner is set it is none to a caller not signed in) or refuses the read. */
     setupImport: () => call<SetupImport | NoOffer>("GET", "/setup/import").then((r) => ((r as Partial<NoOffer> | null)?.offer === false ? null : (r as SetupImport)), (e) => {
@@ -130,6 +139,10 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     }),
     /** Signs this browser out; every other browser stays signed in. */
     signOut: () => call<{ signed_out: boolean }>("POST", "/auth/sign-out", { body: {} }),
+    /** `POST /v2/setup/code` (a serve extension, before the owner is set, with no credential): has the server print a new
+     *  setup code to its log when the last one is expired or spent, and keeps one still good. Whether one was printed and
+     *  when the code now good runs out; never the code. */
+    setupCode: () => call<{ printed: boolean; expires_at: string }>("POST", "/setup/code", { body: {} }),
     /** Signs out every browser and phone signed in to this server, this one too. */
     signOutEverywhere: () => call<{ signed_out: boolean }>("POST", "/auth/sign-out-everywhere", { body: {} }),
     /** Counts and sums from the server's store, for Mission Control (`GET /v2/stats`, a serve extension). */
@@ -192,6 +205,8 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     learningEvals: (id: string) => call<LearningEvals>("GET", `${agent(id)}/learning/evals`),
     learningPromotions: (id: string) => call<Promotions>("GET", `${agent(id)}/learning/promotions`),
     learningLoop: (id: string) => call<LearningLoop>("GET", `${agent(id)}/learning/loop`),
+    /** The audit ledger of the agent's serving learned workflows: one row per finished audit, oldest first. */
+    learningAudits: (id: string) => call<LearningAudits>("GET", `${agent(id)}/learning/audits`),
     learnedWorkflowRevisions: (id: string, name: string, limit?: number) => call<WorkflowRevisions>("GET", `${agent(id)}/learning/workflows/${encodeURIComponent(name)}/revisions${limit ? `?limit=${limit}` : ""}`),
     /** Starts a replay of one revision of a learned workflow on the server's default inputs (POST .../revisions/{digest}/replays):
      *  the owner's session only; 409 replay_conflict, agent_not_runnable or too few inputs of the agent's own runs for a check. */

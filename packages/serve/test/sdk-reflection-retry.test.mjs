@@ -83,7 +83,9 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
     assert.deepEqual(after.filter(entry => entry.kind === "agentrun.sdk.reflecting").map(entry => entry.data.request_id), requestIds);
     const run = (await api("GET", `/runs/${runId}`)).body;
     assert.equal(run.status, "completed"); assert.equal(run.result.final_answer, "Release ready.");
-    assert.equal(run.cost.usd, 0.5, "the task and both reflection attempts are booked exactly once");
+    // The run's row books the task and both reflection attempts, each once; its view's cost.usd is the task's own (A8).
+    assert.equal((await store.runs.get(runId)).costUsd, 0.5, "the task and both reflection attempts are booked exactly once");
+    assert.equal(run.cost.usd, 0.25, "the run's cost is its task's own: the reflection is learning's");
     const proposal = await store.learning.proposal(runId);
     assert.equal(proposal.turn.answer, "No notes.", "the corrected answer is parsed and retained across reclaim");
     assert.equal(proposal.proposal.job_cost_usd, 0.25);

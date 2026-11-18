@@ -16,7 +16,9 @@
 // digest promoted last (learn/promote.ts championOf) serves the run, read from the learning commit its record names. Only
 // the money rule (workflow-first.ts) stops it. Who serves is the champion alone, read at every run's claim, a queued run's
 // included (servingNow): a digest's own promote record never serves it once another digest was promoted after it. A run
-// already executing (an earlier claim of it served a workflow first) keeps that revision (keptFor).
+// already executing (an earlier claim of it served a workflow first) keeps that revision (keptFor). A serving revision
+// this release's workflow DSL refuses (a key an older release took, say) is held at the claim that finds it, once per
+// digest, its reason the DSL's (holdRefused): the run hands back as before, and the hold asks the one recompile.
 // One check at a time: a check at work finishes (a revision newer than it waits, and decides it first: settleAhead). The
 // check is reserved before any of its replay runs starts: its replaying record, naming the runs it will start, is kept
 // only while no other revision of the workflow replays (the rival check in the same guarded write), so two claims of two
@@ -61,6 +63,7 @@ import { readSnapshot } from "../learn/folder.js";
 import { type FirstChoice, fits, laidFor, type Promoted, type ReplayOutcome, servedOf, type Serving, workflowDigest } from "./workflow-first.js";
 import type { LearningFolder } from "../learn/folder.js";
 import { excerptShown } from "../learn/secrets.js";
+import { dslRefusalOf } from "../learn/skills.js";
 import type { Shown } from "../learning.js";
 import { workflowsAt } from "./learning-seed.js";
 
@@ -73,6 +76,9 @@ export const REPLAY_LAUNCH_GRACE_MS = 5 * 60 * 1000;
 
 export interface PromotionDeps {
   readonly store: Store;
+  /** Why model spend beside the claimed run is skipped (claim-secrets.ts claimSpendOff): a replay check starts runs with
+   *  no caller's key. Absent: it runs. */
+  readonly spendOff?: (what: string) => string | undefined;
   readonly agentId: string;
   /** The run being claimed: never one of its own check's inputs. Absent: no run is claimed (a person's replay, and its
    *  read): no run served first to keep, none whose per_run MCP credentials a replay is handed. */
@@ -208,7 +214,7 @@ export const promotionGate = (deps: PromotionDeps): Promoted => {
       const kept = await keptFor(deps, workflow, digest);
       if (kept) return { workflow: kept };
       await decide(deps, workflow, digest);
-      return await servingNow(deps, workflow, digest, true);
+      return await holdRefused(deps, await servingNow(deps, workflow, digest, true));
     } catch (error) {
       return failed(workflow, error);
     }
@@ -217,7 +223,7 @@ export const promotionGate = (deps: PromotionDeps): Promoted => {
   const champion = async (workflow: LearnedWorkflow, digest: string): Promise<Serving | undefined> => {
     try {
       const kept = await keptFor(deps, workflow, digest);
-      return kept ? { workflow: kept } : await servingNow(deps, workflow, digest, false);
+      return kept ? { workflow: kept } : await holdRefused(deps, await servingNow(deps, workflow, digest, false));
     } catch (error) {
       return failed(workflow, error);
     }
@@ -247,6 +253,33 @@ async function servingNow(deps: PromotionDeps, workflow: LearnedWorkflow, digest
   }
   deps.log(`workflow-first: ${workflow.name}'s champion at ${champion.digest} serves this run while ${digest} ${own?.decided === "promote" ? "is a revision promoted before it" : "is not promoted"}`);
   return { workflow: text };
+}
+
+/** The words a hold of a serving revision this release's workflow DSL refuses starts with (holdRefused). */
+export const DSL_REFUSES = "this release's workflow DSL refuses it";
+
+/** `serving` as it serves this run, once a serving revision this release's workflow DSL refuses is held. The refusal is of
+ *  the text alone (learn/skills.ts dslRefusalOf: the DSL's own validation, no tool list), never of a host setting (a tool
+ *  gated, denied or missing, no adapter), which the run's own check still refuses as before. The hold is a promotion
+ *  record of its digest, `hold` by its reason alone ("this release's workflow DSL refuses it: <code> at <path>: <its
+ *  words>", cut of the host's secrets as a check's texts are), written only while the digest's newest record is still the
+ *  promotion this claim read: of two claims at once one writes it, and a later claim finds it (nothing serves). The run
+ *  still runs it, refused before any node runs, and hands back as before: the agent answers. The hold follows compile
+ *  once as a check's does: the agent's next due run asks the one recompile with the reason as data (learn/compile.ts
+ *  heldNamesOf), and that revision's check is the compile's second (attemptOf). */
+async function holdRefused(deps: PromotionDeps, serving: Serving | undefined): Promise<Serving | undefined> {
+  if (!serving) return serving;
+  const refused = dslRefusalOf(await import("@parcha/agentrun-dsl"), serving.workflow.workflow);
+  if (refused === undefined) return serving;
+  const { name } = serving.workflow;
+  const digest = workflowDigest(serving.workflow);
+  const current = promotionOf(await promotionsOf(deps.store.settings, deps.agentId), name, digest);
+  if (current?.decided !== "promote") return serving;
+  const reason = excerptShown(`${DSL_REFUSES}: ${refused}`, await deps.shown(), CHECK_TEXT_MAX);
+  const record: PromotionRecord = { workflow: name, digest, at: iso((deps.now ?? Date.now)()), decided: "hold", reason, ...(current.commit ? { commit: current.commit } : {}) };
+  const kept = await recordPromotion(deps.store.settings, deps.agentId, record, (was) => was?.decided === "promote" && was.at === current.at);
+  if (kept.won) deps.log(`workflow-first: ${name} at ${digest} is held: ${reason}; the agent's next run recompiles it once`);
+  return serving;
 }
 
 /** A run already executing keeps its revision: when an earlier claim of it served `workflow` first (its WORKFLOW_FIRST
@@ -300,15 +333,16 @@ async function loopOfRevision(deps: Pick<PromotionDeps, "store" | "revisionId">)
 }
 
 /** Which check of a compile a new revision's is: 2 when the workflow's newest record of another revision is a first
- *  check's hold or an audit's hold, or a first compile's failed draft (this revision is its one recompile), else 1. A
- *  stop with nothing checked (stopUnchecked) is no first check's hold: it spends no recompile. A workflow's first
- *  revision after a first compile whose drafts failed under another name (learn/compile.ts newCompileAttempt) is that
- *  compile's recompile too. */
+ *  check's hold, an audit's hold or a hold by its reason alone (holdRefused: the DSL refuses a serving revision), or a
+ *  first compile's failed draft (this revision is its one recompile), else 1. A stop with nothing checked
+ *  (stopUnchecked) is no first check's hold: it spends no recompile. A workflow's first revision after a first compile
+ *  whose drafts failed under another name (learn/compile.ts newCompileAttempt) is that compile's recompile too. */
 function attemptOf(records: readonly PromotionRecord[], name: string, digest: string): 1 | 2 {
   const before = records.findLast((one) => one.workflow === name && one.digest !== digest);
   if (!before) return newCompileAttempt(records.filter((one) => one.digest !== digest));
   if (before.decided !== "hold") return 1;
-  return before.audit ? (before.audit.stopped ? 1 : 2) : before.check?.attempt === 1 && !before.check.stopped ? 2 : 1;
+  if (before.audit) return before.audit.stopped ? 1 : 2;
+  return !before.check || (before.check.attempt === 1 && !before.check.stopped) ? 2 : 1;
 }
 
 /** The shadow runs a recompile's check runs on beside the agent's last runs: the disagreeing audit rows the workflow's
@@ -360,6 +394,10 @@ async function checkInputs(deps: Pick<PromotionDeps, "store" | "agentId" | "runI
  *  it fits), it is decided at once: never promoted, it stops with nothing checked (stopUnchecked). */
 async function startCheck(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string): Promise<void> {
   const { store, agentId, log } = deps;
+  // Its replay runs are runs the runner starts, on no caller's key: skipped where the claimed run brought its own key or
+  // the server holds none (claimSpendOff).
+  const off = deps.spendOff?.("A learned workflow's replay check");
+  if (off) return void log(`workflow-first: ${off} ${workflow.name} at ${digest} is not checked and does not serve this run`);
   // Only the learning folder's newest revision is checked: a run pinned to an older commit lays an older text.
   const newest = deps.newest ? await deps.newest(workflow.name) : undefined;
   if (newest !== undefined && newest !== digest) {
@@ -655,6 +693,7 @@ async function startReplay(deps: PromotionDeps, workflow: LearnedWorkflow, diges
  *  this claim created. */
 async function relaunch(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, record: PromotionRecord): Promise<number> {
   const { store } = deps;
+  if (deps.spendOff?.("A replay")) return 0;
   const since = (deps.now ?? Date.now)() - Date.parse(record.at);
   const launch = record.launch;
   if (!launch || since <= REPLAY_LAUNCH_GRACE_MS || since > REPLAY_DEADLINE_MS) return 0;

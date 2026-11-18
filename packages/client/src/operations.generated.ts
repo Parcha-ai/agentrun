@@ -162,7 +162,7 @@ export type DefinitionInput = {
     strong?: string;
   };
   thinking?: "low" | "medium" | "high" | "xhigh" | "max";
-  harness?: "pi" | "claude-agent" | "codex" | "opencode";
+  harness?: string;
   place?: {
     mode: "runner";
   } | {
@@ -497,6 +497,8 @@ export type Cost = {
   so_far_usd?: number;
   unpriced?: number;
   upper_bound?: true;
+  learning_usd?: number | null;
+  all_in_usd?: number | null;
   plan?: {
     requests: number;
     tokens: number;
@@ -580,6 +582,7 @@ export type RunCreateInline = {
   effort?: Effort;
   max_cost_usd?: number;
   quote_id?: string;
+  model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
   }>;
@@ -788,6 +791,7 @@ export type Run = {
     firing_key: string;
   } | null;
   audit_of?: string | null;
+  path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
 };
 
 export type RunResult = {
@@ -813,6 +817,7 @@ export type RunFile = {
 
 export type MessageCreate = {
   content: string;
+  model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
   }>;
@@ -833,6 +838,7 @@ export type RunCreate = {
   effort?: Effort;
   max_cost_usd?: number;
   quote_id?: string;
+  model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
   }>;
@@ -999,7 +1005,13 @@ export type Capabilities = {
     allow: Array<string>;
   };
   harnesses?: Array<{
-    id: "pi" | "claude-agent" | "codex" | "opencode";
+    id: string;
+    label: string;
+    promises: {
+      resume: "exact" | "load" | "restart";
+      tool_gate: "every_call" | "permission" | "config";
+      billing: "proxy" | "plan";
+    };
     available: boolean;
     free_models: Array<{
       id: string;
@@ -1026,7 +1038,7 @@ export type Capabilities = {
     available: boolean;
     reason?: string;
     missing?: Array<string>;
-    harnesses: Array<"pi" | "claude-agent" | "codex" | "opencode">;
+    harnesses: Array<string>;
     providers?: Array<string>;
     provider?: string;
     default_provider?: string;
@@ -1580,6 +1592,52 @@ export type ListLearningPromotionsResponse = {
     } | null;
     audits_off: string | null;
     not_auditable: number;
+    champion: {
+      digest: string;
+      commit: string | null;
+      nodes: Array<{
+        path: string;
+        kind: string;
+        label: string;
+        tier: "fast" | "agent" | null;
+        checks: Array<{
+          on: "when" | "until";
+          predicate: Record<string, unknown>;
+        }>;
+      }> | null;
+      check: {
+        compile_after: number;
+        agree_min: number;
+        alone_min: number;
+        attempt: 1 | 2;
+        n?: number;
+        agreed?: number;
+        alone?: number;
+        of?: Array<string>;
+        cost_usd?: number | null;
+        outcomes?: {
+          answered: number;
+          handed_back: number;
+          failed: number;
+          skipped_write: number;
+        };
+        unstarted?: number;
+        skipped_tools?: Array<{
+          tool: string;
+          inputs: number;
+          no_read_only_hint: boolean;
+        }>;
+        disagreements?: Array<{
+          run: string;
+          input: string;
+          agent: string | null;
+          draft?: string;
+          escalated?: string;
+          failed?: true;
+        }>;
+        stopped?: true;
+      } | null;
+    } | null;
   }>;
 };
 
@@ -2210,6 +2268,50 @@ export type GetLearningCostResponse = {
       agree_min: number;
     } | null;
   };
+  bill: {
+    baseline: {
+      runs: number;
+      mean_usd: number;
+    } | null;
+    promoted: {
+      n: number;
+      run_id: string;
+      at: string;
+    } | null;
+    points: Array<{
+      n: number;
+      run_id: string;
+      actual_usd: number;
+      agent_usd: number | null;
+    }>;
+    break_even: {
+      n: number;
+      run_id: string;
+    } | null;
+    gap_usd: number | null;
+    withheld: number;
+    booked_usd: number;
+    revisions: Array<{
+      workflow: string;
+      digest: string;
+      compile_usd: number | null;
+      check_usd: number | null;
+      spend_usd: number | null;
+      k: number;
+      served: number;
+      attributed_usd: number | null;
+      unattributed_usd: number | null;
+      state: "checking" | "serving" | "stopped";
+    }>;
+    unattributed_usd: number | null;
+    holds: Array<{
+      n: number | null;
+      at: string;
+      workflow: string;
+      by: "audit" | "check" | "dsl";
+      reason: string;
+    }>;
+  };
 };
 
 /** The agent's eval records: the latest, and every one kept, newest first (GET /agents/{agent_id}/learning/evals). */
@@ -2659,6 +2761,7 @@ export type ListComposioEventsResponse = {
     description: string;
     config: Record<string, unknown>;
     polled: boolean;
+    sealed: Array<string>;
     instructions?: string;
   }>;
 };
@@ -3900,9 +4003,9 @@ export type GetCapabilitiesResponse = Capabilities;
 
 /** Whether this server can serve (GET /health). */
 export type GetHealthResponse = {
-  status: "ok" | "failing";
+  status: "ok" | "failing" | "warming";
   checks: {
-    store: "ok" | "does_not_open";
+    store: "ok" | "does_not_open" | "opening";
     disk: "ok" | "below_floor" | "cannot_check";
   };
 };
@@ -4464,6 +4567,7 @@ export type CreateTriggerBody = {
       }>;
     }>;
     instance_id?: string;
+    sealed_config?: Array<string>;
     hook?: string;
     move_subscription?: true;
   } | {
@@ -4595,6 +4699,7 @@ export type CreateTriggerResponse = {
       }>;
     }>;
     instance_id?: string;
+    sealed_config?: Array<string>;
     hook?: string;
     move_subscription?: true;
   } | {
@@ -4829,6 +4934,7 @@ export type GetTriggerResponse = {
       }>;
     }>;
     instance_id?: string;
+    sealed_config?: Array<string>;
     hook?: string;
     move_subscription?: true;
   } | {
@@ -5010,6 +5116,7 @@ export type ListTriggersResponse = {
         }>;
       }>;
       instance_id?: string;
+      sealed_config?: Array<string>;
       hook?: string;
       move_subscription?: true;
     } | {
@@ -5196,6 +5303,7 @@ export type UpdateTriggerBody = {
       }>;
     }>;
     instance_id?: string;
+    sealed_config?: Array<string>;
     hook?: string;
     move_subscription?: true;
   } | {
@@ -5324,6 +5432,7 @@ export type UpdateTriggerResponse = {
       }>;
     }>;
     instance_id?: string;
+    sealed_config?: Array<string>;
     hook?: string;
     move_subscription?: true;
   } | {

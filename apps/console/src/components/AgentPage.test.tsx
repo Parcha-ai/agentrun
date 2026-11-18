@@ -93,6 +93,41 @@ describe("AgentPage overview and run workspace", () => {
   });
 
 
+  // Side by side, the agent's name stays put and its details scroll under it. jsdom lays nothing out, so this holds the
+  // structure the scrolling comes from: the name outside the one scrolling box of the overview, every detail inside it.
+  it("keeps the agent's name outside the overview's scrolling details, and the workspace scrolling by itself", async () => {
+    const page = await open(agentFixture("invoice-checker"));
+    const overview = page.host.querySelector<HTMLElement>('aside[aria-label="Agent overview"]')!;
+    const details = overview.querySelector<HTMLElement>("[data-agent-details]")!;
+    expect(details.className).toContain("lg:overflow-y-auto");
+    // The scrollbar has a gutter of its own beside the cards (styles.css .scroll-quiet), reaching into the space between the columns.
+    for (const c of ["scroll-quiet", "lg:-mr-4", "lg:pr-2.5"]) expect(details.className.split(" ")).toContain(c);
+    expect(details.contains(overview.querySelector("h1"))).toBe(false);
+    for (const inside of ['[aria-label="Current revision"]', '[aria-label="Agent configuration"]', '[aria-label="Live jobs"]']) expect(details.querySelector(inside), inside).not.toBeNull();
+    expect(overview.parentElement!.className).toContain("lg:overflow-hidden");
+    expect(page.host.querySelector('[aria-label="Agent workspace"]')!.className).toContain("lg:overflow-y-auto");
+  });
+
+  // A description of any length is accepted. Side by side the page does not scroll, so a name block as tall as its
+  // description would push every detail out of reach: the block is held to half the column and the description scrolls
+  // inside it, between the name and the id. (The measured version of this is the real-browser check in the pull request.)
+  it("holds the name block to half the column and scrolls a long description inside it, the name and id outside that box", async () => {
+    const agent = agentFixture("invoice-checker");
+    const page = await open({ ...agent, definition: { ...agent.definition, description: "Checks invoices. ".repeat(400) } });
+    const overview = page.host.querySelector<HTMLElement>('aside[aria-label="Agent overview"]')!;
+    const heading = overview.querySelector<HTMLElement>("[data-agent-heading]")!;
+    const description = heading.querySelector<HTMLElement>("[data-agent-description]")!;
+    for (const c of ["lg:max-h-[50%]", "lg:flex", "lg:flex-col", "lg:shrink-0"]) expect(heading.className.split(" "), c).toContain(c);
+    for (const c of ["scroll-quiet", "lg:min-h-7", "lg:overflow-y-auto"]) expect(description.className.split(" "), c).toContain(c);
+    expect(description.querySelector("#agent-description")?.textContent).toContain("Checks invoices.");
+    // A word longer than the column wraps: the box shows nothing sideways.
+    expect(description.querySelector("#agent-description")!.className.split(" ")).toContain("break-words");
+    expect(heading.contains(overview.querySelector("h1"))).toBe(true);
+    expect(description.contains(overview.querySelector("h1"))).toBe(false);
+    expect(description.textContent).not.toContain("invoice-checker");
+    expect(heading.contains(overview.querySelector("[data-agent-details]"))).toBe(false);
+  });
+
   it("keeps the agent overview beside a scoped runs table, with no embedded execution composer or transcript", async () => {
     const page = await open(agentFixture("invoice-checker"));
     expect(page.host.querySelector('aside[aria-label="Agent overview"] h1')?.textContent).toBe("Invoice checker");
@@ -595,9 +630,13 @@ describe("AgentPage current server settings", () => {
   });
 
   it("resolves the server default computer and runner-only tools without overriding an explicit place", async () => {
-    const base = agentFixture("invoice-checker");
+    const fixture = agentFixture("invoice-checker");
+    const base = { ...fixture, definition: { ...fixture.definition, tools: ["read", "bash"] } };
     const places: Places = { modes: ["runner", "sandbox"], boxes: [{ id: "docker", available: true }], defaultPlace: { mode: "sandbox", box: "docker" } };
     expect((await open(base, { places })).fact("Runs")?.textContent).toBe("In a docker box (server default)");
+    // Tools that need no shell run on the runner, where the server puts them.
+    const plain = { ...fixture, definition: { ...fixture.definition, tools: ["read"] } };
+    expect((await open(plain, { places })).fact("Runs")?.textContent).toBe("On the server (server default)");
     const browser = { ...base, definition: { ...base.definition, tools: ["browser"] } };
     expect((await open(browser, { places })).fact("Runs")?.textContent).toBe("On the server (server default)");
     const explicit = { ...base, definition: { ...base.definition, place: { mode: "runner" } } };

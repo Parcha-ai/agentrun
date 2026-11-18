@@ -178,6 +178,9 @@ public interface Device {
 		void launch(String id, String url);
 
 		void terminate(String id);
+
+		/** The label a person knows the app by ("Wikipedia", "System UI"), launcher app or not; null where the phone gives none. */
+		String label(String id);
 	}
 
 	final class App {

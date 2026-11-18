@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { route } from "@/App";
 import { TemplatesPage } from "./Templates";
+import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 import { ClientError } from "@/lib/client";
 import type { TemplateView, Trigger } from "@/lib/v2";
 import { firstPicker, optionsOf, pick, picker, valueOf } from "@/test/picker";
@@ -129,6 +130,23 @@ describe("the Templates page", () => {
     const ODD: TemplateView = { ...REVIEWER, name: "odd", display_name: "Odd: ${parameters.constructor}", parameters: params({ constructor: { type: "string", description: "x" } }) };
     const list = await open(undefined, { templates: [ODD, NOTES] });
     expect([...list.host.querySelectorAll("article h2")].map((h) => h.textContent)).toEqual(["Odd: …", "meeting-notes"]);
+  });
+
+  it("has the sections' top bar: the list names it, a template leads back to it, and the playground's page has its own", async () => {
+    const list = await open(undefined, { playground: false });
+    const bar = list.host.querySelector("header")!;
+    expect(bar.className).toContain(pageToolbarClass);
+    expect(bar.querySelector("h1")!.className).toBe(pageTitleClass);
+    expect(bar.textContent).toBe("Templates");
+    expect(list.host.querySelectorAll("h1")).toHaveLength(1);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const apply = await open("pr-reviewer", { playground: false });
+    const back = apply.host.querySelector('header nav[aria-label="Breadcrumb"] a')!;
+    expect(back.getAttribute("href")).toBe("#/templates");
+    expect(apply.host.querySelectorAll("h1")).toHaveLength(1);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const inPlayground = await open(undefined, { playground: true });
+    expect(inPlayground.host.querySelector("header")).toBeNull();
   });
 
   it("routes #/templates to the list and #/templates/<name> to its Apply screen", () => {

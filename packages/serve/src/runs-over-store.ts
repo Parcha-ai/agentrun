@@ -28,9 +28,10 @@ import { type Place, resolvePlace } from "./place.js";
 import { githubTargetOf } from "./github.js";
 import { type RepoBinding, repoOf } from "./run-repo.js";
 import { type LaunchDisk, launchBody, type RunLaunch, type SeedFailed } from "./run-launch.js";
+import { modelKeyRequired, serverKeyMissing } from "./run-model-key.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
-import { AgentDeleting, AnswerTaken, ExternalBodyConflict, type NewRevision, type RevisionRow, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint, StoreLaunchMissing } from "./store/index.js";
+import { AgentDeleting, AnswerTaken, ExternalBodyConflict, type LaunchSealed, type NewRevision, type RevisionRow, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint, StoreLaunchMissing } from "./store/index.js";
 import { canonical } from "./store/agent-body.js";
 import { toolingOf } from "./tools.js";
 import { type Plane, planeFor, type ToolSettingsMap } from "./tool-plane.js";
@@ -177,7 +178,7 @@ export async function message(
   store: RunsStore & Pick<Store, "agents">,
   moment: RunMoment,
   content: string,
-  { requestId, answers = true, origin, queue, launchSealed, beforeSubmit }: { requestId?: string; answers?: boolean; origin?: unknown; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void>; launchSealed?: Uint8Array; beforeSubmit?: (runId: string, content: string) => Promise<void> | void } = {},
+  { requestId, answers = true, origin, queue, launchSealed, beforeSubmit }: { requestId?: string; answers?: boolean; origin?: unknown; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void>; launchSealed?: LaunchSealed; beforeSubmit?: (runId: string, content: string) => Promise<void> | void } = {},
 ): Promise<{ mode: MessageMode; messageId: string; skipped?: string }> {
   if (moment.importedSource !== undefined) throw importedRefusal(moment);
   const launchBody = await controlLaunchBody(store, moment.id);
@@ -237,8 +238,8 @@ export type SteerCommand = { kind: "steer"; body: Record<string, unknown> };
  *  through runs.reopen, which opens the run again with the steer in one transaction when the store says it may
  *  (reopenableWhere: an agentic run that completed, or that a person stopped, as the console offers a follow-up to both).
  *  Any other (cancelled, failed, a workflow's, an imported or a learning run) answers 409 finished, nothing written. */
-async function steerOrReopen(store: RunsStore, moment: RunMoment, command: SteerCommand, launchSealed?: Uint8Array): Promise<void> {
-  // The message's launch secrets (its mcp_auth, sealed) ride in the same write as its steer, whichever door takes it.
+async function steerOrReopen(store: RunsStore, moment: RunMoment, command: SteerCommand, launchSealed?: LaunchSealed): Promise<void> {
+  // The message's launch secrets (its mcp_auth and model_key, sealed) ride in the same write as its steer, whichever door takes it.
   const sealed = launchSealed ? { launchSealed } : undefined;
   try {
     await sendCommand(store, moment.id, command, sealed);
@@ -485,8 +486,9 @@ export interface StartDeps {
  *  it must have a cap (a trigger's), and who its first message is from when the person did not write it. */
 export interface StartOptions {
   readonly trigger?: RunTrigger;
-  /** The run's launch secrets, sealed for its id once it has one (the create body's mcp_auth, server.ts). */
-  readonly sealed?: (runId: string) => Uint8Array;
+  /** The run's launch secrets, sealed for its id once it has one (the create body's mcp_auth and model_key, server.ts),
+   *  given the launch the start prepared, which the sealer may refuse (a model key where the run's model takes none). */
+  readonly sealed?: (runId: string, launch: RunLaunch, kind: Revision["kind"]) => Uint8Array | null;
   /** The run's title when its starter names one (a trigger's: "<Source> <name>"), else it is made from its input. */
   readonly title?: string;
   readonly origin?: RunOrigin;
@@ -545,10 +547,11 @@ export async function learningStartFor(deps: StartDeps, entry: AgentEntry, revis
 export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps: StartDeps, entry: AgentEntry, body: Json, { trigger, origin, capped = false, from, title, sealed }: StartOptions = {}): Promise<RunRow> {
   if ((entry.revision?.body as {sdk?:unknown})?.sdk) throw new ApiError("agent_not_runnable", "This agent runs in your backend SDK. Start it through its SDK learning wrapper; AgentRun does not launch its tools or credentials.");
   const { launch, revision } = await prepareLaunch(deps, entry, body, { ...(trigger ? { trigger } : {}), capped, ...(from ? { from } : {}), ...(title !== undefined ? { title } : {}) });
+  keyedOrRefused(deps, launch, revision.kind, sealed);
   const runId = (deps.newRunId ?? uuidv7)();
   try {
     const labels = labelsOf(body.labels);
-    return await withHeldFiles(deps, runId, launch, () => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}) }, { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId) } : {}) }));
+    return await withHeldFiles(deps, runId, launch, () => store.runs.create({ id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}) }, { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId, launch, revision.kind) } : {}) }));
   } catch (error) {
     // Only another writer of the store got here first under the same origin key: its run is the one asked for.
     if (origin && error instanceof StoreConstraint) {
@@ -558,6 +561,13 @@ export async function startRun(store: Pick<Store, "runs" | "runOfOrigin">, deps:
     }
     throw error;
   }
+}
+
+/** A start with no launch secrets (`sealed`: a trigger's firing, a learning batch's row) whose route goes to the model
+ *  gateway, on a server that holds no key for it (run-model-key.ts serverKeyMissing): 422 model_key_required, nothing
+ *  written, never a failure at its first model call. A start with them (the API's) is the sealer's to check. */
+function keyedOrRefused(deps: StartDeps, launch: RunLaunch, kind: Revision["kind"], sealed: StartOptions["sealed"]): void {
+  if (!sealed && serverKeyMissing(deps.planeEnv(), { kind, model: launch.model, native: Boolean(launch.native) })) throw modelKeyRequired(false);
 }
 
 /** Writes run `runId` with `write`, its files (launch.files) held for it first (StartDeps.files): a hold that fails part
@@ -621,6 +631,7 @@ export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "a
   // A store revision is the revision the run path reads as a pi Revision (its body is the revision body), as pinnedOf hands
   // one across.
   const { launch } = await prepareLaunch(deps, entry, body, { revision: (storedRevision ?? revision) as unknown as Revision });
+  keyedOrRefused(deps, launch, (storedRevision ?? revision).kind as Revision["kind"], sealed);
   const runId = (deps.newRunId ?? uuidv7)();
   const labels = labelsOf(body.labels);
   try {
@@ -628,7 +639,7 @@ export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "a
       agent: { id: entry.agent.id, name: inline.name, description: inline.description, ref },
       revision: { id: revision.id, version: external.version, kind: revision.kind, body: revision.body, skills: revision.skills, ...(revision.note !== undefined ? { note: revision.note } : {}), ...(revision.mcpPin !== undefined ? { mcpPin: revision.mcpPin } : {}), ...(revision.monidPin !== undefined ? { monidPin: revision.monidPin } : {}) },
       run: { id: runId, ...(origin ? { origin } : {}), ...(labels ? { labels } : {}) },
-      launch: { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId) } : {}) },
+      launch: { body: launchBody(launch), ...(sealed ? { sealed: sealed(runId, launch, (storedRevision ?? revision).kind as Revision["kind"]) } : {}) },
     }));
   } catch (error) {
     if (error instanceof ExternalBodyConflict) throw bodyConflict(external);

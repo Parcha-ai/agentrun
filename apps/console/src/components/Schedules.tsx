@@ -22,6 +22,8 @@ import { ACCEPT_LIMITS, acceptFields, emptyRule, type RuleDraft, ruleDraftOf } f
 import { atLeast, bodyOf, capOf, disabledWords, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENT_NAMES, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, type GitHubPicks, githubPicksOf, githubRulesOf, githubSourceOf, githubWhen, emailWhen, feedWhen, composioWhen, type ComposioDraft, type ComposioTrigger, composioBodyOf, composioSourceOf, type ConfigField, configFieldsOf, emptyComposio, isComposioTrigger, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, same, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf, webhookSourceOf, type FeedDraft, type FeedTrigger, emptyFeed, feedBodyOf, feedDraftOf, feedFields, feedSourceOf, feedUrlsOf, FEED_EVERY_S, isFeedTrigger, MAX_FEEDS, span } from "@/lib/schedules";
 import type { ComposioEvent, ComposioTriggers, Firing, Trigger, TriggerCreate, TriggerMade } from "@/lib/v2";
 import type { McpServer } from "@/lib/mcp";
+import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
+import { cn } from "@/lib/utils";
 
 /** Which triggers page: the list (no `trigger`), a new one (`trigger` null, of `kind`), one trigger, or its editor
  *  (`edit`: a schedule's whole, a webhook's or GitHub trigger's filter, a feed trigger's feeds). */
@@ -102,21 +104,25 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddres
   useEffect(read, [v2, tries]); // eslint-disable-line react-hooks/exhaustive-deps
   useRereads(read, every, [v2]);
   return (
-    <div className="p-5 md:p-8">
-      <div className="mb-5 flex flex-wrap items-center gap-3">
-        <h1 className="mr-auto text-2xl font-semibold">Triggers</h1>
+    // The page's frame is every list page's (Connected agents, Runs): a header bar with the place's icon and name in caps
+    // and its actions at the right, the main one last, then the content.
+    <section className="flex min-h-full flex-col" aria-label="Triggers">
+      <header className={cn(pageToolbarClass, "flex-wrap justify-between gap-3 px-5")}>
+        <h1 className={pageTitleClass}><CalendarClock className="size-4" aria-hidden />Triggers</h1>
         {/* With no trigger yet the panel below offers the five, each with what it is for: the page says each once. */}
         {!(triggers && !triggers.length) && (
-          <>
-            <Button size="lg" disabled={noAddress} onClick={() => go("#/triggers/new-composio")}><Blocks aria-hidden /> New app trigger</Button>
-            <Button size="lg" onClick={() => go("#/triggers/new-github")}><GitPullRequest aria-hidden /> New GitHub trigger</Button>
-            <Button size="lg" onClick={() => go("#/triggers/new-webhook")}><Webhook aria-hidden /> New webhook</Button>
-            <Button size="lg" onClick={() => go("#/triggers/new-feed")}><Rss aria-hidden /> New feed trigger</Button>
-            <Button size="lg" variant="solid" onClick={() => go("#/triggers/new")}><Plus aria-hidden /> New schedule</Button>
-          </>
+          <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+            <Button size="sm" disabled={noAddress} onClick={() => go("#/triggers/new-composio")}><Blocks aria-hidden /> New app trigger</Button>
+            <Button size="sm" onClick={() => go("#/triggers/new-github")}><GitPullRequest aria-hidden /> New GitHub trigger</Button>
+            <Button size="sm" onClick={() => go("#/triggers/new-webhook")}><Webhook aria-hidden /> New webhook</Button>
+            <Button size="sm" onClick={() => go("#/triggers/new-feed")}><Rss aria-hidden /> New feed trigger</Button>
+            <Button size="sm" variant="primary" onClick={() => go("#/triggers/new")}><Plus aria-hidden /> New schedule</Button>
+          </div>
         )}
-      </div>
-      {noAddress && triggers && triggers.length > 0 && <p className="-mt-2 mb-4 text-small text-muted-foreground">{NO_ADDRESS_LINE}</p>}
+      </header>
+      {/* The content starts where the header's name does (px-5). */}
+      <div className="px-5 py-5 md:py-6">
+      {noAddress && triggers && triggers.length > 0 && <p className="mb-4 text-small text-muted-foreground">{NO_ADDRESS_LINE}</p>}
       {error && !triggers ? <ProblemCard problem={error} onRetry={() => setTries((n) => n + 1)} className="" />
         : !triggers ? <ListSkeleton label="Loading the triggers" rows={4} />
         : !triggers.length ? <FirstTrigger go={go} noAddress={noAddress} />
@@ -142,7 +148,8 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddres
           </ul>
         )}
       {triggers && error && <ProblemCard problem={error} className="mt-4" />}
-    </div>
+      </div>
+    </section>
   );
 }
 
@@ -158,17 +165,19 @@ function FirstTrigger({ go, noAddress }: { go: (hash: string) => void; noAddress
     { Icon: Rss, name: "Feed", what: "On each new item in the feeds you name, read every few minutes: a status page's incidents, a blog, or an API's JSON list such as a repository's pull requests.", action: "New feed trigger", to: "#/triggers/new-feed" },
   ];
   return (
-    <section aria-labelledby="first-trigger" className="border border-primary/50 bg-primary/5 p-5">
-      <p className="caps text-label text-primary-text">No triggers yet</p>
+    // No frame of its own: its words start at the page's left edge, under the header's, and the five cards are its only
+    // boxes. The five are peers, so none is the main action: each button is the default one.
+    <section aria-labelledby="first-trigger">
+      <p className="caps text-label text-muted-foreground">No triggers yet</p>
       <h2 id="first-trigger" className="mt-2 text-xl font-semibold">Start runs without being here</h2>
       <p className="mt-1 max-w-prose text-lead text-muted-foreground">A trigger starts a run of an agent for you, and each run it starts stops at a spend cap. Pick what should start it.</p>
       <ul className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
         {kinds.map(({ Icon, name, what, action, to }) => (
           <li key={name} className="flex flex-col border bg-background p-4">
-            <p className="flex items-center gap-2 text-prose font-semibold"><Icon className="size-4 text-primary-text" aria-hidden />{name}</p>
+            <p className="flex items-center gap-2 text-prose font-semibold"><Icon className="size-4 text-muted-foreground" aria-hidden />{name}</p>
             <p className="mt-2 flex-1 text-lead leading-relaxed text-muted-foreground">{what}</p>
             {noAddress && to === "#/triggers/new-composio" && <p className="mt-2 text-small text-muted-foreground">{NO_ADDRESS_LINE}</p>}
-            <Button size="sm" variant={to === "#/triggers/new" ? "solid" : "outline"} className="mt-4 self-start" disabled={noAddress && to === "#/triggers/new-composio"} onClick={() => go(to)}>{action}</Button>
+            <Button size="sm" className="mt-4 self-start" disabled={noAddress && to === "#/triggers/new-composio"} onClick={() => go(to)}>{action}</Button>
           </li>
         ))}
       </ul>
@@ -378,7 +387,7 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
           <dt className="caps text-label text-muted-foreground">App</dt><dd className="min-w-0 break-words"><a href="#/settings/mcp" className="font-mono hover:underline">{app.source.server}</a><span className="text-small text-muted-foreground"> · a saved Composio server</span></dd>
           <dt className="caps text-label text-muted-foreground">Event</dt><dd className="min-w-0 break-words font-mono">{app.source.event}</dd>
           <dt className="caps text-label text-muted-foreground">Config</dt>
-          <dd className="min-w-0 break-words">{Object.keys(app.source.config).length ? <ul className="space-y-1 font-mono text-small">{Object.entries(app.source.config).map(([k, v]) => <li key={k}>{k}: {typeof v === "string" ? v : JSON.stringify(v)}</li>)}</ul> : "None"}</dd>
+          <dd className="min-w-0 break-words">{Object.keys(app.source.config).length ? <ul className="space-y-1 font-mono text-small">{Object.entries(app.source.config).map(([k, v]) => <li key={k}>{k}: {app.source.sealed_config?.includes(k) ? <span data-sealed-config={k} className="text-muted-foreground">Sealed: kept here, never shown</span> : typeof v === "string" ? v : JSON.stringify(v)}</li>)}</ul> : "None"}</dd>
           <dt className="caps text-label text-muted-foreground">Accepts</dt>
           <dd className="min-w-0 break-words">{app.source.accept?.length ? <ul className="space-y-1 font-mono text-small">{app.source.accept.map((a, i) => <li key={i}>{acceptWords(a)}</li>)}</ul> : "Every event of its instance"}</dd>
           <dt className="caps text-label text-muted-foreground">At Composio</dt>
@@ -867,7 +876,7 @@ function ComposioForm({ v2, go, noAddress }: { v2: Client; go: (hash: string) =>
   const pickServer = (server: string) => edit((d) => (d.server === server ? d : { ...d, server, event: "", config: {}, where: [] }));
   const pickEvent = (event: string) => { edit((d) => (d.event === event ? d : { ...d, event, config: {}, where: [] })); setIssues({}); };
   const event = events?.server === draft.server ? events.events.find((e) => e.slug === draft.event) : undefined;
-  const fields: ConfigField[] = configFieldsOf(event?.config);
+  const fields: ConfigField[] = configFieldsOf(event?.config, event?.sealed);
   const agentCapRaw = (agents ?? []).find((a) => a.agent_id === draft.agentId)?.definition.max_cost_usd;
   const agentCap = typeof agentCapRaw === "number" && agentCapRaw > 0 ? agentCapRaw : undefined;
   const send = async (body: TriggerCreate) => {
@@ -1007,7 +1016,7 @@ function ConfigInput({ field: f, value, issue, onChange }: { field: ConfigField;
       <UiField className="min-w-0" label={f.title} required={f.required} optional={!f.required} hint={f.description} error={error}>
         {f.options ? <Picker name={name} label={f.title} className="w-full" value={value} onChange={onChange} options={[...(f.required ? [] : [{ value: "", label: "None" }]), ...f.options.map((o) => ({ value: o, label: o }))]} placeholder="Pick one" />
           : f.type === "json" ? <Textarea name={name} rows={3} className="p-3 font-mono" value={value} onChange={(e) => onChange(e.target.value)} spellCheck={false} />
-          : <Input name={name} inputMode={f.type === "string" ? undefined : "decimal"} value={value} onChange={(e) => onChange(e.target.value)} autoComplete="off" spellCheck={false} />}
+          : <Input name={name} type={f.sealed ? "password" : undefined} inputMode={f.type === "string" ? undefined : "decimal"} value={value} onChange={(e) => onChange(e.target.value)} autoComplete={f.sealed ? "new-password" : "off"} spellCheck={false} />}
       </UiField>
     </div>
   );

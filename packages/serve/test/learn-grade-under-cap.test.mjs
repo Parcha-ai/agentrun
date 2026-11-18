@@ -27,30 +27,34 @@ async function learnedUnder(t, harness, id, cap) {
   const { view } = await ended(server.api, runId);
   const learning = await server.store.runs.get(`${runId}-learning`);
   const launch = learning ? (await server.store.runs.launch(learning.id)).body : undefined;
-  return { server, runId, view, learning, launch };
+  return { server, runId, view, learning, launch, spent: await spentOf(server, runId) };
 }
+
+/** What run `runId`'s own sessions spent (its job and its look-backs), as its cap counts it: its row's. GET /runs/{id}
+ *  `cost.usd` is the job's alone (A8), its look-back in `cost.learning_usd`. */
+const spentOf = async (server, runId) => (await server.store.runs.get(runId)).costUsd;
 
 for (const harness of ["pi", "codex"]) {
   test(`on ${harness}, a capped run whose grade doesn't fit what its cap left is not graded: skipped, said so, and its spend stays within its cap`, { timeout: 180_000 }, async (t) => {
-    const { view, learning, launch } = await learnedUnder(t, harness, `no-room-${harness}`, NO_ROOM);
+    const { view, learning, launch, spent } = await learnedUnder(t, harness, `no-room-${harness}`, NO_ROOM);
     assert.equal(view.status, "completed");
     assert.ok(typeof view.cost?.usd === "number" && view.cost.usd > 0, JSON.stringify(view.cost));
     // The learning run's cap: what the run's cap left once its job and its look-back were spent.
-    assert.ok(near(launch?.max_cost_usd, NO_ROOM - view.cost.usd), `the grade's cap is the run's left: ${JSON.stringify({ launch, cost: view.cost, learning: view.learning })}`);
+    assert.ok(near(launch?.max_cost_usd, NO_ROOM - spent), `the grade's cap is the run's left: ${JSON.stringify({ launch, spent, cost: view.cost, learning: view.learning })}`);
     assert.deepEqual([view.learning?.state, view.learning?.reason, view.learning?.detail], ["dropped", "no_budget", "Not graded: no room under the cap."], JSON.stringify(view.learning));
     // Skipped, never failed: its learning run ended, and spent nothing (no grade request was sent).
     assert.deepEqual([learning?.state, learning?.costUsd], ["ended", 0]);
-    assert.ok(view.cost.usd + learning.costUsd <= NO_ROOM, "the run and its grade together within the cap");
+    assert.ok(spent + learning.costUsd <= NO_ROOM, "the run and its grade together within the cap");
   });
 
   test(`on ${harness}, a capped run whose grade fits what its cap left is graded and merged as before, within its cap`, { timeout: 180_000 }, async (t) => {
-    const { view, learning, launch } = await learnedUnder(t, harness, `room-${harness}`, ROOM);
+    const { view, learning, launch, spent } = await learnedUnder(t, harness, `room-${harness}`, ROOM);
     assert.deepEqual([view.learning?.state, view.learning?.reason], ["merged", null], JSON.stringify(view.learning));
-    assert.ok(near(launch?.max_cost_usd, ROOM - view.cost.usd), JSON.stringify({ launch, cost: view.cost }));
+    assert.ok(near(launch?.max_cost_usd, ROOM - spent), JSON.stringify({ launch, spent, cost: view.cost }));
     assert.equal(learning?.state, "ended");
     assert.ok(learning.costUsd > 0, "the grade was paid for");
     assert.ok(learning.costUsd <= launch.max_cost_usd, "the grade within what the cap left");
-    assert.ok(view.cost.usd + learning.costUsd <= ROOM, "the run and its grade together within the cap");
+    assert.ok(spent + learning.costUsd <= ROOM, "the run and its grade together within the cap");
   });
 }
 
@@ -71,7 +75,8 @@ test("a later round's grade runs under what the cap leaves once the earlier roun
   assert.equal(second.view.learning?.state, "merged", JSON.stringify(second.view.learning));
   const launch = (await server.store.runs.launch(`${runId}-learning-2`)).body;
   // The run's spend now (its job, both look-backs and the follow-up) and the first round's grade, both out of the cap.
-  assert.ok(near(launch.max_cost_usd, ROOM - second.view.cost.usd - learning.costUsd), JSON.stringify({ launch, cost: second.view.cost, first: learning.costUsd }));
+  const spent = await spentOf(server, runId);
+  assert.ok(near(launch.max_cost_usd, ROOM - spent - learning.costUsd), JSON.stringify({ launch, spent, cost: second.view.cost, first: learning.costUsd }));
   const graded = (await server.store.runs.get(`${runId}-learning-2`)).costUsd;
-  assert.ok(second.view.cost.usd + learning.costUsd + graded <= ROOM, "the run and both its grades together within the cap");
+  assert.ok(spent + learning.costUsd + graded <= ROOM, "the run and both its grades together within the cap");
 });

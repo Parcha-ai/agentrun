@@ -82,6 +82,9 @@ export const ERROR_STATUS = {
   agent_not_external: 409,
   runs_in_flight: 409,
   learning_busy: 409,
+  // A run start, or a message that would start a turn, with no model_key where the server holds no key for the run's
+  // model (run-model-key.ts): nothing to spend, so refused before any model call.
+  model_key_required: 422,
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;

@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "../App";
 import { WorkflowEditor } from "./WorkflowEditor";
-import { createBody } from "@/lib/agentForm";
+import { createBody, DECISION, WORKFLOW } from "@/lib/agentForm";
 
 // The graph's node count is the nodes it draws: a new Workflow agent draws one box and says "1 node", a new Decision agent
 // draws four (the judge and its three exits) and says "4 nodes". The root chain the steps hang on is no box of its own.
@@ -11,8 +11,8 @@ import { createBody } from "@/lib/agentForm";
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; vi.unstubAllGlobals(); location.hash = ""; });
 
-const starter = (harness: "workflow" | "decision") =>
-  createBody({ name: harness, description: "", instructions: "", harness, tools: [], decisionProvider: "jev" }).definition.workflow;
+const starter = (name: "workflow" | "decision") =>
+  createBody({ name, description: "", instructions: "", harness: name === "decision" ? DECISION : WORKFLOW, tools: [], decisionProvider: "jev" }).definition.workflow;
 const TEMPLATES = [["Workflow", starter("workflow"), "1 node"], ["Decision", starter("decision"), "4 nodes"]] as const;
 
 // What the drawing shows as boxes: every node group but a chain's, the line its steps sit on (as a click names them).

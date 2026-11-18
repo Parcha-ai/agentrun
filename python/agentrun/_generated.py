@@ -49,6 +49,7 @@ __all__ = [
     "Capabilities",
     "CapabilitiesHarnessesItem",
     "CapabilitiesHarnessesItemFreeModelsItem",
+    "CapabilitiesHarnessesItemPromises",
     "CapabilitiesHome",
     "CapabilitiesLearning",
     "CapabilitiesLinks",
@@ -359,6 +360,13 @@ __all__ = [
     "GetLearningBatchResponseRowsItem",
     "GetLearningBatchResponseRowsItemLearned",
     "GetLearningCostResponse",
+    "GetLearningCostResponseBill",
+    "GetLearningCostResponseBillBaseline",
+    "GetLearningCostResponseBillBreakEven",
+    "GetLearningCostResponseBillHoldsItem",
+    "GetLearningCostResponseBillPointsItem",
+    "GetLearningCostResponseBillPromoted",
+    "GetLearningCostResponseBillRevisionsItem",
     "GetLearningCostResponseRunsItem",
     "GetLearningCostResponseSummary",
     "GetLearningCostResponseSummaryAfter",
@@ -593,6 +601,13 @@ __all__ = [
     "ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem",
     "ListLearningPromotionsResponseServingItem",
     "ListLearningPromotionsResponseServingItemAudit",
+    "ListLearningPromotionsResponseServingItemChampion",
+    "ListLearningPromotionsResponseServingItemChampionCheck",
+    "ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem",
+    "ListLearningPromotionsResponseServingItemChampionCheckOutcomes",
+    "ListLearningPromotionsResponseServingItemChampionCheckSkippedToolsItem",
+    "ListLearningPromotionsResponseServingItemChampionNodesItem",
+    "ListLearningPromotionsResponseServingItemChampionNodesItemChecksItem",
     "ListLearningPromotionsResponseServingItemCheck",
     "ListMcpServersResponse",
     "ListMcpServersResponseServersItem",
@@ -1112,7 +1127,7 @@ class Definition(_DefinitionRequired, total=False):
     model: str
     model_tiers: DefinitionModelTiers
     thinking: Literal["low", "medium", "high", "xhigh", "max"]
-    harness: Literal["pi", "claude-agent", "codex", "opencode"]
+    harness: str
     place: DefinitionPlace1 | DefinitionPlace2
     computer: DefinitionComputer
     tool_settings: DefinitionToolSettings
@@ -1592,7 +1607,7 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
     model: str
     model_tiers: DefinitionInputModelTiers
     thinking: Literal["low", "medium", "high", "xhigh", "max"]
-    harness: Literal["pi", "claude-agent", "codex", "opencode"]
+    harness: str
     place: DefinitionInputPlace1 | DefinitionInputPlace2
     computer: DefinitionInputComputer
     tool_settings: DefinitionInputToolSettings
@@ -2324,6 +2339,7 @@ class ListLearningPromotionsResponseServingItem(TypedDict):
     audit: ListLearningPromotionsResponseServingItemAudit | None
     audits_off: str | None
     not_auditable: int
+    champion: ListLearningPromotionsResponseServingItemChampion | None
 
 
 class ListLearningPromotionsResponseServingItemCheck(TypedDict):
@@ -2338,6 +2354,71 @@ class ListLearningPromotionsResponseServingItemAudit(TypedDict):
     disagree: int
     rows: int
     disagreed: int
+
+
+class ListLearningPromotionsResponseServingItemChampion(TypedDict):
+    digest: str
+    commit: str | None
+    nodes: list[ListLearningPromotionsResponseServingItemChampionNodesItem] | None
+    check: ListLearningPromotionsResponseServingItemChampionCheck | None
+
+
+class ListLearningPromotionsResponseServingItemChampionNodesItem(TypedDict):
+    path: str
+    kind: str
+    label: str
+    tier: Literal["fast", "agent"] | None
+    checks: list[ListLearningPromotionsResponseServingItemChampionNodesItemChecksItem]
+
+
+class ListLearningPromotionsResponseServingItemChampionNodesItemChecksItem(TypedDict):
+    on: Literal["when", "until"]
+    predicate: dict[str, Any]
+
+
+class _ListLearningPromotionsResponseServingItemChampionCheckRequired(TypedDict):
+    compile_after: int
+    agree_min: float
+    alone_min: float
+    attempt: Literal[1, 2]
+
+
+class ListLearningPromotionsResponseServingItemChampionCheck(_ListLearningPromotionsResponseServingItemChampionCheckRequired, total=False):
+    n: int
+    agreed: int
+    alone: int
+    of: list[str]
+    cost_usd: float | None
+    outcomes: ListLearningPromotionsResponseServingItemChampionCheckOutcomes
+    unstarted: int
+    skipped_tools: list[ListLearningPromotionsResponseServingItemChampionCheckSkippedToolsItem]
+    disagreements: list[ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem]
+    stopped: Literal[True]
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckOutcomes(TypedDict):
+    answered: int
+    handed_back: int
+    failed: int
+    skipped_write: int
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckSkippedToolsItem(TypedDict):
+    tool: str
+    inputs: int
+    no_read_only_hint: bool
+
+
+class _ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemRequired(TypedDict):
+    run: str
+    input: str
+    agent: str | None
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem(_ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemRequired, total=False):
+    draft: str
+    escalated: str
+    failed: Literal[True]
 
 
 ListRunsResponse: TypeAlias = "RunList"
@@ -2396,6 +2477,8 @@ class Cost(_CostRequired, total=False):
     so_far_usd: float
     unpriced: int
     upper_bound: Literal[True]
+    learning_usd: float | None
+    all_in_usd: float | None
     plan: CostPlan
 
 
@@ -3356,6 +3439,7 @@ class GetLearningCostResponse(TypedDict):
     unknown_path_runs: int
     workflows: list[GetLearningCostResponseWorkflowsItem]
     summary: GetLearningCostResponseSummary
+    bill: GetLearningCostResponseBill
 
 
 class GetLearningCostResponseRunsItem(TypedDict):
@@ -3434,6 +3518,63 @@ class GetLearningCostResponseSummaryReplay(TypedDict):
     agreed: int
     alone: int
     agree_min: float
+
+
+class GetLearningCostResponseBill(TypedDict):
+    baseline: GetLearningCostResponseBillBaseline | None
+    promoted: GetLearningCostResponseBillPromoted | None
+    points: list[GetLearningCostResponseBillPointsItem]
+    break_even: GetLearningCostResponseBillBreakEven | None
+    gap_usd: float | None
+    withheld: int
+    booked_usd: float
+    revisions: list[GetLearningCostResponseBillRevisionsItem]
+    unattributed_usd: float | None
+    holds: list[GetLearningCostResponseBillHoldsItem]
+
+
+class GetLearningCostResponseBillBaseline(TypedDict):
+    runs: int
+    mean_usd: float
+
+
+class GetLearningCostResponseBillPromoted(TypedDict):
+    n: int
+    run_id: str
+    at: str
+
+
+class GetLearningCostResponseBillPointsItem(TypedDict):
+    n: int
+    run_id: str
+    actual_usd: float
+    agent_usd: float | None
+
+
+class GetLearningCostResponseBillBreakEven(TypedDict):
+    n: int
+    run_id: str
+
+
+class GetLearningCostResponseBillRevisionsItem(TypedDict):
+    workflow: str
+    digest: str
+    compile_usd: float | None
+    check_usd: float | None
+    spend_usd: float | None
+    k: int
+    served: int
+    attributed_usd: float | None
+    unattributed_usd: float | None
+    state: Literal["checking", "serving", "stopped"]
+
+
+class GetLearningCostResponseBillHoldsItem(TypedDict):
+    n: int | None
+    at: str
+    workflow: str
+    by: Literal["audit", "check", "dsl"]
+    reason: str
 
 
 class ListLearningEvalsResponse(TypedDict):
@@ -3950,6 +4091,7 @@ class _ListComposioEventsResponseEventsItemRequired(TypedDict):
     description: str
     config: dict[str, Any]
     polled: bool
+    sealed: list[str]
 
 
 class ListComposioEventsResponseEventsItem(_ListComposioEventsResponseEventsItemRequired, total=False):
@@ -5083,6 +5225,7 @@ class RunCreateInline(_RunCreateInlineRequired, total=False):
     effort: Effort
     max_cost_usd: float
     quote_id: str
+    model_key: str
     mcp_auth: dict[str, RunCreateInlineMcpAuthValue]
     labels: dict[str, str]
     workflow_first: bool
@@ -5151,6 +5294,7 @@ class Run(_RunRequired, total=False):
     imported_from: RunImportedFrom | None
     trigger: RunTrigger | None
     audit_of: str | None
+    path: Literal["agent", "handed_back", "workflow", "replay", "audit"] | None
 
 
 class _RunResultRequired(TypedDict):
@@ -5728,6 +5872,7 @@ class _MessageCreateRequired(TypedDict):
 
 
 class MessageCreate(_MessageCreateRequired, total=False):
+    model_key: str
     mcp_auth: dict[str, MessageCreateMcpAuthValue]
 
 
@@ -5788,6 +5933,7 @@ class RunCreate(_RunCreateRequired, total=False):
     effort: Effort
     max_cost_usd: float
     quote_id: str
+    model_key: str
     mcp_auth: dict[str, RunCreateMcpAuthValue]
     labels: dict[str, str]
     workflow_first: bool
@@ -6361,7 +6507,9 @@ class CapabilitiesPlacesDefaultPlace2(TypedDict):
 
 
 class _CapabilitiesHarnessesItemRequired(TypedDict):
-    id: Literal["pi", "claude-agent", "codex", "opencode"]
+    id: str
+    label: str
+    promises: CapabilitiesHarnessesItemPromises
     available: bool
     free_models: list[CapabilitiesHarnessesItemFreeModelsItem]
     models: list[str]
@@ -6377,6 +6525,12 @@ class CapabilitiesHarnessesItem(_CapabilitiesHarnessesItemRequired, total=False)
     installs: Literal["on_first_use"]
 
 
+class CapabilitiesHarnessesItemPromises(TypedDict):
+    resume: Literal["exact", "load", "restart"]
+    tool_gate: Literal["every_call", "permission", "config"]
+    billing: Literal["proxy", "plan"]
+
+
 class CapabilitiesHarnessesItemFreeModelsItem(TypedDict):
     id: str
     context_window: int
@@ -6388,7 +6542,7 @@ class _CapabilitiesToolsItemRequired(TypedDict):
     nodes: bool
     calls: bool
     available: bool
-    harnesses: list[Literal["pi", "claude-agent", "codex", "opencode"]]
+    harnesses: list[str]
     permission: Literal["allow", "ask", "deny"]
     default_permission: Literal["allow", "ask", "deny"]
     permissions: list[Literal["allow", "ask", "deny"]]
@@ -6457,12 +6611,12 @@ class CapabilitiesSecrets(TypedDict):
 
 
 class GetHealthResponse(TypedDict):
-    status: Literal["ok", "failing"]
+    status: Literal["ok", "failing", "warming"]
     checks: GetHealthResponseChecks
 
 
 class GetHealthResponseChecks(TypedDict):
-    store: Literal["ok", "does_not_open"]
+    store: Literal["ok", "does_not_open", "opening"]
     disk: Literal["ok", "below_floor", "cannot_check"]
 
 
@@ -7246,6 +7400,7 @@ class _CreateTriggerBodySource6Required(TypedDict):
 class CreateTriggerBodySource6(_CreateTriggerBodySource6Required, total=False):
     accept: list[CreateTriggerBodySource6AcceptItem]
     instance_id: str
+    sealed_config: list[str]
     hook: str
     move_subscription: Literal[True]
 
@@ -7473,6 +7628,7 @@ class _CreateTriggerResponseSource6Required(TypedDict):
 class CreateTriggerResponseSource6(_CreateTriggerResponseSource6Required, total=False):
     accept: list[CreateTriggerResponseSource6AcceptItem]
     instance_id: str
+    sealed_config: list[str]
     hook: str
     move_subscription: Literal[True]
 
@@ -7816,6 +7972,7 @@ class _GetTriggerResponseSource6Required(TypedDict):
 class GetTriggerResponseSource6(_GetTriggerResponseSource6Required, total=False):
     accept: list[GetTriggerResponseSource6AcceptItem]
     instance_id: str
+    sealed_config: list[str]
     hook: str
     move_subscription: Literal[True]
 
@@ -8103,6 +8260,7 @@ class _ListTriggersResponseTriggersItemSource6Required(TypedDict):
 class ListTriggersResponseTriggersItemSource6(_ListTriggersResponseTriggersItemSource6Required, total=False):
     accept: list[ListTriggersResponseTriggersItemSource6AcceptItem]
     instance_id: str
+    sealed_config: list[str]
     hook: str
     move_subscription: Literal[True]
 
@@ -8385,6 +8543,7 @@ class _UpdateTriggerBodySource6Required(TypedDict):
 class UpdateTriggerBodySource6(_UpdateTriggerBodySource6Required, total=False):
     accept: list[UpdateTriggerBodySource6AcceptItem]
     instance_id: str
+    sealed_config: list[str]
     hook: str
     move_subscription: Literal[True]
 
@@ -8611,6 +8770,7 @@ class _UpdateTriggerResponseSource6Required(TypedDict):
 class UpdateTriggerResponseSource6(_UpdateTriggerResponseSource6Required, total=False):
     accept: list[UpdateTriggerResponseSource6AcceptItem]
     instance_id: str
+    sealed_config: list[str]
     hook: str
     move_subscription: Literal[True]
 

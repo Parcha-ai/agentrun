@@ -1,4 +1,5 @@
 import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
+import { useScrollQuiet } from "@/lib/useScrollQuiet";
 import { workflowGraph } from "@dsl/graph";
 import { ArrowLeft, ArrowUpRight, Bot, ChevronRight, RefreshCw, Search, Workflow } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -17,7 +18,7 @@ import { SignIns } from "@/components/SignIns";
 import { LearningTab } from "@/components/Learning";
 import { LearningChips, WaitingCount } from "@/components/LearningChips";
 import { Button } from "@/components/ui/button";
-import { Banner, Chip, Input, Tabs, tabPanelProps } from "@/components/ui";
+import { Banner, Chip, fieldBoxClass, Input, Tabs, tabPanelProps } from "@/components/ui";
 import { GraphLegend, WorkflowGraph } from "@/components/WorkflowGraph";
 import { type Agent, runsWhere } from "@/lib/agentForm";
 import { type Client, ClientError } from "@/lib/client";
@@ -33,6 +34,7 @@ import { cn } from "@/lib/utils";
 import { rangeFrom, type Stats } from "@/lib/mission";
 import type { Run } from "@/lib/v2";
 import { drawnNodeCount, nodesWord } from "@/lib/wfGraph";
+import { pageToolbarClass } from "@/components/ui/toolbar";
 
 /** `stats`: the page's own read of the agent's stats over the Analytics tab's first range, which that tab starts from. */
 type TabProps = { agent: Agent; v2: Client; go: (hash: string) => void; stats?: Stats | null; history?: RunHistory };
@@ -122,6 +124,27 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
 }) {
   const history = useRunHistory(agent, v2, reread, () => reread(false, false));
   const [factsOpen, setFactsOpen] = useState(false);
+  // Each scrolling box shows its scrollbar only while it is being scrolled.
+  const detailsScroll = useScrollQuiet<HTMLDivElement>();
+  const workspaceScroll = useScrollQuiet<HTMLElement>();
+  const descriptionScroll = useScrollQuiet<HTMLDivElement>();
+  // A box that scrolls (a long description, or a name long enough to scroll the block) takes the keyboard's focus, so
+  // its end can be read without a pointer (Safari puts no scrolling box in the tab order by itself). One that fits is no stop.
+  const headingScroll = useRef<HTMLDivElement>(null);
+  const [scrolling, setScrolling] = useState({ heading: false, description: false });
+  useEffect(() => {
+    const heading = headingScroll.current, description = descriptionScroll.current;
+    if (!heading || !description || typeof ResizeObserver === "undefined") return;
+    const overflows = (box: HTMLElement) => box.scrollHeight > box.clientHeight + 1;
+    const measure = () => setScrolling((was) => {
+      const now = { heading: overflows(heading), description: overflows(description) };
+      return now.heading === was.heading && now.description === was.description ? was : now;
+    });
+    const sizes = new ResizeObserver(measure);
+    for (const box of [heading, description]) { sizes.observe(box); for (const child of box.children) sizes.observe(child); }
+    measure();
+    return () => sizes.disconnect();
+  }, [descriptionScroll, agent.definition.name, agent.definition.description, agent.definition.approvals]);
   const itemsWaiting = waitingOf(agent);
   const d = agent.definition;
   const sdk = backendSdkOf(d);
@@ -159,7 +182,7 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
   const overviewFacts: [string, string, string?][] = [["Status", agent.archived_at ? "Archived" : native ? nativeStateLabel(native) : "Active"], ["Live jobs", String(liveCount)], ...facts];
   return (
     <NativeMutationProvider native={native}><section className="flex h-full min-h-0 flex-col" aria-label="Agent detail">
-      <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-2 border-b px-5 py-2 lg:flex-nowrap lg:py-0" aria-label="Agent toolbar">
+      <header className={cn(pageToolbarClass, "flex-wrap gap-2 px-5 lg:flex-nowrap")} aria-label="Agent toolbar">
         <Button size="icon" variant="ghost" aria-label="Back to agents" onClick={() => go(agent.archived_at ? "#/agents?archived=true" : "#/agents")}><ArrowLeft aria-hidden /></Button>
         <Icon className="size-4 shrink-0 text-muted-foreground" aria-hidden />
         <strong className="min-w-0 truncate text-body font-semibold">{d.name}</strong>
@@ -170,14 +193,25 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
           {!agent.archived_at && <CodingAgentAction variant="primary" label="Run agent" disabled={!!native && (!native.connected || native.state !== "ready" || !native.capabilities.launch)} prompt={runAgentPrompt(location.origin, agent.agent_id, sdk?.runtime)} playgroundHref={sdk ? undefined : `#/playground?agent=${encodeURIComponent(agent.agent_id)}`} />}
         </div>
       </header>
-      <main className="grid min-h-0 flex-1 grid-cols-1 items-start gap-6 overflow-auto p-5 lg:grid-cols-[minmax(260px,320px)_minmax(0,1fr)] md:p-8">
-        <aside className="min-w-0 space-y-6" aria-label="Agent overview">
-          <div>
-            <h1 className="text-2xl font-semibold">{d.name}</h1>
-            {d.approvals === "never" && <Chip tone="warning" className="mt-2" title="Never ask: a call of this agent never waits for you. A tool set to deny, and a template’s pins, still hold.">Unattended</Chip>}
-            {d.description && <p id="agent-description" className={cn("mt-2 text-body leading-relaxed text-muted-foreground", !factsOpen && "max-sm:line-clamp-2")}>{d.description}</p>}
-            <p className="mt-3 break-all font-mono text-label text-muted-foreground">{agent.agent_id}</p>
+      {/* Each scrolling box reaches 16px into the space beside it: 6px of scrollbar (.scroll-quiet) and 10px between the bar
+          and the cards, so the cards keep the width of the name above them and the bar lies over none of them. */}
+      {/* Side by side (lg), the page itself does not scroll: the agent's name stays put, its details scroll under it, and
+          the workspace scrolls beside them. In one column the whole page scrolls, as before. */}
+      <main className="grid min-h-0 flex-1 grid-cols-1 items-start gap-6 overflow-auto p-5 lg:grid-cols-[minmax(260px,320px)_minmax(0,1fr)] lg:grid-rows-[minmax(0,1fr)] lg:items-stretch lg:overflow-hidden md:p-8">
+        <aside className="min-w-0 space-y-6 lg:flex lg:min-h-0 lg:flex-col" aria-label="Agent overview">
+          {/* The name block takes at most half the column, so the details under it always have room. A description too long
+              for that scrolls in a box of its own between the name and the id, which both stay. The block reaches into
+              the space beside it so that box's scrollbar has its gutter; a name that fills the half by itself scrolls
+              the block, which shows no scrollbar of its own, and the description keeps a line of it. */}
+          <div ref={headingScroll} data-agent-heading {...(scrolling.heading ? { tabIndex: 0, role: "region", "aria-label": "Agent name and description" } : {})} className="lg:-mr-4 lg:flex lg:max-h-[50%] lg:shrink-0 lg:flex-col lg:overflow-y-auto lg:overflow-x-hidden lg:pr-4 lg:[scrollbar-width:none]">
+            <h1 className="text-2xl font-semibold lg:shrink-0">{d.name}</h1>
+            {d.approvals === "never" && <Chip tone="warning" className="mt-2 lg:shrink-0 lg:self-start" title="Never ask: a call of this agent never waits for you. A tool set to deny, and a template’s pins, still hold.">Unattended</Chip>}
+            <div ref={descriptionScroll} data-agent-description {...(scrolling.description ? { tabIndex: 0, role: "region", "aria-label": "Agent description" } : {})} className={cn("scroll-quiet min-w-0 lg:-mr-4 lg:overflow-y-auto lg:overflow-x-hidden lg:pr-2.5", d.description ? "lg:min-h-7" : "lg:min-h-0")}>
+              {d.description && <p id="agent-description" className={cn("mt-2 break-words text-body leading-relaxed text-muted-foreground", !factsOpen && "max-sm:line-clamp-2")}>{d.description}</p>}
+            </div>
+            <p className="mt-3 break-all font-mono text-label text-muted-foreground lg:shrink-0">{agent.agent_id}</p>
           </div>
+          <div ref={detailsScroll} data-agent-details className="scroll-quiet min-w-0 space-y-6 lg:-ml-1 lg:-mr-4 lg:min-h-0 lg:flex-1 lg:overflow-y-auto lg:overflow-x-hidden lg:pb-6 lg:pl-1 lg:pr-2.5">
           <button type="button" aria-expanded={factsOpen} aria-controls={d.description ? "agent-description agent-facts" : "agent-facts"} onClick={() => setFactsOpen((value) => !value)} className="flex w-full min-w-0 items-center gap-2 text-left font-mono text-small text-muted-foreground sm:hidden">
             <ChevronRight className={cn("size-3.5 shrink-0 transition-transform", factsOpen && "rotate-90")} aria-hidden /><span className="truncate">{overviewFacts.map(([, value]) => value).join(" · ")}</span>
           </button>
@@ -212,8 +246,9 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
             {live.length ? <ul className="space-y-3">{live.map((run) => <li key={run.run_id}><a href={`#/runs/${encodeURIComponent(run.run_id)}`} className="flex items-center gap-2 text-small hover:text-primary-text"><StatusBadge run={run} /><span className="min-w-0 flex-1 truncate">{runTitle(run)}</span><ArrowUpRight className="size-3 shrink-0" aria-hidden /></a></li>)}</ul>
               : <p className="text-small leading-relaxed text-muted-foreground">{!history.runs ? "Loading live jobs…" : agent.runs?.live ? "Live jobs are outside the loaded history. Load more runs to find them." : history.error ? "Live jobs could not be refreshed." : "No live jobs."}</p>}
           </section>
+          </div>
         </aside>
-        <section className="min-w-0" aria-label="Agent workspace">
+        <section ref={workspaceScroll} className="scroll-quiet min-w-0 lg:-ml-1 lg:-mr-4 lg:min-h-0 lg:overflow-y-auto lg:overflow-x-hidden lg:pb-6 lg:pl-1 lg:pr-2.5" aria-label="Agent workspace">
           <Tabs id="agent-views" label="Agent views" value={at.id} onChange={(value) => go(agentHash(agent.agent_id, value))} tabs={tabs.map((t) => ({ id: t.id, label: <>{t.label}{t.id === "learning" && <WaitingCount n={itemsWaiting} className="ml-1.5" />}</> }))} className="mb-5 overflow-x-auto px-0 md:px-0" />
           <div {...tabPanelProps("agent-views", at.id)} aria-label={waiting ? undefined : at.label}>
             {waiting ? <ListSkeleton label="Loading the tab" rows={4} /> : <at.Body agent={agent} v2={v2} go={go} stats={stats} history={history} focus={notes} learning={learning} onAgent={onAgent} onChanged={onChanged} places={places} />}
@@ -303,7 +338,7 @@ function RunsTab({ agent, history }: TabProps) {
   const filtered = runs.filter((r) => `${runTitle(r)} ${r.run_id} ${r.status}`.toLowerCase().includes(query.toLowerCase()));
   return <section className="min-h-[380px] overflow-hidden border" aria-label="Agent run history">
     <div className="flex flex-wrap items-center gap-3 border-b p-3">
-      <label className="flex min-w-0 items-center gap-2"><Search className="size-3.5 text-muted-foreground" aria-hidden /><Input aria-label="Search this agent's runs" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search runs…" className="w-40 min-w-0" /></label>
+      <label className={cn(fieldBoxClass, "flex w-56 min-w-0 items-center gap-2 px-3")}><Search className="size-3.5 shrink-0 text-muted-foreground" aria-hidden /><Input bare type="search" aria-label="Search this agent's runs" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search runs…" className="h-control-md w-full" /></label>
       <span className="text-small text-muted-foreground">{runs.length}{cursor ? "+" : ""} {runs.length === 1 && !cursor ? "run" : "runs"}</span>
       <div className="ml-auto"><CodingAgentAction label="Query" prompt={`${queryRunsPrompt(location.origin, agent.agent_id)}\nCurrent view: all statuses; ${agent.archived_at ? "archived runs" : "non-archived runs"}.`} playgroundHref={queryPlaygroundHref(agent.agent_id, { archived: !!agent.archived_at })} /></div>
     </div>

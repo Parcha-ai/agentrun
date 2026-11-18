@@ -130,17 +130,21 @@ async function completedSdk(t, { learning = "notes", usage = SDK_USAGE, status =
   return { ...server, runId, start, seedReflection, sdk: client(server.baseUrl, token) };
 }
 
-async function assertPublicTotals(server, { cost, input = 120, output = 15, cacheRead = 33, cacheWrite = 6 }) {
+/** `cost`: the run's whole spend, its SDK task and its reflection, as its row, stats and usage book it. `job`: the task's
+ *  own, the run view's `cost.usd` (A8: its reflection is learning's); left out, the cost series' figure for the run. */
+async function assertPublicTotals(server, { cost, job, input = 120, output = 15, cacheRead = 33, cacheWrite = 6 }) {
   const run = (await server.api("GET", `/runs/${server.runId}`)).body;
   assert.equal(run.status, "completed", JSON.stringify(run));
-  assert.equal(run.cost.usd, cost, "the public run cost includes SDK and reflection");
+  const series = (await server.api("GET", "/agents/sdk-usage/learning/cost")).body.runs.find((one) => one.run_id === server.runId);
+  assert.ok(job !== undefined || series, "the cost series has the run");
+  assert.equal(run.cost.usd, job !== undefined ? job : series.cost_usd, "the public run cost is the SDK task's own");
   assert.equal(run.result.final_answer, "Ready.");
   const totals = (await server.api("GET", "/stats?agent=sdk-usage")).body.analytics.totals;
   assert.deepEqual({ cost: totals.cost_usd, input: totals.input, output: totals.output, cacheRead: totals.cache_read, cacheWrite: totals.cache_write, requests: totals.requests, unmetered: totals.unmetered }, { cost, input, output, cacheRead, cacheWrite, requests: null, unmetered: null });
   assert.equal(totals.runs, 1);
   assert.equal(totals.unknown_cost_runs, cost === null ? 1 : 0);
   assert.equal(totals.tokens, [input, output, cacheRead, cacheWrite].includes(null) ? null : input + output + cacheRead + cacheWrite);
-  assert.equal((await server.store.runs.get(server.runId)).costUsd, cost, "the persisted total agrees with the run view");
+  assert.equal((await server.store.runs.get(server.runId)).costUsd, cost, "the persisted total: the SDK task and its reflection");
 }
 
 test("SDK public stats persist the aggregate plus known reflection usage", async t => {
@@ -148,7 +152,7 @@ test("SDK public stats persist the aggregate plus known reflection usage", async
   const sent = [];
   await server.start(route(sent));
   assert.equal(sent.length, 1, JSON.stringify((await server.api("GET", `/runs/${server.runId}`)).body.learning));
-  await assertPublicTotals(server, { cost: SDK_USAGE.cost_usd + reflectionUsd });
+  await assertPublicTotals(server, { cost: SDK_USAGE.cost_usd + reflectionUsd, job: SDK_USAGE.cost_usd });
 });
 
 test("a learning SDK completion remains in the cost series with its aggregate and reflection spend", async t => {
@@ -224,7 +228,7 @@ for (const status of ["completed", "failed", "cancelled"]) test(`an incomplete $
 test("an incomplete SDK trace preserves each unknown usage counter without inventing a path or zero cost", async t => {
   const server = await completedSdk(t, { evidenceComplete: false, usage: { ...SDK_USAGE, cost_usd: null, input_tokens: null, cache_write_tokens: null } });
   await server.start(route([]));
-  await assertPublicTotals(server, { cost: null, input: null, output: 5, cacheRead: 3, cacheWrite: null });
+  await assertPublicTotals(server, { cost: null, job: null, input: null, output: 5, cacheRead: 3, cacheWrite: null });
   assert.equal(Object.hasOwn((await server.store.runs.get(server.runId)).metrics, "path"), false);
   assert.equal((await server.api("GET", "/agents/sdk-usage/learning/cost")).body.unknown_path_runs, 1);
 });
@@ -276,19 +280,20 @@ test("claim loss during the SDK path read writes no end and leaves completion av
 test("an unpriced SDK reflection leaves total cost unknown while known tokens still add", async t => {
   const server = await completedSdk(t);
   await server.start(route([], { priced: false }));
-  await assertPublicTotals(server, { cost: null });
+  // The task's own cost is known as it answered; only its reflection's is not.
+  await assertPublicTotals(server, { cost: null, job: SDK_USAGE.cost_usd });
 });
 
 test("an unmetered SDK reflection leaves token totals unknown, never the SDK-only count", async t => {
   const server = await completedSdk(t);
   await server.start(route([], { tokens: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }));
-  await assertPublicTotals(server, { cost: SDK_USAGE.cost_usd + reflectionUsd, input: null, output: null, cacheRead: null, cacheWrite: null });
+  await assertPublicTotals(server, { cost: SDK_USAGE.cost_usd + reflectionUsd, job: SDK_USAGE.cost_usd, input: null, output: null, cacheRead: null, cacheWrite: null });
 });
 
 test("unknown SDK cost and individual token counters remain unknown after a metered reflection", async t => {
   const server = await completedSdk(t, { usage: { ...SDK_USAGE, cost_usd: null, input_tokens: null, cache_write_tokens: null } });
   await server.start(route([]));
-  await assertPublicTotals(server, { cost: null, input: null, cacheWrite: null });
+  await assertPublicTotals(server, { cost: null, job: null, input: null, cacheWrite: null });
 });
 
 test("learning off persists only SDK usage and sends no reflection", async t => {
@@ -296,7 +301,7 @@ test("learning off persists only SDK usage and sends no reflection", async t => 
   const sent = [];
   await server.start(route(sent));
   assert.equal(sent.length, 0);
-  await assertPublicTotals(server, { cost: 0.25, input: 20, output: 5, cacheRead: 3, cacheWrite: 2 });
+  await assertPublicTotals(server, { cost: 0.25, job: 0.25, input: 20, output: 5, cacheRead: 3, cacheWrite: 2 });
 });
 
 test("a reclaimed SDK end reuses reflection and counts each charge once", async t => {
@@ -308,7 +313,7 @@ test("a reclaimed SDK end reuses reflection and counts each charge once", async 
   const entries = await journalEntries(server.store.readJournal(server.runId), BACKGROUND_CONTEXT);
   assert.equal(entries.filter(entry => entry.kind === "agentrun.sdk.completion").length, 1);
   assert.equal(entries.filter(entry => entry.kind === "runner.turn").length, 2, "one SDK aggregate and one reflection booking");
-  await assertPublicTotals(server, { cost: SDK_USAGE.cost_usd + reflectionUsd });
+  await assertPublicTotals(server, { cost: SDK_USAGE.cost_usd + reflectionUsd, job: SDK_USAGE.cost_usd });
 });
 
 for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
@@ -332,7 +337,7 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
 
     await server.start(grader);
     const total = taskCost === null || reflectionCost === null ? null : taskCost + reflectionCost;
-    await assertPublicTotals(server, { cost: total });
+    await assertPublicTotals(server, { cost: total, job: taskCost });
     const cost = await server.api("GET", "/agents/sdk-usage/learning/cost");
     assert.equal(cost.status, 200);
     assert.equal(cost.body.runs.length, 1);
@@ -359,6 +364,8 @@ test("a reclaimed reflection's partial token report preserves each unknown dimen
   const sent = [];
   await server.start(route(sent));
   assert.equal(sent.length, 0, "the saved answer is reused");
+  // The seeded ask kept no task figures, so the task's own is what the run had cost when this claim asked (the reused
+  // answer included): the cost series' figure, which the run view gives too.
   await assertPublicTotals(server, { cost: SDK_USAGE.cost_usd + reflectionUsd, cacheWrite: null });
 });
 
@@ -385,7 +392,7 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) test(`SDK recovery reta
   const saved = await server.store.learning.proposal(server.runId);
   assert.equal(saved.proposal.answered_at, kept.answered_at);
   assert.deepEqual([saved.proposal.job_cost_usd, saved.proposal.look_back_usd], [0.25, 0.25]);
-  await assertPublicTotals(server, { cost: 0.5, input: 220, output: 25, cacheRead: 63, cacheWrite: 10 });
+  await assertPublicTotals(server, { cost: 0.5, job: 0.25, input: 220, output: 25, cacheRead: 63, cacheWrite: 10 });
 });
 
 test("SDK recovery never takes task figures from a different reflection round", async t => {

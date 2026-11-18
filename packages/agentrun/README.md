@@ -13,10 +13,59 @@ It starts [AgentRun Server](https://github.com/Parcha-ai/agentrun/tree/main/pack
 it in your browser (`--no-open`, a CI run or a machine with no display skips that). The server,
 `@parcha/agentrun-serve`, is this package's one dependency, at its exact version, so `npx` installs the two together and
 each version of this command runs the server it was released with. Node.js 24.22.3 or newer, on macOS or Linux; an older
-Node gets one line naming that floor.
+Node gets one line naming that floor and the installer's command.
 
-A start that fails says why on stderr: the step that failed, how the server ended (its exit code or signal, or still
-running after 60 seconds without printing its address, and stopped), its last lines on stderr and stdout, and
+No Node.js on the machine, or an older one? The installer brings its own and keeps AgentRun running after the terminal
+closes:
+
+```sh
+curl -fsSL https://agentrun.ai/install | sh
+```
+
+It downloads a Node.js from nodejs.org: the newest release on the major line of the version this AgentRun needs, so
+later security releases come with the next install. It checks the download against that release's `SHASUMS256.txt`
+and installs it and AgentRun under `~/.agentrun` (`node/`, `lib/`, `bin/agentrun`). Any other Node, nvm or Homebrew is
+left alone, and nothing needs sudo. When no line in your shell's startup file puts `~/.agentrun/bin` on `PATH`, it adds
+one and says so. Then it starts AgentRun as a service of your user, a LaunchAgent on macOS or a systemd user unit on
+Linux, which starts again at login and after a crash and logs to `~/.agentrun/logs/agentrun.log`. Where there is no
+service manager (a container, say), it starts AgentRun in the background, logging to the same file. It runs until the
+machine or container stops, and `agentrun stop` stops it (a SIGTERM, then a SIGKILL to the launcher and its server
+after 45 seconds). Either way the installer returns once AgentRun answers, and prints its address. `sh -s -- --no-start`
+installs only, `--version V` installs another version, `--node-version V` installs that Node.js (at least the floor),
+and `--service` fails where there is no service manager. Running it again upgrades, or installs an older version, and
+first stops the AgentRun it started in the background itself, whatever version that is.
+
+`agentrun service status` prints the console's address and its health. `start`, `stop`, `restart`, `logs [--follow]`,
+`upgrade [--version V]` (the installer again, then a restart) and `uninstall` (the data stays) do what they say, and
+`agentrun service install [--port N] [--data DIR]` installs the service after a `--no-start`. On Linux, a user's
+services stop at logout unless lingering is on: `install` and `status` print the one `sudo loginctl enable-linger` line
+when it is off. To remove AgentRun, run `agentrun service uninstall`, then delete `~/.agentrun/bin`, `~/.agentrun/lib`,
+`~/.agentrun/node` and the `PATH` line; the rest of `~/.agentrun` is your data.
+
+On a machine you keep on (a Mac mini, a home server, a VPS), `--tailscale` also puts AgentRun on your own
+[Tailscale](https://tailscale.com) network, at `https://<machine>.<your tailnet's DNS name>/`, which only your devices
+on that network open:
+
+```sh
+curl -fsSL https://agentrun.ai/install | sh -s -- --tailscale
+```
+
+It runs `tailscale serve --bg --https=443` to AgentRun's port, 7340, where AgentRun keeps listening on loopback only,
+and prints the address from `tailscale status --json`. The server is told that address (`AGENTRUN_PUBLIC_URL`), so its
+first visit asks for the setup code in `~/.agentrun/logs/agentrun.log`. It never uses Funnel, which would put the
+address on the public internet: where Funnel is already on for that address, or the address serves something else, it
+changes nothing and says so. It never installs Tailscale, logs in or runs sudo. With Tailscale missing or logged out,
+it starts AgentRun on this machine and prints the steps and the command to run again. On Linux, where only root or
+Tailscale's operator may change what it serves, it prints the one `sudo tailscale set --operator=$USER` line.
+`agentrun service install --tailscale` does the same for an installed service, `--no-tailscale` takes it off, and
+`agentrun service uninstall` removes the serve entry it added and no other. Tailscale's Personal plan is free: up to 6
+users, unlimited user devices ([pricing](https://tailscale.com/pricing)). The https address needs MagicDNS and HTTPS
+certificates turned on in your tailnet's [DNS settings](https://login.tailscale.com/admin/dns).
+
+The server binds its port first and says so; this command then names the address on stderr at once, and prints its line
+on stdout once the server is ready, which on a cold, slow disk can take minutes. A start that fails says why on stderr:
+the step that failed, how the server ended (its exit code or signal, or still running after 60 seconds without printing
+any address, and stopped; `AGENTRUN_START_TIMEOUT_MS` sets that wait, in milliseconds), its last lines on stderr and stdout, and
 `~/.agentrun/start.log` (in the folder `--data` names), which holds everything the server wrote in that start. Each start
 overwrites that log; it is private to you, as the server's first lines name its API token. A log the disk could not hold
 all of is named with the error that cut it short.

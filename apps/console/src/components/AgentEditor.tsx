@@ -33,6 +33,7 @@ import type { ToolSettings } from "@/lib/v2";
 import { callNodeTools, SERVER_DENY, serverDenies, type ToolChoice, type ToolGate } from "@/lib/toolSettings";
 import { useUnsavedChangesGuard } from "@/lib/useUnsavedChangesGuard";
 import { cn } from "@/lib/utils";
+import { pageToolbarClass } from "@/components/ui/toolbar";
 import { type Approvals, NEVER_ASK_LINE } from "@/lib/v2";
 
 /** A revision as GET /v2/agents/{id}/revisions lists it; `definition` is what it holds (a workflow revision's workflow). */
@@ -288,7 +289,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <header className="flex flex-wrap items-center gap-3 border-b px-5 py-4 md:px-8">
+      <header className={cn(pageToolbarClass, "flex-wrap gap-3 px-5 md:px-8")}>
         <Button size="icon" variant="ghost" aria-label="Back to agents" onClick={onBack}><ArrowLeft aria-hidden /></Button>
         <h1 className="min-w-0 flex-1 truncate font-mono text-xl font-semibold" title={creating ? undefined : d!.name}>{creating ? "New agent" : d!.name}</h1>
         <CodingAgentAction label="Use your agent" prompt={sourceOwned && agent
@@ -428,7 +429,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                     const choice = providerChoices.find((c) => c.name === t.name);
                     const ownPick = (f.tool_settings ?? d?.tool_settings ?? {})[t.name]?.provider;
                     const pickedOver = !!choice && ownPick !== undefined && ownPick !== choice.provider;
-                    const sandbox = sandboxReason(t, f.place ?? placeOf(d?.place) ?? defaultPlaceOf(workflow, f.tools ?? [], caps.places));
+                    // With no place, ticking a shell tool is what moves the agent to the box: read the place with it ticked.
+                    const sandbox = sandboxReason(t, f.place ?? placeOf(d?.place) ?? defaultPlaceOf(workflow, [...(f.tools ?? []), t.name], caps.places));
                     const why = serverDenies(t.name, permissionGates, agent?.tools) ? SERVER_DENY : t.call_only && !workflow ? "Workflow-only: a workflow's call node runs it, not an agent" : !runs ? notOn(f.harness ?? "pi", t.name, caps.tools) : sandbox ?? (!t.available && !pickedOver ? (choice?.reason ?? t.reason ?? `Needs ${(t.missing ?? []).join(", ")}`) : undefined);
                     // The state, as a one-line tag: "Workflow only" or "Sandbox-only" for those two, else the reason itself
                     // (cut to one line); the reason in full is its title, and in Details.
@@ -490,7 +492,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                       const row = (
                         <>
                           <input type="radio" name="harness" value={h.id} checked={f.harness === h.id} disabled={!h.available && f.harness !== h.id} onChange={() => pickHarness(h.id)} className="mt-1 accent-primary" />
-                          <span className="min-w-0"><span className="block break-words font-mono text-body font-semibold">{h.label}</span><span className="mt-0.5 block font-mono text-label text-muted-foreground">{h.available ? h.id : "Not available here"}</span></span>
+                          <span className="min-w-0"><span className="block break-words font-mono text-body font-semibold">{h.label}</span><span className="mt-0.5 block font-mono text-label text-muted-foreground">{h.available ? (isStarter(h.id) ? h.id.slice(h.id.indexOf(":") + 1) : h.id) : "Not available here"}</span></span>
                         </>
                       );
                       const edge = cn("min-w-0 border px-4 py-3", f.harness === h.id ? "border-foreground" : "border-border");

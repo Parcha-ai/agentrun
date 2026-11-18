@@ -13,6 +13,7 @@ import { isObject } from "./validate.js";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, learningView, LEARNING_LABEL, secretsShown, shortOf, type Shown } from "./learning.js";
 import { said } from "./learning-words.js";
 import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
+import { COMPUTER_UNAVAILABLE_CODE, lostEndMessage } from "./computer-lost.js";
 import { launchOf } from "./handed-values.js";
 import { learningStartOf, type RunLaunch, seedFailed } from "./run-launch.js";
 import {
@@ -51,7 +52,7 @@ import { freeCeilingMessage, overCapMessage, SPEND_CAP_REACHED } from "@parcha/a
 import { type BookedSpend, bookedSpend, cliModelWorked, costWordsOf, planSpend, type RunCost, runCostOf } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
-import { laidOf, notesReadOf, runLearningEnd, type RunLearning, shadowSpendOf, usedOnly, withNotes } from "./store-reads/learning.js";
+import { laidOf, notesReadOf, runLearningEnd, type RunLearning, usedOnly, withNotes } from "./store-reads/learning.js";
 import { isCliRecord, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
 import { type RunReadState, readRun } from "./store-reads/runs.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
@@ -91,6 +92,9 @@ export interface ViewDeps {
  *  review; a stopped run is a cancellation), as runs.ts's STATUS_OF mapped them. A running run reads its status from the
  *  journal, and so does an agentic run a person stopped, which reads running (runReadState). */
 const STATUS_OF: Record<Exclude<RunReadState, "running">, Status> = { completed: "completed", failed: "failed", escalated: "completed", stopped: "cancelled" };
+/** A settled run's v2 status from its row alone (STATUS_OF), the status its view reads (statusOf returns the outcome
+ *  first); undefined for a run still going, whose status only its journal says. */
+export const settledStatusOf = (state: RunReadState): Status | undefined => (state === "running" ? undefined : STATUS_OF[state]);
 /** A run that has reached a last state (its view is its ended shape). */
 const TERMINAL = new Set<Status>(["completed", "failed", "cancelled"]);
 
@@ -140,12 +144,15 @@ export const answerOf = (timeline: readonly TimelineEvent[]): string | null => {
 /** A failed run's error from its row (its own words are the summary; the store keeps no code or detail apart). A run
  *  its cap ended once its cost passed it (the kernel's overCapEnd) is code spend_cap_reached, its message the words after
  *  the code, as main served it; a provider's content-filter stop is `moderated`, in words a person can act on
- *  (content-filter.ts); every other failure is run_failed. */
+ *  (content-filter.ts); a run whose sandbox was lost more times than its claim starts new ones (computer-lost.ts lostEnd)
+ *  is computer_unavailable, its message the words after the code; every other failure is run_failed. */
 const errorOfRow = (summary: string | null): { code: string; message: string; retryable: false; details?: unknown } => {
   // A run that reached its limit of requests on free models (the kernel cap's freeCeilingEnd) ends as its cap ends one: code
   // spend_cap_reached, its message the words after the code.
   const over = overCapMessage(summary) ?? freeCeilingMessage(summary);
   if (over !== undefined) return { code: SPEND_CAP_REACHED, message: over, retryable: false };
+  const lost = lostEndMessage(summary);
+  if (lost !== undefined) return { code: COMPUTER_UNAVAILABLE_CODE, message: lost, retryable: false };
   if (summary !== null && contentFiltered(summary)) return { code: MODERATED, message: CONTENT_FILTER_WORDS, retryable: false };
   return { code: "run_failed", message: summary ?? "The run failed.", retryable: false };
 };
@@ -447,14 +454,6 @@ function underWay(started: NonNullable<RunLaunch["learning"]>, laid: ReturnType<
   return reflect ? { state: "reflecting", reason: null, detail: said.reflecting, at } : { state: "seeded", reason: null, detail: said.seeded(started.seedNotes ?? 0, laid.skills.length, laid.workflows.length), at };
 }
 
-/** A view's cost with its audit shadow run's (store-reads/learning.ts shadowSpendOf: unknown while it is queued or
- *  running, 0 when none was started) added to `usd` (unknown once either is). */
-function withShadowCost(cost: Record<string, unknown>, shadow: number | null): Record<string, unknown> {
-  if (shadow === 0) return cost;
-  const usd = typeof cost.usd === "number" && shadow !== null ? Math.round((cost.usd + shadow) * 1e6) / 1e6 : null;
-  return { ...cost, usd };
-}
-
 /** The cost a run's view shows (runs.ts cost): its rows' cost, else what the store kept, and its cap. */
 function costOfView(run: StoreRun): Record<string, unknown> {
   const imported = Boolean(run.row.importedFrom);
@@ -589,7 +588,8 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
     error,
     review,
     pending,
-    cost: withShadowCost(costOfView(run), (await shadowSpendOf(store, runId)).usd),
+    // Its own spend: an audit's shadow run of it is learning (GET /runs/{id}'s cost.learning_usd), never its cost.usd.
+    cost: costOfView(run),
     // The run an audit's shadow run audits (launch.audit, runner/audit.ts); null for any other run.
     audit_of: launch?.audit?.of ?? null,
     // Whether it ran unattended (its revision's approvals, as it started): never, an ask allowed at its gate; ask, the default.

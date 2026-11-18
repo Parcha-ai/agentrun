@@ -181,6 +181,8 @@ const REAL_CLOCK: TriggerClock = {
   },
 };
 const iso = (ms: number) => new Date(ms).toISOString();
+/** How many times a PATCH carrying a source is checked again when the trigger changed between its read and its write. */
+const SOURCE_EDIT_TRIES = 3;
 export const firingKey = (by: string, triggerId: string, what: string) => `fir_${createHash("sha256").update(`${by}\n${triggerId}\n${what}`).digest("hex").slice(0, 32)}`;
 /** The adapter of `kind`, among `adapters`. */
 const adapterIn = (adapters: readonly TriggerAdapter[], kind: string): TriggerAdapter | undefined => adapters.find((a) => a.id === kind);
@@ -424,8 +426,8 @@ export class Triggers {
 
   /** Every trigger of source `kind`, on or off, with its name and source: what a source's sender keeps of them is shared
    *  between some (composio-triggers.ts: one Composio instance per server, event and config). */
-  async ofKind(kind: string): Promise<{ id: string; name: string; enabled: boolean; source: Source }[]> {
-    return (await this.store.triggers.all()).map(asTrigger).filter((t) => t.source.kind === kind).map((t) => ({ id: t.id, name: t.name, enabled: t.enabled, source: t.source }));
+  async ofKind(kind: string): Promise<{ id: string; name: string; enabled: boolean; source: Source; updatedAt: number }[]> {
+    return (await this.store.triggers.all()).map(asTrigger).filter((t) => t.source.kind === kind).map((t) => ({ id: t.id, name: t.name, enabled: t.enabled, source: t.source, updatedAt: t.updatedAt }));
   }
 
   /** Every trigger of source `kind` that is on, turned off because the connection it needs is gone (`disabled: {reason:
@@ -525,6 +527,18 @@ export class Triggers {
    *  paused range is skipped, never caught up. Only the fields named change, applied to the trigger as it stands once
    *  the target's check is done: an edit made meanwhile keeps its own. */
   async update(id: string, body: Json) {
+    // A source is written only on the row it was checked against (its updatedAt): another write meanwhile (the
+    // after-start seal's, a poll's next time) checks it again on the row as it is then, so a source read before a seal
+    // never writes the clear value back over it.
+    for (let tries = 1; ; tries++) {
+      const done = await this.updateOnce(id, body, tries < SOURCE_EDIT_TRIES);
+      if (done) return done;
+    }
+  }
+
+  /** One try of `update`: undefined when its source write was refused because the trigger changed since it was read and
+   *  `retry` (try again); refused on the last try, precondition_failed. */
+  private async updateOnce(id: string, body: Json, retry: boolean) {
     const was = await this.need(id);
     const issues = unknownFields(body, WRITABLE);
     let source = body.source === undefined ? undefined : sourceOf(this.adapters, body.source, this.clock.now(), issues);
@@ -571,9 +585,13 @@ export class Triggers {
       ...(settings.catchup_window_s !== undefined ? { catchupWindowS: settings.catchup_window_s } : {}),
       ...(settings.max_active_runs !== undefined ? { maxActiveRuns: settings.max_active_runs } : {}), ...again, enabled, nextAt: next,
     };
-    const row = await this.store.triggers.update(id, patch, enabled ? this.scopesOf(scopeSource) : []).catch(async (error: unknown) => {
+    const row = await this.store.triggers.update(id, patch, enabled ? this.scopesOf(scopeSource) : [], source ? { ifUpdatedAt: trigger.updatedAt, ifSource: trigger.source } : undefined).catch(async (error: unknown) => {
       throw (await this.scopeTaken(error, scopeSource, trigger.id)) ?? (await this.archivedRefusal(error)) ?? nameTaken(error, patch.name ?? trigger.name);
     });
+    if (!row && source && (await this.store.triggers.get(id))) {
+      if (retry) return undefined;
+      throw new ApiError("precondition_failed", "the trigger kept changing while this edit was checked: read it again, then send the edit again");
+    }
     if (!row) throw new ApiError("not_found", `no trigger ${id}`);
     // Turned on again, a polled source forgets its cursor and last check, so its first poll watches from now, and is
     // answered once it has (as a create is); an edit of its source keeps the cursor (a poll whose cursor was read on
@@ -1162,7 +1180,7 @@ export class Triggers {
     return {
       ...(hook ? { hook_url: `${this.deps.publicUrl ?? ""}${hook}` } : {}),
       ...(adapter?.poll ? { last_check: check ? { at: check.at, ok: check.ok, message: check.message } : null } : {}),
-      id: trigger.id, name: trigger.name, enabled: trigger.enabled, source: trigger.source, target: trigger.target, catchup_window_s: trigger.catchupWindowS ?? CATCHUP_WINDOW_S,
+      id: trigger.id, name: trigger.name, enabled: trigger.enabled, source: adapter?.shown ? adapter.shown(trigger.source) : trigger.source, target: trigger.target, catchup_window_s: trigger.catchupWindowS ?? CATCHUP_WINDOW_S,
       max_active_runs: trigger.maxActiveRuns ?? null, failures_in_a_row: trigger.failuresInARow, disabled: trigger.disabled ?? null, next_at: trigger.nextAt === null ? null : iso(trigger.nextAt), last_run_id: trigger.lastRunId,
       created_at: iso(trigger.createdAt), updated_at: iso(trigger.updatedAt), last_firing: last ? firingView(last) : null,
     };

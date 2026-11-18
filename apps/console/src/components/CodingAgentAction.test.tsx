@@ -123,6 +123,18 @@ describe("CodingAgentAction", () => {
     expect(button("Copy prompt")).toBeTruthy();
   });
 
+  it("takes a Button's height, so it stands level with the button beside it", () => {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    const group = (size?: "sm" | "md" | "lg") => {
+      act(() => root!.render(createElement(CodingAgentAction, { label: "Use your agent", prompt, ...(size ? { size } : {}) })));
+      return host.querySelector<HTMLElement>('[role="group"]')!.className.split(" ").filter((c) => /^h-control-/.test(c));
+    };
+    expect(group()).toEqual(["h-control-sm"]);
+    expect(group("md")).toEqual(["h-control-md"]);
+    expect(group("lg")).toEqual(["h-control-lg"]);
+  });
+
   it("supports keyboard selection, escape, and outside dismissal", async () => {
     mount();
     const trigger = document.querySelector<HTMLButtonElement>('[aria-label="Choose coding agent for Import agents"]')!;
@@ -235,6 +247,30 @@ describe("CodingAgentAction", () => {
     await click(button("Import agents"));
     await click(button("Codex CLI"));
     expect(button("Query").title).toBe("Copy prompt for Codex CLI");
+  });
+
+  // Where the menu opens, with the control's box given (jsdom lays nothing out) in a 1024 px viewport: the menu is 240 wide.
+  const opensAt = async (left: number, right: number) => {
+    clipboard();
+    const host = mount();
+    const group = host.querySelector<HTMLElement>('[role="group"]')!;
+    const box = (l: number, r: number) => ({ left: l, right: r, top: 100, bottom: 132, width: r - l, height: 32, x: l, y: 100, toJSON: () => ({}) }) as DOMRect;
+    vi.spyOn(group, "getBoundingClientRect").mockReturnValue(box(left, right));
+    // The chevron alone, at the control's right edge: no longer what the menu is placed by.
+    vi.spyOn(group.querySelector<HTMLElement>('[aria-haspopup="menu"]')!, "getBoundingClientRect").mockReturnValue(box(right - 28, right));
+    await click(group.querySelector<HTMLElement>('[aria-haspopup="menu"]')!);
+    const menu = document.querySelector<HTMLElement>('[role="menu"]')!;
+    return { left: parseFloat(menu.style.left), top: parseFloat(menu.style.top), width: parseFloat(menu.style.width) };
+  };
+
+  it("opens the menu under the control, from the control's left edge", async () => {
+    expect(window.innerWidth).toBe(1024);
+    // A control narrower than its menu, near the page's left: the menu starts where the control does, not left of it.
+    expect(await opensAt(66, 196)).toEqual({ left: 66, top: 136, width: 240 });
+  });
+
+  it("opens from the control's right edge where the left one would leave the viewport", async () => {
+    expect(await opensAt(880, 1010)).toEqual({ left: 770, top: 136, width: 240 });
   });
 
   it("keeps compact card actions named and functional", async () => {

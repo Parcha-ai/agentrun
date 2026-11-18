@@ -145,7 +145,9 @@ token is 256 random bits in the fragment, so it reaches no server log, proxy or 
 nothing is accepted before it. The upgrade's `Origin` must be the viewer's own origin (behind a proxy, pass the upgrade through with `Origin` intact).
 There is one authenticated viewer per session (a second is refused `viewer_in_use`); the token, the stream and the viewer's socket end at the session's release.
 The page is served with `Referrer-Policy: no-referrer`, `default-src 'self'` and `frame-ancestors` set to `hostOrigin`. The viewer may send a page only to
-http(s) addresses. Frames are held one at a time and acknowledged after they were sent; none is written anywhere.
+http(s) addresses. Frames are held one at a time and acknowledged after they were sent; the live view writes none anywhere. A host may watch a
+session's frames itself, with or without a viewer (`liveView.watch(tag, { frame, ended })`, which AgentRun's run video records): the viewer and the
+watchers share the session's one screencast.
 
 Every browser tool is a model call on its session's gate (`drivingGates`, shared by default between the live view and the toolset, so you pass nothing). To use your own
 registry, pass the same one to both sides: `const gates = createDrivingGates({ idleMs: 5_000 }); createLiveView({ hostOrigin, gates }); createBrowserExtension({ ..., gates });`.

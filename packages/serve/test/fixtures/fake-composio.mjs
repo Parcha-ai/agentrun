@@ -8,7 +8,8 @@
 // config, say); as the real one, `auth_config_ids` narrows the list to those under it. `noTools`: its MCP endpoint serves no tool at all. `listStatus`: its MCP endpoint answers every request after the first handshake with that HTTP status (an outage, not an answer "no"). `fail`: `{ path, status, method? }`
 // makes the call whose path ends in `path` (or for which `path`, a function, holds) answer that status; a list of them
 // fails each. With `times`, only that many such calls fail (the rest are answered as usual); with `wait`, a promise, the
-// failure is answered only once it settles (a slow refusal, for two calls at once).
+// failure is answered only once it settles (a slow refusal, for two calls at once); with `body`, the failure answers that body
+// (a refusal quoting what it was sent).
 // Triggers (composio-triggers.ts): the project's one webhook subscription (`subscription`: one it already has, `{ webhook_url,
 // secret? }`; a second create answers 409, as the real one does), its secret in every answer and new at each rotation;
 // `madeSecret`: the secret a subscription it makes gets (a new one each, else).
@@ -130,7 +131,7 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
     if (failing) {
       failing.used = (failing.used ?? 0) + 1;
       if (failing.wait) await failing.wait;
-      return reply(failing.status, { error: { message: `Composio refused ${url.pathname}` } });
+      return reply(failing.status, failing.body ?? { error: { message: `Composio refused ${url.pathname}` } });
     }
     const slug = url.searchParams.get("toolkit_slug");
     if (req.method === "GET" && url.pathname === "/api/v3/tools") {
@@ -202,6 +203,11 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
       const size = pageSize ?? all.length;
       const page = all.slice(from, from + size);
       return reply(200, { items: page, next_cursor: from + size < all.length ? String(from + size) : null, total_pages: 1, current_page: 1, total_items: all.length });
+    }
+    const typeOne = /^\/api\/v3\/triggers_types\/([^/]+)$/.exec(url.pathname);
+    if (req.method === "GET" && typeOne) {
+      const type = Object.values(triggerTypes).flat().find((t) => t.slug === decodeURIComponent(typeOne[1]));
+      return type ? reply(200, type) : reply(404, { error: { message: `Trigger type ${typeOne[1]} not found` } });
     }
     const upsert = /^\/api\/v3\/trigger_instances\/([^/]+)\/upsert$/.exec(url.pathname);
     if (req.method === "POST" && upsert) {

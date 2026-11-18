@@ -10,16 +10,17 @@ import { MissionSkeleton } from "@/components/Skeleton";
 import type { Problem } from "@/lib/problem";
 import { RANGES, type StatsRange } from "@/lib/mission";
 import { elapsed } from "@/lib/runGraph";
-import { Brain, History, RadioTower } from "lucide-react";
+import { Brain, History, LayoutGrid } from "lucide-react";
 import { stoppedRun } from "@/lib/needs";
+import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
 
 /** The range and agent the page's analytics are asked for, and how to change them. */
 export type AnalyticsScope = { range: StatsRange; onRange: (range: StatsRange) => void; agent: string | null; onAgent?: (agent: string | null) => void; refreshing?: boolean };
 
 function MissionFrame({ actions, children }: { actions?: React.ReactNode; children: React.ReactNode }) {
   return <div className="flex h-full min-h-0 flex-col">
-    <header className="flex min-h-12 shrink-0 flex-wrap items-center justify-between gap-2 border-b px-5 py-2 md:px-6">
-      <h1 className="flex items-center gap-2.5 font-mono text-small font-semibold"><RadioTower className="size-4" aria-hidden />Mission Control</h1>
+    <header className={cn(pageToolbarClass, "flex-wrap justify-between gap-2 px-5 md:px-6")}>
+      <h1 className={pageTitleClass}><LayoutGrid className="size-4" aria-hidden />Mission Control</h1>
       {actions && <div className="ml-auto flex flex-wrap items-center justify-end gap-2">{actions}</div>}
     </header>
     <div className="min-h-0 flex-1 overflow-auto">{children}</div>
