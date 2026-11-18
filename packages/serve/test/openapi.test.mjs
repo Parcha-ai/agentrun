@@ -612,6 +612,9 @@ test("what a person sees and controls of an agent's learning is learning/1: each
   }
   assert.equal(doc.paths["/agents/{agent_id}/learning/notes"], undefined, "no notes route");
   assert.equal(doc.paths["/agents/{agent_id}/learning/files/{file}"].put, undefined, "a person writes corrections.md alone, on its own route");
+  const fileParam = doc.paths["/agents/{agent_id}/learning/files/{file}"].get.parameters.map((p) => p.$ref ? doc.components.parameters[p.$ref.split("/").pop()] : p).find((p) => p.name === "file");
+  assert.doesNotMatch(fileParam.description, /on a read, `corrections\.md`/, "the file route reads a draft's files only; it answers corrections.md with 400");
+  assert.match(fileParam.description, /learning\/corrections/, "the file route points corrections.md readers at its own route");
   for (const write of ["retire", "approve", "restore"].map((action) => doc.paths[`/agents/{agent_id}/learning/files/{file}/${action}`].post)) {
     assert.ok(["200", "400", "412", "428"].every((status) => write.responses[status]), write.operationId);
     assert.ok(write.responses["200"].headers.ETag, `${write.operationId} answers the README's ETag`);
