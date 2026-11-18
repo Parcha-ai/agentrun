@@ -50,17 +50,20 @@ export function runCostOf(rowUsd: number | null, looked: CostLooked | null, besi
   return { cost_usd: job === null ? null : noiseOff(job), learning_usd: spent === null ? null : noiseOff(spent), total_usd: job === null || spent === null ? null : noiseOff(job + spent) };
 }
 
-/** One run of the series, in the order the agent's runs started: `n` its number among them (1 the first). */
+/** One run of the series, in the order the agent's runs started: `n` its number among the runs that do a job (JOB_PATHS,
+ *  1 the first: the bill's numbering), null for a replay, which checks a revision and does no job. */
 export type CostRun = {
-  n: number;
+  n: number | null;
   run_id: string;
   started_at: string;
   path: RunPath;
   /** The learned workflow its job called last, by name; null when it called none. */
   workflow: string | null;
-  /** The commit of the agent's learning folder the run started from (its learning start's seed): the learned revision
-   *  that served it. Null for a run that does not learn. */
-  learned_revision: string | null;
+  /** The revision of that workflow that ran it (its record's metrics.workflow_digest: the first 16 hex characters of its
+   *  workflow.json's sha256); null when no learned workflow ran. One value while one revision serves. */
+  digest: string | null;
+  /** An audit's shadow run was started for it (runner/audit.ts): its cost is in `learning_usd`. */
+  audited: boolean;
   cost_usd: number | null;
   /** Its stored cost is only a bound (the run row's `costAtMostUsd`: a request cut at its cap hold): `cost_usd` and `total_usd` are null, the bound is never shown as a cost. */
   cost_upper_bound: boolean;
@@ -93,7 +96,8 @@ export const SERVED_PATHS: readonly RunPath[] = ["workflow", "handed_back"];
 export const AFTER_STATES = ["priced", "no_served_runs", "cost_unknown"] as const;
 export type AfterState = (typeof AFTER_STATES)[number];
 
-/** What the series shows: `takeover`, its first `workflow` run, null before one; `before`, the mean of the job's own $
+/** What the series shows: `takeover`, the first run a learned workflow served (SERVED_PATHS: it answered alone or handed
+ *  back; the bill's `promoted`), null before one; `before`, the mean of the job's own $
  *  (learning left out) over its `agent` runs before the takeover (every one when there is none yet), whose cost is known
  *  exactly; `after`, the mean all-in $ (learning included) of the runs a learned workflow served from the takeover on
  *  (SERVED_PATHS: never a replay, which checks a revision and serves no one, nor a run by hand) whose total is known
@@ -116,7 +120,7 @@ export type CostSummary = {
 };
 
 export function costSummary(runs: readonly CostRun[], replay: CostReplay | null = null): CostSummary {
-  const first = runs.findIndex((run) => run.path === "workflow");
+  const first = runs.findIndex((run) => SERVED_PATHS.includes(run.path));
   // Each side's figures: the job's own $ before, all-in after; `bound`, known only as at most.
   type Figure = { value: number | null; bound: boolean };
   const beforeSide: Figure[] = (first < 0 ? runs : runs.slice(0, first)).filter((run) => run.path === "agent").map((run) => ({ value: run.cost_usd, bound: run.cost_upper_bound }));
@@ -137,7 +141,7 @@ export function costSummary(runs: readonly CostRun[], replay: CostReplay | null 
   const times = !withheld && before && after && after.runs >= CHEAPER_AFTER_RUNS && after.mean_usd > 0 ? Math.round((before.mean_usd / after.mean_usd) * 10) / 10 : null;
   const handBacks = first < 0 ? null : { ran: served.length, back: served.filter((run) => run.path === "handed_back").length };
   const afterState: AfterState = after ? "priced" : first < 0 ? "no_served_runs" : "cost_unknown";
-  return { takeover: first < 0 ? null : { n: runs[first]!.n, run_id: runs[first]!.run_id }, before, after, after_state: afterState, times_cheaper: times, hand_backs: handBacks, withheld, replay };
+  return { takeover: first < 0 ? null : { n: runs[first]!.n!, run_id: runs[first]!.run_id }, before, after, after_state: afterState, times_cheaper: times, hand_backs: handBacks, withheld, replay };
 }
 
 /** The paths of the runs that do a job: the bill's run index counts these. A replay checks a revision and an audit's
@@ -152,7 +156,7 @@ export type BillPoint = { n: number; run_id: string; actual_usd: number; agent_u
 /** A revision's learning spend and what its served runs carry of it (amortize): `compile_usd` the compile turns that
  *  drafted it (a recompile's turn is its recompiled revision's), `check_usd` its check's replay runs, `spend_usd` the
  *  two (each null when a part's cost is unknown), `k` the served runs it is spread over (its check's compile_after),
- *  `served` how many of those have run, `attributed_usd` what they carry, `unattributed_usd` the rest, and `state`:
+ *  `served` every run it served (its first `k` carry its spend), `attributed_usd` what they carry, `unattributed_usd` the rest, and `state`:
  *  `checking` (its check is at work), `serving` (it is the champion) or `stopped` (held or replaced: nothing more will
  *  carry it). */
 export type RevisionSpend = { workflow: string; digest: string; compile_usd: number | null; check_usd: number | null; spend_usd: number | null; k: number; state: "checking" | "serving" | "stopped" };
@@ -170,8 +174,10 @@ export type BillHold = { n: number | null; at: string; workflow: string; by: "au
  *  the first run from `promoted` on after which `actual_usd` never again exceeds `agent_usd`, the booked total past the
  *  last point included (null: not yet, or nothing served), and `gap_usd` the booked total less the line at the last point
  *  while there is none; `withheld` the runs (a replay among them) whose cost is unknown or only a bound, on neither line;
- *  `booked_usd` every priced run's $, spend booked after the last point included. With the v2 split (amortize):
- *  `revisions`, `unattributed_usd` (the booked total less every run's all-in: what no run carries) and `holds`. */
+ *  `booked_usd` every priced run's $, spend booked after the last point included, and `learning_usd` what of it learning
+ *  booked: every priced job's learning (its compile turn and its audit's shadow run) and every priced replay. With the
+ *  v2 split (amortize): `revisions`, `unattributed_usd` (the booked total less every run's all-in: what no run carries)
+ *  and `holds`. */
 export type Bill = {
   baseline: { runs: number; mean_usd: number } | null;
   promoted: { n: number; run_id: string; at: string } | null;
@@ -180,6 +186,7 @@ export type Bill = {
   gap_usd: number | null;
   withheld: number;
   booked_usd: number;
+  learning_usd: number;
   revisions: RevisionShare[];
   unattributed_usd: number | null;
   holds: BillHold[];
@@ -235,6 +242,8 @@ export function billOf(runs: readonly CostRun[], promotedAt: string | null): Omi
   });
   // Replays with no job at all to join (every job run archived, say) are booked all the same.
   actual = noiseOff(early.reduce((sum, one) => sum + one, actual));
+  // Of it, learning's: the booked total less the priced jobs' own $ (each priced job's total is its own $ and its learning).
+  const learning = noiseOff(jobs.reduce((rest, run) => (priced(run) ? noiseOff(rest - run.cost_usd!) : rest), actual));
   const first = promotedAt === null ? -1 : jobs.findIndex((run) => run.started_at >= promotedAt);
   const promoted = first < 0 ? null : { n: first + 1, run_id: jobs[first]!.run_id, at: promotedAt! };
   // The booked total against the line at the last point: spend after it (carried to no point) is in.
@@ -249,7 +258,7 @@ export function billOf(runs: readonly CostRun[], promotedAt: string | null): Omi
     }
   }
   const gap = !breakEven && line !== null && points.length ? tail : null;
-  return { baseline, promoted, points, break_even: breakEven, gap_usd: gap, withheld, booked_usd: actual };
+  return { baseline, promoted, points, break_even: breakEven, gap_usd: gap, withheld, booked_usd: actual, learning_usd: learning };
 }
 
 /** Each revision's spend split over its first `k` served runs (`served`: the runs a learned workflow served, oldest
@@ -262,11 +271,12 @@ export function amortize(revisions: readonly RevisionSpend[], served: readonly {
   const shares = new Map<string, number | null>();
   let rest: number | null = 0;
   const out = revisions.map((revision): RevisionShare => {
-    const runs = served.filter((one) => one.workflow === revision.workflow && one.digest === revision.digest).slice(0, revision.k);
+    const all = served.filter((one) => one.workflow === revision.workflow && one.digest === revision.digest);
+    const runs = all.slice(0, revision.k);
     if (revision.spend_usd === null) {
       for (const run of runs) shares.set(run.run_id, null);
       rest = null;
-      return { ...revision, served: runs.length, attributed_usd: null, unattributed_usd: null };
+      return { ...revision, served: all.length, attributed_usd: null, unattributed_usd: null };
     }
     // Its whole micro-dollars (read off its pico-dollars, so float noise never drops one), split in integers; the rest
     // under a micro-dollar is the k-th run's.
@@ -282,7 +292,7 @@ export function amortize(revisions: readonly RevisionSpend[], served: readonly {
     });
     const left = noiseOff(revision.spend_usd - carried);
     if (rest !== null) rest = noiseOff(rest + left);
-    return { ...revision, served: runs.length, attributed_usd: carried, unattributed_usd: left };
+    return { ...revision, served: all.length, attributed_usd: carried, unattributed_usd: left };
   });
   return { shares, revisions: out, unattributed_usd: rest };
 }
@@ -290,7 +300,7 @@ export function amortize(revisions: readonly RevisionSpend[], served: readonly {
 /** The series as CSV (RFC 4180, a header line, `\r\n` line ends): one row a run, an unknown figure empty. A text cell that
  *  a spreadsheet would read as a formula (one starting with =, +, -, @, a tab or a carriage return) starts with a `'`, so
  *  it opens as the text it is. */
-export const COST_CSV_COLUMNS = ["n", "run_id", "started_at", "path", "workflow", "learned_revision", "cost_usd", "cost_upper_bound", "learning_usd", "total_usd"] as const;
+export const COST_CSV_COLUMNS = ["n", "run_id", "started_at", "path", "workflow", "digest", "audited", "cost_usd", "cost_upper_bound", "learning_usd", "total_usd"] as const;
 export function costCsv(runs: readonly CostRun[]): string {
   const cell = (value: unknown) => {
     const raw = value === null || value === undefined ? "" : String(value);

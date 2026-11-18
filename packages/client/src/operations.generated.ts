@@ -1927,12 +1927,13 @@ export interface GetLearningCostParams {
 export type GetLearningCostResponse = {
   agent: string;
   runs: Array<{
-    n: number;
+    n: number | null;
     run_id: string;
     started_at: string;
     path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
     workflow: string | null;
-    learned_revision: string | null;
+    digest: string | null;
+    audited: boolean;
     cost_usd: number | null;
     cost_upper_bound: boolean;
     learning_usd: number | null;
@@ -1998,6 +1999,7 @@ export type GetLearningCostResponse = {
       run_id: string;
       at: string;
     } | null;
+    learning_usd: number;
     points: Array<{
       n: number;
       run_id: string;

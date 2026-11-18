@@ -2266,12 +2266,13 @@ export interface operations {
     answer: {
       agent: string;
       runs: {
-        n: number;
+        n: number | null;
         run_id: string;
         started_at: string;
         path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
         workflow: string | null;
-        learned_revision: string | null;
+        digest: string | null;
+        audited: boolean;
         cost_usd: number | null;
         cost_upper_bound: boolean;
         learning_usd: number | null;
@@ -2337,6 +2338,7 @@ export interface operations {
           run_id: string;
           at: string;
         } | null;
+        learning_usd: number;
         points: {
           n: number;
           run_id: string;

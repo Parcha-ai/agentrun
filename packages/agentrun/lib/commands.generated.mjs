@@ -1139,7 +1139,7 @@ export const COMMANDS = [
           "csv"
         ],
         "required": false,
-        "description": "`csv`: the runs as CSV, columns n, run_id, started_at, path, workflow, learned_revision, cost_usd, cost_upper_bound, learning_usd, total_usd."
+        "description": "`csv`: the runs as CSV, columns n, run_id, started_at, path, workflow, digest, audited, cost_usd, cost_upper_bound, learning_usd, total_usd."
       }
     ],
     "headers": [],

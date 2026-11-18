@@ -12,14 +12,14 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { storeOn } from "./store-helpers.mjs";
 
-const { billOf, amortize } = await import("../dist/learning-cost.js");
+const { billOf, amortize, costSummary } = await import("../dist/learning-cost.js");
 const { agentCostOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
 
 const A = "a".repeat(16);
 const B = "b".repeat(16);
 /** One run of the cost series (learning-cost.ts CostRun): `minute` its start, its own $ and what learning added. */
 const row = (n, path, minute, cost, learning = 0) => ({
-  n, run_id: `run-${String(n).padStart(2, "0")}`, started_at: new Date(Date.UTC(2026, 10, 17, 6, minute)).toISOString(), path, workflow: path === "agent" ? null : "answer", learned_revision: null,
+  n, run_id: `run-${String(n).padStart(2, "0")}`, started_at: new Date(Date.UTC(2026, 10, 17, 6, minute)).toISOString(), path, workflow: path === "agent" ? null : "answer", digest: path === "agent" ? null : A, audited: learning > 0,
   cost_usd: cost, cost_upper_bound: false, learning_usd: learning, total_usd: cost === null || learning === null ? null : Math.round((cost + learning) * 1e6) / 1e6,
 });
 const at = (minute) => new Date(Date.UTC(2026, 10, 17, 6, minute)).toISOString();
@@ -83,7 +83,7 @@ test("amortize: a revision's spend over its first K served runs to the micro-dol
   const served = [["run-06", A], ["run-07", A], ["run-08", A], ["run-09", A], ["run-10", B], ["run-11", "c".repeat(16)], ["run-12", "c".repeat(16)], ["run-13", "c".repeat(16)]].map(([run_id, digest]) => ({ run_id, workflow: digest === "c".repeat(16) ? "other" : "answer", digest }));
   const out = amortize(revisions, served);
   assert.deepEqual([...out.shares], [["run-06", 0.2], ["run-07", 0.2], ["run-08", 0.2], ["run-10", 0.125], ["run-11", 0.033334], ["run-12", 0.033333], ["run-13", 0.033333]], "paid after K: run-09 carries none");
-  assert.deepEqual(out.revisions.map((one) => [one.digest, one.served, one.attributed_usd, one.unattributed_usd, one.state]), [[A, 3, 0.6, 0, "serving"], [B, 1, 0.125, 0.375, "stopped"], ["c".repeat(16), 3, 0.1, 0, "serving"]]);
+  assert.deepEqual(out.revisions.map((one) => [one.digest, one.served, one.attributed_usd, one.unattributed_usd, one.state]), [[A, 4, 0.6, 0, "serving"], [B, 1, 0.125, 0.375, "stopped"], ["c".repeat(16), 3, 0.1, 0, "serving"]], "A served four runs; the first three carry it");
   assert.equal(out.unattributed_usd, 0.375);
   // A spend no one knows: its runs' shares are unknown, never $0, and so is the remainder.
   const unknown = amortize([{ workflow: "answer", digest: A, spend_usd: null, k: 2, state: "serving" }], served.slice(0, 1));
@@ -147,7 +147,7 @@ test("over the store: the series' bill, each run's all-in over v2 (a shadow's co
   assert.deepEqual(cost.bill.break_even, { n: 6, run_id: "run-08" });
   assert.equal(cost.bill.booked_usd, 6.35);
   assert.equal(cost.bill.unattributed_usd, 0.5, "B stopped with none of its check passed on");
-  assert.deepEqual(cost.bill.revisions.map((one) => [one.digest, one.spend_usd, one.k, one.served, one.attributed_usd, one.unattributed_usd, one.state]), [[A, 0.6, 3, 3, 0.6, 0, "serving"], [B, 0.5, 3, 0, 0, 0.5, "stopped"]]);
+  assert.deepEqual(cost.bill.revisions.map((one) => [one.digest, one.spend_usd, one.k, one.served, one.attributed_usd, one.unattributed_usd, one.state]), [[A, 0.6, 3, 6, 0.6, 0, "serving"], [B, 0.5, 3, 0, 0, 0.5, "stopped"]]);
 
   const all = {};
   for (const run of await store.runs.list({ agentId: "agent-1" })) all[run.id] = await runAllInOverStore(store, run.id);
@@ -260,7 +260,7 @@ test("A8 (1): the run whose session compiled revision C reports cost.usd its job
 test("A8 (2): C's next K = compile_after served runs each carry (compile + check)/K; the run past the K-th carries none", async (t) => {
   const store = await splitStore(t);
   const cost = await agentCostOverStore(store, "agent-1");
-  assert.deepEqual(cost.bill.revisions.map((one) => [one.digest, one.compile_usd, one.check_usd, one.spend_usd, one.k, one.served, one.attributed_usd, one.unattributed_usd, one.state]), [[C, 0.3, 0.6, 0.9, 3, 3, 0.9, 0, "serving"]]);
+  assert.deepEqual(cost.bill.revisions.map((one) => [one.digest, one.compile_usd, one.check_usd, one.spend_usd, one.k, one.served, one.attributed_usd, one.unattributed_usd, one.state]), [[C, 0.3, 0.6, 0.9, 3, 4, 0.9, 0, "serving"]]);
   const all = await v2Of(store, cost.bill);
   const pick = (id) => [all[id].path, all[id].usd, all[id].learning_usd, all[id].all_in_usd];
   for (const id of ["run-04", "run-05", "run-06"]) assert.deepEqual(pick(id), ["workflow", 0.1, 0.3, 0.4], `${id}: a third of $0.30 compile + $0.60 check`);
@@ -358,7 +358,7 @@ test("A8 (4): two workflows whose workflow.json is the same text (one digest): e
   await store.settings.put("learning.promotions.agent-1", { v: 1, items: [promote("answer"), promote("lookup")] });
 
   const cost = await agentCostOverStore(store, "agent-1");
-  assert.deepEqual(cost.bill.revisions.map((one) => [one.workflow, one.digest, one.compile_usd, one.check_usd, one.spend_usd, one.served, one.attributed_usd, one.unattributed_usd]), [["answer", D, 0.3, 0.3, 0.6, 3, 0.6, 0], ["lookup", D, 0.6, 0.9, 1.5, 3, 1.5, 0]]);
+  assert.deepEqual(cost.bill.revisions.map((one) => [one.workflow, one.digest, one.compile_usd, one.check_usd, one.spend_usd, one.served, one.attributed_usd, one.unattributed_usd]), [["answer", D, 0.3, 0.3, 0.6, 4, 0.6, 0], ["lookup", D, 0.6, 0.9, 1.5, 4, 1.5, 0]]);
   assert.equal(cost.bill.unattributed_usd, 0);
   const all = await v2Of(store, cost.bill);
   const pick = (id) => [all[id].path, all[id].usd, all[id].learning_usd, all[id].all_in_usd];
@@ -366,4 +366,32 @@ test("A8 (4): two workflows whose workflow.json is the same text (one digest): e
   for (const id of ["run-04", "run-06", "run-08"]) assert.deepEqual(pick(id), ["workflow", 0.1, 0.5, 0.6], `${id} (lookup): a third of $0.60 + $0.90`);
   for (const id of ["run-09", "run-10"]) assert.deepEqual(pick(id), ["workflow", 0.1, 0, 0.1], `${id}: past its revision's K-th`);
   assert.deepEqual([pick("run-01"), pick("run-02")], [["agent", 1, 0, 1], ["agent", 1, 0, 1]], "each compile turn its own workflow's revision's, never its run's");
+});
+
+// The Learning tab tells one story (tab polish): one run numbering, the bill's; a revision's served count is every run it
+// served; each run names the workflow revision that ran it and whether it was audited; the bill says what learning booked.
+
+test("one numbering: the series numbers the runs that do a job as the bill does (a replay none), and the takeover is the bill's first served run", async (t) => {
+  const store = await ledgerStore(t);
+  const cost = await agentCostOverStore(store, "agent-1");
+  assert.deepEqual(cost.runs.map((run) => [run.run_id, run.n]), [
+    ["run-01", 1], ["run-02", 2], ["run-03", 3], ["replay-1", null], ["replay-2", null], ["run-06", 4], ["run-07", 5], ["run-08", 6], ["run-09", 7], ["replay-3", null], ["run-11", 8], ["run-12", 9],
+  ], "a replay checks a revision: drawn, never numbered as a job");
+  assert.deepEqual(cost.summary.takeover, { n: cost.bill.promoted.n, run_id: cost.bill.promoted.run_id }, "one takeover: the bill's first served run");
+  assert.deepEqual(cost.bill.points.map((point) => point.n), cost.runs.filter((run) => run.n !== null).map((run) => run.n), "the bill's points and the series share their numbers");
+  // A first served run that handed back is the takeover too: the bill's baseline ends there, and so does the before side.
+  const handed = SERIES.map((one) => (one.run_id === "run-06" ? { ...one, path: "handed_back" } : one));
+  assert.deepEqual(costSummary(handed).takeover, { n: 6, run_id: "run-06" }, "the first run a learned workflow served, alone or handed back");
+});
+
+test("a revision's served count is every run it served (its first K carry its spend), each run names the revision that ran it and whether it was audited, and the bill says what learning booked", async (t) => {
+  const store = await ledgerStore(t);
+  const cost = await agentCostOverStore(store, "agent-1");
+  assert.deepEqual(cost.bill.revisions.map((one) => [one.digest, one.k, one.served, one.attributed_usd]), [[A, 3, 6, 0.6], [B, 3, 0, 0]], "A served six runs; its first three carry its check");
+  assert.deepEqual(cost.runs.map((run) => [run.run_id, run.digest, run.audited]), [
+    ["run-01", null, false], ["run-02", null, false], ["run-03", null, false], ["replay-1", A, false], ["replay-2", A, false],
+    ["run-06", A, true], ["run-07", A, false], ["run-08", A, false], ["run-09", A, true], ["replay-3", B, false], ["run-11", A, false], ["run-12", A, false],
+  ], "the workflow revision that ran each run, never the learning folder's commit");
+  assert.equal("learned_revision" in cost.runs[0], false, "one revision a run: the workflow's");
+  assert.equal(cost.bill.learning_usd, 1.9, "the three replays ($1.10) and the two shadows ($0.80): the booked total less the jobs' own $");
 });
