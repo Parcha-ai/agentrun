@@ -100,6 +100,10 @@ export interface components {
       version: string;
       sha: string | null;
     } | null;
+    run_blockers?: {
+      message: string;
+      fields: components["InputIssue"][];
+    } | null;
     warnings?: components["InputIssue"][];
   };
   AgentCreate: {
