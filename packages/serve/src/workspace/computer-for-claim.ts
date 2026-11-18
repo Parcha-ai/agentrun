@@ -52,7 +52,7 @@ import { type AttachedComputers, pairedProvider, withPaired } from "./attached-c
 import { computerHold, type HeldComputer, heldHands } from "./computer-hold.js";
 import { deleteKept, endKept, KEEP_MS, type Kept, type ParkCause, type ParkedEnd, readKept, takeKept, writeKept } from "./computer-kept.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
-import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer } from "./resolve-computer.js";
+import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer, type StartedComputer } from "./resolve-computer.js";
 import type { RunComputer, RunHold } from "./run-tools.js";
 import { pushFolder, storedFolder } from "./synced-folder.js";
 import type { Workspace } from "./workspace.js";
@@ -231,7 +231,8 @@ export interface ClaimComputer {
   /** The claim's release at the run's park, for `cause`: a computer it `keeps` is kept for KEEP_MS (computer-kept.ts),
    *  its live view closed with the park's cause and the keep's time (ParkedEnd) and its hold ended, but the machine left
    *  running and its mount credential left in place, and true is answered; any other is released as `release` does, and
-   *  false. Idempotent with `release`. */
+   *  false. A synced folder's delta lands first: one that does not keeps nothing, and the park throws as `release` does.
+   *  Idempotent with `release`. */
   park?(cause: ParkCause): Promise<boolean>;
 }
 
@@ -592,6 +593,18 @@ function lostAware(first: ProviderComputer, renewal: Renewal): ProviderComputer 
   };
 }
 
+/** A kept computer's synced folder (`synced`, StartedComputer's) read back whole through a connection of its own, before
+ *  its end deletes it. Throws in words where it can't be. */
+async function pullKept(provider: ComputerProvider, ref: ProviderComputer["ref"], synced: NonNullable<StartedComputer["synced"]>): Promise<void> {
+  const connected = await provider.connect(ref);
+  if (!connected.ok) throw new Error(connected.error.message);
+  try {
+    await synced.pull(connected.value.client);
+  } finally {
+    await connected.value.close();
+  }
+}
+
 /** The computer an earlier claim of the run kept at its park (`kept`), attached again through `provider` and connected,
  *  or undefined when its provider no longer has it or it does not connect (one that does not is deleted). */
 async function keptLaunch(provider: ComputerProvider, kept: Kept, signal: AbortSignal | undefined): Promise<ProviderComputer | undefined> {
@@ -899,6 +912,17 @@ export async function computerForClaim(
           return undefined;
         }
         const provider = await vendorProvider(entry, keys, configuration);
+        // One kept holding the run's folder another way than this claim holds it (its provider's keys changed since the
+        // park: an Archil mount where the run now takes a synced folder) is not taken back: it goes now, its mount's token
+        // with it, so nothing holds the folder but the new one.
+        if (record.folder !== folder) {
+          await deleteKept(provider, record).catch(() => undefined);
+          if (record.folder === "archil") {
+            deps.inheritMount?.();
+            await deps.revokeMount?.().catch(() => undefined);
+          }
+          return undefined;
+        }
         const taken = await keptLaunch(provider, record, signal);
         if (!taken) return undefined;
         deps.inheritMount?.();
@@ -1073,9 +1097,16 @@ export async function computerForClaim(
         return false;
       }
       const ref = keeps.computer.ref;
+      // A synced folder's delta lands on the disk before the computer is kept; one that does not land lets it go as the
+      // run's end does, and the park throws the release's words (writes since the last sync may be lost).
+      const synced = started.synced;
+      if (synced && !(await synced.sync()).ok) {
+        await release();
+        return false;
+      }
       let row: Kept;
       try {
-        row = await writeKept(settings, launch.runId, { provider: keeps.entry, kind: keeps.kind, id: ref.id, name: ref.name, epoch: keeps.epoch, until: now() + KEEP_MS });
+        row = await writeKept(settings, launch.runId, { provider: keeps.entry, kind: keeps.kind, id: ref.id, name: ref.name, epoch: keeps.epoch, until: now() + KEEP_MS, ...(resolved.folder ? { folder: resolved.folder } : {}) });
       } catch {
         // No row, nothing to find it by: it goes as at the run's end.
         await release();
@@ -1091,9 +1122,11 @@ export async function computerForClaim(
         await keeps.computer.close();
       })();
       await released;
-      // Its end at its time, by this process; the janitor's (computer-kept.ts sweepKept) whatever becomes of it.
+      // Its end at its time, by this process; the janitor's (computer-kept.ts sweepKept) whatever becomes of it. A synced
+      // folder is read back whole first, through a connection of its own: what its programs wrote since the park.
       const timer = setTimeout(() => {
         void endKept(settings, launch.runId, row, async () => {
+          if (synced) await pullKept(keeps.provider, ref, synced).catch(() => undefined);
           await deleteKept(keeps.provider, ref);
           await revoke().catch(() => undefined);
         }).catch(() => undefined);

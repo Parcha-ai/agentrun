@@ -318,7 +318,7 @@ test("registryHere: Daytona mounts Archil only where DAYTONA_ARCHIL_EGRESS has a
   // A Mode 2 Daytona sandbox has its computer's shell either way: with the egress and its image named, its folder an
   // Archil mount; without, a synced folder.
   const { resolveComputer: resolveHere } = await import("../dist/workspace/index.js");
-  const side = { keysOf: async () => ({ DAYTONA_API_KEY: "fake-test-key-daytona" }), launch: async () => assert.fail("nothing starts") };
+  const side = { keysOf: async () => ({ DAYTONA_API_KEY: "fake-test-key" }), launch: async () => assert.fail("nothing starts") };
   for (const [registry, folder] of [[relayed, "archil"], [hosted, "sync"]]) {
     assert.equal(shellOf({ kind: "sandbox", provider: "daytona" }, 2, registry), "computer");
     assert.equal((await resolveHere({ kind: "sandbox", provider: "daytona" }, 2, registry, side)).folder, folder);

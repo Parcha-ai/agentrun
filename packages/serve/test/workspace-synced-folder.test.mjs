@@ -27,7 +27,7 @@ const EPOCH = 7;
 /** The check the claim builds, with its epoch: start() marks it a synced folder's. */
 const CHECK = { readBackOf, epoch: EPOCH };
 const DAYTONA = { kind: "sandbox", provider: "daytona" };
-const KEYS = { DAYTONA_API_KEY: "fake-test-key-daytona" };
+const KEYS = { DAYTONA_API_KEY: "fake-test-key" };
 const DAYTONA_SANDBOX = KINDS.PROVIDERS.find((one) => one.id === "daytona").capabilities.find((one) => one.kind === "linux");
 
 const dirs = [];

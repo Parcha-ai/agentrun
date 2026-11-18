@@ -15,14 +15,18 @@
 // deleted first.
 //
 // A sandbox's run folder is the run's either way (bound from this machine, or on Archil, as before); what the keep adds is
-// the rest of the machine (its other files, its processes). An agent's own computer and a paired one outlive every claim
+// the rest of the machine (its other files, its processes). A synced folder's delta lands on the disk at the park; what
+// its programs write after it is read back whole by the claim that takes it back, or by the parking runner's own timer
+// before it deletes the computer. One the janitor ends (the parking process gone, or the run ended) loses those writes,
+// as a runner lost loses an unanswered call's. A claim takes one back only to hold the run's folder the same way (its
+// row's `folder`); else it is ended then, and a new one made. An agent's own computer and a paired one outlive every claim
 // already, and are never kept here; a runner lost, a crash or a server's stop still gives a new one.
 //
 // While the run is parked, its owner's live view says what it waits for and that the computer is kept, until when, then
 // that it wasn't kept once its time passed (parkedWords, lapsedWords): the viewer's page, as the claim's park closes it
 // (computer-live.ts), and the console's Screen tab, until when from the park's row on the run's timeline
 // (computerKeptWords) and its lapse from GET /v2/runs/{id}/computer (computer-view.ts lapsedOf).
-import type { ComputerProvider } from "@parcha/agentrun-computer";
+import type { ComputerProvider, MountKind } from "@parcha/agentrun-computer";
 import { FINAL_STATES, type Settings, type Store } from "../store/index.js";
 
 /** How long a park keeps the run's computer for its resume: 10 minutes. */
@@ -70,6 +74,9 @@ export type Kept = {
   readonly name: string;
   readonly epoch: number;
   readonly until: number;
+  /** The kind of the run's folder it holds (a bind, an Archil mount or a synced folder); none: it holds none. A claim
+   *  takes it back only to hold the folder the same way (computer-for-claim.ts reattach). */
+  readonly folder?: MountKind;
   readonly ending?: true;
   readonly ended?: true;
 };
@@ -84,16 +91,19 @@ export type KeptSettings = Pick<Settings, "get" | "put" | "replaceIf" | "removeI
 /** A row's value as a Kept, or undefined for anything else. */
 export function keptOf(value: unknown): Kept | undefined {
   if (!value || typeof value !== "object") return undefined;
-  const { provider, kind, id, name, epoch, until, ending, ended } = value as Record<string, unknown>;
+  const { provider, kind, id, name, epoch, until, folder, ending, ended } = value as Record<string, unknown>;
   if (typeof provider !== "string" || (kind !== "desktop" && kind !== "phone" && kind !== "sandbox") || typeof id !== "string" || typeof name !== "string") return undefined;
   if (typeof epoch !== "number" || !Number.isSafeInteger(epoch) || typeof until !== "number" || !Number.isFinite(until)) return undefined;
-  if (ended === true) return { provider, kind, id, name, epoch, until, ended: true };
-  return { provider, kind, id, name, epoch, until, ...(ending === true ? { ending: true as const } : {}) };
+  if (folder !== undefined && folder !== "bind" && folder !== "archil" && folder !== "sync") return undefined;
+  const held = folder === undefined ? {} : { folder: folder as MountKind };
+  if (ended === true) return { provider, kind, id, name, epoch, until, ...held, ended: true };
+  return { provider, kind, id, name, epoch, until, ...held, ...(ending === true ? { ending: true as const } : {}) };
 }
 
 /** The row as written: its fields in one order, so a compare-and-set reads the same text. */
 const rowOf = (kept: Kept, state?: "ending" | "ended"): Kept => ({
   provider: kept.provider, kind: kept.kind, id: kept.id, name: kept.name, epoch: kept.epoch, until: kept.until,
+  ...(kept.folder === undefined ? {} : { folder: kept.folder }),
   ...(state === "ending" ? { ending: true as const } : state === "ended" ? { ended: true as const } : {}),
 });
 
