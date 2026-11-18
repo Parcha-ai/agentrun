@@ -34,11 +34,11 @@ describe("a served run on the runs list", () => {
   it("reads Learned workflow in the Kind cell, with the workflow series mark; every other run reads its kind", () => {
     const [served, handed, agent] = kinds([SERVED, HANDED, AGENT]);
     expect(served.textContent).toBe("Learned workflow");
-    expect(served.querySelector('[data-run-kind="learned"] .bg-chart-workflow'), "the series mark beside the words").not.toBeNull();
+    expect(served.querySelector('[data-run-kind="learned"] .fill-chart-workflow'), "the series mark beside the words").not.toBeNull();
     expect(served.querySelector(".text-chart-workflow"), "the series token is a mark's colour, never the words' ink").toBeNull();
     expect(handed.textContent).toBe("agentic");
     expect(agent.textContent).toBe("agentic");
-    expect(handed.querySelector(".bg-chart-workflow")).toBeNull();
+    expect(handed.querySelector(".fill-chart-workflow")).toBeNull();
   });
   it("a workflow run reads workflow", () => {
     const [flow] = kinds([{ ...base, kind: "workflow" }]);
@@ -49,7 +49,7 @@ describe("a served run on the runs list", () => {
 describe("a served run's page header", () => {
   it("reads Learned workflow and its name before the revision and where it ran", () => {
     expect(facts(SERVED)).toBe("Learned workflow mcc-guess · rev 2 · on the server");
-    expect(header(SERVED).querySelector('[data-run-kind="learned"] .bg-chart-workflow')).not.toBeNull();
+    expect(header(SERVED).querySelector('[data-run-kind="learned"] .fill-chart-workflow')).not.toBeNull();
   });
   it("a handed-back run reads agentic, handed back by its workflow; an agent run reads agentic", () => {
     expect(facts(HANDED)).toBe("agentic · handed back by mcc-guess · rev 2 · on the server");

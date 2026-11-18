@@ -11,7 +11,8 @@ export function RunKind({ run, named = false }: { run: Pick<Run, "kind" | "serve
     const name = named && served.workflow ? ` ${served.workflow}` : "";
     return (
       <span data-run-kind="learned" className="inline-flex items-center gap-1.5" title={served.workflow ? `Answered by the learned workflow ${served.workflow}` : "Answered by a learned workflow"}>
-        <span aria-hidden className="size-1.5 shrink-0 rounded-full bg-chart-workflow" />
+        {/* The Learning tab's legend mark for the series (CostPerRun.tsx). */}
+        <svg width="10" height="10" aria-hidden className="shrink-0"><circle cx="5" cy="5" r="4" className="fill-chart-workflow" /></svg>
         <span className="text-foreground">Learned workflow{name}</span>
       </span>
     );
