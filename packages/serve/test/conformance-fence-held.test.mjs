@@ -35,6 +35,21 @@ test("CI's starved order: a process that lost its first claim before the hook is
   assert.throws(() => fenceHeld(landed, CI_WENT_ON), /an epoch-2 commit landed 2 ms after its claim was lost/);
 });
 
+/** The acp case's CI run (merge queue, job 134611956420), cut to its end: the held loop's last write landed in the same
+ *  millisecond as the process said it stops and as the case went on (the case's clock read the same millisecond). That write
+ *  came before the stop, by the file's order, and is no write after the lease. Read by time alone, it was one. */
+const SAME_MS = 1794981758086;
+const CI_SAME_MS = [{"runner":"runner-process","at":1794981757588,"type":"claimed","claim":{"runId":"run-1","runner":"runner-process","epoch":1,"until":1794982357585,"from":"queued"}},{"runner":"runner-process","at":1794981758085,"type":"commit-landed","epoch":1},{"runner":"runner-process","at":SAME_MS,"type":"commit-landed","epoch":1},{"runner":"runner-process","at":SAME_MS,"type":"stopping","point":"beforeIntent"}];
+
+test("a write that landed before the stop, in the same millisecond the case went on, is not a write after the lease: the order says which side it is on", () => {
+  // Once it goes on, the old loop's write is refused: the fence is kept.
+  fenceHeld([...CI_SAME_MS, { at: SAME_MS + 4, type: "continued", point: "beforeIntent" }, { at: SAME_MS + 6, type: "commit-refused", epoch: 1, name: "Fenced" }], SAME_MS);
+  // A write after the stop that lands, in that same millisecond, still fails.
+  assert.throws(() => fenceHeld([...CI_SAME_MS, { at: SAME_MS, type: "commit-landed", epoch: 1 }], SAME_MS), /an epoch-1 commit landed 0 ms after it went on/);
+  // And with nothing after the stop, nothing was tried and no claim was said lost: that fails as before.
+  assert.throws(() => fenceHeld(CI_SAME_MS, SAME_MS), /^AssertionError.*: the old loop /);
+});
+
 test("a write of the old epoch that lands after the claim was lost fails, saying how long after", () => {
   assert.throws(() => fenceHeld([claimed, lost, { at: WENT_ON + 8, type: "commit-landed", epoch: 1 }], WENT_ON), /an epoch-1 commit landed 3 ms after its claim was lost/);
 });
