@@ -1,17 +1,17 @@
 // Who sees a signing secret this server mints: a webhook trigger's (POST /triggers, POST /triggers/{id}/secret) and the
-// outbound webhook's (the first PUT /settings/webhook, POST /settings/webhook/secret). Each is shown once, as `signing_secret`, and only to a caller that
-// may write secrets (secret-writes.ts, the owner's signed-in session): the console's Triggers and Settings → Webhook
-// screens. The API token, which a run's process, an agent's MCP client or a script may hold, gets what it made with the
-// secret's metadata (`secret`, the one SecretMeta shape) and the words that send the person to the console for it.
+// outbound webhook's (the first PUT /settings/webhook, POST /settings/webhook/secret). Each is shown once, as
+// `signing_secret`, and only to a caller that may write secrets (secret-writes.ts, the owner's signed-in session): the
+// console's Triggers and Settings → Webhook screens. The API token, which a run's process, an agent's MCP client or a
+// script may hold, gets what it made with the secret's metadata (`secret`, the one SecretMeta shape) and the words that
+// send the person to the console for it.
 // Rotating a trigger's secret, or the outbound webhook's, is a secret write: the token is refused it in the secret-write
 // words, at the one check in the server's dispatch.
 import { registerSecretWrite, type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
 
 // Replacing a trigger's secret or the outbound webhook's, and removing the outbound webhook (its secret goes with it), are
-// secret writes. A trigger's
-// create and the outbound webhook's first save mint one and write none the caller gave: the token may make them, and is
-// shown no value.
+// secret writes. A trigger's create and the outbound webhook's first save mint one and write none the caller gave: the
+// token may make them, and is shown no value.
 registerSecretWrite("rotateTriggerSecret", () => true);
 registerSecretWrite("rotateWebhookSecret", () => true);
 registerSecretWrite("deleteWebhook", () => true);
