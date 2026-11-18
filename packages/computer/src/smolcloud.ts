@@ -6,6 +6,7 @@
 // most, listed with ?label=k=v, changed with PATCH .../labels); the idle stop is off (autoStopSeconds 0) and the delete
 // timer (ttlSeconds) is set to the request's backstop. The rest of the computer is the shared machine-host adapter's.
 import { randomBytes } from "node:crypto";
+import { boxImageRef } from "./box-image.js";
 import { SMOLCLOUD } from "./descriptors/smolcloud.js";
 import { DEADLINE_LABEL, DEFAULT_CPUS, DEFAULT_MEMORY_MB, show } from "./drift.js";
 import { type HostCall, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
@@ -16,6 +17,7 @@ import { HostedProvider, type HostedOptions } from "./hosted/provider.js";
 import { jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { shellLine } from "./hosted/scripts.js";
 import type { ComputerSpec, Refusal } from "./provider.js";
+import { ok, type Result } from "./result.js";
 
 /** The smol cloud provider's options: the key, then the shared adapter's (HostedOptions). */
 export interface SmolcloudProviderOptions extends Omit<HostedOptions, "kind" | "desktop"> {
@@ -277,6 +279,14 @@ class SmolcloudHost implements MachineHost {
 }
 
 export class SmolcloudProvider extends HostedProvider {
+	/**
+	 * The provider contract's prepareImage (its descriptor declares it): the box image the release publishes, by its
+	 * public registry tag (box-image.ts). No call: smol cloud pulls it at each create.
+	 */
+	async prepareImage(): Promise<Result<string>> {
+		return ok(boxImageRef());
+	}
+
 	constructor(options: SmolcloudProviderOptions) {
 		const { apiKey, apiUrl = DEFAULT_API_URL, fetch, maxLifetimeMs = DAY_MS, ...rest } = options ?? ({} as SmolcloudProviderOptions);
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the smol cloud API key, is required: the provider reads no environment, so the caller passes it");

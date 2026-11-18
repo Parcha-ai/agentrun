@@ -444,6 +444,7 @@ in the kernel's tool registry, keyed by these groups.
   | daytona | sandbox: `DAYTONA_DEFAULT_SNAPSHOT` ("default") |
   | modal | none: `prepareImage()` answers the box image (`boxImageRef()`) |
   | e2b | none: `prepareImage()` answers the box template (`boxE2bTemplate()`), for a sandbox and a desktop alike |
+  | smolcloud | none: `prepareImage()` answers the box image (`boxImageRef()`) |
   | orgo | desktop: `ORGO_BASE_IMAGE` ("linux") |
   | phone-harness | phone: `PHONE_IMAGE` ("android") |
   | browserbase, kernel, local | browser: `BROWSER_IMAGE` ("chromium") |
@@ -2839,7 +2840,8 @@ const made = await smol.create({ image: "alpine:3.20", lifetimeMs: 600_000, netw
 ```
 
 A smol cloud computer is kind `linux`, a [smol cloud](https://smolmachines.com) machine: a microVM booted from any OCI
-image, with its own kernel. smol cloud runs on the shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)):
+image, with its own kernel. With no image named, it starts from the box image, the public registry tag
+`prepareImage()` answers (`boxImageRef()`), which smol cloud pulls at create. smol cloud runs on the shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)):
 `src/smolcloud.ts` is its `MachineHost`, over smol cloud's REST API (`https://api.smolmachines.com`,
 `Authorization: Bearer <key>`) with `fetch` and the shared REST client.
 
@@ -2863,7 +2865,10 @@ What smol cloud refuses or this host works around:
 - Labels: at most 32, keys of `[a-z0-9._/-]`, values up to 255 characters (`facts.labels.count` is 32).
 - Machines are placed on amd64 nodes (`source.arch`), so the daemon uploaded is `computerd-linux-amd64`; smol cloud
   has arm64 nodes too, unused here.
-- No Archil mount yet (`/dev/fuse` opens in the guest; the mount is untried) and no desktop.
+- No mount of the run's folder yet, and no desktop. smol cloud binds each machine's own storage disk at `/workspace`
+  (an ext4 mount of `/dev/vda`), and a synced folder needs nothing mounted there, so the descriptor says so in
+  `unmounted.sync` and serve's Mode 2 refuses a smol cloud sandbox in those words. An Archil mount is untried
+  (`/dev/fuse` opens in the guest).
 
 ### Conformance on smol cloud
 
@@ -2875,7 +2880,7 @@ node packages/computer/dist/conformance/sweep.js --provider smolcloud --before /
 
 The conformance module, `dist/conformance/smolcloud.js`, checks `AGENTRUN_COMPUTER_LIVE_SMOLCLOUD=1` first, then reads
 `COMPUTER_SMOLCLOUD_API_KEY` (`apiKey`, required), `COMPUTER_SMOLCLOUD_API_URL` (`apiUrl`) and
-`COMPUTER_SMOLCLOUD_IMAGE` (the run's image, default `alpine:3.20`), never `SMOLCLOUD_API_KEY`. Every computer of a run
+`COMPUTER_SMOLCLOUD_IMAGE` (the run's image, default the box image), never `SMOLCLOUD_API_KEY`. Every computer of a run
 lives at most 30 minutes. The live sweep is the shared one; its scope is the key's account.
 
 ### Live runs
@@ -2884,7 +2889,12 @@ On 2026-11-17, against smol cloud with an account key: the exec pre-check passed
 40 s, the stdin frames one after another; the daemon goes in through `upload` instead). The `--long` run at
 `--concurrency 4` passed Core 67/67 and Full 9/37 (the rest not declared) in 40 minutes; Full's `lifetime.idle` timed
 out while the test host lost DNS, and passed when run again on its own. An account without a card runs at most 4
-machines at once, and a create past that answers `422`, read as `limit`. The sweep after the last run read
+machines at once, and a create past that answers `422`, read as `limit`.
+
+On 2026-11-18, from the box image: the exec pre-check passed every check (8 MiB through `cat` in 33 s), and the
+`--long` run at `--concurrency 4` passed Core 67/67 and Full 10/41 (the rest not declared, `mount:sync` among them) in
+18 minutes. An earlier run that day, before the descriptor said `unmounted.sync`, had every `mount.sync` case refused
+at create: the read back found an ext4 mount of `/dev/vda` at `/workspace`. The sweep after the last run read
 `{"swept":0,"gone":0,"stillThere":[],"leftAlone":0}`.
 
 ## Conformance

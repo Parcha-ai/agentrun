@@ -196,7 +196,7 @@ test("the conformance module reads COMPUTER_SMOLCLOUD_* alone, after its live sw
 	await assert.rejects(createProvider({ env }), /set AGENTRUN_COMPUTER_LIVE_SMOLCLOUD=1/);
 	assert.equal((await createProvider({ env: { ...env, [ENV.live]: "1" } })).capabilities().maxLifetimeMs, 30 * 60_000);
 	assert.equal((await createHost({ env })).descriptor.id, "smolcloud");
-	assert.equal(await conformanceImage({ env: {} }), "alpine:3.20");
+	assert.match(await conformanceImage({ env: {} }), /^ghcr\.io\/parcha-ai\/agentrun-box:[0-9a-f]{12}$/);
 	assert.match(sweepScope({ env }), /sha256:[0-9a-f]{12}/);
 	assert.doesNotMatch(sweepScope({ env }), new RegExp(KEY));
 });

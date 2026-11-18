@@ -6,7 +6,7 @@
 // makes nothing. Every computer of a run has a deadline of at most 30 minutes, and smol cloud's delete timer is set
 // 5 minutes past it.
 import { createHash } from "node:crypto";
-import { SMOLCLOUD_DEFAULT_IMAGE } from "../descriptors/smolcloud.js";
+import { boxImageRef } from "../box-image.js";
 import type { MachineHost } from "../host.js";
 import { create, type SmolcloudProvider, type SmolcloudProviderOptions } from "../smolcloud.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
@@ -18,7 +18,7 @@ export const SMOLCLOUD_ENV = {
 	key: "COMPUTER_SMOLCLOUD_API_KEY",
 	/** apiUrl: the REST API; default https://api.smolmachines.com. */
 	apiUrl: "COMPUTER_SMOLCLOUD_API_URL",
-	/** The OCI image every computer of the run starts from; default alpine:3.20. */
+	/** The OCI image every computer of the run starts from; default the box image (boxImageRef). */
 	image: "COMPUTER_SMOLCLOUD_IMAGE",
 } as const;
 
@@ -38,7 +38,7 @@ export const CONFORMANCE_MAX_LIFETIME_MS = 30 * 60_000;
 
 /** For the run's report: what this configuration means for the suite. */
 export const conformanceNotes: string[] = [
-	"smolcloud: every computer is a smol cloud machine (a microVM on an amd64 node) with its idle stop off and its delete timer at the adapter's backstop; the daemon is a child of a resumable interactive exec, its stdio the exec's long-polled output and numbered stdin frames; lifetime is the janitor's, by the deadline label, capped at 30 minutes for the run. Network none, open and a list are init's. No mount, no desktop.",
+	"smolcloud: every computer is a smol cloud machine (a microVM on an amd64 node) with its idle stop off and its delete timer at the adapter's backstop; the daemon is a child of a resumable interactive exec, its stdio the exec's long-polled output and numbered stdin frames; lifetime is the janitor's, by the deadline label, capped at 30 minutes for the run. Network none, open and a list are init's. No mount (smol cloud binds its storage disk at /workspace) and no desktop.",
 ];
 
 export interface SmolcloudModuleOptions extends Pick<SmolcloudProviderOptions, "fetch" | "daemonPath" | "timeouts"> {
@@ -70,9 +70,9 @@ export async function createDriftedProvider(options: SmolcloudModuleOptions = {}
 	return create({ ...settings, ...doubles(options), daemonPath: await buildDaemon(DRIFT_VERSION), maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS });
 }
 
-/** The image every computer of the run starts from: COMPUTER_SMOLCLOUD_IMAGE, else the descriptor's default. */
+/** The image every computer of the run starts from: COMPUTER_SMOLCLOUD_IMAGE, else the box image prepareImage() answers. */
 export async function conformanceImage({ env = process.env }: Pick<SmolcloudModuleOptions, "env"> = {}): Promise<string> {
-	return env[SMOLCLOUD_ENV.image] || SMOLCLOUD_DEFAULT_IMAGE;
+	return env[SMOLCLOUD_ENV.image] || boxImageRef();
 }
 
 /**
