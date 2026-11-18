@@ -323,6 +323,24 @@ describe("Settings → Computers", () => {
     for (const k of ["Sandbox", "Desktop"]) expect(row(k, "E2B").querySelector("[data-test]")?.textContent, k).toMatch(new RegExp(`^Failed · .+ · ${REFUSED}$`));
   });
 
+  it("on a server whose runner runs in a process of its own, says on a dial provider's row that no run here can use it, in the server's words, and its test fails in them", async () => {
+    const APART = "no run on this server can use Fly Machines: its machines dial this server, and its runner runs in a process of its own, with no attach hub to take their socket: start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)";
+    const fly: ComputerProvider = { id: "fly", name: "Fly Machines", metered: true, secrets: [secret("fly", "FLY_API_TOKEN", true), secret("fly", "FLY_APP", true)], required: ["computer:fly:FLY_API_TOKEN", "computer:fly:FLY_APP"], ready: true, runs_refused: APART, ...NO_SHELL };
+    const apart = view(true);
+    apart.kinds = apart.kinds.map((one) => (one.kind === "sandbox" ? { ...one, providers: [...one.providers, fly] } : one));
+    const { v2, calls } = server([apart], () => json(200, { ok: false, why: APART }));
+    const { row, click } = await open(v2);
+    const flyRow = row("Sandbox", "Fly Machines");
+    expect(flyRow.textContent).toContain("No run here can use it");
+    expect(flyRow.querySelector("[data-runs-refused]")?.textContent).toBe(APART);
+    expect(row("Sandbox", "E2B").querySelector("[data-runs-refused]"), "a provider its runs can use says nothing").toBeNull();
+    expect(row("Sandbox", "E2B").textContent).not.toContain("No run here can use it");
+    await click(flyRow, /^Test connection$/);
+    expect(calls.at(-1)).toMatchObject({ method: "POST", path: "/v2/computers/fly/test" });
+    const said = row("Sandbox", "Fly Machines").querySelector("[data-test]")?.textContent ?? "";
+    expect(said.startsWith("Failed · ") && said.endsWith(` · ${APART}`), said).toBe(true);
+  });
+
   it("offers Test connection only to a provider whose keys are saved: none to one with no key, or with a required key missing", async () => {
     const optional: ComputerProvider = { id: "opt", name: "Opt", metered: false, secrets: [secret("opt", "OPT_TOKEN", false)], required: [], ready: true, ...NO_SHELL };
     const { v2, calls } = server([{ paired: [], kinds: [kind("sandbox", [docker, e2b(false), daytona, optional]), kind("browser", [kernel])] }]);
