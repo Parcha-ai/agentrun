@@ -168,7 +168,8 @@ RUN chown root:node /usr/local/bin/agentrun-runas && chmod 0750 /usr/local/bin/a
  && { [ "$caps" = "/usr/local/bin/agentrun-runas cap_setgid,cap_setuid,cap_setpcap=ep" ] \
       || { echo "the run helper's capabilities are \"$caps\", not cap_setgid,cap_setuid,cap_setpcap=ep" >&2; exit 1; }; } \
  && [ "$(stat -c '%U:%G %a' /usr/local/bin/agentrun-runas)" = "root:node 750" ] \
- && setpriv --reuid=node --regid=node --init-groups /usr/local/bin/agentrun-runas check# The build fails if any of it is left anywhere in the tree, a nested copy included, or if the Codex CLI the tree holds
+ && setpriv --reuid=node --regid=node --init-groups /usr/local/bin/agentrun-runas check
+# The build fails if any of it is left anywhere in the tree, a nested copy included, or if the Codex CLI the tree holds
 # is not the build its adapter is pinned to.
 RUN sh /opt/agentrun/packages/serve/docker/image-check.sh /opt/agentrun
 # One Node in the image, the verified 24.22.3: the build fails on any other executable named node.
