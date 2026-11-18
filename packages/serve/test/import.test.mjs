@@ -13,7 +13,7 @@ import { DatabaseSync } from "node:sqlite";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { runMetricsOf, timelineOf } from "../dist/timeline/index.js";
-import { agentIdOf, candidatesOf, importCommand, MAX_RUN_BYTES, MAX_SESSION_BYTES, planImport, runImport } from "../dist/import.js";
+import { agentIdOf, candidatesOf, importCommand, importedInstructions, MAX_RUN_BYTES, MAX_SESSION_BYTES, planImport, runImport } from "../dist/import.js";
 import { ACTIVE_GAP_MS, readSession } from "../dist/import-sources.js";
 import { summaryLines } from "../dist/import-summary.js";
 import { openSqliteStore } from "../dist/store/index.js";
@@ -123,7 +123,7 @@ test("each project is one agent with a revision per harness, its CLAUDE.md or AG
   assert.equal(claude.model, "anthropic/claude-sonnet-5");
   assert.match(claude.instructions, /^Keep the site fast\./);
   assert.equal(codex.harness, "codex");
-  assert.equal(codex.model, "openai/gpt-sol-6.1");
+  assert.equal(codex.model, undefined, "a model no catalog here lists is not pinned: the agent runs on the server's default");
   assert.equal(codex.instructions, "Run the tests before a commit.\n");
   assert.deepEqual(Object.keys(claude.skills).sort(), ["deploy/SKILL.md", "deploy/steps.md", "review/SKILL.md"]);
   // The latest session (Codex's) names the current revision.
@@ -262,7 +262,7 @@ test("a link, a binary file, an oversized SKILL.md and a folder with no SKILL.md
   assert.equal(why[join(h.notes, ".pi", "skills")], "a link: not followed", "a skill folder that is itself a link");
   const kept = (await agentOf(store, report.agents[0].id)).revisions[0].body.skills;
   assert.deepEqual(Object.keys(kept).sort(), ["deploy/SKILL.md", "deploy/steps.md", "review/SKILL.md"]);
-  assert.equal((await agentOf(store, report.agents[1].id)).revisions[0].body.instructions, "");
+  assert.equal((await agentOf(store, report.agents[1].id)).revisions[0].body.instructions, importedInstructions("field-notes", "pi"), "a linked AGENTS.md is not read: the agent gets the import's own instructions");
   for (const file of keptUnder(data)) assert.ok(!file[1].includes("OUTSIDE-MARKER"), "a link's target is never read");
 });
 
@@ -1382,6 +1382,34 @@ test("the summary says unknown where it has no data", () => {
     "Open http://127.0.0.1:7340/",
   ]);
   assert.deepEqual(summaryLines([], "http://127.0.0.1:7340").slice(0, 4), ["Found 0 sessions", "Imported into 0 agents (one per project)", "+ tokens unknown · agent time unknown", "+ Busiest hour: unknown · top tool: unknown"]);
+});
+
+test("an imported agent runs as imported: a project with no instructions file gets the import's own, and a coding app's own model (one no catalog lists) is not pinned, while a listed one is", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const [build, docs] = ["nightly-build", "docs-site"].map((name) => join(at, "code", name));
+  for (const dir of [build, docs]) mkdirSync(dir, { recursive: true });
+  // The Codex app's own model, which no key here reaches; and one OpenAI lists.
+  codexSession(at, build, 231, { model: "gpt-6.1-codex" });
+  codexSession(at, docs, 232, { model: "gpt-6.1-sol" });
+  const data = join(root, "agents");
+  const store = await openData(data);
+  t.after(async () => await store.close());
+  const env = { PATH: "/usr/bin" };
+  const opts = { home: at, env, all: true };
+  await runImport(store, await planImport(opts), opts);
+  const current = async (cwd) => (await agentOf(store, agentIdOf(cwd))).revisions.find((r) => r.current).body;
+  const built = await current(build);
+  assert.equal(built.model, undefined);
+  assert.equal(built.instructions, importedInstructions("nightly-build", "codex"));
+  assert.equal(built.instructions, "You work on the project nightly-build. Your past runs are its Codex sessions, imported. Read the project's files before you change them, and say what you changed.");
+  assert.equal((await current(docs)).model, "openai/gpt-6.1-sol");
+  // What a run's start checks (runnable.ts), on a server with OpenRouter's key alone: nothing keeps either from running.
+  const { blockersOf } = await import("../dist/runnable.js");
+  for (const body of [built, await current(docs)]) {
+    const blockers = await blockersOf({ PATH: "/usr/bin", HOME: at, OPENROUTER_API_KEY: "sk-or-v1-test" }, { kind: "agentic", ...body });
+    assert.deepEqual(blockers.map((b) => b.message), [], JSON.stringify(body));
+  }
 });
 
 test("the CLI's own note is never the person's turn: a session holding only notes is passed over without --all, and a note before the first prompt is not the run's title", async (t) => {

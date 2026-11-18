@@ -16,7 +16,7 @@ import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "./t
 import { defaultData } from "./files.js";
 import { childFiles, HARNESS_OF, mostEffortOf, readSession, type Session, SOURCES, type Source, sessionFiles, type Turn } from "./import-sources.js";
 import { type Found, hoursOf, summaryLines } from "./import-summary.js";
-import { catalogPrices, type Listed } from "./model.js";
+import { catalogPrices, type Listed, providerModels } from "./model.js";
 import { logLine } from "./print.js";
 import { launchBody } from "./run-launch.js";
 import { DEFAULT_PORT } from "./server.js";
@@ -1033,9 +1033,18 @@ async function estimateOf(entries: readonly EntryLike[], catalog: () => Promise<
   return Math.round(total * 1e6) / 1e6;
 }
 
+/** What an imported agent is told when its project has no CLAUDE.md or AGENTS.md (or the harness's own file): an agentic
+ *  revision with no instructions is refused every run (runnable.ts), so an import never writes one. */
+export const importedInstructions = (project: string, source: Source): string =>
+  `You work on the project ${project}. Your past runs are its ${SOURCE_NAMES[source]} sessions, imported. Read the project's files before you change them, and say what you changed.`;
+const SOURCE_NAMES: Record<Source, string> = { "claude-code": "Claude Code", codex: "Codex", pi: "pi" };
+
 /** The revision of `source`'s harness this agent keeps already (one per source, by its note), or a new one to write: its
  *  id, and the `NewRevision` the caller stores (through agents.create for the agent's first, agents.addRevision for the
- *  rest). The body is built and checked here (bodyOf), its instructions and skills cut. */
+ *  rest). The body is built and checked here (bodyOf), its instructions and skills cut. `model`: the harness's latest
+ *  session's, kept only when a model catalog here lists it. A coding app's own model (Codex's gpt-6.1-codex) is listed by
+ *  none and runs here on no key: pinned, every run of the agent is refused. Left out, the agent runs on this server's
+ *  default for its harness, and each imported run still names the model it ran on. `project`: its name as kept (keptName). */
 async function revisionFor(
   store: ImportStore,
   agentId: string,
@@ -1045,16 +1054,18 @@ async function revisionFor(
     skills: Record<string, string>;
   },
   model: string | undefined,
+  project: string,
   cut: Cut,
 ): Promise<{ id: string; create?: NewRevision }> {
   const note = `imported from ${source}`;
   const held = (await store.agents.revisions(agentId)).find((r) => r.note === note);
   if (held) return { id: held.id };
   const harness = HARNESS_OF[source];
-  const instructions = INSTRUCTIONS[harness]!.map((name) => files.instructions[name]).find((text) => text !== undefined) ?? "";
+  const own = INSTRUCTIONS[harness]!.map((name) => files.instructions[name]).find((text) => text !== undefined);
+  const instructions = own?.trim() ? cut(own) : importedInstructions(project, source);
   const { body, skills } = bodyOf({
     kind: "agentic",
-    instructions: cut(instructions),
+    instructions,
     skills: keptSkills(files.skills, cut),
     tools: [],
     ...(model ? { model } : {}),
@@ -1104,6 +1115,12 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
   let prices: Promise<Map<string, Listed[]>> | undefined;
   const catalog = () => (prices ??= catalogPrices());
   const held = await importedIn(store);
+  // Whether a model catalog here lists a session's model ("provider/model id"), keys aside: one none lists is no model to pin.
+  let models: Promise<Awaited<ReturnType<typeof providerModels>>> | undefined;
+  const listed = async (ref: string): Promise<boolean> => {
+    const at = ref.indexOf("/");
+    return at > 0 && (await (models ??= providerModels(options.env))).getModel(ref.slice(0, at), ref.slice(at + 1)) !== undefined;
+  };
   // Every key of the import is known before anything of it is written.
   const known = await findKeys(plan, add, text, (listed) => held.get(`${listed.source}:${listed.id}`) !== undefined, options.signal);
   const scannedAs = known.stamps;
@@ -1118,13 +1135,14 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
     if (hash(textNow) !== known.texts.get(project.agentId)) add(await secretsIn(textNow));
     const byStart = [...project.sessions].sort((a, b) => (a.startedAt ?? "").localeCompare(b.startedAt ?? ""));
     const latest = byStart.at(-1)!;
-    // The latest session's harness names the agent's current revision; its model, each harness's latest. The latest source
-    // is last in the order, so it is the last revision written — created with the agent, or added current.
+    // The latest session's harness names the agent's current revision; its model, each harness's latest a catalog lists. The
+    // latest source is last in the order, so it is the last revision written — created with the agent, or added current.
     const order = [...new Set(project.sessions.map((s) => s.source))].sort((a, b) => (a === latest.source ? 1 : 0) - (b === latest.source ? 1 : 0));
     const revisions = new Map<Source, string>();
     const toWrite: NewRevision[] = [];
     for (const source of order) {
-      const resolved = await revisionFor(store, project.agentId, source, files, byStart.findLast((s) => s.source === source && s.model)?.model, text);
+      const model = byStart.findLast((s) => s.source === source && s.model)?.model;
+      const resolved = await revisionFor(store, project.agentId, source, files, model && (await listed(model)) ? model : undefined, keptName(project, text), text);
       revisions.set(source, resolved.id);
       if (resolved.create) toWrite.push(resolved.create);
     }
