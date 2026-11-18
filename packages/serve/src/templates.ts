@@ -773,6 +773,10 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
   }
   // Each agree_on path is a required field of the answer's schema at every level: one an answer may leave out is
   // missing on both sides, and a missing path never agrees, so the check could never promote on it.
+  // With no output schema there is nothing to check the paths against, and nothing makes an answer hold them: refused.
+  if (!learningIssue && f.output === undefined && (agreeOnOf(f.learning) ?? []).length) {
+    bad(MANIFEST, "learning.agree_on names fields of the answer, so the package declares the answer's schema (output: {schema}) that holds them");
+  }
   if (!learningIssue && isObject(outputSchema)) {
     for (const [i, path] of (agreeOnOf(f.learning) ?? []).entries()) {
       const why = undeclaredPath(outputSchema, path);
