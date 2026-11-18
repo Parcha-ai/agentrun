@@ -701,9 +701,10 @@ test("the setup skill asks where AgentRun should run before any install, with a 
   assert.match(bring, /need no model key/);
   assert.match(bring, /It is a real run of that job: it may\s+post or write wherever the job does\./, "the first run of a found job is named as a real run");
 });
-// The server runs a first agent that needs no shell on the runner and never asks an unlisted gateway model to stop
-// reasoning, so the first agent's definition names neither a place nor a thinking level. A local model reaches a service
-// through `service install --env`; only Ollama has been walked.
+// The server runs an agent whose tools need no shell (`tools: []`) on the runner, and never asks an unlisted gateway model
+// to stop reasoning, so the first agent's definition names neither a place nor a thinking level. With no tools named it
+// would get bash and the Docker box, and wait for a container. A local model reaches a service through
+// `service install --env`; only Ollama has been walked.
 test("the setup skill's model step offers ChatGPT, a capped key, then a local Ollama model on the service, and its first agent is the template's alone", () => {
   const skill = setupSkill();
   const model = skillSection(skill, "6. Connect a model");
@@ -718,7 +719,8 @@ test("the setup skill's model step offers ChatGPT, a capped key, then a local Ol
   const first = skillSection(skill, "7. Create the first agent and run it");
   const create = shellBlocks(first).find((block) => block.includes("agents create"));
   const definition = JSON.parse(create.match(/--body '(.+)'/)[1]).definition;
-  assert.deepEqual(Object.keys(definition).sort(), ["harness", "id", "instructions", "max_cost_usd", "name"], "no place, thinking or tools");
+  assert.deepEqual(Object.keys(definition).sort(), ["harness", "id", "instructions", "max_cost_usd", "name", "tools"], "no place or thinking");
+  assert.deepEqual(definition.tools, [], "no tools: an agent that needs no shell runs on the runner");
   assert.equal(definition.max_cost_usd, 0.25);
 });
 test("the setup skill names a hosted cloud session before the questions, and its check prints names, never values", (t) => {

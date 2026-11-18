@@ -259,8 +259,10 @@ Check `agents list` first. Reuse a `release-notes` agent only when `agents get r
 tools; if another agent has that id, use the first free `release-notes-N` (N from 2) in both commands. Otherwise:
 
 ```sh
-~/.agentrun/bin/agentrun agents create --body '{"definition":{"id":"release-notes","name":"Release notes","harness":"pi","max_cost_usd":0.25,"instructions":"Write concise release notes from the changes you are given. Group them under Added, Changed and Fixed. Do not invent changes."}}'
+~/.agentrun/bin/agentrun agents create --body '{"definition":{"id":"release-notes","name":"Release notes","harness":"pi","tools":[],"max_cost_usd":0.25,"instructions":"Write concise release notes from the changes you are given. Group them under Added, Changed and Fixed. Do not invent changes."}}'
 ```
+
+With `"tools":[]` it needs no shell, so it runs at once with no container to start; keep the empty list.
 
 Question tool, header `First run`: "Start the first run of release-notes now on <model>, capped at $0.25?" (the model
 from `models.default`, and whether it bills their ChatGPT plan, a key or nothing). Recommendation: Run it now because
