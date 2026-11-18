@@ -134,6 +134,10 @@ export interface ListedFilter {
   readonly status?: string;
   /** Only runs still going (no settled status on the row) whose listing is behind. */
   readonly going?: boolean;
+  /** Only rows after this one in the list's order (started earlier, or at the same time with a smaller id): a scan's
+   *  place, which rows that leave the set between its reads (a listing built meanwhile) never shift, as they shift an
+   *  offset. */
+  readonly after?: { readonly startedAt: number; readonly id: string };
   readonly limit: number;
   readonly offset?: number;
 }

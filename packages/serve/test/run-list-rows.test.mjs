@@ -286,6 +286,37 @@ test("a status filter lists a run still going that a write moved while the filte
   await sameAsViews(api, working, "the run is listed as its read shows it after the write");
 });
 
+test("a status filter reads every run still going whose listing is behind while the lister builds some between its reads: none is skipped", { timeout: 300_000 }, async (t) => {
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-list-rows-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const data = join(dir, "agents");
+  // 153 runs: 51 completed, 51 failed and 51 working, none built: the filter reads the 51 going in two reads of 50.
+  await storeOf(data, 153, 2);
+  const server = await startServe({ data, port: 0, faux: FAUX, listerIdleMs: Infinity });
+  t.after(() => server.close());
+  // After the filter's first read of the runs still going whose listings are behind (the read whose WHERE holds the
+  // settled-status CASE), the lister writes the listing of the first of them, as it does in the background: that row
+  // leaves the set the filter reads, before its second read. The listing it writes is cut of other keys, so the list
+  // builds it again when its page reaches it.
+  const all = Connection.prototype.all;
+  let built;
+  Connection.prototype.all = function (sql, ...params) {
+    const result = all.call(this, sql, ...params);
+    if (built || !/FROM runs JOIN agents/.test(sql) || !/THEN 'completed'/.test(sql)) return result;
+    return result.then(async (rows) => {
+      built = rows[0].id;
+      await this.write([{ sql: `UPDATE runs SET listing = '{"item":{},"cut":"other"}', list_status = 'working', listing_mark = list_mark, listing_live = 0, listing_until = NULL WHERE id = ?`, params: [built] }]);
+      return rows;
+    });
+  };
+  t.after(() => (Connection.prototype.all = all));
+  const api = client(server.baseUrl, server.token);
+  const working = await everyItem(api, "/runs?status=working");
+  assert.ok(built, "a listing was written between the filter's reads");
+  assert.equal(working.length, 51, "status=working lists every working run");
+  assert.ok(working.every((item) => item.status === "working"));
+});
+
 /** Counts the store calls each GET of a runs list makes, and the rows its reads hand back: every call on a store connection
  *  made while that request is handled (its async context), none of the server's own background work. */
 function storeCallsPerList(t) {

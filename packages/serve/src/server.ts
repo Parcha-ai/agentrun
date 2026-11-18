@@ -3039,10 +3039,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     };
     if (status !== null) {
       const going: { id: string; mark: number }[] = [];
-      for (let at = 0; ; at += UNLISTED_AT_ONCE) {
-        const read = await store.runs.listed({ ...where, going: true, limit: UNLISTED_AT_ONCE, offset: at });
+      // Each read starts after the last row read (ListedFilter.after), never at an offset: the lister may build a row read
+      // before the next read, which would shift an offset past a row not read yet.
+      for (let after: { startedAt: number; id: string } | undefined; ; ) {
+        const read = await store.runs.listed({ ...where, going: true, limit: UNLISTED_AT_ONCE, ...(after ? { after } : {}) });
         going.push(...read.rows.map(({ row, listMark }) => ({ id: row.id, mark: listMark })));
-        if (!read.more) break;
+        const last = read.rows.at(-1)?.row;
+        if (!read.more || !last) break;
+        after = { startedAt: last.startedAt, id: last.id };
       }
       for (const { id, mark } of going) await listNow(id, mark);
     }

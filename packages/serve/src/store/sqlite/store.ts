@@ -1022,7 +1022,7 @@ class SqliteStore implements Store {
       },
       // A list's page from the rows alone: filtered, ordered and cut to the page in the query, one read whatever the number
       // of runs, each row with its listing (schema.ts RUN_LISTING_COLUMNS) and its agent's archive time.
-      listed: async ({ agentId, revisionId, labels, archived, status, going, limit, offset = 0 }) => {
+      listed: async ({ agentId, revisionId, labels, archived, status, going, after, limit, offset = 0 }) => {
         const n = clock();
         const behind = listingBehind(n.sql);
         // Neither a built-in learning run nor an audit's shadow run (learn/audit.ts SHADOW_PREFIX, matched as it is, case and all).
@@ -1035,6 +1035,7 @@ class SqliteStore implements Store {
         if (status !== undefined) (where.push("runs.list_status = ?"), params.push(status));
         // A run still going (no settled status on its row) whose listing is behind: its list_status may say what it was.
         if (going) (where.push(`(${SETTLED_LIST_STATUS}) IS NULL`, behind.sql), params.push(...behind.params(n.params)));
+        if (after) (where.push("(runs.started_at < ? OR (runs.started_at = ? AND runs.id < ?))"), params.push(after.startedAt, after.startedAt, after.id));
         const rows = await db.all<RunRecord & { agent_archived_at: number | null; listing: string | null; list_status: string | null; list_mark: number; behind: number }>(
           `SELECT ${RUN_COLUMNS.split(", ").map((column) => `runs.${column}`).join(", ")}, agents.archived_at AS agent_archived_at, runs.listing, runs.list_status, runs.list_mark,
                   ${behind.sql} AS behind
