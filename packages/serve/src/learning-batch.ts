@@ -175,6 +175,24 @@ const INDEX = (agentId: string) => `learning_batches/${agentId}`;
 export const ROW_KEY = (id: string, n: number) => `learning_batch:${id}:row:${n}`;
 export const BATCH_ID = /^lb_[0-9a-f]{16}$/;
 
+/** Agent `agentId`'s batches as the store keeps them, for its learning's delete (learn/delete.ts): `keys`, every setting of
+ *  them in the order a delete removes them (each batch's rows, then its header, the agent's index last, so a delete
+ *  stopped part way leaves the index that names what is left), and `live`, the ids of those still running or ending (a
+ *  loop owns them: the delete is refused while one is). An id with no header (a create stopped before it) has its rows. */
+export async function batchesKept(settings: Settings, agentId: string): Promise<{ keys: string[]; live: string[] }> {
+  const ids = ((await settings.get(INDEX(agentId))) as string[] | undefined) ?? [];
+  const keys: string[] = [];
+  const live: string[] = [];
+  for (const id of ids) {
+    keys.push(...(await settings.all({ prefix: `${HEAD(id)}/row/` })).map((row) => row.key));
+    const header = (await settings.get(HEAD(id))) as Header | undefined;
+    if (header === undefined) continue;
+    if (header.status === "running") live.push(id);
+    keys.push(HEAD(id));
+  }
+  return { keys: ids.length ? [...keys, INDEX(agentId)] : [], live };
+}
+
 const text = (value: string | null | undefined): string => (value ?? "").replace(/\s+/g, " ").trim().toLowerCase();
 /** A decimal number's text in one form (no sign on zero, no leading or trailing zeros), never through a float: two numbers
  *  are the same when every digit is. Null for text that is no decimal number. */
@@ -395,6 +413,18 @@ export class LearningBatches {
       await loop.done;
     }
     return this.read(agentId, id);
+  }
+
+  /** Agent `agentId` is being deleted (agent-delete.ts, step 1): each of its batches still running ends cancelled, as a
+   *  person's cancel ends it (its live row's run stopped and booked first), its loop taken up here if this process had none,
+   *  and is waited for. A server stopping meanwhile lets go, the batch left running for its learning's delete to refuse. */
+  async stopAll(agentId: string): Promise<void> {
+    for (const id of await this.ids(agentId)) {
+      if (this.halting || (await this.header(id))?.status !== "running") continue;
+      const loop = this.arm(id);
+      loop.cancelled = true;
+      await loop.done;
+    }
   }
 
   /** The server is stopping: every loop lets go where it stands, its batch still running (resume takes it up). */

@@ -9214,6 +9214,7 @@ OPERATIONS: dict[str, Operation] = {
     "archiveAgent": Operation(method="POST", path="/agents/{agent_id}/archive", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "connectNative": Operation(method="POST", path="/native/connect", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createAgent": Operation(method="POST", path="/agents", path_params=(), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "deleteAgent": Operation(method="DELETE", path="/agents/{agent_id}", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "deleteAgentArchil": Operation(method="DELETE", path="/agents/{agent_id}/archil", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "disconnectNative": Operation(method="POST", path="/agents/{agent_id}/native/disconnect", path_params=("agent_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "discoverNative": Operation(method="POST", path="/native/discover", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -9387,6 +9388,10 @@ class AgentsResource(Group):
     def create(self, body: CreateAgentBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> CreateAgentResponse:
         """Create an agent home (POST /agents)."""
         return self._call("createAgent", (), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
+
+    def delete_agent(self, agent_id: str, *, timeout: float | None = None) -> None:
+        """Delete an agent another system owns (DELETE /agents/{agent_id})."""
+        return self._call("deleteAgent", (agent_id,), None, None, timeout=timeout)
 
     def delete_agent_archil(self, agent_id: str, *, timeout: float | None = None) -> DeleteAgentArchilResponse:
         """Remove an agent's own Archil disk, and everything on it (DELETE /agents/{agent_id}/archil)."""
