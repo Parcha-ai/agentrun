@@ -575,30 +575,38 @@ test("(r4) a shadow that stops on its cap is `parked`: no verdict, never counted
   assert.deepEqual([held.decided, held.audit.disagreements.map((one) => one.served)], ["hold", ["wide-1"]], JSON.stringify(held));
 });
 
-// learning.agree_on: the audit compares the served answer and its shadow's on the fields that say the decision, as the
-// check does. The agent (so each shadow) answers as a real model does, prose then a fenced json block with a rationale
-// the workflow's answer never repeats: no disagreement on agree_on (or the output schema's enum and boolean fields), a
-// declared field that differs still holds.
-const SHADOW_SAYS = `Six sevens.\n\n\`\`\`json\n${JSON.stringify({ answer: 42, sure: true, why: "six times seven is forty-two" })}\n\`\`\``;
-for (const [named, extra, compared] of [
-  ["learning.agree_on", { learning: { audit_every: 1, hold_window: 1, hold_disagree: 1, agree_on: ["answer", "sure"] } }, "on answer and sure"],
-  ["the output schema's enum and boolean fields", { learning: { audit_every: 1, hold_window: 1, hold_disagree: 1 }, outputSchema: { type: "object", properties: { answer: { enum: [41, 42] }, sure: { type: "boolean" }, why: { type: "string" } } } }, "on the schema's fields"],
-]) {
-  test(`(agree_on) a served answer that differs from its shadow's only in its rationale is no disagreement, compared ${compared} (${named}); a declared field that differs holds`, { timeout: 300_000 }, async (t) => {
-    const w = await world(t, { ...extra, says: () => SHADOW_SAYS, submit: (text) => (text.includes("Wrong question") ? WRONG : { answer: 42, sure: true }) });
-    const served = await w.start("same-1", "What is six times seven");
-    assert.equal(served.metrics?.path, "workflow", JSON.stringify(served.metrics));
-    const next = await w.start("same-next", "What is seven times six");
-    assert.equal(next.metrics?.path, "workflow", `not held: ${JSON.stringify(next.metrics)}`);
-    const row = (await w.audits()).find((one) => one.run === "same-1");
-    assert.equal(row?.agreed, true, JSON.stringify(row));
-    assert.equal((await promotionsOf(w.server.settings, "agent-1")).at(-1).decided, "promote");
-    await w.start("wrong-1", "Wrong question one");
-    const after = await w.start("wrong-next", "Question 98");
-    assert.equal(after.metrics?.path, "agent", `held on the declared field: ${JSON.stringify(after.metrics)}`);
-    assert.equal((await w.audits()).find((one) => one.run === "wrong-1")?.agreed, false);
-  });
-}
+// learning.agree_on: the audit compares the served answer and its shadow's on the dotted paths that say the decision, as
+// the check does. The agent (so each shadow) answers as a real model does, prose then a fenced json block with a
+// rationale the workflow's answer never repeats: no disagreement on agree_on, a declared field that differs still holds.
+const SHADOW_SAYS = `Six sevens.\n\n\`\`\`json\n${JSON.stringify({ verdict: { answer: 42, note: "six times seven" }, sure: true, why: "six times seven is forty-two" })}\n\`\`\``;
+const NESTED = { verdict: { answer: 42, note: "computed" }, sure: true };
+const NESTED_WRONG = { verdict: { answer: 41, note: "computed" }, sure: true };
+test("(agree_on) a served answer that differs from its shadow's only in its rationale is no disagreement on verdict.answer and sure; a declared field that differs holds", { timeout: 300_000 }, async (t) => {
+  const w = await world(t, { learning: { audit_every: 1, hold_window: 1, hold_disagree: 1, agree_on: ["verdict.answer", "sure"] }, says: () => SHADOW_SAYS, submit: (text) => (text.includes("Wrong question") ? NESTED_WRONG : NESTED) });
+  const served = await w.start("same-1", "What is six times seven");
+  assert.equal(served.metrics?.path, "workflow", JSON.stringify(served.metrics));
+  const next = await w.start("same-next", "What is seven times six");
+  assert.equal(next.metrics?.path, "workflow", `not held: ${JSON.stringify(next.metrics)}`);
+  const row = (await w.audits()).find((one) => one.run === "same-1");
+  assert.equal(row?.agreed, true, JSON.stringify(row));
+  assert.equal((await promotionsOf(w.server.settings, "agent-1")).at(-1).decided, "promote");
+  await w.start("wrong-1", "Wrong question one");
+  const after = await w.start("wrong-next", "Question 98");
+  assert.equal(after.metrics?.path, "agent", `held on the declared field: ${JSON.stringify(after.metrics)}`);
+  assert.equal((await w.audits()).find((one) => one.run === "wrong-1")?.agreed, false);
+});
+
+// No agree_on: the whole answer, whatever the output schema says (no field is picked from it: a schema's enum can be an
+// echo of the owner's setting, not the decision). The same rationale-only difference is a disagreement, and it holds.
+test("(agree_on) with an output schema of enum and boolean fields and no agree_on, the audit compares the whole answer: a rationale-only difference disagrees", { timeout: 300_000 }, async (t) => {
+  const outputSchema = { type: "object", properties: { verdict: { type: "object", properties: { answer: { enum: [41, 42] } } }, sure: { type: "boolean" }, why: { type: "string" } } };
+  const w = await world(t, { learning: { audit_every: 1, hold_window: 1, hold_disagree: 1 }, outputSchema, says: () => SHADOW_SAYS, submit: () => NESTED });
+  const served = await w.start("same-1", "What is six times seven");
+  assert.equal(served.metrics?.path, "workflow", JSON.stringify(served.metrics));
+  const next = await w.start("same-next", "What is seven times six");
+  assert.equal(next.metrics?.path, "agent", `held on the whole answer: ${JSON.stringify(next.metrics)}`);
+  assert.equal((await w.audits()).find((one) => one.run === "same-1")?.agreed, false);
+});
 
 // Review on #3061 r4 (PRRT_kwDOUmdVMs64SUUv): a shadow never waits on a person. Its agent only reads (web_fetch, a
 // built-in the readOnlyHint rule reads as a read: learn/replay-calls.ts READ_TOOLS), and its owner set web_fetch to ask:
