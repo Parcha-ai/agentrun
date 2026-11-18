@@ -24,6 +24,7 @@ import type { PairedComputerRow, Store } from "./store/index.js";
 import type { PairedView } from "./computer-attach.js";
 import { dialApartWords, RUNNER_APART_WORDS, withPaired } from "./workspace/attached-computers.js";
 import { aLabel, type ComputerSettingKind, entryHere, folderKindOf, type ShellPlace, needsNetwork, shellChoiceOf } from "./workspace/resolve-computer.js";
+import { restartWith } from "./start-switches.js";
 
 // Every request to a computer's keys is a secret write (secret-writes.ts), whatever its body (a value, a null, an empty
 // body or none), as saveToolKey's is: the server's one dispatch check keeps it to the owner's session before any provider
@@ -182,7 +183,7 @@ export const NETWORK_REFUSED_WORDS = `needs a network, which this server refuses
 
 /** Why a provider whose computers can't run with no network is not ready where this server has none. */
 const noNetworkWhy = (provider: ProviderEntry): string =>
-  `${provider.label} needs a network, and this server's ${BOX_ALLOW_ENV} is none (no network): pick a computer that runs with no network, or set ${BOX_ALLOW_ENV} to a host list`;
+  `${provider.label} needs a network, and this server's ${BOX_ALLOW_ENV} is none (no network): pick a computer that runs with no network, or ${restartWith(`${BOX_ALLOW_ENV} set to a host list`)}`;
 
 /** What this server's allow-list means for a provider's computers, by the network forms it declares: words for one that
  *  makes "none" alone, "open" alone, or "open" and "allow" but no "none" (a browser behind its own proxy); none where

@@ -94,6 +94,18 @@ only when they already named a place or an AgentRun server (then check its `/v2/
 On **Check**, run the step 4 scan now, while AgentRun installs; it looks at this computer wherever AgentRun runs. On
 **I'll tell you**, ask for the job and its folder (free text, one plain message), and bring it in at step 5.
 
+On **This computer** or **My always-on machine**, before the start, ask once with the
+question tool, header `Local reach`: "Do only you use that machine, and should its agents reach tools or a webhook
+receiver on it?" Recommendation: Not now because it is the safer default and a restart adds it later.
+- Not now (Recommended): runs and the webhook reach nothing local to it.
+- Yes, only me: start the server with `AGENTRUN_MCP_ALLOW_LOOPBACK=1` and `AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` set.
+
+On **Yes, only me**, once the installer has started AgentRun as a service, save both in it; it restarts with them and
+keeps them: `~/.agentrun/bin/agentrun service install --env AGENTRUN_MCP_ALLOW_LOOPBACK=1 --env
+AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1`. Where it runs in the background instead, run `~/.agentrun/bin/agentrun stop`, then
+the installer with both in front of `sh`. On `--vps`, which runs AgentRun in Docker, leave them off. Then check that
+`/v2/capabilities` shows `on: true` for both under `switches`.
+
 ### This computer
 
 First look for a server that already runs here: `AGENTRUN_BASE_URL` is set, or the server `~/.agentrun` records
@@ -275,8 +287,10 @@ On **Local model**, only on this computer, give the service the model; it restar
 
 Where AgentRun runs in the background, run `~/.agentrun/bin/agentrun stop`, then the installer with the same four in
 front of `sh`: `curl -fsSL https://agentrun.ai/install | AGENT_MODEL_BASE_URL=http://localhost:11434/v1
-AGENT_MODEL_GATEWAY_IDS=bare AGENT_MODEL=<tag> AGENT_MODEL_PRICE=0,0,0 sh`. Then confirm `models.ready` in the
-capabilities.
+AGENT_MODEL_GATEWAY_IDS=bare AGENT_MODEL=<tag> AGENT_MODEL_PRICE=0,0,0 sh`. A background start keeps only what that
+line sets, so on **Yes, only me** (step 3) put `AGENTRUN_MCP_ALLOW_LOOPBACK=1 AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` in
+front of `sh` too. Then confirm `models.ready` in the capabilities, and on **Yes, only me** both switches `on: true`
+under `switches`.
 
 Claude Code through a gateway they already run (LiteLLM, say): restart the server with `ANTHROPIC_BASE_URL=<gateway>
 ANTHROPIC_API_KEY=<its key, or any placeholder when it adds its own>`; the gateway must take Anthropic Messages at `/v1/messages`.

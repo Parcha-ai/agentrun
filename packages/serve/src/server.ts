@@ -134,6 +134,7 @@ import { boundTool, MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as m
 import { type ComposioControl, composioForget, composioNote, composioSave, composioTools } from "./composio-preset.js";
 import { ComposioTriggers } from "./composio-triggers.js";
 import { type ComposioDropped, loopbackWords, mcpServersOverStore, type SaveGuard } from "./mcp-servers-store.js";
+import { MCP_ALLOW_LOOPBACK_ENV, startSwitches, WEBHOOK_PRIVATE_TARGETS_ENV } from "./start-switches.js";
 import type { SourceRecord } from "./mcp-sources.js";
 import { getMcpServer, listMcpServers } from "./mcp-store.js";
 import { privateHostsRoute, saveServerOwn } from "./mcp-private-hosts.js";
@@ -837,6 +838,14 @@ export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.
   return capabilitiesWith(env, maxRuns, await harnessOffers(env), learning, await needsOf(env), toolSettings, boxes);
 }
 
+/** The start-time switches a server takes as options (ServeOptions mcpLoopback, webhookPrivateTargets). */
+type SwitchedOn = { mcpLoopback: boolean; webhookPrivateTargets: boolean };
+/** Those switches as `env` sets them, the CLI's way, for a server whose options name neither. */
+const switchedOnBy = (env: NodeJS.ProcessEnv, options: { mcpLoopback?: boolean; webhookPrivateTargets?: boolean } = {}): SwitchedOn => ({
+  mcpLoopback: options.mcpLoopback ?? env[MCP_ALLOW_LOOPBACK_ENV] === "1",
+  webhookPrivateTargets: options.webhookPrivateTargets ?? env[WEBHOOK_PRIVATE_TARGETS_ENV] === "1",
+});
+
 /** capabilities.learning: whether the caller may approve a workflow draft that waits, and what that needs when not. */
 type LearningCaps = { pending: true; approve: boolean; approve_needs?: "password" };
 
@@ -849,8 +858,9 @@ export function forCaller<T extends { learning: LearningCaps }>(caps: T, ownerSe
 /** The capabilities document from offers already resolved, under the server's learning switch, tool settings and box
  *  offers: cheap, made again after each key or tool-settings write with the offers the server holds; and `needs` as
  *  needsOf says it for a revision that names no model (null when it runs). `runnerShell`: the sandbox-only tools a run
- *  on the runner has a shell for here (tools.ts shellTools; bash in Mode 2), available with no box. */
-function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, { needs, priced }: ModelState, toolSettings: ToolSettingsMap, boxes: readonly BoxOffer[], refused: Readonly<Record<string, string>> = {}, runnerShell?: ReadonlySet<string>, isolation: "uid" | "process" = "process") {
+ *  on the runner has a shell for here (tools.ts shellTools; bash in Mode 2), available with no box. `switched`: the two
+ *  start-time switches the server takes as options (switchedOnBy reads them from `env`, as the CLI sets them). */
+function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, { needs, priced }: ModelState, toolSettings: ToolSettingsMap, boxes: readonly BoxOffer[], refused: Readonly<Record<string, string>> = {}, runnerShell?: ReadonlySet<string>, isolation: "uid" | "process" = "process", switched: SwitchedOn = switchedOnBy(env)) {
   const models = { ...modelSource(env), ready: needs === null, needs, priced };
   // Both limits apply: the cap on the count, and the memory each run reserves (host.ts).
   const memory = hostMemory();
@@ -881,6 +891,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
      *  web tool, what it resolves to on each harness under this server's tool settings; `key`, the tool key that unlocks
      *  it (tool-keys.ts), when one does. */
     tools,
+    /** The switches only the operator sets, in the server's environment at its start (start-switches.ts): each one's state,
+     *  the value it read and what it allows. Never a secret's value. */
+    switches: startSwitches(env, switched),
     /** How this server holds its secrets (secrets.ts, the launcher), and what that does not cover. */
     secrets: {
       names: [...SECRET_NAMES],
@@ -1250,7 +1263,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // imports it (runner/beside.ts): its module reaches the runner's, which reach back to this one's.
   const { runIsolationName, runIsolationOf } = await import("./runner/run-child-host.js");
   const isolation = await runIsolationOf(base, 1, () => {}).then(runIsolationName, () => "process" as const);
-  const compose = (runnerShell?: ReadonlySet<string>) => askNeeds(capabilitiesWith(env, maxRuns, offers, learning, needs, settings.get(), boxOffers, toolKeys.refused(), runnerShell, isolation));
+  // The start-time switches as this server was started: its options, else the CLI's variables. mcpLoopback is the
+  // option alone, as everywhere it is read here (localInstall): the CLI sets it from AGENTRUN_MCP_ALLOW_LOOPBACK.
+  const switched: SwitchedOn = { mcpLoopback: options.mcpLoopback === true, webhookPrivateTargets: switchedOnBy(process.env, options).webhookPrivateTargets };
+  const compose = (runnerShell?: ReadonlySet<string>) => askNeeds(capabilitiesWith(env, maxRuns, offers, learning, needs, settings.get(), boxOffers, toolKeys.refused(), runnerShell, isolation, switched));
   const recompose = () => void (caps = compose());
   // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
   let offersFrom: readonly (string | undefined)[] | undefined;
@@ -1532,7 +1548,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Any bound given reaches Webhooks' check (0 and NaN are refused there, never dropped for the default).
     ...(options.webhookTimeoutMs !== undefined ? { timeoutMs: options.webhookTimeoutMs } : {}),
     ...(options.webhookLookup ? { lookup: options.webhookLookup } : {}),
-    privateTargets: options.webhookPrivateTargets ?? process.env.AGENTRUN_WEBHOOK_PRIVATE_TARGETS === "1",
+    privateTargets: switched.webhookPrivateTargets,
   });
   // The outbound webhook's secret, as it stands (set by a PUT, gone with a DELETE), and each it held before.
   stops.push(() => webhooks.close());

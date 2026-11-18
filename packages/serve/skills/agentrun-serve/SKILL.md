@@ -364,5 +364,8 @@ For everything the MCP tools do not cover (tool keys, triggers, webhooks, files,
 - `405` on `/v2/mcp`: it takes POST only (no stream, no session).
 - `409 agent_not_runnable`: this server cannot run that agent yet (a harness, tool or key it lacks); `error.details` and `whoami` say which.
 - `422 input_invalid`: `error.fields` names each field to fix.
+- A refusal that says `restart the server with AGENTRUN_...`: a start-time switch is off (an MCP server or a webhook
+  receiver on this machine, the hosts a computer may reach). No API call sets it. `/v2/capabilities` `switches` lists
+  each and its value; set the variable and start the server again, the `=1` ones only on a machine you alone use.
 - `429 rate_limited` from `runs_start`: the server is at its most runs at once. Start it again when one ends.
 - Keep the server on the loopback address. Started with `--listen` on another one, put TLS in front of it.

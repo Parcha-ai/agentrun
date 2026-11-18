@@ -659,7 +659,7 @@ test("the setup skill asks every choice with the host's question tool, recommend
   assert.match(how, /Never answer a question for the person, and never pass a flag that answers one\./);
   assert.doesNotMatch(skill, /\bbatch/i, "nothing tells the model to batch its questions into one message");
   const questions = setupQuestions(skill);
-  assert.deepEqual(questions.map((q) => q.header), ["Run where", "Scan", "Host", "Agent", "First run", "Model", "First run"], "every choice point, in order");
+  assert.deepEqual(questions.map((q) => q.header), ["Run where", "Scan", "Host", "Local reach", "Agent", "First run", "Model", "First run"], "every choice point, in order");
   for (const q of questions) {
     assert.ok(q.header.length <= 12, `${q.header}: a header of 12 characters or less`);
     assert.match(q.question, /\?/, `${q.header} asks a question`);
@@ -673,6 +673,7 @@ test("the setup skill asks every choice with the host's question tool, recommend
   assert.deepEqual(options["Run where"], ["This computer", "My always-on machine", "A hosted service"]);
   assert.deepEqual(options.Scan, ["Check", "I'll tell you", "No, start fresh"]);
   assert.deepEqual(options.Host, ["Railway", "Render", "AgentRun Cloud"]);
+  assert.deepEqual(options["Local reach"], ["Not now", "Yes, only me"], "the start-time switches stay off unless the person says only they use the machine");
   assert.deepEqual(options.Model, ["Continue with ChatGPT", "OpenRouter key", "Local model"], "ChatGPT, then a capped key, then a local model");
   assert.match(questions.find((q) => q.header === "Agent").paragraph, /then \*\*Start\s+fresh\*\*/, "a found agent or a fresh start");
   assert.deepEqual(proseChoices(skill), [], "no choice is written as prose");
@@ -727,6 +728,11 @@ test("the setup skill's model step offers ChatGPT, a capped key, then a local Ol
   const [install] = shellBlocks(model);
   assert.equal(install, "~/.agentrun/bin/agentrun service install --env AGENT_MODEL_BASE_URL=http://localhost:11434/v1 --env AGENT_MODEL_GATEWAY_IDS=bare --env AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0\n");
   assert.doesNotMatch(skill, /LM Studio|localhost:1234/);
+  // Yes, only me (step 3) survives the model's restart: the service keeps what service install --env saved, and a
+  // background start keeps only what its line sets, so the line carries both switches.
+  const start = skillSection(skill, "3. Start it where they chose");
+  assert.match(start, /service install --env AGENTRUN_MCP_ALLOW_LOOPBACK=1 --env\s+AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1/);
+  assert.match(model, /on \*\*Yes, only me\*\* \(step 3\) put `AGENTRUN_MCP_ALLOW_LOOPBACK=1 AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` in\s+front of `sh` too/);
   assert.match(model, /https:\/\/openrouter\.ai\/keys, create a key, set its credit limit/);
   assert.match(model, /Claude\s+Max, Ultra\s+and Team plans include monthly API credits/);
   assert.doesNotMatch(skill, /(Sign in|Continue) with Claude/i);

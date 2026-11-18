@@ -2867,7 +2867,7 @@ const CONSOLE_URL = (what: string): Json => ({ type: "string", format: "uri", de
 /** The RUN_FIELDS every run's view and summary hold (runs.ts): required, beside the contract's. */
 export const RUN_FIELDS_SENT = ["revision", "kind", "archived_at"];
 /** The capabilities every answer carries beside the contract's required ones (server.ts capabilitiesWith). */
-export const CAPABILITIES_SENT = ["models", "places", "tools", "learning"];
+export const CAPABILITIES_SENT = ["models", "places", "tools", "learning", "switches"];
 /** The field every saved sign-in is sent with beside the contract's, required: `secret`, its one secret's metadata
  *  (secrets/1, sign-ins-secrets.ts). */
 export const SIGN_IN_FIELDS_SENT = ["secret"];
@@ -3446,6 +3446,19 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "How this host keeps one run from another: each run is a process of its own under the runner, and with `uid` each runs as a user of its own (the image's helper, a uid from 1001 per slot), so a run's tools read no other run's folder or memory, nor the data directory's store. `process`: every run as the runner's own user, where the host has no helper (a local install) or `AGENTRUN_RUN_USER=same` says so.",
       "x-agentrun-serve": "serve/1",
     },
+    switches: {
+      type: "object",
+      additionalProperties: {
+        type: "object", additionalProperties: false, required: ["on", "value", "allows"],
+        properties: {
+          on: { type: "boolean", description: "Whether the operator set it: a yes-or-no switch to 1, any other to a value." },
+          value: { type: ["string", "null"], description: "What the server read: `1` for a yes-or-no switch that is on, a comma list of hosts or `none` (AGENTRUN_BOX_ALLOW, lower-cased, each host once), or a size (AGENTRUN_BOX_CPUS, _MEMORY, _PIDS); null when unset. Never a secret: no switch holds one." },
+          allows: { type: "string", description: "What it allows, in an operator's words, with where it is safe to set." },
+        },
+      },
+      description: "The switches only the server's operator sets, as environment variables at its start, by name: AGENTRUN_MCP_ALLOW_LOOPBACK (an MCP server on this machine's loopback), AGENTRUN_WEBHOOK_PRIVATE_TARGETS (the outbound webhook to a private network or this machine), AGENTRUN_BOX_ALLOW (the hosts a run's computer may reach) and AGENTRUN_BOX_CPUS, AGENTRUN_BOX_MEMORY and AGENTRUN_BOX_PIDS (a Docker computer's size). No route and no console page sets them, so no caller of the API can widen what the server reaches; each takes a restart. A refusal one of them causes names it, the value that allows it and the restart (`restart the server with AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1 to allow it, only on a machine you alone use`), its error code unchanged.",
+      "x-agentrun-serve": "switches/1",
+    },
   },
   // decisions/2: the providers took on parallel (and, here, openrouter). A client that validates against decisions/1 refuses it, so the
   // widening is a mark of its own. decisions/3: a provider takes `route` (parallel's, on Parallel's API or OpenRouter), which a
@@ -3723,7 +3736,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // A run's place, which its view always sends (store-view.ts viewOverStore: the launch's, else the runner).
   const runSchema = schemas.Run as Json & { required: string[] };
   runSchema.required = [...runSchema.required, "place"];
-  // The capabilities this server always sends (server.ts capabilitiesWith: models, places, tools and learning; place.ts placesOf:
+  // The capabilities this server always sends (server.ts capabilitiesWith: models, places, tools, learning and switches; place.ts placesOf:
   // places.default_place), required with the contract's, so a client may read them as there.
   const capabilities = schemas.Capabilities as Json & { required: string[]; properties: Record<string, Json & { required: string[] }> };
   capabilities.required = [...capabilities.required, ...CAPABILITIES_SENT];
