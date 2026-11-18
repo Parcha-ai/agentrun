@@ -5,7 +5,7 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { lstat, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,7 +15,7 @@ import { serialize } from "node:v8";
 import { SECRET_NAMES } from "../dist/secrets.js";
 import { shadowRunId } from "../dist/learn/audit.js";
 import { Channel, ChannelClosed, MAX_FRAME } from "../dist/runner/run-channel.js";
-import { FIRST_RUN_ID, RUN_SLOTS, RunIsolationRefused, runIsolationOf, slotId, Slots, slotsUnder, storeCall } from "../dist/runner/run-child-host.js";
+import { FIRST_RUN_ID, reapSlot, RUN_SLOTS, RunIsolationRefused, runIsolationOf, slotId, Slots, slotsUnder, storeCall } from "../dist/runner/run-child-host.js";
 import { createServer } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
@@ -66,6 +66,18 @@ test("a run's folder is given to its next slot however deep an earlier claim's s
   const statOf = async (path) => Object.assign(Object.create(Object.getPrototypeOf(await lstat(path))), await lstat(path), { uid: uidOf(path) });
   assert.deepEqual(await slotsUnder(top, 3, statOf), [7], "the slot that wrote four levels down is reowned");
   assert.deepEqual(await slotsUnder(top, 7, statOf), [], "the run's own slot is not another's");
+});
+
+test("a slot's reap sweeps every folder of the host its uid can leave a file in: /tmp, /var/tmp, /dev/shm, /run/lock, /var/lock and /dev/mqueue", async (t) => {
+  const file = join(scratchDir(t, "runas-"), "agentrun-runas");
+  writeFileSync(file, `#!/bin/sh\nprintf '%s\\n' "$@" > "$0.args"\n`);
+  chmodSync(file, 0o755);
+  const top = scratchDir(t, "top-");
+  await reapSlot({ kind: "uid", helper: file, first: 0, slots: 1 }, 0, [top], () => undefined);
+  const args = readFileSync(`${file}.args`, "utf8").trim().split("\n");
+  const swept = args.flatMap((arg, i) => (arg === "--sweep" ? [args[i + 1]] : []));
+  assert.deepEqual(swept.sort(), ["/dev/mqueue", "/dev/shm", "/run/lock", "/tmp", "/var/lock", "/var/tmp"]);
+  assert.deepEqual(args.slice(0, 2), ["reap", "0"]);
 });
 
 /** A stand-in helper whose `check` exits `code`, saying `said` on stderr. */

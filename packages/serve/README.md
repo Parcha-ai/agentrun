@@ -3997,8 +3997,9 @@ carries no cost at all, as from a provider that does not price the model. The te
   reads neither another live run's folder nor its process's memory, environment or descriptors, and none reads the data
   directory (`0711`: crossed to its own folders, never listed), the store's files (`0600`), the seal key or the
   server's memory. A run's folders are its slot group's (`2770`), which the server's user is in. At the run's end every
-  process of its uid is killed, one in a session of its own included, its files in `/tmp`, `/var/tmp` and `/dev/shm`
-  are removed, and its folders go back to the server's group, which the slot's next run cannot enter.
+  process of its uid is killed, one in a session of its own included, its files in `/tmp`, `/var/tmp`, `/dev/shm`,
+  `/run/lock` (`/var/lock`) and `/dev/mqueue` are removed, and its folders go back to the server's group, which the
+  slot's next run cannot enter. SysV IPC objects (`ipcs`) a run leaves are not removed.
   `GET /v2/capabilities` says `run_isolation: "uid"`.
 - A platform that strips the image's file capabilities, or starts it with `no-new-privileges` (Docker's
   `security_opt: no-new-privileges:true`, Kubernetes' `allowPrivilegeEscalation: false`), leaves the helper unable to

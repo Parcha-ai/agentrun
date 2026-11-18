@@ -213,11 +213,15 @@ export async function slotsUnder(dir: string, slot: number, statOf: (path: strin
   return [...found];
 }
 
+/** The host's shared folders a slot's uid can leave a file in, each swept at its reap (/var/lock is /run/lock's link on
+ *  Debian, swept as itself where it is a folder of its own). SysV IPC is not swept. */
+const SWEPT = ["/tmp", "/var/tmp", "/dev/shm", "/run/lock", "/var/lock", "/dev/mqueue"] as const;
+
 /** After the run's process ended: every process of the slot's uid killed, its files in the shared temporary folders
  *  removed, what it left in its folders readable and removable by the server's group, and its top folders the server's
  *  own again (0770), which the slot's next run cannot enter. */
 export async function reapSlot(isolation: Extract<RunIsolation, { kind: "uid" }>, slot: number, tops: readonly string[], log: (line: string) => void): Promise<void> {
-  const args = ["reap", String(slot), "--sweep", "/tmp", "--sweep", "/var/tmp", "--sweep", "/dev/shm", ...tops.flatMap((top) => ["--fix", top])];
+  const args = ["reap", String(slot), ...SWEPT.flatMap((dir) => ["--sweep", dir]), ...tops.flatMap((top) => ["--fix", top])];
   const reaped = await execText(isolation.helper, args, 120_000);
   if (reaped.code !== 0) log(`slot ${slot}'s reap said: ${reaped.stderr.trim()}`);
   for (const top of tops) {
