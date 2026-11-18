@@ -104,7 +104,9 @@ async function archilSandbox(t, provider = "modal", { existing = [], saved = PRO
       return stand;
     },
   });
-  const run = () => computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "sandbox", provider } }, store, {
+  // The run's row as the claim's own (epoch 3, its runner), which fences the claim's writes of the run's folder.
+  const claimStore = { agents: store.agents, sealedKeys: store.sealedKeys, computerLedger: store.computerLedger, settings: store.settings, runs: { get: async () => ({ epoch: 3, runner: "runner-3" }) } };
+  const run = () => computerForClaim({ runId: "run-1", epoch: 3, computer: { kind: "sandbox", provider } }, claimStore, {
     mode: 2, kinds: REAL_KINDS, sealKey, providers, ...(settings ? { settings } : {}),
     spec: () => ({ image: "agentrun/computer:test", lifetimeMs: 60_000, network: "none" }),
     workspace, check: { readBackOf, epoch: 3 }, revokeMount: () => claim.revoke(),

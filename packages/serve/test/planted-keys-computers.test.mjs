@@ -154,7 +154,9 @@ test("Rule 5: with every key planted, a Mode 1 sandbox's computer, a faux deskto
   const mounted = { created: [], options: [] };
   // An Archil mount needs Archil's image in the computer: here the operator names it.
   const archilKinds = { ...faux.kinds, PROVIDERS: faux.kinds.PROVIDERS.map((one) => (one.id === "faux-sandbox" ? { ...one, mounts: ["archil"], imageNamed: true } : one)) };
-  const remote = await computerForClaim({ runId: "run-3", epoch: 1, computer: { kind: "sandbox", provider: "faux-sandbox" } }, store, {
+  // The run's row as the claim's own (epoch 1, its runner), which fences the claim's writes of the run's folder.
+  const claimStore = { agents: store.agents, sealedKeys: store.sealedKeys, computerLedger: store.computerLedger, settings: store.settings, runs: { get: async () => ({ epoch: 1, runner: "runner-1" }) } };
+  const remote = await computerForClaim({ runId: "run-3", epoch: 1, computer: { kind: "sandbox", provider: "faux-sandbox" } }, claimStore, {
     mode: 2, kinds: archilKinds, keyTable: faux.keyTable, sealKey, spec: SPEC,
     providers: { "faux-sandbox": (options) => (mounted.options.push(options), recordingProvider(join(scratch, "work"), mounted)) },
     workspace, check: { readBackOf: archilReadBackOf, epoch: 1 }, revokeMount: () => claim.revoke(),

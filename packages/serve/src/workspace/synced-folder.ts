@@ -18,7 +18,8 @@
 //   read through computerd, which sees the mount; a later synced claim pushes them, takes the files the file API lists
 //   where sync.json names links as those links (an exec made them), and removes those from the disk (storedFolder,
 //   pushFolder).
-// - Every write of a claim's goes through fencedStore: once another claim holds the run, it is refused, never sent.
+// - Every write of a claim's goes through fencedStore: once a later claim has taken the run (the run's epoch and runner
+//   say so, held or not), it is refused, never sent.
 import { type ComputerClient, fail, type FolderMeta, folderPathProblem, FolderSync, ok, pushTar, type Result, SYNC_MAX_BYTES, SYNC_MAX_ENTRIES, type SyncSink, type TarEntry, tarStream, WORKSPACE } from "@parcha/agentrun-computer";
 
 /** A file or a directory of the folder as the store holds it, by its path relative to the folder. */
@@ -172,10 +173,18 @@ export async function pullFolder(store: FolderStore, client: ComputerClient, sig
  * store's sync.json (FolderSync.recordMeta), which the mount never reads: so a later claim that holds the folder as a
  * synced folder has them (storedFolder). A folder over a cap records nothing and is no failure: no synced folder holds it.
  */
-export async function recordMeta(store: FolderStore, client: ComputerClient, signal?: AbortSignal): Promise<Result<void>> {
-  const recorded = await new FolderSync(client, store).recordMeta(signal ? { signal } : {});
-  return recorded.ok || recorded.error.code !== "limit" ? recorded : ok(undefined);
+export async function recordMeta(store: FolderStore, client: ComputerClient): Promise<Result<void>> {
+  try {
+    const recorded = await new FolderSync(client, store).recordMeta({ signal: AbortSignal.timeout(RECORD_MS) });
+    return recorded.ok || recorded.error.code !== "limit" ? recorded : ok(undefined);
+  } catch (error) {
+    return fail("refused", message(error));
+  }
 }
+
+/** The most a recordMeta waits on the computer's listing and the sync.json write, so a computer that stops answering
+ *  still goes at release. */
+const RECORD_MS = 60_000;
 
 /** A failed recordMeta at release, in words. */
 export const recordWords = (why: string): string => `the run's folder's modes and links were not recorded in its sync.json (${why}), so a later claim that syncs the folder may not have them`;
@@ -184,19 +193,21 @@ export const recordWords = (why: string): string => `the run's folder's modes an
 const CLAIM_GONE = "this runner no longer holds the run's claim, so its write to the run's folder was not sent";
 
 /**
- * Whether `claim` may still write the run's folder: no other claim holds the run now, by `heldAt` (the store's runs.heldAt:
- * the epoch a claim holds it at, by the store's own clock). A run no claim holds is no other's: this claim's own end or
- * park released it before its final sync, or its lease ran out and no runner has claimed it since.
+ * Whether `claim` may still write the run's folder, by the run's row as `run` reads it from the store (runs.get). A claim
+ * moves the run's epoch up by one, and so does an end, park or release, which also clears its runner. So the claim may
+ * write while the epoch is still its own (its lease may have run out, but nothing has claimed the run since), or one
+ * past it with no runner (its own end, park or release, before its final sync). A later claim, held, ended or run out,
+ * puts the epoch further, or one past with a runner, and every write of this claim's is refused from then on.
  */
-export const claimHolds = (heldAt: (runId: string) => Promise<number | undefined>, claim: { readonly runId: string; readonly epoch: number }) =>
+export const claimHolds = (run: (runId: string) => Promise<{ readonly epoch: number; readonly runner: string | null } | undefined>, claim: { readonly runId: string; readonly epoch: number }) =>
   async (): Promise<boolean> => {
-    const held = await heldAt(claim.runId);
-    return held === undefined || held === claim.epoch;
+    const row = await run(claim.runId);
+    return row !== undefined && (row.epoch === claim.epoch || (row.epoch === claim.epoch + 1 && row.runner === null));
   };
 
 /**
- * `store` fenced by the run's claim (Q1): each write asks `holds` (claimHolds) first, and once another claim holds the run
- * it is refused in words and never sent; one whose check fails is not sent either. Reads are not fenced. What is left is
+ * `store` fenced by the run's claim (Q1): each write asks `holds` (claimHolds) first, and once a later claim has taken the
+ * run it is refused in words and never sent; one whose check fails is not sent either. Reads are not fenced. What is left is
  * a write sent before the other claim landed in the store: it lands, at most one write's flight per write in flight.
  */
 export function fencedStore(store: FolderStore, holds: () => Promise<boolean>): FolderStore {

@@ -51,9 +51,18 @@ function memorySettings() {
 /** The store parts the claim reads, its settings shared by every claim and the janitor (one server's store). */
 function memoryStore() {
   const keys = new Map();
-  const runs = new Map([["run-1", { id: "run-1", state: "parked" }]]);
+  const runs = new Map([["run-1", { id: "run-1", state: "parked", epoch: 0, runner: null }]]);
   return {
-    runs: { get: async (id) => runs.get(id), heldAt: async () => undefined, list: async () => [...runs.values()], set: (id, state) => runs.set(id, { id, state }) },
+    // `take`: a runner's claim of the run, at `epoch` (the store's claim moves the epoch up and names the runner); `end`:
+    // its end, park or release commit (the epoch up by one, no runner).
+    runs: {
+      get: async (id) => runs.get(id),
+      heldAt: async () => undefined,
+      list: async () => [...runs.values()],
+      set: (id, state) => runs.set(id, { ...runs.get(id), id, state }),
+      take: (id, epoch) => runs.set(id, { ...runs.get(id), epoch, runner: `runner-${epoch}` }),
+      end: (id) => runs.set(id, { ...runs.get(id), epoch: runs.get(id).epoch + 1, runner: null }),
+    },
     agents: { revision: async () => undefined },
     settings: memorySettings(),
     sealedKeys: { get: async (name) => keys.get(name), put: async (name, sealed) => void keys.set(name, sealed), remove: async (name) => void keys.delete(name), all: async () => [...keys].map(([name]) => ({ name })) },
@@ -129,7 +138,10 @@ async function server({ setting = E2B_DESKTOP, mode = 1, groups = DESKTOP_GROUPS
   const providers = Object.fromEntries(["docker", "e2b", "agent37", "phone-harness", "daytona"].map((id) => [id, () => account.provider]));
   const mounts = { revoked: 0, inherited: 0 };
   const deps = { mode, kinds: KINDS, sealKey, providers, spec: SPEC, workspace: workspace ?? localWorkspace(root), revokeMount: async () => void (mounts.revoked += 1), inheritMount: () => void (mounts.inherited += 1), now: () => clock.now };
-  const claim = (epoch, extra = {}) => computerForClaim({ runId: "run-1", epoch, computer: setting }, store, { ...deps, check: { readBackOf, epoch }, ...extra });
+  const claim = (epoch, extra = {}) => {
+    store.runs.take("run-1", epoch);
+    return computerForClaim({ runId: "run-1", epoch, computer: setting }, store, { ...deps, check: { readBackOf, epoch }, ...extra });
+  };
   const janitor = () => sweepKeptComputers({ store, computers: { kinds: KINDS, providers, keyOf: (name) => getSealedKey(store, sealKey, name) }, now: () => clock.now });
   return { store, account, clock, mounts, claim, janitor, sealKey, keys };
 }
@@ -494,9 +506,6 @@ test("a synced folder's park whose delta does not land keeps nothing: the comput
 
 test("a runner that lost its claim has its writes to the run's folder refused by the claim epoch: once runner B holds the run, nothing runner A sends reaches the disk, and B's writes land", async () => {
   const one = await syncedServer();
-  // The claim that holds run-1 now, by the store's clock (runs.heldAt).
-  let holder = 1;
-  one.store.runs.heldAt = async () => holder;
   const writes = () => one.disk.calls.filter(({ op }) => op === "putObject" || op === "deleteObject" || op === "appendObject").length;
   const a = await one.claim(1);
   const aClient = a.computer.computer.client;
@@ -505,7 +514,6 @@ test("a runner that lost its claim has its writes to the run's folder refused by
   assert.equal(text(one.disk.files.get(`${RUN_ROOT}/a1.txt`)), "A, holding the claim\n");
 
   // Runner B claims the run at epoch 2; runner A goes on, not knowing yet.
-  holder = 2;
   const b = await one.claim(2);
   const before = writes();
   one.account.computer.plant.file("/workspace/a2.txt", "A, after B's claim\n");
@@ -525,6 +533,26 @@ test("a runner that lost its claim has its writes to the run's folder refused by
   assert.equal(text(one.disk.files.get(`${RUN_ROOT}/b.txt`)), "B\n");
   assert.equal(one.disk.dirs.has(`${RUN_ROOT}/d3`), true);
   await b.release();
+
+  // B's run ends (its end commit: the epoch up by one, no runner), so no claim holds the run: A is still refused.
+  one.store.runs.end("run-1");
+  const after = writes();
+  one.account.computer.plant.file("/workspace/a3.txt", "A, after B's end\n");
+  const later = await aClient.call("files.mkdir", { path: "/workspace/d4" });
+  assert.equal(later.ok, false, "a run that a later claim ended is not A's again");
+  assert.match(later.error.message, /this runner no longer holds the run's claim/);
+  assert.equal(writes(), after);
+  assert.equal(one.disk.files.has(`${RUN_ROOT}/a3.txt`), false);
+});
+
+test("a claim's own end or park lets its final writes through: the epoch one past its own with no runner is still the claim's", async () => {
+  const one = await syncedServer();
+  const a = await one.claim(4);
+  // The adapter loop's end commit lands before the final delta: the epoch up by one, no runner.
+  one.store.runs.end("run-1");
+  one.account.computer.plant.file("/workspace/last.txt", "written after the end commit\n");
+  await a.release();
+  assert.equal(text(one.disk.files.get(`${RUN_ROOT}/last.txt`)), "written after the end commit\n");
 });
 
 test("a kept computer holding the run's folder another way is not taken back: a claim that syncs it deletes it, removes its mount token and makes a new one", async () => {

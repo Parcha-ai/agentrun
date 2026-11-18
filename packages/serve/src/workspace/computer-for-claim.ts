@@ -779,14 +779,14 @@ async function ownedStart(
  *  computer_unavailable and the server's words when the agent's computer cannot be had here. */
 export async function computerForClaim(
   launch: ClaimLaunch,
-  // `settings` and `runs`: the agent's own computer's record and its holder's run row, for a persistent setting; and
-  // `runs.heldAt`, the claim that holds the run now, which fences every write of the run's folder to its disk.
-  store: Pick<Store, "agents" | "sealedKeys" | "computerLedger"> & { readonly settings?: Store["settings"]; readonly runs?: Pick<Store["runs"], "get" | "heldAt"> },
+  // `settings` and `runs`: the agent's own computer's record and its holder's run row, for a persistent setting; and the
+  // run's own row, whose epoch and runner fence every write of the run's folder to its disk.
+  store: Pick<Store, "agents" | "sealedKeys" | "computerLedger"> & { readonly settings?: Store["settings"]; readonly runs?: Pick<Store["runs"], "get"> },
   deps: ComputerForClaimDeps,
 ): Promise<ClaimComputer> {
-  // The run's disk as this claim writes the folder on it: each write refused once another claim holds the run (Q1).
+  // The run's disk as this claim writes the folder on it: each write refused once a later claim has taken the run (Q1).
   const runs = store.runs;
-  const holds = runs ? claimHolds((runId) => runs.heldAt(runId), launch) : undefined;
+  const holds = runs ? claimHolds((runId) => runs.get(runId), launch) : undefined;
   const diskOf = (): FolderStore | undefined => {
     const disk = deps.workspace.syncStore?.();
     return disk && holds ? fencedStore(disk, holds) : disk;
