@@ -492,6 +492,41 @@ test("a synced folder's park whose delta does not land keeps nothing: the comput
   assert.equal(one.mounts.revoked, 1);
 });
 
+test("a runner that lost its claim has its writes to the run's folder refused by the claim epoch: once runner B holds the run, nothing runner A sends reaches the disk, and B's writes land", async () => {
+  const one = await syncedServer();
+  // The claim that holds run-1 now, by the store's clock (runs.heldAt).
+  let holder = 1;
+  one.store.runs.heldAt = async () => holder;
+  const writes = () => one.disk.calls.filter(({ op }) => op === "putObject" || op === "deleteObject" || op === "appendObject").length;
+  const a = await one.claim(1);
+  const aClient = a.computer.computer.client;
+  one.account.computer.plant.file("/workspace/a1.txt", "A, holding the claim\n");
+  assert.equal((await aClient.call("files.mkdir", { path: "/workspace/d1" })).ok, true);
+  assert.equal(text(one.disk.files.get(`${RUN_ROOT}/a1.txt`)), "A, holding the claim\n");
+
+  // Runner B claims the run at epoch 2; runner A goes on, not knowing yet.
+  holder = 2;
+  const b = await one.claim(2);
+  const before = writes();
+  one.account.computer.plant.file("/workspace/a2.txt", "A, after B's claim\n");
+  const late = await aClient.call("files.mkdir", { path: "/workspace/d2" });
+  assert.equal(late.ok, false, "A's call answers that its folder was not made durable");
+  assert.match(late.error.message, /^files\.mkdir ran, but the run's folder could not be made durable: .*this runner no longer holds the run's claim/);
+  assert.equal(writes(), before, "nothing A sent reached the disk");
+  assert.equal(one.disk.files.has(`${RUN_ROOT}/a2.txt`), false);
+  assert.equal(one.disk.dirs.has(`${RUN_ROOT}/d2`), false);
+  // A's release: its final delta is refused too (its computer, which B's claim let go, is gone already).
+  await a.release().catch(() => undefined);
+  assert.equal(writes(), before, "nothing of A's final delta reached the disk");
+
+  // B's writes land.
+  one.account.computer.plant.file("/workspace/b.txt", "B\n");
+  assert.equal((await b.computer.computer.client.call("files.mkdir", { path: "/workspace/d3" })).ok, true);
+  assert.equal(text(one.disk.files.get(`${RUN_ROOT}/b.txt`)), "B\n");
+  assert.equal(one.disk.dirs.has(`${RUN_ROOT}/d3`), true);
+  await b.release();
+});
+
 test("a kept computer holding the run's folder another way is not taken back: a claim that syncs it deletes it, removes its mount token and makes a new one", async () => {
   const one = await syncedServer();
   const made = await one.account.provider.create({ labels: { "agentrun.epoch": "3" }, mount: { kind: "archil", disk: "dsk-1", region: "aws-us-east-1", folder: "acme/r1/work" } });

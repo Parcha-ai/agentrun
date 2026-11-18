@@ -14,6 +14,11 @@
 // - At release, a final delta (finalWords says a failed one).
 // - A run synced before and claimed again on an Archil mount: sync.json's modes and links put back over the mount, then
 //   sync.json emptied (restoreMeta), since the mount keeps them itself.
+// - The reverse: an Archil computer's park and release record its folder's modes and links in sync.json (recordMeta),
+//   read through computerd, which sees the mount; a later synced claim pushes them, takes the files the file API lists
+//   where sync.json names links as those links (an exec made them), and removes those from the disk (storedFolder,
+//   pushFolder).
+// - Every write of a claim's goes through fencedStore: once another claim holds the run, it is refused, never sent.
 import { type ComputerClient, fail, type FolderMeta, folderPathProblem, FolderSync, ok, pushTar, type Result, SYNC_MAX_BYTES, SYNC_MAX_ENTRIES, type SyncSink, type TarEntry, tarStream, WORKSPACE } from "@parcha/agentrun-computer";
 
 /** A file or a directory of the folder as the store holds it, by its path relative to the folder. */
@@ -29,8 +34,10 @@ export interface FolderStore extends SyncSink {
   readMeta(): Promise<FolderMeta | undefined>;
 }
 
-/** What the store holds, listed whole and within the caps, and its modes and links. */
-export type StoredFolder = { readonly entries: readonly StoredEntry[]; readonly meta: FolderMeta };
+/** What the store holds, listed whole and within the caps, and its modes and links. `linkObjects`: links an exec made
+ *  on the disk (an Archil mount's), which its file API lists as files: pushed as the links sync.json names, then removed
+ *  from the disk, which keeps a synced folder's links in sync.json alone. */
+export type StoredFolder = { readonly entries: readonly StoredEntry[]; readonly meta: FolderMeta; readonly linkObjects: readonly string[] };
 
 /** How many files a push reads ahead of the one the tar is writing. */
 const AHEAD = 4;
@@ -43,23 +50,28 @@ const message = (error: unknown): string => (error instanceof Error ? error.mess
 
 /**
  * The store's folder listed and held to the caps (SYNC_MAX_ENTRIES, SYNC_MAX_BYTES), from the listing alone, before a
- * byte is read: over one, it throws in words naming the folder's size and the cap. A link sync.json records where the
- * listing has something of its own, or at a path no sink takes, is not the folder's.
+ * byte is read: over one, it throws in words naming the folder's size and the cap. A file the listing has where
+ * sync.json records a link is that link, made by an exec on an Archil mount (the file API lists one as a file, and an
+ * Archil computer's release records it: recordMeta). A link sync.json records where the listing has a directory, or at a
+ * path no sink takes, is not the folder's.
  */
 export async function storedFolder(store: FolderStore): Promise<StoredFolder> {
-  const entries: StoredEntry[] = [];
+  const listed: StoredEntry[] = [];
   let bytes = 0;
   for await (const entry of store.entries()) {
-    entries.push(entry);
+    listed.push(entry);
     if (entry.type === "file") bytes += entry.size;
-    if (entries.length > SYNC_MAX_ENTRIES) throw new Error(tooMany);
+    if (listed.length > SYNC_MAX_ENTRIES) throw new Error(tooMany);
   }
   if (bytes > SYNC_MAX_BYTES) throw new Error(`the run's folder holds ${bytes} bytes, more than ${SYNC_MAX_BYTES}, the most a synced folder holds`);
   const recorded = (await store.readMeta()) ?? { modes: {}, links: {} };
-  const listed = new Set(entries.map((entry) => entry.path));
-  const links = Object.entries(recorded.links).filter(([path]) => !listed.has(path) && folderPathProblem(path) === undefined);
+  const dirs = new Set(listed.filter((entry) => entry.type === "dir").map((entry) => entry.path));
+  const links = Object.entries(recorded.links).filter(([path]) => !dirs.has(path) && folderPathProblem(path) === undefined);
+  const linked = new Set(links.map(([path]) => path));
+  const entries = listed.filter((entry) => !linked.has(entry.path));
   if (entries.length + links.length > SYNC_MAX_ENTRIES) throw new Error(tooMany);
-  return { entries, meta: { modes: recorded.modes, links: Object.fromEntries(links) } };
+  const linkObjects = listed.filter((entry) => linked.has(entry.path)).map((entry) => entry.path);
+  return { entries, meta: { modes: recorded.modes, links: Object.fromEntries(links) }, linkObjects };
 }
 
 /** `promise` as is, its failure also handled, so a read ahead that a push never reaches is no unhandled rejection. */
@@ -70,7 +82,7 @@ const quiet = <T>(promise: Promise<T>): Promise<T> => {
 
 /** The folder's entries as tar entries, by path (a directory before what is in it), then its links: each file read
  *  AHEAD ahead of the one written, so what is held is those few, never the folder. */
-async function* tarEntries(store: FolderStore, { entries, meta }: StoredFolder): AsyncGenerator<TarEntry> {
+async function* tarEntries(store: FolderStore, { entries, meta }: Pick<StoredFolder, "entries" | "meta">): AsyncGenerator<TarEntry> {
   const modeOf = (path: string, fallback: number): number => (Object.hasOwn(meta.modes, path) ? meta.modes[path]! : fallback);
   const sorted = [...entries].sort(byPath);
   const files = sorted.filter((entry) => entry.type === "file");
@@ -94,8 +106,9 @@ async function* tarEntries(store: FolderStore, { entries, meta }: StoredFolder):
 
 /**
  * The stored folder pushed into the computer's empty /workspace through `client` (the computer's own, under no sync),
- * one streaming tar, then the computer's listing read as the manifest: the folder's sync. Throws in words where the
- * push or the listing fails.
+ * one streaming tar, then the computer's listing read as the manifest: the folder's sync. The links an exec made on the
+ * disk (linkObjects), now links in the computer, are then removed from the disk. Throws in words where the push, the
+ * listing or a remove fails.
  */
 export async function pushFolder(store: FolderStore, client: ComputerClient, stored: StoredFolder, signal?: AbortSignal): Promise<FolderSync> {
   const options = signal ? { signal } : {};
@@ -106,6 +119,10 @@ export async function pushFolder(store: FolderStore, client: ComputerClient, sto
   const folder = new FolderSync(client, store);
   const listed = await folder.baseline(options);
   if (!listed.ok) throw new Error(`the run's folder pushed into the computer could not be listed: ${listed.error.message}`);
+  for (const path of stored.linkObjects) {
+    const removed = await store.remove(path, "file");
+    if (!removed.ok) throw new Error(`the link ${JSON.stringify(path)} an exec made on the run's disk could not be removed from it: ${removed.error.message}`);
+  }
   return folder;
 }
 
@@ -148,6 +165,59 @@ export async function pullFolder(store: FolderStore, client: ComputerClient, sig
   const pulled = await folder.sync(signal ? { signal } : {});
   if (!pulled.ok) throw new Error(`the run's folder in the kept computer could not be made durable: ${pulled.error.message}`);
   return folder;
+}
+
+/**
+ * An Archil computer's folder's modes and links, read through `client` (its computerd sees the mount), written to the
+ * store's sync.json (FolderSync.recordMeta), which the mount never reads: so a later claim that holds the folder as a
+ * synced folder has them (storedFolder). A folder over a cap records nothing and is no failure: no synced folder holds it.
+ */
+export async function recordMeta(store: FolderStore, client: ComputerClient, signal?: AbortSignal): Promise<Result<void>> {
+  const recorded = await new FolderSync(client, store).recordMeta(signal ? { signal } : {});
+  return recorded.ok || recorded.error.code !== "limit" ? recorded : ok(undefined);
+}
+
+/** A failed recordMeta at release, in words. */
+export const recordWords = (why: string): string => `the run's folder's modes and links were not recorded in its sync.json (${why}), so a later claim that syncs the folder may not have them`;
+
+/** Why a write of a runner that lost its claim of the run is refused. */
+const CLAIM_GONE = "this runner no longer holds the run's claim, so its write to the run's folder was not sent";
+
+/**
+ * Whether `claim` may still write the run's folder: no other claim holds the run now, by `heldAt` (the store's runs.heldAt:
+ * the epoch a claim holds it at, by the store's own clock). A run no claim holds is no other's: this claim's own end or
+ * park released it before its final sync, or its lease ran out and no runner has claimed it since.
+ */
+export const claimHolds = (heldAt: (runId: string) => Promise<number | undefined>, claim: { readonly runId: string; readonly epoch: number }) =>
+  async (): Promise<boolean> => {
+    const held = await heldAt(claim.runId);
+    return held === undefined || held === claim.epoch;
+  };
+
+/**
+ * `store` fenced by the run's claim (Q1): each write asks `holds` (claimHolds) first, and once another claim holds the run
+ * it is refused in words and never sent; one whose check fails is not sent either. Reads are not fenced. What is left is
+ * a write sent before the other claim landed in the store: it lands, at most one write's flight per write in flight.
+ */
+export function fencedStore(store: FolderStore, holds: () => Promise<boolean>): FolderStore {
+  const fenced = async (write: () => Promise<Result<void>>): Promise<Result<void>> => {
+    let held: boolean;
+    try {
+      held = await holds();
+    } catch (error) {
+      return fail("refused", `the run's claim could not be read, so the write to the run's folder was not sent: ${message(error)}`);
+    }
+    return held ? write() : fail("refused", CLAIM_GONE);
+  };
+  return {
+    entries: () => store.entries(),
+    read: (path, size) => store.read(path, size),
+    readMeta: () => store.readMeta(),
+    put: (path, body) => fenced(() => store.put(path, body)),
+    mkdir: (path) => fenced(() => store.mkdir(path)),
+    remove: (path, type) => fenced(() => store.remove(path, type)),
+    meta: (meta) => fenced(() => store.meta(meta)),
+  };
 }
 
 /** `folder`'s sync, one at a time (syncingClient's after each change, and the final one at release), as
