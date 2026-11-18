@@ -1573,10 +1573,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // Slack (slack.ts): the webhook's outbox under its own channel, its URL the credential, sealed and cut like a secret.
   const slack = new SlackPosts(store, sealKey, (fields) => (log ? log(logLine("slack", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("slack", fields)}\n`)), {
     ...(options.webhookRetryMs ? { retryMs: options.webhookRetryMs } : {}),
+    ...(options.webhookTimeoutMs !== undefined ? { timeoutMs: options.webhookTimeoutMs } : {}),
     ...(options.webhookLookup ? { lookup: options.webhookLookup } : {}),
     privateTargets: options.webhookPrivateTargets ?? process.env.AGENTRUN_WEBHOOK_PRIVATE_TARGETS === "1",
     ...(options.slackTarget ? { sendTo: options.slackTarget } : {}),
-    nameOf: async (agentId) => (await store.agents.get(agentId))?.name || undefined,
+    // Each message's strings (an agent's name, a run's title, a trigger's error) cut of every secret the server holds.
+    serverSecrets: () => serverSecrets(),
   });
   stops.push(() => slack.close());
   await slack.load();

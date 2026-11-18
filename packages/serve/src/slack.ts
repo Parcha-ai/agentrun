@@ -11,12 +11,15 @@
 // form, the events, when it was set and why it is off.
 //
 // What a message says follows the webhook's rule: never a tool's arguments, a run's output or its input. It names the
-// agent (its name, else its id), the status in a plain word, the run's title and a link to the run in the console; a wait
-// says what the run waits on (`pending.kind`), a trigger's failure its name and error. Slack answers 200 "ok"; a 404 or
+// agent (its `agent_name`, which is its id when it has none), the status in a plain word, the run's title and a link to the
+// run in the console; a wait says what the run waits on (`pending.kind`), a trigger's failure its name and error. Every
+// string a message is made of is cut of the server's secrets first (SlackOptions.serverSecrets): an agent's or a trigger's name is
+// whatever a person typed, and a run's title or a trigger's error may quote a key. Slack answers 200 "ok"; a 404 or
 // 410 (no_service, channel_not_found, channel_is_archived...) turns Slack off with Slack's word, as a webhook's 410 does.
 import { randomBytes } from "node:crypto";
 import { fetch as undiciFetch } from "undici";
 import { ApiError, invalid } from "./errors.js";
+import { redacted } from "./key-refusal.js";
 import { SERVER_SCOPE } from "./sealed-settings-store.js";
 import { registerNotSecretWrite, registerSecretWrite, secretMeta, secretName, type SecretMeta } from "./secret-writes.js";
 import type { TriggerFailed } from "./triggers.js";
@@ -79,10 +82,11 @@ export function slackUrlForms(url: string): string[] {
   return token.length >= 16 ? [url, token] : [url];
 }
 
-/** What Slack takes beside the webhook's options: `nameOf`, an agent's name now (its id when none); `sendTo`, a test's
- *  seam, the origin each try posts to in place of https://hooks.slack.com, the URL's path kept (it may be on this
- *  machine). */
-export type SlackOptions = WebhooksOptions & { nameOf?: (agentId: string) => Promise<string | undefined>; sendTo?: string };
+/** What Slack takes beside the webhook's options: `serverSecrets`, every secret the server holds (server.ts serverSecrets),
+ *  read at each message, so a secret saved since is cut too (key-refusal.ts redacted, the rule a run's view takes);
+ *  `sendTo`, a test's seam, the origin each try posts to in place of https://hooks.slack.com, the URL's path kept (it may
+ *  be on this machine). */
+export type SlackOptions = WebhooksOptions & { serverSecrets?: () => readonly string[]; sendTo?: string };
 
 /** Slack's view (GET /v2/settings/slack): never the URL. */
 export type SlackView =
@@ -90,16 +94,14 @@ export type SlackView =
   | { configured: true; url: string; url_state: "sealed" | "unreadable"; secret: SecretMeta; events: Events; disabled: { at: string; reason: string } | null; updated_at: string };
 
 export class SlackPosts extends Webhooks {
-  /** Each agent's name as its last notice read it: a message names the agent, and its body is made as it is queued. */
-  private readonly names = new Map<string, string>();
-  private readonly nameOf?: (agentId: string) => Promise<string | undefined>;
+  private readonly serverSecrets: () => readonly string[];
   private readonly sendTo?: URL;
 
   constructor(store: WebhooksStore, key: Buffer, say: (fields: Record<string, string | number>) => void, options: SlackOptions = {}) {
-    const { nameOf, sendTo, ...rest } = options;
+    const { serverSecrets, sendTo, ...rest } = options;
     // A test's seam sends to this machine: its own target, never a name Slack's is resolved to.
     super(store, key, say, sendTo ? { ...rest, privateTargets: true } : rest, SLACK_OUTBOUND);
-    this.nameOf = nameOf;
+    this.serverSecrets = serverSecrets ?? (() => []);
     this.sendTo = sendTo ? new URL(sendTo) : undefined;
   }
 
@@ -172,32 +174,36 @@ export class SlackPosts extends Webhooks {
       const config: SlackConfig = { url: shownUrl(href), secret_at: now, secret_scope: scope, updated_at: now, events: { ...(was ? this.events(was) : DEFAULT_SLACK_EVENTS), ...events } };
       await this.write(config);
     } catch (error) {
-      await this.secrets.remove(scope).catch((removal: Error) => this.say({ condition: "url_unremoved", error: removal.message }));
+      // The store may hold the setting that names the new URL (a put that landed, its flush failed), as the webhook's
+      // rotate finds (webhooks.ts). What was there goes back first (the earlier setting, or none), and only once that is
+      // durable does the new URL go: the store never names a URL that is gone. If it can't go back, the new URL stays,
+      // and the next start removes whichever URL the setting does not name (load).
+      const restored = await (was ? this.write(was) : this.unwrite()).then(() => true, () => false);
+      if (restored) await this.secrets.remove(scope).catch((removal: Error) => this.say({ condition: "url_unremoved", error: removal.message }));
       throw error;
     }
     if (was && was.secret_scope !== scope) await this.secrets.remove(was.secret_scope).catch((removal: Error) => this.say({ condition: "url_unremoved", error: removal.message }));
     return { created: !was, view: this.slackView() };
   }
 
-  /** A run's notice, queued when its event is on, with its agent's name read now. */
+  /** A run's notice, queued when its event is on. */
   override async emit(type: (typeof RUN_EVENTS)[number], run: RunNotice, marker: string): Promise<Emitted> {
     if (!this.wants(type)) return "off";
-    await this.learnName(run.agent_id);
     return super.emit(type, run, marker);
   }
 
   /** A trigger's failed firing, queued when trigger.failed is on. */
   override async emitTrigger(failed: TriggerFailed, firingKey: string): Promise<Emitted> {
     if (!this.wants("trigger.failed")) return "off";
-    const agent = (failed as { agent_id?: unknown }).agent_id;
-    if (typeof agent === "string") await this.learnName(agent);
     return super.emitTrigger(failed, firingKey);
   }
 
+  /** The message, made of the notice's strings each cut of the server's secrets before it is escaped and shortened (a cut
+   *  after would miss a value the escaping changed, or the shortening split), and saved so: its row never holds one. */
   protected override body(type: string, data: unknown): string {
-    const fields = isObject(data) ? data : {};
-    const agentId = typeof fields.agent_id === "string" ? fields.agent_id : undefined;
-    const agent = typeof fields.agent_name === "string" && fields.agent_name ? fields.agent_name : agentId ? (this.names.get(agentId) ?? agentId) : undefined;
+    const held = this.serverSecrets();
+    const fields = cutStrings(isObject(data) ? data : {}, (text) => redacted(text, held)) as Record<string, unknown>;
+    const agent = typeof fields.agent_name === "string" && fields.agent_name ? fields.agent_name : typeof fields.agent_id === "string" ? fields.agent_id : undefined;
     return JSON.stringify(slackMessage(type, fields, { agent, base: this.base }));
   }
 
@@ -234,12 +240,14 @@ export class SlackPosts extends Webhooks {
     return config ? this.secrets.get(config.secret_scope, URL_FIELD) : undefined;
   }
 
-  private async learnName(agentId: string): Promise<void> {
-    if (!this.nameOf) return;
-    const name = await this.nameOf(agentId).catch(() => undefined);
-    if (name) this.names.set(agentId, name);
-    else this.names.delete(agentId);
-  }
+}
+
+/** `value` with each string in it, at any depth, made by `cut`. */
+function cutStrings(value: unknown, cut: (text: string) => string): unknown {
+  if (typeof value === "string") return cut(value);
+  if (Array.isArray(value)) return value.map((item) => cutStrings(item, cut));
+  if (isObject(value)) return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, cutStrings(item, cut)]));
+  return value;
 }
 
 // ---- the messages --------------------------------------------------------------------------------------------------

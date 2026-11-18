@@ -404,7 +404,7 @@ export class Webhooks {
       return "off";
     }
     if (ends && !this.due(marker, config)) return "queued";
-    const id = `msg_${createHash("sha256").update(`${run.run_id}\n${type}\n${marker}`).digest("hex").slice(0, 32)}`;
+    const id = this.messageId(`${run.run_id}\n${type}\n${marker}`);
     const data = { run_id: run.run_id, agent_id: run.agent_id, agent_name: run.agent_name, status: run.status, title: run.title, url: `${this.base}/#/runs/${encodeURIComponent(run.run_id)}`, ...(run.pending ? { pending: run.pending } : {}) };
     // A new wait goes beside the run's earlier waits and replaces its end (one after an end is a continued run's, past that
     // end); an end replaces the run's last end and keeps its waits.
@@ -430,7 +430,7 @@ export class Webhooks {
   async emitTrigger(failed: TriggerFailed, firingKey: string): Promise<Emitted> {
     if (this.closed) return "closed";
     if (!this.config || this.config.disabled || this.removing) return "off";
-    const id = `msg_${createHash("sha256").update(`trigger.failed\n${firingKey}`).digest("hex").slice(0, 32)}`;
+    const id = this.messageId(`trigger.failed\n${firingKey}`);
     try {
       if ((await this.posted({ id, channel: this.outbound.channel, moment: "trigger.failed", body: this.body("trigger.failed", failed), nextAt: Date.now() })) || !this.timers.has(id)) this.schedule(id, 0);
     } catch (error) {
@@ -481,6 +481,14 @@ export class Webhooks {
       if ((await this.emit("run.ended", now.notice, endedAt)) === "unsaved") unsaved.push(id);
     }
     return unsaved;
+  }
+
+  /** A moment's message id, made from `key` (the same moment, told again by a later server too, has the same id). The
+   *  store keeps one message per id across every channel, so another outbox's ids are made under its channel too: Slack's
+   *  message for a run's end is never the webhook's, whichever is written first. The webhook's ids are as they always were. */
+  private messageId(key: string): string {
+    const made = this.outbound.channel === WEBHOOK_CHANNEL ? key : `${this.outbound.channel}\n${key}`;
+    return `msg_${createHash("sha256").update(made).digest("hex").slice(0, 32)}`;
   }
 
   /** POST .../test: a `webhook.test` message tried once now, never again; its attempt. */
@@ -583,6 +591,13 @@ export class Webhooks {
     // Durable before the PUT (or the 410 that turns it off) answers, as the store's other confirmed writes are.
     await this.store.flush();
     this.config = config;
+  }
+
+  /** The setting removed, durably, and none held here: a removal the store refuses throws, and what was held stays held. */
+  protected async unwrite(): Promise<void> {
+    await this.store.settings.remove(this.outbound.setting);
+    await this.store.flush();
+    this.config = undefined;
   }
 
   /** Whether an end's run.ended is still to be queued: at or after the webhook was set and the day began (a marker that

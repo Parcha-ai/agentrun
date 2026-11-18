@@ -13,6 +13,7 @@ import { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
 import { SECRET_WRITE_REFUSAL } from "../dist/secret-writes.js";
 import { slackMessage, SlackPosts } from "../dist/slack.js";
+import { Webhooks } from "../dist/webhooks.js";
 import { openSqliteStore } from "../dist/store/index.js";
 import { agent, follow, scratch, secretWritePath, serve, startRun } from "./support.mjs";
 
@@ -48,19 +49,26 @@ async function fakeSlack(t, answer = () => [200, "ok"]) {
   return { origin: `http://127.0.0.1:${server.address().port}`, got, when };
 }
 
-/** SlackPosts over a store of its own, posting to `slack` (a fakeSlack), its agent a1 named "Lead triage". */
-async function slackOn(t, slack, { retryMs = [] } = {}) {
+/** SlackPosts over a store of its own (`wrap`ped, when given), posting to `slack` (a fakeSlack), with runs r1 to r3 of
+ *  agent a1. `serverSecrets`: what the server holds, cut from each message. `open()` opens another SlackPosts over the
+ *  same store and key: the next server. */
+async function slackOn(t, slack, { retryMs = [], serverSecrets, wrap = (store) => store } = {}) {
   const dir = await scratch(t);
-  const store = await openSqliteStore({ file: join(dir, "store.sqlite") });
-  t.after(() => store.close());
-  await store.agents.create({ id: "a1", name: "Lead triage" }, { id: "rev-a1", kind: "agentic", body: {} });
-  for (const id of ["r1", "r2", "r3"]) await store.runs.create({ id, agentId: "a1", revisionId: "rev-a1" });
+  const raw = await openSqliteStore({ file: join(dir, "store.sqlite") });
+  t.after(() => raw.close());
+  const store = wrap(raw);
+  await raw.agents.create({ id: "a1", name: "Lead triage" }, { id: "rev-a1", kind: "agentic", body: {} });
+  for (const id of ["r1", "r2", "r3"]) await raw.runs.create({ id, agentId: "a1", revisionId: "rev-a1" });
   const lines = [];
-  const posts = new SlackPosts(store, randomBytes(32), (fields) => lines.push(JSON.stringify(fields)), { retryMs, sendTo: slack.origin, nameOf: async (id) => (await store.agents.get(id))?.name });
-  t.after(() => posts.close());
-  await posts.load();
-  posts.attach(BASE);
-  return { posts, store, lines, dir };
+  const key = randomBytes(32);
+  const open = async () => {
+    const opened = new SlackPosts(store, key, (fields) => lines.push(JSON.stringify(fields)), { retryMs, sendTo: slack.origin, ...(serverSecrets ? { serverSecrets } : {}) });
+    t.after(() => opened.close());
+    await opened.load();
+    opened.attach(BASE);
+    return opened;
+  };
+  return { posts: await open(), open, store: raw, lines, dir, key };
 }
 
 /** The files under `dir` that hold `text`: the store's database and its log among them. */
@@ -82,8 +90,8 @@ describe("Slack's messages", () => {
     const { url } = canaryUrl();
     assert.equal((await posts.saveSlack({ url })).created, true);
     const ended = new Date(Date.now() + 1_000).toISOString();
-    assert.equal(await posts.emit("run.ended", { run_id: "r1", agent_id: "a1", status: "completed", title: "Qualify <ACME> & co" }, ended), "queued");
-    assert.equal(await posts.emit("run.needs_input", { run_id: "r2", agent_id: "a1", status: "input_required", title: "Refund #42", pending: { kind: "approval" } }, "approval:call-1"), "queued");
+    assert.equal(await posts.emit("run.ended", { run_id: "r1", agent_id: "a1", agent_name: "Lead triage", status: "completed", title: "Qualify <ACME> & co" }, ended), "queued");
+    assert.equal(await posts.emit("run.needs_input", { run_id: "r2", agent_id: "a1", agent_name: "Lead triage", status: "input_required", title: "Refund #42", pending: { kind: "approval" } }, "approval:call-1"), "queued");
     assert.equal(await posts.emitTrigger({ trigger_id: "t1", name: "nightly digest", firing_key: "f1", nominal_at: "2026-11-18T09:00:00Z", error: { code: "agent_not_runnable", message: "No model key is set." }, auto_paused: true }, "f1"), "queued");
     const got = await slack.when(3);
     const byText = (prefix) => got.find((post) => post.body.text.startsWith(prefix))?.body;
@@ -183,6 +191,87 @@ describe("Slack's messages", () => {
     await slack.when(2);
     assert.match(slack.got[1].body.text, /run completed/);
   });
+
+  test("with the webhook set too, each destination gets its own message for the same moment: its id, its body, its delivery", async (t) => {
+    const slack = await fakeSlack(t);
+    const hook = await fakeSlack(t);
+    const { posts, store, key } = await slackOn(t, slack);
+    // The outbound webhook over the same store, as the server has it: its receiver on this machine.
+    const webhooks = new Webhooks(store, key, () => undefined, { privateTargets: true });
+    t.after(() => webhooks.close());
+    await webhooks.load();
+    webhooks.attach(BASE);
+    await webhooks.save({ url: `${hook.origin}/in` });
+    await posts.saveSlack({ url: canaryUrl().url });
+    const notice = { run_id: "r1", agent_id: "a1", agent_name: "Lead triage", status: "completed", title: "Qualify ACME" };
+    const ended = new Date(Date.now() + 1_000).toISOString();
+    const failed = { trigger_id: "t1", name: "nightly digest", agent_id: "a1", agent_name: "Lead triage", firing_key: "f1", nominal_at: "2026-11-18T09:00:00Z", error: { code: "agent_not_runnable", message: "No model key is set." }, auto_paused: false };
+    // Whichever is written first, the other's message is its own: the webhook first for the run, Slack first for the trigger.
+    assert.equal(await webhooks.emit("run.ended", notice, ended), "queued");
+    assert.equal(await posts.emit("run.ended", notice, ended), "queued");
+    assert.equal(await posts.emitTrigger(failed, "f1"), "queued");
+    assert.equal(await webhooks.emitTrigger(failed, "f1"), "queued");
+    const [toSlack, toHook] = [await slack.when(2), await hook.when(2)];
+    assert.deepEqual(toSlack.map((post) => post.body.text).sort(), ["Lead triage: run completed: Qualify ACME", "Trigger nightly digest could not start its run: agent_not_runnable"]);
+    assert.deepEqual(toHook.map((post) => post.body.type).sort(), ["run.ended", "trigger.failed"]);
+    assert.ok(toHook.every((post) => post.body.data && post.body.blocks === undefined), "the webhook got its own JSON, never Slack's message");
+    const slackIds = (await arrived(async () => { const { attempts } = await posts.attemptsView(); return attempts.length === 2 && attempts; }, "Slack's two deliveries")).map((a) => a.webhook_id);
+    const hookIds = (await arrived(async () => { const { attempts } = await webhooks.attemptsView(); return attempts.length === 2 && attempts; }, "the webhook's two deliveries")).map((a) => a.webhook_id);
+    assert.deepEqual(slackIds.filter((id) => hookIds.includes(id)), [], "no message id is shared");
+    assert.ok(toHook.every((post) => hookIds.includes(post.headers["webhook-id"])), "the webhook's ids are its own deliveries'");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.equal(slack.got.length + hook.got.length, 4, "each message once");
+  });
+
+  test("a secret the server holds is cut from every string of a message, an agent's name, a title and a trigger's error among them, before it is saved or posted", async (t) => {
+    const slack = await fakeSlack(t);
+    const held = `xoxb${randomBytes(12).toString("hex")}`;
+    const { posts, dir } = await slackOn(t, slack, { serverSecrets: () => [held] });
+    await posts.saveSlack({ url: canaryUrl().url });
+    assert.equal(await posts.emit("run.ended", { run_id: "r1", agent_id: "a1", agent_name: `Bot ${held}`, status: "completed", title: `Rotate ${held} & go` }, new Date(Date.now() + 1_000).toISOString()), "queued");
+    assert.equal(await posts.emitTrigger({ trigger_id: "t1", name: `digest ${held}`, agent_id: "a1", agent_name: held, firing_key: "f1", nominal_at: "2026-11-18T09:00:00Z", error: { code: "start_failed", message: `refused key ${held}` }, auto_paused: false }, "f1"), "queued");
+    const got = await slack.when(2);
+    for (const post of got) assert.ok(!JSON.stringify(post.body).includes(held), JSON.stringify(post.body));
+    const run = got.find((post) => post.body.text.includes("run completed")).body;
+    assert.equal(run.text, "Bot [redacted]: run completed: Rotate [redacted] &amp; go");
+    const trigger = got.find((post) => post.body.text.startsWith("Trigger")).body;
+    assert.match(trigger.blocks[0].text.text, /^Trigger <[^|]+\|digest \[redacted\]> could not start its run of \*\[redacted\]\*\.\n`start_failed`: refused key \[redacted\]$/);
+    assert.deepEqual(everyFileHolding(dir, held), [], "no file of the store holds it: the message was saved cut");
+  });
+
+  for (const first of [true, false]) {
+    test(`a save${first ? " of the first URL" : " of a new URL"} whose setting was put but not flushed fails, and Slack is as it was, after a restart too`, async (t) => {
+      const slack = await fakeSlack(t);
+      // Once armed, the store takes the next put of Slack's setting (the one naming the new URL), then fails the flush
+      // after it, once: the write's outcome is unknown, and the setting is in the store.
+      let armed = false;
+      let failFlush = false;
+      const flaky = (store) => new Proxy(store, {
+        get: (target, name) => {
+          if (name === "flush") return async () => { if (failFlush) { failFlush = false; throw new Error("the store could not flush"); } return target.flush(); };
+          if (name === "settings") return { ...target.settings, put: async (key, value) => { await target.settings.put(key, value); if (armed && key === "slack-out") (armed = false, failFlush = true); } };
+          const value = Reflect.get(target, name, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+      const on = await slackOn(t, slack, { wrap: flaky });
+      const old = canaryUrl();
+      if (!first) await on.posts.saveSlack({ url: old.url });
+      armed = true;
+      await assert.rejects(on.posts.saveSlack({ url: canaryUrl().url }), /the store could not flush/);
+      const check = async (posts) => {
+        const view = posts.slackView();
+        if (first) return assert.equal(view.configured, false, "no Slack: the setting that named the new URL went back");
+        assert.equal(view.url, `https://hooks.slack.com/…${old.url.slice(-4)}`);
+        assert.equal(view.url_state, "sealed", "the setting names a URL that opens here");
+        assert.equal((await posts.test()).status_code, 200);
+        assert.equal(slack.got.at(-1).path, new URL(old.url).pathname, "posted to the URL it had");
+      };
+      await check(on.posts);
+      await on.posts.close();
+      await check(await on.open());
+    });
+  }
 });
 
 describe("Slack's settings over the API", () => {

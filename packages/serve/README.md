@@ -2343,7 +2343,7 @@ Each event posts one message (Block Kit, with `text` for notifications):
 
 | Event | The message |
 | --- | --- |
-| `run.ended` | The agent (its name, else its id), the status in a word (completed, failed, was cancelled), the run's title linked to the run in the console. |
+| `run.ended` | The agent (its `agent_name`: its name, else its id), the status in a word (completed, failed, was cancelled), the run's title linked to the run in the console. |
 | `run.needs_input` | The same, with "needs you" and what the run waits on: a question, an approval, a paused cap, a hand-over or a stopped turn. |
 | `trigger.failed` | The trigger's name, linked to it, and the error's code and message; and whether it turned itself off. |
 
@@ -2355,7 +2355,8 @@ Each event posts one message (Block Kit, with `text` for notifications):
 ```
 
 A message never carries a run's input, its output or a tool's arguments, as the webhook's never does: open the run
-from the link to read them. Every event is on by default. `PUT /v2/settings/slack` with
+from the link to read them. Every string in it (an agent's or a trigger's name, a run's title, an error) is cut of the
+secrets the server holds before it is saved or posted: a key typed into a name reads `[redacted]`. Every event is on by default. `PUT /v2/settings/slack` with
 `{"events": {"run.needs_input": false}}` turns one off; a body with `events` alone is no secret write.
 
 Delivery is the webhook's: the same outbox in the store, retries on the same schedule, one message per run's end or
