@@ -172,6 +172,9 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   const [preview, setPreview] = useState(false);
   const [saving, setSaving] = useState(false);
   const [problem, setProblem] = useState<SaveProblem | null>(initialProblem);
+  // The harness and model the problem was said of: the form as the save sent it (one handed in, the form as it opened).
+  // The Model field shows a refusal only while the form names both again.
+  const [problemOf, setProblemOf] = useState<{ harness: string; model: string | undefined }>(() => ({ harness: f.harness ?? "pi", model: f.model }));
   // A workflow agent's past revision, opened from History as its read-only graph.
   const [viewing, setViewing] = useState<Revision | null>(null);
   const goTo = (s: Step) => { setViewing(null); setStep(s); };
@@ -250,7 +253,7 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
     // A provider picked or reset while the save was under way is not in it: the form keeps that change, unsaved. Saved
     // and unchanged since, the tool settings are the agent's own: the form shows them as the definition has them.
     const unchanged = same(formNow.current.tool_settings ?? {}, fields.tool_settings ?? {});
-    setSaving(false); setProblem(p);
+    setSaving(false); setProblem(p); setProblemOf({ harness: sent.harness ?? "pi", model: sent.model });
     if (p) return;
     // Saved, the form as it was sent is the saved one (an edit made while the save was under way stays unsaved).
     // The held tools are the saved harness's to give back no more; a switch made while the save was under way keeps its own.
@@ -515,7 +518,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                   </div>
                 </Field>
               )}
-              {!starting && <ModelField id="agent-model" harness={f.harness ?? "pi"} model={f.model} onModel={(model) => set({ model })} harnesses={caps.harnesses} routePrefix={caps.routePrefix} state={modelField} error={fieldError("model")} warning={fieldWarning("model")} />}
+              {!starting && <ModelField id="agent-model" harness={f.harness ?? "pi"} model={f.model} onModel={(model) => set({ model })} harnesses={caps.harnesses} routePrefix={caps.routePrefix} state={modelField}
+                error={{ ...problemOf, text: fieldError("model") }} warning={{ harness: d?.harness ?? "pi", model: d?.model, text: fieldWarning("model") }} />}
               {!starting && (
                 <Field label="Default spend cap per run, $" id="agent-max-cost" optional note={<>A run started without a cap of its own, and a trigger with none, stops at this spend. Empty means none.{onPlan && <span className="mt-1 block">{CAP_NOTE}</span>}{freeNote && <span className="mt-1 block" data-note="free-requests">{freeNote}</span>}</>} hint={<SpendCapMinimum />} error={fieldError("max_cost_usd")} warning={fieldWarning("max_cost_usd")}>
                   <Input id="agent-max-cost" inputMode="decimal" value={f.maxCostText ?? ""} onChange={(e) => set({ maxCostText: e.target.value })} placeholder="e.g., 2.50" />
