@@ -1,16 +1,20 @@
 # Give an agent tools
 
 Your agent needs a service such as Sentry, GitHub or Slack. Connect the service as an MCP server in the console. Don't
-install its CLI in the agent's box with a token. This page gives the order to try, and how to let an unattended agent
-use the tools.
+install its CLI in the agent's box with a token. This page gives the order to try, how to give the agent the tools,
+and how to let an unattended agent use them.
 
 ## Why the box has no credentials
 
 An agent's shell commands run in a box. The box gets a fixed environment (`PATH`, `LANG`, `LC_ALL`, `TERM`, and
-`TMPDIR` and `HOME` when set) and nothing from the server's environment. Network access is limited to package
-registries and GitHub (`AGENTRUN_BOX_ALLOW` replaces that list). This is deliberate: an agent reads untrusted text,
-such as issues, logs and web pages, and that text can tell it to print or send whatever it can reach. A token kept in
-the box is a token the agent can leak.
+`TMPDIR` and `HOME` when set) and nothing from the server's environment. This is deliberate: an agent reads untrusted
+text, such as issues, logs and web pages, and that text can tell it to print or send whatever it can reach. A token
+kept in the box is a token the agent can leak.
+
+The network does not make a token safe either. A sandbox (Docker, Daytona, Modal, E2B, Agent37) reaches only package
+registries and GitHub by default (`AGENTRUN_BOX_ALLOW` replaces that list). A desktop and Local Chrome reach the public
+internet unless the server sets `AGENTRUN_BOX_ALLOW`, and a phone or a hosted browser is on its vendor's network.
+Details: [Computers](../packages/serve/README.md#computers), under "What a computer reaches".
 
 An MCP server's credential stays outside the box. AgentRun's runner holds it and calls the server for the agent. The
 agent sees each tool's result, never the token. Every call passes the run's tool gate, so you decide which calls run,
@@ -68,10 +72,21 @@ The CLI's own credential then stays with your server, on this machine, and never
 - Widen `AGENTRUN_BOX_ALLOW` so a CLI in the box can reach a service's API with a key. The list is for installing
   packages, not for calling services.
 
+## Give the agent the server's tools
+
+Saving a server gives no agent its tools, and neither do the permission settings below.
+
+1. Open the agent and go to **Tools & skills**. Each saved server lists its tools there.
+2. Tick the tools the agent needs, and save the agent. Its definition then names each one as `mcp:<server>/<tool>` in
+   `tools`.
+
+The save keeps each tool as the server listed it then. If the server changes a tool, save the agent again to pick up
+the change. MCP tools run on agents on pi, claude-agent and codex. A workflow's nodes can't use them yet.
+
 ## Let an unattended agent use the tools
 
-An MCP tool with no setting asks: the run stops with `input_required` and waits until you allow or deny the call. That
-suits an agent you watch. For an agent on a trigger or a schedule, choose one:
+An MCP tool the agent has, with no setting, asks: the run stops with `input_required` and waits until you allow or deny
+the call. That suits an agent you watch. For an agent on a trigger or a schedule, choose one:
 
 - **Allow specific tools.** In the agent's tool settings, set `mcp:<server>/<tool>` (or `mcp:<server>/*` for a whole
   server) to `allow`. Keep writes on `ask` or `deny` where you can.
