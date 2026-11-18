@@ -755,7 +755,7 @@ test("connect dial: no Archil mount, no GPU and not Daytona's default snapshot, 
 	const caps = provider.capabilities();
 	assert.equal(caps.kind, "linux");
 	assert.equal(caps.daemon, "child", "init is agentrun-dial's child, and agentrun-dial the toolbox's entrypoint session's");
-	assert.deepEqual(caps.mount, [], "no Archil mount on dial, even with an egress");
+	assert.deepEqual(caps.mount, ["sync"], "no Archil mount on dial, even with an egress: a synced folder alone, its /workspace made by agentrun-dial");
 	assert.equal(caps.gpu, undefined, "no GPU on dial");
 	assert.deepEqual(caps.vendorAgentPorts, [2280], "the toolbox still runs, and its port is still blocked");
 	const mount = provider.check(ARCHIL_SPEC);
