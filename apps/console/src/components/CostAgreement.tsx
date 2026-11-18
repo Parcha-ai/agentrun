@@ -1,7 +1,7 @@
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { Card, Label } from "@/components/LearningBill";
-import { level, spread, usd } from "@/lib/costPerRun";
-import { type Agreement, agreedWords, agreementOf, auditsOf, auditWords, intervalWords, logAxis, percent, type RevisionPoint, type Share } from "@/lib/learningGlance";
+import { level, usd } from "@/lib/costPerRun";
+import { type Agreement, agreedWords, agreementOf, auditsOf, auditWords, intervalWords, logAxis, percent, placeApart, type RevisionPoint, type Share } from "@/lib/learningGlance";
 import { cn } from "@/lib/utils";
 import type { LearningCost } from "@/lib/v2";
 
@@ -13,10 +13,13 @@ import type { LearningCost } from "@/lib/v2";
 // line joins them in the order they served, so learning reads as a walk: left is cheaper, up is closer to the agent.
 // Agreement is never accuracy; the card says what was compared.
 
-const M = { top: 34, right: 20, bottom: 42, left: 52 };
+const M = { top: 44, right: 20, bottom: 42, left: 52 };
 const H = 220;
 /** How far right of its revision's mark an audit mark stands, so neither interval hides the other. */
 const DODGE = 13;
+/** The least room between two revisions' marks: revisions that cost nearly the same stand side by side, never on each
+ *  other. The readout and the table say each one's cost exactly. */
+const APART = 36;
 const STATE_WORDS: Record<RevisionPoint["state"], string> = { serving: "serving", held: "held", served: "served earlier" };
 
 type Mark = { key: string; label: string; usd: number; share: number; lo: number; hi: number; revision: RevisionPoint | null; agreement: Agreement | null; audits: Share | null };
@@ -51,6 +54,9 @@ export function CostAgreement({ cost, revisions, width: fixed }: { cost: Learnin
   const plotW = width - M.left - M.right;
   const axis = logAxis(marks.map((m) => m.usd));
   const x = (v: number) => M.left + ((Math.log10(v) - Math.log10(axis.lo)) / (Math.log10(axis.hi) - Math.log10(axis.lo))) * plotW;
+  // Where each mark stands: at its cost, but revisions closer than APART are moved apart about their middle, in the
+  // order of their costs, and kept on the plot. `moved`: some were, and the note under the plot says so.
+  const { at: px, moved } = placeApart(marks.map((m) => ({ x: x(m.usd), fixed: !m.revision })), APART, M.left + 8, M.left + plotW - DODGE - 8);
   const serving = drawn.findLast((m) => m.revision!.state === "serving") ?? drawn.at(-1)!;
   // The bar a check's agreement had to clear to serve: the serving revision's, said only of a check's figure.
   const needed = serving.agreement!.on === "check" ? serving.revision!.check!.agree_min : null;
@@ -63,11 +69,21 @@ export function CostAgreement({ cost, revisions, width: fixed }: { cost: Learnin
   const yTicks = Array.from({ length: Math.round((1 - floor) / step) + 1 }, (_, i) => Math.round((floor + i * step) * 100) / 100);
   // Fewer x ticks on a narrow plot: the decades only.
   const xTicks = axis.ticks.filter((t) => plotW / axis.ticks.length > 44 || Number.isInteger(Math.log10(t)));
-  const walk = marks.map((m, i) => `${i ? "L" : "M"}${x(m.usd).toFixed(1)},${y(m.share).toFixed(1)}`).join("");
-  // Each point's label beside it, on the side with room, lifted off the bar to serve where it would sit on that line,
-  // and moved apart where two would touch. A label right of a mark starts past its audit mark.
-  const clear = (at: number) => (needed !== null && Math.abs(at - y(needed)) < 9 ? y(needed) - 11 : at);
-  const labels = spread(marks.map((m) => ({ m, right: x(m.usd) < M.left + plotW * 0.62, at: clear(y(m.share)) })), M.top - 6, M.top + H - 4);
+  const walk = marks.map((m, i) => `${i ? "L" : "M"}${px[i]!.toFixed(1)},${y(m.share).toFixed(1)}`).join("");
+  // Each label stands over its mark, above the taller interval; one that would touch another is stacked over it. The
+  // agent's ends at its mark, which is the rightmost of the plot; a revision's is centred over its two marks.
+  const placed: { x0: number; x1: number; y: number }[] = [];
+  const labels = marks.map((m, i) => {
+    const words = m.revision ? `${m.label} ${percent(m.share)}` : `The agent ${level(m.usd)}`;
+    const wide = words.length * 6.7;
+    const anchor = m.revision ? "middle" as const : "end" as const;
+    const lx = m.revision ? px[i]! + (m.audits ? DODGE / 2 : 0) : px[i]! + 6;
+    const [x0, x1] = m.revision ? [lx - wide / 2, lx + wide / 2] : [lx - wide, lx];
+    let ly = Math.min(y(m.hi), m.audits ? y(m.audits.hi) : Infinity) - 10;
+    while (placed.some((t) => x0 < t.x1 + 6 && x1 > t.x0 - 6 && Math.abs(t.y - ly) < 13)) ly -= 13;
+    placed.push({ x0, x1, y: ly });
+    return { m, words, x: lx, y: ly, anchor };
+  });
   const headline = `${serving.label} ${STATE_WORDS[serving.revision!.state]}: ${level(serving.usd)} a run, agreed on ${agreedWords(serving.agreement!)} (${percent(serving.share)})`;
   const readout = (m: Mark): string[] => m.revision && m.agreement
     ? [
@@ -116,6 +132,8 @@ export function CostAgreement({ cost, revisions, width: fixed }: { cost: Learnin
             </span>
           )}
         </figcaption>
+        {/* The y axis' name, over the plot and out of its labels' way: a stack of them can reach the plot's top. */}
+        <p className="caps font-mono text-label text-muted-foreground" style={{ paddingLeft: M.left }} aria-hidden>Agrees with the agent</p>
         <div className="relative" tabIndex={0} onKeyDown={move} onBlur={() => setActive(null)}
           aria-label={`Cost against agreement. ${headline}. Arrow keys step through the agent and each revision.`}>
           <svg width={width} height={M.top + H + M.bottom} className="block select-none font-mono" onPointerLeave={() => setActive(null)} aria-hidden>
@@ -131,12 +149,11 @@ export function CostAgreement({ cost, revisions, width: fixed }: { cost: Learnin
                 <text x={x(t)} y={M.top + H + 18} textAnchor="middle" className="fill-muted-foreground text-label">{usd(t)}</text>
               </g>
             ))}
-            <text x={M.left} y={M.top - 20} className="caps fill-muted-foreground text-label">Agrees with the agent</text>
             <text x={M.left + plotW} y={M.top + H + 36} textAnchor="end" className="caps fill-muted-foreground text-label">$ a run, all-in (log)</text>
             {needed !== null && needed >= floor && <path d={`M${M.left},${y(needed)}H${M.left + plotW}`} data-testid="agreement-needed" className="stroke-muted-foreground" strokeWidth={1.5} strokeDasharray="6 4" />}
             <path d={walk} data-testid="agreement-walk" fill="none" className="stroke-muted-foreground" strokeWidth={1.5} strokeLinejoin="round" />
             {marks.map((m, i) => {
-              const cx = x(m.usd), ax = cx + DODGE;
+              const cx = px[i]!, ax = cx + DODGE;
               const top = Math.min(y(m.hi), m.audits ? y(m.audits.hi) : Infinity, y(m.share) - 14);
               const bottom = Math.max(y(m.lo), m.audits ? y(m.audits.lo) : -Infinity, y(m.share) + 14);
               return (
@@ -156,15 +173,13 @@ export function CostAgreement({ cost, revisions, width: fixed }: { cost: Learnin
                 </g>
               );
             })}
-            {labels.map(({ m, right, at: ly }) => (
-              <Label key={m.key} x={x(m.usd) + (right ? 11 + (m.audits ? DODGE + 2 : 0) : -11)} y={ly + 4} anchor={right ? "start" : "end"} strong={m.revision?.state === "serving"}>
-                {m.revision ? `${m.label} ${percent(m.share)}` : `The agent ${level(m.usd)}`}
-              </Label>
+            {labels.map((l) => (
+              <Label key={l.m.key} x={l.x} y={l.y} anchor={l.anchor} strong={l.m.revision?.state === "serving"}>{l.words}</Label>
             ))}
           </svg>
           {at && (
-            <div className={cn("pointer-events-none absolute z-raised max-w-[22rem] border bg-card px-2 py-1 font-mono text-label shadow-float", x(at.usd) > width * 0.55 && "-translate-x-full")} data-testid="agreement-tip"
-              style={{ left: x(at.usd) > width * 0.55 ? x(at.usd) - 14 : x(at.usd) + 14 + (at.audits ? DODGE : 0), top: M.top }}>
+            <div className={cn("pointer-events-none absolute z-raised max-w-[22rem] border bg-card px-2 py-1 font-mono text-label shadow-float", px[active!]! > width * 0.55 && "-translate-x-full")} data-testid="agreement-tip"
+              style={{ left: px[active!]! > width * 0.55 ? px[active!]! - 14 : px[active!]! + 14 + (at.audits ? DODGE : 0), top: M.top }}>
               {readout(at).map((l, i) => <span key={l} className={cn("block", i === 0 ? "font-semibold" : "text-muted-foreground")}>{l}</span>)}
             </div>
           )}
@@ -174,6 +189,7 @@ export function CostAgreement({ cost, revisions, width: fixed }: { cost: Learnin
           Each point is a revision of the learned workflow: what a run it served cost, all in (the mean of the runs read that it served), against how often its answer was the agent&apos;s on the inputs of its promotion check, of the answers it gave alone. The bar is the 95% interval that many answers leave.
           {anyAudits ? " The hollow mark beside it is the same count over its audits since: the runs a shadow run of the agent, or your grade, scored." : ""}
           {before ? " The agent is the reference, at what a run cost it before takeover. Left is cheaper, up is closer to the agent." : " Left is cheaper, up is closer to the agent."}
+          {moved ? " Revisions that cost nearly the same are drawn side by side: the table has each one's cost." : ""}
         </p>
       </figure>
       <details className="border-t px-4 py-2">

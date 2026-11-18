@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { agreedWords, agreementOf, auditsOf, auditWords, glanceOf, headlineOf, intervalWords, logAxis, revisionsOf, shareOf } from "./learningGlance";
+import { agreedWords, agreementOf, auditsOf, auditWords, glanceOf, headlineOf, intervalWords, logAxis, placeApart, revisionsOf, shareOf } from "./learningGlance";
 import { AUDITS, COST, FIRST, PROMOTIONS, SECOND, WORKFLOW } from "./learningTab.fixture";
 import type { LearningCost } from "./v2";
 
@@ -40,7 +40,7 @@ describe("each promoted revision as a point", () => {
     expect(second).toMatchObject({ digest: SECOND, label: "v2", state: "serving", audits: { agreed: 7, rows: 7, grades: 1 } });
     expect(agreementOf(second!)).toMatchObject({ on: "check", agreed: 21, rows: 22 });
     expect(intervalWords(agreementOf(second!)!)).toBe("78% to 99%");
-    expect(agreedWords(agreementOf(second!)!)).toBe("21 of 22 answers on its check");
+    expect(agreedWords(agreementOf(second!)!)).toBe("21 of 22 checked answers");
     expect(auditWords(second!.audits!)).toBe("7 of 7 agreed, 1 your grade");
     expect(second!.served!.runs).toBe(31);
     // Every served run of the read is one revision's: the two means are of the summary's 59 served runs.
@@ -84,18 +84,18 @@ describe("the tab at a glance", () => {
     const g = glanceOf(COST, revisions())!;
     expect(g.revision!.digest).toBe(SECOND);
     expect(g.serves).toBe(true);
-    expect(headlineOf(g)).toBe("7.7x cheaper a run, agreeing with the agent on 21 of 22 answers on its check.");
+    expect(headlineOf(g)).toBe("7.7x cheaper a run, agreeing with the agent on 21 of 22 checked answers.");
     expect(g.alone).toMatchObject({ agreed: 56, rows: 59 });
     expect(g.even).toEqual({ n: COST.bill.break_even!.n });
     expect(glanceOf(summary({ takeover: null }), [])).toBeNull();
   });
   it("never says cheaper for a ratio at or under 1, and works no ratio out when the server gave none", () => {
     const rev = revisions();
-    expect(headlineOf(glanceOf(summary({ times_cheaper: 0.8, before: { runs: 20, mean_usd: 0.1 }, after: { runs: 59, mean_usd: 0.125 } }), rev)!)).toBe("Not cheaper yet: 1.3x the cost a run, agreeing with the agent on 21 of 22 answers on its check.");
-    expect(headlineOf(glanceOf(summary({ times_cheaper: 1 }), rev)!)).toBe("The same cost a run, agreeing with the agent on 21 of 22 answers on its check.");
+    expect(headlineOf(glanceOf(summary({ times_cheaper: 0.8, before: { runs: 20, mean_usd: 0.1 }, after: { runs: 59, mean_usd: 0.125 } }), rev)!)).toBe("Not cheaper yet: 1.3x the cost a run, agreeing with the agent on 21 of 22 checked answers.");
+    expect(headlineOf(glanceOf(summary({ times_cheaper: 1 }), rev)!)).toBe("The same cost a run, agreeing with the agent on 21 of 22 checked answers.");
     // Under 20 served runs the server gives no ratio: the two levels are said, never their quotient.
     const early = headlineOf(glanceOf(summary({ times_cheaper: null, after: { runs: 4, mean_usd: 0.12 } }), rev)!);
-    expect(early).toBe("$0.120 a run instead of $0.890, agreeing with the agent on 21 of 22 answers on its check.");
+    expect(early).toBe("$0.120 a run instead of $0.890, agreeing with the agent on 21 of 22 checked answers.");
     expect(early).not.toMatch(/\dx/);
   });
   it("says the agent takes the runs when the revision is held, or the money rule stopped it running first", () => {
@@ -121,5 +121,21 @@ describe("the dollar axis", () => {
   });
   it("still has an axis with no positive value", () => {
     expect(logAxis([0]).ticks.length).toBeGreaterThan(1);
+  });
+});
+
+describe("marks that would sit on each other", () => {
+  it("moves places closer than the gap apart about their middle, in their order, and leaves the rest and a fixed place alone", () => {
+    // Two revisions 4px apart, an agent's mark far right, a third revision on its own.
+    const { at, moved } = placeApart([{ x: 600, fixed: true }, { x: 102 }, { x: 98 }, { x: 300 }], 36, 60, 700);
+    expect(moved).toBe(true);
+    expect(at[0]).toBe(600);
+    expect(at[3]).toBe(300);
+    // The pair's middle stays at 100, 36px between them, the cheaper one still on the left.
+    expect([at[2], at[1]]).toEqual([82, 118]);
+  });
+  it("keeps a moved run on the plot, and says nothing moved when every place has room", () => {
+    expect(placeApart([{ x: 62 }, { x: 64 }, { x: 66 }], 36, 60, 700).at).toEqual([60, 96, 132]);
+    expect(placeApart([{ x: 100 }, { x: 200 }], 36, 60, 700)).toEqual({ at: [100, 200], moved: false });
   });
 });

@@ -50,8 +50,8 @@ export function agreementOf(p: Pick<RevisionPoint, "check" | "audits">): Agreeme
 }
 /** The share of a revision's scored audit rows that agreed; null with none, or while the ledger is unread. */
 export const auditsOf = (p: Pick<RevisionPoint, "audits">): Share | null => (p.audits ? shareOf(p.audits.agreed, p.audits.rows) : null);
-/** What an agreement was counted on, as the headline and a figure say it: "21 of 22 answers on its check". */
-export const agreedWords = (a: Agreement) => (a.on === "check" ? `${a.agreed} of ${a.rows} answers on its check` : `${a.agreed} of ${a.rows} audited ${a.rows === 1 ? "run" : "runs"}`);
+/** What an agreement was counted on, as the headline and a figure say it: "21 of 22 checked answers". */
+export const agreedWords = (a: Agreement) => (a.on === "check" ? `${a.agreed} of ${a.rows} checked ${a.rows === 1 ? "answer" : "answers"}` : `${a.agreed} of ${a.rows} audited ${a.rows === 1 ? "run" : "runs"}`);
 /** A revision's audit rows in words: "7 of 7 agreed, 1 your grade". */
 export const auditWords = (audits: NonNullable<RevisionPoint["audits"]>) => `${audits.agreed} of ${audits.rows} agreed${audits.grades ? `, ${audits.grades} your ${audits.grades === 1 ? "grade" : "grades"}` : ""}`;
 
@@ -145,4 +145,29 @@ export function logAxis(values: readonly number[], room = 1.7): { lo: number; hi
     for (const k of [1, 2, 5]) { const t = Number((k * 10 ** e).toPrecision(1)); if (t >= lo && t <= hi) ticks.push(t); }
   }
   return { lo, hi, ticks };
+}
+
+/** Places on a line (`x`, in px) with those that may move (`fixed` false) kept at least `gap` apart: a run of places
+ *  closer than that is spread about its own middle, in the order it had, and kept within `lo` to `hi`. A fixed place
+ *  never moves and is no part of a run. `moved`: whether any place changed. */
+export function placeApart(places: readonly { x: number; fixed?: boolean }[], gap: number, lo: number, hi: number): { at: number[]; moved: boolean } {
+  const at = places.map((p) => p.x);
+  const free = places.map((p, i) => ({ i, x: p.x, fixed: !!p.fixed })).filter((p) => !p.fixed).sort((a, b) => a.x - b.x);
+  // Runs of neighbours closer than the gap, each spread evenly about the mean of its members.
+  let run: typeof free = [];
+  const settle = () => {
+    if (run.length > 1) {
+      const mid = run.reduce((sum, p) => sum + p.x, 0) / run.length;
+      const first = Math.min(Math.max(mid - ((run.length - 1) * gap) / 2, lo), Math.max(lo, hi - (run.length - 1) * gap));
+      run.forEach((p, k) => { at[p.i] = first + k * gap; });
+    }
+    run = [];
+  };
+  for (const p of free) {
+    // A place joins the run while it is closer than the gap to where the run's last member will stand at the least.
+    if (run.length && p.x - run.at(-1)!.x >= gap) settle();
+    run.push(p);
+  }
+  settle();
+  return { at, moved: at.some((v, i) => Math.abs(v - places[i]!.x) > 0.5) };
 }

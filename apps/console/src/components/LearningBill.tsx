@@ -265,7 +265,7 @@ export function Card({ title, headline, testid, children }: { title: string; hea
 }
 
 /** A label on the plot: text tokens only, with a halo of the card under it so a line never cuts through it. */
-export function Label({ x, y, anchor = "start", strong = false, children }: { x: number; y: number; anchor?: "start" | "end"; strong?: boolean; children: ReactNode }) {
+export function Label({ x, y, anchor = "start", strong = false, children }: { x: number; y: number; anchor?: "start" | "middle" | "end"; strong?: boolean; children: ReactNode }) {
   return (
     <text x={x} y={y} textAnchor={anchor} className={cn("stroke-card text-label [paint-order:stroke]", strong ? "fill-foreground font-semibold" : "fill-muted-foreground")} strokeWidth={4} strokeLinejoin="round">
       {children}
