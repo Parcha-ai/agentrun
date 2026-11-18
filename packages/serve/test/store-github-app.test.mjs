@@ -172,7 +172,8 @@ test("the GitHub API base has one way in, a test runner's option: no api_url (or
   const testDir = new URL("./", import.meta.url).pathname;
   const tests = (await readdir(testDir, { recursive: true })).filter((f) => /\.(mjs|js|ts)$/.test(f));
   const setters = [];
-  for (const f of tests) for (const line of (await readFile(testDir + f, "utf8")).split("\n")) if (/dispatchRunner\(/.test(line) && /githubMcpOrigin/.test(line)) setters.push(f);
+  // A runner's deps given the option: startInProcessRunner's, which its dispatch loop and its run processes' loop share.
+  for (const f of tests) for (const line of (await readFile(testDir + f, "utf8")).split("\n")) if (/\.\.\.\(githubMcpOrigin \? \{ githubMcpOrigin \} : \{\}\)/.test(line)) setters.push(f);
   assert.deepEqual(setters, ["support.mjs"], "its one setter on a runner: the test's startInProcessRunner");
   assert.deepEqual(lines.filter(([, line]) => /dispatchRunner\(/.test(line) && /githubMcpOrigin/.test(line)), [], "no runner the server or the CLI starts sets it");
   assert.match(text["github.ts"], /export const GITHUB_MCP_ORIGIN = "https:\/\/api\.githubcopilot\.com";/);
