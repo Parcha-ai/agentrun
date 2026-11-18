@@ -27,7 +27,7 @@ import { recordedClient } from "../computer-calls.js";
 import type { Recording, RecordWatch } from "../computer-record.js";
 import type { MountCheck } from "./attach.js";
 import type { AgentComputer, RunComputer } from "./run-tools.js";
-import { finalSyncWords, pullFolder, pushFolder, restoreMeta, type StoredFolder, storedFolder, syncOf } from "./synced-folder.js";
+import { fencedStore, finalSyncWords, type FolderStore, pullFolder, pushFolder, recordMeta, recordWords, restoreMeta, type StoredFolder, storedFolder, syncOf } from "./synced-folder.js";
 import type { Workspace } from "./workspace.js";
 
 /** The setting kind (what an agent is given, not a computer's capabilities().kind), a machine's kind and groups, and one
@@ -282,7 +282,8 @@ export async function computerReadiness(setting: ComputerSetting, mode: 1 | 2, g
 export type StartedComputer = {
   readonly computer: RunComputer | undefined;
   release(): Promise<void>;
-  /** A synced folder's delta now, where the computer holds one (a park lands it before the computer is kept). */
+  /** What the run's disk keeps of the folder beyond what the computer wrote, now (a park lands it before the computer is
+   *  kept): a synced folder's delta, or an Archil mount's modes and links in sync.json (recordMeta). */
   readonly sync?: () => Promise<Result<void>>;
 };
 
@@ -296,8 +297,10 @@ export type ResolvedComputer = {
   readonly ports: readonly Port[];
   /** Starts the computer, mounting `workspace`'s folder when it mounts (a synced folder pushed in from the store
    *  `workspace` keeps it in before the computer is handed on); `check` is the mount check attach runs (the claim's
-   *  epoch bound in). A computer that cannot be had throws with code computer_unavailable and the words. */
-  start(run: { readonly workspace: Workspace; readonly check: MountCheck; readonly signal?: AbortSignal }): Promise<StartedComputer>;
+   *  epoch bound in); `holds`: whether the claim may still write the run's disk (synced-folder.ts claimHolds), asked
+   *  before each write of the folder there (fencedStore). A computer that cannot be had throws with code
+   *  computer_unavailable and the words. */
+  start(run: { readonly workspace: Workspace; readonly check: MountCheck; readonly holds?: () => Promise<boolean>; readonly signal?: AbortSignal }): Promise<StartedComputer>;
 };
 
 const SETTINGS = "Settings → Computers";
@@ -480,11 +483,16 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
     mounts,
     ...(folder ? { folder } : {}),
     ports,
-    async start({ workspace, check, signal }) {
+    async start({ workspace, check, holds, signal }) {
       // A computer kept at the run's park, attached again: it mounts what it mounted, read back under its own epoch.
       const again = await side.reattach?.(entry, { kind, keys, configuration, ...(folder ? { folder } : {}), ...(gpu ? { gpu: { type: gpu.type, count: gpu.count } } : {}), ...(persistent ? { persistent: true as const } : {}), ...(signal ? { signal } : {}) });
-      // A synced folder's store (the run's disk): for a new computer, listed and held to the caps before it is rented.
-      const store = folder === "sync" ? workspace.syncStore?.() : undefined;
+      // The run's disk as the runner keeps the folder on it, each write fenced by the claim.
+      const diskOf = (): FolderStore | undefined => {
+        const disk = workspace.syncStore?.();
+        return disk && holds ? fencedStore(disk, holds) : disk;
+      };
+      // A synced folder's store: for a new computer, listed and held to the caps before it is rented.
+      const store = folder === "sync" ? diskOf() : undefined;
       if (folder === "sync" && store === undefined) {
         await again?.release().catch(() => undefined);
         throw unavailable(`${entry.label} could not start a ${kind} computer: this run's folder can't be synced into a computer here`);
@@ -509,8 +517,8 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
       }
       // A folder synced on an earlier claim, now under a new Archil mount: the modes and links its sync.json keeps, which
       // the mount never reads, put back (and the mount synced) before any tool runs. One that can't be lets the computer go.
-      const synced = folder === "archil" && !again ? workspace.syncStore?.() : undefined;
-      if (synced && launched.client) {
+      const synced = folder === "archil" ? diskOf() : undefined;
+      if (synced && launched.client && !again) {
         try {
           await restoreMeta(synced, syncingClient(launched.client, archilSync(launched.client)), signal);
         } catch (error) {
@@ -534,6 +542,21 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
       if (typeof computer === "string") {
         await launched.release();
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${computer}`);
+      }
+      const own = launched.client;
+      if (!sync && synced && own) {
+        // An Archil mount's park and release: its modes and links recorded in sync.json first (recordMeta), for a later
+        // claim that syncs the folder; the computer goes whatever that answered, and a failed one is said.
+        const record = () => recordMeta(synced, own);
+        return {
+          computer,
+          sync: record,
+          async release() {
+            const recorded = await record();
+            await launched.release();
+            if (!recorded.ok) throw new Error(recordWords(recorded.error.message));
+          },
+        };
       }
       if (!sync) return { computer, release: () => launched.release() };
       const final = sync;

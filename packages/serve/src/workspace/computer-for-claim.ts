@@ -54,7 +54,7 @@ import { deleteKept, endKept, KEEP_MS, type Kept, KEPT_DELETE_MS, KEPT_PULL_MS, 
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
 import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer } from "./resolve-computer.js";
 import type { RunComputer, RunHold } from "./run-tools.js";
-import { type FolderStore, pullFolder, pushFolder, storedFolder } from "./synced-folder.js";
+import { claimHolds, fencedStore, type FolderStore, pullFolder, pushFolder, storedFolder } from "./synced-folder.js";
 import type { Workspace } from "./workspace.js";
 
 /** What the claim knows of the run: its id, the claim's epoch, and where its computer setting is (the launch's own, else
@@ -779,10 +779,18 @@ async function ownedStart(
  *  computer_unavailable and the server's words when the agent's computer cannot be had here. */
 export async function computerForClaim(
   launch: ClaimLaunch,
-  // `settings` and `runs`: the agent's own computer's record and its holder's run row, for a persistent setting alone.
+  // `settings` and `runs`: the agent's own computer's record and its holder's run row, for a persistent setting; and the
+  // run's own row, whose epoch and runner fence every write of the run's folder to its disk.
   store: Pick<Store, "agents" | "sealedKeys" | "computerLedger"> & { readonly settings?: Store["settings"]; readonly runs?: Pick<Store["runs"], "get"> },
   deps: ComputerForClaimDeps,
 ): Promise<ClaimComputer> {
+  // The run's disk as this claim writes the folder on it: each write refused once a later claim has taken the run (Q1).
+  const runs = store.runs;
+  const holds = runs ? claimHolds((runId) => runs.get(runId), launch) : undefined;
+  const diskOf = (): FolderStore | undefined => {
+    const disk = deps.workspace.syncStore?.();
+    return disk && holds ? fencedStore(disk, holds) : disk;
+  };
   const table = deps.keyTable ?? KEY_TABLE;
   // The paired computers, each one more provider of the registry (attached-computers.ts): a setting names one by its id.
   const paired = deps.attached ? await deps.attached.rows() : [];
@@ -854,7 +862,7 @@ export async function computerForClaim(
       const spec = await specNow();
       let mount: ComputerSpec["mount"];
       // The store is read whole before anything is made, so a folder over a cap rents nothing.
-      const store = folder === "sync" ? deps.workspace.syncStore?.() : undefined;
+      const store = folder === "sync" ? diskOf() : undefined;
       if (folder === "sync" && !store) throw new Error("this runner keeps no synced folder for the run");
       const stored = store ? await storedFolder(store) : undefined;
       if (folder === "sync") mount = { kind: "sync" };
@@ -903,7 +911,7 @@ export async function computerForClaim(
     if (!row || row.ended || row.id !== record.id) return;
     const wait = () => keptEnded(settings, launch.runId, KEPT_PULL_MS + KEPT_DELETE_MS, deps.signal);
     if (row.ending) return wait();
-    const disk = deps.workspace.syncStore?.();
+    const disk = diskOf();
     const ended = await endKept(settings, launch.runId, row, async () => {
       const provider = providerOf ? await providerOf() : undefined;
       if (!provider) throw new Error("left to the janitor");
@@ -940,7 +948,7 @@ export async function computerForClaim(
         // park: an Archil mount where the run now takes a synced folder) is not taken back: it goes now (a synced folder
         // read back first), its mount's token with it, so nothing holds the folder but the new one.
         if (record.folder !== folder) {
-          const disk = record.folder === "sync" ? deps.workspace.syncStore?.() : undefined;
+          const disk = record.folder === "sync" ? diskOf() : undefined;
           if (disk) await pullKept(provider, record, disk).catch(() => undefined);
           await deleteKept(provider, record).catch(() => undefined);
           if (record.folder === "archil") {
@@ -1056,7 +1064,7 @@ export async function computerForClaim(
   let started: Awaited<ReturnType<typeof resolved.start>>;
   try {
     // The mount check carries the claim's epoch (a disk read-back under another epoch is refused) unless it names one.
-    started = await resolved.start({ workspace: deps.workspace, check: { ...deps.check, epoch: deps.check.epoch ?? launch.epoch }, ...(deps.signal ? { signal: deps.signal } : {}) });
+    started = await resolved.start({ workspace: deps.workspace, check: { ...deps.check, epoch: deps.check.epoch ?? launch.epoch }, ...(holds ? { holds } : {}), ...(deps.signal ? { signal: deps.signal } : {}) });
   } catch (error) {
     await revoke().catch(() => undefined);
     throw error;
@@ -1130,9 +1138,11 @@ export async function computerForClaim(
         return false;
       }
       const ref = keeps.computer.ref;
-      // A synced folder's delta lands on the disk before the computer is kept; one that does not land lets it go as the
-      // run's end does, and the park throws the release's words (writes since the last sync may be lost).
-      const synced = started.sync ? deps.workspace.syncStore?.() : undefined;
+      // A synced folder's delta lands on the disk before the computer is kept (an Archil mount's modes and links are
+      // recorded); one that does not land lets it go as the run's end does, and the park throws the release's words. The
+      // timer's read-back below writes after this claim is gone: the kept row's end, which a later claim waits for or
+      // takes first, is its fence, not the claim's.
+      const synced = resolved.folder === "sync" ? deps.workspace.syncStore?.() : undefined;
       if (started.sync && !(await started.sync()).ok) {
         await release();
         return false;

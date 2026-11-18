@@ -211,6 +211,24 @@ describe("a synced folder against computerd in a user namespace", { skip }, () =
     return Buffer.from(ran.value.stdout, "base64").toString();
   };
   const stat = async (computer, path) => (await computer.client.call("files.stat", { path: `/workspace/${path}` })).value;
+  const MODAL = { kind: "sandbox", provider: "modal" };
+  const modalSide = (computer) => ({ ...claim(() => computer), keysOf: async () => ({ MODAL_TOKEN_ID: "fake-test-key", MODAL_TOKEN_SECRET: "not-a-secret" }) });
+  const archilMount = { kind: "archil", disk: "d1", region: "aws-us-east-1", folder: ROOT, token: "not-a-secret" };
+  /** A computer with `disk`'s folder `prefix` under its Archil mount, as the file API wrote it: every file at the default
+   *  mode and no link. Its mount.sync answers done, and every method it is called with is recorded. */
+  const mounted = (disk, prefix) => {
+    const computer = computerd();
+    for (const [key, bytes] of disk.files) {
+      if (!key.startsWith(`${prefix}/`)) continue;
+      const path = join(computer.root, key.slice(prefix.length + 1));
+      mkdirSync(join(path, ".."), { recursive: true });
+      writeFileSync(path, bytes);
+      chmodSync(path, 0o644);
+    }
+    const calls = [];
+    const client = { async call(method, params, options) { calls.push(method); return method === "mount.sync" ? { ok: true, value: { exitCode: 0, stdout: "", stderr: "" } } : computer.client.call(method, params, options); }, close() {} };
+    return { ...computer, client, calls, readBack: async () => ({ ok: true, value: { kind: "archil", epoch: EPOCH } }) };
+  };
 
   before(async () => {
     const deadline = new Date(Date.now() + 10 * 60_000).toISOString();
@@ -289,27 +307,10 @@ describe("a synced folder against computerd in a user namespace", { skip }, () =
     await one.release();
     assert.deepEqual(JSON.parse(text(disk.files.get(META))), { modes: { "bin/run": 0o755, secret: 0o600 }, links: { go: "bin/run" } });
 
-    // The Archil mount: the disk's folder as the file API wrote it, every file at the default mode and no link.
-    const mounted = (prefix) => {
-      const computer = computerd();
-      for (const [key, bytes] of disk.files) {
-        if (!key.startsWith(`${prefix}/`)) continue;
-        const path = join(computer.root, key.slice(prefix.length + 1));
-        mkdirSync(join(path, ".."), { recursive: true });
-        writeFileSync(path, bytes);
-        chmodSync(path, 0o644);
-      }
-      const calls = [];
-      const client = { async call(method, params, options) { calls.push(method); return method === "mount.sync" ? { ok: true, value: { exitCode: 0, stdout: "", stderr: "" } } : computer.client.call(method, params, options); }, close() {} };
-      return { ...computer, client, calls, readBack: async () => ({ ok: true, value: { kind: "archil", epoch: EPOCH } }) };
-    };
-    const MODAL = { kind: "sandbox", provider: "modal" };
-    const modalSide = (computer) => ({ ...claim(() => computer), keysOf: async () => ({ MODAL_TOKEN_ID: "fake-test-key", MODAL_TOKEN_SECRET: "not-a-secret" }) });
-    const archilMount = { kind: "archil", disk: "d1", region: "aws-us-east-1", folder: ROOT, token: "not-a-secret" };
     const resolved = await resolveComputer(MODAL, 2, KINDS, modalSide(undefined));
     assert.equal(resolved.folder, "archil", "Modal takes the Archil mount here");
 
-    const third = mounted(ROOT);
+    const third = mounted(disk, ROOT);
     const two = await (await resolveComputer(MODAL, 2, KINDS, modalSide(third))).start({ workspace: { syncStore: () => workspace.syncStore(), mountSpec: async () => archilMount }, check: CHECK });
     assert.equal((await stat(third, "bin/run")).mode, 0o755);
     assert.equal((await stat(third, "secret")).mode, 0o600);
@@ -322,10 +323,36 @@ describe("a synced folder against computerd in a user namespace", { skip }, () =
     // A run whose folder was never synced: nothing to put back, no push.
     const other = runKey("acme", "r2");
     disk.files.set(`${other}/a.txt`, Buffer.from("a"));
-    const fourth = mounted(other);
+    const fourth = mounted(disk, other);
     const otherSpace = archilWorkspace(disk, other);
     const three = await (await resolveComputer(MODAL, 2, KINDS, modalSide(fourth))).start({ workspace: { syncStore: () => otherSpace.syncStore(), mountSpec: async () => ({ ...archilMount, folder: other }) }, check: CHECK });
     assert.deepEqual(fourth.calls.filter((method) => method.startsWith("tar.push")), [], "no push");
     await three.release();
+  });
+
+  it("a run made on an Archil mount, claimed next where it syncs: the link an exec made and its 0755 file come back, recorded in sync.json at the Archil release, and the link's object leaves the disk", async () => {
+    const disk = new FakeArchilDisk();
+    const workspace = archilWorkspace(disk, ROOT);
+    const first = mounted(disk, ROOT);
+    const one = await (await resolveComputer(MODAL, 2, KINDS, modalSide(first))).start({ workspace: { syncStore: () => workspace.syncStore(), mountSpec: async () => archilMount }, check: CHECK });
+    await sh(one.computer.computer.client, "mkdir -p bin && printf '#!/bin/sh\\necho hi\\n' > bin/run && chmod 0755 bin/run && ln -s bin/run go");
+    // What the mount wrote to the disk: the file's bytes, at no mode, and the link as an object the file API lists as a
+    // file and won't read (501).
+    disk.files.set(`${ROOT}/bin/run`, Buffer.from("#!/bin/sh\necho hi\n"));
+    disk.links.set(`${ROOT}/go`, "bin/run");
+    await one.release();
+    assert.deepEqual(JSON.parse(text(disk.files.get(META))), { modes: { "bin/run": 0o755 }, links: { go: "bin/run" } }, "recorded through computerd, which sees the mount");
+
+    // The next claim syncs the folder (Daytona with no DAYTONA_ARCHIL_EGRESS): pushed into a new computer, as it was.
+    const second = computerd();
+    const two = await (await resolveComputer(DAYTONA, 2, KINDS, claim(() => second))).start({ workspace, check: CHECK });
+    assert.equal((await stat(second, "bin/run")).mode, 0o755);
+    assert.deepEqual([(await stat(second, "go")).type, (await stat(second, "go")).target], ["symlink", "bin/run"]);
+    assert.equal(await sh(second.client, "./go"), "hi\n");
+    assert.equal(disk.links.has(`${ROOT}/go`), false, "the link's object left the disk: sync.json keeps the link");
+    // The link replaced by a file in the computer: a plain put, with no object in its way.
+    await sh(two.computer.computer.client, "rm go && printf f > go");
+    assert.equal(text(disk.files.get(`${ROOT}/go`)), "f");
+    await two.release();
   });
 });
