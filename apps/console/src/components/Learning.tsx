@@ -9,7 +9,7 @@ import { CostPerRun } from "@/components/CostPerRun";
 import { LearningBill, useAudits } from "@/components/LearningBill";
 import { CostAgreement } from "@/components/CostAgreement";
 import { LearningGlance } from "@/components/LearningGlance";
-import { revisionsOf } from "@/lib/learningGlance";
+import { agreementOf, revisionsOf } from "@/lib/learningGlance";
 import { WorkflowReplay } from "@/components/WorkflowReplay";
 import { LoopFeed } from "@/components/LoopFeed";
 import { LoopStory } from "@/components/LoopStory";
@@ -191,7 +191,7 @@ function LearningView({ agent, v2, server, onAgent, onChanged }: LearningProps) 
       {shownImpact(view.impact) && <ImpactCard impact={view.impact} cost={cost} />}
       <CostPerRun v2={v2} agentId={agent.agent_id} on={on} promotions={promotions} onCost={setCost} reads={costReads} execution={execution} />
       <LearningBill v2={v2} agentId={agent.agent_id} cost={cost} serving={serving} audits={audits}
-        beside={revisions.some((p) => p.served && p.agreement) ? <CostAgreement cost={cost} revisions={revisions} /> : undefined} />
+        beside={revisions.some((p) => p.served && agreementOf(p)) ? <CostAgreement cost={cost} revisions={revisions} /> : undefined} />
       <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} promotions={promotions} serving={serving} cost={cost} onReplayed={() => { void read(); }} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <div className="min-w-0 space-y-6">

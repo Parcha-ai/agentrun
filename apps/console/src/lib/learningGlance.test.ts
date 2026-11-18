@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evidenceWords, glanceOf, headlineOf, intervalWords, logAxis, revisionsOf, shareOf } from "./learningGlance";
+import { agreedWords, agreementOf, auditsOf, auditWords, glanceOf, headlineOf, intervalWords, logAxis, revisionsOf, shareOf } from "./learningGlance";
 import { AUDITS, COST, FIRST, PROMOTIONS, SECOND, WORKFLOW } from "./learningTab.fixture";
 import type { LearningCost } from "./v2";
 
@@ -29,17 +29,30 @@ describe("a share and its interval", () => {
 });
 
 describe("each promoted revision as a point", () => {
-  it("counts a revision's agreement on its check's alone answers and its audit rows together, and its cost over the runs it served", () => {
+  it("says a revision's agreement by its check's own count, its audits beside it and never added to it, and its cost over the runs it served", () => {
     const [first, second] = revisions();
     expect(first).toMatchObject({ workflow: WORKFLOW, digest: FIRST, label: "v1", state: "held", check: { agreed: 15, alone: 17, n: 20, agree_min: 0.8 }, audits: { agreed: 5, rows: 8, grades: 0 } });
-    expect(first!.agreement).toMatchObject({ agreed: 20, rows: 25 });
+    // The check's figure is the server's: agreed of alone, 15 of 17. The audits' 5 of 8 is its own share.
+    expect(agreementOf(first!)).toMatchObject({ on: "check", agreed: 15, rows: 17 });
+    expect(auditsOf(first!)).toMatchObject({ agreed: 5, rows: 8 });
+    expect(intervalWords(auditsOf(first!)!)).toBe("31% to 86%");
     expect(first!.served!.runs).toBe(28);
     expect(second).toMatchObject({ digest: SECOND, label: "v2", state: "serving", audits: { agreed: 7, rows: 7, grades: 1 } });
-    expect(second!.agreement).toMatchObject({ agreed: 28, rows: 29 });
+    expect(agreementOf(second!)).toMatchObject({ on: "check", agreed: 21, rows: 22 });
+    expect(intervalWords(agreementOf(second!)!)).toBe("78% to 99%");
+    expect(agreedWords(agreementOf(second!)!)).toBe("21 of 22 answers on its check");
+    expect(auditWords(second!.audits!)).toBe("7 of 7 agreed, 1 your grade");
     expect(second!.served!.runs).toBe(31);
     // Every served run of the read is one revision's: the two means are of the summary's 59 served runs.
     expect(first!.served!.runs + second!.served!.runs).toBe(COST.summary.after!.runs);
-    expect(evidenceWords(second!)).toBe("check 21 of 22 · audits 7 of 7, 1 your grade");
+  });
+  it("says a revision with no check input behind it by its audit rows, and nothing with neither", () => {
+    const [, second] = revisions();
+    const approved = { ...second!, check: null };
+    expect(agreementOf(approved)).toMatchObject({ on: "audits", agreed: 7, rows: 7 });
+    expect(agreedWords(agreementOf(approved)!)).toBe("7 of 7 audited runs");
+    expect(agreementOf({ check: null, audits: null })).toBeNull();
+    expect(agreementOf({ check: null, audits: { agreed: 0, rows: 0, grades: 0 } })).toBeNull();
   });
   it("is one point a revision, however many records it has: a promotion and a hold of one digest are one", () => {
     expect(revisions().map((p) => p.digest)).toEqual([FIRST, SECOND]);
@@ -48,8 +61,8 @@ describe("each promoted revision as a point", () => {
     for (const unread of ["loading", "failed"] as const) {
       const second = revisions(unread)[1]!;
       expect(second.audits).toBeNull();
-      expect(second.agreement).toMatchObject({ agreed: 21, rows: 22 });
-      expect(evidenceWords(second)).toBe("check 21 of 22");
+      expect(auditsOf(second)).toBeNull();
+      expect(agreementOf(second)).toMatchObject({ on: "check", agreed: 21, rows: 22 });
     }
   });
   it("leaves an audit with no verdict (skipped, parked) out of the count", () => {
@@ -71,18 +84,18 @@ describe("the tab at a glance", () => {
     const g = glanceOf(COST, revisions())!;
     expect(g.revision!.digest).toBe(SECOND);
     expect(g.serves).toBe(true);
-    expect(headlineOf(g)).toBe("7.7x cheaper a run, agreeing with the agent on 28 of 29 answers.");
+    expect(headlineOf(g)).toBe("7.7x cheaper a run, agreeing with the agent on 21 of 22 answers on its check.");
     expect(g.alone).toMatchObject({ agreed: 56, rows: 59 });
     expect(g.even).toEqual({ n: COST.bill.break_even!.n });
     expect(glanceOf(summary({ takeover: null }), [])).toBeNull();
   });
   it("never says cheaper for a ratio at or under 1, and works no ratio out when the server gave none", () => {
     const rev = revisions();
-    expect(headlineOf(glanceOf(summary({ times_cheaper: 0.8, before: { runs: 20, mean_usd: 0.1 }, after: { runs: 59, mean_usd: 0.125 } }), rev)!)).toBe("Not cheaper yet: 1.3x the cost a run, agreeing with the agent on 28 of 29 answers.");
-    expect(headlineOf(glanceOf(summary({ times_cheaper: 1 }), rev)!)).toBe("The same cost a run, agreeing with the agent on 28 of 29 answers.");
+    expect(headlineOf(glanceOf(summary({ times_cheaper: 0.8, before: { runs: 20, mean_usd: 0.1 }, after: { runs: 59, mean_usd: 0.125 } }), rev)!)).toBe("Not cheaper yet: 1.3x the cost a run, agreeing with the agent on 21 of 22 answers on its check.");
+    expect(headlineOf(glanceOf(summary({ times_cheaper: 1 }), rev)!)).toBe("The same cost a run, agreeing with the agent on 21 of 22 answers on its check.");
     // Under 20 served runs the server gives no ratio: the two levels are said, never their quotient.
     const early = headlineOf(glanceOf(summary({ times_cheaper: null, after: { runs: 4, mean_usd: 0.12 } }), rev)!);
-    expect(early).toBe("$0.120 a run instead of $0.890, agreeing with the agent on 28 of 29 answers.");
+    expect(early).toBe("$0.120 a run instead of $0.890, agreeing with the agent on 21 of 22 answers on its check.");
     expect(early).not.toMatch(/\dx/);
   });
   it("says the agent takes the runs when the revision is held, or the money rule stopped it running first", () => {

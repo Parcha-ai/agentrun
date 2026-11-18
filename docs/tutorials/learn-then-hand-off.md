@@ -71,10 +71,10 @@ chart has room for one each, else each block of runs stacked by path), so the le
 takeover marker.
 
 Above both, the tab opens on one sentence and four figures: the cost ratio, how often the serving revision's answer was
-the agent's, how many of the runs it ran first it finished alone, and the bill's break-even run. Each share has its
-count and its 95% interval. Beside the bill, **cost against agreement** draws each promoted revision as a point: what a
-run it served cost against how often it agreed with the agent, on its check's inputs and its audited runs. Agreement is
-not accuracy: the agent's answer is the reference.
+the agent's on its promotion check, how many of the runs it ran first it finished alone, and the bill's break-even run.
+Each share has its count and its 95% interval. **Cost against agreement** draws each promoted revision as a point: what
+a run it served cost against how often it agreed with the agent on its check's inputs, with its audits since as a
+hollow mark beside it. Agreement is not accuracy: the agent's answer is the reference.
 
 To prove it, keep some inputs it never learns on and compare learning off and on. The
 [learning bench](../../packages/serve/learn-bench/README.md) does that for you.

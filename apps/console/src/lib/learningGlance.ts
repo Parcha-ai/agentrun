@@ -6,9 +6,11 @@ import type { CostRun, LearningCost, Promotion, Serving } from "./v2";
 // The Learning tab at a glance (components/LearningGlance.tsx) and its cost against agreement chart
 // (components/CostAgreement.tsx): each learned workflow revision as one point, what a run it served cost against how
 // often its answer was the agent's. Every count is the server's (the cost read's runs and summary, the promotion
-// records' checks, the audit ledger's rows); what is worked out here is a share of two of those counts and the
-// interval that share's sample leaves it. Agreement is never called accuracy: the agent's answer is the reference,
-// not the truth.
+// records' checks, the audit ledger's rows), and each figure is one of them: a check's agreement is its `agreed` of its
+// `alone`, the figure the server holds against `agree_min`; an audit's is the ledger's rows that agreed. The two are
+// never added into a figure of the console's own. What is worked out here is a share of two counts of one source, the
+// interval that share's sample leaves it, and a revision's mean over the runs the read says it served. Agreement is
+// never called accuracy: the agent's answer is the reference, not the truth.
 
 /** A share of `agreed` in `rows` with its 95% Wilson score interval, each from 0 to 1; null with no row. */
 export type Share = { agreed: number; rows: number; share: number; lo: number; hi: number };
@@ -28,14 +30,30 @@ export const intervalWords = (s: Share) => `${percent(s.lo)} to ${percent(s.hi)}
  *  served. `served`: the runs of the read it ran first whose all-in cost is known, and their mean. `check`: its
  *  promotion check, the inputs it answered alone and those of them that said what the agent said. `audits`: the audit
  *  ledger's scored rows for it (a shadow run of the agent, or its owner's grade, of a run it answered alone) and how
- *  many agreed, `grades` of them the owner's; null while the ledger is unread. `agreement`: the two together. */
+ *  many agreed, `grades` of them the owner's; null while the ledger is unread. */
 export type RevisionPoint = {
   workflow: string; digest: string; label: string; state: "serving" | "held" | "served";
   served: { runs: number; mean_usd: number } | null;
   check: { agreed: number; alone: number; n: number; agree_min: number } | null;
   audits: { agreed: number; rows: number; grades: number } | null;
-  agreement: Share | null;
 };
+
+/** The share a revision's agreement is said by, and what it is of: its promotion check's (the answers it gave alone
+ *  that said what the agent said), which the server holds against `agree_min`; for a revision with no check input
+ *  behind it, its audit rows'. Null with neither. */
+export type Agreement = Share & { on: "check" | "audits" };
+export function agreementOf(p: Pick<RevisionPoint, "check" | "audits">): Agreement | null {
+  const check = p.check ? shareOf(p.check.agreed, p.check.alone) : null;
+  if (check) return { ...check, on: "check" };
+  const audits = auditsOf(p);
+  return audits && { ...audits, on: "audits" };
+}
+/** The share of a revision's scored audit rows that agreed; null with none, or while the ledger is unread. */
+export const auditsOf = (p: Pick<RevisionPoint, "audits">): Share | null => (p.audits ? shareOf(p.audits.agreed, p.audits.rows) : null);
+/** What an agreement was counted on, as the headline and a figure say it: "21 of 22 answers on its check". */
+export const agreedWords = (a: Agreement) => (a.on === "check" ? `${a.agreed} of ${a.rows} answers on its check` : `${a.agreed} of ${a.rows} audited ${a.rows === 1 ? "run" : "runs"}`);
+/** A revision's audit rows in words: "7 of 7 agreed, 1 your grade". */
+export const auditWords = (audits: NonNullable<RevisionPoint["audits"]>) => `${audits.agreed} of ${audits.rows} agreed${audits.grades ? `, ${audits.grades} your ${audits.grades === 1 ? "grade" : "grades"}` : ""}`;
 
 const servedBy = (r: CostRun) => r.path === "workflow" || r.path === "handed_back";
 
@@ -62,7 +80,6 @@ export function revisionsOf(cost: Pick<LearningCost, "runs">, promotions: readon
       state: now?.digest === record.digest && now.state !== "held" && now.state !== "stopped" ? "serving" : held ? "held" : "served",
       served: runs.length ? { runs: runs.length, mean_usd: runs.reduce((sum, r) => sum + r.total_usd!, 0) / runs.length } : null,
       check, audits: tally,
-      agreement: shareOf((check?.agreed ?? 0) + (tally?.agreed ?? 0), (check?.alone ?? 0) + (tally?.rows ?? 0)),
     });
   }
   // Numbered within each workflow, in the order promoted; with more than one workflow the name goes before the number.
@@ -73,15 +90,6 @@ export function revisionsOf(cost: Pick<LearningCost, "runs">, promotions: readon
     count.set(p.workflow, n);
     return { ...p, label: many ? `${p.workflow} v${n}` : `v${n}` };
   });
-}
-
-/** What a revision's agreement was counted on, in words: "check 21 of 22 · audits 7 of 7, 1 your grade". */
-export function evidenceWords(p: Pick<RevisionPoint, "check" | "audits">): string {
-  const parts = [
-    p.check ? `check ${p.check.agreed} of ${p.check.alone}` : null,
-    p.audits?.rows ? `audits ${p.audits.agreed} of ${p.audits.rows}${p.audits.grades ? `, ${p.audits.grades} your ${p.audits.grades === 1 ? "grade" : "grades"}` : ""}` : null,
-  ].filter((part): part is string => part !== null);
-  return parts.join(" · ");
 }
 
 /** The tab's headline figures. Each is null when the server has not said it: nothing is filled in. */
@@ -120,8 +128,8 @@ export function headlineOf(g: Glance): string {
     : ratio !== null && before && after !== null ? (ratio < 1 ? `Not cheaper yet: ${timesOf(after / before)} the cost a run` : "The same cost a run")
       : before !== null && after !== null ? `${level(after)} a run instead of ${level(before)}`
         : served ? `${served} served ${served === 1 ? "run" : "runs"} so far` : "A learned workflow took over";
-  const a = g.revision?.agreement;
-  const agreed = a ? `agreeing with the agent on ${a.agreed} of ${a.rows} answers` : null;
+  const a = g.revision ? agreementOf(g.revision) : null;
+  const agreed = a ? `agreeing with the agent on ${agreedWords(a)}` : null;
   if (!g.serves && g.revision) return `${cost}. ${g.revision.state === "held" ? "Held now" : "Not serving now"}: the agent takes the runs.`;
   return agreed ? `${cost}, ${agreed}.` : `${cost}.`;
 }

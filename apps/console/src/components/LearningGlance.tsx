@@ -1,12 +1,13 @@
 import type { ReactNode } from "react";
 import { level, timesOf, usd } from "@/lib/costPerRun";
-import { evidenceWords, glanceOf, headlineOf, intervalWords, percent, type RevisionPoint, type Share } from "@/lib/learningGlance";
+import { agreedWords, agreementOf, auditsOf, auditWords, glanceOf, headlineOf, intervalWords, percent, type RevisionPoint, type Share } from "@/lib/learningGlance";
 import type { LearningCost } from "@/lib/v2";
 
 // The Learning tab at a glance, once a learned workflow has taken a run over: one sentence, then four figures, each
 // with the count it stands on and, for a share, the 95% interval that count leaves it. The cost ratio is the server's
-// (the cost read's summary), the agreement the serving revision's check and audits, the runs finished alone the
-// summary's hand-backs, the break-even the bill's. Nothing before a takeover: the loop's strip says what comes next.
+// (the cost read's summary), the agreement the serving revision's promotion check (its `agreed` of its `alone`, with
+// its audits since said beside it, never added to it), the runs finished alone the summary's hand-backs, the
+// break-even the bill's. Nothing before a takeover: the loop's strip says what comes next.
 
 const runsWord = (n: number) => `${n} ${n === 1 ? "run" : "runs"}`;
 const dollars = (value: number) => (value >= 1 ? `$${value.toFixed(2)}` : usd(value));
@@ -16,8 +17,10 @@ export function LearningGlance({ cost, revisions }: { cost: LearningCost | null;
   if (!cost || !g) return null;
   const { before, after, ratio, served } = g.cost;
   const cheaper = ratio !== null && ratio > 1;
-  const agreement = g.revision?.agreement ?? null;
-  const needed = g.revision?.check?.agree_min ?? null;
+  const agreement = g.revision ? agreementOf(g.revision) : null;
+  // The bar is the check's: said only beside a check's figure.
+  const needed = agreement?.on === "check" ? g.revision!.check!.agree_min : null;
+  const audited = agreement?.on === "check" && g.revision!.audits && auditsOf(g.revision!) ? ` · audits since: ${auditWords(g.revision!.audits)}` : "";
   // A server from before the bill answers none: the break-even cell says so, the rest stand.
   const bill = (cost as { bill?: LearningCost["bill"] }).bill ?? null;
   const last = bill?.points.at(-1);
@@ -40,8 +43,8 @@ export function LearningGlance({ cost, revisions }: { cost: LearningCost | null;
         </Figure>
         <Figure label="Agrees with the agent" testid="glance-agreement"
           value={agreement ? percent(agreement.share) : "Not checked"}
-          basis={agreement && g.revision
-            ? `${agreement.agreed} of ${agreement.rows} answers it gave alone (${evidenceWords(g.revision)}) · 95% interval ${intervalWords(agreement)}${needed !== null ? ` · ${percent(needed)} needed to serve` : ""}`
+          basis={agreement
+            ? `${agreedWords(agreement)} · 95% interval ${intervalWords(agreement)}${needed !== null ? ` · ${percent(needed)} needed to serve` : ""}${audited}`
             : "No check or audit of the workflow that serves has a verdict yet."}>
           {agreement && <Interval share={agreement} mark={needed} markWords="needed to serve" />}
         </Figure>

@@ -79,15 +79,15 @@ export const AUDITS: AuditRow[] = [
 ];
 
 const COMMIT = "c".repeat(40);
-const NODES = [
+const NODES: NonNullable<NonNullable<Promotions["serving"][number]["champion"]>["nodes"]> = [
   { path: "0", kind: "extract", label: "fields", tier: "fast", checks: [] },
   { path: "1", kind: "decide", label: "account", tier: "agent", checks: [] },
   { path: "2", kind: "escalate", label: "unsure", tier: null, checks: [{ on: "when", predicate: { predicate: "field_equals", path: "account.code", value: "unknown" } }] },
 ];
-const check = (n: number, alone: number, agreed: number) => ({ compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1, n, alone, agreed, of: [], cost_usd: CHECK.spend });
+const check = (n: number, alone: number, agreed: number): NonNullable<Promotions["promotions"][number]["check"]> => ({ compile_after: 20, agree_min: 0.8, alone_min: 0.7, attempt: 1, n, alone, agreed, of: [], cost_usd: CHECK.spend });
 const disagreements = AUDITED[FIRST]!.disagreed.map((n) => ({ run: `audit.${run(n).run_id}`, served: run(n).run_id, input: `invoice ${n}`, agent: "6100 Office supplies", draft: "6400 Software" }));
 
-export const PROMOTIONS = {
+export const PROMOTIONS: Promotions = {
   agent: "invoice-sorter",
   promotions: [
     { workflow: WORKFLOW, digest: FIRST, at: run(sample.summary.takeover!.n).started_at, decided: "promote", reason: "checked on 20 inputs", check: check(20, 17, 15), runs: [], commit: COMMIT },
@@ -99,7 +99,7 @@ export const PROMOTIONS = {
     audit: { window: 10, disagree: 3, rows: 7, disagreed: 0 }, audits_off: null, not_auditable: 0,
     champion: { digest: SECOND, commit: COMMIT, nodes: NODES, check: check(23, 22, 21) },
   }],
-} as unknown as Promotions;
+};
 
 export const LOOP: LearningLoop = {
   agent: "invoice-sorter", completed_runs: RUNS.length,
@@ -112,7 +112,7 @@ export const LOOP: LearningLoop = {
 export const AGENT: Agent = {
   agent_id: "invoice-sorter", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Invoice sorter", description: "Sorts an invoice into its ledger account.", instructions: "Answer in one line.", harness: "pi", skills: [], tools: ["read"], learning: true },
-} as Agent;
+};
 
 export const VIEW: AgentLearning = {
   agent: "invoice-sorter", main: "c3",
