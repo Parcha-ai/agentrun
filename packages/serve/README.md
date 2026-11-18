@@ -1940,7 +1940,8 @@ not known, so not cut, and the import says so.
 ## MCP servers
 
 Add a remote MCP server once, with its credential, and see its tools before you keep it. An agent that grants one of
-its tools calls it on pi and on claude-agent ([below](#agents-call-a-servers-tools)).
+its tools calls it on pi and on claude-agent ([below](#agents-call-a-servers-tools)). Which kind of server to choose for a
+service's CLI, and why its token never goes in the box: [Give an agent tools](../../docs/connect-tools.md).
 
 ```sh
 curl -X POST "$BASE/v2/settings/mcp-servers/preview" -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
