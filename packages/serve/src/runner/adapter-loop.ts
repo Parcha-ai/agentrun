@@ -535,13 +535,16 @@ function sideTurnsOf(records: readonly SessionRecord[]): Set<number> {
   return side;
 }
 
-/** What the request that just answered cost, from the session's records, and the bookings that answer gives (`turns`):
- *  every runner.turn record no answer was given yet (`given`). A side request's booking (sideTurnsOf) is given and never
- *  read: it is no answer's, and it stays on the run's ledger and cap. The answer reads the session's own requests
- *  booked since the answer before it, their booked figures summed (pi asks one at a time, so that is its own; were a
- *  retry ever booked without an answer of its own, it would be summed in), null when any is unknown; undefined when none
- *  is booked. Each booking is given once, so one unknown figure stays that answer's, never every later answer's. */
-export function bookingOfAnswer(records: readonly SessionRecord[], given: ReadonlySet<number>): { turns: number[]; usd: number | null | undefined } {
+/** What the request that just answered cost, from the session's records, and the bookings that answer gives (`turns`),
+ *  among the runner.turn records no answer was given yet (`given`). The answer reads its own conversation's (`own`: the
+ *  turns its conversation asked; absent, every turn): a booking of a conversation asking beside it (a subagent's child,
+ *  answering at about the same time) is left for that conversation's answer, neither read nor given. A side request's
+ *  booking (sideTurnsOf) is given and never read: it is no answer's, and it stays on the run's ledger and cap. The answer
+ *  reads its conversation's requests booked since the answer before it, their booked figures summed (a conversation asks
+ *  one at a time, so that is its own; were a retry ever booked without an answer of its own, it would be summed in), null
+ *  when any is unknown; undefined when none is booked. Each booking is given once, so one unknown figure stays that
+ *  answer's, never every later answer's. */
+export function bookingOfAnswer(records: readonly SessionRecord[], given: ReadonlySet<number>, own: (turn: number) => boolean = () => true): { turns: number[]; usd: number | null | undefined } {
   const side = sideTurnsOf(records);
   const turns: number[] = [];
   let usd: number | null | undefined;
@@ -549,8 +552,12 @@ export function bookingOfAnswer(records: readonly SessionRecord[], given: Readon
     if (record.kind !== RUNNER_RECORDS.turn) continue;
     const turn = record.data as { turn?: unknown; usd?: unknown; bookedUsd?: unknown; rule?: unknown; billing?: unknown };
     if (typeof turn.turn !== "number" || given.has(turn.turn)) continue;
+    if (side.has(turn.turn)) {
+      turns.push(turn.turn);
+      continue;
+    }
+    if (!own(turn.turn)) continue;
     turns.push(turn.turn);
-    if (side.has(turn.turn)) continue;
     // By the kernel's one rule (turnCostOf): an answer with no price of its own is unknown, never the hold it was booked at
     // for the cap; one billed to a person's plan is $0 to the run.
     const figure = turn.usd === undefined && turn.bookedUsd === undefined ? undefined : turnCostOf(turn).usd;
@@ -2342,6 +2349,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const port = booking.models;
         unbooked = 0;
         bookingsWriting = 0;
+        // The conversation each request of this claim was asked in, by its turn, where its client named one.
+        const askedIn = new Map<number, string>();
         const counted: typeof port = {
           beforeRequest: async (request) => {
             // The CLI's next request of its main model after its question to the person: never admitted, it asks for the
@@ -2368,6 +2377,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               else carried = undefined;
             }
             unbooked += 1;
+            // The conversation that asked, as its client named it (pi's, one of several asking at once): whose answer reads
+            // this request's booking (bookedCost).
+            const conversation = (request as { conversation?: string }).conversation;
+            if (ticket && conversation !== undefined) askedIn.set(ticket.turn, conversation);
             // The harness's own side call (a title request on its smaller model): never a typical cost of its main requests.
             if (ticket && (request as { side?: boolean }).side) notOwn.add(ticket.turn);
             // The main model's request as the cap prices it: what the run keeps back to answer is priced on it (wrapUp).
@@ -2412,13 +2425,20 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         };
         // What the request that just answered cost, once the session's requests are booked (bookingOfAnswer): its own
         // booking's figure, null when unknown; a side request's is given and never read. A refused request's record is its $0.
+        // Its own is its conversation's (`conversation`, as the answer's harness names it and as its requests named it:
+        // askedIn): with several conversations asking at once (pi's subagents), each answer reads the bookings of its
+        // own conversation's requests, never one a conversation beside it is still to read. An answer that names no
+        // conversation reads those of the requests that named none.
         // The bookings already given to an answer: every one the session holds when it opens (an earlier claim's), then each
         // this claim gives.
         const given = new Set(turnsOf(await writer.read().catch(() => [] as SessionRecord[])));
-        const bookedCost = async (): Promise<number | null | undefined> => {
+        const bookedCost = async (conversation?: string): Promise<number | null | undefined> => {
           await bookingsSettled();
-          const booking = bookingOfAnswer(await writer.read().catch(() => [] as SessionRecord[]), given);
-          for (const turn of booking.turns) given.add(turn);
+          const booking = bookingOfAnswer(await writer.read().catch(() => [] as SessionRecord[]), given, (turn) => askedIn.get(turn) === conversation);
+          for (const turn of booking.turns) {
+            given.add(turn);
+            askedIn.delete(turn);
+          }
           return booking.usd;
         };
         // The gate a CLI's tool bridge asks before anything of a call: a call it refuses never reaches its host tool, so its
