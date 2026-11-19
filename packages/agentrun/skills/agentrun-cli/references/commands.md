@@ -859,6 +859,12 @@ Show the archived run in the lists again.
 
 Route: `POST /runs/{run_id}/unarchive`.
 
+### `agentrun runs usage RUN_ID`
+
+A run's usage lines: tokens by model, paid tools by who charged, browser time by provider.
+
+Route: `GET /runs/{run_id}/usage`.
+
 ### `agentrun runs wait RUN_ID`
 
 Wait until the run ends or waits on a person, and print it.

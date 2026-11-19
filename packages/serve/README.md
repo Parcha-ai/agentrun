@@ -3796,6 +3796,40 @@ and says how its figure was reached.
 
 The console shows the tokens beside the run's cost, and the figure says its basis: `$0.0042 est.`, `$0.0042 reported`.
 
+## A run's usage lines
+
+`GET /runs/{id}/usage` (`runusage/1`) says what one run used, a line per meter and dimension, for an operator who
+bills or accounts for runs. Each line has a raw quantity, this server's cost figure for it, and how that figure was
+reached. The server prices nothing for anyone here: a quantity is never rounded to a billing increment, and a rate card
+is the biller's.
+
+```json
+{ "run_id": "run_…", "final": true, "currency": "USD", "total_usd": 0.0566, "reason": null,
+  "lines": [
+    { "meter": "tokens", "dimension": "anthropic/claude-sonnet-5-5", "quantity": 3300, "unit": "token", "basis": "reported", "usd": 0.0036,
+      "requests": 3, "tokens": { "input": 3000, "output": 300, "cache_read": 0, "cache_write": 0 }, "unmetered_requests": 0 },
+    { "meter": "tools", "dimension": "monid", "quantity": 1, "unit": "call", "basis": "estimate", "usd": 0.003 },
+    { "meter": "tools", "dimension": "fake", "quantity": 1, "unit": "call", "basis": "estimate", "usd": 0.05 } ] }
+```
+
+- `tokens`, one line per model the requests were sent on (a workflow decision's request on its own model too):
+  `quantity` is the input, cache read, cache write and output tokens as each request reported them, with the split
+  beside it; `basis` is the run's `cost.basis` rule over that model's requests alone.
+- `tools`, one line per charger (`charged_by`: `monid`, an MCP server's name, `parallel`): `quantity` is the charges
+  booked, one per paid call.
+- `browser_time`, one line per browser provider: `quantity` is the seconds this server's clock charged the provider's
+  sessions for, the provider's minimum per session included as the browser charged it.
+- `usd` is the line's cost as the run's booking holds it. `tools` and `browser_time` read `estimate`: a call is booked at
+  the price its record carries, browser time at the provider's price per hour, never from a vendor's invoice. A charge of
+  unknown cost makes its line's `usd` null, with `so_far_usd` and `unpriced` beside it, never $0.
+- The lines are the charges `cost.usd` joins, outside the run's end-of-run (learning) turn, so `total_usd` is the run's
+  `cost.usd`, and the `tools` lines sum to `cost.tools_usd`. Learning's spend for the run is `learning_usd` on the run
+  read, never a line here.
+- `lines` is null, with `reason`, while the run is at work (`running`, `final: false`), for a run whose figure is not its
+  booking's (`not_booked`: an imported, native or SDK run, or a CLI run whose model requests went past its proxy), and
+  for a learning run a follow-up opened again (`reopened`). Read it after `run.ended`.
+- Computer time is not a line yet: this server meters no computer time.
+
 ## Spend cap
 
 A run may name `max_cost_usd`, an agentic run or a workflow run ([below](#a-workflow-run-under-its-cap)). A run that names none takes its agent's default,

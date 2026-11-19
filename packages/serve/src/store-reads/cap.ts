@@ -9,7 +9,7 @@ import { isCliRecord, runEntries, withPaidCosts } from "./journal.js";
 
 /** A CLI run whose model answered or called a tool with no model request booked (metrics.ts cliModelWorked): what it
  *  spent no booking read, so its spend is unknown. */
-const unbookedCli = (entries: Parameters<typeof cliModelWorked>[0]): boolean => isCliRecord(entries) && bookedSpend(entries, "model").requests === 0 && cliModelWorked(entries);
+export const unbookedCli = (entries: Parameters<typeof cliModelWorked>[0]): boolean => isCliRecord(entries) && bookedSpend(entries, "model").requests === 0 && cliModelWorked(entries);
 
 /** What a run has spent, as the cap reads it, from the one store's journal: its model requests and its paid tool calls. */
 export async function spentOverStore(store: Store, runId: string, context: Context): Promise<number | null> {

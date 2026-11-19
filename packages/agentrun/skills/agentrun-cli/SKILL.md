@@ -146,7 +146,7 @@ Two clients call the same API from code, with the same server and token. `@parch
 - `agentrun Observations`: get-observations
 - `agentrun open`: Open AgentRun in this machine's browser: the setup page, its code filled in, until the owner's password is set; the console after (where no browser opens, it prints the link)
 - `agentrun revisions`: list, set-current
-- `agentrun runs`: archive, cancel, computer-call, computer-release, create-inline-run, files, get, grade-run, graph, hand-back-run-computer, learning, learning-diff, list, message, pause, raise-cap, read-file, resume, start, start-held, stop, take-over-run-computer, timeline, trace, unarchive, wait
+- `agentrun runs`: archive, cancel, computer-call, computer-release, create-inline-run, files, get, grade-run, graph, hand-back-run-computer, learning, learning-diff, list, message, pause, raise-cap, read-file, resume, start, start-held, stop, take-over-run-computer, timeline, trace, unarchive, usage, wait
 - `agentrun sdk-runs`: complete, events, get, start
 - `agentrun server`: capabilities, health, mcp, openapi
 - `agentrun service`: install, logs, restart, start, status, stop, uninstall, upgrade

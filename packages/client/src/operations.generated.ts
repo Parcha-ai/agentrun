@@ -3656,6 +3656,34 @@ export type GetRunTraceResponse = {
 /** Show the archived run in the lists again (POST /runs/{run_id}/unarchive). */
 export type UnarchiveRunResponse = Record<string, unknown>;
 
+/** A run's usage lines: tokens by model, paid tools by who charged, browser time by provider (GET /runs/{run_id}/usage). */
+export type GetRunUsageResponse = {
+  run_id: Id;
+  final: boolean;
+  currency: "USD";
+  total_usd: number | null;
+  lines: Array<{
+    meter: "tokens" | "tools" | "browser_time";
+    dimension: string;
+    quantity: number | null;
+    unit: "token" | "call" | "second";
+    basis: "reported" | "estimate" | "unpriced";
+    usd: number | null;
+    so_far_usd?: number;
+    unpriced?: number;
+    upper_bound?: true;
+    requests?: number;
+    tokens?: {
+      input: number;
+      output: number;
+      cache_read: number;
+      cache_write: number;
+    };
+    unmetered_requests?: number;
+  }> | null;
+  reason: "running" | "not_booked" | "reopened" | null;
+};
+
 /** Complete a backend SDK task (POST /sdk-runs/{run_id}/complete). */
 export type CompleteSdkRunBody = {
   status: "completed" | "failed" | "cancelled";
@@ -5652,6 +5680,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getTimeline: {"method":"GET","path":"/runs/{run_id}/timeline","pathParams":["run_id"],"multiSegment":[],"query":["after","wait_ms","limit","calls"],"headers":["Last-Event-ID"],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRunTrace: {"method":"GET","path":"/runs/{run_id}/trace","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   unarchiveRun: {"method":"POST","path":"/runs/{run_id}/unarchive","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getRunUsage: {"method":"GET","path":"/runs/{run_id}/usage","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   completeSdkRun: {"method":"POST","path":"/sdk-runs/{run_id}/complete","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   sdkRunEvents: {"method":"POST","path":"/sdk-runs/{run_id}/events","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getSdkRun: {"method":"GET","path":"/sdk-runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5959,6 +5988,8 @@ export function resources(call: Call) {
       trace: (runId: string, options?: RequestOptions): Promise<GetRunTraceResponse> => call("getRunTrace", [runId], undefined, undefined, options),
       /** Show the archived run in the lists again (POST /runs/{run_id}/unarchive). */
       unarchive: (runId: string, options?: RequestOptions): Promise<UnarchiveRunResponse> => call("unarchiveRun", [runId], undefined, undefined, options),
+      /** A run's usage lines: tokens by model, paid tools by who charged, browser time by provider (GET /runs/{run_id}/usage). */
+      usage: (runId: string, options?: RequestOptions): Promise<GetRunUsageResponse> => call("getRunUsage", [runId], undefined, undefined, options),
     },
     sdkRuns: {
       /** Complete a backend SDK task (POST /sdk-runs/{run_id}/complete). */

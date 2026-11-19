@@ -2856,6 +2856,35 @@ export interface operations {
       dropped: number;
     };
   };
+  getRunUsage: {
+    body: never;
+    answer: {
+      run_id: components["Id"];
+      final: boolean;
+      currency: "USD";
+      total_usd: number | null;
+      lines: {
+        meter: "tokens" | "tools" | "browser_time";
+        dimension: string;
+        quantity: number | null;
+        unit: "token" | "call" | "second";
+        basis: "reported" | "estimate" | "unpriced";
+        usd: number | null;
+        so_far_usd?: number;
+        unpriced?: number;
+        upper_bound?: true;
+        requests?: number;
+        tokens?: {
+          input: number;
+          output: number;
+          cache_read: number;
+          cache_write: number;
+        };
+        unmetered_requests?: number;
+      }[] | null;
+      reason: "running" | "not_booked" | "reopened" | null;
+    };
+  };
   getSdkRun: {
     body: never;
     answer: {
