@@ -104,6 +104,7 @@ Install, deploy and the command
 
 Docs and examples
 
+- The README and `docs/getting-started.md` lead their local setup with the prompt to paste into a coding agent, the same text the website's copy button gives; the three manual steps follow it (#3286). <!-- changes/setup-prompt-first.md -->
 - An example of Browser Use through Monid in a run (#3147). <!-- changes/monid-browser-use-example.md -->
 - The server README records Particle-1's estimate matching Particle's own bill (#3233), a Render deploy walked from creation to first run in 85 s (#3226), and how to count runs with an unrecorded link before unsetting `DAYTONA_ARCHIL_EGRESS` (#3241); `docs/AUTOQA.md`'s expected results match the product (#3235).
 
