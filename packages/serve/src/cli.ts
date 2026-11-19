@@ -99,7 +99,7 @@ AGENTRUN_TELEMETRY=debug prints each event on stderr and sends none.
 
 AGENTRUN_API_ONLY=1 serves the run routes alone, for a server behind its caller's backend: a run's launch, read, list,
 timeline, messages, stop, cancel, kill and cap raise, its files and uploads, an agent's Archil disk, capabilities, health
-and usage. Every other address (the page, sign-in, setup, settings, MCP, triggers and their hooks, the rest of agents)
+and usage; the computers list, the workspace's Archil disk and an agent's delete (DELETE /agents/{id}). Every other address (the page, sign-in, setup, settings, MCP, triggers and their hooks, the rest of agents)
 is a 404, and there are no accounts.
 
 The page is for one person, who signs in with a password (AGENTRUN_ACCOUNTS=0 turns this off; the token works for

@@ -470,8 +470,9 @@ const SYNCED = { image: "attached", lifetimeMs: 60_000, network: "open", mount: 
 
 /** A Linux box's computerd on `computer`'s end, scripted: it runs as uid 1000, its /workspace is `box.workspace` ({ type,
  *  uid, mode }, or none), holding the names in `box.entries` (its listing truncated when `box.truncated`, and a remove
- *  finding none of them when `box.unreachable`, as for a name that is not UTF-8 and reaches the wire changed); each
- *  files call is recorded with its path. */
+ *  finding none of them when `box.unreachable`, as for a name that is not UTF-8 and reaches the wire changed, and
+ *  answering only once `box.removing` settles, as a RemoveAll still deleting there); each files call is recorded with
+ *  its path. */
 function linuxBox(computer, box) {
 	computer.onText((text) => {
 		const { id, method, params } = JSON.parse(text);
@@ -491,10 +492,11 @@ function linuxBox(computer, box) {
 		if (method === "files.list" && box.calls.filter((call) => call.startsWith("files.list")).length > 50) return refuse("limit", "listed /workspace 50 times: emptying it would go on forever");
 		if (method === "files.list") return reply({ entries: box.entries.map((name) => ({ path: `/workspace/${name}`, type: "file", size: 0, mode: 0o644, mtimeMs: 0, uid: 1000, gid: 1000 })), truncated: box.truncated === true });
 		if (method === "files.remove" && box.unreachable) return refuse("not_found", `lstat ${params.path}: no such file or directory`);
-		if (method === "files.remove") {
+		const remove = () => {
 			box.entries = box.entries.filter((name) => `/workspace/${name}` !== params.path);
-			return reply({});
-		}
+			reply({});
+		};
+		if (method === "files.remove") return void (box.removing ? box.removing.then(remove) : remove());
 		return reply({});
 	});
 }
@@ -591,6 +593,65 @@ test("a paired Linux box whose /workspace holds entries a remove can't reach is 
 		assert.equal(box.calls.filter((call) => call === "files.list /workspace").length, 1, "a pass that removes nothing ends it");
 	}
 	hub.revoke(paired.id, "the test is over");
+});
+
+test("a create cancelled while its remove still runs on a paired Linux box answers cancelled at once, and the box's hold lasts until the remove answers, or its connection closes", async () => {
+	const hub = new AttachHub();
+	const paired = { id: "c-box", name: "lab", hello: LINUX, labels: {} };
+	const provider = attachedProvider(paired, hub);
+	const [serve, computer] = socketPair();
+	let removed;
+	const box = { workspace: { type: "dir", uid: 1000, mode: 0o700 }, entries: ["old"], calls: [], programs: [], stat: Promise.resolve(), removing: new Promise((resolve) => (removed = resolve)) };
+	linuxBox(computer, box);
+	assert.equal((await hub.accept(paired, serve)).ok, true);
+	const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+	/** A create of `labels` cancelled once its remove of /workspace/old is on the box: its answer. */
+	const cancelledCreate = async (labels, lifetimeMs = SYNCED.lifetimeMs) => {
+		const cancel = new AbortController();
+		const creating = provider.create({ ...SYNCED, labels, lifetimeMs }, { ...req(), signal: cancel.signal });
+		while (!box.calls.includes("files.remove /workspace/old recursive")) await settle();
+		cancel.abort();
+		return creating;
+	};
+	const a = { "agentrun.run": "a", "agentrun.epoch": "1" };
+	const b = { "agentrun.run": "b", "agentrun.epoch": "2" };
+	assert.equal((await cancelledCreate(a)).error?.code, "aborted", "the cancelled create answers at once, the remove still running on the box");
+	assert.deepEqual(hub.claimed(paired.id), a, "the box stays held while the remove runs there");
+	assert.match((await provider.create({ ...SYNCED, labels: b }, req())).error?.message ?? "", /^lab is held by another run/, "a second create can't take the box under the first remove");
+	removed();
+	await settle();
+	assert.equal(hub.claimed(paired.id), undefined, "the hold is let go once the remove answered");
+	const second = await provider.create({ ...SYNCED, labels: b }, req());
+	assert.equal(second.ok, true, JSON.stringify(second));
+	assert.equal((await provider.release(second.value, "delete")).ok, true);
+
+	// A later claim's release of the kept hold (serve's releaseOlder lists it and releases it, from a provider of its
+	// own) answers only once the remove has answered, and the hold's deadline passing doesn't let it go either.
+	box.entries = ["old"];
+	box.calls.length = 0;
+	box.removing = new Promise((resolve) => (removed = resolve));
+	assert.equal((await cancelledCreate(a, 80)).error?.code, "aborted");
+	const later = attachedProvider(paired, hub);
+	const [kept] = (await later.list({ "agentrun.run": "a" })).value;
+	let released;
+	const releasing = later.release(kept.ref, "delete").then((answer) => (released = answer));
+	await new Promise((resolve) => setTimeout(resolve, 150));
+	assert.equal(released, undefined, "the release waits on the remove");
+	assert.deepEqual(hub.claimed(paired.id), a, "the hold outlasts its deadline while the remove runs");
+	assert.match((await later.create({ ...SYNCED, labels: b }, req())).error?.message ?? "", /^lab is held by another run/);
+	removed();
+	assert.equal((await releasing).ok, true);
+	assert.equal(hub.claimed(paired.id), undefined, "released once the remove answered");
+
+	// A remove whose connection closes before it answers lets the hold go: no hang on a box that is gone.
+	box.entries = ["old"];
+	box.calls.length = 0;
+	box.removing = new Promise(() => {});
+	assert.equal((await cancelledCreate(a)).error?.code, "aborted");
+	assert.deepEqual(hub.claimed(paired.id), a);
+	serve.close(ATTACH_CLOSE.going, "the box went away");
+	await settle();
+	assert.equal(hub.claimed(paired.id), undefined, "the hold is let go once the remove's connection closed");
 });
 
 test("redial delays double from 1 s to 60 s, less up to a fifth; idle, replaced and going away redial", () => {
