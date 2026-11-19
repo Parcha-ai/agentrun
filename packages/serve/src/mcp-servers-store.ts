@@ -663,10 +663,11 @@ export class McpServersOverStore {
   }
 
   /** A saved Composio preset server's key (its sealed x-api-key), the Composio user its address names (`user_id`, the
-   *  preset's default when none) and its toolkit: what its Composio triggers are made with (composio-triggers.ts). Refused
+   *  preset's default when none), its toolkit and the auth config its save recorded (composio-made.ts; none for a server
+   *  saved before that was recorded): what its Composio triggers are made with (composio-triggers.ts). Refused
    *  when `name` is no such server: on the trigger's `source.server` at its create (`field`), as a 404 on the server's own
    *  routes (`route`). The key goes only to Composio. */
-  async composioOf(name: string, refusal: "field" | "route"): Promise<{ key: string; user: string; toolkit: string }> {
+  async composioOf(name: string, refusal: "field" | "route"): Promise<{ key: string; user: string; toolkit: string; auth_config?: string }> {
     const refuse = (message: string) => (refusal === "route" ? new ApiError("not_found", message) : invalid([{ field: "source.server", reason: "not_an_option", message }]));
     const row = await this.store.mcp.server(name);
     if (!row) throw refusal === "route" ? notFound(name) : refuse(`No MCP server ${name}: save a Composio server in Settings → MCP servers first.`);
@@ -676,7 +677,8 @@ export class McpServersOverStore {
     const { headers } = await this.opened(name, row, refusal === "field" ? "source.server" : "api_key");
     const key = Object.entries(headers).find(([header]) => header.toLowerCase() === "x-api-key")?.[1];
     if (!key) throw refuse(`${name}'s saved credential holds no Composio key: save it again with its key.`);
-    return { key, user: new URL(row.url).searchParams.get("user_id") || COMPOSIO_USER, toolkit };
+    const config = recordedMade(await this.store.settings.get(composioMadeKey(name)), row.createdAt)?.auth_config?.id;
+    return { key, user: new URL(row.url).searchParams.get("user_id") || COMPOSIO_USER, toolkit, ...(config ? { auth_config: config } : {}) };
   }
 
   /** What the saved server `row` is, for a template's apply to match (mcp-sources.ts sourceOf): github on the GitHub App's
