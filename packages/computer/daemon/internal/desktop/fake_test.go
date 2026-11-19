@@ -9,6 +9,7 @@ import (
 	"errors"
 	"image/png"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"syscall"
@@ -82,6 +83,74 @@ func TestOnTheFakeAServerErrorStopsTheBatchBeforeItsNextAction(t *testing.T) {
 	for _, in := range inputs(f) {
 		if (in.kind == x11.ButtonPress && in.detail == 1) || in.kind == x11.KeyPress {
 			t.Fatalf("an action after the failed one reached the server: %+v in %+v", in, inputs(f))
+		}
+	}
+}
+
+// A chord presses its keys in order, shift among them as it is, and releases them in reverse; the next action of the
+// batch reaches the server only once the app has had keySettle to act on the shortcut (Calc moves its focus to the Name
+// Box for ctrl+shift+f5 after it reads the keys, so text typed with no gap went to the cell).
+func TestOnTheFakeAChordIsPressedInOrderAndTheNextActionWaitsForItToSettle(t *testing.T) {
+	type timed struct {
+		fakeInput
+		at time.Time
+	}
+	var (
+		mu  sync.Mutex
+		got []timed
+	)
+	_, act := onFake(t, func(f *x11fake.Server) {
+		// Control_L on 37, F5 on 71, Escape on 9, as Xvfb's map has them.
+		for code, sym := range map[int]uint32{37: 0xffe3, 71: 0xffc2, 9: 0xff1b} {
+			f.Keymap[(code-x11fake.MinKey)*2] = sym
+		}
+		f.Hold = func(r x11fake.Request) {
+			if r.Opcode == x11fake.XTest && r.Data == 2 {
+				mu.Lock()
+				got = append(got, timed{fakeInput{r.Body[0], r.Body[1]}, time.Now()})
+				mu.Unlock()
+			}
+		}
+	})
+	press, release := byte(x11.KeyPress), byte(x11.KeyRelease)
+	for _, c := range []struct {
+		keys  []string
+		codes []byte
+	}{
+		{[]string{"ctrl", "shift", "f5"}, []byte{37, 50, 71}},
+		{[]string{"shift", "escape"}, []byte{50, 9}},
+	} {
+		mu.Lock()
+		got = nil
+		mu.Unlock()
+		r, err := act(context.Background(), map[string]any{"type": "key", "keys": c.keys}, map[string]any{"type": "type", "text": "a"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if r := r.(desktop.ActionsResult); r.Done != 2 || r.Failed != nil {
+			t.Fatalf("%v then a: done %d, failed %+v", c.keys, r.Done, r.Failed)
+		}
+		var want []fakeInput
+		for _, code := range c.codes {
+			want = append(want, fakeInput{press, code})
+		}
+		for i := len(c.codes) - 1; i >= 0; i-- {
+			want = append(want, fakeInput{release, c.codes[i]})
+		}
+		want = append(want, fakeInput{press, 38}, fakeInput{release, 38})
+		mu.Lock()
+		sent := append([]timed(nil), got...)
+		mu.Unlock()
+		var seq []fakeInput
+		for _, s := range sent {
+			seq = append(seq, s.fakeInput)
+		}
+		if !slices.Equal(seq, want) {
+			t.Fatalf("%v then a sent %+v; want %+v", c.keys, seq, want)
+		}
+		last := len(c.codes) * 2
+		if gap := sent[last].at.Sub(sent[last-1].at); gap < desktop.KeySettleForTest {
+			t.Errorf("%v then a: the a reached the server %v after the chord's last release; want at least %v", c.keys, gap, desktop.KeySettleForTest)
 		}
 	}
 }
