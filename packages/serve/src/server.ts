@@ -766,6 +766,7 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/triggers\/([^/]+)\/secret$/, name: "rotateTriggerSecret" },
   { method: "GET", pattern: /^\/templates$/, name: "listTemplates" },
   { method: "POST", pattern: /^\/templates\/import$/, name: "importTemplate" },
+  { method: "GET", pattern: /^\/templates\/([^/]+)$/, name: "getTemplate" },
   { method: "DELETE", pattern: /^\/templates\/([^/]+)$/, name: "deleteTemplate" },
   { method: "POST", pattern: /^\/templates\/([^/]+)\/apply$/, name: "applyTemplate" },
   // Answered before the bearer check: the request's signature is its credential.
@@ -5449,6 +5450,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const imported = await importTemplate(importDeps, body, done.signal);
         const pickView = await computerHere([imported.pkg]);
         return send(res, imported.status, { template: { ...packageView(imported.pkg), computer_here: pickView(imported.pkg) }, ...(({ instructions, skill_files }) => ({ instructions, skill_files }))(packageDetail(imported.pkg)), publisher_trusted: imported.trusted, stored: imported.status === 201, replaced: imported.replaced, console_url: imported.status === 201 ? templateLink(linkOrigin(req), imported.pkg.id) : templateInstallLink(linkOrigin(req), imported.pkg.origin?.source ?? imported.pkg.id) });
+      }
+      case "getTemplate": {
+        // One package whole, a bundled one's too: as the list shows it, with the files an import's answer shows, for a
+        // person (or a coding agent) to read before they apply it.
+        const pkg = registry.get(id);
+        if (!pkg) throw new ApiError("not_found", `no template ${id}: GET /v2/templates lists them`);
+        const pickView = await computerHere([pkg]);
+        const { instructions, skill_files } = packageDetail(pkg);
+        return send(res, 200, { template: { ...packageView(pkg), computer_here: pickView(pkg) }, instructions, skill_files, console_url: templateLink(linkOrigin(req), pkg.id) });
       }
       case "deleteTemplate":
         await deleteTemplate(importDeps, id);

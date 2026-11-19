@@ -112,6 +112,7 @@
     "listTriggerFirings": ["triggers", "firings"],
     "rotateTriggerSecret": ["triggers", "rotate-secret"],
     "listTemplates": ["template", "list"],
+    "getTemplate": ["template", "get"],
     "applyTemplate": ["template", "apply"],
     "importTemplate": ["template", "import"],
     "deleteTemplate": ["template", "delete"],

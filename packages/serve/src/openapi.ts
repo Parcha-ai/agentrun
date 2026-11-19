@@ -1415,10 +1415,20 @@ const TEMPLATE_IMPORT = {
     trust_publisher: { type: "boolean", description: "The owner's \"I trust <publisher>\": needed (true) for the first import this server stores from a GitHub account, and remembered for that account. Never needed for a dry run." },
   },
 };
-const TEMPLATE_IMPORTED = closed({
+/** A package whole: what it is, as GET /templates lists it, and every file it would hand the agent, in full. */
+const TEMPLATE_WHOLE = {
   template: { ...TEMPLATE, description: "The package, as GET /templates lists it." },
   instructions: { type: "string", description: "The agent's instructions in full (agent.md's body), placeholders unfilled: what a third party's package would tell the agent." },
   skill_files: { type: "object", additionalProperties: { type: "string" }, description: "Every skill file the agent would be given, by path under its skills folder (`<skill>/SKILL.md`, the rules and the answer's schema beside each), in full." },
+};
+/** template-read/1: one package read whole by its id (GET /templates/{template}). */
+const TEMPLATE_READ_MARK = { "x-agentrun-serve": "template-read/1" };
+const TEMPLATE_READ = closed({
+  ...TEMPLATE_WHOLE,
+  console_url: { type: "string", format: "uri", description: "The package's apply page in the console." },
+});
+const TEMPLATE_IMPORTED = closed({
+  ...TEMPLATE_WHOLE,
   publisher_trusted: { type: "boolean", description: "Whether this server's owner has said they trust the publisher (an earlier import with `trust_publisher`)." },
   stored: { type: "boolean", description: "True when the package was stored (listed by GET /templates); false for a dry run." },
   replaced: { type: ["string", "null"], pattern: "^[0-9a-f]{40}$", description: "The SHA of the package of the same id this import replaced (or, on a dry run, would replace); null when there was none." },
@@ -3187,6 +3197,13 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
   },
   "/templates/{template}": {
+    get: {
+      operationId: "getTemplate", tags: ["local"], summary: "One template package, whole: what it makes and needs, its instructions and every skill file it would give the agent",
+      description: "A bundled package or an imported one, by its id. The package as GET /templates lists it (its `computer_here` read against this server now), with its instructions and skill files in full, placeholders unfilled, as an import's answer shows them: what a person or a coding agent reads before applying it. Nothing is made or changed.",
+      parameters: [{ name: "template", in: "path", required: true, schema: { type: "string" }, description: "The package's id (GET /templates `id`), URL-encoded: a bundled one's name, or an imported one's `github%3A<owner>%2F<repo>…`." }],
+      responses: { "200": json(TEMPLATE_READ, "The package."), ...errors(401, 404, 429, 500) },
+      ...TEMPLATE_READ_MARK,
+    },
     delete: {
       operationId: "deleteTemplate", tags: ["local"], summary: "Remove an imported template package",
       description: "The package is no longer listed or applied here. Agents applied from it stay as they are. A bundled package is 403 forbidden: it ships with this server.",
