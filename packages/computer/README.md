@@ -2866,9 +2866,9 @@ What smol cloud refuses or this host works around:
 - Machines are placed on amd64 nodes (`source.arch`), so the daemon uploaded is `computerd-linux-amd64`; smol cloud
   has arm64 nodes too, unused here.
 - No mount of the run's folder yet, and no desktop. smol cloud binds each machine's own storage disk at `/workspace`
-  (an ext4 mount of `/dev/vda`), and a synced folder needs nothing mounted there, so the descriptor says so in
-  `unmounted.sync` and serve's Mode 2 refuses a smol cloud sandbox in those words. An Archil mount is untried
-  (`/dev/fuse` opens in the guest).
+  (an ext4 mount of `/dev/vda`), and a synced folder can be held only where nothing is mounted there, so the
+  descriptor says so in `unmounted.sync` and serve's Mode 2 refuses a smol cloud sandbox in those words. An Archil
+  mount is untried (`/dev/fuse` opens in the guest).
 
 ### Conformance on smol cloud
 
