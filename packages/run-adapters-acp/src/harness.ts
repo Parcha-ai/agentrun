@@ -14,7 +14,7 @@
 //     permission request for a tool of the agent's own through the host's gate, both journaled.
 // ACP's own report of a tool call (its status, its content) is never trusted: what ran is what the bridge recorded.
 import { randomBytes, randomUUID } from "node:crypto";
-import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { PROTOCOL_VERSION, type ContentBlock, type InitializeResponse, type McpServer as AcpMcpServer, type PermissionOption, type RequestPermissionRequest, type RequestPermissionResponse, type SessionNotification, type SystemPrompt } from "@agentclientprotocol/sdk";
@@ -458,8 +458,16 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       writeFileSync(file, text, { mode: 0o600 });
       own.add(clean.split("\\").join("/"));
     }
-    // The credentials the recipe names are never mirrored either, whatever their names and wherever its state paths reach.
-    for (const path of recipe.credentials ?? []) own.add(homePath(path)!.split("\\").join("/"));
+    // The credentials the recipe names are never written: each path is an empty folder the agent cannot write a file at,
+    // so an agent that tolerates a failed save (Cursor 2026.11.13 says so on stderr and runs on the key in its env) holds
+    // its credential in memory alone, and a hard kill leaves none on disk. Nor are they mirrored, whatever their names and
+    // wherever the recipe's state paths reach.
+    for (const path of recipe.credentials ?? []) {
+      const clean = homePath(path)!;
+      mkdirSync(join(home, clean), { recursive: true, mode: 0o700 });
+      chmodSync(join(home, clean), 0o500);
+      own.add(clean.split("\\").join("/"));
+    }
 
     const stopped = new AbortController();
     const signal = AbortSignal.any([ctx.signal, stopped.signal]);

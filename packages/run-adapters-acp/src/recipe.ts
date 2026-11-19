@@ -33,9 +33,12 @@ export interface AcpRecipe {
    *  start and handed to the agent under the same name, never written in the recipe. A start whose host lacks one of
    *  them is refused with ACP_CODES.keyMissing before anything starts. */
   readonly keys?: readonly string[];
-  /** Files in HOME the agent derives from its keys (Cursor's `.config/cursor/auth.json`): never mirrored, and once a
-   *  recipe names one, the agent's whole private HOME and tmp are removed when its process ends (the drive's end, the
-   *  session's close, a stop past the plan's limit). The next start makes them again from the session's records. */
+  /** Files in HOME the agent derives from its keys (Cursor's `.config/cursor/auth.json`): never written, since each
+   *  start makes every one an empty folder the agent cannot write a file at (an agent named here must run on the key in
+   *  its env when its save fails, as Cursor 2026.11.13 does), so a hard kill leaves none on disk; never mirrored; and
+   *  once a recipe names one, the agent's whole private HOME and tmp are also removed when its process ends (the
+   *  drive's end, the session's close, a stop past the plan's limit). The next start makes them again from the
+   *  session's records. */
   readonly credentials?: readonly string[];
   /** The agent's own refusals, by words it prints (on stderr, or in an error it answers): a start or a turn that fails
    *  saying `says` is said as `<code>: <words>`, so a host tells it apart without reading the agent's words. */
