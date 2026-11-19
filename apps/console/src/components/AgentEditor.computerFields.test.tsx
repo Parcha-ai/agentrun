@@ -80,6 +80,21 @@ describe("AgentEditor, the Computer step's fields across a switch", () => {
     expect((await ok.save())?.gpu).toEqual({ type: "T4", count: 1 });
   });
 
+  it("a provider ready for computers whose GPUs this server can't give drops the GPU in serve's words", async () => {
+    const why = "A Modal GPU computer can't mount this run's folder yet: no mount on gVisor. Use a GPU computer from the library, or this sandbox without a GPU.";
+    const modal = KINDS[1]!.providers[1]! as { gpu?: Record<string, unknown> };
+    const gpu = modal.gpu;
+    modal.gpu = { ...gpu, why };
+    try {
+      const m = mount(agent({ ...SANDBOX, provider: "docker" }));
+      m.click(m.prov("modal"));
+      expect(m.said()).toEqual([`The GPU is off: ${why}`]);
+      expect((await m.save())?.gpu).toBeUndefined();
+    } finally {
+      modal.gpu = gpu;
+    }
+  });
+
   it("a desktop's provider that offers the image and persistence keeps all six; one that doesn't drops image and persistent only", async () => {
     const m = mount(agent({ ...DESKTOP, provider: "e2b" }));
     m.click(m.prov("orgo"));

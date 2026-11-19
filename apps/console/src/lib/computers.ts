@@ -48,6 +48,8 @@ export function refusal(field: CarriedField, value: unknown, kind: string, provi
     const gpu = value as { type: string; count: number };
     if (kind !== "sandbox") return off("only a sandbox takes GPUs");
     if (!provider.gpu) return off(`${provider.name} has no GPUs`);
+    // Serve's sentence for why a run on this server can't have the provider's GPUs (gpu-words.ts), ending in its own stop.
+    if (provider.gpu.why) return `${SUBJECT[field]} is off: ${provider.gpu.why}`;
     if (!provider.gpu.types.includes(gpu.type)) return off(`${provider.name} has no ${gpu.type}`);
     return gpu.count <= provider.gpu.max ? undefined : off(`${provider.name} gives at most ${provider.gpu.max} per computer`);
   }
