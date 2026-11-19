@@ -446,11 +446,11 @@ jobs:
           E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
         run: node packages/computer/box/build-e2b.mjs --image "$BOX_IMAGE" --public
 
-  # The Helm chart (deploy/helm/agentrun) as oci://ghcr.io/parcha-ai/charts/agentrun at the release's version, once the
-  # image it installs is tagged (image-release). The same GITHUB_TOKEN with packages: write as image-release, in this job
-  # alone: no environment and no secret. A re-run pushes the same version again. Anyone installs it without credentials,
-  # so the job ends by reading it back logged out: the first push makes the package private, and an org admin makes
-  # ghcr.io/parcha-ai/charts/agentrun public once (the package's settings), then re-runs this job.
+  # The Helm chart (deploy/helm/agentrun) as oci://ghcr.io/parcha-ai/charts/agentrun, once the image it installs is tagged
+  # (image-release). Packaged at the tag's version and appVersion, so it installs this release's image whatever Chart.yaml
+  # says (the release pull request moves Chart.yaml with render.yaml; railway-template.test.mjs holds the three together).
+  # The same GITHUB_TOKEN with packages: write as image-release, in this job alone: no environment and no secret. A re-run
+  # pushes the same version again. A failed push stops the GitHub release.
   chart:
     needs: image-release
     if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
@@ -474,13 +474,8 @@ jobs:
           version: v4.3.1
       - name: Package the chart at the release's version
         run: |
-          version="${RELEASE_TAG#v}"
-          for field in version appVersion; do
-            have="$(sed -n "s/^$field: \"\{0,1\}\([^\"]*\)\"\{0,1\}$/\1/p" deploy/helm/agentrun/Chart.yaml)"
-            [ "$have" = "$version" ] || { echo "::error::deploy/helm/agentrun/Chart.yaml's $field is $have, not the release's $version" >&2; exit 1; }
-          done
           helm lint deploy/helm/agentrun
-          helm package deploy/helm/agentrun --destination "$RUNNER_TEMP/chart"
+          helm package deploy/helm/agentrun --version "${RELEASE_TAG#v}" --app-version "${RELEASE_TAG#v}" --destination "$RUNNER_TEMP/chart"
       - name: Push it
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -488,6 +483,23 @@ jobs:
           printf '%s' "$GH_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
           helm push "$RUNNER_TEMP/chart/agentrun-${RELEASE_TAG#v}.tgz" "$CHART"
           helm registry logout ghcr.io
+
+  # Anyone installs the chart without credentials: this reads it back with none. GHCR makes a new package private, so until
+  # an org admin makes ghcr.io/parcha-ai/charts/agentrun public once (the package's settings) this job fails, saying so,
+  # and a re-run checks again. Nothing waits for it: a package's visibility never holds the GitHub release.
+  chart-public:
+    needs: chart
+    if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      CHART: oci://ghcr.io/parcha-ai/charts
+    steps:
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.1
       - name: Anyone can install it
         run: |
           helm show chart "$CHART/agentrun" --version "${RELEASE_TAG#v}" \

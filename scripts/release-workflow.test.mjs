@@ -95,8 +95,9 @@ test('the server image is built natively per architecture from the start, pushed
   assert.match(tag.run, /--tag "\$IMAGE:\$RELEASE_TAG" --tag "\$IMAGE:beta"/, 'the release tag and beta, as before');
 });
 
-test('the Helm chart is pushed at the release\'s version once its image is tagged, with this run\'s token, and read back with none', () => {
-  const chart = jobs.chart;
+test('the Helm chart is pushed at the tag\'s version once its image is tagged, with this run\'s token; its logged-out read holds nothing', () => {
+  const { chart } = jobs;
+  const read = jobs['chart-public'];
   assert.deepEqual(needs('chart'), ['image-release'], 'the image the chart installs is tagged first');
   assert.equal(chart.if, jobs.publish.if);
   assert.equal(chart.environment, undefined, 'no secret: this run\'s GITHUB_TOKEN, as image-release');
@@ -107,12 +108,22 @@ test('the Helm chart is pushed at the release\'s version once its image is tagge
   assert.equal(checkout.with.ref, '${{ inputs.tag }}');
   assert.equal(checkout.with['persist-credentials'], false);
   assert.ok(chart.steps.some(step => step.run === 'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"'), 'the checkout is the provenance commit');
-  const order = [/Chart\.yaml's \$field is/, /helm push "\$RUNNER_TEMP\/chart\/agentrun-\$\{RELEASE_TAG#v\}\.tgz" "\$CHART"/, /helm registry logout ghcr\.io/, /helm show chart "\$CHART\/agentrun" --version "\$\{RELEASE_TAG#v\}"/].map(pattern => stepAt('chart', pattern));
-  assert.ok(order.every(at => at >= 0) && order[0] < order[1] && order[1] === order[2] && order[2] < order[3], 'the version checked, pushed, logged out, then read back with no credentials');
-  const push = chart.steps[order[1]];
+  const packaged = stepAt('chart', /helm package deploy\/helm\/agentrun --version "\$\{RELEASE_TAG#v\}" --app-version "\$\{RELEASE_TAG#v\}" /);
+  const pushed = stepAt('chart', /helm push "\$RUNNER_TEMP\/chart\/agentrun-\$\{RELEASE_TAG#v\}\.tgz" "\$CHART"\n\s*helm registry logout ghcr\.io/);
+  assert.ok(packaged >= 0 && pushed > packaged, 'packaged at the tag\'s version and appVersion (whatever Chart.yaml says), then pushed and logged out');
+  const push = chart.steps[pushed];
   assert.equal(push.env.GH_TOKEN, '${{ secrets.GITHUB_TOKEN }}', 'only the push step holds the token');
   assert.match(push.run, /--password-stdin/, 'never on a command line');
   assert.equal(chart.steps.filter(step => JSON.stringify(step).includes('secrets.')).length, 1);
+
+  assert.deepEqual(needs('chart-public'), ['chart']);
+  assert.equal(read.if, jobs.publish.if);
+  assert.deepEqual(read.permissions, {}, 'no token at all: the read is anyone\'s');
+  assert.doesNotMatch(JSON.stringify(read), /secrets\.|github\.token|registry login/);
+  pinned(read.steps);
+  assert.ok(stepAt('chart-public', /^helm show chart "\$CHART\/agentrun" --version "\$\{RELEASE_TAG#v\}"/) >= 0);
+  assert.equal(read.env.CHART, chart.env.CHART);
+  for (const name of Object.keys(jobs)) assert.ok(!upstream(name).has('chart-public'), `${name} never waits for the package's visibility`);
 });
 
 const raw = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
