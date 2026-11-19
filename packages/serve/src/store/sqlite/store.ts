@@ -679,8 +679,12 @@ class SqliteStore implements Store {
           for (const t of off) await writeScopes(tx, t.id, []);
           return off.map(({ id: triggerId, name }) => ({ id: triggerId, name })).sort((a, b) => a.name.localeCompare(b.name));
         }),
-      addRevision: async ({ agentId, ifCurrent, ...revision }) => {
-        await db.transaction((tx) => insertRevision(tx, agentId, revision, now(), ifCurrent));
+      addRevision: async ({ agentId, ifCurrent, description, ...revision }) => {
+        await db.transaction(async (tx) => {
+          await insertRevision(tx, agentId, revision, now(), ifCurrent);
+          // Under the row lock insertRevision took, after its ifCurrent passed: the revision and the description, or neither.
+          if (description !== undefined) await tx.run("UPDATE agents SET description = ? WHERE id = ?", description, agentId);
+        });
       },
       setCurrent: async (agentId, revisionId) => {
         const changed = await db.transaction((tx) => tx.runCounted(

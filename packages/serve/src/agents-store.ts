@@ -271,9 +271,11 @@ export function makeRevision(definition: Json, files: Record<string, string>, no
 const EDIT_TRIES = 5;
 
 /** An edit: a new revision of the agent, made current. Without `skills` the current revision's skill files carry over. An
- *  edit that is the current revision writes nothing, so a PUT sent twice makes one revision. The agent keeps its id, name
- *  and description from its creation. `ifCurrent` (from If-Match) is the current revision the caller read, null for none;
- *  it is checked against the agent's current revision when the edit is read, and the write is conditional on the revision
+ *  edit that is the current revision writes nothing, so a PUT sent twice makes one revision. The agent keeps its id and name
+ *  from its creation (a changed one is input_invalid). Its description is a label: an edit that names a new one makes a
+ *  revision (even with the body unchanged) and writes the description with it in the store's one commit, so a stale or
+ *  refused edit changes neither; one that leaves it out keeps it. `ifCurrent` (from If-Match) is the current revision the
+ *  caller read, null for none; it is checked against the agent's current revision when the edit is read, and the write is conditional on the revision
  *  the edit was built on still being current, compared in the store's own transaction (addRevision's ifCurrent), so it
  *  holds across every server on the store. `check` may refuse the revision before a write; it runs outside the write, so
  *  another request may move the current revision meanwhile: an edit with If-Match is then precondition_failed, and one
@@ -299,11 +301,12 @@ export async function commitAgent(
   const { agent } = entry;
   const kept = [
     ...(definition.id !== undefined && definition.id !== agent.id ? [{ field: "definition.id", reason: "not_an_option", message: `definition.id is ${agent.id}, the agent's id` }] : []),
-    ...(["name", "description"] as const)
-      .filter((key) => definition[key] !== undefined && definition[key] !== (agent as unknown as Record<string, unknown>)[key])
-      .map((key) => ({ field: `definition.${key}`, reason: "not_allowed", message: `The agent store keeps an agent's ${key} from its creation; an edit does not change it.`, fix: `Remove definition.${key}.` })),
+    ...(definition.name !== undefined && definition.name !== agent.name ? [{ field: "definition.name", reason: "not_allowed", message: "An agent keeps the name it was created with; an edit does not change it.", fix: "Remove definition.name." }] : []),
   ];
   if (kept.length) throw invalid(kept);
+  // The description is a label on the agent's row, not part of a revision: an edit that names one writes it with its
+  // revision, in addRevision's one commit. The validator has checked it is a string.
+  const description = typeof definition.description === "string" ? definition.description : undefined;
   for (let tries = 1; ; tries++) {
     if (tries > 1) entry = held((await getAgent(store, agent.id)) ?? entry);
     // A template applied onto the agent (apply with agent_id) keeps its package on the revision it writes, as a create does.
@@ -313,7 +316,9 @@ export async function commitAgent(
     const base = entry.revision?.id ?? null;
     const now = held((await getAgent(store, agent.id)) ?? entry);
     if ((now.revision?.id ?? null) === base) {
-      if (!contract && now.revision && sameRevision(now.revision, revision)) {
+      // A new description is a real edit: a revision, even with the body unchanged. The same one again writes nothing.
+      const described = description !== undefined && description !== now.agent.description;
+      if (!contract && !described && now.revision && sameRevision(now.revision, revision)) {
         checkVersion(definition, now.version);
         return now;
       }
@@ -322,7 +327,7 @@ export async function commitAgent(
       if (contract) checkPast(definition, now.version);
       else checkVersion(definition, now.revisions + 1);
       try {
-        await store.agents.addRevision({ agentId: agent.id, ifCurrent: base, ...revision });
+        await store.agents.addRevision({ agentId: agent.id, ifCurrent: base, ...revision, ...(described ? { description } : {}) });
         return (await getAgent(store, agent.id))!;
       } catch (error) {
         if (!(error instanceof RevisionMoved)) storeError(error);

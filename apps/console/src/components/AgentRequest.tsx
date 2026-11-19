@@ -94,9 +94,11 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
     const workflow = isObject(prepared.definition.workflow);
     const removedKeys = Object.keys(source.definition).filter(key => !Object.hasOwn(prepared.definition, key));
     // Complete JSON must not claim a deletion that the partial-update API would keep, or an immutable metadata edit.
-    for (const key of ["id", "name", "description"] as const) {
+    for (const key of ["id", "name"] as const) {
       if (!invalid && prepared.definition[key] !== source.definition[key]) invalid = `definition.${key} is fixed when the agent is created. Restore its current value.`;
     }
+    // The description is editable, but an edit that leaves it out keeps it: complete JSON can't remove it that way.
+    if (!invalid && removedKeys.includes("description")) invalid = 'Cannot remove definition.description: the API keeps an omitted description. Set it to "" to clear it.';
     for (const key of ["native", "sdk"] as const) {
       if (!invalid && source.definition[key] !== undefined && removedKeys.includes(key)) invalid = `Cannot remove definition.${key} here. Edit the original source configuration with your agent.`;
     }
@@ -187,7 +189,7 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
         {draft && !initial && !editing && <p role="alert" className="text-lead text-warning-text">The linked draft could not be read. Fill in the definition before sending.</p>}
         {view === "json" ? <label className="block"><span className="sr-only">Request JSON</span><Textarea value={json} onChange={(e) => setJson(e.target.value)} className={`${field} min-h-[360px] font-mono text-small`} spellCheck={false} /></label> : <>
           <Field name="Name"><Input value={body.definition.name} readOnly={editing} onChange={(e) => update("name", e.target.value)} className={field} /></Field>
-          <Field name="Description"><Input value={body.definition.description ?? ""} readOnly={editing} onChange={(e) => update("description", e.target.value)} className={field} /></Field>
+          <Field name="Description"><Input value={body.definition.description ?? ""} onChange={(e) => update("description", e.target.value)} className={field} /></Field>
           {body.definition.workflow ? <Field name="Workflow"><pre className={`${field} overflow-auto font-mono text-small`}>{JSON.stringify(body.definition.workflow, null, 2)}</pre></Field> : <>
             <Field name="Instructions"><Textarea value={body.definition.instructions ?? ""} rows={5} onChange={(e) => update("instructions", e.target.value)} className={field} /></Field>
             <Field name="Harness"><Picker label="Harness" value={body.definition.harness ?? "pi"} onChange={(value) => update("harness", value)} options={[...new Set([body.definition.harness ?? "pi", ...harnesses.map((h) => h.id)])].map((id) => ({ value: id, label: `${id}${harnesses.find((h) => h.id === id)?.available === false ? " (not set up)" : ""}` }))} /></Field>

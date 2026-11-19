@@ -614,7 +614,6 @@ function revisionServer(initial: Agent) {
     if (workflow && ["instructions", "model", "thinking", "model_tiers", "learning", "input_schema", "output_schema", "checkout"].some(key => definition[key] !== undefined)) return fail("Workflow definitions take no agentic-only fields.");
     if (definition.id !== undefined && definition.id !== stored.agent_id) return fail("The agent id is fixed.");
     if (definition.name !== undefined && definition.name !== stored.definition.name) return fail("The name is fixed.");
-    if (definition.description !== undefined && definition.description !== stored.definition.description) return fail("The description is fixed.");
     for (const key of ["harness", "max_cost_usd"] as const) if (definition[key] === undefined && stored.definition[key] !== undefined) definition[key] = stored.definition[key] as never;
     if (!workflow && stored.kind === "agentic") for (const key of ["learning", "input_schema", "output_schema", "checkout"] as const) {
       if (definition[key] === undefined && stored.definition[key] !== undefined) definition[key] = stored.definition[key] as never;
@@ -632,7 +631,8 @@ function revisionServer(initial: Agent) {
     const nextFiles = body.skills ?? files;
     definition.id = stored.agent_id;
     definition.name = stored.definition.name;
-    definition.description = stored.definition.description;
+    // A description the edit leaves out is kept; one it names is the agent's from this revision on.
+    definition.description ??= stored.definition.description;
     definition.harness ??= "pi";
     definition.approvals ??= "ask";
     definition.tools ??= [];
@@ -729,7 +729,21 @@ describe("AgentRequest complete JSON API carry and reset contract", () => {
     if (field === "native" || field === "sdk") expect(button("Use your agent").disabled).toBe(false);
   });
 
-  it.each([["id", "delete"], ["name", "change"], ["description", "change"], ["description", "delete"]] as const)("explains creation-only metadata %s %s instead of claiming it saved", async (field, mode) => {
+  it.each(["form", "json"] as const)("sends a changed description from the %s as the next revision, and the agent reads it back", async (view) => {
+    const server = revisionServer(contractAgent());
+    await mount({ operation: "edit-agent", agentId: existing.agent_id }, server.answer);
+    if (view === "form") type(control("Description"), "Answers billing and support questions.");
+    else await editJSON(definition => { definition.description = "Answers billing and support questions."; });
+    expect(button("Send request").disabled).toBe(false);
+    await send();
+    expect(writes()).toHaveLength(1);
+    expect(writes()[0].body).toMatchObject({ definition: { name: existing.definition.name, description: "Answers billing and support questions.", version: existing.revisions + 1 } });
+    expect(server.outcomes).toEqual([200]);
+    expect(server.current().definition.description).toBe("Answers billing and support questions.");
+    expect(server.current().revisions).toBe(existing.revisions + 1);
+  });
+
+  it.each([["id", "delete"], ["name", "change"], ["description", "delete"]] as const)("explains creation-only metadata %s %s instead of claiming it saved", async (field, mode) => {
     const server = revisionServer(contractAgent());
     await mount({ operation: "edit-agent", agentId: existing.agent_id }, server.answer);
     await editJSON(definition => { if (mode === "delete") delete definition[field]; else definition[field] = "A different identity label"; definition.instructions = "A real edit beside the metadata change."; });
