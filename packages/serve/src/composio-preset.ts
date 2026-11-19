@@ -145,6 +145,14 @@ const likelySlug = (slug: string, slugs: readonly string[]): string | undefined 
   return slugs.find((s) => s.toUpperCase() === want);
 };
 
+/** The toolkit's Composio-managed auth config not disabled, the one a save that names none stands on: none, if Composio
+ *  has none for it yet. */
+export async function managedConfig(ask: Ask, toolkit: string): Promise<string | undefined> {
+  const configs = await ask("finding the toolkit's auth config", "GET", `/api/v3/auth_configs?toolkit_slug=${encodeURIComponent(toolkit)}`);
+  const managed = (Array.isArray(configs.items) ? configs.items : []).find((c) => isObject(c) && c.is_composio_managed === true && c.status !== "DISABLED" && text(c.id));
+  return isObject(managed) ? text(managed.id) : undefined;
+}
+
 /** The address Composio's generate answers, made one this server's client can use: the helper actions that connect an
  *  account left off, and the path ended in /mcp (Composio redirects the bare one, which the client refuses on purpose).
  *  `perRun`: with no user and no connected account in it either, for each run to name its own (composioRunAddress). */
@@ -236,9 +244,7 @@ export async function composioSave<T extends { tools?: readonly { name: string }
       if (config.status === "DISABLED") throw invalid([issue("auth_config_id", "disabled", `The auth config ${ownConfig} is disabled in Composio: enable it there, or use another. Nothing was saved.`)]);
       authConfig = ownConfig;
     } else if (!noAuth) {
-      const configs = await ask("finding the toolkit's auth config", "GET", `/api/v3/auth_configs?toolkit_slug=${encodeURIComponent(toolkit)}`);
-      const managed = (Array.isArray(configs.items) ? configs.items : []).find((c) => isObject(c) && c.is_composio_managed === true && c.status !== "DISABLED" && text(c.id));
-      authConfig = managed ? text((managed as Json).id) : undefined;
+      authConfig = await managedConfig(ask, toolkit);
       if (!authConfig) {
         const made = await ask("making the toolkit's auth config", "POST", "/api/v3/auth_configs", { toolkit: { slug: toolkit }, auth_config: { type: "use_composio_managed_auth" } });
         authConfig = isObject(made.auth_config) ? text(made.auth_config.id) : "";
