@@ -348,8 +348,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               <Field label="Name" id="agent-name" required={creating} note={creating ? undefined : "Set when the agent was created; an edit keeps it."} error={fieldError("name")} warning={fieldWarning("name")}>
                 <Input id="agent-name" value={f.name} readOnly={!creating} onChange={(e) => set({ name: e.target.value })} placeholder="e.g., Invoice checker" />
               </Field>
-              <Field label="Description" id="agent-description" optional note={creating ? undefined : "Set when the agent was created; an edit keeps it."} error={fieldError("description")} warning={fieldWarning("description")}>
-                <Input id="agent-description" value={f.description} readOnly={!creating} onChange={(e) => set({ description: e.target.value })} placeholder={creating ? "Short summary for the agent list" : "No description"} />
+              <Field label="Description" id="agent-description" optional error={fieldError("description")} warning={fieldWarning("description")}>
+                <Input id="agent-description" value={f.description} onChange={(e) => set({ description: e.target.value })} placeholder="Short summary for the agent list" />
               </Field>
               </div>
               {starting ? (

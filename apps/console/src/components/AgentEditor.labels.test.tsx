@@ -31,12 +31,15 @@ describe("the agent editor's labels name their inputs", () => {
     expect(byLabel(/^description/i)[0]?.getAttribute("placeholder")).toBe("Short summary for the agent list");
     expect(byLabel(/^instructions/i)[0]?.tagName).toBe("TEXTAREA");
   });
-  it("an agent's edit: the read-only name keeps its label, and Model names its input on the settings step", async () => {
+  it("an agent's edit: the read-only name keeps its label, the description is editable, and Model names its input on the settings step", async () => {
     const agent = agentFixture("invoice-checker");
     const { byLabel } = await open({ agent, step: "context" });
     const name = byLabel(/^name/i)[0] as HTMLInputElement | undefined;
     expect(name?.value).toBe(agent.definition.name);
     expect(name?.readOnly).toBe(true);
+    const description = byLabel(/^description/i)[0] as HTMLInputElement | undefined;
+    expect(description?.value).toBe(agent.definition.description);
+    expect(description?.readOnly).toBe(false);
     act(() => root!.unmount()); document.body.innerHTML = "";
     const settings = await open({ agent, step: "settings" });
     // The Model picker's button is what the label names.

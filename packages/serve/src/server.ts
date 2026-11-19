@@ -2735,8 +2735,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  with agent_id of a package that names none (applyWith), whose agent is where its fresh apply put it. */
   const defaultToolsAt = (place: unknown): readonly string[] | undefined => (isObject(place) && place.mode === "sandbox" ? NEW_AGENT_TOOLS : undefined);
 
-  /** The definition an apply with agent_id writes onto agent `entry` from its package's `definition`: its id, name and
-   *  description are the agent's own, kept from its creation; a package that names no tools gets those its agent's place
+  /** The definition an apply with agent_id writes onto agent `entry` from its package's `definition`: its id and name are
+   *  the agent's own, kept from its creation, and its description is the agent's as it is now (an edit may have changed
+   *  it; the package's never overwrites it); a package that names no tools gets those its agent's place
    *  gives one (defaultToolsAt: the shell tools in the box its fresh apply put it in), as a fresh apply would. */
   const updateDefinition = (entry: AgentEntry, definition: Json): Json => {
     const kept = Object.fromEntries(Object.entries(definition).filter(([key]) => key !== "name" && key !== "description"));
@@ -2984,7 +2985,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       .filter((one) => one.template?.id === pkg.id && one.template.parameters_digest === digest)
       .map((one) => ({ field: "agent_id", reason: "duplicate", message: `The agent ${one.agent.id} was made from the ${pkg.name} template with these parameters, and this apply made another. To change that one instead, apply with agent_id ${one.agent.id}.` }));
     // An update writes the package as a new revision of the agent, as an edit does (its id, name and description are the
-    // agent's own, kept from its creation), but what the package owns and leaves out is gone (fromPackage); only onto the
+    // agent's own: the package's never replace them), but what the package owns and leaves out is gone (fromPackage); only onto the
     // revision it read, else 412 with nothing changed. A fresh apply makes the agent as POST /agents does.
     const { entry, warnings } = onto
       ? await reviseAgentOf(onto, { ...made.agent, definition: updateDefinition(onto, made.agent.definition as Json) }, { template: origin, fromPackage: true, ifCurrent: onto.revision?.id ?? null }).catch((error: unknown) => {

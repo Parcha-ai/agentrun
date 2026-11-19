@@ -3938,6 +3938,9 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   definition.properties.workflow = { ...definition.properties.workflow, "x-agentrun-serve-note": "A workflow revision's own, in place of `instructions`: see `instructions` for the 422s either's absence or both's presence gives." };
   definition.properties.version = { ...definition.properties.version, "x-agentrun-serve-note": "Absent on a create: this server mints 1. This contract's own `PUT .../definition` body (not this server's own `{definition, skills?, note?}` form) requires it, greater than the current revision's; left out there, or not greater, is 422 `definition.version`. Always sent on an answer." };
   definition.properties.skills = { ...definition.properties.skills, "x-agentrun-serve-note": "Absent: none. Always sent on an answer (`[]` when the revision names none)." };
+  // The name is the agent's identity beside its id; the description is a label (agents-store.ts commitAgent).
+  definition.properties.name = { ...definition.properties.name, "x-agentrun-serve-note": "The agent's, from its creation: an edit (`PUT .../definition`) that names another is 422 `definition.name` `not_allowed`." };
+  definition.properties.description = { ...definition.properties.description, "x-agentrun-serve-note": "The agent's, not its revision's: an edit (`PUT .../definition`) that names another writes it with the new revision in one commit (a new revision even when nothing else changed), so an edit refused or stale (412) changes neither; one that leaves it out keeps it. Every read of the agent, its list and its revisions answers the current one." };
   definition.properties.tools = { ...definition.properties.tools, "x-agentrun-serve-note": "Absent: none. Always sent on an answer (`[]` when the revision grants none)." };
   definition.required = definition.required.filter((field) => !DEFINITION_INPUT_OPTIONAL.includes(field));
   const definitionRead = schemas.Definition as Json & { required: string[] };
@@ -3948,7 +3951,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // ErrorBody.fields beyond `input_invalid`: a 409 agent_not_runnable names each thing that keeps the run from starting.
   const errorBody = schemas.ErrorBody as Json & { properties: Record<string, Json> };
   errorBody.properties.fields = { ...errorBody.properties.fields, "x-agentrun-serve-note": "Also on `agent_not_runnable` (409) here: each thing that keeps the run from starting, by the field it is about, its reason, its message and the fix when there is one (such as AGENT_MODEL_PRICE for a capped run on a model with no price), as a 422 names each field." };
-  const noted = ["DefinitionInput.max_cost_usd", "DefinitionInput.input_schema", "DefinitionInput.output_schema", "RunResult.output", "DefinitionInput.instructions", "DefinitionInput.workflow", "DefinitionInput.version", "DefinitionInput.skills", "DefinitionInput.tools", "TimelineRow.usage", "ErrorBody.fields"];
+  const noted = ["DefinitionInput.max_cost_usd", "DefinitionInput.input_schema", "DefinitionInput.output_schema", "RunResult.output", "DefinitionInput.instructions", "DefinitionInput.workflow", "DefinitionInput.version", "DefinitionInput.skills", "DefinitionInput.tools", "DefinitionInput.name", "DefinitionInput.description", "TimelineRow.usage", "ErrorBody.fields"];
   // PUT .../definition takes the contract's body (the definition itself) or this server's own, POST /agents' body with a
   // note: exactly one, as only this server's holds `definition` and both are closed. If-Match is the contract's
   // precondition for its body; this server's own body may leave it out.

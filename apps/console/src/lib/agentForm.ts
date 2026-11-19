@@ -22,14 +22,16 @@ export type SaveWarning = NonNullable<Agent["warnings"]>[number];
 export type { Agent };
 export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd" | "approvals">> & { workflowText?: string; maxCostText?: string; place?: Place; computer?: Computer };
 
-/** The body of a definition edit: the current definition with the edited fields; name and
- *  description stay as the agent was created. Every field the
+/** The body of a definition edit: the current definition with the edited fields; the name stays as the agent was created,
+ *  and a changed description is sent (serve writes it with the new revision). Every field the
  *  form does not show (schemas, tools, a workflow, connection references) is kept as it is, never dropped. A workflow
  *  revision keeps no thinking level (the server refuses one). Skill files are not sent, so they stay as they are. */
 export function editBody(agent: Agent, fields: AgentFields, note: string): { definition: Definition; note?: string; unchanged: boolean } {
-  // The agent store keeps an agent's id, name and description from its creation: an edit never sends a changed one.
-  const { name: _name, description: _description, ...editable } = fields as AgentFields & { id?: string };
+  // The agent store keeps an agent's id and name from its creation: an edit never sends a changed one.
+  const { name: _name, ...editable } = fields as AgentFields & { id?: string };
   const edited: Definition = { ...agent.definition, ...editable };
+  // An agent with no description, left blank in the form, still has none: not a change.
+  if (edited.description === "" && agent.definition.description === undefined) delete edited.description;
   // The computer is the setting; place is the server's view of it. A definition with a computer goes without its place,
   // which would still say the old computer after a change (the server writes place from computer).
   const current: Definition = { ...agent.definition };
