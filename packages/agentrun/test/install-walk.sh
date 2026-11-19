@@ -91,18 +91,25 @@ node_chosen() {
 running() { [ -r "/proc/$1/stat" ] && ! grep -q ') Z ' "/proc/$1/stat"; }
 # The installer as `curl | sh` runs it, with a reader that waits for the end of its output, as an agent's shell does: it
 # returns 0 within $1 seconds, or the walk fails. Its output goes to $2.
-# $2... within $1 seconds, or killed: timeout(1) where there is one; macOS has none, so a watchdog there.
+# $2... within $1 seconds, or stopped: timeout(1) where there is one. macOS has none, so there the command runs in a
+# process group of its own (job control on for that start), and at the bound the whole group (the installer's sh, its
+# npm) is sent SIGTERM, then SIGKILL after 10 s; this returns only once none of the group is left.
 bounded() {
-  local bound=$1 pid dog rc
+  local bound=$1 pid dog rc i
   shift
   if command -v timeout >/dev/null; then timeout "$bound" "$@"; return; fi
+  set -m
   "$@" &
   pid=$!
-  (sleep "$bound" && kill -TERM "$pid" 2>/dev/null) &
+  (sleep "$bound" && kill -TERM -- "-$pid" 2>/dev/null) &
   dog=$!
-  wait "$pid"
-  rc=$?
-  kill "$dog" 2>/dev/null
+  set +m
+  rc=0
+  wait "$pid" || rc=$?
+  kill -TERM -- "-$dog" 2>/dev/null || true
+  for i in $(seq 1 10); do kill -0 -- "-$pid" 2>/dev/null || break; sleep 1; done
+  kill -KILL -- "-$pid" 2>/dev/null || true
+  while kill -0 -- "-$pid" 2>/dev/null; do sleep 0.2; done
   return "$rc"
 }
 piped_install() {
