@@ -74,11 +74,62 @@ test("Mode 2: a Daytona sandbox with no DAYTONA_ARCHIL_EGRESS holds the run's fo
   const resolved = await resolveComputer(DAYTONA, 2, KINDS, claim(() => loopback(scratch())));
   assert.equal("refused" in resolved, false, resolved.refused);
   assert.deepEqual({ mounts: resolved.mounts, folder: resolved.folder, ports: resolved.ports }, { mounts: true, folder: "sync", ports: ["files", "exec", "processes"] });
-  const { side, workspace, run } = await started(new FakeArchilDisk(), loopback(scratch()));
+  const disk = new FakeArchilDisk();
+  const { side, workspace, run } = await started(disk, loopback(scratch()));
   assert.deepEqual(side.launched[0].mount, { kind: "sync" }, "no disk, region or token goes to the computer");
   assert.deepEqual(run.computer.check, { ...CHECK, sync: true });
+  assert.deepEqual(disk.calls.filter((call) => call.op === "exec"), [], "an empty folder, with no sync.json, runs no exec");
   await workspace.attach(run.computer.computer, run.computer.check);
   await run.release();
+});
+
+/** A disk holding what an Archil mount left before its release recorded anything: a 0755 file, and a link an exec made,
+ *  which the file API lists as a file and won't read (501); no sync.json. */
+function unrecorded() {
+  const disk = new FakeArchilDisk();
+  disk.dirs.add(ROOT);
+  disk.dirs.add(`${ROOT}/bin`);
+  disk.files.set(`${ROOT}/bin/run`, Buffer.from("#!/bin/sh\necho hi\n"));
+  disk.modes.set(`${ROOT}/bin/run`, 0o755);
+  disk.links.set(`${ROOT}/go`, "bin/run");
+  return disk;
+}
+
+test("a folder with no sync.json whose links and modes can't be recorded refuses the claim in words, before anything is rented, pushed or written", async () => {
+  const run = (disk) => disk.exec.bind(disk);
+  const cases = [
+    ["the exec fails", (disk) => { disk.exec = async () => { throw new FakeDiskError(503, "ServiceUnavailable", "the exec service is away"); }; },
+      /\(Archil's exec of find failed: the Archil exec failed: 503 ServiceUnavailable: the exec service is away\)\.$/],
+    ["find exits nonzero", (disk) => { const exec = run(disk); disk.exec = (request) => exec({ ...request, command: request.command.replace("'-printf'", "'-no-such-test'") }); },
+      /\(find exited 1: find: unknown predicate `-no-such-test'\)\.$/],
+    ["a path no synced folder takes", (disk) => { const exec = run(disk); disk.exec = (request) => exec({ ...request, command: request.command.replace("%P", "%p") }); },
+      /\(the run's folder holds "\.\/(bin|go)", which has a "\." segment\)\.$/],
+    ["sync.json's write", (disk) => { const put = disk.putObject.bind(disk); disk.putObject = async (key, body) => { if (key === META) throw new FakeDiskError(503, "ServiceUnavailable", "the disk is away"); return put(key, body); }; },
+      /\(its sync\.json could not be written: the folder's sync\.json: 503 ServiceUnavailable: the disk is away\)\.$/],
+  ];
+  for (const [name, breakIt, why] of cases) {
+    const disk = unrecorded();
+    breakIt(disk);
+    const side = claim(() => loopback(scratch()));
+    const resolved = await resolveComputer(DAYTONA, 2, KINDS, side);
+    await assert.rejects(resolved.start({ workspace: archilWorkspace(disk, ROOT), check: CHECK }), (error) => {
+      assert.equal(error.code, "computer_unavailable", name);
+      assert.ok(error.message.startsWith("A Daytona sandbox can't hold this run's folder: the run's folder's links and modes could not be recorded, so it can't be synced as it is ("), `${name}: ${error.message}`);
+      assert.match(error.message, why, name);
+      return true;
+    });
+    assert.deepEqual(side.launched, [], `${name}: nothing rented, so nothing pushed`);
+    assert.equal(disk.files.has(META), false, `${name}: no sync.json written`);
+    assert.equal(disk.links.get(`${ROOT}/go`), "bin/run", `${name}: the link's object stays on the disk`);
+  }
+
+  // A later claim has the run: the record is never sent.
+  const disk = unrecorded();
+  const side = claim(() => loopback(scratch()));
+  await assert.rejects((await resolveComputer(DAYTONA, 2, KINDS, side)).start({ workspace: archilWorkspace(disk, ROOT), check: CHECK, holds: async () => false }),
+    (error) => error.code === "computer_unavailable" && /could not be recorded, so it can't be synced as it is \(this runner no longer holds the run's claim/.test(error.message));
+  assert.deepEqual(disk.calls.filter((call) => call.op === "exec"), [], "no exec");
+  assert.deepEqual(side.launched, []);
 });
 
 test("an exec's file is on the run's disk before the exec answers; one held at the disk holds the answer", async () => {
@@ -354,5 +405,36 @@ describe("a synced folder against computerd in a user namespace", { skip }, () =
     await sh(two.computer.computer.client, "rm go && printf f > go");
     assert.equal(text(disk.files.get(`${ROOT}/go`)), "f");
     await two.release();
+  });
+
+  it("a run an Archil mount held before its release recorded anything (no sync.json), claimed where it syncs: its links and modes are recorded once through Archil's exec, egress denied and only its folder mounted, then pushed; a sync.json, even an empty one, runs no exec", async () => {
+    const disk = unrecorded();
+    const workspace = archilWorkspace(disk, ROOT);
+    const second = computerd();
+    const two = await (await resolveComputer(DAYTONA, 2, KINDS, claim(() => second))).start({ workspace, check: CHECK });
+    assert.equal((await stat(second, "bin/run")).mode, 0o755);
+    assert.deepEqual([(await stat(second, "go")).type, (await stat(second, "go")).target], ["symlink", "bin/run"]);
+    assert.equal(await sh(second.client, "./go"), "hi\n");
+    assert.deepEqual(JSON.parse(text(disk.files.get(META))), { modes: { "bin/run": 0o755 }, links: { go: "bin/run" } }, "recorded through the exec");
+    assert.equal(disk.links.has(`${ROOT}/go`), false, "the link's object left the disk: sync.json keeps the link");
+    const execs = disk.calls.filter((call) => call.op === "exec");
+    assert.equal(execs.length, 1, "one exec");
+    assert.deepEqual(execs[0].mounts, { work: ROOT, out: ROOT.replace(/\/work$/, "/exec-out") }, "the run's folder and its spill folder, nothing else");
+    assert.deepEqual(execs[0].network, { egress: { default: "deny" } });
+    assert.ok(execs[0].command.includes(`timeout --verbose -k 1 120.000 `), execs[0].command);
+    assert.ok(execs[0].command.includes(`'PATH=/usr/bin:/bin' 'find' '.' '-mindepth' '1' '-printf' '%y\\0%m\\0%P\\0%l\\0'`), execs[0].command);
+    await two.release();
+
+    // Claimed again: sync.json is there, so no exec; nor where it holds nothing.
+    const third = computerd();
+    const three = await (await resolveComputer(DAYTONA, 2, KINDS, claim(() => third))).start({ workspace, check: CHECK });
+    assert.deepEqual([(await stat(third, "go")).type, (await stat(third, "go")).target], ["symlink", "bin/run"]);
+    await three.release();
+    disk.files.set(META, Buffer.from("{}"));
+    const fourth = computerd();
+    const four = await (await resolveComputer(DAYTONA, 2, KINDS, claim(() => fourth))).start({ workspace, check: CHECK });
+    assert.equal((await stat(fourth, "bin/run")).mode, 0o644, "an empty sync.json is believed: no mode recorded");
+    await four.release();
+    assert.equal(disk.calls.filter((call) => call.op === "exec").length, 1, "no exec after the first");
   });
 });

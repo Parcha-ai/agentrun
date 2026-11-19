@@ -18,7 +18,9 @@
 // - exec mounts ONLY its subdirectories (`mounts`: name → folder of the disk): it runs the command line with /bin/sh as a
 //   local child, in its own process group, killed when the line ends (the container's end), on one temporary folder per
 //   mount holding just that folder's keys, at the place /mnt/archil/<name> names; what each holds afterwards replaces
-//   its folder (files, folders and links), and nothing else on the disk changes. Each must be a folder; while an exec
+//   its folder (files, folders and links), and nothing else on the disk changes. A file or a folder there shows the mode
+//   `modes` holds for it, else 0644 or 0755 (what the file API's writes show, as the live run measured), and its mode
+//   afterwards is kept in `modes` where it is not that default. Each must be a folder; while an exec
 //   holds them, a put, an append or a delete under one is refused with 409, as the service refuses a write to a path
 //   another client holds. A computer's FUSE mount of a folder (`delegate`, a test's) takes Archil's write delegation:
 //   while it holds, a put, an append or a delete under that folder is refused with 409 OperationAborted, as the live
@@ -28,12 +30,14 @@
 // Every call is recorded in `calls`: { op, key | prefix | directory | mounts, ... }; every exec's materialized file keys
 // (per mount, relative to its folder) in `materialized`.
 import { spawn } from "node:child_process";
-import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Worker } from "node:worker_threads";
 
 export const APPEND_MAX = 1024 * 1024;
+const FILE_MODE = 0o644;
+const DIR_MODE = 0o755;
 
 export class FakeDiskError extends Error {
   constructor(status, code, message) {
@@ -102,6 +106,8 @@ export class FakeArchilDisk {
   dirs = new Set();
   /** key -> link target */
   links = new Map();
+  /** key -> mode, for a file or a directory whose mode, as an exec's mount shows it, is not 0644 or 0755 */
+  modes = new Map();
   calls = [];
   pageSize = 2;
   /** While set, a put or an append waits on it before it is committed. */
@@ -327,21 +333,32 @@ export class FakeArchilDisk {
       mkdirSync(dirname(join(mount, rel)), { recursive: true });
       symlinkSync(target, join(mount, rel));
     }
+    // Modes last, every file and folder made (a folder after what is in it), whatever the process's umask.
+    const chmodAll = (abs, key) => {
+      for (const name of readdirSync(abs)) {
+        const stats = lstatSync(join(abs, name));
+        if (stats.isDirectory()) chmodAll(join(abs, name), `${key}/${name}`);
+        else if (stats.isFile()) chmodSync(join(abs, name), this.modes.get(`${key}/${name}`) ?? FILE_MODE);
+      }
+      if (key !== sub) chmodSync(abs, this.modes.get(key) ?? DIR_MODE);
+    };
+    chmodAll(mount, sub);
     return written.sort();
   }
 
   /** The subdirectory replaced by what `mount` holds: links kept as links, never followed; the rest of the disk kept. */
   #absorb(mount, sub) {
     const base = `${sub}/`;
-    for (const map of [this.files, this.links]) for (const key of [...map.keys()]) if (key.startsWith(base)) map.delete(key);
+    for (const map of [this.files, this.links, this.modes]) for (const key of [...map.keys()]) if (key.startsWith(base)) map.delete(key);
     for (const dir of [...this.dirs]) if (dir.startsWith(base)) this.dirs.delete(dir);
     const walk = (abs, rel) => {
       for (const name of readdirSync(abs)) {
         const key = `${rel}/${name}`;
         const stats = lstatSync(join(abs, name));
+        const mode = stats.mode & 0o7777;
         if (stats.isSymbolicLink()) this.links.set(key, readlinkSync(join(abs, name)));
-        else if (stats.isDirectory()) { this.dirs.add(key); walk(join(abs, name), key); }
-        else if (stats.isFile()) this.files.set(key, readFileSync(join(abs, name)));
+        else if (stats.isDirectory()) { this.dirs.add(key); if (mode !== DIR_MODE) this.modes.set(key, mode); walk(join(abs, name), key); }
+        else if (stats.isFile()) { this.files.set(key, readFileSync(join(abs, name))); if (mode !== FILE_MODE) this.modes.set(key, mode); }
       }
     };
     walk(mount, sub);

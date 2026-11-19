@@ -17,7 +17,9 @@
 // - The reverse: an Archil computer's park and release record its folder's modes and links in sync.json (recordMeta),
 //   read through computerd, which sees the mount; a later synced claim pushes them, takes the files the file API lists
 //   where sync.json names links as those links (an exec made them), and removes those from the disk (storedFolder,
-//   pushFolder).
+//   pushFolder). A folder with files and no sync.json at all (an Archil release before recordMeta) has its modes and
+//   links read once on the disk's side (FolderStore.diskMeta) and written to sync.json before it is pushed; one that
+//   can't be refuses the claim in words, before anything is rented or written.
 // - Every write of a claim's goes through fencedStore: once a later claim has taken the run (the run's epoch and runner
 //   say so, held or not), it is refused, never sent.
 import { type ComputerClient, fail, type FolderMeta, folderPathProblem, FolderSync, ok, pushTar, type Result, SYNC_MAX_BYTES, SYNC_MAX_ENTRIES, type SyncSink, type TarEntry, tarStream, WORKSPACE } from "@parcha/agentrun-computer";
@@ -33,6 +35,9 @@ export interface FolderStore extends SyncSink {
   read(path: string, size: number): Promise<Uint8Array>;
   /** The folder's modes and links as last written, or none where none were. */
   readMeta(): Promise<FolderMeta | undefined>;
+  /** The folder's modes and links as the disk itself holds them, read on the disk's side (an Archil exec), for a folder
+   *  with no record of them: throws in words where they can't be read. */
+  diskMeta(): Promise<FolderMeta>;
 }
 
 /** What the store holds, listed whole and within the caps, and its modes and links. `linkObjects`: links an exec made
@@ -54,7 +59,7 @@ const message = (error: unknown): string => (error instanceof Error ? error.mess
  * byte is read: over one, it throws in words naming the folder's size and the cap. A file the listing has where
  * sync.json records a link is that link, made by an exec on an Archil mount (the file API lists one as a file, and an
  * Archil computer's release records it: recordMeta). A link sync.json records where the listing has a directory, or at a
- * path no sink takes, is not the folder's.
+ * path no sink takes, is not the folder's. A folder with entries and no sync.json is recorded first (recordedMeta).
  */
 export async function storedFolder(store: FolderStore): Promise<StoredFolder> {
   const listed: StoredEntry[] = [];
@@ -65,7 +70,7 @@ export async function storedFolder(store: FolderStore): Promise<StoredFolder> {
     if (listed.length > SYNC_MAX_ENTRIES) throw new Error(tooMany);
   }
   if (bytes > SYNC_MAX_BYTES) throw new Error(`the run's folder holds ${bytes} bytes, more than ${SYNC_MAX_BYTES}, the most a synced folder holds`);
-  const recorded = (await store.readMeta()) ?? { modes: {}, links: {} };
+  const recorded = (await store.readMeta()) ?? (listed.length > 0 ? await recordedMeta(store) : { modes: {}, links: {} });
   const dirs = new Set(listed.filter((entry) => entry.type === "dir").map((entry) => entry.path));
   const links = Object.entries(recorded.links).filter(([path]) => !dirs.has(path) && folderPathProblem(path) === undefined);
   const linked = new Set(links.map(([path]) => path));
@@ -74,6 +79,26 @@ export async function storedFolder(store: FolderStore): Promise<StoredFolder> {
   const linkObjects = listed.filter((entry) => linked.has(entry.path)).map((entry) => entry.path);
   return { entries, meta: { modes: recorded.modes, links: Object.fromEntries(links) }, linkObjects };
 }
+
+/**
+ * A folder with no sync.json, last held on an Archil mount whose release did not record its modes and links (before
+ * recordMeta): the file API lists a link an exec made as a file it won't read, and keeps no mode. So they are read once
+ * on the disk's side (diskMeta) and written to sync.json whole through the claim's store (fenced), before anything is
+ * rented or pushed. Any failure throws in words and writes nothing.
+ */
+async function recordedMeta(store: FolderStore): Promise<FolderMeta> {
+  let meta: FolderMeta;
+  try {
+    meta = await store.diskMeta();
+  } catch (error) {
+    throw new Error(unrecorded(message(error)), { cause: error });
+  }
+  const wrote = await store.meta(meta);
+  if (!wrote.ok) throw new Error(unrecorded(`its sync.json could not be written: ${wrote.error.message}`));
+  return meta;
+}
+
+const unrecorded = (why: string): string => `the run's folder's links and modes could not be recorded, so it can't be synced as it is (${why})`;
 
 /** `promise` as is, its failure also handled, so a read ahead that a push never reaches is no unhandled rejection. */
 const quiet = <T>(promise: Promise<T>): Promise<T> => {
@@ -224,6 +249,12 @@ export function fencedStore(store: FolderStore, holds: () => Promise<boolean>): 
     entries: () => store.entries(),
     read: (path, size) => store.read(path, size),
     readMeta: () => store.readMeta(),
+    // A read, but it holds the folder while it runs: never sent once a later claim has the run.
+    diskMeta: async () => {
+      const held = await fenced(async () => ok(undefined));
+      if (!held.ok) throw new Error(held.error.message);
+      return store.diskMeta();
+    },
     put: (path, body) => fenced(() => store.put(path, body)),
     mkdir: (path) => fenced(() => store.mkdir(path)),
     remove: (path, type) => fenced(() => store.remove(path, type)),

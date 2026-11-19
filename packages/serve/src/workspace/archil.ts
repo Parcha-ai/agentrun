@@ -48,8 +48,10 @@
 //
 // A computer that takes no Archil mount holds the root as a synced folder (synced-folder.ts): syncStore() is the root
 // through the file API as the runner keeps it, its files and `dir/` markers, and its modes and links in sync.json beside
-// the root (syncMetaOf), and attach() with check.sync reads back a synced folder under the claim's epoch instead.
-import { type FolderMeta, folderPathProblem, type MountSpec, type Result } from "@parcha/agentrun-computer";
+// the root (syncMetaOf), and attach() with check.sync reads back a synced folder under the claim's epoch instead. A
+// folder an Archil mount last held, with no sync.json (its release predates recordMeta), has its modes and links read
+// once on the disk's side (syncStore().diskMeta: RECORD_ARGV through this workspace's exec, egress denied).
+import { type FolderMeta, folderPathProblem, type MountSpec, type Result, SYNC_MAX_ENTRIES } from "@parcha/agentrun-computer";
 import { type ArchilDisk, type ArchilImage, type ArchilListPage, DENY_EGRESS, pinnedImage } from "./archil-disk.js";
 import { ArchilEgressRefused, archilExec, COMMAND_MAX_MS, DEFAULT_QUEUE_MS, type ExecJob, MAX_EXEC_MS, spillKeys, spillName } from "./archil-exec.js";
 import { type AttachableComputer, attachedWorkspace, checkReadBack, type MountCheck, noProcesses } from "./attach.js";
@@ -739,6 +741,7 @@ class ArchilWorkspace implements Workspace {
           throw failed(error, path, "read");
         }
       },
+      diskMeta: () => this.#diskMeta(),
       readMeta: async () => {
         let got: { readonly status: number; readonly body: Uint8Array };
         try {
@@ -750,6 +753,23 @@ class ArchilWorkspace implements Workspace {
         return got.status === 416 ? undefined : folderMetaOf(got.body);
       },
     };
+  }
+
+  /** The folder's modes and links as the disk holds them, read through one exec of RECORD_ARGV (this workspace's own:
+   *  only the root and its spill folder mounted, the claim's image, egress denied; on a plan that takes no network
+   *  policy, open, as every exec here that asks to deny it then runs, which gives a fixed find nothing), as metaOf in the
+   *  computer package builds them from a listing. Throws in words where the exec, its deadline or its listing fails. */
+  async #diskMeta(): Promise<FolderMeta> {
+    let ran: ExecResult;
+    try {
+      ran = await this.exec(RECORD_ARGV, { env: { PATH: RECORD_PATH }, timeoutMs: RECORD_MS, maxOutput: EXEC_OUTPUT_MAX, network: "deny" });
+    } catch (error) {
+      throw new Error(`Archil's exec of find failed: ${describe(error)}`, { cause: error });
+    }
+    if (ran.timedOut) throw new Error(`find did not list it within ${RECORD_MS / 1000} s`);
+    if (ran.code !== 0) throw new Error(`find ${ran.signal === null ? `exited ${ran.code}` : `was ended by ${ran.signal}`}: ${describe(ran.stderr.trim())}`);
+    if (ran.truncated) throw new Error(`find's listing of it was more than ${EXEC_OUTPUT_MAX} bytes`);
+    return listedMeta(ran.stdout);
   }
 
   /** Every file and directory under the root, each once, a directory before what is in it: a key the relative-path
@@ -802,6 +822,56 @@ function folderMetaOf(bytes: Uint8Array): FolderMeta {
     modes: Object.fromEntries(Object.entries(record(modes)).filter((pair): pair is [string, number] => Number.isInteger(pair[1]) && (pair[1] as number) >= 0 && (pair[1] as number) <= 0o7777)),
     links: Object.fromEntries(Object.entries(record(links)).filter((pair): pair is [string, string] => typeof pair[1] === "string" && !pair[1].includes("\0"))),
   };
+}
+
+/** The one program a folder's record runs (diskMeta), fixed: nothing of the run's or a user's is in it. It lists every
+ *  entry under the folder, never following a link, as four fields each ended by a NUL (no name holds one): its type
+ *  (f, d, l, or another), its permission bits in octal, its path from the folder, and a link's target (empty otherwise). */
+const RECORD_ARGV: readonly string[] = ["find", ".", "-mindepth", "1", "-printf", "%y\\0%m\\0%P\\0%l\\0"];
+/** The record's PATH: the image's own programs. */
+const RECORD_PATH = "/usr/bin:/bin";
+/** The record's deadline. The listing has already held the folder to SYNC_MAX_ENTRIES (storedFolder), and find makes
+ *  one lstat per entry (a readlink more per link): 120 s is 6 ms an entry at the cap, several cold metadata round trips
+ *  of the mount each. With archil-exec.ts's 60 s grace for the container's boot and mounts, a claim waits at most 180 s
+ *  on it, well inside Archil's 300 s cut. */
+const RECORD_MS = 120_000;
+const FILE_MODE = 0o644;
+const DIR_MODE = 0o755;
+
+/** RECORD_ARGV's listing as a FolderMeta, as metaOf builds one from computerd's: each link by its target, a file's or a
+ *  directory's mode where it is not the default (0644, 0755). Anything else (a FIFO, a socket) is no entry a synced
+ *  folder holds, and is left out. A path the relative-path rule refuses, more than SYNC_MAX_ENTRIES entries, or a
+ *  listing that is not RECORD_ARGV's throws in words. */
+function listedMeta(stdout: Uint8Array): FolderMeta {
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  const fields: string[] = [];
+  for (let at = 0; at < stdout.length;) {
+    const end = stdout.indexOf(0, at);
+    if (end === -1) throw new Error("find's listing ends partway through an entry");
+    try {
+      fields.push(decoder.decode(stdout.subarray(at, end)));
+    } catch {
+      throw new Error(`find's listing holds a name that is not UTF-8, after ${JSON.stringify(fields.at(-1) ?? "")}`);
+    }
+    at = end + 1;
+  }
+  if (fields.length % 4 !== 0) throw new Error("find's listing ends partway through an entry");
+  if (fields.length / 4 > SYNC_MAX_ENTRIES) throw new Error(`the run's folder holds more than ${SYNC_MAX_ENTRIES} entries (files, directories and links), the most a synced folder holds`);
+  const modes: [string, number][] = [];
+  const links: [string, string][] = [];
+  for (let i = 0; i < fields.length; i += 4) {
+    const [type, mode, path, target] = fields.slice(i, i + 4) as [string, string, string, string];
+    const problem = folderPathProblem(path);
+    if (problem !== undefined) throw new Error(`the run's folder holds ${JSON.stringify(path)}, which ${problem}`);
+    if (!/^[0-7]{1,4}$/.test(mode)) throw new Error(`find gave ${JSON.stringify(path)} the mode ${JSON.stringify(mode)}, not permission bits in octal`);
+    const bits = parseInt(mode, 8);
+    if (type === "l") links.push([path, target]);
+    else if (type === "f" || type === "d") {
+      if (bits !== (type === "d" ? DIR_MODE : FILE_MODE)) modes.push([path, bits]);
+    }
+  }
+  const byPath = ([a]: readonly [string, unknown], [b]: readonly [string, unknown]): number => byName(a, b);
+  return { modes: Object.fromEntries(modes.sort(byPath)), links: Object.fromEntries(links.sort(byPath)) };
 }
 
 /** A Workspace on folder `root` of Archil disk `disk` (a relative key, e.g. agents/<agent>/runs/<run>/work). */
