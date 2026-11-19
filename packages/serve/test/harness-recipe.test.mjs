@@ -89,11 +89,12 @@ function cli(args, env = cliEnv()) {
   });
 }
 
-/** The check of `file` on `data`, its report read back. */
+/** The check of `file` on `data`, its report read back (`written`: the file as it is on disk). */
 async function check(t, file, data, env = cliEnv(), extra = []) {
   const report = join(await scratch(t), "report.json");
   const run = await cli(["check-harness", "--recipe", file, "--data", data, "--model", MODEL, "--report", report, ...extra], env);
-  return { ...run, report: existsSync(report) ? JSON.parse(readFileSync(report, "utf8")) : undefined };
+  const written = existsSync(report) ? readFileSync(report, "utf8") : undefined;
+  return { ...run, written, report: written === undefined ? undefined : JSON.parse(written) };
 }
 
 /** The loader's refusal of `recipe`: its code, and every problem's. */
@@ -370,6 +371,18 @@ test("harness-check passes a plan-billed agent that reaches its vendor through H
   assert.equal(missing.status, 1);
   assert.match(`${missing.stdout}\n${JSON.stringify(missing.report)}`, /ACP_KEY_MISSING: [^"\n]*MODEL_AGENT_API_KEY/);
   assert.equal(keyless.origin.messages().length, 0);
+});
+
+test("harness-check cuts the recipe's key from its report and its output: an agent that prints its key on stderr as it dies", { skip: linux, timeout: 120_000 }, async (t) => {
+  // A fake literal, long enough to be cut (MIN_SECRET): never a real key.
+  const key = "fake-test-key-the-agent-prints";
+  const { data, file } = await installed(t, recipeOf(undefined, { keys: ["MODEL_AGENT_API_KEY"], env: { MODEL_AGENT_MODE: "leak-key" }, model: { billing: "plan", maxTurns: 8, maxToolCalls: 8, hosts: ["vendor.example.invalid"] } }));
+  const run = await check(t, file, data, cliEnv({ MODEL_AGENT_API_KEY: key }));
+  assert.equal(run.status, 1, "an agent that dies at each prompt fails the check");
+  assert.ok(run.written, "the report was written");
+  // Where the agent's words land, each told only whether it holds the key, never shown it.
+  for (const [where, text] of [["the report on disk", run.written], ["stdout", run.stdout], ["stderr", run.stderr]]) assert.equal(text.includes(key), false, `${where} holds the recipe's key`);
+  assert.match(run.report.stage3.mcp_tool.error ?? "", /the vendor refused the key \[redacted\] \(401\)/, "the agent's words, its key cut in place");
 });
 
 test("harness-check finds a host key the recipe copied under another name, though the server keeps its keys off the environment's enumeration", { skip: linux, timeout: 120_000 }, async (t) => {
