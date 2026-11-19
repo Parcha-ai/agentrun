@@ -9,7 +9,7 @@ import { DaemonClient } from "./client.js";
 import { kindServed } from "./kinds.js";
 import { EPOCH_LABEL, epochOf } from "./labels.js";
 import { checkMount, type MountReadBack, WORKSPACE } from "./mount.js";
-import { type ComputerClient, type ComputerKind, type ComputerOs, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
+import { type ComputerClient, type ComputerKind, type ComputerOs, type DaemonMethod, type DaemonMethods, type HelloResult, PROTOCOL_VERSION } from "./protocol.js";
 import { type ComputerCapabilities, type ComputerConnection, type ComputerProvider, type ComputerRef, checkLifetime, kindRefusals, runLifetimeMs } from "./provider.js";
 import { fail, ok, type Result } from "./result.js";
 
@@ -508,18 +508,44 @@ async function pairedWorkspaceWhy(client: ComputerClient, name: string, signal?:
 	return ok(undefined);
 }
 
+/**
+ * A call that changes the box (files.remove, process.signal), sent with no abort of its own: computerd still ends what a
+ * cancelled call started, so the call has ended only when the box answers it or its connection closes. It is kept in
+ * `running` until then, for the hold that must outlast it. The caller's own wait still ends at `signal`, and none is
+ * sent once that has aborted.
+ */
+function changeBox<M extends DaemonMethod>(client: ComputerClient, running: Set<Promise<unknown>>, method: M, params: DaemonMethods[M]["params"], signal?: AbortSignal): Promise<Result<DaemonMethods[M]["result"]>> {
+	if (signal?.aborted) return Promise.resolve(fail("aborted", `${method} was aborted before it was sent`));
+	const answer = client.call(method, params);
+	running.add(answer);
+	void answer.finally(() => running.delete(answer));
+	if (signal === undefined) return answer;
+	const aborted = new Promise<Result<never>>((resolve) => {
+		const onAbort = () => resolve(fail("aborted", `${method} was aborted`));
+		signal.addEventListener("abort", onAbort, { once: true });
+		void answer.finally(() => signal.removeEventListener("abort", onAbort));
+	});
+	return Promise.race([answer, aborted]);
+}
+
+/** `then` run once every call in `running` (changeBox's) has ended: at once while none runs. */
+function whenEnded(running: ReadonlySet<Promise<unknown>>, then: () => unknown): void {
+	if (running.size === 0) then();
+	else void Promise.allSettled(running).then(then);
+}
+
 /** Every program computerd still runs on `name` ended, waited for up to 5 s each: the box outlives its runs, and one
  *  run holds it at a time, so a program running at a claim is an earlier run's (a background program left when its hold
  *  ended at its deadline, or its runner was lost), which could read or write the next run's folder. KILL goes to its
- *  process group; init kills what left that group once its guard is gone. */
-async function endPrograms(client: ComputerClient, name: string, signal?: AbortSignal): Promise<Result<void>> {
+ *  process group; init kills what left that group once its guard is gone. Each KILL is kept in `running` (changeBox). */
+async function endPrograms(client: ComputerClient, name: string, running: Set<Promise<unknown>>, signal?: AbortSignal): Promise<Result<void>> {
 	const options = signal ? { signal } : {};
 	const words = (message: string) => `ending an earlier run's programs on ${name}: ${message}`;
 	for (let from = 0; ; ) {
 		const listed = await client.call("process.list", { from }, options);
 		if (!listed.ok) return fail(listed.error.code, words(listed.error.message));
 		for (const program of listed.value.processes.filter((one) => one.running)) {
-			const killed = await client.call("process.signal", { id: program.id, signal: "KILL" }, options);
+			const killed = await changeBox(client, running, "process.signal", { id: program.id, signal: "KILL" }, signal);
 			if (!killed.ok && killed.error.code !== "not_found") return fail(killed.error.code, words(killed.error.message));
 			const waited = await client.call("process.wait", { id: program.id, timeoutMs: 5_000 }, options);
 			if (waited.ok && waited.value.running) return fail("refused", words(`${program.argv.join(" ")} (pid ${program.pid}) is still running 5 s after KILL`));
@@ -532,8 +558,9 @@ async function endPrograms(client: ComputerClient, name: string, signal?: AbortS
 /** Everything in `name`'s /workspace removed, the folder itself kept (only root makes one): each entry of its first
  *  level, a directory with what it holds, a link removed and never followed (files.remove). An entry a remove can't
  *  find (a name that is not UTF-8 reaches the wire changed) is left: a whole listing with one left, or a truncated one
- *  that a pass removes nothing of, refuses the box in words naming what was left. */
-async function emptyWorkspace(client: ComputerClient, name: string, signal?: AbortSignal): Promise<Result<void>> {
+ *  that a pass removes nothing of, refuses the box in words naming what was left. Each remove is kept in `running`
+ *  (changeBox): a cancelled one's RemoveAll still deletes on the box. */
+async function emptyWorkspace(client: ComputerClient, name: string, running: Set<Promise<unknown>>, signal?: AbortSignal): Promise<Result<void>> {
 	const options = signal ? { signal } : {};
 	const words = (message: string) => `emptying ${WORKSPACE} on ${name} of an earlier run's folder: ${message}`;
 	for (;;) {
@@ -541,7 +568,7 @@ async function emptyWorkspace(client: ComputerClient, name: string, signal?: Abo
 		if (!listed.ok) return fail(listed.error.code, words(listed.error.message));
 		const left: string[] = [];
 		for (const entry of listed.value.entries) {
-			const removed = await client.call("files.remove", { path: entry.path, recursive: true }, options);
+			const removed = await changeBox(client, running, "files.remove", { path: entry.path, recursive: true }, signal);
 			if (removed.ok) continue;
 			if (removed.error.code !== "not_found") return fail(removed.error.code, words(removed.error.message));
 			left.push(`${entry.path}: ${removed.error.message}`);
@@ -615,23 +642,24 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 	/** The synced folder read back from inside the box: its /workspace as pairedWorkspaceWhy holds it, else in words.
 	 *  `fresh`: what an earlier run left is ended and removed first, its programs (endPrograms) and then each entry of the
 	 *  folder (a link removed and never followed), so the run's push goes into an empty folder no other run's program
-	 *  reaches, as into a hosted computer's new one. */
-	const folder = async (signal?: AbortSignal, fresh = false): Promise<Result<MountReadBack>> => {
+	 *  reaches, as into a hosted computer's new one. Fresh is given `running`, where each call that changes the box stays
+	 *  until it has ended (changeBox); the connection is closed only then, as a close would drop their answers. */
+	const folder = async (signal?: AbortSignal, running?: Set<Promise<unknown>>): Promise<Result<MountReadBack>> => {
 		const connection = hub.connection(paired.id);
 		if (connection === undefined) return offline();
 		try {
 			const why = await pairedWorkspaceWhy(connection.client, paired.name, signal);
 			if (!why.ok) return why;
 			if (why.value !== undefined) return ok({ other: why.value });
-			if (fresh) {
-				const stopped = await endPrograms(connection.client, paired.name, signal);
+			if (running !== undefined) {
+				const stopped = await endPrograms(connection.client, paired.name, running, signal);
 				if (!stopped.ok) return stopped;
-				const emptied = await emptyWorkspace(connection.client, paired.name, signal);
+				const emptied = await emptyWorkspace(connection.client, paired.name, running, signal);
 				if (!emptied.ok) return emptied;
 			}
 			return ok(recorded());
 		} finally {
-			await connection.close();
+			whenEnded(running ?? new Set(), () => connection.close());
 		}
 	};
 	return {
@@ -682,9 +710,12 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 			// go, in words. A retry of this request meanwhile shares this answer.
 			const requestId = context.requestId;
 			const answer = (async () => {
-				const read = await folder(context.signal, true);
+				const running = new Set<Promise<unknown>>();
+				const read = await folder(context.signal, running);
 				if (!read.ok || "other" in read.value) {
-					hub.unclaim(paired.id, hold);
+					// A cancelled create answers at once, but the box still runs the remove or KILL it stopped waiting for: the
+					// hold is let go once each has answered or its connection closed, so no next run's folder lands under it.
+					whenEnded(running, () => hub.unclaim(paired.id, hold));
 					return read.ok ? fail("refused", (read.value as { other: string }).other) : read;
 				}
 				syncedHold = hold;
