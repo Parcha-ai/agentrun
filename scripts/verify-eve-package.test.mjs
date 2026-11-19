@@ -3,20 +3,25 @@
 // rejects (the consumer directory's cleanup never races a live child), and a failure shows both stdout and stderr.
 // Each case drives a tiny `sh` command with a short timeout: no npm, no network.
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { once } from 'node:events';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { runStep } from './verify-eve-package.mjs';
 
 const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; } };
 
-/** A scratch directory, and the pid a command writes to `pidfile` there; the test kills that pid if it is left. */
+/** A scratch directory, and the pid a command writes to `pidfile` (or `grandchild`) there; the test kills each pid left. */
 function scratch(t) {
   const dir = mkdtempSync(join(tmpdir(), 'verify-eve-step-'));
-  const pidOf = () => Number(readFileSync(join(dir, 'pidfile'), 'utf8').trim());
+  const pidOf = (file = 'pidfile') => Number(readFileSync(join(dir, file), 'utf8').trim());
   t.after(() => {
-    try { process.kill(pidOf(), 'SIGKILL'); } catch {}
+    for (const file of ['pidfile', 'grandchild']) {
+      try { const pid = pidOf(file); if (pid > 0) process.kill(pid, 'SIGKILL'); } catch {}
+    }
     rmSync(dir, { recursive: true, force: true });
   });
   return { dir, pidOf };
@@ -111,4 +116,33 @@ test('a step that floods its output and ignores SIGTERM: what it keeps stays wit
   const [written, kept] = [Number(said[1]), Number(said[2])];
   assert.ok(written > 4 * 1024, `it kept writing through the grace (${written} bytes)`);
   assert.ok(kept <= 1024, `kept ${kept} bytes, no more than the 1024-byte cap`);
+});
+
+test('a SIGINT to the process running a step stops the step and its grandchild, the caller\'s cleanup still runs, and it exits 130', async (t) => {
+  const { dir, pidOf } = scratch(t);
+  // A caller as verify-packages is: a step in a try, a cleanup in its finally, the exit code from the error's signal.
+  const script = `import { writeFileSync } from 'node:fs';
+import { constants } from 'node:os';
+import { runStep } from ${JSON.stringify(new URL('./verify-eve-package.mjs', import.meta.url).href)};
+try {
+  await runStep('sh', ['-c', 'sleep 37 >/dev/null 2>&1 & echo $! > grandchild; echo $$ > pidfile; exec sleep 37'], { cwd: process.cwd(), env: process.env, timeout: 60_000, grace: 200 });
+} catch (error) {
+  process.exitCode = 128 + constants.signals[error.signal];
+} finally {
+  writeFileSync('cleaned', '');
+}`;
+  const caller = spawn(process.execPath, ['--input-type=module', '-e', script], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] });
+  let output = '';
+  caller.stdout.on('data', chunk => { output += chunk; }); caller.stderr.on('data', chunk => { output += chunk; });
+  const exited = once(caller, 'exit');
+  for (const end = Date.now() + 30_000; !(existsSync(join(dir, 'pidfile')) && pidOf() > 0);) {
+    assert.ok(Date.now() < end, `the step started within 30 s: ${output}`);
+    await sleep(25);
+  }
+  caller.kill('SIGINT');
+  const [code, signal] = await exited;
+  assert.equal(alive(pidOf()), false, `the step's process is gone once the caller has exited (caller: code ${code}, signal ${signal})`);
+  assert.equal(alive(pidOf('grandchild')), false, 'the step\'s grandchild, which left its pipes, is gone too');
+  assert.ok(existsSync(join(dir, 'cleaned')), 'the caller\'s finally ran');
+  assert.equal(code, 130, `the caller exits 128 + SIGINT: ${output}`);
 });
