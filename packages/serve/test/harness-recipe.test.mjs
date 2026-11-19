@@ -89,7 +89,7 @@ function cli(args, env = cliEnv()) {
 /** The check of `file` on `data`, its report read back. */
 async function check(t, file, data, env = cliEnv(), extra = []) {
   const report = join(await scratch(t), "report.json");
-  const run = await cli(["harness-check", "--recipe", file, "--data", data, "--model", MODEL, "--report", report, ...extra], env);
+  const run = await cli(["check-harness", "--recipe", file, "--data", data, "--model", MODEL, "--report", report, ...extra], env);
   return { ...run, report: existsSync(report) ? JSON.parse(readFileSync(report, "utf8")) : undefined };
 }
 

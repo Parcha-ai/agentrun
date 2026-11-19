@@ -37,7 +37,7 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
        agentrun-serve validate-template DIR
        agentrun-serve install-harness goose [--data DIR]
        agentrun-serve install-harness --recipe FILE [--data DIR]
-       agentrun-serve harness-check --recipe FILE [--model PROVIDER/MODEL] [--data DIR] [--report FILE] [--cap USD]
+       agentrun-serve check-harness --recipe FILE [--model PROVIDER/MODEL] [--data DIR] [--report FILE] [--cap USD]
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL | --on-data DIR] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
        agentrun-serve runner --data DIR [--loops N] [--drain-timeout D] [--name NAME]
@@ -224,8 +224,9 @@ if (process.argv[2] === "install-harness") {
 // A recipe's agent run for real and judged (harness-check.ts): its report written as JSON, its stages and the three facts
 // (resume, tool_gate, billing) printed. 0 when every stage passed, 1 when the recipe was refused, its binary is not the
 // installed and pinned one, or a stage failed, 2 for usage. It spends: four short turns on --model, under --cap.
-if (process.argv[2] === "harness-check") {
-  const usage = (message: string): never => (console.error(`agentrun-serve harness-check: ${message}\n\n${USAGE}`), process.exit(2));
+// `agentrun harness-check` runs it; its own word is check-harness, as install-harness is `agentrun harness install`'s.
+if (process.argv[2] === "check-harness") {
+  const usage = (message: string): never => (console.error(`agentrun-serve check-harness: ${message}\n\n${USAGE}`), process.exit(2));
   const read = () => {
     try {
       return parseArgs({ args: process.argv.slice(3), options: { recipe: { type: "string" }, data: { type: "string" }, model: { type: "string" }, report: { type: "string" }, cap: { type: "string" } } });

@@ -7,7 +7,8 @@
 // provider key goes near it.
 //
 // `agentrun harness-check --recipe FILE`: the recipe's installed agent run for real on --model and judged
-// (agentrun-serve harness-check): a JSON report, and the three facts printed. It spends, on the model's key.
+// (agentrun-serve check-harness, named as install-harness is, so this command's own word stays the CLI's): a JSON
+// report, and the three facts printed. It spends, on the model's key.
 import { spawnSync } from "node:child_process";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -73,6 +74,6 @@ export const HARNESS_CHECK = {
     if (values.report !== undefined) flags.push("--report", resolve(values.report));
     if (values.cap !== undefined) flags.push("--cap", values.cap);
     // The model's key goes to the server's launcher, which holds it in memory (its SECRETS) and hands it to no agent.
-    return spawnSync(launcher, ["harness-check", ...flags], { stdio: "inherit", env }).status ?? 1;
+    return spawnSync(launcher, ["check-harness", ...flags], { stdio: "inherit", env }).status ?? 1;
   },
 };
