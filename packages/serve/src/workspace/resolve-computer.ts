@@ -27,7 +27,7 @@ import { recordedClient } from "../computer-calls.js";
 import type { Recording, RecordWatch } from "../computer-record.js";
 import type { MountCheck } from "./attach.js";
 import type { AgentComputer, RunComputer } from "./run-tools.js";
-import { fencedStore, finalSyncWords, type FolderStore, pullFolder, pushFolder, recordMeta, recordWords, restoreMeta, type StoredFolder, storedFolder, syncOf } from "./synced-folder.js";
+import { fencedStore, finalSyncWords, type FolderStore, type HeldFolder, holdSynced, pullFolder, recordMeta, recordWords, restoreMeta, type StoredFolder, storedFolder, syncOf } from "./synced-folder.js";
 import type { Workspace } from "./workspace.js";
 import { restartWith } from "../start-switches.js";
 
@@ -299,9 +299,10 @@ export type ResolvedComputer = {
   /** Starts the computer, mounting `workspace`'s folder when it mounts (a synced folder pushed in from the store
    *  `workspace` keeps it in before the computer is handed on); `check` is the mount check attach runs (the claim's
    *  epoch bound in); `holds`: whether the claim may still write the run's disk (synced-folder.ts claimHolds), asked
-   *  before each write of the folder there (fencedStore). A computer that cannot be had throws with code
-   *  computer_unavailable and the words. */
-  start(run: { readonly workspace: Workspace; readonly check: MountCheck; readonly holds?: () => Promise<boolean>; readonly signal?: AbortSignal }): Promise<StartedComputer>;
+   *  before each write of the folder there (fencedStore); `held`: the claim's synced folder, which a new sandbox in
+   *  place of a lost one holds again (computer-for-claim.ts renewalOf), absent where nothing does. A computer that
+   *  cannot be had throws with code computer_unavailable and the words. */
+  start(run: { readonly workspace: Workspace; readonly check: MountCheck; readonly holds?: () => Promise<boolean>; readonly held?: HeldFolder; readonly signal?: AbortSignal }): Promise<StartedComputer>;
 };
 
 const SETTINGS = "Settings → Computers";
@@ -484,7 +485,7 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
     mounts,
     ...(folder ? { folder } : {}),
     ports,
-    async start({ workspace, check, holds, signal }) {
+    async start({ workspace, check, holds, held, signal }) {
       // A computer kept at the run's park, attached again: it mounts what it mounted, read back under its own epoch.
       const again = await side.reattach?.(entry, { kind, keys, configuration, ...(folder ? { folder } : {}), ...(gpu ? { gpu: { type: gpu.type, count: gpu.count } } : {}), ...(persistent ? { persistent: true as const } : {}), ...(signal ? { signal } : {}) });
       // The run's disk as the runner keeps the folder on it, each write fenced by the claim.
@@ -531,12 +532,15 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
       // copy may be newer than the disk's). One that can't be had lets the computer go.
       let sync: (() => Promise<Result<void>>) | undefined;
       if (store && launched.client) {
+        const folderHeld = held ?? {};
         try {
-          sync = syncOf(again ? await pullFolder(store, launched.client, signal) : await pushFolder(store, launched.client, stored!, signal));
+          if (again) folderHeld.folder = await pullFolder(store, launched.client, signal);
+          else await holdSynced(folderHeld, store, launched.client, stored!, signal);
         } catch (error) {
           await launched.release().catch(() => undefined);
           throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
         }
+        sync = syncOf(folderHeld);
       }
       const checked = mounts ? { ...check, ...(again ? { epoch: again.epoch } : {}), ...(folder === "sync" ? { sync: true as const } : {}) } : undefined;
       const computer = runComputerOf(kind, launched, checked, { ...(setting.surface ? { surface: setting.surface } : {}), ...(noPrograms(setting) ? { exec: false as const } : {}) }, sync);

@@ -5,18 +5,21 @@
 // request and counts for nothing; a provider read that comes back after the sandbox it asked about was replaced changes
 // nothing; a sandbox taken back from the run's park is started again the same way; and the loss once the claim's bound
 // (`recreates`) is reached stops the run at once, through its ledger's pause, for good, in computer_unavailable's words.
+// A synced folder's new sandbox is pushed the disk's folder, and the claim's sync goes on from that sandbox's listing.
 // The provider is a loopback fake; the kind registry is the agreed stand-in (workspace-kinds-fixture.mjs).
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { readBackOf } from "@parcha/agentrun-computer";
 import { putSealedKey } from "../dist/server-keys.js";
-import { computerForClaim, localWorkspace } from "../dist/workspace/index.js";
+import { archilWorkspace, computerForClaim, localWorkspace, runKey } from "../dist/workspace/index.js";
 import { KEEP_MS, readKept, writeKept } from "../dist/workspace/computer-kept.js";
 import { bookedIn } from "../dist/paid-calls.js";
+import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
 
@@ -41,12 +44,34 @@ function memorySettings() {
   };
 }
 
+/** Where a synced claim's run folder is on its fake disk. */
+const SYNCED = runKey("acme", "r1");
+
+/** A fake sandbox over a folder of its own, reading back a synced folder under epoch 3: a push into it is extracted for
+ *  real, its mtimes fresh as computerd's extraction sets them, and its exec writes out.txt. */
+function syncedComputer() {
+  const root = realpathSync(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-lost-synced-")));
+  dirs.push(root);
+  const computer = fakeComputer(root, { readBack: { kind: "sync", epoch: 3 }, exec: () => (writeFileSync(join(root, "out.txt"), "made by the exec\n"), undefined) });
+  const tar = [];
+  computer.overrides["tar.push.begin"] = () => ({ id: "push-1" });
+  computer.overrides["tar.push.write"] = ({ data }) => (tar.push(Buffer.from(data, "base64")), {});
+  computer.overrides["tar.push.end"] = () => {
+    const extracted = spawnSync("tar", ["-x", "-m", "-C", root], { input: Buffer.concat(tar.splice(0)) });
+    if (extracted.status !== 0) throw new Error(`tar: ${extracted.stderr}`);
+    return { entries: readdirSync(root).length };
+  };
+  return computer;
+}
+
 /**
  * A Mode 2 claim (epoch 3) of a Modal sandbox. Its provider deletes a computer at the call `record.lose(id, method)`
  * picks; `record.attachOf(ref)`, when set, answers the provider's read of a machine in place of its own; `record.refuse`
  * refuses that many creates first. `kept`: the run parked at epoch 2 keeping sandbox c0, which this claim takes back.
+ * `synced`: a fake disk; the sandbox is then Daytona's with no DAYTONA_ARCHIL_EGRESS, each one holding the run's folder
+ * synced from that disk (syncedComputer).
  */
-async function claim({ recreates, kept = false } = {}) {
+async function claim({ recreates, kept = false, synced } = {}) {
   const dir = realpathSync(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-lost-computer-")));
   dirs.push(dir);
   const root = join(dir, "work");
@@ -59,7 +84,8 @@ async function claim({ recreates, kept = false } = {}) {
     settings: memorySettings(),
   };
   const sealKey = randomBytes(32);
-  for (const [name, value] of Object.entries({ MODAL_TOKEN_ID: "mi", MODAL_TOKEN_SECRET: "ms" })) await putSealedKey(store, sealKey, name, value);
+  const vendor = synced ? "daytona" : "modal";
+  for (const [name, value] of Object.entries(synced ? { DAYTONA_API_KEY: "fake-test-key" } : { MODAL_TOKEN_ID: "mi", MODAL_TOKEN_SECRET: "ms" })) await putSealedKey(store, sealKey, name, value);
   const record = { created: [], requests: [], released: [], revoked: 0, minted: 0, inherited: 0, notes: [], lose: () => false, attachOf: undefined, refuse: 0, lostAnswer: GONE };
   const held = new Map();
   if (kept) {
@@ -81,7 +107,7 @@ async function claim({ recreates, kept = false } = {}) {
       }
       record.created.push(spec);
       const id = `c${record.created.length}`;
-      held.set(id, fakeComputer(root));
+      held.set(id, synced ? syncedComputer() : fakeComputer(root));
       return { ok: true, value: { id, name: id } };
     },
     async connect(ref) {
@@ -120,13 +146,13 @@ async function claim({ recreates, kept = false } = {}) {
   };
   workspace.attach = (computer, check) => local.attach(computer, check);
   /** The run's claim at `epoch`, on this store and provider: a resume is a later one. */
-  const at = (epoch) => computerForClaim({ runId: "run-1", epoch, computer: { kind: "sandbox", provider: "modal" } }, store, {
+  const at = (epoch) => computerForClaim({ runId: "run-1", epoch, computer: { kind: "sandbox", provider: vendor } }, store, {
     mode: 2,
     kinds: KINDS,
     sealKey,
-    providers: { modal: () => provider },
-    spec: () => ({ lifetimeMs: 60_000, network: "none" }),
-    workspace,
+    providers: { [vendor]: () => provider },
+    spec: () => ({ image: "agentrun/computer:test", lifetimeMs: 60_000, network: "none" }),
+    workspace: synced ? archilWorkspace(synced, SYNCED) : workspace,
     check: { readBackOf, epoch },
     revokeMount: async () => void (record.revoked += 1),
     inheritMount: () => void (record.inherited += 1),
@@ -163,6 +189,21 @@ test("a lost Mode 2 sandbox: the next tool call's computer call starts a new one
   await answer.release();
   assert.deepEqual(record.released, [["c1", "delete"], ["c2", "delete"]], "the run's end lets the new one go");
   assert.equal(record.revoked, 2);
+});
+
+test("a lost synced sandbox: the new one is pushed the disk's folder and the claim's sync goes on from its listing, so the next exec puts the one file it wrote, never the whole folder", async () => {
+  const disk = new FakeArchilDisk();
+  for (const name of ["a.txt", "b.txt", "c.txt"]) disk.files.set(`${SYNCED}/${name}`, Buffer.from(name));
+  const { record, answer, inCall } = await claim({ synced: disk });
+  record.lose = (id, method) => id === "c1" && method === "files.stat";
+  assert.deepEqual(await inCall(...STAT), LOST("c1"));
+  const before = disk.calls.length;
+  const ran = await inCall("exec.run", { argv: ["sh", "-c", "echo made by the exec > out.txt"], cwd: "/workspace", timeoutMs: 10_000 });
+  assert.equal(ran.ok, true, JSON.stringify(ran));
+  assert.equal(record.created.length, 2, "a new sandbox, c2, ran it");
+  const puts = disk.calls.slice(before).filter((call) => call.op === "putObject" && call.key.startsWith(`${SYNCED}/`)).map((call) => call.key);
+  assert.deepEqual(puts, [`${SYNCED}/out.txt`], "the one file the exec wrote: the folder pushed into c2 is not put back");
+  await answer.release();
 });
 
 test("two calls in flight when a hosted provider's vendor deletes the sandbox (its not_found words): both fail code gone, saying it was lost and not run again, never not_found; one new sandbox serves the next call", async () => {

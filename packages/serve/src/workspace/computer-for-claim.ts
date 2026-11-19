@@ -55,7 +55,7 @@ import { deleteKept, endKept, KEEP_MS, type Kept, KEPT_DELETE_MS, KEPT_PULL_MS, 
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
 import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer } from "./resolve-computer.js";
 import type { RunComputer, RunHold } from "./run-tools.js";
-import { claimHolds, fencedStore, type FolderStore, pullFolder, pushFolder, storedFolder } from "./synced-folder.js";
+import { claimHolds, fencedStore, type FolderStore, type HeldFolder, holdSynced, pullFolder, storedFolder } from "./synced-folder.js";
 import type { Workspace } from "./workspace.js";
 
 /** What the claim knows of the run: its id, the claim's epoch, and where its computer setting is (the launch's own, else
@@ -810,6 +810,8 @@ export async function computerForClaim(
     const disk = deps.workspace.syncStore?.();
     return disk && holds ? fencedStore(disk, holds) : disk;
   };
+  /** The claim's synced folder, held at the start and again by each new sandbox in place of a lost one. */
+  const folderHeld: HeldFolder = {};
   const table = deps.keyTable ?? KEY_TABLE;
   // The paired computers, each one more provider of the registry (attached-computers.ts): a setting names one by its id.
   const paired = deps.attached ? await deps.attached.rows() : [];
@@ -872,7 +874,7 @@ export async function computerForClaim(
    *  this claim's labels and its own request (the claim's, then which new one), so a retry of it under this epoch finds
    *  the one it made. Where it holds the run's folder (`folder`), the new one holds it too, read back before it serves a
    *  call: a mount's credential of the lost one removed (Mode 2) and a new one asked for; a synced folder pushed in again
-   *  from the disk (synced-folder.ts), whose sync goes on from there (the claim's FolderSync lists the new one). */
+   *  from the disk and held (synced-folder.ts holdSynced), so the claim's sync goes on from the new one's manifest. */
   const renewalOf = (provider: ComputerProvider, entry: ProviderEntry, specNow: () => Promise<ComputerSpec>, folder: MountKind | undefined): Renewal => ({
     provider,
     max: deps.recreates ?? LOST_RECREATES,
@@ -901,7 +903,7 @@ export async function computerForClaim(
       const again = providerComputer(provider, ref, connected.value);
       if (mount) {
         try {
-          if (store && stored) await pushFolder(store, again.client, stored, deps.signal);
+          if (store && stored) await holdSynced(folderHeld, store, again.client, stored, deps.signal);
           await deps.workspace.attach({ id: ref.id, client: again.client, readBack: () => again.readBack() }, { ...deps.check, epoch: deps.check.epoch ?? launch.epoch, ...(store ? { sync: true as const } : {}) });
         } catch (error) {
           await again.release().catch(() => undefined);
@@ -1083,7 +1085,7 @@ export async function computerForClaim(
   let started: Awaited<ReturnType<typeof resolved.start>>;
   try {
     // The mount check carries the claim's epoch (a disk read-back under another epoch is refused) unless it names one.
-    started = await resolved.start({ workspace: deps.workspace, check: { ...deps.check, epoch: deps.check.epoch ?? launch.epoch }, ...(holds ? { holds } : {}), ...(deps.signal ? { signal: deps.signal } : {}) });
+    started = await resolved.start({ workspace: deps.workspace, check: { ...deps.check, epoch: deps.check.epoch ?? launch.epoch }, ...(holds ? { holds } : {}), held: folderHeld, ...(deps.signal ? { signal: deps.signal } : {}) });
   } catch (error) {
     await revoke().catch(() => undefined);
     throw error;

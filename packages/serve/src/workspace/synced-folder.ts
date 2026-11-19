@@ -4,11 +4,12 @@
 //
 // - At the claim (resolve-computer.ts start), the store is listed and held to the caps (storedFolder) before anything is
 //   rented, so a folder over one is refused in words naming its size and the cap. Once the computer is up, the folder
-//   is pushed in (pushFolder): its files read 4 ahead into one streaming tar, its modes and links from sync.json beside
+//   is pushed in (holdSynced): its files read 4 ahead into one streaming tar, its modes and links from sync.json beside
 //   it, into /workspace; then the computer's own listing is the manifest (FolderSync.baseline: extraction sets no
-//   mtimes, so it is read, never guessed).
+//   mtimes, so it is read, never guessed). A new sandbox in place of a lost one is held the same way, and the claim's
+//   sync goes on from its manifest (HeldFolder).
 // - After each call that may change the folder, the delta lands on the disk before the call answers: syncingClient
-//   over syncOf(folder), under the run's recordedClient.
+//   over syncOf(held), under the run's recordedClient.
 // - A kept computer attached again by a new runner has no manifest: one full pull (pullFolder), every file the computer
 //   holds put and what the disk holds beyond them removed.
 // - At release, a final delta (finalWords says a failed one).
@@ -17,7 +18,7 @@
 // - The reverse: an Archil computer's park and release record its folder's modes and links in sync.json (recordMeta),
 //   read through computerd, which sees the mount; a later synced claim pushes them, takes the files the file API lists
 //   where sync.json names links as those links (an exec made them), and removes those from the disk (storedFolder,
-//   pushFolder).
+//   holdSynced).
 // - Every write of a claim's goes through fencedStore: once a later claim has taken the run (the run's epoch and runner
 //   say so, held or not), it is refused, never sent.
 import { type ComputerClient, fail, type FolderMeta, folderPathProblem, FolderSync, ok, pushTar, type Result, SYNC_MAX_BYTES, SYNC_MAX_ENTRIES, type SyncSink, type TarEntry, tarStream, WORKSPACE } from "@parcha/agentrun-computer";
@@ -105,13 +106,18 @@ async function* tarEntries(store: FolderStore, { entries, meta }: Pick<StoredFol
   for (const [path, target] of Object.entries(meta.links)) yield { name: path, type: "symlink", mode: 0o777, link: target };
 }
 
+/** The claim's synced folder: the FolderSync of the computer that holds it now, which the claim's sync (syncOf) runs.
+ *  Set at the claim's start, and again by each new sandbox the claim starts in place of a lost one (holdSynced). */
+export type HeldFolder = { folder?: FolderSync };
+
 /**
  * The stored folder pushed into the computer's empty /workspace through `client` (the computer's own, under no sync),
- * one streaming tar, then the computer's listing read as the manifest: the folder's sync. The links an exec made on the
- * disk (linkObjects), now links in the computer, are then removed from the disk. Throws in words where the push, the
- * listing or a remove fails.
+ * one streaming tar, then the computer's listing read as the manifest, and `held` set to that sync: the claim's start,
+ * and a new sandbox in place of a lost one, whose fresh mtimes the old manifest would read as every file changed. The
+ * links an exec made on the disk (linkObjects), now links in the computer, are then removed from the disk. Throws in
+ * words where the push, the listing or a remove fails.
  */
-export async function pushFolder(store: FolderStore, client: ComputerClient, stored: StoredFolder, signal?: AbortSignal): Promise<FolderSync> {
+export async function holdSynced(held: HeldFolder, store: FolderStore, client: ComputerClient, stored: StoredFolder, signal?: AbortSignal): Promise<void> {
   const options = signal ? { signal } : {};
   if (stored.entries.length > 0 || Object.keys(stored.meta.links).length > 0) {
     const pushed = await pushTar(client, WORKSPACE, tarStream(tarEntries(store, stored)), options);
@@ -124,7 +130,7 @@ export async function pushFolder(store: FolderStore, client: ComputerClient, sto
     const removed = await store.remove(path, "file");
     if (!removed.ok) throw new Error(`the link ${JSON.stringify(path)} an exec made on the run's disk could not be removed from it: ${removed.error.message}`);
   }
-  return folder;
+  held.folder = folder;
 }
 
 /**
@@ -231,13 +237,13 @@ export function fencedStore(store: FolderStore, holds: () => Promise<boolean>): 
   };
 }
 
-/** `folder`'s sync, one at a time (syncingClient's after each change, and the final one at release), as
- *  syncingClient takes it. */
-export function syncOf(folder: FolderSync): () => Promise<Result<void>> {
+/** The sync of the folder `held` holds when it runs, one at a time (syncingClient's after each change, and the final one
+ *  at release), as syncingClient takes it. `held` is set before the first. */
+export function syncOf(held: HeldFolder): () => Promise<Result<void>> {
   let last: Promise<unknown> = Promise.resolve();
   return () => {
     const run = last
-      .then(() => folder.sync())
+      .then(() => held.folder!.sync())
       .then((synced) => (synced.ok ? ok(undefined) : fail(synced.error.code, synced.error.message)), (error: unknown) => fail("refused", message(error)));
     last = run;
     return run;
