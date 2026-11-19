@@ -206,6 +206,22 @@ test("a lost synced sandbox: the new one is pushed the disk's folder and the cla
   await answer.release();
 });
 
+test("a lost synced sandbox found by an exec, which syncs after it: that sync starts no new sandbox under it, so the disk gets only the file the next exec wrote on the new one, never the whole folder", async () => {
+  const disk = new FakeArchilDisk();
+  for (const name of ["a.txt", "b.txt", "c.txt"]) disk.files.set(`${SYNCED}/${name}`, Buffer.from(name));
+  const { record, answer, inCall } = await claim({ synced: disk });
+  record.lose = (id, method) => id === "c1" && method === "exec.run";
+  const before = disk.calls.length;
+  const exec = ["exec.run", { argv: ["sh", "-c", "echo made by the exec > out.txt"], cwd: "/workspace", timeoutMs: 10_000 }];
+  assert.deepEqual(await inCall(...exec), LOST("c1"));
+  const ran = await inCall(...exec);
+  assert.equal(ran.ok, true, JSON.stringify(ran));
+  assert.equal(record.created.length, 2, "a new sandbox, c2, ran it");
+  const puts = disk.calls.slice(before).filter((call) => call.op === "putObject" && call.key.startsWith(`${SYNCED}/`)).map((call) => call.key);
+  assert.deepEqual(puts, [`${SYNCED}/out.txt`], "the one file the exec on c2 wrote: the folder pushed into c2 is not put back");
+  await answer.release();
+});
+
 test("two calls in flight when a hosted provider's vendor deletes the sandbox (its not_found words): both fail code gone, saying it was lost and not run again, never not_found; one new sandbox serves the next call", async () => {
   const { record, inCall, answer } = await claim();
   const deleted = (id) => `the computer ${id} (${id}) was deleted: Daytona no longer has it`;

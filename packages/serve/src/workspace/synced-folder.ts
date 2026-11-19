@@ -7,7 +7,8 @@
 //   is pushed in (holdSynced): its files read 4 ahead into one streaming tar, its modes and links from sync.json beside
 //   it, into /workspace; then the computer's own listing is the manifest (FolderSync.baseline: extraction sets no
 //   mtimes, so it is read, never guessed). A new sandbox in place of a lost one is held the same way, and the claim's
-//   sync goes on from its manifest (HeldFolder).
+//   sync goes on from its manifest (HeldFolder). Each FolderSync reads its own machine's client (LaunchedComputer.own):
+//   a sync that finds its machine lost fails, and the next call starts the new one before its own sync.
 // - After each call that may change the folder, the delta lands on the disk before the call answers: syncingClient
 //   over syncOf(held), under the run's recordedClient.
 // - A kept computer attached again by a new runner has no manifest: one full pull (pullFolder), every file the computer

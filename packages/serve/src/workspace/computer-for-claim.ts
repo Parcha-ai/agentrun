@@ -603,6 +603,10 @@ function lostAware(first: ProviderComputer, renewal: Renewal): ProviderComputer 
     machine: first.machine,
     hello: first.hello,
     client,
+    // The current one's own: a synced folder's sync through it finds a loss and starts nothing (the next call does).
+    get own() {
+      return current.client;
+    },
     readBack: () => current.readBack(),
     close: () => current.close(),
     async release() {

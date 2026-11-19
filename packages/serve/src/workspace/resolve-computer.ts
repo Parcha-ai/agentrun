@@ -66,6 +66,10 @@ export type LaunchedComputer = {
   readonly id: string;
   readonly groups: readonly (Group | string)[];
   readonly client?: ComputerClient;
+  /** The client of the machine `client` reaches now, where `client` may go on to a new one in its place (a sandbox
+   *  started again once its provider lost it: computer-for-claim.ts lostAware). A synced folder's sync lists through it,
+   *  so a sync never starts the new one and reads it against the lost one's manifest. Absent where `client` is it. */
+  readonly own?: ComputerClient;
   readonly hello?: HelloResult;
   readBack?(): Promise<Result<MountReadBack>>;
   readonly browser?: ClaimBrowser;
@@ -523,13 +527,14 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
       }
       // A synced folder, before any tool runs there: pushed into a new computer, or pulled whole from a kept one (whose
-      // copy may be newer than the disk's). One that can't be had lets the computer go.
+      // copy may be newer than the disk's), through the machine's own client. One that can't be had lets the computer go.
       let sync: (() => Promise<Result<void>>) | undefined;
-      if (store && launched.client) {
+      const own = launched.own ?? launched.client;
+      if (store && own) {
         const folderHeld = held ?? {};
         try {
-          if (again) folderHeld.folder = await pullFolder(store, launched.client, signal);
-          else await holdSynced(folderHeld, store, launched.client, stored!, signal);
+          if (again) folderHeld.folder = await pullFolder(store, own, signal);
+          else await holdSynced(folderHeld, store, own, stored!, signal);
         } catch (error) {
           await launched.release().catch(() => undefined);
           throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
