@@ -96,6 +96,21 @@ async function refusedEverywhere(api, port, queued) {
     assert.match(launched.body.error.message, REFUSED, JSON.stringify(launched.body));
     assert.equal(launched.body.error.retryable, false, JSON.stringify(launched.body));
   });
+  await check("a message", async () => {
+    const sent = await api("POST", `/runs/${queued}/messages`, { content: "Keep going." });
+    assert.equal(sent.status, 503, `refused in words: ${JSON.stringify(sent.body)}`);
+    assert.equal(sent.body.error.code, "runner_refused", JSON.stringify(sent.body));
+    assert.match(sent.body.error.message, REFUSED, JSON.stringify(sent.body));
+  });
+  await check("an SDK start", async () => {
+    // A runner keeps an SDK run's evidence, so its start is refused too, before a receipt the caller would run on.
+    const made = await api("POST", "/agents", { definition: { id: "sdk-waits", name: "sdk-waits", instructions: "Keep the policy.", sdk: { runtime: "claude-agent-sdk" }, learning: false, tools: [] } });
+    assert.ok(made.status === 201 || made.status === 409, JSON.stringify(made.body));
+    const started = await api("POST", "/agents/sdk-waits/sdk-runs", { runtime: "claude-agent-sdk", input: "Answer.", instructions: "Keep the policy." }, { "Idempotency-Key": `sdk-${queued}` });
+    assert.equal(started.status, 503, `refused in words: ${JSON.stringify(started.body)}`);
+    assert.equal(started.body.error.code, "runner_refused", JSON.stringify(started.body));
+    assert.match(started.body.error.message, REFUSED, JSON.stringify(started.body));
+  });
   await check("capabilities", async () => {
     const caps = await api("GET", "/capabilities");
     assert.match(String(caps.body.runner_refused), REFUSED, `they say why no runner claims: ${JSON.stringify(caps.body.runner_refused)}`);
