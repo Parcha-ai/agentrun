@@ -133,7 +133,8 @@ import { toolKeysOverStore } from "./tool-keys-store.js";
 import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 import { signInsOverStore } from "./sign-ins-store.js";
 import { boundTool, MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
-import { type ComposioControl, composioForget, composioNote, composioSave, composioTools } from "./composio-preset.js";
+import { composioMadeKey, composioPerRun } from "./composio-made.js";
+import { COMPOSIO_PER_RUN, type ComposioControl, composioForget, composioNote, composioSave, composioTools } from "./composio-preset.js";
 import { ComposioTriggers } from "./composio-triggers.js";
 import { type ComposioDropped, loopbackWords, mcpServersOverStore, type SaveGuard } from "./mcp-servers-store.js";
 import { MCP_ALLOW_LOOPBACK_ENV, startSwitches, WEBHOOK_PRIVATE_TARGETS_ENV } from "./start-switches.js";
@@ -3172,10 +3173,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const issues: InputIssue[] = [];
       const mcp = mcp_auth === undefined ? undefined : mcpAuthOf(mcp_auth, issues);
       const auth: Record<string, RunMcpAuth[string]> = {};
-      for (const [server, headers] of Object.entries(mcp ?? {})) {
+      for (const [server, entry] of Object.entries(mcp ?? {})) {
         const row = await getMcpServer(store, server);
-        if (row?.auth !== "per_run") issues.push({ field: `mcp_auth.${server}`, reason: "not_an_option", message: row ? `The MCP server ${server} keeps its own credential (auth ${row.auth}): only a per_run server takes one from a run.` : `No MCP server ${server} is saved here.` });
-        else auth[server] = { headers, origin: new URL(row.url).origin };
+        const field = `mcp_auth.${server}`;
+        if (!row) {
+          issues.push({ field, reason: "not_an_option", message: `No MCP server ${server} is saved here.` });
+          continue;
+        }
+        // A per-run Composio server takes a binding (its key is its own); a per_run server takes headers; no other takes either.
+        const perRunComposio = composioPerRun(row, await store.settings.get(composioMadeKey(server)));
+        if ("composio" in entry) {
+          if (perRunComposio) auth[server] = { composio: entry.composio, origin: new URL(row.url).origin };
+          else issues.push({ field, reason: "not_an_option", message: `The MCP server ${server} is not a per-run Composio server: only one saved through the Composio preset with user_id "${COMPOSIO_PER_RUN}" takes a Composio account from a run.` });
+        } else if (row.auth === "per_run") auth[server] = { headers: entry.headers, origin: new URL(row.url).origin };
+        else issues.push({ field, reason: "not_an_option", message: perRunComposio ? `The MCP server ${server} takes a Composio account from each run, not headers: send {"composio_user_id": "<user>", "connected_account_id": "ca_..."} (the account optional).` : `The MCP server ${server} keeps its own credential (auth ${row.auth}): only a per_run server takes one from a run.` });
       }
       const model = model_key === undefined ? undefined : modelKeyOf(model_key, issues);
       if (issues.length) throw invalid(issues);

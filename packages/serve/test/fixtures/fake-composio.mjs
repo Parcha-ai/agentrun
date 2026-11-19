@@ -76,7 +76,22 @@ export const STAR_ADDED = {
 /** When an account was made, as Composio lists it, for one that names no other. */
 const ACCOUNT_MADE = "2026-11-13T20:26:18.916Z";
 
-export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, authConfigs = {}, active = [], accounts = {}, fail, noTools = false, listStatus, subscription, triggerTypes = { github: [ISSUE_ADDED, STAR_ADDED] }, pageSize, toolsPage, instancePage, madeSecret } = {}) {
+/** Who Composio's MCP endpoint serves, as it does live (probed 2026-11-19 on a Gmail server): a request whose address
+ *  names neither `user_id` nor `connected_account_id` is refused, its listing too. With `mcpAccounts` (by Composio user,
+ *  the ids of that user's connected accounts), a tools/call is answered as Composio answers one it can't run: an isError
+ *  saying the user has no connected account, or that the named account is not the user's (an account named with no
+ *  user is that refusal too). Without it, any user's call runs. */
+const mcpGate = (mcpAccounts, toolkits) => (url, message) => {
+  const user = url.searchParams.get("user_id");
+  const account = url.searchParams.get("connected_account_id");
+  if (!user && !account) return { status: 400, body: { error: { message: "user_id or connected_account_id query parameter is required for security reasons" } } };
+  if (!mcpAccounts || message?.method !== "tools/call") return undefined;
+  if (account && !(mcpAccounts[user] ?? []).includes(account)) return { toolError: "Connected account user ID does not match the provided user ID" };
+  if (!account && !(mcpAccounts[user] ?? []).length) return { toolError: `No connected account found for user ID ${user} for toolkit ${Object.keys(toolkits ?? {})[0] ?? "unknown"}` };
+  return undefined;
+};
+
+export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, authConfigs = {}, active = [], accounts = {}, fail, noTools = false, listStatus, subscription, triggerTypes = { github: [ISSUE_ADDED, STAR_ADDED] }, pageSize, toolsPage, instancePage, madeSecret, mcpAccounts } = {}) {
   const calls = [];
   const strays = [];
   const mcpKeys = [];
@@ -88,7 +103,7 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
   const mcpLive = new Set();
   const served = (path) => mcpLive.has(/^\/v3\/mcp\/([^/]+)\/mcp$/.exec(path)?.[1]);
   const inspect = (headers) => mcpKeys.push(headers["x-api-key"]);
-  const mcp = noTools || listStatus ? await startEmptyMcp(served, inspect, listStatus) : await startFakeMcp({ path: served, inspect });
+  const mcp = noTools || listStatus ? await startEmptyMcp(served, inspect, listStatus) : await startFakeMcp({ path: served, inspect, gate: mcpGate(mcpAccounts, toolkits) });
   const mcpOrigin = new URL(mcp.url).origin;
   let made = 0;
   let links = 0;
