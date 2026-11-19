@@ -33,8 +33,10 @@ resources:
 terminationGracePeriodSeconds: 35
 
 # Plain variables, by name. AGENTRUN_PUBLIC_URL is the address people open the console at, which the links the server
-# prints and sends use; unset, the ingress's (http(s)://<host>/) when it is on. AGENTRUN_TELEMETRY: "0" turns the usage
-# counts off (docs/telemetry.md). Model keys go in the console (Settings, Model keys), never here.
+# prints and sends use, and the one NOTES prints; unset, the ingress's (http(s)://<host>/) when it is on, which also
+# overrides one in existingSecret. Set it here when TLS ends before the ingress (https:// with no tlsSecret).
+# AGENTRUN_TELEMETRY: "0" turns the usage counts off (docs/telemetry.md). Model keys go in the console (Settings, Model
+# keys), never here.
 env: {}
 
 # The container's arguments. Empty: the image's own, the server and a runner on /data, port 7340.

@@ -24,7 +24,8 @@ from the Secret. Set your password with the token on the first screen. Then Cont
   to the server's user and mode 0711, as the image has it: each run's process crosses it to its own folders without
   listing it.
 - **A Service** on port 7340, and an **Ingress** when `ingress.enabled` is true. The ingress's address is the server's
-  `AGENTRUN_PUBLIC_URL`, which its links use, unless `env.AGENTRUN_PUBLIC_URL` sets another.
+  `AGENTRUN_PUBLIC_URL`, which its links use, unless `env.AGENTRUN_PUBLIC_URL` sets another: set that when TLS ends
+  before the ingress, and put the address there rather than in `existingSecret`, which the ingress's would override.
 
 `helm uninstall` removes the Deployment, the Service and the Ingress, and **keeps the Secret and the volume**
 (`helm.sh/resource-policy: keep`): every run, and the seal key everything sealed is read with, survive it. An install
