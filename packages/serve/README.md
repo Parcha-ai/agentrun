@@ -2017,8 +2017,10 @@ trigger in the console, with each step's API call.
 
 A preset server is saved for one Composio user. To let each run act as its own person's account instead, save it with
 `user_id: "per_run"` (a word reserved for this, never a Composio user id): the server keeps no user and no connected
-account in its address, looks up no account and makes no connect link. Each run then names the account its calls of
-that server run as, in `mcp_auth` on its start or on a message:
+account in its address, looks up no account and makes no connect link. Composio refuses an address that names no user, even to list its tools, so
+the save, a refresh, a preview and an agent's save list them as `agentrun~tool-listing`, a user no save or run can name,
+never stored and never used for a call. Each run then names the account its calls of that server run as, in `mcp_auth`
+on its start or on a message:
 
 ```sh
 curl -X POST "$BASE/v2/agents/$AGENT/runs" -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \

@@ -152,6 +152,19 @@ export function composioAddress(generated: string, perRun = false): string {
   return url.href;
 }
 
+/** The Composio user a per-run server's tools are listed as (its save, refresh, preview and an agent's save): Composio's
+ *  MCP endpoint refuses an address that names no user, its listing too, and any user lists the server's tools. Outside
+ *  COMPOSIO_USER_ID (the ~), so no save and no run's binding can name it: never stored, never used for a call. */
+export const COMPOSIO_LISTING_USER = "agentrun~tool-listing";
+
+/** The address a per-run Composio server's tools are listed at: its saved one (no user, no account) as
+ *  COMPOSIO_LISTING_USER. */
+export function composioListingAddress(saved: URL): URL {
+  const url = new URL(saved.href);
+  url.searchParams.set(ADDRESS_USER, COMPOSIO_LISTING_USER);
+  return url;
+}
+
 /** What a run's requests to a per-run Composio server add to its saved address: the Composio user and, when the run's
  *  binding names one, the connected account its calls run as (Composio's MCP endpoint reads both from the query). */
 export const composioRunQuery = (binding: { readonly user_id: string; readonly connected_account_id?: string }): Record<string, string> =>

@@ -77,7 +77,7 @@ export async function startFakeMcp({ era = "modern", token, oauth = false, port 
     }
     if (gated && "toolError" in gated && message?.method === "tools/call") {
       res.writeHead(200, { "content-type": "application/json" });
-      return void res.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { content: [{ type: "text", text: gated.toolError }], isError: true } }));
+      return void res.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { resultType: "complete", content: [{ type: "text", text: gated.toolError }], isError: true } }));
     }
     const headers = new Headers();
     for (const [key, value] of Object.entries(req.headers)) if (typeof value === "string") headers.set(key, value);

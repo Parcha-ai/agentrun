@@ -188,7 +188,7 @@ test("a preset server saved for one user is unchanged: its address names that us
 
 test("Composio refuses an address that names no user, so a per-run server's save, refresh, preview and an agent's save list its tools as a listing-only user no binding can name, and call nothing", async (t) => {
   const s = await setup(t);
-  assert.ok(s.saved.tools?.some((tool) => tool.name === "add"), `the save listed its tools: ${JSON.stringify(s.saved)}`);
+  assert.ok(s.saved.server?.tools?.some((tool) => tool.name === "add"), `the save listed its tools: ${JSON.stringify(s.saved)}`);
   const refreshed = await s.api("POST", "/settings/mcp-servers/mail/refresh");
   assert.equal(refreshed.status, 200, `the refresh listed its tools: ${JSON.stringify(refreshed.body)}`);
   const previewed = await s.api("POST", "/settings/mcp-servers/preview", { name: "mail" });
@@ -213,5 +213,6 @@ test("a binding naming another user's account, or a user with no account, gets C
   const stranger = await runOnce(s, bind("grep-user-carol-0003"));
   assert.equal(toolCalls(stranger.sent).length, 1, stranger.answer);
   assert.doesNotMatch(stranger.answer, /The tool said: 5\b/, "the call ran nothing");
-  assert.match(stranger.answer, /No connected account found for user ID grep-user-carol-0003/, stranger.answer);
+  assert.match(stranger.answer, /No connected account found for user ID/, stranger.answer);
+  assert.equal(stranger.answer.includes("grep-user-carol-0003"), false, "the bound user is cut from what the run shows, Composio's words included");
 });
