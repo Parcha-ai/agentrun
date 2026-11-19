@@ -46,10 +46,11 @@ export function tool(name, run, replay = 'never') {
   return { name, description: `The test's ${name} tool.`, inputSchema: { type: 'object', properties: {} }, replay, call: async (args, context) => ({ text: String(await run(args, context)) }) };
 }
 
-/** A session of `recipe` on `store` (default a new in-memory one) under key s1, its events collected. */
-export async function openSession(t, recipe, { store = memorySessionStore(), tools = [], gate, sessionsDir, system = [], options = {}, signal } = {}) {
-  const { countFile: _, ...plain } = recipe;
-  const adapter = acpAdapter({ recipe: plain, sessionsDir: sessionsDir ?? join(scratch(), 'sessions'), ...options });
+/** A session of `recipe` on `store` (default a new in-memory one) under key s1, its events collected. `adapter`: one
+ *  already made (Cursor's own, on its real binary), in place of an ACP adapter of `recipe`. */
+export async function openSession(t, recipe, { store = memorySessionStore(), tools = [], gate, sessionsDir, system = [], options = {}, signal, adapter: made } = {}) {
+  const { countFile: _, ...plain } = recipe ?? {};
+  const adapter = made ?? acpAdapter({ recipe: plain, sessionsDir: sessionsDir ?? join(scratch(), 'sessions'), ...options });
   const events = [];
   const controller = new AbortController();
   const io = {
