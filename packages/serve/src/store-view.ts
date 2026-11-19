@@ -523,7 +523,9 @@ function costOfView(run: StoreRun): Record<string, unknown> {
  *  paid-tools session booked (a monid endpoint's, a priced MCP tool's, Parallel's behind the web tools, the browser's
  *  time), joined and rounded by the one rule its `usd` is (costWordsOf), less those in its end-of-run turn, which are
  *  learning's as that turn's model requests are (runCostOf). A part of `usd`, never added to it; 0 with none. Null when
- *  one's charge is unknown (charged an unknown amount, cut, or still out) or counted at its hold; for a run a follow-up
+ *  one's charge is unknown (charged an unknown amount, cut, or still out) or counted at its hold; while the run is at work
+ *  (not ended, stopped or failed), as its `usd` is the view's snapshot and a paid call booked after it would be read here
+ *  and not there (an ended run's record no longer moves); for a run a follow-up
  *  opened again (a round past its first), whose job is what it had cost when its first round answered and whose paid
  *  calls the booking can't split by that; and for an imported, native or SDK run, whose `usd` is its import's or its
  *  harness's own figure, with no booking of its paid tool calls (a native or SDK run never opens the paid-tools session),
@@ -531,7 +533,7 @@ function costOfView(run: StoreRun): Record<string, unknown> {
 export async function toolsUsdOverStore(store: Store, runId: string): Promise<number | null> {
   const runRow = await store.runs.get(runId);
   const launch = await launchOf(store, runId);
-  if (!runRow || runRow.importedFrom || launch?.native || launch?.sdk || (await roundsOf(store, runId)).length > 1) return null;
+  if (!runRow || !FINAL_STATES.includes(runRow.state) || runRow.importedFrom || launch?.native || launch?.sdk || (await roundsOf(store, runId)).length > 1) return null;
   const records = await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT);
   const turns = reflectRanges(records.submissions ?? [], records.entries);
   const words = costWordsOf([bookedSpend(records.entries.filter((entry) => !inReflect(turns, Number(entry.id))) as never, "paid")]);
