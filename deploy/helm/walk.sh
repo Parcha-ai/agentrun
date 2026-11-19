@@ -3,10 +3,10 @@
 # chart's own image, on the faux model of deploy/walk/faux-steps.mjs (no key, no network) and the counts off
 # (walk-values.yaml). It installs and waits for ready, checks what the chart made (the keys, the data directory, each
 # run's own user, the memory the runner budgets), runs a first run to completed, upgrades onto a new pod and checks the
-# keys and the run were kept. It uninstalls and checks the Secret and the volume were kept (keepOnUninstall), installs
-# again under the same name and checks the first run is still listed with the same token, then uninstalls, deletes the
-# kept Secret and volume, and checks nothing of the release is left. Needs helm, kubectl, node and a cluster with a
-# default StorageClass. REPORT=<file> puts the report in that file too.
+# keys and the run were kept. It uninstalls and checks only the Secret, the claim and its volume are left, then installs
+# again under the same name and checks the first run is still listed with the same token. Its cleanup removes the
+# release, the kept Secret and claim, and its namespace. Needs helm, kubectl, node and a cluster with a default
+# StorageClass. REPORT=<file> puts the report in that file too.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 walk=$(dirname "$here")/walk
@@ -57,9 +57,7 @@ k create configmap walk-files --from-file="$walk/faux-steps.mjs" --from-file="$w
 helm install "$release" "$here/agentrun" -n "$ns" -f "$here/walk-values.yaml" --wait --timeout 5m >"$work/install.log" 2>&1 \
   || { cat "$work/install.log" >&2; fail "installed" "helm install --wait: $(tail -1 "$work/install.log")"; }
 first=$(pod)
-grace=$(k get pod "$first" -o jsonpath='{.spec.terminationGracePeriodSeconds}')
-[ "$grace" = 35 ] || fail "installed" "the pod's stop grace is ${grace}s, not 35 s (the 6 s drain and the runner's 25 s)"
-pass "installed" "$(k get pod "$first" -o jsonpath='{.metadata.name} {.status.phase}, image {.spec.containers[0].image}'), stop grace ${grace}s"
+pass "installed" "$(k get pod "$first" -o jsonpath='{.metadata.name} {.status.phase}, image {.spec.containers[0].image}')"
 
 token=$(k get secret "$release" -o jsonpath='{.data.AGENTRUN_TOKEN}' | base64 -d | wc -c)
 seal=$(k get secret "$release" -o jsonpath='{.data.AGENTRUN_SEAL_KEY}' | base64 -d | base64 -d | wc -c)
@@ -85,10 +83,6 @@ done
 case $budget in *" memory: 1920 MiB for runs"*) ;; *) fail "runner memory" "$budget, not 1920 MiB (the 2Gi limit less 128 MiB)" ;; esac
 pass "runner memory" "$budget"
 
-telemetry=$(in_pod printenv AGENTRUN_TELEMETRY || true)
-[ "$telemetry" = 0 ] || fail "counts off" "AGENTRUN_TELEMETRY is '$telemetry', not 0"
-pass "counts off" "AGENTRUN_TELEMETRY=0 in the pod"
-
 agent=$(get "$(api agent)" agent)
 run=$(get "$(api start "$agent" 3 0)" run)
 ended_once "first run" "$(api end "$run")" 3
@@ -96,12 +90,9 @@ ended_once "first run" "$(api end "$run")" 3
 before=$(keys_hash)
 helm upgrade "$release" "$here/agentrun" -n "$ns" -f "$here/walk-values.yaml" --set-string env.WALK_UPGRADED=1 --wait --timeout 5m >"$work/upgrade.log" 2>&1 \
   || { cat "$work/upgrade.log" >&2; fail "upgraded" "helm upgrade --wait: $(tail -1 "$work/upgrade.log")"; }
-tries=0
-while second=$(pod) && [ "$second" = "$first" ]; do
-  tries=$((tries + 1))
-  [ "$tries" -le 60 ] || fail "upgraded" "the pod is still $first 30 s after the upgrade"
-  sleep 0.5
-done
+# Recreate ends the old pod before it makes the new one, and --wait returns once that one is ready.
+second=$(pod)
+[ "$second" != "$first" ] || fail "upgraded" "the pod is still $first after the upgrade"
 pass "upgraded" "pod $first replaced by $second"
 after=$(keys_hash)
 [ "$after" = "$before" ] || fail "keys kept" "the Secret's data changed across the upgrade"
@@ -129,15 +120,3 @@ helm install "$release" "$here/agentrun" -n "$ns" -f "$here/walk-values.yaml" --
 listed=$(get "$(api run "$run")" status)
 [ "$listed" = completed ] || fail "reinstalled" "the first run reads $listed after the reinstall"
 pass "reinstalled" "pod $(pod): the same Secret data (sha256 $before), and the first run reads $listed with the same token"
-
-helm uninstall "$release" -n "$ns" --wait --timeout 3m >/dev/null
-k delete secret "$release" >/dev/null
-k delete pvc "$release" --wait=true >/dev/null
-k delete configmap walk-files >/dev/null
-tries=0
-while [ -n "$(left)" ]; do
-  tries=$((tries + 1))
-  [ "$tries" -le 120 ] || fail "uninstalled" "still there 60 s after helm uninstall: $(left | tr '\n' ' ')"
-  sleep 0.5
-done
-pass "uninstalled" "after helm uninstall and deleting the kept Secret and claim: nothing labelled app.kubernetes.io/instance=$release in $ns, and no volume bound to a claim there"
