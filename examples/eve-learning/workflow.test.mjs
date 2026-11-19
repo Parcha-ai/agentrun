@@ -288,4 +288,21 @@ test('base example writes an explicit owner correction, reuses its revision on c
   assert.equal(inputs.length, 3); assert.equal(learning, false);
   assert.equal((await demonstrate({ ...options, resume: saved })).stage, 'passed');
   assert.equal(inputs.length, 3); assert.equal(writes, 1);
+  // An interrupted proof may not replace owner settings with either its On or Off control.
+  for (const stage of ['reused', 'control_off']) {
+    const paused = structuredClone(proof);
+    paused.stage = stage;
+    paused.sessions = { connected_off: proof.sessions.connected_off,
+      ...(stage === 'control_off' ? { reused: proof.sessions.reused } : {}) };
+    paused.settings = [{ learning: true, version: 2 }];
+    learning = { compile_after: 40 }; version++;
+    const ownerVersion = version;
+    let stopped;
+    try { await demonstrate({ ...options, resume: paused }); } catch (error) { stopped = error; }
+    assert.deepEqual(learning, { compile_after: 40 }, 'Keep the owner settings intact.');
+    assert.equal(version, ownerVersion, 'Do not write even with a fresh ETag.');
+    assert.equal(inputs.length, 3, 'Do not submit another native task.');
+    assert.equal(writes, 1, 'Do not write another correction.');
+    assert.match(stopped?.message ?? '', /owner changed learning/);
+  }
 });

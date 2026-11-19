@@ -39,6 +39,8 @@ before the switch's update.
 Support configurable full-learning settings for Eve registration and workflow execution, and preserve
 an already-enabled loop configuration when the console refreshes before saving. The fresh-agent
 cookbook opts into a five-run compilation threshold without changing acceptance thresholds.
+Resuming the owner-correction example stops before changing learning if the owner has edited
+the saved setting; it does not overwrite a custom schedule with its On or Off control.
 
 Scope bounded native evidence to the recorded turn boundary, so an invalid or oversized buffer
 does not disable future turns. Skip unverifiable learning without inventing a completion, and

@@ -42,9 +42,11 @@ async function runForSession(client, agentId, sessionId) {
   }, 'the recorded eve run');
 }
 
-async function setLearning(client, agentId, learning) {
+async function setLearning(client, agentId, learning, expectedLearning) {
   const current = await client.agents.get(agentId);
   assert.equal(current.body.definition.sdk?.runtime, 'eve', 'The id is not the connected eve agent.');
+  assert.deepEqual(current.body.definition.learning, expectedLearning,
+    'The owner changed learning outside this proof. Inspect the settings; this demo will not overwrite them.');
   if (current.body.definition.learning === learning) return { learning, version: current.body.definition.version, etag: current.etag, unchanged: true };
   assert.ok(current.etag, 'The server did not supply an ETag for the learning-setting change.');
   const { version: previousVersion, ...definition } = current.body.definition;
@@ -146,7 +148,8 @@ export async function demonstrate({ baseUrl = process.env.AGENTRUN_BASE_URL, api
     assert.equal(connected.run.learning ?? null, null, 'The Off run unexpectedly started learning.');
     assert.doesNotMatch(connected.result.answer, VISIBLE_PREFIX, 'The baseline independently used the special prefix; this comparison is inconclusive.');
     if (!evidence.correction) {
-      evidence.settings.push(await setLearning(client, agentId, true));
+      evidence.settings.push(await setLearning(client, agentId, true, evidence.settings.at(-1)?.learning ?? false));
+      await save();
       const current = (await client.learning.corrections(agentId)).body;
       assert.equal(current.text.trim(), '', 'The owner added corrections outside this proof.');
       assert.ok(current.etag, 'No version guard for owner corrections.');
@@ -165,7 +168,7 @@ export async function demonstrate({ baseUrl = process.env.AGENTRUN_BASE_URL, api
     evidence.correction = { ...evidence.correction, state: 'verified', revision: correctedRevision, ownerCommit: correctionCommit.commit };
     await save();
     if (!evidence.sessions.reused?.sessionId) {
-      evidence.settings.push(await setLearning(client, agentId, true));
+      evidence.settings.push(await setLearning(client, agentId, true, evidence.settings.at(-1)?.learning ?? false));
       await save();
     }
     const reused = await invoke('reused', task('demo-worker'), 'demo-worker');
@@ -173,7 +176,7 @@ export async function demonstrate({ baseUrl = process.env.AGENTRUN_BASE_URL, api
     assert.match(reused.result.answer, VISIBLE_PREFIX, 'The fresh session did not apply the owner correction to the new service.');
 
     if (!evidence.sessions.control_off?.sessionId) {
-      evidence.settings.push(await setLearning(client, agentId, false));
+      evidence.settings.push(await setLearning(client, agentId, false, evidence.settings.at(-1)?.learning ?? false));
       await save();
     }
     const control = await invoke('control_off', task('demo-worker'), 'demo-worker');
