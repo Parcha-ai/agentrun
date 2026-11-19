@@ -910,7 +910,7 @@ export async function computerForClaim(
       const again = providerComputer(provider, ref, connected.value);
       if (mount) {
         try {
-          if (store && stored) await holdSynced(folderHeld, store, own(again), stored, deps.signal);
+          if (store && stored) folderHeld.folder = await holdSynced(store, own(again), stored, deps.signal);
           await deps.workspace.attach({ id: ref.id, client: again.client, readBack: () => again.readBack() }, { ...deps.check, epoch: deps.check.epoch ?? launch.epoch, ...(store ? { sync: true as const } : {}) });
         } catch (error) {
           await again.release().catch(() => undefined);
@@ -1049,7 +1049,8 @@ export async function computerForClaim(
   let started: Awaited<ReturnType<typeof resolved.start>>;
   try {
     // The mount check carries the claim's epoch (a disk read-back under another epoch is refused) unless it names one.
-    started = await resolved.start({ workspace: deps.workspace, check: { ...deps.check, epoch: deps.check.epoch ?? launch.epoch }, ...(holds ? { holds } : {}), held: folderHeld, ...(deps.signal ? { signal: deps.signal } : {}) });
+    const disk = diskOf();
+    started = await resolved.start({ workspace: deps.workspace, check: { ...deps.check, epoch: deps.check.epoch ?? launch.epoch }, ...(disk ? { store: disk } : {}), held: folderHeld, ...(deps.signal ? { signal: deps.signal } : {}) });
   } catch (error) {
     await revoke().catch(() => undefined);
     throw error;

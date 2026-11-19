@@ -2513,6 +2513,7 @@ export type ListComputersResponse = {
     offered: boolean;
     groups: Array<string>;
     tools: Array<string>;
+    settings: Array<string>;
     providers: Array<{
       id: string;
       name: string;

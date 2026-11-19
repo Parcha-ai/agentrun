@@ -39,7 +39,6 @@ const scratch = (name = "agentrun-synced-") => {
 };
 
 const text = (bytes) => (bytes === undefined ? undefined : Buffer.from(bytes).toString());
-const tick = () => new Promise((resolve) => setTimeout(resolve, 50));
 
 /** The claim's side: Daytona's keys, and a launch that hands out `computers()` in turn, recording each spec. */
 function claim(computers, reattach) {
@@ -59,6 +58,9 @@ function claim(computers, reattach) {
   };
 }
 
+/** What the claim starts a computer with over `workspace`: its disk as the folder's store, and the claim's held folder. */
+const startOf = (workspace) => ({ workspace, check: CHECK, store: workspace.syncStore(), held: {} });
+
 /** A loopback computer over host folder `root`, reading back a synced folder under the claim's epoch. */
 const loopback = (root, options = {}) => fakeComputer(root, { readBack: { kind: "sync", epoch: EPOCH }, ...options });
 
@@ -66,14 +68,14 @@ async function started(disk, computer) {
   const side = claim(() => computer);
   const resolved = await resolveComputer(DAYTONA, 2, KINDS, side);
   const workspace = archilWorkspace(disk, ROOT);
-  const run = await resolved.start({ workspace, check: CHECK });
+  const run = await resolved.start(startOf(workspace));
   return { side, resolved, workspace, run, client: run.computer.computer.client };
 }
 
 test("Mode 2: a Daytona sandbox with no DAYTONA_ARCHIL_EGRESS holds the run's folder as a synced folder, launched with a sync mount and read back as one", async () => {
   const resolved = await resolveComputer(DAYTONA, 2, KINDS, claim(() => loopback(scratch())));
   assert.equal("refused" in resolved, false, resolved.refused);
-  assert.deepEqual({ mounts: resolved.mounts, folder: resolved.folder, ports: resolved.ports }, { mounts: true, folder: "sync", ports: ["files", "exec", "processes"] });
+  assert.deepEqual({ folder: resolved.folder, ports: resolved.ports }, { folder: "sync", ports: ["files", "exec", "processes"] });
   const { side, workspace, run } = await started(new FakeArchilDisk(), loopback(scratch()));
   assert.deepEqual(side.launched[0].mount, { kind: "sync" }, "no disk, region or token goes to the computer");
   assert.deepEqual(run.computer.check, { ...CHECK, sync: true });
@@ -88,9 +90,17 @@ test("an exec's file is on the run's disk before the exec answers; one held at t
   const { client, run } = await started(disk, computer);
   let letGo;
   disk.hold = new Promise((resolve) => { letGo = resolve; });
+  // The gate: the exec's put has reached the disk, which holds it there.
+  let arrived;
+  const atDisk = new Promise((resolve) => { arrived = resolve; });
+  const put = disk.putObject.bind(disk);
+  disk.putObject = (key, body) => {
+    if (key === `${ROOT}/out.txt`) arrived();
+    return put(key, body);
+  };
   let answered = false;
   const call = client.call("exec.run", { argv: ["sh", "-c", "echo made by the exec > out.txt"], cwd: "/workspace", timeoutMs: 10_000 }).then((result) => ((answered = true), result));
-  await tick();
+  await atDisk;
   assert.equal(answered, false, "the exec waits for its delta to land on the disk");
   disk.hold = undefined;
   letGo();
@@ -142,7 +152,7 @@ test("a folder over a cap refuses the claim before any byte is read and anything
   ]) {
     const side = claim(() => loopback(scratch()));
     const resolved = await resolveComputer(DAYTONA, 2, KINDS, side);
-    await assert.rejects(resolved.start({ workspace: archilWorkspace(disk, ROOT), check: CHECK }), (error) => error.code === "computer_unavailable" && error.message === words);
+    await assert.rejects(resolved.start(startOf(archilWorkspace(disk, ROOT))), (error) => error.code === "computer_unavailable" && error.message === words);
     assert.deepEqual(side.launched, [], "nothing rented");
     assert.deepEqual(disk.calls.filter((call) => call.op !== "listPage"), [], "nothing read but the listing");
   }
@@ -257,7 +267,7 @@ describe("a synced folder against computerd in a user namespace", { skip }, () =
     // The first claim: an empty folder pushed in, then a shell's tree landing on the disk as it is made.
     const first = computerd();
     const side = claim(() => first);
-    const one = await (await resolveComputer(DAYTONA, 2, KINDS, side)).start({ workspace, check: CHECK });
+    const one = await (await resolveComputer(DAYTONA, 2, KINDS, side)).start(startOf(workspace));
     await workspace.attach(one.computer.computer, one.computer.check);
     await sh(one.computer.computer.client, "mkdir -p bin empty && printf '#!/bin/sh\\necho hi\\n' > bin/run && chmod 0755 bin/run && printf s > secret && chmod 0600 secret && ln -s bin/run go && head -c 700000 /dev/zero > big.bin");
     assert.equal(text(disk.files.get(`${ROOT}/bin/run`)), "#!/bin/sh\necho hi\n");
@@ -269,7 +279,7 @@ describe("a synced folder against computerd in a user namespace", { skip }, () =
 
     // The run reopened on a new computer: the disk's folder pushed in, modes and links as they were.
     const second = computerd();
-    const two = await (await resolveComputer(DAYTONA, 2, KINDS, claim(() => second))).start({ workspace, check: CHECK });
+    const two = await (await resolveComputer(DAYTONA, 2, KINDS, claim(() => second))).start(startOf(workspace));
     assert.equal(text(Buffer.from((await second.client.call("files.read", { path: "/workspace/bin/run" })).value.data, "base64")), "#!/bin/sh\necho hi\n");
     assert.equal((await stat(second, "bin/run")).mode, 0o755);
     assert.equal((await stat(second, "secret")).mode, 0o600);
@@ -288,7 +298,7 @@ describe("a synced folder against computerd in a user namespace", { skip }, () =
       assert.equal(spec.folder, "sync");
       return { id: second.id, client: second.client, readBack: second.readBack, groups: DAYTONA_SANDBOX.groups, hello: { protocol: "0.2", version: "0", os: "linux", kind: "linux", arch: "amd64", groups: DAYTONA_SANDBOX.groups }, release: async () => {}, epoch: EPOCH };
     });
-    const three = await (await resolveComputer(DAYTONA, 2, KINDS, kept)).start({ workspace, check: CHECK });
+    const three = await (await resolveComputer(DAYTONA, 2, KINDS, kept)).start(startOf(workspace));
     assert.equal(text(disk.files.get(`${ROOT}/new.txt`)), "new");
     assert.equal(text(disk.files.get(`${ROOT}/tree/deep/t`)), "t");
     assert.equal(disk.files.has(`${ROOT}/secret`), false);
@@ -300,7 +310,7 @@ describe("a synced folder against computerd in a user namespace", { skip }, () =
     const disk = new FakeArchilDisk();
     const workspace = archilWorkspace(disk, ROOT);
     const first = computerd();
-    const one = await (await resolveComputer(DAYTONA, 2, KINDS, claim(() => first))).start({ workspace, check: CHECK });
+    const one = await (await resolveComputer(DAYTONA, 2, KINDS, claim(() => first))).start(startOf(workspace));
     await sh(one.computer.computer.client, "printf old > target && ln -s target go");
     await one.release();
     assert.deepEqual(JSON.parse(text(disk.files.get(META))).links, { go: "target" });
@@ -309,14 +319,14 @@ describe("a synced folder against computerd in a user namespace", { skip }, () =
     // which the mount lands on the disk as that file.
     const resolved = await resolveComputer(MODAL, 2, KINDS, modalSide(mounted(disk, ROOT)));
     assert.equal(resolved.folder, "archil", "Modal takes the Archil mount here");
-    const two = await resolved.start({ workspace: { syncStore: () => workspace.syncStore(), mountSpec: async () => archilMount }, check: CHECK });
+    const two = await resolved.start(startOf({ syncStore: () => workspace.syncStore(), mountSpec: async () => archilMount }));
     assert.deepEqual(JSON.parse(text(disk.files.get(META))), { modes: {}, links: {} }, "emptied at the Archil claim's start");
     await sh(two.computer.computer.client, "printf new > go");
     disk.files.set(`${ROOT}/go`, Buffer.from("new"));
     await two.release();
 
     const third = computerd();
-    const three = await (await resolveComputer(DAYTONA, 2, KINDS, claim(() => third))).start({ workspace, check: CHECK });
+    const three = await (await resolveComputer(DAYTONA, 2, KINDS, claim(() => third))).start(startOf(workspace));
     assert.equal((await stat(third, "go")).type, "file", "the file the Archil claim wrote, not the link sync.json had");
     assert.equal(await sh(third.client, "cat go"), "new");
     await three.release();
@@ -326,7 +336,7 @@ describe("a synced folder against computerd in a user namespace", { skip }, () =
     const disk = new FakeArchilDisk();
     const workspace = archilWorkspace(disk, ROOT);
     const first = mounted(disk, ROOT);
-    const one = await (await resolveComputer(MODAL, 2, KINDS, modalSide(first))).start({ workspace: { syncStore: () => workspace.syncStore(), mountSpec: async () => archilMount }, check: CHECK });
+    const one = await (await resolveComputer(MODAL, 2, KINDS, modalSide(first))).start(startOf({ syncStore: () => workspace.syncStore(), mountSpec: async () => archilMount }));
     await sh(one.computer.computer.client, "mkdir -p bin && printf '#!/bin/sh\\necho hi\\n' > bin/run && chmod 0755 bin/run && ln -s bin/run go");
     // What the mount wrote to the disk: the file's bytes, at no mode, and the link as an object the file API lists as a
     // file and won't read (501).
@@ -337,7 +347,7 @@ describe("a synced folder against computerd in a user namespace", { skip }, () =
 
     // The next claim syncs the folder (Daytona with no DAYTONA_ARCHIL_EGRESS): pushed into a new computer, as it was.
     const second = computerd();
-    const two = await (await resolveComputer(DAYTONA, 2, KINDS, claim(() => second))).start({ workspace, check: CHECK });
+    const two = await (await resolveComputer(DAYTONA, 2, KINDS, claim(() => second))).start(startOf(workspace));
     assert.equal((await stat(second, "bin/run")).mode, 0o755);
     assert.deepEqual([(await stat(second, "go")).type, (await stat(second, "go")).target], ["symlink", "bin/run"]);
     assert.equal(await sh(second.client, "./go"), "hi\n");

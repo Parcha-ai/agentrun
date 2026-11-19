@@ -272,11 +272,16 @@ export function derivedMounts(descriptor: Pick<ProviderDescriptor, "mounts" | "u
  * The mount kinds a provider's computers take, and why not the others, with the keys `set` says the operator has set: its
  * derived mounts, and each kind of its mountsWith whose key is set, which leaves its unmounted. What a provider made with
  * those keys declares (capabilities().mount), and what a server reads to know whether that provider can mount a run's
- * folder.
+ * folder. Made with create() `options` whose machines dial the server (connectOf), it takes no Archil mount: the
+ * helper's steps run as root through exec, which a machine that dials has none of.
  */
-export function mountsOf(descriptor: Pick<ProviderDescriptor, "mounts" | "unmounted" | "mountsWith" | "capabilities">, set: (name: string) => boolean): { mounts: MountKind[]; unmounted: Unmounted } {
+export function mountsOf(descriptor: Pick<ProviderDescriptor, "label" | "connect" | "mounts" | "unmounted" | "mountsWith" | "capabilities">, set: (name: string) => boolean, options: { readonly connect?: unknown } = {}): { mounts: MountKind[]; unmounted: Unmounted } {
 	const taken = Object.entries(descriptor.mountsWith ?? {}).flatMap(([kind, key]) => (typeof key === "string" && set(key) ? [kind as MountKind] : []));
-	const unmounted = Object.fromEntries(Object.entries(descriptor.unmounted ?? {}).filter(([kind]) => !taken.includes(kind as MountKind)));
+	const unmounted: Unmounted = Object.fromEntries(Object.entries(descriptor.unmounted ?? {}).filter(([kind]) => !taken.includes(kind as MountKind)));
 	const mounts = [...descriptor.mounts, ...taken.filter((kind) => !descriptor.mounts.includes(kind))];
+	if (connectOf(descriptor, options) === "dial") {
+		const archil = `${descriptor.label}'s machines dial this server, and a machine that dials takes no Archil mount`;
+		return { mounts: derivedMounts({ ...descriptor, mounts: mounts.filter((kind) => kind !== "archil") }), unmounted: { ...unmounted, archil } };
+	}
 	return { mounts: derivedMounts({ ...descriptor, mounts }), unmounted };
 }

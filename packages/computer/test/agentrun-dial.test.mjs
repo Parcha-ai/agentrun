@@ -14,7 +14,7 @@ const INSTALL = readFileSync(new URL("../box/install.sh", import.meta.url), "utf
 /** agentrun-dial's text, as install.sh writes it. */
 const DIAL = INSTALL.match(/^\tcat >"\$DIAL" <<'EOF'\n([^]*?\n)EOF\n/m)?.[1];
 /** A token of the minted shape, made here. */
-const TOKEN = `art_${randomBytes(32).toString("hex")}`;
+const TOKEN = `art_${randomBytes(32).toString("base64url")}`;
 /** init's user is this one: agentrun-dial gives /workspace to it, which only root may do for another. */
 const USER = `${process.getuid()}:${process.getgid()}`;
 const INIT_ARGS = `--deadline 2026-11-16T12:00:00Z --user ${USER} --own-network --network allow:*.example.com`;
