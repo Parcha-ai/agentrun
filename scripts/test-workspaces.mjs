@@ -145,9 +145,6 @@ let stopping;
 // Each script runs as a suite of its own: under a `node --test` that started this script, NODE_TEST_CONTEXT would make
 // every workspace's `node --test` report to that parent instead, and pass having run nothing.
 const { NODE_TEST_CONTEXT, ...childEnv } = process.env;
-// The servers the tests start send no usage counts (docs/telemetry.md): CI already turns them off, and this does on any
-// other machine, unless the shell set AGENTRUN_TELEMETRY itself.
-childEnv.AGENTRUN_TELEMETRY ??= '0';
 
 function start(ws) {
   const { text, env } = commandOf(ws);

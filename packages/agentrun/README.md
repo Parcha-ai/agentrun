@@ -50,8 +50,8 @@ AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0 --env AGENT_MODEL_API_KEY=none` 
 service and restarts it (`AGENT_MODEL_API_KEY` takes `none` alone: a model that takes no key, as Ollama's, still needs a
 key the server sends, or each run is refused with `model_key_required`). They stay through restarts, upgrades and later installs, and `--env KEY=` removes one. On a machine
 you alone use, `--env AGENTRUN_MCP_ALLOW_LOOPBACK=1 --env AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` turns on the two start-time
-switches the same way (a switch takes `1` alone). `--env` takes those seven names and the usage counts' two switches alone:
-model keys go in the console, never in a service file. The service never sees the shell that installed it, so
+switches the same way (a switch takes `1` alone). `--env` takes the names `agentrun service install --help` lists, and
+no others: model keys go in the console, never in a service file. The service never sees the shell that installed it, so
 `AGENTRUN_TELEMETRY` or `DO_NOT_TRACK` set there is written into it, and under `CI` it gets `AGENTRUN_TELEMETRY=0`
 ([anonymous usage counts](../../docs/telemetry.md)). On Linux, a user's
 services stop at logout unless lingering is on: `install` and `status` print the one `sudo loginctl enable-linger` line
