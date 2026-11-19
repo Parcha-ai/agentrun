@@ -301,11 +301,15 @@ test("the end's cost read fails once: the end reads it again, and the stored cos
   assert.equal(reads, 2, "read twice");
 });
 
-test("the end's cost read fails every time: the end stores it unknown, and the view says the same as the list and the stored cost", { timeout: 120_000 }, async (t) => {
+test("the end's cost read fails every time: the end stores it unknown, and the view reads the priced booking, never a bare null", { timeout: 120_000 }, async (t) => {
   const warned = [];
   t.mock.method(console, "warn", (...args) => warned.push(args.join(" ")));
   const { row, view, listed } = await endedRun(t, (spec) => ({ ...spec, endCost: async () => Promise.reject(new Error("the store is down")) }));
   assert.equal(row.state, "ended");
-  assert.deepEqual([row.costUsd, listed.costUsd ?? null, view.cost.usd], [null, null, null], `one answer on every reader: ${JSON.stringify(view.cost)}`);
+  // The stored column keeps the end's answer; the run's read reads its booking, priced, so the next GET heals what the
+  // end could not read.
+  assert.deepEqual([row.costUsd, listed.costUsd ?? null], [null, null], "the column keeps the end's unknown");
+  assert.equal(view.cost.usd, REQUEST_USD, `the view reads the booking: ${JSON.stringify(view.cost)}`);
+  assert.equal(view.cost.unknown, undefined);
   assert.ok(warned.some((line) => /its end's cost failed .*the end is written with its cost unknown/.test(line)), `the end says why: ${JSON.stringify(warned)}`);
 });

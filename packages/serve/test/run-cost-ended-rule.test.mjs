@@ -5,7 +5,9 @@
 //   - every request booked at a known price: `usd` and `all_in_usd` the booked total;
 //   - the cut final request: two requests answered and booked, the last cut with no answer, no usage and no hold;
 //   - a compacted run whose final request was cut the same way: the compaction's summary is priced and counted, and the
-//     cut request is still the one charge of no known cost, on the run and on its usage row.
+//     cut request is still the one charge of no known cost, on the run and on its usage row;
+//   - an end whose read of the booking failed (it stores the cost unknown): the run read reads the priced booking, so
+//     the next GET heals it; with no booked request to read either, `unknown: "booking_unread"` says why.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -59,7 +61,7 @@ function journalOf(steps) {
  *  the cost its booking gives (runCostOf), then the store's end. Before that end is written the run reads working, never
  *  completed. Returns GET /v2/runs/run-1 from a server over the store, the store's row, and the usage row its settled
  *  timeline ends with. */
-async function endedRun(t, steps) {
+async function endedRun(t, steps, { endRead = "read" } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "run-cost-ended-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const data = join(dir, "agents");
@@ -75,7 +77,9 @@ async function endedRun(t, steps) {
   for (const [kind, d, model] of root) writes.push({ type: "entry", value: { id: await journal.mintId(), conversationId: ROOT, kind, ...(d === undefined ? {} : { data: d }), ...(model === undefined ? {} : { model }) } });
   for (const [kind, d] of records) writes.push({ type: "entry", value: { id: await journal.mintId(), conversationId: HARNESS, kind, data: d } });
   await commitWrites(journal, writes, ctx);
-  const costUsd = runCostOf(await runEntries(store, "run-1", ctx)).usd;
+  // `failed`: the end's read of the booking failed within its bound, so the end stores the cost unknown (adapter-loop.ts
+  // endPatchOf), whatever the booking says.
+  const costUsd = endRead === "failed" ? null : runCostOf(await runEntries(store, "run-1", ctx)).usd;
   await commitWrites(journal, [{ type: "entry", value: { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.end", data: { state: "ended", costUsd } } }], ctx);
   assert.equal((await viewOverStore(store, "run-1", { origin: "", serverSecrets: () => [] })).status, "working", "no completed read before the store's end");
   await store.runs.update(claim, { state: "ended", outcome: "completed", summary: "done", costUsd, metrics: { path: "agent", workflow: null }, endedAt: Date.now() });
@@ -99,7 +103,7 @@ function billable(cost) {
   assert.notEqual(cost.usd, 0, `usd never reads $0 beside booked usage: ${said}`);
   assert.notEqual(cost.all_in_usd, 0, `all_in_usd never reads $0 beside booked usage: ${said}`);
   if (typeof cost.all_in_usd === "number") assert.ok(typeof cost.usd === "number" && cost.all_in_usd >= cost.usd, `all_in_usd never below usd: ${said}`);
-  if (cost.usd === null) assert.ok(cost.unpriced >= 1 && typeof cost.so_far_usd === "number", `a null says why, and what is known: ${said}`);
+  if (cost.usd === null) assert.ok((cost.unpriced >= 1 && typeof cost.so_far_usd === "number") || cost.unknown === "booking_unread", `a null says why: ${said}`);
 }
 
 test("an ended run with every request booked at a known price reads the booked total, never $0, all_in_usd not below it", { timeout: 60_000 }, async (t) => {
@@ -124,4 +128,19 @@ test("a compacted run whose final request was cut still reads usd null and unpri
   // Its usage row says the same: the one cut request unpriced, the summary counted as a request at its known cost.
   assert.deepEqual([usageRow?.usd, usageRow?.unpriced, usageRow?.requests], [null, 1, 5], JSON.stringify(usageRow));
   assert.ok(near(usageRow?.so_far_usd, 0.46), JSON.stringify(usageRow));
+});
+
+test("an ended run whose end could not read its priced booking (stored unknown) reads the booking on the next GET: the booked total, never a bare null", { timeout: 60_000 }, async (t) => {
+  const { cost, row } = await endedRun(t, [["answered", 0.05], ["answered", 0.07], ["answered", 0.11]], { endRead: "failed" });
+  assert.equal(row.costUsd, null, "the end stored it unknown");
+  billable(cost);
+  assert.ok(near(cost.usd, 0.23) && near(cost.all_in_usd, 0.23), `healed from the booking: ${JSON.stringify(cost)}`);
+  assert.deepEqual([cost.unpriced, cost.unknown], [undefined, undefined], JSON.stringify(cost));
+});
+
+test("an ended run whose end could not read its booking, with no booked request to read it from now, says why: unknown booking_unread", { timeout: 60_000 }, async (t) => {
+  const { cost, row } = await endedRun(t, [], { endRead: "failed" });
+  assert.equal(row.costUsd, null);
+  billable(cost);
+  assert.deepEqual([cost.usd, cost.all_in_usd, cost.unknown, cost.unpriced], [null, null, "booking_unread", undefined], JSON.stringify(cost));
 });

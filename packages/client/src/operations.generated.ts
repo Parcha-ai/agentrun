@@ -483,6 +483,7 @@ export type Cost = {
   so_far_usd?: number;
   unpriced?: number;
   upper_bound?: true;
+  unknown?: "booking_unread";
   tokens?: {
     input: number;
     output: number;

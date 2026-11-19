@@ -46,6 +46,12 @@ describe("cost", () => {
     expect(cost({ usd: null, basis: "estimate", charge_state: null, cap_usd: null })).not.toMatch(/\$0/);
   });
 
+  it("says why an ended run's cost is unknown when the server could not read it, never a zero", () => {
+    const unread = { usd: null, basis: "unpriced", charge_state: null, cap_usd: null, unknown: "booking_unread" } as Cost;
+    expect(cost(unread, { ended: true })).toBe("Unknown · cost not read");
+    expect(costOfCap(unread, 1, { ended: true })).toBe("Unknown · cost not read · cap $1.00");
+  });
+
   it("reads the recorded run whose cost is not known as Unknown", () => {
     const c = (unpriced as { body: { cost: Cost } }).body.cost;
     expect(c.usd).toBeNull();

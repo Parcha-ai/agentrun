@@ -251,6 +251,9 @@ interface StoreRun {
   /** Whether the run's last end wrote its cost (EndData.costUsd present: a figure or null), so the stored column holds the
    *  end's answer. False for an end whose spec reads no cost, which leaves the column as it was. */
   readonly endSaidCost?: boolean;
+  /** Whether its end stored its cost unknown while this read, which reads its cost from its booking (an ended agentic run
+   *  not native, or workflow, not imported), found no booked request: the end could not read the booking, nor can this. */
+  readonly endUnread?: boolean;
 }
 
 /** A runner holds the run's claim now: it is not in a final state, a runner is named on its row, and its lease has not run
@@ -468,8 +471,10 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // reading below.
   const bookedCost = terminal && (row.kind === "workflow" || (row.kind === "agentic" && !native)) && !row.importedFrom ? runCostOf(records.entries as never, { unbooked: isCliRecord(records.entries as never) && cliModelWorked(records.entries as never) }) : undefined;
   const endCost = bookedCost?.requests ? bookedCost : undefined;
-  const endSaidCost = endCost ? ((records.entries.findLast((entry) => entry.kind === KINDS.end)?.data as EndData | undefined)?.costUsd !== undefined) : false;
-  return { ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan, model, ...(endCost ? { endCost, endSaidCost } : {}) };
+  const endSaid = (records.entries.findLast((entry) => entry.kind === KINDS.end)?.data as EndData | undefined)?.costUsd;
+  const endSaidCost = endCost ? endSaid !== undefined : false;
+  const endUnread = bookedCost !== undefined && !endCost && endSaid === null;
+  return { ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan, model, ...(endCost ? { endCost, endSaidCost } : {}), ...(endUnread ? { endUnread } : {}) };
 }
 
 /** A run's learning as the view shows it: its end from the store (what it held for the owner's OK as it reads now), in a
@@ -499,10 +504,11 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   // Its decisions' booked cost joins its usage row's (costView), one unknown making it unknown.
   const decisions = run.decisions;
   // An ended run that booked its requests reads the cost its end stored by its booking (runCostOf), the answer the list,
-  // usage and stats read too: one figure on every reader. Its end reads that cost again when a read fails
-  // (loop.ts readAgain), so a null is kept only when the booking could not be read within the end's bound. The booking,
-  // read in the snapshot that read its state, adds only what the stored figure agrees with: what is known so far when both
-  // are unknown. An end that wrote no cost (a spec that reads none) left the column alone: the booking is the answer then.
+  // usage and stats read too. Its end reads that cost again when a read fails (loop.ts readAgain), and stores it unknown
+  // only when the booking could not be read within the end's bound: then this read, which reads the booking in the
+  // snapshot that read its state, says what the booking says (a figure, or unknown with what is known so far), so a late
+  // read heals on the next GET and never reads as a null with no reason. An end that wrote no cost (a spec that reads
+  // none) left the column alone: the booking is the answer then too.
   const booked = run.endCost;
   const said = booked !== undefined && run.endSaidCost === true;
   // Its cost in the Cost's words (CostWords), each figure by the one rule (costWordsOf): a hold is never spend, so while
@@ -513,8 +519,12 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   // beside it only where the two agree (the same unknown, the same bound); a bound its end stored is said so
   // (cost_upper_bound), the bound the list and the column read too.
   const bookedWords = booked ? costWordsOf([booked]) : undefined;
-  const words = !booked ? (imported ? { usd: costOfRun(run.runRow) } : costWordsOfView(run.rows, stored, decisions)) : !said ? bookedWords! : stored !== null && stored !== undefined ? { usd: stored } : storedAtMost !== null ? { ...(bookedWords!.upper_bound ? bookedWords : {}), usd: storedAtMost, upper_bound: true as const } : bookedWords!.usd === null ? bookedWords! : { usd: null };
+  const words = !booked ? (imported ? { usd: costOfRun(run.runRow) } : costWordsOfView(run.rows, stored, decisions)) : !said ? bookedWords! : stored !== null && stored !== undefined ? { usd: stored } : storedAtMost !== null ? { ...(bookedWords!.upper_bound ? bookedWords : {}), usd: storedAtMost, upper_bound: true as const } : bookedWords!;
   const usd = words.usd;
+  // A run whose end stored its cost unknown and whose booking this read finds no request in, its cost unknown with
+  // nothing else to say why (no charge counted unpriced, no bound): the booking could not be read. Said in `unknown`,
+  // never a bare null.
+  const unread = run.endUnread && usd === null && words.unpriced === undefined && !words.upper_bound ? { unknown: "booking_unread" as const } : undefined;
   const counted = words.so_far_usd !== undefined && words.unpriced !== undefined ? { so_far_usd: words.so_far_usd, unpriced: words.unpriced } : undefined;
   const upper = words.upper_bound ? { upper_bound: true as const } : undefined;
   // A request billed to a person's plan costs no dollars, however it ended (the kernel's turnCostOf): every reader counts it
@@ -528,7 +538,7 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   // The run's cap as it stands (its view's meta: the newest raise's, else the launch's).
   const cap = run.view.meta.max_cost_usd;
   const tokens = tokensOfView(run);
-  return { usd, basis: basisOfView(run, words), charge_state: null, cap_usd: cap ?? null, ...(soFar ?? {}), ...(upper ?? {}), ...(plan ? { plan: { requests: plan.requests, tokens: plan.tokens, on } } : {}), ...(tokens ? { tokens } : {}) };
+  return { usd, basis: basisOfView(run, words), charge_state: null, cap_usd: cap ?? null, ...(soFar ?? {}), ...(upper ?? {}), ...(unread ?? {}),...(plan ? { plan: { requests: plan.requests, tokens: plan.tokens, on } } : {}), ...(tokens ? { tokens } : {}) };
 }
 
 /** How a run's cost was reached (metrics.ts CostBasis): by how its model requests were priced, as its booking says, while
