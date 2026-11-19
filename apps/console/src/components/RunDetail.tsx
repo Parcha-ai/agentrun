@@ -238,21 +238,26 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   const moved = useRef({ rows, times: 0 });
   if (moved.current.rows !== rows) moved.current = { rows, times: moved.current.times + 1 };
   // A run paused at its cap shows its raise form under the banner; the header's Raise the cap goes there (one form, not two).
-  // The Graph and Dev tools tabs fill the page and show no banner, so on them the header's button opens its own form.
+  // The Graph and Dev tools tabs fill the page and show no banner, so from them the button opens the Timeline first. The
+  // form is then the one the run has, whatever tab the person was on: no second form whose draft a tab change would drop.
   const bannerRaise = !!(view.needsYou && budget && typeof budget.cap_usd === "number" && actions?.onRaiseCap);
   const bannerShown = tab !== "graph" && !(tab === "trace" && readTrace);
   const bannerRaiseRef = useRef<HTMLDivElement>(null);
-  const toBannerRaise = () => {
+  const [raiseAsked, setRaiseAsked] = useState(0);
+  const toBannerRaise = () => { if (!bannerShown) setTab("timeline"); setRaiseAsked((n) => n + 1); };
+  // After the render that shows the form (the tab may have just changed), bring it into view with the cursor in its amount.
+  useEffect(() => {
+    if (!raiseAsked) return;
     const box = bannerRaiseRef.current;
     box?.scrollIntoView({ block: "center" });
     box?.querySelector("input")?.focus();
-  };
+  }, [raiseAsked]);
   const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ...(readTrace ? [["trace", "Dev tools"] as [Tab, string]] : []), ...(run.learning ? [["learning", "Learning"] as [Tab, string]] : []), ["files", `Files ${listedFiles(files, showHidden).length}`], ...(hasScreen ? [["screen", "Screen"] as [Tab, string]] : [])];
   return (
     // On a short screen (a phone on its side) the page scrolls as a whole, in <main>: the header, the tabs and the composer
     // keep their own heights and the tab body takes what it needs, instead of what is left of 390 px (nothing).
     <div className="flex h-full min-h-0 flex-col short:h-auto">
-      <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} raiseBelow={bannerRaise && bannerShown ? toBannerRaise : undefined} />
+      <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} raiseBelow={bannerRaise ? toBannerRaise : undefined} />
       <Tabs id="run-views" label="Run views" value={tab} onChange={(value) => setTab(value as Tab)} tabs={tabs.map(([id, label]) => ({ id, label }))} />
       {tab === "graph" ? <div {...tabPanelProps("run-views", tab)} className="min-h-0 flex-1 short:min-h-96">{graphView}</div>
         // The Dev tools tab is a page of data: it fills the width and scrolls in its own panes.
