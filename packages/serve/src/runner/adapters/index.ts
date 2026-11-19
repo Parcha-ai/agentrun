@@ -8,7 +8,7 @@ import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
 import type { AdapterRun } from "../adapter-loop.js";
 import { facts as openCodeFacts } from "../../harness-opencode/facts.js";
-import { harnessOf } from "../../harness-table.js";
+import { harnessOf, ON_TABLE } from "../../harness-table.js";
 import { piAdapter, type PiAdapterOptions } from "./pi.js";
 
 /** What every adapter is given for one claim, from the run's launch. */
@@ -111,20 +111,10 @@ export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
   },
 };
 
-/** The runner of an entry that serve's table runs itself, from its facts and its adapter (Goose's and Cursor's: the
- *  loop's spec builds the run from the entry, harness-loops.ts cliRunSpecFromLaunch): the loop keeps the run's record, as
- *  for every CLI harness, and its adapter is never asked for, which it says if it is. #3198's harness modules have one of
- *  these too (harness-table.ts ON_TABLE): the two are one once both are on main. */
-export const ON_TABLE: RunnerHarness = Object.freeze({
-  record: "loop" as const,
-  adapter: async () => {
-    throw new Error("this harness runs from its table entry (its facts and adapter), never from a runner adapter");
-  },
-});
-
 /** The harness the launch names, as `env`'s harness table has it (harness-table.ts harnessOf): a built-in one's runner is
  *  the runner's own (RUNNER_HARNESSES), one a harness module adds brings its own (HarnessEntry.runner), and any other entry
- *  with facts and an adapter is run from the table (ON_TABLE). Undefined when the table has none by that name. `env`:
+ *  with facts and an adapter (Goose's, Cursor's: harness-loops.ts cliRunSpecFromLaunch builds the run from the entry) is
+ *  run from the table (harness-table.ts ON_TABLE, the modules' runner too). Undefined when the table has none by that name. `env`:
  *  the run's environment (this process's when not given). */
 export function resolveHarness(harness: string, env: NodeJS.ProcessEnv = process.env): RunnerHarness | undefined {
   const entry = harnessOf(env, harness);

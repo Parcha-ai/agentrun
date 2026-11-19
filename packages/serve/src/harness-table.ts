@@ -280,12 +280,13 @@ export interface AcpEntryHost {
   readonly env?: boolean;
 }
 
-/** A module's entry is run on serve's table (its facts' adapter, cli-run-spec.ts), never by a runner's adapter of its
- *  own: this one says so if it is ever asked. The loop keeps the run's record, as for every CLI harness. */
-const ON_TABLE: RunnerHarness = Object.freeze({
+/** The runner of an entry run on serve's table (its facts' adapter, cli-run-spec.ts), never by a runner's adapter of its
+ *  own: a module's, and Goose's and Cursor's (resolveHarness). Its adapter says so if it is ever asked. The loop keeps the
+ *  run's record, as for every CLI harness. */
+export const ON_TABLE: RunnerHarness = Object.freeze({
   record: "loop" as const,
   adapter: async () => {
-    throw new Error("a harness module's adapter harness runs from its table entry (facts and adapter), not a runner adapter");
+    throw new Error("this harness runs from its table entry (facts and adapter), not a runner adapter");
   },
 });
 

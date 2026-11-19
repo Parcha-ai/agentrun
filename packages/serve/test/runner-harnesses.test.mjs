@@ -7,7 +7,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 
-const { ON_TABLE, RUNNER_HARNESSES, resolveHarness } = await import("../dist/runner/adapters/index.js");
+const { RUNNER_HARNESSES, resolveHarness } = await import("../dist/runner/adapters/index.js");
+// The one table-run runner: a harness module's entry's, and Goose's and Cursor's.
+const { ON_TABLE } = await import("../dist/harness-table.js");
 
 const dir = mkdtempSync(join(tmpdir(), "runner-harnesses-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
