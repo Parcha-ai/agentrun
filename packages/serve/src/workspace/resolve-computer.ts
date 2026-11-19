@@ -423,12 +423,14 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
   // operator names its image, so the folder it holds is the one the start and the readiness check said.
   const entry = registry.PROVIDERS.find((one) => one.id === setting.provider);
   if (!entry) return { refused: `${JSON.stringify(setting.provider)} is no computer provider this server knows: pick ${pick}` };
-  // The configurations of the provider that serve the kind; none, and the registry says why, by its closest one.
+  // The configurations of the provider that serve the kind; none, and its descriptor's own why (unserved), else the
+  // registry's, by its closest one.
   const serving = servingOf(registry, entry, kind);
   if (serving.length === 0) {
     const own = registry.unservedWhy?.(entry, kind);
     if (own !== undefined) return { refused: `${own}, or pick ${pick}` };
-    const why = entry.capabilities.map((one) => registry.servingRefusals(one, kind)).sort((a, b) => a.length - b.length)[0] ?? [];
+    const unserved = entry.unserved?.[kind];
+    const why = unserved !== undefined ? [unserved] : (entry.capabilities.map((one) => registry.servingRefusals(one, kind)).sort((a, b) => a.length - b.length)[0] ?? []);
     return { refused: `${entry.label} gives no ${kind} computer${why.length > 0 ? `: ${why.join("; ")}` : ""}. Pick ${pick}` };
   }
   // The configuration the setting's image selects: one the provider does not offer for the kind is refused, naming those
