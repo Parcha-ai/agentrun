@@ -12,7 +12,7 @@ import { randomBytes } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { parse } from "yaml";
-import { FIRST_RUN } from "../railway/publish-and-walk.mjs";
+import { FIRST_RUN, onStop } from "../railway/publish-and-walk.mjs";
 import { isMain } from "../../scripts/is-main.mjs";
 
 export const PREFIX = "agentrun-render-walk-";
@@ -76,6 +76,7 @@ async function main() {
   });
 
   let serviceId;
+  let stopped = () => {};
   try {
     const owner = (await render("GET", "/owners?limit=20")).map((o) => o.owner).find((o) => o.name === args.owner);
     if (!owner) throw new Error(`the key has no workspace named "${args.owner}": nothing made`);
@@ -94,6 +95,7 @@ async function main() {
     const made = await render("POST", "/services", body);
     const service = made.service ?? made;
     serviceId = service.id;
+    stopped = onStop(() => render("DELETE", `/services/${serviceId}`));
     const base = service.serviceDetails?.url ?? (await render("GET", `/services/${serviceId}`)).serviceDetails?.url;
     if (!base) throw new Error(`service ${serviceId} has no URL`);
     row("service made", "PASS", `${name} (${serviceId}) in "${owner.name}": ${svc.image.url}, plan ${svc.plan}, ${svc.disk.sizeGB} GB disk at ${svc.disk.mountPath}, ${body.envVars.map((e) => e.key).join(", ")} (generated values not shown)`);
@@ -113,9 +115,11 @@ async function main() {
     t.healthy = Date.now();
     row("healthy", "PASS", `GET ${base}/v2/health: 200 ${JSON.stringify(health)}, ${since(t.healthy)}`);
 
+    const page = await fetch(`${base}/`, { headers: { accept: "text/html" } });
+    if (page.status !== 200 || !/text\/html/.test(page.headers.get("content-type") ?? "")) throw new Error(`GET ${base}/ answered ${page.status} ${page.headers.get("content-type")}, not the console`);
     const session = await (await fetch(`${base}/v2/auth/session`)).json();
     if (session.password_set !== false || session.setup_code !== true) throw new Error(`the first visit does not ask for the setup code: ${JSON.stringify(session)}`);
-    row("first visit asks for the setup code", "PASS", `GET /v2/auth/session: ${JSON.stringify(session)}`);
+    row("first visit asks for the setup code", "PASS", `GET / is the console; GET /v2/auth/session: ${JSON.stringify(session)}`);
     const setup = await fetch(`${base}/v2/setup`, { method: "POST", headers: { "content-type": "application/json", origin: base }, body: JSON.stringify({ code: token, password: randomBytes(18).toString("base64url") }) });
     const signedIn = await setup.json().catch(() => ({}));
     if (setup.status !== 201 || signedIn.signed_in !== true) throw new Error(`POST /v2/setup with AGENTRUN_TOKEN as the code answered ${setup.status} ${JSON.stringify(signedIn)}`);
@@ -147,6 +151,7 @@ async function main() {
   } catch (error) {
     row("walk", "FAIL", error.message);
   } finally {
+    stopped();
     if (serviceId) {
       try {
         await render("DELETE", `/services/${serviceId}`);

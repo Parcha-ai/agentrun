@@ -26,3 +26,26 @@ test("the walk makes render.yaml's service: its image, plan, disk and health che
   }
   assert.equal(env.AGENTRUN_TELEMETRY, "0", "the walk is not a user: no usage counts");
 });
+
+test("a walk stopped midway (the job cancelled or out of time: SIGINT, then SIGTERM) deletes what it made, then exits", async () => {
+  const { spawn } = await import("node:child_process");
+  const { mkdtemp, readFile: read } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const dir = await mkdtemp(join(tmpdir(), "walk-stop-"));
+  const walk = new URL("deploy/railway/publish-and-walk.mjs", ROOT).href;
+  for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]]) {
+    const mark = join(dir, signal);
+    // The walk's stand-in: something made, its delete a write, then a wait no walk outlives.
+    const script = `const { onStop } = await import(${JSON.stringify(walk)}); const { writeFileSync } = await import("node:fs");
+onStop(async () => writeFileSync(${JSON.stringify(mark)}, "deleted")); console.log("made"); setTimeout(() => {}, 60_000);`;
+    const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "inherit"] });
+    const exited = new Promise((r) => child.once("exit", (c) => r(c)));
+    const started = await Promise.race([new Promise((r) => child.stdout.once("data", () => r(true))), exited.then(() => false)]);
+    assert.ok(started, `${signal}: the stand-in walk started`);
+    child.kill(signal);
+    const exit = await exited;
+    assert.equal(await read(mark, "utf8"), "deleted", `${signal}: deleted`);
+    assert.equal(exit, code, `${signal}: exits ${code}`);
+  }
+});

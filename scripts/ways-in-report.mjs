@@ -26,9 +26,9 @@ const PREFIX = 'ways in: ';
 const SUFFIX = ' broke';
 
 /** A row's result as the table says it: PASS, FAIL, or GitHub's word (cancelled, skipped) for the rest. A hosted row
- *  without its secrets passes having walked nothing: its job's `missing` output names what it lacked. */
+ *  that walked nothing (no secrets yet, or a pull request's run) passes: its job's `skip` output says why. */
 function said({ result, outputs } = {}, image) {
-  if (result === 'success' && outputs?.missing) return `not walked: no ${outputs.missing.trim().split(/\s+/).join(', ')}`;
+  if (result === 'success' && outputs?.skip) return `not walked: ${outputs.skip}`;
   if (result === 'success') return 'PASS';
   if (result === 'failure') return 'FAIL';
   if (result === 'skipped' && image !== 'success') return "not walked: main's image did not build";
