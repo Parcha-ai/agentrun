@@ -241,7 +241,8 @@ export async function composioSave<T extends { tools?: readonly { name: string }
         }
       }
     }
-    const stands: ComposioMade = { user, auth_config: authConfig ? { id: authConfig, made: madeConfig } : null, accounts };
+    // One the owner named is theirs (`named`): never recorded as made here, whoever made it (composio-made.ts).
+    const stands: ComposioMade = { user, auth_config: authConfig ? { id: authConfig, made: madeConfig, ...(ownConfig ? { named: true as const } : {}) } : null, accounts };
     url = composioAddress(address);
     // Saved as what it is, a Composio server of this toolkit: a template that needs the toolkit maps to it, whatever its
     // name. A slug no template can name (mcp:<toolkit>/<tool>: no `_`) is saved as a Composio server of no toolkit.

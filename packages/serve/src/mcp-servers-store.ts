@@ -18,7 +18,7 @@ import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./m
 import { credentialMark } from "./mcp-secret-writes.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
-import { type Cleanup, cleanupOf, composioMadeKey, type ComposioMade, droppedOf, madeToWrite, recordedMade, storedMade } from "./composio-made.js";
+import { type Cleanup, cleanupOf, composioMadeKey, type ComposioMade, droppedOf, madeToWrite, recordedMade, releasedOf, storedMade } from "./composio-made.js";
 import { COMPOSIO_USER, composioServerId } from "./composio-preset.js";
 import { mcpSourceKey, type RecordedRow, recordedForAnother, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, toolkitGiven } from "./mcp-sources.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
@@ -376,7 +376,12 @@ export class McpServersOverStore {
       // What it stands on at Composio: what the preset found and made, over what the server saved before over this row had
       // made. A row moved off Composio stands on nothing there: its delete removes nothing at Composio.
       if (made && stands) {
-        const others = (await this.composioRecords()).filter(([other]) => other !== name);
+        // An auth config the owner named (auth_config_id) is theirs from this save on: every other saved server's claim to
+        // have made it is let go first, so neither this record nor theirs, nor what they hand on, ever removes it.
+        const listed = (await this.composioRecords()).filter(([other]) => other !== name);
+        const released = stands.auth_config?.named ? releasedOf(stands.auth_config.id, listed) : [];
+        await this.handOver(listed, released);
+        const others = listed.map(([other, record, at]): [string, ComposioMade, number] => [other, released.find(([one]) => one === other)?.[1] ?? record, at]);
         const before = was ? recordedMade(await this.store.settings.get(composioMadeKey(name)), was.createdAt) : undefined;
         const record = madeToWrite(stands, before, others.map(([, other]) => other));
         await this.store.settings.put(composioMadeKey(name), storedMade(record, saved));

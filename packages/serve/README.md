@@ -2007,8 +2007,8 @@ user_id?, auth_config_id?, price_usd?}` makes and saves the server. When the too
 (default `agentrun`) has none active, the answer's `connect_url` is Composio's page to connect it; nothing here signs in.
 The server and its connect link are made against the toolkit's Composio-managed auth config (found, else made), or
 against `auth_config_id`, one you already have at Composio (your own OAuth app's, say): it is read first, and one Composio
-doesn't know, of another toolkit, or disabled is `422` under `auth_config_id` before anything is made; a save never
-deletes it. `price_usd` (0 to 100) is what each call costs you: every granted action is saved at that price, so a call is
+doesn't know, of another toolkit, or disabled is `422` under `auth_config_id` before anything is made. From that save on it is yours: no delete or later save
+removes it, even when AgentRun made it for this or another saved server. `price_usd` (0 to 100) is what each call costs you: every granted action is saved at that price, so a call is
 held under its run's cap and booked as the run's tool cost (its trace span's `usd`, the run's `cost.usd`), as any priced
 MCP tool's. Composio's server can leave
 out an action it was allowed (it did for `HACKERNEWS_GET_FRONTPAGE`), so the answer's `not_served` names any chosen

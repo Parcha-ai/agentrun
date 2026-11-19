@@ -176,3 +176,10 @@ test("an auth config another saved server made, once a server names it in auth_c
   assert.deepEqual(deleted, [mcpPath(s.composio.mcpIds[0]), "/api/v3/connected_accounts/ca_link_1", "/api/v3/connected_accounts/ca_link_2"]);
   assert.equal(s.composio.madeConfigs.github.length, 1, "the owner's auth config is still at Composio");
 });
+
+test("a save naming an auth config that fails after Composio made its server removes only what it made: the server, never the named config", async (t) => {
+  const s = await setup(t, { authConfigs: { github: [{ id: "ac_mine", is_composio_managed: false }] }, fail: { path: "/mcp/servers/generate", status: 400 } });
+  const refused = await save(s, "gh", { toolkit: "github", tools: ["add"], auth_config_id: "ac_mine" });
+  assert.equal(refused.status, 422, JSON.stringify(refused.body));
+  assert.deepEqual(deletesFrom(s.composio, 0), [mcpPath(s.composio.mcpId)], "the MCP server it made is removed, the owner's auth config kept");
+});
