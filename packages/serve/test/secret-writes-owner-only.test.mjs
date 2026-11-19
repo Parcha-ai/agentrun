@@ -8,7 +8,8 @@
 //   token's to remove;
 // - a sign-in's start is refused to the token, with no state cookie handed back;
 // - every operation on a secret's route (MCP servers, GitHub, sign-ins, tool keys, computers, the workspace, a trigger's
-//   secret) is in the one gate's registry, or said on purpose to write none, with why.
+//   secret) is in the one gate's registry, or said on purpose to write none, with why;
+// - every operation the gate can refuse to the token lists that 403 in the API document.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
@@ -153,3 +154,19 @@ test("every operation on a secret's route is in the one gate's registry, or said
 
 /** Whether an operation decides by its body (a predicate that says yes to some body): one with a request body. */
 const body = (op) => op.requestBody !== undefined;
+
+test("every operation the gate can refuse to the token documents that 403, so a client reading the API document expects it", () => {
+  const doc = openapiDocument(() => undefined);
+  // Registered only because its body's fields are marked secret: it keeps nothing, so the gate never refuses it.
+  const neverRefused = { previewMcpServer: { url: "https://mcp.example.com", auth: { type: "bearer", token: "not-a-secret" } } };
+  for (const [operation, sample] of Object.entries(neverRefused)) assert.equal(gate.writesSecret(operation, sample), false, `${operation} is never refused`);
+  const ops = new Map(Object.entries(doc.paths).flatMap(([path, item]) => Object.entries(item).map(([method, op]) => [op?.operationId, `${method.toUpperCase()} ${path}`])));
+  const undocumented = gate.registeredOperations()
+    .filter((operation) => !(operation in neverRefused))
+    .filter((operation) => {
+      const [method, path] = ops.get(operation).split(" ");
+      return !("403" in doc.paths[path][method.toLowerCase()].responses);
+    })
+    .map((operation) => `${ops.get(operation)} (${operation})`);
+  assert.deepEqual(undocumented, [], `secret writes whose 403 the document leaves out: ${undocumented.join(", ")}`);
+});

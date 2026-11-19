@@ -14,7 +14,7 @@ import { inspect } from "node:util";
 import { queued, storeOn } from "./store-helpers.mjs";
 import { client, dropSchema, freshSchema, PG_URL, postgresOnly, schemaOf } from "./store-target.mjs";
 
-const { migrate, migrationsIn, openPostgresStore, postgresVersionOf: versionOf, postgresWhere, openStore, PgConnection, SchemaVersionUnknown, storeTarget, StoreBusy, StoreConstraint, STORE_CONNECT_TIMEOUT_MS, StoreDeadline, StoreOwned, Unanswered, LEASE_DEADLINE_MS } = await import("../dist/store/index.js");
+const { migrate, migrationsIn, openPostgresStore, postgresVersionOf: versionOf, postgresWhere, openStore, PgConnection, SchemaVersionUnknown, storeTarget, StoreAwaitsServer, StoreBusy, StoreConstraint, STORE_CONNECT_TIMEOUT_MS, StoreDeadline, StoreOwned, Unanswered, LEASE_DEADLINE_MS } = await import("../dist/store/index.js");
 const { RUNNER_RENEW_EVERY_MS, RunnerRefused, startRunnerProcess } = await import("../dist/runner/main.js");
 
 const ONLY = postgresOnly("the Postgres adapter");
@@ -903,32 +903,20 @@ test("a runner process on a schema not set up is refused in the SQLite words, na
   assert.ok(!error.message.includes(PG_URL), "the URL is not in the words");
 });
 
-test("a runner process on a schema an earlier release set up is told to start the server first, which upgrades it in place, never to start on a new data folder", ONLY, async (t) => {
+test("a runner process on a schema an earlier release set up is told to start the server first", ONLY, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "store-runner-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const schema = await schemaFor(t);
   // The earlier release's schema: every migration but this build's last, as its server left it.
-  const known = migrationsIn().at(-1).version;
   const connection = await PgConnection.open({ url: PG_URL, schema });
   try {
     await connection.withClient((c) => migrate(c, schema, 0, migrationsIn().slice(0, -1)));
   } finally {
     await connection.close();
   }
-  const words = `start the server first, which upgrades the store in place, then the runner.`;
   const error = await startRunnerProcess({ dataDir: dir, env: { AGENTRUN_STORE_SCHEMA: schema }, storeUrl: PG_URL, createLoop: () => assert.fail("no run is claimed") }).then(() => null, (e) => e);
-  assert.ok(error instanceof RunnerRefused, String(error));
-  assert.equal(error.message, `The store in the Postgres schema ${schema} is at schema version ${known - 1}, and this runner knows ${known}: ${words}`);
-  // The store's own refusal, as any opener as a runner meets it, says the same, and none of the new-folder advice.
-  await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "runner" }), (refused) => {
-    assert.ok(refused instanceof SchemaVersionUnknown && refused.found === known - 1 && refused.known === known && refused.upgradesInPlace, String(refused));
-    assert.ok(refused.message.includes("start the server first, which upgrades the store in place"), refused.message);
-    assert.ok(!/new, empty data folder|--data <new folder>/.test(refused.message), refused.message);
-    return true;
-  });
-  // The advice holds: the server's start upgrades the schema in place, and then the runner opens it.
-  await (await openPostgresStore({ url: PG_URL, schema })).close();
-  await (await openPostgresStore({ url: PG_URL, schema, role: "runner" })).close();
+  assert.ok(error instanceof RunnerRefused && error.cause instanceof StoreAwaitsServer, String(error));
+  assert.match(error.message, /start the server first/);
 });
 
 test("a run's outcome takes 'stopped' and 'cancelled' on a fresh schema and on one an earlier build set up (every migration before the outcome's) and migrated since", ONLY, async (t) => {

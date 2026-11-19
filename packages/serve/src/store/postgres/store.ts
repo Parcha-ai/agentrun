@@ -1,7 +1,7 @@
 // The Store on Postgres: the same domain code as SQLite's (sqlite/store.ts storeOver) over a Postgres connection
 // (connection.ts) in the store's own schema (default "agentrun"). The server sets the schema up (migrate.ts) and holds the
 // owner lock, one server per schema; runners are many, set nothing up, and refuse a schema version they do not know.
-import { SchemaVersionUnknown, type Store, type StoreOwned, type StoreRole } from "../store.js";
+import { SchemaVersionUnknown, StoreAwaitsServer, type Store, type StoreOwned, type StoreRole } from "../store.js";
 import { backfillNativeCommandOwners } from '../native-command-owner.js';
 import { storeOver } from "../sqlite/store.js";
 import { PgConnection, SCHEMA_NAME } from "./connection.js";
@@ -56,7 +56,7 @@ export interface PostgresStoreOptions {
 /** Opens the store in `schema` on the Postgres at `url`. As the server (the default): takes the owner lock (StoreOwned when
  *  another server holds the schema) and applies the pending migrations. As a runner: sets nothing up, and warns when its
  *  clock is far from the database's. Either refuses a schema version this build does not know (SchemaVersionUnknown), a
- *  runner also a schema not set up yet. */
+ *  runner also a schema not set up yet, and one this build's server has yet to migrate (StoreAwaitsServer). */
 export async function openPostgresStore(options: PostgresStoreOptions): Promise<Store> {
   const schema = options.schema ?? DEFAULT_SCHEMA;
   if (!SCHEMA_NAME.test(schema)) throw new TypeError(`the store's schema is a lower-case name of letters, digits and underscores, not ${JSON.stringify(schema)}`);
@@ -82,9 +82,8 @@ export async function openPostgresStore(options: PostgresStoreOptions): Promise<
   });
   try {
     const found = await connection.withClient((client) => (role === "server" ? migrate(client, schema, now(), migrations) : versionOf(client, schema)));
-    // An earlier schema is one this release's server migrates in place (migrate takes every pending migration), so only a
-    // runner meets it here, and its way on is that server's start.
-    if (found !== known) throw new SchemaVersionUnknown(placeOf(schema), found, known, { upgradesInPlace: true });
+    if (role === "runner" && found !== null && found < known) throw new StoreAwaitsServer(`bring this store from version ${found} to ${known}`);
+    if (found !== known) throw new SchemaVersionUnknown(placeOf(schema), found, known);
     if(role==="server")await backfillNativeCommandOwners(connection);
     if (role === "runner" && options.warn) {
       const gap = now() - (await connection.clock());

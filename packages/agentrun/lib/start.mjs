@@ -318,7 +318,10 @@ export async function main(argv, env = process.env) {
   // and a flag starts the server, whose flags with values (--listen ADDR) follow.
   const first = argv.find((arg, i) => arg !== "--data" && !arg.startsWith("--data=") && argv[i - 1] !== "--data");
   if (NOUNS.has(words(argv)[0]) || (first !== undefined && !first.startsWith("-") && !SERVER_COMMANDS.includes(first))) return cli(argv, env);
-  if (argv.includes("--help") || argv.includes("-h")) return console.log(USAGE), 0;
+  // --help is this command's usage when it starts the server; a server command's --help is that command's, which the
+  // server prints (import --help names --from and --dry-run). remote-bridge, the connector's own process, has no usage of
+  // its own to print and never reads --help, so it keeps this one.
+  if (!(SERVER_COMMANDS.includes(first) && first !== "remote-bridge") && (argv.includes("--help") || argv.includes("-h"))) return console.log(USAGE), 0;
   if (process.platform === "win32") return console.error("AgentRun's server runs on macOS and Linux; on Windows, use WSL or its container."), 1;
   const launcher = installedServer();
   if (launcher === undefined) return console.error(`AgentRun's server (${SERVE_PACKAGE}) is not installed beside this command; run it as npx ${OWN_SPEC}.`), 1;

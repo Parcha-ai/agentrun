@@ -270,8 +270,14 @@ function fanBox(ctx: Ctx, node: Node, kids: Kid[]): Box {
   };
 }
 
-/** A file's name without its folder and extension, for a cell. */
-const shortName = (label: string) => label.replace(/^.*\//, "").replace(/\.(pdf|png|jpe?g|webp|gif|tiff?)$/i, "");
+/** A cell's name: a file's or a page's name without its folder and extension, and a label that is text as it is. A
+ *  label with a space is text unless it ends in a file's extension, so a sentence that names `/v2/events` keeps its
+ *  head. */
+const FILE_EXT = /\.(pdf|png|jpe?g|webp|gif|tiff?)$/i;
+const shortName = (label: string) => {
+  if (/\s/.test(label) && !FILE_EXT.test(label)) return label;
+  return label.replace(/^.*\//, "").replace(FILE_EXT, "") || label;
+};
 
 /** A named cell: the item's name on top, its outcome (or its state) and the probability behind it under. */
 function richCell(g: SVGElement, node: Node, it: ItemMark, x: number, y: number, picked: boolean) {
