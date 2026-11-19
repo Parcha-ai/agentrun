@@ -18,7 +18,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { acpPlatform, CURSOR_PIN, cursorAdapter } from '@parcha/agentrun-harness-acp';
-import { fakeRecipe, openSession, scratch, until } from './helpers.mjs';
+import { fakeEvents, fakeRecipe, openSession, scratch, until } from './helpers.mjs';
 
 const RECORD = fileURLToPath(new URL('./cursor-walk.json', import.meta.url));
 const sha = (text) => createHash('sha256').update(text).digest('hex');
@@ -54,7 +54,8 @@ export function traces(root, key) {
   return count;
 }
 
-/** The processes whose HOME is `home`: the agent the adapter started there and anything it started. */
+/** The processes whose HOME is `home`: the agent the adapter started there and anything it started. Read from /proc,
+ *  so Linux alone: the real walk's (Cursor is pinned for linux-x86_64 alone); the fake says its own pid. */
 function agentPids(home) {
   const pids = [];
   for (const name of readdirSync('/proc')) {
@@ -68,7 +69,7 @@ function agentPids(home) {
 
 /** The walk: a turn, a hard kill mid-turn, the close; the session folder counted after each. `words`: the two turns';
  *  `plant`: a path under HOME the key is written to after the first turn. */
-async function walk(t, { recipe, adapter, sessionsDir, key, env, words = ['Answer with the single word OK.', 'Write the numbers from 1 to 400, separated by spaces.'], plant, settle = 30_000 }) {
+async function walk(t, { recipe, adapter, sessionsDir, key, env, words = ['Answer with the single word OK.', 'Write the numbers from 1 to 400, separated by spaces.'], plant, settle = 30_000, pids: pidsOf = agentPids }) {
   const { session, events } = await openSession(t, recipe, { adapter, sessionsDir, options: { env } });
   const home = homeOf(sessionsDir);
   const at = {};
@@ -84,7 +85,7 @@ async function walk(t, { recipe, adapter, sessionsDir, key, env, words = ['Answe
   await session.send(words[1]);
   // Killed once the turn is under way (its first event in), or after `settle` ms: the fake's hanging model says nothing.
   await until(() => events.length > seen, 'the second turn under way', settle).catch(() => {});
-  const pids = agentPids(home);
+  const pids = pidsOf(home);
   assert.ok(pids.length > 0, 'the agent runs under its private HOME');
   for (const pid of pids) try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
   const killed = await session.turnEnd();
@@ -105,7 +106,10 @@ const KEY = 'fake-test-key-0123456789';
 const cursorLike = (dir, fake) => fakeRecipe(dir, { style: 'cursor', announce: 'late', writeAuth: true, script: [{ say: 'OK' }, { hang: true }], ...fake }, { keys: ['CURSOR_API_KEY'], credentials: ['.config/cursor/auth.json'], state: ['.fake-acp'] });
 const fakeWalk = (t, fake) => {
   const dir = scratch();
-  return walk(t, { recipe: cursorLike(dir, fake), sessionsDir: join(dir, 'sessions'), key: KEY, env: { PATH: process.env.PATH, CURSOR_API_KEY: KEY }, settle: 500 });
+  const recipe = cursorLike(dir, fake);
+  // The fake says its own pid at its start: no /proc, so the walk runs wherever the package's tests do.
+  const pids = () => fakeEvents(recipe).filter((e) => e.type === 'start').slice(-1).map((e) => e.pid);
+  return walk(t, { recipe, sessionsDir: join(dir, 'sessions'), key: KEY, env: { PATH: process.env.PATH, CURSOR_API_KEY: KEY }, settle: 500, pids });
 };
 
 for (const [what, leak] of [
@@ -145,7 +149,8 @@ test("the walk was run on the pin: cursor-walk.json names the digests CURSOR_PIN
 });
 
 const CURSOR = process.env.AGENTRUN_TEST_CURSOR;
-const live = !CURSOR ? 'AGENTRUN_TEST_CURSOR is not set: it names the folder holding the pinned Cursor\'s dist-package'
+const live = process.platform !== 'linux' ? 'Linux alone: Cursor is pinned for linux-x86_64, and the walk finds its processes in /proc'
+  : !CURSOR ? 'AGENTRUN_TEST_CURSOR is not set: it names the folder holding the pinned Cursor\'s dist-package'
   : !process.env.CURSOR_API_KEY ? 'CURSOR_API_KEY is not set: the walk runs on the owner\'s Cursor key'
   : process.env.AGENTRUN_TEST_CURSOR_LIVE !== '1' ? 'AGENTRUN_TEST_CURSOR_LIVE is not 1: the walk spends two short turns on the key\'s plan'
   : false;
