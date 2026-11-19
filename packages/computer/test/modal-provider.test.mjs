@@ -868,9 +868,10 @@ test("kind desktop on connect dial: the desktop's groups, no GPU, the window man
 	const { env } = rec.params();
 	assert.deepEqual(Object.keys(env).sort(), ["AGENTRUN_ATTACH_TOKEN", "AGENTRUN_ATTACH_URL", "AGENTRUN_DAEMON_SHA256", "AGENTRUN_DAEMON_URL", "AGENTRUN_INIT_ARGS", "DISPLAY"]);
 	assert.equal(env.DISPLAY, ":0");
-	// connect exec makes kind linux, as it always has: a desktop there is refused before any SDK call.
+	// connect exec makes kind linux, as it always has: a desktop there is refused before any SDK call, naming the connect
+	// its descriptor's desktop configuration takes.
 	for (const connect of [undefined, "exec"]) {
-		assert.throws(() => setup({ ...(connect ? { connect } : {}), kind: "desktop" }), /^Error: a Modal desktop is made on connect "dial" alone, from the box image, its X server started over the socket its machine dials: connect "exec" makes kind linux$/);
+		assert.throws(() => setup({ ...(connect ? { connect } : {}), kind: "desktop" }), /^Error: Modal gives a desktop computer on connect "dial" alone, not "exec"$/);
 	}
 	assert.equal(setup({ kind: "linux" }).provider.capabilities().kind, "linux");
 });

@@ -20,7 +20,7 @@
 // command there would run on the server itself. runShellOf reads it off a setting before anything starts (the tool
 // plane shows bash unavailable by it), and the claim's runTools takes the same rule over the computer it started.
 import { hostToolDefs, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
-import { type BrowserFeatures, type BrowserFile, type BrowserSpec, type ComputerClient, type ComputerSettingKind, configurationOf, connectOf, type GpuSpec, type Group, type HelloResult, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, mountsOf, type ProviderEntry, type Result, syncingClient } from "@parcha/agentrun-computer";
+import { type BrowserFeatures, type BrowserFile, type BrowserSpec, type ComputerClient, type ComputerSettingKind, configurationOf, connectOf, type GpuSpec, type Group, type HelloResult, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, mountsOf, type ProviderEntry, type Result, type SettingKindSpec, syncingClient } from "@parcha/agentrun-computer";
 import { type DockerDaemon, noDockerWords } from "../docker-daemon.js";
 import { gpuRefused } from "../gpu-words.js";
 import { recordedClient } from "../computer-calls.js";
@@ -49,12 +49,9 @@ export const noPrograms = <C extends { readonly kind: string; readonly exec?: bo
 /** The computer module's kind registry (src/kinds.ts), by its own names: the setting kinds, why a machine does not serve
  *  one (servingRefusals, whose words a refusal here carries), and the providers. */
 export type KindRegistry = {
-  readonly SETTING_KINDS: Readonly<Record<ComputerSettingKind, unknown>>;
+  readonly SETTING_KINDS: Readonly<Record<ComputerSettingKind, SettingKindSpec>>;
   servingRefusals(capabilities: KindCapabilities, kind: ComputerSettingKind): string[];
   readonly PROVIDERS: readonly ProviderEntry[];
-  /** A provider's own words for why it gives no computer of `kind`, where they say more than servingRefusals' (a paired
-   *  computer: its driver is what to update, attached-computers.ts withPaired); undefined, servingRefusals' words. */
-  readonly unservedWhy?: (entry: ProviderEntry, kind: ComputerSettingKind) => string | undefined;
 };
 
 /** A computer a provider started for the run: its ref, its computerd client and what it offers (sandbox, desktop,
@@ -414,12 +411,10 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
   // operator names its image, so the folder it holds is the one the start and the readiness check said.
   const entry = registry.PROVIDERS.find((one) => one.id === setting.provider);
   if (!entry) return { refused: `${JSON.stringify(setting.provider)} is no computer provider this server knows: pick ${pick}` };
-  // The configurations of the provider that serve the kind; none, and its descriptor's own why (unserved), else the
-  // registry's, by its closest one.
+  // The configurations of the provider that serve the kind; none, and its own why (unserved: its descriptor's, a paired
+  // computer's), else the registry's, by its closest one.
   const serving = servingOf(registry, entry, kind);
   if (serving.length === 0) {
-    const own = registry.unservedWhy?.(entry, kind);
-    if (own !== undefined) return { refused: `${own}, or pick ${pick}` };
     const unserved = entry.unserved?.[kind];
     const why = unserved !== undefined ? [unserved] : (entry.capabilities.map((one) => registry.servingRefusals(one, kind)).sort((a, b) => a.length - b.length)[0] ?? []);
     return { refused: `${entry.label} gives no ${kind} computer${why.length > 0 ? `: ${why.join("; ")}` : ""}. Pick ${pick}` };
