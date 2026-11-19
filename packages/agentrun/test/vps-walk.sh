@@ -116,6 +116,18 @@ said "$logs/2.log" "Kept the API token and the seal key in $dir/.env"
 [ "$(container)" = "$before" ] || die "the container was made again with nothing changed"
 healthy
 
+# docs/telemetry.md's opt-out is running the installer again with AGENTRUN_TELEMETRY=0. An earlier run that turned the
+# counts on left AGENTRUN_TELEMETRY=1 in .env (written here, so this server never starts with it): the 0 replaces it.
+step "2b. counts turned on in .env by an earlier run, then the installer again with AGENTRUN_TELEMETRY=0: .env says 0"
+sed -i 's/^AGENTRUN_TELEMETRY=.*/AGENTRUN_TELEMETRY=1/' "$dir/.env"
+[ "$(setting AGENTRUN_TELEMETRY)" = 1 ] || die "the walk could not set AGENTRUN_TELEMETRY=1 in .env"
+piped_install 600 "$logs/2b.log" --vps
+[ "$(setting AGENTRUN_TELEMETRY)" = 0 ] || die "running again with AGENTRUN_TELEMETRY=0 kept AGENTRUN_TELEMETRY=$(setting AGENTRUN_TELEMETRY) in .env: the opt-out did nothing"
+[ "$(grep -c '^AGENTRUN_TELEMETRY=' "$dir/.env")" = 1 ] || die ".env has more than one AGENTRUN_TELEMETRY line"
+[ "$(secrets)" = "$first" ] || die "the token or the seal key changed"
+healthy
+before=$(container)
+
 step "3. an upgrade${image[*]:+ to the image built from this checkout}, on the faux model: the same token, the data kept"
 if [ ${#image[@]} -gt 0 ]; then
   docker build -q -f "$repo/packages/serve/docker/Dockerfile" -t agentrun-vps:local "$repo" > /dev/null || die "the image did not build"
