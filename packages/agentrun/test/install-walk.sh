@@ -209,11 +209,17 @@ skill_line() {
 # The prompt's lines start with a literal ~/, which skill_line looks for as written: nothing here expands it.
 # shellcheck disable=SC2088
 first_run_walk() {
-  local t0 t_install t_model t_ready t_create t_run total local_model create start ready out nodebin served='' model_log
+  local t0 t_install t_model t_ready t_create t_run total local_model background pair create start ready out nodebin served='' model_log
   local_model=$(skill_line '~/.agentrun/bin/agentrun service install --env AGENT_MODEL_BASE_URL=http://localhost:11434/v1 ')
   local_model=${local_model//<tag>/walk-model}
-  grep -qF 'curl -fsSL https://agentrun.ai/install | AGENT_MODEL_API_KEY=none AGENT_MODEL_BASE_URL=http://localhost:11434/v1' "$here/../../docs/SKILL.md" ||
+  # The background start's variables, every one as the prompt writes them (its line wraps): what runs in front of sh here.
+  background=$(tr '\n' ' ' < "$here/../../docs/SKILL.md" | grep -o -m 1 'curl -fsSL https://agentrun.ai/install | [A-Z_]*=[^`]* sh`') ||
     die "docs/SKILL.md no longer puts the local model in front of sh for a background start"
+  background=${background#curl -fsSL https://agentrun.ai/install | }
+  background=${background% sh\`}
+  background=${background//<tag>/walk-model}
+  for pair in $background; do [[ $pair =~ ^[A-Z_]+=[^=]*$ ]] || die "the background start's line has $pair, not a VARIABLE=value"; done
+  [[ " $background " == *" AGENT_MODEL_API_KEY=none "* ]] || die "the background start's line sets no AGENT_MODEL_API_KEY=none: each run would be refused"
   create=$(skill_line "~/.agentrun/bin/agentrun agents create --body '{\"definition\":{\"id\":\"release-notes\"")
   start=$(skill_line '~/.agentrun/bin/agentrun runs start release-notes --wait ')
   if [[ " $* " == *" --tailscale "* ]]; then
@@ -242,11 +248,11 @@ first_run_walk() {
   for _ in $(seq 1 50); do grep -q 'walk model on' /tmp/walk-model.out && break; sleep 0.1; done
   grep -q 'walk model on' /tmp/walk-model.out || die "the walk model did not start: $(cat /tmp/walk-model.out)"
   if grep -q "so it runs in the background" /tmp/first-install.log; then
-    step "   Local model, in the background: agentrun stop, then the installer with the five in front of sh"
+    step "   Local model, in the background: agentrun stop, then the installer with $background in front of sh"
     "$agentrun" stop
     down 30
-    AGENT_MODEL_API_KEY=none AGENT_MODEL_BASE_URL=http://localhost:11434/v1 AGENT_MODEL_GATEWAY_IDS=bare AGENT_MODEL=walk-model AGENT_MODEL_PRICE=0,0,0 \
-      piped_install "$bar" /tmp/first-model.log "$@"
+    # shellcheck disable=SC2086 # the prompt's words, one VARIABLE=value each (checked above)
+    (for pair in $background; do export "${pair?}"; done; piped_install "$bar" /tmp/first-model.log "$@") || exit 1
   else
     step "   Local model, on the service: $local_model"
     bash -c "$local_model"
