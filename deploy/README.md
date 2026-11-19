@@ -148,7 +148,7 @@ GiB) is $6 a month ([pricing](https://www.digitalocean.com/pricing/droplets)). T
 ## On Kubernetes, with Helm
 
 ```sh
-helm install agentrun deploy/helm/agentrun --namespace agentrun --create-namespace
+helm install agentrun oci://ghcr.io/parcha-ai/charts/agentrun --namespace agentrun --create-namespace
 ```
 
 One pod, the server and its runner, on a 10 GiB volume, from the release's image; the token and seal key are made as a

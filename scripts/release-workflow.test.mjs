@@ -95,6 +95,26 @@ test('the server image is built natively per architecture from the start, pushed
   assert.match(tag.run, /--tag "\$IMAGE:\$RELEASE_TAG" --tag "\$IMAGE:beta"/, 'the release tag and beta, as before');
 });
 
+test('the Helm chart is pushed at the release\'s version once its image is tagged, with this run\'s token, and read back with none', () => {
+  const chart = jobs.chart;
+  assert.deepEqual(needs('chart'), ['image-release'], 'the image the chart installs is tagged first');
+  assert.equal(chart.if, jobs.publish.if);
+  assert.equal(chart.environment, undefined, 'no secret: this run\'s GITHUB_TOKEN, as image-release');
+  assert.deepEqual(chart.permissions, { contents: 'read', packages: 'write' });
+  assert.equal(chart.env.CHART, 'oci://ghcr.io/parcha-ai/charts');
+  pinned(chart.steps);
+  const checkout = chart.steps.find(step => /^actions\/checkout@/.test(step.uses ?? ''));
+  assert.equal(checkout.with.ref, '${{ inputs.tag }}');
+  assert.equal(checkout.with['persist-credentials'], false);
+  assert.ok(chart.steps.some(step => step.run === 'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"'), 'the checkout is the provenance commit');
+  const order = [/Chart\.yaml's \$field is/, /helm push "\$RUNNER_TEMP\/chart\/agentrun-\$\{RELEASE_TAG#v\}\.tgz" "\$CHART"/, /helm registry logout ghcr\.io/, /helm show chart "\$CHART\/agentrun" --version "\$\{RELEASE_TAG#v\}"/].map(pattern => stepAt('chart', pattern));
+  assert.ok(order.every(at => at >= 0) && order[0] < order[1] && order[1] === order[2] && order[2] < order[3], 'the version checked, pushed, logged out, then read back with no credentials');
+  const push = chart.steps[order[1]];
+  assert.equal(push.env.GH_TOKEN, '${{ secrets.GITHUB_TOKEN }}', 'only the push step holds the token');
+  assert.match(push.run, /--password-stdin/, 'never on a command line');
+  assert.equal(chart.steps.filter(step => JSON.stringify(step).includes('secrets.')).length, 1);
+});
+
 const raw = readFileSync(new URL('../.github/workflows/release.yml', import.meta.url), 'utf8');
 const stepAt = (job, pattern) => jobs[job].steps.findIndex(step => pattern.test(step.run ?? step.uses ?? ''));
 
@@ -110,7 +130,7 @@ test('the publish job keeps the changelog its fold wrote, right after the fold, 
 
 test('the GitHub release is published once every publish job passed, from the folded changelog, by the only job that may write the repository', () => {
   const release = jobs['github-release'];
-  assert.deepEqual(needs('github-release').sort(), ['box', 'image-release', 'publish', 'pypi'], 'after npm, PyPI, the server image and the box image');
+  assert.deepEqual(needs('github-release').sort(), ['box', 'chart', 'image-release', 'publish', 'pypi'], 'after npm, PyPI, the server image, the Helm chart and the box image');
   assert.equal(release.if, jobs.publish.if);
   assert.equal(release.environment, undefined, 'no secret: the approval was given to the jobs it waits for');
   assert.deepEqual(release.permissions, { contents: 'write' });
@@ -124,7 +144,8 @@ test('the GitHub release is published once every publish job passed, from the fo
   const fetched = release.steps[stepAt('github-release', /^actions\/download-artifact@/)];
   assert.equal(fetched.with.name, 'release-changelog', 'the fold\'s own output, not a second fold');
   const notes = release.steps[stepAt('github-release', /^node scripts\/release-notes\.mjs /)];
-  assert.match(notes.run, /--tag "\$RELEASE_TAG" --changelog "\$\{\{ runner\.temp \}\}\/changelog\/CHANGELOG\.md" --image "\$IMAGE:\$RELEASE_TAG" --platforms "\$PLATFORMS" --out "\$\{\{ runner\.temp \}\}\/notes\.md"/);
+  assert.match(notes.run, /--tag "\$RELEASE_TAG" --changelog "\$\{\{ runner\.temp \}\}\/changelog\/CHANGELOG\.md" --image "\$IMAGE:\$RELEASE_TAG" --platforms "\$PLATFORMS" --chart oci:\/\/ghcr\.io\/parcha-ai\/charts\/agentrun --out "\$\{\{ runner\.temp \}\}\/notes\.md"/);
+  assert.match(notes.run, new RegExp(`--chart ${jobs.chart.env.CHART.replace(/[./]/g, '\\$&')}/agentrun `), 'the chart the chart job pushed');
   assert.equal(fetched.with.path, '${{ runner.temp }}/changelog');
   assert.equal(release.env.IMAGE, jobs.image.env.IMAGE, 'the image the image job built');
   assert.equal(release.env.PLATFORMS, jobs.image.strategy.matrix.include.map(entry => entry.platform).join(','), 'its platforms, as the image job builds them');

@@ -4,9 +4,11 @@ One AgentRun server and its runner in one pod, on a 10 GiB volume, from the rele
 key.
 
 ```sh
-git clone --depth 1 https://github.com/Parcha-ai/agentrun && cd agentrun
-helm install agentrun deploy/helm/agentrun --namespace agentrun --create-namespace
+helm install agentrun oci://ghcr.io/parcha-ai/charts/agentrun --namespace agentrun --create-namespace
 ```
+
+Each release publishes the chart at its own version (`--version 0.1.0-beta.47`), installing that release's image. From a
+checkout, `helm install agentrun deploy/helm/agentrun` installs this one.
 
 Then open the console. The install's notes print the two commands: a port-forward, and the one that reads your token
 from the Secret. Set your password with the token on the first screen. Then Continue with ChatGPT, or add a model key

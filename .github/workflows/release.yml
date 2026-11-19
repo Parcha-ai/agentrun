@@ -446,13 +446,60 @@ jobs:
           E2B_API_KEY: ${{ secrets.E2B_API_KEY }}
         run: node packages/computer/box/build-e2b.mjs --image "$BOX_IMAGE" --public
 
+  # The Helm chart (deploy/helm/agentrun) as oci://ghcr.io/parcha-ai/charts/agentrun at the release's version, once the
+  # image it installs is tagged (image-release). The same GITHUB_TOKEN with packages: write as image-release, in this job
+  # alone: no environment and no secret. A re-run pushes the same version again. Anyone installs it without credentials,
+  # so the job ends by reading it back logged out: the first push makes the package private, and an org admin makes
+  # ghcr.io/parcha-ai/charts/agentrun public once (the package's settings), then re-runs this job.
+  chart:
+    needs: image-release
+    if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      CHART: oci://ghcr.io/parcha-ai/charts
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag }}
+          persist-credentials: false
+      - name: Match the checkout to the provenance commit
+        run: test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.1
+      - name: Package the chart at the release's version
+        run: |
+          version="${RELEASE_TAG#v}"
+          for field in version appVersion; do
+            have="$(sed -n "s/^$field: \"\{0,1\}\([^\"]*\)\"\{0,1\}$/\1/p" deploy/helm/agentrun/Chart.yaml)"
+            [ "$have" = "$version" ] || { echo "::error::deploy/helm/agentrun/Chart.yaml's $field is $have, not the release's $version" >&2; exit 1; }
+          done
+          helm lint deploy/helm/agentrun
+          helm package deploy/helm/agentrun --destination "$RUNNER_TEMP/chart"
+      - name: Push it
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          printf '%s' "$GH_TOKEN" | helm registry login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          helm push "$RUNNER_TEMP/chart/agentrun-${RELEASE_TAG#v}.tgz" "$CHART"
+          helm registry logout ghcr.io
+      - name: Anyone can install it
+        run: |
+          helm show chart "$CHART/agentrun" --version "${RELEASE_TAG#v}" \
+            || { echo "::error::$CHART/agentrun ${RELEASE_TAG#v} can't be read with no credentials: the package is private. An org admin makes ghcr.io/parcha-ai/charts/agentrun public once, in the package's settings, then re-runs this job." >&2; exit 1; }
+
   # The GitHub release, once everything it names is out: the npm packages (publish), the Python client (pypi), the server
-  # image (image-release), and the box image and template (box). Its notes are the version's CHANGELOG.md section as the
+  # image (image-release), the Helm chart (chart), and the box image and template (box). Its notes are the version's CHANGELOG.md section as the
   # publish job's fold left it (the release-changelog artifact), then the install lines (scripts/release-notes.mjs).
   # scripts/release-github.mjs publishes it on the existing tag, a prerelease for a beta: it never creates or moves a tag,
   # and stops, saying so, when the tag has a release already. The one job that writes to the repository.
   github-release:
-    needs: [publish, pypi, image-release, box]
+    needs: [publish, pypi, image-release, chart, box]
     if: github.repository == 'Parcha-ai/agentrun' && github.event.repository.private == false
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -477,7 +524,7 @@ jobs:
           name: release-changelog
           path: ${{ runner.temp }}/changelog
       - name: Write the notes
-        run: node scripts/release-notes.mjs --tag "$RELEASE_TAG" --changelog "${{ runner.temp }}/changelog/CHANGELOG.md" --image "$IMAGE:$RELEASE_TAG" --platforms "$PLATFORMS" --out "${{ runner.temp }}/notes.md"
+        run: node scripts/release-notes.mjs --tag "$RELEASE_TAG" --changelog "${{ runner.temp }}/changelog/CHANGELOG.md" --image "$IMAGE:$RELEASE_TAG" --platforms "$PLATFORMS" --chart oci://ghcr.io/parcha-ai/charts/agentrun --out "${{ runner.temp }}/notes.md"
       - name: Publish the release on its tag
         env:
           GH_TOKEN: ${{ github.token }}
