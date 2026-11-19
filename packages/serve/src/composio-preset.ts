@@ -8,6 +8,7 @@
 import { randomBytes } from "node:crypto";
 import type { Cleanup, ComposioMade, Made, Thing } from "./composio-made.js";
 import { ApiError, invalid, type InputIssue } from "./errors.js";
+import { priceValid } from "./mcp-probe.js";
 import { MCP_SERVER_NAME } from "./tool-names.js";
 import { isObject, type Json } from "./validate.js";
 
@@ -20,7 +21,20 @@ export const COMPOSIO_USER = "agentrun";
 /** A Composio toolkit's slug, as a save takes it once trimmed and lower-cased. */
 export const COMPOSIO_TOOLKIT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 const TOOLKIT = COMPOSIO_TOOLKIT;
-const USER_ID = /^[A-Za-z0-9._@-]{1,128}$/;
+/** A Composio user id, as a save's `user_id` and a run's binding (mcp_auth's composio_user_id) take it. */
+export const COMPOSIO_USER_ID = /^[A-Za-z0-9._@-]{1,128}$/;
+const USER_ID = COMPOSIO_USER_ID;
+/** The `user_id` a save names for a per-run server, reserved for that and never a Composio user: the server keeps no user
+ *  and no connected account, and each run names its own (mcp_auth.<server> = {composio_user_id, connected_account_id?}). */
+export const COMPOSIO_PER_RUN = "per_run";
+/** A Composio connected account's id, as a run's binding names one: Composio's are `ca_` and a short random id. At least
+ *  8 characters in all, so the run's redactors (which hold a value of 8 or more) hold every one. */
+export const COMPOSIO_ACCOUNT_ID = /^ca_[A-Za-z0-9_-]{5,64}$/;
+/** Where Composio's MCP address names the user and the connected account its calls run as. */
+const ADDRESS_USER = "user_id";
+const ADDRESS_ACCOUNT = "connected_account_id";
+/** A Composio auth config's id, as its dashboard and API show it (`ac_` and a nanoid). */
+export const COMPOSIO_AUTH_CONFIG_ID = /^ac_[A-Za-z0-9_-]{1,64}$/;
 const PAGE = 200;
 const MAX_PAGES = 10;
 const MAX_TOOLS = 500;
@@ -30,14 +44,15 @@ const WAIT_MS = 20_000;
 
 export type ComposioTool = { slug: string; name: string; description: string };
 /** A Composio call (asking): its JSON answer, or the refusal in words that name its step. */
-export type Ask = (step: string, method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body?: unknown, missing?: string) => Promise<Json>;
+export type Ask = (step: string, method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body?: unknown, missing?: string | InputIssue) => Promise<Json>;
 
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
 const issue = (field: string, reason: string, message: string): InputIssue => ({ field, reason, message });
 
 /** A Composio call as `key`: its JSON answer, or an error in words that name `step` and never the key nor a `sealed`
  *  value (a trigger's sealed config), and end with `outcome`, what the failure left (a save's: nothing was saved). A call
- *  with sealed values in play passes on none of Composio's words. */
+ *  with sealed values in play passes on none of Composio's words. Composio's 404 is `missing` when given: the words of a
+ *  toolkit it has not, or the refusal on another field. */
 export function asking(control: ComposioControl, key: string, signal: AbortSignal | undefined, outcome = "nothing was saved", sealed: readonly string[] = []): Ask {
   const base = (control.baseUrl ?? BASE).replace(/\/+$/, "");
   const send = control.fetch ?? fetch;
@@ -71,7 +86,7 @@ export function asking(control: ComposioControl, key: string, signal: AbortSigna
     }
     const said = isObject(json) && isObject(json.error) ? text(json.error.message) : isObject(json) ? text(json.message) : "";
     if (res.status === 401 || res.status === 403) throw invalid([issue("api_key", "refused", `Composio refused the API key while ${step}: check it in Composio's dashboard.`)]);
-    if (res.status === 404 && missing) throw invalid([issue("toolkit", "not_found", missing)]);
+    if (res.status === 404 && missing) throw invalid([typeof missing === "string" ? issue("toolkit", "not_found", missing) : missing]);
     if (res.status >= 400 && res.status < 500 && withheld) throw invalid([issue("body", "refused", `Composio refused the request while ${step} (HTTP ${res.status}): ${outcome}. Its answer is withheld because the request carried a sealed value.`)]);
     if (res.status >= 400 && res.status < 500) throw invalid([issue("body", "refused", `Composio refused the request while ${step} (${res.status})${said ? `: ${scrub(said)}` : ""}.`)]);
     throw new ApiError("upstream_failed", `Composio failed while ${step} (${res.status}): ${outcome}.`);
@@ -131,27 +146,60 @@ const likelySlug = (slug: string, slugs: readonly string[]): string | undefined 
 };
 
 /** The address Composio's generate answers, made one this server's client can use: the helper actions that connect an
- *  account left off, and the path ended in /mcp (Composio redirects the bare one, which the client refuses on purpose). */
-export function composioAddress(generated: string): string {
+ *  account left off, and the path ended in /mcp (Composio redirects the bare one, which the client refuses on purpose).
+ *  `perRun`: with no user and no connected account in it either, for each run to name its own (composioRunAddress). */
+export function composioAddress(generated: string, perRun = false): string {
   const url = new URL(generated);
   url.searchParams.delete("include_composio_helper_actions");
+  if (perRun) for (const name of [ADDRESS_USER, ADDRESS_ACCOUNT]) url.searchParams.delete(name);
   const path = url.pathname.replace(/\/+$/, "");
   url.pathname = path.endsWith("/mcp") ? path : `${path}/mcp`;
   return url.href;
 }
 
+/** The Composio user a per-run server's tools are listed as (its save, refresh, preview and an agent's save): Composio's
+ *  MCP endpoint refuses an address that names no user, its listing too, and any user lists the server's tools. Outside
+ *  COMPOSIO_USER_ID (the ~), so no save and no run's binding can name it: never stored, never used for a call. */
+export const COMPOSIO_LISTING_USER = "agentrun~tool-listing";
+
+/** The address a per-run Composio server's tools are listed at: its saved one (no user, no account) as
+ *  COMPOSIO_LISTING_USER. */
+export function composioListingAddress(saved: URL): URL {
+  const url = new URL(saved.href);
+  url.searchParams.set(ADDRESS_USER, COMPOSIO_LISTING_USER);
+  return url;
+}
+
+/** What a run's requests to a per-run Composio server add to its saved address: the Composio user and, when the run's
+ *  binding names one, the connected account its calls run as (Composio's MCP endpoint reads both from the query). */
+export const composioRunQuery = (binding: { readonly user_id: string; readonly connected_account_id?: string }): Record<string, string> =>
+  ({ [ADDRESS_USER]: binding.user_id, ...(binding.connected_account_id ? { [ADDRESS_ACCOUNT]: binding.connected_account_id } : {}) });
+
 /** PUT /settings/mcp-servers/{name}/composio: Composio makes the managed MCP server, `save` keeps it as a saved MCP server
- *  (`{url, auth}`: the key a sealed header), and a toolkit that needs the person's account says where to connect it.
- *  `save` gets what the server stands on there too (`stands`, composio-made.ts): the auth config found or made and the
- *  account found or started, each marked whether this save made it, for its delete to remove what was made. */
-export async function composioSave<T extends { tools?: readonly { name: string }[] }>(body: unknown, control: ComposioControl, save: (mcp: { url: string; auth: { type: "headers"; headers: Record<string, string> } }, made: { source: "composio"; toolkit: string | null }, stands: ComposioMade) => Promise<T>, name: string, signal?: AbortSignal, savedUrl?: () => Promise<string | undefined>): Promise<{ server: T; connect_url?: string; not_served?: string[] }> {
+ *  (`{url, auth}`: the key a sealed header; `prices`, each granted action at `price_usd` when the body names one), and a
+ *  toolkit that needs the person's account says where to connect it. The auth config is the body's `auth_config_id` (one
+ *  the owner has, a custom OAuth app's say: read first, and refused unless it is this toolkit's and enabled), else the
+ *  toolkit's Composio-managed one, found or made. `save` gets what the server stands on there too (`stands`,
+ *  composio-made.ts): the auth config found or made and the account found or started, each marked whether this save made
+ *  it, for its delete to remove what was made. */
+export async function composioSave<T extends { tools?: readonly { name: string }[] }>(body: unknown, control: ComposioControl, save: (mcp: { url: string; auth: { type: "headers"; headers: Record<string, string> }; prices?: Record<string, number> }, made: { source: "composio"; toolkit: string | null }, stands: ComposioMade) => Promise<T>, name: string, signal?: AbortSignal, savedUrl?: () => Promise<string | undefined>): Promise<{ server: T; connect_url?: string; not_served?: string[] }> {
   const { key, toolkit, rest } = head(body);
   const tools = Array.isArray(rest.tools) ? rest.tools : [];
   const user = rest.user_id === undefined ? COMPOSIO_USER : typeof rest.user_id === "string" ? rest.user_id : "";
+  const price = rest.price_usd;
+  const ownConfig = rest.auth_config_id === undefined ? undefined : typeof rest.auth_config_id === "string" ? rest.auth_config_id : "";
   const issues: InputIssue[] = [];
   if (!tools.length || tools.length > MAX_TOOLS || !tools.every((t) => typeof t === "string" && t && t.length <= MAX_SLUG)) issues.push(issue("tools", "invalid", `Send the slugs of the actions to grant: 1 to ${MAX_TOOLS} of them, each at most ${MAX_SLUG} characters.`));
-  if (!USER_ID.test(user)) issues.push(issue("user_id", "invalid", "A user_id is letters, digits and . _ @ - (at most 128)."));
+  if (!USER_ID.test(user)) issues.push(issue("user_id", "invalid", `A user_id is letters, digits and . _ @ - (at most 128), or "${COMPOSIO_PER_RUN}" for a server each run names its own account for.`));
+  if (price !== undefined && !priceValid(price)) issues.push(issue("price_usd", "invalid", "price_usd is what each call of the server's actions costs, in USD: a finite number, 0 or more."));
+  if (ownConfig !== undefined && !COMPOSIO_AUTH_CONFIG_ID.test(ownConfig)) issues.push(issue("auth_config_id", "invalid", "An auth_config_id is the id Composio shows for an auth config: ac_ then letters, digits, _ and - (at most 64 after ac_)."));
   if (issues.length) throw invalid(issues);
+  // A per-run server: no user, no account, no connect link here; each run names its own (mcp_auth).
+  const perRun = user === COMPOSIO_PER_RUN;
+  // Every granted action at the one price, saved as the server's prices: each call is held and booked as any priced MCP
+  // call (mcp-gateway.ts). None named: the server's prices as they stand, for the actions it still lists (a server saved
+  // with none: "not metered").
+  const prices = priceValid(price) ? Object.fromEntries([...new Set(tools as string[])].map((slug) => [slug, price])) : undefined;
   const ask = asking(control, key, signal);
   // What this save made at Composio. A failure removes it all again (the MCP server, the account its connect link started,
   // then the auth config), so a failed save leaves nothing it made in the person's account, and never removes what it
@@ -176,9 +224,18 @@ export async function composioSave<T extends { tools?: readonly { name: string }
       throw invalid([issue("tools", "not_found", `Composio's ${toolkit} toolkit has no action ${listed(names, "or")}: pick from its list (POST /settings/mcp-servers/composio/tools). Nothing was saved.`)]);
     }
     const noAuth = needsNoAuth(kit);
+    if (noAuth && ownConfig) throw invalid([issue("auth_config_id", "not_allowed", `Composio's ${toolkit} toolkit needs no account, so no auth config: send no auth_config_id. Nothing was saved.`)]);
     let authConfig: string | undefined;
     let madeConfig = false;
-    if (!noAuth) {
+    if (ownConfig) {
+      // The owner's own auth config (a custom OAuth app's): the server and its connect link are made against it, as it is.
+      // Read first, so one Composio doesn't know, of another toolkit, or disabled is refused before anything is made.
+      const config = await ask("reading the auth config", "GET", `/api/v3/auth_configs/${encodeURIComponent(ownConfig)}`, undefined, issue("auth_config_id", "not_found", `Composio has no auth config ${ownConfig} in this key's project: use the id its dashboard shows for one of the ${toolkit} toolkit's. Nothing was saved.`));
+      const of = isObject(config.toolkit) ? text(config.toolkit.slug).toLowerCase() : "";
+      if (of !== toolkit) throw invalid([issue("auth_config_id", "wrong_toolkit", `The auth config ${ownConfig} is ${of ? `the ${of} toolkit's` : "no toolkit's Composio names"}, not ${toolkit}'s: use one of ${toolkit}'s. Nothing was saved.`)]);
+      if (config.status === "DISABLED") throw invalid([issue("auth_config_id", "disabled", `The auth config ${ownConfig} is disabled in Composio: enable it there, or use another. Nothing was saved.`)]);
+      authConfig = ownConfig;
+    } else if (!noAuth) {
       const configs = await ask("finding the toolkit's auth config", "GET", `/api/v3/auth_configs?toolkit_slug=${encodeURIComponent(toolkit)}`);
       const managed = (Array.isArray(configs.items) ? configs.items : []).find((c) => isObject(c) && c.is_composio_managed === true && c.status !== "DISABLED" && text(c.id));
       authConfig = managed ? text((managed as Json).id) : undefined;
@@ -196,12 +253,14 @@ export async function composioSave<T extends { tools?: readonly { name: string }
     const id = text(made.id);
     if (!id) throw new ApiError("upstream_failed", "Composio made no MCP server: nothing was saved.");
     madeHere.push({ kind: "mcp", id });
-    const generated = await ask("making the MCP server's address", "POST", "/api/v3.1/mcp/servers/generate", { mcp_server_id: id, user_ids: [user], managed_auth_by_composio: true });
+    // A per-run server's address is generated as the default user's (the one answer shape known, user_ids_url), then
+    // saved with no user and no account in it (composioAddress): generating an address makes nothing at Composio.
+    const generated = await ask("making the MCP server's address", "POST", "/api/v3.1/mcp/servers/generate", { mcp_server_id: id, user_ids: [perRun ? COMPOSIO_USER : user], managed_auth_by_composio: true });
     const address = Array.isArray(generated.user_ids_url) ? text(generated.user_ids_url[0]) : "";
     if (!address) throw new ApiError("upstream_failed", "Composio gave no address for the MCP server: nothing was saved.");
     let connect: string | undefined;
     const accounts: Made[] = [];
-    if (authConfig) {
+    if (authConfig && !perRun) {
       // Only an account under this server's auth config serves it: one ACTIVE under another config (a custom one) doesn't.
       const listed = await ask("checking the connected account", "GET", `/api/v3/connected_accounts?user_ids=${encodeURIComponent(user)}&toolkit_slugs=${encodeURIComponent(toolkit)}&auth_config_ids=${encodeURIComponent(authConfig)}`);
       const active = (Array.isArray(listed.items) ? listed.items : []).find((a) => isObject(a) && a.status === "ACTIVE" && isObject(a.auth_config) && a.auth_config.id === authConfig);
@@ -217,14 +276,15 @@ export async function composioSave<T extends { tools?: readonly { name: string }
         }
       }
     }
-    const stands: ComposioMade = { user, auth_config: authConfig ? { id: authConfig, made: madeConfig } : null, accounts };
-    url = composioAddress(address);
+    // One the owner named is theirs (`named`): never recorded as made here, whoever made it (composio-made.ts).
+    const stands: ComposioMade = { user, auth_config: authConfig ? { id: authConfig, made: madeConfig, ...(ownConfig ? { named: true as const } : {}) } : null, accounts, ...(perRun ? { per_run: true as const } : {}) };
+    url = composioAddress(address, perRun);
     // Saved as what it is, a Composio server of this toolkit: a template that needs the toolkit maps to it, whatever its
     // name. A slug no template can name (mcp:<toolkit>/<tool>: no `_`) is saved as a Composio server of no toolkit.
     // Composio leaves out an action it does not serve, and a server that serves none of the picked ones lists no tools at
     // all: its MCP answers the listing "Method not found" (JSON-RPC -32601). Only that answer says "none served", in words
     // naming the picked actions; any other failure (no DNS, a timeout, an HTTP 500) stays the 424 it is.
-    const server = await save({ url, auth: { type: "headers", headers: { "x-api-key": key } } }, { source: "composio", toolkit: MCP_SERVER_NAME.test(toolkit) ? toolkit : null }, stands).catch((error: unknown) => {
+    const server = await save({ url, auth: { type: "headers", headers: { "x-api-key": key } }, ...(prices ? { prices } : {}) }, { source: "composio", toolkit: MCP_SERVER_NAME.test(toolkit) ? toolkit : null }, stands).catch((error: unknown) => {
       if (!(error instanceof ApiError) || error.code !== "upstream_failed" || error.extra.details?.rpc_code !== METHOD_NOT_FOUND) throw error;
       throw invalid([issue("tools", "not_served", `Composio's ${toolkit} server doesn't serve ${(tools as string[]).join(", ")}: pick another action.`)]);
     });

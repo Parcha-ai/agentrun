@@ -261,6 +261,10 @@ export interface components {
     }>;
   };
   CommitSha: string;
+  ComposioRunBinding: {
+    composio_user_id: string;
+    connected_account_id?: string;
+  };
   Cost: {
     usd: number | null;
     basis: "charge" | "estimate" | "reported" | "unpriced";
@@ -279,6 +283,7 @@ export interface components {
       unmetered?: number;
     };
     learning_usd?: number | null;
+    tools_usd?: number | null;
     all_in_usd?: number | null;
     plan?: {
       requests: number;
@@ -719,7 +724,7 @@ export interface components {
     model_key?: string;
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
-    }>;
+    } | components["ComposioRunBinding"]>;
   };
   MessageResult: {
     run_id: components["Id"];
@@ -956,6 +961,7 @@ export interface components {
     workflow?: {
       name: string | null;
       digest: string | null;
+      repick: "found" | "missed" | null;
     } | null;
   };
   RunCreate: {
@@ -967,7 +973,7 @@ export interface components {
     model_key?: string;
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
-    }>;
+    } | components["ComposioRunBinding"]>;
     labels?: Record<string, string>;
     workflow_first?: boolean;
     learning?: "use";
@@ -991,7 +997,7 @@ export interface components {
     model_key?: string;
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
-    }>;
+    } | components["ComposioRunBinding"]>;
     labels?: Record<string, string>;
     workflow_first?: boolean;
     learning?: "use";
@@ -1166,6 +1172,7 @@ export interface components {
     workflow?: {
       name: string | null;
       digest: string | null;
+      repick: "found" | "missed" | null;
     } | null;
   };
   SecretMeta: {
@@ -4923,6 +4930,8 @@ export interface operations {
       toolkit: string;
       tools: string[];
       user_id?: string;
+      auth_config_id?: string;
+      price_usd?: number;
     };
     answer: {
       server: {

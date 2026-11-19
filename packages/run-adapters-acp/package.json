@@ -1,7 +1,6 @@
 {
   "name": "@parcha/agentrun-harness-acp",
   "version": "0.1.0-beta.46",
-  "private": true,
   "description": "Any Agent Client Protocol agent as an AgentRun harness: the agent over stdio in a private HOME, the host's tools as one loopback MCP server, its permission asks through the host's gate, durable in AgentRun's own store.",
   "keywords": [
     "agentrun",
@@ -47,6 +46,10 @@
     "@agentclientprotocol/sdk": "2.7.0",
     "@parcha/agentrun-kernel": "0.1.0-beta.46",
     "zod": "4.6.6"
+  },
+  "publishConfig": {
+    "access": "public",
+    "tag": "beta"
   },
   "repository": {
     "type": "git",

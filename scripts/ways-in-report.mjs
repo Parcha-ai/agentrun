@@ -19,12 +19,16 @@ export const ROWS = [
   { job: 'helm', name: 'Helm', walks: "main's chart and image on kind: install, first run, upgrade, uninstall (helm-walk.yml)" },
   { job: 'coolify', name: 'Coolify', walks: "main's template and image on Coolify: deploy, first run and its page in the console, remove (selfhost-walk.yml)" },
   { job: 'dokploy', name: 'Dokploy', walks: "main's template and image on Dokploy: deploy, first run and its page in the console, remove (selfhost-walk.yml)" },
+  { job: 'railway-hosted', name: 'Railway (hosted)', walks: "the README's Deploy on Railway template as published, on Railway: deploy, setup with the token, a first run on a capped key, deleted (deploy/railway/publish-and-walk.sh --walk)" },
+  { job: 'render-hosted', name: 'Render (hosted)', walks: "render.yaml's service as the Render button makes it, on Render: deploy, setup with the token, a first run on a capped key, deleted (deploy/render/walk.mjs)" },
 ];
 const PREFIX = 'ways in: ';
 const SUFFIX = ' broke';
 
-/** A row's result as the table says it: PASS, FAIL, or GitHub's word (cancelled, skipped) for the rest. */
-function said(result, image) {
+/** A row's result as the table says it: PASS, FAIL, or GitHub's word (cancelled, skipped) for the rest. A hosted row
+ *  that walked nothing (no secrets yet, or a pull request's run) passes: its job's `skip` output says why. */
+function said({ result, outputs } = {}, image) {
+  if (result === 'success' && outputs?.skip) return `not walked: ${outputs.skip}`;
   if (result === 'success') return 'PASS';
   if (result === 'failure') return 'FAIL';
   if (result === 'skipped' && image !== 'success') return "not walked: main's image did not build";
@@ -41,7 +45,7 @@ export function summarize(needs, reports, runUrl) {
     '',
     '| way in | walks | result |',
     '| --- | --- | --- |',
-    ...ROWS.map(({ job, name, walks }) => `| ${name} | ${walks} | ${said(needs[job]?.result, needs.image?.result)} |`),
+    ...ROWS.map(({ job, name, walks }) => `| ${name} | ${walks} | ${said(needs[job], needs.image?.result)} |`),
   ];
   for (const { job, name } of ROWS) if (reports[job]) lines.push('', `### ${name}`, '', reports[job].trim());
   return { broken, title: broken.length ? `${PREFIX}${broken.join(', ')}${SUFFIX}` : undefined, table: `${lines.join('\n')}\n` };

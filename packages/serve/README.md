@@ -2024,15 +2024,50 @@ preset: you give your Composio API key, a toolkit (`github`, `slack`...), the ac
 toolkit's list) and a server name, and the server has Composio make a managed MCP server for them, then saves it as an
 ordinary MCP server with the key sealed as an `x-api-key` header. `POST /v2/settings/mcp-servers/composio/tools`
 `{api_key, toolkit}` lists the actions; `PUT /v2/settings/mcp-servers/{name}/composio` `{api_key, toolkit, tools,
-user_id?}` makes and saves the server. When the toolkit needs your account and `user_id` (default `agentrun`) has none
-active, the answer's `connect_url` is Composio's page to connect it; nothing here signs in. Composio's server can leave
-out an action it was allowed (it did for `HACKERNEWS_GET_FRONTPAGE`), so the answer's `not_served` names any chosen
-action the saved server doesn't list. Both routes are the owner's
-session alone, and a saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are,
-"not metered" until you price them. Composio's own meta tools stay refused, and the helper actions that connect an
-account are left off the server's address. Deleting the server in Settings deletes what its save made in Composio too, with the saved key: the Composio MCP server, the connected account its connect link started (the link with it) and the auth config it made (Composio's "already gone" is fine). What another saved server uses is kept until the last of them goes, and what was there before the save (an auth config or account you had) is never deleted. The `DELETE` answers `200 {deleted: true, composio: {removed, note}}`: the note says what it removed, what it kept and why, and, when Composio refuses or does not answer, what is left to remove in Composio yourself (`removed: false`; the server is still forgotten here). The console shows it. A save that fails removes in Composio what it made there and never what it found, and its error names what is left when Composio refuses that too (a 422 on a field says it in `details.composio` as well). A save over a preset server removes, once it is saved, the Composio MCP server its earlier save made, and what that save made and the new one no longer stands on (the account of another `user_id`, the auth config of another toolkit), with the key it was made with, unless another saved server uses it, and answers `composio: {removed, note}` saying so. An ordinary `PUT` that moves a preset server to another address makes it another service's server: it removes what the preset made for it in Composio as its delete would, and answers `composio` too. While Composio triggers use the server, that move, and a preset save over it as another `user_id` or auth config, are refused as its delete is (`409 composio_in_use`, naming them). Preset saves and MCP server deletes run one at a time, so a delete never removes what a save in progress reuses; an ordinary save of a preset server lists its tools at once and takes its turn only to write the server and clean up.
+user_id?, auth_config_id?, price_usd?}` makes and saves the server. When the toolkit needs your account and `user_id`
+(default `agentrun`) has none active, the answer's `connect_url` is Composio's page to connect it; nothing here signs
+in. The server and its connect link are made against the toolkit's Composio-managed auth config (found, else made), or
+against `auth_config_id`, one you already have at Composio (your own OAuth app's, say): it is read first, and one
+Composio doesn't know, of another toolkit, or disabled is `422` under `auth_config_id` before anything is made. From
+that save on it is yours: no delete or later save removes it, even when AgentRun made it for this or another saved
+server. `price_usd` (0 or more, as a `prices` value) is what each call costs you: every granted action is saved at that
+price, so a call is held under its run's cap and booked as the run's tool cost (its trace span's `usd`, the run's
+`cost.usd`), as any priced MCP tool's. A re-save that names no price keeps the server's prices for the actions it still
+lists. Composio's server can leave out an action it was allowed (it did for `HACKERNEWS_GET_FRONTPAGE`), so the answer's
+`not_served` names any chosen action the saved server doesn't list. Both routes are the owner's session alone, and a
+saved Composio server is gated, approved and shown on the Timeline as any MCP server's tools are, "not metered" until
+you price them (`price_usd`, or the server's `prices`). Composio's own meta tools stay refused, and the helper actions
+that connect an account are left off the server's address. Deleting the server in Settings deletes what its save made in Composio too, with the saved key: the Composio MCP server, the connected account its connect link started (the link with it) and the auth config it made (Composio's "already gone" is fine). What another saved server uses is kept until the last of them goes, and what was there before the save (an auth config or account you had) is never deleted. The `DELETE` answers `200 {deleted: true, composio: {removed, note}}`: the note says what it removed, what it kept and why, and, when Composio refuses or does not answer, what is left to remove in Composio yourself (`removed: false`; the server is still forgotten here). The console shows it. A save that fails removes in Composio what it made there and never what it found, and its error names what is left when Composio refuses that too (a 422 on a field says it in `details.composio` as well). A save over a preset server removes, once it is saved, the Composio MCP server its earlier save made, and what that save made and the new one no longer stands on (the account of another `user_id`, the auth config of another toolkit), with the key it was made with, unless another saved server uses it, and answers `composio: {removed, note}` saying so. An ordinary `PUT` that moves a preset server to another address makes it another service's server: it removes what the preset made for it in Composio as its delete would, and answers `composio` too. While Composio triggers use the server, that move, and a preset save over it as another `user_id` or auth config, are refused as its delete is (`409 composio_in_use`, naming them). Preset saves and MCP server deletes run one at a time, so a delete never removes what a save in progress reuses; an ordinary save of a preset server lists its tools at once and takes its turn only to write the server and clean up.
 [Connect Composio tools and triggers](../../docs/tutorials/composio.md) walks through the preset and a Composio
 trigger in the console, with each step's API call.
+
+#### One Composio server, an account per run
+
+A preset server is saved for one Composio user. To let each run act as its own person's account instead, save it with
+`user_id: "per_run"` (a word reserved for this, never a Composio user id): the server keeps no user and no connected
+account in its address, looks up no account and makes no connect link. Composio refuses an address that names no user, even to list its tools, so
+the save, a refresh, a preview and an agent's save list them as `agentrun~tool-listing`, a user no save or run can name,
+never stored and never used for a call. Each run then names the account its calls of that server run as, in `mcp_auth`
+on its start or on a message:
+
+```sh
+curl -X POST "$BASE/v2/agents/$AGENT/runs" -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"input": {"content": "..."}, "mcp_auth": {"mail": {"composio_user_id": "user-1234", "connected_account_id": "ca_abc123"}}}'
+```
+
+`composio_user_id` is a Composio user id; `connected_account_id`, optional, is one of that user's connected accounts
+(`ca_...`), and without it Composio picks the user's account for the toolkit. Each request to the server carries that
+user and account, the Composio key staying the server's own. The binding is kept as a `per_run` server's headers are:
+sealed into the run's launch, erased by the write that ends the run, never on the server's row, the run's view, its
+timeline, its trace or a log line, and its values are cut from whatever the run shows. The binding's ids are held by
+the run's redactors as any secret of 8 characters or more; a shorter Composio user id is an identifier, not a
+credential, and a conversation can still quote it, but no row, journal entry, timeline item or log line carries it as a
+field (an account id is always 8 or more: `ca_` and 5 to 64 characters). A message's binding replaces
+the run's for the turn it starts. A run that names no account has its calls of the server answered, unsent, that it
+was handed none, so a per-run server never calls as a default account. A malformed user or account is `422
+input_invalid` at `mcp_auth.<server>.composio_user_id` or `.connected_account_id`; headers for such a server, or a
+binding for any other server, are `422` at `mcp_auth.<server>`, and no run starts. A per-run server makes no Composio
+trigger: a trigger runs as one account. A server saved for one user before this mode keeps calling as that user.
 
 What can go wrong, told apart:
 
@@ -2603,8 +2638,8 @@ A string that is an address carrying a credential, in any scheme (`https`, `post
 (`token`, `api_key`, `access_token`, `sig`) that has a value. An address with none stays as it is; one whose user part
 holds no secret (`ssh://git@host`) is sealed all the same. A field the event's schema marks with `format: "password"` or
 `writeOnly: true` is sealed whatever its name; the create reads the event's schema from Composio for this. A create with
-such a value below the config's top level is refused `422`, naming it. For example, HubSpot's deal-stage event takes
-`{app_id, developer_api_key}`. Composio's trigger schemas rarely mark a field secret, so the name mostly decides. A
+such a value below the config's top level is refused `422`, naming it.
+Composio's trigger schemas rarely mark a field secret, so the name mostly decides. A
 number is sealed as its decimal text and stays a number in what Composio gets; a run's output is cut of that text when
 it is 8 characters or more, as a string's is. The value is kept in the composio source's sealed settings, next to the subscription's
 secret. Composio gets it once, in the instance's upsert. Every answer has `"[sealed]"` in its place, and
@@ -3730,6 +3765,14 @@ and says how its figure was reached.
   and do not change it. A native, SDK or imported run's figure is its harness's own, an `estimate`; so is an imported
   session's catalog estimate where its source priced none ([importing your sessions](#importing-your-sessions)). LiteLLM writes no
   cost into a streamed answer's headers, so a run whose answers stream through LiteLLM reads `estimate`.
+- `tools_usd` (on `GET /runs/{id}` alone, `toolsusd/1`): the part of `usd` its paid tool calls cost (monid's endpoints,
+  MCP tools with a saved price, Parallel behind `web_search` and `web_fetch`, browser time), as the run's ledger booked
+  them, rounded as `usd` is. It is inside `usd`, never added to it: `usd` less `tools_usd` is what its model requests and
+  decisions cost. A paid call in a learning run's end-of-run turn is learning's (in `learning_usd`), never in
+  `tools_usd`. 0 when it made no paid call. Null while a paid call's charge is unknown (as `usd` is then); while the run
+  is at work (until it ended, stopped or failed); for a learning run a follow-up opened again, whose `usd` is what its
+  first round had cost; and for an imported, native or SDK run, whose `usd` is its import's or its harness's own figure
+  and whose tool calls the server never books. Each call's own charge is its span's `usd` on `GET /runs/{id}/trace`.
 - `GET /stats` (`cost.basis`) and `GET /usage` (`basis`) say the same words over the runs they sum: `estimate` when any
   run's is, else `reported` when any run's is, else `unpriced`. A run whose end stored no basis (one that ended before
   this, or a workflow run: its run read still says its basis from its booking) counts as `estimate` when it cost anything.

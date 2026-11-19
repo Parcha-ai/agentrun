@@ -90,6 +90,8 @@ for(const runtime of ['claude-code','codex'])test(`${runtime} HTTP cancellation 
  const row=await reader.runs.get(run);const {entries}=await journalRecords(reader.readJournal(run),BACKGROUND_CONTEXT);
  assert.equal(row.outcome,'cancelled');assert.equal(row.metrics.output,4,'reported usage survives the stop');
  assert.equal(row.costUsd,runtime==='codex'?null:0.25);
+ // A native run's paid tool calls are its harness's own, never booked here: what they cost is unknown (null), never $0.
+ const read=(await api('GET',`/runs/${run}`)).body;assert.equal(read.cost.tools_usd,null,`a native run's tools_usd is unknown: ${JSON.stringify(read.cost)}`);
  const events=entries.filter(e=>[KINDS.callStart,KINDS.callEnd,'agentrun.native.usage',KINDS.end].includes(e.kind));
  assert.deepEqual(events.map(e=>e.kind),[KINDS.callStart,KINDS.callEnd,'agentrun.native.usage',KINDS.end]);
  assert.equal(events[1].data.output,'ready');assert.equal(events[2].data.usage.output_tokens,4);

@@ -34,6 +34,7 @@ import { defineTool, ROOT_CONVERSATION_ID, type ToolRegistration } from "@earend
 import { registerLabel, registerOutcome } from "./timeline/index.js";
 import { LEARNED_NODES, LEARNED_NODES_MAX, type LearnedEnded, type LearnedNode, type LoopRow } from "./learned-nodes.js";
 import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";
+import { repickLabels } from "./learn/check.js";
 import { decisionsAsked, deniedDecisionWords } from "./learn/workflow-draft.js";
 import { DEFAULT_DECISION_PROVIDER } from "./decisions.js";
 import { type LearnedWorkflow, workflowLine } from "./learning.js";
@@ -413,6 +414,8 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   const problems = draftProblems(dsl, flow.workflow, tools, gated, deniedBy, decisionsOf(run, dsl, flow.workflow));
   if (problems.length) return refuse(problems.map(({ detail }) => detail).join("; "));
   const doc = JSON.parse(flow.workflow);
+  // Its quote re-pick loops (check.ts repickLabels): their exits are the run's re-picks (LoopRow `repick`).
+  const repickAt = repickLabels(doc);
   // What a node answered the first time this call ran it, in every rerun of the call (`nested.memo`, by `key`): a rerun
   // after a park or a crash goes on from the same answers, so its MCP calls are asked with the arguments a person saw,
   // and never does a node's work again: `work` is called only while no answer is recorded, so a model's request or a paid
@@ -519,7 +522,7 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   const onEvent = (event: { type: string; label: string; detail?: unknown; executionPath?: string }) => {
     if (event.type === "loop.exited") {
       const detail = (event.detail ?? {}) as { reason?: unknown; iterations?: unknown };
-      if (typeof detail.iterations === "number") loops.push({ node: String(event.label), iterations: detail.iterations, met: detail.reason === "condition_met" });
+      if (typeof detail.iterations === "number") loops.push({ node: String(event.label), iterations: detail.iterations, met: detail.reason === "condition_met", ...(repickAt.has(String(event.label)) ? { repick: true as const } : {}) });
       return;
     }
     if (event.type !== "node.end" || nodes.length >= LEARNED_NODES_MAX) return;
