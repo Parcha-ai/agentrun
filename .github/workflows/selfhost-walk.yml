@@ -1,0 +1,56 @@
+name: Self-host walk
+
+# Runs deploy/selfhost/walk.sh for Coolify and for Dokploy, each on a VM of its own. Not a required check.
+
+on:
+  pull_request:
+    paths:
+      - 'deploy/coolify/**'
+      - 'deploy/dokploy/**'
+      - 'deploy/selfhost/**'
+      - 'deploy/walk/api.mjs'
+      - 'deploy/walk/faux-steps.mjs'
+      - 'deploy/walk/rows.sh'
+      - '.github/workflows/selfhost-walk.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/coolify/**'
+      - 'deploy/dokploy/**'
+      - 'deploy/selfhost/**'
+      - 'deploy/walk/api.mjs'
+      - 'deploy/walk/faux-steps.mjs'
+      - 'deploy/walk/rows.sh'
+      - '.github/workflows/selfhost-walk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: selfhost-walk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  walk:
+    name: ${{ matrix.platform }}, template to first run to removed
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [coolify, dokploy]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      # overlay.mjs's yaml.
+      - run: npm ci --ignore-scripts
+      - name: Walk
+        run: REPORT="$RUNNER_TEMP/selfhost-walk.md" sh deploy/selfhost/walk.sh "${{ matrix.platform }}"
+      - name: Report
+        if: always()
+        run: '[ ! -f "$RUNNER_TEMP/selfhost-walk.md" ] || cat "$RUNNER_TEMP/selfhost-walk.md" >> "$GITHUB_STEP_SUMMARY"'
