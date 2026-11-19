@@ -8,7 +8,7 @@
 //   RENDER_API_KEY=<api key> OPENROUTER_API_KEY=<key> node deploy/render/walk.mjs --owner "<workspace name>"
 // REPORT=<file> puts the report in that file too. Exits 0 on PASS. RENDER_API_KEY, OPENROUTER_API_KEY, AGENTRUN_TOKEN,
 // AGENTRUN_SEAL_KEY and the session cookie are never printed. Render bills by the second: a walk costs about $0.001.
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { parse } from "yaml";
@@ -33,6 +33,26 @@ export function serviceRequest(blueprint, { ownerId, name, generated }) {
     envVars,
     serviceDetails: { runtime: "image", plan: svc.plan, numInstances: svc.numInstances, healthCheckPath: svc.healthCheckPath, disk: { name: svc.disk.name, mountPath: svc.disk.mountPath, sizeGB: svc.disk.sizeGB } },
   };
+}
+
+/** A request to the service through Render's edge, which answers 502, 503 or 504 itself, not in JSON, while a new deploy
+ *  takes its traffic (a 502 came 3 s after the health check passed). Those are tried again every waitMs until forMs is
+ *  up; any other answer, the server's JSON 503 included, is returned as it is, so a refusal is never sent twice. A POST
+ *  goes under one Idempotency-Key for all its sends: a create the server made before the edge failed is replayed, not
+ *  made again (setup takes no key; a second setup is refused, and the walk fails on it). Every send, and the wait for
+ *  its answer, ends by the deadline. `retried.n` counts the edge's answers. */
+export async function throughEdge(url, init, { fetch: send = fetch, waitMs = 3_000, forMs = 60_000, retried = { n: 0 } } = {}) {
+  const end = Date.now() + forMs;
+  const headers = new Headers(init?.headers);
+  if (init?.method === "POST" && !headers.has("idempotency-key")) headers.set("idempotency-key", randomUUID());
+  for (;;) {
+    const response = await send(url, { ...init, headers, signal: AbortSignal.timeout(Math.max(1, end - Date.now())) });
+    const fromEdge = [502, 503, 504].includes(response.status) && !/json/i.test(response.headers.get("content-type") ?? "");
+    if (!fromEdge || Date.now() + waitMs >= end) return response;
+    await response.body?.cancel().catch(() => {});
+    retried.n++;
+    await new Promise((r) => setTimeout(r, waitMs));
+  }
 }
 
 async function main() {
@@ -115,24 +135,27 @@ async function main() {
     t.healthy = Date.now();
     row("healthy", "PASS", `GET ${base}/v2/health: 200 ${JSON.stringify(health)}, ${since(t.healthy)}`);
 
-    const page = await fetch(`${base}/`, { headers: { accept: "text/html" } });
+    // From here on, every request to the service goes through the edge's retries (throughEdge).
+    const edge = { n: 0 };
+    const atService = (url, init) => throughEdge(url, init, { retried: edge });
+    const page = await atService(`${base}/`, { headers: { accept: "text/html" } });
     if (page.status !== 200 || !/text\/html/.test(page.headers.get("content-type") ?? "")) throw new Error(`GET ${base}/ answered ${page.status} ${page.headers.get("content-type")}, not the console`);
-    const session = await (await fetch(`${base}/v2/auth/session`)).json();
+    const session = await (await atService(`${base}/v2/auth/session`)).json();
     if (session.password_set !== false || session.setup_code !== true) throw new Error(`the first visit does not ask for the setup code: ${JSON.stringify(session)}`);
     row("first visit asks for the setup code", "PASS", `GET / is the console; GET /v2/auth/session: ${JSON.stringify(session)}`);
-    const setup = await fetch(`${base}/v2/setup`, { method: "POST", headers: { "content-type": "application/json", origin: base }, body: JSON.stringify({ code: token, password: randomBytes(18).toString("base64url") }) });
+    const setup = await atService(`${base}/v2/setup`, { method: "POST", headers: { "content-type": "application/json", origin: base }, body: JSON.stringify({ code: token, password: randomBytes(18).toString("base64url") }) });
     const signedIn = await setup.json().catch(() => ({}));
     if (setup.status !== 201 || signedIn.signed_in !== true) throw new Error(`POST /v2/setup with AGENTRUN_TOKEN as the code answered ${setup.status} ${JSON.stringify(signedIn)}`);
     const cookie = (setup.headers.get("set-cookie") ?? "").split(";")[0];
     t.setUp = Date.now();
-    row("token works as the setup code", "PASS", `POST /v2/setup: 201, signed in (session cookie not shown), ${since(t.setUp)}`);
+    row("token works as the setup code", "PASS", `POST /v2/setup: 201, signed in (session cookie not shown), ${since(t.setUp)}${edge.n ? `; the Render edge answered 502, 503 or 504 ${edge.n} time(s) first, tried again` : ""}`);
 
-    const saved = await fetch(`${base}/v2/settings/tool-keys/openrouter`, { method: "PUT", headers: { cookie, origin: base, "content-type": "application/json" }, body: JSON.stringify({ values: { OPENROUTER_API_KEY: orKey } }) });
+    const saved = await atService(`${base}/v2/settings/tool-keys/openrouter`, { method: "PUT", headers: { cookie, origin: base, "content-type": "application/json" }, body: JSON.stringify({ values: { OPENROUTER_API_KEY: orKey } }) });
     if (saved.status !== 204) throw new Error(`PUT /v2/settings/tool-keys/openrouter answered ${saved.status}: ${(await saved.text()).slice(0, 300)}`);
     row("model key saved", "PASS", "OPENROUTER_API_KEY saved in Settings with the owner's session: 204 (value not shown)");
 
     const api = async (method, path, payload) => {
-      const r = await fetch(`${base}/v2${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, ...(payload ? { body: JSON.stringify(payload) } : {}) });
+      const r = await atService(`${base}/v2${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, ...(payload ? { body: JSON.stringify(payload) } : {}) });
       const got = await r.json().catch(() => ({}));
       if (r.status >= 300) throw new Error(`${method} /v2${path} answered ${r.status}: ${got.error?.message ?? JSON.stringify(got).slice(0, 300)}`);
       return got;
