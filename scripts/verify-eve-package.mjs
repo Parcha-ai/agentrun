@@ -37,17 +37,22 @@ export function runStep(command, args, { cwd, env, timeout = 180_000, maxBuffer 
     const keptBytes = { stdout: 0, stderr: 0 };
     const written = { stdout: 0, stderr: 0 };
     let timedOut = false; let over = ''; let killer; let spawnError; let settled = false;
-    const child = spawn(command, args, { cwd, env, detached: true, stdio: 'pipe' });
+    // Listen before the spawn: a signal that lands while the step starts then waits for the event loop, after the spawn.
+    // SIGKILL at once, not stop()'s grace: the caller removes the consumer folder next, so nothing a step tidies survives.
+    let stoppedBy; let child;
+    const cancel = signal => { stoppedBy = signal; if (child?.pid !== undefined) signalGroup(child.pid, 'SIGKILL'); };
+    process.once('SIGINT', cancel).once('SIGTERM', cancel);
+    try { child = spawn(command, args, { cwd, env, detached: true, stdio: 'pipe' }); } catch (error) {
+      process.off('SIGINT', cancel).off('SIGTERM', cancel);
+      throw error;
+    }
+    if (stoppedBy) cancel(stoppedBy);
     const stop = () => {
       if (killer || child.pid === undefined) return;
       signalGroup(child.pid, 'SIGTERM');
       killer = setTimeout(() => signalGroup(child.pid, 'SIGKILL'), grace);
     };
     const timer = setTimeout(() => { timedOut = true; stop(); }, timeout);
-    // SIGKILL at once, not stop()'s grace: the caller removes the consumer folder next, so nothing a step tidies survives.
-    let stoppedBy;
-    const cancel = signal => { stoppedBy = signal; signalGroup(child.pid, 'SIGKILL'); };
-    process.once('SIGINT', cancel).once('SIGTERM', cancel);
     for (const name of ['stdout', 'stderr']) child[name].on('data', chunk => {
       written[name] += chunk.length; kept[name].push(chunk); keptBytes[name] += chunk.length;
       while (keptBytes[name] > maxBuffer) {
