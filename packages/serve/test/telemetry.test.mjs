@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { setTimeout as wait } from "node:timers/promises";
+import { setImmediate } from "node:timers/promises";
 import { test } from "node:test";
 import { HEARTBEAT_MS, runsRange, startTelemetry, TELEMETRY_FILE, TELEMETRY_KEY, TELEMETRY_NOTICE, telemetryMode } from "../dist/telemetry.js";
 
@@ -223,28 +223,21 @@ test("two servers on one data directory, one still stopping: every write is whol
   assert.deepEqual(await readdir(data), [TELEMETRY_FILE]);
 });
 
-test("a receiver that fails or never answers costs the server nothing", async () => {
-  const data = await scratch();
-  start(data, receiver()).close();
-  const t = startTelemetry({ data, version: "9.9.9", env: {}, key: KEY, fetch: () => Promise.reject(new Error("offline")) });
-  t.runEnded("ended");
-  t.close();
-  await wait(5);
-});
-
-test("an endpoint that answers 404 (not deployed yet) or never answers: one request an event, no retry, nothing said, and a run's end never waits for it", async () => {
-  for (const answer of [() => Promise.resolve(new Response("not found", { status: 404 })), () => new Promise(() => {})]) {
+test("an endpoint that refuses, answers 404 (not deployed) or never answers: one request an event, no retry, nothing said, and neither a run's end nor close waits on it", { timeout: 10_000 }, async () => {
+  const answers = { refused: () => Promise.reject(new Error("offline")), "404": () => Promise.resolve(new Response("not found", { status: 404 })), silent: () => new Promise(() => {}) };
+  for (const [name, answer] of Object.entries(answers)) {
     const data = await scratch();
     start(data, receiver()).close(); // the notice's start: the next one sends
     const sent = [];
     const said = [];
     const t = startTelemetry({ data, version: "9.9.9", env: {}, key: KEY, url: "https://receiver.invalid/e/", say: (line) => said.push(line), fetch: (url, init) => (sent.push(JSON.parse(init.body).event), answer()) });
-    assert.equal(t.runEnded("ended"), undefined, "a run's end hands back nothing to wait on");
-    await wait(20);
-    assert.deepEqual(sent, ["server_started", "first_run_completed"], "each event once, the run's end included, never again");
-    assert.deepEqual(said, []);
-    const closed = await Promise.race([t.close().then(() => "closed"), wait(500).then(() => "waiting")]);
-    assert.equal(closed, "closed", "close never waits on the endpoint");
+    assert.equal(t.runEnded("ended"), undefined, `${name}: a run's end hands back nothing to wait on`);
+    // emit calls fetch as it is made, so `sent` is whole here; the turn lets a refusal settle where nothing catches it.
+    await setImmediate();
+    assert.deepEqual(sent, ["server_started", "first_run_completed"], `${name}: each event once, never again`);
+    assert.deepEqual(said, [], name);
+    // A close that waited on the endpoint would hang here until the test's timeout fails it.
+    await t.close();
   }
 });
 

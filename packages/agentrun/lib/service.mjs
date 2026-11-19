@@ -132,6 +132,8 @@ export const SERVICE_ENV = {
   DO_NOT_TRACK: null,
 };
 const SERVICE_NAMES = Object.keys(SERVICE_ENV);
+/** The usage counts' two switches in SERVICE_ENV, which install also copies from its own shell. */
+const TELEMETRY_NAMES = ["AGENTRUN_TELEMETRY", "DO_NOT_TRACK"];
 
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
@@ -446,7 +448,7 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
       // An installed service keeps its local model's variables, its start-time switches and its usage counts' switches; the switches set in this
       // shell reach it (and under CI, AGENTRUN_TELEMETRY=0), then --env KEY=VALUE sets one and KEY= removes it.
       const model = installed() ? Object.fromEntries(Object.entries(manager.env(readFileSync(manager.file, "utf8"))).filter(([key]) => Object.hasOwn(SERVICE_ENV, key))) : {};
-      for (const key of ["AGENTRUN_TELEMETRY", "DO_NOT_TRACK"]) if ((env[key] ?? "") !== "" && !/[\0-\x1f]/.test(env[key])) model[key] = env[key];
+      for (const key of TELEMETRY_NAMES) if ((env[key] ?? "") !== "" && !/[\0-\x1f]/.test(env[key])) model[key] = env[key];
       if (env.CI && model.AGENTRUN_TELEMETRY === undefined) model.AGENTRUN_TELEMETRY = "0";
       for (const [key, value] of changes) {
         if (value === "") delete model[key];
