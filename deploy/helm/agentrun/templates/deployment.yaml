@@ -64,13 +64,15 @@ spec:
           envFrom:
             - secretRef:
                 name: {{ .Values.existingSecret | default .Release.Name }}
-          {{- if or .Values.publicUrl .Values.env }}
+          {{- $url := include "agentrun.publicUrl" . }}
+          {{- $env := omit .Values.env "AGENTRUN_PUBLIC_URL" }}
+          {{- if or $url $env }}
           env:
-            {{- with .Values.publicUrl }}
+            {{- with $url }}
             - name: AGENTRUN_PUBLIC_URL
               value: {{ . | quote }}
             {{- end }}
-            {{- range $name, $value := .Values.env }}
+            {{- range $name, $value := $env }}
             - name: {{ $name }}
               value: {{ $value | quote }}
             {{- end }}

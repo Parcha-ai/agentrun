@@ -39,6 +39,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { ATTACH_HELLO_MS, ATTACH_PATH, ATTACH_SUBPROTOCOL, AttachHub, DAEMON_PATH, descriptorOf, hostedDaemonPath, isProviderId, providerModule } from "@parcha/agentrun-computer";
 import WebSocket from "ws";
 import { isMain } from "../../../scripts/is-main.mjs";
+import { MACHINE_TOKEN_SOURCE } from "../../computer/dist/attach.js";
 import { plantSecrets } from "../../computer/dist/conformance/cli.js";
 import { casesFor, runConformance } from "../../computer/dist/conformance/index.js";
 import { createAttachRoutes, sha256Hex } from "../dist/computer-attach.js";
@@ -48,8 +49,8 @@ const END = "DIAL-CONFORMANCE-REPORT-END";
 const USAGE = "usage: node dial-conformance.mjs --provider <registry id or module path> [--only <groups and case ids>] [--exit], with AGENTRUN_PUBLIC_URL and PORT set";
 /** A name of a module's ENV that holds a secret (the conformance CLI's rule). */
 const SECRET_NAME = /(^|_)(KEY|TOKEN|SECRET)(_|$)/;
-/** A token serve mints for a machine (computer-attach.ts newMintedToken). */
-const MINTED_TOKEN = /art_[0-9a-f]{64}/g;
+/** `text` with every machine token in it redacted by its shape, whether or not this run minted it. */
+export const scrubMachineTokens = (text) => text.replace(new RegExp(MACHINE_TOKEN_SOURCE, "g"), "art_[redacted]");
 
 const say = (line) => process.stderr.write(`dial-conformance: ${line}\n`);
 
@@ -361,7 +362,7 @@ async function main({ provider: name, only, exit }, env, state) {
 		};
 		const secretNames = Object.values(module.ENV ?? {}).filter((one) => typeof one === "string" && SECRET_NAME.test(one));
 		// No secret leaves this process: the module's secret values and every machine token are taken out of what it writes.
-		const scrub = (text) => [...secretNames.map((one) => env[one]), ...tokens.values()].reduce((kept, secret) => (secret ? kept.split(secret).join("[redacted]") : kept), text.replace(MINTED_TOKEN, "art_[redacted]"));
+		const scrub = (text) => [...secretNames.map((one) => env[one]), ...tokens.values()].reduce((kept, secret) => (secret ? kept.split(secret).join("[redacted]") : kept), scrubMachineTokens(text));
 		const image = typeof module.conformanceImage === "function" ? await module.conformanceImage(options, { signal: controller.signal }) : undefined;
 		if (typeof image !== "string" || image === "") throw new Error(`${name}: its conformance module names no image (conformanceImage())`);
 		const cases = casesFor(provider.capabilities().kind);

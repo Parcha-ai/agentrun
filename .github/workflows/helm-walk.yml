@@ -1,8 +1,6 @@
 name: Helm walk
 
-# The Helm chart (deploy/helm/agentrun) on a kind cluster (deploy/helm/walk.sh): helm install with the chart's own
-# image, ready, a first run to completed on the faux model (no key, no network, the usage counts off), helm upgrade onto
-# a new pod with the keys and the run kept, then helm uninstall with nothing left. Not a required check.
+# Runs deploy/helm/walk.sh on a kind cluster, after deploy/helm/render.sh. Not a required check.
 
 on:
   pull_request:
@@ -21,12 +19,19 @@ on:
       - 'deploy/walk/rows.sh'
       - '.github/workflows/helm-walk.yml'
   workflow_dispatch:
+  # The daily walk (ways-in-daily.yml): image names an artifact of this run, a docker save of the image to walk in place
+  # of the release's (main's, built once for every row).
+  workflow_call:
+    inputs:
+      image:
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: helm-walk-${{ github.ref }}
+  group: ${{ github.workflow }}-helm-walk-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -45,10 +50,31 @@ jobs:
       - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
         with:
           cluster_name: helm-walk
+      - name: The image to walk
+        if: ${{ inputs.image }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ inputs.image }}
+          path: ${{ runner.temp }}/image
+      - name: Load it
+        if: ${{ inputs.image }}
+        run: |
+          image=$(docker load -i "$RUNNER_TEMP/image/image.tar" | sed -n 's/^Loaded image: //p' | head -n 1)
+          kind load docker-image "$image" --name helm-walk
+          echo "WALK_IMAGE=$image" >> "$GITHUB_ENV"
       - name: helm lint
         run: helm lint deploy/helm/agentrun
+      - name: The public address the server gets is the one NOTES prints
+        run: sh deploy/helm/render.sh
       - name: Walk
         run: REPORT="$RUNNER_TEMP/helm-walk.md" sh deploy/helm/walk.sh
       - name: Report
         if: always()
         run: '[ ! -f "$RUNNER_TEMP/helm-walk.md" ] || cat "$RUNNER_TEMP/helm-walk.md" >> "$GITHUB_STEP_SUMMARY"'
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: walk-report-helm
+          path: ${{ runner.temp }}/helm-walk.md
+          if-no-files-found: ignore

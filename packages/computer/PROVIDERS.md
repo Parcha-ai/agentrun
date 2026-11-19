@@ -445,7 +445,7 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
     declares no desktop and says why (`unserved.desktop`): serve refuses a desktop setting naming Daytona in those
     words, and the constructor refuses `kind: "desktop"` in them on every connect.
 
-  Xvfb and the window manager on Fly, Cloudflare and Modal were verified live 11-18/19 (the desktop cases pass on each).
+  Xvfb and the window manager over the dial were verified live (dial desktop runs 11-18/19: E2B, Fly, Cloudflare, Modal).
 - **Prove it** as below. Your conformance module also exports `dialKit()`, the server your machines dial, for the
   Core case `provider.dial-token` (`test/fixtures/dial-provider.mjs` is one).
 - **No REST call that starts a machine?** Ship a relay the operator deploys once, as Cloudflare's
@@ -488,7 +488,7 @@ COMPUTER_FLY_API_TOKEN=… COMPUTER_FLY_APP=agentrun-computers-<org slug> AGENTR
   node packages/serve/scripts/dial-conformance.mjs --provider fly
 ```
 
-`COMPUTER_FLY_KIND=desktop` runs the desktop suite (unset, linux); Cloudflare and Modal's modules read `COMPUTER_CLOUDFLARE_KIND` and `COMPUTER_MODAL_KIND` the same way. Daytona's reads `COMPUTER_DAYTONA_KIND` too, and its provider refuses `desktop` with the reason, on dial and on exec.
+`COMPUTER_FLY_KIND=desktop` runs the desktop suite (unset, linux); Cloudflare and Modal's modules read `COMPUTER_CLOUDFLARE_KIND` and `COMPUTER_MODAL_KIND` the same way.
 
 ### Wire it up
 

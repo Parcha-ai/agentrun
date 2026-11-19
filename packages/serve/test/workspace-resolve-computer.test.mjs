@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { readBackOf } from "@parcha/agentrun-computer";
+import { DAYTONA, mountsOf, readBackOf } from "@parcha/agentrun-computer";
 import { computerToolsFor } from "@parcha/agentrun-kernel/kernel";
 import { localWorkspace, resolveComputer, runShellOf, runTools } from "../dist/workspace/index.js";
 import { runHands } from "../dist/workspace/run-tools.js";
@@ -115,7 +115,7 @@ test("a setting the registry does not give is refused in words that name the set
   // A kind the provider's descriptor refuses with its own reason (unserved) is refused in that reason, never the generic one.
   for (const mode of [1, 2]) {
     assert.deepEqual(await resolve({ kind: "desktop", provider: "daytona" }, mode), {
-      refused: "Daytona gives no desktop computer: its sandboxes run under AppArmor's restrict_unprivileged_userns, so the tool user can't make the user and network namespaces the window manager runs in. Pick one of Docker, Modal, E2B, Agent37, Cloudflare, Fly Machines, Orgo, boxd for this agent's computer in Settings → Computers.",
+      refused: `Daytona gives no desktop computer: ${DAYTONA.unserved.desktop}. Pick one of Docker, Modal, E2B, Agent37, Cloudflare, Fly Machines, Orgo, boxd for this agent's computer in Settings → Computers.`,
     });
   }
   assert.deepEqual(await resolve({ kind: "phone", provider: "nokia" }, 2), { refused: "\"nokia\" is no computer provider this server knows: pick one of Phone harness for this agent's computer in Settings → Computers." });
@@ -154,6 +154,10 @@ test("a sandbox's GPUs: held to its provider's declared GPUs with the mode's fol
   // No GPU computer mounts Mode 2's Archil folder yet (no FUSE): Modal's and Daytona's hold a synced folder instead.
   assert.deepEqual(folderOf(await resolve({ kind: "sandbox", provider: "modal", gpu: { type: "T4", count: 1 } }, 2, scratch(), SAVED, KINDS)), SYNCED);
   assert.deepEqual(folderOf(await resolve({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 1 } }, 2, scratch(), SAVED, KINDS)), SYNCED);
+  assert.deepEqual(folderOf(await resolve({ kind: "sandbox", provider: "modal", gpu: { type: "H100", count: 8 } }, 2, scratch(), SAVED, KINDS)), SYNCED, "Modal gives up to eight");
+  // Daytona gives one H100 a computer: another type, or more than one, is refused.
+  assert.match((await resolve({ kind: "sandbox", provider: "daytona", gpu: { type: "T4", count: 1 } }, 2, scratch(), SAVED, KINDS)).refused, /^A Daytona sandbox can't have this agent's GPUs: gpu\.type "T4" is not one this provider offers/);
+  assert.match((await resolve({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 2 } }, 2, scratch(), SAVED, KINDS)).refused, /^A Daytona sandbox can't have this agent's GPUs: /);
   // A GPU computer that takes none of the provider's folders is refused in words that say why and what to use instead,
   // the provider's own reason from its descriptor.
   const NO_GPU_FOLDER = { ...KINDS, PROVIDERS: KINDS.PROVIDERS.map((one) => (one.id === "modal" ? { ...one, capabilities: one.capabilities.map((c) => (c.gpu ? { ...c, gpu: { ...c.gpu, mounts: [] } } : c)) } : one)) };
@@ -324,7 +328,7 @@ test("registryHere: Daytona mounts Archil only where DAYTONA_ARCHIL_EGRESS has a
   // Every other provider as it is, but that one whose machines dial says why it takes no Archil mount, as it does itself.
   for (const entry of REAL.filter((one) => one.id !== "daytona")) {
     const kept = relayed.PROVIDERS.find((one) => one.id === entry.id);
-    if (kept !== entry) assert.deepEqual(kept, { ...entry, unmounted: { ...entry.unmounted, archil: `${entry.label}'s machines dial this server, and a machine that dials takes no Archil mount` } }, entry.id);
+    if (kept !== entry) assert.deepEqual(kept, { ...entry, unmounted: mountsOf(entry, () => false, true).unmounted }, entry.id);
   }
   assert.deepEqual(relayed.PROVIDERS.filter((one, at) => one !== REAL[at]).map((one) => one.id).sort(), ["cloudflare", "daytona", "fly"]);
   // A Mode 2 Daytona sandbox has its computer's shell either way: with the egress and its image named, its folder an

@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { ATTACH_CLOSE, AttachHub, helloMismatch, hostedDaemonPath, MemoryMachineTokens, mintedComputer } from "../dist/index.js";
+import { ATTACH_CLOSE, AttachHub, helloMismatch, hostedDaemonPath, MACHINE_TOKEN_SOURCE, MemoryMachineTokens, mintedComputer, mountsOf } from "../dist/index.js";
 import { HostedProvider } from "../dist/hosted/provider.js";
 import { fakeDialHost, PUBLIC_URL } from "./fake-dial-host.mjs";
 import { fakeHost } from "./fake-host.mjs";
@@ -42,7 +42,7 @@ test("a dial create boots the machine with its env, runs nothing in it, and read
 	assert.deepEqual(Object.keys(env).sort(), ["AGENTRUN_ATTACH_TOKEN", "AGENTRUN_ATTACH_URL", "AGENTRUN_DAEMON_SHA256", "AGENTRUN_DAEMON_URL", "AGENTRUN_INIT_ARGS"]);
 	assert.equal(env.AGENTRUN_ATTACH_URL, "ws://127.0.0.1:8080/v2/computers/attach");
 	assert.equal(env.AGENTRUN_DAEMON_URL, "http://127.0.0.1:8080/v2/computers/daemon?arch=amd64");
-	assert.match(env.AGENTRUN_ATTACH_TOKEN, /^art_[A-Za-z0-9_-]{43}$/);
+	assert.match(env.AGENTRUN_ATTACH_TOKEN, new RegExp(`^${MACHINE_TOKEN_SOURCE}$`));
 	assert.match(env.AGENTRUN_DAEMON_SHA256, /^[0-9a-f]{64}$/);
 	assert.equal(env.AGENTRUN_INIT_ARGS, `--deadline ${request.labels["agentrun.computer.deadline"]} --user 2510:2510 --own-network --max-deadline ${request.labels["agentrun.computer.max-deadline"]}`);
 	assert.equal(request.command, undefined, "no entrypoint: agentrun-dial starts init");
@@ -353,7 +353,7 @@ test("a dial host takes no Archil mount, in words, and declares a synced folder 
 	assert.deepEqual(provider.capabilities().mount, ["sync"]);
 	const refused = await create(provider, { ...SPEC, mount: { kind: "archil", disk: "dsk-0123456789abcdef", region: "aws-us-east-1", folder: "agents/a/runs/r/work" } });
 	assert.equal(refused.ok, false);
-	assert.match(refused.error.message, /mount: Fakehost's machines dial this server, and a machine that dials takes no Archil mount/);
+	assert.ok(refused.error.message.includes(`mount: ${mountsOf(provider.host.descriptor, () => false, true).unmounted.archil}`), refused.error.message);
 	assert.equal(fake.creates(), 0);
 });
 

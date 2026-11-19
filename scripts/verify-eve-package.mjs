@@ -1,19 +1,104 @@
 #!/usr/bin/env node
 // Exercise built release archives in an ordinary eve project. No workspace links or model calls.
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { constants, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { isMain } from './is-main.mjs';
 
-const exec = promisify(execFile);
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const json = async path => JSON.parse(await readFile(path, 'utf8'));
 const cleanEnvironment = () => Object.fromEntries(Object.entries(process.env)
   .filter(([key]) => !/(?:API_KEY|TOKEN|SECRET|PASSWORD|PRIVATE_KEY|NODE_OPTIONS|NODE_PATH)/i.test(key)));
+
+const TAIL = 5000;
+const groupAlive = pid => { try { process.kill(-pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
+const signalGroup = (pid, signal) => { try { process.kill(-pid, signal); } catch {} };
+async function groupGone(pid, ms) {
+  for (const end = Date.now() + ms; groupAlive(pid);) { if (Date.now() > end) return false; await sleep(25); }
+  return true;
+}
+
+/** One step of the check, in its own process group. On timeout, too much output or a step that exits with processes of
+ *  its own still running, the whole group gets SIGTERM, then SIGKILL after `grace` ms. The shutdown starts when the
+ *  step's process exits, not when its pipes close (a child of the group could hold them open), and the step settles
+ *  only once the group is gone: the consumer directory's cleanup never runs beside a live step. Each stream keeps at
+ *  most its last `maxBuffer` bytes while the pipes go on draining. A failure names the command, its exit code or
+ *  signal, whether it timed out, and the tails of stdout and stderr, each labelled. A SIGINT or SIGTERM to this process
+ *  while the step runs (its own group doesn't get the terminal's) kills the group and rejects, the error's `stoppedBy` set,
+ *  once the group is gone, so the caller's cleanup still runs. */
+export function runStep(command, args, { cwd, env, timeout = 180_000, maxBuffer = 8 * 1024 * 1024, grace = 5_000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const kept = { stdout: [], stderr: [] };
+    const keptBytes = { stdout: 0, stderr: 0 };
+    const written = { stdout: 0, stderr: 0 };
+    let timedOut = false; let over = ''; let killer; let spawnError; let settled = false;
+    // Listen before the spawn: a signal that lands while the step starts then waits for the event loop, after the spawn.
+    // SIGKILL at once, not stop()'s grace: the caller removes the consumer folder next, so nothing a step tidies survives.
+    let stoppedBy; let child;
+    const cancel = signal => { stoppedBy = signal; if (child?.pid !== undefined) signalGroup(child.pid, 'SIGKILL'); };
+    process.once('SIGINT', cancel).once('SIGTERM', cancel);
+    try { child = spawn(command, args, { cwd, env, detached: true, stdio: 'pipe' }); } catch (error) {
+      process.off('SIGINT', cancel).off('SIGTERM', cancel);
+      throw error;
+    }
+    if (stoppedBy) cancel(stoppedBy);
+    const stop = () => {
+      if (killer || child.pid === undefined) return;
+      signalGroup(child.pid, 'SIGTERM');
+      killer = setTimeout(() => signalGroup(child.pid, 'SIGKILL'), grace);
+    };
+    const timer = setTimeout(() => { timedOut = true; stop(); }, timeout);
+    for (const name of ['stdout', 'stderr']) child[name].on('data', chunk => {
+      written[name] += chunk.length; kept[name].push(chunk); keptBytes[name] += chunk.length;
+      while (keptBytes[name] > maxBuffer) {
+        const first = kept[name][0]; const extra = keptBytes[name] - maxBuffer;
+        if (first.length <= extra) { kept[name].shift(); keptBytes[name] -= first.length; }
+        else { kept[name][0] = first.subarray(extra); keptBytes[name] -= extra; }
+      }
+      if (written[name] > maxBuffer && !over) { over = name; stop(); }
+    });
+    const closed = new Promise(done => child.on('close', done));
+    const settle = (code, signal, left = '') => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer); clearTimeout(killer); process.off('SIGINT', cancel).off('SIGTERM', cancel);
+      const text = name => Buffer.concat(kept[name]).toString('utf8');
+      const stdout = text('stdout');
+      if (code === 0 && !timedOut && !over && !spawnError && !left && !stoppedBy) return resolve(stdout);
+      const how = [
+        stoppedBy ? `stopped by ${stoppedBy}` : '',
+        timedOut ? `timed out after ${Date.now() - started} ms (limit ${timeout} ms)` : '',
+        over ? `${over} over ${maxBuffer} bytes (written ${written[over]}, kept the last ${keptBytes[over]})` : '',
+        spawnError ? String(spawnError.message) : '', left,
+        code !== null && code !== undefined ? `exit code ${code}` : signal ? `signal ${signal}` : '',
+      ].filter(Boolean).join('; ');
+      const tail = name => `--- ${name} (last ${TAIL} chars) ---\n${text(name).slice(-TAIL)}`;
+      reject(Object.assign(new Error(`eve package consumer step failed: ${[command, ...args].join(' ')}\n${how}\n${tail('stdout')}\n${tail('stderr')}`), { stoppedBy }));
+    };
+    child.on('error', error => {
+      spawnError = error;
+      if (child.pid === undefined) settle(null, null); // never started: no group, no exit to wait for
+    });
+    child.on('exit', async (code, signal) => {
+      // The step has ended: waiting for its group below is cleanup, not the step, so it can't count as a timeout.
+      clearTimeout(timer);
+      let left = '';
+      if (groupAlive(child.pid)) {
+        stop();
+        if (!await groupGone(child.pid, grace + 5_000)) left = 'its process group outlived SIGKILL';
+      }
+      if (await Promise.race([closed.then(() => true), sleep(1_000).then(() => false)]) === false) {
+        child.stdout.destroy(); child.stderr.destroy();
+      }
+      settle(code, signal, left);
+    });
+  });
+}
 
 /** `tarballs` are the exact archives already packed and scanned by verify-packages. */
 export async function verifyEvePackage({ root = repository, tarballs, parentDirectory = tmpdir() }) {
@@ -23,15 +108,11 @@ export async function verifyEvePackage({ root = repository, tarballs, parentDire
   const env = { ...cleanEnvironment(), DO_NOT_TRACK: '1', NO_COLOR: '1' };
   const commands = [];
   async function run(command, args, offline = true) {
-    try {
-      const result = await exec(command, args, { cwd: consumer, env: offline ? {
-        ...env, NODE_OPTIONS: `--import=${join(temporary, 'deny-network.mjs')}`,
-      } : env, timeout: 180_000, maxBuffer: 8 * 1024 * 1024 });
-      commands.push({ command: [command === process.execPath ? 'node' : command, ...args], status: 'passed' });
-      return result.stdout;
-    } catch (error) {
-      throw new Error(`eve package consumer ${command} ${args[0] ?? ''} failed: ${String(error.stderr || error.stdout || error.message).slice(-5000)}`);
-    }
+    const stdout = await runStep(command, args, { cwd: consumer, env: offline ? {
+      ...env, NODE_OPTIONS: `--import=${join(temporary, 'deny-network.mjs')}`,
+    } : env });
+    commands.push({ command: [command === process.execPath ? 'node' : command, ...args], status: 'passed' });
+    return stdout;
   }
   try {
     await mkdir(join(consumer, 'agent/extensions'), { recursive: true });
@@ -130,7 +211,12 @@ if (isMain(import.meta)) {
   const version = (await json(join(repository, 'packages/eve/package.json'))).version;
   const tarballs = Object.fromEntries(['client', 'dsl', 'eve'].map(name => [name,
     join(resolve(directory), `parcha-agentrun-${name}-${version}.tgz`)]));
-  const result = await verifyEvePackage({ tarballs });
-  if (output) await writeFile(resolve(output), JSON.stringify(result, null, 2) + '\n');
-  console.log(JSON.stringify(result, null, 2));
+  try {
+    const result = await verifyEvePackage({ tarballs });
+    if (output) await writeFile(resolve(output), JSON.stringify(result, null, 2) + '\n');
+    console.log(JSON.stringify(result, null, 2));
+  } catch (error) {
+    console.error(error.message);
+    process.exitCode = error.stoppedBy ? 128 + constants.signals[error.stoppedBy] : 1;
+  }
 }

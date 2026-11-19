@@ -148,13 +148,54 @@ GiB) is $6 a month ([pricing](https://www.digitalocean.com/pricing/droplets)). T
 ## On Kubernetes, with Helm
 
 ```sh
-helm install agentrun deploy/helm/agentrun --namespace agentrun --create-namespace
+helm install agentrun oci://ghcr.io/parcha-ai/charts/agentrun --devel --namespace agentrun --create-namespace
 ```
 
 One pod, the server and its runner, on a 10 GiB volume, from the release's image; the token and seal key are made as a
 Secret at install and kept on upgrade. Its agents get file tools and `web_fetch` but no shell, as on Render. The
-chart's [README](helm/agentrun/README.md) covers its values, Argo CD and Flux, and what survives `helm uninstall`
-(the Secret and the volume, by default).
+chart's [README](helm/agentrun/README.md) covers Argo CD and Flux, and what `helm uninstall` keeps (the Secret and the
+volume).
+
+## On Coolify or Dokploy
+
+Each template runs the release's image as one service, the server with its runner beside it, with its data on a
+volume at `/data` and a 2 GB memory limit, which the runner budgets runs by (set `AGENTRUN_MEMORY` to change it). The platform generates the token and the seal key once, with its own secret generator, and gives
+the service its domain. Nothing gets the Docker socket, so agents get file tools and `web_fetch` but no shell, as on
+Render. Neither template needs a model key. To give agents a shell, add a sandbox provider's key in the console.
+Mounting the host's Docker socket into the service would also give them one, but it hands them the host itself, so
+neither template does it.
+
+### Coolify
+
+From [`coolify/agentrun.yaml`](coolify/agentrun.yaml), in the shape of Coolify's own templates:
+
+1. In a project, add a resource: **Docker Compose Empty**.
+2. Paste the file, save, and deploy.
+
+Coolify makes `SERVICE_URL_AGENTRUN` (an `sslip.io` address until you give the service a domain),
+`SERVICE_HEX_64_AGENTRUN` (the token) and `SERVICE_REALBASE64_32_SEALKEY` (the seal key). Read the token in the
+service's Environment Variables and paste it as the setup code at the first visit. If you give the service your own
+domain, redeploy so `AGENTRUN_PUBLIC_URL` follows it.
+
+### Dokploy
+
+From [`dokploy/agentrun/`](dokploy/agentrun), a `docker-compose.yml` and a `template.toml` in the shape of Dokploy's own
+templates:
+
+1. From `deploy/`, encode the two files:
+
+   ```sh
+   jq -n --rawfile compose dokploy/agentrun/docker-compose.yml --rawfile config dokploy/agentrun/template.toml \
+     '{compose: $compose, config: $config}' | base64 -w0
+   ```
+
+2. In a project, create a **Compose** service.
+3. On its **Advanced** tab, under **Import**, paste the output, import, and deploy.
+
+Dokploy makes the domain (`${domain}`, an `sslip.io` address), the token (`${hash:64}`) and the seal key
+(`${base64:32}`), and writes them to the service's Environment. Read `AGENTRUN_TOKEN` there and paste it as the setup
+code at the first visit. Dokploy's generated domain is http. If you give the service your own domain with HTTPS, set
+`AGENTRUN_PUBLIC_URL` to it in the Environment and redeploy.
 
 ## The first visit's setup code
 
@@ -373,9 +414,16 @@ this checkout's image, or walks `AGENTRUN_IMAGE` when set.
   the other runner takes it over (read from `GET /v2/runs/{id}`'s `claim`), after a SIGKILL within the 30 s lease, and
   the run completes with each step done once.
 
-`helm/walk.sh`, which CI runs on a kind cluster (`helm-walk.yml`), walks the Helm chart the same way: install, a first
-run to completed, an upgrade that keeps the keys and the run, an uninstall and a reinstall that keep them too, and a
-last uninstall that, with the kept Secret and volume deleted, leaves nothing.
+`helm/walk.sh` (CI: `helm-walk.yml`, on kind) walks the chart: install, a first run, upgrade, uninstall and reinstall.
+`selfhost/walk.sh coolify|dokploy` (CI: `selfhost-walk.yml`, each platform on a VM of its own) installs the platform, deploys
+the template through its API, makes a first run and removes it with its volume.
+Both walk the release's image, or `WALK_IMAGE` when set.
+
+Every day, `ways-in-daily.yml` walks every way in on main, whatever changed: the README's `npx @parcha/agentrun` as
+published (`packages/agentrun/test/npx-walk.sh`), main's launcher (`install-walk.yml`), and Docker Compose, Railway's
+service, Helm, Coolify and Dokploy on main's image, built once for every row. Its summary is one table, each way in and
+its result, with each walk's report under it. A red run opens the issue `ways in: <rows> broke`, or updates the open
+one, and the next green run closes it.
 
 Two walk the Railway template:
 

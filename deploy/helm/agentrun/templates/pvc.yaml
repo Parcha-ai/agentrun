@@ -5,10 +5,9 @@ metadata:
   name: {{ .Release.Name }}
   labels:
     {{- include "agentrun.labels" . | nindent 4 }}
-  {{- if .Values.keepOnUninstall }}
+  # helm uninstall leaves it: an install with the same release name here takes it up again (NOTES.txt, README.md).
   annotations:
     helm.sh/resource-policy: keep
-  {{- end }}
 spec:
   accessModes: ["ReadWriteOnce"]
   {{- with .Values.persistence.storageClass }}

@@ -174,8 +174,8 @@ a harness row carries:
 The report's `gate` says how the tool gate was reached: each permission the agent asked for, and each question the gate
 was asked. The adapter ties a call to AgentRun's tools by the title the agent gives it: `agentrun__<tool>`,
 `agentrun: <tool>` (Goose 1.59.2 writes the tool's underscores as spaces, `agentrun: check echo`) or
-`agentrun-<tool>: <tool>`. A permission it can't tie reaches the gate as the agent's own (`acp_<kind>`, with the agent's
-title); the check answers it by the tool the title names, and `denied_call.askedAs` shows it.
+`agentrun-<tool>: <tool>`. A permission it can't tie reaches the gate as the agent's own (`acp_<kind>`) and the check
+refuses it, so an untied title fails `mcp_tool`.
 
 `--cap USD` bounds what the check spends (default $0.25). `--data DIR` is the data directory the agent was installed
 into. Exit 0 when every check passed, 1 when the recipe was refused, the binary is not installed or pinned, or a check

@@ -27,9 +27,9 @@ export const NATIVE_EFFECT_KINDS: ReadonlySet<string> = new Set(["execute", "edi
 
 /** The host tool an ACP tool call names, by the agent's own name for our MCP server's tools (Goose `agentrun__<tool>`, or
  *  as Goose 1.59.2 titles it, `agentrun: <tool>` with the tool's underscores as spaces; Cursor `agentrun-<tool>: <tool>`),
- *  when it is one of `tools` and its kind is not one with effects of its own. A spaced title ties only under our server's
- *  exact name and only to the one tool it spells. The title is the agent's text, so this alone is never evidence that a
- *  call is ours: a permission request also needs the tool_call that announced it (CallIds.announced). */
+ *  when it is one of `tools` and its kind is not one with effects of its own. The title is the agent's text, so this alone
+ *  is never evidence that a call is ours: a permission request also needs the tool_call that announced it
+ *  (CallIds.announced). */
 export function ourTool(update: { title?: string | null; name?: string | null; kind?: string | null }, tools: ReadonlySet<string>): string | undefined {
   if (typeof update.kind === "string" && NATIVE_EFFECT_KINDS.has(update.kind)) return undefined;
   const candidates: string[] = [];
@@ -37,13 +37,8 @@ export function ourTool(update: { title?: string | null; name?: string | null; k
     if (typeof said !== "string") continue;
     const goose = new RegExp(`^${MCP_SERVER}__(.+)$`).exec(said);
     if (goose) candidates.push(goose[1]!);
-    const cursor = new RegExp(`^${MCP_SERVER}(?:-[^:]*)?: (.+)$`).exec(said);
-    if (cursor) candidates.push(cursor[1]!.trim());
-    const spaced = said.startsWith(`${MCP_SERVER}: `) ? said.slice(MCP_SERVER.length + 2) : undefined;
-    if (spaced) {
-      const spelled = [...tools].filter((name) => name.includes("_") && name.replace(/_/g, " ") === spaced);
-      if (spelled.length === 1) candidates.push(spelled[0]!);
-    }
+    const cursor = new RegExp(`^${MCP_SERVER}(-[^:]*)?: (.+)$`).exec(said);
+    if (cursor) candidates.push(cursor[2]!.trim(), ...(cursor[1] ? [] : [cursor[2]!.replace(/ /g, "_")]));
   }
   return candidates.find((name) => tools.has(name));
 }

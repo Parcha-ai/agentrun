@@ -116,13 +116,21 @@ test("the CLI's stop deadline covers the runner's whole close: its drain, then t
   assert.ok(DEADLINE_MARGIN_MS > 0);
 });
 
-test("a runner of its own stops inside compose's stop grace: its default drain and the loops' stop after it", async () => {
+test("a runner of its own stops inside the stop grace of compose, the Helm chart and the Coolify and Dokploy templates: its default drain and the loops' stop after it", async () => {
   const compose = await readFile(new URL("../../../deploy/compose.yaml", import.meta.url), "utf8");
   const runner = /x-runner: &runner\n(?:  .*\n)*?  stop_grace_period: (\d+)s/.exec(compose);
   assert.ok(runner, "compose's runners name their stop_grace_period");
+  const values = await readFile(new URL("../../../deploy/helm/agentrun/values.yaml", import.meta.url), "utf8");
+  const pod = /^terminationGracePeriodSeconds: (\d+)$/m.exec(values);
+  assert.ok(pod, "the chart names its pod's terminationGracePeriodSeconds");
   const bound = runnerCloseBoundMs(durationMs(RUNNER_DRAIN_TIMEOUT));
   assert.equal(bound, 31_000, "6 + 25 = 31 s");
   assert.ok(bound < Number(runner[1]) * 1_000, `the runner's close (${bound} ms) is inside compose's ${runner[1]} s`);
+  assert.ok(bound < Number(pod[1]) * 1_000, `the runner's close (${bound} ms) is inside the chart's ${pod[1]} s`);
+  for (const path of ["deploy/coolify/agentrun.yaml", "deploy/dokploy/agentrun/docker-compose.yml"]) {
+    const grace = /^    stop_grace_period: (\d+)s$/m.exec(await readFile(new URL(`../../../${path}`, import.meta.url), "utf8"));
+    assert.ok(grace && bound < Number(grace[1]) * 1_000, `the runner's close (${bound} ms) is inside ${path}'s stop_grace_period`);
+  }
 });
 
 test("--max-runs 2 with 4 runs queued: the runner holds 2 at once, the other 2 wait queued, then run as places free", async (t) => {

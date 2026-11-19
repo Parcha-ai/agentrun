@@ -4,13 +4,7 @@ import { defineProvider } from "../descriptor.js";
 import type { GpuCapability } from "../provider.js";
 import { SANDBOX } from "./shared.js";
 
-/**
- * Why Daytona gives no desktop (measured 11-19): its container sandboxes run under Sysbox on a kernel with
- * kernel.apparmor_restrict_unprivileged_userns=1, where the tool user (uid 2510) can make a user namespace but not write
- * its uid_map ("unshare: write failed /proc/self/uid_map: Operation not permitted"), and can't make a network namespace;
- * desktop.ts starts the window manager as the tool user inside both. The descriptor's unserved desktop: serve refuses a
- * desktop setting naming Daytona in these words, and the provider's constructor kind desktop.
- */
+/** Why Daytona gives no desktop (measured 11-19): PROVIDERS.md, Machines that dial in. The descriptor's unserved desktop. */
 export const DAYTONA_NO_DESKTOP = "its sandboxes run under AppArmor's restrict_unprivileged_userns, so the tool user can't make the user and network namespaces the window manager runs in";
 
 /** The key that turns on a Daytona computer's Archil mount: the operator's Archil egress relay (archilEgress). */

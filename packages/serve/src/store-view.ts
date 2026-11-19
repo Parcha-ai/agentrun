@@ -732,13 +732,11 @@ export async function listingOverStore(store: Store, runId: string, deps: ViewDe
   };
 }
 
-/** Whether `listing` has the current run-path fields and is cut of the server's secrets as they are now.
- *  Older persisted rows used served/handed_back instead; null path/workflow values are current, absent fields are not.
- *  A list builds any other again before it shows it
+/** Whether `listing` is cut of the server's secrets as they are now. A list builds any other again before it shows it
  *  (server.ts runsPage): the run's view cuts a value whole where it holds a secret (a note's name reads [redacted]), which
  *  cutting the built item again could not do. */
 export function builtOfNow(listing: KeptListing, serverSecrets: readonly string[]): boolean {
-  return Object.hasOwn(listing.item, "path") && Object.hasOwn(listing.item, "workflow") && listing.cut === secretsDigest(serverSecrets);
+  return listing.cut === secretsDigest(serverSecrets);
 }
 
 /** A listing's list item as a list serves it (listingOverStore): its console link at `origin`, its archive time now
