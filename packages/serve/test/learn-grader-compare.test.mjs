@@ -278,11 +278,9 @@ test("(7) a person's stop while each replay's grader request hangs: every replay
   await landRevision(w.dir, answerFlow(REVISED), ids[0]);
   await w.start(ids[0], "Question 10");
   await until(() => w.graderRequests().length === 3, "each replay's grader request is in flight", 120_000);
-  const at = Date.now();
   for (const { row } of await w.replays()) await w.server.command(row.id, { kind: "stop" });
   // A stop never waits on the grader: well inside the 60 s a hung request would hold it, and the gateway never answers.
   const stopped = await w.replaysEnded(3, 20_000);
-  assert.ok(Date.now() - at < 20_000, `stopped in ${Date.now() - at} ms`);
   for (const row of stopped) {
     assert.equal(row.state, "stopped", `${row.id}: ${row.summary}`);
     assert.equal(row.metrics?.replay?.compared, undefined, `${row.id} keeps no verdict`);
@@ -320,6 +318,10 @@ test("the grader's verdict: one JSON object, bare or the whole of one fence; any
   assert.deepEqual(graderVerdictOf('{"same": true, "differs_on": null}'), { same: true, differs_on: null });
   assert.deepEqual(graderVerdictOf('```json\n{"same": false, "differs_on": " the code "}\n```'), { same: false, differs_on: "the code" });
   assert.deepEqual(graderVerdictOf('{"same": false}'), { same: false, differs_on: null });
+  assert.deepEqual(graderVerdictOf('```\n{"same": true}\n```'), { same: true, differs_on: null }, "an unlabelled whole fence");
+  assert.deepEqual(graderVerdictOf('  ```json\r\n{"same": true, "differs_on": null}\r\n```  '), { same: true, differs_on: null }, "a json-labelled whole fence, padded");
+  assert.equal(graderVerdictOf('```json\n{"same": false}\n```\n```json\n{"same": true}\n```'), undefined, "two verdicts: none, never the last");
+  assert.equal(graderVerdictOf('Sure:\n```json\n{"same": true}\n```'), undefined, "prose around a fence");
   for (const text of ["same", '{"same": "yes"}', '{"same": true, "differs_on": 3}', 'Sure: {"same": true}', "[true]"]) assert.equal(graderVerdictOf(text), undefined, text);
 });
 
@@ -423,19 +425,17 @@ test("graderAsk: a reply's text, a cap refusal as refused (nothing sent), any ot
   assert.ok("failed" in (await graderAsk(down, { system: "S", user: "U" })));
 });
 
-test("graderAsk: a request that never answers is cut by the run's stop, or at its deadline, and its own signal is aborted with it", async () => {
+test("graderAsk: a request that never answers is cut by the run's stop, or at its deadline, through the one signal it is handed", async () => {
   const model = { id: "fast-1", provider: "p" };
   const hung = () => {
     const signals = [];
-    return { signals, models: { getModels: () => [model], getModel: () => model, streamSimple: () => { throw new Error("unused"); }, completeSimple: (m, context, options) => (signals.push(options.signal), new Promise(() => {})) } };
+    return { signals, models: { getModels: () => [model], getModel: () => model, streamSimple: () => { throw new Error("unused"); }, completeSimple: (m, context, options) => (signals.push(options.signal), new Promise((_, reject) => options.signal.addEventListener("abort", () => reject(options.signal.reason), { once: true }))) } };
   };
   const stopping = hung();
   const stop = new AbortController();
   const asked = graderAsk(stopping.models, { system: "S", user: "U" }, { signal: stop.signal, deadlineMs: 60_000 });
-  setTimeout(() => stop.abort(new Error("the run was stopped")), 20);
-  const at = Date.now();
+  stop.abort(new Error("the run was stopped"));
   assert.deepEqual(await asked, { cut: "its request was stopped with the run" });
-  assert.ok(Date.now() - at < 5_000, "the stop never waits on the request");
   assert.equal(stopping.signals[0]?.aborted, true, "the request's own signal is aborted");
   const late = hung();
   assert.deepEqual(await graderAsk(late.models, { system: "S", user: "U" }, { deadlineMs: 30 }), { cut: "its request gave no answer within 0.03 s" });

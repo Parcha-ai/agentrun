@@ -26,7 +26,7 @@ test('an earlier same-version SQLite store gains command metadata on server reop
  assert.equal(db.prepare("SELECT count(*) n FROM sqlite_schema WHERE name='settings_native_commands'").get().n,1,'fresh databases have the index');
  db.exec('DROP INDEX settings_native_commands');db.exec('ALTER TABLE settings DROP COLUMN connector_id');
  const before=db.prepare('SELECT key,value,updated_at FROM settings ORDER BY key').all();db.close();
- await assert.rejects(openSqliteStore({file,role:'runner'}),/Start this build’s server before its runners/);
+ await assert.rejects(openSqliteStore({file,role:'runner'}),/Start the AgentRun server to add native command ownership metadata before opening a runner/);
  db=new DatabaseSync(file);assert.equal(db.prepare('PRAGMA table_info(settings)').all().some(column=>column.name==='connector_id'),false,'a runner installs nothing');db.close();
  store=await openSqliteStore({file});
  assert.deepEqual((await store.settings.all(filter)).map(row=>row.value),[own]);

@@ -3,6 +3,9 @@ package desktop
 // FrameGapForTest is the least time between two frames of a watch on a screen with DAMAGE: the frame rate's cap.
 var FrameGapForTest = frameGap
 
+// KeySettleForTest is how long a batch waits after a key action before its next action.
+var KeySettleForTest = keySettle
+
 // SetChunkForTest makes screen.shot and screen.read give at most n bytes, and returns what puts it back.
 func SetChunkForTest(n int) func() {
 	was := chunk

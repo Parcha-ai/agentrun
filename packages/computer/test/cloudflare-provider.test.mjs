@@ -194,7 +194,7 @@ test("the constructor refuses a relay URL that is not https and a missing token,
 test("cloudflare is in the registry; its conformance module reads COMPUTER_CLOUDFLARE_* alone and refuses a dialKit off the public server", async () => {
 	assert.ok(registry.providerIds.includes("cloudflare"));
 	assert.equal((await registry.providerModule("cloudflare")).create, create);
-	assert.deepEqual(cloudflareModule.ENV, { url: "COMPUTER_CLOUDFLARE_RELAY_URL", token: "COMPUTER_CLOUDFLARE_RELAY_TOKEN" });
+	assert.deepEqual(cloudflareModule.ENV, { url: "COMPUTER_CLOUDFLARE_RELAY_URL", token: "COMPUTER_CLOUDFLARE_RELAY_TOKEN", kind: "COMPUTER_CLOUDFLARE_KIND" });
 	assert.throws(() => cloudflareModule.settingsFromEnv({ COMPUTER_CLOUDFLARE_RELAY_URL: RELAY }), /needs COMPUTER_CLOUDFLARE_RELAY_URL and COMPUTER_CLOUDFLARE_RELAY_TOKEN/);
 	const env = { COMPUTER_CLOUDFLARE_RELAY_URL: RELAY, COMPUTER_CLOUDFLARE_RELAY_TOKEN: TOKEN };
 	assert.equal(cloudflareModule.createProvider({ env }).capabilities().maxLifetimeMs, 30 * 60_000);

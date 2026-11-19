@@ -73,7 +73,7 @@ import { replayCallsOver } from "./promotion.js";
 import { learnedFirstWhereHeld } from "./learned-first.js";
 import { pathMetrics } from "./workflow-first.js";
 import { AUDIT_PARKED, withAudit } from "./audit.js";
-import { compareEndOfRun, GRADER_LABEL, GRADER_ROUTE, withGrader } from "./compare-end.js";
+import { compareEndOfRun, GRADER, withGrader } from "./compare-end.js";
 import { runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
@@ -610,7 +610,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // A replay run's or a shadow's grader (runner/compare-end.ts), on a proxy of its own beside the CLI session's, as pi's
   // is (adapter-run-spec.ts graderRouteOf), reached through the session's port while it is up. None: compared whole.
   const graderRoute = launch.replay || launch.audit ? await graderRouteOf(body as { learning?: unknown }, keyed, runKey, claimed, cut, log, deps, [held, cut]) : undefined;
-  if (graderRoute) tierRoutes.set(GRADER_ROUTE as Tier, graderRoute);
+  if (graderRoute) tierRoutes.set(GRADER as Tier, graderRoute);
   // Each step writes the store or reads another run (runner/learned-first.ts): in a run's own process its runner takes
   // them (held.ts learnedFirst), over the workflows it reads at the claim's seed itself.
   const learned = await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, folder: learningFolder, shown, spendOff }, seedLaid?.workflows ?? []);
@@ -692,7 +692,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // from. With a grader it compares its answer with the other one (runner/compare-end.ts), on its own cap.
   // A run the promoted workflow answered (path `workflow`) starts its shadow audit after the step, drawn at 1 in k (runner/audit.ts
   // withAudit): at its end, so the shadow's cap is what the run's own left.
-  const endOfRun = launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, revisionId: runRow.revisionId, folder: learningFolder, log, ...(run.redact ? { redact: run.redact } : {}) }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER_LABEL, GRADER_ROUTE) } : undefined) : withAudit(learningEndOfRun(launch, {
+  const endOfRun = launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, folder: learningFolder, log, ...(run.redact ? { redact: run.redact } : {}) }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),

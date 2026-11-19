@@ -7,7 +7,7 @@ import { routeOf as sdkModelRoute } from "./runner/model-route.js";
 import { answerSkill } from './skill-route.js';
 import { RemoteConnectors, verifyRemote, REMOTE_COMPLETION_BODY_BYTES } from './native/remote.js';
 import { REMOTE_HISTORY_BODY_BYTES } from './native/history.js';
-import { nativeOf, nativeModelOverrides, nativeExecutionOverrides, NATIVE_MODEL_SETTINGS_UNSUPPORTED, NATIVE_EXECUTION_SETTINGS_UNSUPPORTED, NATIVE_TOOL_BUDGET_UNSUPPORTED } from "./native/binding.js";
+import { nativeOf, nativeModelOverrides, nativeExecutionOverrides, NATIVE_MODEL_SETTINGS_UNSUPPORTED, NATIVE_EXECUTION_SETTINGS_UNSUPPORTED, NATIVE_TOOL_BUDGET_UNSUPPORTED, NATIVE_CAP_UNSUPPORTED } from "./native/binding.js";
 import { discoverNative } from "./native/discovery.js";
 import { isNativeRuntime } from "./native/runtimes.js";
 import { connectNative, launchNative, updateNative, verifyConnection } from "./native/connection.js";
@@ -1518,7 +1518,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
   const runComputerOf = (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => runComputerRead(store, runId, view, { context: ctx });
-  /** The run read's path and costs (A8, store-reads/learning.ts runAllInOverStore): `path`; `cost.usd` its own spend, the
+  /** The run read's costs (A8, store-reads/learning.ts runAllInOverStore): `cost.usd` its own spend, the
    *  job's (its compile turn is learning's), null while unknown; what learning spent for it
    *  (`learning_usd`) and the two (`all_in_usd`). A cost known only as a bound keeps its bound, and all-in is unknown. */
   const allInViewOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
@@ -1528,7 +1528,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (!all) return {};
     // A bound stays the view's bound. Otherwise usd is the job's (runCostOf's cost_usd, the same figure the cost series
     // gives): known as it answered even when its compile turn's cost is not; the row's while the run is at work.
-    return { path: all.path, cost: { ...cost, ...(cost.upper_bound === true ? {} : { usd: all.usd }), learning_usd: all.learning_usd, all_in_usd: all.all_in_usd } };
+    return { cost: { ...cost, ...(cost.upper_bound === true ? {} : { usd: all.usd }), learning_usd: all.learning_usd, all_in_usd: all.all_in_usd } };
   };
   // The agents accessor the routes call, over the one store (module A): the agents-store functions, with the run-row reads
   // the server makes (store-reads) under `.store`. `.request` is a thin pass-through — the store runs its own transactions,
@@ -2551,7 +2551,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (execution.length) throw new ApiError("agent_not_runnable", NATIVE_EXECUTION_SETTINGS_UNSUPPORTED, { fields: execution.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_EXECUTION_SETTINGS_UNSUPPORTED })) });
       if (((revision.body as { maxToolCalls?: number }).maxToolCalls ?? 0) > 0) throw new ApiError("agent_not_runnable", NATIVE_TOOL_BUDGET_UNSUPPORTED, { fields: [{ field: "definition.max_tool_calls", reason: "not_an_option", message: NATIVE_TOOL_BUDGET_UNSUPPORTED }] });
       if (!native.remote && (options.apiOnly || options.publicUrl || !isLoopback(host))) throw new ApiError("agent_not_runnable", "Native connections run only on an AgentRun server bound to loopback on the source machine, without a public URL.");
-      if (capped) throw new ApiError("agent_not_runnable", "Native runs retain their own limits; AgentRun cannot enforce a dollar cap on this connection. Remove max_cost_usd and use native limits.");
+      if (capped) throw new ApiError("agent_not_runnable", NATIVE_CAP_UNSUPPORTED);
       if(native.remote)await new RemoteConnectors(store).assertReady(native);else await launchNative(native); return;
     }
     const shape = { ...shapeOf(revision), place, ...(revision.body.place ? {} : { unnamed: true as const }) };
@@ -3422,8 +3422,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const secrets = serverSecrets();
     const runs: Record<string, unknown>[] = [];
     for (const { row, agentArchivedAt, listing, listMark, behind } of page.rows) {
-      // One cut of other secrets (a secret saved since, or the server's own keys at another start), or built under another
-      // listing format (a server before this one), is built again too: at most the page's `limit` builds, and each writes
+      // One cut of other secrets (a secret saved since, or the server's own keys at another start) is built again too: at most the page's `limit` builds, and each writes
       // its listing back, so the next list finds it current.
       const kept = listing === null || behind || !builtOfNow(listing, secrets) ? await listNow(row.id, listMark) : listing;
       // A run whose status moved between the two reads is left off this page, never shown under a status it has left.

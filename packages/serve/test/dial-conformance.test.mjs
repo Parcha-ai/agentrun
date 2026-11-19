@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { driftedVersion, patchVersion, reachesThisRun } from "../scripts/dial-conformance.mjs";
+import { driftedVersion, fixtureFor, patchVersion, reachesThisRun } from "../scripts/dial-conformance.mjs";
 
 const SCRIPT = fileURLToPath(new URL("../scripts/dial-conformance.mjs", import.meta.url));
 const FIXTURE = fileURLToPath(new URL("./fixtures/dial-fake-provider.mjs", import.meta.url));
@@ -100,6 +100,22 @@ test("a run whose Core does not pass still prints its report between the markers
   assert.deepEqual(report.results.map(({ id, status }) => [id, status]), [["health.declared", "skip"]]);
   assert.equal(report.core, "fail");
   assert.equal(ran.code, 1, ran.stderr);
+});
+
+test("a desktop run is given computerd-fixture (without it the screen and input cases skip and Core cannot pass); another kind gets none; a missing binary is refused in words", () => {
+	const dir = mkdtempSync(join(tmpdir(), "dial-conformance-fixture-"));
+	try {
+		const path = join(dir, "computerd-fixture-linux-amd64");
+		writeFileSync(path, "a stand-in", { mode: 0o755 });
+		assert.equal(fixtureFor("desktop", undefined, path), path);
+		assert.equal(fixtureFor("linux", undefined, path), undefined);
+		assert.throws(() => fixtureFor("desktop", undefined, join(dir, "absent")), /a desktop run needs computerd-fixture at .*absent: the server's image builds it/);
+		assert.equal(fixtureFor("desktop", ["health.hello"], join(dir, "absent")), undefined, "a narrowed run goes on without the binary");
+		assert.equal(fixtureFor("desktop", ["health.hello"], path), path, "and takes it when it is there");
+		assert.equal(fixtureFor("linux", undefined, join(dir, "absent")), undefined, "a linux run asks for no file");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("the drift case's patch writes the version string over where it occurs exactly once, the same length and printable, and refuses anything else", () => {

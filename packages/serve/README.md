@@ -188,10 +188,10 @@ once without checking again (a key some harness reads would, with `why=key`).
 
 ## Anonymous usage counts
 
-The server can send three anonymous events: `server_started`, a daily `heartbeat` and `first_run_completed`. Each holds
+The server sends three anonymous events: `server_started`, a daily `heartbeat` and `first_run_completed`. Each holds
 a random id kept in the data directory (`.telemetry.json`), the version, the platform and how many runs ended as a
-range; never a prompt, a file, a key or a name. This release sends nothing: the receiver's key is not set.
-`AGENTRUN_TELEMETRY=0` or `DO_NOT_TRACK=1` turns it off, as do `CI` and `--faux`; `AGENTRUN_TELEMETRY=debug` prints each
+range; never a prompt, a file, a key or a name.
+`AGENTRUN_TELEMETRY=0` or `DO_NOT_TRACK=1` turns it off, as do `CI`, a test runner (`node --test`) and `--faux`; `AGENTRUN_TELEMETRY=debug` prints each
 event on stderr and sends none. The start that first could send prints one notice and sends nothing at that start.
 [docs/telemetry.md](../../docs/telemetry.md) lists every field.
 
@@ -2399,7 +2399,10 @@ change repeats fires once, at its first pass; one it skips fires at the first ti
 reckoned from the last nominal one, so a timer that wakes late does not drift. Every run a trigger starts is capped: by
 the target's `max_cost_usd`, else by the agent's default (its definition's `max_cost_usd`) as it stands when the firing
 starts. A target with neither is `422`, and a firing that finds neither (the default removed since) fails, so no trigger
-starts an uncapped run, a workflow agent's included ([workflow runs](#a-workflow-run-under-its-cap)). Each run's
+starts an uncapped run, a workflow agent's included ([workflow runs](#a-workflow-run-under-its-cap)). The one
+exception is a connected agent ([native agents](../../docs/native-agents.md)): its own CLI keeps its own limits and
+AgentRun cannot hold it to a dollar cap, so a trigger on one takes no `max_cost_usd` (on the target or as the agent's
+default) and no `effort`, each `422 not_allowed`, and its runs start uncapped, as the ones a caller starts do. Each run's
 input ends with a line naming the schedule and the time it fired for, in its zone, and the run's `trigger` names the
 trigger and the firing, in the run's view and in the runs lists (`GET /v2/runs`, `GET /v2/agents/{id}/runs`) alike;
 a run a caller started has `trigger: null`.

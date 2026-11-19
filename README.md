@@ -528,7 +528,8 @@ for the disk, at Render's prices when this was written. Leave the model keys in 
 blank. When it's live, open its URL and paste `AGENTRUN_TOKEN` from the service's Environment tab to set your password.
 Then Continue with ChatGPT (Settings → Model keys, or the first screen), then run your first agent. Or paste a key in
 Render's form, or add it in the console: we recommend an `OPENROUTER_API_KEY` with a dollar cap and an expiration
-date. Do not share it with anyone.
+date. Do not share it with anyone. Walked on 0.1.0-beta.46 from the service's creation to a finished first run in 85
+seconds (healthy at 77), about a tenth of a cent of Render time.
 
 **Self-host on a $5 VPS.**
 
@@ -594,7 +595,7 @@ API token can't write a secret or approve a tool call: its secret write is refus
 nothing a run learns can keep a secret it was handed. [SECURITY.md](SECURITY.md) says how to report a vulnerability.
 
 The server counts itself anonymously (a random id, its version, its platform): never prompts, files or keys.
-`AGENTRUN_TELEMETRY=0` or `DO_NOT_TRACK=1` turns that off, and this release sends nothing yet.
+`AGENTRUN_TELEMETRY=0` or `DO_NOT_TRACK=1` turns that off, and the first start only prints a notice.
 [Anonymous usage counts](docs/telemetry.md) lists every field.
 
 ## Docs

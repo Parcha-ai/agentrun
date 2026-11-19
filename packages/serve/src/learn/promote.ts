@@ -12,6 +12,7 @@ import type { FeedbackRound, OpenedRound } from "../runner/feedback-round.js";
 import type { Settings } from "../store/store.js";
 import { answerJson } from "../answer-json.js";
 import { pathSegments } from "../learning-setting.js";
+import { isObject } from "../validate.js";
 import type { Skipped } from "./replay-calls.js";
 import type { ReplayOutcome } from "../runner/workflow-first.js";
 
@@ -437,8 +438,6 @@ function same(a: unknown, b: unknown): boolean {
   return ka.length === kb.length && ka.every((key) => same((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]));
 }
 
-const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
-
 /** Not there: a path of agree_on that does not resolve in an answer. */
 const MISSING = Symbol("missing");
 
@@ -465,9 +464,6 @@ export function sameAnswer(a: string | null, b: string | null, on?: readonly str
     return x !== MISSING && y !== MISSING && same(x, y);
   });
 }
-
-/** The fields a check or an audit compared on, in words: "mcc", "mcc and riskTier", "mcc, riskTier and siteStatus". */
-export const fieldsWords = (on: readonly string[]): string => (on.length < 2 ? on.join("") : `${on.slice(0, -1).join(", ")} and ${on.at(-1)}`);
 
 // The grader: with no agree_on, the agent's fast model reads two answers to one input and says whether they reach the same
 // decision. One request per pair, its reply {"same": boolean, "differs_on": string | null}. A replay run and an audit's
@@ -517,19 +513,13 @@ export type GraderReply = { readonly text: string } | { readonly refused: string
 /** The grader: its model's name, and one request to it. */
 export type Grader = { readonly model: string; ask(request: { readonly system: string; readonly user: string }): Promise<GraderReply> };
 
-/** A reply that is one fence and nothing else, its info string `json` or none: the JSON inside. */
-const VERDICT_FENCE = /^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/i;
-
 /** The grader's verdict in `text`: one JSON object (bare, or the whole of one fence) whose `same` is a boolean and whose
  *  `differs_on` is a string or null (or absent); undefined for any other reply. */
 export function graderVerdictOf(text: string): { same: boolean; differs_on: string | null } | undefined {
-  const trimmed = text.trim();
-  let value: unknown;
-  try {
-    value = JSON.parse(VERDICT_FENCE.exec(trimmed)?.[1] ?? trimmed);
-  } catch {
-    return undefined;
-  }
+  // One verdict and nothing else: a reply with prose around a fence, or with two fences, is none (valueOf alone would take the last).
+  const fences = text.match(/```/g)?.length ?? 0;
+  if (fences > 0 && !(fences === 2 && text.trim().startsWith("```") && text.trim().endsWith("```"))) return undefined;
+  const value = valueOf(text);
   if (!isObject(value) || typeof value.same !== "boolean") return undefined;
   const differs = value.differs_on;
   if (differs !== undefined && differs !== null && typeof differs !== "string") return undefined;

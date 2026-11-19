@@ -33,7 +33,7 @@ export function LearningBill({ v2, agentId, cost, serving, width }: { v2: Client
   if (!bill || !shown) return null;
   return (
     <>
-      <BillChart bill={bill} width={width} />
+      <BillChart bill={bill} takeover={cost.summary.takeover} width={width} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <AuditLine serving={serving} audits={audits} bill={bill} runs={cost.runs} />
         {serves?.champion && <ServingWorkflow workflow={serves.workflow} champion={serves.champion} />}
@@ -47,7 +47,7 @@ const H = 220;
 
 /** The bill as a chart: the booked bill and the agent for all of it, cumulative, on one dollar axis; the break-even
  *  marker; a hover with each run's two figures; a table of every point. */
-export function BillChart({ bill, width: fixed }: { bill: Bill; width?: number }) {
+export function BillChart({ bill, takeover, width: fixed }: { bill: Bill; takeover: LearningCost["summary"]["takeover"]; width?: number }) {
   const fig = useRef<HTMLElement>(null);
   const [room, setRoom] = useState(fixed ?? 720);
   useEffect(() => {
@@ -59,7 +59,7 @@ export function BillChart({ bill, width: fixed }: { bill: Bill; width?: number }
   }, [fixed]);
   const [active, setActive] = useState<number | null>(null);
   const points = bill.points;
-  const { headline, marker } = billWords(bill);
+  const { headline, marker } = billWords(bill, takeover);
   const both = points.some((p) => p.agent_usd !== null);
   const width = Math.max(300, room);
   const narrow = width < 520;
@@ -71,8 +71,8 @@ export function BillChart({ bill, width: fixed }: { bill: Bill; width?: number }
   // The two lines' end labels, in a gutter right of the last point as wide as they need, at each line's end, pushed apart
   // when the lines end close: never on a line. A narrow card has none (the legend and the headline say the figures).
   const ends = end && !narrow ? spread([
-    { key: "bill", words: `Bill ${money(end.actual_usd)}`, at: y(end.actual_usd) },
-    ...(end.agent_usd !== null ? [{ key: "agent", words: `Agent ${money(end.agent_usd)}`, at: y(end.agent_usd) }] : []),
+    { key: "bill", words: `Bill ${usd(end.actual_usd)}`, at: y(end.actual_usd) },
+    ...(end.agent_usd !== null ? [{ key: "agent", words: `Agent ${usd(end.agent_usd)}`, at: y(end.agent_usd) }] : []),
   ], M.top + 4, M.top + H) : [];
   const plotW = width - M.left - (ends.length ? gutterFor(ends.map((l) => l.words)) : M.right);
   const first = points[0]?.n ?? 1, last = points.at(-1)?.n ?? 1;
@@ -168,8 +168,8 @@ export function BillChart({ bill, width: fixed }: { bill: Bill; width?: number }
             <tr key={p.run_id}>
               <td className="py-0.5 pr-4">{p.n}</td>
               <td className="pr-4">{p.run_id}</td>
-              <td className="pr-4">{money(p.actual_usd)}</td>
-              <td className="pr-4">{p.agent_usd === null ? "-" : money(p.agent_usd)}</td>
+              <td className="pr-4">{usd(p.actual_usd)}</td>
+              <td className="pr-4">{p.agent_usd === null ? "-" : usd(p.agent_usd)}</td>
             </tr>
           ))}</tbody>
         </table></div>
@@ -178,8 +178,6 @@ export function BillChart({ bill, width: fixed }: { bill: Bill; width?: number }
   );
 }
 
-/** A cumulative figure in the table: cents from a dollar up, as the bill is read. */
-const money = (value: number) => (value >= 1 ? `$${value.toFixed(2)}` : usd(value));
 
 /** Each serving learned workflow's audit line, and each hold at the run the server placed it on (`bill.holds`). Nothing
  *  when there is neither. While the audits are read nothing of all time is said; a failed read says so. `runs`: the cost

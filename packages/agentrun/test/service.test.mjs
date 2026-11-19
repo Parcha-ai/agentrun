@@ -403,6 +403,34 @@ test("service install --env: the local model's variables go into the systemd uni
   assert.equal(readFileSync(file, "utf8"), before);
 });
 
+test("service install: the usage counts' switches set where it runs reach the service, under CI it is off, and they stay until --env KEY= removes them", async () => {
+  const { home, exec, get } = linuxHome();
+  const { io } = ioOf();
+  const file = join(home, ".config", "systemd", "user", UNIT);
+  const at = (env) => serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: { PATH: "/usr/bin", ...env }, exec, io, fail, get, waitMs: 5_000 });
+  // A shell with neither switch and no CI writes neither.
+  assert.equal(await at({}).install({}), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin" });
+  // DO_NOT_TRACK in the installing shell is the service's too, and a later install from a shell without it keeps it.
+  assert.equal(await at({ DO_NOT_TRACK: "1" }).install({}), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", DO_NOT_TRACK: "1" });
+  assert.equal(await at({}).install({}), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", DO_NOT_TRACK: "1" });
+  // --env takes them, and KEY= removes one.
+  assert.equal(await at({}).install({ env: ["DO_NOT_TRACK=", "AGENTRUN_TELEMETRY=0"] }), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", AGENTRUN_TELEMETRY: "0" });
+  assert.equal(await at({}).install({ env: ["AGENTRUN_TELEMETRY="] }), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin" });
+  // Under CI the service it starts is off as well; a switch the shell set wins over that.
+  assert.equal(await at({ CI: "true" }).install({}), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", AGENTRUN_TELEMETRY: "0" });
+  assert.equal(await at({ CI: "true", AGENTRUN_TELEMETRY: "debug" }).install({}), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", AGENTRUN_TELEMETRY: "debug" });
+  // A value with a line break never reaches the unit file.
+  assert.equal(await at({ AGENTRUN_TELEMETRY: "", DO_NOT_TRACK: "1\nExecStart=/bin/sh" }).install({ env: ["AGENTRUN_TELEMETRY="] }), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin" });
+});
+
 test("service install --env on macOS: the LaunchAgent's EnvironmentVariables, kept through a re-install", async () => {
   const home = fresh();
   mkdirSync(join(home, ".agentrun", "bin"), { recursive: true });
@@ -447,7 +475,7 @@ test("service install --env refuses any other variable by name, and a pair with 
   const { io } = ioOf();
   const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, exec, io, fail, get, waitMs: 5_000 });
   for (const [pair, said] of [
-    ["OPENROUTER_API_KEY=sk-or-x", /--env takes AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_PRICE, AGENTRUN_MCP_ALLOW_LOOPBACK or AGENTRUN_WEBHOOK_PRIVATE_TARGETS, not OPENROUTER_API_KEY: a key goes in the console/],
+    ["OPENROUTER_API_KEY=sk-or-x", /--env takes AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_PRICE, AGENTRUN_MCP_ALLOW_LOOPBACK, AGENTRUN_WEBHOOK_PRIVATE_TARGETS, AGENTRUN_TELEMETRY or DO_NOT_TRACK, not OPENROUTER_API_KEY: a key goes in the console/],
     ["PATH=/x", /not PATH/],
     ["AGENT_MODEL", /--env takes KEY=VALUE, not AGENT_MODEL/],
     ["AGENT_MODEL=a\nb", /AGENT_MODEL's value has a line break/],

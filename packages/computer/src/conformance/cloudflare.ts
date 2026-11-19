@@ -17,6 +17,8 @@ export const ENV = {
 	url: "COMPUTER_CLOUDFLARE_RELAY_URL",
 	/** relayToken, required: the relay's RELAY_TOKEN. */
 	token: "COMPUTER_CLOUDFLARE_RELAY_TOKEN",
+	/** kind: linux (default) or desktop, which needs the public server's process (dialKit). */
+	kind: "COMPUTER_CLOUDFLARE_KIND",
 } as const;
 
 /** The longest lifetime a computer of a run may ask for: init's deadline and the janitor end each container by then. */
@@ -45,8 +47,11 @@ export interface CloudflareModuleOptions {
 
 /** The provider the run makes computers with, dialing the server options.dial names. */
 export function createProvider({ env = process.env, dial, daemonPath, fetch, onNote }: CloudflareModuleOptions = {}): CloudflareProvider {
+	const kind = env[ENV.kind] || undefined;
 	return create({
 		...settingsFromEnv(env),
+		// create() refuses any other kind in words.
+		...(kind === undefined ? {} : { kind: kind as "desktop" | "linux" }),
 		...(dial ? { dial } : {}),
 		...(daemonPath === undefined ? {} : { daemonPath }),
 		...(fetch ? { fetch } : {}),
