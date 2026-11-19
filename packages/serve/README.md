@@ -2848,8 +2848,9 @@ approve, such a send is refused in those words.
 ## Templates
 
 A template package makes a working agent in one call: its definition, its skills and rules, and its triggers, from a
-folder the server ships. `GET /v2/templates` lists them; `POST /v2/templates/{name}/apply` with `{parameters,
-overrides?: {model}}` makes one, or nothing when a check fails (a trigger refused archives the agent it made). A
+folder the server ships. `GET /v2/templates` lists them; `GET /v2/templates/{name}` reads one whole (its instructions and
+every skill file, as an import shows them); `POST /v2/templates/{name}/apply` with `{parameters, overrides?: {model}}`
+makes one, or nothing when a check fails (a trigger refused archives the agent it made). A
 package's `version` is SemVer and never `definition.version`, the agent's revision number. A package's `composio` trigger names its
 need's toolkit as its `server` (`server: github` for a required `{source: composio, toolkit: github}` need), and apply makes it
 on the saved Composio server that need maps to, its `config` filled from the parameters it names

@@ -433,6 +433,19 @@ __all__ = [
     "GetStatsResponseLearning",
     "GetStatsResponsePerAgentItem",
     "GetStatsResponseRuns",
+    "GetTemplateResponse",
+    "GetTemplateResponseTemplate",
+    "GetTemplateResponseTemplateAuthor",
+    "GetTemplateResponseTemplateBudget",
+    "GetTemplateResponseTemplateComputerHere",
+    "GetTemplateResponseTemplateComputerHereComputer",
+    "GetTemplateResponseTemplateMcpItem",
+    "GetTemplateResponseTemplateMcpItemToolsItem",
+    "GetTemplateResponseTemplateMcpItemToolsItemPinValue",
+    "GetTemplateResponseTemplateModel",
+    "GetTemplateResponseTemplateModelChoicesItem",
+    "GetTemplateResponseTemplateOutput",
+    "GetTemplateResponseTemplateToolPolicy",
     "GetTimelineResponse",
     "GetToolSettingsResponse",
     "GetToolSettingsResponseBrowser",
@@ -6631,6 +6644,130 @@ class ApplyTemplateResponseWebhookSecretsItem(_ApplyTemplateResponseWebhookSecre
     note: str
 
 
+class GetTemplateResponse(TypedDict):
+    template: GetTemplateResponseTemplate
+    instructions: str
+    skill_files: dict[str, str]
+    console_url: str
+
+
+class GetTemplateResponseTemplate(TypedDict):
+    id: str
+    bundled: bool
+    source: str | None
+    sha: str | None
+    publisher: str | None
+    name: str
+    display_name: str | None
+    version: str
+    description: str
+    license: str | None
+    author: GetTemplateResponseTemplateAuthor | None
+    repository: str | None
+    output: GetTemplateResponseTemplateOutput | None
+    harness: list[str] | None
+    model: GetTemplateResponseTemplateModel | None
+    effort: str | None
+    tools: list[str] | None
+    checkout: Literal["pull_request"] | None
+    tool_policy: GetTemplateResponseTemplateToolPolicy | None
+    computer: list[Literal["shell", "none"]] | None
+    computer_here: GetTemplateResponseTemplateComputerHere | None
+    category: Literal["engineering", "security", "sales", "marketing", "research", "finance", "operations", "compliance", "personal"] | None
+    tags: list[str]
+    mcp: list[GetTemplateResponseTemplateMcpItem]
+    parameters: dict[str, Any]
+    input_schema: dict[str, Any] | None
+    secrets: list[str]
+    budget: GetTemplateResponseTemplateBudget | None
+    learning: bool | dict[str, Any]
+    approvals_default: Literal["ask", "never"]
+    triggers: list[dict[str, Any]]
+    skills: list[str]
+    evals: list[str]
+
+
+class _GetTemplateResponseTemplateAuthorRequired(TypedDict):
+    name: str
+
+
+class GetTemplateResponseTemplateAuthor(_GetTemplateResponseTemplateAuthorRequired, total=False):
+    email: str
+    url: str
+
+
+class GetTemplateResponseTemplateOutput(TypedDict):
+    schema: str
+    json_schema: dict[str, Any] | None
+
+
+class _GetTemplateResponseTemplateModelRequired(TypedDict):
+    tier: Literal["fast", "balanced", "strong"]
+
+
+class GetTemplateResponseTemplateModel(_GetTemplateResponseTemplateModelRequired, total=False):
+    prefer: str
+    fast: str
+    strong: str
+    choices: list[GetTemplateResponseTemplateModelChoicesItem]
+
+
+class GetTemplateResponseTemplateModelChoicesItem(TypedDict):
+    id: str
+    label: str
+    model: str
+    harness: str
+    warning: str | None
+    note: str | None
+    secrets: list[str]
+
+
+class GetTemplateResponseTemplateToolPolicy(TypedDict):
+    bash: Literal["read-only"]
+
+
+class GetTemplateResponseTemplateComputerHere(TypedDict):
+    entry: Literal["shell", "none"] | None
+    computer: GetTemplateResponseTemplateComputerHereComputer | None
+    shell: str | None
+    dropped: list[str]
+    note: str | None
+
+
+class _GetTemplateResponseTemplateComputerHereComputerRequired(TypedDict):
+    kind: str
+
+
+class GetTemplateResponseTemplateComputerHereComputer(_GetTemplateResponseTemplateComputerHereComputerRequired, total=False):
+    provider: str
+
+
+class GetTemplateResponseTemplateMcpItem(TypedDict):
+    source: Literal["composio", "github", "url"]
+    toolkit: str
+    required: bool
+    reason: str | None
+    tools: list[GetTemplateResponseTemplateMcpItemToolsItem]
+
+
+class _GetTemplateResponseTemplateMcpItemToolsItemRequired(TypedDict):
+    name: str
+    tool: str
+    asks: Literal["allow", "ask"]
+
+
+class GetTemplateResponseTemplateMcpItemToolsItem(_GetTemplateResponseTemplateMcpItemToolsItemRequired, total=False):
+    pin: dict[str, str | float | bool | None | list[str | float | bool | None] | GetTemplateResponseTemplateMcpItemToolsItemPinValue]
+
+
+class GetTemplateResponseTemplateMcpItemToolsItemPinValue(TypedDict):
+    keys: list[str]
+
+
+class GetTemplateResponseTemplateBudget(TypedDict):
+    per_run_usd: float
+
+
 class _ImportTemplateBodyRequired(TypedDict):
     source: str
 
@@ -9092,6 +9229,7 @@ OPERATIONS: dict[str, Operation] = {
     "getStats": Operation(method="GET", path="/stats", path_params=(), multi_segment=(), query=("from", "to", "agent"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "applyTemplate": Operation(method="POST", path="/templates/{template}/apply", path_params=("template",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "deleteTemplate": Operation(method="DELETE", path="/templates/{template}", path_params=("template",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
+    "getTemplate": Operation(method="GET", path="/templates/{template}", path_params=("template",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "importTemplate": Operation(method="POST", path="/templates/import", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "listTemplates": Operation(method="GET", path="/templates", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteToolKey": Operation(method="DELETE", path="/settings/tool-keys/{key_id}", path_params=("key_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
@@ -9729,6 +9867,10 @@ class TemplateResource(Group):
     def delete(self, template: str, *, timeout: float | None = None) -> None:
         """Remove an imported template package (DELETE /templates/{template})."""
         return self._call("deleteTemplate", (template,), None, None, timeout=timeout)
+
+    def get(self, template: str, *, timeout: float | None = None) -> GetTemplateResponse:
+        """One template package, whole: what it makes and needs, its instructions and every skill file it would give the agent (GET /templates/{template})."""
+        return self._call("getTemplate", (template,), None, None, timeout=timeout)
 
     def import_(self, body: ImportTemplateBody, *, timeout: float | None = None) -> ImportTemplateResponse:
         """Import a template package from a public GitHub repository, or preview it (dry_run) (POST /templates/import)."""

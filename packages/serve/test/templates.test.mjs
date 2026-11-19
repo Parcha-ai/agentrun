@@ -292,6 +292,35 @@ test("code-review through the API: listed, applied with a repo it makes the agen
   assert.ok(schemaProblems(schema, schema, { ...FINDINGS, findings: [{ ...FINDINGS.findings[0], severity: "important" }] }).length, "v1's severity is gone: priority replaces it");
 });
 
+test("GET /templates/{template} answers one package whole, a bundled one's too: as the list shows it, its instructions and every skill file in full, and its console page; an unknown one is 404, and it takes the token", async (t) => {
+  const { api, baseUrl } = await serve(t, { runner: false });
+  const meets = await documented(baseUrl);
+  const listed = (await api("GET", "/templates")).body.templates;
+  assert.ok(listed.length > 0);
+  for (const view of listed) {
+    const one = await api("GET", `/templates/${encodeURIComponent(view.id)}`);
+    assert.equal(one.status, 200, `${view.id}: ${JSON.stringify(one.body)}`);
+    meets("/templates/{template}", "get", "200", one.body);
+    assert.deepEqual(one.body.template, view, `${view.id} reads as GET /templates lists it`);
+    assert.equal(new URL(one.body.console_url).hash, `#/templates/${encodeURIComponent(view.id)}`, `${view.id} links to its apply page`);
+  }
+
+  // What a person reads before applying it: the package's own files, as they are on disk.
+  const review = (await api("GET", "/templates/code-review")).body;
+  assert.equal(review.instructions, file("agent.md").replace(/^---[\s\S]*?\n---\n/, "").trim(), "the instructions in full, placeholders unfilled");
+  assert.deepEqual(Object.keys(review.skill_files).sort(), ["review/CODEREVIEW.md", "review/DEEP.md", "review/REVIEWER.md", "review/SKILL.md", "review/findings.schema.json"]);
+  assert.equal(review.skill_files["review/SKILL.md"], file("skills/review/SKILL.md"), "each skill file in full");
+  assert.equal(review.skill_files["review/CODEREVIEW.md"], file("rules/CODEREVIEW.md"), "the rules beside the skill that reads them");
+  assert.equal(review.skill_files["review/findings.schema.json"], file("skills/review/findings.schema.json"));
+
+  const unknown = await api("GET", "/templates/nope");
+  assert.deepEqual([unknown.status, unknown.body.error.code], [404, "not_found"], JSON.stringify(unknown.body));
+  assert.match(unknown.body.error.message, /no template nope: GET \/v2\/templates lists them/);
+  // The import route is a POST: a GET of its path asks for a package named "import", which there is none of.
+  assert.equal((await api("GET", "/templates/import")).status, 404);
+  assert.equal((await fetch(`${baseUrl}/templates/code-review`)).status, 401);
+});
+
 test("apply makes nothing when a secret is missing, its parameters do not check, or the package is unknown; it takes the token as creating an agent does", async (t) => {
   withEnv(t, {}, [KEY]);
   const { api, baseUrl } = await serve(t, { templates: FIXTURES });
