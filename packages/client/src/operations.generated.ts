@@ -467,6 +467,7 @@ export type RunSummary = {
   workflow?: {
     name: string | null;
     digest: string | null;
+    repick: "found" | "missed" | null;
   } | null;
 };
 
@@ -774,6 +775,7 @@ export type Run = {
   workflow?: {
     name: string | null;
     digest: string | null;
+    repick: "found" | "missed" | null;
   } | null;
 };
 

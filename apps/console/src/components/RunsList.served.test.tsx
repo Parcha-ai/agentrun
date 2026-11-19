@@ -13,8 +13,8 @@ const base: Run = {
   run_id: "r1", agent_id: "mcc", agent_version: 2, revision: "rv2", kind: "agentic", status: "completed", state: "idle", title: "Coffee shop",
   created_at: "2026-11-18T06:00:00Z", ended_at: "2026-11-18T06:00:03Z", result: null, error: null, cost: { usd: 0.002, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null,
 };
-const SERVED: Run = { ...base, run_id: "r-served", path: "workflow", workflow: { name: "mcc-guess", digest: "d".repeat(16) } };
-const HANDED: Run = { ...base, run_id: "r-handed", path: "handed_back", workflow: { name: "mcc-guess", digest: "d".repeat(16) } };
+const SERVED: Run = { ...base, run_id: "r-served", path: "workflow", workflow: { name: "mcc-guess", digest: "d".repeat(16), repick: null } };
+const HANDED: Run = { ...base, run_id: "r-handed", path: "handed_back", workflow: { name: "mcc-guess", digest: "d".repeat(16), repick: null } };
 const AGENT: Run = { ...base, run_id: "r-agent" };
 
 const host = (html: string) => {
@@ -56,6 +56,27 @@ describe("a served run's page header", () => {
     expect(facts(AGENT)).toBe("agentic · rev 2 · on the server");
   });
   it("a served run whose workflow is not named reads Learned workflow alone", () => {
-    expect(facts({ ...SERVED, workflow: { name: null, digest: null } })).toBe("Learned workflow · rev 2 · on the server");
+    expect(facts({ ...SERVED, workflow: { name: null, digest: null, repick: null } })).toBe("Learned workflow · rev 2 · on the server");
+  });
+});
+
+// A quote miss re-picks a compiled answer once before it hands back (the server's `workflow.repick`, from the run's loop
+// rows): the run page says which pass answered, beside the served label; the runs list keeps its one word.
+describe("a re-picked run's page header", () => {
+  const repicked = (run: Run, repick: "found" | "missed"): Run => ({ ...run, workflow: { name: "mcc-guess", digest: "d".repeat(16), repick } });
+  it("a served run whose re-pick found its quotes reads Learned workflow · re-picked", () => {
+    expect(facts(repicked(SERVED, "found"))).toBe("Learned workflow mcc-guess · re-picked · rev 2 · on the server");
+    expect(header(repicked(SERVED, "found")).querySelector('[data-run-kind="learned"] .fill-chart-workflow')).not.toBeNull();
+  });
+  it("a handed-back run whose re-pick missed says so before its hand-back", () => {
+    expect(facts(repicked(HANDED, "missed"))).toBe("agentic · handed back by mcc-guess after its re-pick missed · rev 2 · on the server");
+  });
+  it("a handed-back run whose re-pick found its quotes says it re-picked before its hand-back", () => {
+    expect(facts(repicked(HANDED, "found"))).toBe("agentic · handed back by mcc-guess after a re-pick · rev 2 · on the server");
+  });
+  it("a run answered on its first pass reads as before, and the runs list keeps Learned workflow", () => {
+    expect(facts(SERVED)).toBe("Learned workflow mcc-guess · rev 2 · on the server");
+    const [served] = kinds([repicked(SERVED, "found")]);
+    expect(served.textContent).toBe("Learned workflow");
   });
 });

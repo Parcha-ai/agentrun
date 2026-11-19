@@ -961,6 +961,7 @@ export interface components {
     workflow?: {
       name: string | null;
       digest: string | null;
+      repick: "found" | "missed" | null;
     } | null;
   };
   RunCreate: {
@@ -1171,6 +1172,7 @@ export interface components {
     workflow?: {
       name: string | null;
       digest: string | null;
+      repick: "found" | "missed" | null;
     } | null;
   };
   SecretMeta: {
