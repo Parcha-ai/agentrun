@@ -509,6 +509,7 @@ test("no real Modal client: the provider and the conformance module import nothi
 		app: "COMPUTER_MODAL_APP",
 		serverUrl: "COMPUTER_MODAL_SERVER_URL",
 		connect: "COMPUTER_MODAL_CONNECT",
+		kind: "COMPUTER_MODAL_KIND",
 	});
 	assert.equal(module.CONFORMANCE_MAX_LIFETIME_MS, 30 * 60_000);
 	assert.equal(modal.modalCommands, undefined, "the scripts are the adapter's");

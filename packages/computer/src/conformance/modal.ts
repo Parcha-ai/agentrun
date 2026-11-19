@@ -41,6 +41,8 @@ export const MODAL_ENV = {
 	serverUrl: "COMPUTER_MODAL_SERVER_URL",
 	/** connect: exec (default) or dial, which needs the public server's process (dialKit). */
 	connect: "COMPUTER_MODAL_CONNECT",
+	/** kind: linux (default) or desktop, which create() takes on dial alone. */
+	kind: "COMPUTER_MODAL_KIND",
 } as const;
 
 /** The names this module reads, under the conformance modules' common name (ConformanceModule.ENV). */
@@ -99,7 +101,9 @@ function live(env: Record<string, string | undefined>): void {
 /** The provider the CLI runs; throws in words without the live switch, or when a setting is missing or wrong. */
 export async function createProvider({ env = process.env, ModalClient, daemonPath, onNote, dial }: ModalModuleOptions = {}): Promise<ModalProvider> {
 	live(env);
-	return create({ ...settingsFromEnv(env), ...(daemonPath === undefined ? {} : { daemonPath }), ...(ModalClient ? { ModalClient } : {}), ...(onNote ? { onNote } : {}), ...(dial ? { dial } : {}), maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS });
+	const kind = env[MODAL_ENV.kind] || undefined;
+	// create() refuses any other kind, and desktop without dial, in words.
+	return create({ ...settingsFromEnv(env), ...(kind === undefined ? {} : { kind: kind as "desktop" | "linux" }), ...(daemonPath === undefined ? {} : { daemonPath }), ...(ModalClient ? { ModalClient } : {}), ...(onNote ? { onNote } : {}), ...(dial ? { dial } : {}), maxLifetimeMs: CONFORMANCE_MAX_LIFETIME_MS });
 }
 
 /**
