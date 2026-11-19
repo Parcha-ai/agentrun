@@ -20,7 +20,8 @@ const TOOLS = [
 ];
 // The fake MCP server's action (fake-mcp-server.mjs), which the toolkits list so a save can grant one its server serves.
 const ADD = { slug: "add", name: "Add", description: "Add two numbers." };
-const TOOLKITS = { github: { no_auth: false, tools: [...TOOLS, ADD] }, slack: { no_auth: false, tools: TOOLS }, hackernews: { no_auth: true, tools: [ADD] } };
+const PAID = { slug: "paid", name: "Paid", description: "A call the server bills." };
+const TOOLKITS = { github: { no_auth: false, tools: [...TOOLS, ADD] }, slack: { no_auth: false, tools: TOOLS }, hackernews: { no_auth: true, tools: [ADD, PAID] } };
 /** What a save makes at Composio: an auth config, an MCP server, its address, a connect link. */
 const MAKING = [["POST", "/api/v3/auth_configs"], ["POST", "/api/v3.1/mcp/servers/custom"], ["POST", "/api/v3.1/mcp/servers/generate"], ["POST", "/api/v3/connected_accounts/link"]];
 const made = (composio) => composio.calls.filter((call) => MAKING.some(([method, path]) => call.method === method && call.path === path));
@@ -182,4 +183,32 @@ test("a save naming an auth config that fails after Composio made its server rem
   const refused = await save(s, "gh", { toolkit: "github", tools: ["add"], auth_config_id: "ac_mine" });
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
   assert.deepEqual(deletesFrom(s.composio, 0), [mcpPath(s.composio.mcpId)], "the MCP server it made is removed, the owner's auth config kept");
+});
+
+test("a preset re-save with no price keeps the server's prices for the actions it still grants: the owner's, and price_usd's, held and booked on the next call", { timeout: 150_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") });
+  const s = await setup(t, {}, { faux: FAUX_MCP, accounts: true, openSetup: true });
+  const read = async (name) => (await s.api("GET", `/settings/mcp-servers/${name}`)).body;
+  // Prices the owner set on a preset server (an ordinary PUT keeping its address and sealed key), then a preset re-save
+  // that adds an action: each re-save is a new Composio server at a new address.
+  assert.equal((await save(s, "owned", { toolkit: "hackernews", tools: ["add"] })).status, 200);
+  const priced = await s.api("PUT", "/settings/mcp-servers/owned", { url: (await read("owned")).url, auth: { type: "headers" }, prices: { add: 0.02 } });
+  assert.equal(priced.status, 200, JSON.stringify(priced.body));
+  const grown = await save(s, "owned", { toolkit: "hackernews", tools: ["add", "paid"] });
+  assert.equal(grown.status, 200, JSON.stringify(grown.body));
+  assert.deepEqual(grown.body.server.prices, { add: 0.02 }, "the owner's price stays through a preset re-save that names none");
+  assert.deepEqual((await read("owned")).prices, { add: 0.02 });
+
+  // price_usd's prices the same: a re-save adding an action keeps add's, and a call of it is held and booked at it.
+  assert.equal((await save(s, "hn", { toolkit: "hackernews", tools: ["add"], price_usd: 0.01 })).status, 200);
+  const again = await save(s, "hn", { toolkit: "hackernews", tools: ["add", "paid"] });
+  assert.equal(again.status, 200, JSON.stringify(again.body));
+  assert.deepEqual(again.body.server.prices, { add: 0.01 }, "price_usd's price stays through a re-save that names none");
+  assert.equal((await s.api("PUT", "/settings/tools", { "mcp:hn/*": { permission: "allow" } })).status, 200);
+  const call = await ran(s.api, "kept", "mcp:hn/add", 'Call mcp__hn__add with {"a":2,"b":3}');
+  assert.deepEqual([call.span.usd, call.span.charged, call.span.not_metered], [0.01, true, false], JSON.stringify(call.span));
+  assert.equal(call.run.cost?.usd, 0.01);
+  // A re-save naming a price replaces them: every granted action at it.
+  const repriced = await save(s, "hn", { toolkit: "hackernews", tools: ["add", "paid"], price_usd: 0.03 });
+  assert.deepEqual(repriced.body.server.prices, { add: 0.03, paid: 0.03 });
 });
