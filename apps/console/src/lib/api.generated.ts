@@ -4930,6 +4930,8 @@ export interface operations {
       toolkit: string;
       tools: string[];
       user_id?: string;
+      auth_config_id?: string;
+      price_usd?: number;
     };
     answer: {
       server: {
