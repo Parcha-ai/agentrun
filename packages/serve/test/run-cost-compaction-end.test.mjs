@@ -20,7 +20,7 @@ const { runAllInOverStore } = await import("../dist/store-reads/learning.js");
 const { viewOverStore } = await import("../dist/store-view.js");
 const { spentOverStore } = await import("../dist/store-reads/cap.js");
 const { HELD_FIELD, spentFrom } = await import("../dist/cap.js");
-const { REQUEST_STARTED } = await import("../dist/timeline/index.js");
+const { REQUEST_COST, REQUEST_STARTED, timelineOf } = await import("../dist/timeline/index.js");
 
 const ROOT = 1;
 const deps = { origin: "", serverSecrets: () => [] };
@@ -130,6 +130,20 @@ for (const compactions of [1, 2]) {
   });
 }
 
+/** The usage row a settled run's entries end with. */
+const usageOf = (entries) => timelineOf(entries.map(([kind, data, model]) => ({ kind, ...(data === undefined ? {} : { data }), ...(model === undefined ? {} : { model }) })), { settled: true }).findLast((row) => row.kind === "usage")?.usage;
+
+test("a compaction answers only a summary that left unanswered: never a request a crash cut, never one a host marked apart", () => {
+  const [cut, sideStart, sideCost] = [[REQUEST_STARTED, {}], [REQUEST_STARTED, { request: "compaction" }], [REQUEST_COST, { request: "compaction", usd: 0.15 }]];
+  // Every request answered, then a compaction: nothing is left for it, so it is no request of its own.
+  const answered = usageOf([[REQUEST_STARTED, {}], answer(0.03, "a"), compaction("s")]);
+  assert.deepEqual([answered?.usd, answered?.requests, answered?.unpriced], [0.03, 1, undefined], JSON.stringify(answered));
+  // A summary the host marked as a side request, closed by its cost: the compaction after it answers no other mark, so a
+  // request a crash cut before it stays cut, its cost unknown.
+  const side = usageOf([[REQUEST_STARTED, {}], answer(0.03, "a"), cut, sideStart, sideCost, compaction("s")]);
+  assert.deepEqual([side?.usd, side?.so_far_usd, side?.unpriced, side?.requests], [null, 0.18, 1, 3], JSON.stringify(side));
+});
+
 test("the cap's spend counts a compaction's summary once, at its answer's cost, when its marks hold their figures", () => {
   // The same shape, each start mark holding what the cap held for it: the summary's mark is answered by pi's compaction
   // entry, never left open as a request a crash cut and counted again at its hold.
@@ -137,4 +151,9 @@ test("the cap's spend counts a compaction's summary once, at its answer's cost, 
   const held = root.map(([kind, data, model]) => ({ kind, data: kind === REQUEST_STARTED ? { [HELD_FIELD]: 0.75 } : data, ...(model === undefined ? {} : { model }) }));
   const spent = spentFrom(held);
   assert.ok(typeof spent === "number" && Math.abs(spent - sum) < 1e-9, `the cap's spend: ${spent}, not ${sum}`);
+  // A summary marked as a side request is closed by its cost: the compaction after it leaves a request a crash cut open,
+  // at its hold.
+  const entry = ([kind, data, model]) => ({ kind, ...(data === undefined ? {} : { data }), ...(model === undefined ? {} : { model }) });
+  const side = spentFrom([[REQUEST_STARTED, { [HELD_FIELD]: 0.5 }], answer(0.03, "a"), [REQUEST_STARTED, { [HELD_FIELD]: 0.75 }], [REQUEST_STARTED, { request: "compaction", [HELD_FIELD]: 0.5 }], [REQUEST_COST, { request: "compaction", usd: 0.15 }], compaction("s")].map(entry));
+  assert.ok(typeof side === "number" && Math.abs(side - 0.93) < 1e-9, `the cap's spend beside a side summary: ${side}, not 0.93`);
 });
