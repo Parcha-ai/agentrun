@@ -4,6 +4,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import { App, Console, IMPORT_POLL_MS } from "./App";
 import { createClient, type Client } from "@/lib/client";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { picker } from "@/test/picker";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -11,7 +12,7 @@ let root: Root | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; vi.useRealTimers(); vi.unstubAllGlobals(); history.replaceState(null, "", "/"); });
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-const agent = (id: string): Agent => ({ agent_id: id, kind: "agentic", revision: "r2", revisions: 2, archived_at: null, definition: { version: 2, name: id, instructions: "Answer.", harness: "pi", skills: [], tools: [] } });
+const agent = (id: string): Agent => ({ ...SERVED_AGENT, agent_id: id, kind: "agentic", revision: "r2", revisions: 2, archived_at: null, definition: { version: 2, name: id, instructions: "Answer.", harness: "pi", skills: [], tools: [] } });
 const reviewer = agent("reviewer"), other = agent("other");
 const fileId = "019a0000-0000-7000-8000-000000000001";
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { promise, resolve }; };

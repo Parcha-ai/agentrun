@@ -67,10 +67,10 @@ export type Agent = {
     default_permission: "allow" | "ask" | "deny";
     permissions: Array<"allow" | "ask" | "deny">;
   }>;
-  kind?: "agentic" | "workflow" | null;
-  revision?: string | null;
-  revisions?: number;
-  archived_at?: string | null;
+  kind: "agentic" | "workflow" | null;
+  revision: string | null;
+  revisions: number;
+  archived_at: string | null;
   learning?: {
     pending: number;
   };
@@ -987,7 +987,7 @@ export type Capabilities = {
     default_reason?: string;
     allow: Array<string>;
   };
-  harnesses?: Array<{
+  harnesses: Array<{
     id: string;
     label: string;
     promises: {

@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { type Agent, type AgentFields, type SaveProblem, editBody, toolOffers } from "@/lib/agentForm";
+import type { Computer } from "@/lib/v2";
+import { SERVED_AGENT } from "@/test/agent";
 
 // The Computer step's run video (`computer.record`, serve's README "A video of each run"): a switch of provider, or of
 // kind to another that records, keeps it; a kind with no screen drops it and says so; a Recording switch sets and
@@ -20,10 +22,10 @@ const KINDS = [
   { kind: "browser", offered: true, groups: ["cdp"], tools: ["browser"], providers: [ready("browserbase", "Browserbase")] },
 ];
 const caps = { harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools: toolOffers([{ name: "read", available: true, harnesses: ["pi"] }]), computers: KINDS };
-const RECORDED = { kind: "desktop", provider: "orgo", record: true };
-const agent = (computer: Record<string, unknown> = RECORDED): Agent => ({
-  agent_id: "filmed", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
-  definition: { version: 1, name: "Filmed", instructions: "Probe.", harness: "pi", skills: [], tools: ["read"], computer } as Agent["definition"],
+const RECORDED: Computer = { kind: "desktop", provider: "orgo", record: true };
+const agent = (computer: Computer = RECORDED): Agent => ({
+  ...SERVED_AGENT, agent_id: "filmed", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
+  definition: { version: 1, name: "Filmed", instructions: "Probe.", harness: "pi", skills: [], tools: ["read"], computer },
 });
 
 function mount(a: Agent, step = "computer", answer: SaveProblem | null = null) {

@@ -7,13 +7,14 @@ import { createClient } from "@/lib/client";
 import { templateAgentDraft } from "@/lib/agentDraft";
 import { TEMPLATES } from "@/lib/templates";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { holdsMove } from "@/lib/useUnsavedChangesGuard";
 import { workflowStarter } from "@/lib/workflowStarter";
 import { pick, picker, valueOf } from "@/test/picker";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const origin = "https://console.example.test";
-const existing: Agent = { agent_id: "support/a", kind: "agentic", revision: "rev-three", revisions: 5, archived_at: null, definition: {
+const existing: Agent = { ...SERVED_AGENT, agent_id: "support/a", kind: "agentic", revision: "rev-three", revisions: 5, archived_at: null, definition: {
   version: 3, name: "Support", description: "Answers support questions", instructions: "Answer carefully.", harness: "pi", model: "anthropic/example-model", tools: ["read", "web_fetch"], skills: ["support"], learning: true,
   tool_settings: { web_fetch: { provider: "kernel" } }, input_schema: { type: "object", properties: { ticket: { type: "string" } } },
 } };
@@ -624,7 +625,7 @@ function revisionServer(initial: Agent) {
     }
     const computer = definition.computer as { kind: string; provider?: string } | undefined;
     const place = definition.place as { mode: string; box?: string } | undefined;
-    if (computer) definition.place = computer.kind === "sandbox" ? { mode: "sandbox", box: computer.provider } : { mode: "runner" };
+    if (computer) definition.place = computer.kind === "sandbox" ? { mode: "sandbox", box: computer.provider } as Agent["definition"]["place"] : { mode: "runner" };
     else if (place) definition.computer = place.mode === "sandbox" ? { kind: "sandbox", provider: place.box } : { kind: "none" };
     if (definition.checkout === "none") delete definition.checkout;
     if (definition.max_cost_usd === 0) delete definition.max_cost_usd;
@@ -756,7 +757,7 @@ describe("AgentRequest complete JSON API carry and reset contract", () => {
   });
 
   it("allows deleting only a derived place while preserving the full computer", async () => {
-    const computer = { kind: "sandbox", provider: "docker", image: "large", gpu: { type: "T4", count: 1 } };
+    const computer = { kind: "sandbox" as const, provider: "docker", image: "large", gpu: { type: "T4", count: 1 } };
     const server = revisionServer(contractAgent({ computer, place: { mode: "sandbox", box: "docker" } }));
     await mount({ operation: "edit-agent", agentId: existing.agent_id }, server.answer);
     await editJSON(definition => { delete definition.place; definition.instructions = "Keep the rich computer."; });

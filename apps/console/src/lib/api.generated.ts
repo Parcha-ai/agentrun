@@ -68,10 +68,10 @@ export interface components {
       default_permission: "allow" | "ask" | "deny";
       permissions: ("allow" | "ask" | "deny")[];
     }[];
-    kind?: "agentic" | "workflow" | null;
-    revision?: string | null;
-    revisions?: number;
-    archived_at?: string | null;
+    kind: "agentic" | "workflow" | null;
+    revision: string | null;
+    revisions: number;
+    archived_at: string | null;
     learning?: {
       pending: number;
     };
@@ -168,7 +168,7 @@ export interface components {
       default_reason?: string;
       allow: string[];
     };
-    harnesses?: {
+    harnesses: {
       id: string;
       label: string;
       promises: {

@@ -104,8 +104,6 @@ export type McpRefresh = { added: string[]; removed: string[]; changed: string[]
 export type McpAuth = { type: McpAuthType; token?: string; headers?: Record<string, string> };
 /** A Composio toolkit's actions (POST /settings/mcp-servers/composio/tools), `no_auth` when it needs no account. */
 export type ComposioTools = { toolkit: string; no_auth: boolean; tools: { slug: string; name: string; description: string }[] };
-/** Capabilities' `features.mcp_client`. */
-export type McpClientFeature = { auth?: string[]; harnesses?: string[] };
 
 /** The grant `definition.tools` holds for a server's tool, and the server and tool a grant names (null: not one). */
 /** What a preview's tool list is: the tools the server offers, listed with this credential, not what it lets this

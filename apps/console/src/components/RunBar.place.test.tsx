@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { RunBar } from "./RunBar";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { ClientError } from "@/lib/client";
 
 // A run runs where its agent's definition says: the start names no place, for an agent in a box too, and a start the
@@ -11,8 +12,8 @@ import { ClientError } from "@/lib/client";
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
-const agent = (place?: unknown): Agent => ({
-  agent_id: "boxed", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
+const agent = (place?: Agent["definition"]["place"]): Agent => ({
+  ...SERVED_AGENT, agent_id: "boxed", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Boxed", instructions: "Probe.", harness: "pi", skills: [], tools: ["read"], ...(place ? { place } : {}) },
 });
 

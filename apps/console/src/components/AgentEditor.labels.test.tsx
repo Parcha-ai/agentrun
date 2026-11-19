@@ -70,7 +70,7 @@ const namedGroup = (host: HTMLElement, name: string) => {
 describe("the agent editor's composite field groups", () => {
   it("names Tools and Skills and links their help, refusal and warning without changing the tool edit", async () => {
     const savedAgent = agentFixture("invoice-checker");
-    const agent = { ...savedAgent, definition: { ...savedAgent.definition, tools: ["read", "write"], skills: ["billing.md"] }, warnings: [{ field: "definition.tools[0]", reason: "missing", message: "Need a configured source." }] };
+    const agent = { ...savedAgent, definition: { ...savedAgent.definition, tools: ["read", "write"], skills: ["billing.md"] }, warnings: [{ field: "definition.tools[0]", reason: "missing" as const, message: "Need a configured source." }] };
     let saved: { tools?: string[] } | undefined;
     const { host } = await open({ agent, step: "tools", problem: { kind: "invalid", message: "Refused", fields: { "definition.tools[0]": "Choose another tool." } }, onSave: async (fields) => { saved = fields; return null; } });
     const tools = namedGroup(host, "Tools"), skills = namedGroup(host, "Skills");
@@ -91,7 +91,7 @@ describe("the agent editor's composite field groups", () => {
 
   it("names a saved workflow's action group and links its help and warning", async () => {
     const savedAgent = agentFixture("invoice-checker");
-    const agent = { ...savedAgent, kind: "workflow" as const, definition: { ...savedAgent.definition, workflow: { v: 2, name: "check", root: { node: "chain", steps: [] } } }, warnings: [{ field: "definition.workflow/root", reason: "missing", message: "Workflow needs a source." }] };
+    const agent = { ...savedAgent, kind: "workflow" as const, definition: { ...savedAgent.definition, workflow: { v: 2, name: "check", root: { node: "chain", steps: [] } } }, warnings: [{ field: "definition.workflow/root", reason: "missing" as const, message: "Workflow needs a source." }] };
     const { host } = await open({ agent, step: "context" });
     const group = namedGroup(host, "Workflow");
     expect(textAtIds(group, "aria-describedby")).toContain("Edit its nodes in the Workflow step");
