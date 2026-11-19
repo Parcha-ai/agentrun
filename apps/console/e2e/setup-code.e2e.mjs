@@ -11,7 +11,9 @@
 // With --url URL --setup-code-file F --password-file P, it starts nothing and checks a server already running (a hosted
 // one, at its public address): the plain address shows the Setup code field and its note; the setup code (or the
 // server's API token) in F, with the owner's password in P, sets the password and signs in; over https the page carries
-// Strict-Transport-Security. Neither file's content is printed.
+// Strict-Transport-Security. Neither file's content is printed. --run ID then opens that run's page and checks the console
+// reads it completed, --screenshot FILE keeps that page as a PNG, and --resolve IP reaches the --url's host at IP (a
+// platform's proxy on this machine: deploy/selfhost/walk.sh).
 // No fixed sleeps: every wait is for a condition, with a bound. Exits 0 when every check holds, else 1.
 // Needs the repository built (npm run build). Chrome: CHROME_BIN, else playwright's own; playwright-core: PLAYWRIGHT_CORE
 // (its index.mjs or its index.js: either loads), else the package `playwright-core`.
@@ -90,7 +92,13 @@ async function start(env) {
   };
 }
 
-const browser = await chromium.launch(process.env.CHROME_BIN ? { executablePath: process.env.CHROME_BIN } : {});
+const arg = (name) => { const at = process.argv.indexOf(name); return at > 1 ? process.argv[at + 1] : undefined; };
+// --resolve IP: the --url's host reached at IP, as curl --resolve does (a platform's proxy on this machine, no DNS).
+const resolve = arg("--resolve");
+const browser = await chromium.launch({
+  ...(process.env.CHROME_BIN ? { executablePath: process.env.CHROME_BIN } : {}),
+  ...(resolve && arg("--url") ? { args: [`--host-resolver-rules=MAP ${new URL(arg("--url")).hostname} ${resolve}`] } : {}),
+});
 /** A fresh browser page on `url`: the page, and the first document's response headers. */
 async function open(url) {
   const page = await (await browser.newContext()).newPage();
@@ -110,7 +118,6 @@ const fill = async (page, code, password = PASSWORD) => {
 /** Whether the server says this browser is signed in, within 30 s: settles, rejecting at the bound. */
 const signedIn = (page) => page.waitForFunction(async () => (await (await fetch("/v2/auth/session")).json()).signed_in === true, null, { timeout: 30_000 });
 
-const arg = (name) => { const at = process.argv.indexOf(name); return at > 1 ? process.argv[at + 1] : undefined; };
 const hosted = arg("--url");
 // A --url given empty (an unset variable) never falls back to the local servers: that would pass without checking it.
 if (process.argv.includes("--url") && !hosted) { console.error("--url needs the server's address"); process.exit(2); }
@@ -130,6 +137,20 @@ if (hosted) {
     await fill(page, code, password);
     await page.click('button[type="submit"]');
     check("the setup code (or token) sets the password and signs in", await signedIn(page).then(() => true, () => false));
+    // --run ID --screenshot FILE: that run's page, once the console has read it completed, saved as a PNG.
+    const runId = arg("--run");
+    if (runId) {
+      const runPath = `/v2/runs/${encodeURIComponent(runId)}`;
+      const completed = page.waitForResponse(async (r) => r.request().method() === "GET" && new URL(r.url()).pathname === runPath && r.ok() && (await r.json().catch(() => null))?.status === "completed", { timeout: 30_000 });
+      await page.goto(`${url}/#/runs/${encodeURIComponent(runId)}`);
+      check("the run's page reads it completed", await completed.then(() => true, () => false));
+      await page.getByText(/completed/i).first().waitFor({ timeout: 15_000 });
+      const shot = arg("--screenshot");
+      if (shot) {
+        await page.screenshot({ path: shot, fullPage: true });
+        console.log(`--   the run's page: ${shot}`);
+      }
+    }
     check("no console errors", errors.length === 0, errors.join(" | "));
   } catch (error) {
     check("the walk ran to its end", false, error instanceof Error ? error.message.split("\n")[0] : String(error));

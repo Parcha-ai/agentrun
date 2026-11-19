@@ -17,8 +17,8 @@ export const ROWS = [
   { job: 'docker', name: 'Docker', walks: "main's image: deploy/compose.yaml's server and two runners, to a run" },
   { job: 'railway', name: 'Railway', walks: "main's image, run as the Railway template's service runs (deploy/railway/local-walk.mjs)" },
   { job: 'helm', name: 'Helm', walks: "main's chart and image on kind: install, first run, upgrade, uninstall (helm-walk.yml)" },
-  { job: 'coolify', name: 'Coolify', walks: "main's template and image on Coolify: deploy, first run, remove (selfhost-walk.yml)" },
-  { job: 'dokploy', name: 'Dokploy', walks: "main's template and image on Dokploy: deploy, first run, remove (selfhost-walk.yml)" },
+  { job: 'coolify', name: 'Coolify', walks: "main's template and image on Coolify: deploy, first run and its page in the console, remove (selfhost-walk.yml)" },
+  { job: 'dokploy', name: 'Dokploy', walks: "main's template and image on Dokploy: deploy, first run and its page in the console, remove (selfhost-walk.yml)" },
 ];
 const PREFIX = 'ways in: ';
 const SUFFIX = ' broke';

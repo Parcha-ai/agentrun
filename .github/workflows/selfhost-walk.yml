@@ -11,6 +11,7 @@ on:
       - 'deploy/walk/api.mjs'
       - 'deploy/walk/faux-steps.mjs'
       - 'deploy/walk/rows.sh'
+      - 'apps/console/e2e/setup-code.e2e.mjs'
       - '.github/workflows/selfhost-walk.yml'
   push:
     branches: [main]
@@ -21,6 +22,7 @@ on:
       - 'deploy/walk/api.mjs'
       - 'deploy/walk/faux-steps.mjs'
       - 'deploy/walk/rows.sh'
+      - 'apps/console/e2e/setup-code.e2e.mjs'
       - '.github/workflows/selfhost-walk.yml'
   workflow_dispatch:
   # The daily walk (ways-in-daily.yml): image names an artifact of this run, a docker save of the image to walk in place
@@ -58,7 +60,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
-      # overlay.mjs's yaml.
+      # overlay.mjs's yaml, and the console row's playwright-core.
       - run: npm ci --ignore-scripts
       - name: The image to walk
         if: ${{ inputs.image }}
@@ -66,6 +68,9 @@ jobs:
         with:
           artifact: ${{ inputs.image }}
       - name: Walk
+        env:
+          CHROME_BIN: /usr/bin/google-chrome
+          SCREENSHOT: ${{ runner.temp }}/console-${{ matrix.platform }}.png
         run: REPORT="$RUNNER_TEMP/selfhost-walk.md" sh deploy/selfhost/walk.sh "${{ matrix.platform }}"
       - name: Report
         if: always()
@@ -76,4 +81,12 @@ jobs:
         with:
           name: walk-report-${{ matrix.platform }}
           path: ${{ runner.temp }}/selfhost-walk.md
+          if-no-files-found: ignore
+      # The run's page after the first run, in the console at the platform's domain.
+      - name: Keep the console's screenshot
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: console-${{ matrix.platform }}
+          path: ${{ runner.temp }}/console-${{ matrix.platform }}.png
           if-no-files-found: ignore

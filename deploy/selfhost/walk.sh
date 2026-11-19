@@ -4,8 +4,10 @@
 # the platform's own API so the platform makes the token, the seal key and the domain, and checks what it made: the
 # keys, the public address and the platform's proxy reaching the server at it, the data directory, each run's own user,
 # the memory the runner budgets (the template's limit), and a first run to completed on the faux model of deploy/walk/faux-steps.mjs (no key, no network; overlay.mjs, with
-# the counts off). Then it removes the service and its volume through the platform's API and checks nothing is left.
-# Needs sudo, docker, curl, jq and node with this checkout's node_modules. REPORT=<file> puts the report in that file too.
+# the counts off), then that run's page in Chrome, signed in at the domain with the token as the setup code. Then it
+# removes the service and its volume through the platform's API and checks nothing is left.
+# Needs sudo, docker, curl, jq, Chrome (CHROME_BIN, else playwright's) and node with this checkout's node_modules.
+# REPORT=<file> puts the report in that file too; SCREENSHOT=<file> keeps the run's page as a PNG.
 # AGENTRUN_IMAGE=<image> walks that image, on this Docker, in place of the template's (the daily walk's, main's):
 # pushed to a registry of the walk's own on 127.0.0.1:5000, which the platform pulls it from as it pulls any image.
 set -eu
@@ -117,6 +119,16 @@ pass "runner memory" "$budget"
 agent=$(get "$(api agent)" agent)
 run=$(get "$(api start "$agent" 3 0)" run)
 ended_once "first run" "$(api end "$run")" 3
+
+# A person's first visit at the platform's domain, in Chrome: the token the platform made as the setup code sets a
+# password and signs in, and the run's page reads it completed. SCREENSHOT=<file> keeps that page as a PNG.
+(umask 077 && env_of AGENTRUN_TOKEN >"$work/code" && openssl rand -hex 16 >"$work/password")
+shot=${SCREENSHOT:-$work/console.png}
+if ! node "$here/../../apps/console/e2e/setup-code.e2e.mjs" --url "$url" --resolve 127.0.0.1 --setup-code-file "$work/code" \
+  --password-file "$work/password" --run "$run" --screenshot "$shot" >"$work/console.log" 2>&1; then
+  fail "console" "$(grep -E '^FAIL' "$work/console.log" | tr '\n' ' ')"
+fi
+pass "console" "at $url, the token signs in as the setup code and the run's page reads it completed$([ -z "${SCREENSHOT:-}" ] || echo "; $(basename "$shot")")"
 
 remove
 removed=1
