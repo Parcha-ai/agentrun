@@ -19,7 +19,7 @@ import { facts as openCodeFacts } from "./harness-opencode/facts.js";
 import { CURSOR_FACTS, GOOSE_FACTS } from "./adapter-facts.js";
 import { ACP_PACKAGE, acpPackage } from "./acp-package.js";
 import { gooseHidden } from "./harness-goose.js";
-import { CURSOR_DEFAULT_MODEL, CURSOR_KEY, CURSOR_PROVIDER, cursorCardOf, cursorHidden } from "./harness-cursor.js";
+import { CURSOR_DEFAULT_MODEL, CURSOR_KEY, cursorCardOf, cursorHidden, cursorLimitsOf, cursorMissing } from "./harness-cursor.js";
 import type { AdapterNeeds } from "./adapters.js";
 import { DEFAULT_HARNESS, HARNESS_ID_PATTERN, type HarnessId, PLAN_HARNESSES, RESERVED_HARNESS_IDS } from "./harness.js";
 import { HARNESS_INSTALLS, type HarnessInstallEntry, type HarnessPins } from "./harness-install.js";
@@ -98,7 +98,8 @@ export interface HarnessEntry {
    *  It is still in the table, so a run or a save naming it is refused with these words. */
   hidden?(env: NodeJS.ProcessEnv): string | undefined;
   /** The secrets that are this harness's own (Cursor's CURSOR_API_KEY): a run of it is handed them, and a run of any
-   *  other harness never is (run-secrets.ts keysFor). */
+   *  other harness never is (run-secrets.ts keysFor). Only a built-in's count (BUILTIN_OWN_KEYS): a module's entry that
+   *  names a key here moves no key from another harness's run. */
   readonly ownKeys?: readonly string[];
   /** What its owner reads before running it (capabilities' `card`): who bills it, what stops it, whose terms it runs
    *  under. None for a harness that runs on this server's keys and cap. */
@@ -198,7 +199,7 @@ const onOpenRouter = (id: string, vendor: string): boolean => new RegExp(`^openr
 /** An adapter harness's entry, from its facts and the factory that builds its adapter. */
 function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs: AdapterNeeds) => Promise<AgentAdapter>, extra: Pick<HarnessEntry, "skillCheck" | "pins" | "promises" | "hidden"> = {}): HarnessEntry {
   const { wire, id } = facts;
-  // A harness billed to its own plan has an entry of its own (cursorEntry): this one is for a model wire of ours.
+  // A harness billed to its own plan is acpEntryOf's plan-billed entry (Cursor's): this one is for a model wire of ours.
   if (!modelWire(wire)) throw new Error(`${id} is billed to its own plan, so its table entry is its own, never adapterEntry's`);
   const { vendor, gateway } = WIRES[wire];
   const installs = HARNESS_INSTALLS[id];
@@ -298,9 +299,9 @@ const moduleEntryOf = (facts: AdapterFacts, adapter: (launch: ModuleLaunch) => A
   Object.freeze({ ...adapterEntry(facts, moduleAdapter(facts, adapter, missing ? { missing } : {}, host), extra), runner: ON_TABLE });
 const moduleEntry: HarnessModuleKit["adapterEntry"] = (facts, adapter, extra) => moduleEntryOf(facts, adapter, extra);
 
-/** An ACP agent's whole entry, moduleEntry over serve's own ACP adapter: a module's (HarnessModuleKit.acpEntry, `host`
- *  none) and a recipe's under harness-check (AcpEntryHost), the one way an ACP agent outside the built-ins starts. */
-export function acpEntryOf(options: AcpEntryOptions, host: AcpEntryHost = {}): HarnessEntry {
+/** A proxy-billed ACP agent's whole entry, moduleEntry over serve's own ACP adapter: a module's (HarnessModuleKit.acpEntry,
+ *  `host` none) and a proxy-billed recipe's under harness-check (AcpEntryHost). */
+function acpProxyEntryOf(options: AcpEntryOptions, host: AcpEntryHost = {}): HarnessEntry {
   return moduleEntryOf(options.facts, (launch) => {
     const acp = acpPackage();
     if (!acp) throw new HarnessUnavailable(`${options.facts.label} needs the ACP adapter (${ACP_PACKAGE}) beside this server`);
@@ -314,49 +315,79 @@ export function acpEntryOf(options: AcpEntryOptions, host: AcpEntryHost = {}): H
     });
   }, { promises: options.promises ?? ACP_PROMISES, ...(options.missing ? { missing: options.missing } : {}) }, host);
 }
-const acpModuleEntry: HarnessModuleKit["acpEntry"] = (options) => acpEntryOf(options);
 
-/** The kit a harness module is handed (HarnessModuleKit). */
-const MODULE_KIT: HarnessModuleKit = Object.freeze({
-  adapterEntry: moduleEntry,
-  acpEntry: acpModuleEntry,
-});
+/** What a run of a plan-billed ACP agent is given (acpEntryOf's plan branch): its model as its vendor names it (`default`
+ *  for the vendor's own), a log, the confinement its process starts under and the server's environment. No provider or
+ *  price: its vendor bills its owner's plan, and no request of it reaches a proxy of ours. */
+export type PlanLaunch = Omit<ModuleLaunch, "provider" | "price" | "skills">;
 
-/** Cursor's entry, from its facts: billed to its owner's Cursor plan on the owner's Cursor API key (`ownKeys`), so no
- *  model key, proxy, catalog or cap of ours is its. Its model is one Cursor lists for that key, named `cursor/<model-id>`
- *  (`cursor/default`: Cursor's own default), checked against Cursor's list when its session opens (ACP_MODEL_UNLISTED).
- *  Listed only once its owner has installed it (`agentrun harness install cursor`), and stopped by its owner's turn and
- *  tool-call limits (harness-cursor.ts cursorLimitsOf), which its card says. */
-function cursorEntry(facts: AdapterFacts): HarnessEntry {
-  const { id } = facts;
-  const prefix = `${CURSOR_PROVIDER}/`;
+/** What serve gives acpEntryOf for an ACP agent billed to its owner's plan (its facts' wire `plan`): Cursor's entry and
+ *  harness-check's plan-billed recipes. Not the kit's: a module's acpEntry is proxy-billed. `missing` may throw a
+ *  HarnessUnavailable of its own, which keeps the fix (install, pins) it names; `recipe` may throw one too (a key unset). */
+export interface AcpPlanEntryOptions extends ModuleChecks, Pick<HarnessEntry, "ownKeys" | "card" | "hidden"> {
+  readonly facts: AdapterFacts;
+  recipe(launch: PlanLaunch): AcpRecipe | Promise<AcpRecipe>;
+  beforeStart?(command: string): Promise<void>;
+  readonly promises?: HarnessPromises;
+}
+
+/** What a plan-billed ACP harness promises by default: as ACP_PROMISES, billed to its owner's plan. */
+const ACP_PLAN_PROMISES: HarnessPromises = Object.freeze({ resume: "load", tool_gate: "permission", billing: "plan" });
+/** The model id of a plan-billed agent's own default (`<id>/default`). */
+const PLAN_DEFAULT_MODEL = "default";
+
+/** A plan-billed ACP agent's whole entry: its models are the ones its vendor lists for its owner, named `<id>/<model-id>`
+ *  (`<id>/default`: the vendor's own default), checked against that list when its session opens (ACP_MODEL_UNLISTED);
+ *  no model key, route, proxy, catalog or price of ours is its, and it has no runner adapter of a module's (ON_TABLE). */
+function acpPlanEntryOf(options: AcpPlanEntryOptions, host: AcpEntryHost = {}): HarnessEntry {
+  const { facts } = options;
+  const { id, label } = facts;
+  if (modelWire(facts.wire)) throw new Error(`${id} runs on a model wire of ours, so its ACP entry is the proxy-billed one`);
+  const prefix = `${id}/`;
+  const make = async (env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> => {
+    const { fixOf, harnessLog } = await import("./adapters.js");
+    // What no key fixes is said first, as for the built-in harnesses' binaries.
+    const lacks = await options.missing?.(env);
+    if (lacks) throw new HarnessUnavailable(lacks);
+    const acp = acpPackage();
+    if (!acp) throw new HarnessUnavailable(`${label} needs the ACP adapter (${ACP_PACKAGE}) beside this server`);
+    if (needs.model.provider !== id) throw new HarnessUnavailable(`${label} runs ${label}'s models, named ${prefix}<model-id>; the run's model is ${needs.model.provider}/${needs.model.modelId}.`);
+    const log = host.log ?? harnessLog(id, env);
+    try {
+      const recipe = await options.recipe({ model: needs.model.modelId, log, ...(needs.confine ? { confine: needs.confine } : {}), env });
+      // Its keys (recipe.keys) are read from the run's environment, which holds its own (ownKeys: run-secrets.ts keysFor).
+      return acp.acpAdapter({ recipe, ...(options.beforeStart ? { beforeStart: options.beforeStart } : {}), ...(needs.confine ? { confine: needs.confine } : {}), env, log });
+    } catch (error) {
+      if (error instanceof HarnessUnavailable) throw error;
+      throw new HarnessUnavailable((error as Error).message, fixOf(facts, error));
+    }
+  };
   const entry: HarnessEntry = {
     id,
-    label: facts.label,
+    label,
     steer: facts.steer,
     runMib: facts.runMib,
     oneAlwaysFits: false,
     facts,
-    promises: Object.freeze({ resume: "load", tool_gate: "permission", billing: "plan" }),
-    ownKeys: Object.freeze([CURSOR_KEY]),
-    hidden: cursorHidden,
-    card: cursorCardOf,
+    promises: options.promises ?? ACP_PLAN_PROMISES,
+    ...(options.ownKeys ? { ownKeys: Object.freeze([...options.ownKeys]) } : {}),
+    ...(options.hidden ? { hidden: options.hidden } : {}),
+    ...(options.card ? { card: options.card } : {}),
     runs: (_env, model) => model.startsWith(prefix),
     onWire: () => true,
     model: async (_env, ref, available) => {
       if (!available) return undefined;
-      const named = ref ?? `${prefix}${CURSOR_DEFAULT_MODEL}`;
+      const named = ref ?? `${prefix}${PLAN_DEFAULT_MODEL}`;
       const modelId = named.startsWith(prefix) ? named.slice(prefix.length) : "";
-      const { acpPackage } = await import("./acp-package.js");
-      if (!modelId || !acpPackage()?.MODEL_ID.test(modelId)) return { why: `${facts.label} runs a model Cursor lists for your Cursor API key, named ${prefix}<model-id> (${prefix}${CURSOR_DEFAULT_MODEL} for Cursor's own default); ${named} is not one.`, host: false, needs: "model" };
-      return { model: { provider: CURSOR_PROVIDER, modelId } };
+      if (!modelId || !acpPackage()?.MODEL_ID.test(modelId)) return { why: `${label} runs a model ${label} lists for your ${label} API key, named ${prefix}<model-id> (${prefix}${PLAN_DEFAULT_MODEL} for ${label}'s own default); ${named} is not one.`, host: false, needs: "model" };
+      return { model: { provider: id, modelId } };
     },
     priceModel: (_env, model) => model,
-    adapter: async (env, needs) => (await import("./adapters.js")).cursorOf(env, needs),
+    adapter: make,
     refusal: async (env, given, { atStart }) => {
-      const { cursorOf, startReason } = await import("./adapters.js");
+      const { startReason } = await import("./adapters.js");
       try {
-        const adapter = await cursorOf(env, given ?? { model: { provider: CURSOR_PROVIDER, modelId: CURSOR_DEFAULT_MODEL }, models: { getModel: () => undefined } });
+        const adapter = await make(env, given ?? { model: { provider: id, modelId: PLAN_DEFAULT_MODEL }, models: { getModel: () => undefined } });
         const problems = adapter.check({ key: "capabilities", label: "capabilities", system: [], tools: [], context: "fresh" });
         return problems.length ? { reason: problems.join(" ") } : undefined;
       } catch (error) {
@@ -365,6 +396,65 @@ function cursorEntry(facts: AdapterFacts): HarnessEntry {
     },
   };
   return Object.freeze(entry);
+}
+
+/** An ACP agent's whole entry on serve's own ACP adapter, by its facts' wire: proxy-billed (a module's, a proxy-billed
+ *  recipe's) or billed to its owner's plan (Cursor's, a plan-billed recipe's). The one way an ACP agent other than the
+ *  built-in Goose starts. A module's acpEntry is the proxy-billed one alone. */
+export function acpEntryOf(options: AcpEntryOptions, host?: AcpEntryHost): HarnessEntry;
+export function acpEntryOf(options: AcpPlanEntryOptions, host?: AcpEntryHost): HarnessEntry;
+export function acpEntryOf(options: AcpEntryOptions | AcpPlanEntryOptions, host: AcpEntryHost = {}): HarnessEntry {
+  return modelWire(options.facts.wire) ? acpProxyEntryOf(options as AcpEntryOptions, host) : acpPlanEntryOf(options as AcpPlanEntryOptions, host);
+}
+const acpModuleEntry: HarnessModuleKit["acpEntry"] = (options) => acpProxyEntryOf(options);
+
+/** The kit a harness module is handed (HarnessModuleKit). */
+const MODULE_KIT: HarnessModuleKit = Object.freeze({
+  adapterEntry: moduleEntry,
+  acpEntry: acpModuleEntry,
+});
+
+/** What Cursor gives acpEntryOf for its plan-billed entry: billed to its owner's Cursor plan on the owner's Cursor API key
+ *  (`ownKeys`), its model one Cursor lists for that key (`cursor/<model-id>`, `cursor/default` for Cursor's own). Listed
+ *  only once its owner has installed it (`agentrun harness install cursor`): `missing` is its release, looked up and
+ *  verified (harness-cursor.ts cursorMissing), and `beforeStart` checks its launcher and every file beside it again
+ *  before each process starts. Stopped by its owner's turn and tool-call limits (cursorLimitsOf), which its card says. */
+function cursorOptions(facts: AdapterFacts): AcpPlanEntryOptions {
+  /** Cursor's launcher, or the HarnessUnavailable that says why it is not here, with the fix (install, pins) it names. */
+  const launcher = async (env: NodeJS.ProcessEnv): Promise<string> => {
+    const found = await cursorMissing(env);
+    if (!("missing" in found)) return found.binary;
+    const { fixOf } = await import("./adapters.js");
+    throw new HarnessUnavailable(found.missing.message, fixOf(facts, found.missing));
+  };
+  return {
+    facts,
+    ownKeys: [CURSOR_KEY],
+    hidden: cursorHidden,
+    card: cursorCardOf,
+    missing: async (env) => void (await launcher(env)),
+    recipe: async (launch) => {
+      if (!launch.env[CURSOR_KEY]) throw new HarnessUnavailable(`${facts.label} runs on your Cursor API key, and ${CURSOR_KEY} is not set where AgentRun starts: set it there (it is handed to Cursor's runs alone), then restart AgentRun.`);
+      const acp = acpPackage()!;
+      let limits: { maxTurns: number; maxToolCalls: number };
+      try {
+        limits = cursorLimitsOf(acp, launch.env);
+      } catch (error) {
+        throw new HarnessUnavailable((error as Error).message);
+      }
+      const model = launch.model === CURSOR_DEFAULT_MODEL ? undefined : launch.model;
+      return acp.cursorRecipe({ command: await launcher(launch.env), limits, ...(model ? { model } : {}) });
+    },
+    beforeStart: async (command) => {
+      const acp = acpPackage()!;
+      const release = acp.cursorRelease(acp.acpPlatform());
+      const root = release && acp.cursorRootOf(command, release.cmd);
+      // The launcher is the one cursorMissing found at its pinned path: a release or folder lost since is refused.
+      if (!release || !root) throw new Error(`ACP_BINARY_MISMATCH: the Cursor launcher at ${command} is not at its pinned path inside its folder`);
+      await acp.verifyPinnedBinaryAsync(command, release.binarySha256);
+      await acp.verifyPinnedTree(root, release.treeSha256);
+    },
+  };
 }
 
 /** The secrets the built-in harnesses own (each entry's ownKeys), whether or not its package is beside serve here: a
@@ -400,7 +490,7 @@ const BUILTIN: Readonly<Record<HarnessId, HarnessEntry>> = Object.freeze({
   } : {}),
   // Cursor, over ACP, where the same package is beside serve: its owner installs its pinned release (`agentrun harness
   // install cursor`, harness-cursor.ts) and sets CURSOR_API_KEY; listed only once it is installed and verified.
-  ...(CURSOR_FACTS ? { [CURSOR_FACTS.id]: cursorEntry(CURSOR_FACTS) } : {}),
+  ...(CURSOR_FACTS ? { [CURSOR_FACTS.id]: acpEntryOf(cursorOptions(CURSOR_FACTS)) } : {}),
 } as Record<HarnessId, HarnessEntry>);
 
 /** The ids of the harnesses this server has built in (Goose and Cursor where their package is beside it, as a recipe

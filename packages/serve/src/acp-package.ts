@@ -4,6 +4,7 @@
 // A leaf: the harness table's own imports (adapter-facts.ts) read it in any import order.
 import { createRequire } from "node:module";
 import type { AdapterFacts, AgentAdapter } from "@parcha/agentrun-kernel";
+import type { AcpRecipe } from "@parcha/agentrun-harness-acp";
 
 export const ACP_PACKAGE = "@parcha/agentrun-harness-acp";
 
@@ -25,6 +26,10 @@ export type AcpPackage = {
   readonly CURSOR_LIMITS: { readonly maxTurns: number; readonly maxToolCalls: number };
   cursorCard(limits: { readonly maxTurns: number; readonly maxToolCalls: number }): string;
   cursorAdapter(options: Record<string, unknown>): AgentAdapter;
+  /** Cursor's recipe for a run: its launcher, the run's limits, and its model (none: Cursor's own default). */
+  cursorRecipe(options: { command: string; limits: { readonly maxTurns: number; readonly maxToolCalls: number }; model?: string }): AcpRecipe;
+  /** The folder Cursor was installed into, from its launcher's path and the pin's `cmd`; undefined when it is not there. */
+  cursorRootOf(binary: string, cmd: string): string | undefined;
   /** Cursor's release pinned for `platform` (default this host's), its launcher's and tree's digests; undefined where none is. */
   cursorRelease(platform?: string): { readonly cmd: string; readonly binarySha256: string; readonly treeSha256: string } | undefined;
   /** The form a model id an ACP agent lists takes (Cursor's `gpt-5.4-nano[reasoning=medium]` among them). */

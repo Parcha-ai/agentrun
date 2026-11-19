@@ -150,7 +150,7 @@ export function harnessLog(harness: string, env: NodeJS.ProcessEnv, write: (line
 }
 
 /** What an adapter's own setup error says installing fixes, by the code its facts name for each: none for any other error. */
-function fixOf(facts: AdapterFacts, error: unknown): InstallFix | undefined {
+export function fixOf(facts: AdapterFacts, error: unknown): InstallFix | undefined {
   const code = (error as { code?: unknown } | null)?.code;
   return code === facts.install.codes.install ? "install" : code === facts.install.codes.pins ? "pins" : undefined;
 }
@@ -433,39 +433,6 @@ export async function gooseOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Prom
   }
 }
 
-/** Cursor's adapter (its package's cursorAdapter, acp-package.ts), on the release its owner installed into the data's
- *  harnesses directory (`agentrun harness install cursor`, harness-cursor.ts), its launcher and every file beside it the
- *  pinned ones, and on its owner's Cursor API key (CURSOR_API_KEY), which the adapter reads by name from `env` at each
- *  start and hands to Cursor's process alone. Its model is Cursor's, billed to the owner's Cursor plan: no proxy and no
- *  price of ours; the run stops at the owner's turn and tool-call limits (cursorLimitsOf). `cursor/default` runs Cursor's
- *  own default model. */
-export async function cursorOf(env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> {
-  const [{ acpPackage }, { cursorMissing, cursorLimitsOf, CURSOR_DEFAULT_MODEL, CURSOR_ID, CURSOR_KEY, CURSOR_PROVIDER }] = await Promise.all([import("./acp-package.js"), import("./harness-cursor.js")]);
-  const acp = acpPackage();
-  // What no key fixes is said first, as gooseOf does: the release, checked off the event loop.
-  const found = await cursorMissing(env);
-  if ("missing" in found) throw new HarnessUnavailable(found.missing.message, acp && fixOf(acp.cursorFacts, found.missing));
-  if (!acp) throw new HarnessUnavailable("Cursor's adapter is not installed beside this server");
-  const facts = acp.cursorFacts;
-  if (needs.model.provider !== CURSOR_PROVIDER) throw new HarnessUnavailable(`${facts.label} runs Cursor's models, named ${CURSOR_PROVIDER}/<model-id>; the run's model is ${needs.model.provider}/${needs.model.modelId}.`);
-  if (!env[CURSOR_KEY]) throw new HarnessUnavailable(`${facts.label} runs on your Cursor API key, and ${CURSOR_KEY} is not set where AgentRun starts: set it there (it is handed to Cursor's runs alone), then restart AgentRun.`);
-  let limits: { maxTurns: number; maxToolCalls: number };
-  try {
-    limits = cursorLimitsOf(acp, env);
-  } catch (error) {
-    throw new HarnessUnavailable((error as Error).message);
-  }
-  const model = needs.model.modelId === CURSOR_DEFAULT_MODEL ? undefined : needs.model.modelId;
-  try {
-    return acp.cursorAdapter({
-      binary: found.binary, limits, env, log: harnessLog(CURSOR_ID, env),
-      ...(model ? { model } : {}),
-      ...(needs.confine ? { confine: needs.confine } : {}),
-    });
-  } catch (error) {
-    throw new HarnessUnavailable((error as Error).message, fixOf(facts, error));
-  }
-}
 
 /** Why `harness` cannot run here, or undefined when it can (its entry's refusal): its package and pins, its provider, and
  *  the adapter's own check of the model `given` names (with none, a model of its wire's vendor: whether it runs here at

@@ -1,4 +1,4 @@
-// Cursor in serve's harness table (harness-table.ts): one entry, on the ACP adapter (cursorAdapter), its release the one
+// Cursor in serve's harness table (harness-table.ts): one entry, acpEntryOf's plan-billed one, its release the one
 // `agentrun harness install cursor` puts in `<data>/harnesses/cursor` (harness-archive.ts: its launcher at
 // ./dist-package/cursor-agent and every file beside it checked against the pin), on its owner's CURSOR_API_KEY, billed to
 // the owner's Cursor plan (wire `plan`): no proxy, key, catalog or cap of ours is its.
