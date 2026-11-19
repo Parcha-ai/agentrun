@@ -3941,6 +3941,18 @@ export const SECRET_ROUTES = [
     ]
   },
   {
+    "operationId": "saveModelGateway",
+    "method": "PUT",
+    "path": "/settings/model-gateway",
+    "publicFields": [
+      "base_url",
+      "ids",
+      "models.default",
+      "models.fast",
+      "models.strong"
+    ]
+  },
+  {
     "operationId": "saveSlack",
     "method": "PUT",
     "path": "/settings/slack",
@@ -3960,6 +3972,14 @@ export const SECRET_ROUTES = [
       "url",
       "scopes.[]",
       "client_id"
+    ]
+  },
+  {
+    "operationId": "testModelGateway",
+    "method": "POST",
+    "path": "/settings/model-gateway/test",
+    "publicFields": [
+      "base_url"
     ]
   }
 ];
