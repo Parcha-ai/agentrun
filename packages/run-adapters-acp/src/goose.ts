@@ -19,7 +19,7 @@ import { acpAdapter, type AcpAdapterOptions } from "./adapter.js";
 import { ACP_CODES } from "./facts.js";
 import { gooseProxy, type GooseProxyOptions } from "./host/goose-proxy.js";
 import { acpPlatform, AcpBinaryRefused, GOOSE_PIN, verifyPinnedBinary, verifyPinnedBinaryAsync } from "./pinned-binary.js";
-import { recipeProblems, type AcpRecipe } from "./recipe.js";
+import { MODEL_ID, recipeProblems, type AcpRecipe } from "./recipe.js";
 
 /** A recipe as its file holds it: everything but the binary, which the host's install puts where it does. */
 export type AcpRecipeFile = Omit<AcpRecipe, "command">;
@@ -30,9 +30,6 @@ export type AcpRecipeName = "goose" | "cursor";
 /** The variables the proxy (ANTHROPIC_HOST, ANTHROPIC_API_KEY) and the loader (GOOSE_MODEL) set: a recipe file never
  *  names them. */
 const SET_ELSEWHERE: ReadonlySet<string> = new Set(["ANTHROPIC_HOST", "ANTHROPIC_API_KEY", "GOOSE_MODEL"]);
-
-/** A model id as a provider names one: one line of letters, digits and `.-_:/`. */
-const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,199}$/;
 
 /** The recipe file `name`, as shipped beside this package's code. */
 export function recipeFile(name: AcpRecipeName): AcpRecipeFile {

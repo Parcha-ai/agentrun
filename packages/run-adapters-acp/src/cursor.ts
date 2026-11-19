@@ -24,7 +24,7 @@ import { ACP_CODES } from "./facts.js";
 import { CURSOR_LIMITS, type CursorLimits } from "./cursor-facts.js";
 import { recipeFile } from "./goose.js";
 import { type AcpArchivePin, acpPlatform, AcpBinaryRefused, type AcpPlatform, CURSOR_PIN, verifyPinnedBinary, verifyPinnedBinaryAsync, verifyPinnedTree } from "./pinned-binary.js";
-import { MODEL_ID, recipeProblems, type AcpRecipe } from "./recipe.js";
+import { recipeProblems, type AcpRecipe } from "./recipe.js";
 
 export interface CursorRecipeOptions {
   /** The Cursor launcher (`<install>/dist-package/cursor-agent`), absolute: one that met its pin. */
@@ -39,10 +39,7 @@ export interface CursorRecipeOptions {
 /** Cursor's recipe for one run: its file, with the launcher, the run's model and its limits. Refused when it could not
  *  run. */
 export function cursorRecipe(options: CursorRecipeOptions): AcpRecipe {
-  if (options.model !== undefined && (typeof options.model !== "string" || !MODEL_ID.test(options.model))) throw new Error(`acp: the model ${JSON.stringify(String(options.model).slice(0, 80))} is not a model id`);
   const limits = options.limits ?? CURSOR_LIMITS;
-  if (!Number.isInteger(limits.maxTurns) || limits.maxTurns < 1) throw new Error(`acp: Cursor's maxTurns must be a whole number of at least 1, not ${JSON.stringify(limits.maxTurns)}`);
-  if (!Number.isInteger(limits.maxToolCalls) || limits.maxToolCalls < 0) throw new Error(`acp: Cursor's maxToolCalls must be a whole number, not ${JSON.stringify(limits.maxToolCalls)}`);
   const file = recipeFile("cursor");
   const recipe: AcpRecipe = { ...file, command: options.command, billing: { kind: "plan", maxTurns: limits.maxTurns, maxToolCalls: limits.maxToolCalls }, ...(options.model !== undefined ? { model: options.model } : {}) };
   const problems = recipeProblems(recipe);
