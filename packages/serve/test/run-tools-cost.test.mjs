@@ -4,11 +4,13 @@
 // reads 0; one whose paid call charged an unknown amount reads null, as `usd` does. A faux model at a fixed price per
 // request, faux monid and a fake MCP server on loopback, the real server and runner.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { REQUEST_USD } from "./fixtures/faux-tools-cost.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
+import { ended, started } from "./learn-support.mjs";
 import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX = new URL("./fixtures/faux-tools-cost.mjs", import.meta.url).pathname;
@@ -20,9 +22,10 @@ const allowed = (...names) => Object.fromEntries(names.map((name) => [name, { pe
 /** Two figures equal to the micro-dollar. */
 const micro = (usd) => (usd === null || usd === undefined ? usd : Math.round(usd * 1e6));
 
-async function server(t) {
-  withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: join(await scratch(t), "monid-calls.jsonl") });
-  return serve(t, { faux: FAUX, fauxMonid: FAUX_MONID });
+async function server(t, extra = {}) {
+  const calls = join(await scratch(t), "monid-calls.jsonl");
+  withEnv(t, { MONID_API_KEY: MONID_KEY, AGENTRUN_TEST_FAUX_MONID_CALLS: calls });
+  return { ...(await serve(t, { faux: FAUX, fauxMonid: FAUX_MONID, ...extra })), calls };
 }
 
 /** Run `id` (saved with `tools`) on `content` to its end; its read. */
@@ -77,4 +80,34 @@ test("a run whose paid call charged an unknown amount: tools_usd is null, as usd
   assert.equal(view.cost.usd, null, "usd: unknown");
   assert.ok(view.cost.so_far_usd >= 0, "usd's known part is said beside it");
   assert.equal(view.cost.tools_usd, null, "tools_usd: unknown too");
+});
+
+test("a learning run's follow-up: a paid call in the follow-up is learning's, as the round's model turns are, so tools_usd stays the first round's and inside usd; a run with no follow-up keeps its whole charge (#3234 review)", { timeout: 240_000 }, async (t) => {
+  const { api, calls } = await server(t, { learning: "on" });
+  // The enrich runs monid answered (its run requests, never an endpoint's inspection).
+  const enriched = () => readFileSync(calls, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((one) => one.path === "/v1/run" && one.endpoint === "/person/enrich").length;
+  const CALL = 'Call monid__faux__person__enrich with {"body":{"name":"Ada"}}';
+  for (const id of ["once", "again"]) {
+    const saved = await api("POST", "/agents", agent(id, { learning: true, tools: [ENRICH], tool_settings: allowed(ENRICH) }));
+    assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  }
+
+  // No follow-up: its one round's paid call is its job's, whole.
+  const once = (await ended(api, await started(api, "once", CALL))).view;
+  assert.equal(once.status, "completed", JSON.stringify(once.error));
+  assert.equal(once.cost.tools_usd, 0.003, `no follow-up: monid's whole charge: ${JSON.stringify(once.cost)}`);
+  assert.ok(once.cost.tools_usd <= once.cost.usd, `inside usd: ${JSON.stringify(once.cost)}`);
+
+  // A follow-up that makes a second paid call: the run's usd is its first round's job, the follow-up learning's.
+  const runId = await started(api, "again", CALL);
+  const first = (await ended(api, runId)).view;
+  assert.equal(first.cost.tools_usd, 0.003, `the first round's charge: ${JSON.stringify(first.cost)}`);
+  const sent = await api("POST", `/runs/${runId}/messages`, { content: CALL });
+  assert.equal(sent.status, 202, JSON.stringify(sent.body));
+  const second = (await ended(api, runId)).view;
+  assert.equal(second.status, "completed", JSON.stringify(second.error));
+  assert.equal(enriched(), 3, "the follow-up made its own paid call: one for each run's first round, one in the follow-up");
+  assert.equal(micro(second.cost.usd), micro(first.cost.usd), `usd stays the first round's job: ${JSON.stringify(second.cost)}`);
+  assert.equal(second.cost.tools_usd, 0.003, `tools_usd: the first round's charge alone, the follow-up's learning's: ${JSON.stringify(second.cost)}`);
+  assert.ok(second.cost.tools_usd <= second.cost.usd, `inside usd: ${JSON.stringify(second.cost)}`);
 });
