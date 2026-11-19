@@ -103,6 +103,8 @@ test("the image's own command, its data on a volume at /data, its health check, 
     // No Docker socket, no host: agents get file tools and web_fetch, no shell.
     assert.doesNotMatch(JSON.stringify(compose), /docker\.sock|privileged|"network_mode"|"pid"|cap_add|"user"/, name);
     assert.equal(service.ports, undefined, `${name}: the platform's proxy reaches it; nothing published on the host`);
+    // The runner budgets runs by its container's limit: without one, the whole server's memory, the platform's included.
+    assert.equal(service.mem_limit, "${AGENTRUN_MEMORY:-2g}", `${name}: a memory limit, 2 GB unless AGENTRUN_MEMORY sets another`);
     const check = service.healthcheck.test;
     assert.equal(check[0], "CMD");
     assert.ok(check.slice(0, 3).join(" ") === "CMD env -i", `${name}: the check runs with an empty environment, so the secrets stay out of it`);
@@ -111,6 +113,7 @@ test("the image's own command, its data on a volume at /data, its health check, 
   assert.ok(only(coolify).environment.includes(`SERVICE_URL_AGENTRUN_${port}`), "Coolify's domain reaches the image's port");
   assert.deepEqual(dokployToml.config.domains.map((d) => [d.serviceName, d.port]), [["agentrun", port]], "Dokploy's domain reaches the image's port");
   assert.deepEqual(dokployToml.config.mounts, []);
+  assert.equal(dokployToml.config.env.AGENTRUN_MEMORY, "2g", "Dokploy's Environment shows the limit");
 });
 
 test("each deploy makes a token and a seal key this server takes, from the platform's own random bytes, and the public URL at its domain", () => {
@@ -121,7 +124,7 @@ test("each deploy makes a token and a seal key this server takes, from the platf
       dokploy: [renderDokploy(dokployToml, only(dokploy), domain), `http://${domain}`],
     };
     for (const [name, [env, url]] of Object.entries(runs)) {
-      assert.deepEqual(Object.keys(env).sort(), ["AGENTRUN_PUBLIC_URL", "AGENTRUN_SEAL_KEY", "AGENTRUN_TOKEN"], `${name}: no model key, nothing to type`);
+      assert.deepEqual(Object.keys(env).sort(), ["AGENTRUN_PUBLIC_URL", "AGENTRUN_SEAL_KEY", "AGENTRUN_TOKEN"], `${name}: the server's variables: no model key, nothing to type`);
       assert.equal(tokenProblem(env.AGENTRUN_TOKEN), undefined, name);
       assert.ok(env.AGENTRUN_TOKEN.length >= 64, `${name}: 256 bits or more`);
       assert.equal(sealKeyOf(env.AGENTRUN_SEAL_KEY)?.length, 32, `${name}: the seal key is 32 bytes in base64 (it has ${env.AGENTRUN_SEAL_KEY.length} characters)`);

@@ -20,3 +20,5 @@ host = "${main_domain}"
 AGENTRUN_PUBLIC_URL = "http://${main_domain}"
 AGENTRUN_TOKEN = "${token}"
 AGENTRUN_SEAL_KEY = "${seal_key}"
+# The container's memory limit, which the runner budgets runs by (docker-compose.yml).
+AGENTRUN_MEMORY = "2g"

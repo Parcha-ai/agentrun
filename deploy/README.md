@@ -159,7 +159,7 @@ chart's [README](helm/agentrun/README.md) covers its values, Argo CD and Flux, a
 ## On Coolify or Dokploy
 
 Each template runs the release's image as one service, the server with its runner beside it, with its data on a
-volume at `/data`. The platform generates the token and the seal key once, with its own secret generator, and gives
+volume at `/data` and a 2 GB memory limit, which the runner budgets runs by (set `AGENTRUN_MEMORY` to change it). The platform generates the token and the seal key once, with its own secret generator, and gives
 the service its domain. Nothing gets the Docker socket, so agents get file tools and `web_fetch` but no shell, as on
 Render. Neither template needs a model key. To give agents a shell, add a sandbox provider's key in the console.
 Mounting the host's Docker socket into the service would also give them one, but it hands them the host itself, so

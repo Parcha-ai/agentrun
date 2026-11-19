@@ -3,7 +3,7 @@
 # (a throwaway VM: it takes ports 80 and 443 and, for Dokploy, makes this Docker a swarm), deploys our template through
 # the platform's own API so the platform makes the token, the seal key and the domain, and checks what it made: the
 # keys, the public address and the platform's proxy reaching the server at it, the data directory, each run's own user,
-# and a first run to completed on the faux model of deploy/walk/faux-steps.mjs (no key, no network; overlay.mjs, with
+# the memory the runner budgets (the template's limit), and a first run to completed on the faux model of deploy/walk/faux-steps.mjs (no key, no network; overlay.mjs, with
 # the counts off). Then it removes the service and its volume through the platform's API and checks nothing is left.
 # Needs sudo, docker, curl, jq and node with this checkout's node_modules. REPORT=<file> puts the report in that file too.
 set -eu
@@ -86,6 +86,15 @@ pass "data directory" "/data on the volume is $data"
 isolation=$(get "$(api isolation)" run_isolation)
 [ "$isolation" = uid ] || fail "run user" "run_isolation is $isolation, not uid: each run is not a user of its own"
 pass "run user" "run_isolation $isolation: each run's process is a user of its own"
+
+tries=0
+until budget=$(docker logs "$container" 2>&1 | grep -E '^Runner [^ ]+ memory: [0-9]+ MiB for runs' | tail -1) && [ -n "$budget" ]; do
+  tries=$((tries + 1))
+  [ "$tries" -le 60 ] || fail "runner memory" "no runner memory line within 30 s"
+  sleep 0.5
+done
+case $budget in *" memory: 1920 MiB for runs"*) ;; *) fail "runner memory" "$budget, not 1920 MiB (the template's 2 GB limit less 128 MiB)" ;; esac
+pass "runner memory" "$budget"
 
 agent=$(get "$(api agent)" agent)
 run=$(get "$(api start "$agent" 3 0)" run)
