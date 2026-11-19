@@ -330,3 +330,13 @@ test("registryHere: Daytona mounts Archil only where DAYTONA_ARCHIL_EGRESS has a
     assert.equal((await resolveHere({ kind: "sandbox", provider: "daytona" }, 2, registry, side)).folder, folder);
   }
 });
+
+test("registryHere: a connect setting no provider knows leaves that provider on exec, for it to refuse when made, and every other provider as it is", async () => {
+  const { PROVIDERS: REAL, SETTING_KINDS, servingRefusals } = await import("@parcha/agentrun-computer");
+  const { registryHere } = await import("../dist/workspace/index.js");
+  const either = REAL.find((one) => one.connect === "either" && one.mountsWith === undefined && one.imageEnv === undefined);
+  assert.ok(either, "a provider whose machines dial or are exec'd, by its connect");
+  const registry = await registryHere({ SETTING_KINDS, PROVIDERS: REAL, servingRefusals }, async () => undefined, (id) => (id === either.id ? { connect: "dail" } : {}));
+  assert.equal(registry.PROVIDERS.find((one) => one.id === either.id), either);
+  assert.equal(registry.PROVIDERS.length, REAL.length);
+});

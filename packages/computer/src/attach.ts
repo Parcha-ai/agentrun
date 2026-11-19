@@ -463,9 +463,10 @@ export class AttachHub {
 		});
 	}
 
-	/** Resolves once no call that changes the computer runs (changing): at once while none does. */
+	/** Resolves once no call that changes the computer runs (changing), one sent after another's answer too: at once
+	 *  while none does. */
 	async unchanged(id: string): Promise<void> {
-		await Promise.allSettled([this.#changing.get(id)]);
+		for (let running = this.#changing.get(id); running !== undefined; running = this.#changing.get(id)) await Promise.allSettled([running]);
 	}
 
 	/**
@@ -477,7 +478,8 @@ export class AttachHub {
 	async unclaim(id: string, hold: string): Promise<boolean> {
 		const held = this.#claims.get(id);
 		if (held === undefined || held.hold !== hold) return false;
-		if (this.#changing.has(id)) {
+		// Checked again after each wait: a create still running sends its next remove once the last one answers.
+		while (this.#changing.has(id)) {
 			await this.unchanged(id);
 			if (this.#claims.get(id) !== held) return false;
 		}

@@ -672,6 +672,34 @@ test("of two unclaims of one hold while a change runs on the box, the first ends
 	assert.deepEqual(hub.claimed("c-box"), b);
 });
 
+test("a hold whose deadline passes while a create still empties a paired Linux box's /workspace lasts until the create's last remove has answered, not its first", async () => {
+	const hub = new AttachHub();
+	const paired = { id: "c-box", name: "lab", hello: LINUX, labels: {} };
+	const provider = attachedProvider(paired, hub);
+	const [serve, computer] = socketPair();
+	let first;
+	let second;
+	const box = { workspace: { type: "dir", uid: 1000, mode: 0o700 }, entries: ["a", "b"], calls: [], programs: [], stat: Promise.resolve(), removing: new Promise((resolve) => (first = resolve)) };
+	linuxBox(computer, box);
+	assert.equal((await hub.accept(paired, serve)).ok, true);
+	const settle = (ms = 10) => new Promise((resolve) => setTimeout(resolve, ms));
+	const a = { "agentrun.run": "a", "agentrun.epoch": "1" };
+	const creating = provider.create({ ...SYNCED, labels: a, lifetimeMs: 80 }, req());
+	while (!box.calls.includes("files.remove /workspace/a recursive")) await settle();
+	await settle(150);
+	assert.deepEqual(hub.claimed(paired.id), a, "past its deadline, the hold lasts while the first remove runs");
+	box.removing = new Promise((resolve) => (second = resolve));
+	first();
+	while (!box.calls.includes("files.remove /workspace/b recursive")) await settle();
+	await settle();
+	assert.deepEqual(hub.claimed(paired.id), a, "the create's next remove, sent once the first answered, holds it too");
+	second();
+	await creating;
+	await settle();
+	assert.equal(hub.claimed(paired.id), undefined, "the hold ends once the last remove has answered");
+	hub.revoke(paired.id, "the test is over");
+});
+
 test("redial delays double from 1 s to 60 s, less up to a fifth; idle, replaced and going away redial", () => {
 	assert.equal(redialDelay(0, () => 0), 1000);
 	assert.equal(redialDelay(3, () => 1), 6400);

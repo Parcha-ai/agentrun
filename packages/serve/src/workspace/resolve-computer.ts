@@ -172,10 +172,21 @@ type HereFields = {
  *  settings give (computer-keys.ts settingOptions): where its machines dial this server by them, mountsOf leaves out
  *  the Archil mount, so its folder is synced where Archil's would be. */
 export function entryHere<Entry extends HereFields>(entry: Entry, set: (name: string) => boolean, options: Readonly<Record<string, unknown>> = {}): Entry {
-  const descriptor = entry as unknown as Parameters<typeof mountsOf>[0];
   const named = entry.imageEnv !== undefined && set(entry.imageEnv);
-  if (entry.mountsWith === undefined && !named && connectOf(descriptor, options) !== "dial") return entry;
-  return { ...entry, ...mountsOf(descriptor, set, options), ...(named ? { imageNamed: true as const } : {}) };
+  const dial = dials(entry, options);
+  if (entry.mountsWith === undefined && !named && !dial) return entry;
+  return { ...entry, ...mountsOf(entry as unknown as Parameters<typeof mountsOf>[0], set, dial ? { connect: "dial" } : {}), ...(named ? { imageNamed: true as const } : {}) };
+}
+
+/** Whether a computer of `entry` made with `options` dials this server (the computer package's connectOf). A connect it
+ *  doesn't know reads as exec here: the provider refuses it in its own words when it is made, and no other provider's
+ *  listing or run fails on it. */
+function dials(entry: HereFields, options: Readonly<Record<string, unknown>>): boolean {
+  try {
+    return connectOf(entry as unknown as Parameters<typeof connectOf>[0], options) === "dial";
+  } catch {
+    return false;
+  }
 }
 
 /** The names entryHere reads of `entry`: the keys of its mountsWith, and its imageEnv. */
@@ -318,7 +329,7 @@ function folderOf(kind: ComputerSettingKind, entry: ProviderEntry, serving: read
   if (!((kind === "sandbox" || kind === "desktop") && shell)) return undefined;
   // Configurations made on dial by their own options take no Archil mount either (mountsOf), as entryHere's settings'
   // dial. `entry` holds its keyed mounts already: no key is read again.
-  const dialed = serving.every((one) => connectOf(entry, one.options ?? {}) === "dial");
+  const dialed = serving.every((one) => dials(entry, one.options ?? {}));
   return folderKindOf(dialed ? { ...entry, ...mountsOf(entry, () => false, { connect: "dial" }) } : entry, mode, gpuMounts);
 }
 
