@@ -28,7 +28,7 @@ async function groupGone(pid, ms) {
  *  only once the group is gone: the consumer directory's cleanup never runs beside a live step. Each stream keeps at
  *  most its last `maxBuffer` bytes while the pipes go on draining. A failure names the command, its exit code or
  *  signal, whether it timed out, and the tails of stdout and stderr, each labelled. A SIGINT or SIGTERM to this process
- *  while the step runs (its own group doesn't get the terminal's) kills the group and rejects, the error's `signal` set,
+ *  while the step runs (its own group doesn't get the terminal's) kills the group and rejects, the error's `stoppedBy` set,
  *  once the group is gone, so the caller's cleanup still runs. */
 export function runStep(command, args, { cwd, env, timeout = 180_000, maxBuffer = 8 * 1024 * 1024, grace = 5_000 } = {}) {
   return new Promise((resolve, reject) => {
@@ -73,7 +73,7 @@ export function runStep(command, args, { cwd, env, timeout = 180_000, maxBuffer 
         code !== null && code !== undefined ? `exit code ${code}` : signal ? `signal ${signal}` : '',
       ].filter(Boolean).join('; ');
       const tail = name => `--- ${name} (last ${TAIL} chars) ---\n${text(name).slice(-TAIL)}`;
-      reject(Object.assign(new Error(`eve package consumer step failed: ${[command, ...args].join(' ')}\n${how}\n${tail('stdout')}\n${tail('stderr')}`), { signal: stoppedBy }));
+      reject(Object.assign(new Error(`eve package consumer step failed: ${[command, ...args].join(' ')}\n${how}\n${tail('stdout')}\n${tail('stderr')}`), { stoppedBy }));
     };
     child.on('error', error => {
       spawnError = error;
@@ -212,6 +212,6 @@ if (isMain(import.meta)) {
     console.log(JSON.stringify(result, null, 2));
   } catch (error) {
     console.error(error.message);
-    process.exitCode = error.signal ? 128 + constants.signals[error.signal] : 1;
+    process.exitCode = error.stoppedBy ? 128 + constants.signals[error.stoppedBy] : 1;
   }
 }

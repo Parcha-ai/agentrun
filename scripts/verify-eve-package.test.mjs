@@ -65,6 +65,16 @@ test('a step that fails: the error holds its stdout and its stderr, each labelle
   assert.doesNotMatch(error.message, /timed out/);
 });
 
+test('a step killed by a signal of its own: it rejects naming the signal, and was not stopped by this process', async (t) => {
+  const { dir } = scratch(t);
+  const step = runStep('sh', ['-c', 'echo $$ > pidfile; kill -TERM $$'], { cwd: dir, env: process.env, timeout: 10_000, grace: 200 });
+  const error = await step.then(() => null, error => error);
+  assert.ok(error, 'the step rejects');
+  assert.match(error.message, /signal SIGTERM/);
+  assert.doesNotMatch(error.message, /stopped by/);
+  assert.equal(error.stoppedBy, undefined, 'only a signal to this process sets stoppedBy');
+});
+
 test('a step that exits 0: it resolves with its stdout and leaves no process behind', async (t) => {
   const { dir, pidOf } = scratch(t);
   const step = runStep('sh', ['-c', 'echo $$ > pidfile; echo ok-text-from-step'],
@@ -134,7 +144,7 @@ import { constants } from 'node:os';
 try {
   await runStep('sh', ['-c', 'sleep 37 >/dev/null 2>&1 & echo $! > grandchild; echo $$ > pidfile; exec sleep 37'], { cwd: process.cwd(), env: process.env, timeout: 60_000, grace: 200 });
 } catch (error) {
-  process.exitCode = 128 + constants.signals[error.signal];
+  process.exitCode = 128 + constants.signals[error.stoppedBy];
 } finally {
   writeFileSync('cleaned', '');
 }`);

@@ -594,7 +594,7 @@ try { console.log(JSON.stringify({ cliPath: verifyClaudeAgent({}).cliPath })); }
   receipt.error = error instanceof Error ? error.message : 'Unknown verification failure';
   console.error(receipt.error);
   // A step stopped by a signal (verify-eve-package's runStep) ends this process with that signal's status, once cleaned up.
-  process.exitCode = error?.signal ? 128 + constants.signals[error.signal] : 1;
+  process.exitCode = error?.stoppedBy ? 128 + constants.signals[error.stoppedBy] : 1;
 } finally {
   receipt.finishedAt = new Date().toISOString();
   await writeReceipt();

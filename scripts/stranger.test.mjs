@@ -84,15 +84,3 @@ test('the browser spec accepts exactly the output its README shows under the com
   assert.equal(ran({}), 0);
   assert.deepEqual([ran({ stdout: `${shown}more\n` }), ran({ stdout: shown.slice(1) }), ran({ stdout: shown.replace('forty-two', 'forty-three') }), ran({ stderr: 'a warning\n' })], [1, 1, 1, 1]);
 });
-
-// ---- the examples' Since cells ----
-
-const index = [
-  '| Example | What it shows | Needs | Since | CI |', '|---|---|---|---|---|',
-  '| [01-durable-chat](01-durable-chat/) | a disk chat | Archil | checkout | no |',
-  '| [01-durable-chat/on-a-directory.mjs](01-durable-chat/on-a-directory.mjs) | quickstart | Linux | 0.1.0-beta.13 | yes |',
-  '| [kill-9](kill-9/) | survives kill -9 | Linux | 0.1.0-beta.13 | yes |',
-  '| [fork-into-many](fork-into-many/) | forks | Linux | 0.1.0-beta.14 | yes |',
-  '| [planned-move](planned-move/) | moves | Archil and Daytona | 0.1.0-beta.14 | no |',
-  '', 'text after the table', '',
-].join('\n');
