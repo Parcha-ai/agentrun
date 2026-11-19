@@ -47,7 +47,7 @@ export const DAYTONA_ENV = {
 	archilEgress: "COMPUTER_DAYTONA_ARCHIL_EGRESS",
 	/** connect: exec (default) or dial, which needs the public server's process (dialKit). */
 	connect: "COMPUTER_DAYTONA_CONNECT",
-	/** kind: linux (default) or desktop, which create() takes on dial alone. */
+	/** kind: linux (default); create() refuses desktop on every connect, saying why. */
 	kind: "COMPUTER_DAYTONA_KIND",
 } as const;
 
@@ -119,7 +119,7 @@ export interface DaytonaModuleOptions {
 function optionsOf({ env = process.env, fetch, webSocket, timeouts, onNote, dial, daemonPath }: DaytonaModuleOptions): DaytonaProviderOptions {
 	return {
 		...settingsFromEnv(env),
-		// create() refuses desktop without dial in words.
+		// create() refuses any other kind, desktop among them, in words.
 		...kindFrom(env, DAYTONA_ENV.kind),
 		...(daemonPath === undefined ? {} : { daemonPath }),
 		autoStopMinutes: CONFORMANCE_AUTO_STOP_MINUTES,

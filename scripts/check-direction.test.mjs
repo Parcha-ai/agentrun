@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { directionProblems } from './check-direction.mjs';
+import { directionProblems, MAY } from './check-direction.mjs';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const scratch = await mkdtemp(join(tmpdir(), 'agentrun-direction-'));
@@ -17,14 +17,14 @@ const may = { protocol: [], kernel: ['protocol'], 'plug-in': ['protocol', 'kerne
 
 let made = 0;
 /** A workspace with one package per layer, and `files` ({ path: text }) written over it. */
-async function workspace(files = {}) {
+async function workspace(files = {}, workspaceLayers = layers) {
   const dir = join(scratch, `w${made += 1}`);
   const base = {
     'packages/v/src/files.ts': 'export const TOKEN_FILE = ".token";\nexport const RUN_META = "serve.json";\n',
     'packages/g/src/index.ts': "import { run } from '@x/k';\nimport type { Wire } from '@x/p';\n",
     'apps/c/src/main.ts': "fetch('/api/v2/runs');\n",
   };
-  for (const layer of Object.values(layers)) for (const pkg of layer) base[`${pkg}/package.json`] = JSON.stringify({ name: `@x/${pkg.split('/')[1]}` }, null, 2);
+  for (const layer of Object.values(workspaceLayers)) for (const pkg of layer) base[`${pkg}/package.json`] = JSON.stringify({ name: `@x/${pkg.split('/')[1]}` }, null, 2);
   for (const [path, text] of Object.entries({ ...base, ...files })) {
     await mkdir(dirname(join(dir, path)), { recursive: true });
     await writeFile(join(dir, path), text);
@@ -39,6 +39,31 @@ test('this tree follows the layer direction, with its listed exceptions', async 
 
 test('a planted workspace with only allowed edges passes', async () => {
   assert.deepEqual(await check({ 'packages/s/src/a.ts': "import '@x/k';\nimport { b } from '@x/p/sub';\nexport * from '../../s/src/b.ts';\n" }), []);
+});
+
+test('a host extension uses the API client and workflow library without reaching the server, surfaces or server data', async () => {
+  const hostLayers = { ...layers, 'api-client': ['packages/api'], 'host-extension': ['packages/e'] };
+  const hostMay = { ...may, 'api-client': MAY['api-client'], 'host-extension': MAY['host-extension'] };
+  const valid = {
+    'packages/e/package.json': JSON.stringify({ name: '@x/e', dependencies: { '@x/api': '1.0.0', '@x/s': '1.0.0' } }),
+    'packages/e/src/main.ts': "import { client } from '@x/api';\nimport { run } from '@x/s';\n",
+  };
+  const inspect = async (files = {}) => directionProblems(await workspace({ ...valid, ...files }, hostLayers), { layers: hostLayers, may: hostMay, exceptions: [] });
+  assert.deepEqual(await inspect(), []);
+  for (const [file, text, target] of [
+    ['packages/e/src/forbidden.ts', "import '@x/v';", 'packages/v'],
+    ['packages/e/src/forbidden.ts', "import '@x/c';", 'apps/c'],
+    ['packages/e/src/forbidden.ts', 'readFileSync(".token");', 'packages/v'],
+    ['packages/api/src/forbidden.ts', "import '@x/s';", 'packages/s'],
+    ['packages/api/src/forbidden.ts', 'readFileSync(".token");', 'packages/v'],
+    ['apps/c/src/forbidden.ts', "import '@x/api';", 'packages/api'],
+    ['packages/k/src/forbidden.ts', "import '@x/api';", 'packages/api'],
+  ]) {
+    const problems = await inspect({ [file]: text });
+    assert.equal(problems.length, 1, problems.join('; '));
+    assert.ok(problems[0].startsWith(`${file}:1:`), problems[0]);
+    assert.ok(problems[0].includes(`reaches ${target} (`), problems[0]);
+  }
 });
 
 test('a wrong edge fails with its file:line and both layers', async () => {

@@ -446,7 +446,7 @@ node --input-type=module -e '
 4. Mission Control shows the same totals as `/v2/stats` for a date range (`?from=&to=`). So does the agent page's
    Analytics tab, once it is on main (#1354).
 5. An import's dry run counts what the import then stores, and a second import adds nothing.
-6. Settings → Tool keys never shows a value.
+6. Settings → API Keys never shows a value.
 
 ### Learning loop
 

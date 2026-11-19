@@ -274,13 +274,15 @@ test("harness-check fails an agent whose own tools are on: its model request is 
   assert.match(run.stdout, /harness-check: FAILED/);
 });
 
-test("harness-check gates an agent that titles our tool its own way (Goose's `agentrun: check echo`) by the tool its title names", { skip: linux, timeout: 120_000 }, async (t) => {
+test("harness-check: a call titled as Goose 1.59.2 titles it (`agentrun: check echo`) is ours, its gate asked by the bridge, never as the agent's own", { skip: linux, timeout: 120_000 }, async (t) => {
   const { data, file, env } = await installed(t, recipeOf(undefined, { env: { MODEL_AGENT_MODE: "goose-title" } }));
   const run = await check(t, file, data, env);
   assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}\n${JSON.stringify(run.report?.gate)}`);
   const asked = run.report.gate.asked;
-  assert.ok(asked.some((g) => g.tool === "acp_other" && g.about === "check_echo" && g.answer === "allow"), JSON.stringify(asked));
-  assert.ok(asked.some((g) => g.tool === "acp_other" && g.about === "check_denied" && g.answer === "deny"), JSON.stringify(asked));
+  assert.ok(asked.every((g) => !g.tool.startsWith("acp_")), JSON.stringify(asked));
+  assert.ok(asked.some((g) => g.tool === "check_echo" && g.answer === "allow"), JSON.stringify(asked));
+  assert.ok(asked.some((g) => g.tool === "check_denied" && g.answer === "deny"), JSON.stringify(asked));
+  assert.deepEqual(run.report.stage3.denied_call.askedAs, ["check_denied"]);
   assert.equal(run.report.stage3.mcp_tool.calls, 1);
   assert.equal(run.report.stage3.denied_call.ran, 0);
   assert.equal(run.report.facts.tool_gate, "permission");

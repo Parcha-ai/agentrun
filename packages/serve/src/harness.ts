@@ -19,7 +19,7 @@ export const HARNESS_ID_PATTERN = "^[a-z][a-z0-9-]{0,39}$";
  *  runtime's (sdk/schema.ts SDK_BINDING). Also every name a plain object already has that the id pattern admits
  *  (`constructor`): serve looks harnesses up by id in plain objects, where such an id would read Object's own member. */
 export const RESERVED_HARNESS_IDS: readonly string[] = Object.freeze([
-  "learning", "sdk", "workflow", "claude-agent-sdk", "codex-sdk",
+  "learning", "sdk", "workflow", "claude-agent-sdk", "codex-sdk", "eve",
   ...Object.getOwnPropertyNames(Object.prototype).filter((name) => new RegExp(HARNESS_ID_PATTERN).test(name)),
 ]);
 /** The harnesses that run on a person's ChatGPT plan (chatgpt-plan.ts): those whose requests go to OpenAI's Responses
