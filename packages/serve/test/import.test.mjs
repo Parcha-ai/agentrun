@@ -1477,6 +1477,40 @@ test("an imported agent runs as imported: a project with no instructions file ge
   assert.deepEqual(lines.filter((line) => line.startsWith("model not kept: ")), [`model not kept: ${build} (codex) ran on openai/gpt-6.1-codex, which no model catalog here lists; its agent runs on the server's default model until you pick one`]);
 });
 
+test("a model the import did not pin is reported by the import that wrote the agent's revision, and not again by one that finds the revision held", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const build = join(at, "code", "nightly-build");
+  mkdirSync(build, { recursive: true });
+  codexSession(at, build, 233, { model: "gpt-6.1-codex" });
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  const opts = { home: at, env: { PATH: "/usr/bin" }, all: true };
+  const first = await runImport(store, await planImport(opts), opts);
+  assert.deepEqual(first.modelsLeftOut, [{ cwd: build, source: "codex", model: "openai/gpt-6.1-codex" }]);
+  // A later session of the same project, on the same model: the second import takes it into the agent it holds.
+  codexSession(at, build, 234, { model: "gpt-6.1-codex" });
+  const again = await runImport(store, await planImport(opts), opts);
+  assert.deepEqual(again.agents.map((a) => [a.runs, a.already, a.created]), [[1, 1, false]]);
+  assert.equal((await store.agents.revisions(agentIdOf(build))).length, 1, "the held revision is kept; none is written");
+  assert.deepEqual(again.modelsLeftOut ?? [], [], "nothing was written this time, so no model was left out of anything");
+});
+
+test("a project whose instructions file holds only whitespace gets the import's own instructions, as one with no file does", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const docs = join(at, "code", "docs-site");
+  mkdirSync(docs, { recursive: true });
+  writeFileSync(join(docs, "AGENTS.md"), " \n\t\n");
+  codexSession(at, docs, 235, { model: "gpt-6.1-sol" });
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  const opts = { home: at, env: { PATH: "/usr/bin" }, all: true };
+  await runImport(store, await planImport(opts), opts);
+  const [revision] = await store.agents.revisions(agentIdOf(docs));
+  assert.equal(revision.body.instructions, importedInstructions("docs-site", "codex"));
+});
+
 test("the summary says what this import took: new sessions out of every agent, nothing new as nothing new, a stop as a stop", () => {
   const found = [{ source: "codex", agent: "a" }, { source: "codex", agent: "b" }, { source: "pi", agent: "c" }];
   const open = { url: "http://127.0.0.1:7340", known: true };
