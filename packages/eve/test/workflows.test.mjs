@@ -57,7 +57,7 @@ test('real MCP dispatch uses the exact original callback, pinned workflow and ru
   assert.doesNotMatch(JSON.stringify(result.agentrun.events), /demo-api|original callback result/);
 });
 
-test('notes-only config has no executable workflow binding or supplemental instructions', () => {
+test('a mount without workflow bindings has no executable workflow or supplemental instructions', () => {
   assert.equal(workflowBinding(), undefined);
   const f = fixture(); delete f.record.workflowBinding;
   assert.equal(workflowInstructions(f.record), '');
@@ -129,7 +129,7 @@ test('first ordered request owns the turn even when sibling tool steps share the
   assert.equal(reserveWorkflowInvocation(rows, 'run-two', 'new-call', input).length, 2);
 });
 
-test('Off, notes-only, denied and ask policies refuse execution and cannot produce complete training evidence', async () => {
+test('Off, invalid learning values, denied and ask policies refuse execution and cannot produce complete training evidence', async () => {
   for (const options of [{ learning: false }, { learning: 'notes' }, { learning: null }, { learning: [] }, { policy: () => 'deny' }, { policy: () => 'ask' }, { permission: 'ask' }]) {
     const f = fixture(options), result = await executeLearnedWorkflow(f.config, f.record, input, native());
     assert.equal(result.isError, true);

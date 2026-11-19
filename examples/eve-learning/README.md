@@ -34,7 +34,7 @@ Keep the same original agent files and tool. Set these variables in eve's enviro
 - `AGENTRUN_API_KEY`: an AgentRun API key, separate from the model credential.
 - `AGENTRUN_AGENT_ID`: a stable id for this agent, such as `eve-demo-release`.
 
-The AgentRun server needs its runner enabled and a configured reflection/grading model. Configure those model keys in its Settings; self-improvement makes additional model calls there.
+The AgentRun server needs its runner enabled and a configured compilation model. Configure those model keys in its Settings; self-improvement makes additional model calls there.
 
 ```sh
 npm run connect --prefix examples/eve-learning
@@ -44,45 +44,29 @@ This creates **only** `agent/extensions/agentrun.ts`, copying the mount under `c
 
 Invoke the original task again. The extension registers the existing agent in AgentRun and records the task with runtime **Vercel eve**. Self-improvement is initially Off. AgentRun does not start an extra eve task or replace the original tool.
 
-## Enable self-improvement and test the next run
+## Test owner corrections on the next run
 
-Open the connected agent in AgentRun and enable self-improvement on its Learning tab. Then run a fresh eve task that teaches a harmless reporting preference:
+The base extension delivers the owner's `corrections.md`. It does **not** autonomously create notes or skills. Automatic workflow learning is the separate, two-tool proof below.
 
-```sh
-npm run invoke --prefix examples/eve-learning -- --live 'Read release status for demo-api and report its service, version, test result and readiness. For this and future release reports, begin the final answer with the exact prefix "Launch note:" and use one concise sentence. Remember this preference.'
-```
-
-Wait for AgentRun's independent checker to accept the resulting note or skill. Task completion alone does not mean learning has finished. If it is pending review or rejected, inspect that decision rather than approving it merely to make the demo pass.
-
-Next, ask about a different fixture service in a fresh session **without repeating the preference**:
+After the original baseline and extension setup, use a fresh demonstration agent id with learning Off and no corrections or workflows:
 
 ```sh
-npm run invoke --prefix examples/eve-learning -- --live 'Read release status for demo-worker and report its service, version, test result and readiness.'
+npm run validate --prefix examples/eve-learning -- --live --output /tmp/eve-correction-proof.json
 ```
 
-The proof requires an accepted run-generated lesson, the accepted revision recorded on this new run, a completed original `release_status` call for `demo-worker`, and an answer beginning `Launch note:` with the new version `3.1.2`. Plain text and Markdown bold (`**Launch note:**`) render the same visible prefix and both count; the baseline and Off control must lack either form.
+This makes three native model tasks: a connected Off baseline, a fresh-session reuse task, and a fresh-session Off control on the same agent. Between the first two, the validator enables learning and explicitly writes an **owner-authored correction** to `corrections.md` through the version-checked API: begin release reports with `Launch note:` and use one concise sentence. It records the owner commit and verifies that the next run pins that revision. This is correction delivery, not evidence of autonomous learning.
 
-Finally turn self-improvement Off and run that same `demo-worker` request in another fresh session. Its recorded learning revision must be absent, its original tool must still work, and the special prefix must not appear independently. A control that independently chooses the same wording is inconclusive, not a passing comparison.
+The reuse task asks about `demo-worker` without repeating the correction. It must execute the original `release_status` callback with a fresh observation UUID and report version `3.1.2` with the prefix. Plain text and Markdown bold (`**Launch note:**`) render the same prefix. The baseline and Off control must lack either form; otherwise the comparison is inconclusive. The same agent is left Off afterward. Each invocation uses a fresh native session, so earlier conversation history cannot supply the correction.
 
-Each invocation creates a fresh eve session; this avoids confusing conversation history with learning. The example's agent and recorded runs remain available in the console for inspection. This is an integration smoke test, not a general learning-quality benchmark.
+The validator reads `AGENTRUN_BASE_URL`, `AGENTRUN_API_KEY`, `AGENTRUN_AGENT_ID`, `EVE_BASE_URL` and optional `EVE_BEARER_TOKEN`. Its output path must be new. It checkpoints session ids immediately and saves answers, fictional tool observations, run ids, setting changes and the correction revision without credentials or receipt tokens. It never retries a paid task.
 
-### Run the connected proof automatically
-
-After the original baseline and extension setup, use a fresh demonstration agent id with learning Off and no accepted lessons. The following command performs the connected Off task, enables notes through the same version-checked API used by the console, teaches the preference, waits up to three minutes for independent acceptance, tests fresh-session reuse with changed tool data, and runs the same agent with learning Off. It leaves that agent Off for inspection; enable it again in the console when finished.
+To inspect and continue an interrupted validation:
 
 ```sh
-npm run validate --prefix examples/eve-learning -- --live --output /tmp/eve-learning-proof.json
+npm run validate --prefix examples/eve-learning -- --live --resume /tmp/eve-correction-proof.json
 ```
 
-The validator reads the same `AGENTRUN_BASE_URL`, `AGENTRUN_API_KEY`, `AGENTRUN_AGENT_ID`, `EVE_BASE_URL` and optional `EVE_BEARER_TOKEN` from its environment. It makes four native model tasks plus server reflection calls. The output path must be new. It checkpoints session ids immediately and saves answers, tool observations, run ids, setting changes and accepted revisions without credentials or receipt tokens. It never retries a paid task, seeds a lesson or force-approves one. If checking fails, stop and inspect the saved stage and existing session instead of blindly rerunning.
-
-To continue an interrupted validation without repeating completed model tasks:
-
-```sh
-npm run validate --prefix examples/eve-learning -- --live --resume /tmp/eve-learning-proof.json
-```
-
-Resume reads every saved native session's finite history and re-fetches its AgentRun run. It verifies one fresh turn, the exact original input, completed native tools and the recorded learning revision; saved answers alone are not trusted. Existing sessions are never resent or replaced. An unfinished session or uncertain submission without a confirmed session id stops the proof. Only stages that were never submitted may start a new task. The saved file is updated in place, preserving the earlier failure and resumption time; add `--output NEW_PATH` to save a separate continuation. A setting already at its intended value is left unchanged.
+Resume re-reads native histories and server records. Confirmed sessions are never resubmitted; a submission without a confirmed session id stops. An interrupted correction write is resolved by reading the exact saved body, never blindly re-sending it. Only stages that were never submitted can start a task. Earlier failures remain in the resumption record. Legacy note/skill proof files cannot be resumed under this lifecycle.
 
 For deployed eve applications, retain the original channel authentication and pass `EVE_BEARER_TOKEN` to the invocation script if that route requires a bearer credential. Production `eve start` rejects session requests until route authentication is configured, even though health checks are public; follow eve's [route-authentication guide](https://github.com/vercel/eve/blob/main/docs/guides/auth-and-route-protection.md) for an application that has no production route policy yet. Never expose an unauthenticated local development server publicly.
 
@@ -94,7 +78,7 @@ When the workflow fixture is enabled, its original standing policy explicitly pe
 
 Service names are string inputs; the two fictional records are data, not an enum to bake into the reusable workflow. The original callback still rejects unknown services, and the formatter still rejects invented or modified observations. This lets the learned procedure apply to changed service data without weakening the tool's runtime checks.
 
-Use a **separate clean copy of this example** and a new `AGENTRUN_AGENT_ID` so its skills and workflow have a verifiable origin. If another eve development server is running, give the copy its own working directory, `.eve` state, output directory and port; two eve servers must not build from the same directory. Install that copy against the same built AgentRun checkout. Do not copy an existing generated `agent/extensions/agentrun.ts` mount or prior `.eve` state.
+Use a **separate clean copy of this example** and a new `AGENTRUN_AGENT_ID` so its compiled workflow has a verifiable origin. If another eve development server is running, give the copy its own working directory, `.eve` state, output directory and port; two eve servers must not build from the same directory. Install that copy against the same built AgentRun checkout. Do not copy an existing generated `agent/extensions/agentrun.ts` mount or prior `.eve` state.
 
 Set the same model and AgentRun connection variables as above, plus:
 
@@ -123,15 +107,17 @@ npm run validate:workflows -- --live --output /tmp/eve-workflow-proof.json
 
 Use a new agent id that does not already exist. The validator creates that dedicated agent with learning Off and refuses to overwrite an existing agent or settings changed outside the proof.
 
-This performs at most eight native model tasks, plus the server's independent learning calls:
+This performs at most eight native model tasks, plus the server's compiler calls:
 
 1. Run the original two-tool procedure with learning Off.
-2. Enable **notes and skills**, teach that reusable procedure, and wait for an independently accepted skill. SDK turns without owner feedback use this mode for look-back learning.
-3. Enable **full workflow learning** with `learning: { compile_after: 5 }` for this new demonstration agent and run up to four ordinary practice tasks. The server must produce an independently accepted executable workflow at that configured cadence (the default is 20 completed runs). The checker and its acceptance thresholds are unchanged.
-4. Ask about `demo-worker` in a fresh session, without repeating the taught procedure. Require the accepted revision, a completed `agentrun__learned_workflow` invocation, both original callback bindings as its children, a fresh observation UUID and the changed version `3.1.2`.
-5. Turn the **same agent** Off and submit the same `demo-worker` task in another fresh session. Require direct native tools, no workflow invocation and no learning revision.
+2. Enable `learning: { compile_after: 5 }`, teach the repeatable procedure, then run up to four ordinary practice tasks. The server counts completed native traces, including the connected Off baseline; compilation can therefore happen after the third practice task. The default cadence is 20 completed runs. Practice stops as soon as a committed workflow exists.
+3. Require a new workflow from a run in this proof, successful compiler static and synthesized dry-run checks, a matching document digest, and its run-owned learning commit. No corrections, skills or workflow files are written by the validator.
+4. Ask about `demo-worker` in a fresh session without repeating the procedure. Require the committed revision, a completed `agentrun__learned_workflow` invocation, both original callback bindings, a fresh observation UUID and changed version `3.1.2`. Verify the workflow parent and callback children also reached the canonical server timeline.
+5. Turn the **same agent** Off and submit the same task in another fresh session. Require direct native tools, no workflow invocation and no learning revision.
 
-The validator changes settings through the version-checked public API and leaves learning Off. A correct answer obtained through direct tools does **not** pass the workflow-reuse stage. A rejected candidate, pending owner review, missing skill or missing workflow stops the proof; it never seeds a workflow, force-approves one or raises the paid-task limit to get a pass.
+A committed workflow passed compilation, static validation and a dry run with synthesized results. That is **not** a runtime promotion grade: the SDK can offer a committed workflow while a separate runtime check is still checking or holding it. The proof reports these states separately and never claims independent promotion.
+
+The validator uses the version-checked public API and leaves learning Off. Direct-tool fallback does not pass workflow reuse. Missing compilation, a changed digest, foreign provenance, pending owner review or incomplete telemetry stops the proof; it never seeds a workflow, forces approval or raises its task limit to get a pass. The original pre-extension baseline adds one task, for at most nine total.
 
 It checkpoints each session id as soon as eve returns it. To resume after inspecting an interruption:
 
@@ -139,9 +125,9 @@ It checkpoints each session id as soon as eve returns it. To resume after inspec
 npm run validate:workflows -- --live --resume /tmp/eve-workflow-proof.json
 ```
 
-Resume re-reads actual native histories and AgentRun records; it never resubmits a recorded task. A submission without a confirmed session id is uncertain and stops. The proof contains native answers, fictional callback facts, accepted workflow documents and metadata for inspection; private workflow signatures and credentials are excluded.
+Resume re-reads actual native histories and AgentRun records; it never resubmits a recorded task. A submission without a confirmed session id is uncertain and stops. The proof contains native answers, fictional callback facts, committed workflow documents and metadata for inspection; private workflow signatures and credentials are excluded.
 
-The tool-only workflow needs no Jev key or extra workflow-model credential. Eve still needs its original model route, and the AgentRun server needs its reflection, compilation and independent-checker routes. This first eve bridge accepts explicitly read-only callbacks only, with no model nodes, judge nodes, shell/code execution or implicit permissions. See the [workflow extension details](../../docs/tutorials/eve-learning.md#execute-accepted-workflows-with-existing-tools).
+The tool-only workflow needs no Jev key or extra workflow-model credential. Eve still needs its original model route, and the AgentRun server needs its compilation model route. This first eve bridge accepts explicitly read-only callbacks only, with no model nodes, judge nodes, shell/code execution or implicit permissions. See the [workflow extension details](../../docs/tutorials/eve-learning.md#execute-committed-workflows-with-existing-tools).
 
 Offline checks use scripted native/model receipts and a real local MCP bridge/interpreter, without model calls:
 

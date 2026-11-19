@@ -40,11 +40,11 @@ function fixture({ parent = false, loseCompletion = false, workflows, admittedWo
       const path = new URL(url).pathname, body = init.body ? JSON.parse(init.body) : undefined;
       requests.push({ path, body, headers: init.headers });
       const response = value => new Response(JSON.stringify(value), { headers: { 'content-type': 'application/json' } });
-      if (path === '/v2/agents/eve-runtime') return response({ definition: { sdk: { runtime: 'eve' }, learning: 'notes' } });
+      if (path === '/v2/agents/eve-runtime') return response({ definition: { sdk: { runtime: 'eve' }, learning: true } });
       if (path.endsWith('/sdk-runs')) {
         const run_id = `run-${starts.length + 1}`; starts.push({ run_id, body });
         return response({ agent_id: 'eve-runtime', run_id, token: `fake-receipt-${run_id}`,
-          learning: { enabled: true, revision: 'checked-revision', context: 'Existing checked note.', skills: [],
+          learning: { enabled: true, revision: 'checked-revision', context: 'Existing owner correction.',
             ...(admittedWorkflows ? { workflows: admittedWorkflows } : {}) } });
       }
       if (path.endsWith('/complete')) {

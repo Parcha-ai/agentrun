@@ -2,10 +2,12 @@
 
 An additive extension for an existing [eve](https://github.com/vercel/eve) agent. eve keeps its
 model, tools, credentials, permissions, channels and durable execution. AgentRun records each
-turn and supplies independently checked notes, skills and opt-in workflows to later turns.
+turn and supplies the owner's corrections and opt-in learned workflows to later turns.
 
 Targets **eve 1.0.0** and **Node 24.22.3 or newer**. The AgentRun server must support the `eve`
-SDK runtime and have a reflection/grading model configured to enable self-improvement.
+SDK runtime and have a compilation model route and key configured before Self-improving can be
+enabled, even for a mount without workflow bindings. Such a mount supplies owner corrections but
+does not itself make a compilation call.
 The package is a tested release candidate, held from npm publication. Install the candidate's
 three archives together in your **existing eve project**:
 
@@ -66,13 +68,14 @@ and a stable `AGENTRUN_AGENT_ID` in the eve backend's environment. Keep secrets 
 The agent's existing model and tool keys stay where they are.
 
 Restart or redeploy eve normally and run one ordinary task. It registers the connected agent with
-learning off. Open that agent's **Learning** tab and enable **Self-improving** for notes and skills.
-The next fresh turn pins its accepted learning revision. Alternatively, `learning: true` in this
-mount opts in on first registration only; without workflow bindings it selects notes/skills mode.
-With explicit workflow bindings, `learning: { compile_after: 5 }` opts a new agent into full
+learning off. Open that agent's **Learning** tab and enable **Self-improving**.
+The next fresh turn pins the owner's corrections from `corrections.md`. Alternatively, `learning: true`
+in this mount opts in on first registration only. Without workflow bindings the extension records
+turns and supplies those corrections; it cannot learn executable workflows.
+With explicit workflow bindings, `learning: { compile_after: 5 }` opts a new agent into
 workflow learning with a five-completed-run compilation threshold (the server default is 20).
-`agree_min` and `alone_min` may also configure the independent check. These settings do not
-force a workflow to pass its check. An existing agent's console setting always wins. The extension declares its own build dependencies;
+`agree_min` and `alone_min` configure the server's separate workflow-promotion checks; they do not
+gate delivery of committed workflows to eve. An existing agent's console setting always wins. The extension declares its own build dependencies;
 the application's model, tools and `agent.ts` build configuration need no changes.
 
 Removing the extension restores the original eve integration; it does not delete AgentRun history.
@@ -80,16 +83,17 @@ See the [cookbook](https://github.com/Parcha-ai/agentrun/blob/main/docs/tutorial
 and [runnable example](https://github.com/Parcha-ai/agentrun/tree/main/examples/eve-learning)
 in the matching source release. The candidate source includes these files before they reach main.
 
-To check setup, teach a harmless preference in a fresh eve task, wait for its learning result in
-AgentRun, then start another fresh task without repeating the preference. Confirm that run names
-the accepted learning revision. Switching self-improvement Off should leave the original tools
-working without a learning revision on the next fresh task.
+To check the context path, add a harmless owner correction in AgentRun, then start a fresh eve
+task that uses it. Confirm that run names the correction's pinned revision. To test automatic
+workflow learning, use the bound original tools for enough complete tasks to reach the compilation
+threshold, then follow the cookbook's fresh-session reuse and Learning Off comparison. Switching
+self-improvement Off leaves the original tools working without learning on the next fresh task.
 
 If setup fails, check the backend's environment and API URL first. An unsupported `eve` runtime
 means the server needs the matching release; an agent-id/runtime conflict needs a separate id for
-this eve application. If runs are recorded but nothing learns, check the server's model route and
-select notes/skills mode. Full workflow mode needs explicit tool bindings and repeated procedures;
-it does not reflect on every successful task without feedback.
+this eve application. If runs are recorded but no workflow appears, check the server's compilation
+model route, explicit tool bindings and completed-run threshold. The extension does not infer
+corrections or create a workflow after every successful task.
 
 ## What happens per turn
 
@@ -101,8 +105,11 @@ it does not reflect on every successful task without feedback.
    facts before they appear in durable history. Normalize through the exact turn-settled event;
    later delivery housekeeping cannot change a retry. Upload visible assistant text, tool names/outcomes, model and reported usage.
    Raw tool inputs/results, reasoning and native credentials remain with eve.
-4. Submit the original outcome once. AgentRun's ordinary runner reflects and independently checks
-   proposals. A future fresh turn receives only accepted learning; submission alone is not promotion.
+4. Submit the original outcome once. Once enough complete native runs are recorded, AgentRun's
+   ordinary runner compiles workflow drafts using the owner's corrections and the bound tool
+   schemas and commits them. A later fresh turn receives compatible committed workflows at its
+   pinned revision; the server's independent promotion checks are a separate stage. Submitting evidence does not itself
+   make a workflow executable.
 
 Evidence is bounded per turn. An oversized or conflicting buffer skips that turn’s learning;
 later native turns can still proceed. A missing start boundary or a full delivery backlog
@@ -114,7 +121,7 @@ and edit actions direct the coding agent back to the existing eve project.
 
 ## Executable learned workflows
 
-Notes and skills work with the mount above. To enable executable workflows, add an explicit
+Owner corrections work with the mount above. To enable executable workflows, add an explicit
 `workflows` configuration containing a trusted workflow engine, live policy and read-only
 callbacks. Bind the **same original functions** used by your eve tools; do not recreate their
 permissions, credentials or business logic in the extension.
@@ -150,10 +157,10 @@ eve runtime name, for example `my_learning__learned_workflow`. Alias matching is
 similar-looking tool names are never inferred. The typed mount configuration carries callbacks
 locally; only schemas and permission metadata are sent to AgentRun.
 
-Start with notes/skills mode to learn the procedure. After binding the original tools, select
-**Notes, skills and workflows** in the agent's learning settings. The ordinary reflection/checking process can
-learn a workflow from complete native traces. The next fresh turn receives only workflows pinned
-to that turn's accepted learning revision. When eve chooses `learned_workflow`, the extension
+After binding the original tools, enable **Self-improving** in the agent's learning settings.
+The server can compile a workflow from complete native traces once the configured threshold is
+reached. The next fresh turn receives compatible committed workflows pinned
+to that turn's learning revision. When eve chooses `learned_workflow`, the extension
 creates a local MCP bridge inside that native tool step and invokes the original callbacks through
 the bridge's schema checks and live policy. This MCP server is temporary and listens only on
 localhost inside the eve application; it is not a public MCP endpoint on the AgentRun server.
@@ -175,7 +182,7 @@ cancel a callback already dispatched. Fresh Off turns expose no executable workf
 - This initial adapter learns from complete, fresh, text-only turns. Conversation follow-ups,
   steering, missing or referenced evidence, and child work are not claimed as complete learning
   evidence. Accepted learning can still be supplied; original task and policy remain authoritative.
-- Notes and skills are reference text. Workflow execution is opt-in through the explicit bindings
+- Owner corrections are reference text. Workflow execution is opt-in through the explicit bindings
   above; the extension does not install arbitrary tools or rewrite the project.
 - Admission requires AgentRun to be reachable. Once native work completes, a delivery failure
   is logged without replacing eve's answer. A pending receipt is retried on the next turn in the

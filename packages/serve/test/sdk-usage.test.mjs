@@ -127,7 +127,7 @@ test("Eve's native task is booked once without an obsolete reflection charge", a
   const server = await completedSdk(t, { runtime: "eve", evidenceComplete: true });
   const sent = [];
   await server.start(route(sent));
-  assert.equal(sent.length, 0, "an Eve task below compile cadence does not ask a model");
+  assert.equal(sent.length, 0, "an Eve task without a workflow binding does not ask a model");
   await assertPublicTotals(server, { cost: 0.25 });
   const run = (await server.api("GET", `/runs/${server.runId}`)).body;
   assert.equal(run.sdk.runtime, "eve");

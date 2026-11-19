@@ -3,6 +3,10 @@ Copyright 2026 Parcha Labs, Inc.
 
 The boxd computer provider (packages/computer/src/boxd.ts) was contributed by Michiel Voortman.
 
+The console includes the eve icon from vercel/eve, copyright Vercel, Inc.,
+licensed under Apache-2.0. Source: apps/docs/registry/channel/web/app/icon.svg
+at commit 7d5340870dd2c75520162963d9ddb84d1580dbff.
+
 The console in dist/console bundles third-party software. dist/console/THIRD-PARTY-NOTICES.txt names each
 package it holds, with its version, its license and its license text.
 

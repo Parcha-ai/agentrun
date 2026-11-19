@@ -8,7 +8,7 @@ import { readReport, report } from './invoke.mjs';
 const PREFIX = 'Launch note:';
 const VISIBLE_PREFIX = /^(?:Launch note:|\*\*Launch note:\*\*)/i;
 const task = service => `Read release status for ${service} and report its service, version, test result and readiness.`;
-const teach = `${task('demo-api')} For this and future release reports, my formatting preference is to begin your final answer with the exact prefix "${PREFIX}" and use one concise sentence. Remember this preference for later release reports.`;
+export const CORRECTION = `Begin every release status report with the exact prefix "${PREFIX}" and use one concise sentence.`;
 const POLL_MS = 180_000;
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
 
@@ -72,13 +72,15 @@ function verifyOriginalTool(result, service, previousObservations) {
   }
 }
 
-/** Four fresh native eve sessions; only read polling is repeated. Existing baseline can be kept separately. */
+/** Owner-authored corrections delivery, not autonomous learning. Three fresh native eve sessions. */
 export async function demonstrate({ baseUrl = process.env.AGENTRUN_BASE_URL, apiKey = process.env.AGENTRUN_API_KEY,
   agentId = process.env.AGENTRUN_AGENT_ID, eveBaseUrl = process.env.EVE_BASE_URL,
-  eveBearer = process.env.EVE_BEARER_TOKEN, checkpoint = async () => {}, resume } = {}) {
-  if (!baseUrl || !apiKey || !agentId || !eveBaseUrl) throw new Error('Set AGENTRUN_BASE_URL, AGENTRUN_API_KEY, AGENTRUN_AGENT_ID and EVE_BASE_URL in the environment.');
-  const client = new AgentRun({ baseUrl, apiKey, timeoutMs: 10_000, maxRetries: 0 });
+  eveBearer = process.env.EVE_BEARER_TOKEN, checkpoint = async () => {}, resume,
+  client: suppliedClient, invokeNative = report, readNative = readReport } = {}) {
+  if ((!suppliedClient && (!baseUrl || !apiKey)) || !agentId || !eveBaseUrl) throw new Error('Set AGENTRUN_BASE_URL, AGENTRUN_API_KEY, AGENTRUN_AGENT_ID and EVE_BASE_URL in the environment.');
+  const client = suppliedClient ?? new AgentRun({ baseUrl, apiKey, timeoutMs: 10_000, maxRetries: 0 });
   if (resume) {
+    assert.equal(resume.kind, 'eve-owner-correction', 'Legacy autonomous note/skill proofs cannot be resumed.');
     assert.equal(resume.agentId, agentId, 'The saved proof belongs to another AgentRun agent.');
     assert.equal(resume.prefix, PREFIX, 'The saved proof uses a different teaching preference.');
     assert.ok(!resume.runtime || resume.runtime === 'eve', 'The saved proof belongs to another runtime.');
@@ -86,7 +88,7 @@ export async function demonstrate({ baseUrl = process.env.AGENTRUN_BASE_URL, api
     for (const saved of Object.values(resume.sessions)) assert.ok(!saved.run || saved.run.runtime === 'eve', 'A saved run belongs to another runtime.');
   }
   const priorStage = resume?.stage;
-  const evidence = resume ? structuredClone(resume) : { agentId, prefix: PREFIX, startedAt: new Date().toISOString(), stage: 'preflight', sessions: {}, settings: [] };
+  const evidence = resume ? structuredClone(resume) : { kind: 'eve-owner-correction', agentId, prefix: PREFIX, startedAt: new Date().toISOString(), stage: 'preflight', sessions: {}, settings: [] };
   evidence.runtime = 'eve';
   if (resume) {
     evidence.resumptions = [...evidence.resumptions ?? [], { at: new Date().toISOString(), stage: priorStage, ...(evidence.failure ? { failure: evidence.failure } : {}) }];
@@ -106,8 +108,8 @@ export async function demonstrate({ baseUrl = process.env.AGENTRUN_BASE_URL, api
       if (!resume) {
         assert.equal(existing.body.definition.learning, false, 'Start with the example agent learning Off.');
         const before = await client.learning.get(agentId);
-        assert.equal(before.notes.items.filter(note => note.status === 'active').length + before.skills.filter(skill => skill.status === 'active').length, 0,
-          'Use a fresh demonstration agent without existing accepted learning. Do not delete real learning to rerun this example.');
+        assert.equal(before.corrections?.trim() ?? '', '', 'Use a fresh demonstration agent without owner corrections.');
+        assert.equal(before.workflows.length, 0, 'Use a fresh demonstration agent without workflows.');
       }
     }
     if (resume) assert.ok(existing, 'The connected agent from the saved proof no longer exists.');
@@ -119,12 +121,12 @@ export async function demonstrate({ baseUrl = process.env.AGENTRUN_BASE_URL, api
       if (resume && (saved || priorStage === stage)) assert.ok(saved?.sessionId, 'The previous task submission has no confirmed session id; inspect it rather than sending a replacement.');
       let result;
       if (saved?.sessionId) {
-        result = await readReport(saved.sessionId, { expectedTask: input, baseUrl: eveBaseUrl, bearer: eveBearer });
+        result = await readNative(saved.sessionId, { expectedTask: input, baseUrl: eveBaseUrl, bearer: eveBearer });
         if (saved.turnId) assert.equal(result.turnId, saved.turnId, 'The saved native turn identity changed.');
       } else {
         evidence.sessions[stage] = { state: 'submitting' };
         await save();
-        result = await report(input, { baseUrl: eveBaseUrl, bearer: eveBearer,
+        result = await invokeNative(input, { baseUrl: eveBaseUrl, bearer: eveBearer,
           onStarted: async receipt => { evidence.sessions[stage] = { ...receipt, state: 'started' }; await save(); } });
       }
       evidence.sessions[stage] = { ...result, ...(saved?.run ? { run: saved.run } : {}), state: 'native_completed' };
@@ -141,46 +143,34 @@ export async function demonstrate({ baseUrl = process.env.AGENTRUN_BASE_URL, api
 
     const connected = await invoke('connected_off', task('demo-api'), 'demo-api');
     assert.equal(connected.run.sdk.learning_revision, null, 'The Off run unexpectedly received learning.');
-    assert.equal(connected.run.learning ?? null, null, 'The Off run unexpectedly started reflection.');
+    assert.equal(connected.run.learning ?? null, null, 'The Off run unexpectedly started learning.');
     assert.doesNotMatch(connected.result.answer, VISIBLE_PREFIX, 'The baseline independently used the special prefix; this comparison is inconclusive.');
-    if (!evidence.sessions.taught?.sessionId) {
-      evidence.settings.push(await setLearning(client, agentId, 'notes'));
+    if (!evidence.correction) {
+      evidence.settings.push(await setLearning(client, agentId, true));
+      const current = (await client.learning.corrections(agentId)).body;
+      assert.equal(current.text.trim(), '', 'The owner added corrections outside this proof.');
+      assert.ok(current.etag, 'No version guard for owner corrections.');
+      evidence.correction = { state: 'submitting', text: `- ${CORRECTION}\n` };
       await save();
+      await client.learning.writeCorrections(agentId, { text: evidence.correction.text }, { 'If-Match': current.etag });
+      evidence.correction.state = 'written'; await save();
     }
-    const taught = await invoke('taught', teach, 'demo-api');
-    assert.match(taught.result.answer, VISIBLE_PREFIX, 'The teaching turn did not follow the requested format.');
-    evidence.stage = 'waiting_for_independent_acceptance';
-    await save();
-    const acceptedRun = await poll(async options => {
-      const run = await client.runs.get(taught.run.run_id, options);
-      if (run.learning?.state === 'dropped') {
-        evidence.sessions.taught.run = runSummary(run);
-        await save();
-        throw new Error('The independent checker did not accept a lesson. Inspect Learning Dojo; this proof never force-approves a proposal.');
-      }
-      return run.learning?.state === 'merged' ? run : null;
-    }, 'the independent learning checker');
+    // An interrupted write is resolved by reading the exact body, never blindly re-sent.
     const learned = await client.learning.get(agentId);
-    const changedFiles = new Set(learned.log.items.filter(change => change.by.run === taught.run.run_id).flatMap(change => change.files));
-    const acceptedFiles = [
-      ...learned.notes.items.filter(note => note.status === 'active' && note.origin === 'run' && changedFiles.has(note.file)).map(note => note.file),
-      ...learned.skills.filter(skill => skill.status === 'active' && skill.run === taught.run.run_id).map(skill => skill.file),
-    ];
-    assert.ok(acceptedFiles.length, 'No active run-generated lesson was accepted from this teaching turn.');
-    assert.ok(learned.main && learned.main !== taught.run.sdk.learning_revision, 'The teaching turn did not create an accepted learning revision.');
-    evidence.sessions.taught.run = runSummary(acceptedRun);
-    const acceptedRevision = evidence.accepted?.revision ?? learned.main;
-    assert.ok(acceptedRevision === learned.main || learned.log.items.some(change => change.commit === acceptedRevision), 'The previously accepted revision is absent from real learning history.');
-    evidence.accepted = { revision: acceptedRevision, files: acceptedFiles };
+    assert.equal(learned.corrections, evidence.correction.text, 'The owner correction write is absent or changed; inspect it before proceeding.');
+    const correctionCommit = learned.log.items.find(change => change.by?.user === true && change.files.includes('corrections.md'));
+    assert.ok(correctionCommit, 'The correction has no owner-authored provenance.');
+    const correctedRevision = evidence.correction.revision ?? learned.main;
+    assert.ok(correctedRevision && (correctedRevision === learned.main || learned.log.items.some(change => change.commit === correctedRevision)));
+    evidence.correction = { ...evidence.correction, state: 'verified', revision: correctedRevision, ownerCommit: correctionCommit.commit };
     await save();
-
     if (!evidence.sessions.reused?.sessionId) {
-      evidence.settings.push(await setLearning(client, agentId, 'notes'));
+      evidence.settings.push(await setLearning(client, agentId, true));
       await save();
     }
     const reused = await invoke('reused', task('demo-worker'), 'demo-worker');
-    assert.equal(reused.run.sdk.learning_revision, acceptedRevision, 'The fresh run did not receive the accepted learning revision.');
-    assert.match(reused.result.answer, VISIBLE_PREFIX, 'The fresh session did not apply the accepted preference to the new service.');
+    assert.equal(reused.run.sdk.learning_revision, correctedRevision, 'The fresh run did not receive the owner correction revision.');
+    assert.match(reused.result.answer, VISIBLE_PREFIX, 'The fresh session did not apply the owner correction to the new service.');
 
     if (!evidence.sessions.control_off?.sessionId) {
       evidence.settings.push(await setLearning(client, agentId, false));
@@ -188,7 +178,7 @@ export async function demonstrate({ baseUrl = process.env.AGENTRUN_BASE_URL, api
     }
     const control = await invoke('control_off', task('demo-worker'), 'demo-worker');
     assert.equal(control.run.sdk.learning_revision, null, 'The Off control unexpectedly received learning.');
-    assert.equal(control.run.learning ?? null, null, 'The Off control unexpectedly started reflection.');
+    assert.equal(control.run.learning ?? null, null, 'The Off control unexpectedly started learning.');
     assert.doesNotMatch(control.result.answer, VISIBLE_PREFIX, 'The Off control independently chose the same prefix; this comparison is inconclusive.');
     evidence.stage = 'passed';
     evidence.finishedAt = new Date().toISOString();
@@ -206,7 +196,7 @@ export async function demonstrate({ baseUrl = process.env.AGENTRUN_BASE_URL, api
 
 if (import.meta.main) {
   const args = process.argv.slice(2);
-  if (!args.includes('--live')) throw new Error('This starts four real eve model tasks and server reflection. Run with --live after the original baseline and extension setup.');
+  if (!args.includes('--live')) throw new Error('This writes one explicit owner correction and starts three real eve model tasks. Run with --live after the original baseline and extension setup.');
   let output, resumePath;
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--live') continue;
@@ -215,6 +205,7 @@ if (import.meta.main) {
   }
   const resume = resumePath ? JSON.parse(await readFile(resumePath, 'utf8')) : undefined;
   output ??= resumePath;
+  assert.ok(output, 'An evidence output path is required before any paid task.');
   let created = output === resumePath && Boolean(resumePath);
   try {
     const evidence = await demonstrate({ resume, checkpoint: async value => {

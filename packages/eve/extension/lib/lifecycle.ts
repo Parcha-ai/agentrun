@@ -55,7 +55,7 @@ export async function beginTurn(config: LearningConfig, source: TurnSource): Pro
     try {
       await owner.agents.create({ definition: {
         id: config.agentId, name: config.name ?? config.agentId, instructions: config.instructions,
-        sdk: { runtime: 'eve' }, learning: on ? (workflows ? learning === true ? true : { ...learning } : 'notes') : false,
+        sdk: { runtime: 'eve' }, learning: on ? learning === true ? true : { ...learning } : false,
       } }, { 'Idempotency-Key': `eve:register:${hash(config.agentId)}` });
     } catch (conflict) {
       if (!(conflict instanceof AgentRunRefused) || conflict.status !== 409) throw conflict;
@@ -76,7 +76,7 @@ export async function beginTurn(config: LearningConfig, source: TurnSource): Pro
 export function learningInstructions(record: TurnRecord, workflows?: EveWorkflowOptions): string {
   const learning = record.receipt.learning;
   return renderLearningContext({
-    learningEnabled: learning.enabled, revision: learning.revision, context: learning.context, skills: learning.skills,
+    learningEnabled: learning.enabled, revision: learning.revision, context: learning.context,
     workflowContext: workflowInstructions(record, workflows),
   });
 }

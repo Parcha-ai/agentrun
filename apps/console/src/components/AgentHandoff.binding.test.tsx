@@ -24,7 +24,7 @@ const nativeBinding: NativeBinding = {
 const native: Agent = { ...managed, definition: { ...managed.definition, native: nativeBinding } };
 const sourceAgents = [
   { name: "native", agent: native, expected: "Edit the original native setup" },
-  ...(["claude-agent-sdk", "codex-sdk"] as const).map(runtime => ({ name: runtime, agent: { ...managed, definition: { ...managed.definition, sdk: { runtime } } }, expected: runtime === "claude-agent-sdk" ? "using Claude Agent SDK" : "using Codex SDK" })),
+  ...(["claude-agent-sdk", "codex-sdk", "eve"] as const).map(runtime => ({ name: runtime, agent: { ...managed, definition: { ...managed.definition, sdk: { runtime } } }, expected: runtime === "eve" ? "using Vercel eve" : runtime === "claude-agent-sdk" ? "using Claude Agent SDK" : "using Codex SDK" })),
 ];
 let root: Root | undefined;
 let host: HTMLDivElement;
@@ -106,12 +106,15 @@ describe("rendered handoffs follow the loaded agent's execution binding", () => 
     const prompt = await copy(); expect(prompt).toContain("Help me build an agent"); expect(prompt).toContain(`Prepared request: POST ${origin}/v2/agents`);
     expect(prompt).toContain('"instructions": "Answer carefully."'); expect(prompt).not.toContain("If-Match:");
   });
-  for (const runtime of ["claude-agent-sdk", "codex-sdk"] as const) {
+  for (const runtime of ["claude-agent-sdk", "codex-sdk", "eve"] as const) {
     it(`AgentPage runs ${runtime} through its backend without dispatching on copy`, async () => {
       const agent = { ...managed, definition: { ...managed.definition, sdk: { runtime } } };
       await mount(createElement(AgentPage, { v2: client(agent), agentId: agent.agent_id, go: write }));
-      const prompt = await copy("Run agent"); expect(prompt).toContain(runtime === "claude-agent-sdk" ? "using Claude Agent SDK" : "using Codex SDK");
-      expect(prompt).toContain("application's existing job entrypoint"); expect(prompt).toContain("Do not launch it with AgentRun's managed run API"); expect(prompt).toContain("flushLearning()");
+      const prompt = await copy("Run agent"); expect(prompt).toContain(runtime === "eve" ? "using Vercel eve" : runtime === "claude-agent-sdk" ? "using Claude Agent SDK" : "using Codex SDK");
+      expect(prompt).toContain(runtime === "eve" ? "existing eve project and normal invocation" : "application's existing job entrypoint");
+      expect(prompt).toContain("Do not launch it with AgentRun's managed run API");
+      if (runtime === "eve") { expect(prompt).toContain("eve's own controls"); expect(prompt).not.toContain("flushLearning()"); }
+      else expect(prompt).toContain("flushLearning()");
     });
   }
   for (const [name, agent] of [["managed", managed], ["native", native]] as const) {

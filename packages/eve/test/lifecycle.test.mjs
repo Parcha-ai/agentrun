@@ -16,7 +16,7 @@ function service({ definition } = {}) {
     if (path === '/v2/agents/eve-support/sdk-runs') {
       const key = options.headers['Idempotency-Key'];
       if (!runs.has(key)) runs.set(key, { run_id: `run-${runs.size + 1}`, agent_id: 'eve-support', token: 'scoped-private-token',
-        console_url: 'https://console.example/#/runs/one', learning: { enabled, revision, context: 'Use a release brief.', skills: [] } });
+        console_url: 'https://console.example/#/runs/one', learning: { enabled, revision, context: 'Use a release brief.' } });
       if (failAfterCommit) { failAfterCommit = false; throw new Error('connection lost'); }
       return answer(runs.get(key));
     }
@@ -50,23 +50,23 @@ test('different sessions do not share receipts, and an existing agent setting is
   assert.notEqual(first.receipt.run_id, second.receipt.run_id);
   assert.equal(server.requests.some(row => row.method === 'PUT' || row.method === 'PATCH'), false);
   const registration = server.requests.find(row => row.path === '/v2/agents').body.definition;
-  assert.equal(registration.learning, 'notes');
+  assert.equal(registration.learning, true);
   assert.deepEqual(registration.sdk, { runtime: 'eve' });
   assert.equal(registration.instructions, 'Keep existing tool permissions.');
 });
 
-test('new workflow agents keep configured loop numbers; notes-only mounts and existing settings remain unchanged', async () => {
+test('new agents keep configured loop numbers with or without workflow bindings; existing settings remain unchanged', async () => {
   const workflows = { engine: { inspectWorkflow() {}, runWorkflow() {}, resolveSchemaForWorkflow() {} }, policy: () => 'allow',
     tools: [{ name: 'mcp:release/status', nativeName: 'release_status', description: 'Read release status.',
       input_schema: { type: 'object' }, permission: 'allow', readOnly: true, async execute() {} }] };
   const learning = { compile_after: 5, agree_min: 0.9, alone_min: 0.7 };
-  for (const [bindings, expected] of [[workflows, learning], [undefined, 'notes']]) {
+  for (const bindings of [workflows, undefined]) {
     const server = service();
     await beginTurn({ ...config(server.fetch), learning, workflows: bindings }, source);
     const registration = server.requests.find(row => row.path === '/v2/agents').body.definition;
-    assert.deepEqual(registration.learning, expected);
+    assert.deepEqual(registration.learning, learning);
   }
-  for (const existing of [false, 'notes', { compile_after: 40, agree_min: 0.95 }]) {
+  for (const existing of [false, true, { compile_after: 40, agree_min: 0.95 }]) {
     const server = service({ definition: { id: 'eve-support', sdk: { runtime: 'eve' }, learning: existing } });
     await beginTurn({ ...config(server.fetch), learning, workflows }, source);
     assert.equal(server.requests.some(row => row.path === '/v2/agents' || row.method === 'PUT' || row.method === 'PATCH'), false,
@@ -75,8 +75,8 @@ test('new workflow agents keep configured loop numbers; notes-only mounts and ex
   }
 });
 
-test('Learning Off never renders a supplied skill or context', () => {
-  const record = { receipt: { learning: { enabled: false, revision: 'old', context: 'old note', skills: [{ name: 'old', files: { 'SKILL.md': 'old skill' } }] } } };
+test('Learning Off never renders owner corrections', () => {
+  const record = { receipt: { learning: { enabled: false, revision: 'old', context: 'Existing owner correction.' } } };
   assert.equal(learningInstructions(record), '');
 });
 

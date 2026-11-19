@@ -1,6 +1,6 @@
-// Real native tasks and ordinary independent promotion. No seeded workflow or forced approval.
+// Real native traces → normal compilation → committed workflow → original callbacks. No seeded workflow.
 import assert from 'node:assert/strict';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 import { setTimeout as delay } from 'node:timers/promises';
 import { isDeepStrictEqual } from 'node:util';
@@ -10,7 +10,7 @@ import { readWorkflowAudit } from './agent/lib/release-tools.ts';
 import { readWorkflowReport, workflowReport } from './workflow-report.mjs';
 
 export const workflowTask = service => `Prepare a release brief for ${service} from its current release data. Return the formatter's brief verbatim as plain text: no Markdown, bold, headings, quotes, commentary, or extra lines.`;
-export const teachWorkflow = workflowTask('demo-api') + ' For this and future release briefs, follow this reusable two-step procedure: call release_status for the requested service, then pass its entire returned status object unchanged to format_release_brief. Remember this procedure as a reusable skill so it can become an executable workflow after repeated use. Service names, versions and observations are fresh request data, never constants to remember.';
+export const teachWorkflow = workflowTask('demo-api') + ' For this and future release briefs, follow this reusable two-step procedure: call release_status for the requested service, then pass its entire returned status object unchanged to format_release_brief. Use the same procedure on later release briefs. Service names, versions and observations are fresh request data, never constants to remember.';
 const TOOL_NAMES = ['mcp:release/release_status', 'mcp:release/format_release_brief'];
 const TERMINAL = new Set(['completed', 'failed', 'cancelled']);
 const DEMO_LEARNING = { compile_after: 5 };
@@ -39,13 +39,13 @@ export function assertOriginalChain(result, rows, run, service, observations = n
   return { read, formatted };
 }
 
-export function assertExecutableReuse(result, run, accepted, chain) {
-  assert.equal(run.sdk.learning_revision, accepted.revision, 'The fresh run did not pin the accepted workflow revision.');
+export function assertExecutableReuse(result, run, committed, chain) {
+  assert.equal(run.sdk.learning_revision, committed.revision, 'The fresh run did not pin the committed workflow revision.');
   const call = result.toolCalls.find(call => call.name === 'agentrun__learned_workflow' && call.outcome === 'completed'
-    && accepted.workflows.some(item => item.name === call.workflow?.name));
-  assert.ok(call, 'No accepted workflow completed. Direct-tool fallback is not workflow reuse.');
+    && committed.workflows.some(item => item.name === call.workflow?.name));
+  assert.ok(call, 'No committed workflow completed. Direct-tool fallback is not workflow reuse.');
   const trace = call.workflow;
-  assert.equal(trace.runId, run.run_id); assert.equal(trace.revision, accepted.revision); assert.equal(trace.complete, true);
+  assert.equal(trace.runId, run.run_id); assert.equal(trace.revision, committed.revision); assert.equal(trace.complete, true);
   assert.equal(chain.read.source, 'workflow'); assert.equal(chain.formatted.source, 'workflow');
   assert.equal(chain.read.workflow, trace.name); assert.equal(chain.formatted.workflow, trace.name);
   const parents = trace.events.filter(event => event.name === 'learned_workflow' && event.status === 'completed');
@@ -54,6 +54,32 @@ export function assertExecutableReuse(result, run, accepted, chain) {
     && parents.some(parent => parent.id === event.parent_tool_use_id)), 'The workflow did not execute both original callback bindings.');
 }
 
+/** A committed draft passed the compiler's static and synthesized dry-run checks, not a runtime promotion grade. */
+export function assertCompiledOrigin(item, document, detail, learning, proofRunIds) {
+  assert.ok(proofRunIds.has(item.run), 'The workflow came from a run outside this proof.');
+  assert.equal(detail?.run, item.run);
+  assert.equal(detail.state, 'merged', 'The compile result was not committed.');
+  assert.equal(detail.compiled?.workflow, item.name, 'The origin did not compile this workflow.');
+  assert.ok(detail.compiled.attempts.length && detail.compiled.attempts.at(-1).ok
+    && detail.compiled.attempts.at(-1).errors.length === 0, 'The compile draft did not pass its static and dry-run checks.');
+  assert.equal(detail.compiled.digest, createHash('sha256').update(document).digest('hex').slice(0, 16),
+    'The committed workflow differs from the checked compile draft.');
+  assert.ok(detail.workflows.some(file => file.file === item.file && file.name === item.name && !file.pending));
+  assert.ok(detail.merged && learning.log.items.some(change => change.commit === detail.merged
+    && change.by?.run === item.run && change.files.includes(item.file)), 'No proof-owned learning commit records this workflow.');
+  return { run: detail.run, revision: detail.merged, compiled: detail.compiled };
+}
+
+export function assertServerWorkflow(trace, rows) {
+  const parents = trace.events.filter(event => event.name === 'learned_workflow' && event.status === 'completed');
+  const children = trace.events.filter(event => TOOL_NAMES.includes(event.name) && event.status === 'completed');
+  for (const event of [...parents, ...children]) assert.ok(rows.some(row => row.kind === 'tool_result'
+    && row.tool_use_id === event.id && row.tool_name === event.name && row.tool_status === 'success'
+    && (event.parent_tool_use_id === undefined || row.parent_tool_use_id === event.parent_tool_use_id)),
+  'The canonical server timeline is missing a completed workflow or original callback child.');
+}
+const offered = item => !['pending', 'retired'].includes(item.status) && item.run;
+
 /** Bounded paid work; polling and resume perform reads, never replay a submitted native task. */
 export async function demonstrateWorkflows({ baseUrl = process.env.AGENTRUN_BASE_URL, apiKey = process.env.AGENTRUN_API_KEY,
   agentId = process.env.AGENTRUN_AGENT_ID, eveBaseUrl = process.env.EVE_BASE_URL, eveBearer = process.env.EVE_BEARER_TOKEN,
@@ -61,13 +87,27 @@ export async function demonstrateWorkflows({ baseUrl = process.env.AGENTRUN_BASE
   client: suppliedClient, invokeNative = workflowReport, readNative = readWorkflowReport, readAudit = readWorkflowAudit,
   pollMs = 180_000, pollIntervalMs = 1_000 } = {}) {
   assert.ok(agentId && eveBaseUrl && auditPath && (suppliedClient || baseUrl && apiKey), 'Set the AgentRun and Eve connection environment and EVE_WORKFLOW_AUDIT_PATH.');
-  const client = suppliedClient ?? new AgentRun({ baseUrl, apiKey, timeoutMs: 10_000, maxRetries: 0 });
+  // The generated client parses JSON files. Preserve their response text as well so a digest
+  // comparison covers the exact checked bytes, including whitespace, without a second request.
+  const fileTexts = new Map();
+  const client = suppliedClient ?? new AgentRun({ baseUrl, apiKey, timeoutMs: 10_000, maxRetries: 0,
+    fetch: async (url, options) => {
+      const response = await fetch(url, options);
+      const path = new URL(url).pathname;
+      if (response.ok && options?.method === 'GET' && path.includes('/learning/files/')) {
+        const text = await response.clone().text();
+        assert.ok(Buffer.byteLength(text) <= 256 * 1024, 'Workflow document exceeds the proof bound.');
+        fileTexts.set(decodeURIComponent(path.split('/learning/files/')[1]), text);
+      }
+      return response;
+    },
+  });
   if (resume) {
-    assert.equal(resume.kind, 'eve-executable-workflow'); assert.equal(resume.agentId, agentId);
+    assert.equal(resume.kind, 'eve-executable-workflow'); assert.equal(resume.version, 2, 'Legacy note/skill proofs cannot be resumed with the compile lifecycle.'); assert.equal(resume.agentId, agentId);
     assert.ok(resume.sessions && Array.isArray(resume.settings), 'Malformed saved workflow proof.');
   }
   const priorStage = resume?.stage;
-  const proof = resume ? structuredClone(resume) : { kind: 'eve-executable-workflow', agentId,
+  const proof = resume ? structuredClone(resume) : { kind: 'eve-executable-workflow', version: 2, agentId,
     startedAt: new Date().toISOString(), stage: 'preflight', sessions: {}, settings: [] };
   if (resume) { proof.resumptions = [...proof.resumptions ?? [], { at: new Date().toISOString(), stage: priorStage, failure: proof.failure }]; delete proof.failure; }
   const save = () => checkpoint(proof);
@@ -91,6 +131,7 @@ export async function demonstrateWorkflows({ baseUrl = process.env.AGENTRUN_BASE
   };
   const readLearning = async () => {
     const learning = await client.learning.get(agentId);
+    assert.equal(learning.corrections?.trim() ?? '', '', 'This automatic workflow proof must not use owner-written corrections.');
     assert.ok(!learning.workflows.some(item => item.status === 'pending'), 'A workflow needs owner review. The proof never force-approves it.');
     return learning;
   };
@@ -127,7 +168,7 @@ export async function demonstrateWorkflows({ baseUrl = process.env.AGENTRUN_BASE
     const run = await client.runs.get(runId);
     await readLearning();
     return ['merged', 'dropped'].includes(run.learning?.state) ? run : null;
-  }, 'independent learning');
+  }, 'workflow compilation');
 
   await save();
   try {
@@ -146,36 +187,52 @@ export async function demonstrateWorkflows({ baseUrl = process.env.AGENTRUN_BASE
     const baseline = await invoke('connected_off', teachWorkflow, 'demo-api', 'native');
     assert.equal(baseline.run.sdk.learning_revision, null); assert.equal(baseline.run.learning ?? null, null);
     assert.equal(baseline.result.toolCalls.filter(call => call.workflow).length, 0);
-    // Notes mode runs the SDK look-back even without owner feedback. Full mode then
-    // compiles that checked skill with this new demo agent's explicit five-run cadence (20 is the server default).
-    if (!proof.sessions.taught?.sessionId) await setLearning('notes');
+    // Main counts prior completed native runs, including the connected Off baseline.
+    // Compile after five qualifying runs; never insert notes, corrections, skills or workflow files.
+    if (!proof.sessions.taught?.sessionId) await setLearning(DEMO_LEARNING);
     const taught = await invoke('taught', teachWorkflow, 'demo-api', 'native');
     await settle(taught.run.run_id);
     let learned = await readLearning();
-    assert.ok(learned.skills.some(skill => skill.status === 'active' && skill.run === taught.run.run_id), 'No independently accepted skill came from the teaching turn. Inspect its checker result.');
     for (let index = 1; index <= 4; index++) {
       const stage = `practice_${index}`;
-      if (learned.workflows.some(item => item.status === 'active' && item.run) && !proof.sessions[stage]) break;
+      if (learned.workflows.some(offered) && !proof.sessions[stage]) break;
       if (!proof.sessions[stage]?.sessionId) await setLearning(DEMO_LEARNING);
       const practice = await invoke(stage, workflowTask('demo-api'), 'demo-api');
       await settle(practice.run.run_id); learned = await readLearning();
     }
-    const active = learned.workflows.filter(item => item.status === 'active' && item.run);
-    assert.ok(active.length, 'No independently accepted workflow after the bounded ordinary practice cadence. Inspect Dojo before more paid work.');
-    if (!proof.accepted) {
+    const active = learned.workflows.filter(offered);
+    assert.ok(active.length, 'No committed workflow after the bounded ordinary practice cadence. Inspect Dojo before more paid work.');
+    if (!proof.committed) {
       const workflows = [];
       for (const item of active) {
-        const origin = await client.runs.get(item.run);
-        assert.equal(origin.learning?.state, 'merged', 'The workflow origin was not independently accepted.');
-        assert.ok(Object.values(proof.sessions).some(saved => saved.run?.runId === item.run), 'The workflow came from a run outside this proof.');
-        workflows.push({ name: item.name, file: item.file, run: item.run, document: (await client.learning.read(agentId, item.file)).body });
+        const response = await client.learning.read(agentId, item.file);
+        const document = fileTexts.get(item.file) ?? response.body;
+        assert.equal(typeof document, 'string', 'The exact workflow response text is required to verify its digest.');
+        const origin = assertCompiledOrigin(item, document, await client.runs.learning(item.run), learned,
+          new Set(Object.values(proof.sessions).map(saved => saved.run?.runId)));
+        workflows.push({ name: item.name, file: item.file, run: item.run, status: item.status, document, origin });
       }
-      proof.accepted = { revision: learned.main, workflows }; await save();
+      proof.committed = { revision: learned.main, workflows, qualifyingRuns: Object.entries(proof.sessions)
+        .filter(([stage]) => stage === 'connected_off' || stage === 'taught' || stage.startsWith('practice_'))
+        .map(([, saved]) => saved.run.runId) }; await save();
     }
-    assert.ok(proof.accepted.revision && (proof.accepted.revision === learned.main || learned.log.items.some(row => row.commit === proof.accepted.revision)), 'The saved accepted revision is absent from real learning history.');
+    assert.ok(proof.committed.revision && (proof.committed.revision === learned.main || learned.log.items.some(row => row.commit === proof.committed.revision)), 'The saved committed revision is absent from real learning history.');
     if (!proof.sessions.reused?.sessionId) await setLearning(DEMO_LEARNING);
     const reused = await invoke('reused', workflowTask('demo-worker'), 'demo-worker', 'workflow');
-    assertExecutableReuse(reused.result, reused.run, proof.accepted, reused.chain);
+    assertExecutableReuse(reused.result, reused.run, proof.committed, reused.chain);
+    const rows = []; let after = 0;
+    for (let page = 0; page < 10; page++) {
+      const timeline = await client.runs.timeline(reused.run.run_id, { after, limit: 100 });
+      rows.push(...timeline.rows);
+      if (!timeline.has_more) break;
+      assert.ok(timeline.next_after > after && page < 9, 'Canonical timeline was incomplete or exceeded the proof bound.');
+      after = timeline.next_after;
+    }
+    const invocation = reused.result.toolCalls.find(call => call.workflow)?.workflow;
+    assertServerWorkflow(invocation, rows);
+    proof.serverWorkflow = rows.filter(row => row.kind === 'tool_result' && row.tool_status === 'success')
+      .map(({ tool_use_id, tool_name, parent_tool_use_id }) => ({ tool_use_id, tool_name, parent_tool_use_id }));
+    await save();
     if (!proof.sessions.control_off?.sessionId) await setLearning(false);
     const off = await invoke('control_off', workflowTask('demo-worker'), 'demo-worker', 'native');
     assert.equal(off.run.sdk.learning_revision, null); assert.equal(off.run.learning ?? null, null);
@@ -190,7 +247,7 @@ export async function demonstrateWorkflows({ baseUrl = process.env.AGENTRUN_BASE
 
 if (import.meta.main) {
   const args = process.argv.slice(2); let output, resumePath;
-  if (!args.includes('--live')) throw new Error('This starts up to eight native model tasks and server reflection. Configure the example and pass --live.');
+  if (!args.includes('--live')) throw new Error('This starts up to eight native model tasks and server compilation. Configure the example and pass --live.');
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--live') continue;
     if (!['--output', '--resume'].includes(args[i]) || !args[i + 1] || args[i + 1].startsWith('--')) throw new Error('Usage: node workflow-validate.mjs --live --output new-proof.json [--resume saved-proof.json]');

@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { createHash } from 'node:crypto';
 import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { readReleaseStatus, formatReleaseBrief, readWorkflowAudit, releaseWorkflowTools } from './agent/lib/release-tools.ts';
-import { assertExecutableReuse, assertOriginalChain, demonstrateWorkflows, workflowTask } from './workflow-validate.mjs';
+import { assertCompiledOrigin, assertExecutableReuse, assertOriginalChain, demonstrateWorkflows, workflowTask } from './workflow-validate.mjs';
 
 async function journal(t) {
   const dir = await mkdtemp(join(tmpdir(), 'eve-workflow-test-'));
@@ -87,14 +88,14 @@ test('a real local MCP workflow calls the original callback functions and emits 
   } finally { await client.close(); await bound.close(); await bridge.close(); }
 });
 
-async function proofFixture(t, { pending = false, fallback = false, uncertain = false, interrupt = false, preexisting = false } = {}) {
+async function proofFixture(t, { pending = false, fallback = false, uncertain = false, interrupt = false, preexisting = false, compiledFailure = false, unrelatedOrigin = false, missingServerChild = false, held = false } = {}) {
   const auditPath = await journal(t), agentId = 'eve-workflow-fixture', results = new Map(), runs = new Map(), prompts = [], reads = [], settings = [];
-  let learning = false, version = 1, registered = preexisting, taughtRun, workflowRun, checkpoint;
+  let learning = false, version = 1, registered = preexisting, workflowRun, checkpoint;
+  const document = '{"unit-test":"scripted compiled document"}', digest = createHash("sha256").update(document).digest("hex").slice(0, 16);
   const accepted = () => Boolean(workflowRun);
-  const view = () => ({ main: accepted() ? 'revision-workflow' : taughtRun ? 'revision-skill' : 'revision-empty',
-    notes: { items: [] }, skills: taughtRun ? [{ status: 'active', run: taughtRun, name: 'release-brief', file: 'skills/release-brief/SKILL.md' }] : [],
-    workflows: accepted() ? [{ status: pending ? 'pending' : 'active', run: workflowRun, name: 'release-brief', file: 'workflows/release-brief/workflow.json' }] : [],
-    log: { items: [{ commit: 'revision-workflow' }] } });
+  const view = () => ({ main: accepted() ? 'revision-workflow' : 'revision-empty', corrections: '',
+    workflows: accepted() ? [{ status: pending ? 'pending' : held ? 'held' : 'active', run: workflowRun, name: 'release-brief', file: 'workflows/release-brief/workflow.json' }] : [],
+    log: { items: accepted() ? [{ commit: 'revision-workflow', by: { run: unrelatedOrigin ? 'foreign-run' : workflowRun }, files: ['workflows/release-brief/workflow.json'] }] : [] } });
   const client = { agents: {
     async get() {
       if (!registered) throw Object.assign(new Error('No agent registered.'), { code: 'not_found' });
@@ -110,15 +111,27 @@ async function proofFixture(t, { pending = false, fallback = false, uncertain = 
       return this.get();
     },
     async runs() { return { runs: [...runs.values()] }; },
-  }, runs: { async get(id) { assert.ok(runs.has(id)); return structuredClone(runs.get(id)); } },
-  learning: { async get() { return view(); }, async read() { return { body: '{"unit-test":"scripted checker document"}' }; } } };
+  }, runs: {
+    async get(id) { assert.ok(runs.has(id)); return structuredClone(runs.get(id)); },
+    async learning(id) { return { run: id, state: 'merged', merged: 'revision-workflow',
+      compiled: { workflow: 'release-brief', attempts: [{ ok: !compiledFailure, errors: compiledFailure ? ['dry run failed'] : [] }], digest, promoted: false },
+      workflows: [{ name: 'release-brief', file: 'workflows/release-brief/workflow.json' }] }; },
+    async timeline(id) {
+      const result = [...results.values()].find(saved => saved.result.toolCalls.some(call => call.workflow?.runId === id)).result;
+      const events = result.toolCalls.find(call => call.workflow).workflow.events;
+      return { has_more: false, rows: events.filter((event, index) => !missingServerChild || index !== 2).map(event => ({
+        kind: 'tool_result', tool_use_id: event.id, tool_name: event.name, tool_status: 'success', parent_tool_use_id: event.parent_tool_use_id,
+      })) };
+    },
+  }, learning: { async get() { return view(); }, async read() { return { body: document }; } } };
+
   const invokeNative = async (input, { onStarted }) => {
     prompts.push(input);
     if (uncertain) { uncertain = false; throw new Error('A connection closed before a session receipt was returned.'); }
     const sessionId = `session-${prompts.length}`, runId = `run-${prompts.length}`;
     await onStarted({ sessionId, deliveryId: `delivery-${prompts.length}` });
     const service = input.includes('demo-worker') ? 'demo-worker' : 'demo-api';
-    const workflow = accepted() && learning !== false && learning !== 'notes' && !fallback;
+    const workflow = accepted() && learning !== false && !fallback;
     const revision = learning === false ? null : view().main;
     const ctx = { auditPath, ...(workflow ? { runId, workflow: 'release-brief' } : { sessionId }) };
     const status = await readReleaseStatus({ service }, ctx), brief = await formatReleaseBrief({ status }, ctx);
@@ -132,7 +145,6 @@ async function proofFixture(t, { pending = false, fallback = false, uncertain = 
     const run = { run_id: runId, status: 'completed', sdk: { runtime: 'eve', session_id: sessionId, learning_revision: revision },
       ...(learning === false ? {} : { learning: { state: 'merged' } }) };
     results.set(sessionId, { input, result }); runs.set(runId, run);
-    if (learning === 'notes') taughtRun = runId;
     // Current compile_after counts the agent's own completed runs, including its Off baseline.
     if (typeof learning === 'object' && runs.size >= learning.compile_after) workflowRun ??= runId;
     if (interrupt) { interrupt = false; throw new Error('A native delivery completed after the connection closed.'); }
@@ -145,12 +157,12 @@ async function proofFixture(t, { pending = false, fallback = false, uncertain = 
   return { options, prompts, settings, runs, reads, results, proof: () => checkpoint, changeOwnerLearning(value) { learning = value; version++; } };
 }
 
-test('live-proof orchestration teaches in notes mode, then compiles normally, proves fresh callback reuse, and switches the same agent Off', async t => {
+test('live-proof orchestration compiles normal native traces with current checks, proves fresh callback reuse, and switches the same agent Off', async t => {
   const f = await proofFixture(t), proof = await demonstrateWorkflows(f.options);
   assert.equal(proof.stage, 'passed'); assert.equal(f.prompts.length, 7);
-  assert.deepEqual(f.settings, ['notes', { compile_after: 5 }, false]);
+  assert.deepEqual(f.settings, [{ compile_after: 5 }, false]);
   assert.equal(f.prompts.at(-2), workflowTask('demo-worker')); assert.equal(f.prompts.at(-1), workflowTask('demo-worker'));
-  assert.equal(proof.accepted.workflows[0].run, proof.sessions.practice_3.run.runId);
+  assert.equal(proof.committed.workflows[0].run, proof.sessions.practice_3.run.runId);
   assert.equal(proof.sessions.reused.callbacks.read.source, 'workflow');
   assert.equal(proof.sessions.control_off.callbacks.read.source, 'native');
   assert.equal(new Set(Object.values(proof.sessions).map(row => row.callbacks.read.result.observation)).size, 7);
@@ -172,7 +184,7 @@ test('workflow proof never changes a pre-existing agent or replaces owner settin
   assert.equal(paused.prompts.length, 1); assert.deepEqual(paused.settings, []);
 });
 
-test('workflow proof stops at independent review without auto-approving or invoking reuse', async t => {
+test('workflow proof stops at pending owner review without auto-approving or invoking reuse', async t => {
   const f = await proofFixture(t, { pending: true });
   await assert.rejects(demonstrateWorkflows(f.options), /needs owner review/);
   assert.equal(f.prompts.length, 5); assert.equal(f.proof().sessions.reused, undefined);
@@ -184,7 +196,7 @@ test('good direct-tool output is never counted as executable workflow reuse', as
   assert.equal(f.prompts.length, 6); assert.equal(f.proof().sessions.control_off, undefined);
   const result = f.results.get('session-6').result, run = f.runs.get('run-6');
   const chain = assertOriginalChain(result, await readWorkflowAudit(f.options.auditPath), run, 'demo-worker');
-  assert.throws(() => assertExecutableReuse(result, run, f.proof().accepted, chain), /No accepted workflow completed/);
+  assert.throws(() => assertExecutableReuse(result, run, f.proof().committed, chain), /No committed workflow completed/);
 });
 
 test('uncertain submissions cannot be retried by resume, but confirmed native sessions are read without resending', async t => {
@@ -208,4 +220,72 @@ test('example source keeps workflows opt-in and binds explicit original native t
   assert.match(mount, /tools: releaseWorkflowTools/);
   assert.deepEqual(releaseWorkflowTools.map(tool => tool.nativeName), ['release_status', 'format_release_brief']);
   assert.ok(releaseWorkflowTools.every(tool => tool.readOnly && tool.permission === 'allow'));
+});
+
+for (const [name, option, message] of [
+  ['failed compile checks', { compiledFailure: true }, /static and dry-run checks/],
+  ['foreign commit provenance', { unrelatedOrigin: true }, /proof-owned learning commit/],
+  ['missing canonical callback', { missingServerChild: true }, /canonical server timeline/],
+]) test(`workflow proof refuses ${name}`, async t => {
+  const f = await proofFixture(t, option);
+  await assert.rejects(demonstrateWorkflows(f.options), message);
+  assert.equal(f.proof().sessions.control_off, undefined);
+});
+
+test('committed workflow is offered while a separate runtime promotion check holds it', async t => {
+  const f = await proofFixture(t, { held: true });
+  const proof = await demonstrateWorkflows(f.options);
+  assert.equal(proof.stage, 'passed');
+  assert.equal(proof.committed.workflows[0].status, 'held');
+  assert.equal(proof.committed.workflows[0].origin.compiled.promoted, false);
+  assert.equal(proof.committed.qualifyingRuns.length, 5);
+  assert.equal(proof.serverWorkflow.length, 3);
+});
+
+test('compile provenance refuses a changed workflow or a successful draft with no commit', () => {
+  const item = { run: 'origin', name: 'brief', file: 'workflows/brief/workflow.json' }, document = '{}';
+  const detail = { run: 'origin', state: 'merged', merged: 'commit', workflows: [item],
+    compiled: { workflow: 'brief', attempts: [{ ok: true, errors: [] }], digest: createHash('sha256').update(document).digest('hex').slice(0, 16) } };
+  const learning = { log: { items: [{ commit: 'commit', by: { run: 'origin' }, files: [item.file] }] } };
+  assertCompiledOrigin(item, document, detail, learning, new Set(['origin']));
+  assert.throws(() => assertCompiledOrigin(item, '{"changed":true}', detail, learning, new Set(['origin'])), /differs from the checked compile draft/);
+  assert.throws(() => assertCompiledOrigin(item, document, { ...detail, merged: null }, learning, new Set(['origin'])), /proof-owned learning commit/);
+  assert.throws(() => assertCompiledOrigin(item, document, detail, learning, new Set(['other'])), /outside this proof/);
+});
+
+
+test('base example writes an explicit owner correction, reuses its revision on changed data, then proves same-agent Off', async () => {
+  const { demonstrate, CORRECTION } = await import('./validate.mjs');
+  let learning = false, correction = '', version = 1, saved, writes = 0;
+  const runs = [], results = new Map(), inputs = [];
+  const client = { agents: {
+    async get() { return { etag: `"${version}"`, body: { definition: { version, sdk: { runtime: 'eve' }, learning } } }; },
+    async update(id, { definition }, headers) { assert.equal(headers['If-Match'], `"${version}"`); learning = definition.learning; version++; return this.get(); },
+    async runs() { return { runs }; },
+  }, runs: { async get(id) { return runs.find(run => run.run_id === id); } }, learning: {
+    async get() { return { main: correction ? 'owner-revision' : 'empty', corrections: correction, workflows: [],
+      log: { items: correction ? [{ commit: 'owner-revision', by: { user: true }, files: ['corrections.md'] }] : [] } }; },
+    async corrections() { return { body: { text: correction, etag: '"correction-version"' } }; },
+    async writeCorrections(id, body, headers) { assert.equal(headers['If-Match'], '"correction-version"'); correction = body.text; writes++; },
+  } };
+  const options = { agentId: 'owner-example', eveBaseUrl: 'http://127.0.0.1:7443', client,
+    checkpoint: async value => { saved = structuredClone(value); },
+    async invokeNative(input, { onStarted }) {
+      inputs.push(input); assert.ok(!input.includes(CORRECTION));
+      const sessionId = `owner-session-${inputs.length}`, service = input.includes('demo-worker') ? 'demo-worker' : 'demo-api';
+      await onStarted({ sessionId });
+      const release = { service, version: service === 'demo-api' ? '2.4.0' : '3.1.2', tests: 'passed', ready: true, observation: (await import('node:crypto')).randomUUID() };
+      const result = { sessionId, answer: `${learning ? 'Launch note: ' : ''}${service} ${release.version} tests passed, ready.`,
+        toolCalls: [{ name: 'release_status', outcome: 'completed', release }] };
+      runs.push({ run_id: `owner-run-${inputs.length}`, status: 'completed', sdk: { runtime: 'eve', session_id: sessionId, learning_revision: learning ? 'owner-revision' : null } });
+      results.set(sessionId, result); return result;
+    },
+    async readNative(id) { return results.get(id); },
+  };
+  const proof = await demonstrate(options);
+  assert.equal(proof.stage, 'passed'); assert.equal(proof.kind, 'eve-owner-correction');
+  assert.equal(proof.correction.ownerCommit, 'owner-revision'); assert.equal(writes, 1);
+  assert.equal(inputs.length, 3); assert.equal(learning, false);
+  assert.equal((await demonstrate({ ...options, resume: saved })).stage, 'passed');
+  assert.equal(inputs.length, 3); assert.equal(writes, 1);
 });

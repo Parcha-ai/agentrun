@@ -56,7 +56,7 @@ async function research(api, id, definition, fields = {}, until = ["completed"])
   return { runId: started.body.run_id, results, rows, usage: rows.findLast((row) => row.kind === "usage")?.usage, report: report.body };
 }
 /** What a search answers when Exa's free limit holds after its one retry: our words, never Exa's fix. */
-const RATE_LIMITED = "Free web search is rate-limited right now. Try again in a minute; add the free Parallel Search server in Settings → MCP servers and grant the agent its web_search; or add a Parallel key in Settings → Tool keys to search with a key.";
+const RATE_LIMITED = "Free web search is rate-limited right now. Try again in a minute; add the free Parallel Search server in Settings → MCP servers and grant the agent its web_search; or add a Parallel key in Settings → API Keys to search with a key.";
 const EXA_FIX = /exa\.ai|Fix:|MCP URL|exaApiKey|free MCP rate limit/;
 const HARNESS_RESEARCH = "Research widgets on the web, read http://public.example/ and write report.md.";
 
