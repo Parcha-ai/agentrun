@@ -552,7 +552,7 @@ AgentRun alone. Details: [deploy/README.md](deploy/README.md#one-command-on-a-se
 **Self-host on Kubernetes.**
 
 ```sh
-helm install agentrun oci://ghcr.io/parcha-ai/charts/agentrun --namespace agentrun --create-namespace
+helm install agentrun oci://ghcr.io/parcha-ai/charts/agentrun --devel --namespace agentrun --create-namespace
 ```
 
 One pod on a 10 GiB volume, from the release's image, with the token and seal key made as a Secret and kept through

@@ -4,10 +4,11 @@ One AgentRun server and its runner in one pod, on a 10 GiB volume, from the rele
 key.
 
 ```sh
-helm install agentrun oci://ghcr.io/parcha-ai/charts/agentrun --namespace agentrun --create-namespace
+helm install agentrun oci://ghcr.io/parcha-ai/charts/agentrun --devel --namespace agentrun --create-namespace
 ```
 
-Each release publishes the chart at its own version (`--version 0.1.0-beta.47`), installing that release's image. From a
+Each release publishes the chart at its own version, installing that release's image. Releases are betas for now,
+and Helm skips a prerelease unless told: `--devel` takes the newest, `--version 0.1.0-beta.47` a given one. From a
 checkout, `helm install agentrun deploy/helm/agentrun` installs this one.
 
 Then open the console. The install's notes print the two commands: a port-forward, and the one that reads your token
