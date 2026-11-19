@@ -81,7 +81,7 @@ laptop, in one container, or as a server with runners. Apache-2.0.
 create an account or sign in. For help setting up your team's workflows,
 [talk to us](https://calendly.com/d/dtwn-dsp-nx5/agentrun).
 
-Prefer your own machine or infrastructure? Start locally below, or [self-host on Railway, Render, a VPS, Kubernetes or Docker](#deploy-it).
+Prefer your own machine or infrastructure? Start locally below, or [self-host on Railway, Render, a VPS, Kubernetes, Coolify, Dokploy or Docker](#deploy-it).
 The [getting-started guide](docs/getting-started.md) explains the three options.
 
 <a id="start-in-three-steps"></a>
@@ -557,6 +557,10 @@ helm install agentrun oci://ghcr.io/parcha-ai/charts/agentrun --devel --namespac
 
 One pod on a 10 GiB volume, from the release's image; agents get file tools and `web_fetch`, no shell. Details:
 [the chart's README](deploy/helm/agentrun/README.md).
+
+**Self-host on Coolify or Dokploy.** One service from the release's image on a volume, with the token, the seal key and
+the domain made by the platform; agents get file tools and `web_fetch`, no shell. The templates and their steps:
+[deploy/README.md](deploy/README.md#on-coolify-or-dokploy).
 
 <details>
 <summary>Docker Compose: a server and two runners</summary>
