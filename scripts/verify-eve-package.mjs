@@ -74,6 +74,8 @@ export function runStep(command, args, { cwd, env, timeout = 180_000, maxBuffer 
       if (child.pid === undefined) settle(null, null); // never started: no group, no exit to wait for
     });
     child.on('exit', async (code, signal) => {
+      // The step has ended: waiting for its group below is cleanup, not the step, so it can't count as a timeout.
+      clearTimeout(timer);
       let left = '';
       if (groupAlive(child.pid)) {
         stop();
