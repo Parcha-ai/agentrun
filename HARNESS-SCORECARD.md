@@ -21,16 +21,15 @@ are the registry's for `linux-x86_64`.
 
 ## The table
 
-Of 25 rows: 1 clean, 8 fit if unverified facts hold, 3 need a workaround, 13 are blocked. Two are built: Goose (on main
-as a harness module, and as a recipe in this page's proof) and Cursor (on main as a harness module:
-[harness-cursor.ts](packages/serve/src/harness-cursor.ts)). The installer unpacks `.tar.gz` as well as `.tar.bz2`
+Of 25 rows: 1 clean, 8 fit if unverified facts hold, 3 need a workaround, 13 are blocked. Two are built in: Goose (also a
+recipe in this page's proof) and Cursor ([harness-cursor.ts](packages/serve/src/harness-cursor.ts)). The installer unpacks `.tar.gz` as well as `.tar.bz2`
 ([harness-archive.ts](packages/serve/src/harness-archive.ts) ARCHIVE_FORMATS), and a recipe's loader takes the same two
 formats; the rows below are rated with it.
 
 | Agent | Registry release | Fit | Billing a recipe would use | What's open |
 | --- | --- | --- | --- | --- |
 | Goose | `goose` 1.60.1 (main pins 1.59.2), binary `.tar.bz2` with sha256 | clean fit (built: a recipe for 1.59.2 passes `harness-check` on OpenRouter's Claude Haiku 4.5; resume `load`, tool_gate `permission`) | proxy, `GOOSE_MODEL` | the proxy's policy is Goose's own: a new Goose that sends a new `anthropic-beta` value is refused until the policy learns it. Goose titles a call of ours `agentrun: check echo` (the tool's underscores as spaces), which the ACP adapter ties to our tool, so the host's gate is asked once, at the MCP call; it asks for `models.dev:443` at every start, refused, and makes no other request beyond loopback |
-| Cursor | `cursor` 2026.11.13, binary `.tar.gz`, no sha256 | built as a harness module ([harness-cursor.ts](packages/serve/src/harness-cursor.ts)); as a recipe, needs a workaround: a recipe names no credential file, and Cursor writes one derived from its key (`auth.json`, which the module makes unwritable) | plan, on the owner's own Cursor key | the registry lists no digest: the module pins the archive, the launcher and every file it unpacks to, and refuses any drift |
+| Cursor | `cursor` 2026.11.13, binary `.tar.gz`, no sha256 | built in; as a recipe, needs a workaround: a recipe names no credential file, and Cursor derives one from its key (`auth.json`) | plan, on the owner's own Cursor key | the registry lists no digest: serve pins the archive, the launcher and every file it unpacks to, and refuses any drift |
 | Google Antigravity | `antigravity-acp` 1.5.0, binary `.zip` with sha256 | needs a workaround (`.zip`) | plan; **unverified**: whether it takes a key or only a Google sign-in, which no recipe key carries | its args end in `--uid=`, a per-user id; **unverified** what a recipe sets there |
 | Kimi CLI (legacy) | `kimi` 1.52.0, binary `.tar.gz` with sha256 | fits if its key name holds | plan; **unverified**: whether it reads a key name other than `KIMI_API_KEY` or `MOONSHOT_API_KEY`, which are the server's (rule 1) | tools off, resume and permission asks, **unverified** |
 | Devin | `devin` 3000.14.30821, binary `.tar.gz`, no sha256 | fits if a key can carry its account | plan, on the owner's Devin account; **unverified**: a key a recipe can name | no digest in the registry: the writer pins the archive, the first binary digest is recorded |
