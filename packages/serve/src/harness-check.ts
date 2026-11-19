@@ -18,6 +18,7 @@ import { createHash, randomBytes } from "node:crypto";
 import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { connect as netConnect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentAdapter, HostTool, SessionRecord, SessionStore } from "@parcha/agentrun-kernel";
@@ -32,6 +33,7 @@ import { providerModels } from "./model.js";
 import { providerFor } from "./provider.js";
 import { capModelOf } from "./runner/cli-run-spec.js";
 import { keyShaped } from "./secret-name.js";
+import { SECRET_NAMES } from "./secrets.js";
 import { createRequire } from "node:module";
 
 /** What the check reads of the ACP package. */
@@ -136,17 +138,33 @@ function checkStore(): SessionStore {
 
 const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the one address the refusing egress proxy of a check listens on
 
-/** A loopback HTTP proxy that refuses every request and records its target: what the agent reaches for beyond loopback. */
-async function egressProxy(): Promise<{ url: string; asked: { method: string; target: string }[]; close(): Promise<void> }> {
-  const asked: { method: string; target: string }[] = [];
-  const sockets = new Set<import("node:net").Socket>();
+/** A loopback HTTP proxy that records what the agent reaches for beyond loopback. It tunnels a CONNECT to one of `vendor`
+ *  (a plan-billed recipe's model.hosts, `host` for port 443 or `host:port`) and refuses everything else. */
+async function egressProxy(vendor: readonly string[] = []): Promise<{ url: string; asked: { method: string; target: string; tunneled: boolean }[]; close(): Promise<void> }> {
+  const asked: { method: string; target: string; tunneled: boolean }[] = [];
+  const sockets = new Set<Socket>();
+  const allowed = new Set(vendor.map((host) => (host.includes(":") ? host : `${host}:443`)));
   const server = createServer((req, res) => {
-    asked.push({ method: req.method ?? "GET", target: req.url ?? "" });
+    asked.push({ method: req.method ?? "GET", target: req.url ?? "", tunneled: false });
     res.writeHead(403).end();
   });
-  server.on("connect", (req, socket) => {
-    asked.push({ method: "CONNECT", target: req.url ?? "" });
-    socket.end("HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\n\r\n");
+  server.on("connect", (req, socket: Socket, head: Buffer) => {
+    const target = req.url ?? "";
+    const tunneled = allowed.has(target);
+    asked.push({ method: "CONNECT", target, tunneled });
+    if (!tunneled) return void socket.end("HTTP/1.1 403 Forbidden\r\ncontent-length: 0\r\n\r\n");
+    const at = target.lastIndexOf(":");
+    const upstream = netConnect({ host: target.slice(0, at), port: Number(target.slice(at + 1)) }, () => {
+      socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+      if (head.length) upstream.write(head);
+      upstream.pipe(socket);
+      socket.pipe(upstream);
+    });
+    sockets.add(upstream);
+    upstream.on("close", () => (sockets.delete(upstream), socket.destroy()));
+    upstream.on("error", () => socket.end("HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\n\r\n"));
+    socket.on("error", () => upstream.destroy());
+    socket.on("close", () => upstream.destroy());
   });
   server.on("connection", (socket) => (sockets.add(socket), socket.on("close", () => sockets.delete(socket))));
   await new Promise<void>((resolve) => server.listen(0, LOOPBACK, resolve));
@@ -307,10 +325,17 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
   };
   const logs: { message: string; [field: string]: unknown }[] = [];
   const log = (message: string, fields?: Record<string, unknown>) => void logs.push({ message, ...(fields ?? {}) });
-  const egress = await egressProxy();
+  // A plan-billed agent reaches its vendor through the check's proxy, tunneled to the hosts its recipe names.
+  const egress = await egressProxy(recipe.model.billing === "plan" ? (recipe.model.hosts ?? []) : []);
   const work = await mkdtemp(join(tmpdir(), "agentrun-harness-check-"));
   const canary = `harness-check-canary-${nonce}`;
   const hostEnv = { ...env, HARNESS_CHECK_CANARY: canary };
+  // The values of every key the host holds, the server's own included: withSecrets keeps those off its enumeration
+  // (so the spread above drops them), so each is read by name.
+  const hostSecrets = [...new Set([...SECRET_NAMES, ...Object.keys(env).filter((name) => keyShaped(name))])]
+    .filter((name) => !recipe.keys.includes(name))
+    .map((name) => env[name])
+    .filter((value): value is string => typeof value === "string" && value.length >= 8);
   const childVars: Record<string, string> = { ...recipe.env };
   if (recipe.model.billing === "proxy") childVars[recipe.model.env] = provider!.modelId;
   for (const name of recipe.keys) if (env[name]) childVars[name] = env[name]!;
@@ -411,8 +436,7 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
     if (environ) {
       const expected = new Set([...INHERITED, ...acp.RESERVED_ENV, ...Object.keys(childVars), ...PROXY_VARS, ...SHELL_OWN]);
       const extra = Object.keys(environ).filter((name) => !expected.has(name)).sort();
-      const secrets = Object.entries(hostEnv).filter(([name, value]) => keyShaped(name) && typeof value === "string" && value.length >= 8 && !recipe.keys.includes(name)).map(([, value]) => value as string);
-      const leaked = Object.entries(environ).filter(([, value]) => secrets.includes(value) || value === canary).map(([name]) => name).sort();
+      const leaked = Object.entries(environ).filter(([, value]) => hostSecrets.includes(value) || value === canary).map(([name]) => name).sort();
       stage2.env_allowlist = { ok: extra.length === 0 && leaked.length === 0, names: Object.keys(environ).sort(), beyondAllowlist: extra, hostSecretsSeen: leaked };
     } else stage2.env_allowlist = { ok: null, why: process.platform === "linux" ? "the agent's process was gone before its environment was read" : "the environment is read from /proc, on Linux alone" };
 
@@ -458,8 +482,8 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
       // What the agent asked the proxy for beyond the Messages route: refused there, never sent on.
       const atProxy = logs.filter((l) => /: refused$/.test(l.message) && typeof l.path === "string" && !String(l.path).startsWith("/v1/messages")).map((l) => `${String(l.method)} ${String(l.path)}`);
       // The provider's Messages route, under its own prefix (OpenRouter's is /api/v1/messages).
-      stage2.side_requests = { ok: forwarded.every((r) => r.method === "POST" && r.path.endsWith("/v1/messages")), toProvider: paths, sent: forwarded.length, refusedAtProxy: atProxy, beyondLoopbackRefused: egress.asked.map((a) => `${a.method} ${a.target}`) };
-    } else stage2.side_requests = { ok: null, beyondLoopbackRefused: egress.asked.map((a) => `${a.method} ${a.target}`), why: "plan billing: the vendor's own requests are not seen here" };
+      stage2.side_requests = { ok: forwarded.every((r) => r.method === "POST" && r.path.endsWith("/v1/messages")), toProvider: paths, sent: forwarded.length, refusedAtProxy: atProxy, beyondLoopbackRefused: egress.asked.filter((a) => !a.tunneled).map((a) => `${a.method} ${a.target}`) };
+    } else stage2.side_requests = { ok: null, toVendor: [...new Set(egress.asked.filter((a) => a.tunneled).map((a) => a.target))], beyondLoopbackRefused: egress.asked.filter((a) => !a.tunneled).map((a) => `${a.method} ${a.target}`), why: "plan billing: the vendor's requests are tunneled to model.hosts through the check's proxy, so their content is not seen here" };
   } catch (error) {
     failures.push(`the check stopped: ${(error as Error).message}`);
   } finally {

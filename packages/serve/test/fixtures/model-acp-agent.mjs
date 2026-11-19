@@ -9,7 +9,9 @@
 //   side       asks its HTTPS proxy for telemetry.invalid:443 once at start, as an agent that phones home;
 //   no-load    advertises no session/load, so a restart is a new session told the conversation;
 //   goose-title titles each call as Goose 1.59.2 does (`agentrun: check echo`), which the adapter does not tie to a
-//              tool of ours, so the host's gate is asked about it as the agent's own (`acp_other`).
+//              tool of ours, so the host's gate is asked about it as the agent's own (`acp_other`);
+//   plan       billed on its vendor's plan: its model is MODEL_AGENT_VENDOR (host:port), reached through HTTPS_PROXY's
+//              CONNECT on its own key MODEL_AGENT_API_KEY, as a plan-billed agent reaches its vendor beyond loopback.
 // Its model is MODEL_AGENT_MODEL; the proxy's address is ANTHROPIC_HOST, else ANTHROPIC_BASE_URL (the recipe's hostEnv).
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
@@ -37,6 +39,32 @@ const phoneHome = () => new Promise((resolve) => {
   req.on("error", () => resolve());
   req.on("response", () => resolve());
   req.end();
+});
+
+/** A Messages request to the vendor at MODEL_AGENT_VENDOR (host:port), on the agent's own key, through a CONNECT tunnel
+ *  of HTTPS_PROXY: a plan-billed agent's request beyond loopback. Plain HTTP inside the tunnel; a real one is TLS. */
+const vendorPost = (body) => new Promise((resolve, reject) => {
+  const proxy = new URL(process.env.HTTPS_PROXY ?? "http://proxy.invalid");
+  const vendor = process.env.MODEL_AGENT_VENDOR ?? "";
+  const refused = (status) => resolve({ status, text: async () => `the proxy refused the tunnel: ${status}` });
+  const tunnel = httpRequest({ host: proxy.hostname, port: proxy.port, method: "CONNECT", path: vendor });
+  tunnel.on("error", reject);
+  tunnel.on("response", (res) => refused(res.statusCode));
+  tunnel.on("connect", (res, socket) => {
+    if (res.statusCode !== 200) return (socket.destroy(), refused(res.statusCode));
+    const at = vendor.lastIndexOf(":");
+    const headers = { "content-type": "application/json", "x-api-key": process.env.MODEL_AGENT_API_KEY ?? "", "anthropic-version": "2023-06-01", connection: "close" };
+    const req = httpRequest({ host: vendor.slice(0, at), port: Number(vendor.slice(at + 1)), method: "POST", path: "/v1/messages", createConnection: () => socket, headers });
+    req.on("error", reject);
+    req.on("response", (answer) => {
+      let raw = "";
+      answer.setEncoding("utf8");
+      answer.on("data", (chunk) => (raw += chunk));
+      answer.on("end", () => (socket.destroy(), resolve({ status: answer.statusCode, text: async () => raw })));
+    });
+    req.end(body);
+  });
+  tunnel.end();
 });
 
 /** An MCP client over streamable HTTP. */
@@ -73,11 +101,14 @@ async function openSession(id, params, messages) {
 async function ask(session) {
   const offered = session.tools.map((t) => ({ name: `agentrun__${t.name}`, description: t.description ?? "", input_schema: t.inputSchema ?? { type: "object" } }));
   if (mode === "own-tools") offered.push({ name: "shell", description: "Run a shell command.", input_schema: { type: "object", properties: { command: { type: "string" } } } });
-  const response = await fetch(`${process.env.ANTHROPIC_HOST ?? process.env.ANTHROPIC_BASE_URL}/v1/messages`, {
-    method: "POST",
-    headers: { "content-type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY ?? "", "anthropic-version": "2023-06-01" },
-    body: JSON.stringify({ model: process.env.MODEL_AGENT_MODEL, max_tokens: 1024, stream: true, messages: session.messages, tools: offered }),
-  });
+  const body = JSON.stringify({ model: process.env.MODEL_AGENT_MODEL, max_tokens: 1024, stream: true, messages: session.messages, tools: offered });
+  const response = mode === "plan"
+    ? await vendorPost(body)
+    : await fetch(`${process.env.ANTHROPIC_HOST ?? process.env.ANTHROPIC_BASE_URL}/v1/messages`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY ?? "", "anthropic-version": "2023-06-01" },
+      body,
+    });
   const raw = await response.text();
   if (response.status !== 200) throw new Error(`the model answered ${response.status}: ${raw.slice(0, 200)}`);
   const blocks = [];

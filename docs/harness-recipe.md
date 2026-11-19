@@ -36,7 +36,7 @@ refused (`RECIPE_INVALID`, or the code of the rule it would break).
 | `release` | yes | Where the binary comes from: `{ "registry": ID, "version": VERSION, "archives": { PLATFORM: ARCHIVE } }`. `registry` is the agent's id in the ACP registry, `version` its version there. |
 | `release.archives.PLATFORM` | at least one | `PLATFORM` as the registry names it: `linux-x86_64`, `linux-aarch64`, `darwin-aarch64`, `darwin-x86_64`. `ARCHIVE` is `{ "url", "format", "sha256", "cmd", "binarySha256"? }`: `url` the registry's `archive` (https), `format` `"tar.bz2"`, `sha256` the registry's `sha256` of the archive (64 lowercase hex digits; when the registry lists none, the sha256 of the archive you downloaded and checked yourself), `cmd` the registry's `cmd` (the binary's path inside the archive, `./agent`). `binarySha256`, when you know it, is the sha256 of the unpacked binary; leave it out and the first install records it (rule 2). |
 | `args` | no | The arguments that start the agent in ACP mode over stdio: the registry's `args` (`["acp"]`). |
-| `model` | yes | Who bills the model. `{ "billing": "proxy", "wire": "anthropic-messages", "env": NAME, "hostEnv"?: "ANTHROPIC_HOST" \| "ANTHROPIC_BASE_URL" }`, or `{ "billing": "plan", "maxTurns": N, "maxToolCalls": M }`. See [Billing](#billing). |
+| `model` | yes | Who bills the model. `{ "billing": "proxy", "wire": "anthropic-messages", "env": NAME, "hostEnv"?: "ANTHROPIC_HOST" \| "ANTHROPIC_BASE_URL" }`, or `{ "billing": "plan", "maxTurns": N, "maxToolCalls": M, "hosts"?: [HOST, ...] }`. See [Billing](#billing). |
 | `keys` | no | The names of keys saved for this harness alone (a vendor's API key the agent reads). A plan-billed agent needs at least one. Never a key the server holds for anything else (rule 1). |
 | `env` | no | Variables the agent gets, each written out as a literal string: `{ "NAME": "value" }`. The place for an agent's switches (turn off its own tools, its telemetry, its session naming). No key, nothing read from the host (rule 5). |
 | `files` | no | Files written into the session's private HOME before the agent starts: `{ "path/in/home": "content" }`. A path is relative to HOME (`.config/agent/config.yaml`, or `$HOME/.config/...`). |
@@ -112,7 +112,9 @@ with that rule's code. `agentrun harness install --recipe` and `agentrun harness
   only the `anthropic-beta` values Goose 1.59.2 sends.
 - **`plan`**: the agent calls its vendor itself, on the owner's plan and the recipe's own `keys`. AgentRun never sees
   those requests, so the adapter stops the run itself after `maxTurns` turns or `maxToolCalls` tool calls
-  (`ACP_TURN_LIMIT`, `ACP_TOOL_CALL_LIMIT`).
+  (`ACP_TURN_LIMIT`, `ACP_TOOL_CALL_LIMIT`). `hosts` (up to 16, each `host` or `host:port`, port 443 by default) names
+  where the vendor's model is: `harness-check` tunnels the agent's `CONNECT` to those hosts and refuses the rest, so
+  list every host the agent needs for a turn.
 
 ## Install it
 
@@ -143,12 +145,14 @@ Stage 2, the real binary:
 
 - `tools_off`: the agent's first model request offers only AgentRun's tools.
 - `env_allowlist`: the agent's environment, read from `/proc/<pid>/environ`, holds only the allowlist's names, and no
-  value of a key the host holds.
+  value of a key the host holds, under any name (`hostSecretsSeen`).
 - `limits`: proxy billing: once the cap is set at what the check has spent, the next request is refused and never
   sent. Plan billing: `maxTurns` and `maxToolCalls` are set.
 - `pins`: every start of the agent's process ran the pinned binary.
 - `side_requests`: the provider got the turns' Messages requests and nothing else. What the agent reaches for beyond
-  loopback goes to the check's own HTTPS proxy, which refuses it and lists it (`beyondLoopbackRefused`).
+  loopback goes to the check's own HTTPS proxy, which refuses it and lists it (`beyondLoopbackRefused`). For plan
+  billing, a `CONNECT` to one of `model.hosts` is tunneled and listed in `toVendor`; what goes through the tunnel is
+  the vendor's and is not read, so this stage is reported, not passed or failed.
 
 Stage 3, live:
 

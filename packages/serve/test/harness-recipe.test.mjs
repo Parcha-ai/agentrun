@@ -195,14 +195,16 @@ test("the owner's install: the archive's sha256 checked, the binary's first sha2
   assert.equal(run.report.refused.code, "ACP_BINARY_DRIFT", run.report.refused.message);
 });
 
-/** The stand-in agent installed from `recipe` into a fresh data directory, and a scripted origin for its model. */
+/** The stand-in agent installed from `recipe` (or `recipe(origin)`) into a fresh data directory, and a scripted origin
+ *  for its model. */
 async function installed(t, recipe) {
+  const origin = await fakeAnthropic({ step: checkStep });
+  t.after(() => origin.close());
+  if (typeof recipe === "function") recipe = recipe(origin);
   const data = join(await scratch(t), "agents");
   const built = await release(t);
   const file = await recipeFile(t, { ...recipe, release: { ...recipe.release, archives: { [PLATFORM]: { ...recipe.release.archives[PLATFORM], sha256: built.archiveSha } } } });
   await installRecipe(loadRecipe(file).recipe, file, data, { fetch: servedFetch(built.bytes) });
-  const origin = await fakeAnthropic({ step: checkStep });
-  t.after(() => origin.close());
   return { data, file, origin, env: cliEnv({ ANTHROPIC_BASE_URL: origin.url, ANTHROPIC_API_KEY: "fake-test-key" }) };
 }
 
@@ -289,4 +291,39 @@ test("harness-check lists what the agent reaches for beyond loopback, refused by
   const run = await check(t, file, data, env);
   assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
   assert.ok(run.report.stage2.side_requests.beyondLoopbackRefused.includes("CONNECT telemetry.invalid:443"), JSON.stringify(run.report.stage2.side_requests));
+});
+
+test("harness-check passes a plan-billed agent that reaches its vendor through HTTPS_PROXY: the hosts its recipe names are tunneled, the rest refused", { skip: linux, timeout: 120_000 }, async (t) => {
+  const planned = (origin) => {
+    const vendor = new URL(origin.url).host;
+    return recipeOf(undefined, { keys: ["MODEL_AGENT_API_KEY"], env: { MODEL_AGENT_MODE: "plan", MODEL_AGENT_VENDOR: vendor, MODEL_AGENT_MODEL: "vendor-model" }, model: { billing: "plan", maxTurns: 8, maxToolCalls: 8, hosts: [vendor] } });
+  };
+  const { data, file, origin } = await installed(t, planned);
+  const run = await check(t, file, data, cliEnv({ MODEL_AGENT_API_KEY: "fake-test-key" }));
+  assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}\n${JSON.stringify(run.report?.stage2)}`);
+  assert.equal(run.report.facts.billing, "plan");
+  assert.deepEqual(run.report.stage2.side_requests.toVendor, [new URL(origin.url).host]);
+  assert.deepEqual(run.report.stage2.side_requests.beyondLoopbackRefused, []);
+  assert.equal(run.report.stage3.mcp_tool.calls, 1);
+  assert.equal(run.report.stage3.denied_call.ran, 0);
+  // The vendor got the agent's requests, each on the agent's own key.
+  assert.ok(origin.messages().length >= 4);
+  assert.ok(origin.messages().every((r) => r.headers["x-api-key"] === "fake-test-key"));
+  // A host the recipe does not name is refused: the same agent, its vendor left out of model.hosts.
+  const unnamed = await installed(t, (o) => ({ ...planned(o), model: { billing: "plan", maxTurns: 8, maxToolCalls: 8, hosts: ["vendor.example.invalid"] } }));
+  const refused = await check(t, unnamed.file, unnamed.data, cliEnv({ MODEL_AGENT_API_KEY: "fake-test-key" }));
+  assert.equal(refused.status, 1);
+  assert.equal(unnamed.origin.messages().length, 0);
+  assert.ok(refused.report.stage2.side_requests.beyondLoopbackRefused.includes(`CONNECT ${new URL(unnamed.origin.url).host}`), JSON.stringify(refused.report.stage2.side_requests));
+  // model.hosts are host names with an optional port, and only plan billing names them.
+  assert.equal(refusalOf(recipeOf(undefined, { keys: ["MODEL_AGENT_API_KEY"], model: { billing: "plan", maxTurns: 8, maxToolCalls: 8, hosts: ["https://vendor.example/"] } })).code, RECIPE_CODES.invalid);
+  assert.equal(refusalOf(recipeOf(undefined, { model: { billing: "proxy", wire: "anthropic-messages", env: "MODEL_AGENT_MODEL", hosts: ["vendor.example"] } })).code, RECIPE_CODES.invalid);
+});
+
+test("harness-check finds a host key the recipe copied under another name, though the server keeps its keys off the environment's enumeration", { skip: linux, timeout: 120_000 }, async (t) => {
+  const { data, file, env } = await installed(t, recipeOf(undefined, { env: { MODEL_AGENT_MODE: "good", DEBUG_VALUE: "fake-test-key" } }));
+  const run = await check(t, file, data, env);
+  assert.equal(run.status, 1, `${run.stdout}\n${run.stderr}`);
+  assert.deepEqual(run.report.stage2.env_allowlist.hostSecretsSeen, ["DEBUG_VALUE"]);
+  assert.match(run.stdout, /stage 2 env_allowlist: FAIL/);
 });
