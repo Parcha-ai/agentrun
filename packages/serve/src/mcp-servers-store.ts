@@ -344,9 +344,10 @@ export class McpServersOverStore {
     const unlisted = Object.keys(asked ?? {}).filter((tool) => !listed.tools.some((listedTool) => listedTool.name === tool));
     if (unlisted.length) throw invalid(unlisted.map((tool) => ({ field: `prices.${tool}`, reason: "not_an_option", message: `The server ${name} lists no tool ${tool}; its tools are ${listed.tools.map((t) => t.name).join(", ") || "none"}.` })));
     // The row as saved over `row` (the one read, or read again): a body with no `prices` keeps the saved ones, for the tools
-    // still listed at the same address.
+    // still listed at the same address; a preset save over a preset row keeps them at the new address its Composio server
+    // has (each preset save makes one), so a re-save never leaves a priced action unmetered.
     const fields = (row: McpServerRow | undefined) => {
-      const priced = asked ?? (row?.url === url.href ? pricesListed((row.prices ?? undefined) as McpPrices | undefined, listed.tools) : undefined);
+      const priced = asked ?? (row && (row.url === url.href || (made && wasPreset)) ? pricesListed((row.prices ?? undefined) as McpPrices | undefined, listed.tools) : undefined);
       return {
         name, url: url.href, auth: auth.type, protocol: listed.protocol, tools: listed.tools, serverInfo: listed.server_info, instructions: listed.instructions ?? null,
         ...(priced && Object.keys(priced).length ? { prices: priced } : {}),
