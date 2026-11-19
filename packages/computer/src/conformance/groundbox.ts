@@ -14,6 +14,7 @@ import { boxImageRef } from "../box-image.js";
 import { create, type GroundboxProvider, type GroundboxProviderOptions } from "../groundbox.js";
 import type { MachineHost } from "../host.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
+import { kindFrom } from "./kind.js";
 
 /** The environment this module reads, by name, each for the option its comment names, the live switch and the run's image. */
 export const GROUNDBOX_ENV = {
@@ -28,6 +29,8 @@ export const GROUNDBOX_ENV = {
 	daemon: "COMPUTER_GROUNDBOX_DAEMON",
 	/** daemonUser: uid:gid the daemon runs as; default 2510:2510. */
 	user: "COMPUTER_GROUNDBOX_USER",
+	/** kind: linux (default) or desktop. */
+	kind: "COMPUTER_GROUNDBOX_KIND",
 } as const;
 
 /** The names this module reads, under the conformance modules' common name (ConformanceModule.ENV). */
@@ -36,7 +39,7 @@ export const ENV = GROUNDBOX_ENV;
 const DEFAULT_API_URL = "https://api.groundbox.dev/v1";
 
 /** What this module reads from the environment: the key, and each other option whose name is set. */
-export type GroundboxSettings = Pick<GroundboxProviderOptions, "apiKey" | "apiUrl" | "daemonPath" | "daemonUser">;
+export type GroundboxSettings = Pick<GroundboxProviderOptions, "apiKey" | "apiUrl" | "daemonPath" | "daemonUser" | "kind">;
 
 /** The provider's options this module reads from env, each only when its name is set; throws in words without the key, never echoing it. */
 export function settingsFromEnv(env: Record<string, string | undefined> = process.env): GroundboxSettings {
@@ -45,7 +48,7 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 	const apiUrl = env[GROUNDBOX_ENV.apiUrl] || undefined;
 	const daemonPath = env[GROUNDBOX_ENV.daemon] || undefined;
 	const daemonUser = env[GROUNDBOX_ENV.user] || undefined;
-	return { apiKey, ...(apiUrl === undefined ? {} : { apiUrl }), ...(daemonPath === undefined ? {} : { daemonPath }), ...(daemonUser === undefined ? {} : { daemonUser }) };
+	return { apiKey, ...(apiUrl === undefined ? {} : { apiUrl }), ...(daemonPath === undefined ? {} : { daemonPath }), ...(daemonUser === undefined ? {} : { daemonUser }), ...kindFrom(env, GROUNDBOX_ENV.kind) };
 }
 
 /** The longest lifetime a computer of a run may ask for. */
@@ -53,7 +56,7 @@ export const CONFORMANCE_MAX_LIFETIME_MS = 30 * 60_000;
 
 /** For the run's report: what this configuration means for the suite. */
 export const conformanceNotes: string[] = [
-	"groundbox: every computer is a Groundbox sandbox (a Firecracker microVM, amd64) whose own timer is set to the adapter's backstop; the daemon is a child of a resumable command of the WebSocket command stream, installed as root (the box image) or through passwordless sudo (Groundbox's own image), its output read by position across sockets and its stdin written to a fifo one answered call at a time; lifetime is the janitor's, by the deadline label, capped at 30 minutes for the run. Network none, open and a list are init's. The run's folder is a synced folder; no Archil mount, no desktop.",
+	"groundbox: every computer is a Groundbox sandbox (a Firecracker microVM, amd64) whose own timer is set to the adapter's backstop; the daemon is a child of a resumable command of the WebSocket command stream, installed as root (the box image) or through passwordless sudo (Groundbox's own image), its output read by position across sockets and its stdin written to a fifo one answered call at a time; lifetime is the janitor's, by the deadline label, capped at 30 minutes for the run. Network none, open and a list are init's. The run's folder is a synced folder; no Archil mount. Kind desktop (COMPUTER_GROUNDBOX_KIND=desktop) starts from the box image too, with Xvfb on :0 and xfwm4 started through the daemon as the tool user.",
 ];
 
 export interface GroundboxModuleOptions extends Pick<GroundboxProviderOptions, "fetch" | "webSocket" | "daemonPath" | "timeouts"> {

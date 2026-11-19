@@ -2904,10 +2904,14 @@ import { providerFor } from "@parcha/agentrun-computer";
 // The key is the caller's to pass (serve's GROUNDBOX_API_KEY).
 const groundbox = await providerFor("groundbox", { apiKey });
 const made = await groundbox.create({ lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
+// A desktop: the box image's X server and window manager, started through computerd.
+const desktop = await providerFor("groundbox", { apiKey, kind: "desktop" });
 ```
 
-A Groundbox computer is kind `linux`, a [Groundbox](https://groundbox.dev) sandbox: a Firecracker microVM with its own
-kernel and disk. With no image named, it starts from the box image, the public registry tag `prepareImage()` answers
+A Groundbox computer is a [Groundbox](https://groundbox.dev) sandbox: a Firecracker microVM with its own kernel and
+disk. It is kind `linux` by default, and kind `desktop` with `kind: "desktop"`: computerd starts the box image's Xvfb
+on `:0` and xfwm4 itself, as on E2B and boxd, and its X11 shim drives it. Groundbox's own desktop (`desktop: true` on
+create, its own X server, Chrome and live view) is not used. With no image named, it starts from the box image, the public registry tag `prepareImage()` answers
 (`boxImageRef()`), which Groundbox turns into a disk at the first create from it and keeps for later ones. A spec's
 `image` may instead be `"default"` (the team's default template, else Groundbox's own Ubuntu 24.04 image), a template
 of the key's team (`tpl_...`, its name, or `name:version`), or any other public image reference. Groundbox runs on the
@@ -2929,14 +2933,21 @@ What Groundbox refuses or this host works around:
 
 - Every connection to the command stream ends within the hour on Groundbox's side, and any may drop sooner. The command
   runs on; the host attaches again from the last position read, so no output is lost or read twice. A socket silent
-  past three of Groundbox's 20 s heartbeats is taken as dead and replaced; output Groundbox no longer keeps (`skipped`)
-  fails the stream rather than leave a hole.
+  past three of Groundbox's 20 s heartbeats is taken as dead and replaced at once, without waiting for a close that a
+  gone peer never sends; anything it says later is ignored. Output Groundbox no longer keeps (`skipped`) fails the
+  stream rather than leave a hole.
+- Output the reader has not taken is held to 8 MiB: past that the host lets the socket go, and attaches again from the
+  last position queued once the reader is down to 2 MiB. Groundbox keeps the output meanwhile; a reader so slow that
+  Groundbox drops some fails the stream (`skipped`), never silently.
 - Stdin does not ride the socket: Groundbox delivers a stream's stdin at most once across a dropped connection, with
   nothing saying what arrived. So each write is a call of up to 256 KiB that writes the command's fifo and answers once
   it has.
 - On the box image and any other public image Groundbox runs a command as root. On Groundbox's own image and its
   templates it runs as the image's user, `runner` (uid 1001), with passwordless sudo, which the adapter's scripts use;
   `daemonUser` may not be 1001 there.
+- A desktop needs Xvfb and xfwm4 in its image. Groundbox's own image has Xvfb but not xfwm4, so `check()` refuses
+  `"default"` for kind desktop; the box image has both, and Xfce's terminal and text editor, Firefox ESR and xdotool as
+  its apps.
 - Groundbox's own image keeps toolchains under `/opt` (corepack's pnpm under
   `/opt/corepack/v1/pnpm/<version>/dist/node_modules/...`, and `/opt/hostedtoolcache`), deeper than the isolation probe's
   8 levels, so `isolation.vendor-agent` can't prove the socket fence on it. That is why the box image is the default.
@@ -2947,7 +2958,7 @@ What Groundbox refuses or this host works around:
 - `PATCH` replaces the whole metadata map, so `extend` reads it and sends it back with the deadline label changed.
 - A computer may live up to 30 days less 6 minutes (Groundbox's longest timer, less the backstop margin), a day unless
   `maxLifetimeMs` says otherwise.
-- Sandboxes are amd64. No Archil mount yet (`/dev/fuse` opens in the guest; untried) and no desktop. Groundbox's own
+- Sandboxes are amd64. No Archil mount yet (`/dev/fuse` opens in the guest; untried). Groundbox's own
   egress allowlist is not used: network none, open and a list are init's. Pause, fork and save points are not used.
 
 ### Conformance on Groundbox
@@ -2955,15 +2966,17 @@ What Groundbox refuses or this host works around:
 ```sh
 AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1 COMPUTER_GROUNDBOX_API_KEY=... \
   npm run conformance -w @parcha/agentrun-computer -- --provider groundbox --long
+AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1 COMPUTER_GROUNDBOX_API_KEY=... COMPUTER_GROUNDBOX_KIND=desktop \
+  npm run conformance -w @parcha/agentrun-computer -- --provider groundbox --kind desktop --long --fixture <computerd-fixture for linux/amd64>
 node packages/computer/dist/conformance/sweep.js --provider groundbox --before /tmp/groundbox-before.json   # then --after
 ```
 
 The conformance module, `dist/conformance/groundbox.js`, checks `AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1` first, then reads
 `COMPUTER_GROUNDBOX_API_KEY` (`apiKey`, required), `COMPUTER_GROUNDBOX_API_URL` (`apiUrl`), `COMPUTER_GROUNDBOX_IMAGE`
-(the run's image, default the box image), `COMPUTER_GROUNDBOX_DAEMON` (`daemonPath`) and `COMPUTER_GROUNDBOX_USER`
-(`daemonUser`), never `GROUNDBOX_API_KEY`. Every computer of a run lives at most 30 minutes. The live sweep is the
+(the run's image, default the box image), `COMPUTER_GROUNDBOX_DAEMON` (`daemonPath`), `COMPUTER_GROUNDBOX_USER`
+(`daemonUser`) and `COMPUTER_GROUNDBOX_KIND` (`kind`: `linux` by default, or `desktop`), never `GROUNDBOX_API_KEY`. Every computer of a run lives at most 30 minutes. The live sweep is the
 shared one; its scope is the key's team. `test/groundbox/conformance.groundbox.test.mjs` (`npm run test:groundbox`) runs
-the suite one test per case, and skips unless the switch and the key are both set.
+the suite one test per case (building the fixture with Go), and skips unless the switch and the key are both set.
 
 ### Live runs
 
@@ -2971,6 +2984,12 @@ On 2026-11-19, from the box image at Groundbox's default size (2 CPUs, 4 GB), wi
 work: the exec pre-check passed all ten checks (8 MiB through `cat` in 16 s, `no-timeout` 75 s silent), and the
 `--long` run passed Core 67/67 and Full 14/41 (the rest not declared) in 17 minutes, with at most 5 computers alive at
 once. The sweep after it read `{"swept":0,"gone":0,"stillThere":[],"leftAlone":0}`.
+
+Later that day, with kind desktop and the bounds on the command stream above, from the box image: `--kind desktop
+--long` with `computerd-fixture` passed the kind, every one of its 74 Core cases (screen, input and
+`apps.launch-terminate` among them) and Full 14/40, in 19 minutes; `--kind sandbox --long` passed the kind, its 67 Core
+cases and Full 14/27, in 17 minutes; the exec pre-check passed all ten checks again. The sweep after both read
+`{"swept":0,"gone":0,"stillThere":[],"leftAlone":0}`.
 
 On 2026-11-18, on Groundbox's own image, two `--long` runs passed Core 66/67: `isolation.vendor-agent` failed both
 times on folders under `/opt` deeper than the probe's 8 levels (above). On the same image, a command was held for 65

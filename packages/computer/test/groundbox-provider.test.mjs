@@ -348,6 +348,7 @@ test("the conformance module reads COMPUTER_GROUNDBOX_* alone, after its live sw
 	assert.throws(() => settingsFromEnv({ GROUNDBOX_API_KEY: KEY }), (error) => /set COMPUTER_GROUNDBOX_API_KEY/.test(error.message) && !error.message.includes(KEY));
 	const env = { [ENV.key]: KEY };
 	assert.deepEqual(settingsFromEnv({ ...env, [ENV.apiUrl]: API, [ENV.user]: "3000:3000" }), { apiKey: KEY, apiUrl: API, daemonUser: "3000:3000" });
+	assert.deepEqual(settingsFromEnv({ ...env, [ENV.kind]: "desktop" }), { apiKey: KEY, kind: "desktop" });
 	await assert.rejects(createProvider({ env }), /set AGENTRUN_COMPUTER_LIVE_GROUNDBOX=1/);
 	assert.equal((await createProvider({ env: { ...env, [ENV.live]: "1" } })).capabilities().maxLifetimeMs, 30 * 60_000);
 	assert.equal((await createHost({ env })).descriptor.id, "groundbox");
@@ -356,4 +357,119 @@ test("the conformance module reads COMPUTER_GROUNDBOX_* alone, after its live sw
 	assert.equal(await conformanceImage({ env: { [ENV.image]: "default" } }), "default");
 	assert.match(sweepScope({ env }), /sha256:[0-9a-f]{12} at https:\/\/api\.groundbox\.dev\/v1/);
 	assert.doesNotMatch(sweepScope({ env }), new RegExp(KEY));
+});
+
+test("kind desktop: the box image's X server and window manager through the daemon, the screen, pointer, keys and apps declared, and Groundbox's own image refused for it", async () => {
+	const descriptorKinds = GROUNDBOX.capabilities.map((one) => [one.kind, one.options ?? {}]);
+	assert.deepEqual(descriptorKinds, [["linux", {}], ["desktop", { kind: "desktop" }]]);
+	const desktop = new GroundboxProvider({ apiKey: KEY, daemonPath: "/nonexistent/computerd", kind: "desktop" });
+	const capabilities = desktop.capabilities();
+	assert.equal(capabilities.kind, "desktop");
+	assert.deepEqual(capabilities.groups, ["exec", "files", "processes", "screen", "input.pointer", "input.keys", "apps"]);
+	assert.equal(desktop.host.facts.windowManager, true);
+	// The same box image for both kinds.
+	assert.match((await desktop.prepareImage()).value, /^ghcr\.io\/parcha-ai\/agentrun-box:[0-9a-f]{12}$/);
+	const fields = (provider, spec) => provider.host.check(spec).map((one) => one.field);
+	assert.deepEqual(fields(desktop, { image: "default" }), ["image"]);
+	assert.match(desktop.host.check({ image: "default" })[0].message, /lacks \(xfwm4\): name the box image, ghcr\.io\/parcha-ai\/agentrun-box:/);
+	for (const image of ["ghcr.io/parcha-ai/agentrun-box:87f44537b8b7", "my-desktop", "ghcr.io/org/desktop:1"]) assert.deepEqual(fields(desktop, { image }), [], image);
+	// Kind linux still takes Groundbox's own image.
+	assert.deepEqual(fields(new GroundboxProvider({ apiKey: KEY, daemonPath: "/nonexistent/computerd" }), { image: "default" }), []);
+	assert.throws(() => new GroundboxProvider({ apiKey: KEY, kind: "phone" }), /kind is desktop or linux/);
+});
+
+/** Sockets scripted by the test: each records what was sent to it and how it was closed, and never closes on its own. */
+function scriptedSockets() {
+	const opened = [];
+	const webSocket = () => {
+		const listeners = {};
+		const socket = {
+			readyState: 1,
+			bufferedAmount: 0,
+			sent: [],
+			closed: [],
+			addEventListener: (type, listener) => (listeners[type] = listener),
+			send: (text) => socket.sent.push(JSON.parse(text)),
+			// A peer that is gone answers no close frame: the close event never comes unless the test emits it.
+			close: (code) => socket.closed.push(code),
+			emit: (type, event = {}) => listeners[type]?.(event),
+			say: (message) => listeners.message?.({ data: JSON.stringify(message) }),
+		};
+		opened.push(socket);
+		queueMicrotask(() => socket.emit("open"));
+		return socket;
+	};
+	return { opened, webSocket, exec: undefined, stopAll: () => {} };
+}
+
+const out = (text, seq) => ({ type: "stdout", data: Buffer.from(text).toString("base64"), seq });
+const settle = () => new Promise((done) => setTimeout(done, 20));
+
+/** Waits up to 2 s for check() to hold. */
+const until = async (check, what) => {
+	for (let i = 0; i < 200 && !check(); i++) await new Promise((done) => setTimeout(done, 10));
+	assert.ok(check(), what);
+};
+
+test("a socket gone silent with no close is let go at once: another attaches from the position read to, once, and the old one's later messages and close are ignored", async () => {
+	const streams = scriptedSockets();
+	const { host } = hostOf(() => undefined, streams, { streamBounds: { silenceMs: 100 } });
+	const starting = host.exec(ID, ["sh", "-c", "echo a; sleep 1; echo b"], CTX);
+	await until(() => streams.opened.length === 1, "the first socket");
+	const [first] = streams.opened;
+	first.say({ type: "started", exec_id: "ex_0123456789abcdef" });
+	const proc = await starting;
+	const reading = textOf(proc.stdout);
+	first.say(out("a\n", 2));
+	// No heartbeat and no close: the watchdog lets the socket go and attaches on a new one without waiting for a close.
+	await until(() => streams.opened.length === 2, "a second socket, with no close from the first");
+	assert.deepEqual(first.closed, [4000]);
+	const [, second] = streams.opened;
+	await until(() => second.sent.length === 1, "the attach");
+	assert.deepEqual(second.sent, [{ type: "attach", exec_id: "ex_0123456789abcdef", seq: 2, encoding: "base64" }]);
+	// The old socket wakes up late: what it says is not read, and its close opens no other socket.
+	first.say(out("stale\n", 8));
+	first.emit("close", { code: 1006 });
+	await settle();
+	assert.equal(streams.opened.length, 2, "the late close opened no third socket");
+	second.say(out("b\n", 4));
+	second.say({ type: "exit", exit_code: 0 });
+	assert.equal(await proc.wait(), 0);
+	assert.equal(await reading, "a\nb\n");
+});
+
+test("output the reader has not taken is bounded: past the high mark the socket is let go, and reading resumes from the position read to once the reader catches up", async () => {
+	const streams = scriptedSockets();
+	const { host } = hostOf(() => undefined, streams, { streamBounds: { queueHighBytes: 200_000, queueLowBytes: 50_000 } });
+	const starting = host.exec(ID, ["yes"], CTX);
+	await until(() => streams.opened.length === 1, "the first socket");
+	const [first] = streams.opened;
+	first.say({ type: "started", exec_id: "ex_0123456789abcdef" });
+	const proc = await starting;
+	// Nobody reads stdout. The first chunks fill the stdout stream's own buffer; then the output queued here passes the
+	// 200 kB mark with the chunk that ends at 350 kB, and the socket is let go there with the command running: the last
+	// chunk it then says is not queued.
+	const chunks = Array.from({ length: 8 }, (_, i) => String.fromCharCode(97 + i).repeat(50_000));
+	chunks.slice(0, 3).forEach((text, i) => first.say(out(text, (i + 1) * 50_000)));
+	await settle();
+	assert.deepEqual(first.closed, []);
+	chunks.slice(3).forEach((text, i) => first.say(out(text, (i + 4) * 50_000)));
+	await settle();
+	assert.deepEqual(first.closed, [4000]);
+	// Anything the dropped socket still says is not queued, and its close opens no other.
+	first.say(out("late", 400_004));
+	first.emit("close", { code: 1006 });
+	await settle();
+	assert.equal(streams.opened.length, 1, "no socket while the reader is behind");
+	// The reader catches up: a new socket attaches from the last position queued, and nothing is lost or read twice.
+	const reading = textOf(proc.stdout);
+	await until(() => streams.opened.length === 2 && streams.opened[1].sent.length === 1, "a socket once the reader caught up");
+	const [, second] = streams.opened;
+	assert.deepEqual(second.sent, [{ type: "attach", exec_id: "ex_0123456789abcdef", seq: 350_000, encoding: "base64" }]);
+	// The new socket reads on from there: the chunk the old one said after it was let go comes again, once.
+	second.say(out(chunks[7], 400_000));
+	second.say(out("end", 400_003));
+	second.say({ type: "exit", exit_code: 0 });
+	assert.equal(await proc.wait(), 0);
+	assert.equal(await reading, `${chunks.join("")}end`);
 });

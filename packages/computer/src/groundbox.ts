@@ -9,8 +9,9 @@
 // user, runner, who has passwordless sudo, which the adapter's scripts use. A command's own kill is the user's who ran
 // it, so kill is the shared pid kill as root. Labels are the sandbox's metadata, which the listing filters by. The
 // lifetime is the janitor's, by the deadline label, and Groundbox's own timer (timeout_minutes) is set to the request's
-// backstop. The rest of the computer is the shared machine-host adapter's (./hosted/provider.ts). Every Groundbox fact
-// used here is cited in the README's Groundbox section.
+// backstop. Kind desktop is the box image's Xvfb and xfwm4, started through the daemon as on E2B and boxd. The rest of
+// the computer is the shared machine-host adapter's (./hosted/provider.ts). Every Groundbox fact used here is cited in
+// the README's Groundbox section.
 import { randomBytes } from "node:crypto";
 import { boxImageRef } from "./box-image.js";
 import { GROUNDBOX, GROUNDBOX_OWN_IMAGE } from "./descriptors/groundbox.js";
@@ -39,7 +40,7 @@ export interface GroundboxSocket {
 export type GroundboxSocketFactory = (url: string, init: { headers: Record<string, string> }) => GroundboxSocket;
 
 /** The Groundbox provider's options: the key and Groundbox's own settings, then the shared adapter's (HostedOptions). */
-export interface GroundboxProviderOptions extends Omit<HostedOptions, "kind" | "desktop"> {
+export interface GroundboxProviderOptions extends HostedOptions {
 	/** The Groundbox API key (gbx_...). The caller passes it; this provider never reads it from the environment. */
 	apiKey: string;
 	/** The REST API, ending in /v1; default https://api.groundbox.dev/v1. */
@@ -50,6 +51,11 @@ export interface GroundboxProviderOptions extends Omit<HostedOptions, "kind" | "
 	fetch?: typeof fetch;
 	/** For tests: every command stream opens through it. Default Node's global WebSocket. */
 	webSocket?: GroundboxSocketFactory;
+	/**
+	 * For tests: the command stream's bounds (the silence after which a socket is taken as dead; the unread output that
+	 * pauses reading, and the level it resumes at).
+	 */
+	streamBounds?: Partial<StreamBounds>;
 }
 
 export async function create(options: GroundboxProviderOptions): Promise<GroundboxProvider> {
@@ -152,6 +158,20 @@ const RESUME_MAX_MS = 10_000;
 const RESUME_GIVE_UP_MS = 5 * 60_000;
 /** The close code of a socket this host drops to open another (not 1000, which ends the command). */
 const DROP = 4000;
+/**
+ * The output read and not yet taken by framedExec that pauses reading: the socket is let go of, and a new one attaches
+ * from the position read to once the queue is down to QUEUE_LOW, so a reader that stops never makes the host hold more.
+ * Groundbox keeps the command's output meanwhile; what it no longer keeps comes back as `skipped`, which fails the stream.
+ */
+const QUEUE_HIGH = 8 * 1024 * 1024;
+const QUEUE_LOW = 2 * 1024 * 1024;
+
+/** The command stream's bounds: SILENCE_MS, QUEUE_HIGH and QUEUE_LOW unless a test gives others. */
+export interface StreamBounds {
+	silenceMs: number;
+	queueHighBytes: number;
+	queueLowBytes: number;
+}
 
 /** A sandbox as the API answers it (Sandbox in Groundbox's contracts), as far as this host reads it. */
 interface Sandbox {
@@ -183,14 +203,22 @@ interface Command {
 	/** The position in the command's output just after the last chunk read. */
 	seq: number;
 	socket?: GroundboxSocket;
-	/** The stream's events not read yet. */
+	/** The stream's events not read yet, and their output's bytes. */
 	events: FramedEvent[];
+	queued: number;
+	/** No socket is open on purpose: the events not read yet passed QUEUE_HIGH, and reading on waits for QUEUE_LOW. */
+	paused: boolean;
+	/** A #resume is under way: no other starts. */
+	resuming: boolean;
 	/** The stream is over: the command exited, or it failed (failure). */
 	ended: boolean;
 	failure?: Error;
 	/** Wakes the events waiting for more. */
 	wake: () => void;
 }
+
+/** The bytes a chunk of base64 holds. */
+const bytesOf = (base64: string): number => Math.floor((base64.length * 3) / 4);
 
 /** A sandbox as the adapter reads a machine; none for a record Groundbox keeps of one that has ended. */
 function machineOf(sandbox: Sandbox): Machine | undefined {
@@ -223,20 +251,26 @@ class GroundboxHost implements MachineHost {
 		arch: "amd64",
 		// Groundbox's agent in the guest listens on a unix socket that is root's, reached over vsock: nothing on TCP.
 		vendorAgentPorts: [],
+		// A desktop runs the box image's xfwm4 once its X server answers.
+		windowManager: true,
 	};
 	readonly #apiKey: string;
 	readonly #apiUrl: string;
 	readonly #fetch: typeof fetch | undefined;
 	readonly #webSocket: GroundboxSocketFactory;
 	readonly #diskGb: number | undefined;
+	readonly #kind: "desktop" | "linux";
+	readonly #bounds: StreamBounds;
 	readonly #api: Rest;
 
-	constructor(options: { apiKey: string; apiUrl: string; fetch?: typeof fetch; webSocket: GroundboxSocketFactory; diskGb?: number }) {
+	constructor(options: { apiKey: string; apiUrl: string; fetch?: typeof fetch; webSocket: GroundboxSocketFactory; diskGb?: number; kind: "desktop" | "linux"; streamBounds?: Partial<StreamBounds> }) {
 		this.#apiKey = options.apiKey;
 		this.#apiUrl = options.apiUrl.replace(/\/+$/, "");
 		this.#fetch = options.fetch;
 		this.#webSocket = options.webSocket;
 		this.#diskGb = options.diskGb;
+		this.#kind = options.kind;
+		this.#bounds = { silenceMs: SILENCE_MS, queueHighBytes: QUEUE_HIGH, queueLowBytes: QUEUE_LOW, ...options.streamBounds };
 		this.#api = this.#client();
 	}
 
@@ -274,6 +308,9 @@ class GroundboxHost implements MachineHost {
 		const { image, cpus, memoryMb, labels } = spec;
 		if (image !== undefined && !(typeof image === "string" && IMAGE_REF.test(image))) {
 			refusals.push({ field: "image", message: `an image is "${GROUNDBOX_OWN_IMAGE}" (the team's default template, else Groundbox's own Ubuntu 24.04), a Groundbox template (its id tpl_..., its name, or name:version), or a public image reference such as ghcr.io/org/app:tag` });
+		} else if (image === GROUNDBOX_OWN_IMAGE && this.#kind === "desktop") {
+			// Groundbox's own image has Xvfb but not xfwm4, the window manager every desktop here runs.
+			refusals.push({ field: "image", message: `a Groundbox desktop starts from an image with Xvfb and xfwm4, which Groundbox's own image lacks (xfwm4): name the box image, ${boxImageRef()}, which prepareImage() answers, or an image of your own that has both` });
 		}
 		if (cpus !== undefined && !(isWhole(cpus) && cpus >= 1 && cpus <= MAX_CPUS)) refusals.push({ field: "cpus", message: `a Groundbox computer has a whole number of CPUs, 1 to ${MAX_CPUS}` });
 		if (memoryMb !== undefined) {
@@ -386,7 +423,7 @@ class GroundboxHost implements MachineHost {
 
 	/** Starts the command on a new socket and answers once Groundbox says it has started, within the call's bound. */
 	async #start(id: string, argv: readonly string[], ctx: HostCall): Promise<Command> {
-		const command: Command = { sandbox: id, fifo: `${FIFO_PREFIX}${randomBytes(8).toString("hex")}`, seq: 0, events: [], ended: false, wake: () => {} };
+		const command: Command = { sandbox: id, fifo: `${FIFO_PREFIX}${randomBytes(8).toString("hex")}`, seq: 0, events: [], queued: 0, paused: false, resuming: false, ended: false, wake: () => {} };
 		const first = { type: "start", args: ["sh", "-c", START_SCRIPT, "sh", command.fifo, ...argv], resumable: true, encoding: "base64", timeout_s: EXEC_STREAM_MAX_S };
 		try {
 			await this.#connect(command, first, ctx);
@@ -424,12 +461,30 @@ class GroundboxHost implements MachineHost {
 		let ready!: (failure?: Error) => void;
 		const readied = new Promise<Error | undefined>((done) => (ready = done));
 		let silence: ReturnType<typeof setTimeout> | undefined;
-		/** This socket was given up on before it was the command's: its close opens no other. */
+		/** This socket was given up on: nothing it says is read any more, and its close opens no other. */
 		let abandoned = false;
+		/**
+		 * Lets this socket go while the command runs on: its later messages and its close are ignored, since a close may
+		 * never come (WebSocket's close waits for a peer that may be gone). Silent: another socket attaches at once. Full:
+		 * none until the reader has taken enough (#events).
+		 */
+		const letGo = (why: "silent" | "full") => {
+			if (abandoned) return;
+			abandoned = true;
+			clearTimeout(silence);
+			if (command.socket === socket) command.socket = undefined;
+			try {
+				socket.close(DROP);
+			} catch {
+				// Already closing: nothing more to do with it.
+			}
+			if (why === "full") command.paused = true;
+			else void this.#resume(command);
+		};
 		const heard = () => {
 			clearTimeout(silence);
-			// A resumable stream is never silent for long (its heartbeat): one that is has died without a close.
-			if (command.execId !== undefined && !command.ended) (silence = setTimeout(() => socket.close(DROP), SILENCE_MS)).unref?.();
+			// A resumable stream is never silent for long (its heartbeat): one that is has died, with or without a close.
+			if (command.execId !== undefined && !command.ended) (silence = setTimeout(() => letGo("silent"), this.#bounds.silenceMs)).unref?.();
 		};
 		socket.addEventListener("open", () => {
 			try {
@@ -441,7 +496,7 @@ class GroundboxHost implements MachineHost {
 			}
 		});
 		socket.addEventListener("message", ({ data }) => {
-			if (socket !== command.socket || command.ended || typeof data !== "string") return;
+			if (abandoned || socket !== command.socket || command.ended || typeof data !== "string") return;
 			let message: StreamMessage;
 			try {
 				message = JSON.parse(data) as StreamMessage;
@@ -454,7 +509,10 @@ class GroundboxHost implements MachineHost {
 				ready();
 			} else if ((message.type === "stdout" || message.type === "stderr") && typeof message.data === "string") {
 				command.events.push({ stream: message.type, base64: message.data });
+				command.queued += bytesOf(message.data);
 				if (typeof message.seq === "number") command.seq = message.seq;
+				// Everything up to seq is queued: a socket opened later attaches from there, and nothing is lost or read twice.
+				if (command.queued > this.#bounds.queueHighBytes) letGo("full");
 			} else if (message.type === "skipped") {
 				this.#end(command, new Error(`Groundbox no longer keeps ${String(message.bytes)} bytes of the command's output, lost while its stream was down`));
 			} else if (message.type === "exit" && typeof message.exit_code === "number") {
@@ -499,17 +557,24 @@ class GroundboxHost implements MachineHost {
 	 * tried again with doubling pauses. A sandbox that is gone, or no socket for RESUME_GIVE_UP_MS, fails the stream.
 	 */
 	async #resume(command: Command): Promise<void> {
-		const since = Date.now();
-		for (let wait = RESUME_MIN_MS; !command.ended; wait = Math.min(wait * 2, RESUME_MAX_MS)) {
-			try {
-				await this.#connect(command, { type: "attach", exec_id: command.execId, seq: command.seq, encoding: "base64" } as { type: string }, { timeoutMs: 30_000 });
-				return;
-			} catch (error) {
-				const code = error instanceof HostError ? error.code : undefined;
-				if (code === "not_found" || code === "gone") return this.#end(command, error as Error);
-				if (Date.now() - since > RESUME_GIVE_UP_MS) return this.#end(command, new Error(`the command's stream could not be opened again for ${RESUME_GIVE_UP_MS / 1000} s: ${(error as Error).message}`));
+		// One at a time, and none while reading is paused (#events starts it again).
+		if (command.resuming || command.paused || command.ended) return;
+		command.resuming = true;
+		try {
+			const since = Date.now();
+			for (let wait = RESUME_MIN_MS; !command.ended; wait = Math.min(wait * 2, RESUME_MAX_MS)) {
+				try {
+					await this.#connect(command, { type: "attach", exec_id: command.execId, seq: command.seq, encoding: "base64" } as { type: string }, { timeoutMs: 30_000 });
+					return;
+				} catch (error) {
+					const code = error instanceof HostError ? error.code : undefined;
+					if (code === "not_found" || code === "gone") return this.#end(command, error as Error);
+					if (Date.now() - since > RESUME_GIVE_UP_MS) return this.#end(command, new Error(`the command's stream could not be opened again for ${RESUME_GIVE_UP_MS / 1000} s: ${(error as Error).message}`));
+				}
+				await pause(wait);
 			}
-			await pause(wait);
+		} finally {
+			command.resuming = false;
 		}
 	}
 
@@ -518,6 +583,14 @@ class GroundboxHost implements MachineHost {
 		try {
 			for (;;) {
 				const next = command.events.shift();
+				if (next !== undefined && "base64" in next) {
+					command.queued -= bytesOf(next.base64);
+					// Reading was paused with too much unread: read on from where it stopped once the reader has caught up.
+					if (command.paused && command.queued <= this.#bounds.queueLowBytes) {
+						command.paused = false;
+						void this.#resume(command);
+					}
+				}
 				if (next !== undefined) yield next;
 				else if (command.ended) break;
 				else await new Promise<void>((done) => (command.wake = done));
@@ -564,7 +637,7 @@ export class GroundboxProvider extends HostedProvider {
 	}
 
 	constructor(options: GroundboxProviderOptions) {
-		const { apiKey, apiUrl = DEFAULT_API_URL, diskGb, fetch, webSocket, maxLifetimeMs = DEFAULT_LIFETIME_MS, ...rest } = options ?? ({} as GroundboxProviderOptions);
+		const { apiKey, apiUrl = DEFAULT_API_URL, diskGb, fetch, webSocket, streamBounds, maxLifetimeMs = DEFAULT_LIFETIME_MS, ...rest } = options ?? ({} as GroundboxProviderOptions);
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Groundbox API key, is required: the provider reads no environment, so the caller passes it");
 		let url: URL | undefined;
 		try {
@@ -582,6 +655,8 @@ export class GroundboxProvider extends HostedProvider {
 				...(fetch ? { fetch } : {}),
 				webSocket: webSocket ?? ((url, init) => new WebSocket(url, init as never) as unknown as GroundboxSocket),
 				...(diskGb === undefined ? {} : { diskGb }),
+				kind: rest.kind === "desktop" ? "desktop" : "linux",
+				...(streamBounds === undefined ? {} : { streamBounds }),
 			}),
 			{ ...rest, maxLifetimeMs },
 		);

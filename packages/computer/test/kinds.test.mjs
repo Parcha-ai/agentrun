@@ -346,7 +346,7 @@ const BUILT = {
 	// Each configuration built by its own create() options, as serve builds the one a setting's image selects.
 	morph: [() => new MorphProvider({ apiKey: "fake-test-key", ssh2: AGENT37_SSH2, fetch: async () => new Response(null, { status: 500 }) })],
 	boxd: PROVIDERS.find((one) => one.id === "boxd").capabilities.map(({ options }) => () => new BoxdProvider({ ...options, apiKey: "fake-test-key", Boxd: BOXD_SDK })),
-	groundbox: [() => new GroundboxProvider({ apiKey: "fake-test-key", fetch: async () => new Response(null, { status: 500 }), webSocket: () => assert.fail("a command stream was opened") })],
+	groundbox: PROVIDERS.find((one) => one.id === "groundbox").capabilities.map(({ options }) => () => new GroundboxProvider({ ...options, apiKey: "fake-test-key", fetch: async () => new Response(null, { status: 500 }), webSocket: () => assert.fail("a command stream was opened") })),
 	orgo: PROVIDERS.find((one) => one.id === "orgo").capabilities.map(({ options }) => () => createOrgo({ ...options, apiKey: "fake-test-key", workspaceId: "ws-test", fetch: async () => new Response(null, { status: 500 }) })),
 };
 
