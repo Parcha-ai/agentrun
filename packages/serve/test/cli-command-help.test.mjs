@@ -25,7 +25,7 @@ const COMMANDS = [
   ["import", /^usage: agentrun-serve import \[--data DIR\] \[--from claude-code,codex,pi\] \[--dry-run\] /m],
   ["reset-password", /^usage: agentrun-serve reset-password \[--data DIR\]$/m],
   ["runner", /^usage: agentrun-serve runner --data DIR \[--loops N\] [^\n]*\n {7}agentrun-serve runner --check --data DIR/m],
-  ["install-harness", /^usage: agentrun-serve install-harness goose \[--data DIR\]$/m],
+  ["install-harness", /^usage: agentrun-serve install-harness goose\|cursor \[--data DIR\]$/m],
   ["validate-template", /^usage: agentrun-serve validate-template DIR$/m],
   ["eval-template", /^usage: agentrun-serve eval-template DIR \[--case NAME \.\.\.\] /m],
 ];
