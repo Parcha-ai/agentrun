@@ -528,7 +528,8 @@ for the disk, at Render's prices when this was written. Leave the model keys in 
 blank. When it's live, open its URL and paste `AGENTRUN_TOKEN` from the service's Environment tab to set your password.
 Then Continue with ChatGPT (Settings → Model keys, or the first screen), then run your first agent. Or paste a key in
 Render's form, or add it in the console: we recommend an `OPENROUTER_API_KEY` with a dollar cap and an expiration
-date. Do not share it with anyone.
+date. Do not share it with anyone. Walked on 0.1.0-beta.46 from the service's creation to a finished first run in 85
+seconds (healthy at 77), about a tenth of a cent of Render time.
 
 **Self-host on a $5 VPS.**
 

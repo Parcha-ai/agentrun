@@ -13,7 +13,7 @@ import type { LearnedFile, Learning } from "./learning.js";
 /** `n` of `one`, said as a person says it: "1 correction", "2 corrections". */
 const count = (n: number, one: string) => `${n} ${one}${n === 1 ? "" : "s"}`;
 /** `parts` as a person lists them: "a", "a and b", "a, b and c". */
-const listed = (parts: readonly string[]) => (parts.length < 2 ? parts.join("") : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`);
+export const listed = (parts: readonly string[]) => (parts.length < 2 ? parts.join("") : `${parts.slice(0, -1).join(", ")} and ${parts.at(-1)}`);
 /** `text` on one line, at most `max` characters, cut at a word with an ellipsis when it is longer. */
 export function short(text: string, max: number): string {
   const flat = text.replace(/\s+/g, " ").trim();

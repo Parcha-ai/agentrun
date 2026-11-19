@@ -167,8 +167,8 @@ export function costSummary(runs: readonly CostRun[], replay: CostReplay | null 
 export const JOB_PATHS: readonly RunPath[] = ["agent", "workflow", "handed_back"];
 
 /** One run of the bill: `n` its place among the agent's runs that do a job (JOB_PATHS, 1 the first), `actual_usd` the
- *  booked $ to it, every run before it included, and `agent_usd` the agent for all of it: the baseline times the runs
- *  the bill shows to it (null with no baseline). */
+ *  booked $ to it, every run before it included, and `agent_usd` the agent for all of it: the summary's `before` mean times the runs
+ *  the bill shows to it (null with no `before`). */
 export type BillPoint = { n: number; run_id: string; actual_usd: number; agent_usd: number | null };
 
 /** A revision's learning spend and what its served runs carry of it (amortize): `compile_usd` the compile turns that
@@ -187,9 +187,8 @@ export type RevisionShare = RevisionSpend & { served: number; attributed_usd: nu
 export type BillHold = { n: number | null; at: string; workflow: string; by: "audit" | "check" | "dsl"; reason: string };
 
 /** The owner's bill over the series (GET /agents/{id}/learning/cost `bill`, billOf), booked $ only: `points`, one a run
- *  that does a job; `baseline` the mean own $ (learning left out) of the `agent` runs before the first served run (every
- *  one with none yet) known exactly; `promoted` the first run a learned workflow served (or an audit audited); `break_even`
- *  the first run from `promoted` on after which `actual_usd` never again exceeds `agent_usd`, the booked total past the
+ *  that does a job, against the line the summary's `before` gives (the mean own $ of the `agent` runs before the first
+ *  served run, learning left out); `break_even` the first run from the summary's `takeover` on after which `actual_usd` never again exceeds `agent_usd`, the booked total past the
  *  last point included (null: not yet, or nothing served), and `gap_usd` the booked total less the line at the last point
  *  while there is none; `withheld` the runs (a replay among them) whose cost is unknown or only a bound, on neither line;
  *  `booked_usd` every priced run's $, spend booked after the last point included, and `learning_usd` what of it learning
@@ -197,8 +196,6 @@ export type BillHold = { n: number | null; at: string; workflow: string; by: "au
  *  v2 split (amortize): `revisions`, `unattributed_usd` (the booked total less every run's all-in: what no run carries)
  *  and `holds`. */
 export type Bill = {
-  baseline: { runs: number; mean_usd: number } | null;
-  promoted: { n: number; run_id: string; at: string } | null;
   points: BillPoint[];
   break_even: { n: number; run_id: string } | null;
   gap_usd: number | null;
@@ -212,18 +209,13 @@ export type Bill = {
 
 /** The bill over `runs` (the cost series, oldest first, replays among them): each run that does a job, all in (its own
  *  $, its compile turn and its audit shadow), with each replay's $ joining the run that does a job it followed (the first
- *  one when none did), cumulative; against the baseline times the runs shown so far. Spend booked with no point to join
+ *  one when none did), cumulative; against the summary's `before` mean times the runs shown so far. Spend booked with no point to join
  *  (a replay after a job of unknown cost) is carried to the next point, and with none after it is still booked: in the
  *  gap, and no break-even while it puts the bill over the line. Every sum and difference has its float noise rounded off
  *  (noiseOff), so a tie reads as a tie and a decision's sub-micro-dollar cost is booked as the usage row books it. */
-export function billOf(runs: readonly CostRun[]): Omit<Bill, "revisions" | "unattributed_usd" | "holds"> {
+export function billOf(runs: readonly CostRun[], { takeover, before }: Pick<CostSummary, "takeover" | "before">): Omit<Bill, "revisions" | "unattributed_usd" | "holds"> {
   const jobs = runs.filter((run) => JOB_PATHS.includes(run.path));
   const priced = (run: CostRun) => run.total_usd !== null && !run.cost_upper_bound;
-  // The first run a learned workflow served (the summary's takeover): by its place in the series, never by a start time,
-  // which two runs queued together can share.
-  const first = jobs.findIndex((run) => SERVED_PATHS.includes(run.path));
-  const before = (first < 0 ? jobs : jobs.slice(0, first)).filter((run) => run.path === "agent" && run.cost_usd !== null && !run.cost_upper_bound);
-  const baseline = before.length ? { runs: before.length, mean_usd: usd(before.reduce((sum, run) => sum + run.cost_usd!, 0) / before.length) } : null;
   // Each replay's $ joins the job it followed; one before every job joins the first.
   const extra = new Map<string, number>();
   let withheld = 0;
@@ -246,7 +238,7 @@ export function billOf(runs: readonly CostRun[]): Omit<Bill, "revisions" | "unat
   const points: BillPoint[] = [];
   let actual = 0;
   let shown = 0;
-  const line = baseline ? baseline.mean_usd : null;
+  const line = before ? before.mean_usd : null;
   const diffs: number[] = [];
   jobs.forEach((run, at) => {
     if (!priced(run)) {
@@ -264,12 +256,11 @@ export function billOf(runs: readonly CostRun[]): Omit<Bill, "revisions" | "unat
   actual = noiseOff(early.reduce((sum, one) => sum + one, actual));
   // Of it, learning's: the booked total less the priced jobs' own $ (each priced job's total is its own $ and its learning).
   const learning = noiseOff(jobs.reduce((rest, run) => (priced(run) ? noiseOff(rest - run.cost_usd!) : rest), actual));
-  const promoted = first < 0 ? null : { n: first + 1, run_id: jobs[first]!.run_id, at: jobs[first]!.started_at };
   // The booked total against the line at the last point: spend after it (carried to no point) is in.
   const tail = line === null ? Number.NaN : noiseOff(actual - noiseOff(line * shown));
   let breakEven: Bill["break_even"] = null;
-  if (promoted && line !== null && !(tail > 0)) {
-    const from = points.findIndex((point) => point.n >= promoted.n);
+  if (takeover && line !== null && !(tail > 0)) {
+    const from = points.findIndex((point) => point.n >= takeover.n);
     if (from >= 0) {
       const over = diffs.findLastIndex((diff, at) => at >= from && diff > 0);
       const at = over < 0 ? from : over + 1;
@@ -277,7 +268,7 @@ export function billOf(runs: readonly CostRun[]): Omit<Bill, "revisions" | "unat
     }
   }
   const gap = !breakEven && line !== null && points.length ? tail : null;
-  return { baseline, promoted, points, break_even: breakEven, gap_usd: gap, withheld, booked_usd: actual, learning_usd: learning };
+  return { points, break_even: breakEven, gap_usd: gap, withheld, booked_usd: actual, learning_usd: learning };
 }
 
 /** Each revision's spend split over its first `k` served runs (`served`: the runs a learned workflow served, oldest

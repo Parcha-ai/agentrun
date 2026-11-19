@@ -953,14 +953,10 @@ export interface components {
     } | null;
     audit_of?: string | null;
     path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
-    served?: {
-      workflow: string | null;
+    workflow?: {
+      name: string | null;
       digest: string | null;
-    };
-    handed_back?: {
-      workflow: string | null;
-      digest: string | null;
-    };
+    } | null;
   };
   RunCreate: {
     input: Record<string, unknown>;
@@ -1166,14 +1162,11 @@ export interface components {
       id: string;
       firing_key: string;
     } | null;
-    served?: {
-      workflow: string | null;
+    path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
+    workflow?: {
+      name: string | null;
       digest: string | null;
-    };
-    handed_back?: {
-      workflow: string | null;
-      digest: string | null;
-    };
+    } | null;
   };
   SecretMeta: {
     name: string;
@@ -2391,15 +2384,6 @@ export interface operations {
         } | null;
       };
       bill: {
-        baseline: {
-          runs: number;
-          mean_usd: number;
-        } | null;
-        promoted: {
-          n: number;
-          run_id: string;
-          at: string;
-        } | null;
         learning_usd: number;
         points: {
           n: number;
