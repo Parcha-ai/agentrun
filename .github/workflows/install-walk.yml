@@ -45,12 +45,14 @@ on:
     workflows: ['Publish verified beta']
     types: [completed]
   workflow_dispatch:
+  # The daily walk (ways-in-daily.yml): the whole walk, on main's launcher.
+  workflow_call:
 
 permissions:
   contents: read
 
 concurrency:
-  group: install-walk-${{ github.event.pull_request.number || github.sha }}
+  group: ${{ github.workflow }}-install-walk-${{ github.event.pull_request.number || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
