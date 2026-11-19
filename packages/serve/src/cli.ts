@@ -100,10 +100,8 @@ AGENTRUN_TELEMETRY=0 (or DO_NOT_TRACK=1) turns off the anonymous usage counts (d
 version, the platform and how many runs as a range, never prompts, files or keys. Off in CI, under a test runner and under --faux too;
 AGENTRUN_TELEMETRY=debug prints each event on stderr and sends none.
 
-AGENTRUN_API_ONLY=1 serves the run routes alone, for a server behind its caller's backend: a run's launch, read, list,
-timeline, messages, stop, cancel, kill and cap raise, its files and uploads, an agent's Archil disk, capabilities, health
-and usage; the computers list, the workspace's Archil disk and an agent's delete (DELETE /agents/{id}). Every other address (the page, sign-in, setup, settings, MCP, triggers and their hooks, the rest of agents)
-is a 404, and there are no accounts.
+AGENTRUN_API_ONLY=1 serves the run API alone, for a server behind its caller's backend (the routes in api-only.ts; every
+other address is a 404, and there are no accounts).
 
 The page is for one person, who signs in with a password (AGENTRUN_ACCOUNTS=0 turns this off; the token works for
 scripts and the CLI either way). With no AGENTRUN_PUBLIC_URL, listening on loopback, the first visit to the page sets the
@@ -508,8 +506,7 @@ try {
 // (besideRunnerOptions): at most --max-runs runs at once, the rest waiting queued, and on the stop each busy run finishes
 // its turn for up to --drain-timeout.
 let runnerProc: Awaited<ReturnType<typeof runnerBeside>> | undefined;
-// Anonymous usage counts (telemetry.ts, docs/telemetry.md): off with AGENTRUN_TELEMETRY=0 or DO_NOT_TRACK=1, in CI and
-// under --faux. It hears each run's end from the runner beside the server; with --no-runner it counts no runs.
+// Anonymous usage counts (docs/telemetry.md). It hears each run's end from the runner beside the server; with --no-runner it counts no runs.
 const telemetry = startTelemetry({ data: resolve(data), ...(values.faux ? { faux: true } : {}) });
 const { loops, loopsTold, drainMs } = besideRunnerOptions(serveOptions, process.env);
 // A stop asked during the server's start starts no runner: nothing is claimed for the stop to cut.

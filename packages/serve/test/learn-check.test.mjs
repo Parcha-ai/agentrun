@@ -520,3 +520,21 @@ test("a composed workflow node whose child names no output path is refused at le
   assert.match(result[0].detail, /the workflow node at \/root: its output names no path/, result[0].detail);
   assert.deepEqual(granted(draft(composedDraft("web_fetch"))), [], "a child that names its path passes");
 });
+
+// A quote re-pick is the loop quoteCheckProblems requires (a step of the top-level chain, a loop of 2 until `not` of
+// quote_missing): its exit is the one a run's views call a re-pick (learned-nodes.ts LoopRow.repick). Any other loop
+// that ran twice (one until a field is filled, a re-pick-shaped loop off the top-level chain) is an ordinary loop.
+test("repickLabels names the top-level quote re-pick loops alone, never an ordinary loop that may run twice", () => {
+  const missing = { predicate: "quote_missing", path: "answer.evidence", field: "quote", pages: ["page"] };
+  const answer = { node: "decide", label: "answer", instructions: "Answer.", out: "Answer", as: "answer" };
+  const root = { node: "chain", steps: [
+    { node: "loop", label: "refine", maxIters: 2, until: { predicate: "exists", path: "answer.code" }, body: answer },
+    { node: "loop", label: "repick", maxIters: 2, until: { predicate: "not", of: missing }, body: answer },
+    { node: "loop", label: "three", maxIters: 3, until: { predicate: "not", of: missing }, body: answer },
+    { node: "route", label: "which", on: "kind", branches: { a: { node: "loop", label: "inner", maxIters: 2, until: { predicate: "not", of: missing }, body: answer } } },
+  ] };
+  assert.deepEqual([...checks.repickLabels({ root })], ["repick"]);
+  assert.deepEqual([...checks.repickLabels({ root: root.steps[1] })], ["repick"], "a root that is the loop itself");
+  assert.deepEqual([...checks.repickLabels({})], []);
+  assert.deepEqual([...checks.repickLabels(null)], []);
+});

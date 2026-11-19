@@ -8,8 +8,8 @@
 //   own-tools  offers its own `shell` tool beside ours on every request, as an agent whose tools are not off;
 //   side       asks its HTTPS proxy for telemetry.invalid:443 once at start, as an agent that phones home;
 //   no-load    advertises no session/load, so a restart is a new session told the conversation;
-//   goose-title titles each call as Goose 1.59.2 does (`agentrun: check echo`), which the adapter does not tie to a
-//              tool of ours, so the host's gate is asked about it as the agent's own (`acp_other`);
+//   untied     titles each call of ours under another server's name (`github: check echo`), a title the adapter does
+//              not tie to our tool, so its permission reaches the host's gate as the agent's own (`acp_other`);
 //   plan       billed on its vendor's plan: its model is MODEL_AGENT_VENDOR (host:port), reached through HTTPS_PROXY's
 //              CONNECT on its own key MODEL_AGENT_API_KEY, as a plan-billed agent reaches its vendor beyond loopback.
 // Its model is MODEL_AGENT_MODEL; the proxy's address is ANTHROPIC_HOST, else ANTHROPIC_BASE_URL (the recipe's hostEnv).
@@ -142,8 +142,8 @@ async function takeTurn(client, session, prompt) {
     }
     const results = [];
     for (const use of uses) {
-      // goose-title: the call titled as Goose 1.59.2 titles it, `agentrun: check echo`.
-      const title = mode === "goose-title" && use.name.startsWith("agentrun__") ? `agentrun: ${use.name.slice("agentrun__".length).replace(/_/g, " ")}` : use.name;
+      // untied: the call titled under another server's name, `github: check echo`.
+      const title = mode === "untied" && use.name.startsWith("agentrun__") ? `github: ${use.name.slice("agentrun__".length).replace(/_/g, " ")}` : use.name;
       const update = { toolCallId: use.id, title, kind: "other", status: "pending", rawInput: use.input };
       await notify({ sessionUpdate: "tool_call", ...update });
       const options = [{ optionId: "allow_once", name: "Allow Once", kind: "allow_once" }, { optionId: "reject_once", name: "Deny Once", kind: "reject_once" }];

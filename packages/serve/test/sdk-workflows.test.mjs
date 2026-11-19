@@ -18,7 +18,8 @@ test("SDK compilation delegates explicitly while managed compilation retains wor
   for (const adapters of [[], ["runNode"]]) {
     const prompt = compile(adapters);
     assert.doesNotMatch(prompt, /on later runs it runs first|runs on the agent's model/);
-    assert.match(prompt, /explicitly invokes/);
+    assert.match(prompt, /Execution still requires an explicit MCP tool call/);
+    assert.match(prompt, /What you write is a compiled workflow: no check has compared it with the agent's own answers/);
   }
   const managed = compile();
   assert.match(managed, /on later runs it runs first/);
@@ -245,7 +246,7 @@ test("the SDK compiler's request carries the owner's standing corrections, a rul
   assert.ok(prompts[0].includes(rule), "the compiler is told the owner's correction");
 });
 
-for (const [runtime, priced] of [["claude-agent-sdk", true], ["codex-sdk", true], ["claude-agent-sdk", false]]) test(`${runtime}${priced ? "" : " with an unpriced tool"} learns a workflow through the ordinary cadence and pins it for the next backend run`, { timeout: 90_000 }, async (t) => {
+for (const [runtime, priced] of [["claude-agent-sdk", true], ["codex-sdk", true], ["eve", true], ["claude-agent-sdk", false]]) test(`${runtime}${priced ? "" : " with an unpriced tool"} learns a workflow through the ordinary cadence and pins it for the next backend run`, { timeout: 90_000 }, async (t) => {
   const { client, follow } = await import("./support.mjs");
   const { SdkRuns } = await import("../dist/sdk/runs.js");
   const server = await serve(t, { faux: new URL("./fixtures/sdk-workflow-model.mjs", import.meta.url).pathname });

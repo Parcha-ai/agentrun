@@ -1,3 +1,4 @@
+import claudeMark from "@/assets/coding-agents/claude-code-cli.svg";
 import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -32,6 +33,7 @@ describe("existing agent observation", () => {
   });
   it("shows the original harness and model on the existing agents page without executable-agent actions", async () => {
     const host = await render(createElement(AgentsList, { agents: [], observations: read }));
+    expect(host.querySelector<HTMLImageElement>("li a img")?.getAttribute("src")).toBe(claudeMark);
     expect(host.textContent).toContain("Existing backend");
     expect(host.textContent).toContain("Claude Code");
     expect(host.textContent).toContain("test-model");

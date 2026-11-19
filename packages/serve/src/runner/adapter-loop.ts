@@ -679,8 +679,11 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
   // is never ended interrupted; it waits for its answer, which ends it (run once, refused, or withdrawn).
   const parked = new Set<string>();
   const sent = new Set<string>();
-  // A call of a tool that only nests calls (its start marked `nests`): never ended interrupted, as it runs again whole.
+  // A call of a tool that only nests calls (its start marked `nests`): never ended interrupted at a record's open, as it
+  // runs again whole; only the run's end ends it (openCalls).
   const nesting = new Set<string>();
+  // The calls still open: no end, and not parked unsent. None for a harness that says each call's end (endsItsCalls).
+  const openNow = (): string[] => (endsItsCalls ? [] : [...started].filter(([callId, ended]) => !ended && !(parked.has(callId) && !sent.has(callId))).map(([callId]) => callId));
   // The call of the harness's own each call runs inside (nestedIn), named on the call's start.
   const parents = new Map<string, string>();
   const parentOf = (callId: string): { parent: string } | Record<string, never> => {
@@ -720,8 +723,8 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
     else if (entry.kind === KINDS.turnEnd && turnsOpen > 0) turnsOpen -= 1;
     if ((entry.kind === KINDS.message || entry.kind === KINDS.input) && typeof data.requestId === "string") followUps.add(data.requestId);
   }
-  for (const [callId, ended] of started) {
-    if (endsItsCalls || ended || (parked.has(callId) && !sent.has(callId)) || nesting.has(callId)) continue;
+  for (const callId of openNow()) {
+    if (nesting.has(callId)) continue;
     await append(KINDS.callEnd, { callId, status: "interrupted" });
     started.set(callId, true);
     ends.set(callId, { status: "interrupted" });
@@ -860,10 +863,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
     },
     nestedIn: (callId, parent) => void parents.set(callId, parent),
     unsentParked: () => [...parked].filter((callId) => !sent.has(callId) && started.get(callId) === false),
-    openCalls: () =>
-      endsItsCalls
-        ? []
-        : [...started.keys()].filter((callId) => started.get(callId) === false && !(parked.has(callId) && !sent.has(callId))).sort((a, b) => Number(nesting.has(a)) - Number(nesting.has(b))),
+    openCalls: () => openNow().sort((a, b) => Number(nesting.has(a)) - Number(nesting.has(b))),
     noteEnd(callId, status, output) {
       started.set(callId, true);
       ends.set(callId, { status, ...(output === undefined ? {} : { output }) });

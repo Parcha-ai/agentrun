@@ -1,6 +1,8 @@
-// The walks' API client, run inside the server's container (`docker compose exec -T server node /walk/api.mjs ...`),
-// where the server listens on its own address (`server`), with the token the server keeps in /data/.token. One command
-// per call; each prints one JSON line. A wait polls every 250 ms until what it waits for holds, and fails after its bound.
+// The walks' API client, run inside the server's container (`docker compose exec -T server node /walk/api.mjs ...`, or
+// `kubectl exec` in deploy/helm/walk.sh), at WALK_BASE (else the server's own address, `server`), with the container's
+// AGENTRUN_TOKEN (else the token the server keeps in /data/.token). One command per call; each prints one JSON line. A
+// wait polls every 250 ms until what it waits for holds, and fails after its bound.
+//   isolation                      how each run's process is kept apart (GET /v2/capabilities) -> {run_isolation}
 //   agent                          make the walk's agent (pi, the runner's place, the write tool) -> {agent}
 //   start <agent> <steps> <ms>     start a run of it                                          -> {run}
 //   run <run>                      the run's status, state and claim                          -> {status, state, claim}
@@ -9,8 +11,8 @@
 //   end <run>                      wait until the run ends; its steps and files               -> {status, steps, files}
 import { readFileSync } from "node:fs";
 
-const BASE = "http://server:7340/v2";
-const token = readFileSync("/data/.token", "utf8").trim();
+const BASE = process.env.WALK_BASE || "http://server:7340/v2";
+const token = process.env.AGENTRUN_TOKEN || readFileSync("/data/.token", "utf8").trim();
 const [command, ...args] = process.argv.slice(2);
 const fail = (why) => {
   console.error(`walk api: ${why}`);
@@ -64,7 +66,9 @@ async function steps(run) {
 
 const ENDED = ["completed", "failed", "cancelled"];
 let out;
-if (command === "agent") {
+if (command === "isolation") {
+  out = { run_isolation: (await call("GET", "/capabilities")).run_isolation };
+} else if (command === "agent") {
   const made = await call("POST", "/agents", {
     definition: { name: "walk-steps", instructions: "Do each step the model asks for.", harness: "pi", tools: ["write"], place: { mode: "runner" } },
   });

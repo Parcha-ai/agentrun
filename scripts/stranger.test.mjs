@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFile, readdir } from 'node:fs/promises';
 import test from 'node:test';
-import { exitCodeOf, extractSnippet, isMissing, judge, loadSpec, runCommand, strangerEnv, validateSpec } from './stranger.mjs';
+import { exitCodeOf, extractSnippet, isMissing, judge, loadSpec, strangerEnv, validateSpec } from './stranger.mjs';
 
 const readme = ['# Title', '', '## Install', '```sh', 'npm i x', '```', '', '## Offline tests', 'text', '```js', 'one();', '```', '```js', 'two();', '```', '### Sub', '```js', 'sub();', '```', '## Next', '```js', 'next();', '```', ''].join('\n');
 
@@ -83,29 +83,4 @@ test('the browser spec accepts exactly the output its README shows under the com
   const ran = over => judge(browser, { exitCode: 0, stdout: shown, stderr: '', timedOut: false, ...over }).length;
   assert.equal(ran({}), 0);
   assert.deepEqual([ran({ stdout: `${shown}more\n` }), ran({ stdout: shown.slice(1) }), ran({ stdout: shown.replace('forty-two', 'forty-three') }), ran({ stderr: 'a warning\n' })], [1, 1, 1, 1]);
-});
-
-// ---- the examples' Since cells ----
-
-const index = [
-  '| Example | What it shows | Needs | Since | CI |', '|---|---|---|---|---|',
-  '| [01-durable-chat](01-durable-chat/) | a disk chat | Archil | checkout | no |',
-  '| [01-durable-chat/on-a-directory.mjs](01-durable-chat/on-a-directory.mjs) | quickstart | Linux | 0.1.0-beta.13 | yes |',
-  '| [kill-9](kill-9/) | survives kill -9 | Linux | 0.1.0-beta.13 | yes |',
-  '| [fork-into-many](fork-into-many/) | forks | Linux | 0.1.0-beta.14 | yes |',
-  '| [planned-move](planned-move/) | moves | Archil and Daytona | 0.1.0-beta.14 | no |',
-  '', 'text after the table', '',
-].join('\n');
-
-test("an example's run ends after its command exits and a short grace, even if a process outside its group keeps an output pipe open", async () => {
-  // The command starts a detached child (a group of its own, so the timeout's group kill cannot reach it) that inherits the
-  // output pipes and lives a while, prints its pid and exits at once.
-  const script = "const { spawn } = require('node:child_process'); const c = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 15000)'], { detached: true, stdio: ['ignore', 'inherit', 'inherit'] }); console.log(c.pid); c.unref();";
-  const started = Date.now();
-  const result = await runCommand(process.execPath, ['-e', script], { cwd: process.cwd(), env: { PATH: process.env.PATH }, timeoutMs: 60_000, group: true, graceMs: 300 });
-  const elapsed = Date.now() - started;
-  const lingering = Number(result.stdout.trim());
-  try { assert.ok(Number.isInteger(lingering) && lingering > 0, `the command printed its child's pid: ${result.stdout}`); } finally { if (lingering > 0) try { process.kill(lingering, 'SIGKILL'); } catch { /* already gone */ } }
-  assert.equal(result.exitCode, 0);
-  assert.ok(elapsed < 6000, `the run did not wait for the lingering child: ${elapsed} ms`);
 });

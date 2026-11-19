@@ -33,8 +33,8 @@ const (
 	ExitVersion      = 5 // another protocol version, or a hello its kind does not serve: 426 at the upgrade, or 4426
 )
 
-// A machine's token: a hosted machine's minted one (art_ and 64 hex) or a paired computer's (art_ and 43 base64url).
-var tokenPattern = regexp.MustCompile(`^art_(?:[0-9a-f]{64}|[A-Za-z0-9_-]{43})$`)
+// A machine's token, a hosted machine's or a paired computer's: art_ and 32 bytes in base64url (43 characters).
+var tokenPattern = regexp.MustCompile(`^art_[A-Za-z0-9_-]{43}$`)
 
 // Config is what attach runs by: the server, init's socket, and the numbers of attach.md.
 type Config struct {
@@ -66,7 +66,7 @@ func FromEnv(socket, subprotocol string, maxMessage int) (Config, error) {
 		cfg.TokenFile = path
 	}
 	if !tokenPattern.MatchString(cfg.Token) {
-		return cfg, fmt.Errorf("%s is the machine's token, art_ and 64 lowercase hex (a hosted machine's) or 43 base64url (a paired computer's)", TokenEnv)
+		return cfg, fmt.Errorf("%s is the machine's token, art_ and 43 base64url characters", TokenEnv)
 	}
 	cfg.Options = Options{Token: cfg.Token, Subprotocol: subprotocol, MaxMessage: maxMessage, Heartbeat: 20 * time.Second, Idle: time.Minute}
 	return cfg, nil

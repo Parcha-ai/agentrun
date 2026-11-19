@@ -20,14 +20,14 @@
 // command there would run on the server itself. runShellOf reads it off a setting before anything starts (the tool
 // plane shows bash unavailable by it), and the claim's runTools takes the same rule over the computer it started.
 import { hostToolDefs, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
-import { type BrowserFeatures, type BrowserFile, type BrowserSpec, type ComputerClient, type ComputerSettingKind, configurationOf, connectOf, type GpuSpec, type Group, type HelloResult, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, mountsOf, type ProviderEntry, type Result, syncingClient } from "@parcha/agentrun-computer";
+import { type BrowserFeatures, type BrowserFile, type BrowserSpec, type ComputerClient, type ComputerSettingKind, configurationOf, connectOf, type GpuSpec, type Group, type HelloResult, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, mountsOf, type ProviderEntry, type Result, type SettingKindSpec, syncingClient } from "@parcha/agentrun-computer";
 import { type DockerDaemon, noDockerWords } from "../docker-daemon.js";
 import { gpuRefused } from "../gpu-words.js";
 import { recordedClient } from "../computer-calls.js";
 import type { Recording, RecordWatch } from "../computer-record.js";
 import type { MountCheck } from "./attach.js";
 import type { AgentComputer, RunComputer } from "./run-tools.js";
-import { emptyMeta, fencedStore, finalSyncWords, type HeldFolder, holdSynced, pullFolder, recordMeta, recordWords, type StoredFolder, storedFolder, syncOf } from "./synced-folder.js";
+import { emptyMeta, finalSyncWords, type FolderStore, type HeldFolder, holdSynced, pullFolder, recordMeta, recordWords, type StoredFolder, storedFolder, syncOf } from "./synced-folder.js";
 import type { Workspace } from "./workspace.js";
 import { restartWith } from "../start-switches.js";
 
@@ -49,12 +49,9 @@ export const noPrograms = <C extends { readonly kind: string; readonly exec?: bo
 /** The computer module's kind registry (src/kinds.ts), by its own names: the setting kinds, why a machine does not serve
  *  one (servingRefusals, whose words a refusal here carries), and the providers. */
 export type KindRegistry = {
-  readonly SETTING_KINDS: Readonly<Record<ComputerSettingKind, unknown>>;
+  readonly SETTING_KINDS: Readonly<Record<ComputerSettingKind, SettingKindSpec>>;
   servingRefusals(capabilities: KindCapabilities, kind: ComputerSettingKind): string[];
   readonly PROVIDERS: readonly ProviderEntry[];
-  /** A provider's own words for why it gives no computer of `kind`, where they say more than servingRefusals' (a paired
-   *  computer: its driver is what to update, attached-computers.ts withPaired); undefined, servingRefusals' words. */
-  readonly unservedWhy?: (entry: ProviderEntry, kind: ComputerSettingKind) => string | undefined;
 };
 
 /** A computer a provider started for the run: its ref, its computerd client and what it offers (sandbox, desktop,
@@ -169,32 +166,24 @@ type HereFields = {
  *  descriptor's imageEnv names its image here (Daytona's AGENTRUN_DAYTONA_SNAPSHOT). Any other entry as it is. Every
  *  reader of an entry's mounts (Settings → Computers, the claim, a run's start, its shell) reads this, so the
  *  provider made with those keys and the server agree on what it mounts. `options`: the create() options its server
- *  settings give (computer-keys.ts settingOptions): where its machines dial this server by them (dialsBy), it takes no
- *  Archil mount (withoutArchil), so its folder is synced where Archil's would be. */
+ *  settings give (computer-keys.ts settingOptions): where its machines dial this server by them, mountsOf leaves out
+ *  the Archil mount, so its folder is synced where Archil's would be. */
 export function entryHere<Entry extends HereFields>(entry: Entry, set: (name: string) => boolean, options: Readonly<Record<string, unknown>> = {}): Entry {
-  const keyed = entry.mountsWith === undefined ? undefined : mountsOf(entry as unknown as Parameters<typeof mountsOf>[0], set);
   const named = entry.imageEnv !== undefined && set(entry.imageEnv);
-  const here = keyed === undefined && !named ? entry : { ...entry, ...keyed, ...(named ? { imageNamed: true as const } : {}) };
-  return dialsBy(entry, options) ? withoutArchil(here) : here;
+  const dial = dials(entry, options);
+  if (entry.mountsWith === undefined && !named && !dial) return entry;
+  return { ...entry, ...mountsOf(entry as unknown as Parameters<typeof mountsOf>[0], set, dial), ...(named ? { imageNamed: true as const } : {}) };
 }
 
 /** Whether a computer of `entry` made with `options` dials this server (the computer package's connectOf). A connect it
- *  doesn't know is the provider's to refuse, in its words, when it is made: here it is read as exec. */
-function dialsBy(entry: HereFields, options: Readonly<Record<string, unknown>>): boolean {
-  if (entry.connect === undefined) return false;
+ *  doesn't know reads as exec here: the provider refuses it in its own words when it is made, and no other provider's
+ *  listing or run fails on it. */
+function dials(entry: HereFields, options: Readonly<Record<string, unknown>>): boolean {
   try {
-    return connectOf({ label: entry.label ?? "", connect: entry.connect }, options) === "dial";
+    return connectOf(entry as unknown as Parameters<typeof connectOf>[0], options) === "dial";
   } catch {
     return false;
   }
-}
-
-/** `entry` with no Archil mount, saying why: a machine that dials this server takes none (the computer package's
- *  HostedProvider drops it from its capabilities on dial and refuses one in check()). */
-function withoutArchil<Entry extends HereFields>(entry: Entry): Entry {
-  if (!entry.mounts.includes("archil")) return entry;
-  const archil = `${entry.label ?? "its provider"}'s machines dial this server, and a machine that dials takes no Archil mount`;
-  return { ...entry, mounts: entry.mounts.filter((kind) => kind !== "archil"), unmounted: { ...entry.unmounted, archil } };
 }
 
 /** The names entryHere reads of `entry`: the keys of its mountsWith, and its imageEnv. */
@@ -293,21 +282,20 @@ export type StartedComputer = {
   readonly sync?: () => Promise<Result<void>>;
 };
 
-/** A setting resolved: its kind and provider, whether the run's folder is mounted, the ports, and how to start it. */
+/** A setting resolved: its kind and provider, the run's folder in it where it mounts one, the ports, and how to start it. */
 export type ResolvedComputer = {
   readonly kind: ComputerSettingKind;
   readonly provider: string | null;
-  readonly mounts: boolean;
   /** The kind of the run's folder in it, where it mounts: a bind, an Archil mount or a synced folder (folderKindOf). */
   readonly folder?: MountKind;
   readonly ports: readonly Port[];
-  /** Starts the computer, mounting `workspace`'s folder when it mounts (a synced folder pushed in from the store
-   *  `workspace` keeps it in before the computer is handed on); `check` is the mount check attach runs (the claim's
-   *  epoch bound in); `holds`: whether the claim may still write the run's disk (synced-folder.ts claimHolds), asked
-   *  before each write of the folder there (fencedStore); `held`: the claim's synced folder, which a new sandbox in
-   *  place of a lost one holds again (computer-for-claim.ts renewalOf), absent where nothing does. A computer that
-   *  cannot be had throws with code computer_unavailable and the words. */
-  start(run: { readonly workspace: Workspace; readonly check: MountCheck; readonly holds?: () => Promise<boolean>; readonly held?: HeldFolder; readonly signal?: AbortSignal }): Promise<StartedComputer>;
+  /** Starts the computer, mounting `workspace`'s folder when it mounts (a synced folder pushed in from `store` before
+   *  the computer is handed on); `check` is the mount check attach runs (the claim's epoch bound in); `store`: the run's
+   *  disk as the claim writes the folder on it, each write fenced by the claim (computer-for-claim.ts, fencedStore),
+   *  absent where this runner keeps none; `held`: the claim's synced folder, set here and again by a new sandbox in place
+   *  of a lost one (computer-for-claim.ts renewalOf). A computer that cannot be had throws with code
+   *  computer_unavailable and the words. */
+  start(run: { readonly workspace: Workspace; readonly check: MountCheck; readonly store?: FolderStore; readonly held: HeldFolder; readonly signal?: AbortSignal }): Promise<StartedComputer>;
 };
 
 const SETTINGS = "Settings → Computers";
@@ -336,10 +324,10 @@ export function shellPlaceOf(mounts: boolean, mode: 1 | 2): ShellPlace {
 function folderOf(kind: ComputerSettingKind, entry: ProviderEntry, serving: readonly KindCapabilities[], mode: 1 | 2, gpuMounts?: readonly string[]): MountKind | undefined {
   const shell = serving.some((one) => one.groups.includes("files") && one.groups.includes("exec"));
   if (!((kind === "sandbox" || kind === "desktop") && shell)) return undefined;
-  // Configurations made on dial by their own options (the provider's are its settings' and theirs) take no Archil mount
-  // either, as entryHere's settings' dial.
-  const dialed = serving.every((one) => dialsBy(entry, one.options ?? {}));
-  return folderKindOf(dialed ? withoutArchil(entry) : entry, mode, gpuMounts);
+  // Configurations made on dial by their own options take no Archil mount either (mountsOf), as entryHere's settings'
+  // dial. `entry` holds its keyed mounts already: no key is read again.
+  const dialed = serving.every((one) => dials(entry, one.options ?? {}));
+  return folderKindOf(dialed ? { ...entry, ...mountsOf(entry, () => false, true) } : entry, mode, gpuMounts);
 }
 
 /** The configurations of `entry` that serve `kind`. */
@@ -413,7 +401,7 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
     const [why] = registry.servingRefusals({ kind: "linux", groups: [] }, kind);
     return { refused: `This agent's computer: ${why}. Set it in ${SETTINGS}.` };
   }
-  if (kind === "none") return { kind, provider: null, mounts: false, ports: [], start: async () => ({ computer: undefined, release: nothing }) };
+  if (kind === "none") return { kind, provider: null, ports: [], start: async () => ({ computer: undefined, release: nothing }) };
 
   const offered = registry.PROVIDERS.filter((entry) => entry.kinds.includes(kind));
   const pick = `one of ${offered.map((entry) => entry.label).join(", ")} for this agent's computer in ${SETTINGS}.`;
@@ -423,12 +411,12 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
   // operator names its image, so the folder it holds is the one the start and the readiness check said.
   const entry = registry.PROVIDERS.find((one) => one.id === setting.provider);
   if (!entry) return { refused: `${JSON.stringify(setting.provider)} is no computer provider this server knows: pick ${pick}` };
-  // The configurations of the provider that serve the kind; none, and the registry says why, by its closest one.
+  // The configurations of the provider that serve the kind; none, and its own why (unserved: its descriptor's, a paired
+  // computer's), else the registry's, by its closest one.
   const serving = servingOf(registry, entry, kind);
   if (serving.length === 0) {
-    const own = registry.unservedWhy?.(entry, kind);
-    if (own !== undefined) return { refused: `${own}, or pick ${pick}` };
-    const why = entry.capabilities.map((one) => registry.servingRefusals(one, kind)).sort((a, b) => a.length - b.length)[0] ?? [];
+    const unserved = entry.unserved?.[kind];
+    const why = unserved !== undefined ? [unserved] : (entry.capabilities.map((one) => registry.servingRefusals(one, kind)).sort((a, b) => a.length - b.length)[0] ?? []);
     return { refused: `${entry.label} gives no ${kind} computer${why.length > 0 ? `: ${why.join("; ")}` : ""}. Pick ${pick}` };
   }
   // The configuration the setting's image selects: one the provider does not offer for the kind is refused, naming those
@@ -487,25 +475,22 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
   return {
     kind,
     provider: entry.id,
-    mounts,
     ...(folder ? { folder } : {}),
     ports,
-    async start({ workspace, check, holds, held, signal }) {
+    async start({ workspace, check, store: disk, held, signal }) {
       // A computer kept at the run's park, attached again: it mounts what it mounted, read back under its own epoch.
       const again = await side.reattach?.(entry, { kind, keys, configuration, ...(folder ? { folder } : {}), ...(gpu ? { gpu: { type: gpu.type, count: gpu.count } } : {}), ...(persistent ? { persistent: true as const } : {}), ...(signal ? { signal } : {}) });
-      // The run's disk as the runner keeps the folder on it, each write fenced by the claim. A synced folder's store: for
-      // a new computer, listed and held to the caps before it is rented. Under an Archil mount, its sync.json emptied
-      // here and written again at the park and release.
-      const disk = folder === "sync" || folder === "archil" ? workspace.syncStore?.() : undefined;
-      const fenced = disk && holds ? fencedStore(disk, holds) : disk;
-      const store = folder === "sync" ? fenced : undefined;
+      // The run's disk as the claim keeps the folder on it. A synced folder's store: for a new computer, listed and held
+      // to the caps before it is rented. Under an Archil mount, its sync.json emptied here and written again at the park
+      // and release.
+      const store = folder === "sync" ? disk : undefined;
       if (folder === "sync" && store === undefined) {
         await again?.release().catch(() => undefined);
         throw unavailable(`${entry.label} could not start a ${kind} computer: this run's folder can't be synced into a computer here`);
       }
-      if (folder === "archil" && fenced) {
+      if (folder === "archil" && disk) {
         try {
-          await emptyMeta(fenced);
+          await emptyMeta(disk);
         } catch (error) {
           await again?.release().catch(() => undefined);
           throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
@@ -534,15 +519,13 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
       let sync: (() => Promise<Result<void>>) | undefined;
       const own = launched.own ?? launched.client;
       if (store && own) {
-        const folderHeld = held ?? {};
         try {
-          if (again) folderHeld.folder = await pullFolder(store, own, signal);
-          else await holdSynced(folderHeld, store, own, stored!, signal);
+          held.folder = again ? await pullFolder(store, own, signal) : await holdSynced(store, own, stored!, signal);
         } catch (error) {
           await launched.release().catch(() => undefined);
           throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
         }
-        sync = syncOf(folderHeld);
+        sync = syncOf(held);
       }
       const checked = mounts ? { ...check, ...(again ? { epoch: again.epoch } : {}), ...(folder === "sync" ? { sync: true as const } : {}) } : undefined;
       const computer = runComputerOf(kind, launched, checked, { ...(setting.surface ? { surface: setting.surface } : {}), ...(noPrograms(setting) ? { exec: false as const } : {}) }, sync);
@@ -550,11 +533,11 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
         await launched.release();
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${computer}`);
       }
-      if (folder === "archil" && fenced && own) {
+      if (folder === "archil" && disk && own) {
         // An Archil mount's park and release: its modes and links recorded in sync.json first (recordMeta), read through
         // the machine's own client as it is then (a lost one's replacement, never the lost one; asking it starts none),
         // for a later claim that syncs the folder; the computer goes whatever that answered, and a failed one is said.
-        const record = () => recordMeta(fenced, launched.own ?? own);
+        const record = () => recordMeta(disk, launched.own ?? own);
         return {
           computer,
           sync: record,

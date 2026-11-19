@@ -4,7 +4,7 @@
 //
 // Off with AGENTRUN_TELEMETRY=0 or DO_NOT_TRACK=1, in CI, under a test runner, and under --faux. The start that first could send prints one
 // notice and sends nothing at its start, so a person reads how to turn it off before anything leaves the machine.
-// AGENTRUN_TELEMETRY=debug prints every event and sends none; it never stands in for that notice.
+// AGENTRUN_TELEMETRY=debug prints every event and sends none, and writes nothing, so it never stands in for that notice.
 // Sending never delays a start, a run or a stop, and a send that fails is dropped without a word. A run's end is counted
 // in memory and written behind it, one write at a time, so no request or run waits on the disk.
 import { randomUUID } from "node:crypto";
@@ -29,8 +29,9 @@ export const TELEMETRY_NOTICE =
   "AgentRun sends anonymous usage counts (a random id, the version, the platform, how many runs as a range): never prompts, files, keys or names. Nothing was sent at this start. Turn it off with AGENTRUN_TELEMETRY=0 or DO_NOT_TRACK=1. Every field: https://github.com/Parcha-ai/agentrun/blob/main/docs/telemetry.md";
 
 export type TelemetryEventName = "server_started" | "heartbeat" | "first_run_completed";
-/** One event, as sent. `runs` is a range, never a count. */
+/** One event, as sent (and as debug prints it). `runs` is a range, never a count. */
 export interface TelemetryEvent {
+  api_key: string;
   event: TelemetryEventName;
   distinct_id: string;
   timestamp: string;
@@ -43,8 +44,7 @@ export type TelemetryMode = "on" | "debug" | "off_setting" | "off_do_not_track" 
 
 const OFF = new Set(["0", "false", "off", "no"]);
 
-/** What this start does, from its environment: the operator's own setting first, then DO_NOT_TRACK, CI and --faux; a test runner turns
- *  off sending, never debug's printing. */
+/** What this start does, from its environment (docs/telemetry.md). */
 export function telemetryMode(env: NodeJS.ProcessEnv, o: { faux?: boolean; key?: string } = {}): TelemetryMode {
   const setting = (env.AGENTRUN_TELEMETRY ?? "").trim().toLowerCase();
   if (OFF.has(setting)) return "off_setting";
@@ -64,9 +64,9 @@ interface State {
   id: string;
   noticed_at?: string;
   runs: number;
-  first_run_sent?: boolean;
-  /** The first run completed during the start that printed the notice: said at the next start or that start's heartbeat. */
-  first_run_held?: boolean;
+  /** The first completed run: held when it completed during the start that printed the notice (said at the next start or
+   *  that start's heartbeat), sent once it has been said. */
+  first_run?: "held" | "sent";
 }
 
 /** The kept state, or a new one when the file is missing or not what this wrote. */
@@ -78,8 +78,7 @@ function readState(file: string): State {
         id: kept.id,
         runs: typeof kept.runs === "number" && Number.isInteger(kept.runs) && kept.runs >= 0 ? kept.runs : 0,
         ...(typeof kept.noticed_at === "string" ? { noticed_at: kept.noticed_at } : {}),
-        ...(kept.first_run_sent === true ? { first_run_sent: true } : {}),
-        ...(kept.first_run_held === true ? { first_run_held: true } : {}),
+        ...(kept.first_run === "held" || kept.first_run === "sent" ? { first_run: kept.first_run } : {}),
       };
     }
   } catch {
@@ -104,12 +103,11 @@ export interface TelemetryOptions {
   version?: string;
   env?: NodeJS.ProcessEnv;
   faux?: boolean;
-  /** For tests: the key, the route, the sender, the clock, the heartbeat's period and where debug lines go. */
+  /** For tests: the key, the route, the sender, the clock and where debug lines go. */
   key?: string;
   url?: string;
   fetch?: typeof fetch;
   now?: () => Date;
-  heartbeatMs?: number;
   say?: (line: string) => void;
 }
 
@@ -154,6 +152,7 @@ export function startTelemetry(o: TelemetryOptions): Telemetry {
   let stale = false;
   let writing: Promise<void> | undefined;
   const keepLater = (): void => {
+    if (mode === "debug") return;
     stale = true;
     writing ??= (async () => {
       while (stale) {
@@ -165,21 +164,23 @@ export function startTelemetry(o: TelemetryOptions): Telemetry {
   };
 
   // The start that first could send: the notice, kept before anything is sent. If it cannot be kept, the next start would
-  // print it again and still send nothing, so this one stays quiet too. Debug sends nothing and prints no notice, so it
-  // never marks the notice as read: a start that can send after it still prints the notice and holds its first event.
+  // print it again and still send nothing, so this one stays quiet too. Debug runs the same rules on the kept state in
+  // memory and writes nothing: what it printed never left, so a start that can send after it still prints the notice and
+  // still says the first run.
   const first = mode === "on" && state.noticed_at === undefined;
   if (first) state.noticed_at = now().toISOString();
-  if (!keepNow()) return { ...idle, mode: "off_setting" };
+  if (mode === "on" && !keepNow()) return { ...idle, mode: "off_setting" };
 
   const emit = (event: TelemetryEventName): void => {
     const body: TelemetryEvent = {
+      api_key: key,
       event,
       distinct_id: state.id,
       timestamp: now().toISOString(),
       properties: { version, os: process.platform, arch: process.arch, node: Number(process.versions.node.split(".")[0]), runs: runsRange(state.runs), $process_person_profile: false, $geoip_disable: true },
     };
     if (mode === "debug") return say(`agentrun-serve telemetry (debug, not sent): ${JSON.stringify(body)}`);
-    void send(o.url ?? TELEMETRY_URL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ api_key: key, ...body }), signal: AbortSignal.timeout(SEND_TIMEOUT_MS) }).then(
+    void send(o.url ?? TELEMETRY_URL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(SEND_TIMEOUT_MS) }).then(
       () => {},
       () => {},
     );
@@ -187,19 +188,10 @@ export function startTelemetry(o: TelemetryOptions): Telemetry {
 
   // The start that printed the notice sends nothing until its first heartbeat, a day later: a first run that completes
   // before then is kept as held and said with that heartbeat, or at the next start, whichever comes first.
-  // Debug prints first_run_completed once a start and marks nothing as sent or said: what it printed never left, so a
-  // start that can send after it still sends the event.
   let holding = first;
-  let printed = false;
   const sayHeld = (): void => {
-    if (!state.first_run_held || state.first_run_sent) return;
-    if (mode === "debug") {
-      if (!printed) emit("first_run_completed");
-      printed = true;
-      return;
-    }
-    state.first_run_sent = true;
-    delete state.first_run_held;
+    if (state.first_run !== "held") return;
+    state.first_run = "sent";
     keepLater();
     emit("first_run_completed");
   };
@@ -212,7 +204,7 @@ export function startTelemetry(o: TelemetryOptions): Telemetry {
     holding = false;
     emit("heartbeat");
     sayHeld();
-  }, o.heartbeatMs ?? HEARTBEAT_MS);
+  }, HEARTBEAT_MS);
   beat.unref();
 
   return {
@@ -220,18 +212,10 @@ export function startTelemetry(o: TelemetryOptions): Telemetry {
     ...(first ? { notice: TELEMETRY_NOTICE } : {}),
     runEnded(status) {
       state.runs += 1;
-      if (mode === "debug") {
-        keepLater();
-        if (status === "ended" && !state.first_run_sent && !printed) emit("first_run_completed");
-        if (status === "ended") printed = true;
-        return;
-      }
-      const completed = status === "ended" && !state.first_run_sent && !state.first_run_held;
-      const held = completed && holding;
-      if (held) state.first_run_held = true;
-      else if (completed) state.first_run_sent = true;
+      const completed = status === "ended" && state.first_run === undefined;
+      if (completed) state.first_run = holding ? "held" : "sent";
       keepLater();
-      if (completed && !held) emit("first_run_completed");
+      if (completed && !holding) emit("first_run_completed");
     },
     close: () => (clearInterval(beat), writing ?? Promise.resolve()),
   };

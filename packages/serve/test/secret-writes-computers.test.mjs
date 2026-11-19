@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { openapiDocument } from "../dist/openapi.js";
-import { isSecretWriteOperation, markedOperations, registeredOperations, SECRET_WRITE_REFUSAL, unguardedOperations, writesSecret } from "../dist/secret-writes.js";
+import { isSecretWriteOperation, markedOperations, SECRET_WRITE_REFUSAL, unguardedOperations, writesSecret } from "../dist/secret-writes.js";
 import { call, cookieOf, serve, withEnv } from "./support.mjs";
 import { plantedValue } from "./fixtures/planted-secrets.mjs";
 
@@ -21,7 +21,7 @@ const doc = openapiDocument(() => undefined);
 test("the computer and Archil key fields are marked in the document, and each marked operation has its predicate", () => {
   const marked = markedOperations(doc);
   for (const name of ["saveComputerKeys", "putWorkspaceArchil"]) assert.ok(marked.includes(name), `${name} marks its secret fields`);
-  assert.deepEqual(unguardedOperations(doc, registeredOperations()), []);
+  assert.deepEqual(unguardedOperations(doc), []);
   assert.equal(doc.paths["/computers/{provider}/keys"].put.requestBody.content["application/json"].schema.additionalProperties["x-agentrun-secret"], true);
   const archilBody = doc.paths["/workspace/archil"].put.requestBody.content["application/json"].schema;
   assert.equal(archilBody.properties.keys.properties.ARCHIL_API_KEY["x-agentrun-secret"], true);

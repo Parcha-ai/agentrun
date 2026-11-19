@@ -26,9 +26,16 @@ test("the template runs the image the release tags beta, from the repository ren
   assert.match(await read(".github/workflows/release.yml"), /imagetools create --tag "\$IMAGE:\$RELEASE_TAG" --tag "\$IMAGE:beta"/);
 });
 
-test("render.yaml pins this release's image (the tag a release bumps)", async () => {
+test("render.yaml and the Helm chart pin this release's image (the tag a release bumps)", async () => {
   const { version } = JSON.parse(await read("packages/serve/package.json"));
   assert.match(await read("render.yaml"), new RegExp(`^ {6}url: ghcr\\.io/parcha-ai/agentrun-server:v${version.replace(/\./g, "\\.")}$`, "m"));
+  // The chart's image is v<appVersion> (deploy/helm/agentrun/templates/_helpers.tpl), and its version moves with it.
+  const chart = await read("deploy/helm/agentrun/Chart.yaml");
+  assert.equal(/^version: (\S+)$/m.exec(chart)?.[1], version);
+  assert.equal(/^appVersion: "(\S+)"$/m.exec(chart)?.[1], version);
+  const values = await read("deploy/helm/agentrun/values.yaml");
+  assert.match(values, /^  repository: ghcr\.io\/parcha-ai\/agentrun-server$/m);
+  assert.match(values, /^  tag: ""$/m);
 });
 
 test("the start command is the image's own entrypoint and command, as the image's user, once the volume is that user's", async () => {
@@ -150,7 +157,13 @@ test("a first run: the source project made, the template generated and checked, 
   assert.ok(at("POST /v2/setup") > at("GET /v2/auth/session"));
   const generated = client.calls.find((c) => c.op === "TemplateDeploy").variables.input;
   assert.equal(generated.templateId, "<template>");
-  assert.deepEqual(differences(loadTemplate(), generated.serializedConfig), []);
+  // The walk deploys the template as its form fills it, plus AGENTRUN_TELEMETRY=0: the walk's server is ours.
+  const deployed = structuredClone(generated.serializedConfig);
+  const walkVars = Object.values(deployed.services)[0].variables;
+  assert.deepEqual(walkVars.AGENTRUN_TELEMETRY, { value: "0" });
+  delete walkVars.AGENTRUN_TELEMETRY;
+  assert.deepEqual(differences(loadTemplate(), deployed), []);
+  assert.equal(Object.values(loadTemplate().services)[0].variables.AGENTRUN_TELEMETRY, undefined, "the template leaves the counts on");
   const env = (await client.call("Variables", {})).variables;
   for (const secret of [env.AGENTRUN_TOKEN, env.AGENTRUN_SEAL_KEY]) assert.ok(!lines.some((l) => l.includes(secret)), "a generated secret was printed");
   assert.ok(lines.some((l) => l.includes(buttonLine("<code>"))), "the README's button line is printed");

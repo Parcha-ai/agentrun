@@ -1,9 +1,9 @@
 // Settings → Computers, the serve side (computers.ts): createComputerRoutes over a real store on a temp file and a
-// stand-in kind registry by its own names (fixtures/computer-kinds.mjs), with the account test and the claim's options
-// through computer-keys.ts over fake provider modules. The kinds this server offers in each folder mode, each provider's
-// keys saved or not (never a value), a key save that takes only a provider's declared names, sealed in the store, an
-// account test whose failures are plain words, and the refusal a run meets at its claim when its computer cannot be had,
-// in words that name the setting to fill, else the options its provider is made with. No provider is ever called.
+// stand-in kind registry by its own names (fixtures/computer-kinds.mjs), with the account test through computer-keys.ts
+// over fake provider modules. The kinds this server offers in each folder mode, each provider's keys saved or not (never
+// a value), a key save that takes only a provider's declared names, sealed in the store, and an account test whose
+// failures are plain words. No provider is ever called. A run's claim is refused by the resolver
+// (workspace-resolve-computer.test.mjs).
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
@@ -32,7 +32,7 @@ async function setup(t, { mode = "local", settings, kinds = KINDS, env, unbuilt 
   return { store, sealKey, routes, ...fake };
 }
 
-test("an environment variable with a key's name overrides the saved one: source env, and the test and the claim take its value", async (t) => {
+test("an environment variable with a key's name overrides the saved one: source env, and the test takes its value", async (t) => {
   const { routes, built } = await setup(t, { env: { E2B_API_KEY: "fake-test-key", PATH: "/usr/bin" } });
   const view = await routes.view();
   assert.deepEqual(providerOf(view, "sandbox", "e2b").secrets, [{ name: "computer:e2b:E2B_API_KEY", set: true, source: "env", changed_at: null }]);
@@ -43,8 +43,6 @@ test("an environment variable with a key's name overrides the saved one: source 
   assert.equal(providerOf(await routes.view(), "sandbox", "e2b").secrets[0].source, "env", "the environment still wins over a saved value");
   await routes.test("e2b");
   assert.deepEqual(built.at(-1), ["e2b", { apiKey: "fake-test-key" }], "and its value is the one used");
-  assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "e2b" }), undefined);
-  assert.deepEqual(await routes.claimOptions({ kind: "desktop", provider: "e2b" }), { ok: true, options: { apiKey: "fake-test-key" } });
   assert.ok(!JSON.stringify(await routes.view()).includes("fake-test-key"), "never a value");
   const empty = await setup(t, { env: { E2B_API_KEY: "" } });
   assert.equal(providerOf(await empty.routes.view(), "sandbox", "e2b").secrets[0].set, false, "an empty variable sets nothing");
@@ -136,16 +134,12 @@ test("Mode 2: Docker's sandbox can't mount the owner's disk; Daytona's holds a s
   assert.equal(providerOf(view, "sandbox", "daytona").why, "Daytona needs DAYTONA_API_KEY saved: save it in Settings → Computers");
   // Modal prepares its image (the box image's public tag, pulled by Modal at the first create): ready once its keys are saved.
   assert.deepEqual([providerOf(view, "sandbox", "modal").ready, providerOf(view, "sandbox", "modal").why], [true, undefined], "modal: its keys are saved, so it is ready");
-  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "modal" }), undefined, "modal: claimRefusal lets it");
   assert.equal(kindOf(view, "sandbox").offered, true, "Modal's, E2B's and Agent37's sandboxes mount the owner's disk");
   assert.equal(providerOf(view, "desktop", "docker").ready, true, "a desktop holds no folder unless its provider mounts it");
   // E2B and Agent37 prepare their image (E2B's public box template; Agent37 registers the box image, and the first claim
   // waits on the registration): their sandbox and their desktop, which mounts the disk too, are ready once the keys are saved.
   for (const provider of ["e2b", "agent37"]) {
-    for (const kind of ["sandbox", "desktop"]) {
-      assert.deepEqual([providerOf(view, kind, provider).ready, providerOf(view, kind, provider).why], [true, undefined], `${provider}'s ${kind}: its keys are saved, so it is ready`);
-      assert.equal(await routes.claimRefusal({ kind, provider }), undefined, `${provider}'s ${kind}: claimRefusal lets it`);
-    }
+    for (const kind of ["sandbox", "desktop"]) assert.deepEqual([providerOf(view, kind, provider).ready, providerOf(view, kind, provider).why], [true, undefined], `${provider}'s ${kind}: its keys are saved, so it is ready`);
   }
   assert.equal(providerOf(view, "desktop", "orgo").why, "Orgo needs ORGO_API_KEY saved: save it in Settings → Computers", "Orgo's desktop mounts nothing: only its key");
   assert.equal(kindOf(view, "desktop").offered, true);
@@ -156,7 +150,6 @@ test("Mode 1: an E2B or Agent37 desktop mounts nothing, so it is never refused f
   const { routes } = await setup(t, { env: { E2B_API_KEY: "fake-test-key", AGENT37_API_KEY: "not-a-secret" } });
   const view = await routes.view();
   assert.equal(providerOf(view, "desktop", "e2b").ready, true);
-  assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "e2b" }), undefined);
   assert.doesNotMatch(providerOf(view, "desktop", "agent37").why ?? "", /Mode 2|Archil/);
 });
 
@@ -237,31 +230,7 @@ test("a provider's test answer that quotes the saved key in another form (base64
   for (const form of [KEY, ...forms]) assert.ok(!ok.detail.includes(form), `no ${form} in the detail: ${ok.detail}`);
 });
 
-test("the claim's options: computer_unavailable with the refusal's words, else the provider's create() options from its saved keys", async (t) => {
-  const { routes } = await setup(t);
-  assert.equal(await routes.claimOptions({ kind: "none" }), undefined);
-  assert.deepEqual(await routes.claimOptions({ kind: "phone", provider: "phone-harness" }), { ok: false, error: { code: "computer_unavailable", message: "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/phone-harness/keys)" } });
-  await routes.saveKeys("phone-harness", { PHONE_HARNESS_API_KEY: "good-p" });
-  assert.deepEqual(await routes.claimOptions({ kind: "phone", provider: "phone-harness" }), { ok: true, options: { apiKey: "good-p" } });
-  assert.deepEqual(await routes.claimOptions({ kind: "sandbox", provider: "docker" }), { ok: true, options: {} });
-  assert.equal((await routes.claimOptions({ kind: "sandbox", provider: "daytona" })).error.code, "computer_unavailable");
-});
-
-test("at the claim: a computer this server cannot give is refused in words that name the setting to fill", async (t) => {
-  const { routes } = await setup(t);
-  assert.equal(await routes.claimRefusal({ kind: "none" }), undefined);
-  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "docker" }), undefined);
-  assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "daytona" }), /can't mount this server's run folders.*Settings → Computers/);
-  assert.equal(await routes.claimRefusal({ kind: "phone", provider: "phone-harness" }), "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/phone-harness/keys)");
-  assert.equal(await routes.claimRefusal({ kind: "browser", provider: "e2b" }), "E2B does not serve a browser computer (kind browser is a browser machine, not a linux one; kind browser needs groups cdp, which the provider does not declare; kind browser is a browser machine, not a desktop one): set this agent's computer to one it serves (Settings → Computers)", "servingRefusals' words");
-  assert.match(await routes.claimRefusal({ kind: "desktop", provider: "nobody" }), /names the provider nobody, which this server does not have/);
-  // ORGO_WORKSPACE_ID is picked, not required: unsaved, the provider uses the key's account's one workspace.
-  assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "orgo" }), "Orgo needs ORGO_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/orgo/keys)");
-  await routes.saveKeys("phone-harness", { PHONE_HARNESS_API_KEY: "good-p" });
-  assert.equal(await routes.claimRefusal({ kind: "phone", provider: "phone-harness" }), undefined);
-});
-
-test("a provider whose host command is not on this machine's PATH is not ready, its key saved or not, and its claim is refused in words of what to install", async (t) => {
+test("a provider whose host command is not on this machine's PATH is not ready, its key saved or not, in words of what to install", async (t) => {
   const NO_ADB = "adb isn't installed on this server (no adb command on PATH): install Android platform-tools, then restart AgentRun";
   // hostCommandRefusals reads PATH's folders: a folder with an executable adb has it, one without (or a plain file) not.
   const dir = await mkdtemp(join(tmpdir(), "host-command-"));
@@ -294,11 +263,8 @@ test("a provider whose host command is not on this machine's PATH is not ready, 
   const routes = createComputerRoutes({ store, sealKey, kinds: KINDS, factories: fakeFactories().factories, tools, mode: "local", hostWhy: { "phone-harness": NO_ADB } });
   const phoneView = async () => providerOf(await routes.view(), "phone", "phone-harness");
   assert.deepEqual([(await phoneView()).ready, (await phoneView()).why], [false, NO_ADB]);
-  assert.equal(await routes.claimRefusal({ kind: "phone", provider: "phone-harness" }), NO_ADB);
   await routes.saveKeys("phone-harness", { PHONE_HARNESS_API_KEY: "good-p" });
   assert.deepEqual([(await phoneView()).ready, (await phoneView()).why], [false, NO_ADB], "its key saved, still not ready");
-  assert.equal(await routes.claimRefusal({ kind: "phone", provider: "phone-harness" }), NO_ADB);
-  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "docker" }), undefined, "another provider is not touched");
 });
 
 test("the folder mode is read at each call (folderModeOf): turning Archil on or off takes effect without building the routes again", async (t) => {
@@ -306,10 +272,8 @@ test("the folder mode is read at each call (folderModeOf): turning Archil on or 
   const routes = createComputerRoutes({ store, sealKey: randomBytes(32), kinds: KINDS, factories: fakeFactories().factories, tools, mode: folderModeOf(store) });
   const docker = async () => (await routes.view()).kinds.find((one) => one.kind === "sandbox").providers.find((one) => one.id === "docker");
   assert.equal((await docker()).ready, true, "Mode 1: Docker's sandbox");
-  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "docker" }), undefined);
   await saveArchilSettings(store, { diskId: "dsk-00000000000fake0", region: "aws-us-east-1", s3Url: "https://s3.archil.example" });
   assert.match((await docker()).why, /can't mount the owner's disk/, "Mode 2 at the next call");
-  assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "docker" }), /can't mount the owner's disk/);
   await clearArchilSettings(store);
   assert.equal((await docker()).ready, true, "Mode 1 again");
 });
@@ -319,12 +283,6 @@ test("the folder mode reads the Archil settings in the server's environment too:
   const env = { AGENTRUN_ARCHIL_REGION: "aws-us-east-1", AGENTRUN_ARCHIL_S3_URL: "https://s3.archil.example" };
   assert.equal(await folderModeOf(store, env)(), "disk");
   assert.equal(await folderModeOf(store)(), "local", "the same store without it: Mode 1");
-});
-
-test("at the claim in Mode 2: Docker's sandbox is refused", async (t) => {
-  const { routes } = await setup(t, { mode: "disk" });
-  assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "docker" }), /can't mount the owner's disk/);
-  assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "docker" }), undefined);
 });
 
 test("each choice says where its runs have their shell, the host tools that gives (the kernel registry's own list) and what it leaves out: no computer in each mode, a sandbox, and a desktop whose provider does not mount", async (t) => {
@@ -353,9 +311,9 @@ test("each choice says where its runs have their shell, the host tools that give
 /** The words a person reads when no Docker daemon answers here, over the fixture registry: a Mode 1 sandbox (its vendors
  *  need Archil first) and a desktop in either mode. */
 const NO_DOCKER_SANDBOX = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Modal, E2B or Agent37) needs Archil turned on in Settings → Workspace.";
-const NO_DOCKER_DESKTOP = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. Daytona, Modal, E2B, Agent37, Cloudflare, Fly Machines, Orgo or boxd for a desktop.";
+const NO_DOCKER_DESKTOP = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. Modal, E2B, Agent37, Cloudflare, Fly Machines, Orgo or boxd for a desktop.";
 
-test("no Docker daemon here: Docker is not ready, in words that name the vendors of each kind, and the claim refuses it in the same words", async (t) => {
+test("no Docker daemon here: Docker is not ready, in words that name the vendors of each kind", async (t) => {
   const asked = [];
   const answers = async (provider) => (asked.push(provider), { up: false, absent: true, reason: "docker version failed: exit 1" });
   const { store } = await storeOn(t);
@@ -364,8 +322,6 @@ test("no Docker daemon here: Docker is not ready, in words that name the vendors
   assert.deepEqual([providerOf(view, "sandbox", "docker").ready, providerOf(view, "sandbox", "docker").why], [false, NO_DOCKER_SANDBOX]);
   assert.deepEqual([providerOf(view, "desktop", "docker").ready, providerOf(view, "desktop", "docker").why], [false, NO_DOCKER_DESKTOP]);
   assert.deepEqual(asked, ["docker"], "one ask per view, for the one provider that binds a folder of this machine");
-  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "docker" }), NO_DOCKER_SANDBOX);
-  assert.deepEqual(await routes.claimOptions({ kind: "desktop", provider: "docker" }), { ok: false, error: { code: "computer_unavailable", message: NO_DOCKER_DESKTOP } });
   // A daemon that is there but refuses this process says its own reason.
   const denied = createComputerRoutes({ store, sealKey: randomBytes(32), kinds: KINDS, factories: fakeFactories().factories, tools, mode: "local", answers: async () => ({ up: false, absent: false, reason: "This server's process isn't in the docker group" }) });
   assert.equal(providerOf(await denied.view(), "sandbox", "docker").why, "This server's process isn't in the docker group");
@@ -374,16 +330,14 @@ test("no Docker daemon here: Docker is not ready, in words that name the vendors
   const inDisk = await archil.view();
   assert.match(providerOf(inDisk, "sandbox", "docker").why, /can't mount the owner's disk/);
   assert.equal(providerOf(inDisk, "desktop", "docker").why, NO_DOCKER_DESKTOP);
-  assert.equal(await archil.claimRefusal({ kind: "desktop", provider: "docker" }), NO_DOCKER_DESKTOP);
 });
 
-test("a Docker daemon that answers: Docker is ready, and the claim takes it", async (t) => {
+test("a Docker daemon that answers: Docker is ready", async (t) => {
   const { store } = await storeOn(t);
   const routes = createComputerRoutes({ store, sealKey: randomBytes(32), kinds: KINDS, factories: fakeFactories().factories, tools, mode: "local", answers: async () => ({ up: true }) });
   const view = await routes.view();
   assert.deepEqual(providerOf(view, "sandbox", "docker"), { id: "docker", name: "Docker", metered: false, secrets: [], required: [], ready: true, runs_refused: null, shell: "computer", host_tools: hostToolsOf("computer") });
   assert.equal(providerOf(view, "desktop", "docker").ready, true);
-  assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "docker" }), undefined);
 });
 
 test("no view's why holds a route: the words a person reads end at the setting, in either mode, with no key saved and no Docker", async (t) => {
@@ -398,12 +352,9 @@ test("no view's why holds a route: the words a person reads end at the setting, 
       for (const why of whys) assert.ok(!why.includes("PUT ") && !why.includes("/v2/"), `a view's why holds a route (${mode}): ${why}`);
     }
   }
-  // The claim's refusal, for a caller, still names the route that saves the keys.
-  const routes = createComputerRoutes({ store, sealKey: randomBytes(32), kinds, factories: fakeFactories().factories, tools, mode: "local" });
-  assert.equal(await routes.claimRefusal({ kind: "phone", provider: "phone-harness" }), "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/phone-harness/keys)");
 });
 
-test("a sandbox provider's GPUs show on GET /v2/computers as its configuration declares them, with why a run here cannot have them; the claim holds a sandbox's gpu to them in checkGpu's words", async (t) => {
+test("a sandbox provider's GPUs show on GET /v2/computers as its configuration declares them, with why a run here cannot have them", async (t) => {
   const { routes } = await setup(t, { mode: "disk" });
   const view = await routes.view();
   const daytona = providerOf(view, "sandbox", "daytona").gpu;
@@ -417,16 +368,6 @@ test("a sandbox provider's GPUs show on GET /v2/computers as its configuration d
   assert.equal(modal.why, undefined);
   assert.equal(providerOf(view, "sandbox", "docker").gpu, undefined, "Docker declares no GPU");
   assert.equal(providerOf(view, "desktop", "e2b").gpu, undefined, "only a sandbox takes GPUs");
-
-  await routes.saveKeys("daytona", { DAYTONA_API_KEY: "good-d" });
-  await routes.saveKeys("modal", { MODAL_TOKEN_ID: "good-i", MODAL_TOKEN_SECRET: "good-s" });
-  // A Daytona or Modal GPU sandbox holds a synced folder in Mode 2: ready, held to its declared GPUs in their words.
-  for (const gpu of [{ type: "H100", count: 1 }, undefined]) assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "daytona", ...(gpu ? { gpu } : {}) }), undefined, JSON.stringify(gpu));
-  assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "daytona", gpu: { type: "T4", count: 1 } }), /^Daytona can't give this agent's computer its GPUs: gpu\.type "T4" is not one this provider offers/);
-  assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "daytona", gpu: { type: "H100", count: 2 } }), /^Daytona can't give this agent's computer its GPUs: /);
-  for (const gpu of [undefined, { type: "T4", count: 1 }, { type: "H100", count: 8 }]) assert.equal(await routes.claimRefusal({ kind: "sandbox", provider: "modal", ...(gpu ? { gpu } : {}) }), undefined, JSON.stringify(gpu));
-  const local = (await setup(t)).routes;
-  assert.match(await local.claimRefusal({ kind: "sandbox", provider: "docker", gpu: { type: "T4", count: 1 } }), /^Docker can't give this agent's computer its GPUs: this provider offers no GPU/);
 });
 
 test("a picked key (Orgo's workspace): the view lists it under picked, and choices reads its options from the provider made with the saved keys, marking the one saved", async (t) => {

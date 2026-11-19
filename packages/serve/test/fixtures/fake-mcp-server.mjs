@@ -27,8 +27,11 @@ export const baseTools = () => ({
 });
 
 /** `inspect`: called with each request's headers, for a test that reads one of them (the credential a run sent, a static
- *  header beside it); the log itself never holds a header's value. */
-export async function startFakeMcp({ era = "modern", token, oauth = false, port = 0, name = "fake-mcp", path = "/mcp", inspect, hold } = {}) {
+ *  header beside it); the log itself never holds a header's value. `gate`: called with each request to its endpoint (its
+ *  URL as sent, and its JSON-RPC message), for a server that refuses some: `{ status, body }` answers it so, nothing
+ *  served; `{ toolError }` answers a tools/call with that text as an isError result, the tool never run; undefined serves
+ *  it as usual. */
+export async function startFakeMcp({ era = "modern", token, oauth = false, port = 0, name = "fake-mcp", path = "/mcp", inspect, hold, gate } = {}) {
   const tools = baseTools();
   const log = [];
   const factory = () => {
@@ -66,6 +69,15 @@ export async function startFakeMcp({ era = "modern", token, oauth = false, port 
     if (token !== undefined && !(typeof token === "function" ? token(req.headers.authorization) : req.headers.authorization === `Bearer ${token}`)) {
       res.writeHead(401, { "content-type": "application/json", "www-authenticate": oauth ? `Bearer resource_metadata="${base}/.well-known/oauth-protected-resource/mcp"` : 'Bearer realm="fake"' });
       return void res.end('{"error":"unauthorized"}');
+    }
+    const gated = gate?.(new URL(req.url, base), message);
+    if (gated && "status" in gated) {
+      res.writeHead(gated.status, { "content-type": "application/json" });
+      return void res.end(JSON.stringify(gated.body));
+    }
+    if (gated && "toolError" in gated && message?.method === "tools/call") {
+      res.writeHead(200, { "content-type": "application/json" });
+      return void res.end(JSON.stringify({ jsonrpc: "2.0", id: message.id, result: { resultType: "complete", content: [{ type: "text", text: gated.toolError }], isError: true } }));
     }
     const headers = new Headers();
     for (const [key, value] of Object.entries(req.headers)) if (typeof value === "string") headers.set(key, value);

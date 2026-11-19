@@ -123,7 +123,7 @@ export type DefinitionInput = {
   workflow?: JsonObject;
   max_cost_usd?: number;
   sdk?: {
-    runtime: "claude-agent-sdk" | "codex-sdk";
+    runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
   };
   native?: {
     runtime: "claude-code" | "codex";
@@ -349,7 +349,7 @@ export type RunSummary = {
   ended_at: Timestamp | null;
   cost: Cost;
   sdk?: {
-    runtime: "claude-agent-sdk" | "codex-sdk";
+    runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
     model: string | null;
     session_id: string | null;
     learning_revision: string | null;
@@ -467,6 +467,7 @@ export type RunSummary = {
   workflow?: {
     name: string | null;
     digest: string | null;
+    repick: "found" | "missed" | null;
   } | null;
 };
 
@@ -492,6 +493,7 @@ export type Cost = {
     unmetered?: number;
   };
   learning_usd?: number | null;
+  tools_usd?: number | null;
   all_in_usd?: number | null;
   plan?: {
     requests: number;
@@ -580,7 +582,7 @@ export type RunCreateInline = {
   model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
-  }>;
+  } | ComposioRunBinding>;
   labels?: Record<string, string>;
   workflow_first?: boolean;
   learning?: "use";
@@ -597,6 +599,11 @@ export type ExternalRef = {
   kind: string;
   id: string;
   version: string | number;
+};
+
+export type ComposioRunBinding = {
+  composio_user_id: string;
+  connected_account_id?: string;
 };
 
 export type Run = {
@@ -616,7 +623,7 @@ export type Run = {
   cost: Cost;
   poll_after_ms: number;
   sdk?: {
-    runtime: "claude-agent-sdk" | "codex-sdk";
+    runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
     model: string | null;
     session_id: string | null;
     learning_revision: string | null;
@@ -768,6 +775,7 @@ export type Run = {
   workflow?: {
     name: string | null;
     digest: string | null;
+    repick: "found" | "missed" | null;
   } | null;
 };
 
@@ -797,7 +805,7 @@ export type MessageCreate = {
   model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
-  }>;
+  } | ComposioRunBinding>;
 };
 
 export type MessageResult = {
@@ -818,7 +826,7 @@ export type RunCreate = {
   model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
-  }>;
+  } | ComposioRunBinding>;
   labels?: Record<string, string>;
   workflow_first?: boolean;
   learning?: "use";
@@ -2514,6 +2522,7 @@ export type ListComputersResponse = {
     offered: boolean;
     groups: Array<string>;
     tools: Array<string>;
+    settings: Array<string>;
     providers: Array<{
       id: string;
       name: string;
@@ -3702,7 +3711,7 @@ export type GetSdkRunResponse = {
 
 /** Register a task executed by an existing backend SDK (POST /agents/{agent_id}/sdk-runs). */
 export type StartSdkRunBody = {
-  runtime: "claude-agent-sdk" | "codex-sdk";
+  runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
   input: string;
   instructions: string;
   model?: string;

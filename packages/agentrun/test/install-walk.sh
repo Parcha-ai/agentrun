@@ -12,8 +12,7 @@
 #       to a finished first run, the time said against the bar, 5 minutes (a warning over it, never a failure: it
 #       counts the runner's downloads): the installer (a service where there is a service manager,
 #       else the background), the Local model step on a stand-in for Ollama (walk-model.mjs), `server capabilities`
-#       until models.ready, then the release-notes agent and its first run. With --tailscale, a fake tailscale that is
-#       logged in (fake-tailscale.sh) first on PATH, and the tailnet address printed.
+#       until models.ready, then the release-notes agent and its first run.
 # Installer options: --package FILE (this checkout's launcher, packed), or none (the published one). NODE_PIN=1 gives the
 # installer the launcher's Node floor as --node-version; without it the installer picks the newest on the floor's line.
 set -euo pipefail
@@ -23,6 +22,7 @@ set -euo pipefail
 mode=$1
 shift
 here=$(cd "$(dirname "$0")/.." && pwd)
+repo=$(cd "$here/../.." && pwd)
 agentrun=$HOME/.agentrun/bin/agentrun
 record=$HOME/.agentrun/.server.json
 log=$HOME/.agentrun/logs/agentrun.log
@@ -90,32 +90,14 @@ node_chosen() {
 # Whether process $1 runs: in /proc and not a zombie (a container's PID 1 may reap nothing).
 running() { [ -r "/proc/$1/stat" ] && ! grep -q ') Z ' "/proc/$1/stat"; }
 # The installer as `curl | sh` runs it, with a reader that waits for the end of its output, as an agent's shell does: it
-# returns 0 within $1 seconds, or the walk fails. Its output goes to $2.
-# $2... within $1 seconds, or stopped: timeout(1) where there is one. macOS has none, so there the command runs in a
-# process group of its own (job control on for that start), and at the bound the whole group (the installer's sh, its
-# npm) is sent SIGTERM, then SIGKILL after 10 s; this returns only once none of the group is left.
-bounded() {
-  local bound=$1 pid dog rc i
-  shift
-  if command -v timeout >/dev/null; then timeout "$bound" "$@"; return; fi
-  set -m
-  "$@" &
-  pid=$!
-  (sleep "$bound" && kill -TERM -- "-$pid" 2>/dev/null) &
-  dog=$!
-  set +m
-  rc=0
-  wait "$pid" || rc=$?
-  kill -TERM -- "-$dog" 2>/dev/null || true
-  for i in $(seq 1 10); do kill -0 -- "-$pid" 2>/dev/null || break; sleep 1; done
-  kill -KILL -- "-$pid" 2>/dev/null || true
-  while kill -0 -- "-$pid" 2>/dev/null; do sleep 0.2; done
-  return "$rc"
-}
+# returns 0 within $1 seconds, or the walk fails. Its output goes to $2. macOS has no timeout(1): there the job's
+# timeout-minutes stops a hang, as it does for service mode's installer.
 piped_install() {
   local bound=$1 out=$2
   shift 2
-  bounded "$bound" bash -c 'cat "$0" | sh -s -- "$@" 2>&1 | cat' "$here/install.sh" "$@" > "$out" || {
+  local run=(bash -c 'cat "$0" | sh -s -- "$@" 2>&1 | cat' "$here/install.sh" "$@")
+  if command -v timeout > /dev/null; then run=(timeout "$bound" "${run[@]}"); fi
+  "${run[@]}" > "$out" || {
     cat "$out"
     die "the installer did not return 0 within $bound s"
   }
@@ -213,98 +195,53 @@ tailnet_walk() {
 # downloads, so it is said (the job summary, a warning over the bar) and never fails the job; the installer is bounded
 # at 600 s as the other modes' are, a hang and not a slow network.
 bar=300
-# docs/SKILL.md's line that starts with $1, or the walk fails: a prompt that no longer says it fails here first.
-skill_line() {
-  local line
-  line=$(grep -m 1 -F -- "$1" "$here/../../docs/SKILL.md") || die "docs/SKILL.md has no line starting $1"
-  printf '%s' "$line"
-}
-# The prompt's lines start with a literal ~/, which skill_line looks for as written: nothing here expands it.
-# shellcheck disable=SC2088
+# The prompt's steps after the installer: first-run.sh, which npx-walk.sh takes too.
+# shellcheck source=packages/agentrun/test/first-run.sh
+. "$here/test/first-run.sh"
 first_run_walk() {
-  local t0 t_install t_model t_ready t_create t_run total local_model background pair create start ready out nodebin served='' model_log
-  local_model=$(skill_line '~/.agentrun/bin/agentrun service install --env AGENT_MODEL_BASE_URL=http://localhost:11434/v1 ')
-  local_model=${local_model//<tag>/walk-model}
-  # The background start's variables, every one as the prompt writes them (its line wraps): what runs in front of sh here.
-  background=$(tr '\n' ' ' < "$here/../../docs/SKILL.md" | grep -o -m 1 'curl -fsSL https://agentrun.ai/install | [A-Z_]*=[^`]* sh`') ||
-    die "docs/SKILL.md no longer puts the local model in front of sh for a background start"
-  background=${background#curl -fsSL https://agentrun.ai/install | }
-  background=${background% sh\`}
-  background=${background//<tag>/walk-model}
-  for pair in $background; do [[ $pair =~ ^[A-Z_]+=[^=]*$ ]] || die "the background start's line has $pair, not a VARIABLE=value"; done
-  [[ " $background " == *" AGENT_MODEL_API_KEY=none "* ]] || die "the background start's line sets no AGENT_MODEL_API_KEY=none: each run would be refused"
-  create=$(skill_line "~/.agentrun/bin/agentrun agents create --body '{\"definition\":{\"id\":\"release-notes\"")
-  start=$(skill_line '~/.agentrun/bin/agentrun runs start release-notes --wait ')
-  if [[ " $* " == *" --tailscale "* ]]; then
-    served=box.tail1234.example
-    out=$(mktemp -d)
-    cp "$here/test/fake-tailscale.sh" "$out/tailscale"
-    chmod 755 "$out/tailscale"
-    export PATH="$out:$PATH" FAKE_TAILSCALE_DIR
-    FAKE_TAILSCALE_DIR=$(mktemp -d)
-  fi
+  local t0 t_install t_model t_ready t_create t_run total nodebin work out
+  first_run_lines "$agentrun" 11434 || die "$fr_why"
 
   t0=$SECONDS
-  step "1. the installer$([ -n "$served" ] && echo ", --tailscale")"
+  step "1. the installer"
   piped_install 600 /tmp/first-install.log "$@"
   healthy 30
   t_install=$((SECONDS - t0))
-  if [ -n "$served" ]; then
-    grep -q "AgentRun is on your tailnet at https://$served/ (tailscale serve)" /tmp/first-install.log || die "no tailnet address printed"
-    grep -q funnel "$FAKE_TAILSCALE_DIR/calls" && die "tailscale funnel was run"
-  fi
 
   step "2. a local model on localhost:11434 (walk-model.mjs, the stand-in for Ollama)"
   nodebin=$(echo "$HOME"/.agentrun/node/*/bin/node)
-  model_log=$(mktemp)
-  "$nodebin" "$here/test/walk-model.mjs" "$model_log" 11434 > /tmp/walk-model.out 2>&1 &
-  for _ in $(seq 1 50); do grep -q 'walk model on' /tmp/walk-model.out && break; sleep 0.1; done
-  grep -q 'walk model on' /tmp/walk-model.out || die "the walk model did not start: $(cat /tmp/walk-model.out)"
+  work=$(mktemp -d)
+  first_run_model "$nodebin" "$work" 11434 || die "$fr_why"
   if grep -q "so it runs in the background" /tmp/first-install.log; then
-    step "   Local model, in the background: agentrun stop, then the installer with $background in front of sh"
+    step "   Local model, in the background: agentrun stop, then the installer with $fr_vars in front of sh"
     "$agentrun" stop
     down 30
-    # shellcheck disable=SC2086 # the prompt's words, one VARIABLE=value each (checked above)
-    (for pair in $background; do export "${pair?}"; done; piped_install 600 /tmp/first-model.log "$@") || exit 1
+    # shellcheck disable=SC2086 # the prompt's words, one VARIABLE=value each (first_run_lines checked them)
+    (for pair in $fr_vars; do export "${pair?}"; done; piped_install 600 /tmp/first-model.log "$@") || exit 1
   else
-    step "   Local model, on the service: $local_model"
-    bash -c "$local_model"
+    step "   Local model, on the service: $fr_service"
+    bash -c "$fr_service"
   fi
   healthy 30
   t_model=$((SECONDS - t0))
 
   step "3. server capabilities until models.ready"
-  ready=
-  for _ in $(seq 1 60); do
-    out=$("$agentrun" server capabilities 2> /dev/null) || out=
-    if [ -n "$out" ] && "$nodebin" -e 'process.exit(JSON.parse(process.argv[1]).models?.ready === true ? 0 : 1)' "$out"; then ready=1; break; fi
-    sleep 1
-  done
-  [ -n "$ready" ] || die "models.ready is not true: $out"
+  first_run_ready "$nodebin" "$agentrun" || die "$fr_why"
   t_ready=$((SECONDS - t0))
 
-  step "4. $create"
-  bash -c "$create"
+  step "4. $fr_create"
+  first_run_agent || die "$fr_why"
   t_create=$((SECONDS - t0))
 
-  step "5. $start"
-  out=$(bash -c "$start") || die "runs start failed: $out"
-  echo "$out"
+  step "5. $fr_start"
+  first_run_run "$nodebin" || die "$fr_why"
+  echo "$fr_receipt"
   t_run=$((SECONDS - t0))
-  "$nodebin" -e '
-    const run = JSON.parse(process.argv[1]);
-    const fail = (why) => { console.error(`FAIL: ${why}`); process.exit(1); };
-    if (run.status !== "completed") fail(`the first run is ${run.status}: ${JSON.stringify(run.error ?? null)}`);
-    if (!/Added/.test(run.result?.final_answer ?? "")) fail(`the answer did not come from the local model: ${run.result?.final_answer}`);
-    if (typeof run.cost?.usd !== "number") fail("no cost.usd");
-    if (!/^https?:\/\//.test(run.console_url ?? "")) fail(`no console_url: ${run.console_url}`);
-  ' "$out" || die "the first run's receipt is not what the prompt hands over"
-  grep -qE '^POST .*/(responses|chat/completions)$' "$model_log" || die "the run never reached the local model: $(cat "$model_log")"
 
   total=$t_run
   out="paste to first run: ${total}s (bar ${bar}s): installer ${t_install}s, local model $((t_model - t_install))s, models.ready $((t_ready - t_model))s, agent $((t_create - t_ready))s, run $((t_run - t_create))s; \$0 (a local model)"
   step "$out"
-  [ -n "${GITHUB_STEP_SUMMARY:-}" ] && echo "- $(uname -sm)$([ -n "$served" ] && echo ' --tailscale'): $out" >> "$GITHUB_STEP_SUMMARY"
+  [ -n "${GITHUB_STEP_SUMMARY:-}" ] && echo "- $(uname -sm): $out" >> "$GITHUB_STEP_SUMMARY"
   ((total < bar)) || echo "::warning::paste to first run took ${total}s, over the bar (${bar}s): $out"
 }
 

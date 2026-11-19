@@ -149,10 +149,19 @@ export interface MachineMint {
 	run?: string;
 }
 
+/** A machine token's shape, as a RegExp source without anchors or flags: `art_` and 43 base64url characters (32 bytes).
+ *  computerd takes this alone (daemon/internal/attach/attach.go tokenPattern, the same source anchored); a scrub
+ *  builds its global RegExp from it. */
+export const MACHINE_TOKEN_SOURCE = "art_[A-Za-z0-9_-]{43}";
+
+/** A new machine token, a paired computer's or a hosted machine's: `art_` and 32 random bytes in base64url
+ *  (MACHINE_TOKEN_SOURCE). */
+export const newMachineToken = (): string => `art_${randomBytes(32).toString("base64url")}`;
+
 /**
  * The tokens of hosted machines that dial (spec/computer/attach.md, Hosted machines that dial), as the server's store
- * keeps them: HostedProvider mints one at each dial create and revokes it at the delete. A token is `art_` and 64 hex
- * digits (32 random bytes); the store keeps only its sha256, bound to the machine and its mint, and never logs it. The
+ * keeps them: HostedProvider mints one at each dial create and revokes it at the delete. A token is newMachineToken's;
+ * the store keeps only its sha256, bound to the machine and its mint, and never logs it. The
  * server's attach upgrade and its daemon route take it while it is neither revoked nor past expiresAt, and hand its
  * socket to the AttachHub as mintedComputer(machine, mint). machine is the computer's name, computer-<12 hex digits>,
  * from its create's request id (computerNameFor): what the provider's connect and release are given.
@@ -181,7 +190,7 @@ export class MemoryMachineTokens implements MachineTokens {
 	// No await in either: a mint replaces the machine's token at once, so two of one machine leave one token, not two.
 	async mint(machine: string, mint: MachineMint): Promise<string> {
 		this.#drop(machine);
-		const token = `art_${randomBytes(32).toString("hex")}`;
+		const token = newMachineToken();
 		this.#held.set(sha256(token), { machine, mint: { ...mint } });
 		this.#hashOf.set(machine, sha256(token));
 		return token;
@@ -288,9 +297,10 @@ interface Live {
 export class AttachHub {
 	readonly #live = new Map<string, Live>();
 	/** The run holding each computer: the hold's own token, its labels, and its deadline with the timer that ends it. */
-	readonly #claims = new Map<string, { hold: string; labels: Record<string, string>; deadline?: Date; timer?: ReturnType<typeof setTimeout>; ending?: Promise<boolean> }>();
-	/** The calls still running on each computer that change it (changing): no hold on it ends before each has ended. */
-	readonly #changing = new Map<string, Set<Promise<unknown>>>();
+	readonly #claims = new Map<string, { hold: string; labels: Record<string, string>; deadline?: Date; timer?: ReturnType<typeof setTimeout> }>();
+	/** The call still running on each computer that changes it (changing): no hold on it ends before it has ended. A
+	 *  create sends them one at a time, and none after its abort. */
+	readonly #changing = new Map<string, Promise<unknown>>();
 	/** The sockets still saying hello, by computer: a revoke closes them too, so none comes back after it. */
 	readonly #pending = new Map<string, Set<AttachSocket>>();
 	/** Each computer's connections given out, by the function that closes one. */
@@ -456,40 +466,36 @@ export class AttachHub {
 	 * on the computer ends before that (unclaim).
 	 */
 	changing(id: string, answer: Promise<unknown>): void {
-		const running = this.#changing.get(id) ?? new Set<Promise<unknown>>();
-		this.#changing.set(id, running);
-		running.add(answer);
+		this.#changing.set(id, answer);
 		void answer.finally(() => {
-			running.delete(answer);
-			if (running.size === 0 && this.#changing.get(id) === running) this.#changing.delete(id);
+			if (this.#changing.get(id) === answer) this.#changing.delete(id);
 		});
 	}
 
-	/** Resolves once no call that changes the computer runs (changing): at once while none does. */
+	/** Resolves once no call that changes the computer runs (changing), one sent after another's answer too: at once
+	 *  while none does. */
 	async unchanged(id: string): Promise<void> {
-		for (let running = this.#changing.get(id); running !== undefined; running = this.#changing.get(id)) await Promise.allSettled(running);
+		for (let running = this.#changing.get(id); running !== undefined; running = this.#changing.get(id)) await Promise.allSettled([running]);
 	}
 
 	/**
 	 * Ends the hold named by its token, and closes the connections it was given: at once, or while a call that changes
-	 * the computer still runs (changing), once each has ended, so no next run is given a computer an earlier call still
-	 * changes. A token of a hold already ended (a late release, after the deadline gave the computer to another run)
-	 * ends nothing: false.
+	 * the computer still runs (changing), once it has ended, so no next run is given a computer an earlier call still
+	 * changes. A token of a hold already ended (a late release, after the deadline gave the computer to another run), or
+	 * ended by another unclaim while this one waited, ends nothing: false.
 	 */
-	unclaim(id: string, hold: string): Promise<boolean> {
+	async unclaim(id: string, hold: string): Promise<boolean> {
 		const held = this.#claims.get(id);
-		if (held === undefined || held.hold !== hold) return Promise.resolve(false);
-		if (this.#changing.has(id)) {
-			held.ending ??= this.unchanged(id).then(() => {
-				held.ending = undefined;
-				return this.unclaim(id, hold);
-			});
-			return held.ending;
+		if (held === undefined || held.hold !== hold) return false;
+		// Checked again after each wait: a create still running sends its next remove once the last one answers.
+		while (this.#changing.has(id)) {
+			await this.unchanged(id);
+			if (this.#claims.get(id) !== held) return false;
 		}
 		clearTimeout(held.timer);
 		this.#claims.delete(id);
 		this.#closeGiven(id);
-		return Promise.resolve(true);
+		return true;
 	}
 
 	/** A hold past its deadline ends at once, whether or not its timer has run yet (once its changing calls end). */

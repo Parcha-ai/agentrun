@@ -16,49 +16,27 @@
 //   hub took. No dial, or one with no public address: its launch refuses in words, as the computer package's does.
 import { randomBytes } from "node:crypto";
 import { crc32, deflateSync } from "node:zlib";
-import { ATTACH_PATH, ATTACH_SUBPROTOCOL, type HelloResult, type HostedDial, MAX_LINE_BYTES, type ScreenWatch, type ScreenWatchHandlers, type WatchOptions } from "@parcha/agentrun-computer";
+import { ATTACH_PATH, ATTACH_SUBPROTOCOL, type HelloResult, type HostedDial, type KindCapabilities, MAX_LINE_BYTES, type ProviderEntry, type ScreenWatch, type ScreenWatchHandlers, SETTING_KIND_NAMES, SETTING_KINDS, servingRefusals, type WatchOptions } from "@parcha/agentrun-computer";
 import { WebSocket } from "ws";
 import type { KeyTable, ProviderFactories } from "./computer-keys.js";
-import type { ComputerKind } from "./computer-setting.js";
-import type { KindCapabilities, KindRegistry, ProviderEntry, SettingKindSpec } from "./computers.js";
 import type { WatchOf } from "./workspace/computer-for-claim.js";
-import type { ComputerSettingKind, LaunchedComputer } from "./workspace/resolve-computer.js";
+import type { ComputerSettingKind, KindRegistry, LaunchedComputer } from "./workspace/resolve-computer.js";
 
-// The computer package's setting kinds and servingRefusals, as its kinds.ts gives them (the swap to its exports
-// replaces these two with the package's own).
-const SETTING_KINDS: Readonly<Record<ComputerKind, SettingKindSpec>> = {
-  none: { machineKinds: [], required: [], optional: [] },
-  sandbox: { machineKinds: ["linux"], required: ["exec", "files", "processes"], optional: [] },
-  desktop: { machineKinds: ["desktop"], required: ["screen", "input.pointer", "input.keys"], optional: ["exec", "files", "processes", "apps", "ui", "stream"] },
-  phone: { machineKinds: ["android", "ios"], required: ["screen", "input.touch", "apps"], optional: ["input.keys", "apps.install", "ui", "stream"] },
-  browser: { machineKinds: ["browser"], required: ["cdp"], optional: ["stream", "downloads"] },
-} as unknown as Readonly<Record<ComputerKind, SettingKindSpec>>;
-const KIND_NAMES = Object.keys(SETTING_KINDS) as ComputerKind[];
-
-function servingRefusals(capabilities: KindCapabilities, kind: ComputerKind): string[] {
-  const spec = Object.hasOwn(SETTING_KINDS, kind) ? SETTING_KINDS[kind] : undefined;
-  if (spec === undefined) return [`${JSON.stringify(kind)} is not a setting kind: ${KIND_NAMES.join(", ")}`];
-  if (spec.machineKinds.length === 0) return [`kind ${kind} is no computer: no provider serves it`];
-  const refusals: string[] = [];
-  if (!(spec.machineKinds as readonly string[]).includes(capabilities.kind)) refusals.push(`kind ${kind} is a ${spec.machineKinds.join(" or ")} machine, not a ${capabilities.kind} one`);
-  const groups = (Array.isArray(capabilities.groups) ? capabilities.groups : []) as readonly string[];
-  const missing = (spec.required as readonly string[]).filter((group) => !groups.includes(group));
-  if (missing.length > 0) refusals.push(`kind ${kind} needs groups ${missing.join(", ")}, which the provider does not declare`);
-  return refusals;
-}
-
-const SANDBOX = { kind: "linux", groups: ["exec", "files", "processes"] } as unknown as KindCapabilities;
+const SANDBOX: KindCapabilities = { kind: "linux", groups: ["exec", "files", "processes"] };
 const DESKTOP_GROUPS = ["screen", "input.pointer", "input.keys"] as const;
-const DESKTOP = { kind: "desktop", groups: [...DESKTOP_GROUPS] } as unknown as KindCapabilities;
+const DESKTOP: KindCapabilities = { kind: "desktop", groups: [...DESKTOP_GROUPS] };
 
 const entry = (fields: Omit<ProviderEntry, "kinds">): ProviderEntry =>
-  ({ ...fields, kinds: KIND_NAMES.filter((kind) => fields.capabilities.some((one) => servingRefusals(one, kind).length === 0)) }) as ProviderEntry;
+  ({ ...fields, kinds: SETTING_KIND_NAMES.filter((kind) => fields.capabilities.some((one) => servingRefusals(one, kind).length === 0)) });
 
+// A faux computer takes this server's allow-list as it is, none or the list, so Settings says nothing of its network and
+// AGENTRUN_BOX_ALLOW none never refuses it.
+const NETWORK = ["none", "allow"] as const;
 const PROVIDERS: readonly ProviderEntry[] = [
-  entry({ id: "faux-sandbox", label: "Faux sandbox", keys: [{ name: "FAUX_SANDBOX_KEY", required: true }], mounts: ["bind"], metered: false, capabilities: [SANDBOX] } as Omit<ProviderEntry, "kinds">),
-  entry({ id: "faux-broken", label: "Faux broken", keys: [], mounts: ["bind"], metered: false, capabilities: [SANDBOX] } as Omit<ProviderEntry, "kinds">),
-  entry({ id: "faux-desktop", label: "Faux desktop", keys: [], mounts: [], metered: false, capabilities: [DESKTOP] } as Omit<ProviderEntry, "kinds">),
-  entry({ id: "faux-dial", label: "Faux dial", connect: "dial", keys: [], mounts: [], metered: false, capabilities: [DESKTOP] } as Omit<ProviderEntry, "kinds">),
+  entry({ id: "faux-sandbox", label: "Faux sandbox", keys: [{ name: "FAUX_SANDBOX_KEY", option: "apiKey", required: true }], mounts: ["bind"], network: NETWORK, metered: false, capabilities: [SANDBOX] }),
+  entry({ id: "faux-broken", label: "Faux broken", keys: [], mounts: ["bind"], network: NETWORK, metered: false, capabilities: [SANDBOX] }),
+  entry({ id: "faux-desktop", label: "Faux desktop", keys: [], mounts: [], network: NETWORK, metered: false, capabilities: [DESKTOP] }),
+  entry({ id: "faux-dial", label: "Faux dial", connect: "dial", keys: [], mounts: [], network: NETWORK, metered: false, capabilities: [DESKTOP] }),
 ];
 
 const KEYS: KeyTable = {

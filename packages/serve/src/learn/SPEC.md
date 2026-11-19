@@ -312,8 +312,9 @@ Over a cap is refused, never cut.
   other hand back with no re-pick; the detail asks for one place one check reads. On H5d (preregistered, 259 dead-site
   merchants) the check fired on 31; the answer step once more over the run's pages kept 26, right 76.9% against the
   drafts' 50.0%, at 11.6% of the agent's cost where handing every miss back (H5c) cost 21.7%. Each loop exit is a row
-  of the run's metrics (`loops`: `{node, iterations, met, workflow}`), so a re-pick (`iterations` 2) and whether it
-  found its quotes (`met`) are counted; its request is booked as any node's.
+  of the run's metrics (`loops`: `{node, iterations, met, repick?, workflow}`, `repick` true on the re-pick loop alone,
+  a top-level step of this shape), so a re-pick (`iterations` 2) and whether it found its quotes (`met`) are counted,
+  and a run's views say it (`workflow.repick`: `found`, `missed`, or null); its request is booked as any node's.
 - Every problem is `{ rule, path?, detail }`, printable as it is: its path and detail are cut of the host's values and
   of secret shapes, and a field over 4096 bytes prints whole as `[redacted]`, never scanned.
 

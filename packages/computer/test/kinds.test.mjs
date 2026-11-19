@@ -238,6 +238,7 @@ test("a descriptor is checked when it is defined: its id, keys, settings and con
 	assert.deepEqual(descriptorProblems({ ...good, unmounted: { archil: "Archil's client hangs here" } }), [], "a kind it doesn't take, with why");
 	const relay = { ...good, keys: [...good.keys, { name: "ACME_RELAY", option: "relay", required: false }], unmounted: { archil: "Archil's client hangs here" }, mountsWith: { archil: "ACME_RELAY" } };
 	assert.deepEqual(descriptorProblems(relay), [], "a kind it takes once the operator sets one of its keys");
+	assert.deepEqual(descriptorProblems({ ...good, unserved: { desktop: "its window manager can't start there" } }), [], "a setting kind it doesn't serve, with why");
 	for (const [change, words] of [
 		[{ id: "Acme Cloud" }, /id "Acme Cloud" is not lowercase letters, digits and hyphens/],
 		[{ label: " " }, /label is not a name in words/],
@@ -256,6 +257,11 @@ test("a descriptor is checked when it is defined: its id, keys, settings and con
 		[{ unmounted: { archil: "it hangs" }, mountsWith: { nfs: "ACME_KEY" } }, /mountsWith maps mount kinds/],
 		[{ unmounted: { archil: "it hangs" }, mountsWith: ["archil"] }, /mountsWith maps mount kinds/],
 		[{ keys: [{ name: "ACME_KEY", option: "apiKey", required: true }, { name: "ACME_RELAY", option: "relay", required: false }], mountsWith: { archil: "ACME_RELAY" } }, /each kind of mountsWith is in unmounted too/],
+		[{ unserved: { desktop: " " } }, /unserved maps setting kinds \(sandbox, desktop, phone, browser\) to why, in words/],
+		[{ unserved: { none: "nothing to serve" } }, /unserved maps setting kinds/],
+		[{ unserved: { desktp: "a misspelt kind" } }, /unserved maps setting kinds/],
+		[{ unserved: { linux: "a machine kind, not a setting kind" } }, /unserved maps setting kinds/],
+		[{ unserved: ["desktop"] }, /unserved maps setting kinds/],
 		[{ network: [] }, /network is not a list of the network forms/],
 		[{ network: ["vpn"] }, /network is not a list of the network forms/],
 		[{ load: "./acme.js" }, /load is not a function/],
@@ -371,4 +377,12 @@ test("mountsOf: a descriptor's mounts with the operator's keys, the kinds of mou
 	// The registry's entry carries it, for a server to read without loading the provider.
 	assert.deepEqual(PROVIDERS.find((one) => one.id === "daytona").mountsWith, { archil: "DAYTONA_ARCHIL_EGRESS" });
 	assert.deepEqual(mountsOf({ mounts: ["bind"], unmounted: { archil: "why" }, mountsWith: { archil: "K" }, capabilities: [] }, () => true), { mounts: ["bind", "archil"], unmounted: {} });
+});
+
+test("mountsOf with dial: machines that dial the server take no Archil mount, even with the key that turns it on, and say why in one sentence", () => {
+	const daytona = DESCRIPTORS.find((one) => one.id === "daytona");
+	const archil = "Daytona's machines dial this server, and a machine that dials takes no Archil mount";
+	assert.deepEqual(mountsOf(daytona, (name) => name === "DAYTONA_ARCHIL_EGRESS", true), { mounts: ["sync"], unmounted: { archil } });
+	assert.deepEqual(mountsOf(daytona, () => false, true), { mounts: ["sync"], unmounted: { archil } });
+	assert.deepEqual(mountsOf({ label: "X", mounts: ["archil"], capabilities: [] }, () => false, true), { mounts: [], unmounted: { archil: "X's machines dial this server, and a machine that dials takes no Archil mount" } });
 });

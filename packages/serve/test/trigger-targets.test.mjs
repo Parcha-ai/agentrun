@@ -11,6 +11,8 @@ const { openSqliteStore } = await import("../dist/store/index.js");
 const { triggerTargets } = await import("../dist/trigger-targets.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
 const { runnersRefused } = await import("../dist/runner/presence.js");
+const { carriesPrevious } = await import("../dist/trigger-adapter.js");
+const { TRIGGER_ADAPTERS } = await import("../dist/trigger-adapters.js");
 
 const dirs = [];
 after(() => {
@@ -129,12 +131,22 @@ test("a start_run target with the agent's default cap is allowed", async () => {
   assert.deepEqual(await t.targetIssues({ kind: "start_run", agent_id: "a1", input: { content: "hi" } }), []);
 });
 
+// ---- the previous result -------------------------------------------------------------------------------------------
+
+test("only the schedule's runs are handed their trigger's last result: every other source's firings are different events", () => {
+  assert.deepEqual(TRIGGER_ADAPTERS.filter(carriesPrevious).map((a) => a.id), ["schedule"]);
+});
+
+test("a source that says nothing about the previous result hands none", () => {
+  assert.equal(carriesPrevious({}), false);
+});
+
 // ---- start / message / statusOf / runOf -----------------------------------------------------------------------------
 
 test("start inserts a queued, capped run under the firing's key", async () => {
   const store = await freshStore();
   const t = triggerTargets(store, deps());
-  const { run_id } = await t.start({ kind: "start_run", agent_id: "a1", input: { content: "hi" }, max_cost_usd: 3 }, { content: "hi" }, { id: "t1", firing_key: "f1" }, from);
+  const { run_id } = await t.start({ kind: "start_run", agent_id: "a1", input: { content: "hi" }, max_cost_usd: 3 }, { content: "hi" }, { id: "t1", firing_key: "f1" }, from, undefined, false);
   const row = await store.runs.get(run_id);
   assert.equal(row.state, "queued");
   assert.equal(readLaunchBody((await store.runs.launch(run_id)).body).maxCostUsd, 3);

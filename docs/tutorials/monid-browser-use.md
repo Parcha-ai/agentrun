@@ -9,7 +9,7 @@ model configured and a Monid key. [Monid docs](https://docs.monid.ai)
 ## 1. Give AgentRun your key
 
 Set `MONID_API_KEY` in the environment that starts AgentRun, or paste it in the
-console under **Settings → Tool keys**, which shows where the key comes from.
+console under **Settings → API Keys**, which shows where the key comes from.
 The server needs the key to look up and pin the endpoint when you save the
 grant, so set it before saving the agent.
 

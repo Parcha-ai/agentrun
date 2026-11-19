@@ -1,0 +1,172 @@
+name: Ways in daily
+
+# Every way in the README offers, walked on main's tip every day, whatever changed, so a merge that breaks one is caught
+# the same day: the walks that run on a pull request only when it touches their own files, here on main's code (its
+# launcher, its image built once for every row, its chart and templates), and the README's npx command as published.
+# One table (scripts/ways-in-report.mjs) in the run's summary: each way in, what it walks, its result, and each walk's
+# own rows. A red run on main opens the issue "ways in: <rows> broke", or updates the open one; the next green closes it.
+# A pull request that changes the daily walk itself walks it too, and leaves the issue alone.
+on:
+  schedule:
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - '.github/workflows/ways-in-daily.yml'
+      - 'scripts/ways-in-report.mjs'
+      - 'packages/agentrun/test/npx-walk.sh'
+      - 'packages/agentrun/test/first-run.sh'
+      - '.github/actions/walk-image/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ways-in-daily-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  image:
+    name: main's image, once for every row
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Build and save it
+        run: |
+          docker build -q -f packages/serve/docker/Dockerfile -t agentrun-walk:daily .
+          docker save agentrun-walk:daily -o "$RUNNER_TEMP/image.tar"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ways-in-image
+          path: ${{ runner.temp }}/image.tar
+          retention-days: 1
+
+  npx:
+    name: npx, the README's command as published
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.22.3'
+      - name: Walk
+        run: REPORT="$RUNNER_TEMP/npx-walk.md" sh packages/agentrun/test/npx-walk.sh
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: walk-report-npx
+          path: ${{ runner.temp }}/npx-walk.md
+          if-no-files-found: ignore
+
+  launcher:
+    uses: ./.github/workflows/install-walk.yml
+
+  docker:
+    name: Docker Compose, main's image
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.22.3'
+      - uses: ./.github/actions/walk-image
+        with:
+          artifact: ways-in-image
+      - name: Walk
+        run: REPORT="$RUNNER_TEMP/docker-walk.md" sh deploy/walk/smoke.sh
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: walk-report-docker
+          path: ${{ runner.temp }}/docker-walk.md
+          if-no-files-found: ignore
+
+  railway:
+    name: Railway's service, main's image
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.22.3'
+      - uses: ./.github/actions/walk-image
+        with:
+          artifact: ways-in-image
+      - name: Walk
+        run: REPORT="$RUNNER_TEMP/railway-walk.md" node deploy/railway/local-walk.mjs
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: walk-report-railway
+          path: ${{ runner.temp }}/railway-walk.md
+          if-no-files-found: ignore
+
+  helm:
+    needs: image
+    uses: ./.github/workflows/helm-walk.yml
+    with:
+      image: ways-in-image
+
+  coolify:
+    needs: image
+    uses: ./.github/workflows/selfhost-walk.yml
+    with:
+      image: ways-in-image
+      platforms: '["coolify"]'
+
+  dokploy:
+    needs: image
+    uses: ./.github/workflows/selfhost-walk.yml
+    with:
+      image: ways-in-image
+      platforms: '["dokploy"]'
+
+  report:
+    name: one table, and the issue
+    needs: [image, npx, launcher, docker, railway, helm, coolify, dokploy]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
+    env:
+      NEEDS: ${{ toJSON(needs) }}
+      RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '24.22.3'
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: walk-report-*
+          path: ${{ runner.temp }}/reports
+      - name: The table
+        run: node scripts/ways-in-report.mjs "$RUNNER_TEMP/reports"
+      # A run from a branch walks it, and leaves the issue that tracks main alone.
+      - name: The issue that tracks a red way in
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: node scripts/ways-in-report.mjs "$RUNNER_TEMP/reports" --issue

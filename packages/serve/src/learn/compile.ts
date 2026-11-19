@@ -225,6 +225,12 @@ const QUOTE_CHECK_RULE = "An answer that quotes pages a call step fetched is che
 /** The compact-state rule (check.ts compactStateProblems): a model step off the fast tier never reads a page. */
 const COMPACT_STATE_RULE = "A model step off the fast tier (no `\"tier\": \"fast\"`: the answering step among them) never reads a page a call step fetched. Give it a `state` map naming only compact keys: the facts a fast-tier extract step wrote from the pages (the verbatim lines the answer will quote among them), the run's own small input fields, and, in a re-pick loop, its own draft as `\"{answer?}\"`. With no `state` map a step reads the whole state, every page in it. Pages reach the agent's model only through a fast-tier step's output.";
 
+/** SDK execution is caller-owned, and nothing promotes an SDK agent's workflow (runner/harness-loops.ts skips the
+ *  promotion gate; no shadow check runs where its tools run). So the words call it compiled and unchecked, and leave the
+ *  choice to the agent: never an instruction to prefer it. */
+const SDK_WORKFLOW_SELECTION = "What you write is a compiled workflow: no check has compared it with the agent's own answers, and nothing promotes it. The agent decides whether one fits a task under its original instructions and permissions; backend code can also choose it. Execution still requires an explicit MCP tool call through the registered bridge. Saving alone executes nothing; the server does not pre-run it before the native agent. The caller may derive argument values from the current request and observed tool data, but must not invent missing values.";
+const SDK_WORKFLOW_APPLICABILITY = "Its description says what task it solves and exactly when it matches, not how the bridge is invoked; it never tells the agent to use it in place of the agent's own tool calls or on every task it could apply to. Input descriptions explain the data each field takes. Do not add an explicit-user-request or backend-only precondition unless the original job actually requires one; a required callback still runs through the registered bridge under the original policy.";
+
 /** This host's addendum to the DSL's author contract: the node kinds it runs, and its rules, each one the checks hold a
  *  draft to (learn/workflow-draft.ts draftProblems; check.ts). */
 export function learnedHost(options: { readonly tools: readonly string[]; readonly judges: boolean; readonly workflowAdapters?: readonly ("runNode" | "runJudge")[] }): AuthorHostAddendum {
@@ -235,7 +241,7 @@ export function learnedHost(options: { readonly tools: readonly string[]; readon
       name: "AgentRun backend SDK workflow bridge",
       nodeKinds: ["chain", "call", "escalate", "map", "parallel", "loop", "route", ...(model ? ["extract", "decide", "agent"] as const : []), ...(judge ? ["judge", "pick", "sift"] as const : [])],
       rules: [
-        "The backend explicitly invokes a saved workflow through its registered MCP bridge. Saving it never automatically runs it on later tasks.",
+        SDK_WORKFLOW_SELECTION,
         tools.length ? `A call node runs via tool alone and names only this allowed callback catalog: ${tools.join(", ")}. Its arguments and output schema must match that callback. Never shell or executor.` : "There is no allowed tool callback: author no call node.",
         model ? "runNode is explicitly registered for tool-free model nodes. It owns model selection; name no model or tier and grant its model nodes no tools." : "This backend provides NO runNode: author no extract, decide or agent node. Never invent a model adapter.",
         judge ? "runJudge is explicitly registered for decision nodes; the backend owns its implementation." : "This backend provides NO runJudge: author no judge, pick, sift, verification or model-based predicate.",
@@ -411,7 +417,7 @@ export function compilePrompt(ask: CompileAsk): string {
     ? [
         COMPILE_OPENS.new,
         "This agent has done this job enough times to write it down. Compile the whole job, from the run's input to its answer, into one workflow:",
-        sdk ? "The backend explicitly invokes it through its registered MCP bridge when appropriate. It is never automatically run before later tasks." : "on later runs it runs first, before you, and answers alone, or ends on an escalate node and hands the case back to you with what it found.",
+        sdk ? "Write a reusable job the caller can choose for a matching later task." : "on later runs it runs first, before you, and answers alone, or ends on an escalate node and hands the case back to you with what it found.",
         "Do the steps the runs below took, the way they took them, keeping every correction your owner gave. Name it for the job.",
         OUTPUT_FORMAT,
       ]
@@ -437,6 +443,7 @@ export function compilePrompt(ask: CompileAsk): string {
       ];
   return [
     ...why,
+    ...(sdk ? [SDK_WORKFLOW_SELECTION, SDK_WORKFLOW_APPLICABILITY] : []),
     "Use no tool in this turn.",
     "",
     "## The workflow language",
@@ -452,7 +459,7 @@ export function compilePrompt(ask: CompileAsk): string {
     "",
     "## This job",
     "",
-    fields ? (sdk ? `This task was given these fields: ${fields}. Declare the input the backend must explicitly supply to the bridge; it is never automatically mapped from later tasks.` : `This run's input has these fields: ${fields}. The workflow's input schema requires them, by these names.`) : "This run's input is the message it was given.",
+    fields ? (sdk ? `This task was given these fields: ${fields}. Declare the data the caller supplies to the bridge, using field names and descriptions that explain that data. The server does not populate these arguments itself.` : `This run's input has these fields: ${fields}. The workflow's input schema requires them, by these names.`) : "This run's input is the message it was given.",
     ask.tools.length ? `A call node may run only these tools: ${ask.tools.join(", ")}.` : "There is no tool for a call node to run.",
     ...describedLines(ask.described ?? [], ask.tools),
     ...(ask.mode === "revise" && ask.current ? ["", `\`${ask.workflow}\` as it is now:`, ...fenced("its workflow.json", clean(ask.current, 32_000))] : []),

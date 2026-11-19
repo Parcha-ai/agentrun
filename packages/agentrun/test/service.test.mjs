@@ -3,7 +3,7 @@
 // and the wiring from the bin. The installer's flags and its refusals.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -466,7 +466,7 @@ test("service install --env: the start-time switches go into the unit at 1, stay
   assert.equal(await service.install({ env: ["AGENTRUN_WEBHOOK_PRIVATE_TARGETS="] }), 0);
   assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", AGENTRUN_MCP_ALLOW_LOOPBACK: "1", AGENT_MODEL: "qwen3:8b" });
   // The server reads a switch as on at 1 alone: any other value would leave it off, so it is refused.
-  await assert.rejects(service.install({ env: ["AGENTRUN_MCP_ALLOW_LOOPBACK=true"] }), (error) => error.code === 2 && /AGENTRUN_MCP_ALLOW_LOOPBACK takes 1 \(on\) or nothing \(off\), not true/.test(error.message));
+  await assert.rejects(service.install({ env: ["AGENTRUN_MCP_ALLOW_LOOPBACK=true"] }), (error) => error.code === 2 && /AGENTRUN_MCP_ALLOW_LOOPBACK takes 1 alone, or nothing to remove it/.test(error.message));
   assert.equal(unitEnv(readFileSync(file, "utf8")).AGENTRUN_MCP_ALLOW_LOOPBACK, "1");
 });
 
@@ -488,7 +488,7 @@ test("service install --env refuses any other variable by name, and a pair with 
   for (const [pair, said] of [
     ["OPENROUTER_API_KEY=sk-or-x", /--env takes AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_PRICE, AGENT_MODEL_API_KEY, AGENTRUN_MCP_ALLOW_LOOPBACK, AGENTRUN_WEBHOOK_PRIVATE_TARGETS, AGENTRUN_TELEMETRY or DO_NOT_TRACK, not OPENROUTER_API_KEY: a key goes in the console/],
     ["PATH=/x", /not PATH/],
-    ["AGENT_MODEL_API_KEY=sk-or-x", /AGENT_MODEL_API_KEY takes none alone, for a local model that needs no key: a key goes in the console/],
+    ["AGENT_MODEL_API_KEY=sk-or-x", /^AGENT_MODEL_API_KEY takes none alone, or nothing to remove it: a model key goes in the console \(Settings → Model keys\), never in a service file\.$/],
     ["AGENT_MODEL", /--env takes KEY=VALUE, not AGENT_MODEL/],
     ["AGENT_MODEL=a\nb", /AGENT_MODEL's value has a line break/],
   ]) {
@@ -628,12 +628,49 @@ test("stop: the AgentRun the installer started in the background, and its server
   assert.equal(existsSync(pidFile), false);
   assert.match(out.join(""), /^No AgentRun started in the background is running\.\n/);
 
+  // A server in the foreground (`npx @parcha/agentrun` in a terminal): no pid file, its record naming a live process that
+  // answers /health ok. It is named, with how to stop it, and left running; exit 1. A record whose server does not
+  // answer (one a crash left, its pid another process's by now) is none running.
+  const answers = (ok) => async () => (ok ? { ok: true, json: async () => ({ status: "ok" }) } : Promise.reject(Object.assign(new Error("refused"), { name: "TypeError" })));
+  const foreground = await holder(home, { pidFile: false });
+  try {
+    writeFileSync(join(home, ".agentrun", ".server.json"), JSON.stringify({ base_url: "http://127.0.0.1:7340/v2", pid: foreground.child.pid }));
+    out.splice(0);
+    assert.equal(await serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, io, fail, get: answers(true) }).background(), 1);
+    assert.equal(out.join(""), `AgentRun is running in the foreground (pid ${foreground.child.pid}); press Ctrl-C in its terminal.\n`);
+    assert.equal(foreground.child.exitCode ?? foreground.child.signalCode, null, "left running");
+    out.splice(0);
+    assert.equal(await serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, io, fail, get: answers(false) }).background(), 3);
+    assert.match(out.join(""), /^No AgentRun started in the background is running\.\n/);
+  } finally {
+    foreground.child.kill("SIGKILL");
+    await foreground.exited;
+  }
+  rmSync(join(home, ".agentrun", ".server.json"));
+
   // With a service installed, it says the service has a stop of its own.
   mkdirSync(join(home, ".config", "systemd", "user"), { recursive: true });
   writeFileSync(join(home, ".config", "systemd", "user", UNIT), "");
   out.splice(0);
   assert.equal(await service().background(), 3);
   assert.match(out.join(""), /AgentRun runs as a service here: agentrun service stop stops it\./);
+
+  // A service writes the same record and no pid file: while the service runs, its live, healthy server is the service's,
+  // not one in a terminal. With the service stopped, a server that answers is one in a terminal (npx after service stop).
+  const serviced = await holder(home, { pidFile: false });
+  const managed = (active) => execOf((command, args) => (args[1] === "show" ? { stdout: `ActiveState=${active}\nSubState=x\nMainPID=7\n` } : {})).exec;
+  try {
+    writeFileSync(join(home, ".agentrun", ".server.json"), JSON.stringify({ base_url: "http://127.0.0.1:7340/v2", pid: serviced.child.pid }));
+    out.splice(0);
+    assert.equal(await serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, exec: managed("active"), io, fail, get: answers(true) }).background(), 3);
+    assert.equal(out.join(""), "No AgentRun started in the background is running. AgentRun runs as a service here: agentrun service stop stops it.\n");
+    out.splice(0);
+    assert.equal(await serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, exec: managed("inactive"), io, fail, get: answers(true) }).background(), 1);
+    assert.equal(out.join(""), `AgentRun is running in the foreground (pid ${serviced.child.pid}); press Ctrl-C in its terminal.\n`);
+  } finally {
+    serviced.child.kill("SIGKILL");
+    await serviced.exited;
+  }
 });
 
 /** The bin, with HOME a fresh folder and a fake systemctl first on PATH that answers as a machine with no user session. */

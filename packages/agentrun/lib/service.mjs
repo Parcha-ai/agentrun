@@ -3,7 +3,7 @@
 // unit on Linux; never a system service, never sudo. The service runs the installer's command (~/.agentrun/bin/agentrun,
 // install.sh), which brings its own Node, with --no-open and the interactive launcher's rules for the data directory and
 // port, and writes to ~/.agentrun/logs/agentrun.log. With --tailscale it is also served on the person's tailnet
-// (tailscale.mjs); with --env, on a local model (MODEL_ENV) or with a start-time switch on (SWITCH_ENV). `agentrun stop` stops the AgentRun the installer starts in the
+// (tailscale.mjs); with --env, on a local model or with a start-time switch on (SERVICE_ENV). `agentrun stop` stops the AgentRun the installer starts in the
 // background where there is no service manager (a container): its pid is in ~/.agentrun/agentrun.pid.
 import { spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
@@ -111,21 +111,29 @@ export const unitArgs = (text) => systemdWords(/^ExecStart=(.*)$/m.exec(text)?.[
 export const unitEnv = (text) =>
   Object.fromEntries([...text.matchAll(/^Environment=(.*)$/gm)].map((match) => systemdWords(match[1])[0] ?? "").map((pair) => [pair.slice(0, pair.indexOf("=")), pair.slice(pair.indexOf("=") + 1)]));
 
-/** The variables `service install --env` sets: a local model's (AGENT_MODEL_BASE_URL in front of a gateway such as
- *  Ollama's). Never a key: a unit file is plain text, and keys are sealed in the console. */
-export const MODEL_ENV = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_GATEWAY_IDS", "AGENT_MODEL", "AGENT_MODEL_PRICE"];
-/** The start-time switches `service install --env` also sets (the server's start-switches.ts): yes-or-no, on at `1`
- *  alone, and only on a machine its owner alone uses. A server reads them at its start, so the service restarts. */
-export const SWITCH_ENV = ["AGENTRUN_MCP_ALLOW_LOOPBACK", "AGENTRUN_WEBHOOK_PRIVATE_TARGETS"];
-/** The usage counts' switches (docs/telemetry.md). A service never sees the shell that installed it, so `service install`
- *  writes these into it as that shell set them, and AGENTRUN_TELEMETRY=0 when it runs under CI. `--env` sets them too. */
-export const TELEMETRY_ENV = ["AGENTRUN_TELEMETRY", "DO_NOT_TRACK"];
-/** The gateway's key variable, which `service install --env` takes at `none` alone: a local model such as Ollama's takes
- *  no key, and a server that holds none for its gateway refuses each run that brings none (run-model-key.ts,
- *  model_key_required), so `none` is the key it sends. A real key goes in the console, never in a service file. */
-export const NO_KEY_ENV = ["AGENT_MODEL_API_KEY"];
-/** Every variable `service install --env` sets, and an installed service keeps through a re-install. */
-const SERVICE_ENV = [...MODEL_ENV, ...NO_KEY_ENV, ...SWITCH_ENV, ...TELEMETRY_ENV];
+/** The variables `service install --env` sets, and an installed service keeps through a re-install: each name, with the
+ *  values it takes alone, or null for any value. `KEY=` removes one. Never a model key: a unit file is plain text, and keys
+ *  are sealed in the console.
+ *  - A local model's (AGENT_MODEL_BASE_URL in front of a gateway such as Ollama's), and its key at `none`: a server that
+ *    holds no key for its gateway refuses each run that brings none (run-model-key.ts, model_key_required).
+ *  - The start-time switches (the server's start-switches.ts), on at `1` alone, for a machine its owner alone uses. A
+ *    server reads them at its start, so the service restarts.
+ *  - The usage counts' switches (docs/telemetry.md). A service never sees the shell that installed it, so install writes
+ *    these into it as that shell set them, and AGENTRUN_TELEMETRY=0 under CI. */
+export const SERVICE_ENV = {
+  AGENT_MODEL_BASE_URL: null,
+  AGENT_MODEL_GATEWAY_IDS: null,
+  AGENT_MODEL: null,
+  AGENT_MODEL_PRICE: null,
+  AGENT_MODEL_API_KEY: ["none"],
+  AGENTRUN_MCP_ALLOW_LOOPBACK: ["1"],
+  AGENTRUN_WEBHOOK_PRIVATE_TARGETS: ["1"],
+  AGENTRUN_TELEMETRY: null,
+  DO_NOT_TRACK: null,
+};
+const SERVICE_NAMES = Object.keys(SERVICE_ENV);
+/** The usage counts' two switches in SERVICE_ENV, which install also copies from its own shell. */
+const TELEMETRY_NAMES = ["AGENTRUN_TELEMETRY", "DO_NOT_TRACK"];
 
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
@@ -422,10 +430,11 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
         const at = pair.indexOf("=");
         if (at < 1) throw fail(2, `--env takes KEY=VALUE, not ${pair}.`);
         const key = pair.slice(0, at);
-        if (!SERVICE_ENV.includes(key)) throw fail(2, `--env takes ${SERVICE_ENV.slice(0, -1).join(", ")} or ${SERVICE_ENV.at(-1)}, not ${key}: a key goes in the console (Settings → Model keys), never in a service file.`);
+        if (!Object.hasOwn(SERVICE_ENV, key)) throw fail(2, `--env takes ${SERVICE_NAMES.slice(0, -1).join(", ")} or ${SERVICE_NAMES.at(-1)}, not ${key}: a key goes in the console (Settings → Model keys), never in a service file.`);
         if (/[\0-\x1f]/.test(pair)) throw fail(2, `${key}'s value has a line break or another control character.`);
-        if (NO_KEY_ENV.includes(key) && !["", "none"].includes(pair.slice(at + 1))) throw fail(2, `${key} takes none alone, for a local model that needs no key: a key goes in the console (Settings → Model keys), never in a service file.`);
-        if (SWITCH_ENV.includes(key) && !["", "1"].includes(pair.slice(at + 1))) throw fail(2, `${key} takes 1 (on) or nothing (off), not ${pair.slice(at + 1)}: the server reads it as on at 1 alone.`);
+        const takes = SERVICE_ENV[key];
+        // The value is never echoed: it may be a key.
+        if (takes && pair.slice(at + 1) !== "" && !takes.includes(pair.slice(at + 1))) throw fail(2, `${key} takes ${takes.join(" or ")} alone, or nothing to remove it: a model key goes in the console (Settings → Model keys), never in a service file.`);
         return [key, pair.slice(at + 1)];
       });
       // --public-url goes on the service's command line, so every start of it (a restart, a login) has it, and with it
@@ -438,8 +447,8 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
       if (why !== undefined) throw fail(1, `AgentRun can't run as a service here: ${why}. Start it in a terminal with ${program}.`);
       // An installed service keeps its local model's variables, its start-time switches and its usage counts' switches; the switches set in this
       // shell reach it (and under CI, AGENTRUN_TELEMETRY=0), then --env KEY=VALUE sets one and KEY= removes it.
-      const model = installed() ? Object.fromEntries(Object.entries(manager.env(readFileSync(manager.file, "utf8"))).filter(([key]) => SERVICE_ENV.includes(key))) : {};
-      for (const key of TELEMETRY_ENV) if ((env[key] ?? "") !== "" && !/[\0-\x1f]/.test(env[key])) model[key] = env[key];
+      const model = installed() ? Object.fromEntries(Object.entries(manager.env(readFileSync(manager.file, "utf8"))).filter(([key]) => Object.hasOwn(SERVICE_ENV, key))) : {};
+      for (const key of TELEMETRY_NAMES) if ((env[key] ?? "") !== "" && !/[\0-\x1f]/.test(env[key])) model[key] = env[key];
       if (env.CI && model.AGENTRUN_TELEMETRY === undefined) model.AGENTRUN_TELEMETRY = "0";
       for (const [key, value] of changes) {
         if (value === "") delete model[key];
@@ -544,7 +553,7 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
     },
     /** `agentrun stop`: the AgentRun install.sh started in the background, stopped as Ctrl-C would (SIGTERM, which the
      *  launcher passes on to the server), then SIGKILL past stopWaitMs. Exit 0 once the launcher and its server have
-     *  ended, 3 when none is running, 1 when one outlives its SIGKILL. install.sh stops it with the same steps in sh, so an
+     *  ended, 3 when none is running, 1 when one outlives its SIGKILL or runs in the foreground (named, and left running). install.sh stops it with the same steps in sh, so an
      *  install of a version with no `agentrun stop` stops it too. */
     async background() {
       const file = join(root, "agentrun.pid");
@@ -574,6 +583,20 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
       };
       if (!ours(pid)) {
         rmSync(file, { force: true });
+        // A server in the foreground (`npx @parcha/agentrun` in a terminal) has no pid file, only the record every server
+        // writes, and it runs from npm's folder, not this install's. One whose process runs and whose recorded address
+        // answers /health ok is named, with how to stop it, and left running: Ctrl-C there is its stop. A service writes the
+        // same record and no pid file, so while one runs its server is the service's, and the hint below says so; with the
+        // service stopped (service stop, then npx), a server that answers is in a terminal.
+        let record;
+        try {
+          record = JSON.parse(readFileSync(join(root, ".server.json"), "utf8"));
+        } catch {}
+        const live = Number.isInteger(record?.pid) && record.pid > 1 && ![undefined, "Z"].includes(processOf(record.pid)?.state);
+        if (live && !(installed() && manager.state().active) && (await healthOf(root, { fetch: get })).health === "ok") {
+          say(`AgentRun is running in the foreground (pid ${record.pid}); press Ctrl-C in its terminal.`);
+          return 1;
+        }
         say(`No AgentRun started in the background is running.${installed() ? " AgentRun runs as a service here: agentrun service stop stops it." : ""}`);
         return 3;
       }
@@ -613,7 +636,7 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
 }
 
 const VERBS = [
-  ["install", "Install AgentRun as a service of this user and start it: it keeps running after the terminal closes and starts again at login", [["--port N", "the port to listen on (default: the first free from 7340; 7340 with --tailscale)"], ["--data DIR", "the data directory (default ~/.agentrun)"], ["--tailscale", "also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off"], ["--env KEY=VALUE", `a local model's variable for the server (${MODEL_ENV.join(", ")}, and ${NO_KEY_ENV.join(", ")} at none for one that takes no key), a start-time switch at 1 (${SWITCH_ENV.join(", ")}), or the usage counts' switch (${TELEMETRY_ENV.join(", ")}), kept until KEY= removes it; repeatable`], ["--public-url URL", "the https address people open it at, through a proxy you run in front of it (your own tailscale serve, a reverse proxy); kept for every restart"]], { port: { type: "string" }, tailscale: { type: "boolean" }, env: { type: "string", multiple: true }, "public-url": { type: "string" } }],
+  ["install", "Install AgentRun as a service of this user and start it: it keeps running after the terminal closes and starts again at login", [["--port N", "the port to listen on (default: the first free from 7340; 7340 with --tailscale)"], ["--data DIR", "the data directory (default ~/.agentrun)"], ["--tailscale", "also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off"], ["--env KEY=VALUE", `a local model's variable for the server, a start-time switch or the usage counts' switch: ${Object.entries(SERVICE_ENV).map(([name, takes]) => (takes ? `${name} (${takes.join(" or ")})` : name)).join(", ")}; kept until KEY= removes it; repeatable`], ["--public-url URL", "the https address people open it at, through a proxy you run in front of it (your own tailscale serve, a reverse proxy); kept for every restart"]], { port: { type: "string" }, tailscale: { type: "boolean" }, env: { type: "string", multiple: true }, "public-url": { type: "string" } }],
   ["status", "Say whether the service is installed and running, the console's address and its health (exit 0 healthy, 1 not, 3 not installed)", [], {}],
   ["start", "Start the service and wait until it answers", [], {}],
   ["stop", "Stop the service (it starts again at the next login)", [], {}],
