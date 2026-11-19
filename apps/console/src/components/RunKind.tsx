@@ -21,5 +21,5 @@ export function RunKind({ run, named = false }: { run: Pick<Run, "kind" | "path"
   }
   const back = named && run.path === "handed_back" ? name : undefined;
   const after = back && repick ? (repick === "missed" ? " after its re-pick missed" : " after a re-pick") : "";
-  return <>{run.kind}{back && ` · handed back by ${back}${after}`}</>;
+  return <span data-run-kind={run.kind}>{run.kind}{back && ` · handed back by ${back}${after}`}</span>;
 }
