@@ -14,6 +14,7 @@ import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, follow, secretWritePath, serve, serverLog, storeBytes, whenFree } from "./support.mjs";
 
 const { UNUSABLE } = await import("../dist/mcp-probe.js");
+const { COMPOSIO_USER } = await import("../dist/composio-preset.js");
 
 secretWritePath(["PUT"], /^\/settings\/mcp-servers\/[^/]+\/composio$/);
 
@@ -28,7 +29,8 @@ const USER_B = "grep-user-bob-0002";
 const ACCOUNT_B = "ca_bob_gmail_0002";
 const OWNER = "owner-0001";
 // Each Composio user's connected accounts, as the fake's MCP endpoint checks a call against them.
-const MCP_ACCOUNTS = { [USER_A]: [ACCOUNT_A], [USER_B]: [ACCOUNT_B], [OWNER]: ["ca_owner_gmail_0001"] };
+// The preset's default user (`agentrun`) has its own account too: the one a single-user preset server calls as.
+const MCP_ACCOUNTS = { [USER_A]: [ACCOUNT_A], [USER_B]: [ACCOUNT_B], [OWNER]: ["ca_owner_gmail_0001"], [COMPOSIO_USER]: ["ca_shared_gmail_0001"] };
 const COMPOSIO_USER_ID = /^[A-Za-z0-9._@-]{1,128}$/;
 const CALL = 'Call mcp__mail__add with {"a":2,"b":3}';
 const bind = (user, account) => ({ mail: { composio_user_id: user, ...(account ? { connected_account_id: account } : {}) } });
@@ -142,6 +144,26 @@ test("bindings are checked: a well-formed one starts the run; a bad user, an acc
     for (const value of [USER_A, ACCOUNT_A]) assert.equal(JSON.stringify(refused.body).includes(value), false, "a refusal never quotes the binding");
   }
   assert.equal((await s.api("GET", "/runs")).body.runs.length, before, "no run made");
+});
+
+test("a binding to the preset's default user is 422 on a run's start and on a message, nothing sent; a binding to another user calls as that user", async (t) => {
+  const s = await setup(t);
+  const bound = await runOnce(s, bind(USER_A, ACCOUNT_A));
+  assert.equal(toolCalls(bound.sent).length, 1, `a binding to another user reaches Composio: ${bound.answer}`);
+  assert.deepEqual(bound.sent.map(asWho), bound.sent.map(() => [USER_A, ACCOUNT_A]), "as that user and account");
+  const before = (await s.api("GET", "/runs")).body.runs.length;
+  const from = s.composio.mcpLog.length;
+  const expect = (refused, what) => {
+    const issue = refused.body.error?.fields?.[0];
+    assert.deepEqual([refused.status, refused.body.error?.code, issue?.field, issue?.reason], [422, "input_invalid", "mcp_auth.mail.composio_user_id", "not_allowed"], `${what} binding the preset's default user ${COMPOSIO_USER} is refused: ${JSON.stringify(refused.body)}`);
+    assert.match(issue.message, /shared default/, "the refusal says it is the preset's shared default user");
+  };
+  for (const mcp_auth of [bind(COMPOSIO_USER), bind(COMPOSIO_USER, "ca_shared_gmail_0001")]) {
+    expect(await s.api("POST", "/agents/reader/runs", { input: { content: CALL }, mcp_auth }), "a run's start");
+    expect(await s.api("POST", `/runs/${bound.id}/messages`, { content: CALL, mcp_auth }), "a message");
+  }
+  assert.equal((await s.api("GET", "/runs")).body.runs.length, before, "no run made");
+  assert.equal(toolCalls(s.composio.mcpLog.slice(from)).length, 0, "nothing sent to Composio");
 });
 
 test("a message's binding replaces the run's: the turn it starts calls Composio as the new user, never the old one", async (t) => {
