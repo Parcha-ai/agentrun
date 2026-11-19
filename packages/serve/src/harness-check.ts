@@ -315,12 +315,12 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
     starts.push(now);
     if (now !== pin.sha256) throw new Error(`${ARCHIVE_CODES.binary}: ${command} changed after the check began (sha256 ${now})`);
   };
-  // A proxy-billed recipe starts as a module's ACP agent does on a server (harness-table.ts acpEntryOf): its model and key
-  // chosen and a login refused there, its price, the adapter over its recipe and the session's model proxy (the one on
-  // Anthropic's Messages there is, Goose's policy, its address under the variable the recipe names), on this check's log
-  // and host environment.
+  // A recipe starts as an ACP agent outside the built-ins does on a server (harness-table.ts acpEntryOf), on this check's
+  // log and host environment. Proxy-billed: as a module's, its model and key chosen and a login refused there, its price,
+  // the adapter over its recipe and the session's model proxy (the one on Anthropic's Messages there is, Goose's policy,
+  // its address under the variable the recipe names). Billed to its plan: as Cursor's, on its vendor's own default model.
   const proxyAt: string = recipe.model.billing === "proxy" ? (recipe.model.hostEnv ?? "ANTHROPIC_HOST") : "ANTHROPIC_HOST";
-  const entry = needs && acpEntryOf({
+  const entry = needs ? acpEntryOf({
     facts: { ...acp.gooseFacts, id: recipe.id, label: recipe.label },
     recipe: (launch) => acpRecipeOf(launch.model),
     proxy: (launch) => {
@@ -333,14 +333,18 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
       };
     },
     beforeStart,
-  }, { log, env: true });
-  // Plan billing starts the adapter directly because the kit has no plan entry (adapterEntry refuses a non-model wire, and acpEntry requires a proxy); this goes when a module needs plan billing.
-  const adapterFor = async (): Promise<AgentAdapter> => entry ? entry.adapter!(hostEnv, needs!) : acp.acpAdapter({ recipe: acpRecipeOf(), env: hostEnv, log, beforeStart });
+  }, { log, env: true }) : acpEntryOf({
+    facts: { ...acp.cursorFacts, id: recipe.id, label: recipe.label },
+    recipe: () => acpRecipeOf(),
+    beforeStart,
+  }, { log });
+  const planNeeds: AdapterNeeds = { model: { provider: recipe.id, modelId: "default" }, models: { getModel: () => undefined } };
+  const adapterFor = async (): Promise<AgentAdapter> => entry.adapter!(hostEnv, needs ?? planNeeds);
   // The first runner's adapter is made before any turn, so a model this server can't run is refused before the agent
   // starts; with it, the cap's model, priced here or refused.
   let firstAdapter: AgentAdapter | undefined;
   let capModel: ReturnType<typeof capModelOf> | undefined;
-  if (entry && needs) {
+  if (needs) {
     const refuseHere = async (message: string) => {
       await egress.close();
       await rm(work, { recursive: true, force: true }).catch(() => {});
