@@ -20,7 +20,8 @@
 // upsert makes, one per slug, account and config (the same again answers the same id and turns it on again, as the real
 // one does), each listed by GET /trigger_instances/active (a disabled one only with show_disabled=true; `instancePage` pages
 // it at most that many a page, by `cursor` and `next_cursor`, as `limit` does), turned on and off
-// by PATCH and deleted by DELETE /trigger_instances/manage/{id}. An upsert for an account that is not ACTIVE, or whose
+// by PATCH and deleted by DELETE /trigger_instances/manage/{id}. An upsert is for the `active` toolkit's account or an ACTIVE
+// one of `accounts` it names; one for an account that is not ACTIVE, or whose
 // config misses a required field, is refused 400. Connected accounts carry their id (`ca_fake_<toolkit>`) and user_id.
 // An auth config it makes (`ac_made_<n>`) is listed with its toolkit's from then on, as Composio-managed, until a DELETE
 // /auth_configs/{id} removes it; a connect link answers the connected account it starts (`ca_link_<n>`), which DELETE
@@ -103,7 +104,7 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
   const subscriptions = subscription ? [{ id: `ws_fake_${++madeSubs}`, webhook_url: subscription.webhook_url, version: "V3", enabled_events: ["composio.trigger.message"], secret: subscription.secret ?? secretOf(), created_at: at(), updated_at: at() }] : [];
   /** The trigger instances, by id. */
   const instances = new Map();
-  const accountOf = (kit) => (active.includes(kit) ? { id: `ca_fake_${kit}`, status: "ACTIVE" } : undefined);
+  const accountOf = (kit, id) => (accounts[kit] ?? []).find((a) => a.status === "ACTIVE" && a.id !== undefined && a.id === id) ?? (active.includes(kit) ? { id: `ca_fake_${kit}`, status: "ACTIVE" } : undefined);
   const fails = (Array.isArray(fail) ? fail : fail ? [fail] : []);
   /** The answers held back (hold): each the next call it matches, answered as it stood then once released. */
   const holds = [];
@@ -229,7 +230,7 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
       const type = Object.values(triggerTypes).flat().find((t) => t.slug === upsert[1]);
       if (!type) return reply(404, { error: { message: `Trigger type ${upsert[1]} not found` } });
       const kit = type.toolkit.slug;
-      const account = accountOf(kit);
+      const account = accountOf(kit, body.connected_account_id);
       if (!account || (body.connected_account_id && body.connected_account_id !== account.id)) return reply(400, { error: { message: `No active connection found for user ${body.user_id ?? ""} and toolkit ${kit}` } });
       const config = body.trigger_config ?? {};
       const missing = (type.config.required ?? []).filter((field) => config[field] === undefined || config[field] === "");
