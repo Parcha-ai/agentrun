@@ -135,6 +135,21 @@ for (const [name, code, make] of BROKEN) {
   });
 }
 
+test("one list names the variables the adapter and the proxy set, by part, and its parts are the adapter's own", async () => {
+  const { AGENT_VARS, PROXY_HOST_ENVS } = await import("../dist/harness-recipe.js");
+  const [{ RESERVED_ENV }, { INHERITED_ENV }] = await Promise.all([import("@parcha/agentrun-harness-acp"), import(new URL("../../run-adapters-acp/dist/host/child.js", import.meta.url).href)]);
+  assert.deepEqual(Object.keys(AGENT_VARS).sort(), ["inherited", "proxy", "reserved"]);
+  assert.deepEqual([...AGENT_VARS.reserved].sort(), [...RESERVED_ENV].sort(), "the adapter's RESERVED_ENV");
+  assert.deepEqual([...AGENT_VARS.inherited].sort(), [...INHERITED_ENV].sort(), "the adapter's INHERITED_ENV");
+  assert.deepEqual([...AGENT_VARS.proxy].sort(), ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_HOST"]);
+  assert.ok(PROXY_HOST_ENVS.every((name) => AGENT_VARS.proxy.includes(name)), "the proxy's address is one of its variables");
+  // A recipe names none of them, in env or as its model's variable.
+  for (const name of Object.values(AGENT_VARS).flat()) {
+    assert.equal(refusalOf(recipeOf(undefined, { env: { [name]: "x" } })).code, RECIPE_CODES.env, name);
+    assert.equal(refusalOf(recipeOf(undefined, { model: { billing: "proxy", wire: "anthropic-messages", env: name } })).code, RECIPE_CODES.env, name);
+  }
+});
+
 test("harness-check refuses a recipe that breaks each of the five rules, by the rule's code, and starts nothing", async (t) => {
   const data = join(await scratch(t), "agents");
   const rules = [BROKEN[0], BROKEN[2], BROKEN[5], BROKEN[7], BROKEN[8]];
