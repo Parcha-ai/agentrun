@@ -492,6 +492,7 @@ export type Cost = {
     unmetered?: number;
   };
   learning_usd?: number | null;
+  tools_usd?: number | null;
   all_in_usd?: number | null;
   plan?: {
     requests: number;

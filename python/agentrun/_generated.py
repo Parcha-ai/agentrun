@@ -2481,6 +2481,7 @@ class Cost(_CostRequired, total=False):
     upper_bound: Literal[True]
     tokens: CostTokens
     learning_usd: float | None
+    tools_usd: float | None
     all_in_usd: float | None
     plan: CostPlan
 

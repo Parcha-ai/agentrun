@@ -3758,6 +3758,14 @@ and says how its figure was reached.
   and do not change it. A native, SDK or imported run's figure is its harness's own, an `estimate`; so is an imported
   session's catalog estimate where its source priced none ([importing your sessions](#importing-your-sessions)). LiteLLM writes no
   cost into a streamed answer's headers, so a run whose answers stream through LiteLLM reads `estimate`.
+- `tools_usd` (on `GET /runs/{id}` alone, `toolsusd/1`): the part of `usd` its paid tool calls cost (monid's endpoints,
+  MCP tools with a saved price, Parallel behind `web_search` and `web_fetch`, browser time), as the run's ledger booked
+  them, rounded as `usd` is. It is inside `usd`, never added to it: `usd` less `tools_usd` is what its model requests and
+  decisions cost. A paid call in a learning run's end-of-run turn is learning's (in `learning_usd`), never in
+  `tools_usd`. 0 when it made no paid call. Null while a paid call's charge is unknown (as `usd` is then); while the run
+  is at work (until it ended, stopped or failed); for a learning run a follow-up opened again, whose `usd` is what its
+  first round had cost; and for an imported, native or SDK run, whose `usd` is its import's or its harness's own figure
+  and whose tool calls the server never books. Each call's own charge is its span's `usd` on `GET /runs/{id}/trace`.
 - `GET /stats` (`cost.basis`) and `GET /usage` (`basis`) say the same words over the runs they sum: `estimate` when any
   run's is, else `reported` when any run's is, else `unpriced`. A run whose end stored no basis (one that ended before
   this, or a workflow run: its run read still says its basis from its booking) counts as `estimate` when it cost anything.
