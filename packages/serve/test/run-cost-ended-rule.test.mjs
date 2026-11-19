@@ -15,7 +15,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
-import { client, FAUX, startServe } from "./support.mjs";
+import { client, FAUX, startServe, withEnv } from "./support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { runCostOf } = await import("../dist/runner/metrics.js");
@@ -200,11 +200,8 @@ test("the store heals on a read: once the run read reads its priced booking, the
 
 test("the store heals at the server's start: a run nobody reads again gets its booked total on /stats, /usage and the learning cost, and one count line with no ids", { timeout: 60_000 }, async (t) => {
   const { api, lines } = await endedRun(t, priced, { endRead: "failed", read: false });
-  const line = await swept(lines);
-  assert.match(line, /read=1\b/);
-  assert.match(line, /healed=1\b/);
-  assert.match(line, /failed=0\b/);
-  assert.doesNotMatch(line, /run-1/, "no ids");
+  // The whole line: its counts, no id.
+  assert.match(await swept(lines), /^at=\S+ event=cost_heal read=1 healed=1 failed=0$/);
   const readers = await readersOf(api);
   assert.ok(near(readers.stats, 0.23) && near(readers.usage, 0.23) && readers.usageUnpriced === 0 && near(readers.bill, 0.23) && readers.billUnknown === 0 && readers.unattributed === 0, readers.said);
   const run = (await api("GET", "/runs/run-1")).body.cost;
@@ -219,11 +216,10 @@ test("a stored figure is never written over: an end that stored $0.30 keeps it o
   assert.ok(readers.stats === 0.3 && readers.usage === 0.3 && readers.bill === 0.3, readers.said);
 });
 
-test("a run whose booking cannot be read keeps its null in the store: the sweep reads it, heals nothing, and every reader counts it unknown", { timeout: 60_000 }, async (t) => {
+test("a run whose booking cannot be read keeps its null in the store: the sweep reads it, heals nothing, says so even quiet, and every reader counts it unknown", { timeout: 60_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_LOG: "quiet" });
   const { api, lines } = await endedRun(t, [], { endRead: "failed", read: false });
-  const line = await swept(lines);
-  assert.match(line, /read=1\b/);
-  assert.match(line, /healed=0\b/);
+  assert.match(await swept(lines), /^at=\S+ event=cost_heal read=1 healed=0 failed=0$/);
   assert.equal((await api("GET", "/runs/run-1")).body.cost.unknown, "booking_unread");
   const readers = await readersOf(api);
   assert.ok(readers.stats === null && readers.usage === 0 && readers.usageUnpriced === 1 && readers.bill === null && readers.billUnknown === 1 && readers.unattributed === null, readers.said);

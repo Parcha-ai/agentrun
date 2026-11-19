@@ -185,6 +185,10 @@ One line at start, `event=boxes`, says which boxes this server has ([Sandbox](#s
 package and pins; [harnesses](#harnesses)), the bulk of its start; quiet keeps it too. It is made at the start only: a
 PUT of `/settings/tools` and a save or delete of a tool key change no harness's offer, so they remake capabilities at
 once without checking again (a key some harness reads would, with `why=key`).
+`event=cost_heal read=<n> healed=<n> failed=<n>` says, once after the start, what the start's sweep did: the ended runs
+whose stored cost was unknown that it read, those whose priced booking it wrote back, and those it could not read (each
+heals on its next read). The rest stay unknown: a charge of no known cost, or a booking with no request to read. It
+names no run, and a store with no such run says nothing; quiet keeps it too.
 
 ## Anonymous usage counts
 
