@@ -239,8 +239,8 @@ export type ProjectPlan = {
  *  again: theirs, and (when measuring) those of planned sessions the store holds already. `children`: the files of each
  *  session's subagents, whose usage is its run's: Claude Code's by the session file beside them, Codex's by `source:thread`; `untied`, those of subagents whose file names
  *  no parent, counted in a summary's totals alone. `found`: each other planned session measured,
- *  when the plan was made to (`measure`). */
-export type Plan = { projects: ProjectPlan[]; skipped: Skipped[]; already: number; held: string[]; children: Map<string, string[]>; untied: { file: string; source: Source }[]; found?: Found[]; secretsFound?: number };
+ *  when the plan was made to (`measure`). `stopped`: `signal` ended the listing with session files still unlisted. */
+export type Plan = { projects: ProjectPlan[]; skipped: Skipped[]; already: number; held: string[]; children: Map<string, string[]>; untied: { file: string; source: Source }[]; found?: Found[]; secretsFound?: number; stopped?: true };
 export type ImportReport = {
   agents: {
     id: string;
@@ -258,6 +258,9 @@ export type ImportReport = {
   /** Keys and tokens cut out of what it wrote (secret-cut.ts): the environment's values, the saved keys, and those of a
    *  known format secretlint found. */
   secretsRemoved?: number;
+  /** `signal` ended it with sessions of the plan still to take, or the plan was itself stopped (`Plan.stopped`): the
+   *  next import takes the rest. Absent when a stop came with nothing left to take: the import is whole. */
+  stopped?: true;
 };
 
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
@@ -426,12 +429,16 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
   const child = (owner: string, file: string) => void children.set(owner, [...(children.get(owner) ?? []), file]);
   const untied: Plan["untied"] = [];
   const projects = new Map<string, ProjectPlan>();
+  let stopped = false;
   // Each listed session's place in the import's order (inOrder).
   const rank = new Map<Session, number>();
   const temps = [...new Set([tempDir, await realpath(tempDir).catch(() => tempDir)])];
   for (const source of sources) {
     for (const { file, stats } of await inOrder(await sessionFiles(home, source), source)) {
-      if (signal?.aborted) break;
+      if (signal?.aborted) {
+        stopped = true;
+        break;
+      }
       const known = seen.get(hash(file));
       if (sameFile(known, stats)) {
         already += 1;
@@ -514,7 +521,7 @@ export async function planImport({ home, sources = SOURCES, all = false, deleted
     }
     skipped.splice(0, skipped.length, ...ofChosen);
   }
-  const plan: Plan = { projects: [...projects.values()].filter((project) => !chosen || chosen.has(project.agentId)).sort((a, b) => a.cwd.localeCompare(b.cwd)), skipped, already, held, children, untied };
+  const plan: Plan = { projects: [...projects.values()].filter((project) => !chosen || chosen.has(project.agentId)).sort((a, b) => a.cwd.localeCompare(b.cwd)), skipped, already, held, children, untied, ...(stopped ? { stopped: true } : {}) };
   if (!measure) return plan;
   const counting = secretCut(env, SECRET_NAMES);
   // Every key the import would cut, found first, as the import finds it before it writes anything: then the counts.
@@ -1122,7 +1129,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
   const add = (keys: readonly string[]) => (cut.add(keys), options.onKeys?.(keys));
   // This server's own secrets, then every key the import finds.
   add(options.own ?? []);
-  const report: ImportReport = { agents: [], skipped: [...plan.skipped], already: plan.already };
+  const report: ImportReport = { agents: [], skipped: [...plan.skipped], already: plan.already, ...(plan.stopped ? { stopped: true } : {}) };
   let prices: Promise<Map<string, Listed[]>> | undefined;
   const catalog = () => (prices ??= catalogPrices());
   const held = await importedIn(store);
@@ -1140,7 +1147,10 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
   const scannedAs = known.stamps;
   const epoch0 = new Date(0).toISOString();
   for (const project of plan.projects) {
-    if (options.signal?.aborted) break;
+    if (options.signal?.aborted) {
+      report.stopped = true;
+      break;
+    }
     const existing = await store.agents.get(project.agentId);
     const created = !existing;
     const files = await projectFiles(project.cwd, report.skipped);
@@ -1178,7 +1188,10 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
     const seen = await seenIn(store, project.agentId);
     for (const files of byRun(project.sessions)) {
       options.onProgress?.("write", written++, toTake);
-      if (options.signal?.aborted) break;
+      if (options.signal?.aborted) {
+        report.stopped = true;
+        break;
+      }
       const listed = files[0]!;
       // A run the store holds already is left as it is: importRun is atomic, so a held run is a whole run.
       if (held.get(`${listed.source}:${listed.id}`) !== undefined) {
@@ -1522,7 +1535,6 @@ async function importWith(
       stops.hook();
       let plan: Plan;
       let report: ImportReport;
-      let stopped: boolean;
       try {
         const options: ImportOptions = {
           ...(await optionsFrom(store)),
@@ -1532,7 +1544,6 @@ async function importWith(
         progress.show("Looking for sessions…");
         plan = await planImport(options, store);
         report = await runImport(store, plan, options);
-        stopped = stops.signal.aborted;
       } finally {
         progress.done();
       }
@@ -1547,7 +1558,7 @@ async function importWith(
       // Every session found: those imported now, those held before, and those whose file an earlier import read whole.
       const held = await importedIn(store);
       const runs = [...plan.projects.flatMap((p) => p.sessions.flatMap((s) => held.get(`${s.source}:${s.id}`) ?? [])), ...plan.held];
-      const imported = { sessions: taken, agents: report.agents.filter((a) => a.runs > 0).length, stopped };
+      const imported = { sessions: taken, agents: report.agents.filter((a) => a.runs > 0).length, stopped: report.stopped };
       for (const line of summaryLines([...(await foundAll(store, runs)), ...(await untiedFound(plan))], open, imported)) out(line);
       return 0;
     } finally {

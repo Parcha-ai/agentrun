@@ -1544,6 +1544,94 @@ test("import says how far it is, and a Ctrl+C stops it between two sessions: wha
   assert.equal(resumed.at(-4), "Imported 2 sessions into 1 agent (one per project)");
 });
 
+test("a Ctrl+C while the last session is saved leaves nothing for a next import, so the summary says what was imported, not a stop; the exit code is still 130", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const project = join(at, "code", "last-session");
+  mkdirSync(project, { recursive: true });
+  for (const n of [221, 222]) codexSession(at, project, n);
+  const data = join(root, "agents");
+  let interrupted = false;
+  const progress = {
+    show: (text) => {
+      // Ctrl+C once the import has gone on to its last session: the check between two sessions follows this line at once,
+      // so a signal on the next microtask comes after it, while that session is read and before it is written.
+      if (!interrupted && text === "Importing sessions: 1 of 2") {
+        interrupted = true;
+        queueMicrotask(() => process.emit("SIGINT"));
+      }
+    },
+    done: () => undefined,
+  };
+  const said = t.mock.method(console, "error", () => undefined);
+  const lines = [];
+  const code = await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line), progress });
+  assert.equal(said.mock.calls.filter((call) => String(call.arguments[0]).startsWith("agentrun-serve import: stopping;")).length, 1, "the import took the Ctrl+C");
+  assert.equal(code, 130, "a Ctrl+C the import took is in its exit code");
+  assert.equal(lines.at(-4), "Imported 2 sessions into 1 agent (one per project)", lines.join("\n"));
+  assert.deepEqual(lines.filter((line) => line.startsWith("Stopped:")), [], "nothing is left, so nothing says to run the import again");
+  const again = [];
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => again.push(line), progress: { show: () => undefined, done: () => undefined } }), 0);
+  assert.equal(again.at(-4), "Nothing new to import: all 2 sessions are in 1 agent already", "the stopped import had taken every session");
+});
+
+test("a Ctrl+C before anything is written, while the sessions are listed or checked for keys, reads as a stop: nothing imported, exit 130, and the next import takes them all", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const project = join(at, "code", "early-stop");
+  mkdirSync(project, { recursive: true });
+  for (const n of [223, 224]) codexSession(at, project, n);
+  t.mock.method(console, "error", () => undefined);
+  const quiet = { show: () => undefined, done: () => undefined };
+  for (const [when, data] of [["Looking for sessions…", join(root, "listing")], ["Checking sessions for keys: 1 of 2", join(root, "keys")]]) {
+    const progress = { show: (text) => void (text === when && process.emit("SIGINT")), done: () => undefined };
+    const lines = [];
+    const code = await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line), progress });
+    assert.equal(code, 130, when);
+    assert.equal(lines.at(-4), "Stopped: imported 0 sessions into 0 agents before Ctrl+C; run the import again for the rest", `${when}\n${lines.join("\n")}`);
+    const resumed = [];
+    assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => resumed.push(line), progress: quiet }), 0);
+    assert.equal(resumed.at(-4), "Imported 2 sessions into 1 agent (one per project)", when);
+  }
+});
+
+test("a plan and an import say they were stopped only when the stop left sessions untaken", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const project = join(at, "code", "stop-report");
+  mkdirSync(project, { recursive: true });
+  for (const n of [225, 226]) codexSession(at, project, n);
+  const env = { PATH: "/usr/bin" };
+  // The store, with a stop asked as its `nth` session is written: after the check between two sessions, before the next.
+  const stoppingAt = async (name, nth, stop) => {
+    const store = await openData(join(root, name));
+    t.after(async () => await store.close());
+    let writes = 0;
+    const importRun = async (run) => (++writes === nth && stop.abort(), await store.importRun(run));
+    return new Proxy(store, { get: (target, key) => (key === "importRun" ? importRun : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
+  };
+  const taken = (report) => report.agents.reduce((n, a) => n + a.runs, 0);
+  const last = new AbortController();
+  const whole = { home: at, env, all: true, signal: last.signal };
+  const done = await runImport(await stoppingAt("last", 2, last), await planImport(whole), whole);
+  assert.deepEqual([taken(done), done.stopped], [2, undefined], "a stop during the last session leaves nothing: not stopped");
+  const first = new AbortController();
+  const part = { home: at, env, all: true, signal: first.signal };
+  const cut = await runImport(await stoppingAt("first", 1, first), await planImport(part), part);
+  assert.deepEqual([taken(cut), cut.stopped], [1, true], "a stop during the first of two leaves one: stopped");
+  // A stop before the listing: the plan lists nothing and says it was stopped, and an import of it says so too.
+  const before = new AbortController();
+  before.abort();
+  const early = { home: at, env, all: true, signal: before.signal };
+  const unlisted = await planImport(early);
+  assert.deepEqual([unlisted.projects.length, unlisted.stopped], [0, true]);
+  assert.equal((await runImport(await stoppingAt("early", 0, before), unlisted, early)).stopped, true);
+  // The same stop over a home with no session: nothing was left unlisted.
+  const empty = join(root, "empty-home");
+  mkdirSync(empty, { recursive: true });
+  assert.equal((await planImport({ ...early, home: empty })).stopped, undefined);
+});
+
 test("a Ctrl+C once the sessions are saved still gets the whole summary: the import holds it until everything is printed, and exits 130", { timeout: 60_000 }, async (t) => {
   const root = await scratch(t);
   const at = join(root, "home");
