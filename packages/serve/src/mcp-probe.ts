@@ -105,12 +105,16 @@ export const canonical = (value: unknown): string =>
   : isObject(value) ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`
   : JSON.stringify(value) ?? "null";
 
-/** The body's prices: each tool's USD a call, a finite number, 0 or more. Which tools the server lists is checked once
- *  it has listed them. */
+/** A tool's price in USD a call, as every save takes one (an owner's `prices`, the Composio preset's `price_usd`): a
+ *  finite number, 0 or more. */
+export const priceValid = (usd: unknown): usd is number => typeof usd === "number" && Number.isFinite(usd) && usd >= 0;
+
+/** The body's prices: each tool's USD a call (priceValid). Which tools the server lists is checked once it has listed
+ *  them. */
 export function pricesOf(value: unknown, issues: InputIssue[]): McpPrices | undefined {
   if (value === undefined) return undefined;
   if (!isObject(value)) return void issues.push({ field: "prices", reason: "wrong_type", message: "prices is an object of the server's tool names to their price in USD a call." });
-  const bad = Object.entries(value).filter(([, usd]) => typeof usd !== "number" || !Number.isFinite(usd) || usd < 0);
+  const bad = Object.entries(value).filter(([, usd]) => !priceValid(usd));
   for (const [tool] of bad) issues.push({ field: `prices.${tool}`, reason: "invalid", message: `prices.${tool} is a price in USD a call: a finite number, 0 or more.` });
   // Keyed by tool names, which may be an object's own properties (`__proto__`): no prototype to fall into.
   return bad.length ? undefined : (Object.assign(Object.create(null), value) as McpPrices);

@@ -8,6 +8,7 @@
 import { randomBytes } from "node:crypto";
 import type { Cleanup, ComposioMade, Made, Thing } from "./composio-made.js";
 import { ApiError, invalid, type InputIssue } from "./errors.js";
+import { priceValid } from "./mcp-probe.js";
 import { MCP_SERVER_NAME } from "./tool-names.js";
 import { isObject, type Json } from "./validate.js";
 
@@ -23,8 +24,6 @@ const TOOLKIT = COMPOSIO_TOOLKIT;
 const USER_ID = /^[A-Za-z0-9._@-]{1,128}$/;
 /** A Composio auth config's id, as its dashboard and API show it (`ac_` and a nanoid). */
 export const COMPOSIO_AUTH_CONFIG_ID = /^ac_[A-Za-z0-9_-]{1,64}$/;
-/** The highest price_usd a save takes, in USD a call: a price above it is a slip (cents for dollars), not a price. */
-export const COMPOSIO_PRICE_MAX = 100;
 const PAGE = 200;
 const MAX_PAGES = 10;
 const MAX_TOOLS = 500;
@@ -161,12 +160,13 @@ export async function composioSave<T extends { tools?: readonly { name: string }
   const issues: InputIssue[] = [];
   if (!tools.length || tools.length > MAX_TOOLS || !tools.every((t) => typeof t === "string" && t && t.length <= MAX_SLUG)) issues.push(issue("tools", "invalid", `Send the slugs of the actions to grant: 1 to ${MAX_TOOLS} of them, each at most ${MAX_SLUG} characters.`));
   if (!USER_ID.test(user)) issues.push(issue("user_id", "invalid", "A user_id is letters, digits and . _ @ - (at most 128)."));
-  if (price !== undefined && (typeof price !== "number" || !Number.isFinite(price) || price < 0 || price > COMPOSIO_PRICE_MAX)) issues.push(issue("price_usd", "invalid", `price_usd is what each call of the server's actions costs, in USD: a number from 0 to ${COMPOSIO_PRICE_MAX}.`));
+  if (price !== undefined && !priceValid(price)) issues.push(issue("price_usd", "invalid", "price_usd is what each call of the server's actions costs, in USD: a finite number, 0 or more."));
   if (ownConfig !== undefined && !COMPOSIO_AUTH_CONFIG_ID.test(ownConfig)) issues.push(issue("auth_config_id", "invalid", "An auth_config_id is the id Composio shows for an auth config: ac_ then letters, digits, _ and - (at most 64 after ac_)."));
   if (issues.length) throw invalid(issues);
   // Every granted action at the one price, saved as the server's prices: each call is held and booked as any priced MCP
-  // call (mcp-gateway.ts). None named: none priced, "not metered", as before.
-  const prices = typeof price === "number" ? Object.fromEntries([...new Set(tools as string[])].map((slug) => [slug, price])) : undefined;
+  // call (mcp-gateway.ts). None named: the server's prices as they stand, for the actions it still lists (a server saved
+  // with none: "not metered").
+  const prices = priceValid(price) ? Object.fromEntries([...new Set(tools as string[])].map((slug) => [slug, price])) : undefined;
   const ask = asking(control, key, signal);
   // What this save made at Composio. A failure removes it all again (the MCP server, the account its connect link started,
   // then the auth config), so a failed save leaves nothing it made in the person's account, and never removes what it

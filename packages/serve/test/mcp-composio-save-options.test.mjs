@@ -109,10 +109,11 @@ test("auth_config_id: one Composio doesn't know, one of another toolkit, or a di
   assert.deepEqual(s.composio.to("/api/v3.1/mcp/servers/custom")[0].body.auth_config_ids, ["ac_managed"]);
 });
 
-test("a negative, absurd or non-number price_usd, or a malformed auth_config_id, is 422 input_invalid naming its field, and Composio is asked nothing", async (t) => {
+test("a price_usd that is no price (negative, null, a string), or a malformed auth_config_id, is 422 input_invalid naming its field, and Composio is asked nothing", async (t) => {
   const s = await setup(t, { authConfigs: { github: [{ id: "ac_custom1", is_composio_managed: false }] } });
   const bad = [
-    [{ price_usd: -0.01 }, "price_usd"], [{ price_usd: 1e9 }, "price_usd"], [{ price_usd: "0.01" }, "price_usd"],
+    // The one rule every price is checked by (mcp-probe.ts priceValid, as an owner's `prices`): a finite number, 0 or more.
+    [{ price_usd: -0.01 }, "price_usd"], [{ price_usd: null }, "price_usd"], [{ price_usd: "0.01" }, "price_usd"],
     [{ auth_config_id: "not an id!" }, "auth_config_id"], [{ auth_config_id: 42 }, "auth_config_id"], [{ auth_config_id: "" }, "auth_config_id"],
   ];
   for (const [extra, field] of bad) {
