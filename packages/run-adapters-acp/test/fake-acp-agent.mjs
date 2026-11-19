@@ -91,7 +91,7 @@ function writeAuth() {
   } catch (error) {
     // As Cursor 2026.11.13 does (src/utils/credential-persistence.ts): a credential it cannot save is said on stderr, and
     // the session goes on with the one it holds in memory.
-    process.stderr.write(`Cursor couldn't save your credentials. This session continues with the credentials it already has.\nError: ${error.code}\n`);
+    process.stderr.write(`\u001b[33m⚠ Cursor couldn't save your credentials. This session continues with the credentials it already has.\u001b[0m\nError: ${error.code}: illegal operation on a directory, open '${file}'\n`);
     said({ type: "auth", file, keySha, saved: false, code: error.code });
     return;
   }
@@ -284,6 +284,11 @@ async function takeTurn(client, session, prompt, signal) {
       // Cursor reports a refused call completed: the client must never trust it.
       await notify({ sessionUpdate: "tool_call_update", toolCallId: id, status: style === "cursor" ? "completed" : entry.status });
       continue;
+    }
+    if ("die" in s) {
+      // Killed mid-turn (SIGKILL), as a host's kill takes it: no answer, no exit of its own.
+      said({ type: "die" });
+      process.kill(process.pid, "SIGKILL");
     }
     if ("hang" in s) {
       said({ type: "hang" });

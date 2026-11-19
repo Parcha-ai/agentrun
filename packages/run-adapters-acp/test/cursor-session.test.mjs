@@ -80,6 +80,18 @@ test('a hard kill leaves no credential on disk: the agent never wrote one, so th
   assert.equal(filesIn(join(homeOf(sessionsDir), '.config/cursor/auth.json')).length, 0, 'auth.json is no file, and holds none');
 });
 
+test("an agent killed mid-turn is said ACP_AGENT_EXITED in plain words: Cursor's warning that it could not save its credential is not why", async (t) => {
+  const dir = scratch();
+  const recipe = cursorLike(dir, { script: [{ die: true }] }, { quiet: recipeFile('cursor').quiet });
+  const { session } = await openSession(t, recipe, { options: { env: { PATH: process.env.PATH, CURSOR_API_KEY: KEY } } });
+  await session.send('a');
+  const end = await session.turnEnd();
+  assert.equal(end.status, 'failed');
+  assert.match(end.error, new RegExp(`^${ACP_CODES.agentExited}: `), end.error);
+  assert.doesNotMatch(end.error, /couldn't save|EISDIR|auth\.json/, end.error);
+  assert.doesNotMatch(end.error, /\u001b/, 'no terminal escape');
+});
+
 test('a credential the recipe names is never written nor mirrored, even inside a state path and under a name no filter knows', async (t) => {
   const dir = scratch();
   const sessionsDir = join(dir, 'sessions');
