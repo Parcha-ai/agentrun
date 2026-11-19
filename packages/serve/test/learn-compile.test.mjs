@@ -10,7 +10,7 @@ import { added, DRAFT_PATH, README_PATH, readme, richWorkflow } from "./learn-fo
 
 const compile = await import("../dist/learn/compile.js");
 const { draftProblems, draftDryRun, draftDecisionProviders } = await import("../dist/learn/workflow-draft.js");
-const { answerTierProblems, checkDraft, compactStateProblems, quoteCheckProblems } = await import("../dist/learn/check.js");
+const { answerTierProblems, checkDraft, compactStateProblems, quoteCheckProblems, repickLabels } = await import("../dist/learn/check.js");
 const { reflectRequestId, reflectRanges } = await import("../dist/runner/end-of-run.js");
 const learningEnd = await import("../dist/runner/learning-end.js");
 const { runLearningBody } = await import("../dist/learning-routes.js");
@@ -530,6 +530,8 @@ const citedDraft = ({ check = { pages: ["page"] }, extra = [], answer = {}, repi
     ...(check ? [{ node: "escalate", label: "quotes", when: QUOTES_WHEN(check), kind: "quote_missing", stage: "answer", summary: "a quote is in no page the workflow fetched" }] : []),
   ] },
 });
+/** A draft whose answer its composed workflow step "cite" writes, `child` that step's workflow. */
+const parent = (child) => ({ ...citedDraft({ check: null }), root: { node: "chain", steps: [{ node: "workflow", label: "cite", as: "answer", workflow: child }] } });
 const NO_QUOTE_CHECK = 'the answer carries quotes (Answer.evidence[].quote) and the workflow fetches pages: check them in code, with an escalate {"predicate": "quote_missing", "path": "answer.evidence", "field": "quote", "pages": ["page"]} as a step of its top-level chain after the step that writes the answer (pages: the state keys its call steps write), never a judge';
 
 test("the quote check is code: a draft whose answer carries quotes and which fetches pages is refused without a quote_missing escalate on its answer, a judge's quote question in its place included; with one it passes", () => {
@@ -685,7 +687,6 @@ test("quoteCheckProblems: a check reads the answer's quotes (path and field), af
   early.root.steps = [fetch, answer, check, { ...answer, label: "again" }];
   assert.deepEqual(quoteCheckProblems(early), [NO_QUOTE_CHECK], "the answer rewritten after its check");
   // A composed workflow writing the answer checks it in its own state.
-  const parent = (child) => ({ ...citedDraft({ check: null }), root: { node: "chain", steps: [{ node: "workflow", label: "cite", as: "answer", workflow: child }] } });
   assert.deepEqual(quoteCheckProblems(parent(citedDraft())), [], "the child checks its quotes against its pages");
   assert.deepEqual(quoteCheckProblems(parent(citedDraft({ check: null }))), [`the composed workflow step "cite" writes the answer: ${NO_QUOTE_CHECK}`]);
   // The child's check covers the places its own schema declares; a place only the parent's declares is the parent's.
@@ -693,6 +694,22 @@ test("quoteCheckProblems: a check reads the answer's quotes (path and field), af
   const [uncovered, ...rest] = quoteCheckProblems(wider);
   assert.deepEqual(rest, []);
   assert.match(uncovered, /^the answer carries quotes \(Answer\.extra\.quote\) and the workflow fetches pages, but no state key holds a page as fetched/);
+});
+
+// A quote re-pick is the loop the quote rule requires of the step writing the answer: its exit is the one a run's views
+// call a re-pick (learned-nodes.ts LoopRow.repick). A composed workflow writing the answer re-picks in its child, whose
+// loop's events the DSL labels `<step>/<loop>` (scopeDepsToChild). Any other loop that ran twice is an ordinary loop.
+test("repickLabels names the answer's quote re-pick loop alone, a composed child's by the label the DSL gives its events, never an ordinary loop", () => {
+  assert.deepEqual([...repickLabels(citedDraft())], ["repick"]);
+  assert.deepEqual([...repickLabels(parent(citedDraft()))], ["cite/repick"], "a composed child's re-pick");
+  assert.deepEqual([...repickLabels(parent(parent(citedDraft())))], ["cite/cite/repick"], "a composed child's composed child's");
+  const ordinary = citedDraft();
+  ordinary.root.steps.splice(1, 1, { node: "loop", label: "again", maxIters: 2, until: { predicate: "not", of: QUOTES_WHEN({ pages: ["page"] }) }, body: ordinary.root.steps[1] });
+  assert.deepEqual([...repickLabels(ordinary)], ["repick"], "a re-pick-shaped loop around another step");
+  assert.deepEqual([...repickLabels(citedDraft({ repick: false }))], [], "an answer step with no loop");
+  assert.deepEqual([...repickLabels({ ...citedDraft(), root: citedDraft().root.steps[2] })], ["repick"], "a root that is the loop itself");
+  assert.deepEqual([...repickLabels({})], []);
+  assert.deepEqual([...repickLabels(null)], []);
 });
 
 test("quoteCheckProblems: a key a model step writes over the page a call fetched is no page, and an answer schema with more quote places, or deeper, than the check reads is refused, never read in part", () => {
