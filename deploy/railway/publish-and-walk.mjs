@@ -480,14 +480,18 @@ async function firstRunOf(client, { base, token, cookie, key, model, step, times
  *  SIGINT, then SIGTERM seconds later, and a walk killed in a wait would never reach its own delete. `remove` runs once,
  *  then the process exits 130 or 143. Returns the call that takes the handlers off, once the walk deletes it itself. */
 export function onStop(remove) {
+  // A cancel is SIGINT, then SIGTERM about 7.5 s later: both stay caught while the delete runs, so the second one,
+  // ignored, cannot kill a delete still in flight.
+  let stopping = false;
   const stop = (signal) => {
-    off();
+    if (stopping) return console.error(`${signal}: still deleting what the walk made`);
+    stopping = true;
     console.error(`${signal}: deleting what the walk made before exiting`);
     Promise.resolve().then(remove).catch((e) => console.error(`the delete on ${signal} failed: ${e.message}`)).finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
   };
   const off = () => { process.off("SIGINT", stop); process.off("SIGTERM", stop); };
-  process.once("SIGINT", stop);
-  process.once("SIGTERM", stop);
+  process.on("SIGINT", stop);
+  process.on("SIGTERM", stop);
   return off;
 }
 

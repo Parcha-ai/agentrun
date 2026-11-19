@@ -50,6 +50,30 @@ onStop(async () => writeFileSync(${JSON.stringify(mark)}, "deleted")); console.l
   }
 });
 
+test("a walk stopped by SIGINT, then SIGTERM while its delete is still running (Actions' cancel), finishes the delete before it exits", async () => {
+  const { spawn } = await import("node:child_process");
+  const { mkdtemp, readFile: read } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const mark = join(await mkdtemp(join(tmpdir(), "walk-stop-")), "deleted");
+  const walk = new URL("deploy/railway/publish-and-walk.mjs", ROOT).href;
+  // The stand-in's delete takes 1.5 s, and says when it starts; the SIGTERM lands in the middle of it.
+  const script = `const { onStop } = await import(${JSON.stringify(walk)}); const { writeFileSync } = await import("node:fs");
+onStop(async () => { console.log("deleting"); await new Promise((r) => setTimeout(r, 1500)); writeFileSync(${JSON.stringify(mark)}, "deleted"); });
+console.log("made"); setTimeout(() => {}, 60_000);`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "inherit"] });
+  const exited = new Promise((r) => child.once("exit", (code, signal) => r({ code, signal })));
+  const said = (word) => Promise.race([new Promise((r) => { const on = (c) => { if (String(c).includes(word)) { child.stdout.off("data", on); r(true); } }; child.stdout.on("data", on); }), exited.then(() => false)]);
+  assert.ok(await said("made"), "the stand-in walk started");
+  const deleting = said("deleting");
+  child.kill("SIGINT");
+  assert.ok(await deleting, "the SIGINT started the delete");
+  child.kill("SIGTERM");
+  const { code, signal } = await exited;
+  assert.equal(await read(mark, "utf8").catch(() => "not deleted"), "deleted", "the delete finished");
+  assert.deepEqual({ code, signal }, { code: 130, signal: null }, "it exits as the first signal says, not killed by the second");
+});
+
 test("the walk tries a request again only while Render's edge answers (502, 503 or 504, not JSON), a POST under one Idempotency-Key, within its time", async () => {
   const { throughEdge } = await import("../../../deploy/render/walk.mjs");
   // The edge answers in HTML or nothing; the server always in JSON.
