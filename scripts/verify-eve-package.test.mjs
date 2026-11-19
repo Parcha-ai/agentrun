@@ -157,8 +157,34 @@ try {
   }
   run.child.kill('SIGINT');
   const [code, signal] = await run.closed;
-  assert.equal(alive(pidOf()), false, `the step's process is gone once the caller has exited (caller: code ${code}, signal ${signal})`);
+  assert.equal(alive(pidOf()), false, `the step's process is gone once the caller has exited (caller: code ${code}, signal ${signal}): ${run.output}`);
   assert.equal(alive(pidOf('grandchild')), false, 'the step\'s grandchild, which left its pipes, is gone too');
   assert.ok(existsSync(join(dir, 'cleaned')), 'the caller\'s finally ran');
   assert.equal(code, 130, `the caller exits 128 + SIGINT: ${run.output}`);
+});
+
+test('a SIGINT that reaches the caller as its step starts: it still stops the step, runs the cleanup and exits 130', async (t) => {
+  const { dir, pidOf } = scratch(t);
+  // The step signals its caller first thing, so the SIGINT lands as close to the spawn as a step can make it; a caller
+  // with no listener yet dies by the signal and leaves the step alive.
+  const run = caller(dir, `import { writeFileSync } from 'node:fs';
+import { constants } from 'node:os';
+try {
+  await runStep('sh', ['-c', 'echo $$ > pidfile; kill -INT $PPID; exec sleep 37'], { cwd: process.cwd(), env: process.env, timeout: 60_000, grace: 200 });
+} catch (error) {
+  process.exitCode = 128 + constants.signals[error.stoppedBy];
+} finally {
+  writeFileSync('cleaned', '');
+}`);
+  const [code, signal] = await run.closed;
+  assert.equal(alive(pidOf()), false, `the step's process is gone once the caller has exited (caller: code ${code}, signal ${signal}): ${run.output}`);
+  assert.ok(existsSync(join(dir, 'cleaned')), 'the caller\'s finally ran');
+  assert.equal(code, 130, `the caller exits 128 + SIGINT: ${run.output}`);
+});
+
+test('a step that never starts: it rejects and takes its SIGINT and SIGTERM listeners off', async () => {
+  const before = ['SIGINT', 'SIGTERM'].map(name => process.listenerCount(name));
+  await assert.rejects(runStep('verify-eve-step-no-such-command', [], { cwd: tmpdir(), env: process.env }), /ENOENT/);
+  await assert.rejects(runStep('sh', ['-c', 'true'], { cwd: 42, env: process.env }), { code: 'ERR_INVALID_ARG_TYPE' });
+  assert.deepEqual(['SIGINT', 'SIGTERM'].map(name => process.listenerCount(name)), before);
 });
