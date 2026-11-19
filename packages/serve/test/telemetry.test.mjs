@@ -257,16 +257,15 @@ test("a receiver that fails or never answers costs the server nothing", async ()
 });
 
 test("an endpoint that answers 404 (not deployed yet) or never answers: one request an event, no retry, nothing said, and a run's end never waits for it", async () => {
-  const data = await scratch();
-  start(data, receiver()).close(); // the notice's start: the next one sends
   for (const answer of [() => Promise.resolve(new Response("not found", { status: 404 })), () => new Promise(() => {})]) {
+    const data = await scratch();
+    start(data, receiver()).close(); // the notice's start: the next one sends
     const sent = [];
     const said = [];
     const t = startTelemetry({ data, version: "9.9.9", env: {}, key: KEY, url: "https://receiver.invalid/e/", say: (line) => said.push(line), fetch: (url, init) => (sent.push(JSON.parse(init.body).event), answer()) });
     assert.equal(t.runEnded("ended"), undefined, "a run's end hands back nothing to wait on");
     await wait(20);
-    assert.equal(sent[0], "server_started");
-    assert.equal(new Set(sent).size, sent.length, `each event once, never again: ${sent}`);
+    assert.deepEqual(sent, ["server_started", "first_run_completed"], "each event once, the run's end included, never again");
     assert.deepEqual(said, []);
     const closed = await Promise.race([t.close().then(() => "closed"), wait(500).then(() => "waiting")]);
     assert.equal(closed, "closed", "close never waits on the endpoint");
