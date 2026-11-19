@@ -3026,7 +3026,8 @@ export const COMMANDS = [
         "type": "string",
         "enum": [
           "claude-agent-sdk",
-          "codex-sdk"
+          "codex-sdk",
+          "eve"
         ],
         "required": true,
         "description": ""
