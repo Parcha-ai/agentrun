@@ -126,7 +126,10 @@ ended_once "first run" "$(api end "$run")" 3
 shot=${SCREENSHOT:-$work/console.png}
 if ! node "$here/../../apps/console/e2e/setup-code.e2e.mjs" --url "$url" --resolve 127.0.0.1 --setup-code-file "$work/code" \
   --password-file "$work/password" --run "$run" --screenshot "$shot" >"$work/console.log" 2>&1; then
-  fail "console" "$(grep -E '^FAIL' "$work/console.log" | tr '\n' ' ')"
+  # Its checks' FAIL lines, else (Chrome never started) the log's last lines: the code and the password are files, in none.
+  why=$(grep -E '^(FAIL|--   Chrome)' "$work/console.log" | tr '\n' ' ')
+  [ -n "$why" ] || why=$(tail -n 3 "$work/console.log" | tr '\n' ' ')
+  fail "console" "$why"
 fi
 pass "console" "at $url, the token signs in as the setup code and the run's page reads it completed$([ -z "${SCREENSHOT:-}" ] || echo "; $(basename "$shot")")"
 

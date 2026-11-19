@@ -93,12 +93,15 @@ async function start(env) {
 }
 
 const arg = (name) => { const at = process.argv.indexOf(name); return at > 1 ? process.argv[at + 1] : undefined; };
-// --resolve IP: the --url's host reached at IP, as curl --resolve does (a platform's proxy on this machine, no DNS).
+// --resolve IP: the --url's host reached at IP, as curl --resolve does (a platform's proxy on this machine, no DNS). A
+// public name at a loopback or private address is what Chrome's Local Network Access checks refuse
+// (net::ERR_BLOCKED_BY_CLIENT), so they are off for that browser alone.
 const resolve = arg("--resolve");
 const browser = await chromium.launch({
   ...(process.env.CHROME_BIN ? { executablePath: process.env.CHROME_BIN } : {}),
-  ...(resolve && arg("--url") ? { args: [`--host-resolver-rules=MAP ${new URL(arg("--url")).hostname} ${resolve}`] } : {}),
+  ...(resolve && arg("--url") ? { args: [`--host-resolver-rules=MAP ${new URL(arg("--url")).hostname} ${resolve}`, "--disable-features=LocalNetworkAccessChecks,BlockInsecurePrivateNetworkRequests,PrivateNetworkAccessSendPreflights"] } : {}),
 });
+if (arg("--url")) console.log(`--   Chrome ${browser.version()}`);
 /** A fresh browser page on `url`: the page, and the first document's response headers. */
 async function open(url) {
   const page = await (await browser.newContext()).newPage();
