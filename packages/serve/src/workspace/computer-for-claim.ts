@@ -480,8 +480,9 @@ type Renewal = {
   /** The most new ones this claim starts (ComputerForClaimDeps.recreates). */
   readonly max: number;
   /** A new sandbox in place of the lost one, the claim's `times`th, connected and its mount read back: what the lost one
-   *  was made with, under the same claim's labels. Its words, thrown, when it can't be had. */
-  remake(times: number): Promise<ProviderComputer>;
+   *  was made with, under the same claim's labels. A synced folder is held in it through `own` of it (lostAware's
+   *  ownOf). Its words, thrown, when it can't be had. */
+  remake(times: number, own: (held: ProviderComputer) => ComputerClient): Promise<ProviderComputer>;
   /** Told once a new one is up, with its name: the run's Timeline row. */
   started(name: string): void;
   /** The run's end in `words`, once a lost sandbox is past the bound: the run's own stop (ComputerForClaimDeps.stopRun). */
@@ -542,6 +543,20 @@ function lostAware(first: ProviderComputer, renewal: Renewal): ProviderComputer 
     await renewal.stop(spent.message);
     return spent;
   };
+  /** `held`'s own client, for a synced folder's sync, which stays on the machine it holds and starts nothing: a loss it
+   *  finds while `held` is the current one marks it lost as any call's does (lose), so the run's next call starts the new
+   *  one before it runs. Its answers on a machine already lost or replaced stand. */
+  const ownOf = (held: ProviderComputer): ComputerClient => ({
+    async call<M extends DaemonMethod>(method: M, params: DaemonMethods[M]["params"], options?: { signal?: AbortSignal }): Promise<Result<DaemonMethods[M]["result"]>> {
+      const answered = await held.client.call(method, params, options);
+      if (answered.ok || spent || held !== current || lost) return answered;
+      if (!(await goneFrom(held, answered.error)) || spent || held !== current || lost) return answered;
+      return { ok: false, error: await lose(held, answered.error) };
+    },
+    close() {
+      held.client.close();
+    },
+  });
   /** A new one in place of the lost one, or why the run has none now. */
   const renew = async (why: ComputerError): Promise<ComputerError | undefined> => {
     // The lost one's resources go first: a vendor's delete of one it no longer has is done already.
@@ -551,7 +566,7 @@ function lostAware(first: ProviderComputer, renewal: Renewal): ProviderComputer 
     }
     let fresh: ProviderComputer;
     try {
-      fresh = await renewal.remake(made + 1);
+      fresh = await renewal.remake(made + 1, ownOf);
     } catch (error) {
       return { code: "gone", message: `${why.message}; a new sandbox could not be started: ${error instanceof Error ? error.message : String(error)}` };
     }
@@ -603,9 +618,9 @@ function lostAware(first: ProviderComputer, renewal: Renewal): ProviderComputer 
     machine: first.machine,
     hello: first.hello,
     client,
-    // The current one's own: a synced folder's sync through it finds a loss and starts nothing (the next call does).
+    // The current one's own (ownOf): a synced folder's sync through it marks a loss it finds and starts nothing.
     get own() {
-      return current.client;
+      return ownOf(current);
     },
     readBack: () => current.readBack(),
     close: () => current.close(),
@@ -870,7 +885,7 @@ export async function computerForClaim(
   const renewalOf = (provider: ComputerProvider, entry: ProviderEntry, specNow: () => Promise<ComputerSpec>, folder: MountKind | undefined): Renewal => ({
     provider,
     max: deps.recreates ?? LOST_RECREATES,
-    async remake(times) {
+    async remake(times, own) {
       deps.onStarting?.({ provider: entry.label, kind: "sandbox" });
       const spec = await specNow();
       let mount: ComputerSpec["mount"];
@@ -895,7 +910,7 @@ export async function computerForClaim(
       const again = providerComputer(provider, ref, connected.value);
       if (mount) {
         try {
-          if (store && stored) await holdSynced(folderHeld, store, again.client, stored, deps.signal);
+          if (store && stored) await holdSynced(folderHeld, store, own(again), stored, deps.signal);
           await deps.workspace.attach({ id: ref.id, client: again.client, readBack: () => again.readBack() }, { ...deps.check, epoch: deps.check.epoch ?? launch.epoch, ...(store ? { sync: true as const } : {}) });
         } catch (error) {
           await again.release().catch(() => undefined);

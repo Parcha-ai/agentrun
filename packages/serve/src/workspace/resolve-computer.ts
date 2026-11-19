@@ -68,7 +68,8 @@ export type LaunchedComputer = {
   readonly client?: ComputerClient;
   /** The client of the machine `client` reaches now, where `client` may go on to a new one in its place (a sandbox
    *  started again once its provider lost it: computer-for-claim.ts lostAware). A synced folder's sync lists through it,
-   *  so a sync never starts the new one and reads it against the lost one's manifest. Absent where `client` is it. */
+   *  so a sync never starts the new one and reads it against the lost one's manifest; a loss it finds is marked, so the
+   *  run's next call starts the new one. Absent where `client` is it. */
   readonly own?: ComputerClient;
   readonly hello?: HelloResult;
   readBack?(): Promise<Result<MountReadBack>>;

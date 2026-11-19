@@ -222,6 +222,26 @@ test("a lost synced sandbox found by an exec, which syncs after it: that sync st
   await answer.release();
 });
 
+test("a synced sandbox lost after an exec ran on it, found by that exec's sync: the sync marks it lost and starts nothing, so the next exec runs on a new one, never on the lost one (the first sandbox and a new one alike)", async () => {
+  const disk = new FakeArchilDisk();
+  for (const name of ["a.txt", "b.txt", "c.txt"]) disk.files.set(`${SYNCED}/${name}`, Buffer.from(name));
+  const { record, answer, inCall } = await claim({ synced: disk });
+  const exec = ["exec.run", { argv: ["sh", "-c", "echo made by the exec > out.txt"], cwd: "/workspace", timeoutMs: 10_000 }];
+  for (const [lostId, nextId, made] of [["c1", "c2", 2], ["c2", "c3", 3]]) {
+    record.lose = (id, method) => id === lostId && method === "files.list";
+    await inCall(...exec);
+    assert.equal(record.created.length, made - 1, `the sync that found ${lostId} lost started nothing`);
+    record.lose = () => false;
+    const before = disk.calls.length;
+    const ran = await inCall(...exec);
+    assert.equal(ran.ok, true, `the next exec ran on ${nextId}, not on the lost ${lostId}: ${JSON.stringify(ran)}`);
+    assert.equal(record.created.length, made, `${nextId} was started for it`);
+    const puts = disk.calls.slice(before).filter((call) => call.op === "putObject" && call.key.startsWith(`${SYNCED}/`)).map((call) => call.key);
+    assert.deepEqual(puts, [`${SYNCED}/out.txt`], `the one file the exec on ${nextId} wrote`);
+  }
+  await answer.release();
+});
+
 test("two calls in flight when a hosted provider's vendor deletes the sandbox (its not_found words): both fail code gone, saying it was lost and not run again, never not_found; one new sandbox serves the next call", async () => {
   const { record, inCall, answer } = await claim();
   const deleted = (id) => `the computer ${id} (${id}) was deleted: Daytona no longer has it`;
