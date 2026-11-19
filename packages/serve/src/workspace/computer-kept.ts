@@ -16,14 +16,11 @@
 //
 // A sandbox's run folder is the run's either way (bound from this machine, or on Archil, as before); what the keep adds is
 // the rest of the machine (its other files, its processes). A synced folder's delta lands on the disk at the park; what
-// its programs write after it is read back whole by the claim that takes it back, or by the parking runner's own timer
-// before it deletes the computer (bounded, KEPT_PULL_MS). One the janitor ends (the parking process gone, or the run
-// ended) loses those writes, as a runner lost loses an unanswered call's. A claim takes one back only to hold the run's
-// folder the same way (its row's `folder`). A claim that doesn't take a kept synced one back ends it before its own
-// computer reads the folder off the disk (read back first where it can reach its provider; else its row is left ending,
-// so no timer reads it back, for the janitor to delete), or waits for an end already under way (keptEnded): no write of
-// the old one lands after the new one's. An agent's own computer and a paired one outlive every claim
-// already, and are never kept here; a runner lost, a crash or a server's stop still gives a new one.
+// its programs write after it is read back whole by the claim that takes it back. One whose keep lapses is deleted, by
+// the parking runner's own timer or the janitor, with no read-back: those writes are lost, as a runner lost loses an
+// unanswered call's. A claim takes one back only to hold the run's folder the same way (its row's `folder`). An agent's
+// own computer and a paired one outlive every claim already, and are never kept here; a runner lost, a crash or a
+// server's stop still gives a new one.
 //
 // While the run is parked, its owner's live view says what it waits for and that the computer is kept, until when, then
 // that it wasn't kept once its time passed (parkedWords, lapsedWords): the viewer's page, as the claim's park closes it
@@ -87,24 +84,6 @@ export type Kept = {
 /** How long one delete of a kept computer may take at the janitor's pass: past it the pass goes on, the row is left
  *  ending, and the next pass deletes it again (a Docker command has no timeout of its own). */
 export const KEPT_DELETE_MS = 60_000;
-/** How long an end's read-back of a kept synced folder may take: past it the read stops, the delete goes on, and a
- *  claim that waits on the end (keptEnded) goes on too. */
-export const KEPT_PULL_MS = 120_000;
-/** How often a claim waiting on a kept computer's end reads its row again. */
-const KEPT_POLL_MS = 250;
-
-/** Waits while `runId`'s kept row reads ending (its end under way: a synced folder read back onto the disk, then the
- *  delete), at most `ms` of real time or until `signal` aborts. A claim does so before its computer reads the run's
- *  folder off the disk, so no write of the old one lands after. A row that can't be read is not waited on. */
-export async function keptEnded(settings: Pick<KeptSettings, "get">, runId: string, ms: number, signal?: AbortSignal): Promise<void> {
-  const until = Date.now() + ms;
-  while (Date.now() < until && signal?.aborted !== true) {
-    const row = await readKept(settings, runId).catch(() => undefined);
-    if (!row?.ending) return;
-    await new Promise((resolve) => setTimeout(resolve, KEPT_POLL_MS));
-  }
-}
-
 /** The settings the kept rows live in. */
 export type KeptSettings = Pick<Settings, "get" | "put" | "replaceIf" | "removeIf" | "remove" | "all">;
 

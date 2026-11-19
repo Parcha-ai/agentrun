@@ -157,16 +157,7 @@ const body = (op) => op.requestBody !== undefined;
 
 test("every operation the gate can refuse to the token documents that 403, so a client reading the API document expects it", () => {
   const doc = openapiDocument(() => undefined);
-  // Registered only because its body's fields are marked secret: it keeps nothing, so the gate never refuses it.
-  const neverRefused = { previewMcpServer: { url: "https://mcp.example.com", auth: { type: "bearer", token: "not-a-secret" } } };
-  for (const [operation, sample] of Object.entries(neverRefused)) assert.equal(gate.writesSecret(operation, sample), false, `${operation} is never refused`);
-  const ops = new Map(Object.entries(doc.paths).flatMap(([path, item]) => Object.entries(item).map(([method, op]) => [op?.operationId, `${method.toUpperCase()} ${path}`])));
-  const undocumented = gate.registeredOperations()
-    .filter((operation) => !(operation in neverRefused))
-    .filter((operation) => {
-      const [method, path] = ops.get(operation).split(" ");
-      return !("403" in doc.paths[path][method.toLowerCase()].responses);
-    })
-    .map((operation) => `${ops.get(operation)} (${operation})`);
+  const ops = new Map(Object.values(doc.paths).flatMap((item) => Object.values(item).map((op) => [op?.operationId, op])));
+  const undocumented = gate.registeredOperations().filter((operation) => !("403" in ops.get(operation).responses));
   assert.deepEqual(undocumented, [], `secret writes whose 403 the document leaves out: ${undocumented.join(", ")}`);
 });

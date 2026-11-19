@@ -417,3 +417,29 @@ test('MCP read-only annotation requires explicit read-only callbacks and no mode
     assert.ok(bridge.catalog.every(tool=>!Object.hasOwn(tool,'readOnly')),'readOnly remains local callback metadata');
   }
 });
+
+// Durable hosts can keep evidence in their own native result instead of constructing an SDK wrapper session.
+test('a structural durable host binding calls MCP with pinned arguments and expires on close', async t => {
+  const { bridge, client, calls } = await setup(t);
+  const events = [], protectedValues = [];
+  const binding = bridge.bind({ runId: 'durable-turn', workflows: [accepted(workflow)],
+    protect(values) { protectedValues.push(...values); },
+    async event(event) { events.push(event); },
+    markEvidenceIncomplete() { throw new Error('Unexpected incomplete evidence'); },
+  });
+  assert.throws(() => binding.mcpArguments('not-pinned', {}), /pinned workflow/);
+  const input = { service: 'new-service' };
+  const args = binding.mcpArguments('release', input);
+  input.service = 'changed-after-binding';
+  const result = await client.callTool({ name: 'learned_workflow', arguments: args });
+  assert.equal(result.content[0].text, 'new-service current-2');
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every(call => call.ctx.runId === 'durable-turn'));
+  assert.ok(events.some(event => event.type === 'tool' && event.status === 'completed'));
+  assert.ok(protectedValues.includes(args.capability));
+  binding.close();
+  assert.throws(() => binding.mcpArguments('release', {}), /closed/);
+  const replay = await client.callTool({ name: 'learned_workflow', arguments: args });
+  assert.equal(replay.isError, true);
+  assert.equal(calls.length, 2);
+});

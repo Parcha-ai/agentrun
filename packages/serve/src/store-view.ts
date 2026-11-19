@@ -261,6 +261,16 @@ function liveOf(runRow: RunRow, now: number): boolean {
   return !FINAL_STATES.includes(runRow.state) && runRow.runner !== null && runRow.claimedUntil !== null && runRow.claimedUntil >= now;
 }
 
+/** Whether the run's turn stands on a person: a tool call asked for their approval with no answer in its journal (the
+ *  view's `approvals`, asksOf), or a browser or desktop hand-over neither answered in its journal nor by a hand-back row.
+ *  By the journal alone, never by the clock: a hand-over past its expiry still holds the turn until its expiry is written
+ *  as its answer, and only then does the turn go on. Such a turn has no model request in flight. */
+export function standsOnPerson(approvals: ReadonlyMap<string, { readonly resolved?: true }>, entries: readonly { kind: string; data?: unknown }[], commands: Awaited<ReturnType<Store["commands"]>>): boolean {
+  return [...approvals.values()].some((approval) => !approval.resolved) ||
+    browserAskOf(entries as unknown as Parameters<typeof browserAskOf>[0], commands, Number.NEGATIVE_INFINITY) !== undefined ||
+    computerAskOf(entries as unknown as Parameters<typeof computerAskOf>[0], commands, Number.NEGATIVE_INFINITY) !== undefined;
+}
+
 /** Reads the run from the store and builds the RunView the view functions read. Every read of the run (its row, launch,
  *  journal, live tick and commands) is made in one snapshot of the store (Store.snapshot), so the view is of one moment: a
  *  runner's commit that lands while it is built is in all of it or in none. What is read through the server's own handles
@@ -366,8 +376,11 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // takes the stop, a read would otherwise see the cut turn's input_required with nothing pending; a run waiting (on an
   // approval, a person, a browser) reads stopped from the stop's answer on. While its turn still works it reads working:
   // the cut is what books the request it cuts (its cost unknown), so a run read stopped before the cut would say the known
-  // sum as its cost.
-  const asked = !terminal && !working && stopAsked(row, runRow, await commandsNow());
+  // sum as its cost. A turn that stands on a person (standsOnPerson) has no request in flight to book: the runner that takes
+  // the stop claims the run with that turn still open, and it reads stopped under that claim too, never working between the
+  // stop's answer and its end.
+  const commands = terminal ? [] : await commandsNow();
+  const asked = !terminal && stopAsked(row, runRow, commands) && (!working || standsOnPerson(approvals, records.entries, commands));
   // A call asked before an end in the journal reads withdrawn in that end's words; a stopped or failed run's (states no
   // reopen leaves) whose journal holds no end, by its row (answersOf `final`); every call still waiting once a stop is
   // asked (stopAsked).
@@ -741,11 +754,13 @@ export async function listingOverStore(store: Store, runId: string, deps: ViewDe
   };
 }
 
-/** Whether `listing` is cut of the server's secrets as they are now. A list builds any other again before it shows it
+/** Whether `listing` has the current run-path fields and is cut of the server's secrets as they are now.
+ *  Older persisted rows used served/handed_back instead; null path/workflow values are current, absent fields are not.
+ *  A list builds any other again before it shows it
  *  (server.ts runsPage): the run's view cuts a value whole where it holds a secret (a note's name reads [redacted]), which
  *  cutting the built item again could not do. */
 export function builtOfNow(listing: KeptListing, serverSecrets: readonly string[]): boolean {
-  return listing.cut === secretsDigest(serverSecrets);
+  return Object.hasOwn(listing.item, "path") && Object.hasOwn(listing.item, "workflow") && listing.cut === secretsDigest(serverSecrets);
 }
 
 /** A listing's list item as a list serves it (listingOverStore): its console link at `origin`, its archive time now

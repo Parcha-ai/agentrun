@@ -8,7 +8,8 @@
 //   http: advertise MCP over HTTP (default true); the client then picks the transport;
 //   style: "goose" (titles agentrun__<tool>, every tool asks permission, allow_always offered first) or "cursor"
 //          (titles agentrun-<tool>: <tool>; MCP and execute ask, edits do not; a refused native call still reports
-//          completed);
+//          completed), or "goose-1.59" (as "goose", but titled as Goose 1.59.2 titles a call of an extension's tool:
+//          `agentrun: <tool, its underscores as spaces>`);
 //   askMcp: ask permission before an MCP call (default: by style); askNative: the native kinds that ask;
 //   nativeLog: a file each native call that runs appends its title to;
 //   countFile: a file each event (new, load, prompt, cancel, mcp, permission) is appended to, one JSON line;
@@ -51,7 +52,7 @@ const pgid = (() => {
   }
 })();
 said({ type: "start", env: Object.keys(process.env).sort(), home, cwd: process.cwd(), pgid });
-const titleOf = (tool) => (style === "cursor" ? `agentrun-${tool}: ${tool}` : `agentrun__${tool}`);
+const titleOf = (tool) => (style === "cursor" ? `agentrun-${tool}: ${tool}` : style === "goose-1.59" ? `agentrun: ${tool.replace(/_/g, " ")}` : `agentrun__${tool}`);
 const steps = (history) => history.filter((h) => h.kind === "call" || h.kind === "native" || h.kind === "say").length;
 const text = (blocks) => blocks.filter((b) => b.type === "text").map((b) => b.text);
 

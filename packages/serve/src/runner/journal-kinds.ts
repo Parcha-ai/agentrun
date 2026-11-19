@@ -226,7 +226,7 @@ export interface CallEndData {
   readonly callId: string;
   readonly status: CallStatus;
   readonly output?: unknown;
-  /** On an `interrupted` end the run's own end wrote (a call that only nests calls, still open: adapter-loop.ts openNests):
+  /** On an `interrupted` end the run's own end wrote (a CLI's call still open: adapter-loop.ts openCalls):
    *  nothing ended it, so it has no outcome. Its row reads interrupted, never failed (CALL_ENDED_WITH_RUN). */
   readonly withRun?: true;
   /** When it was written (ms, the loop's clock): the Timeline dates the result's row by it. */
