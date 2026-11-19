@@ -137,10 +137,6 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
       // person is told nothing by a trigger (skipped, never queued behind the person).
       if (run.maxCostUsd === undefined) throw new ApiError("not_continuable", NO_CAP);
       if (run.waitsOnPerson) return { skipped: WAITS_ON_A_PERSON };
-      // A runner applies every message: while every runner here refused to claim, the firing fails in their words, as
-      // POST /runs/{id}/messages and a start_run firing do (runner/presence.ts), never sent to wait for good.
-      const refused = await deps.start.runnersRefused?.();
-      if (refused !== undefined) throw new ApiError("runner_refused", refused);
       try {
         // The firing's key is the message's id; the message answers no person (answers false), its origin the trigger's.
         // Its command row is written with its firing marked sent, in one transaction, within the trigger's bound per run

@@ -188,6 +188,7 @@ test("two messages racing at a completed agentic run are both taken as steers: o
         return store.runs.reopen(runId, command);
       },
     },
+    runners: store.runners,
     command: (...args) => store.command(...args),
     commands: (...args) => store.commands(...args),
     runOfOrigin: (...args) => store.runOfOrigin(...args),

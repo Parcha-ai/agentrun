@@ -31,6 +31,7 @@ import { type LaunchDisk, launchBody, type RunLaunch } from "./run-launch.js";
 import { modelKeyRequired, serverKeyMissing } from "./run-model-key.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
+import { runnersRefused } from "./runner/presence.js";
 import { AgentDeleting, AnswerTaken, ExternalBodyConflict, type LaunchSealed, type NewRevision, type RevisionRow, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint, StoreLaunchMissing } from "./store/index.js";
 import { canonical } from "./store/agent-body.js";
 import { toolingOf } from "./tools.js";
@@ -173,13 +174,16 @@ export type MessageMode = "steer" | "answer" | "follow_up";
  *  run's state. `answers: false` is a trigger's message, which never answers a person: refused while the run waits on one,
  *  and never a deny of an approval. The mode is the label the v2 answer reports, from the run's moment. `queue`: the steer's
  *  write when it is not this run's own (a trigger's: its firing marked with it, within its bound, store.triggers.message),
- *  which may skip it, in words. */
+ *  which may skip it, in words. A runner applies every message, so while every runner here refused to claim, any message
+ *  (a person's or a trigger's) is refused in their words first, as a start is (prepareLaunch, runner/presence.ts). */
 export async function message(
-  store: RunsStore & Pick<Store, "agents">,
+  store: RunsStore & Pick<Store, "agents" | "runners">,
   moment: RunMoment,
   content: string,
   { requestId, answers = true, origin, queue, launchSealed, beforeSubmit }: { requestId?: string; answers?: boolean; origin?: unknown; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void>; launchSealed?: LaunchSealed; beforeSubmit?: (runId: string, content: string) => Promise<void> | void } = {},
 ): Promise<{ mode: MessageMode; messageId: string; skipped?: string }> {
+  const refused = await runnersRefused(store.runners);
+  if (refused !== undefined) throw new ApiError("runner_refused", refused);
   if (moment.importedSource !== undefined) throw importedRefusal(moment);
   const launchBody = await controlLaunchBody(store, moment.id);
   if (isObject(launchBody) && launchBody.sdk) throw new ApiError("not_continuable", "Backend SDK runs are single-task sessions. Start a new SDK call for another task.");

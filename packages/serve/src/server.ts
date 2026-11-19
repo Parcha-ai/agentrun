@@ -4275,10 +4275,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           const content = body.content;
           if (typeof content !== "string" || !/\S/.test(content)) throw invalid([{ field: "content", reason: content === undefined ? "missing" : "wrong_type", message: "content is a non-empty string" }]);
           if (content.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);
-          // A runner applies every message (and a message to an ended run opens it again for one to claim): while every
-          // runner here refused to claim, it is refused in their words, as a start is (runner/presence.ts).
-          const refused = await refusedNow();
-          if (refused !== undefined) throw new ApiError("runner_refused", refused);
           // Its mcp_auth and model_key replace the run's in the steer's own write, so the turn it starts uses them.
           const { mode, messageId } = await message(store, run, content, { ...(seal ? { launchSealed: seal } : {}), ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}) });
           // The run's state after the command row is written (the run view): the runner applies the steer; the client polls.
