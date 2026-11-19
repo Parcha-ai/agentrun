@@ -132,3 +132,31 @@ test("archil mountSpec through the run's Workspace: the region from the claim an
   assert.equal(unminted.workspace.constructor.name, "ArchilWorkspace", "no local run folder in its place");
   await assert.rejects(unminted.workspace.mountSpec(), (error) => error instanceof WorkspaceError && error.code === "REFUSED" && /an Archil Workspace goes in a computer only when/.test(error.message));
 });
+
+test("archil attach across the run channel: the run's process hands its check to the runner's Workspace, whose readBackOf answers there as a promise, and the exact read-back is still accepted", async () => {
+  // A run's own process (run-child.ts) attaches the runner's Workspace (held.ts archil) to its computer with the check
+  // it made (computerHere: { readBackOf, epoch }). Over the channel the check's readBackOf is a handle, so on the
+  // runner's side calling it gives a promise: the expected read-back must be awaited, or it reads as
+  // "undefined:/undefined in undefined" and every Mode 2 run is refused (v0.1.0-beta.46).
+  const { duplexPair } = await import("node:stream");
+  const { Channel } = await import("../dist/runner/run-channel.js");
+  const [a, b] = duplexPair();
+  const runner = new Channel(a);
+  const child = new Channel(b);
+  try {
+    const disk = new FakeArchilDisk();
+    const { workspace } = mounted(disk);
+    runner.expose("held", (method) => {
+      if (method === "archil") return { workspace };
+      throw new Error(`no ${method}`);
+    });
+    const { workspace: there } = await child.call("held", "archil", []);
+    const exact = { kind: "archil", disk: disk.id, region: REGION, folder: runKey(AGENT, RUN), exclusive: true, epoch: EPOCH };
+    const attached = await there.attach(computerWith(exact), CHECK);
+    assert.equal(typeof attached.read, "function", "the attached Workspace comes back");
+    await assert.rejects(there.attach(computerWith({ ...exact, epoch: EPOCH + 1 }), CHECK), (error) => error.code === "REFUSED" && /not .*runs.* in aws-us-east-1, exclusive under epoch 7/.test(error.message) && !error.message.includes("undefined"), "another epoch is still refused, in words naming the expected folder");
+  } finally {
+    runner.close();
+    child.close();
+  }
+});
