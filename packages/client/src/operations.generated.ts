@@ -583,6 +583,9 @@ export type RunCreateInline = {
   model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
+  } | {
+    composio_user_id: string;
+    connected_account_id?: string;
   }>;
   labels?: Record<string, string>;
   workflow_first?: boolean;
@@ -804,6 +807,9 @@ export type MessageCreate = {
   model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
+  } | {
+    composio_user_id: string;
+    connected_account_id?: string;
   }>;
 };
 
@@ -825,6 +831,9 @@ export type RunCreate = {
   model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
+  } | {
+    composio_user_id: string;
+    connected_account_id?: string;
   }>;
   labels?: Record<string, string>;
   workflow_first?: boolean;

@@ -719,6 +719,9 @@ export interface components {
     model_key?: string;
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
+    } | {
+      composio_user_id: string;
+      connected_account_id?: string;
     }>;
   };
   MessageResult: {
@@ -971,6 +974,9 @@ export interface components {
     model_key?: string;
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
+    } | {
+      composio_user_id: string;
+      connected_account_id?: string;
     }>;
     labels?: Record<string, string>;
     workflow_first?: boolean;
@@ -995,6 +1001,9 @@ export interface components {
     model_key?: string;
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
+    } | {
+      composio_user_id: string;
+      connected_account_id?: string;
     }>;
     labels?: Record<string, string>;
     workflow_first?: boolean;

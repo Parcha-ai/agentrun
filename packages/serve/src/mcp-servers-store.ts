@@ -18,8 +18,8 @@ import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./m
 import { credentialMark } from "./mcp-secret-writes.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
-import { type Cleanup, cleanupOf, composioMadeKey, type ComposioMade, droppedOf, madeToWrite, recordedMade, storedMade } from "./composio-made.js";
-import { COMPOSIO_USER, composioServerId } from "./composio-preset.js";
+import { type Cleanup, cleanupOf, composioMadeKey, type ComposioMade, composioPerRun, droppedOf, madeToWrite, recordedMade, storedMade } from "./composio-made.js";
+import { COMPOSIO_PER_RUN, COMPOSIO_USER, composioServerId } from "./composio-preset.js";
 import { mcpSourceKey, type RecordedRow, recordedForAnother, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, toolkitGiven } from "./mcp-sources.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
@@ -354,7 +354,7 @@ export class McpServersOverStore {
     const write = async () => {
       if (guard && wasPreset) {
         const stood = recordedMade(await this.store.settings.get(composioMadeKey(name)), was!.createdAt);
-        if (moved || (made && stands && (!stood || stood.user !== stands.user || (stood.auth_config?.id ?? null) !== (stands.auth_config?.id ?? null)))) await guard.inUse();
+        if (moved || (made && stands && (!stood || stood.user !== stands.user || Boolean(stood.per_run) !== Boolean(stands.per_run) || (stood.auth_config?.id ?? null) !== (stands.auth_config?.id ?? null)))) await guard.inUse();
       }
       const saved = keeping
         // Re-applied only onto a row that still holds a credential of this auth type, at the address this save read: never
@@ -664,6 +664,8 @@ export class McpServersOverStore {
     const { source, toolkit } = await this.sourceOf(row);
     if (source !== "composio" || row.auth !== "headers") throw refuse(`${name} is not a Composio server: only one saved with Settings → MCP servers → Composio makes Composio triggers.`);
     if (!toolkit) throw refuse(`${name} is a Composio server of no toolkit this server can name: save it again with its toolkit's slug.`);
+    // A trigger runs as one Composio account, and a per-run server has none: each run names its own.
+    if (refusal === "field" && composioPerRun(row, await this.store.settings.get(composioMadeKey(name)))) throw refuse(`${name} takes its Composio account from each run (saved with user_id "${COMPOSIO_PER_RUN}"), and a trigger runs as one account: save a Composio server for that account to make its triggers.`);
     const { headers } = await this.opened(name, row, refusal === "field" ? "source.server" : "api_key");
     const key = Object.entries(headers).find(([header]) => header.toLowerCase() === "x-api-key")?.[1];
     if (!key) throw refuse(`${name}'s saved credential holds no Composio key: save it again with its key.`);

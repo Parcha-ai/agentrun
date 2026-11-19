@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun-client
+kind: feature
+---
+A Composio preset server can act as each run's own Composio account: save it with `user_id: "per_run"` (reserved for this, never a Composio user id) and it keeps no user or connected account in its address and makes no connect link. Each run names its account in `mcp_auth.<server>` as `{composio_user_id, connected_account_id?}` on `POST /v2/runs`, `POST /v2/agents/{agent_id}/runs` or `POST /v2/runs/{run_id}/messages`, from the owner's session or the API token. The binding is sealed into the run's launch and erased at the run's end, never on the server's row, the run's view, its timeline, its trace or a log line. A run that names none has its calls of the server refused unsent. A malformed user or account, headers for such a server, or a binding for any other server is `422 input_invalid` naming the field. Such a server makes no Composio trigger. Servers saved for one user are unchanged. Marked `x-agentrun-serve: "composioperrun/1"` in the OpenAPI document.

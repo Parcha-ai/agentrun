@@ -667,7 +667,8 @@ __all__ = [
     "McpOAuthClientResponse",
     "McpServersResource",
     "MessageCreate",
-    "MessageCreateMcpAuthValue",
+    "MessageCreateMcpAuthValue1",
+    "MessageCreateMcpAuthValue2",
     "MessageResult",
     "Meter",
     "NextAction",
@@ -767,8 +768,10 @@ __all__ = [
     "RunCreateArchilDisk",
     "RunCreateInline",
     "RunCreateInlineArchilDisk",
-    "RunCreateInlineMcpAuthValue",
-    "RunCreateMcpAuthValue",
+    "RunCreateInlineMcpAuthValue1",
+    "RunCreateInlineMcpAuthValue2",
+    "RunCreateMcpAuthValue1",
+    "RunCreateMcpAuthValue2",
     "RunError",
     "RunErrorCode",
     "RunErrorDetails",
@@ -4947,7 +4950,7 @@ class RunCreateInline(_RunCreateInlineRequired, total=False):
     max_cost_usd: float
     quote_id: str
     model_key: str
-    mcp_auth: dict[str, RunCreateInlineMcpAuthValue]
+    mcp_auth: dict[str, RunCreateInlineMcpAuthValue1 | RunCreateInlineMcpAuthValue2]
     labels: dict[str, str]
     workflow_first: bool
     learning: Literal["use"]
@@ -4964,8 +4967,16 @@ class ExternalRef(TypedDict):
     version: str | int
 
 
-class RunCreateInlineMcpAuthValue(TypedDict):
+class RunCreateInlineMcpAuthValue1(TypedDict):
     headers: dict[str, str]
+
+
+class _RunCreateInlineMcpAuthValue2Required(TypedDict):
+    composio_user_id: str
+
+
+class RunCreateInlineMcpAuthValue2(_RunCreateInlineMcpAuthValue2Required, total=False):
+    connected_account_id: str
 
 
 class RunCreateInlineArchilDisk(TypedDict):
@@ -5494,11 +5505,19 @@ class _MessageCreateRequired(TypedDict):
 
 class MessageCreate(_MessageCreateRequired, total=False):
     model_key: str
-    mcp_auth: dict[str, MessageCreateMcpAuthValue]
+    mcp_auth: dict[str, MessageCreateMcpAuthValue1 | MessageCreateMcpAuthValue2]
 
 
-class MessageCreateMcpAuthValue(TypedDict):
+class MessageCreateMcpAuthValue1(TypedDict):
     headers: dict[str, str]
+
+
+class _MessageCreateMcpAuthValue2Required(TypedDict):
+    composio_user_id: str
+
+
+class MessageCreateMcpAuthValue2(_MessageCreateMcpAuthValue2Required, total=False):
+    connected_account_id: str
 
 
 SendMessageResponse: TypeAlias = "MessageResult"
@@ -5555,7 +5574,7 @@ class RunCreate(_RunCreateRequired, total=False):
     max_cost_usd: float
     quote_id: str
     model_key: str
-    mcp_auth: dict[str, RunCreateMcpAuthValue]
+    mcp_auth: dict[str, RunCreateMcpAuthValue1 | RunCreateMcpAuthValue2]
     labels: dict[str, str]
     workflow_first: bool
     learning: Literal["use"]
@@ -5565,8 +5584,16 @@ class RunCreate(_RunCreateRequired, total=False):
     hold_minutes: int
 
 
-class RunCreateMcpAuthValue(TypedDict):
+class RunCreateMcpAuthValue1(TypedDict):
     headers: dict[str, str]
+
+
+class _RunCreateMcpAuthValue2Required(TypedDict):
+    composio_user_id: str
+
+
+class RunCreateMcpAuthValue2(_RunCreateMcpAuthValue2Required, total=False):
+    connected_account_id: str
 
 
 class RunCreateArchilDisk(TypedDict):

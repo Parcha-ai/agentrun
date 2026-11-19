@@ -25,6 +25,14 @@
 // opens it again, so a message's new credential reaches the run's next model request; a run handed none gets its calls
 // refused unsent (UNUSABLE.perRunMissing).
 //
+// A per-run Composio server (composio-made.ts composioPerRun: the preset saved it with user_id "per_run") keeps the
+// install's key, sealed as any headers server's, and no Composio user or account: its address names none. The run's
+// caller binds it ({composio_user_id, connected_account_id?} in mcp_auth), sealed in the run's launch as per_run
+// headers are, and its entry here carries that user and account as the query every request to it adds to the pinned
+// address (mcp-gateway.ts), held by the run's redactors as headers are, never written to its row, the journal, the
+// timeline or a log line. A run that bound none gets its calls refused unsent, in UNUSABLE.perRunMissing's words: never
+// a call to an address that names no account.
+//
 // fresh(). After the pin check and before the loop, and again on a command-row resume: an OAuth access token past its
 // expiry is refreshed, bounded (the call within MCP_REFRESH_CALL_MS; a request not yet dialled within 4 s, and tried again
 // only when it provably never left: a refused or unmade connection, an address check out of time; one request that left
@@ -51,6 +59,8 @@ import { EndpointRefused, REFRESH_REQUEST_MS, refreshed, refused, RequestUnsent,
 import { type McpCredentials, type McpPin } from "../mcp-gateway.js";
 import { type PinListing, pinFirst } from "../mcp-pin-first.js";
 import { mcpNameOf } from "../tool-names.js";
+import { composioMadeKey, composioPerRun } from "../composio-made.js";
+import { composioRunQuery } from "../composio-preset.js";
 import { META_REASON, metaToolOf } from "../mcp-meta.js";
 import { credentialInQuery, credentialInQueryWords, shownUrl } from "../mcp-probe.js";
 import { privateOAuthHosts } from "../mcp-private-hosts.js";
@@ -255,12 +265,15 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     }
     gone.delete(name);
     stamps.set(name, { url: row.url, auth: row.auth, changedAt: row.credentialChangedAt });
-    const entry = (extra: { headers?: Record<string, string>; unopened?: string }) => {
+    const entry = (extra: { headers?: Record<string, string>; unopened?: string; query?: Record<string, string> }) => {
       // Held by the run's redactor before anything else: a value opened is a value to cut, sent or not.
       if (extra.headers) options.hold?.(credentialValues(extra.headers));
+      if (extra.query) options.hold?.(Object.values(extra.query));
       if (released || gone.has(name)) return;
-      // Headers go only to the URL the run was pinned to: a server moved since is refused per call by the gateway.
-      credentials[name] = { url: row.url, ...(extra.unopened ? { unopened: extra.unopened } : extra.headers && row.url === pinnedUrl ? { headers: extra.headers } : {}) };
+      // Headers and a run's account go only to the URL the run was pinned to: a server moved since is refused per call by
+      // the gateway.
+      const pinned = row.url === pinnedUrl;
+      credentials[name] = { url: row.url, ...(extra.unopened ? { unopened: extra.unopened } : { ...(extra.headers && pinned ? { headers: extra.headers } : {}), ...(extra.query && pinned ? { query: extra.query } : {}) }) };
     };
     // A GitHub App's server keeps no credential: its token is minted for this run (awaited, so the claim is confirmed
     // after it), kept fresh mid-run, and never stored.
@@ -268,12 +281,16 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     // A per_run server keeps none either: its credential is the one the run's caller handed it (mcp_auth), sealed in the
     // run's launch, read again at every fresh() so a message's new one reaches the run's next request.
     if (row.auth === "per_run") return entry(await perRun(name, row.url)), { awaited: false };
-    if (row.sealed === null) return entry({}), { awaited: false };
+    // A per-run Composio server: the run's account, or its calls refused unsent; its key is opened below as any server's.
+    const account = row.auth === "headers" ? await composioAccount(name, row) : undefined;
+    if (account && "unopened" in account) return entry({ unopened: account.unopened }), { awaited: false };
+    const query = account?.query;
+    if (row.sealed === null) return entry({ ...(query ? { query } : {}) }), { awaited: false };
     // A seal problem first: no refresh is ever sent for a credential this runner cannot open.
     const opened = openMcpRow(sealKey, row);
     if (!("credential" in opened)) return entry(opened.unusable === "none" ? {} : { unopened: UNUSABLE.damaged }), { awaited: false };
     const credential = opened.credential;
-    if (credential.type === "headers") return entry({ headers: { ...credential.headers } }), { awaited: false };
+    if (credential.type === "headers") return entry({ headers: { ...credential.headers }, ...(query ? { query } : {}) }), { awaited: false };
     const oauth = credential as OAuthCredential;
     if (oauth.expired) return entry({ unopened: UNUSABLE.signedOut }), { awaited: false };
     const set = oauth.set;
@@ -394,9 +411,23 @@ export async function mcpClaim(options: McpClaimOptions): Promise<McpClaimStep> 
     const handed = await perRunRead;
     if (handed === undefined) return { unopened: UNUSABLE.damaged };
     const given = Object.hasOwn(handed, name) ? handed[name] : undefined;
-    if (!given) return { unopened: UNUSABLE.perRunMissing };
+    if (!given || !("headers" in given)) return { unopened: UNUSABLE.perRunMissing };
     if (given.origin !== new URL(url).origin) return { unopened: UNUSABLE.damaged };
     return { headers: { ...given.headers } };
+  };
+
+  /** A per-run Composio server's account for this run, as the query its requests add (composio-preset.ts
+   *  composioRunQuery), from its launch's binding; or why there is none. Undefined: `row` is no per-run Composio server
+   *  (its own record says so: composioPerRun). Only for the origin its url had when the binding was handed. */
+  const composioAccount = async (name: string, row: McpServerRow): Promise<{ query: Record<string, string> } | { unopened: string } | undefined> => {
+    if (!composioPerRun(row, await store.settings.get(composioMadeKey(name)))) return undefined;
+    perRunRead ??= store.runs.launch(claim.runId).then((launch) => openRunMcpAuth(sealKey, claim.runId, launch.sealed));
+    const handed = await perRunRead;
+    if (handed === undefined) return { unopened: UNUSABLE.damaged };
+    const given = Object.hasOwn(handed, name) ? handed[name] : undefined;
+    if (!given || !("composio" in given)) return { unopened: UNUSABLE.perRunMissing };
+    if (given.origin !== new URL(row.url).origin) return { unopened: UNUSABLE.damaged };
+    return { query: composioRunQuery(given.composio) };
   };
 
   const fresh = async () => {
