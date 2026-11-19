@@ -72,7 +72,7 @@ const response = { items: [
   { id: 'message-1', type: 'agent_message', text: 'Ready. Tests passed.' },
 ], finalResponse: 'Ready. Tests passed.', usage: { input_tokens: 20, cached_input_tokens: 8, cache_write_input_tokens: 4, output_tokens: 6 } };
 
-test('Codex uses the original client and thread, preserves result identity and options, and pins approved context', async () => {
+test('Codex uses the original client and thread, preserves result identity and options, and pins learning context', async () => {
   const { config, requests } = service(), { codex, calls, threads } = native({ result: response });
   const wrapped = withCodexAgentLearning(codex, config);
   const options = { model: 'native-model', sandboxMode: 'read-only', workingDirectory: '/fixture-project', approvalPolicy: 'never' };
@@ -87,6 +87,8 @@ test('Codex uses the original client and thread, preserves result identity and o
   assert.equal(calls.length, 1, 'reflection must not call the native SDK a second time');
   assert.equal(wrapped.otherMethod(), 'preserved');
   assert.match(calls[0].input, /Start release reports with Ready or Blocked/);
+  assert.match(calls[0].input, /AgentRun learning context/);
+  assert.doesNotMatch(calls[0].input, /approved learning|approved lessons/i, 'Receiving learning context must not claim approval of its contents.');
   assert.match(calls[0].input, /Keep the report to two sentences/);
   const start = requests.find(r => r.path.endsWith('/sdk-runs'));
   assert.equal(start.body.input, 'Report the release status.');

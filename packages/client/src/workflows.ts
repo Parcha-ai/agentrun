@@ -1,11 +1,9 @@
 /** Optional, local workflow MCP bridge. Native SDK credentials and tools remain owned by the backend. */
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
-import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
-import type { BackendWorkflowSession, BackendWorkflowBinding, BackendWorkflowBridge, BackendWorkflowToolManifest, SdkLearningEvent } from './learning.js';
+import { Ajv } from 'ajv';
+import formatsModule from 'ajv-formats';
+import type { BackendWorkflowSession, BackendWorkflowBinding, BackendWorkflowBridge, BackendWorkflowToolManifest, SdkLearningEvent, BackendWorkflowCheck } from './learning.js';
 
 export interface WorkflowToolContext {
   signal: AbortSignal;
@@ -94,12 +92,24 @@ export interface WorkflowMcpBridgeOptions<
   leaseDurationMs?: number;
   /** Local metadata only; callback inputs/results and capability tokens are never emitted. */
   onEvent?(event: WorkflowBridgeEvent): void;
+  /** Opt in to fresh, explicitly read-only observations when the native recording has no match. Default false. */
+  shadowReadFallback?: boolean;
+  /** Optional host mapping for a draft's typed input. The default accepts the task's JSON object or one
+   * unambiguous recorded tool input matching the schema. It never guesses semantic fields. */
+  resolveCheckInput?(check: BackendWorkflowCheck, turn: { input: string; events: readonly SdkLearningEvent[]; signal: AbortSignal }): Promise<Record<string, unknown> | null> | Record<string, unknown> | null;
 }
 /** Private host handle. Never expose its arguments or capability in model-visible results or logs. */
 export interface WorkflowMcpBinding extends BackendWorkflowBinding {
+  execute(name: string, input: Record<string, unknown>, signal: AbortSignal): Promise<WorkflowToolResult>;
   mcpArguments(name: string, input: Record<string, unknown>): { capability: string; name: string; input: Record<string, unknown> };
 }
-export interface WorkflowMcpBridge extends BackendWorkflowBridge {
+export type WorkflowToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean };
+export interface WorkflowBridge extends BackendWorkflowBridge {
+  bind(session: BackendWorkflowSession): WorkflowMcpBinding;
+  check: NonNullable<BackendWorkflowBridge['check']>;
+  close(): Promise<void>;
+}
+export interface WorkflowMcpBridge extends WorkflowBridge {
   bind(session: BackendWorkflowSession): WorkflowMcpBinding;
   readonly url: string;
   readonly headers: Readonly<Record<string, string>>;
@@ -115,9 +125,39 @@ const limit = (value: number | undefined, fallback: number, max: number, name: s
   return value ?? fallback;
 };
 class Refused extends Error {}
+/** Schema validation is shared by local and MCP execution; the in-process path imports no MCP runtime. */
+class SchemaValidator {
+  readonly #ajv = new Ajv({ strict: false, validateFormats: true, validateSchema: false, allErrors: true });
+  readonly #validators = new Map<string, (value: unknown) => { valid: boolean }>();
+  constructor() { (formatsModule as unknown as (ajv: Ajv) => void)(this.#ajv); }
+  getValidator(schema: Record<string, unknown>): (value: unknown) => { valid: boolean } {
+    // Tool and workflow snapshots are cloned. Reuse identical definitions, but let Ajv reject a
+    // different definition with an already registered $id instead of validating against stale rules.
+    const key = canonical(schema), cached = this.#validators.get(key);
+    if (cached) return cached;
+    const validate = this.#ajv.compile(schema);
+    const validator = (value: unknown) => ({ valid: validate(value) === true });
+    this.#validators.set(key, validator);
+    return validator;
+  }
+}
 const refuse = (message: string): never => { throw new Refused(message); };
 const pointer = (value: unknown, path: string) => path.split('/').slice(1).reduce<unknown>((node, key) => object(node) || Array.isArray(node) ? (node as Record<string, unknown>)[key.replace(/~1/g, '/').replace(/~0/g, '~')] : undefined, value);
 const toolResult = (text: string, isError = false) => ({ content: [{ type: 'text' as const, text }], ...(isError ? { isError: true } : {}) });
+const canonical = (value: unknown): string => JSON.stringify(value, (_, item) => object(item)
+  ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item);
+const answerOf = (output: unknown): string => {
+  const values = object(output) ? Object.values(output) : [];
+  return typeof output === 'string' ? output : values.length === 1 && typeof values[0] === 'string' ? values[0] : JSON.stringify(output ?? null);
+};
+/** Native SDKs return either the callback value or MCP text/structured content. No prose guessing. */
+function recordedOutput(value: unknown): unknown {
+  if (object(value) && Object.hasOwn(value, 'structuredContent')) return value.structuredContent;
+  if (object(value) && Array.isArray(value.content)) return recordedOutput(value.content);
+  if (Array.isArray(value) && value.length === 1 && object(value[0]) && value[0].type === 'text') return recordedOutput(value[0].text);
+  if (typeof value === 'string') { try { return JSON.parse(value); } catch { return value; } }
+  return value;
+}
 
 /** Race work with cancellation without pretending an uncooperative callback can be rolled back. */
 async function cancellable<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
@@ -148,12 +188,12 @@ type Lease = {
 /** Start once, explicitly configure this endpoint on the original native SDK, then pass the bridge to its wrapper.
  * The endpoint never executes a workflow supplied by a model: only the server's checked, pinned run snapshot.
  * Nothing is installed into the backend or executed through a new hidden native SDK session. */
-export async function createWorkflowMcpBridge<
+function makeWorkflowBridge<
   Document extends WorkflowEngineDocument,
   NodeRequest extends WorkflowModelRequest,
   JudgeRequest extends WorkflowJudgeRequest,
   JudgeResult,
->(options: WorkflowMcpBridgeOptions<Document, NodeRequest, JudgeRequest, JudgeResult>): Promise<WorkflowMcpBridge> {
+>(options: WorkflowMcpBridgeOptions<Document, NodeRequest, JudgeRequest, JudgeResult>) {
   if (!options.engine || typeof options.engine.inspectWorkflow !== 'function' || typeof options.engine.runWorkflow !== 'function' || typeof options.engine.resolveSchemaForWorkflow !== 'function')
     throw new TypeError('Provide an explicit host workflow engine with inspection, execution and schema resolution.');
   if (typeof options.policy !== 'function') throw new TypeError('A live backend policy callback is required.');
@@ -168,8 +208,10 @@ export async function createWorkflowMcpBridge<
   // Capture callbacks and schemas once: later caller mutation cannot silently expand this bridge's authority.
   const { inspectWorkflow, runWorkflow, resolveSchemaForWorkflow } = options.engine;
   const policy = options.policy, runNode = options.runNode, runJudge = options.runJudge, observer = options.onEvent;
-  const validator = new AjvJsonSchemaValidator();
-  const registered = new Map<string, { manifest: BackendWorkflowToolManifest; readOnly: boolean; execute: BackendWorkflowTool['execute']; input: ReturnType<AjvJsonSchemaValidator['getValidator']>; output?: ReturnType<AjvJsonSchemaValidator['getValidator']> }>();
+  const resolveCheckInput = options.resolveCheckInput;
+  const readFallback = options.shadowReadFallback === true;
+  const validator = new SchemaValidator();
+  const registered = new Map<string, { manifest: BackendWorkflowToolManifest; readOnly: boolean; execute: BackendWorkflowTool['execute']; input: ReturnType<SchemaValidator['getValidator']>; output?: ReturnType<SchemaValidator['getValidator']> }>();
   for (const tool of options.tools) {
     if (!tool || typeof tool !== 'object' || typeof tool.name !== 'string' || !canonicalTool.test(tool.name) || registered.has(tool.name) ||
       typeof tool.description !== 'string' || !tool.description.trim() || tool.description.length > 4000 ||
@@ -191,7 +233,7 @@ export async function createWorkflowMcpBridge<
   const readOnlyHint = !runNode && !runJudge && [...registered.values()].every(tool => tool.manifest.permission !== 'allow' || tool.readOnly);
   const authorization = `Bearer ${randomBytes(32).toString('hex')}`;
   const leases = new Map<string, Lease>();
-  const connections = new Set<Server>();
+  const shadows = new Set<AbortController>();
   let closed = false;
   const emit = (event: WorkflowBridgeEvent) => { try { observer?.(Object.freeze(event)); } catch { /* Observers cannot change execution. */ } };
   const evidence = async (lease: Lease, event: SdkLearningEvent) => { await lease.session.event(event).catch(() => undefined); };
@@ -213,6 +255,119 @@ export async function createWorkflowMcpBridge<
       if (node.node === 'call' && (node.via !== 'tool' || object(node.retry) && Number(node.retry.attempts) > 1)) refuse('Only explicitly delegated tool effects without automatic retries are supported.');
     }
     return workflow;
+  };
+
+  const shadowCheck: WorkflowBridge['check'] = async (candidate, turn) => {
+    // Freeze the exact receipt and native evidence before any caller callback or await. The result reports
+    // execution only: agreement and promotion belong to the server's independent comparison.
+    const check = freeze(copy(candidate)), events = freeze(copy(turn.events));
+    const receipt = { type: 'workflow_check' as const, id: check.id, digest: check.digest };
+    const controller = new AbortController();
+    shadows.add(controller);
+    const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(maxDuration), ...(turn.signal ? [turn.signal] : [])]);
+    let skipped: { tool: string; unmarked?: true } | undefined;
+    let calls = 0, nodes = 0;
+    try {
+      signal.throwIfAborted();
+      if (closed || turn.outcome.status !== 'completed') refuse('A shadow needs a completed native turn and an open host bridge.');
+      if (Buffer.byteLength(JSON.stringify(events)) > 3_000_000) refuse('The native recording exceeds the shadow limit.');
+      const workflow = checked(check.workflow.workflow);
+      const tools = new Set(inspectWorkflow(workflow).requires.tools);
+      type Call = { name: string; input: Record<string, unknown>; output?: unknown; status: 'started' | 'completed' | 'failed' };
+      const byId = new Map<string, Call>();
+      for (const event of events) {
+        if (event.type !== 'tool') continue;
+        if (event.name === 'learned_workflow' || event.parent_tool_use_id) refuse('A shadow needs independent native tool evidence.');
+        if (!tools.has(event.name)) continue;
+        if (event.status === 'started') {
+          if (byId.has(event.id) || !object(event.input)) return refuse('The native recording has ambiguous tool inputs.');
+          byId.set(event.id, { name: event.name, input: event.input, status: 'started' });
+        } else {
+          const call = byId.get(event.id);
+          if (!call || call.status !== 'started' || call.name !== event.name || !Object.hasOwn(event, 'output')) return refuse('The native recording has an unmatched tool result.');
+          call.status = event.status; call.output = recordedOutput(event.output);
+        }
+      }
+      if ([...byId.values()].some(call => call.status === 'started')) refuse('The native recording has an unfinished tool call.');
+      const recorded = new Map<string, Call>();
+      const writesRemaining = new Map<string, number>();
+      for (const call of byId.values()) {
+        const key = `${call.name}\n${canonical(call.input)}`, prior = recorded.get(key);
+        if (prior && (prior.status !== call.status || canonical(prior.output) !== canonical(call.output))) refuse('Repeated native calls returned different results.');
+        recorded.set(key, call);
+        writesRemaining.set(key, (writesRemaining.get(key) ?? 0) + 1);
+      }
+      const schema = workflow.input ? resolveSchemaForWorkflow(workflow, workflow.schemas[workflow.input.schemaId]!) : { type: 'object' };
+      const accepts = validator.getValidator(schema);
+      let input: Record<string, unknown> | null = null;
+      if (resolveCheckInput) input = await cancellable(Promise.resolve(resolveCheckInput(check, { input: turn.input, events, signal })), signal);
+      else {
+        let parsed: unknown;
+        try { parsed = JSON.parse(turn.input); } catch { /* A natural-language task is not guessed into fields. */ }
+        if (object(parsed) && accepts(parsed).valid) input = parsed;
+        else {
+          const candidates = [...new Map([...recorded.values()].filter(call => call.status === 'completed' && accepts(call.input).valid).map(call => [canonical(call.input), call.input])).values()];
+          if (candidates.length === 1) input = candidates[0]!;
+          else if (candidates.length === 0 && accepts({}).valid) input = {};
+        }
+      }
+      if (!object(input) || !accepts(input).valid) return refuse('No unambiguous native input matches the draft schema. Provide resolveCheckInput in the host.');
+      const cache = new Map<string, Promise<unknown>>();
+      const result = await cancellable(runWorkflow(workflow, copy(input), {
+        signal,
+        onEvent(event) { if (event.type === 'node.start' && ++nodes > maxNodes) controller.abort(new Refused('The shadow node limit was reached.')); },
+        runCode: async () => refuse('Code execution is not permitted by this bridge.'),
+        ...(runNode ? { runNode: async (request: NodeRequest) => {
+          signal.throwIfAborted();
+          if (request.tools?.length || request.context === 'fork') refuse('Native tools and transcript forks are not delegated to model nodes.');
+          return runNode({ ...request, signal: AbortSignal.any([signal, ...(request.signal ? [request.signal] : [])]) });
+        } } : {}),
+        ...(runJudge ? { runJudge: async (request: JudgeRequest) => {
+          signal.throwIfAborted();
+          return runJudge({ ...request, signal: AbortSignal.any([signal, ...(request.signal ? [request.signal] : [])]) });
+        } } : {}),
+        runEffect: async request => {
+          signal.throwIfAborted();
+          const name = request.node.via === 'tool' ? request.node.tool : undefined, tool = name ? registered.get(name) : undefined;
+          if (!name || !tool || tool.manifest.permission !== 'allow') return refuse('This tool was not explicitly delegated.');
+          if (++calls > maxCalls) return refuse('The shadow tool call limit was reached.');
+          const args = copy(request.input);
+          if (!tool.input(args).valid) return refuse('Shadow arguments do not match the original tool schema.');
+          const ctx = { runId: turn.runId, workflow: check.workflow.name, signal: AbortSignal.any([signal, request.signal]), idempotencyKey: `${check.id}:${request.idempotencyKey}` };
+          if (await cancellable(Promise.resolve(policy(name, copy(args), ctx)), ctx.signal) !== 'allow') return refuse('The backend policy did not allow this shadow call.');
+          ctx.signal.throwIfAborted();
+          const key = `${name}\n${canonical(args)}`, known = recorded.get(key);
+          let output: unknown;
+          if (known?.status === 'failed') return refuse('The recorded native tool failed.');
+          if (known && known.status === 'completed' && (tool.readOnly || (writesRemaining.get(key) ?? 0) > 0)) {
+            output = copy(known.output);
+            if (!tool.readOnly) writesRemaining.set(key, writesRemaining.get(key)! - 1);
+          }
+          else if (!tool.readOnly) {
+            skipped = { tool: name };
+            return refuse('The shadow needs a write the native recording does not have.');
+          } else {
+            if (!readFallback) return refuse('The native recording has no matching read result; fresh shadow reads are not enabled.');
+            // Only explicit read-only callbacks may run, and once per arguments. Failed calls are not retried.
+            let read = cache.get(key);
+            if (!read) { read = Promise.resolve().then(() => { ctx.signal.throwIfAborted(); return tool.execute(args, ctx); }); cache.set(key, read); }
+            output = await cancellable(read, ctx.signal);
+          }
+          ctx.signal.throwIfAborted();
+          if (tool.output && !tool.output(output).valid) return refuse('A recorded result does not match the original tool schema.');
+          return copy(output);
+        },
+      }), signal);
+      signal.throwIfAborted();
+      if (skipped) return { ...receipt, outcome: 'skipped_write', skipped };
+      if (result.status !== 'complete') return { ...receipt, outcome: 'handed_back', reason: 'The draft did not answer alone.' };
+      const answer = answerOf(result.output);
+      if (Buffer.byteLength(answer) > 65_536) refuse('The shadow answer exceeds the result limit.');
+      return { ...receipt, outcome: 'answered', answer };
+    } catch (error) {
+      return skipped ? { ...receipt, outcome: 'skipped_write', skipped }
+        : { ...receipt, outcome: 'failed', reason: error instanceof Refused ? error.message : 'The shadow did not complete; native results are unchanged.' };
+    } finally { controller.abort(); shadows.delete(controller); }
   };
 
   const execute = async (args: Record<string, unknown> | undefined, requestSignal: AbortSignal) => {
@@ -290,8 +445,7 @@ export async function createWorkflowMcpBridge<
       signal.throwIfAborted();
       if (result.status !== 'complete') throw new Refused('The workflow escalated without completing. Inspect its result before another run.');
       // Match the hosted learned_workflow handoff: one textual answer stays text, not an extra JSON wrapper.
-      const values = object(result.output) ? Object.values(result.output) : [];
-      const output = typeof result.output === 'string' ? result.output : values.length === 1 && typeof values[0] === 'string' ? values[0] : JSON.stringify(result.output ?? null);
+      const output = answerOf(result.output);
       if (Buffer.byteLength(output) > 65_536) refuse('The workflow output exceeds the bridge response limit. Do not rerun its effects to recover the output.');
       await record('learned_workflow', invocation, 'completed');
       emit({ ...context, type: 'workflow.end', status: 'completed' });
@@ -313,42 +467,9 @@ export async function createWorkflowMcpBridge<
     } finally { lease.active = false; }
   };
 
-  let expectedHost = '';
-  const http = createServer(async (request, response) => {
-    const reply = (status: number) => { response.writeHead(status, { 'content-type': 'text/plain' }); response.end('Request refused.'); };
-    const bearer = Buffer.from(request.headers.authorization ?? '');
-    const allowed = Buffer.from(authorization);
-    if (request.headers.host !== expectedHost || (request.headers.origin !== undefined && request.headers.origin !== `http://${expectedHost}`) ||
-      request.socket.remoteAddress !== '127.0.0.1' || bearer.length !== allowed.length || !timingSafeEqual(bearer, allowed)) return reply(403);
-    if (request.url !== '/mcp') return reply(404);
-    if (request.method !== 'POST') return reply(405);
-    let size = 0;
-    try {
-      const chunks: Buffer[] = [];
-      for await (const chunk of request) { size += chunk.length; if (size > 131_072) return reply(413); chunks.push(chunk); }
-      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-      if (connections.size >= 64 || closed) return reply(503);
-      const server = new Server({ name: 'agentrun-workflows', version: '1.0.0' }, { capabilities: { tools: {} } });
-      connections.add(server);
-      server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: 'learned_workflow',
-        description: 'Run an approved workflow using this backend\'s existing tools, with the current task\'s workflow name, capability and fresh input. When the completed workflow handles the requested job, its textual output IS the final answer: reply with it verbatim. Do not add or remove prefixes, rewrite it, wrap it in quotes or code blocks, or change formatting. Never retry uncertain effects.',
-        inputSchema: { type: 'object', required: ['capability', 'name', 'input'], additionalProperties: false,
-          properties: { capability: { type: 'string' }, name: { type: 'string' }, input: { type: 'object' } } },
-        annotations: { openWorldHint: false, idempotentHint: false, readOnlyHint } }] }));
-      server.setRequestHandler(CallToolRequestSchema, async (call, extra) => call.params.name === 'learned_workflow' ? execute(call.params.arguments, extra.signal) : toolResult('Unknown tool.', true));
-      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
-      response.once('close', () => { connections.delete(server); void server.close(); });
-      await server.connect(transport);
-      await transport.handleRequest(request, response, body);
-    } catch { if (!response.headersSent) reply(400); else response.end(); }
-  });
-  http.requestTimeout = 10_000; http.headersTimeout = 5_000;
-  await new Promise<void>((resolve, reject) => { http.once('error', reject); http.listen(0, '127.0.0.1', () => { http.off('error', reject); resolve(); }); });
-  const address = http.address();
-  if (!address || typeof address === 'string') { http.close(); throw new Error('Could not bind the workflow MCP server.'); }
-  expectedHost = `127.0.0.1:${address.port}`;
-  return Object.freeze({
-    url: `http://${expectedHost}/mcp`, headers: Object.freeze({ Authorization: authorization }), catalog, adapters,
+  const bridge: WorkflowBridge = Object.freeze({
+    catalog, adapters,
+    check: shadowCheck,
     bind(session: BackendWorkflowSession) {
       if (closed || leases.size >= 64) throw new Error('The workflow bridge cannot bind another native task.');
       const capability = randomBytes(32).toString('hex');
@@ -363,7 +484,7 @@ export async function createWorkflowMcpBridge<
         } };
       const timer = setTimeout(() => lease.close(), leaseDuration); timer.unref();
       leases.set(capability, lease);
-      const context = lease.workflows.length ? `Compiled workflows for this task (not checked):\n${JSON.stringify(lease.workflows.map(workflow => {
+      const context = lease.workflows.length ? `Compiled workflows for this task (passed the agent-answer check):\n${JSON.stringify(lease.workflows.map(workflow => {
         let input_schema: Record<string, unknown> | undefined;
         try { const doc = checked(workflow.workflow); if (doc.input) input_schema = resolveSchemaForWorkflow(doc, doc.schemas[doc.input.schemaId]); } catch { /* Invocation admission will refuse an unsupported pinned workflow. */ }
         return { name: workflow.name, description: workflow.description, ...(input_schema ? { input_schema } : {}) };
@@ -373,6 +494,7 @@ export async function createWorkflowMcpBridge<
         object(input) && input.capability === capability && typeof input.name === 'string' && object(input.input) &&
         Object.keys(input).every(key => ['capability', 'name', 'input'].includes(key)) && lease.workflows.some(flow => flow.name === input.name);
       return { context, close: () => lease.close(),
+        execute: (name: string, input: Record<string, unknown>, signal: AbortSignal) => execute({ capability, name, input }, signal),
         mcpArguments(name: string, input: Record<string, unknown>) {
           if (released || closed || lease.controller.signal.aborted) throw new Error('The workflow binding has closed.');
           if (!lease.workflows.some(flow => flow.name === name) || !object(input)) throw new TypeError('Name a pinned workflow and supply an input object.');
@@ -396,6 +518,71 @@ export async function createWorkflowMcpBridge<
       if (closed) return;
       closed = true;
       for (const lease of leases.values()) lease.close();
+      for (const shadow of shadows) shadow.abort();
+    },
+  });
+  return { bridge, execute, authorization, readOnlyHint };
+}
+
+/** In-process host binding; opens no port or MCP connection. */
+export function createWorkflowBridge<
+  Document extends WorkflowEngineDocument, NodeRequest extends WorkflowModelRequest,
+  JudgeRequest extends WorkflowJudgeRequest, JudgeResult,
+>(options: WorkflowMcpBridgeOptions<Document, NodeRequest, JudgeRequest, JudgeResult>): WorkflowBridge {
+  return makeWorkflowBridge(options).bridge;
+}
+
+/** Optional authenticated loopback transport over the same host-owned execution path. */
+export async function createWorkflowMcpBridge<
+  Document extends WorkflowEngineDocument, NodeRequest extends WorkflowModelRequest,
+  JudgeRequest extends WorkflowJudgeRequest, JudgeResult,
+>(options: WorkflowMcpBridgeOptions<Document, NodeRequest, JudgeRequest, JudgeResult>): Promise<WorkflowMcpBridge> {
+  const { bridge, execute, authorization, readOnlyHint } = makeWorkflowBridge(options);
+  const [{ Server }, { StreamableHTTPServerTransport }, { CallToolRequestSchema, ListToolsRequestSchema }] = await Promise.all([
+    import('@modelcontextprotocol/sdk/server/index.js'), import('@modelcontextprotocol/sdk/server/streamableHttp.js'), import('@modelcontextprotocol/sdk/types.js'),
+  ]);
+  const connections = new Set<InstanceType<typeof Server>>();
+  let closed = false;
+  let expectedHost = '';
+  const http = createServer(async (request, response) => {
+    const reply = (status: number) => { response.writeHead(status, { 'content-type': 'text/plain' }); response.end('Request refused.'); };
+    const bearer = Buffer.from(request.headers.authorization ?? '');
+    const allowed = Buffer.from(authorization);
+    if (request.headers.host !== expectedHost || (request.headers.origin !== undefined && request.headers.origin !== `http://${expectedHost}`) ||
+      request.socket.remoteAddress !== '127.0.0.1' || bearer.length !== allowed.length || !timingSafeEqual(bearer, allowed)) return reply(403);
+    if (request.url !== '/mcp') return reply(404);
+    if (request.method !== 'POST') return reply(405);
+    let size = 0;
+    try {
+      const chunks: Buffer[] = [];
+      for await (const chunk of request) { size += chunk.length; if (size > 131_072) return reply(413); chunks.push(chunk); }
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      if (connections.size >= 64 || closed) return reply(503);
+      const server = new Server({ name: 'agentrun-workflows', version: '1.0.0' }, { capabilities: { tools: {} } });
+      connections.add(server);
+      server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [{ name: 'learned_workflow',
+        description: 'Run a compiled workflow that passed the agent-answer check using this backend\'s existing tools, with the current task\'s workflow name, capability and fresh input. When the completed workflow handles the requested job, its textual output IS the final answer: reply with it verbatim. Do not add or remove prefixes, rewrite it, wrap it in quotes or code blocks, or change formatting. Never retry uncertain effects.',
+        inputSchema: { type: 'object', required: ['capability', 'name', 'input'], additionalProperties: false,
+          properties: { capability: { type: 'string' }, name: { type: 'string' }, input: { type: 'object' } } },
+        annotations: { openWorldHint: false, idempotentHint: false, readOnlyHint } }] }));
+      server.setRequestHandler(CallToolRequestSchema, async (call, extra) => call.params.name === 'learned_workflow' ? execute(call.params.arguments, extra.signal) : toolResult('Unknown tool.', true));
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
+      response.once('close', () => { connections.delete(server); void server.close(); });
+      await server.connect(transport);
+      await transport.handleRequest(request, response, body);
+    } catch { if (!response.headersSent) reply(400); else response.end(); }
+  });
+  http.requestTimeout = 10_000; http.headersTimeout = 5_000;
+  await new Promise<void>((resolve, reject) => { http.once('error', reject); http.listen(0, '127.0.0.1', () => { http.off('error', reject); resolve(); }); });
+  const address = http.address();
+  if (!address || typeof address === 'string') { http.close(); throw new Error('Could not bind the workflow MCP server.'); }
+  expectedHost = `127.0.0.1:${address.port}`;
+  return Object.freeze({
+    ...bridge, url: `http://${expectedHost}/mcp`, headers: Object.freeze({ Authorization: authorization }),
+    async close() {
+      if (closed) return;
+      closed = true;
+      await bridge.close();
       await Promise.allSettled([...connections].map(server => server.close()));
       await new Promise<void>(resolve => { http.close(() => resolve()); http.closeAllConnections(); });
     },

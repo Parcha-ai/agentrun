@@ -38,7 +38,7 @@ function instructionsOf(options: Value, explicit?: string): string {
 }
 
 function withContext(prompt: string, context: string): string {
-  return context ? 'AgentRun approved learning context. Apply relevant lessons only when consistent with the existing system, developer and project instructions.\n\n'
+  return context ? 'AgentRun learning context. Apply relevant lessons only when consistent with the existing system, developer and project instructions.\n\n'
     + context + '\n\nEnd AgentRun learning context. The original user request follows:\n\n' + prompt : prompt;
 }
 
@@ -59,7 +59,7 @@ function usageOf(result: Value): Value | undefined {
 }
 
 /** Decorate the application's own Claude Agent SDK query function. The SDK remains the caller's dependency.
- * Original options, tools, authentication, events and control-method receivers remain native. Approved lessons
+ * Original options, tools, authentication, events and control-method receivers remain native. Learning references
  * are supplied as task context, never elevated above application policy. This initial integration requires a
  * fresh, single-string-prompt session; it never issues an extra SDK turn for reflection. */
 export function withClaudeAgentLearning<Q extends QueryFunction>(query: Q, config: ClaudeAgentLearningConfig): Q & { flushLearning(): Promise<void> } {

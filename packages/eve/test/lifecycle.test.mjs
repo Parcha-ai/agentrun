@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { beginTurn, learningInstructions, submitTurn } from '../dist/extension/lib/lifecycle.mjs';
 
-function service({ definition } = {}) {
+function service({ definition, check } = {}) {
   const requests = [], runs = new Map();
   let registered = Boolean(definition), failAfterCommit = false, revision = 'accepted-one', enabled = true;
   const fetch = async (url, options) => {
@@ -16,7 +16,7 @@ function service({ definition } = {}) {
     if (path === '/v2/agents/eve-support/sdk-runs') {
       const key = options.headers['Idempotency-Key'];
       if (!runs.has(key)) runs.set(key, { run_id: `run-${runs.size + 1}`, agent_id: 'eve-support', token: 'scoped-private-token',
-        console_url: 'https://console.example/#/runs/one', learning: { enabled, revision, context: 'Use a release brief.' } });
+        console_url: 'https://console.example/#/runs/one', learning: { enabled, revision, context: 'Use a release brief.', ...(check ? { check } : {}) } });
       if (failAfterCommit) { failAfterCommit = false; throw new Error('connection lost'); }
       return answer(runs.get(key));
     }
@@ -129,7 +129,7 @@ test('lost completion response retries identical evidence and outcome with scope
   assert.equal(server.runs.size, 1);
   assert.equal(attempts, 2);
   assert.equal(writes.size, 2);
-  const completion = JSON.parse(writes.get(`${record.receipt.run_id}:eve:complete`));
+  const completion = JSON.parse(writes.get(`${record.receipt.run_id}:complete`));
   assert.equal(completion.status, 'completed');
   assert.equal(completion.answer, 'The result includes [withheld] and [withheld].');
 });
@@ -149,4 +149,49 @@ test('a receipt cannot upload to a changed server or another agent/session', asy
   await assert.rejects(submitTurn({ ...settings, agentId: 'another-agent' }, record, completedReader()), /another server/);
   await assert.rejects(submitTurn(settings, record, { ...completedReader(), id: 'other-session' }), /another server/);
   assert.equal(server.requests.length, before);
+});
+
+
+test('Eve supplies original recorded tool payloads only to its private shadow and persists the result before upload', async () => {
+  const engine = await import('@parcha/agentrun-dsl');
+  const schema = { type: 'object', properties: { service: { type: 'string' } }, required: ['service'], additionalProperties: false };
+  const output = { type: 'object', properties: { brief: { type: 'string' } }, required: ['brief'], additionalProperties: false };
+  const workflow = { v: 2, name: 'release', schemas: { Input: schema, Output: output }, input: { schemaId: 'Input' },
+    output: { schemaId: 'Output', path: 'result' }, root: { node: 'call', label: 'read', via: 'tool', tool: 'mcp:release/status',
+      args: { service: '{service}' }, out: 'Output', as: 'result', deadline_s: 5 } };
+  const check = { id: 'shadow-one', revision: 'candidate-revision', digest: '1234567890abcdef',
+    workflow: { name: 'release', workflow: JSON.stringify(workflow), description: 'Private candidate.' } };
+  const server = service({ check }), writes = [];
+  let persisted, callbacks = 0, loseCompletion = true;
+  const settings = { ...config(async (url, init) => {
+    if (!new URL(url).pathname.startsWith('/v2/sdk-runs/')) return server.fetch(url, init);
+    const body = JSON.parse(init.body);
+    if (body.events?.some(row => row.type === 'workflow_check')) assert.equal(persisted.shadow.state, 'complete');
+    writes.push(body);
+    if (new URL(url).pathname.endsWith('/complete') && loseCompletion) { loseCompletion = false; throw new Error('lost response'); }
+    return Response.json({});
+  }), workflows: { engine, policy: () => 'allow', tools: [{ name: 'mcp:release/status', nativeName: 'release_status',
+    description: 'Read the release.', input_schema: schema, output_schema: output, permission: 'allow', readOnly: true,
+    execute() { callbacks++; assert.fail('The native recording already holds the result.'); } }] } };
+  const record = await beginTurn(settings, source);
+  assert.doesNotMatch(learningInstructions(record, settings.workflows), /Private candidate|shadow-one/);
+  const rows = [];
+  for await (const row of completedReader().stream()) rows.push(row);
+  rows.splice(5, 0,
+    { type: 'call.requested', data: { callId: 'native-call', owner: { runId: 'model' }, capability: { name: 'release_status', kind: 'tool' }, input: { service: 'private-service' } } },
+    { type: 'call.started', data: { callId: 'native-call' } },
+    { type: 'call.settled', data: { callId: 'native-call', outcome: 'completed', output: { brief: 'The original answer.' } } });
+  const reader = { id: source.sessionId, async *stream() {
+    for (const [line, row] of rows.entries()) yield { ...row, scope: { turnId: source.turnId },
+      meta: { at: '2026-01-01T00:00:00Z', position: { line, index: 0 }, endOfLine: true } };
+  } };
+  const persist = saved => { persisted = structuredClone(saved); };
+  await assert.rejects(submitTurn(settings, record, reader, persist), /Cannot reach the server/);
+  assert.equal(await submitTurn(settings, persisted, reader, persist), true);
+  assert.equal(callbacks, 0);
+  const checks = writes.flatMap(row => row.events ?? []).filter(row => row.type === 'workflow_check');
+  assert.equal(checks.length, 2);
+  assert.deepEqual(checks[0], { type: 'workflow_check', id: check.id, digest: check.digest, outcome: 'answered', answer: 'The original answer.' });
+  assert.deepEqual(checks[1], checks[0]);
+  assert.doesNotMatch(JSON.stringify(writes), /private-service|scoped-private-token|fake-test-key/);
 });

@@ -43,6 +43,8 @@ test('Claude wrapper preserves native options, stream events and methods while r
   assert.equal(calls.length, 1, 'no hidden reflection turn enters the existing SDK session');
   assert.equal(calls[0].options, options);
   assert.match(calls[0].prompt, /Prefer concise release reports/);
+  assert.match(calls[0].prompt, /AgentRun learning context/);
+  assert.doesNotMatch(calls[0].prompt, /approved learning|approved lessons/i, 'Receiving learning context must not claim approval of its contents.');
   assert.equal(events[0], assistant);
   assert.equal(events[1], result);
   assert.equal(requests.find(r => r.path.endsWith('/sdk-runs')).body.input, 'What is the release status?');

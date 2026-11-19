@@ -67,10 +67,18 @@
     "tag": "beta"
   },
   "peerDependencies": {
-    "@modelcontextprotocol/sdk": "1.32.2"
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "ajv": "8.18.0",
+    "ajv-formats": "3.0.1"
   },
   "peerDependenciesMeta": {
     "@modelcontextprotocol/sdk": {
+      "optional": true
+    },
+    "ajv": {
+      "optional": true
+    },
+    "ajv-formats": {
       "optional": true
     }
   },

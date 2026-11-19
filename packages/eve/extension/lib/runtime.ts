@@ -26,11 +26,17 @@ export async function reconcile(): Promise<void> {
       continue;
     }
     try {
-      if (await submitTurn(extension.config, record, withPendingEvidence(sessions.attach(record.source.sessionId), pendingEvidence.get(), record.source.turnId))) {
+      if (await submitTurn(extension.config, record, withPendingEvidence(sessions.attach(record.source.sessionId), pendingEvidence.get(), record.source.turnId), saved => {
+        learningState.update(state => ({ turns: state.turns.map(row => row.receipt.run_id === saved.receipt.run_id ? { ...saved } : row) }));
+      })) {
         learningState.update(state => ({ turns: state.turns.map(row => row.receipt.run_id === record.receipt.run_id ? { ...row, submitted: true } : row) }));
       }
     } catch (error) {
-      if (!(error instanceof AgentRunRefused) || error.code !== 'not_continuable') throw error;
+      if (!(error instanceof AgentRunRefused) || error.code !== 'not_continuable') {
+        // Delivery belongs to this old receipt. Never fail an unrelated native turn because telemetry is unavailable.
+        console.warn(`AgentRun run ${record.receipt.run_id} still has pending evidence; new native turns can continue.`);
+        continue;
+      }
       // The server closed/expired this receipt. Do not invent a completion or keep blocking new eve turns.
       learningState.update(state => ({ turns: state.turns.map(row => row.receipt.run_id === record.receipt.run_id ? { ...row, expired: true } : row) }));
       console.warn(`AgentRun run ${record.receipt.run_id} no longer accepts evidence; self-improvement was skipped.`);

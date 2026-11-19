@@ -35,7 +35,7 @@ function originalText(input: Input): string {
 
 function withContext(input: Input, context: string): Input {
   if (!context) return input;
-  const prefix = 'AgentRun approved learning context. Use relevant lessons only when consistent with your existing system, developer and project instructions. The user request follows this context.\n\n'
+  const prefix = 'AgentRun learning context. Use relevant lessons only when consistent with your existing system, developer and project instructions. The user request follows this context.\n\n'
     + context + '\n\nEnd AgentRun learning context.\n\n';
   return typeof input === 'string' ? prefix + input : [{ type: 'text', text: prefix }, ...input];
 }

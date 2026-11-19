@@ -3561,8 +3561,9 @@ job, once it repeats: after `learning.compile_after` completed runs (20 by defau
 for the whole job as one workflow, which is checked in code, replayed on the agent's own past inputs, and served as one
 tool once it agrees with the agent's own answers. The console reads `GET /v2/agents/{id}/learning` for the agent's
 corrections, workflows and history, and `GET /v2/runs/{id}/learning` and its `/diff` for an individual result.
-Observation requires no model key; producing new learning requires an agentic run through this server with learning
-enabled and a configured model.
+Observation requires no model key; producing new learning requires an agentic run executed or reported through this
+server with learning enabled and a configured compile model. Connected SDK checks run in the application, as described
+below.
 
 Importing Claude Code, Codex or pi session history does not replay learning or connect a live learning stream.
 Before/after cost and duration are observations, not an accuracy evaluation.
@@ -3592,7 +3593,8 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   follow-up reads the same.
 - The workflows the agent learned, each a folder `workflows/<name>/` on `main` with its `workflow.json` and its
   `README.md`, are the run's as one tool, `learned_workflow {name, input}`, on every harness (pi, claude-agent, codex),
-  with no edit of the agent's definition. Only an active one is: its `README.md` sets no status, or `active`; front
+  with no edit of the agent's definition. Only an active, promoted revision is: its `README.md` sets no status, or `active`,
+  and its promotion record names the checked champion. A compiled draft without that record is withheld; front
   matter that does not read one way (not closed, a key indented under another, a key set twice, a status over more
   than one line) reads as retired, so no run is given it. Its description names each workflow with the line its README gives, 8 KiB of lines in all: by name, each
   while its line fits, and one that does not, or holds one of the server's secrets, is left out. A README whose front
@@ -3660,12 +3662,38 @@ The round's commit is made with plumbing: the passing draft's files added or cha
 the commit the change was made on (once more on a `main` that moved meanwhile), and a run a trailer already names is
 merged, never twice. A draft file that is not on `main` as it was on the run's seed is a conflict, never written over.
 
-A new workflow revision serves only once its promotion check passes: the first run that lays it replays it on the
+A new workflow revision serves only once its promotion check passes. For a server-run agent, the first run that lays it replays it on the
 inputs of the agent's last `compile_after` completed runs, one replay run each at workflow cost, and scores each against
 the agent's own recorded answer. It is promoted when it agrees on at least `learning.agree_min` (0.8) of them and
 answers at least `learning.alone_min` (0.7) alone; under either bar it is held, and the next run asks one revision with
 the inputs it disagreed on. Held again, it stops, and nothing compiles again until its owner acts. A promotion by
 check is never moved by grades. `GET /agents/{agent_id}/learning/promotions` reads every record.
+
+Connected SDK agents (Claude Agent SDK, Codex SDK and Eve) check where their original tools live. When an application
+starts an SDK run with a workflow bridge, `learning.workflows` contains only compatible promoted revisions. If a
+compiled draft needs a check, the server instead reserves one candidate in
+`learning.check: {id, revision, digest, workflow}` and returns an empty `learning.workflows` list. The candidate is
+not a tool for the model. The application completes its ordinary native turn first, then the bridge executes the
+candidate in shadow using that turn's recorded tool results. It makes no fresh tool calls by default and never repeats
+a write. A host can explicitly enable `shadowReadFallback` for its declared read-only callbacks under its original
+policy. Missing or changed evidence, an input that cannot be bound to the workflow, and unsupported adapters fail the
+check closed.
+
+The bridge posts one `workflow_check` event with the reservation's `id` and `digest`, its execution `outcome`
+(`answered`, `handed_back`, `failed` or `skipped_write`), and its answer or reason. It does not choose whether the
+workflow passes. The server compares the answer with the immutable native completion and applies the same
+`agree_min` and `alone_min` promotion policy. This initial SDK check uses **one independent native turn** (`n: 1`),
+not the server-run agent's historical replay set. Agreement is whole-answer equality (JSON values or trimmed text), or equality of the owner's
+configured `agree_on` fields; there is no semantic model grader on this path. A paraphrase can therefore be held even
+when a person would consider it equivalent. Incomplete, redacted, failed, cancelled or workflow-assisted native evidence
+cannot promote a draft. A skipped write records no agreement.
+
+Concurrent starts reserve at most one check per workflow; retries keep the same reservation, and a late report cannot
+replace a recorded decision. An abandoned reservation is held when a later start sees it past the one-hour deadline.
+An older checked champion can still serve while a newer revision is checking or held, except on the independent
+check turn itself. Learning Off returns neither workflows nor a check. Without a workflow bridge the application gets
+no workflow to execute. The application's tools, model callbacks and credentials stay in its process; the server receives
+evidence and the shadow result through the run-scoped SDK credential.
 
 The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason, detail}` in run lists, the detail cut to 140
 characters and no time) says how it went: `seeded`, then `reflecting` during its end step, and `merged`, or `dropped`
