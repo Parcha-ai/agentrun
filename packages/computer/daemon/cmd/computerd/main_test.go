@@ -644,7 +644,7 @@ func TestProbeDiagnoseTakesNoOtherArgument(t *testing.T) {
 // attach takes its URL and token from the environment alone, refuses a missing or malformed one with 2, and stops with 3
 // when the server refuses the token at the upgrade; no line it writes holds the token. (internal/attach tests the rest.)
 func TestAttachReadsItsEnvironmentAndExitsAsItsWordsSay(t *testing.T) {
-	token := "art_" + strings.Repeat("ab", 32)
+	token := "art_" + strings.Repeat("Ab", 21) + "c"
 	t.Setenv("AGENTRUN_ATTACH_URL", "")
 	t.Setenv("AGENTRUN_ATTACH_TOKEN", token)
 	if code, stderr := computerd(t, 30*time.Second, "attach"); code != 2 || !strings.Contains(stderr, "AGENTRUN_ATTACH_URL") {
@@ -707,7 +707,7 @@ func TestPairAttachAndUnpairKeepTheTokenInItsFileAlone(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("runs as root: root's token file is /etc/agentrun/computer.token, which a test must not write")
 	}
-	token := "art_" + strings.Repeat("0f", 32)
+	token := "art_" + strings.Repeat("Zz_-", 10) + "Q0w"
 	config := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", config)
 	t.Setenv("AGENTRUN_ATTACH_TOKEN", "")

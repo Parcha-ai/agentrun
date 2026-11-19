@@ -9,8 +9,8 @@ import (
 	"testing"
 )
 
-// A paired computer's token as serve makes it: art_ and 32 bytes in hex.
-var pairedToken = "art_" + strings.Repeat("0f", 32)
+// A paired computer's token as serve makes it: art_ and 32 bytes in base64url.
+var pairedToken = "art_" + strings.Repeat("Zz_-", 10) + "Q0w"
 
 // pair writes the token 0600 from its first byte, in a directory it makes 0700, by a rename that leaves nothing else
 // behind; the umask cannot widen either.

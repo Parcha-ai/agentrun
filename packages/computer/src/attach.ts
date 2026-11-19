@@ -149,10 +149,14 @@ export interface MachineMint {
 	run?: string;
 }
 
+/** A new machine token, a paired computer's or a hosted machine's: `art_` and 32 random bytes in base64url, the one
+ *  shape computerd takes. */
+export const newMachineToken = (): string => `art_${randomBytes(32).toString("base64url")}`;
+
 /**
  * The tokens of hosted machines that dial (spec/computer/attach.md, Hosted machines that dial), as the server's store
- * keeps them: HostedProvider mints one at each dial create and revokes it at the delete. A token is `art_` and 64 hex
- * digits (32 random bytes); the store keeps only its sha256, bound to the machine and its mint, and never logs it. The
+ * keeps them: HostedProvider mints one at each dial create and revokes it at the delete. A token is newMachineToken's;
+ * the store keeps only its sha256, bound to the machine and its mint, and never logs it. The
  * server's attach upgrade and its daemon route take it while it is neither revoked nor past expiresAt, and hand its
  * socket to the AttachHub as mintedComputer(machine, mint). machine is the computer's name, computer-<12 hex digits>,
  * from its create's request id (computerNameFor): what the provider's connect and release are given.
@@ -181,7 +185,7 @@ export class MemoryMachineTokens implements MachineTokens {
 	// No await in either: a mint replaces the machine's token at once, so two of one machine leave one token, not two.
 	async mint(machine: string, mint: MachineMint): Promise<string> {
 		this.#drop(machine);
-		const token = `art_${randomBytes(32).toString("hex")}`;
+		const token = newMachineToken();
 		this.#held.set(sha256(token), { machine, mint: { ...mint } });
 		this.#hashOf.set(machine, sha256(token));
 		return token;

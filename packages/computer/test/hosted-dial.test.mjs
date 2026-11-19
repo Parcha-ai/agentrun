@@ -42,7 +42,7 @@ test("a dial create boots the machine with its env, runs nothing in it, and read
 	assert.deepEqual(Object.keys(env).sort(), ["AGENTRUN_ATTACH_TOKEN", "AGENTRUN_ATTACH_URL", "AGENTRUN_DAEMON_SHA256", "AGENTRUN_DAEMON_URL", "AGENTRUN_INIT_ARGS"]);
 	assert.equal(env.AGENTRUN_ATTACH_URL, "ws://127.0.0.1:8080/v2/computers/attach");
 	assert.equal(env.AGENTRUN_DAEMON_URL, "http://127.0.0.1:8080/v2/computers/daemon?arch=amd64");
-	assert.match(env.AGENTRUN_ATTACH_TOKEN, /^art_[0-9a-f]{64}$/);
+	assert.match(env.AGENTRUN_ATTACH_TOKEN, /^art_[A-Za-z0-9_-]{43}$/);
 	assert.match(env.AGENTRUN_DAEMON_SHA256, /^[0-9a-f]{64}$/);
 	assert.equal(env.AGENTRUN_INIT_ARGS, `--deadline ${request.labels["agentrun.computer.deadline"]} --user 2510:2510 --own-network --max-deadline ${request.labels["agentrun.computer.max-deadline"]}`);
 	assert.equal(request.command, undefined, "no entrypoint: agentrun-dial starts init");

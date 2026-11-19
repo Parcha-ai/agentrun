@@ -168,7 +168,7 @@ func TestADialRedialAndRefusalNeverLogTheToken(t *testing.T) {
 			t.Errorf("the log says no %q: %s", want, log)
 		}
 	}
-	if strings.Contains(log, testToken) || strings.Contains(log, strings.Repeat("0", 64)) {
+	if strings.Contains(log, testToken[len("art_"):]) {
 		t.Fatalf("the log holds the token: %s", log)
 	}
 }
@@ -273,8 +273,9 @@ func TestFromEnvRefusesAMissingOrMalformedURLOrTokenWithoutSayingIt(t *testing.T
 		{"wss://agentrun.example.com", testToken},
 		{"wss://agentrun.example.com/v2/computers/attach", ""},
 		{"wss://agentrun.example.com/v2/computers/attach", "art_" + strings.Repeat("A", 64)},
-		// 32 bytes in base64url: no machine token, whoever minted it.
-		{"wss://agentrun.example.com/v2/computers/attach", "art_" + strings.Repeat("Zz_-", 10) + "Q0w"},
+		// 32 bytes in hex: no machine token. A server minted one for a hosted machine before tokens had one shape, and
+		// that machine runs the computerd its server served then.
+		{"wss://agentrun.example.com/v2/computers/attach", "art_" + strings.Repeat("0f", 32)},
 		{"wss://agentrun.example.com/v2/computers/attach", testToken + "\r\nX-Other: 1"},
 	} {
 		t.Setenv(URLEnv, tc[0])

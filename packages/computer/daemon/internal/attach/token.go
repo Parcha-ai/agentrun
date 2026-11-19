@@ -157,7 +157,7 @@ func readToken(path string, uid int) (string, error) {
 	}
 	token := strings.TrimSuffix(string(data), "\n")
 	if !tokenPattern.MatchString(token) {
-		return "", fmt.Errorf("the token file %s holds no machine token (art_ and 64 lowercase hex): delete it and pair again", path)
+		return "", fmt.Errorf("the token file %s holds no machine token (art_ and 43 base64url characters): delete it and pair again", path)
 	}
 	return token, nil
 }

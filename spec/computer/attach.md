@@ -68,7 +68,7 @@ under the code's owner, with its name, its `hello` and the time. The answer:
 - The computer's id is `cmp-` and 16 lowercase letters and digits: an id an agent's computer setting names as its
   provider, `{"kind":"desktop","provider":"cmp-8f2k3jq7m4xw9tnb"}`.
 
-- The token is the machine's long-lived credential: `art_` and 64 lowercase hex (32 random bytes), the one shape of
+- The token is the machine's long-lived credential: `art_` and 32 random bytes in base64url, the one shape of
   every machine token, a paired computer's or a hosted machine's; the prefix lets a secret scanner know it. It is shown only in this answer. The app keeps it in the OS's keychain (the macOS login keychain, Android's
   Keystore-backed storage), or, on a box with no keychain, a file only its user can read ([A Linux box](#a-linux-box)),
   and never in a log. The server keeps only its SHA-256.
@@ -314,8 +314,8 @@ A vendor that boots an image with env, and has no two-way exec, makes machines t
 reached ([`provider.md`](provider.md#a-hosted-vendors-exec), facts `connect: "dial"`). Its computers are a hosted
 provider's, made and deleted by runs; only the transport is this binding's.
 
-- **Mint.** `create` mints the machine its own token (`MachineTokens.mint` in `src/attach.ts`): `art_` and 64 hex, of
-  32 random bytes, for the computer's name, kind, os and arch. The store keeps only its SHA-256. It expires at the
+- **Mint.** `create` mints the machine its own token (`MachineTokens.mint` in `src/attach.ts`): `art_` and 32 random
+  bytes in base64url, for the computer's name, kind, os and arch. The store keeps only its SHA-256. It expires at the
   computer's `backstopAt` (its deadline cap plus the backstop margin), so a machine the janitor never reaches stops
   dialing then at the latest.
 - **Boot env.** The vendor's create puts five names in the machine's env, and a sixth for a desktop, and nothing
