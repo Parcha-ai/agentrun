@@ -2058,9 +2058,13 @@ credential, and a conversation can still quote it, but no row, journal entry, ti
 field (an account id is always 8 or more: `ca_` and 5 to 64 characters). A message's binding replaces
 the run's for the turn it starts. A run that names no account has its calls of the server answered, unsent, that it
 was handed none, so a per-run server never calls as a default account. A malformed user or account is `422
-input_invalid` at `mcp_auth.<server>.composio_user_id` or `.connected_account_id`; headers for such a server, or a
+input_invalid` at `mcp_auth.<server>.composio_user_id` or `.connected_account_id`, and so is a binding to the preset's
+default user `agentrun` (`not_allowed`: the user single-user preset servers call as); headers for such a server, or a
 binding for any other server, are `422` at `mcp_auth.<server>`, and no run starts. A per-run server makes no Composio
 trigger: a trigger runs as one account. A server saved for one user before this mode keeps calling as that user.
+
+With `user_id: "per_run"`, whoever can start a run chooses its Composio user, so the host (Grep, say) owns which user
+each run binds: it binds each run to its own person and never takes the ids from that person.
 
 What can go wrong, told apart:
 
