@@ -539,6 +539,9 @@ if (!values["no-runner"] && askedAt === undefined) {
       process.exit(1);
     }
     console.error(`agentrun-serve: ${error.message}`);
+    // And said in the store, as the runner subcommand says it (presence.ts): while no runner that claims is there, the
+    // server refuses a launch in these words and fails the runs left queued, never queueing one for good.
+    serve.refuseRuns(error.message);
   }
 }
 // A token from the environment is the operator's already, and the stored one is printed by the start that made it only.

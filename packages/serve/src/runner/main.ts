@@ -11,8 +11,10 @@
 // run is claimable when its lease lapses); then 0. Bad arguments exit 2, a store it cannot open (yet) 3, anything else 1.
 // A run isolation it cannot give (run-child-host.ts runIsolationOf) is said, and it stays up claiming nothing until a stop: 0.
 // An error nothing handles exits 1 at once, said with its stack (lastResort).
+import { randomUUID } from "node:crypto";
 import { mkdirSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { type HostedDial, PROVIDERS } from "@parcha/agentrun-computer";
 import { type RunnerRelay, startRunnerRelay } from "../dial-relay.js";
 import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
@@ -49,6 +51,7 @@ import { RUN_PROCESS_MIB, runnerMemory } from "./memory-claim.js";
 import { childLoops, isolationLoops, type RunIsolation, RunIsolationRefused, runIsolationOf } from "./run-child-host.js";
 import { sweepEndedScratch } from "./scratch-sweep.js";
 import { RUNNER_RENEW_EVERY_MS, runnerName, startRunner, type Runner, type RunnerEvent, type RunnerMemory } from "./runner.js";
+import { keepPresence, type Presence } from "./presence.js";
 
 export { RUNNER_RENEW_EVERY_MS } from "./runner.js";
 
@@ -267,6 +270,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
   let seal: Awaited<ReturnType<typeof bootSealKey>> | undefined;
   let janitor: ReturnType<typeof startJanitor> | undefined;
   let relay: RunnerRelay | undefined;
+  let presence: Presence | undefined;
   try {
     // The server's seal key, booted the one way the server boots it (seal-key.ts): the one handed over, else the one in
     // this data directory, checked against what the store records. A runner on a store whose secrets another key sealed
@@ -274,9 +278,13 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
     // or records a key.
     seal = await bootSealKey(store, options.dataDir, { given: handedSecret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV], role: "runner" });
     const name = options.name ?? runnerName();
+    // One incarnation for this process: its word in the store that it is there (presence.ts) and its relay's minted
+    // tokens and proofs name the same one, so the server's "restarted since" and the runner's row speak of one process.
+    // The presence first, then the relay says where it answers on the presence's row.
+    presence = keepPresence(store.runners, name, null, { warn, incarnation: randomUUID() });
     // Its relay (dial-relay.ts), where its environment names the server's public address: a machine that dials the
     // server lands in this runner's hub, through the server. Its log lines are the runner's warnings.
-    relay = await startRunnerRelay({ store, sealKey: seal.key, runner: name, env, log: warn });
+    relay = await startRunnerRelay({ store, sealKey: seal.key, runner: name, presence, env, log: warn });
     const made = options.createLoop ?? ofStore((opened, sealKey, dial) => runnerLoop(opened, options.dataDir, undefined, sealKey, undefined, dial));
     // A factory of the store (marked by ofStore) is given the store; a loop factory is used as is.
     const parts = isStoreFactory(made) ? made(store, seal.key, relay?.dial) : made;
@@ -292,6 +300,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       store,
       createLoop,
       name,
+      presence,
       ...(options.loops ? { loops: options.loops } : {}),
       ...(options.drainMs ? { drainMs: options.drainMs } : {}),
       memory,
@@ -302,6 +311,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
   } catch (error) {
     await janitor?.close();
     await relay?.close();
+    await presence?.close();
     seal?.release();
     await store.close();
     throw error;
@@ -309,6 +319,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
   let closing: Promise<void> | undefined;
   const held = seal;
   const relayed = relay;
+  const kept = presence;
   return {
     runner,
     store: { kind, schema },
@@ -317,8 +328,10 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       (closing ??= (async () => {
         // The janitor's sweep is cut and waited for on its own bound, beside the runner's close, never before it.
         await Promise.all([janitor?.close(), runner.close()]);
-        // Its relay after its runs: a run's release revokes its machine's token through it.
+        // Its relay after its runs: a run's release revokes its machine's token through it. Then its word that it is
+        // there: it claims no more.
         await relayed?.close();
+        await kept.close();
         // A first-use install its claims started, stopped as they let go: its npm ends before this process can.
         await claimInstallsStopped();
         await store.close();
@@ -532,7 +545,10 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
     // Said, then up and claiming nothing until a stop: in the image's server-and-runner either process's exit stops the
     // container, which a platform that restarts it (Render, Railway) would loop on, the refusal lost in the restarts.
     console.error(`agentrun-serve runner: ${error.message}`);
-    await untilSignalled(RUNNER_SIGNALS);
+    // And said in the store until the stop (presence.ts), so the server, in its own process or on another host, refuses a
+    // launch in these words and fails the runs left queued while no runner that claims is there.
+    const stop = untilSignalled(RUNNER_SIGNALS);
+    await refusedInStore(args.dataDir, env, name ?? runnerName(), error.message, stop);
     return 0;
   }
   if (isolation.kind === "uid" && holds.loops > isolation.slots) console.error(`agentrun-serve runner: each run runs as a user of its own, and the helper reaches ${isolation.slots} slots from slot ${isolation.first}: this runner holds at most ${isolation.slots} runs at once`);
@@ -599,6 +615,38 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
 
 /** The signals that stop a runner process. */
 const RUNNER_SIGNALS: readonly NodeJS.Signals[] = ["SIGTERM", "SIGINT"];
+
+/** How long a refusing runner waits before it tries its store again (refusedInStore). */
+const REFUSED_STORE_RETRY_MS = 5_000;
+
+/** A runner whose run isolation was refused: its `words` kept in its store (presence.ts) until `stopped`, then its row
+ *  removed and the store closed. A store that does not open (not set up yet, one its server has yet to upgrade, a
+ *  connection down) is said, once for each reason, and tried again every REFUSED_STORE_RETRY_MS until it opens or the
+ *  stop: a runner that starts before its server still tells that server, once it is there. */
+async function refusedInStore(dataDir: string, env: NodeJS.ProcessEnv, name: string, words: string, stopped: Promise<void>): Promise<void> {
+  const warn = (line: string) => void console.error(`agentrun-serve runner: ${line}`);
+  let stop = false;
+  void stopped.then(() => void (stop = true));
+  let said: string | undefined;
+  while (!stop) {
+    let store: Store;
+    try {
+      ({ store } = await openRunnerStore(dataDir, env, warn, undefined));
+    } catch (error) {
+      const why = (error as Error)?.message ?? String(error);
+      if (why !== said) warn(`the server is not told yet that this runner claims nothing, since its store did not open (tried again every ${REFUSED_STORE_RETRY_MS / 1000} s): ${why}`);
+      said = why;
+      await Promise.race([sleep(REFUSED_STORE_RETRY_MS, undefined, { ref: false }), stopped]);
+      continue;
+    }
+    if (said !== undefined) warn("its store opened: the server is told that this runner claims nothing");
+    const presence = keepPresence(store.runners, name, words, { warn });
+    await stopped;
+    await presence.close();
+    await store.close();
+    return;
+  }
+}
 
 /** Holds the process up, with nothing else to do, until one of `signals`. */
 function untilSignalled(signals: readonly NodeJS.Signals[]): Promise<void> {

@@ -283,7 +283,18 @@ copy: a service that loses it loses them). With no
 `AGENTRUN_TOKEN` from the Environment tab, or the code the start prints in the service's log (`Set up this server: ...`). On another host, set `AGENTRUN_PUBLIC_URL` to
 the address people open before the first start; without it, whoever opens the console first sets the password. Set
 `AGENT_MODEL` and the provider's key there too. Render waits 30 s after SIGTERM, above the image's 6 s drain; it does not
-let a service with a disk change that.
+let a service with a disk change that. It sets `AGENTRUN_RUN_USER=same` (every run as the server's own user, each still
+a process of its own), as Railway's template does: neither platform has been shown to keep the image helper's file
+capabilities.
+
+A runner that refuses to claim (its run isolation refused: an `AGENTRUN_RUN_USER` it does not know, or a helper that
+can't switch users) stays up and says so in the store. While every runner there has refused, and one at least is there,
+the server refuses a run's start, and a message to a run, with 503 `runner_refused` in the runner's words and their fix;
+`GET /v2/capabilities` has them in `runner_refused` (null otherwise); `GET /v2/health` answers 200 `degraded`, its
+`runner` check `refused` and the words in `runner_refused`, so a platform's health check never restarts the service over
+a setting; and a run already queued ends `failed` with error code `runner_refused`. A run a runner claimed is left to it.
+A server with `--no-runner` and no runner started yet refuses nothing: runs queue for the runner to come. Once a runner
+that can claim is there, the refusal is gone.
 
 ## The disk, and earlier data directories
 

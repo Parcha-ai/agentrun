@@ -14,6 +14,7 @@ import { currentLearning, holdsForOk, type ItemStatus, type Learning, learningVi
 import { said } from "./learning-words.js";
 import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
 import { COMPUTER_UNAVAILABLE_CODE, lostEndMessage } from "./computer-lost.js";
+import { refusedEndMessage, RUNNER_REFUSED_CODE } from "./runner/presence.js";
 import { launchOf } from "./handed-values.js";
 import { learningStartOf, type RunLaunch, seedFailed } from "./run-launch.js";
 import {
@@ -163,6 +164,9 @@ const errorOfRow = (summary: string | null): { code: string; message: string; re
   if (over !== undefined) return { code: SPEND_CAP_REACHED, message: over, retryable: false };
   const lost = lostEndMessage(summary);
   if (lost !== undefined) return { code: COMPUTER_UNAVAILABLE_CODE, message: lost, retryable: false };
+  // A run still queued when every runner here refused to claim (runner/presence.ts refusedEnd): runner_refused.
+  const refused = refusedEndMessage(summary);
+  if (refused !== undefined) return { code: RUNNER_REFUSED_CODE, message: refused, retryable: false };
   if (summary !== null && contentFiltered(summary)) return { code: MODERATED, message: CONTENT_FILTER_WORDS, retryable: false };
   return { code: "run_failed", message: summary ?? "The run failed.", retryable: false };
 };

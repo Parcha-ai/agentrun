@@ -26,7 +26,7 @@ import { Worker } from "node:worker_threads";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
 import { rm } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import type { Revision, RunOrigin } from "./agent-rows.js";
 import { pinFirst as pinFirstOf } from "./mcp-pin-first.js";
 import { type AgentEntry, agentRevision, agentRevisions, agentView, commitAgent, createAgent, etagOf, externalKey, getAgent, listAgents, makeRevision, refuseExternal, revisionView, type SaveCheck, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
@@ -72,6 +72,7 @@ import { dialHost, liveReachOf, reachForRun } from "./live-reach.js";
 import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
 import { type RunMoment, type State, type Status } from "./run-view.js";
+import { keepPresence, type Presence, refusedEnd, runnersRefused } from "./runner/presence.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, prepareLaunch, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
 import { builtOfNow, factsOverStore, listedItem, momentOverStore, summaryOverStore, timelineOverStore, toolsUsdOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { healEndedCosts } from "./cost-heal.js";
@@ -183,7 +184,7 @@ import { recordingsFolder } from "./workspace/paths.js";
 import { heldRoute, holdIssues, runComputerRead } from "./computer-held-routes.js";
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runComputerKind } from "./computer-routes.js";
 import { ATTACH_PATH, AttachHub, type HostedDial, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
-import { type AttachTiming, createAttachRoutes, pairedView, RELAY_STALE_MS } from "./computer-attach.js";
+import { type AttachTiming, createAttachRoutes, liveRelays, pairedView } from "./computer-attach.js";
 import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
 import { COMPUTER_TOOLS, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
@@ -224,6 +225,8 @@ const IMPORT_STARTS = 3;
 const IMPORT_HEAP_MB = 2048;
 const MAX_MESSAGE = 20_000;
 const MAX_WAIT_MS = 25_000;
+/** How often the server fails the runs still queued while no runner here can take them (runner/presence.ts). */
+const REFUSED_SWEEP_MS = 2_000;
 const PAGE_ROWS = 500;
 const FILE_LIST_CAP = 2_000;
 /** Where the stop's lines go (ServeOptions.notice). Best-effort: a notice that throws never stops a close or a start. */
@@ -502,7 +505,11 @@ export type Serve = { url: string; baseUrl: string; port: number; token: string;
   /** What a stop waits on: the runs whose processes still finish their turn, and the longest it waits on them. */
   stopping(): { runs: number; boundMs: number };
   /** Resolves once every run's listing is current (run-listing.ts Lister.settled): for tests and benchmarks. */
-  listingSettled(): Promise<void> };
+  listingSettled(): Promise<void>;
+  /** Says in the store, until the stop, that the runner beside this server refused to claim any run, in `words` (its run
+   *  isolation refused, cli.ts): while no runner that claims is there, a start is refused in them and the runs queued
+   *  fail (runner/presence.ts). Once; a second call keeps the first. */
+  refuseRuns(words: string): void };
 
 const isLoopback = (host: string) => host === "localhost" || host === "::1" || /^127\./.test(host);
 
@@ -1200,7 +1207,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const reach = liveReachOf(process.env, seal.key);
   const attach = createAttachRoutes({
     store, hub: attachHub, machinesOnly: options.apiOnly === true, runnerApart: options.runnerApart === true,
-    relay: { relays: store.runnerRelays, reach },
+    relay: { runners: store.runners, reach },
     ...(options.attachTiming ? { timing: options.attachTiming } : {}),
     log: (event, fields) => (log ? log(logLine(event, fields)) : void process.stderr.write(`agentrun-serve: ${logLine(event, fields)}\n`)),
   });
@@ -1445,8 +1452,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     paired: { rows: () => store.pairedComputers.list(), viewOf: (row, serves) => pairedView(row, attachHub, serves, options.runnerApart === true) },
     runnerApart: options.runnerApart === true,
     // A runner in a process of its own that relays its dials (dial-relay.ts): one whose attach listener said it is there
-    // within RELAY_STALE_MS, at a host this server dials.
-    relayed: async () => (await store.runnerRelays.list()).some((row) => row.seenAt >= Date.now() - RELAY_STALE_MS && dialHost(row.host, reach) !== undefined),
+    // within PRESENCE_STALE_MS on the store's clock (liveRelays), at a host this server dials.
+    relayed: async () => (await liveRelays(store.runners)).some((row) => dialHost(row.host, reach) !== undefined),
     ...(options.faux
       // --faux's providers stand in for every vendor's, a local one's daemon included.
       ? { kinds: fauxOf().kinds, factories: fauxOf().factories, keyTable: fauxOf().keyTable }
@@ -1673,7 +1680,29 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // needs that live in this request layer are gathered once as StartDeps; the run's model is resolved once, now (the runner
   // reads launch.model alone).
   const modelOf = (_entry: AgentEntry, revision: Revision) => nativeOf(revision.body) ? Promise.resolve(undefined) : runModelRef(env, revision);
+  // Why no runner here can take a run, while every runner there refused to claim (runner/presence.ts): read from the
+  // store at each start, capabilities and health answer, so a runner in another process (or on another host over one
+  // Postgres) counts as the one beside this server does, and a runner that can claim, once there, clears it at once.
+  const refusedNow = () => runnersRefused(store.runners);
+  // While it holds, the runs still queued fail in those words (Runs.failUnclaimed), every REFUSED_SWEEP_MS: a run queued
+  // before the refusal was known never waits for good. A run a runner claimed is not one of them.
+  let refusedSweep: Promise<void> = Promise.resolve();
+  let refusedStopped = false;
+  const sweepRefused = () => {
+    refusedSweep = refusedSweep.then(async () => {
+      if (refusedStopped) return;
+      const words = await refusedNow();
+      if (words !== undefined && !refusedStopped) await store.runs.failUnclaimed(refusedEnd(words));
+    }).catch((error: Error) => void process.stderr.write(`agentrun-serve: the runs queued while no runner here can take them could not be failed: ${error.message}\n`));
+    return refusedSweep;
+  };
+  const refusedTimer = setInterval(() => void sweepRefused(), REFUSED_SWEEP_MS);
+  refusedTimer.unref();
+  // The runner beside this server, when its run isolation was refused (cli.ts): its word, kept in this store until the stop.
+  let refusedBeside: Presence | undefined;
   const startDeps: StartDeps = {
+    // A start while every runner here refused to claim is refused in their words (runner/presence.ts).
+    runnersRefused: refusedNow,
     runBodyIssues,
     boundRepos: async (agentId) => bindingOf(await store.triggers.list(agentId), agentId),
     pinnedOf,
@@ -3857,7 +3886,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       await planNow();
       const answer = forCaller(runnerShell.size ? compose(runnerShell) : caps, byOwnerSession(req));
       // features.triggers.public_url: whether Composio (or any sender) has a public address to reach, never the address.
-      return send(res, 200, { ...answer, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) } } });
+      // runner_refused: why no runner here can take a run, in their words, while every runner there refused to claim
+      // (runner/presence.ts); null while one can, or none is there yet.
+      const runnerRefused = (await refusedNow().catch(() => undefined)) ?? null;
+      return send(res, 200, { ...answer, runner_refused: runnerRefused, features: { ...answer.features, computers: await computerCapabilities(computersOf()), triggers: { ...answer.features.triggers, public_url: Boolean(options.publicUrl) } } });
     }
     if (found.name === "getOpenapi") return send(res, 200, servedOpenapi(openapi, req.socket.localPort));
     // With accounts off there is no owner, and the console still asks whether it may save a secret: secret-writes.ts'
@@ -3922,8 +3954,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     if (found.name === "getHealth") {
       // The store this server opened (SQLite or Postgres), never a second open of the data directory's file.
-      const health = await healthOf(store, data, minFreeBytes);
-      return send(res, health.status === "ok" ? 200 : 503, health);
+      // Degraded (every runner here refused to claim) is 200: a platform's health check never restarts it over a setting.
+      const health = await healthOf(store, data, minFreeBytes, undefined, refusedNow);
+      return send(res, health.status === "failing" ? 503 : 200, health);
     }
     // Approving a learned workflow held for its owner's OK (a step calls a tool with no price) takes the owner's
     // signed-in page alone: never a token, which a run's process, an agent's MCP client or a script may hold, nor a
@@ -5637,6 +5670,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     costHealStopped = true;
     await costHealed;
     await lister.stop();
+    // No more sweeps of the runs no runner can take, and the refused word of the runner beside it goes with it: a start
+    // whose runner can claim finds no refusal of this one.
+    refusedStopped = true;
+    clearInterval(refusedTimer);
+    await refusedSweep;
+    await refusedBeside?.close();
     // The store's EXCLUSIVE lock is the one-server lock: closing it releases it for the next server.
     await store.close();
     dataLock.release();
@@ -5663,5 +5702,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // No per-run process drains here: the runner owns a run's turn, so a stop waits on none.
     stopping: () => ({ runs: 0, boundMs: 0 }),
     listingSettled: () => lister.settled(),
+    refuseRuns: (words) => {
+      if (refusedBeside || refusedStopped) return;
+      refusedBeside = keepPresence(store.runners, `${hostname()}:${process.pid}:beside`, words, { warn: (line) => void process.stderr.write(`agentrun-serve: ${line}\n`) });
+      // The runs it left queued fail now, not at the next sweep.
+      void sweepRefused();
+    },
   };
 }

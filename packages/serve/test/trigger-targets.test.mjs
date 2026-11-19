@@ -10,6 +10,7 @@ import { after, test } from "node:test";
 const { openSqliteStore } = await import("../dist/store/index.js");
 const { triggerTargets } = await import("../dist/trigger-targets.js");
 const { readLaunchBody } = await import("../dist/run-launch.js");
+const { runnersRefused } = await import("../dist/runner/presence.js");
 const { carriesPrevious } = await import("../dist/trigger-adapter.js");
 const { TRIGGER_ADAPTERS } = await import("../dist/trigger-adapters.js");
 
@@ -184,6 +185,27 @@ test("message to a run with no cap is refused with the cap words", async () => {
   await assert.rejects(
     () => t.message({ kind: "message_run", run_id: "run-1", input: { content: "hi" } }, { content: "hi" }, "f1", from, BOUND),
     (e) => e.code === "not_continuable" && /only messages a run with one/.test(e.message),
+  );
+});
+
+test("message while every runner here refused to claim is refused runner_refused in their words, nothing written and the firing left for the engine to fail; a start alike", async () => {
+  const store = await freshStore();
+  await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1" });
+  await dueFirings(store, ["f1"]);
+  // The refusal is the store's (a refused runner's row): a message reads it in message(), a start through its deps, as the
+  // server wires them (server.ts refusedNow).
+  await store.runners.put({ runner: "r1", incarnation: "a", refused: "set AGENTRUN_RUN_USER=same." });
+  const words = "No runner of this server can take a run: set AGENTRUN_RUN_USER=same.";
+  const t = triggerTargets(store, deps({ start: { runnersRefused: () => runnersRefused(store.runners) } }));
+  await assert.rejects(
+    () => t.message({ kind: "message_run", run_id: "run-1", input: { content: "hi" } }, { content: "hi" }, "f1", from, BOUND),
+    (e) => e.code === "runner_refused" && e.message === words,
+  );
+  assert.equal((await store.commands("run-1", 0)).length, 0, "no message waits on a runner that never comes");
+  assert.equal((await store.triggers.firing("t1", "f1")).status, "due", "not marked sent");
+  await assert.rejects(
+    () => t.start({ kind: "start_run", agent_id: "a1", input: { content: "hi" }, max_cost_usd: 1 }, { content: "hi" }, { id: "t1", firing_key: "f2" }, from),
+    (e) => e.code === "runner_refused" && e.message === words,
   );
 });
 

@@ -6,8 +6,9 @@
 // (AGENTRUN_PUBLIC_URL, as the server reads it), `tokens` are minted into the shared store with the runner's name and
 // this incarnation on each row (computer-attach.ts `owner`), and `hub` is the runner's own AttachHub. It serves that hub
 // on a private attach listener: on loopback beside its server, or on its live host (AGENTRUN_RUNNER_LIVE_HOST,
-// live-reach.ts) where it runs on another host, and keeps where in the store (runner_relays), renewed every
-// RELAY_RENEW_MS. The server's attach upgrade looks a token up, sees another runner owns it, and opens a socket to that
+// live-reach.ts) where it runs on another host, and says where on the runner's row in the store (runners, through its
+// presence: runner/presence.ts), which the presence renews; its incarnation is the presence's, one per runner process.
+// The server's attach upgrade looks a token up, sees another runner owns it, and opens a socket to that
 // runner's listener (computer-attach.ts relayDial) with the proxy's proof under the seal key (live-reach.ts relayProof).
 // The listener answers nothing without a good, fresh proof it has not taken before, for this token, this runner and
 // this incarnation, on loopback too, and its attach routes take only a token whose row names this runner and
@@ -15,13 +16,13 @@
 //
 // A runner with no public address keeps no relay: its dial providers still refuse (hosted/provider.ts), and the server's
 // Settings → Computers still says so (computers.ts runs_refused).
-import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import type { Duplex } from "node:stream";
 import { ATTACH_PATH, AttachHub, type HostedDial } from "@parcha/agentrun-computer";
-import { type AttachTiming, bearerOf, createAttachRoutes, RELAY_RENEW_MS, sha256Hex } from "./computer-attach.js";
+import { type AttachTiming, bearerOf, createAttachRoutes, sha256Hex } from "./computer-attach.js";
 import { LOOPBACK, relayKeyOf, relayProofs, runnerLiveOf } from "./live-reach.js";
 import { logLine } from "./print.js";
+import type { Presence } from "./runner/presence.js";
 import type { Store } from "./store/index.js";
 
 /** A runner's relay: its HostedDial for its providers, where its listener answers, and its close. */
@@ -30,15 +31,18 @@ export interface RunnerRelay {
   readonly incarnation: string;
   readonly host: string;
   readonly port: number;
-  /** Its listener and every socket it took closed, its row gone. */
+  /** Its listener and every socket it took closed, and its runner's row answering nowhere (the row stays its presence's). */
   close(): Promise<void>;
 }
 
 export interface RunnerRelayOptions {
-  readonly store: Pick<Store, "mintedTokens" | "pairedComputers" | "runnerRelays">;
+  readonly store: Pick<Store, "mintedTokens" | "pairedComputers">;
   readonly sealKey: Buffer;
   /** The runner's name, as its claims and its row carry it. */
   readonly runner: string;
+  /** The runner's word that it is there (runner/presence.ts): its incarnation is the relay's, and its row says where the
+   *  relay answers. */
+  readonly presence: Pick<Presence, "incarnation" | "relay">;
   /** AGENTRUN_PUBLIC_URL (or RENDER_EXTERNAL_URL), AGENTRUN_RUNNER_LIVE_HOST and AGENTRUN_RUNNER_LIVE_BIND. */
   readonly env: NodeJS.ProcessEnv;
   /** Told each line worth saying (a machine attached, refused); never a token. */
@@ -59,9 +63,9 @@ export function publicUrlOf(env: NodeJS.ProcessEnv): string | undefined {
 export async function startRunnerRelay(options: RunnerRelayOptions): Promise<RunnerRelay | undefined> {
   const url = publicUrlOf(options.env);
   if (url === undefined) return undefined;
-  const { store, runner, now = Date.now } = options;
+  const { store, runner, presence, now = Date.now } = options;
   const log = options.log ?? (() => {});
-  const incarnation = randomUUID();
+  const { incarnation } = presence;
   const live = runnerLiveOf(options.env, options.sealKey);
   const host = live?.host ?? LOOPBACK;
   const hub = new AttachHub();
@@ -94,15 +98,13 @@ export async function startRunnerRelay(options: RunnerRelayOptions): Promise<Run
     server.closeAllConnections();
     await new Promise<void>((resolve) => server.close(() => resolve()));
   };
+  // Said on the runner's row, which its presence renews: a runner that died without its close reads as gone with it.
   try {
-    await store.runnerRelays.put({ runner, incarnation, host, port });
+    await presence.relay({ host, port });
   } catch (error) {
     await shut();
     throw error;
   }
-  // Said again on its interval, so the server takes a runner that died without its close as gone (RELAY_STALE_MS).
-  const renew = setInterval(() => void store.runnerRelays.seen(runner, incarnation).catch(() => undefined), RELAY_RENEW_MS);
-  renew.unref();
   let closing: Promise<void> | undefined;
   return {
     dial: { url, tokens: routes.machineTokens, hub },
@@ -111,8 +113,7 @@ export async function startRunnerRelay(options: RunnerRelayOptions): Promise<Run
     port,
     close: () =>
       (closing ??= (async () => {
-        clearInterval(renew);
-        await store.runnerRelays.remove(runner, incarnation).catch(() => undefined);
+        await presence.relay(null).catch(() => undefined);
         await shut();
       })()),
   };

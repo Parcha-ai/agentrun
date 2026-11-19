@@ -105,10 +105,12 @@ test("migration trigger_template adds triggers.template_id where it is missing: 
   const migrations = migrationsIn();
   const own = migrations.find((one) => one.name === "trigger_template");
   assert.ok(own, "a migration named trigger_template ships");
-  // The schema as the build before it left it: the column gone, the migration (and any after it) unrecorded.
+  // The schema as the build before it left it: the column gone, the migration (and any after it) unrecorded, and the
+  // runners table a later one (0020) renames runner_relays to gone with them.
   const c = await client(schema);
   try {
     await c.query("ALTER TABLE triggers DROP COLUMN template_id");
+    await c.query("DROP TABLE runners");
     await c.query("DELETE FROM schema_migrations WHERE version >= $1", [own.version]);
     await c.query("UPDATE store_meta SET schema_version = $1 WHERE singleton = 1", [own.version - 1]);
   } finally {
