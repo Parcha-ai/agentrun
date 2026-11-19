@@ -480,6 +480,33 @@ describe("the switch and the empty states", () => {
     expect(t.text()).toContain("Another revision was saved first. · precondition_failed");
     expect(sw.getAttribute("aria-checked")).toBe("false");
   });
+  it("enabling an existing eve agent enables learning for its next ordinary task", async () => {
+    const t = await open(agent(false, { sdk: { runtime: "eve" } }));
+    await act(async () => { (t.host.querySelector('[role="switch"]') as HTMLButtonElement).click(); });
+    await settle();
+    const put = t.calls.find((call) => call.startsWith("put "))!;
+    expect(JSON.parse(put.slice(4, put.lastIndexOf(" ")))).toMatchObject({
+      definition: { learning: true, sdk: { runtime: "eve" }, version: 2 }, note: "Learning on",
+    });
+    expect(put.endsWith('"rv1"')).toBe(true);
+    expect(t.agents.at(-1)?.definition.learning).toBe(true);
+  });
+  it("turning eve learning Off still saves false", async () => {
+    const t = await open(agent(undefined, { learning: true, sdk: { runtime: "eve" } }));
+    await act(async () => { (t.host.querySelector('[role="switch"]') as HTMLButtonElement).click(); });
+    await settle();
+    expect(t.agents.at(-1)?.definition.learning).toBe(false);
+  });
+  it.each([true, { compile_after: 5, agree_min: 0.95 }] as const)("an enable click preserves the freshly read %s mode without another revision", async learning => {
+    const current = agent(false, { sdk: { runtime: "eve" } });
+    const t = await open(current);
+    // Another client saved a mode after this page rendered Off. getAgent reads that latest value.
+    current.definition.learning = learning;
+    await act(async () => { (t.host.querySelector('[role="switch"]') as HTMLButtonElement).click(); });
+    await settle();
+    expect(t.calls.some(call => call.startsWith("put "))).toBe(false);
+    expect(t.agents.at(-1)?.definition.learning).toBe(learning);
+  });
   it("with learning on and nothing learned yet: says so, how many runs looked back, and the corrections can be written", async () => {
     const t = await open(agent(true), { learning: async () => none(), runs: [RUNS[0], RUNS[2]] });
     expect(t.text()).toContain("Nothing learned yet");
@@ -911,7 +938,7 @@ describe("learning-loop integration with source-owned execution", () => {
     expect(story.querySelector('[data-testid="stage-took_over"]')).toBeNull();
     expect(story.querySelector('[data-testid="stage-cheaper"]')).toBeNull();
   });
-  it.each(["claude-agent-sdk", "codex-sdk"] as const)("%s keeps launches in the backend and workflows explicitly bound", async runtime => {
+  it.each(["claude-agent-sdk", "codex-sdk", "eve"] as const)("%s keeps launches in the backend and workflows explicitly bound", async runtime => {
     const t = await open(agent(true, { sdk: { runtime } }));
     const story = t.host.querySelector('[data-testid="loop-story"]')!;
     expect(story.textContent).toContain("Your backend keeps launching each run");

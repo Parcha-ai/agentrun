@@ -466,7 +466,7 @@ test("service install --env: the start-time switches go into the unit at 1, stay
   assert.equal(await service.install({ env: ["AGENTRUN_WEBHOOK_PRIVATE_TARGETS="] }), 0);
   assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", AGENTRUN_MCP_ALLOW_LOOPBACK: "1", AGENT_MODEL: "qwen3:8b" });
   // The server reads a switch as on at 1 alone: any other value would leave it off, so it is refused.
-  await assert.rejects(service.install({ env: ["AGENTRUN_MCP_ALLOW_LOOPBACK=true"] }), (error) => error.code === 2 && /AGENTRUN_MCP_ALLOW_LOOPBACK takes 1 \(on\) or nothing \(off\), not true/.test(error.message));
+  await assert.rejects(service.install({ env: ["AGENTRUN_MCP_ALLOW_LOOPBACK=true"] }), (error) => error.code === 2 && /AGENTRUN_MCP_ALLOW_LOOPBACK takes 1 alone, or nothing to remove it/.test(error.message));
   assert.equal(unitEnv(readFileSync(file, "utf8")).AGENTRUN_MCP_ALLOW_LOOPBACK, "1");
 });
 
@@ -488,7 +488,7 @@ test("service install --env refuses any other variable by name, and a pair with 
   for (const [pair, said] of [
     ["OPENROUTER_API_KEY=sk-or-x", /--env takes AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_PRICE, AGENT_MODEL_API_KEY, AGENTRUN_MCP_ALLOW_LOOPBACK, AGENTRUN_WEBHOOK_PRIVATE_TARGETS, AGENTRUN_TELEMETRY or DO_NOT_TRACK, not OPENROUTER_API_KEY: a key goes in the console/],
     ["PATH=/x", /not PATH/],
-    ["AGENT_MODEL_API_KEY=sk-or-x", /AGENT_MODEL_API_KEY takes none alone, for a local model that needs no key: a key goes in the console/],
+    ["AGENT_MODEL_API_KEY=sk-or-x", /^AGENT_MODEL_API_KEY takes none alone, or nothing to remove it: a model key goes in the console \(Settings → Model keys\), never in a service file\.$/],
     ["AGENT_MODEL", /--env takes KEY=VALUE, not AGENT_MODEL/],
     ["AGENT_MODEL=a\nb", /AGENT_MODEL's value has a line break/],
   ]) {

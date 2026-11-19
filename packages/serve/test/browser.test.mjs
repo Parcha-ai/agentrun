@@ -30,7 +30,7 @@ test("capabilities list browser with the variables it is missing (names only), a
   // Half of Browserbase's keys and none of Kernel's: no vendor runs, and the reason names each one's variables.
   // The plane keeps its own value (a run's meta stores it); only the words a person reads name Settings first.
   const STORED_NO_BROWSER_KEY = "unavailable: no browser key: set or save Browserbase's (BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID) or Kernel's (KERNEL_API_KEY)";
-  const reason = "it needs a Browserbase key: save one in Settings → Tool keys (or set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID where the server starts), or a Kernel key: save one in Settings → Tool keys (or set KERNEL_API_KEY where the server starts)";
+  const reason = "it needs a Browserbase key: save one in Settings → API Keys (or set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID where the server starts), or a Kernel key: save one in Settings → API Keys (or set KERNEL_API_KEY where the server starts)";
   const { summary: _, why: __, ...listed } = caps.tools.find((tool) => tool.name === "browser");
   assert.deepEqual(listed, { name: "browser", blurb: "Browse websites in a hosted browser", nodes: false, calls: false, available: false, reason, harnesses: ["pi"], providers: ["auto", "browserbase", "kernel", "chrome"], provider: "auto", default_provider: "auto", permission: "allow", default_permission: "allow", permissions: ["allow", "deny"], resolves: { pi: STORED_NO_BROWSER_KEY, "claude-agent": STORED_NO_BROWSER_KEY, codex: STORED_NO_BROWSER_KEY, opencode: STORED_NO_BROWSER_KEY }, key: "browserbase" });
   // No workflow model node takes the browser (#2098).
@@ -39,7 +39,7 @@ test("capabilities list browser with the variables it is missing (names only), a
   assert.equal((await api("POST", "/agents", { definition: { id: "browse", name: "browse", instructions: "Browse.", tools: ["browser"] } })).status, 201);
   const refused = await api("POST", "/agents/browse/runs", { input: { content: "Browse the example page." } });
   assert.deepEqual([refused.status, refused.body.error.code], [409, "agent_not_runnable"]);
-  assert.match(refused.body.error.message, /The\ tool\ browser\ does\ not\ run\ here\ on\ pi:\ it\ needs\ a\ Browserbase\ key:\ save\ one\ in\ Settings\ →\ Tool\ keys\ \(or\ set\ BROWSERBASE_API_KEY\ and\ BROWSERBASE_PROJECT_ID\ where\ the\ server\ starts\),\ or\ a\ Kernel\ key:\ save\ one\ in\ Settings\ →\ Tool\ keys\ \(or\ set\ KERNEL_API_KEY\ where\ the\ server\ starts\)\./);
+  assert.match(refused.body.error.message, /The\ tool\ browser\ does\ not\ run\ here\ on\ pi:\ it\ needs\ a\ Browserbase\ key:\ save\ one\ in\ Settings\ →\ API\ Keys\ \(or\ set\ BROWSERBASE_API_KEY\ and\ BROWSERBASE_PROJECT_ID\ where\ the\ server\ starts\),\ or\ a\ Kernel\ key:\ save\ one\ in\ Settings\ →\ API\ Keys\ \(or\ set\ KERNEL_API_KEY\ where\ the\ server\ starts\)\./);
   assert.deepEqual((await api("GET", "/runs")).body.runs, []);
 });
 

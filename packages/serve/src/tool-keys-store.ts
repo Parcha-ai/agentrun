@@ -53,8 +53,8 @@ type Snapshot = { fields: Map<string, Opened>; checks: Map<string, KeyCheck>; se
 /** What the start's log line says to a person when saved keys do not open, by why: where they are kept is the server's
  *  store (`kept=store`), and what to do is to save them again in the console's Settings. */
 export const REENTER_SAID: Readonly<Record<(typeof UNREADABLE)[number], string>> = {
-  seal_key_changed: "these saved keys were sealed under another seal key, so they do not open: save them again in Settings → Tool keys",
-  file_unreadable: "these saved keys do not read: save them again in Settings → Tool keys",
+  seal_key_changed: "these saved keys were sealed under another seal key, so they do not open: save them again in Settings → API Keys",
+  file_unreadable: "these saved keys do not read: save them again in Settings → API Keys",
 };
 
 /** The saved tool keys over the store. `toolKeysOverStore` builds it; the server awaits load() once before the first read. */

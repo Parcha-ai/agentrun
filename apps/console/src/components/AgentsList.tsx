@@ -1,6 +1,7 @@
+import { HarnessIcon } from "@/components/HarnessIcon";
 import { ObservedSessions } from "@/components/ObservedSessions";
 import type { ObservationRead } from "@/lib/observations";
-import { Archive, ArchiveRestore, Bot, Brain, History, Pencil, Play, Search, Workflow } from "lucide-react";
+import { Archive, ArchiveRestore, Bot, Brain, History, Pencil, Play, Search } from "lucide-react";
 import { type ReactNode, useState } from "react";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
@@ -61,17 +62,17 @@ export function AgentsList({ agents, archived = false, onArchivedChange, actions
 }
 
 function AgentCard({ agent: a, actions }: { agent: Agent; actions: AgentsListActions }) {
-  const Icon = a.kind === "workflow" ? Workflow : Bot;
   const archived = !!a.archived_at;
   const native = nativeReadinessOf(a);
   const sdk = backendSdkOf(a.definition);
+  const harness = a.kind === "workflow" ? "workflow" : sdk?.runtime ?? native?.runtime ?? a.definition.harness ?? "pi";
   // Its learned workflows that wait for its owner's OK (the list's own read: each agent's `learning.pending`); nothing at 0.
   const waiting = waitingOf(a);
   return (
     <li className={cn("flex flex-col border p-5 transition-colors hover:border-border-strong", archived && "opacity-70")}>
       <button type="button" className="flex min-w-0 items-start gap-2.5 text-left" onClick={() => actions.onOpen?.(a.agent_id)}>
-        {/* The icon sits in a box as tall as the name's line, centred in it, so it is level with the name and its chips. */}
-        <span data-agent-card-icon className="flex h-6 shrink-0 items-center"><Icon className="size-4 text-muted-foreground" aria-hidden /></span>
+        {/* Align the harness mark with the name and its chips. */}
+        <span data-agent-card-icon className="flex h-6 shrink-0 items-center"><HarnessIcon harness={harness} /></span>
         <span className="min-w-0 flex-1">
           <span className="flex min-h-6 flex-wrap items-center gap-2">
             <span className="text-base font-semibold">{a.definition.name}</span>

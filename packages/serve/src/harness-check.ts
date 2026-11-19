@@ -293,9 +293,9 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
     { name: "check_denied", description: "A tool this run refuses: calling it shows the refusal.", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] }, replay: "never", call: async (args) => (deniedRan.push(args), { text: "this call should never have run" }) },
   ];
   // The gate answers by the tool a call is about: our own tool by its name (asked at the MCP call), or a permission the
-  // adapter could not tie to a call of ours (`acp_<kind>`) by the tool its title names, as the agent writes it: Goose
-  // 1.59.2 titles it `agentrun: check echo`. check_echo is allowed; check_denied, and everything of the agent's own, is
-  // denied.
+  // adapter could not tie to a call of ours (`acp_<kind>`) by the tool its title names, as the agent writes it (an agent
+  // whose title form the adapter does not know yet). check_echo is allowed; check_denied, and everything of the agent's
+  // own, is denied.
   const gateAsked: { tool: string; about: string; answer: string }[] = [];
   const named = (title: unknown): string => {
     const words = typeof title === "string" ? title : "";
