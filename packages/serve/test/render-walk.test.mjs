@@ -50,16 +50,17 @@ onStop(async () => writeFileSync(${JSON.stringify(mark)}, "deleted")); console.l
   }
 });
 
-test("a walk stopped by SIGINT, then SIGTERM while its delete is still running (Actions' cancel), finishes the delete before it exits", async () => {
+test("a walk stopped by SIGINT, then SIGTERM while its delete is still running (Actions' cancel), finishes the delete before it exits, though its finally took the handlers off", async () => {
   const { spawn } = await import("node:child_process");
   const { mkdtemp, readFile: read } = await import("node:fs/promises");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const mark = join(await mkdtemp(join(tmpdir(), "walk-stop-")), "deleted");
   const walk = new URL("deploy/railway/publish-and-walk.mjs", ROOT).href;
-  // The stand-in's delete takes 1.5 s, and says when it starts; the SIGTERM lands in the middle of it.
+  // The stand-in's delete takes 1.5 s. The walk goes on after the SIGINT, and its `finally` calls onStop's off() while
+  // that delete runs; then it says "deleting", and the SIGTERM lands in the middle of the delete.
   const script = `const { onStop } = await import(${JSON.stringify(walk)}); const { writeFileSync } = await import("node:fs");
-onStop(async () => { console.log("deleting"); await new Promise((r) => setTimeout(r, 1500)); writeFileSync(${JSON.stringify(mark)}, "deleted"); });
+const off = onStop(async () => { setTimeout(() => { off(); console.log("deleting"); }, 0); await new Promise((r) => setTimeout(r, 1500)); writeFileSync(${JSON.stringify(mark)}, "deleted"); });
 console.log("made"); setTimeout(() => {}, 60_000);`;
   const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "inherit"] });
   const exited = new Promise((r) => child.once("exit", (code, signal) => r({ code, signal })));
@@ -72,6 +73,32 @@ console.log("made"); setTimeout(() => {}, 60_000);`;
   const { code, signal } = await exited;
   assert.equal(await read(mark, "utf8").catch(() => "not deleted"), "deleted", "the delete finished");
   assert.deepEqual({ code, signal }, { code: 130, signal: null }, "it exits as the first signal says, not killed by the second");
+});
+
+test("the first run's wait asks again when the network cuts a read of the run, and fails at once on an answer the server refused", async () => {
+  const { firstRunOf, rows } = await import("../../../deploy/railway/publish-and-walk.mjs");
+  const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const walk = (reads) => {
+    const client = {
+      sleep: async () => {},
+      http: async (url, init) => {
+        if (init?.method === "PUT") return new Response(null, { status: 204 });
+        if (url.endsWith("/agents")) return json(201, { agent_id: "a1" });
+        if (url.endsWith("/runs")) return json(201, { run_id: "r1" });
+        const next = reads.shift();
+        if (next instanceof Error) throw next;
+        return next;
+      },
+    };
+    const step = rows(() => {});
+    const times = { clicked: Date.now() };
+    return { step, done: firstRunOf(client, { base: "https://walk.test", token: "t", cookie: "s=1", key: "k", model: "m", step, times }) };
+  };
+  const cut = walk([new TypeError("fetch failed"), Object.assign(new Error("timed out"), { name: "TimeoutError" }), json(200, { status: "running" }), json(200, { status: "completed", cost: { usd: 0.001 }, result: "notes" })]);
+  await cut.done;
+  assert.equal(cut.step.all.at(-1)[0], "first run finished");
+  const refused = walk([json(401, { error: { message: "unauthorized" } })]);
+  await assert.rejects(refused.done, /GET \/v2\/runs\/r1 answered 401: unauthorized/);
 });
 
 test("the walk tries a request again only while Render's edge answers (502, 503 or 504, not JSON), a POST under one Idempotency-Key, within its time", async () => {

@@ -483,9 +483,10 @@ export async function firstRunOf(client, { base, token, cookie, key, model, step
   step.pass("agent made", `"${FIRST_RUN.agent.name}" (${agent.agent_id}): pi on ${model}, no tools, on the runner, capped at $${FIRST_RUN.maxCostUsd}`);
   const started = await api("POST", `/agents/${agent.agent_id}/runs`, { input: { content: FIRST_RUN.input } });
   const run = await until(client, `run ${started.run_id} ended`, 10 * 60_000, 3_000, async () => {
-    const r = await api("GET", `/runs/${started.run_id}`);
+    // A read the network cut (a reset, a send past its time) is asked again; an answer the server refused is not.
+    const r = await api("GET", `/runs/${started.run_id}`).catch((e) => { if (e instanceof TypeError || ["TimeoutError", "AbortError"].includes(e.name)) return undefined; throw e; });
     // A run waiting for input never completes by itself: it ends the wait too, and the walk fails on it.
-    return ["completed", "failed", "cancelled", "input_required"].includes(r.status) ? r : undefined;
+    return r && ["completed", "failed", "cancelled", "input_required"].includes(r.status) ? r : undefined;
   });
   times.finished = Date.now();
   times.runId = started.run_id;
@@ -501,7 +502,8 @@ export async function firstRunOf(client, { base, token, cookie, key, model, step
  *  then the process exits 130 or 143. Returns the call that takes the handlers off, once the walk deletes it itself. */
 export function onStop(remove) {
   // A cancel is SIGINT, then SIGTERM about 7.5 s later: both stay caught while the delete runs, so the second one,
-  // ignored, cannot kill a delete still in flight.
+  // ignored, cannot kill a delete still in flight. The walk goes on after the SIGINT, so its `finally` calls off() too:
+  // once a stop has begun, off() leaves the handlers on, and the stop's exit ends the process.
   let stopping = false;
   const stop = (signal) => {
     if (stopping) return console.error(`${signal}: still deleting what the walk made`);
@@ -509,7 +511,7 @@ export function onStop(remove) {
     console.error(`${signal}: deleting what the walk made before exiting`);
     Promise.resolve().then(remove).catch((e) => console.error(`the delete on ${signal} failed: ${e.message}`)).finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
   };
-  const off = () => { process.off("SIGINT", stop); process.off("SIGTERM", stop); };
+  const off = () => { if (!stopping) { process.off("SIGINT", stop); process.off("SIGTERM", stop); } };
   process.on("SIGINT", stop);
   process.on("SIGTERM", stop);
   return off;
