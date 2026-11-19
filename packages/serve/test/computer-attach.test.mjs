@@ -4,7 +4,8 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-const { closeReason, newAttachToken, newPairedId, newPairingCode, PAIR_TRIES_PER_MINUTE, pairBodyOf, pairedView, pairingCodeOf, pairRefusal, pairTries } = await import("../dist/computer-attach.js");
+const { newMachineToken } = await import("@parcha/agentrun-computer");
+const { closeReason, newPairedId, newPairingCode, PAIR_TRIES_PER_MINUTE, pairBodyOf, pairedView, pairingCodeOf, pairRefusal, pairTries } = await import("../dist/computer-attach.js");
 const { helloLacks, pairedEntry, servesNoKind, withPaired, ONE_PROCESS_WORDS, pairedProvider } = await import("../dist/workspace/attached-computers.js");
 const { resolveComputer } = await import("../dist/workspace/resolve-computer.js");
 const { PAIRING_CODE_PATTERN, PROTOCOL_VERSION, PROVIDERS, SETTING_KINDS, servingRefusals } = await import("@parcha/agentrun-computer");
@@ -19,7 +20,7 @@ test("a pairing code is eight characters of the alphabet in two groups of four; 
   assert.equal(pairingCodeOf(" k7pd-w3qx "), "K7PD-W3QX");
   for (const bad of ["K7PD-W3Q", "K7PD-W3QXY", "K0PD-W3QX", "K1PD-W3QX", "KIPD-W3QX", "KOPD-W3QX", 12345678, undefined]) assert.equal(pairingCodeOf(bad), undefined, `${bad} is no code`);
   assert.match(newPairedId(), /^cmp-[a-z2-9]{16}$/);
-  assert.match(newAttachToken(), /^art_[A-Za-z0-9_-]{43}$/, "art_ and 32 bytes");
+  assert.match(newMachineToken(), /^art_[A-Za-z0-9_-]{43}$/, "art_ and 32 bytes in base64url");
 });
 
 test("the pair limit lets a source address try ten times a minute, then says how long to wait; another address is not held by it, an IPv6 one counted by its /64", () => {
@@ -120,7 +121,7 @@ test("a paired Mac never runs a run's shell or holds its folder, granted exec an
   for (const mode of [1, 2]) {
     for (const one of [row, granted]) {
       const desktop = await resolveComputer({ kind: "desktop", provider: "cmp-abc" }, mode, withPaired({ SETTING_KINDS, PROVIDERS, servingRefusals }, [one]), keys);
-      assert.deepEqual({ refused: desktop.refused, mounts: desktop.mounts, ports: desktop.ports }, { refused: undefined, mounts: false, ports: ["screen", "input"] }, `Mode ${mode}, groups ${one.hello.groups}`);
+      assert.deepEqual({ refused: desktop.refused, folder: desktop.folder, ports: desktop.ports }, { refused: undefined, folder: undefined, ports: ["screen", "input"] }, `Mode ${mode}, groups ${one.hello.groups}`);
     }
     const { refused } = await resolveComputer({ kind: "sandbox", provider: "cmp-abc" }, mode, withPaired({ SETTING_KINDS, PROVIDERS, servingRefusals }, [row]), keys);
     assert.match(refused, /^vesper-mac is a computer of your own, and only a Linux box paired with computerd and no display can be a sandbox computer: give this agent vesper-mac as a desktop computer, or pick one of /);

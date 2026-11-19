@@ -10,6 +10,7 @@ import type { MachineHost } from "../host.js";
 import type { HostedDial } from "../hosted/provider.js";
 import type { ProviderNote } from "../mount-archil.js";
 import { dialOnlyFromServer } from "./dial-only.js";
+import { kindFrom } from "./kind.js";
 
 /** The environment this module reads, by name, each for the option its comment names. */
 export const ENV = {
@@ -47,11 +48,9 @@ export interface CloudflareModuleOptions {
 
 /** The provider the run makes computers with, dialing the server options.dial names. */
 export function createProvider({ env = process.env, dial, daemonPath, fetch, onNote }: CloudflareModuleOptions = {}): CloudflareProvider {
-	const kind = env[ENV.kind] || undefined;
 	return create({
 		...settingsFromEnv(env),
-		// create() refuses any other kind in words.
-		...(kind === undefined ? {} : { kind: kind as "desktop" | "linux" }),
+		...kindFrom(env, ENV.kind),
 		...(dial ? { dial } : {}),
 		...(daemonPath === undefined ? {} : { daemonPath }),
 		...(fetch ? { fetch } : {}),

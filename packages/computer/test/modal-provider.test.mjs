@@ -845,7 +845,7 @@ test("connect dial: init is agentrun-dial's child, no Archil mount (refused in w
 	assert.equal(caps.gpu?.isolation, "gvisor");
 	const refusals = provider.check({ ...SPEC, mount: { kind: "archil", disk: "dsk-00000000000baf76", region: "aws-us-east-1", folder: "agents/a1/runs/r1/work", token: "not-a-secret" } });
 	assert.deepEqual(refusals.map(({ field }) => field), ["mount"]);
-	assert.match(refusals[0].message, /Modal's machines dial this server, and a machine that dials takes no Archil mount yet/);
+	assert.match(refusals[0].message, /Modal's machines dial this server, and a machine that dials takes no Archil mount$/);
 	assert.throws(() => setup({ connect: "ssh" }), /connect is how Modal reaches its machines, "exec" \(the default\) or "dial", not "ssh"/);
 	assert.deepEqual(MODAL.settings, [
 		{ name: "modalApp", option: "app", default: "agentrun" },

@@ -706,7 +706,7 @@ test("connect dial: create starts agentrun-dial once as root with the boot env, 
 	assert.match(script, /# agentrun-computer: root-only[\s\S]*' sh \/usr\/local \/usr\/bin\/envd \/etc\/inittab && sh -c '# agentrun-computer: sockets[\s\S]*' sh '\/tmp\/dbus-\*' && exec \/usr\/local\/bin\/agentrun-dial$/);
 	assert.deepEqual(Object.keys(request.process.envs).sort(), [...BOOT_NAMES, "PATH"].sort());
 	assert.equal(request.process.envs.PATH, "/usr/sbin:/usr/bin:/sbin:/bin");
-	assert.match(request.process.envs.AGENTRUN_ATTACH_TOKEN, /^art_[0-9a-f]{64}$/);
+	assert.match(request.process.envs.AGENTRUN_ATTACH_TOKEN, /^art_[A-Za-z0-9_-]{43}$/);
 	assert.equal(request.process.envs.AGENTRUN_ATTACH_URL, "ws://127.0.0.1:8080/v2/computers/attach");
 	assert.equal(request.stdin, false);
 	assert.equal(options.headers.Authorization, `Basic ${Buffer.from("root:").toString("base64")}`);

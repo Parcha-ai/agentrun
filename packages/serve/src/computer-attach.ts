@@ -26,7 +26,7 @@
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
-import { ATTACH_CLOSE, ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_PATH, ATTACH_SUBPROTOCOL, type AttachHub, type AttachSocket, type ComputerKind, type ComputerOs, type HelloResult, hostedDaemonPath, MAX_LINE_BYTES, type MachineTokens, mintedComputer, type PairedComputer, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, PROTOCOL_VERSION, RUN_LABEL } from "@parcha/agentrun-computer";
+import { ATTACH_CLOSE, ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_PATH, ATTACH_SUBPROTOCOL, type AttachHub, type AttachSocket, type ComputerKind, type ComputerOs, type HelloResult, hostedDaemonPath, MAX_LINE_BYTES, type MachineTokens, mintedComputer, newMachineToken, type PairedComputer, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, PROTOCOL_VERSION, RUN_LABEL } from "@parcha/agentrun-computer";
 import { WebSocket, WebSocketServer } from "ws";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { dialHost, LIVE_PROOF_HEADER, type LiveReach, relayProof } from "./live-reach.js";
@@ -79,12 +79,6 @@ export function pairingCodeOf(typed: unknown): string | undefined {
 /** A new paired computer's id: PAIRED_ID_PREFIX and 16 lowercase letters and digits. */
 export const newPairedId = (pick: (below: number) => number = randomInt): string =>
   `${PAIRED_ID_PREFIX}${Array.from({ length: 16 }, () => "abcdefghijkmnpqrstuvwxyz23456789"[pick(32)]).join("")}`;
-
-/** A new computer token: ATTACH_TOKEN_PREFIX and 32 random bytes. */
-export const newAttachToken = (): string => `${ATTACH_TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
-
-/** A new hosted machine's token: ATTACH_TOKEN_PREFIX and 32 random bytes in hex, which goes in the machine's env. */
-export const newMintedToken = (): string => `${ATTACH_TOKEN_PREFIX}${randomBytes(32).toString("hex")}`;
 
 /** The computerd builds a minted machine fetches (GET /v2/computers/daemon?arch=), each at hostedDaemonPath: the file a
  *  hosted provider uploads by default, so the route serves the bytes whose SHA-256 the provider puts in the machine's env. */
@@ -402,7 +396,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     const unserved = servesNoKind(name, hello);
     if (unserved) throw invalid([{ field: "hello.groups", reason: "invalid", message: unserved }]);
     const id = newPairedId();
-    const token = newAttachToken();
+    const token = newMachineToken();
     const made = await paired.pair(sha256Hex(code), { id, name, hello: hello as unknown as Record<string, unknown>, labels: {}, tokenSha256: sha256Hex(token) });
     if (!made) throw new ApiError("not_found", "no such pairing code: make a new one on the console's Computers page");
     log("computer_paired", { computer: id, kind: hello.kind, os: hello.os, driver: hello.version });
@@ -424,7 +418,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     async mint(machine, { kind, os, arch, expiresAt, run }) {
       const until = expiresAt.getTime();
       if (!Number.isFinite(until)) throw new TypeError(`a machine token's expiresAt is a time, not ${JSON.stringify(expiresAt)}`);
-      const token = newMintedToken();
+      const token = newMachineToken();
       await minted.mint({ machine, tokenSha256: sha256Hex(token), kind, os, arch, expiresAt: until, ...(options.owner ?? {}), ...(run !== undefined ? { run } : {}) });
       log("machine_token_minted", { ...(run !== undefined ? { run } : {}), machine, kind, os, arch, expires_at: new Date(until).toISOString() });
       return token;

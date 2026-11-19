@@ -4,7 +4,7 @@ Open the console:
 {{- if .Values.ingress.enabled }}
   {{ .Values.publicUrl | default (printf "%s://%s/" (ternary "https" "http" (ne .Values.ingress.tlsSecret "")) .Values.ingress.host) }}
 {{- else }}
-  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ .Release.Name }} 7340
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ .Release.Name }} 7340:{{ .Values.service.port }}
   then http://127.0.0.1:7340/
 {{- end }}
 
