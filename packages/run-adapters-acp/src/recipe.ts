@@ -43,6 +43,10 @@ export interface AcpRecipe {
   /** The agent's own refusals, by words it prints (on stderr, or in an error it answers): a start or a turn that fails
    *  saying `says` is said as `<code>: <words>`, so a host tells it apart without reading the agent's words. */
   readonly refusals?: readonly AcpRefusal[];
+  /** Words the agent prints on stderr that never say why it failed (Cursor's warning that it could not save the
+   *  credential the adapter keeps unwritable, and the error line under it): a stderr line holding one is left out of a
+   *  failure's words, as are the terminal's escapes. Matched as they are. */
+  readonly quiet?: readonly string[];
   /** The run's model, by the agent's id (`gpt-5.4-nano[reasoning=medium]`) or its name before the brackets
    *  (`gpt-5.4-nano`): chosen with session/set_model among those session/new lists, before the first prompt. One it
    *  does not list is refused with ACP_CODES.modelUnlisted. Absent: the agent's own default. */
@@ -97,6 +101,7 @@ export function recipeProblems(recipe: AcpRecipe): string[] {
     const ok = typeof refusal?.says === "string" && refusal.says.trim() !== "" && typeof refusal.code === "string" && CODE.test(refusal.code) && typeof refusal.words === "string" && refusal.words.trim() !== "";
     if (!ok) problems.push(`the refusal ${JSON.stringify(refusal ?? null).slice(0, 120)} needs says, a code (capitals, digits and _) and words`);
   }
+  if (recipe.quiet !== undefined && (!Array.isArray(recipe.quiet) || recipe.quiet.some((words) => typeof words !== "string" || words.trim() === ""))) problems.push("quiet is a list of words, none empty");
   if (recipe.model !== undefined && (typeof recipe.model !== "string" || !MODEL_ID.test(recipe.model))) problems.push(`the model ${JSON.stringify(String(recipe.model).slice(0, 80))} is not a model id`);
   return problems;
 }

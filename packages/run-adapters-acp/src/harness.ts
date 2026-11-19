@@ -246,6 +246,20 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const refusal = recipe.refusals?.find((r) => text.includes(r.says));
     return refusal && `${refusal.code}: ${refusal.words}`;
   };
+  /** `text` (the agent's stderr, or an error carrying it) as a failure's words: the terminal's escapes out, and every
+   *  line holding words the recipe calls quiet (recipe.quiet) left out, the last 300 characters of what is left. */
+  // eslint-disable-next-line no-control-regex
+  const ESCAPES = /\u001b\[[0-9;?]*[A-Za-z]/g;
+  const lastWords = (text: string): string =>
+    text
+      .replace(ESCAPES, "")
+      .split("\n")
+      .filter((line) => !(recipe.quiet ?? []).some((words) => line.includes(words)))
+      .join("\n")
+      .trim()
+      .slice(-300);
+  /** Why an agent that ended did: its last words on stderr, else the error's, else that it said nothing. */
+  const whyEnded = (agent: { stderrTail(): string }, error: unknown): string => lastWords(agent.stderrTail()) || lastWords(message(error)) || "it said nothing";
 
   /** Mirror the agent's session store into `journal` (the caller flushes). A failure is said and never thrown: the next
    *  point takes the mirror again, and a turn's outcome is never lost to it. */
@@ -549,7 +563,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
           if (!live.alive() || live.connection.signal.aborted) await Promise.race([live.exited, sleep(500)]);
           const named = refusalIn(`${live.stderrTail()}\n${message(error)}`);
           if (named) throw new Error(named);
-          if (!live.alive() || live.connection.signal.aborted) throw new Error(`${ACP_CODES.agentExited}: the agent ended during ${what}: ${live.stderrTail().trim().slice(-300) || message(error)}`);
+          if (!live.alive() || live.connection.signal.aborted) throw new Error(`${ACP_CODES.agentExited}: the agent ended during ${what}: ${whyEnded(live, error)}`);
           throw new Error(`acp: ${what} failed: ${message(error).slice(0, 300)}`);
         });
       const init: InitializeResponse = await ask("initialize", () =>
@@ -742,7 +756,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       if (turn.limitHit) outcome = { status: "failed", error: turn.limitHit };
       else if (failure !== undefined) {
         const named = refusalIn(`${agent.agent.stderrTail()}\n${message(failure)}`);
-        outcome = { status: "failed", error: named ?? (agent.agent.alive() && !agent.agent.connection.signal.aborted ? `acp: session/prompt failed: ${message(failure).slice(0, 300)}` : `${ACP_CODES.agentExited}: the agent ended during the turn: ${agent.agent.stderrTail().trim().slice(-300) || message(failure).slice(0, 300)}`) };
+        outcome = { status: "failed", error: named ?? (agent.agent.alive() && !agent.agent.connection.signal.aborted ? `acp: session/prompt failed: ${message(failure).slice(0, 300)}` : `${ACP_CODES.agentExited}: the agent ended during the turn: ${whyEnded(agent.agent, failure)}`) };
       } else {
         const reason = answer?.stopReason;
         if (reason === "end_turn") outcome = { status: "completed" };
