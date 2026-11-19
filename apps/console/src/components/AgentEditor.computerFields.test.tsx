@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { type Agent, type AgentFields, toolOffers } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 
 // The Computer step keeps what a person set on the computer (image, persistent, gpu, surface, exec, record) across a
 // switch of provider or kind that can take it, and drops, in words, what the new pick can't. "Can take" is read from the
@@ -27,8 +28,8 @@ const KINDS = [
 ];
 const caps = { harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools: toolOffers([{ name: "read", available: true, harnesses: ["pi"] }]), computers: KINDS };
 const agent = (computer: Record<string, unknown>): Agent => ({
-  agent_id: "set", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
-  definition: { version: 1, name: "Set", instructions: "Probe.", harness: "pi", skills: [], tools: ["read"], computer } as Agent["definition"],
+  ...SERVED_AGENT, agent_id: "set", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
+  definition: { version: 1, name: "Set", instructions: "Probe.", harness: "pi", skills: [], tools: ["read"], computer: computer as NonNullable<Agent["definition"]["computer"]> },
 });
 const SANDBOX = { kind: "sandbox", provider: "modal", image: "py", persistent: true, gpu: { type: "T4", count: 1 } };
 const DESKTOP = { kind: "desktop", provider: "orgo", image: "windows", persistent: true, surface: "code", exec: false, record: true };
