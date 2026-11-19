@@ -9,7 +9,7 @@
 import { execFileSync } from 'node:child_process';
 import { appendFileSync, existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { isMain } from './is-main.mjs';
 
 export const ROWS = [
   { job: 'npx', name: 'npx', walks: "the README's `npx @parcha/agentrun`, from npm as published, to a first run" },
@@ -69,7 +69,7 @@ function readReports(dir) {
   return reports;
 }
 
-if (process.argv[1] === fileURLToPath(import.meta.url)) {
+if (isMain(import.meta)) {
   const [dir, flag] = process.argv.slice(2);
   const run = process.env.RUN_URL;
   const { broken, title, table } = summarize(JSON.parse(process.env.NEEDS), readReports(dir), run);
