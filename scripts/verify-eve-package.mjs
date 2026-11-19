@@ -22,47 +22,68 @@ async function groupGone(pid, ms) {
   return true;
 }
 
-/** One step of the check, in its own process group. On timeout, too much output or a step that ends with processes of
- *  its own still running, the whole group gets SIGTERM, then SIGKILL after `grace` ms, and the step settles only once
- *  the group is gone: the consumer directory's cleanup never runs beside a live step. A failure names the command, its
- *  exit code or signal, whether it timed out, and the tails of stdout and stderr, each labelled. */
+/** One step of the check, in its own process group. On timeout, too much output or a step that exits with processes of
+ *  its own still running, the whole group gets SIGTERM, then SIGKILL after `grace` ms. The shutdown starts when the
+ *  step's process exits, not when its pipes close (a child of the group could hold them open), and the step settles
+ *  only once the group is gone: the consumer directory's cleanup never runs beside a live step. Each stream keeps at
+ *  most its last `maxBuffer` bytes while the pipes go on draining. A failure names the command, its exit code or
+ *  signal, whether it timed out, and the tails of stdout and stderr, each labelled. */
 export function runStep(command, args, { cwd, env, timeout = 180_000, maxBuffer = 8 * 1024 * 1024, grace = 5_000 } = {}) {
   return new Promise((resolve, reject) => {
     const started = Date.now();
-    const output = { stdout: [], stderr: [] };
-    const bytes = { stdout: 0, stderr: 0 };
-    let timedOut = false; let overflow = ''; let killer;
+    const kept = { stdout: [], stderr: [] };
+    const keptBytes = { stdout: 0, stderr: 0 };
+    const written = { stdout: 0, stderr: 0 };
+    let timedOut = false; let over = ''; let killer; let spawnError; let settled = false;
     const child = spawn(command, args, { cwd, env, detached: true, stdio: 'pipe' });
     const stop = () => {
-      if (killer) return;
+      if (killer || child.pid === undefined) return;
       signalGroup(child.pid, 'SIGTERM');
       killer = setTimeout(() => signalGroup(child.pid, 'SIGKILL'), grace);
     };
     const timer = setTimeout(() => { timedOut = true; stop(); }, timeout);
     for (const name of ['stdout', 'stderr']) child[name].on('data', chunk => {
-      bytes[name] += chunk.length; output[name].push(chunk);
-      if (bytes[name] > maxBuffer && !overflow) { overflow = `${name} over ${maxBuffer} bytes`; stop(); }
-    });
-    let spawnError;
-    child.on('error', error => { spawnError = error; });
-    child.on('close', async (code, signal) => {
-      clearTimeout(timer);
-      let left = '';
-      if (child.pid !== undefined && groupAlive(child.pid)) {
-        stop();
-        if (!await groupGone(child.pid, grace + 5_000)) left = 'its process group outlived SIGKILL';
+      written[name] += chunk.length; kept[name].push(chunk); keptBytes[name] += chunk.length;
+      // Only the last maxBuffer bytes are kept; the pipe goes on draining, so a step that ignores SIGTERM can't block.
+      while (keptBytes[name] > maxBuffer) {
+        const first = kept[name][0]; const extra = keptBytes[name] - maxBuffer;
+        if (first.length <= extra) { kept[name].shift(); keptBytes[name] -= first.length; }
+        else { kept[name][0] = first.subarray(extra); keptBytes[name] -= extra; }
       }
-      clearTimeout(killer);
-      const text = name => Buffer.concat(output[name]).toString('utf8');
+      if (written[name] > maxBuffer && !over) { over = name; stop(); }
+    });
+    const closed = new Promise(done => child.on('close', done));
+    const settle = (code, signal, left = '') => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer); clearTimeout(killer);
+      const text = name => Buffer.concat(kept[name]).toString('utf8');
       const stdout = text('stdout');
-      if (code === 0 && !timedOut && !overflow && !spawnError && !left) return resolve(stdout);
+      if (code === 0 && !timedOut && !over && !spawnError && !left) return resolve(stdout);
       const how = [
         timedOut ? `timed out after ${Date.now() - started} ms (limit ${timeout} ms)` : '',
-        overflow, spawnError ? String(spawnError.message) : '', left,
-        code !== null ? `exit code ${code}` : `signal ${signal}`,
+        over ? `${over} over ${maxBuffer} bytes (written ${written[over]}, kept the last ${keptBytes[over]})` : '',
+        spawnError ? String(spawnError.message) : '', left,
+        code !== null && code !== undefined ? `exit code ${code}` : signal ? `signal ${signal}` : '',
       ].filter(Boolean).join('; ');
       const tail = name => `--- ${name} (last ${TAIL} chars) ---\n${text(name).slice(-TAIL)}`;
       reject(new Error(`eve package consumer step failed: ${[command, ...args].join(' ')}\n${how}\n${tail('stdout')}\n${tail('stderr')}`));
+    };
+    child.on('error', error => {
+      spawnError = error;
+      if (child.pid === undefined) settle(null, null); // never started: no group, no exit to wait for
+    });
+    child.on('exit', async (code, signal) => {
+      let left = '';
+      if (groupAlive(child.pid)) {
+        stop();
+        if (!await groupGone(child.pid, grace + 5_000)) left = 'its process group outlived SIGKILL';
+      }
+      // The group is gone, so its pipes close; drain what is left, and drop them if something outside the group holds them.
+      if (await Promise.race([closed.then(() => true), sleep(1_000).then(() => false)]) === false) {
+        child.stdout.destroy(); child.stderr.destroy();
+      }
+      settle(code, signal, left);
     });
   });
 }
