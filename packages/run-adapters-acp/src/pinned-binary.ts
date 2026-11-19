@@ -72,7 +72,9 @@ export const GOOSE_PIN: AcpBinaryPin = Object.freeze({
 /** Cursor's CLI 2026.11.13 (build eacade1), the release its ACP registry entry pointed to when read (`source`). The
  *  registry lists no digest for Cursor, so the archive is pinned by the first sha256 seen for it (2026-11-16, harness S0;
  *  downloaded again 2026-11-19 and the same), its launcher and its whole tree by what that archive unpacked to. A drift
- *  of any of them is refused. */
+ *  of any of them is refused. A new pin takes the key walk on it (test/cursor-key-walk.test.mjs, on the real binary and
+ *  the owner's key, AGENTRUN_RECORD_CURSOR_WALK=1): Cursor's credential design rests on Cursor tolerating a failed save,
+ *  and CI refuses a pin cursor-walk.json does not name. */
 export const CURSOR_PIN: AcpBinaryPin = Object.freeze({
   id: "cursor",
   version: "2026.11.13-eacade1",

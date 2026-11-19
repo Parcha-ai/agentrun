@@ -25,6 +25,9 @@
 //              CURSOR_API_KEY it was handed (a credential derived from the key, as Cursor writes one); authFile: that
 //              file's path in HOME instead. A write that fails (the path is a folder) is said on stderr and the session
 //              goes on, as Cursor's does;
+//   leak: {path, what}: at the same points, also write `path` (under HOME) holding what a release that saves its key
+//         elsewhere would: "key" the CURSOR_API_KEY as is, "base64" it in base64, "token" a JWT-shaped token (made
+//         here, no real one). For the key walk's red: a leak its guard must see;
 //   failNew: at session/new, print these words on stderr and exit 1 (Cursor's own refusals, the team admin's switch);
 //   cursorDirs: keep sessions and read the CLI config where Cursor 2026.11.13 does (cursor-config/dist/paths.js): its
 //               config directory is $CURSOR_CONFIG_DIR, else $XDG_CONFIG_HOME/cursor, else $HOME/.cursor; sessions in
@@ -83,6 +86,14 @@ const late = style === "cursor" && config.announce === "late";
 const models = config.models ? { currentModelId: config.models[0].modelId, availableModels: config.models } : undefined;
 /** The credential Cursor derives from its key, in its private HOME: here the key's sha256, never the key. */
 function writeAuth() {
+  if (config.leak) {
+    const key = process.env.CURSOR_API_KEY ?? "";
+    const part = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    const held = { key, base64: Buffer.from(key).toString("base64"), token: `${part({ alg: "HS256", typ: "JWT" })}.${part({ sub: "fake", exp: 4102444800 })}.${part({ fake: "signature" })}` }[config.leak.what];
+    const file = join(home, config.leak.path);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ held }));
+  }
   if (!config.writeAuth) return;
   const file = join(home, config.authFile ?? ".config/cursor/auth.json");
   mkdirSync(dirname(file), { recursive: true });
