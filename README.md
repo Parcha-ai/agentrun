@@ -555,10 +555,8 @@ AgentRun alone. Details: [deploy/README.md](deploy/README.md#one-command-on-a-se
 helm install agentrun oci://ghcr.io/parcha-ai/charts/agentrun --devel --namespace agentrun --create-namespace
 ```
 
-One pod on a 10 GiB volume, from the release's image, with the token and seal key made as a Secret and kept through
-upgrades and `helm uninstall`. The install's notes print how to open the console and read the token. Agents get file
-tools and `web_fetch` but no shell. Walked on kind in CI from install to a finished first run, an upgrade and a
-reinstall. Details: [the chart's README](deploy/helm/agentrun/README.md).
+One pod on a 10 GiB volume, from the release's image; agents get file tools and `web_fetch`, no shell. Details:
+[the chart's README](deploy/helm/agentrun/README.md).
 
 <details>
 <summary>Docker Compose: a server and two runners</summary>

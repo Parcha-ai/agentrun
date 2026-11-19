@@ -153,8 +153,8 @@ helm install agentrun oci://ghcr.io/parcha-ai/charts/agentrun --devel --namespac
 
 One pod, the server and its runner, on a 10 GiB volume, from the release's image; the token and seal key are made as a
 Secret at install and kept on upgrade. Its agents get file tools and `web_fetch` but no shell, as on Render. The
-chart's [README](helm/agentrun/README.md) covers its values, Argo CD and Flux, and what survives `helm uninstall`
-(the Secret and the volume, by default).
+chart's [README](helm/agentrun/README.md) covers Argo CD and Flux, and what `helm uninstall` keeps (the Secret and the
+volume).
 
 ## The first visit's setup code
 
