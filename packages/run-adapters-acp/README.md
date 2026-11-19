@@ -39,5 +39,5 @@ const adapter = acpAdapter({
 });
 ```
 
-The tests run on a fake ACP agent (`test/fake-acp-agent.mjs`) that plays Goose (load, MCP over HTTP, a permission
+The tests run on a fake ACP agent (`testing/fake-acp-agent.mjs`, exported as `@parcha/agentrun-harness-acp/testing`) that plays Goose (load, MCP over HTTP, a permission
 request for every tool) and Cursor (load, permission for shell and MCP but not edits), and an agent with no load.

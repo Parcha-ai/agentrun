@@ -24,7 +24,7 @@ export function onCursorPin(pinned, make) {
   assert.throws(make, (error) => error.code === ACP_CODES.binaryUnpinned, 'refused ACP_BINARY_UNPINNED where no release is pinned');
 }
 
-export const FAKE = fileURLToPath(new URL('./fake-acp-agent.mjs', import.meta.url));
+export const FAKE = fileURLToPath(new URL('../testing/fake-acp-agent.mjs', import.meta.url));
 const ROOT = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'agentrun-acp-test-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
 let n = 0;

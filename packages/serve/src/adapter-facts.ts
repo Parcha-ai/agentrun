@@ -18,8 +18,4 @@ export const GOOSE_FACTS: AdapterFacts | undefined = acpPackage()?.gooseFacts;
  *  owner has installed it; billed to the owner's Cursor plan (its wire `plan`), never to a model key of ours. */
 export const CURSOR_FACTS: AdapterFacts | undefined = acpPackage()?.cursorFacts;
 
-/** Every adapter harness's facts: the built-in ones, then Goose's and Cursor's where their package is. */
-export const EVERY_ADAPTER_FACTS: readonly AdapterFacts[] = Object.freeze([...ADAPTER_FACTS, ...(GOOSE_FACTS ? [GOOSE_FACTS] : []), ...(CURSOR_FACTS ? [CURSOR_FACTS] : [])]);
-
-/** The facts of the adapter harness `id`, built-in, Goose or Cursor; undefined for pi and for an id no adapter states. */
-export const adapterFactsOf = (id: string): AdapterFacts | undefined => EVERY_ADAPTER_FACTS.find((facts) => facts.id === id);
+// A harness's facts by id are its table entry's (harness-table.ts factsOf), so a module's harness is read as a built-in is.

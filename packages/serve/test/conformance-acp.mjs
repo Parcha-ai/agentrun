@@ -1,6 +1,6 @@
 // The harness conformance suite's ACP subjects, through the runner: the ACP adapter (packages/run-adapters-acp) driven by
 // the kernel's generic adapter loop (runner/adapter-loop.ts), on the fake ACP agent (run-adapters-acp's
-// test/fake-acp-agent.mjs: a stdio agent on the official SDK whose model is the suite's script; no binary, no model, no
+// testing/fake-acp-agent.mjs, its ./testing export: a stdio agent on the official SDK whose model is the suite's script; no binary, no model, no
 // network beyond loopback). The adapter is built here, not through the runner's harness table: registering an ACP
 // harness waits for the table (S1), so the suite runs it under a test-only id.
 //  - acpSubject plays Goose: it resumes with session/load, takes our tools over HTTP, and asks permission for each.
@@ -10,27 +10,19 @@
 // so a resumed run picks up at its step.
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { join } from "node:path";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { MAX_RESTARTS } = await import("../dist/runner/conformance/harness.js");
 const { acpAdapter, acpFacts } = await import("@parcha/agentrun-harness-acp");
-
-const FAKE = join(dirname(fileURLToPath(import.meta.resolve("@parcha/agentrun-harness-acp/package.json"))), "test", "fake-acp-agent.mjs");
+const { FAKE_ACP_AGENT: FAKE } = await import("@parcha/agentrun-harness-acp/testing");
 /** The id the suite runs the adapter under: no harness of the runner's table is named so. */
 export const TEST_ID = "acp-conformance";
 
-/** The suite's tools as the host's tools (HostTool): replay-safe or at most once, each calling the suite's own. */
-export function hostTools(tools) {
-  return Object.values(tools).map((tool) => ({
-    name: tool.name,
-    description: `The suite's ${tool.name} tool.`,
-    inputSchema: { type: "object", properties: {} },
-    replay: tool.replaySafe ? "safe" : "never",
-    call: async (args, context) => ({ text: String(await tool.run(args ?? {}, context.signal)), ...(tool.images ? { images: tool.images } : {}), ...(tool.structured !== undefined ? { structured: tool.structured } : {}) }),
-  }));
-}
+/** The suite's tools as the host's tools (HostTool): the helper an author's conformance file takes from
+ *  `@parcha/agentrun-serve/conformance`. */
+const { suiteHostTools: hostTools } = await import("../dist/runner/conformance/host-tools.js");
+export { hostTools };
 
 /** Every session this module's adapters opened and nobody closed yet: a crash case freezes its loop in-process, so that
  *  session's agent keeps running; a test file closes these at its end. */

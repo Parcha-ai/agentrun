@@ -26,11 +26,16 @@
       "types": "./dist/facts.d.ts",
       "default": "./dist/facts.js"
     },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
     "dist",
     "recipes",
+    "testing",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
