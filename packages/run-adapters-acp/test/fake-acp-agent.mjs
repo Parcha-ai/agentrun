@@ -14,14 +14,22 @@
 //   countFile: a file each event (new, load, prompt, cancel, mcp, permission) is appended to, one JSON line;
 //   systemPrompt: advertise sessionCapabilities.systemPrompt;
 //   ignoreCancel: log session/cancel and go on as if it never came (an agent that keeps spending);
-//   keepMcpOnCancel: on session/cancel, answer the prompt `cancelled` at once and leave an MCP call in flight open.
+//   keepMcpOnCancel: on session/cancel, answer the prompt `cancelled` at once and leave an MCP call in flight open;
+//   announce: "late" (with style "cursor"): an MCP call as Cursor 2026.11.13 announces it, a tool_call titled
+//             "MCP: tool" with no input, then a tool_call_update titled `agentrun: <tool>` whose rawInput is
+//             {providerIdentifier, toolName, args}; its permission request is titled `agentrun-<tool>: <tool>`;
+//   models: the models session/new and session/load list ({modelId, name}), the first current; session/set_model
+//           takes one of them and refuses any other;
+//   writeAuth: at session/new and session/load, write $HOME/.config/cursor/auth.json holding the sha256 of the
+//              CURSOR_API_KEY it was handed (a credential derived from the key, as Cursor writes one);
+//   failNew: at session/new, print these words on stderr and exit 1 (Cursor's own refusals, the team admin's switch).
 // A script step {hang: true} is a model that never answers (until a cancel the agent heeds).
 // The step the model takes is the number it took before: its session's history (calls, native calls, answers), plus the
 // calls a recovery or context note names that its history does not hold, as a resumed model reads its conversation.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { Readable, Writable } from "node:stream";
 import { agent, ndJsonStream, RequestError } from "@agentclientprotocol/sdk";
@@ -52,6 +60,17 @@ const pgid = (() => {
 })();
 said({ type: "start", env: Object.keys(process.env).sort(), home, cwd: process.cwd(), pgid });
 const titleOf = (tool) => (style === "cursor" ? `agentrun-${tool}: ${tool}` : `agentrun__${tool}`);
+const late = style === "cursor" && config.announce === "late";
+const models = config.models ? { currentModelId: config.models[0].modelId, availableModels: config.models } : undefined;
+/** The credential Cursor derives from its key, in its private HOME: here the key's sha256, never the key. */
+function writeAuth() {
+  if (!config.writeAuth) return;
+  const file = join(home, ".config", "cursor", "auth.json");
+  mkdirSync(dirname(file), { recursive: true });
+  const keySha = createHash("sha256").update(process.env.CURSOR_API_KEY ?? "").digest("hex");
+  writeFileSync(file, JSON.stringify({ keySha }));
+  said({ type: "auth", file, keySha });
+}
 const steps = (history) => history.filter((h) => h.kind === "call" || h.kind === "native" || h.kind === "say").length;
 const text = (blocks) => blocks.filter((b) => b.type === "text").map((b) => b.text);
 
@@ -179,8 +198,13 @@ async function takeTurn(client, session, prompt, signal) {
       const entry = { kind: "call", id, tool: s.call, args, status: "pending" };
       session.history.push(entry);
       save(session);
-      await notify({ sessionUpdate: "tool_call", ...update });
-      if (askMcp && !(await permitted(client, session, update))) {
+      if (late) {
+        // Cursor 2026.11.13: the call is announced with no name, then named by an update, then asked about by its own title.
+        await notify({ sessionUpdate: "tool_call", toolCallId: id, title: "MCP: tool", kind: "other", status: "pending", rawInput: {} });
+        await notify({ sessionUpdate: "tool_call_update", toolCallId: id, title: `agentrun: ${s.call}`, rawInput: { providerIdentifier: "agentrun", toolName: s.call, args } });
+        await notify({ sessionUpdate: "tool_call_update", toolCallId: id, status: "in_progress" });
+      } else await notify({ sessionUpdate: "tool_call", ...update });
+      if (askMcp && !(await permitted(client, session, late ? { toolCallId: id, title: titleOf(s.call), kind: "other", status: "pending" } : update))) {
         if (signal.aborted) return { stopReason: "cancelled" };
         entry.status = "failed";
         entry.result = "the client refused the call";
@@ -263,11 +287,22 @@ const app = agent({ name: "fake-acp" })
     agentInfo: { name: "fake-acp", version: "1.0.0" },
   }))
   .onRequest("session/new", async ({ params }) => {
+    if (config.failNew) {
+      process.stderr.write(`${config.failNew}\n`);
+      process.exit(1);
+    }
     const id = `sess_${randomUUID()}`;
     const session = await openSession(id, params, []);
     save(session);
+    writeAuth();
     said({ type: "new", sessionId: id, mcp: params.mcpServers.map((s) => s.type ?? "stdio"), system: session.system });
-    return { sessionId: id };
+    return { sessionId: id, ...(models ? { models } : {}) };
+  })
+  // Not in the SDK's stable methods: Cursor's own (unstable ACP) method, so its params are taken as they come.
+  .onRequest("session/set_model", (params) => params ?? {}, async ({ params }) => {
+    if (!models?.availableModels.some((m) => m.modelId === params.modelId)) throw RequestError.invalidParams({ modelId: params.modelId });
+    said({ type: "set_model", sessionId: params.sessionId, modelId: params.modelId });
+    return {};
   })
   .onRequest("session/load", async ({ params, client }) => {
     const file = join(store, `${params.sessionId}.json`);
@@ -284,7 +319,8 @@ const app = agent({ name: "fake-acp" })
         await client.notify("session/update", { sessionId: session.id, update: { sessionUpdate: "tool_call_update", toolCallId: h.id, status: h.status === "pending" ? "failed" : h.status } });
       }
     }
-    return {};
+    writeAuth();
+    return models ? { models } : {};
   })
   .onRequest("session/prompt", async ({ params, client }) => {
     const session = sessions.get(params.sessionId);
