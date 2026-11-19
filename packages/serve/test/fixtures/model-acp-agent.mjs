@@ -7,7 +7,9 @@
 //   good       (default) as above;
 //   own-tools  offers its own `shell` tool beside ours on every request, as an agent whose tools are not off;
 //   side       asks its HTTPS proxy for telemetry.invalid:443 once at start, as an agent that phones home;
-//   no-load    advertises no session/load, so a restart is a new session told the conversation.
+//   no-load    advertises no session/load, so a restart is a new session told the conversation;
+//   goose-title titles each call as Goose 1.59.2 does (`agentrun: check echo`), which the adapter does not tie to a
+//              tool of ours, so the host's gate is asked about it as the agent's own (`acp_other`).
 // Its model is MODEL_AGENT_MODEL; the proxy's address is ANTHROPIC_HOST, else ANTHROPIC_BASE_URL (the recipe's hostEnv).
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
@@ -109,7 +111,9 @@ async function takeTurn(client, session, prompt) {
     }
     const results = [];
     for (const use of uses) {
-      const update = { toolCallId: use.id, title: use.name, kind: "other", status: "pending", rawInput: use.input };
+      // goose-title: the call titled as Goose 1.59.2 titles it, `agentrun: check echo`.
+      const title = mode === "goose-title" && use.name.startsWith("agentrun__") ? `agentrun: ${use.name.slice("agentrun__".length).replace(/_/g, " ")}` : use.name;
+      const update = { toolCallId: use.id, title, kind: "other", status: "pending", rawInput: use.input };
       await notify({ sessionUpdate: "tool_call", ...update });
       const options = [{ optionId: "allow_once", name: "Allow Once", kind: "allow_once" }, { optionId: "reject_once", name: "Deny Once", kind: "reject_once" }];
       const answer = await client.request("session/request_permission", { sessionId: session.id, toolCall: update, options });

@@ -99,6 +99,7 @@ export interface HarnessCheckReport {
   stage2?: Record<string, Check>;
   stage3?: Record<string, Check>;
   facts?: { resume: "load" | "restart" | "unknown"; tool_gate: "permission" | "config"; billing: "proxy" | "plan" };
+  gate?: { permissionsAsked: { toolCallId: unknown; kind: unknown }[]; asked: { tool: string; about: string; answer: string }[] };
   spendUsd?: number | null;
   checkedAt: string;
   failures: string[];
@@ -250,10 +251,20 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
     { name: "check_echo", description: "Echo the text back, prefixed with ECHO.", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] }, replay: "never", call: async (args) => (echoed.push(args), { text: `ECHO:${(args as { text?: unknown })?.text ?? ""}` }) },
     { name: "check_denied", description: "A tool this run refuses: calling it shows the refusal.", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] }, replay: "never", call: async (args) => (deniedRan.push(args), { text: "this call should never have run" }) },
   ];
-  const gateAsked: { tool: string; answer: string }[] = [];
-  const gate = async (call: { tool: string }) => {
-    const answer = call.tool === "check_echo" ? "allow" : "deny";
-    gateAsked.push({ tool: call.tool, answer });
+  // The gate answers by the tool a call is about: our own tool by its name (asked at the MCP call), or a permission the
+  // adapter could not tie to a call of ours (`acp_<kind>`) by the tool its title names, as the agent writes it: Goose
+  // 1.59.2 titles it `agentrun: check echo`. check_echo is allowed; check_denied, and everything of the agent's own, is
+  // denied.
+  const gateAsked: { tool: string; about: string; answer: string }[] = [];
+  const named = (title: unknown): string => {
+    const words = typeof title === "string" ? title : "";
+    const said = (name: string) => [name, name.replace(/_/g, " ")].some((form) => new RegExp(`(^|[^A-Za-z0-9_]|__)${form}([^A-Za-z0-9_]|$)`).test(words));
+    return tools.map((tool) => tool.name).find(said) ?? words.slice(0, 80);
+  };
+  const gate = async (call: { tool: string; args?: unknown }) => {
+    const about = call.tool.startsWith("acp_") ? named((call.args as { title?: unknown } | undefined)?.title) : call.tool;
+    const answer = about === "check_echo" ? "allow" : "deny";
+    gateAsked.push({ tool: call.tool, about, answer });
     return answer === "allow" ? ("allow" as const) : { deny: "harness-check refuses this call on purpose" };
   };
   const forwarded: { method: string; path: string; tools: string[]; text: string }[] = [];
@@ -387,11 +398,12 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
     const before = messages().length;
     const t2 = await first.turn(`Use the check_denied tool once, with the text argument set to two. It will be refused; that is expected. Then reply with the text the check_echo tool returned earlier in this conversation.`);
     const secondOpen = opened()[1];
-    const remembered = messages().slice(before).some((r) => r.text.includes(nonce));
+    // What check_echo returned in turn 1 is in the model's next request: the conversation came through the kill.
+    const remembered = messages().slice(before).some((r) => r.text.includes(`ECHO:${nonce}`));
     resumeFact = secondOpen ? (secondOpen.loaded ? "load" : "restart") : "unknown";
     stage3.resume = { ok: killed && t2.status === "completed" && !!secondOpen && secondOpen.pid !== firstOpen?.pid && (recipe.model.billing !== "proxy" || remembered), killed, turn: t2.status, ...(t2.error ? { error: t2.error } : {}), newProcess: !!secondOpen && secondOpen.pid !== firstOpen?.pid, loaded: secondOpen?.loaded ?? null, sameSession: !!secondOpen && secondOpen.sessionId === firstOpen?.sessionId, conversationCarried: recipe.model.billing === "proxy" ? remembered : null };
-    const deniedAsked = gateAsked.filter((g) => g.tool === "check_denied");
-    stage3.denied_call = { ok: deniedAsked.length >= 1 && deniedAsked.every((g) => g.answer === "deny") && deniedRan.length === 0 && t2.status === "completed", gateAsked: deniedAsked.length, ran: deniedRan.length, turn: t2.status };
+    const deniedAsked = gateAsked.filter((g) => g.about === "check_denied");
+    stage3.denied_call = { ok: deniedAsked.length >= 1 && deniedAsked.every((g) => g.answer === "deny") && deniedRan.length === 0 && t2.status === "completed", gateAsked: deniedAsked.length, askedAs: [...new Set(deniedAsked.map((g) => g.tool))], ran: deniedRan.length, turn: t2.status };
     await first.session.close();
 
     // Turn 3: another runner, its own directory, from the records.
@@ -400,7 +412,7 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
     const before3 = messages().length;
     const t3 = await other.turn("Reply with the word ready and nothing else.");
     const thirdOpen = opened().at(-1);
-    const carried3 = messages().slice(before3).some((r) => r.text.includes(nonce));
+    const carried3 = messages().slice(before3).some((r) => r.text.includes(`ECHO:${nonce}`));
     stage3.other_runner = { ok: t3.status === "completed" && (recipe.model.billing !== "proxy" || carried3), turn: t3.status, ...(t3.error ? { error: t3.error } : {}), loaded: thirdOpen?.loaded ?? null, conversationCarried: recipe.model.billing === "proxy" ? carried3 : null };
 
     // Turn 4: the billing limit. Proxy: the cap is set at what was spent, so the next request is refused unsent.
@@ -420,7 +432,8 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
       const paths = [...new Set(forwarded.map((r) => `${r.method} ${r.path}`))];
       // What the agent asked the proxy for beyond the Messages route: refused there, never sent on.
       const atProxy = logs.filter((l) => /: refused$/.test(l.message) && typeof l.path === "string" && !String(l.path).startsWith("/v1/messages")).map((l) => `${String(l.method)} ${String(l.path)}`);
-      stage2.side_requests = { ok: paths.every((p) => p.endsWith(" /v1/messages")), toProvider: paths, refusedAtProxy: atProxy, beyondLoopbackRefused: egress.asked.map((a) => `${a.method} ${a.target}`) };
+      // The provider's Messages route, under its own prefix (OpenRouter's is /api/v1/messages).
+      stage2.side_requests = { ok: forwarded.every((r) => r.method === "POST" && r.path.endsWith("/v1/messages")), toProvider: paths, sent: forwarded.length, refusedAtProxy: atProxy, beyondLoopbackRefused: egress.asked.map((a) => `${a.method} ${a.target}`) };
     } else stage2.side_requests = { ok: null, beyondLoopbackRefused: egress.asked.map((a) => `${a.method} ${a.target}`), why: "plan billing: the vendor's own requests are not seen here" };
   } catch (error) {
     failures.push(`the check stopped: ${(error as Error).message}`);
@@ -443,6 +456,11 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
     stage2,
     stage3,
     facts: { resume: resumeFact, tool_gate: asked().length > 0 ? "permission" : "config", billing: recipe.model.billing },
+    // How the tool gate was reached: each permission the agent asked for, and each question the gate was asked.
+    gate: {
+      permissionsAsked: asked().map((l) => ({ toolCallId: l.toolCallId ?? null, kind: l.kind ?? null })),
+      asked: gateAsked,
+    },
     spendUsd: lastBooking ? lastBooking.spentUsd() : 0,
     failures,
   };
