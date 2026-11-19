@@ -3,7 +3,7 @@
 // sends a model request or treats a tool/decision key as a generative model credential.
 import { chooseModel, FAUX_ENV, hostModel, type ModelNeeds } from "./model.js";
 import { harnessOf } from "./harness-table.js";
-import { HarnessUnavailable, providerFor } from "./provider.js";
+import { HarnessUnavailable, modelWire, providerFor } from "./provider.js";
 import { nativeOf } from "./native/binding.js";
 import { noServerKeyFor, serverKeyMissing } from "./run-model-key.js";
 import { askRouteOf } from "./runner/sdk-ask.js";
@@ -38,6 +38,15 @@ export async function learningModelOf(env: NodeJS.ProcessEnv, revision?: { kind:
     if ("why" in choice) return notReady(configured, choice.needs ?? (choice.host ? "key" : "model"), choice.why.replaceAll("Settings → Model keys", "Settings → API Keys"));
     if (!choice.model) return notReady(configured, "model", "Configure a server model in Settings → API Keys before enabling learning.");
     const model = `${choice.model.provider}/${choice.model.modelId}`;
+    // A managed plan harness compiles in its own session, never through a server model proxy. Keep its installation,
+    // own credential and adapter checks: naming a model alone does not establish that the harness can run here.
+    if (revision && !body.sdk && entry?.facts && !modelWire(entry.facts.wire)) {
+      const hidden = entry.hidden?.(env);
+      if (hidden) return notReady(model, "model", hidden);
+      const refused = await entry.refusal(env, { model: choice.model, models: { getModel: () => undefined } }, { atStart: false });
+      if (refused) return notReady(model, entry.ownKeys?.some(key => !env[key]) ? "key" : "model", refused.reason);
+      return { location: "server", ready: true, model, needs: null, reason: null };
+    }
     const needsServerKey = !env[FAUX_ENV] && (!revision || body.sdk
       ? noServerKeyFor(env, "Background learning") !== undefined
       : serverKeyMissing(env, { kind: "agentic", model: choice.model }));

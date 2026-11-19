@@ -49,6 +49,60 @@ test('gateway key and model are both required for background compilation', async
   assert.equal((await learningModelOf({ AGENT_MODEL_BASE_URL: gateway.AGENT_MODEL_BASE_URL, AGENT_MODEL_API_KEY: 'fake-test-key' })).ready, false);
 });
 
+test('managed Cursor learning uses its installed plan harness and own key, not a server model proxy', async t => {
+  const { learningModelOf } = await import('../dist/learning-model.js');
+  const { HARNESS_TABLE_ENV } = await import('../dist/harness-table.js');
+  const { scratch } = await import('./support.mjs');
+  const { writeFileSync } = await import('node:fs');
+  const { join } = await import('node:path');
+  const { createRequire } = await import('node:module');
+  const file = join(await scratch(t), 'cursor-readiness.cjs');
+  // Only the installed adapter boundary stands in: Cursor's real plan facts and model validation remain in use.
+  writeFileSync(file, `module.exports = { calls: [], entries: () => ({ cursor: {
+    hidden: env => env.CURSOR_TEST_INSTALLED ? undefined : 'Cursor release is not installed.',
+    refusal: async (env, given) => {
+      module.exports.calls.push(given.model);
+      if (env.CURSOR_TEST_REFUSAL) return { reason: env.CURSOR_TEST_REFUSAL };
+      return env.CURSOR_API_KEY ? undefined : { reason: 'Cursor requires CURSOR_API_KEY on this server.' };
+    },
+  } }) };`);
+  const fixture = createRequire(import.meta.url)(file);
+  const env = { NODE_TEST_CONTEXT: 'child-v8', [HARNESS_TABLE_ENV]: file, CURSOR_TEST_INSTALLED: '1', CURSOR_API_KEY: 'fake-test-key',
+    AGENT_MODEL_BASE_URL: 'http://127.0.0.1:9', AGENT_MODEL: 'openai/gpt-6.1-sol' };
+  const agent = { kind: 'agentic', body: { harness: 'cursor', model: 'cursor/default' } };
+  const ready = await learningModelOf(env, agent);
+  assert.deepEqual(ready, { location: 'server', ready: true, model: 'cursor/default', needs: null, reason: null }, 'Cursor compiles in its own session, without an AgentRun model gateway credential');
+  assert.deepEqual(fixture.calls, [{ provider: 'cursor', modelId: 'default' }], 'readiness still checks the installed adapter with the selected model');
+  const noKey = await learningModelOf({ ...env, CURSOR_API_KEY: undefined }, agent);
+  assert.equal(noKey.ready, false);
+  assert.equal(noKey.needs, 'key');
+  assert.match(noKey.reason, /CURSOR_API_KEY/);
+  const notInstalled = await learningModelOf({ ...env, CURSOR_TEST_INSTALLED: undefined }, agent);
+  assert.equal(notInstalled.ready, false);
+  assert.equal(notInstalled.needs, 'model');
+  assert.match(notInstalled.reason, /not installed/);
+  const refused = await learningModelOf({ ...env, CURSOR_TEST_REFUSAL: 'Cursor release verification failed.' }, agent);
+  assert.equal(refused.ready, false);
+  assert.equal(refused.needs, 'model');
+  assert.equal(refused.reason, 'Cursor release verification failed.');
+  const wrongModel = await learningModelOf(env, { kind: 'agentic', body: { harness: 'cursor', model: 'openai/gpt-6.1-sol' } });
+  assert.equal(wrongModel.ready, false);
+  assert.equal(wrongModel.needs, 'model');
+  assert.match(wrongModel.reason, /Cursor runs a model Cursor lists/);
+  const sdk = await learningModelOf(env, { kind: 'agentic', body: { harness: 'cursor', model: 'cursor/default', sdk: { runtime: 'eve' } } });
+  assert.equal(sdk.ready, false, 'an SDK application cannot borrow the managed Cursor session for separate server compilation');
+});
+
+test('Cursor learning does not claim an unavailable real installation is ready just because it has its own key', async t => {
+  const { learningModelOf } = await import('../dist/learning-model.js');
+  const { DATA_ENV } = await import('../dist/files.js');
+  const { scratch } = await import('./support.mjs');
+  const access = await learningModelOf({ [DATA_ENV]: await scratch(t), CURSOR_API_KEY: 'fake-test-key' }, { kind: 'agentic', body: { harness: 'cursor' } });
+  assert.equal(access.ready, false);
+  assert.equal(access.needs, 'model');
+  assert.match(access.reason, /HARNESS_NOT_INSTALLED|ACP_BINARY_UNPINNED/);
+});
+
 test('native sign-in and managed Claude or ChatGPT sign-in are not misreported as missing API keys', async () => {
   const { learningModelOf } = await import('../dist/learning-model.js');
   const { withClaudeLogin } = await import('../dist/claude-login.js');
