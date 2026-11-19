@@ -8,6 +8,11 @@
 #       with no `agentrun stop`, then this one again, each replace it; `agentrun stop` stops it. Then --tailscale with no
 #       tailscale, and with a fake one first on PATH (fake-tailscale.sh): logged in, where the served name opens the
 #       setup that takes the code, not an open server; operator rights refused; Funnel on; and --no-tailscale.
+#   install-walk.sh first-run [installer options]  the setup prompt's own lines (docs/SKILL.md), timed from the installer
+#       to a finished first run against the bar, 5 minutes: the installer (a service where there is a service manager,
+#       else the background), the Local model step on a stand-in for Ollama (walk-model.mjs), `server capabilities`
+#       until models.ready, then the release-notes agent and its first run. With --tailscale, a fake tailscale that is
+#       logged in (fake-tailscale.sh) first on PATH, and the tailnet address printed.
 # Installer options: --package FILE (this checkout's launcher, packed), or none (the published one). NODE_PIN=1 gives the
 # installer the launcher's Node floor as --node-version; without it the installer picks the newest on the floor's line.
 set -euo pipefail
@@ -178,9 +183,104 @@ tailnet_walk() {
   down 30
 }
 
+# The bar (BRIEF-1117): from pasting the setup prompt to a finished first run in under 5 minutes. A person's agent also
+# reads and asks between these lines; the walk times what AgentRun does.
+bar=300
+# docs/SKILL.md's line that starts with $1, or the walk fails: a prompt that no longer says it fails here first.
+skill_line() {
+  local line
+  line=$(grep -m 1 -F -- "$1" "$here/../../docs/SKILL.md") || die "docs/SKILL.md has no line starting $1"
+  printf '%s' "$line"
+}
+first_run_walk() {
+  local t0 t_install t_model t_ready t_create t_run total local_model create start ready out nodebin served='' model_log
+  local_model=$(skill_line '~/.agentrun/bin/agentrun service install --env AGENT_MODEL_BASE_URL=http://localhost:11434/v1 ')
+  local_model=${local_model//<tag>/walk-model}
+  grep -qF 'curl -fsSL https://agentrun.ai/install | AGENT_MODEL_BASE_URL=http://localhost:11434/v1' "$here/../../docs/SKILL.md" ||
+    die "docs/SKILL.md no longer puts the local model in front of sh for a background start"
+  create=$(skill_line "~/.agentrun/bin/agentrun agents create --body '{\"definition\":{\"id\":\"release-notes\"")
+  start=$(skill_line '~/.agentrun/bin/agentrun runs start release-notes --wait ')
+  if [[ " $* " == *" --tailscale "* ]]; then
+    served=box.tail1234.example
+    out=$(mktemp -d)
+    cp "$here/test/fake-tailscale.sh" "$out/tailscale"
+    chmod 755 "$out/tailscale"
+    export PATH="$out:$PATH" FAKE_TAILSCALE_DIR
+    FAKE_TAILSCALE_DIR=$(mktemp -d)
+  fi
+
+  t0=$SECONDS
+  step "1. the installer$([ -n "$served" ] && echo ", --tailscale")"
+  piped_install "$bar" /tmp/first-install.log "$@"
+  healthy 30
+  t_install=$((SECONDS - t0))
+  if [ -n "$served" ]; then
+    grep -q "AgentRun is on your tailnet at https://$served/ (tailscale serve)" /tmp/first-install.log || die "no tailnet address printed"
+    grep -q funnel "$FAKE_TAILSCALE_DIR/calls" && die "tailscale funnel was run"
+  fi
+
+  step "2. a local model on localhost:11434 (walk-model.mjs, the stand-in for Ollama)"
+  nodebin=$(echo "$HOME"/.agentrun/node/*/bin/node)
+  model_log=$(mktemp)
+  "$nodebin" "$here/test/walk-model.mjs" "$model_log" 11434 > /tmp/walk-model.out 2>&1 &
+  for _ in $(seq 1 50); do grep -q 'walk model on' /tmp/walk-model.out && break; sleep 0.1; done
+  grep -q 'walk model on' /tmp/walk-model.out || die "the walk model did not start: $(cat /tmp/walk-model.out)"
+  if grep -q "so it runs in the background" /tmp/first-install.log; then
+    step "   Local model, in the background: agentrun stop, then the installer with the four in front of sh"
+    "$agentrun" stop
+    down 30
+    AGENT_MODEL_BASE_URL=http://localhost:11434/v1 AGENT_MODEL_GATEWAY_IDS=bare AGENT_MODEL=walk-model AGENT_MODEL_PRICE=0,0,0 \
+      piped_install "$bar" /tmp/first-model.log "$@"
+  else
+    step "   Local model, on the service: $local_model"
+    bash -c "$local_model"
+  fi
+  healthy 30
+  t_model=$((SECONDS - t0))
+
+  step "3. server capabilities until models.ready"
+  ready=
+  for _ in $(seq 1 60); do
+    out=$("$agentrun" server capabilities 2> /dev/null) || out=
+    if [ -n "$out" ] && "$nodebin" -e 'process.exit(JSON.parse(process.argv[1]).models?.ready === true ? 0 : 1)' "$out"; then ready=1; break; fi
+    sleep 1
+  done
+  [ -n "$ready" ] || die "models.ready is not true: $out"
+  t_ready=$((SECONDS - t0))
+
+  step "4. $create"
+  bash -c "$create"
+  t_create=$((SECONDS - t0))
+
+  step "5. $start"
+  out=$(bash -c "$start") || die "runs start failed: $out"
+  echo "$out"
+  t_run=$((SECONDS - t0))
+  "$nodebin" -e '
+    const run = JSON.parse(process.argv[1]);
+    const fail = (why) => { console.error(`FAIL: ${why}`); process.exit(1); };
+    if (run.status !== "completed") fail(`the first run is ${run.status}: ${JSON.stringify(run.error ?? null)}`);
+    if (!/Added/.test(run.result?.final_answer ?? "")) fail(`the answer did not come from the local model: ${run.result?.final_answer}`);
+    if (typeof run.cost?.usd !== "number") fail("no cost.usd");
+    if (!/^https?:\/\//.test(run.console_url ?? "")) fail(`no console_url: ${run.console_url}`);
+  ' "$out" || die "the first run's receipt is not what the prompt hands over"
+  grep -qE '^POST .*/(responses|chat/completions)$' "$model_log" || die "the run never reached the local model: $(cat "$model_log")"
+
+  total=$t_run
+  out="paste to first run: ${total}s (bar ${bar}s): installer ${t_install}s, local model $((t_model - t_install))s, models.ready $((t_ready - t_model))s, agent $((t_create - t_ready))s, run $((t_run - t_create))s; \$0 (a local model)"
+  step "$out"
+  [ -n "${GITHUB_STEP_SUMMARY:-}" ] && echo "- $(uname -sm)$([ -n "$served" ] && echo ' --tailscale'): $out" >> "$GITHUB_STEP_SUMMARY"
+  ((total < bar)) || die "$total s is over the bar, $bar s"
+}
+
 step "no Node.js on PATH ($PATH)"
 if command -v node; then die "node is on PATH"; fi
 uname -a
+
+if [ "$mode" = first-run ]; then
+  first_run_walk "$@"
+  exit 0
+fi
 
 if [ "$mode" = container ]; then
   step "the installer, piped to sh, --no-start"
@@ -240,7 +340,7 @@ if [ "$mode" = container ]; then
   exit 0
 fi
 
-[ "$mode" = service ] || die "mode is service or container, not $mode"
+[ "$mode" = service ] || die "mode is service, container or first-run, not $mode"
 case $(uname -s) in
   Darwin) target=gui/$(id -u)/ai.agentrun.server ;;
   Linux) target=agentrun.service ;;

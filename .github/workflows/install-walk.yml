@@ -5,6 +5,9 @@ name: Install walk
 # systemd user session; a macOS runner with launchd in its Aqua session. On a pull request or push it installs this
 # checkout's launcher, packed; after a release, the published one. The container also walks --tailscale with a fake
 # tailscale (packages/agentrun/test/fake-tailscale.sh): no tailnet, no secret. No model is called. Not a required check.
+# The first-run jobs walk the setup prompt's own lines (docs/SKILL.md) from the installer to a finished first run on a
+# local model (walk-model.mjs, a stand-in for Ollama), timed against the bar, 5 minutes: a container on x64 and arm64,
+# with --tailscale on a fake tailscale, the systemd user service and the macOS LaunchAgent.
 # The vps job walks --vps as root on a runner whose Docker it purges first (packages/agentrun/test/vps-walk.sh): the
 # release's published image, then, on a pull request or push, this checkout's, with a faux model (no key).
 
@@ -19,6 +22,8 @@ on:
       - 'packages/agentrun/test/fake-tailscale.sh'
       - 'packages/agentrun/test/vps-walk.sh'
       - 'packages/agentrun/test/vps-faux-shell.mjs'
+      - 'packages/agentrun/test/walk-model.mjs'
+      - 'docs/SKILL.md'
       - '.github/workflows/install-walk.yml'
   push:
     branches: [main]
@@ -31,6 +36,8 @@ on:
       - 'packages/agentrun/test/fake-tailscale.sh'
       - 'packages/agentrun/test/vps-walk.sh'
       - 'packages/agentrun/test/vps-faux-shell.mjs'
+      - 'packages/agentrun/test/walk-model.mjs'
+      - 'docs/SKILL.md'
       - '.github/workflows/install-walk.yml'
   workflow_run:
     workflows: ['Publish verified beta']
@@ -104,6 +111,78 @@ jobs:
           # takes the installer's choice, the newest on the floor's major line.
           NODE_PIN: ${{ runner.arch == 'X64' && '1' || '' }}
         run: packages/agentrun/test/install-walk.sh container ${PACKAGE:+--package /tmp/launcher/$PACKAGE}
+
+  first-run-container:
+    name: first run in 5 min, container (${{ matrix.runner }}${{ matrix.tailscale && ', --tailscale' || '' }})
+    needs: pack
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+          - runner: ubuntu-24.04-arm
+          - runner: ubuntu-24.04
+            tailscale: '--tailscale'
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    container: ubuntu:24.04
+    steps:
+      - name: curl, and nothing else
+        run: apt-get update -qq && apt-get install -y -qq --no-install-recommends curl ca-certificates > /dev/null
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        if: ${{ needs.pack.outputs.package != '' }}
+        with:
+          name: launcher
+          path: /tmp/launcher
+      - name: Walk
+        shell: bash
+        env:
+          PACKAGE: ${{ needs.pack.outputs.package }}
+          TAILSCALE: ${{ matrix.tailscale }}
+        run: packages/agentrun/test/install-walk.sh first-run $TAILSCALE ${PACKAGE:+--package /tmp/launcher/$PACKAGE}
+      - name: The server's log
+        if: ${{ always() }}
+        run: cat ~/.agentrun/logs/agentrun.log || true
+
+  first-run-service:
+    name: first run in 5 min, ${{ matrix.name }}
+    needs: pack
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Linux systemd user service
+            runner: ubuntu-24.04
+            path: /usr/sbin:/usr/bin:/sbin:/bin
+          - name: macOS LaunchAgent
+            runner: macos-26
+            path: /usr/bin:/bin:/usr/sbin:/sbin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        if: ${{ needs.pack.outputs.package != '' }}
+        with:
+          name: launcher
+          path: /tmp/launcher
+      - name: A systemd user session
+        if: ${{ runner.os == 'Linux' }}
+        run: |
+          sudo loginctl enable-linger "$USER"
+          for i in $(seq 1 30); do [ -S "/run/user/$(id -u)/bus" ] && break; sleep 1; done
+          echo "XDG_RUNTIME_DIR=/run/user/$(id -u)" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/bus" >> "$GITHUB_ENV"
+      - name: Walk
+        shell: bash
+        env:
+          PACKAGE: ${{ needs.pack.outputs.package }}
+          WALK_PATH: ${{ matrix.path }}
+        run: PATH=$WALK_PATH packages/agentrun/test/install-walk.sh first-run ${PACKAGE:+--package /tmp/launcher/$PACKAGE}
+      - name: The service's log
+        if: ${{ always() }}
+        run: cat ~/.agentrun/logs/agentrun.log || true
 
   vps:
     name: VPS, Docker Compose as root (--vps)
