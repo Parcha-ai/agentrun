@@ -25,8 +25,12 @@ Each step ends on a command that tells you whether it is done. Run them from the
    fake ACP agent, with no binary, no model and no key:
    `npm run test:harness-module-example`
    It is done when the last lines read `ℹ pass 25`, `ℹ fail 0` and `ℹ skipped 6`.
-2. Copy `examples/harness-module` to a folder of your own and give it your package name. Change [what you
-   write](#what-you-write): the id, the facts, the recipe, the proxy and `missing`.
+2. Copy the example from the tag of the release your server runs,
+   `https://github.com/Parcha-ai/agentrun/tree/v<version>/examples/harness-module`, to a folder of your own, and give
+   it your package name. Its `@parcha` pins are that release's. The kit, `@parcha/agentrun-serve/harness`,
+   `/conformance` and `@parcha/agentrun-harness-acp/testing` ship from the first release that includes this guide, so
+   an older tag has no example to copy. Change [what you write](#what-you-write): the id, the facts, the recipe, the
+   proxy and `missing`.
 3. Run `npm test` in your copy until it passes the same way ([prove it](#prove-it)).
 4. Install it beside a server and start the server with it ([load it](#load-it)). `GET /v2/capabilities` lists your
    harness in `harnesses` after the built-in ones.
