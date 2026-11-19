@@ -42,3 +42,5 @@ resolve workflow input schema references before advertising them in the native c
 
 Label tool credentials as API Keys in console settings and retain all repository and third-party
 attributions in the package archives.
+Browser archive verification recognizes both required vendor provenance manifests and continues
+to reject unlisted files.
