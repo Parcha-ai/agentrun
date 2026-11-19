@@ -2608,8 +2608,8 @@ A string that is an address carrying a credential, in any scheme (`https`, `post
 (`token`, `api_key`, `access_token`, `sig`) that has a value. An address with none stays as it is; one whose user part
 holds no secret (`ssh://git@host`) is sealed all the same. A field the event's schema marks with `format: "password"` or
 `writeOnly: true` is sealed whatever its name; the create reads the event's schema from Composio for this. A create with
-such a value below the config's top level is refused `422`, naming it. For example, HubSpot's deal-stage event takes
-`{app_id, developer_api_key}`. Composio's trigger schemas rarely mark a field secret, so the name mostly decides. A
+such a value below the config's top level is refused `422`, naming it.
+Composio's trigger schemas rarely mark a field secret, so the name mostly decides. A
 number is sealed as its decimal text and stays a number in what Composio gets; a run's output is cut of that text when
 it is 8 characters or more, as a string's is. The value is kept in the composio source's sealed settings, next to the subscription's
 secret. Composio gets it once, in the instance's upsert. Every answer has `"[sealed]"` in its place, and
