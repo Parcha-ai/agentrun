@@ -1314,6 +1314,9 @@ export interface Runners {
   seen(runner: string, incarnation: string): Promise<boolean>;
   /** Every runner's row, by name. */
   list(): Promise<RunnerRow[]>;
+  /** The rows seen within `staleMs`, by name. Every row's time (a put's, a seen's) and this "now" are the deadlines'
+   *  clock (fence.ts storeNow: the database's on Postgres), never one process's: runners on other hosts are judged alike. */
+  live(staleMs: number): Promise<RunnerRow[]>;
   /** The runner's row gone, while it is still this incarnation's. */
   remove(runner: string, incarnation: string): Promise<void>;
 }

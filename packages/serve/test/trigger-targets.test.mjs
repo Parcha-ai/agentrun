@@ -175,6 +175,24 @@ test("message to a run with no cap is refused with the cap words", async () => {
   );
 });
 
+test("message while every runner here refused to claim is refused runner_refused in their words, nothing written and the firing left for the engine to fail; a start alike", async () => {
+  const store = await freshStore();
+  await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1" });
+  await dueFirings(store, ["f1"]);
+  const words = "No runner of this server can take a run: set AGENTRUN_RUN_USER=same.";
+  const t = triggerTargets(store, deps({ start: { runnersRefused: async () => words } }));
+  await assert.rejects(
+    () => t.message({ kind: "message_run", run_id: "run-1", input: { content: "hi" } }, { content: "hi" }, "f1", from, BOUND),
+    (e) => e.code === "runner_refused" && e.message === words,
+  );
+  assert.equal((await store.commands("run-1", 0)).length, 0, "no message waits on a runner that never comes");
+  assert.equal((await store.triggers.firing("t1", "f1")).status, "due", "not marked sent");
+  await assert.rejects(
+    () => t.start({ kind: "start_run", agent_id: "a1", input: { content: "hi" }, max_cost_usd: 1 }, { content: "hi" }, { id: "t1", firing_key: "f2" }, from),
+    (e) => e.code === "runner_refused" && e.message === words,
+  );
+});
+
 test("runOf finds a run started under a key: a run is inserted whole, so a found run started", async () => {
   const store = await freshStore();
   await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1", origin: { key: "f1" } });

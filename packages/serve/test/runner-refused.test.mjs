@@ -145,6 +145,23 @@ test("a runner in a process of its own that refuses to claim: launches 503 in it
   await stopped(serve);
 });
 
+test("a refusing runner started before its server, its store not set up yet, tries the store again: once the server is there it hears the refusal", { timeout: 150_000 }, async (t) => {
+  const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-runner-refused-first-"));
+  t.after(() => rmSync(data, { recursive: true, force: true }));
+  const refusing = cli(t, ["runner", "--data", data, "--name", "refuses-first"], { AGENTRUN_RUN_USER: "bogus" });
+  await line(refusing, "err", /the server is not told (yet )?that this runner claims nothing, since its store did not open/);
+  const serve = await server(t, data, ["--no-runner"]);
+  const { api, port } = serve;
+  assert.equal((await api("POST", "/agents", agent("waits"))).status, 201);
+  const caps = await until(() => api("GET", "/capabilities"), (r) => typeof r.body.runner_refused === "string");
+  assert.match(String(caps.body.runner_refused), REFUSED, `the runner told the server once its store was there: ${JSON.stringify(caps.body.runner_refused)} ${JSON.stringify(refusing.said.err)}`);
+  const launched = await api("POST", "/agents/waits/runs", { input: { content: "Answer." } });
+  assert.equal(launched.status, 503, JSON.stringify(launched.body));
+  assert.equal(launched.body.error.code, "runner_refused", JSON.stringify(launched.body));
+  await stopped(refusing);
+  await stopped(serve);
+});
+
 test("a runner beside the server that refuses to claim fails the run an earlier start left queued, and refuses launches until a start whose runner can claim", { timeout: 150_000 }, async (t) => {
   const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-runner-refused-beside-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));

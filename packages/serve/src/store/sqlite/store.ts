@@ -1781,22 +1781,30 @@ class SqliteStore implements Store {
       },
     };
 
+    // Stamped and judged on the deadlines' clock (fence.ts storeNow: the database's on Postgres), the one a claim's lease
+    // runs on, so a runner on another host whose own clock is behind the server's never reads as gone.
+    const RUNNERS_SELECT = "SELECT runner, incarnation, refused, seen_at FROM runners";
     this.runners = {
       put: async ({ runner, incarnation, refused }) => {
-        const at = now();
+        const n = clock();
         await db.write([
-          { sql: "DELETE FROM runners WHERE seen_at < ?", params: [at - RUNNER_ROWS_KEPT_MS] },
+          { sql: `DELETE FROM runners WHERE seen_at < ${n.sql} - ${d.bigintParam}`, params: [...n.params, RUNNER_ROWS_KEPT_MS] },
           {
-            sql: "INSERT INTO runners (runner, incarnation, refused, seen_at) VALUES (?, ?, ?, ?) ON CONFLICT (runner) DO UPDATE SET incarnation = excluded.incarnation, refused = excluded.refused, seen_at = excluded.seen_at",
-            params: [runner, incarnation, refused, at],
+            sql: `INSERT INTO runners (runner, incarnation, refused, seen_at) VALUES (?, ?, ?, ${n.sql}) ON CONFLICT (runner) DO UPDATE SET incarnation = excluded.incarnation, refused = excluded.refused, seen_at = excluded.seen_at`,
+            params: [runner, incarnation, refused, ...n.params],
           },
         ]);
       },
       seen: async (runner, incarnation) => {
-        const [result] = await db.write([{ sql: "UPDATE runners SET seen_at = ? WHERE runner = ? AND incarnation = ?", params: [now(), runner, incarnation] }]);
+        const n = clock();
+        const [result] = await db.write([{ sql: `UPDATE runners SET seen_at = ${n.sql} WHERE runner = ? AND incarnation = ?`, params: [...n.params, runner, incarnation] }]);
         return (result?.changes ?? 0) === 1;
       },
-      list: async () => (await db.all<RunnerRecord>("SELECT runner, incarnation, refused, seen_at FROM runners ORDER BY runner")).map(runnerOf),
+      list: async () => (await db.all<RunnerRecord>(`${RUNNERS_SELECT} ORDER BY runner`)).map(runnerOf),
+      live: async (staleMs) => {
+        const n = clock();
+        return (await db.all<RunnerRecord>(`${RUNNERS_SELECT} WHERE seen_at >= ${n.sql} - ${d.bigintParam} ORDER BY runner`, ...n.params, staleMs)).map(runnerOf);
+      },
       remove: async (runner, incarnation) => {
         await db.write([{ sql: "DELETE FROM runners WHERE runner = ? AND incarnation = ?", params: [runner, incarnation] }]);
       },

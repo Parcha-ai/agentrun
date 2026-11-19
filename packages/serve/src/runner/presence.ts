@@ -59,9 +59,9 @@ export function keepPresence(runners: Runners, runner: string, refused: string |
 }
 
 /** Why no runner here can take a run, in the runners' own words, or undefined while one can (or none is there): the rows
- *  seen within `staleMs` of `now`, when there is one at least and every one refused. */
-export async function runnersRefused(runners: Pick<Runners, "list">, now = Date.now(), staleMs = PRESENCE_STALE_MS): Promise<string | undefined> {
-  const live = (await runners.list()).filter((row) => row.seenAt >= now - staleMs);
+ *  seen within `staleMs` on the store's clock (Runners.live), when there is one at least and every one refused. */
+export async function runnersRefused(runners: Pick<Runners, "live">, staleMs = PRESENCE_STALE_MS): Promise<string | undefined> {
+  const live = await runners.live(staleMs);
   if (live.length === 0 || live.some((row) => row.refused === null)) return undefined;
   const reasons = [...new Set(live.map((row) => row.refused as string))];
   return `No runner of this server can take a run: ${reasons.join(" ")}`;

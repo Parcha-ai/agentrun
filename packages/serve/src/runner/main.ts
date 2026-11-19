@@ -13,6 +13,7 @@
 // An error nothing handles exits 1 at once, said with its stack (lastResort).
 import { mkdirSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { type HostedDial, PROVIDERS } from "@parcha/agentrun-computer";
 import { type RunnerRelay, startRunnerRelay } from "../dial-relay.js";
 import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
@@ -536,9 +537,7 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
     // And said in the store until the stop (presence.ts), so the server, in its own process or on another host, refuses a
     // launch in these words and fails the runs left queued while no runner that claims is there.
     const stop = untilSignalled(RUNNER_SIGNALS);
-    const word = await refusedInStore(args.dataDir, env, name ?? runnerName(), error.message);
-    await stop;
-    await word?.close();
+    await refusedInStore(args.dataDir, env, name ?? runnerName(), error.message, stop);
     return 0;
   }
   if (isolation.kind === "uid" && holds.loops > isolation.slots) console.error(`agentrun-serve runner: each run runs as a user of its own, and the helper reaches ${isolation.slots} slots from slot ${isolation.first}: this runner holds at most ${isolation.slots} runs at once`);
@@ -606,28 +605,39 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
 /** The signals that stop a runner process. */
 const RUNNER_SIGNALS: readonly NodeJS.Signals[] = ["SIGTERM", "SIGINT"];
 
-/** Holds the process up, with nothing else to do, until one of `signals`. */
-/** A runner whose run isolation was refused, its `words` kept in its store (presence.ts) until the close, which also
- *  closes the store. A store that does not open (not set up yet, a schema this runner does not know) is said, and the
- *  runner stays up claiming nothing all the same: undefined. */
-async function refusedInStore(dataDir: string, env: NodeJS.ProcessEnv, name: string, words: string): Promise<{ close(): Promise<void> } | undefined> {
+/** How long a refusing runner waits before it tries its store again (refusedInStore). */
+const REFUSED_STORE_RETRY_MS = 5_000;
+
+/** A runner whose run isolation was refused: its `words` kept in its store (presence.ts) until `stopped`, then its row
+ *  removed and the store closed. A store that does not open (not set up yet, one its server has yet to upgrade, a
+ *  connection down) is said, once for each reason, and tried again every REFUSED_STORE_RETRY_MS until it opens or the
+ *  stop: a runner that starts before its server still tells that server, once it is there. */
+async function refusedInStore(dataDir: string, env: NodeJS.ProcessEnv, name: string, words: string, stopped: Promise<void>): Promise<void> {
   const warn = (line: string) => void console.error(`agentrun-serve runner: ${line}`);
-  let store: Store;
-  try {
-    ({ store } = await openRunnerStore(dataDir, env, warn, undefined));
-  } catch (error) {
-    warn(`the server is not told that this runner claims nothing, since its store did not open: ${(error as Error)?.message ?? String(error)}`);
-    return undefined;
+  let stop = false;
+  void stopped.then(() => void (stop = true));
+  let said: string | undefined;
+  while (!stop) {
+    let store: Store;
+    try {
+      ({ store } = await openRunnerStore(dataDir, env, warn, undefined));
+    } catch (error) {
+      const why = (error as Error)?.message ?? String(error);
+      if (why !== said) warn(`the server is not told yet that this runner claims nothing, since its store did not open (tried again every ${REFUSED_STORE_RETRY_MS / 1000} s): ${why}`);
+      said = why;
+      await Promise.race([sleep(REFUSED_STORE_RETRY_MS, undefined, { ref: false }), stopped]);
+      continue;
+    }
+    if (said !== undefined) warn("its store opened: the server is told that this runner claims nothing");
+    const presence = keepPresence(store.runners, name, words, { warn });
+    await stopped;
+    await presence.close();
+    await store.close();
+    return;
   }
-  const presence = keepPresence(store.runners, name, words, { warn });
-  return {
-    async close() {
-      await presence.close();
-      await store.close();
-    },
-  };
 }
 
+/** Holds the process up, with nothing else to do, until one of `signals`. */
 function untilSignalled(signals: readonly NodeJS.Signals[]): Promise<void> {
   return new Promise<void>((resolve) => {
     // A signal's listener alone does not keep Node's loop alive.

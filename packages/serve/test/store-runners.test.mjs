@@ -39,21 +39,25 @@ test("a runner's row is its incarnation's: seen and removed only by it, put agai
 test("no runner can take a run only while every runner still there refused, and one at least is there", async (t) => {
   const clock = { now: T0 };
   const { store } = await storeOn(t, { clock });
+  // Every time here is the store's clock (T0, years from this process's): rows are stamped and judged by it alone, so a
+  // runner on another host whose clock is behind the server's still counts.
   const at = (ms) => T0 + ms;
-  assert.equal(await runnersRefused(store.runners, at(0)), undefined, "no runner yet: runs queue for one to come");
+  assert.equal(await runnersRefused(store.runners), undefined, "no runner yet: runs queue for one to come");
   await store.runners.put({ runner: "refuses", incarnation: "1", refused: WORDS });
-  assert.equal(await runnersRefused(store.runners, at(0)), `No runner of this server can take a run: ${WORDS}`);
+  assert.equal(await runnersRefused(store.runners), `No runner of this server can take a run: ${WORDS}`, "judged on the store's clock, not this process's");
   await store.runners.put({ runner: "refuses-too", incarnation: "1", refused: WORDS });
-  assert.equal(await runnersRefused(store.runners, at(0)), `No runner of this server can take a run: ${WORDS}`, "the same words once");
+  assert.equal(await runnersRefused(store.runners), `No runner of this server can take a run: ${WORDS}`, "the same words once");
   await store.runners.put({ runner: "claims", incarnation: "1", refused: null });
-  assert.equal(await runnersRefused(store.runners, at(0)), undefined, "one runner that claims is enough");
+  assert.equal(await runnersRefused(store.runners), undefined, "one runner that claims is enough");
   // The runner that claims stops saying it is there (it died): past PRESENCE_STALE_MS it no longer counts.
   clock.now = at(PRESENCE_STALE_MS);
   await store.runners.seen("refuses", "1");
   await store.runners.seen("refuses-too", "1");
-  assert.equal(await runnersRefused(store.runners, at(PRESENCE_STALE_MS + 1)), `No runner of this server can take a run: ${WORDS}`);
+  clock.now = at(PRESENCE_STALE_MS + 1);
+  assert.equal(await runnersRefused(store.runners), `No runner of this server can take a run: ${WORDS}`);
   // And refusing runners that died count for nothing either: no runner is there.
-  assert.equal(await runnersRefused(store.runners, at(2 * PRESENCE_STALE_MS + 1)), undefined);
+  clock.now = at(2 * PRESENCE_STALE_MS + 1);
+  assert.equal(await runnersRefused(store.runners), undefined);
 });
 
 test("keepPresence keeps its row renewed and puts it back when it went; its close removes it", async (t) => {
