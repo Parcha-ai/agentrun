@@ -106,15 +106,18 @@ export interface HarnessEntry {
 }
 
 /** What one run of a module's adapter harness is given (HarnessModuleKit.adapterEntry): the model as its provider names it,
- *  where the session's proxy forwards it (origin, credential, auth), the price of a request's usage, a log, and the
- *  confinement its process starts under. serve chooses each from the run's model and this server's keys (providerFor),
- *  as it does for the built-in harnesses. */
+ *  where the session's proxy forwards it (origin, credential, auth), the price of a request's usage, a log, the
+ *  confinement its process starts under, and the skills it loads itself. serve chooses each from the run's model and
+ *  this server's keys (providerFor), as it does for the built-in harnesses. */
 export interface ModuleLaunch {
   readonly model: string;
   readonly provider: { readonly origin: string; readonly credential: () => string | Promise<string>; readonly auth?: "bearer" | "x-api-key" };
   readonly price: (model: string, usage: { input: number; output: number; cacheRead?: number; cacheWrite?: number }) => number | null;
   readonly log: (message: string, fields?: Record<string, unknown>) => void;
   readonly confine?: AdapterNeeds["confine"];
+  /** The run's skills its skillCheck accepted, taken out of the prompt for the harness to load itself; only with a
+   *  skillCheck (adapterEntry's), and only when the run has some. */
+  readonly skills?: AdapterNeeds["skills"];
   /** The server's environment, for the module's own settings (its binary's path, say). */
   readonly env: NodeJS.ProcessEnv;
 }
@@ -261,6 +264,7 @@ function moduleAdapter(facts: AdapterFacts, build: (launch: ModuleLaunch) => Age
       price: priceOf({ ...needs, model: provider.priceModel }),
       log: host.log ?? harnessLog(facts.id, env),
       ...(needs.confine ? { confine: needs.confine } : {}),
+      ...(needs.skills?.length ? { skills: needs.skills } : {}),
       env,
     });
   };

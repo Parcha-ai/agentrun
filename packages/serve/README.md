@@ -3191,7 +3191,8 @@ are made with, on the running server's own copy:
   `AdapterFacts`): its models are its wire's vendor's, its key rows are that vendor's and OpenRouter's, and its tools are
   gated and named by its facts, as for claude-agent, codex and opencode. `adapter(launch)` builds the adapter for one run
   from the launch serve chose on this server's keys (`ModuleLaunch`: the provider's model id, the origin and credential
-  the session's proxy forwards to, the price of a request's usage, a log, and the server's environment). A person's
+  the session's proxy forwards to, the price of a request's usage, a log, the skills a `skillCheck` in `extra` accepted,
+  taken out of the prompt, and the server's environment). A person's
   Claude Code login is never a launch's credential.
 - `kit.acpEntry({facts, recipe, proxy, beforeStart?, promises?})` makes an ACP agent's entry on serve's own ACP adapter
   (`@parcha/agentrun-harness-acp`), promising `load`, `permission` and `proxy` unless `promises` says otherwise.
