@@ -109,17 +109,18 @@ async function* tarEntries(store: FolderStore, { entries, meta }: StoredFolder):
 }
 
 /** The claim's synced folder: the FolderSync of the computer that holds it now, which the claim's sync (syncOf) runs.
- *  Set at the claim's start, and again by each new sandbox the claim starts in place of a lost one (holdSynced). */
+ *  Set at the claim's start (holdSynced, or pullFolder for a kept one), and again by each new sandbox the claim starts
+ *  in place of a lost one (holdSynced). */
 export type HeldFolder = { folder?: FolderSync };
 
 /**
  * The stored folder pushed into the computer's empty /workspace through `client` (the computer's own, under no sync),
- * one streaming tar, then the computer's listing read as the manifest, and `held` set to that sync: the claim's start,
- * and a new sandbox in place of a lost one, whose fresh mtimes the old manifest would read as every file changed. The
- * links an exec made on the disk (linkObjects), now links in the computer, are then removed from the disk. Throws in
- * words where the push, the listing or a remove fails.
+ * one streaming tar, then the computer's listing read as the manifest: the sync the claim holds from then on (the
+ * caller sets HeldFolder.folder to it), at the claim's start and for a new sandbox in place of a lost one, whose fresh
+ * mtimes the old manifest would read as every file changed. The links an exec made on the disk (linkObjects), now links
+ * in the computer, are then removed from the disk. Throws in words where the push, the listing or a remove fails.
  */
-export async function holdSynced(held: HeldFolder, store: FolderStore, client: ComputerClient, stored: StoredFolder, signal?: AbortSignal): Promise<void> {
+export async function holdSynced(store: FolderStore, client: ComputerClient, stored: StoredFolder, signal?: AbortSignal): Promise<FolderSync> {
   const options = signal ? { signal } : {};
   if (stored.entries.length > 0 || Object.keys(stored.meta.links).length > 0) {
     const pushed = await pushTar(client, WORKSPACE, tarStream(tarEntries(store, stored)), options);
@@ -132,7 +133,7 @@ export async function holdSynced(held: HeldFolder, store: FolderStore, client: C
     const removed = await store.remove(path, "file");
     if (!removed.ok) throw new Error(`the link ${JSON.stringify(path)} an exec made on the run's disk could not be removed from it: ${removed.error.message}`);
   }
-  held.folder = folder;
+  return folder;
 }
 
 /**

@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fold } from './changes.mjs';
-import { checkManifest, checkReleaseAudit, checkReleaseDispatch, checkReleaseTree, heldPackages, listedPackages, ownVersionPackages, releaseLayers, releasePackages, releasePackageNames, releasePreflight } from './release-preflight.mjs';
+import { checkManifest, checkNotice, noticeAppendices, checkReleaseAudit, checkReleaseDispatch, checkReleaseTree, heldPackages, listedPackages, ownVersionPackages, releaseLayers, releasePackages, releasePackageNames, releasePreflight } from './release-preflight.mjs';
 
 const exec = promisify(execFile);
 const version = '0.1.0-beta.1';
@@ -243,6 +243,12 @@ test('Apache release preserves the approved root license and notices in every ar
     await assert.rejects(preflight(root), /mismatched NOTICE/, edited);
   }
   await writeFile(join(root, 'packages/pi-browser/NOTICE'), notice);
+  // A notice goes only where what it covers ships: dsl ships no third-party code, so a notice appended to its NOTICE is
+  // refused, however whole the root header above it.
+  await writeFile(join(root, 'packages/dsl/NOTICE'), `${notice}\nThird-party notice for something dsl does not ship.\n`);
+  await recordPackages(root);
+  await assert.rejects(preflight(root), /@parcha\/agentrun-dsl's NOTICE appends/);
+  await writeFile(join(root, 'packages/dsl/NOTICE'), notice);
   await recordPackages(root);
   await writeFile(join(root, 'LICENSE'), 'Apache License\nVersion 2.0, January 2004\n' + 'x'.repeat(1000));
   await assert.rejects(preflight(root), /Apache license text is incomplete/);
@@ -251,6 +257,16 @@ test('Apache release preserves the approved root license and notices in every ar
   await recordPackages(root);
   await assert.rejects(preflight(root), /mismatched NOTICE/);
 }));
+
+test("this tree's NOTICEs keep the rule the preflight checks at release, and every package allowed an appendix carries one", () => {
+  const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+  const root = read('NOTICE');
+  for (const directory of listedPackages) checkNotice(directory, read(`packages/${directory}/NOTICE`), root);
+  for (const directory of Object.keys(noticeAppendices)) {
+    assert.ok(listedPackages.includes(directory), `noticeAppendices names ${directory}, which is not a release package`);
+    assert.notEqual(read(`packages/${directory}/NOTICE`).trim(), root.trim(), `${directory}'s NOTICE appends nothing: drop it from noticeAppendices`);
+  }
+});
 
 const repoPackages = () => readdirSync(new URL('../packages', import.meta.url)).filter(name => !name.startsWith('.')).sort();
 const repoManifest = name => JSON.parse(readFileSync(new URL(`../packages/${name}/package.json`, import.meta.url), 'utf8'));

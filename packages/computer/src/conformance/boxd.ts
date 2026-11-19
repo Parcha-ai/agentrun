@@ -14,6 +14,7 @@ import { BOXD_DEFAULT_IMAGE } from "../descriptors/boxd.js";
 import { type BoxdOptions, type BoxdProvider, create } from "../boxd.js";
 import type { MachineHost } from "../host.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
+import { kindFrom } from "./kind.js";
 
 /** The environment this module reads, by name, each for the option its comment names, the live switch and the run's image. */
 export const BOXD_ENV = {
@@ -50,15 +51,13 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 	const org = env[BOXD_ENV.org] || undefined;
 	const region = env[BOXD_ENV.region] || undefined;
 	const daemonPath = env[BOXD_ENV.daemon] || undefined;
-	const kind = env[BOXD_ENV.kind] || undefined;
 	const daemonUser = env[BOXD_ENV.user] || undefined;
 	return {
 		apiKey,
 		...(org === undefined ? {} : { org }),
 		...(region === undefined ? {} : { region }),
 		...(daemonPath === undefined ? {} : { daemonPath }),
-		// create() refuses any other kind in words.
-		...(kind === undefined ? {} : { kind: kind as "desktop" | "linux" }),
+		...kindFrom(env, BOXD_ENV.kind),
 		...(daemonUser === undefined ? {} : { daemonUser }),
 	};
 }

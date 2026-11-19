@@ -735,7 +735,7 @@ test("connect dial: create sends the boot env as the sandbox's env and its netwo
 	assert.deepEqual(Object.keys(body.env).sort(), BOOT_NAMES);
 	assert.equal(body.env.AGENTRUN_ATTACH_URL, "ws://127.0.0.1:8080/v2/computers/attach");
 	assert.equal(body.env.AGENTRUN_DAEMON_URL, "http://127.0.0.1:8080/v2/computers/daemon?arch=amd64");
-	assert.match(body.env.AGENTRUN_ATTACH_TOKEN, /^art_[0-9a-f]{64}$/);
+	assert.match(body.env.AGENTRUN_ATTACH_TOKEN, /^art_[A-Za-z0-9_-]{43}$/);
 	assert.match(body.env.AGENTRUN_INIT_ARGS, /^--deadline \S+ --user 2510:2510 --own-network --max-deadline \S+$/);
 	assert.equal(body.networkBlockAll, false, "its root reaches the server; its tools' network none is init's");
 	assert.equal(dial.tokens.check(body.env.AGENTRUN_ATTACH_TOKEN), undefined, "a create Daytona refused has its token revoked");
@@ -760,7 +760,7 @@ test("connect dial: no Archil mount, no GPU and not Daytona's default snapshot, 
 	assert.deepEqual(caps.vendorAgentPorts, [2280], "the toolbox still runs, and its port is still blocked");
 	const mount = provider.check(ARCHIL_SPEC);
 	assert.deepEqual(mount.map(({ field }) => field), ["mount"]);
-	assert.match(mount[0].message, /Daytona's machines dial this server, and a machine that dials takes no Archil mount yet/);
+	assert.match(mount[0].message, /Daytona's machines dial this server, and a machine that dials takes no Archil mount$/);
 	const gpu = provider.check({ ...SPEC, image: "default", gpu: GPU });
 	assert.ok(gpu.length > 0 && gpu.every(({ field }) => field === "gpu"), JSON.stringify(gpu));
 	assert.ok(gpu.some(({ message }) => /a Daytona computer that dials this server takes no GPU: daytona-gpu holds no agentrun-dial/.test(message)), JSON.stringify(gpu));

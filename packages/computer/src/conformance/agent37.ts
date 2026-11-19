@@ -24,6 +24,7 @@ import type { MachineHost } from "../host.js";
 import type { MountKind } from "../mount.js";
 import { type ArchilRunFolderOptions, archilRunFolder, archilSettings } from "./archil.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
+import { kindFrom } from "./kind.js";
 import type { RunFolder } from "./types.js";
 
 /** The Archil disk's settings for the mount cases, by name (COMPUTER_ARCHIL_*: all five, or none). */
@@ -76,14 +77,13 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 	const apiUrl = env[AGENT37_ENV.apiUrl] || undefined;
 	const daemonPath = env[AGENT37_ENV.daemon] || undefined;
 	const daemonUser = env[AGENT37_ENV.user] || undefined;
-	const kind = env[AGENT37_ENV.kind] || undefined;
 	return {
 		apiKey,
 		sshKey,
 		// create() refuses any other type or region in words.
 		...(type === undefined ? {} : { type: type as Agent37Type }),
 		...(region === undefined ? {} : { region: region as Agent37Region }),
-		...(kind === undefined ? {} : { kind: kind as "desktop" | "linux" }),
+		...kindFrom(env, AGENT37_ENV.kind),
 		...(apiUrl === undefined ? {} : { apiUrl }),
 		...(daemonPath === undefined ? {} : { daemonPath }),
 		...(lifetime === undefined ? {} : { maxLifetimeMs: Number(lifetime) }),
