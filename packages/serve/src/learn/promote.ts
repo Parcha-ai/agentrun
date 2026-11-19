@@ -516,6 +516,9 @@ export type Grader = { readonly model: string; ask(request: { readonly system: s
 /** The grader's verdict in `text`: one JSON object (bare, or the whole of one fence) whose `same` is a boolean and whose
  *  `differs_on` is a string or null (or absent); undefined for any other reply. */
 export function graderVerdictOf(text: string): { same: boolean; differs_on: string | null } | undefined {
+  // One verdict and nothing else: a reply with prose around a fence, or with two fences, is none (valueOf alone would take the last).
+  const fences = text.match(/```/g)?.length ?? 0;
+  if (fences > 0 && !(fences === 2 && text.trim().startsWith("```") && text.trim().endsWith("```"))) return undefined;
   const value = valueOf(text);
   if (!isObject(value) || typeof value.same !== "boolean") return undefined;
   const differs = value.differs_on;

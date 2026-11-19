@@ -320,6 +320,8 @@ test("the grader's verdict: one JSON object, bare or the whole of one fence; any
   assert.deepEqual(graderVerdictOf('{"same": false}'), { same: false, differs_on: null });
   assert.deepEqual(graderVerdictOf('```\n{"same": true}\n```'), { same: true, differs_on: null }, "an unlabelled whole fence");
   assert.deepEqual(graderVerdictOf('  ```json\r\n{"same": true, "differs_on": null}\r\n```  '), { same: true, differs_on: null }, "a json-labelled whole fence, padded");
+  assert.equal(graderVerdictOf('```json\n{"same": false}\n```\n```json\n{"same": true}\n```'), undefined, "two verdicts: none, never the last");
+  assert.equal(graderVerdictOf('Sure:\n```json\n{"same": true}\n```'), undefined, "prose around a fence");
   for (const text of ["same", '{"same": "yes"}', '{"same": true, "differs_on": 3}', 'Sure: {"same": true}', "[true]"]) assert.equal(graderVerdictOf(text), undefined, text);
 });
 
