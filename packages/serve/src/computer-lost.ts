@@ -1,7 +1,8 @@
 // A run's sandbox that its provider lost mid-run (deleted by the vendor's own API or console, or gone with no why): the
-// claim starts a new one in its place at the next tool call (workspace/computer-for-claim.ts lostAware), up to
-// LOST_RECREATES times a claim. These are the words of both: the Timeline's row for a new one, and the run's end once the
-// claim has started as many as it may. That end's words begin with its code, so a reader of the run's summary serves it
+// call in flight when the loss is confirmed fails and is never run again, and the claim starts a new one in its place at
+// the next tool call (workspace/computer-for-claim.ts lostAware), up to LOST_RECREATES times a claim. These are the words
+// of all three: the call the loss cut, the Timeline's row for a new one, and the run's end once the claim has started as
+// many as it may. That end's words begin with its code, so a reader of the run's summary serves it
 // as the error computer_unavailable, its message the words after the code (store-view.ts errorOfRow), as a cap's end is
 // served as spend_cap_reached.
 
@@ -13,6 +14,12 @@ export const COMPUTER_UNAVAILABLE_CODE = "computer_unavailable";
 
 /** How lostEnd's words begin, and only theirs. */
 const LOST_END = `${COMPUTER_UNAVAILABLE_CODE}: `;
+
+/** The answer of the call in flight when its sandbox, `name`, was found lost, `why` the provider's words. Its code is
+ *  gone, never not_found, so no caller reads it as a file or a program that is not there (a shell's fallback from bash
+ *  to sh would send the command again, to the new sandbox). */
+export const lostInCallWords = (name: string, why: string): string =>
+  `the computer ${name} was lost while this call ran, and it was not run again: ${why.replace(/[.!?]+$/, "")}. A new computer starts at the next call.`;
 
 /** The Timeline's row once a new sandbox replaced a lost one: its name. */
 export const lostRecreatedWords = (name: string): string => `Its computer was lost; started a new one (${name}).`;

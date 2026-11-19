@@ -29,7 +29,7 @@ import type { Settings } from "./store/index.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessId } from "./harness.js";
 import type { AdapterFacts } from "@parcha/agentrun-kernel";
 import { builtinHarness, factsOf as tableFactsOf, harnessOf } from "./harness-table.js";
-import { viaOpenRouter, WIRES } from "./provider.js";
+import { viaOpenRouter, wireOf } from "./provider.js";
 import { savedIn } from "./secrets.js";
 import { hostModel } from "./model.js";
 import { NEEDS_A_COMPUTER, NO_SHELL, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
@@ -222,7 +222,7 @@ function noNative(input: ResolveInput): { id: string; why: string } | undefined 
   if (facts) {
     if (!facts.webSearch) return { id: `${input.harness}, whose model requests carry no provider-hosted tool`, why: `${facts.label}'s model requests carry no provider-hosted tool` };
     if (input.openRouter) return { id: `${input.harness} on OpenRouter`, why: `through OpenRouter ${facts.label}'s own search is not run, and its searches are not counted to price` };
-    if (input.gateway && WIRES[facts.wire].gateway) return { id: `${input.harness} behind a gateway`, why: `behind a gateway ${facts.label} has no own search` };
+    if (input.gateway && wireOf(facts.wire)?.gateway) return { id: `${input.harness} behind a gateway`, why: `behind a gateway ${facts.label} has no own search` };
     return input.capped ? cappedOwn(input.harness, facts.label, facts.webSearch) : undefined;
   }
   if (input.gateway) return { id: `${input.harness} behind a gateway`, why: `behind a gateway ${input.harness} has no hosted search` };

@@ -33,7 +33,7 @@ describe("markers on the run axis", () => {
     ];
     expect(markersOf(runs, records).map((m) => [m.kind, m.n, m.workflow])).toEqual([["hold", 3, "sort-invoice"], ["hold", 3, "tag-vendor"]]);
   });
-  it("one numbering: a promotion written while its first served run started stands on that run (the takeover's, the bill's promoted), and a replay is never a marker's run", () => {
+  it("one numbering: a promotion written while its first served run started stands on that run (the takeover's), and a replay is never a marker's run", () => {
     // Jobs 1-3 by the agent, two replays (no number), then job 4, the first the workflow served: its promotion was written
     // as job 4 was claimed, after it started. A hold written between the replays stands on the next job.
     const replay = (h: number, id: string): CostRun => ({ ...run(0, "replay"), n: null, run_id: id, started_at: at(h) });
@@ -83,6 +83,9 @@ describe("a revision's standing and numbers", () => {
     expect(replayLine(record({ check: { ...CHECK, agree_on: ["mcc", "riskTier"] } }))).toBe("Checked on 20 inputs of the agent's own runs: 18 answered alone (90%, 70% needed), 17 of those said what the agent said on mcc and riskTier (94%, 80% needed), 2 handed back");
     expect(replayLine(record({ check: { ...CHECK, agree_on: ["verdict.decision", "verdict.risk", "flagged"] } }))).toContain("said what the agent said on verdict.decision, verdict.risk and flagged (94%, 80% needed), 2");
     expect(replayLine(record({ check: { ...CHECK, agree_on: undefined } }))).toContain("17 of those said what the agent said (94%, 80% needed; compared the whole answer), 2 handed back");
+  });
+  it("says a check with no agree_on was compared by the fast model when its grader ran (check.grader)", () => {
+    expect(replayLine(record({ check: { ...CHECK, agree_on: undefined, grader: "claude-haiku-5-5" } }))).toContain("17 of those said what the agent said (94%, 80% needed; compared by the fast model), 2 handed back");
   });
   it("says what a promotion was decided on: checked on n inputs and how many alone, nothing for a check that ran on none; only a checked one is proven", () => {
     const checked = record({ check: { ...CHECK, n: 18, alone: 9 } });

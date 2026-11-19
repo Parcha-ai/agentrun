@@ -44,7 +44,7 @@ test("stats counts runs by state, sums the known costs, and keeps archived apart
   assert.equal(s.archivedAgents, 1, "agent-2");
   assert.deepEqual(s.runs, { total: 4, running: 1, completed: 1, failed: 1, stopped: 0, escalated: 1 }, "agent-1's shown runs; the archived one is apart");
   assert.equal(s.archivedRuns, 2, "agent-1's archived run and agent-2's run");
-  assert.deepEqual(s.cost, { usd: 3, known: 2, unknown: 2 }, "the completion and the escalation are known; the failure and the queued run are not");
+  assert.deepEqual(s.cost, { usd: 3, known: 2, unknown: 2, basis: "estimate" }, "the completion and the escalation are known; the failure and the queued run are not");
   assert.deepEqual(s.byAgent, [{ id: "agent-1", name: "Agent A", runs: 4 }, { id: "agent-3", name: "Agent C", runs: 0 }], "by name, archived agent left out");
   assert.deepEqual(s.running, ["r-queue"], "the queued run, which is not terminal and not archived");
 });
@@ -52,5 +52,30 @@ test("stats counts runs by state, sums the known costs, and keeps archived apart
 test("an empty store: no agents, no runs, cost unknown is null", async (t) => {
   const { store } = await storeOn(t);
   const s = await stats(store);
-  assert.deepEqual(s, { agents: 0, archivedAgents: 0, runs: { total: 0, running: 0, completed: 0, failed: 0, stopped: 0, escalated: 0 }, archivedRuns: 0, cost: { usd: null, known: 0, unknown: 0 }, byAgent: [], running: [] });
+  assert.deepEqual(s, { agents: 0, archivedAgents: 0, runs: { total: 0, running: 0, completed: 0, failed: 0, stopped: 0, escalated: 0 }, archivedRuns: 0, cost: { usd: null, known: 0, unknown: 0, basis: "unpriced" }, byAgent: [], running: [] });
+});
+
+test("the summed costs' basis: `reported` while every summed run's end stored it, `estimate` once one stored an estimate or none (it cost something and said nothing)", async (t) => {
+  const { store } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "Agent A" }, { id: "rev-1", kind: "agentic", body: { instructions: "x" } });
+  await create(store, "r-1", "agent-1");
+  await end(store, "r-1", { state: "ended", outcome: "completed", costUsd: 0.25, metrics: { input: 10, output: 1, costBasis: "reported" } });
+  // A run that priced nothing ($0, unpriced) leaves the basis as it is.
+  await create(store, "r-2", "agent-1");
+  await end(store, "r-2", { state: "ended", outcome: "completed", costUsd: 0, metrics: { input: 0, output: 0, costBasis: "unpriced" } });
+  assert.deepEqual((await stats(store)).cost, { usd: 0.25, known: 2, unknown: 0, basis: "reported" });
+  await create(store, "r-3", "agent-1");
+  await end(store, "r-3", { state: "ended", outcome: "completed", costUsd: 0.5, metrics: { input: 10, output: 1 } });
+  assert.deepEqual((await stats(store)).cost, { usd: 0.75, known: 3, unknown: 0, basis: "estimate" }, "a run that stored no basis and cost something is an estimate");
+});
+
+test("an imported session's catalog estimate (its stored cost unknown, costUsdEst beside it) is summed as an estimate, beside a reported run", async (t) => {
+  const { store } = await storeOn(t);
+  await store.agents.create({ id: "agent-1", name: "Agent A" }, { id: "rev-1", kind: "agentic", body: { instructions: "x" } });
+  await create(store, "r-reported", "agent-1");
+  await end(store, "r-reported", { state: "ended", outcome: "completed", costUsd: 0.25, metrics: { input: 10, output: 1, costBasis: "reported" } });
+  // As import.ts stores a session its source did not price: no cost, the catalog's estimate beside it.
+  await create(store, "r-imported", "agent-1");
+  await end(store, "r-imported", { state: "ended", outcome: "completed", costUsd: null, metrics: { input: 10, output: 1, costUsdEst: 0.5, costBasis: "catalog" } });
+  assert.deepEqual((await stats(store)).cost, { usd: 0.75, known: 2, unknown: 0, basis: "estimate" }, "the estimate is in the sum, so the sum is an estimate");
 });

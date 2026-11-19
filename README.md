@@ -81,7 +81,7 @@ laptop, in one container, or as a server with runners. Apache-2.0.
 create an account or sign in. For help setting up your team's workflows,
 [talk to us](https://calendly.com/d/dtwn-dsp-nx5/agentrun).
 
-Prefer your own machine or infrastructure? Start locally below, or [self-host on Railway, Render, a VPS or Docker](#deploy-it).
+Prefer your own machine or infrastructure? Start locally below, or [self-host on Railway, Render, a VPS, Kubernetes, Coolify, Dokploy or Docker](#deploy-it).
 The [getting-started guide](docs/getting-started.md) explains the three options.
 
 <a id="start-in-three-steps"></a>
@@ -101,7 +101,7 @@ start a new agent from a template.
    ```
 
    It starts the server and one runner on port 7340 (or the next free one), keeps everything in `~/.agentrun`, and
-   opens the console in your browser.
+   opens the console in your browser. It runs in that terminal until you press Ctrl-C there, which stops it.
 
 2. **Continue with ChatGPT, or add a model key.** In the console, set a password, then press **Continue with ChatGPT**
    (on the first screen, or under **Settings → Model keys**) and sign in on OpenAI's page: Codex and pi agents run on
@@ -387,7 +387,7 @@ computer:
 | --- | --- | --- |
 | `none` | Read and write files in its run folder; no shell (with Archil, commands run on Archil's exec) | none needed |
 | `sandbox` | Run code, install packages, keep processes in the background, on Linux | Docker, Daytona, Modal, E2B, Cloudflare (through a relay Worker you deploy) |
-| `desktop` | See a Linux screen, move the mouse, type | Orgo, E2B, Docker (your own image with an X server), and on dial Daytona, Modal, Cloudflare and Fly Machines (the box image's desktop) |
+| `desktop` | See a Linux screen, move the mouse, type | Orgo, E2B, Docker (your own image with an X server), and on dial Modal, Cloudflare and Fly Machines (the box image's desktop) |
 | `phone` | Tap, swipe, type, open apps and read the screen on Android | phone harness (a rented cloud Android) |
 | `browser` | Browse the web, and hand the controls to you at any point | Browserbase, Kernel |
 
@@ -509,7 +509,7 @@ into the console.
 
 **Self-host on Railway.**
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/agentrun)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/agentrun-1)
 
 The button deploys the published template: the image, a volume at `/data`, a domain, and the token and seal key made
 for you. About $5 a month on Railway's Hobby plan, which includes $5 of usage; agents get no shell. When it's live, open
@@ -528,7 +528,8 @@ for the disk, at Render's prices when this was written. Leave the model keys in 
 blank. When it's live, open its URL and paste `AGENTRUN_TOKEN` from the service's Environment tab to set your password.
 Then Continue with ChatGPT (Settings → Model keys, or the first screen), then run your first agent. Or paste a key in
 Render's form, or add it in the console: we recommend an `OPENROUTER_API_KEY` with a dollar cap and an expiration
-date. Do not share it with anyone.
+date. Do not share it with anyone. Walked from the service's creation through Render's API to a finished first run
+in 85 seconds.
 
 **Self-host on a $5 VPS.**
 
@@ -547,6 +548,19 @@ upgrade.
 A Hetzner Cloud CPX02 (1 GB) is from €5.49 a month before VAT and a DigitalOcean Basic Droplet (1 GiB) is $6, at their
 prices when this was written. The server gets the VPS's Docker socket, which is root on it, so keep the VPS for
 AgentRun alone. Details: [deploy/README.md](deploy/README.md#one-command-on-a-server-you-rent).
+
+**Self-host on Kubernetes.**
+
+```sh
+helm install agentrun oci://ghcr.io/parcha-ai/charts/agentrun --devel --namespace agentrun --create-namespace
+```
+
+One pod on a 10 GiB volume, from the release's image; agents get file tools and `web_fetch`, no shell. Details:
+[the chart's README](deploy/helm/agentrun/README.md).
+
+**Self-host on Coolify or Dokploy.** One service from the release's image on a volume, with the token, the seal key and
+the domain made by the platform; agents get file tools and `web_fetch`, no shell. The templates and their steps:
+[deploy/README.md](deploy/README.md#on-coolify-or-dokploy).
 
 <details>
 <summary>Docker Compose: a server and two runners</summary>
@@ -589,11 +603,12 @@ Every saved secret (model and tool keys, MCP credentials, sign-ins, webhook sign
 `AGENTRUN_SEAL_KEY`; keep it, because losing it loses what it sealed. Secrets are write-only: the console shows each
 one as set or missing, and only the console can paste, replace or remove one (your signed-in session, or the
 launcher's console on loopback when accounts are off). A key set where the server starts wins over a pasted one. The
-API token can't write a secret or approve a tool call. A run gets only the keys its own model and tools need, and
+API token can't write a secret or approve a tool call: its secret write is refused with a console link
+(`error.details.console_url`) to the form, filled in except for the secret. A run gets only the keys its own model and tools need, and
 nothing a run learns can keep a secret it was handed. [SECURITY.md](SECURITY.md) says how to report a vulnerability.
 
 The server counts itself anonymously (a random id, its version, its platform): never prompts, files or keys.
-`AGENTRUN_TELEMETRY=0` or `DO_NOT_TRACK=1` turns that off, and this release sends nothing yet.
+`AGENTRUN_TELEMETRY=0` or `DO_NOT_TRACK=1` turns that off, and the first start only prints a notice.
 [Anonymous usage counts](docs/telemetry.md) lists every field.
 
 ## Docs
@@ -605,6 +620,7 @@ The server counts itself anonymously (a random id, its version, its platform): n
 - [The CLI's skill](packages/agentrun/skills/agentrun-cli/SKILL.md) and [every command](packages/agentrun/skills/agentrun-cli/references/commands.md)
 - [Connect existing agents and import history](docs/native-agents.md), locally or from another machine
 - [Deploying](deploy/README.md), [computers](packages/computer/README.md), [templates](packages/serve/templates/README.md)
+- [Give an agent tools](docs/connect-tools.md): Sentry, GitHub, Slack and other services as MCP servers, with no token in the box
 - [Connect Composio tools and triggers](docs/tutorials/composio.md)
 - [The workflow language](packages/dsl/README.md), [authoring](docs/authoring.md), [the guide](docs/guide.md)
 - [Changelog](CHANGELOG.md) and [contributing](CONTRIBUTING.md)

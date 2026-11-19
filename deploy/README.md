@@ -74,7 +74,7 @@ Hobby plan is $5 a month and includes $5 of usage. Use Hobby or above, because t
 Claude Code and Codex (about 1 GB, installed onto the volume on first use).
 
 <!-- railway-button: publish-and-walk.sh prints this line's replacement once the template is published -->
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/agentrun?utm_medium=integration&utm_source=button&utm_campaign=agentrun)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/agentrun-1?utm_medium=integration&utm_source=button&utm_campaign=agentrun)
 
 Once you click, Railway shows the service's variables, all filled in: the token and the seal key are made for you, and
 there's nothing to type. Railway pulls the image, mounts a volume at `/data` and gives the service an `up.railway.app` domain.
@@ -144,6 +144,57 @@ It runs on 1 GB of memory, with room for a run or two at once; 2 GB holds more. 
 written, a Hetzner Cloud CPX02 (1 vCPU, 1 GB, 20 GB) is from €5.49 a month before VAT
 ([pricing](https://www.hetzner.com/cloud/regular-performance)), and a DigitalOcean Basic Droplet (1 vCPU, 1 GiB, 25
 GiB) is $6 a month ([pricing](https://www.digitalocean.com/pricing/droplets)). The $4 Droplet's 512 MiB is too little.
+
+## On Kubernetes, with Helm
+
+```sh
+helm install agentrun oci://ghcr.io/parcha-ai/charts/agentrun --devel --namespace agentrun --create-namespace
+```
+
+One pod, the server and its runner, on a 10 GiB volume, from the release's image; the token and seal key are made as a
+Secret at install and kept on upgrade. Its agents get file tools and `web_fetch` but no shell, as on Render. The
+chart's [README](helm/agentrun/README.md) covers Argo CD and Flux, and what `helm uninstall` keeps (the Secret and the
+volume).
+
+## On Coolify or Dokploy
+
+Each template runs the release's image as one service, the server with its runner beside it, with its data on a
+volume at `/data` and a 2 GB memory limit, which the runner budgets runs by (set `AGENTRUN_MEMORY` to change it). The
+platform generates the token and the seal key once, with its own secret generator, and gives the service its domain.
+Neither template mounts the Docker socket, which would hand agents the host: they get file tools and `web_fetch`, no
+shell, as on Render. No model key is needed; for a shell, add a sandbox provider's key in the console.
+
+### Coolify
+
+From [`coolify/agentrun.yaml`](coolify/agentrun.yaml), in the shape of Coolify's own templates:
+
+1. In a project, add a resource: **Docker Compose Empty**.
+2. Paste the file, save, and deploy.
+
+Coolify makes `SERVICE_URL_AGENTRUN` (an `sslip.io` address until you give the service a domain),
+`SERVICE_HEX_64_AGENTRUN` (the token) and `SERVICE_REALBASE64_32_SEALKEY` (the seal key). Read the token in the
+service's Environment Variables and paste it as the setup code at the first visit. If you give the service your own
+domain, redeploy so `AGENTRUN_PUBLIC_URL` follows it.
+
+### Dokploy
+
+From [`dokploy/agentrun/`](dokploy/agentrun), a `docker-compose.yml` and a `template.toml` in the shape of Dokploy's own
+templates:
+
+1. From `deploy/`, encode the two files:
+
+   ```sh
+   jq -n --rawfile compose dokploy/agentrun/docker-compose.yml --rawfile config dokploy/agentrun/template.toml \
+     '{compose: $compose, config: $config}' | base64 -w0
+   ```
+
+2. In a project, create a **Compose** service.
+3. On its **Advanced** tab, under **Import**, paste the output, import, and deploy.
+
+Dokploy makes the domain (`${domain}`, an `sslip.io` address), the token (`${hash:64}`) and the seal key
+(`${base64:32}`), and writes them to the service's Environment. Read `AGENTRUN_TOKEN` there and paste it as the setup
+code at the first visit. Dokploy's generated domain is http. If you give the service your own domain with HTTPS, set
+`AGENTRUN_PUBLIC_URL` to it in the Environment and redeploy.
 
 ## The first visit's setup code
 
@@ -285,7 +336,9 @@ the server, which reaches the runner's viewer. Each runner names the host the se
 (`AGENTRUN_RUNNER_LIVE_HOST`; its viewers listen there, or on `AGENTRUN_RUNNER_LIVE_BIND`), and the server dials only
 the hosts in its `AGENTRUN_RUNNER_HOSTS`. Every request the server makes of a runner's viewer is signed with a key
 derived from the seal key, and a runner takes no other. The hop is plain HTTP: keep the server and its runners on a
-private network of their own, as this stack does. With neither setting, viewers stay on loopback, which is right when
+private network of their own, as this stack does. The attach relay's `ws://` hop, from the server to the runner that
+made a dial computer, carries that machine's bearer token over the same private network, so the same rule covers it.
+With neither setting, viewers stay on loopback, which is right when
 the server and its runner share a machine (the default image's command).
 
 **Postgres.** The `pg` profile runs a Postgres for the store. In `.env`:
@@ -352,13 +405,24 @@ Nothing converts an earlier volume.
 `walk/` holds two walks of this stack on a faux model (`walk/faux-steps.mjs`: no model key, no network). Each starts its
 own compose project with its own volume and seal key, prints a report (a `Verdict:` line, then a table of step, result and
 evidence), and removes everything when it ends. Each starts on a new volume, never an earlier server's, and builds
-this checkout's image, or walks `AGENTRUN_IMAGE` when set.
+this checkout's image.
 
 - `walk/smoke.sh`, which CI runs: the server is healthy, both runners say they are ready, and a run of an agent in the
   runner's place completes, each of its steps done once.
 - `walk/reclaim.sh`: a run of about 60 s whose runner is stopped in the middle, by SIGTERM and then by SIGKILL. Each time
   the other runner takes it over (read from `GET /v2/runs/{id}`'s `claim`), after a SIGKILL within the 30 s lease, and
   the run completes with each step done once.
+
+`helm/walk.sh` (CI: `helm-walk.yml`, on kind) walks the chart: install, a first run, upgrade, uninstall and reinstall.
+`selfhost/walk.sh coolify|dokploy` (CI: `selfhost-walk.yml`, each platform on a VM of its own) installs the platform, deploys
+the template through its API, makes a first run and removes it with its volume.
+Both walk the release's image. Every walk here walks `AGENTRUN_IMAGE=<image>` instead when it is set.
+
+Every day, `ways-in-daily.yml` walks every way in on main, whatever changed: the README's `npx @parcha/agentrun` as
+published (`packages/agentrun/test/npx-walk.sh`), main's launcher (`install-walk.yml`), and Docker Compose, Railway's
+service, Helm, Coolify and Dokploy on main's image, built once for every row. Its summary is one table, each way in and
+its result, with each walk's report under it. A red run opens the issue `ways in: <rows> broke`, or updates the open
+one, and the next green run closes it.
 
 Two walk the Railway template:
 

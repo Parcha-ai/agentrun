@@ -372,8 +372,6 @@ export const feed: TriggerAdapter = {
   label: "feed trigger",
   delivery: "clock",
   owner: false,
-  // Each item is its own: one run's answer is never handed to the next.
-  previousResult: false,
   settings: { scope: "trigger", fields: { [CURSOR]: { public: true }, [LAST_CHECK]: { public: true } } },
   describe: `{kind: "feed", urls: ["https://..."], every_s?: ${DEFAULT_EVERY_S}, items?: "/data/items", id?: "/id", updated?: "/updated_at", fields?: ["/number", "/title"], accept?: [{event: "${EVENT}", where?}]}`,
   fires: "each new or updated item in its feeds (`feed`: RSS, Atom, JSON Feed or a JSON list), read every every_s seconds, that its `accept` takes",

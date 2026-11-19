@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import type { Agent, AgentFields, SaveProblem } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { toolChoices } from "@/lib/toolSettings";
 import { pick, picker, valueOf } from "@/test/picker";
 
@@ -19,7 +20,7 @@ const choices = toolChoices([SEARCH]);
 // Each tool's permission, as GET /agents/{id} serves it: the default's.
 const GATE = { permission: "allow" as const, permission_from: "default" as const, default_permission: "allow" as const, permissions: ["allow" as const, "ask" as const, "deny" as const] };
 const agentWith = (revision: string, toolSettings?: Agent["definition"]["tool_settings"]): Agent => ({
-  agent_id: "searcher", kind: "agentic", revision, revisions: 1, archived_at: null,
+  ...SERVED_AGENT, agent_id: "searcher", kind: "agentic", revision, revisions: 1, archived_at: null,
   definition: { version: 1, name: "Searcher", instructions: "Look it up.", harness: "pi", skills: [], tools: ["read", "web_search"], ...(toolSettings ? { tool_settings: toolSettings } : {}) },
   tools: [{ name: "read", ...GATE }, { name: "web_search", provider: toolSettings?.web_search?.provider ?? "exa-keyless", provider_from: toolSettings ? "agent" : "server", default_provider: "exa-keyless", resolved: "exa-keyless", ...GATE }],
 });

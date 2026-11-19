@@ -50,6 +50,27 @@ export function bytes(n: number): string {
 /** Whether a cost is an estimate, by its basis. The label's "est." and the run page's billing disclaimer both read it. */
 export const isEstimate = (c: Cost) => c.basis === "estimate";
 
+/** The word a figure carries for its basis: " est." for a price table's (an estimate), " reported" for the provider's or
+ *  its gateway's own figure; none for a charge or a cost nothing priced. */
+const basisMark = (c: Pick<Cost, "basis">): string => (c.basis === "estimate" ? " est." : c.basis === "reported" ? " reported" : "");
+
+/** How a cost was reached, in a sentence for its hover note (the server's `basis`); undefined for a charge. */
+export const basisNote = (c: Pick<Cost, "basis">): string | undefined =>
+  c.basis === "estimate" ? "A local estimate, not a bill" : c.basis === "reported" ? "As the provider or gateway reported it" : c.basis === "unpriced" ? "No model request was priced" : undefined;
+
+/** A run's tokens as its cost says them (costbasis/1 `cost.tokens`): "12.4K in · 1,250 out", the prompt cache's reads and
+ *  writes when there were any, and the requests that reported no tokens. Undefined when the run says none. `in` leaves the
+ *  cached input out, as the server counts it. */
+export function tokensWords(c: Cost | null | undefined): string | undefined {
+  const t = c?.tokens;
+  if (!t) return undefined;
+  const parts = [`${compact(t.input)} in`, `${compact(t.output)} out`];
+  if (t.cache_read > 0) parts.push(`${compact(t.cache_read)} cache read`);
+  if (t.cache_write > 0) parts.push(`${compact(t.cache_write)} cache write`);
+  if (t.unmetered) parts.push(`${compact(t.unmetered)} ${t.unmetered === 1 ? "request" : "requests"} unmetered`);
+  return parts.join(" · ");
+}
+
 /** A run's cost in dollars: a figure above zero never reads as $0 (under a hundredth of a cent it reads "<$0.0001"),
  *  four places under a cent, two from a cent up. */
 export const dollars = (usd: number) => (usd > 0 && usd < 0.0001 ? "<$0.0001" : usd < 0.01 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(2)}`);
@@ -113,7 +134,7 @@ export function cost(c: Cost | null | undefined, { ended = false }: { ended?: bo
 }
 function dollarWords(c: Cost | null | undefined, ended: boolean): string {
   const known = soFar(c);
-  const est = (x: Cost) => (isEstimate(x) ? " est." : "");
+  const est = basisMark;
   if (known) return ended ? `${soFarDollars(known.so_far_usd)}${est(known)} known · ${known.unpriced} not priced` : `so far ${soFarDollars(known.so_far_usd)}${est(known)} · ${known.unpriced} not priced`;
   if (!c || c.usd === null) return "Unknown";
   if (freeCost(c)) return FREE_COST;
@@ -145,7 +166,7 @@ export function costOfCap(c: Cost | null | undefined, cap: number | null | undef
   const figure = text !== undefined ? ONE_FIGURE.test(text) : !soFar(c) && !planOf(c) && !!c && c.usd !== null && !freeCost(c);
   return figure ? `${shown} of ${capDollars(cap)}` : `${shown} · cap ${capDollars(cap)}`;
 }
-const ONE_FIGURE = /^<?\$[\d.,]+( est\.)?$/;
+const ONE_FIGURE = /^<?\$[\d.,]+( est\.| reported)?$/;
 
 /** A spend cap in dollars as it was set: two places at least ($1.00, $2.50), more when the cap has them ($0.013), so a
  *  raise finer than a cent still reads as a change. */

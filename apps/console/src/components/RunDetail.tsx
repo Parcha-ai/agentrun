@@ -16,7 +16,7 @@ import { RunChanges, useRunChanges } from "@/components/RunChanges";
 import { RunGrade } from "@/components/RunGrade";
 import { RunUsed, useRunLearning } from "@/components/RunUsed";
 import { Timeline, Working } from "@/components/Timeline";
-import { Tabs } from "@/components/ui/tabs";
+import { tabPanelProps, Tabs } from "@/components/ui/tabs";
 import { APPROVAL_ROW, approvalOf } from "@/lib/approval";
 import { askedAt, askOf, computerRefusal } from "@/lib/computerAsk";
 import { runEnded } from "@/lib/format";
@@ -244,10 +244,10 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
     <div className="flex h-full min-h-0 flex-col short:h-auto">
       <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} />
       <Tabs id="run-views" label="Run views" value={tab} onChange={(value) => setTab(value as Tab)} tabs={tabs.map(([id, label]) => ({ id, label }))} />
-      {tab === "graph" ? <div className="min-h-0 flex-1 short:min-h-96">{graphView}</div>
+      {tab === "graph" ? <div {...tabPanelProps("run-views", tab)} className="min-h-0 flex-1 short:min-h-96">{graphView}</div>
         // The Dev tools tab is a page of data: it fills the width and scrolls in its own panes.
-        : tab === "trace" && readTrace ? <RunTrace run={run} read={readTrace} version={`${moved.current.times}:${run.status}:${run.ended_at ?? ""}`} live={view.live} {...traceAt} />
-        : <div data-scroll-pane className="min-h-0 flex-1 overflow-auto short:flex-none short:overflow-visible">
+        : tab === "trace" && readTrace ? <RunTrace run={run} read={readTrace} version={`${moved.current.times}:${run.status}:${run.ended_at ?? ""}`} live={view.live} panel={tabPanelProps("run-views", tab)} {...traceAt} />
+        : <div {...tabPanelProps("run-views", tab)} data-scroll-pane className="min-h-0 flex-1 overflow-auto short:flex-none short:overflow-visible">
         <div className="mx-auto max-w-4xl space-y-6 px-5 py-8 md:px-8">
           {native && <NativeRun native={native} agentId={run.agent_id} />}
           {run.status === "failed" && run.error && <RunError error={run.error} title={isEscalated(run.status, run.error) ? "The run escalated" : undefined} />}

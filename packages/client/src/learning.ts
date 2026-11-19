@@ -3,7 +3,7 @@
 import { AgentRun, type ClientOptions } from './client.js';
 import { AgentRunRefused, AgentRunTimeout, AgentRunUsage } from './errors.js';
 
-export type BackendSdkRuntime = 'claude-agent-sdk' | 'codex-sdk';
+export type BackendSdkRuntime = 'claude-agent-sdk' | 'codex-sdk' | 'eve';
 
 export interface BackendWorkflowToolManifest {
   name: string;
@@ -21,11 +21,21 @@ export interface BackendWorkflowBinding {
   /** Consume one actual bridge completion with identical arguments, status and result. No match keeps native evidence. */
   claimNativeEnvelope?(name: string, input: unknown, status: 'completed' | 'failed', output: unknown): boolean;
 }
+/** The pinned run and evidence sink a workflow host must provide. Durable hosts can persist evidence in
+ * their native result instead of depending on an in-memory SDK session or HTTP connection. */
+export interface BackendWorkflowSession {
+  readonly runId: string;
+  readonly workflows: NonNullable<BackendLearningSnapshot['workflows']>;
+  protect(values: readonly string[]): void;
+  event(event: SdkLearningEvent): Promise<void>;
+  markEvidenceIncomplete(reason: string): void;
+}
+
 /** Structural seam: importing the base client does not load the optional workflow interpreter or MCP server. */
 export interface BackendWorkflowBridge {
   readonly catalog: readonly BackendWorkflowToolManifest[];
   readonly adapters: readonly ('runNode' | 'runJudge')[];
-  bind(session: BackendLearningSession): BackendWorkflowBinding;
+  bind(session: BackendWorkflowSession): BackendWorkflowBinding;
 }
 
 /** The learning loop's numbers an agent definition may set (`learning: {...}`); each one left out is the server's default. */
@@ -178,7 +188,7 @@ export class BackendLearningClient {
 
   async begin(source: BackendLearningStart, signal?: AbortSignal): Promise<BackendLearningSession> {
     signal?.throwIfAborted();
-    if (source.runtime !== 'claude-agent-sdk' && source.runtime !== 'codex-sdk') throw new AgentRunUsage('Unsupported backend SDK runtime.');
+    if (source.runtime !== 'claude-agent-sdk' && source.runtime !== 'codex-sdk' && source.runtime !== 'eve') throw new AgentRunUsage('Unsupported backend SDK runtime.');
     if (typeof source.input !== 'string' || typeof source.instructions !== 'string') throw new AgentRunUsage('SDK input and source instructions must be strings.');
     // Freeze the source before the registration request: caller mutation cannot change the policy after validation.
     const start = clone({ ...source, ...(this.#config.workflows ? { workflow_tools: [...this.#config.workflows.catalog], workflow_adapters: [...this.#config.workflows.adapters] } : {}) });

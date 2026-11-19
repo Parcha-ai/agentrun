@@ -8,7 +8,21 @@ import { fileURLToPath } from 'node:url';
 import { foldSession } from '@parcha/agentrun-kernel/kernel';
 import { journalRecords, transcriptOf } from '@parcha/agentrun-kernel/process';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
-import { acpAdapter } from '@parcha/agentrun-harness-acp';
+import assert from 'node:assert/strict';
+import { ACP_CODES, acpAdapter, CURSOR_PIN, cursorRelease } from '@parcha/agentrun-harness-acp';
+
+/** Whether Cursor has a release pinned for this host (cursorRelease, the adapter's own test). CURSOR_PIN pins
+ *  linux-x86_64 alone: on any other host (a Mac) Cursor's adapter is refused ACP_BINARY_UNPINNED before it reads a file. */
+export const CURSOR_PINNED = cursorRelease() !== undefined;
+/** Why a test on the real Cursor cannot run on this host, or false. */
+export const CURSOR_UNPINNED_WHY = !CURSOR_PINNED && `Cursor ${CURSOR_PIN.version} is pinned for ${Object.keys(CURSOR_PIN.archives).join(', ')} alone; here its adapter is refused ${ACP_CODES.binaryUnpinned}`;
+
+/** Where Cursor is pinned for this host, `pinned()`, the checks that need its pin; where it is not, that `make()` (a
+ *  Cursor adapter made) is refused ACP_BINARY_UNPINNED, by its code. */
+export function onCursorPin(pinned, make) {
+  if (CURSOR_PINNED) return pinned();
+  assert.throws(make, (error) => error.code === ACP_CODES.binaryUnpinned, 'refused ACP_BINARY_UNPINNED where no release is pinned');
+}
 
 export const FAKE = fileURLToPath(new URL('../testing/fake-acp-agent.mjs', import.meta.url));
 const ROOT = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'agentrun-acp-test-'));
@@ -46,10 +60,11 @@ export function tool(name, run, replay = 'never') {
   return { name, description: `The test's ${name} tool.`, inputSchema: { type: 'object', properties: {} }, replay, call: async (args, context) => ({ text: String(await run(args, context)) }) };
 }
 
-/** A session of `recipe` on `store` (default a new in-memory one) under key s1, its events collected. */
-export async function openSession(t, recipe, { store = memorySessionStore(), tools = [], gate, sessionsDir, system = [], options = {}, signal } = {}) {
-  const { countFile: _, ...plain } = recipe;
-  const adapter = acpAdapter({ recipe: plain, sessionsDir: sessionsDir ?? join(scratch(), 'sessions'), ...options });
+/** A session of `recipe` on `store` (default a new in-memory one) under key s1, its events collected. `adapter`: one
+ *  already made (Cursor's own, on its real binary), in place of an ACP adapter of `recipe`. */
+export async function openSession(t, recipe, { store = memorySessionStore(), tools = [], gate, sessionsDir, system = [], options = {}, signal, adapter: made } = {}) {
+  const { countFile: _, ...plain } = recipe ?? {};
+  const adapter = made ?? acpAdapter({ recipe: plain, sessionsDir: sessionsDir ?? join(scratch(), 'sessions'), ...options });
   const events = [];
   const controller = new AbortController();
   const io = {

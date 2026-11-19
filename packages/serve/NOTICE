@@ -23,3 +23,7 @@ licensed under the MIT License:
   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT,
   TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
   SOFTWARE.
+
+The console includes the eve icon from vercel/eve, copyright Vercel, Inc.,
+licensed under Apache-2.0. Source: apps/docs/registry/channel/web/app/icon.svg
+at commit 7d5340870dd2c75520162963d9ddb84d1580dbff.

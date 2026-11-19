@@ -93,11 +93,16 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
   // replaces a server of that name (an older one that matches no need, say). Chosen once the list is read, and kept for
   // that link: the server it saves is never counted against it.
   const named = useRef<{ key: string; name: string } | null>(null);
-  if (add && servers && named.current?.key !== addKey) named.current = { key: addKey, name: freeName(add.name, servers) };
+  // A link to change a saved server (a refused secret write's `change`) keeps its name: its save replaces that server.
+  if (add && servers && named.current?.key !== addKey) named.current = { key: addKey, name: add.change ? add.name : freeName(add.name, servers) };
   // The need's toolkit stays the link's own (a url need's is its name) when the name moves to a free one.
   const filled = (a: Add): Add => (named.current?.key === JSON.stringify(a) && named.current.name !== a.name ? { ...a, toolkit: a.toolkit ?? a.name, name: named.current.name } : a);
   // A form a link filled waits for the list (or its failure), so the name it shows is the one it saves.
   const listed = servers !== null || loadError !== null;
+  // A link to change a saved server (`?change=<name>`, a refused secret write's): that server's Change form, filled with
+  // the link's address and kind of credential. A name no longer saved opens the add form with it.
+  const changing = form?.add?.change ? servers?.find((s) => s.name === form.add!.name) : undefined;
+  const formSaved = form?.saved ?? changing;
   // The outcome is said once: a reload of the page does not say it again.
   useEffect(() => { if (signIn && location.hash.includes("sign_in=")) history.replaceState(null, "", "#/settings/mcp"); }, [signIn]);
   const startSignIn = async (name: string, body: Parameters<Client["startMcpSignIn"]>[1]) => open((await v2.startMcpSignIn(name, body)).authorization_url);
@@ -129,7 +134,7 @@ export function McpServersPage({ v2, signIn, add, writable, whyNot = "sign_in", 
             </>
           )}>
         {/* A save that lands after its form was closed (Cancel, or another Change) closes no form opened since. */}
-        {form && (!form.add || listed) && <ServerForm key={`${form.saved?.name ?? "new"}|${form.add?.name ?? ""}|${form.add?.auth ?? ""}|${form.add?.preset ?? ""}`} v2={v2} saved={form.saved} add={form.add && filled(form.add)} given={form.problem} writable={writable} taken={servers} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => (said?: { removed: boolean; note: string }) => { if (said) setRemovedNote(said); setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
+        {form && (!form.add || listed) && <ServerForm key={`${formSaved?.name ?? "new"}|${form.add ? JSON.stringify(form.add) : ""}`} v2={v2} saved={formSaved} add={form.add && (changing ? form.add : filled(form.add))} given={form.problem} writable={writable} taken={servers} signIn={startSignIn} onCancel={() => setForm(null)} onSaved={((mine) => (said?: { removed: boolean; note: string }) => { if (said) setRemovedNote(said); setForm((open) => (open === mine ? null : open)); load(); })(form)} />}
         {composio && (typeof composio !== "object" || listed) && <ComposioForm key={typeof composio === "object" ? addKey : "new"} v2={v2} add={typeof composio === "object" ? filled(composio) : undefined} onClose={() => setComposio(false)} onSaved={load} />}
         {servers && (servers.length
           ? <ul className="border">{servers.map((s) => <ServerRow key={s.name} v2={v2} server={s} settings={settings} settingsBusy={settingsBusy} settingsProblem={settingsProblem?.server === s.name ? settingsProblem.problem : null} onSettings={(edit) => void saveSettings(s.name, edit)} writable={writable && !form} signIn={startSignIn} onChange={(problem) => setForm({ saved: s, ...(problem ? { problem } : {}) })}
@@ -489,8 +494,9 @@ function ServerForm({ v2, saved, add, given, writable, taken, signIn, onCancel, 
   const linked = saved ? undefined : urlPresetOf(add?.preset);
   const [preset, setPreset] = useState<McpPreset | undefined>(linked);
   const [name, setName] = useState(saved?.name ?? add?.name ?? "");
-  const [url, setUrl] = useState(saved?.url ?? (add?.auth === "github_app" ? GITHUB_MCP_URL : linked?.url ?? ""));
-  const [type, setType] = useState<McpAuth["type"]>(saved?.auth.type ?? add?.auth ?? linked?.auth ?? "none");
+  // A link's address and kind of credential (a refused secret write's) fill the form, a saved server's Change form too.
+  const [url, setUrl] = useState(add?.url ?? saved?.url ?? (add?.auth === "github_app" ? GITHUB_MCP_URL : linked?.url ?? ""));
+  const [type, setType] = useState<McpAuth["type"]>(add?.auth ?? saved?.auth.type ?? linked?.auth ?? "none");
   const [headerRows, setHeaderRows] = useState(Math.max(1, saved?.auth.headers?.length ?? 0));
   // Where its tools come from and the toolkit they are, which a template's MCP need is matched on. The source is what made
   // the server, shown and never sent: on the GitHub App's tokens github (its toolkit github), from the Composio preset
@@ -498,7 +504,10 @@ function ServerForm({ v2, saved, add, given, writable, taken, signIn, onCancel, 
   // with that toolkit.
   const shownSource: McpSource = type === "github_app" ? "github" : saved?.source === "composio" ? "composio" : "url";
   // A preset's tools are its toolkit's, whatever name the link gave the server.
-  const [toolkit, setToolkit] = useState(saved?.toolkit ?? (linked ? linked.name : add && !add.auth ? add.toolkit ?? add.name : ""));
+  // A template's url need names its toolkit by the server's name; a refused write's link names one only when it sent one.
+  // A link to change a saved server with the toolkit its refused save named fills that one over the saved one, as it does
+  // the address and the kind of credential.
+  const [toolkit, setToolkit] = useState((add?.change ? add.toolkit : undefined) ?? saved?.toolkit ?? (linked ? linked.name : add?.auth === "github_app" ? "" : add ? add.toolkit ?? (add.auth || add.url ? "" : add.name) : ""));
   const shownToolkit = shownSource === "github" ? "github" : toolkit.trim();
   // What a save sends of it: only a toolkit that differs from the saved server's (a new one: only one said); one on the
   // GitHub App's tokens sends none.
@@ -527,6 +536,13 @@ function ServerForm({ v2, saved, add, given, writable, taken, signIn, onCancel, 
   const checkSignIn = (t = type) => setNeedsSignIn(!!saved && t === "oauth" && (saved.auth.type !== "oauth" || value("mcp-scopes") !== (saved.oauth?.scopes.join(" ") ?? "")
     || !!value("mcp-client-id") || !!value("mcp-client-secret") || originOf(value("mcp-url")) !== originOf(saved.url)));
   useEffect(() => checkSignIn(), [type]); // eslint-disable-line react-hooks/exhaustive-deps
+  // A link that filled the rest (a refused secret write's: its address, or a saved server to change) leaves the
+  // credential alone to type: the cursor starts there.
+  useEffect(() => {
+    if (!add?.url && !add?.change) return;
+    const field = type === "bearer" ? "mcp-token" : type === "headers" ? "mcp-header-name-0" : undefined;
+    if (field) (form.current?.elements.namedItem(field) as HTMLInputElement | null)?.focus();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
   // The credential typed: none typed is none sent, which a save takes as "keep the sealed one".
   const auth = (): McpAuth => {
     if (type === "bearer") return value("mcp-token") ? { type, token: value("mcp-token") } : { type };

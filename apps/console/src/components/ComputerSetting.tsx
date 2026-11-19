@@ -1,30 +1,31 @@
 import { useState } from "react";
 import { Switch } from "@/components/ui/switch";
-import { BY_THE_MINUTE, METERED, pickable, pickKind, RECORDS, recorded, whyNot } from "@/lib/computers";
+import { BY_THE_MINUTE, type Carried, type CarriedField, carry, type Dropped, METERED, pickable, pickKind, recorded, refusal, whyNot } from "@/lib/computers";
 import { cn } from "@/lib/utils";
 import type { Computer, ComputerKindView } from "@/lib/v2";
 
 /** A kind's name as the card shows it: the server's id, capitalized. */
 const kindName = (kind: string) => kind.charAt(0).toUpperCase() + kind.slice(1);
 
-/** Why a kind a recorded computer was switched to isn't recorded: it has no screen. */
-const unrecorded = (kind: string) => `Recording is off: ${kind === "none" ? "with no computer, there is no screen" : `a ${kind} has no screen`} to record.`;
-
 /** The agent's computer, in the editor's Computer step: a card per kind the server lists (one it can't give here greyed,
  *  with its words and a link to the Computers settings), then the picked kind's providers (one not ready disabled, with
  *  why; a metered one says so, and, but for a browser, that its minutes aren't counted in a run's spending cap), the
- *  Recording switch for a kind that records (a switch of kind or provider keeps it; a kind with no screen drops it and
- *  says so on its card), and the tools that kind brings its loop, as served. A pick is the computer `onChange` gets. */
+ *  Recording switch for a kind that records (a switch keeps each setting the new pick can take; the card names any it
+ *  drops), and the tools that kind brings its loop, as served. A pick is the computer `onChange` gets. */
 export function ComputerSetting({ kinds, value, onChange, error, warning }: {
   kinds: ComputerKindView[]; value: Computer; onChange: (computer: Computer) => void; error?: string; warning?: string;
 }) {
   const picked = kinds.find((k) => k.kind === value.kind);
-  // The kind with no screen picked since a pick dropped the recording; a kind that records clears it.
-  const [dropped, setDropped] = useState<string>();
-  const pick = (k: ComputerKindView) => {
-    setDropped(!RECORDS.has(k.kind) && (value.record === true || dropped !== undefined) ? k.kind : undefined);
-    onChange(pickKind(k, value));
+  // What a switch dropped since the person set it, with its value; a later pick that can take a field clears it.
+  const [lost, setLost] = useState<Dropped>({});
+  const choose = (kind: ComputerKindView, made: Carried) => {
+    const all: Dropped = { ...lost, ...made.dropped };
+    const provider = kind.providers.find((p) => p.id === made.computer.provider);
+    setLost(Object.fromEntries(Object.entries(all).filter(([f, v]) => refusal(f as CarriedField, v, kind, provider))));
+    onChange(made.computer);
   };
+  const pick = (k: ComputerKindView) => choose(k, pickKind(k, value));
+  const words = Object.entries(lost).flatMap(([f, v]) => refusal(f as CarriedField, v, picked, picked?.providers.find((p) => p.id === value.provider)) ?? []);
   return (
     <div>
       <div className="mb-2 caps text-small font-semibold">Kind</div>
@@ -48,7 +49,7 @@ export function ComputerSetting({ kinds, value, onChange, error, warning }: {
                   {why} <a href="#/settings/computers" className="underline underline-offset-2 hover:text-foreground">Computers settings</a>
                 </p>
               )}
-              {dropped === k.kind && value.kind === k.kind && <p className="mt-2 text-small text-muted-foreground" role="status">{unrecorded(k.kind)}</p>}
+              {value.kind === k.kind && words.map((w) => <p key={w} className="mt-2 text-small text-muted-foreground" role="status">{w}</p>)}
             </div>
           );
         })}
@@ -61,7 +62,7 @@ export function ComputerSetting({ kinds, value, onChange, error, warning }: {
               <li key={p.id} className="border-b last:border-b-0">
                 <label className={cn("flex items-start gap-3 px-4 py-2.5", p.ready ? "cursor-pointer" : "cursor-not-allowed text-muted-foreground")}>
                   <input type="radio" name="computer-provider" value={p.id} checked={value.provider === p.id} disabled={!p.ready && value.provider !== p.id}
-                    onChange={() => onChange(recorded({ kind: picked.kind, provider: p.id }, value.record === true))} className="mt-1 accent-primary" />
+                    onChange={() => choose(picked, carry({ kind: picked.kind, provider: p.id }, value, picked))} className="mt-1 accent-primary" />
                   <span className="min-w-0">
                     <span className="flex flex-wrap items-baseline gap-2"><span className="text-body font-semibold">{p.name}</span>{p.metered && <span className="caps text-label text-muted-foreground">Metered</span>}</span>
                     {/* A browser's time is counted in a run's cap; a sandbox's, desktop's or phone's vendor minutes are not. */}
@@ -74,7 +75,7 @@ export function ComputerSetting({ kinds, value, onChange, error, warning }: {
           </ul>
         </>
       )}
-      {picked && RECORDS.has(picked.kind) && (
+      {picked?.settings.includes("record") && (
         <>
           <div className="mb-2 mt-5 caps text-small font-semibold">Recording</div>
           <div className="border px-4 py-3" aria-label="Recording">

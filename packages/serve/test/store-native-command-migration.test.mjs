@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { migrate, migrationsIn, openPostgresStore, openSqliteStore, SCHEMA_VERSION, SchemaVersionUnknown } from "../dist/store/index.js";
+import { migrate, migrationsIn, openPostgresStore, openSqliteStore, SCHEMA_VERSION, StoreAwaitsServer } from "../dist/store/index.js";
 import { client, dropSchema, freshSchema, PG_URL, postgresOnly } from "./store-target.mjs";
 
 const ONLY = postgresOnly("native command migration lineage");
@@ -45,7 +45,7 @@ for (const missing of missingMetadata) {
     });
     const before = snapshot(); db.close();
     if (missing.length) {
-      const refusal = missing.some(column => column !== "connector_id") ? /Start the AgentRun server to install MCP and Monid revision metadata/ : /Native command ownership metadata is not prepared/;
+      const refusal = missing.some(column => column !== "connector_id") ? /Start the AgentRun server to install MCP and Monid revision metadata/ : /Start the AgentRun server to add native command ownership metadata/;
       await assert.rejects(openSqliteStore({ file, role: "runner" }), refusal);
     } else {
       runner = await openSqliteStore({ file, role: "runner" });
@@ -107,7 +107,8 @@ for (const version of [10, 11, 12]) {
     if (version >= 12) await sql.query("UPDATE revisions SET monid_pin=$1", [JSON.stringify(monidPin)]);
     const history = (await sql.query("SELECT * FROM schema_migrations ORDER BY version")).rows;
     const before = (await sql.query("SELECT * FROM revisions ORDER BY id")).rows;
-    await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "runner" }), SchemaVersionUnknown);
+    // The runner waits for the server, which upgrades the store in place: no new-folder advice.
+    await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "runner" }), (error) => error instanceof StoreAwaitsServer && error.message.includes(`from version ${version} to ${newest}`) && !/new, empty data folder|--data <new folder>/.test(error.message));
     assert.deepEqual((await sql.query("SELECT * FROM schema_migrations ORDER BY version")).rows, history);
     assert.deepEqual((await sql.query("SELECT * FROM revisions ORDER BY id")).rows, before);
     assert.equal((await sql.query("SELECT count(*)::int n FROM information_schema.columns WHERE table_schema=current_schema() AND table_name='settings' AND column_name='connector_id'")).rows[0].n, 0, "runner refuses without native metadata DDL");

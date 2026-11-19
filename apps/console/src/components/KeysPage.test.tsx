@@ -8,7 +8,7 @@ import { type KeyIn, servedKey } from "@/test/keys";
 
 type ToolKeyField = KeyIn["fields"][number];
 
-// Settings → Tool keys over GET, PUT and DELETE /v2/settings/tool-keys: each field says whether it is set and where
+// Settings → API Keys over GET, PUT and DELETE /v2/settings/tool-keys: each field says whether it is set and where
 // from, a save sends only what was typed, a key the server holds is read-only, a saved key that no longer opens is
 // asked for again out loud, and no typed value is ever left in the page.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;

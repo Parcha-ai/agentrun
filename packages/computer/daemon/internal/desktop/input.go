@@ -32,6 +32,13 @@ const (
 	wheelUp, wheelDown, wheelLeft, wheelRight = 4, 5, 6, 7
 )
 
+// keySettle is how long a batch waits after a key action before it runs the next one. An app may act on a shortcut
+// after it has read the key events behind it: LibreOffice Calc 7.4 (GTK3) moves its focus to the Name Box for
+// ctrl+shift+f5 only once it dispatches the command, so text typed in the same batch with no gap went to the cell, and
+// 30 ms was not enough on an idle desktop where 60 ms was. A person's keys through the viewer come in batches of their
+// own, a human's time apart.
+const keySettle = 100 * time.Millisecond
+
 // stop is a failure of one action: its kind and why.
 type stop struct {
 	kind rpc.Kind
@@ -47,7 +54,7 @@ func stopf(kind rpc.Kind, format string, args ...any) error {
 // actions checks the whole batch, then runs it in order until the first failure. A failure releases every button and
 // key the batch pressed and did not release; success keeps them, so a down with no up stays down into the next batch.
 // A cancel stops at the next key, click or point of the action running, or before the next action, releases the same
-// way, and answers aborted.
+// way, and answers aborted. An action after a key action waits keySettle first, so the app has acted on the shortcut.
 //
 // The server answers a request with no reply only when it refuses one, so the batch waits for it (a Sync) after each
 // action that sent one the server may refuse: a button or key, or a keyboard map change. A refused action stops the
@@ -114,7 +121,14 @@ func (d *Display) actions(ctx context.Context, raw json.RawMessage) (any, error)
 			return nil, rpc.Errorf(rpc.KindAborted, "input.actions was cancelled before action %d; what the batch held was released", i)
 		}
 		b.refusable = false
-		if err := b.run(ctx, a); err != nil {
+		var err error
+		if i > 0 && actions[i-1].Type == "key" {
+			err = b.wait(ctx, int(keySettle/time.Millisecond))
+		}
+		if err == nil {
+			err = b.run(ctx, a)
+		}
+		if err != nil {
 			b.release()
 			var s *stop
 			switch {

@@ -314,7 +314,9 @@ function ManagedSavedSwitch({ agent, v2, onAgent, server, disabled, quiet }: { a
     setBusy(true); setTrouble(null); setShown(next);
     try {
       const { agent: now, etag } = await v2.getAgent(agent.agent_id);
-      const body = editBody(now, { learning: next }, next ? "Learning on" : "Learning off");
+      // Preserve learning already enabled by another writer.
+      const learning = !next ? false : learningOn(now.definition.learning) ? now.definition.learning : true;
+      const body = editBody(now, { learning }, next ? "Learning on" : "Learning off");
       if (body.unchanged) onAgent?.(now);
       else { const { unchanged: _u, ...send } = body; onAgent?.((await v2.updateDefinition(agent.agent_id, send, etag)).agent); }
     } catch (e) { setTrouble(e ?? new Error("unknown")); }

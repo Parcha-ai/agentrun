@@ -22,6 +22,28 @@ describe("RunHeader's cost", () => {
     expect(html).toContain("$1.50 est.");
     expect(html).toContain(DISCLAIMER);
   });
+  it("a cost the provider or gateway reported says so, with no estimate disclaimer", () => {
+    const html = renderToStaticMarkup(createElement(RunHeader, { run: runWith({ usd: 0.0042, basis: "reported", charge_state: null, cap_usd: null }), agentName: "Calc" }));
+    expect(html).toContain("$0.0042 reported");
+    expect(html).toContain("As the provider or gateway reported it");
+    expect(html).not.toContain(DISCLAIMER);
+  });
+  it("a cost no model request was priced for says so", () => {
+    const html = renderToStaticMarkup(createElement(RunHeader, { run: runWith({ usd: 0, basis: "unpriced", charge_state: null, cap_usd: null }), agentName: "Calc" }));
+    expect(html).toContain("$0.0000");
+    expect(html).toContain("No model request was priced");
+    expect(html).not.toContain(DISCLAIMER);
+  });
+  it("its tokens: input, output, the cache's reads and writes, and the requests that reported none", () => {
+    const tokens = { input: 12_400, output: 1_250, cache_read: 3_000, cache_write: 0, requests: 3, unmetered: 1 };
+    const html = renderToStaticMarkup(createElement(RunHeader, { run: runWith({ usd: 0.0042, basis: "reported", charge_state: null, cap_usd: null, tokens }), agentName: "Calc" }));
+    expect(html).toContain("12.4K in · 1,250 out · 3,000 cache read · 1 request unmetered");
+    expect(html).not.toContain("cache write");
+  });
+  it("no tokens line when the run says none", () => {
+    const html = renderToStaticMarkup(createElement(RunHeader, { run: runWith({ usd: 1.5, basis: "estimate", charge_state: null, cap_usd: null }), agentName: "Calc" }));
+    expect(html).not.toContain(" out");
+  });
   it("an unknown cost reads Unknown, with no estimate disclaimer", () => {
     const html = renderToStaticMarkup(createElement(RunHeader, { run: runWith({ usd: null, basis: "estimate", charge_state: null, cap_usd: null }), agentName: "Calc" }));
     expect(html).toContain("Unknown");

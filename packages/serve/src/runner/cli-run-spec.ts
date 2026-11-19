@@ -50,7 +50,7 @@ import { settingOfDefinition } from "../computer-setting.js";
 import { computerKeptWords, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
 import { hadComputer } from "./computer-journal.js";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
-import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, capModelOf as capModelOfRoute, claimLiveAt, hostToolCtxOf, type LearnedTier, learnedTierRoutes, learnedTiers, learnedWorkflowHostTool, learnsWorkflows, mcpReachOf, modelAskOf, PI_WIRES, webHostTools } from "./adapter-run-spec.js";
+import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, capModelOf as capModelOfRoute, claimLiveAt, graderRouteOf, hostToolCtxOf, type LearnedTier, learnedTierRoutes, learnedTiers, learnedWorkflowHostTool, learnsWorkflows, mcpReachOf, modelAskOf, PI_WIRES, webHostTools } from "./adapter-run-spec.js";
 import { openTierProxies, type TierProxies } from "./adapters/pi.js";
 import type { ModelRoute } from "./model-route.js";
 import { signInReads } from "../sign-ins-store.js";
@@ -66,13 +66,14 @@ import { decisionProvidersIn } from "../decisions.js";
 import { resolveHarness } from "./adapters/index.js";
 import { entriesOf } from "./loop.js";
 import type { Claim } from "./loop-contract.js";
-import { bookedSpend, cliModelWorked, cliRunMetrics, endCostOf, runCostOf } from "./metrics.js";
+import { bookedSpend, cliModelWorked, cliRunMetrics, costBasisOf, endCostOf, runCostOf } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { replayCallsOver } from "./promotion.js";
 import { learnedFirstWhereHeld } from "./learned-first.js";
 import { pathMetrics } from "./workflow-first.js";
 import { AUDIT_PARKED, withAudit } from "./audit.js";
+import { compareEndOfRun, GRADER, withGrader } from "./compare-end.js";
 import { runPathOverStore } from "../store-reads/learning.js";
 import { type SpecHolds, specBuilt } from "./spec-holds.js";
 import { heldRedactor, holdClaimed, runnerSecrets, secretRedactor } from "./redact.js";
@@ -151,11 +152,12 @@ export function capModelOf(id: string, wire: string, listed: { cost?: Partial<Ca
 type CapPrice = { input: number; output: number; cacheRead: number; cacheWrite: number; tiers: readonly { inputTokensAbove: number; input: number; output: number; cacheRead: number; cacheWrite: number }[] };
 
 /** The model a CLI run of `entry` on `chosen` (modelsOf) is capped at, on its `wire`: the catalog entry that bills it
- *  (its entry's priceModel), priced by capModelOf. */
+ *  (its entry's priceModel), priced by capModelOf. A harness its vendor bills to its owner's plan (its promises' billing,
+ *  Cursor's) is the plan rule's, as a ChatGPT plan's model is. */
 function chosenCapModel(entry: HarnessEntry, env: NodeJS.ProcessEnv, chosen: Awaited<ReturnType<typeof modelsOf>>, wire: string): CapModel {
   const priced = entry.priceModel(env, chosen.model);
   const listed = chosen.models.getModel(priced.provider, priced.modelId) as { cost?: Partial<CapPrice>; maxTokens?: number } | undefined;
-  return capModelOf(priced.modelId, wire, listed, chosen.unpriced.has(priced.modelId) || listed === undefined, priced.provider === PLAN_PROVIDER || priced.provider === CLAUDE_LOGIN_PROVIDER);
+  return capModelOf(priced.modelId, wire, listed, chosen.unpriced.has(priced.modelId) || listed === undefined, priced.provider === PLAN_PROVIDER || priced.provider === CLAUDE_LOGIN_PROVIDER || entry.promises?.billing === "plan");
 }
 
 /** The model a run of the CLI harness `entry` on `ref` (a revision's model; none, this host's default for it) is capped
@@ -607,6 +609,10 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // are skipped, in words, where the run brought its own key or the server holds none.
   const spendOff = await claimSpendOff({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, runKey);
   const audits = { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, folder: learningFolder, shown, sealKey: deps.sealKey, spendOff };
+  // A replay run's or a shadow's grader (runner/compare-end.ts), on a proxy of its own beside the CLI session's, as pi's
+  // is (adapter-run-spec.ts graderRouteOf), reached through the session's port while it is up. None: compared whole.
+  const graderRoute = launch.replay || launch.audit ? await graderRouteOf(body as { learning?: unknown }, keyed, runKey, claimed, cut, log, deps, [held, cut]) : undefined;
+  if (graderRoute) tierRoutes.set(GRADER as Tier, graderRoute);
   // Each step writes the store or reads another run (runner/learned-first.ts): in a run's own process its runner takes
   // them (held.ts learnedFirst), over the workflows it reads at the claim's seed itself.
   const learned = await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, folder: learningFolder, shown, spendOff }, seedLaid?.workflows ?? []);
@@ -684,10 +690,11 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The run's end-of-run step, when it learns, the same as the pi spec's: the compile turn and the owner's correction over
   // the run's store, its learning folder where the run's place keeps it — Mode 1 under the data directory, Mode 2 on this
   // claim's Archil disk — so the draft is checked against the seed in the run's own Workspace, never this machine's local path.
-  // A replay run or an audit's shadow run asks nothing at its end: it is the promotion's, never the agent's to learn from.
+  // A replay run or an audit's shadow run learns nothing at its end: it is the promotion's, never the agent's to learn
+  // from. With a grader it compares its answer with the other one (runner/compare-end.ts), on its own cap.
   // A run the promoted workflow answered (path `workflow`) starts its shadow audit after the step, drawn at 1 in k (runner/audit.ts
   // withAudit): at its end, so the shadow's cap is what the run's own left.
-  const endOfRun = launch.replay || launch.audit ? undefined : withAudit(learningEndOfRun(launch, {
+  const endOfRun = launch.replay || launch.audit ? withGrader(compareEndOfRun(launch, { store: deps.store, folder: learningFolder, log, ...(run.redact ? { redact: run.redact } : {}) }), graderRoute ? { model: graderRoute.model, models: () => run.ledger.models(GRADER, GRADER) } : undefined) : withAudit(learningEndOfRun(launch, {
     store: deps.store,
     data: deps.data,
     ...(deps.env ? { env: deps.env } : {}),
@@ -766,7 +773,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       const metrics = cliRunMetrics(piShaped(entries as never), booked, { ...(thinking ? { effort: thinking } : {}), model: `${chosen.model.provider}/${chosen.model.modelId}`, catalog: await hashedMcpOf(deps.store, claim.runId) });
       // Its cost is endCost's, read apart (an unknown one written as null, never left out: a follow-up's end clears the
       // cost an earlier end stored).
-      return { metrics: { ...metrics, ...pathMetrics(launch, launch.learning ? await runPathOverStore(deps.store, claim.runId, launch.learning, run.redact) : undefined, entries as never) } };
+      return { metrics: { ...metrics, ...pathMetrics(launch, launch.learning ? await runPathOverStore(deps.store, claim.runId, launch.learning, run.redact) : undefined, entries as never), costBasis: costBasisOf(booked) } };
     },
     // A run started with hold: true holds its computer for its owner (computer-held.ts), as the pi spec's.
     ...(heldComputer ? { held: heldComputer } : {}),

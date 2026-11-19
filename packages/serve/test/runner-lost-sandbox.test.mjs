@@ -46,7 +46,8 @@ const until = async (done, what, ms = 60_000) => {
 /**
  * Docker's stand-in: each sandbox made over the run's folder it binds. `docker.lose(one, method)` says whether a call
  * loses the sandbox it goes to: the provider deletes it then (as a vendor's own API can), and that call and every later
- * one on its connection answer gone. `docker.attachAnswer`, when set, is what the provider's read of a machine answers
+ * one on its connection answer gone (or `docker.lostAnswer`, a hosted provider's not_found "was deleted" words).
+ * Each process.start is kept in `docker.starts` as [sandbox id, argv]. `docker.attachAnswer`, when set, is what the provider's read of a machine answers
  * (a failing read, a 5xx); else a held one is found and a deleted one is not_found. Each create's request id is kept.
  */
 function sandboxes() {
@@ -54,7 +55,8 @@ function sandboxes() {
   const made = [];
   const requests = [];
   const released = [];
-  const docker = { held, made, requests, released, lose: () => false, attachAnswer: undefined };
+  const starts = [];
+  const docker = { held, made, requests, released, starts, lose: () => false, attachAnswer: undefined, lostAnswer: GONE };
   docker.provider = {
     id: "fake",
     version: "0",
@@ -76,11 +78,12 @@ function sandboxes() {
       const one = held.get(ref.id);
       const client = {
         async call(method, params, options) {
-          if (!one.alive) return GONE(ref.id);
+          if (!one.alive) return docker.lostAnswer(ref.id);
+          if (method === "process.start") starts.push([ref.id, params.argv]);
           if (docker.lose(one, method)) {
             one.alive = false;
             held.delete(ref.id);
-            return GONE(ref.id);
+            return docker.lostAnswer(ref.id);
           }
           return one.computer.client.call(method, params, options);
         },
@@ -104,7 +107,7 @@ function sandboxes() {
   return docker;
 }
 
-async function opened(t, computer = { kind: "sandbox", provider: "docker" }, extra = {}) {
+async function opened(t, computer = { kind: "sandbox", provider: "docker" }, extra = {}, tools = ["read", "write"]) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-lost-sandbox-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const stores = [server];
@@ -114,7 +117,7 @@ async function opened(t, computer = { kind: "sandbox", provider: "docker" }, ext
     for (const store of stores.reverse()) await store.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  await server.agents.create({ id: "agent-1", name: "Box" }, { id: "rev-1", kind: "agentic", body: { instructions: "Work.", computer, tools: ["read", "write"] } });
+  await server.agents.create({ id: "agent-1", name: "Box" }, { id: "rev-1", kind: "agentic", body: { instructions: "Work.", computer, tools } });
   const launch = { input: { content: "Work." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5.5" } };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
   await server.flush?.();
@@ -169,6 +172,33 @@ test("a sandbox its provider deletes mid-call: that call fails, the next starts 
   assert.deepEqual(run.docker.released, ["c1", "c2"], "the lost one let go at once, the new one at the run's end");
   assert.equal(run.docker.held.size, 0);
   assert.equal((await run.served()).error, null);
+});
+
+/** A hosted provider's answer once its vendor deleted the machine (the computer package's deletedSaid), as Daytona's was. */
+const DELETED = (id) => ({ ok: false, error: { code: "not_found", message: `the computer ${id} (${id}) was deleted: Daytona no longer has it` } });
+const LOOP = "for i in $(seq 60); do echo tick >> ticks.txt; sleep 3; done";
+
+test("a sandbox deleted while a bash command runs: that command ends failed saying the computer was lost and it was not run again, it ran once, the next call runs on a new sandbox, and the run completes", { timeout: 120_000 }, async (t) => {
+  const run = await opened(t, undefined, {}, ["read", "write", "bash"]);
+  run.docker.lostAnswer = DELETED;
+  // The first sandbox is deleted while the loop runs: the read of its output finds it gone.
+  run.docker.lose = (one, method) => one.ref.id === "c1" && method === "process.read";
+  const requests = [];
+  await run.start(scriptedOrigin([{ call: "bash", args: { command: LOOP } }, { call: "bash", args: { command: "echo next" } }, { say: "done" }], requests));
+  const row = await run.settled(["ended"]);
+  assert.equal(row.state, "ended", "the run completes");
+  const loops = run.docker.starts.filter(([, argv]) => argv.at(-1).endsWith(LOOP));
+  assert.deepEqual(loops.map(([id]) => id), ["c1"], `the loop ran once, on the lost sandbox, never again on the new one: ${JSON.stringify(run.docker.starts)}`);
+  const results = toolResults(requests);
+  assert.deepEqual(results.map((one) => one.error), [true, false], "the cut command failed; the next ran");
+  assert.match(results[0].text, /the computer c1 was lost while this call ran, and it was not run again/, results[0].text);
+  assert.match(results[0].text, /Daytona no longer has it/, "the provider's words are kept");
+  assert.match(results[0].text, /A new computer starts at the next call/);
+  const next = run.docker.starts.filter(([, argv]) => argv.at(-1).endsWith("echo next"));
+  assert.deepEqual(next.map(([id]) => id), ["c2"], "the next call ran on the new sandbox");
+  assert.deepEqual(run.docker.made, ["c1", "c2"], "one new sandbox");
+  const said = await run.summaries();
+  assert.deepEqual(said.filter((summary) => summary?.startsWith("Its computer was lost")), ["Its computer was lost; started a new one (c2)."]);
 });
 
 test("the loss after two new sandboxes ends the run failed, served as computer_unavailable in the provider's words, though the model answers right after it; no fourth is made", { timeout: 120_000 }, async (t) => {

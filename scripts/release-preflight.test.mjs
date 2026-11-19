@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync, readdirSync } from 'node:fs';
 import { fold } from './changes.mjs';
-import { checkManifest, checkReleaseAudit, checkReleaseDispatch, checkReleaseTree, heldPackages, listedPackages, ownVersionPackages, releaseLayers, releasePackages, releasePackageNames, releasePreflight } from './release-preflight.mjs';
+import { checkManifest, checkNotice, noticeAppendices, checkReleaseAudit, checkReleaseDispatch, checkReleaseTree, heldPackages, listedPackages, ownVersionPackages, releaseLayers, releasePackages, releasePackageNames, releasePreflight } from './release-preflight.mjs';
 
 const exec = promisify(execFile);
 const version = '0.1.0-beta.1';
@@ -33,7 +33,9 @@ SOFTWARE.\n`;
 const manifest = directory => ({ name: releasePackageNames[directory], ...(heldPackages.includes(directory) ? { private: true } : {}), version: ownVersionPackages.includes(directory) ? '0.3.0' : version, license: 'MIT', type: 'module', files: ['dist', 'LICENSE'],
   repository: { type: 'git', url: 'git+https://github.com/Parcha-ai/agentrun.git', directory: `packages/${directory}` },
   homepage: 'https://agentrun.ai', bugs: { url: 'https://github.com/Parcha-ai/agentrun/issues' }, publishConfig: { access: 'public', tag: 'beta' },
-  ...(directory === 'agentrun' ? { dependencies: { '@parcha/agentrun-serve': version } } : directory === 'dsl' || directory === 'client' || directory === 'computer' || directory === 'pi-browser' ? {} : { dependencies: { '@parcha/agentrun-dsl': version } }),
+  ...(directory === 'agentrun' ? { dependencies: { '@parcha/agentrun-serve': version } } : directory === 'eve'
+    ? { dependencies: { '@parcha/agentrun-dsl': version, '@parcha/agentrun-client': version } }
+    : directory === 'dsl' || directory === 'client' || directory === 'computer' || directory === 'pi-browser' ? {} : { dependencies: { '@parcha/agentrun-dsl': version } }),
 });
 const putJson = (path, value) => writeFile(path, JSON.stringify(value));
 /** Holds `directory` in the checked tree (its manifest says "private": true), whatever this checkout holds, and records the
@@ -82,7 +84,7 @@ async function recordPackages(root) {
   const refused = settled.find((outcome) => outcome.status === 'rejected');
   if (refused) throw refused.reason;
   await putJson(join(root, '.release/verification.json'), { status: 'passed', packages,
-    runtimeSmoke: { core: true, jev: true, browser: true, serve: true, decisions: true, adapters: true, computer: true, client: true, network: 'prohibited' }, audit: { vulnerabilities: { high: 0, critical: 0 } } });
+    runtimeSmoke: { core: true, jev: true, browser: true, serve: true, decisions: true, adapters: true, computer: true, client: true, eve: true, network: 'prohibited' }, audit: { vulnerabilities: { high: 0, critical: 0 } } });
 }
 after(async () => { await rm(baseline, { recursive: true, force: true }); });
 async function fixture(fn) {
@@ -179,6 +181,9 @@ test('a receipt names every installed package smoke, the browser one included, a
   const { computer: __, ...withoutComputer } = receipt.runtimeSmoke;
   await putJson(path, { ...receipt, runtimeSmoke: withoutComputer });
   await assert.rejects(preflight(root), /All installed package smoke checks/);
+  const { eve: ___, ...withoutEve } = receipt.runtimeSmoke;
+  await putJson(path, { ...receipt, runtimeSmoke: withoutEve });
+  await assert.rejects(preflight(root), /All installed package smoke checks/, 'held extensions still require their installed runtime smoke');
   assert.match(readFileSync(new URL('./verify-packages.mjs', import.meta.url), 'utf8'), /assert\.deepEqual\(smoke, runtimeSmokeChecks\);/, 'verify-packages asserts its smoke against the set the preflight requires');
 }));
 
@@ -238,6 +243,12 @@ test('Apache release preserves the approved root license and notices in every ar
     await assert.rejects(preflight(root), /mismatched NOTICE/, edited);
   }
   await writeFile(join(root, 'packages/pi-browser/NOTICE'), notice);
+  // A notice goes only where what it covers ships: dsl ships no third-party code, so a notice appended to its NOTICE is
+  // refused, however whole the root header above it.
+  await writeFile(join(root, 'packages/dsl/NOTICE'), `${notice}\nThird-party notice for something dsl does not ship.\n`);
+  await recordPackages(root);
+  await assert.rejects(preflight(root), /@parcha\/agentrun-dsl's NOTICE appends/);
+  await writeFile(join(root, 'packages/dsl/NOTICE'), notice);
   await recordPackages(root);
   await writeFile(join(root, 'LICENSE'), 'Apache License\nVersion 2.0, January 2004\n' + 'x'.repeat(1000));
   await assert.rejects(preflight(root), /Apache license text is incomplete/);
@@ -246,6 +257,16 @@ test('Apache release preserves the approved root license and notices in every ar
   await recordPackages(root);
   await assert.rejects(preflight(root), /mismatched NOTICE/);
 }));
+
+test("this tree's NOTICEs keep the rule the preflight checks at release, and every package allowed an appendix carries one", () => {
+  const read = path => readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+  const root = read('NOTICE');
+  for (const directory of listedPackages) checkNotice(directory, read(`packages/${directory}/NOTICE`), root);
+  for (const directory of Object.keys(noticeAppendices)) {
+    assert.ok(listedPackages.includes(directory), `noticeAppendices names ${directory}, which is not a release package`);
+    assert.notEqual(read(`packages/${directory}/NOTICE`).trim(), root.trim(), `${directory}'s NOTICE appends nothing: drop it from noticeAppendices`);
+  }
+});
 
 const repoPackages = () => readdirSync(new URL('../packages', import.meta.url)).filter(name => !name.startsWith('.')).sort();
 const repoManifest = name => JSON.parse(readFileSync(new URL(`../packages/${name}/package.json`, import.meta.url), 'utf8'));
@@ -262,7 +283,7 @@ test('the publish set is the explicit release map minus the held packages, and a
 });
 
 test('publication order is dependency order, fixed by the release map and not by directory listing', () => {
-  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi-browser', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'serve', 'agentrun'], 'dsl before jev, the packages that depend on none of them after, then serve (@parcha/agentrun-serve), which depends on the packages before it, and the npx command, which depends on serve, last');
+  assert.deepEqual(listedPackages, ['dsl', 'jev', 'pi-browser', 'decisions', 'computer', 'client', 'eve', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'serve', 'agentrun'], 'dependencies before consumers, including client/DSL before eve and the harness adapters before serve, and the npx command after serve');
   const names = new Map(listedPackages.map(directory => [releasePackageNames[directory], directory]));
   for (const directory of listedPackages) {
     for (const dependency of Object.keys(repoManifest(directory).dependencies ?? {})) {
@@ -270,6 +291,21 @@ test('publication order is dependency order, fixed by the release map and not by
     }
   }
   assert.ok(releasePackages.every((directory, index) => index === 0 || listedPackages.indexOf(releasePackages[index - 1]) < listedPackages.indexOf(directory)), 'the publish set keeps that order');
+});
+
+test('eve follows its publication hold and requires matching client and DSL packages', () => {
+  const { private: held, ...candidate } = repoManifest('eve');
+  assert.equal(heldPackages.includes('eve'), held === true);
+  assert.equal(releasePackages.includes('eve'), held !== true);
+  assert.deepEqual(candidate.eve.extension.externalDependencies, ['@parcha/agentrun-dsl'], 'the extension carries its deployed asset requirement');
+  checkManifest(candidate, 'eve', candidate.version, candidate.license);
+  for (const dependency of ['@parcha/agentrun-client', '@parcha/agentrun-dsl']) {
+    assert.throws(() => checkManifest({ ...candidate, dependencies: { ...candidate.dependencies, [dependency]: '^0.1.0' } },
+      'eve', candidate.version, candidate.license), /exact release version/);
+  }
+  const layers = releaseLayers([...new Set([...releasePackages, 'eve'])]);
+  const layerOf = name => layers.findIndex(layer => layer.includes(name));
+  assert.ok(layerOf('eve') > layerOf('client') && layerOf('eve') > layerOf('dsl'));
 });
 
 test('a workspace package that is neither private nor in the release map fails the preflight; a private one does not', () => fixture(async root => {

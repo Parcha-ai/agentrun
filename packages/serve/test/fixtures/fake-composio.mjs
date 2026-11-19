@@ -6,7 +6,7 @@
 // lists besides them (the real one's base version leaves out tools added since; linear 21 of 48 live 11-18). `toolsPage`
 // pages the tool list at most that many a page, by `cursor` and `next_cursor`. As the real one, a toolkit's own answer says
 // no_auth only as `auth_config_details[].mode` "NO_AUTH" (only the toolkit list has a `no_auth` field). `authConfigs`: by toolkit slug, the auth configs
-// it already has. `active`: toolkit slugs the user already has an ACTIVE connected account for, under the auth config the
+// it already has (`{ id, is_composio_managed, status? }`), each read alone by GET /auth_configs/{id} with that toolkit. `active`: toolkit slugs the user already has an ACTIVE connected account for, under the auth config the
 // call names. `accounts`: by toolkit slug, the user's accounts as `{ status, auth_config, id?, created_at? }` (an ACTIVE one under another
 // config, say); as the real one, `auth_config_ids` narrows the list to those under it. `noTools`: its MCP endpoint serves no tool at all. `listStatus`: its MCP endpoint answers every request after the first handshake with that HTTP status (an outage, not an answer "no"). `fail`: `{ path, status, method? }`
 // makes the call whose path ends in `path` (or for which `path`, a function, holds) answer that status; a list of them
@@ -20,7 +20,8 @@
 // upsert makes, one per slug, account and config (the same again answers the same id and turns it on again, as the real
 // one does), each listed by GET /trigger_instances/active (a disabled one only with show_disabled=true; `instancePage` pages
 // it at most that many a page, by `cursor` and `next_cursor`, as `limit` does), turned on and off
-// by PATCH and deleted by DELETE /trigger_instances/manage/{id}. An upsert for an account that is not ACTIVE, or whose
+// by PATCH and deleted by DELETE /trigger_instances/manage/{id}. An upsert is for the `active` toolkit's account or an ACTIVE
+// one of `accounts` it names; one for an account that is not ACTIVE, or whose
 // config misses a required field, is refused 400. Connected accounts carry their id (`ca_fake_<toolkit>`) and user_id.
 // An auth config it makes (`ac_made_<n>`) is listed with its toolkit's from then on, as Composio-managed, until a DELETE
 // /auth_configs/{id} removes it; a connect link answers the connected account it starts (`ca_link_<n>`), which DELETE
@@ -76,7 +77,22 @@ export const STAR_ADDED = {
 /** When an account was made, as Composio lists it, for one that names no other. */
 const ACCOUNT_MADE = "2026-11-13T20:26:18.916Z";
 
-export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, authConfigs = {}, active = [], accounts = {}, fail, noTools = false, listStatus, subscription, triggerTypes = { github: [ISSUE_ADDED, STAR_ADDED] }, pageSize, toolsPage, instancePage, madeSecret } = {}) {
+/** Who Composio's MCP endpoint serves, as it does live (probed 2026-11-19 on a Gmail server): a request whose address
+ *  names neither `user_id` nor `connected_account_id` is refused, its listing too. With `mcpAccounts` (by Composio user,
+ *  the ids of that user's connected accounts), a tools/call is answered as Composio answers one it can't run: an isError
+ *  saying the user has no connected account, or that the named account is not the user's (an account named with no
+ *  user is that refusal too). Without it, any user's call runs. */
+const mcpGate = (mcpAccounts, toolkits) => (url, message) => {
+  const user = url.searchParams.get("user_id");
+  const account = url.searchParams.get("connected_account_id");
+  if (!user && !account) return { status: 400, body: { error: { message: "user_id or connected_account_id query parameter is required for security reasons" } } };
+  if (!mcpAccounts || message?.method !== "tools/call") return undefined;
+  if (account && !(mcpAccounts[user] ?? []).includes(account)) return { toolError: "Connected account user ID does not match the provided user ID" };
+  if (!account && !(mcpAccounts[user] ?? []).length) return { toolError: `No connected account found for user ID ${user} for toolkit ${Object.keys(toolkits ?? {})[0] ?? "unknown"}` };
+  return undefined;
+};
+
+export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, authConfigs = {}, active = [], accounts = {}, fail, noTools = false, listStatus, subscription, triggerTypes = { github: [ISSUE_ADDED, STAR_ADDED] }, pageSize, toolsPage, instancePage, madeSecret, mcpAccounts } = {}) {
   const calls = [];
   const strays = [];
   const mcpKeys = [];
@@ -88,7 +104,7 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
   const mcpLive = new Set();
   const served = (path) => mcpLive.has(/^\/v3\/mcp\/([^/]+)\/mcp$/.exec(path)?.[1]);
   const inspect = (headers) => mcpKeys.push(headers["x-api-key"]);
-  const mcp = noTools || listStatus ? await startEmptyMcp(served, inspect, listStatus) : await startFakeMcp({ path: served, inspect });
+  const mcp = noTools || listStatus ? await startEmptyMcp(served, inspect, listStatus) : await startFakeMcp({ path: served, inspect, gate: mcpGate(mcpAccounts, toolkits) });
   const mcpOrigin = new URL(mcp.url).origin;
   let made = 0;
   let links = 0;
@@ -103,7 +119,7 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
   const subscriptions = subscription ? [{ id: `ws_fake_${++madeSubs}`, webhook_url: subscription.webhook_url, version: "V3", enabled_events: ["composio.trigger.message"], secret: subscription.secret ?? secretOf(), created_at: at(), updated_at: at() }] : [];
   /** The trigger instances, by id. */
   const instances = new Map();
-  const accountOf = (kit) => (active.includes(kit) ? { id: `ca_fake_${kit}`, status: "ACTIVE" } : undefined);
+  const accountOf = (kit, id) => (accounts[kit] ?? []).find((a) => a.status === "ACTIVE" && a.id !== undefined && a.id === id) ?? (active.includes(kit) ? { id: `ca_fake_${kit}`, status: "ACTIVE" } : undefined);
   const fails = (Array.isArray(fail) ? fail : fail ? [fail] : []);
   /** The answers held back (hold): each the next call it matches, answered as it stood then once released. */
   const holds = [];
@@ -154,6 +170,14 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
       return reply(201, { auth_config: { id: config.id } });
     }
     const config = /^\/api\/v3\/auth_configs\/([^/]+)$/.exec(url.pathname);
+    // One auth config, as the real one answers it: its toolkit, whether Composio manages it, and its status.
+    if (req.method === "GET" && config) {
+      for (const [kit, list] of [...Object.entries(madeConfigs), ...Object.entries(authConfigs)]) {
+        const found = list.find((c) => c.id === config[1]);
+        if (found) return reply(200, { id: found.id, is_composio_managed: found.is_composio_managed === true, status: found.status ?? "ENABLED", toolkit: { slug: found.toolkit?.slug ?? kit } });
+      }
+      return reply(404, { error: { message: `Auth config ${config[1]} not found` } });
+    }
     if (req.method === "DELETE" && config) {
       for (const list of [...Object.values(madeConfigs), ...Object.values(authConfigs)]) {
         const at = list.findIndex((c) => c.id === config[1]);
@@ -221,7 +245,7 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
       const type = Object.values(triggerTypes).flat().find((t) => t.slug === upsert[1]);
       if (!type) return reply(404, { error: { message: `Trigger type ${upsert[1]} not found` } });
       const kit = type.toolkit.slug;
-      const account = accountOf(kit);
+      const account = accountOf(kit, body.connected_account_id);
       if (!account || (body.connected_account_id && body.connected_account_id !== account.id)) return reply(400, { error: { message: `No active connection found for user ${body.user_id ?? ""} and toolkit ${kit}` } });
       const config = body.trigger_config ?? {};
       const missing = (type.config.required ?? []).filter((field) => config[field] === undefined || config[field] === "");

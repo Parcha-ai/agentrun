@@ -158,7 +158,7 @@ export async function checkApi(client, log) {
     EnvironmentConfig: { id }, EnvironmentPatchCommit: { environmentId: id, patch: {}, commitMessage: "check" },
     WorkspaceTemplates: { workspaceId: id }, TemplateGenerate: { projectId: id, environmentId: id },
     Template: { code: "agentrun-check-api" },
-    TemplateDeploy: { input: { templateId: id, serializedConfig: formValues(config), workspaceId: id } },
+    TemplateDeploy: { input: { templateId: id, serializedConfig: walkValues(config), workspaceId: id } },
     ProjectRename: { id, name: WALK_PROJECT }, WorkflowStatus: { id }, Project: { id },
     Deployments: { input: { projectId: id, environmentId: id, serviceId: id } },
     Domains: { projectId: id, environmentId: id, serviceId: id }, Variables: { projectId: id, environmentId: id, serviceId: id },
@@ -206,6 +206,14 @@ export function formValues(config) {
   for (const service of Object.values(out.services ?? {})) {
     for (const v of Object.values(service.variables ?? {})) if (v?.defaultValue) v.value = v.defaultValue;
   }
+  return out;
+}
+
+/** The walk's deploy: the form as the template fills it, plus AGENTRUN_TELEMETRY=0, since the walk's server is ours and
+ *  sends no usage counts (docs/telemetry.md). The template itself leaves them on. */
+export function walkValues(config) {
+  const out = formValues(config);
+  for (const service of Object.values(out.services ?? {})) service.variables = { ...service.variables, AGENTRUN_TELEMETRY: { value: "0" } };
   return out;
 }
 
@@ -337,12 +345,14 @@ export async function usageOf(client, { projectId, environmentId, serviceId, sin
 async function walk(client, { workspaceId, template, step, firstRun, times }) {
   const { service } = onlyService(template.serializedConfig);
   let projectId, environmentId, serviceId;
+  let stopped = () => {};
   try {
     times.clicked = Date.now();
-    const deployed = (await client.call("TemplateDeploy", { input: { templateId: template.id, serializedConfig: formValues(template.serializedConfig), workspaceId } })).templateDeployV2;
+    const deployed = (await client.call("TemplateDeploy", { input: { templateId: template.id, serializedConfig: walkValues(template.serializedConfig), workspaceId } })).templateDeployV2;
     projectId = deployed.projectId;
+    stopped = onStop(() => client.call("ProjectDelete", { id: projectId }));
     await client.call("ProjectRename", { id: projectId, name: `${WALK_PROJECT}-${Date.now()}` });
-    step.pass("template deployed", `into a new project ${projectId}, with the form as the template fills it`);
+    step.pass("template deployed", `into a new project ${projectId}, with the form as the template fills it (and AGENTRUN_TELEMETRY=0)`);
     if (deployed.workflowId) {
       await until(client, "the template's deploy workflow completed", 10 * 60_000, 5_000, async () => {
         const s = (await client.call("WorkflowStatus", { id: deployed.workflowId })).workflowStatus;
@@ -407,6 +417,7 @@ async function walk(client, { workspaceId, template, step, firstRun, times }) {
 
     if (firstRun) await firstRunOf(client, { base, token: vars.AGENTRUN_TOKEN, cookie, key: firstRun.key, model: firstRun.model, step, times });
   } finally {
+    stopped();
     if (projectId) {
       if (serviceId) {
         const usage = await usageOf(client, { projectId, environmentId, serviceId, since: times.clicked });
@@ -463,6 +474,21 @@ async function firstRunOf(client, { base, token, cookie, key, model, step, times
   const result = typeof run.result === "string" ? run.result : run.result?.content ?? JSON.stringify(run.result ?? null);
   times.result = result;
   step.pass("first run finished", `run ${started.run_id}: completed, model cost $${times.modelUsd}, ${minutes(times.finished - times.clicked)} after the deploy started; it wrote ${result.length} characters: ${JSON.stringify(result.slice(0, 160))}`);
+}
+
+/** What a walk made, deleted when the walk is stopped midway: Actions cancels a job (a person, or its time limit) with
+ *  SIGINT, then SIGTERM seconds later, and a walk killed in a wait would never reach its own delete. `remove` runs once,
+ *  then the process exits 130 or 143. Returns the call that takes the handlers off, once the walk deletes it itself. */
+export function onStop(remove) {
+  const stop = (signal) => {
+    off();
+    console.error(`${signal}: deleting what the walk made before exiting`);
+    Promise.resolve().then(remove).catch((e) => console.error(`the delete on ${signal} failed: ${e.message}`)).finally(() => process.exit(signal === "SIGINT" ? 130 : 143));
+  };
+  const off = () => { process.off("SIGINT", stop); process.off("SIGTERM", stop); };
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+  return off;
 }
 
 /** A walk's longest run (its waits added up, with room to spare): a walk project younger than this may be another run's,

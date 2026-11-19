@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "@/App";
 import { agentFixture } from "@/fixtures";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import type { Client } from "@/lib/client";
 import { CODING_AGENT_PREFERENCE } from "@/lib/codingAgentLinks";
 import type { NativeBinding } from "@/lib/native";
@@ -20,7 +21,7 @@ afterEach(() => {
   location.hash = "";
 });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-const managed: Agent = { agent_id: "inspect/a + b", kind: "agentic", revision: "r2", revisions: 2, archived_at: null,
+const managed: Agent = { ...SERVED_AGENT, agent_id: "inspect/a + b", kind: "agentic", revision: "r2", revisions: 2, archived_at: null,
   definition: { version: 2, name: "Inspector", instructions: "Current instructions.", harness: "pi", skills: [], tools: [] } };
 const native: NativeBinding = {
   runtime: "claude-code", machine_id: "source-machine", project: "/workspace/project", selector: { kind: "project" }, state: "ready",

@@ -16,15 +16,16 @@ import type { AcpProxy, AcpRecipe } from "@parcha/agentrun-harness-acp";
 import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
 import { facts as openCodeFacts } from "./harness-opencode/facts.js";
-import { GOOSE_FACTS } from "./adapter-facts.js";
+import { CURSOR_FACTS, GOOSE_FACTS } from "./adapter-facts.js";
 import { ACP_PACKAGE, acpPackage } from "./acp-package.js";
 import { gooseHidden } from "./harness-goose.js";
+import { CURSOR_DEFAULT_MODEL, CURSOR_KEY, CURSOR_PROVIDER, cursorCardOf, cursorHidden } from "./harness-cursor.js";
 import type { AdapterNeeds } from "./adapters.js";
 import { DEFAULT_HARNESS, HARNESS_ID_PATTERN, type HarnessId, PLAN_HARNESSES, RESERVED_HARNESS_IDS } from "./harness.js";
 import { HARNESS_INSTALLS, type HarnessInstallEntry, type HarnessPins } from "./harness-install.js";
 import { chooseModel } from "./model.js";
 import { HarnessUnavailable, type ModelChoice, modelOn, openRouterOnly, priceModelFor, providerFor } from "./provider.js";
-import { WIRES } from "./wires.js";
+import { modelWire, WIRES } from "./wires.js";
 import type { SkillCheck } from "./skills.js";
 import type { RunnerHarness } from "./runner/adapters/index.js";
 import { PLAN_PROVIDER, signedIn } from "./chatgpt-plan.js";
@@ -96,6 +97,12 @@ export interface HarnessEntry {
    *  undefined while it is. One its owner installs (Goose: harness-goose.ts) is listed only once it is there and verified.
    *  It is still in the table, so a run or a save naming it is refused with these words. */
   hidden?(env: NodeJS.ProcessEnv): string | undefined;
+  /** The secrets that are this harness's own (Cursor's CURSOR_API_KEY): a run of it is handed them, and a run of any
+   *  other harness never is (run-secrets.ts keysFor). */
+  readonly ownKeys?: readonly string[];
+  /** What its owner reads before running it (capabilities' `card`): who bills it, what stops it, whose terms it runs
+   *  under. None for a harness that runs on this server's keys and cap. */
+  card?(env: NodeJS.ProcessEnv): string | undefined;
 }
 
 /** What one run of a module's adapter harness is given (HarnessModuleKit.adapterEntry): the model as its provider names it,
@@ -188,6 +195,8 @@ const onOpenRouter = (id: string, vendor: string): boolean => new RegExp(`^openr
 /** An adapter harness's entry, from its facts and the factory that builds its adapter. */
 function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs: AdapterNeeds) => Promise<AgentAdapter>, extra: Pick<HarnessEntry, "skillCheck" | "pins" | "promises" | "hidden"> = {}): HarnessEntry {
   const { wire, id } = facts;
+  // A harness billed to its own plan has an entry of its own (cursorEntry): this one is for a model wire of ours.
+  if (!modelWire(wire)) throw new Error(`${id} is billed to its own plan, so its table entry is its own, never adapterEntry's`);
   const { vendor, gateway } = WIRES[wire];
   const installs = HARNESS_INSTALLS[id];
   const onPlan = PLAN_HARNESSES.includes(id);
@@ -295,6 +304,55 @@ const MODULE_KIT: HarnessModuleKit = Object.freeze({
   acpEntry: acpModuleEntry,
 });
 
+/** Cursor's entry, from its facts: billed to its owner's Cursor plan on the owner's Cursor API key (`ownKeys`), so no
+ *  model key, proxy, catalog or cap of ours is its. Its model is one Cursor lists for that key, named `cursor/<model-id>`
+ *  (`cursor/default`: Cursor's own default), checked against Cursor's list when its session opens (ACP_MODEL_UNLISTED).
+ *  Listed only once its owner has installed it (`agentrun harness install cursor`), and stopped by its owner's turn and
+ *  tool-call limits (harness-cursor.ts cursorLimitsOf), which its card says. */
+function cursorEntry(facts: AdapterFacts): HarnessEntry {
+  const { id } = facts;
+  const prefix = `${CURSOR_PROVIDER}/`;
+  const entry: HarnessEntry = {
+    id,
+    label: facts.label,
+    steer: facts.steer,
+    runMib: facts.runMib,
+    oneAlwaysFits: false,
+    facts,
+    promises: Object.freeze({ resume: "load", tool_gate: "permission", billing: "plan" }),
+    ownKeys: Object.freeze([CURSOR_KEY]),
+    hidden: cursorHidden,
+    card: cursorCardOf,
+    runs: (_env, model) => model.startsWith(prefix),
+    onWire: () => true,
+    model: async (_env, ref, available) => {
+      if (!available) return undefined;
+      const named = ref ?? `${prefix}${CURSOR_DEFAULT_MODEL}`;
+      const modelId = named.startsWith(prefix) ? named.slice(prefix.length) : "";
+      const { acpPackage } = await import("./acp-package.js");
+      if (!modelId || !acpPackage()?.MODEL_ID.test(modelId)) return { why: `${facts.label} runs a model Cursor lists for your Cursor API key, named ${prefix}<model-id> (${prefix}${CURSOR_DEFAULT_MODEL} for Cursor's own default); ${named} is not one.`, host: false, needs: "model" };
+      return { model: { provider: CURSOR_PROVIDER, modelId } };
+    },
+    priceModel: (_env, model) => model,
+    adapter: async (env, needs) => (await import("./adapters.js")).cursorOf(env, needs),
+    refusal: async (env, given, { atStart }) => {
+      const { cursorOf, startReason } = await import("./adapters.js");
+      try {
+        const adapter = await cursorOf(env, given ?? { model: { provider: CURSOR_PROVIDER, modelId: CURSOR_DEFAULT_MODEL }, models: { getModel: () => undefined } });
+        const problems = adapter.check({ key: "capabilities", label: "capabilities", system: [], tools: [], context: "fresh" });
+        return problems.length ? { reason: problems.join(" ") } : undefined;
+      } catch (error) {
+        return { reason: atStart ? startReason(error) : (error as Error).message };
+      }
+    },
+  };
+  return Object.freeze(entry);
+}
+
+/** The secrets the built-in harnesses own (each entry's ownKeys), whether or not its package is beside serve here: a
+ *  server without Cursor's adapter still never hands CURSOR_API_KEY to another harness's run (run-secrets.ts keysFor). */
+export const BUILTIN_OWN_KEYS: readonly string[] = Object.freeze([CURSOR_KEY]);
+
 /** The harnesses this server runs, by id. */
 const BUILTIN: Readonly<Record<HarnessId, HarnessEntry>> = Object.freeze({
   [DEFAULT_HARNESS]: PI,
@@ -322,7 +380,14 @@ const BUILTIN: Readonly<Record<HarnessId, HarnessEntry>> = Object.freeze({
       hidden: gooseHidden,
     }),
   } : {}),
+  // Cursor, over ACP, where the same package is beside serve: its owner installs its pinned release (`agentrun harness
+  // install cursor`, harness-cursor.ts) and sets CURSOR_API_KEY; listed only once it is installed and verified.
+  ...(CURSOR_FACTS ? { [CURSOR_FACTS.id]: cursorEntry(CURSOR_FACTS) } : {}),
 } as Record<HarnessId, HarnessEntry>);
+
+/** The ids of the harnesses this server has built in (Goose and Cursor where their package is beside it, as a recipe
+ *  needs it too): a recipe or module never takes one (harness-recipe.ts). */
+export const BUILTIN_HARNESS_IDS: readonly string[] = Object.freeze(Object.keys(BUILTIN));
 
 const loaded = new Map<string, Readonly<Record<string, HarnessEntry>>>();
 const requireHere = createRequire(import.meta.url);

@@ -12,7 +12,7 @@ import { isMain } from './is-main.mjs';
 export const MAX_BODY = 120_000;
 
 /** The lines of `version`'s section of a changelog's text, its heading left out, the fold's fragment markers taken out (`withoutMarkers`)
- *  and blank lines trimmed: what the release notes and the Slack post show. Throws when it has none or it is empty. */
+ *  and blank lines trimmed: what the release notes show. Throws when it has none or it is empty. */
 export function changelogSection(text, version) {
   const lines = text.replace(/\r\n/g, '\n').split('\n');
   const at = lines.findIndex(line => isVersionHeading(line, version));
@@ -31,8 +31,8 @@ export function releaseVersions(root = resolve(dirname(fileURLToPath(import.meta
 }
 
 /** The notes' install block. Every field is required. */
-export function installLines({ version, launcher, python, image, platforms }) {
-  for (const [name, value] of Object.entries({ version, launcher, python, image })) if (typeof value !== 'string' || !value) throw new Error(`the install lines need the ${name}`);
+export function installLines({ version, launcher, python, image, platforms, chart }) {
+  for (const [name, value] of Object.entries({ version, launcher, python, image, chart })) if (typeof value !== 'string' || !value) throw new Error(`the install lines need the ${name}`);
   if (!Array.isArray(platforms) || !platforms.length) throw new Error('the install lines need the image\'s platforms');
   return [
     '## Install',
@@ -41,6 +41,7 @@ export function installLines({ version, launcher, python, image, platforms }) {
     `- Launcher and CLI: \`npx @parcha/agentrun@${launcher}\``,
     `- Python client: \`pip install parcha-agentrun==${python}\``,
     `- Server image: \`docker pull ${image}\` (${platforms.join(', ')})`,
+    `- Helm chart: \`helm install agentrun ${chart} --version ${version}\``,
   ].join('\n');
 }
 
@@ -57,26 +58,6 @@ export function releaseNotes({ section, install, tag, repository }) {
   return `${kept.slice(0, kept.lastIndexOf('\n'))}${rest}`;
 }
 
-const label = /^\*\*([^*]+?):?\*\*:?\s*$/;
-const cut = (line, most) => (line.length <= most ? line : `${line.slice(0, most - 1).trimEnd()}…`);
-
-/**
- * The first lines of a section, for a post: `{ label, lines, more }`. From its upgrading or highlights block when it has one
- * ("**Upgrading and going back:**"), else from the section; the first line of each of its first `count` top-level bullets, each
- * cut at 300 characters, and how many bullets that leaves out.
- */
-export function highlights(section, count = 3) {
-  const lines = section.split('\n');
-  const start = lines.findIndex(line => /^(?:Upgrading|Highlights)\b/i.test(label.exec(line)?.[1] ?? ''));
-  let block = lines;
-  if (start >= 0) {
-    const end = lines.findIndex((line, index) => index > start && label.test(line));
-    block = lines.slice(start + 1, end < 0 ? lines.length : end);
-  }
-  const bullets = block.filter(line => line.startsWith('- ')).map(line => cut(line.slice(2).trim(), 300));
-  return { label: start >= 0 ? label.exec(lines[start])[1] : null, lines: bullets.slice(0, count), more: Math.max(0, bullets.length - count) };
-}
-
 if (isMain(import.meta)) {
   const args = process.argv.slice(2);
   const option = name => { const at = args.indexOf(name); return at >= 0 ? args[at + 1] : undefined; };
@@ -85,7 +66,7 @@ if (isMain(import.meta)) {
     const versions = releaseVersions();
     if (tag !== `v${versions.version}`) throw new Error(`${tag} is not this checkout's version, v${versions.version}`);
     const section = changelogSection(readFileSync(option('--changelog'), 'utf8'), versions.version);
-    const install = installLines({ ...versions, image: option('--image'), platforms: (option('--platforms') ?? '').split(',').filter(Boolean) });
+    const install = installLines({ ...versions, image: option('--image'), platforms: (option('--platforms') ?? '').split(',').filter(Boolean), chart: option('--chart') });
     writeFileSync(option('--out'), releaseNotes({ section, install, tag, repository: process.env.GITHUB_REPOSITORY ?? 'Parcha-ai/agentrun' }));
     console.log(`Wrote the notes of ${tag}: its CHANGELOG.md section (${section.split('\n').length} lines) and the install lines.`);
   } catch (error) {

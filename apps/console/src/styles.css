@@ -54,6 +54,13 @@
   .report a, .report button[data-run-file] { @apply text-primary-text underline underline-offset-2; }
   /* A run file the answer links (format.ts markdown): a button that opens it in the viewer, read as a link. */
   .report button[data-run-file] { @apply cursor-pointer text-left; font: inherit; }
+  /* The Dev tools tab's marks (a bar on the time axis, a swatch, a part of a stacked bar) are fills, and forced colours
+     (a contrast theme) remove a fill: an edge that shows only there keeps each mark's shape, thicker on the open one. */
+  .trace-mark { outline: 1px solid transparent; outline-offset: -1px; }
+  .trace-mark[data-open] { outline-width: 3px; outline-offset: -3px; }
+  /* A mark told from its neighbours by more than its hue: stripes cut through its fill (a call that failed, what a
+     request wrote to cache). */
+  .trace-hatch { background-image: repeating-linear-gradient(135deg, transparent 0 3px, hsl(var(--card) / 0.6) 3px 5px); }
 }
 
 /* The workflow graph (src/lib/wfGraph.ts): who works colours a card's swatch, a

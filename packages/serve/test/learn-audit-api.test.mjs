@@ -151,6 +151,8 @@ test("(h) served runs over v2 read like any run: the answer text, documented tim
     // Its path; cost.usd its own requests (its hand-back's among them); its shadow's, when it has one, on learning_usd
     // (its revision's check ran no replay run here: nothing else to pass on), all_in_usd the two.
     assert.equal(view.path, path);
+    // The workflow that served it, as its path says (path/1).
+    assert.deepEqual(view.workflow, { name: "answer", digest: DIGEST, repick: null }, JSON.stringify(view));
     const own = (await store.runs.get(id)).costUsd;
     const shadow = shadows[id];
     const shadowUsd = shadow?.costUsd ?? 0;

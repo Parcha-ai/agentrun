@@ -1,16 +1,16 @@
 // Settings → Computers, the serve side: which computers this server offers, each provider's keys (saved or not, never a
-// value), saving a provider's keys sealed in the store, testing a provider's account, and the refusal a run meets at its
-// claim when its agent's computer cannot be had here, with the options its provider is made with. createComputerRoutes
-// takes the server's Store and the computer package's kind registry by its own names (SETTING_KINDS, PROVIDERS,
-// servingRefusals); the tools each kind brings are the server's to say (server.ts kindTools: a sandbox's shell tools from
-// the kernel's hostToolDefs, a browser's from pi-browser, a desktop's or a phone's the kernel's COMPUTER_TOOLS). Keys go by
-// their names only: a provider declares them, Settings takes only those, and the store keeps each sealed under the
-// server's seal key (server-keys.ts); a provider is handed its keys only at the claim, or for its test, both through
-// computer-keys.ts (providerOptions, testConnection), which maps a key's name onto the option it fills.
-import { type ComputerProvider, connectOf, type GpuCapability, imagesOf } from "@parcha/agentrun-computer";
+// value), saving a provider's keys sealed in the store, and testing a provider's account. createComputerRoutes takes the
+// server's Store and the computer package's kind registry by its own names (SETTING_KINDS, PROVIDERS, servingRefusals);
+// the tools each kind brings are the server's to say (server.ts kindTools: a sandbox's shell tools from the kernel's
+// hostToolDefs, a browser's from pi-browser, a desktop's or a phone's the kernel's COMPUTER_TOOLS). Keys go by their
+// names only: a provider declares them, Settings takes only those, and the store keeps each sealed under the server's
+// seal key (server-keys.ts); a provider is handed its keys only for its test, or for the agent's own computer
+// (providerFor), through computer-keys.ts (providerOptions, testConnection), which maps a key's name onto the option it
+// fills. A run's claim is refused by the workspace's resolver (workspace/resolve-computer.ts resolveComputer).
+import { type ComputerProvider, connectOf, type GpuCapability, type HostCommand, imagesOf, type ProviderEntry } from "@parcha/agentrun-computer";
 import { BOX_ALLOW_ENV, boxAllowOf } from "./box-settings.js";
-import { KEY_TABLE, type KeyChoice, keyChoices, type KeyTable, type OptionsAnswer, type ProviderFactories, type ProviderSettings, providerOptions, settingOptions, testConnection } from "./computer-keys.js";
-import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting, gpuOf } from "./computer-setting.js";
+import { KEY_TABLE, type KeyChoice, keyChoices, type KeyTable, type ProviderFactories, type ProviderSettings, providerOptions, settingOptions, testConnection } from "./computer-keys.js";
+import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting, kindSettings } from "./computer-setting.js";
 import { inArchilMode } from "./archil-settings.js";
 import { daemonUp, type DockerDaemon, noDockerWords } from "./docker-daemon.js";
 import { ApiError, invalid } from "./errors.js";
@@ -18,68 +18,20 @@ import { commandOnPath } from "./host-command.js";
 import { gpuRefused } from "./gpu-words.js";
 import { redacted } from "./key-refusal.js";
 import { type KeyEnv, type KeyMeta, keyMetaOf, envValue } from "./key-meta.js";
-import { registerNotSecretWrite, registerSecretWrite, secretName } from "./secret-writes.js";
-import { getSealedKey, putSealedKey, removeSealedKey, sealedKeyNames } from "./server-keys.js";
+import { registerNotSecretWrite, registerSecretPage, registerSecretWrite, secretName } from "./secret-writes.js";
+import { getSealedKey, putSealedKey, removeSealedKey } from "./server-keys.js";
 import type { PairedComputerRow, Store } from "./store/index.js";
 import type { PairedView } from "./computer-attach.js";
 import { dialApartWords, RUNNER_APART_WORDS, withPaired } from "./workspace/attached-computers.js";
-import { aLabel, type ComputerSettingKind, entryHere, folderKindOf, type ShellPlace, needsNetwork, shellChoiceOf } from "./workspace/resolve-computer.js";
+import { aLabel, type ComputerSettingKind, entryHere, folderKindOf, type KindRegistry, type ShellPlace, needsNetwork, shellChoiceOf } from "./workspace/resolve-computer.js";
+import { restartWith } from "./start-switches.js";
 
 // Every request to a computer's keys is a secret write (secret-writes.ts), whatever its body (a value, a null, an empty
 // body or none), as saveToolKey's is: the server's one dispatch check keeps it to the owner's session before any provider
 // is looked up, so a token learns nothing of which providers exist. The view and the connection test write none.
 registerSecretWrite("saveComputerKeys", () => true);
+registerSecretPage("saveComputerKeys", "/#/settings/computers");
 registerNotSecretWrite("testComputer", "A connection test reads the saved keys and writes none.");
-
-/** A setting kind as the kind registry's SETTING_KINDS gives it. */
-export interface SettingKindSpec {
-  readonly machineKinds: readonly string[];
-  readonly required: readonly string[];
-  readonly optional: readonly string[];
-}
-
-/** A provider configuration's machine kind and groups, the GPUs it gives where it declares them, whether it keeps an
- *  agent's own computer between runs (persistence), and the image a setting selects it by, where it names one, as the
- *  kind registry gives them. */
-export type KindCapabilities = { readonly kind: string; readonly groups: readonly string[]; readonly gpu?: GpuCapability; readonly persistence?: unknown; readonly image?: string; readonly options?: Readonly<Record<string, unknown>> };
-
-/** A provider as the kind registry's PROVIDERS gives it. */
-export interface ProviderEntry {
-  readonly id: string;
-  readonly label: string;
-  /** Whether its machines dial this server, as its descriptor declares it (the computer package's connectOf reads it
-   *  with its settings' connect). Absent: they never do. */
-  readonly connect?: "dial" | "either";
-  readonly kinds: readonly ComputerKind[];
-  readonly keys: readonly { readonly name: string; readonly required: boolean; readonly picked?: boolean }[];
-  /** The mounts its computers take; none means it cannot mount the run's folder. */
-  readonly mounts: readonly string[];
-  /** Why its computers take none of these mounts, each in one sentence (Daytona's archil), as its descriptor says. */
-  readonly unmounted?: Readonly<Partial<Record<string, string>>>;
-  /** Mounts its computers take only where the operator sets the key named, by mount (Daytona's archil, with
-   *  DAYTONA_ARCHIL_EGRESS), as its descriptor says: resolve-computer.ts entryHere reads it with the keys set here. */
-  readonly mountsWith?: Readonly<Partial<Record<string, string>>>;
-  /** The server's environment variable that names the image every computer of it starts from (Daytona's
-   *  AGENTRUN_DAYTONA_SNAPSHOT), as its descriptor says: set, the operator names its image here (entryHere). */
-  readonly imageEnv?: string;
-  /** Set by entryHere alone: its imageEnv has a value here. */
-  readonly imageNamed?: true;
-  /** The network forms its computers make ("none", "open", "allow"), as its descriptor declares them. Absent (a
-   *  test's fixture): nothing is said of its network. */
-  readonly network?: readonly string[];
-  readonly metered: boolean;
-  readonly capabilities: readonly KindCapabilities[];
-  /** The image a computer of each kind starts from when its setting names none. */
-  readonly defaultImage?: Partial<Record<ComputerKind, string>>;
-  /** Its provider makes its image ready before the first create (its descriptor's prepareImage). */
-  readonly prepareImage?: boolean;
-  /** A program its computers need on this machine's PATH, what installs it, and the machines it is built for
-   *  (`${platform}-${arch}`; absent, every one), as its descriptor declares it: the phone's adb. Absent: none. */
-  readonly hostCommand?: HostCommand;
-}
-
-/** A provider's host command, as the kind registry's entry names it. */
-export type HostCommand = { readonly command: string; readonly from: string; readonly builds?: readonly string[] };
 
 const ARCH_NAMES: Readonly<Record<string, string>> = { x64: "x86-64", arm64: "arm64" };
 const PLATFORM_NAMES: Readonly<Record<string, string>> = { linux: "Linux", darwin: "macOS", win32: "Windows" };
@@ -100,13 +52,6 @@ export function hostCommandWhy(label: string, { command, from, builds }: HostCom
  *  holds an executable file of its name. */
 export function hostCommandRefusals(providers: readonly Pick<ProviderEntry, "id" | "label" | "hostCommand">[], path: string | undefined, platform: string = process.platform, arch: string = process.arch): Readonly<Record<string, string>> {
   return Object.fromEntries(providers.flatMap((provider) => (provider.hostCommand && !commandOnPath(provider.hostCommand.command, path, platform) ? [[provider.id, hostCommandWhy(provider.label, provider.hostCommand, platform, arch)]] : [])));
-}
-
-/** The kind registry, by its own names: the computer package's module (SETTING_KINDS, PROVIDERS, servingRefusals). */
-export interface KindRegistry {
-  readonly SETTING_KINDS: Readonly<Record<ComputerKind, SettingKindSpec>>;
-  readonly PROVIDERS: readonly ProviderEntry[];
-  servingRefusals(capabilities: KindCapabilities, kind: ComputerKind): string[];
 }
 
 /** Where the run's folder lives: on this machine (Mode 1), or on the owner's disk (Mode 2). */
@@ -182,7 +127,7 @@ export const NETWORK_REFUSED_WORDS = `needs a network, which this server refuses
 
 /** Why a provider whose computers can't run with no network is not ready where this server has none. */
 const noNetworkWhy = (provider: ProviderEntry): string =>
-  `${provider.label} needs a network, and this server's ${BOX_ALLOW_ENV} is none (no network): pick a computer that runs with no network, or set ${BOX_ALLOW_ENV} to a host list`;
+  `${provider.label} needs a network, and this server's ${BOX_ALLOW_ENV} is none (no network): pick a computer that runs with no network, or ${restartWith(`${BOX_ALLOW_ENV} set to a host list`)}`;
 
 /** What this server's allow-list means for a provider's computers, by the network forms it declares: words for one that
  *  makes "none" alone, "open" alone, or "open" and "allow" but no "none" (a browser behind its own proxy); none where
@@ -195,8 +140,9 @@ export function networkWords(network: readonly string[] | undefined, kind?: Comp
   if (network?.length === 2 && network.includes("open") && network.includes("allow")) return OPERATOR_LIST_WORDS;
   return undefined;
 }
-/** A kind; kind none, the one "no computer" choice, carries its ShellChoice itself (it has no providers). */
-export type KindView = { kind: ComputerKind; offered: boolean; why?: string; groups: string[]; tools: string[]; providers: ProviderView[] } & Partial<ShellChoice>;
+/** A kind; kind none, the one "no computer" choice, carries its ShellChoice itself (it has no providers). `settings`: the
+ *  fields its computer may set beside kind and provider (computer-setting.ts kindSettings). */
+export type KindView = { kind: ComputerKind; offered: boolean; why?: string; groups: string[]; tools: string[]; settings: string[]; providers: ProviderView[] } & Partial<ShellChoice>;
 export type TestView = { ok: true; detail: string } | { ok: false; why: string };
 /** A picked key's choices (GET /v2/computers/{provider}/choices): its KEY, as PUT …/keys takes it, then the values the
  *  vendor's list offers, each saved as it is and shown by its label, and `saved`, the one whose value is saved now, where
@@ -251,30 +197,19 @@ function gpuView(gpu: GpuCapability, provider: ProviderEntry, mode: FolderMode):
   return { ...shown, ...(refused ? { why: refused.words } : {}) };
 }
 
-/** Why `computer`'s GPUs cannot be had on `provider` in `mode`, in gpuRefused's words; undefined when they can, or it
- *  asks for none (only a sandbox does). */
-function gpuRefusal(kinds: Pick<KindRegistry, "servingRefusals">, computer: ComputerSetting, provider: ProviderEntry, mode: FolderMode): string | undefined {
-  const asked = gpuOf(computer);
-  if (!asked) return undefined;
-  const gpu = sandboxGpu(kinds, provider);
-  const refused = gpuRefused(asked, gpu, folderMount(provider, gpu, mode), provider.label);
-  if (!refused) return undefined;
-  return refused.folder ? `${refused.words} (Settings → Computers)` : `${provider.label} can't give this agent's computer its GPUs: ${refused.words} (Settings → Computers)`;
-}
-
 /** The required keys `provider` has no saved value for, by name. */
 const missingKeys = (provider: ProviderEntry, saved: ReadonlySet<string>): string[] => provider.keys.filter((key) => key.required && !saved.has(key.name)).map((key) => key.name);
 
-/** Why a provider with keys missing is not ready, naming the setting to fill: a person reads it (the view, the test), so
- *  it ends at the setting. A caller's refusal (the claim's) adds the route that saves them (`route`). */
-const keysWhy = (provider: ProviderEntry, missing: readonly string[], route = false): string =>
-  `${provider.label} needs ${missing.join(" and ")} saved: save ${missing.length > 1 ? "them" : "it"} in Settings → Computers${route ? ` (PUT /v2/computers/${provider.id}/keys)` : ""}`;
+/** Why a provider with keys missing is not ready, naming the setting to fill: a person reads it (the view, the test). */
+const keysWhy = (provider: ProviderEntry, missing: readonly string[]): string =>
+  `${provider.label} needs ${missing.join(" and ")} saved: save ${missing.length > 1 ? "them" : "it"} in Settings → Computers`;
 
 /** Whether `provider` binds a folder of this machine, so its computers need this machine's Docker daemon. */
 const local = (provider: ProviderEntry): boolean => provider.mounts.includes("bind");
 
 /** The routes' work over the server's store: GET /v2/computers (view), PUT /v2/computers/{provider}/keys (saveKeys), POST
- *  /v2/computers/{provider}/test (test), and the claim's refusal (claimRefusal). */
+ *  /v2/computers/{provider}/test (test), GET /v2/computers/{provider}/choices (choices), and the provider of an agent's
+ *  own computer (providerFor). */
 export function createComputerRoutes(options: ComputerRoutesOptions) {
   const { store, sealKey, kinds, factories, settings = {}, keyTable = KEY_TABLE, tools, env = {}, answers = daemonUp, hostWhy = {} } = options;
   const providerOf = (id: string) => kinds.PROVIDERS.find((one) => one.id === id);
@@ -299,7 +234,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     const mode = await modeNow();
     // The paired computers, each one more provider of its kind; one not attached now is not ready, saying so.
     const rows = options.paired ? await options.paired.rows() : [];
-    const listed = withPaired(options.kinds as never, rows) as unknown as KindRegistry;
+    const listed = withPaired(options.kinds, rows);
     const paired = rows.map((row) => options.paired!.viewOf(row, listed.PROVIDERS.find((provider) => provider.id === row.id)?.kinds ?? []));
     const offline = new Map(rows.flatMap((row, at) => (paired[at]!.online ? [] : [[row.id, `${row.name} is not attached now: open its driver on that computer, which dials this server`] as const])));
     const pairedIds = new Set(rows.map((row) => row.id));
@@ -311,8 +246,8 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     const saved = new Set(slots.filter((slot) => metas.get(slot.secret)!.set).map((slot) => slot.env));
     // Each provider as this server has it: the mounts its saved keys turn on, whether this server names its image, and no
     // Archil mount where its settings make its machines dial this server.
-    const kinds = { ...listed, PROVIDERS: listed.PROVIDERS.map((provider) => entryHere(provider, (name) => saved.has(name) || envValue(env, name) !== undefined, settingOptions(provider.id, settings, keyTable))) } as KindRegistry;
-    const choice = (setting: ComputerSetting): ShellChoice => shellChoiceOf(setting, mode === "disk" ? 2 : 1, kinds as never);
+    const kinds = { ...listed, PROVIDERS: listed.PROVIDERS.map((provider) => entryHere(provider, (name) => saved.has(name) || envValue(env, name) !== undefined, settingOptions(provider.id, settings, keyTable))) };
+    const choice = (setting: ComputerSetting): ShellChoice => shellChoiceOf(setting, mode === "disk" ? 2 : 1, kinds);
     // Under this server's AGENTRUN_BOX_ALLOW none, a computer that needs a network is refused at a
     // run's start and its claim (resolve-computer.ts noNetworkRefusal), so it is never ready here, whatever its keys.
     const refusedOpen = (provider: ProviderEntry): boolean => boxAllowOf(env as NodeJS.ProcessEnv) === "none" && needsNetwork(provider.network);
@@ -344,7 +279,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
         const why = offered ? undefined
           : serving.length && serving.every(refusedOpen) ? `every provider of a ${kind} computer needs a network, and this server's ${BOX_ALLOW_ENV} is none (no network)`
           : serving.length ? `no provider of a ${kind} computer can reach this server's run folders` : `no provider serves a ${kind} computer`;
-        return { kind, offered, ...(why ? { why } : {}), groups: [...spec.required, ...spec.optional], tools: [...tools(kind)], providers, ...(kind === "none" ? choice({ kind: "none" }) : {}) };
+        return { kind, offered, ...(why ? { why } : {}), groups: [...spec.required, ...spec.optional], tools: [...tools(kind)], settings: kindSettings(kind), providers, ...(kind === "none" ? choice({ kind: "none" }) : {}) };
       }),
       paired,
     };
@@ -427,39 +362,6 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     return { choices: views };
   }
 
-  /** Why a run of an agent whose computer is `computer` cannot have it here, in words naming the setting to fill;
-   *  undefined when it can. Checked at the claim: the provider must serve the kind (servingRefusals' words), fit this
-   *  server's folder mode, give a sandbox the GPUs it asks for (checkGpu's words), have its daemon answer where it binds
-   *  a folder of this machine (Docker), find what it runs on this machine (hostWhy's words), and have every required key
-   *  saved; a key refusal names the route that saves them. */
-  async function claimRefusal(computer: ComputerSetting): Promise<string | undefined> {
-    if (computer.kind === "none") return undefined;
-    const listed = providerOf(computer.provider);
-    if (!listed) return `this agent's computer names the provider ${computer.provider}, which this server does not have: set its computer in Settings → Computers`;
-    // The keys set here, saved or the environment's: what the provider is made with, and what turns its mounts on.
-    const set = new Set([...(await sealedKeyNames(store)), ...listed.keys.filter((key) => envValue(env, key.name) !== undefined).map((key) => key.name)]);
-    const provider = entryHere(listed, (name) => set.has(name) || envValue(env, name) !== undefined, settingOptions(listed.id, settings, keyTable));
-    if (!provider.kinds.includes(computer.kind)) {
-      const words = [...new Set(provider.capabilities.flatMap((capabilities) => kinds.servingRefusals(capabilities, computer.kind)))];
-      return `${provider.label} does not serve a ${computer.kind} computer${words.length ? ` (${words.join("; ")})` : ""}: set this agent's computer to one it serves (Settings → Computers)`;
-    }
-    const mode = await modeNow();
-    const refused = modeRefusal(computer.kind, provider, mode) ?? gpuRefusal(kinds, computer, provider, mode) ?? (local(provider) ? daemonWhy(computer.kind, await answers(provider.id), mode) : undefined) ?? hostOf(provider);
-    if (refused) return refused;
-    const missing = missingKeys(provider, set);
-    return missing.length ? keysWhy(provider, missing, true) : undefined;
-  }
-
-  /** What the claim makes a run's computer with: the options its provider's create() takes, from its saved keys and the
-   *  server's settings (computer-keys.ts providerOptions); refused with computer_unavailable and claimRefusal's words when
-   *  the computer cannot be had here. Undefined for a run with no computer. */
-  async function claimOptions(computer: ComputerSetting): Promise<OptionsAnswer | undefined> {
-    if (computer.kind === "none") return undefined;
-    const why = await claimRefusal(computer);
-    if (why) return { ok: false, error: { code: COMPUTER_UNAVAILABLE, message: why } };
-    return providerOptions(computer.provider, await keysOf(providerOf(computer.provider)!), settings, keyTable);
-  }
-
   /** The provider an agent's own computer lives on (workspace/agent-computer.ts reconcileAgentComputer deletes it
    *  through it): made from its saved keys and the server's settings, with the create() options of the configuration
    *  `image` selects, and the store's ledger (the factories'). Throws, in words, when it cannot be made here. */
@@ -476,7 +378,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     return made as Pick<ComputerProvider, "release">;
   }
 
-  return { view, saveKeys, test, choices, claimRefusal, claimOptions, providerFor };
+  return { view, saveKeys, test, choices, providerFor };
 }
 
 export type ComputerRoutes = ReturnType<typeof createComputerRoutes>;

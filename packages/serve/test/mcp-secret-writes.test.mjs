@@ -28,7 +28,6 @@ test("the table: true only for a body that carries an MCP secret value to keep, 
     ["startMcpOAuth", { url: "https://mcp.example.test/mcp", client_id: "corp-app", client_secret: TOKEN }, true, "a client secret"],
     ["startMcpOAuth", { url: "https://mcp.example.test/mcp", client_id: "corp-app" }, true, "a client id alone: its callback seals the sign-in's token set"],
     ["startMcpOAuth", { url: "https://mcp.example.test/mcp", scopes: ["read"] }, true, "no client: the same"],
-    ["previewMcpServer", { url: "https://mcp.example.test/mcp", auth: { type: "bearer", token: TOKEN } }, false, "a preview keeps nothing"],
     ["putMcpPrivateHosts", { hosts: [] }, true, "the private-network hosts, whatever the body"],
     ["deleteMcpServer", undefined, false, "a delete is decided by the stored server (below), not its request"],
     ["refreshMcpServer", {}, false, "a refresh carries none"],
@@ -40,14 +39,16 @@ test("MCP's operations are registered with the one gate, by this predicate; the 
   const gate = await import("../dist/secret-writes.js");
   await import("../dist/mcp-servers-store.js");
   const { openapiDocument } = await import("../dist/openapi.js");
-  for (const operation of ["saveMcpServer", "startMcpOAuth", "previewMcpServer", "putMcpPrivateHosts", "deleteMcpServer"]) assert.ok(gate.isSecretWriteOperation(operation), `${operation} is registered`);
-  assert.ok(!gate.isSecretWriteOperation("refreshMcpServer") && gate.notSecretWriteReason("refreshMcpServer"), "a refresh is said, with why, to write no secret");
+  for (const operation of ["saveMcpServer", "startMcpOAuth", "putMcpPrivateHosts", "deleteMcpServer"]) assert.ok(gate.isSecretWriteOperation(operation), `${operation} is registered`);
+  // Said, with why, to write no secret: the dispatch's check never reads them, so a token's preview (its body's token is
+  // marked secret, and kept nowhere) and refresh always go through.
+  for (const operation of ["refreshMcpServer", "previewMcpServer"]) assert.ok(!gate.isSecretWriteOperation(operation) && gate.notSecretWriteReason(operation), `${operation} writes no secret, said with why`);
   const bearer = { url: "https://mcp.example.test/mcp", auth: { type: "bearer", token: TOKEN } };
   assert.equal(gate.writesSecret("saveMcpServer", bearer), true);
   assert.equal(gate.writesSecret("saveMcpServer", { url: bearer.url, auth: { type: "none" } }), false);
-  assert.equal(gate.writesSecret("previewMcpServer", bearer), false, "a preview keeps nothing");
   const doc = openapiDocument(() => undefined);
   const marked = gate.markedOperations(doc);
+  assert.ok(marked.includes("previewMcpServer"), "a preview's token is marked secret all the same");
   for (const operation of ["saveMcpServer", "startMcpOAuth"]) assert.ok(marked.includes(operation), `${operation}'s secret fields are marked: ${JSON.stringify(marked)}`);
   const save = doc.paths["/settings/mcp-servers/{name}"].put.requestBody.content["application/json"].schema.properties.auth;
   assert.equal(save.properties.token["x-agentrun-secret"], true, "auth.token");

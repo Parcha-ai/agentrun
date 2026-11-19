@@ -5,7 +5,7 @@
 // validate and template eval, which check and run a package folder on this machine, are template.mjs's, harness install
 // (the harness its owner installs: goose) is harness.mjs's, and service
 // (AgentRun as a launchd or systemd user service) and stop (the AgentRun the installer started in the background) are
-// service.mjs's.
+// service.mjs's, and doctor (how this AgentRun is set up, read-only) is doctor.mjs's.
 import { closeSync, constants, fstatSync, openSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
@@ -13,13 +13,14 @@ import { parseArgs } from "node:util";
 import { COMMANDS, SECRET_ROUTES } from "./commands.generated.mjs";
 import { ALL, FLAGS, MAX_PAGES, REQUEST_MS, WAIT, followTimeline, timerMs, waitRun } from "./follow.mjs";
 import { SECRETS, guarded, refusalExit } from "./login.mjs";
-import { SERVICE, STOP } from "./service.mjs";
+import { DOCTOR } from "./doctor.mjs";
+import { OPEN, SERVICE, STOP } from "./service.mjs";
 import { SKILL_INSTALL } from "./skill.mjs";
 import { TEMPLATE_EVAL, TEMPLATE_INSTALL, TEMPLATE_VALIDATE } from "./template.mjs";
-import { HARNESS_INSTALL } from "./harness.mjs";
+import { HARNESS_CHECK, HARNESS_INSTALL } from "./harness.mjs";
 
 /** The hand-written commands that run as they are given (`run`), beside the table's. */
-const LOCAL = [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL, TEMPLATE_INSTALL, HARNESS_INSTALL, ...SERVICE, STOP];
+const LOCAL = [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL, TEMPLATE_INSTALL, HARNESS_INSTALL, HARNESS_CHECK, ...SERVICE, STOP, OPEN, DOCTOR];
 export const NOUNS = new Set(["api", "help", ...[...COMMANDS, ...LOCAL].map((entry) => entry.command[0])]);
 const DEFAULT_BASE_URL = "http://127.0.0.1:7340/v2"; // key-gate: loopback-rule the default address of the server started on this machine
 const START = "start it with `npx @parcha/agentrun`, or pass --base-url (or set AGENTRUN_BASE_URL) to the address the server printed";
@@ -513,8 +514,9 @@ async function local(entry, argv, env, io) {
   if (values.help) return io.stdout.write(`${helpOf(entry, entry.help)}\n`), 0;
   const args = positionals.slice(entry.command.length);
   const count = entry.pathParams.length;
-  if (args.length !== count) throw usageError(`${helpOf(entry, entry.help)}\n\n${usageOf(entry)} takes ${count || "no"} argument${count === 1 ? "" : "s"}, given ${args.length}.`);
-  const cli = { fail: (code, message) => new Exit(code, message), baseOf, targetOf, clientOf, request, BAD_HEADER };
+  // An entry whose arguments a flag can stand in for (`harness install --recipe FILE`) takes none too; its run checks.
+  if (args.length !== count && !(entry.argsOptional && args.length === 0)) throw usageError(`${helpOf(entry, entry.help)}\n\n${usageOf(entry)} takes ${count || "no"} argument${count === 1 ? "" : "s"}, given ${args.length}.`);
+  const cli = { fail: (code, message) => new Exit(code, message), baseOf, targetOf, clientOf, request, privateFile, BAD_HEADER };
   return entry.run({ values, args, env, io, cli });
 }
 

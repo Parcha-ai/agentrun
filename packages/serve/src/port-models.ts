@@ -14,6 +14,7 @@ import { anthropicMessagesApi } from "@earendil-works/pi-ai/api/anthropic-messag
 import { openAIResponsesApi } from "@earendil-works/pi-ai/api/openai-responses.lazy";
 import { createProvider } from "@earendil-works/pi-ai/models";
 import type { SessionPort } from "@parcha/agentrun-kernel";
+import { CONVERSATION_HEADER, conversationLabel } from "@parcha/agentrun-kernel/host";
 import { attachingImages } from "./attach-images.js";
 
 /** The provider id the port's one model is listed under. */
@@ -85,17 +86,24 @@ export function sessionProvider(api: SessionPort["api"], proxy: { readonly url: 
   } as never);
 }
 
-/** A translated Chat Completions session carries its cache identity in Messages' existing metadata field: the proxy
- *  preserves it without forwarding extra headers. The translation uses it only for provider cache affinity. */
+/** The session's client of `api`. Each request names its conversation to the proxy (CONVERSATION_HEADER: pi's own id for
+ *  it, the request's `sessionId`, one per conversation), so the host knows which of several conversations asking at once
+ *  a booking is; the proxy sends that header no further. A translated Chat Completions session also carries its cache
+ *  identity in Messages' existing metadata field: the proxy preserves it without forwarding extra headers. The
+ *  translation uses it only for provider cache affinity. */
 function sessionApi(api: SessionPort["api"], like?: SessionLike): ProviderStreams {
   const own = attachingImages(api === "anthropic-messages" ? anthropicMessagesApi() : openAIResponsesApi());
-  if (api !== "anthropic-messages" || !like?.translatedChatCompletions) return own;
-  const withSession = <O extends { sessionId?: string; cacheRetention?: "none" | "short" | "long"; metadata?: Record<string, unknown> }>(options?: O) => ({
-    ...options,
-    // The upstream can have accepted a paid request before this hop fails. Never replay it implicitly.
-    maxRetries: 0,
-    ...(options?.cacheRetention === "none" ? { metadata: { ...options.metadata, user_id: "" } } : options?.sessionId ? { metadata: { ...options.metadata, user_id: options.sessionId } } : {}),
-  });
+  const translated = api === "anthropic-messages" && like?.translatedChatCompletions === true;
+  const withSession = <O extends { sessionId?: string; cacheRetention?: "none" | "short" | "long"; metadata?: Record<string, unknown>; headers?: Record<string, string | null> }>(options?: O) => {
+    const conversation = conversationLabel(options?.sessionId);
+    return {
+      ...options,
+      ...(conversation === undefined ? {} : { headers: { ...options?.headers, [CONVERSATION_HEADER]: conversation } }),
+      // The upstream can have accepted a paid request before this hop fails. Never replay it implicitly.
+      ...(translated ? { maxRetries: 0 } : {}),
+      ...(!translated ? {} : options?.cacheRetention === "none" ? { metadata: { ...options.metadata, user_id: "" } } : options?.sessionId ? { metadata: { ...options.metadata, user_id: options.sessionId } } : {}),
+    };
+  };
   return {
     ...own,
     stream: (model, context, options) => own.stream(model, context, withSession(options)),

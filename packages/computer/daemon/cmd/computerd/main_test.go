@@ -644,7 +644,7 @@ func TestProbeDiagnoseTakesNoOtherArgument(t *testing.T) {
 // attach takes its URL and token from the environment alone, refuses a missing or malformed one with 2, and stops with 3
 // when the server refuses the token at the upgrade; no line it writes holds the token. (internal/attach tests the rest.)
 func TestAttachReadsItsEnvironmentAndExitsAsItsWordsSay(t *testing.T) {
-	token := "art_" + strings.Repeat("ab", 32)
+	token := "art_" + strings.Repeat("Ab", 21) + "c"
 	t.Setenv("AGENTRUN_ATTACH_URL", "")
 	t.Setenv("AGENTRUN_ATTACH_TOKEN", token)
 	if code, stderr := computerd(t, 30*time.Second, "attach"); code != 2 || !strings.Contains(stderr, "AGENTRUN_ATTACH_URL") {

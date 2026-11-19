@@ -12,6 +12,9 @@ describe("costOfCap", () => {
     expect(costOfCap(est(0.0059), 2.5)).toBe("$0.0059 est. of $2.50");
     expect(costOfCap({ usd: 0.42, basis: "charge", charge_state: null, cap_usd: null }, 1)).toBe("$0.42 of $1.00");
   });
+  it("a reported cost is one figure too: of the cap", () => {
+    expect(costOfCap({ usd: 0.0042, basis: "reported", charge_state: null, cap_usd: null }, 1)).toBe("$0.0042 reported of $1.00");
+  });
   it("with no cap, the cost alone", () => {
     expect(costOfCap(est(0.0059), null)).toBe("$0.0059 est.");
     expect(costOfCap(est(0.0059), undefined)).toBe("$0.0059 est.");

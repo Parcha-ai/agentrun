@@ -91,6 +91,10 @@ const OPTIONAL: Readonly<Record<string, { readonly kinds?: readonly ComputerKind
   },
 };
 
+/** The fields a computer of `kind` may set beside its kind and provider, in OPTIONAL's order: none for kind none. */
+export const kindSettings = (kind: ComputerKind): string[] =>
+  kind === "none" ? [] : Object.entries(OPTIONAL).filter(([, { kinds }]) => kinds === undefined || kinds.includes(kind)).map(([key]) => key);
+
 /** A place as the v2 API names it. */
 export type PlaceView = { mode: "runner" } | { mode: "sandbox"; box: string };
 

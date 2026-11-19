@@ -9,6 +9,7 @@ import type { PlanReader } from "../chatgpt-plan.js";
 import type { Tier } from "../model.js";
 import type { RunSignIn } from "../sign-ins-store.js";
 import type { LiveHandover } from "../browser-live.js";
+import type { ComputerHoldChange } from "./computer-journal.js";
 import type { ApprovalPrice, ToolEffect } from "../tool-gate.js";
 import type { OpenedAccount } from "../email/account.js";
 import type { SavedCalendar } from "../calendar/address.js";
@@ -93,6 +94,9 @@ export interface Held {
   /** A browser session's viewer handed over, and taken back (browser-live.ts). */
   liveViewerPut(handover: LiveHandover): Promise<boolean>;
   liveViewerDrop(tag?: string): Promise<void>;
+  /** A change of the claim's computer's hold, committed to the run's journal here: signalled on the runner, whose live
+   *  view of the computer tells its open viewer (computer-journal.ts heardComputerHold). */
+  computerHold(change: ComputerHoldChange): Promise<void>;
   /** The MCP credentials run `from` was handed, sealed again for run `id`, a run this one starts (promotion.ts,
    *  audit.ts): none unless `from` is the claim's own run. */
   handOn(from: string, id: string): Promise<Uint8Array | undefined>;
@@ -117,7 +121,7 @@ export interface Held {
    *  what the run's learning must never keep is every secret the runner holds, which no run's process is given. Its
    *  turns are asked through `input.ask`, the run's own session; `input.keptOf` is read once, for the round the runner
    *  reads. */
-  endOfRun(input: HeldEndOfRunInput): Promise<{ readonly also: readonly AlsoRow[] } | undefined>;
+  endOfRun(input: HeldEndOfRunInput): Promise<Awaited<ReturnType<EndOfRunTurn>>>;
   /** The claim's learned first choice (learned-first.ts learnedFirst), run by the runner over the workflows it reads at the
    *  claim's seed: `laid` says only whether the process's seed lay laid any (false: none is laid). Its audits, promotion
    *  and replay reads are the runner's. */

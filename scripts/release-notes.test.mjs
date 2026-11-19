@@ -7,7 +7,7 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { fold } from './changes.mjs';
-import { changelogSection, highlights, installLines, MAX_BODY, releaseNotes, releaseVersions } from './release-notes.mjs';
+import { changelogSection, installLines, MAX_BODY, releaseNotes, releaseVersions } from './release-notes.mjs';
 
 const exec = promisify(execFile);
 
@@ -85,7 +85,6 @@ test('the section the notes and the post read carries no fragment marker: a mark
     assert.doesNotMatch(section, /<!--|-->/, version);
     assert.equal(section, changelogSection(changelog, version), `${version} reads as it did before the markers`);
   }
-  assert.equal(highlights(changelogSection(marked, '0.1.0-beta.41')).lines[0], 'Keep the same data folder and start command, and change only the image. Upgrade the server first, then the runners.');
   assert.doesNotMatch(releaseNotes({ section: changelogSection(marked, '0.1.0-beta.43'), install: '## Install\n\n- x', tag: 'v0.1.0-beta.43', repository: 'o/r' }), /<!--/);
 });
 
@@ -116,8 +115,8 @@ test('the notes of a section the fold gave a breaking change show the Breaking h
   assert.equal((await readFile(join(dir, 'CHANGELOG.md'), 'utf8')).match(/^- Late fix\. <!-- changes\/late-fix\.md -->$/gm)?.length, 2, 'beta.41\'s and beta.45\'s');
 });
 
-test('the install lines name the npm version, the launcher\'s, the Python client\'s, and the image tag with its platforms', () => {
-  const lines = installLines({ version: '0.1.0-beta.44', launcher: '0.4.12', python: '0.3.12', image: 'ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.44', platforms: ['linux/amd64', 'linux/arm64'] });
+test('the install lines name the npm version, the launcher\'s, the Python client\'s, the image tag with its platforms, and the Helm chart', () => {
+  const lines = installLines({ version: '0.1.0-beta.44', launcher: '0.4.12', python: '0.3.12', image: 'ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.44', platforms: ['linux/amd64', 'linux/arm64'], chart: 'oci://ghcr.io/parcha-ai/charts/agentrun' });
   assert.equal(lines, [
     '## Install',
     '',
@@ -125,9 +124,11 @@ test('the install lines name the npm version, the launcher\'s, the Python client
     '- Launcher and CLI: `npx @parcha/agentrun@0.4.12`',
     '- Python client: `pip install parcha-agentrun==0.3.12`',
     '- Server image: `docker pull ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.44` (linux/amd64, linux/arm64)',
+    '- Helm chart: `helm install agentrun oci://ghcr.io/parcha-ai/charts/agentrun --version 0.1.0-beta.44`',
   ].join('\n'));
+  assert.throws(() => installLines({ version: '0.1.0-beta.44', launcher: '0.4.12', python: '0.3.12', image: 'i:t', platforms: ['linux/amd64'] }), /chart/);
   assert.throws(() => installLines({ version: '0.1.0-beta.44', launcher: '0.4.12', python: undefined, image: 'i:t', platforms: ['linux/amd64'] }), /python/);
-  assert.throws(() => installLines({ version: '0.1.0-beta.44', launcher: '0.4.12', python: '0.3.12', image: 'i:t', platforms: [] }), /platforms/);
+  assert.throws(() => installLines({ version: '0.1.0-beta.44', launcher: '0.4.12', python: '0.3.12', image: 'i:t', platforms: [], chart: 'oci://c' }), /platforms/);
 });
 
 test('this checkout\'s versions: the workspace\'s, the launcher\'s own line and the Python client\'s', () => {
@@ -149,36 +150,18 @@ test('the notes are the section, then the install lines; a body over GitHub\'s l
   assert.equal(cut.match(/\]\((https:[^)]+)\)/)[1], 'https://github.com/o/r/tree/v0.1.0-beta.43/changes', 'the cut body\'s link is the tag\'s changes/ folder');
 });
 
-test('the highlights are the first lines of the upgrading block when the release has one, else of the section', () => {
-  assert.deepEqual(highlights(changelogSection(changelog, '0.1.0-beta.41')), {
-    label: 'Upgrading and going back',
-    lines: [
-      'Keep the same data folder and start command, and change only the image. Upgrade the server first, then the runners.',
-      'SQLite keeps schema version 11: the server adds the nullable `runs.labels` column.',
-      'Postgres goes from schema version 14 to 16 at the server\'s start.',
-    ],
-    more: 1,
-  });
-  assert.deepEqual(highlights(changelogSection(changelog, '0.1.0-beta.43'), 2), {
-    label: null,
-    lines: ['The old learning promotion loop is gone. A learned workflow has one path to serving.', 'The Cloudflare relay no longer answers a create with a bare 500 when its container is slow to start.'],
-    more: 3,
-  });
-  const long = highlights(`- ${'word '.repeat(200)}`);
-  assert.ok(long.lines[0].length <= 300 && long.lines[0].endsWith('…'), 'a long first line is cut');
-});
-
 test('the command writes the notes from a folded changelog and this checkout\'s versions', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'agentrun-release-notes-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const { version } = releaseVersions();
   await writeFile(join(dir, 'CHANGELOG.md'), changelog.replace('0.1.0-beta.43 (', `${version} (`));
   const script = fileURLToPath(new URL('./release-notes.mjs', import.meta.url));
-  await exec(process.execPath, [script, '--tag', `v${version}`, '--changelog', join(dir, 'CHANGELOG.md'), '--image', `ghcr.io/parcha-ai/agentrun-server:v${version}`, '--platforms', 'linux/amd64,linux/arm64', '--out', join(dir, 'notes.md')]);
+  await exec(process.execPath, [script, '--tag', `v${version}`, '--changelog', join(dir, 'CHANGELOG.md'), '--image', `ghcr.io/parcha-ai/agentrun-server:v${version}`, '--platforms', 'linux/amd64,linux/arm64', '--chart', 'oci://ghcr.io/parcha-ai/charts/agentrun', '--out', join(dir, 'notes.md')]);
   const notes = await readFile(join(dir, 'notes.md'), 'utf8');
   assert.match(notes, /^- The old learning promotion loop is gone/);
-  assert.match(notes, new RegExp(`- Server image: \`docker pull ghcr\\.io/parcha-ai/agentrun-server:v${version.replace(/\./g, '\\.')}\` \\(linux/amd64, linux/arm64\\)\\n$`));
-  const refused = await exec(process.execPath, [script, '--tag', 'v0.0.1', '--changelog', join(dir, 'CHANGELOG.md'), '--image', 'i:t', '--platforms', 'linux/amd64', '--out', join(dir, 'other.md')]).then(() => null, error => error);
+  assert.match(notes, new RegExp(`- Server image: \`docker pull ghcr\\.io/parcha-ai/agentrun-server:v${version.replace(/\./g, '\\.')}\` \\(linux/amd64, linux/arm64\\)\\n`));
+  assert.match(notes, new RegExp(`- Helm chart: \`helm install agentrun oci://ghcr\\.io/parcha-ai/charts/agentrun --version ${version.replace(/\./g, '\\.')}\`\\n$`));
+  const refused = await exec(process.execPath, [script, '--tag', 'v0.0.1', '--changelog', join(dir, 'CHANGELOG.md'), '--image', 'i:t', '--platforms', 'linux/amd64', '--chart', 'oci://c', '--out', join(dir, 'other.md')]).then(() => null, error => error);
   assert.ok(refused, 'a tag that is not this checkout\'s version stops');
   assert.match(refused.stderr, /v0\.0\.1 is not this checkout's version/);
 });

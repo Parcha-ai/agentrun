@@ -26,6 +26,8 @@ export interface RestAnswer {
 export interface RestInit {
 	json?: unknown;
 	form?: FormData;
+	/** A body sent as it is (a file's bytes). */
+	bytes?: Uint8Array<ArrayBuffer>;
 	timeoutMs?: number;
 	/**
 	 * true: send again on no answer, 429 and 5xx (only for a call that may run twice). A function: send again only on an
@@ -119,7 +121,7 @@ export function rest(options: RestOptions): Rest {
 				const response = await fetcher(url, {
 					method,
 					headers,
-					body: init.json === undefined ? init.form : JSON.stringify(init.json),
+					body: init.json === undefined ? (init.bytes ?? init.form) : JSON.stringify(init.json),
 					redirect: "error",
 					signal: signal ? AbortSignal.any([signal, timeout.signal]) : timeout.signal,
 				});

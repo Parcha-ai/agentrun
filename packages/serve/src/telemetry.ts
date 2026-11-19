@@ -2,9 +2,9 @@
 // first run completed. Each event holds a random id made for this data directory, the server's version, the platform,
 // and how many runs ended here as a range. It never holds a prompt, a workflow, a key, a name, a path or an address.
 //
-// Off with AGENTRUN_TELEMETRY=0 or DO_NOT_TRACK=1, in CI, and under --faux. The start that first could send prints one
+// Off with AGENTRUN_TELEMETRY=0 or DO_NOT_TRACK=1, in CI, under a test runner, and under --faux. The start that first could send prints one
 // notice and sends nothing at its start, so a person reads how to turn it off before anything leaves the machine.
-// AGENTRUN_TELEMETRY=debug prints every event and sends none; it never stands in for that notice.
+// AGENTRUN_TELEMETRY=debug prints every event and sends none, and writes nothing, so it never stands in for that notice.
 // Sending never delays a start, a run or a stop, and a send that fails is dropped without a word. A run's end is counted
 // in memory and written behind it, one write at a time, so no request or run waits on the disk.
 import { randomUUID } from "node:crypto";
@@ -15,8 +15,8 @@ import { tempOf, writeDurableSync } from "./server-fs.js";
 
 /** Where events go: PostHog's capture route, behind this project's own name. */
 export const TELEMETRY_URL = "https://telemetry.agentrun.ai/i/v0/e/";
-/** The project's write-only key, public by design. Empty: this build sends nothing and prints no notice. */
-export const TELEMETRY_KEY = "";
+/** The PostHog project's write-only key, public by design: that project holds these counts and nothing else. Empty, a build sends nothing and prints no notice. */
+export const TELEMETRY_KEY = "phc_kz3ieB34X89r2bv6gLbdeXDiNNn78KiAPRCZCxMzUBuA";
 /** The file in the data directory that keeps the id, when the notice was printed and how many runs ended. */
 export const TELEMETRY_FILE = ".telemetry.json";
 /** How often a running server says it still runs. */
@@ -29,8 +29,9 @@ export const TELEMETRY_NOTICE =
   "AgentRun sends anonymous usage counts (a random id, the version, the platform, how many runs as a range): never prompts, files, keys or names. Nothing was sent at this start. Turn it off with AGENTRUN_TELEMETRY=0 or DO_NOT_TRACK=1. Every field: https://github.com/Parcha-ai/agentrun/blob/main/docs/telemetry.md";
 
 export type TelemetryEventName = "server_started" | "heartbeat" | "first_run_completed";
-/** One event, as sent. `runs` is a range, never a count. */
+/** One event, as sent (and as debug prints it). `runs` is a range, never a count. */
 export interface TelemetryEvent {
+  api_key: string;
   event: TelemetryEventName;
   distinct_id: string;
   timestamp: string;
@@ -39,11 +40,11 @@ export interface TelemetryEvent {
 export type RunsRange = "0" | "1-10" | "11-100" | "101+";
 
 /** Why nothing is sent, or "on" / "debug" (events printed to stderr, none sent). */
-export type TelemetryMode = "on" | "debug" | "off_setting" | "off_do_not_track" | "off_ci" | "off_faux" | "off_no_key";
+export type TelemetryMode = "on" | "debug" | "off_setting" | "off_do_not_track" | "off_ci" | "off_faux" | "off_test" | "off_no_key";
 
 const OFF = new Set(["0", "false", "off", "no"]);
 
-/** What this start does, from its environment: the operator's own setting first, then DO_NOT_TRACK, CI and --faux. */
+/** What this start does, from its environment (docs/telemetry.md). */
 export function telemetryMode(env: NodeJS.ProcessEnv, o: { faux?: boolean; key?: string } = {}): TelemetryMode {
   const setting = (env.AGENTRUN_TELEMETRY ?? "").trim().toLowerCase();
   if (OFF.has(setting)) return "off_setting";
@@ -52,6 +53,8 @@ export function telemetryMode(env: NodeJS.ProcessEnv, o: { faux?: boolean; key?:
   if (env.CI) return "off_ci";
   if (o.faux) return "off_faux";
   if (setting === "debug") return "debug";
+  // A server a test starts inherits node --test's mark: this repository's suites, and anyone's, are never counted.
+  if (env.NODE_TEST_CONTEXT) return "off_test";
   return (o.key ?? TELEMETRY_KEY) === "" ? "off_no_key" : "on";
 }
 
@@ -61,7 +64,9 @@ interface State {
   id: string;
   noticed_at?: string;
   runs: number;
-  first_run_sent?: boolean;
+  /** The first completed run: held when it completed during the start that printed the notice (said at the next start or
+   *  that start's heartbeat), sent once it has been said. */
+  first_run?: "held" | "sent";
 }
 
 /** The kept state, or a new one when the file is missing or not what this wrote. */
@@ -73,7 +78,7 @@ function readState(file: string): State {
         id: kept.id,
         runs: typeof kept.runs === "number" && Number.isInteger(kept.runs) && kept.runs >= 0 ? kept.runs : 0,
         ...(typeof kept.noticed_at === "string" ? { noticed_at: kept.noticed_at } : {}),
-        ...(kept.first_run_sent === true ? { first_run_sent: true } : {}),
+        ...(kept.first_run === "held" || kept.first_run === "sent" ? { first_run: kept.first_run } : {}),
       };
     }
   } catch {
@@ -98,12 +103,11 @@ export interface TelemetryOptions {
   version?: string;
   env?: NodeJS.ProcessEnv;
   faux?: boolean;
-  /** For tests: the key, the route, the sender, the clock, the heartbeat's period and where debug lines go. */
+  /** For tests: the key, the route, the sender, the clock and where debug lines go. */
   key?: string;
   url?: string;
   fetch?: typeof fetch;
   now?: () => Date;
-  heartbeatMs?: number;
   say?: (line: string) => void;
 }
 
@@ -148,6 +152,7 @@ export function startTelemetry(o: TelemetryOptions): Telemetry {
   let stale = false;
   let writing: Promise<void> | undefined;
   const keepLater = (): void => {
+    if (mode === "debug") return;
     stale = true;
     writing ??= (async () => {
       while (stale) {
@@ -159,29 +164,47 @@ export function startTelemetry(o: TelemetryOptions): Telemetry {
   };
 
   // The start that first could send: the notice, kept before anything is sent. If it cannot be kept, the next start would
-  // print it again and still send nothing, so this one stays quiet too. Debug sends nothing and prints no notice, so it
-  // never marks the notice as read: a start that can send after it still prints the notice and holds its first event.
+  // print it again and still send nothing, so this one stays quiet too. Debug runs the same rules on the kept state in
+  // memory and writes nothing: what it printed never left, so a start that can send after it still prints the notice and
+  // still says the first run.
   const first = mode === "on" && state.noticed_at === undefined;
   if (first) state.noticed_at = now().toISOString();
-  if (!keepNow()) return { ...idle, mode: "off_setting" };
+  if (mode === "on" && !keepNow()) return { ...idle, mode: "off_setting" };
 
   const emit = (event: TelemetryEventName): void => {
     const body: TelemetryEvent = {
+      api_key: key,
       event,
       distinct_id: state.id,
       timestamp: now().toISOString(),
       properties: { version, os: process.platform, arch: process.arch, node: Number(process.versions.node.split(".")[0]), runs: runsRange(state.runs), $process_person_profile: false, $geoip_disable: true },
     };
     if (mode === "debug") return say(`agentrun-serve telemetry (debug, not sent): ${JSON.stringify(body)}`);
-    void send(o.url ?? TELEMETRY_URL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ api_key: key, ...body }), signal: AbortSignal.timeout(SEND_TIMEOUT_MS) }).then(
+    void send(o.url ?? TELEMETRY_URL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(SEND_TIMEOUT_MS) }).then(
       () => {},
       () => {},
     );
   };
 
-  if (!first) emit("server_started");
+  // The start that printed the notice sends nothing until its first heartbeat, a day later: a first run that completes
+  // before then is kept as held and said with that heartbeat, or at the next start, whichever comes first.
+  let holding = first;
+  const sayHeld = (): void => {
+    if (state.first_run !== "held") return;
+    state.first_run = "sent";
+    keepLater();
+    emit("first_run_completed");
+  };
+  if (!first) {
+    emit("server_started");
+    sayHeld();
+  }
   // A server that stays up is counted by its heartbeat, the first start's too: a day after the notice.
-  const beat = setInterval(() => emit("heartbeat"), o.heartbeatMs ?? HEARTBEAT_MS);
+  const beat = setInterval(() => {
+    holding = false;
+    emit("heartbeat");
+    sayHeld();
+  }, HEARTBEAT_MS);
   beat.unref();
 
   return {
@@ -189,10 +212,10 @@ export function startTelemetry(o: TelemetryOptions): Telemetry {
     ...(first ? { notice: TELEMETRY_NOTICE } : {}),
     runEnded(status) {
       state.runs += 1;
-      const completed = status === "ended" && !state.first_run_sent;
-      if (completed) state.first_run_sent = true;
+      const completed = status === "ended" && state.first_run === undefined;
+      if (completed) state.first_run = holding ? "held" : "sent";
       keepLater();
-      if (completed) emit("first_run_completed");
+      if (completed && !holding) emit("first_run_completed");
     },
     close: () => (clearInterval(beat), writing ?? Promise.resolve()),
   };

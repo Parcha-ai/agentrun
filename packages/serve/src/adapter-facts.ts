@@ -14,4 +14,8 @@ export const ADAPTER_FACTS: readonly AdapterFacts[] = Object.freeze([claudeFacts
  *  no goose row. Goose is listed only while its owner has installed it, so it is not one of HARNESSES. */
 export const GOOSE_FACTS: AdapterFacts | undefined = acpPackage()?.gooseFacts;
 
+/** Cursor's facts (the same package's), or undefined where it is not beside serve. Listed, as Goose is, only while its
+ *  owner has installed it; billed to the owner's Cursor plan (its wire `plan`), never to a model key of ours. */
+export const CURSOR_FACTS: AdapterFacts | undefined = acpPackage()?.cursorFacts;
+
 // A harness's facts by id are its table entry's (harness-table.ts factsOf), so a module's harness is read as a built-in is.

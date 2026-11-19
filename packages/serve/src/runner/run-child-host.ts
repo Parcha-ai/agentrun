@@ -32,7 +32,8 @@ import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { learningEndOfRun } from "./learning-end.js";
 import { runnerSecrets } from "./redact.js";
 import { storeSecrets } from "./store-secrets.js";
-import { FAUX_ENV } from "../model.js";
+import { FAUX_ENV, GATEWAY_KEY_ENV } from "../model.js";
+import { SAVED_GATEWAY_ENV, savedGatewayIn } from "../model-gateway.js";
 import { FAUX_VENDOR_API_ENV } from "../tools.js";
 import { withinCarried } from "../paid-calls.js";
 import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
@@ -54,15 +55,18 @@ import { learningStartOf, seedFailed } from "../run-launch.js";
 import { messageText } from "../run-manifest.js";
 import { placeRunInputs } from "../uploads.js";
 import { withAudit } from "./audit.js";
+import { compareEndOfRun } from "./compare-end.js";
+import type { Compared } from "../learn/promote.js";
 import { learnedFirst, type LearnedFirst } from "./learned-first.js";
 import { workflowsAt } from "./learning-seed.js";
 import { heldMcpOf, mcpForClaim } from "./mcp-run.js";
 import { learnedTiers, learnsWorkflows, mcpReachOf, type AdapterSpecDeps } from "./adapter-run-spec.js";
 import { createDispatchLoop } from "./dispatch.js";
-import { resolveRunnerLoop } from "./harness-loops.js";
+import { resolveRunnerLoop, withSavedGatewayDeps } from "./harness-loops.js";
 import { isWorkflowRevision } from "./workflow-loop.js";
 import { loginForRun } from "../claude-login.js";
 import type { Held, HeldComputerAsk } from "./held.js";
+import { heardComputerHold } from "./computer-journal.js";
 import { type Claim, type Command, type CommandOutcome, type HeldState, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, type StopReason, ClaimRefused } from "./loop-contract.js";
 import { Channel, ChannelClosed } from "./run-channel.js";
 import { registerRunErrors } from "./run-errors.js";
@@ -98,12 +102,19 @@ export class RunIsolationRefused extends Error {
   override name = "RunIsolationRefused";
 }
 
+/** The helper run once: its exit code and output, never a rejection. A spawn error Node throws from execFile itself
+ *  (EPERM, say, where a platform forbids the helper's file capabilities; only EACCES, EAGAIN, EMFILE, ENFILE and ENOENT
+ *  come to the callback) is `code` -1 with the error's words as `stderr`, so every caller reads it as the failure it is. */
 const execText = (file: string, args: readonly string[], timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string }> =>
   new Promise((resolve) => {
-    execFile(file, args, { timeout: timeoutMs, encoding: "utf8" }, (error, stdout, stderr) => {
-      const code = error ? (typeof (error as { code?: unknown }).code === "number" ? ((error as { code: number }).code) : 1) : 0;
-      resolve({ code, stdout: String(stdout), stderr: String(stderr || (error && !stderr ? error.message : "")) });
-    });
+    try {
+      execFile(file, args, { timeout: timeoutMs, encoding: "utf8" }, (error, stdout, stderr) => {
+        const code = error ? (typeof (error as { code?: unknown }).code === "number" ? ((error as { code: number }).code) : 1) : 0;
+        resolve({ code, stdout: String(stdout), stderr: String(stderr || (error && !stderr ? error.message : "")) });
+      });
+    } catch (error) {
+      resolve({ code: -1, stdout: "", stderr: (error as Error)?.message ?? String(error) });
+    }
   });
 
 /** This host's isolation for `loops` runs at once, by `env` and the helper: the helper's own check that it can switch
@@ -750,6 +761,8 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     runZone: () => runZone(store, launch.inputOrigin),
     liveViewerPut: (handover) => putLiveViewer(store, sealKey, claim, handover),
     liveViewerDrop: (tag) => dropLiveViewer(store, claim, tag),
+    // The claim's own run, whatever the process names: its view on this runner hears the change.
+    computerHold: async (change) => heardComputerHold(claim.runId, change, cut),
     handOn: async (from, id) => {
       if (from !== claim.runId || typeof id !== "string") return undefined;
       const sealed = await store.runs.launch(from).then((one) => one.sealed ?? null, () => null);
@@ -811,8 +824,17 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // The step as the run's spec builds it in a runner (adapter-run-spec.ts), over the runner's reads of the claim: what
       // the run must never learn is every secret this runner holds, the keys its claim handed it, every secret the server
       // keeps sealed and its sign-in's pointers, none of which the run's process is given.
-      // A replay run or an audit's shadow run asks nothing at its end, as the run's spec says (adapter-run-spec.ts).
-      if (launch.replay || launch.audit) return undefined;
+      // A replay run or an audit's shadow run learns nothing at its end, as the run's spec says (adapter-run-spec.ts): it
+      // compares its answer with the other one through its grader, handed in by the run's process (runner/compare-end.ts).
+      // This runner reads both answers and the learning ledger, which no run's process may.
+      if (launch.replay || launch.audit) {
+        const compare = compareEndOfRun(launch, { store, folder: await folderNow(), log, redact: cut });
+        const grade = input.grade;
+        const rows = compare && grade && typeof input.grader === "string"
+          ? await compare({ runId: claim.runId, agentId: run.agentId, claim, outcome: input.outcome === "failed" ? "failed" : "completed", ...(input.cut === undefined ? {} : { cut: "faulted" as const }), grader: input.grader, grade: (request) => grade(request), ask: input.ask, signal: input.signal })
+          : undefined;
+        return rows?.compared ? { also: [], compared: dataOnly(rows.compared) as Compared } : undefined;
+      }
       const made = await archilOf();
       // The audit's spend, skipped as the run's spec skips it (claim-secrets.ts claimSpendOff): over the claim's own key.
       const spendOff = await claimSpendOff(keys, await claimModelKey(keys, claim.runId));
@@ -998,6 +1020,14 @@ export function childLoops(options: ChildLoopsOptions): LoopFactory {
 
 registerRunErrors();
 
+/** `claimed` with the saved gateway's key beside its own (the runner's reads of what the run must never keep, heldFor):
+ *  a copy, every property as it is (its non-enumerable keys and the sign-in's reader too), the key non-enumerable. */
+function withGatewayKey(claimed: NodeJS.ProcessEnv, key: string): NodeJS.ProcessEnv {
+  const out = Object.defineProperties({}, Object.getOwnPropertyDescriptors(claimed)) as NodeJS.ProcessEnv;
+  Object.defineProperty(out, GATEWAY_KEY_ENV, { value: key, enumerable: false, writable: false, configurable: false });
+  return out;
+}
+
 /** The environment a run's process starts with: the runner's run environment's plain values (runEnv: its secrets are
  *  not enumerable, so none is here), no key-shaped name, and where its keys come from. */
 function childEnv(base: NodeJS.ProcessEnv, keys: Buffer, extra: Record<string, string>): NodeJS.ProcessEnv {
@@ -1066,17 +1096,26 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         const revisionRow = await deps.store.agents.revision(runRow.revisionId);
         if (!revisionRow) throw new Error(`run ${claim.runId}: its revision ${runRow.revisionId} is gone from the store`);
         const revision = { kind: revisionRow.kind, body: (revisionRow.body ?? {}) as Record<string, unknown> };
+        // The model gateway saved in the console, read from the store now and laid over this claim's environment, as a run
+        // in this process has it laid (harness-loops.ts): the run's process reads no store row of it and holds no seal key.
+        const claimDeps = await withSavedGatewayDeps(deps);
+        const claimEnv = claimDeps.env ?? {};
+        const savedGateway = savedGatewayIn(claimEnv);
         // The run's own keys: those its claim opens (claim-secrets.ts), the one list its loop in this process read.
-        const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as never, launch);
+        const claimed = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }, revisionRow as never, launch);
         // With them, its revision's own model's (a launch pinned at its start to another model, a --faux start's, is still
         // handed its agent's model's key, as a run's own process was handed it before: run-secrets.ts secretsFor).
-        const ofRevision = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, revisionRow as never, { ...(launch.plane ? { plane: launch.plane } : {}) });
+        const ofRevision = await claimSecrets({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }, revisionRow as never, { ...(launch.plane ? { plane: launch.plane } : {}) });
         // A run that holds a model key of its own (model_key, its launch's) spends that key alone: its process is handed
         // none of the server's model keys, as its spec drops them from its tools' (claim-secrets.ts withoutModelKeys).
         // Copies: the runner's own reads (heldFor's `claimed`: what the run's learning must never keep) stay whole.
         const keyed = (await openRunModelKey({ store: deps.store, sealKey: deps.sealKey }, claim.runId)) !== undefined;
         const toProcess = keyed ? [withoutModelKeys({ ...claimed }), withoutModelKeys({ ...ofRevision })] : [claimed, ofRevision];
-        const handed = (name: string): string | undefined => toProcess.map((from) => from[name]).find((value): value is string => typeof value === "string" && value !== "");
+        // The saved gateway's key, kept off the claim's tool keys (claimSecrets), is handed for the run's model routes alone,
+        // read as the server's model keys are (savedModelKeys, over the claim's environment the gateway was laid over), as a
+        // run in this process reads it from its environment by name; none to a run that brings its own key.
+        const gatewayKey = savedGateway ? (keyed ? {} : await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: claimEnv }))[GATEWAY_KEY_ENV] || undefined : undefined;
+        const handed = (name: string): string | undefined => (name === GATEWAY_KEY_ENV && savedGateway ? gatewayKey : toProcess.map((from) => from[name]).find((value): value is string => typeof value === "string" && value !== ""));
         const keys = encode(SECRET_NAMES.flatMap((name) => {
           const value = handed(name);
           return value === undefined ? [] : [[name, value] as const];
@@ -1099,7 +1138,7 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         }
         if (isolation.kind === "uid" && slot !== undefined) hold = new SlotHold(slot, isolation.helper, log);
         const tops = runTops(deps.data, runRow.agentId, claim.runId);
-        const heldSide = heldFor(deps, { claim, run: runRow, launch, revision, claimed }, cut, log);
+        const heldSide = heldFor({ ...deps, env: claimEnv }, { claim, run: runRow, launch, revision, claimed: gatewayKey ? withGatewayKey(claimed, gatewayKey) : claimed }, cut, log);
         try {
           let extra: Record<string, string> = {};
           let argv = [...(options.argv ?? childArgv())];
@@ -1113,7 +1152,8 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
             extra = { TMPDIR: tmp, HOME: scratch };
             argv = [isolation.helper, "run", String(slot), "--keep-fd", "3", "--keep-fd", "4", "--", ...argv];
           }
-          const env = childEnv(deps.env, keys, extra);
+          // The saved gateway's address and models go as plain variables (childEnv), and its mark says they are the saved one.
+          const env = childEnv(claimEnv, keys, savedGateway ? { ...extra, [SAVED_GATEWAY_ENV]: "1" } : extra);
           const [program, ...rest] = argv;
           child = spawn(program!, rest, { stdio: ["ignore", "inherit", "inherit", "pipe", "pipe"], env, detached: true });
           exited = new Promise((resolve) => {

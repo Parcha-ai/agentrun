@@ -86,6 +86,9 @@ export const KINDS = {
    *  later claim that asks the same turn again reads the first ask's (the commit of main a compile turn was asked at among
    *  them), never its own. Neither a call nor a message: the reader passes over it. */
   endOfRunKept: "agentrun.end-of-run.kept",
+  /** A replay run's or an audit shadow's grader verdict (learn/promote.ts Compared), from its end-of-run step, written on
+   *  the root before its end: its metrics carry it (`replay.compared`, `audit.compared`). Neither a call nor a message. */
+  compared: "agentrun.learning.compared",
   /** How the run's job's own turn ended (JobEndData: the end it gives the run, a CLI's error answer), as the claim that
    *  read it decided, written on the root before the end-of-run step asks its first turn. A claim that finds that turn
    *  open ends the run on the newest one, never working the job's end out again. Neither a call nor a message. */
@@ -223,7 +226,7 @@ export interface CallEndData {
   readonly callId: string;
   readonly status: CallStatus;
   readonly output?: unknown;
-  /** On an `interrupted` end the run's own end wrote (a call that only nests calls, still open: adapter-loop.ts openNests):
+  /** On an `interrupted` end the run's own end wrote (a CLI's call still open: adapter-loop.ts openCalls):
    *  nothing ended it, so it has no outcome. Its row reads interrupted, never failed (CALL_ENDED_WITH_RUN). */
   readonly withRun?: true;
   /** When it was written (ms, the loop's clock): the Timeline dates the result's row by it. */

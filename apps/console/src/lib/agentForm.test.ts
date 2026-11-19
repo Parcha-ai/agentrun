@@ -20,12 +20,18 @@ describe("editBody", () => {
     expect(body).not.toHaveProperty("skills");
   });
 
-  it("never changes the name or description: the agent store keeps them from the agent's creation", () => {
-    const body = editBody(a, { name: "Renamed", description: "", instructions: "Check it twice." }, "");
+  it("never changes the name, which the agent store keeps from the agent's creation; a changed description is sent as the next revision", () => {
+    const body = editBody(a, { name: "Renamed", instructions: "Check it twice." }, "");
     expect(body.definition.name).toBe(agent.body.definition.name);
     expect(body.definition.description).toBe(agent.body.definition.description);
+    const described = editBody(a, { name: "Renamed", description: "Checks invoices against the ledger." }, "");
+    expect(described).toMatchObject({ unchanged: false, definition: { name: agent.body.definition.name, description: "Checks invoices against the ledger.", version: agent.body.revisions + 1 } });
+    // Cleared, it is sent empty: an edit that left it out would keep it.
+    expect(editBody(a, { description: "" }, "")).toMatchObject({ unchanged: false, definition: { description: "" } });
+    // An agent with none, its field left blank, still has none: no change.
     const bare = editBody({ ...(agent.body as object), definition: { ...agent.body.definition, description: undefined } } as never, { description: "" }, "");
     expect(bare.definition).not.toHaveProperty("description");
+    expect(bare.unchanged).toBe(true);
   });
 
   it("numbers a changed definition as the next revision, even when the current one is an earlier revision", () => {

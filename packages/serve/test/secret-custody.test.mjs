@@ -53,6 +53,8 @@ const DECISION_KEYS = ["TYPESAFE_API_KEY", "PARALLEL_API_KEY"];
 const BROWSERBASE = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID"];
 const BROWSER = [...BROWSERBASE, "KERNEL_API_KEY"];
 const TOOL_KEYS = ["MONID_API_KEY", ...BROWSER];
+/** A harness's own key (harness-table.ts ownKeys): handed to that harness's runs alone, never another's. */
+const OWN_KEYS = ["CURSOR_API_KEY"];
 /** The model keys: every key of pi-ai's providers and the gateway's. A run's process gets those its model needs and no
  *  other: a pi run its model's provider's (per tier), or the gateway's behind AGENT_MODEL_BASE_URL; codex OpenAI's, or
  *  the gateway's; claude-agent Anthropic's. TypeSafe's is a decision key, never on the pipe. */
@@ -391,7 +393,7 @@ test("secretsFor: a tool key's fields only for a revision naming a tool its row 
   const revision = (kind, body) => ({ id: "r".repeat(64), agent: "a", parent: null, createdAt: "2026-11-01T00:00:00.000Z", kind, body: { skills: {}, tools: [], ...body } });
   const agentic = (tools) => revision("agentic", { instructions: "Answer.", tools });
   const workflow = (flow, tools = []) => revision("workflow", { workflow: flow, tools });
-  const without = (...names) => RUN_SECRETS.filter((name) => !names.includes(name) && !MODEL_KEYS.includes(name));
+  const without = (...names) => RUN_SECRETS.filter((name) => !names.includes(name) && !MODEL_KEYS.includes(name) && !OWN_KEYS.includes(name));
   for (const name of [...TOOL_KEYS, ...MODEL_KEYS]) assert.ok(RUN_SECRETS.includes(name), `${name} is among a run's secrets`);
 
   // A monid endpoint, or a provider's every endpoint, is unlocked by monid's key (its row's monid:*).
@@ -426,7 +428,7 @@ test("secretsFor: a run is handed exactly the model keys its model needs: a pi r
   const { RUN_SECRETS, secretsFor } = await import("../dist/run-secrets.js");
   const revision = (kind, body) => ({ id: "r".repeat(64), agent: "a", parent: null, createdAt: "2026-11-03T00:00:00.000Z", kind, body: { skills: {}, tools: [], ...body } });
   const agentic = (extra = {}) => revision("agentic", { instructions: "Answer.", ...extra });
-  const others = RUN_SECRETS.filter((name) => !MODEL_KEYS.includes(name) && !TOOL_KEYS.includes(name));
+  const others = RUN_SECRETS.filter((name) => !MODEL_KEYS.includes(name) && !TOOL_KEYS.includes(name) && !OWN_KEYS.includes(name));
   /** The model keys a run of `rev` is handed on a host of `env`, sorted; and the rest exactly what a run naming no
    *  model and no tool gets. */
   const held = async (rev, env) => {
@@ -465,6 +467,10 @@ test("secretsFor: a run is handed exactly the model keys its model needs: a pi r
   const drafting = revision("workflow", { workflow: flow });
   assert.deepEqual(await held(drafting, { AGENT_MODEL: "deepseek/deepseek-chat", AGENT_MODEL_FAST: "google/gemini-2.5-flash" }), ["DEEPSEEK_API_KEY", "GEMINI_API_KEY"], "and the default tier an llm call runs on");
   assert.deepEqual(await held(drafting, { ...GATEWAY, AGENT_MODEL: "m-1" }), ["AGENT_MODEL_API_KEY"], "a workflow behind a gateway: the gateway's");
+  // A harness's own key: Cursor's run is handed CURSOR_API_KEY and no model key; no other harness's run is (above).
+  const cursor = await secretsFor(agentic({ harness: "cursor", model: "cursor/gpt-5.4-nano" }), undefined, { OPENROUTER_API_KEY: "set" });
+  assert.ok(cursor.includes("CURSOR_API_KEY"), "Cursor's run takes its own key");
+  assert.deepEqual(cursor.filter((name) => MODEL_KEYS.includes(name)), [], "and no model key: its model is its own plan's");
 });
 
 /** The names a provider's auth asks for that no run is handed, each with why. Every other name pi-ai reads for a provider

@@ -35,10 +35,11 @@ import { get as httpsGet } from "node:https";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { ATTACH_HELLO_MS, ATTACH_PATH, ATTACH_SUBPROTOCOL, AttachHub, DAEMON_PATH, descriptorOf, hostedDaemonPath, isProviderId, providerModule } from "@parcha/agentrun-computer";
 import WebSocket from "ws";
 import { isMain } from "../../../scripts/is-main.mjs";
+import { MACHINE_TOKEN_SOURCE } from "../../computer/dist/attach.js";
 import { plantSecrets } from "../../computer/dist/conformance/cli.js";
 import { casesFor, runConformance } from "../../computer/dist/conformance/index.js";
 import { createAttachRoutes, sha256Hex } from "../dist/computer-attach.js";
@@ -48,8 +49,8 @@ const END = "DIAL-CONFORMANCE-REPORT-END";
 const USAGE = "usage: node dial-conformance.mjs --provider <registry id or module path> [--only <groups and case ids>] [--exit], with AGENTRUN_PUBLIC_URL and PORT set";
 /** A name of a module's ENV that holds a secret (the conformance CLI's rule). */
 const SECRET_NAME = /(^|_)(KEY|TOKEN|SECRET)(_|$)/;
-/** A token serve mints for a machine (computer-attach.ts newMintedToken). */
-const MINTED_TOKEN = /art_[0-9a-f]{64}/g;
+/** `text` with every machine token in it redacted by its shape, whether or not this run minted it. */
+export const scrubMachineTokens = (text) => text.replace(new RegExp(MACHINE_TOKEN_SOURCE, "g"), "art_[redacted]");
 
 const say = (line) => process.stderr.write(`dial-conformance: ${line}\n`);
 
@@ -133,6 +134,13 @@ const NO_PAIRING = new Proxy(
 					},
 	},
 );
+
+/** computerd-fixture for linux/amd64, which the server's image builds next to computerd (packages/serve/docker/Dockerfile). */
+export const FIXTURE_PATH = fileURLToPath(new URL("../../computer/dist/computerd-fixture-linux-amd64", import.meta.url));
+
+/** What a run of `kind` checks effects with: a desktop's computerd-fixture (its screen and input cases skip without it, and
+ *  Core cannot pass), none otherwise. */
+export const fixtureFor = (kind, path = FIXTURE_PATH) => (kind === "desktop" ? path : undefined);
 
 /** The version a drifted daemon reports: the provider's, its last character changed, so the bytes keep their length. */
 export const driftedVersion = (version) => `${version.slice(0, -1)}${version.endsWith("x") ? "y" : "x"}`;
@@ -354,10 +362,11 @@ async function main({ provider: name, only, exit }, env, state) {
 		};
 		const secretNames = Object.values(module.ENV ?? {}).filter((one) => typeof one === "string" && SECRET_NAME.test(one));
 		// No secret leaves this process: the module's secret values and every machine token are taken out of what it writes.
-		const scrub = (text) => [...secretNames.map((one) => env[one]), ...tokens.values()].reduce((kept, secret) => (secret ? kept.split(secret).join("[redacted]") : kept), text.replace(MINTED_TOKEN, "art_[redacted]"));
+		const scrub = (text) => [...secretNames.map((one) => env[one]), ...tokens.values()].reduce((kept, secret) => (secret ? kept.split(secret).join("[redacted]") : kept), scrubMachineTokens(text));
 		const image = typeof module.conformanceImage === "function" ? await module.conformanceImage(options, { signal: controller.signal }) : undefined;
 		if (typeof image !== "string" || image === "") throw new Error(`${name}: its conformance module names no image (conformanceImage())`);
 		const cases = casesFor(provider.capabilities().kind);
+		const fixture = fixtureFor(provider.capabilities().kind);
 		if (only !== undefined) {
 			// A name that is no group or case id would narrow the run to nothing, which must not read as a pass.
 			const known = new Set(cases.flatMap((one) => [one.id, one.group]));
@@ -370,6 +379,7 @@ async function main({ provider: name, only, exit }, env, state) {
 		const report = await runConformance(provider, {
 			image,
 			cases,
+			...(fixture === undefined ? {} : { fixture }),
 			...(only === undefined ? {} : { only }),
 			long: true,
 			signal: controller.signal,

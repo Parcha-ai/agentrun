@@ -2,10 +2,12 @@
 // of its code loads. Each vendor declares one, once, in its descriptor module (src/descriptors/<id>.ts, data and a lazy
 // load() alone), and its provider module reads its mounts and capabilities from it. The kind registry's PROVIDERS and
 // the provider registry are derived from the descriptors; nothing beside them repeats what a descriptor says.
-import type { ComputerSettingKind, KindCapabilities } from "./kinds.js";
+import type { KindCapabilities } from "./kinds.js";
 import type { MountKind, Unmounted } from "./mount.js";
+import type { ComputerKind } from "./protocol.js";
 import type { NetworkForm } from "./provider.js";
 import type { ProviderModule } from "./providers.js";
+import { type ComputerSettingKind, SETTING_KIND_NAMES, SETTING_KINDS } from "./setting-kinds.js";
 
 /** One key a provider takes in Settings: its serve-side name, the create() option it fills, and whether it is needed. */
 export interface DescriptorKey {
@@ -97,6 +99,12 @@ export interface ProviderDescriptor<Module extends ProviderModule = ProviderModu
 	 */
 	readonly capabilities: readonly KindCapabilities[];
 	/**
+	 * Setting kinds its capabilities don't serve though a caller would ask it for one, each with why, in words: serve
+	 * refuses a setting of that kind on it with these words in place of servingRefusals' (Daytona's desktop: the window
+	 * manager can't start in its sandboxes).
+	 */
+	readonly unserved?: Readonly<Partial<Record<ComputerSettingKind, string>>>;
+	/**
 	 * The image a computer of each setting kind starts from when its setting names none. A kind with no entry has no
 	 * default, and the caller refuses the setting in words (Docker's sandbox: the server builds its image, prepareImage).
 	 */
@@ -159,6 +167,9 @@ export function defineProvider<const Descriptor extends ProviderDescriptor>(desc
 	return descriptor;
 }
 
+/** The setting kinds a descriptor's unserved may name: every one but none. */
+const UNSERVABLE: readonly string[] = SETTING_KIND_NAMES.filter((kind) => kind !== "none");
+
 /** What is wrong with a value offered as a descriptor, in words; none when it is one. */
 export function descriptorProblems(value: unknown): string[] {
 	if (typeof value !== "object" || value === null) return ["it is not an object"];
@@ -180,6 +191,7 @@ export function descriptorProblems(value: unknown): string[] {
 		if (entries === undefined || entries.some(([kind, key]) => (kind !== "bind" && kind !== "archil") || typeof key !== "string" || !optional(key))) problems.push("mountsWith maps mount kinds (bind, archil) to the name of one of its keys that is not required");
 		else if (entries.some(([kind]) => typeof d.unmounted?.[kind as MountKind] !== "string")) problems.push("each kind of mountsWith is in unmounted too, with why while its key is unset");
 	}
+	if (d.unserved !== undefined && (typeof d.unserved !== "object" || d.unserved === null || Array.isArray(d.unserved) || Object.entries(d.unserved).some(([kind, why]) => !UNSERVABLE.includes(kind) || typeof why !== "string" || why.trim() === ""))) problems.push(`unserved maps setting kinds (${UNSERVABLE.join(", ")}) to why, in words`);
 	if (!Array.isArray(d.network) || d.network.length === 0 || d.network.some((form) => form !== "none" && form !== "open" && form !== "allow")) problems.push("network is not a list of the network forms its computers make (none, open, allow)");
 	if (!Array.isArray(d.capabilities) || d.capabilities.length === 0) problems.push("capabilities is not a list of one configuration or more");
 	else if (d.capabilities.some((one) => typeof one?.kind !== "string" || !Array.isArray(one.groups))) problems.push("each configuration is a machine kind and its groups");
@@ -241,6 +253,23 @@ export function connectOf(descriptor: Pick<ProviderDescriptor, "label" | "connec
 }
 
 /**
+ * Why a provider made for machine kind `kind` over `connect` (connectOf's answer) gives no such computer, by its
+ * descriptor alone; undefined when it gives one, or `kind` is none of its configurations' (create() judges that). Its
+ * unserved words for the setting kind `kind` is: "<label> gives no <kind> computer: <why>". Else, where each configuration
+ * of `kind` names a connect of its own in its options and none is `connect`: the connect that makes one. A provider's
+ * constructor throws these words, so a kind rule is said once, in the descriptor.
+ */
+export function kindRefusal(descriptor: Pick<ProviderDescriptor, "label" | "capabilities" | "unserved">, { kind, connect }: { readonly kind?: string; readonly connect: "exec" | "dial" }): string | undefined {
+	if (kind === undefined) return undefined;
+	const setting = SETTING_KIND_NAMES.find((name) => SETTING_KINDS[name].machineKinds.includes(kind as ComputerKind));
+	const why = setting === undefined ? undefined : descriptor.unserved?.[setting];
+	if (why !== undefined) return `${descriptor.label} gives no ${setting} computer: ${why}`;
+	const connects = descriptor.capabilities.filter((one) => one.kind === kind).map((one) => one.options?.connect);
+	if (connects.length === 0 || connects.some((one) => one === undefined || one === connect)) return undefined;
+	return `${descriptor.label} gives a ${kind} computer on connect ${[...new Set(connects)].map((one) => JSON.stringify(one)).join(" or ")} alone, not ${JSON.stringify(connect)}`;
+}
+
+/**
  * Whether a configuration takes a synced folder: its groups have exec and files (all the runner reads and writes the
  * folder through), and its descriptor binds no host folder (a bind is the folder itself) nor says why it takes none
  * (unmounted.sync).
@@ -259,11 +288,16 @@ export function derivedMounts(descriptor: Pick<ProviderDescriptor, "mounts" | "u
  * The mount kinds a provider's computers take, and why not the others, with the keys `set` says the operator has set: its
  * derived mounts, and each kind of its mountsWith whose key is set, which leaves its unmounted. What a provider made with
  * those keys declares (capabilities().mount), and what a server reads to know whether that provider can mount a run's
- * folder.
+ * folder. With `dial`, its machines dial the server (connectOf's "dial"), and it takes no Archil mount: the helper's
+ * steps run as root through exec, which a machine that dials has none of.
  */
-export function mountsOf(descriptor: Pick<ProviderDescriptor, "mounts" | "unmounted" | "mountsWith" | "capabilities">, set: (name: string) => boolean): { mounts: MountKind[]; unmounted: Unmounted } {
+export function mountsOf(descriptor: Pick<ProviderDescriptor, "label" | "mounts" | "unmounted" | "mountsWith" | "capabilities">, set: (name: string) => boolean, dial = false): { mounts: MountKind[]; unmounted: Unmounted } {
 	const taken = Object.entries(descriptor.mountsWith ?? {}).flatMap(([kind, key]) => (typeof key === "string" && set(key) ? [kind as MountKind] : []));
-	const unmounted = Object.fromEntries(Object.entries(descriptor.unmounted ?? {}).filter(([kind]) => !taken.includes(kind as MountKind)));
+	const unmounted: Unmounted = Object.fromEntries(Object.entries(descriptor.unmounted ?? {}).filter(([kind]) => !taken.includes(kind as MountKind)));
 	const mounts = [...descriptor.mounts, ...taken.filter((kind) => !descriptor.mounts.includes(kind))];
+	if (dial) {
+		const archil = `${descriptor.label}'s machines dial this server, and a machine that dials takes no Archil mount`;
+		return { mounts: derivedMounts({ ...descriptor, mounts: mounts.filter((kind) => kind !== "archil") }), unmounted: { ...unmounted, archil } };
+	}
 	return { mounts: derivedMounts({ ...descriptor, mounts }), unmounted };
 }

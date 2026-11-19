@@ -23,7 +23,7 @@ test("a token's PUT of a bearer token is 403 in the one refusal and keeps nothin
 
   const byToken = await put("fake", { url: fake.url, auth: { type: "bearer", token: TOKEN } });
   assert.equal(byToken.status, 403, byToken.text);
-  assert.equal(byToken.json?.error?.message, SECRET_WRITE_REFUSAL);
+  assert.ok(String(byToken.json?.error?.message).startsWith(SECRET_WRITE_REFUSAL));
   assert.ok(!byToken.text.includes(TOKEN), "the refusal never echoes the value");
   assert.equal((await call(server.port, { path: "/v2/settings/mcp-servers/fake", headers: bearer })).status, 404, "nothing was kept");
   assert.equal(fake.log.length, 0, "nothing was sent to the MCP server");

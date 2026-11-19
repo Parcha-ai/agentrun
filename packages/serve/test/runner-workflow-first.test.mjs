@@ -44,6 +44,7 @@ const { LEARNED_WORKFLOW_TOOL } = await import("../dist/learned-workflow.js");
 const { runTimeline, runEntries, runReflect } = await import("../dist/store-reads/journal.js");
 const { said } = await import("../dist/learning-words.js");
 const { agentCostOverStore } = await import("../dist/store-reads/learning.js");
+const { viewOverStore } = await import("../dist/store-view.js");
 const { LEARNED_CLIP } = await import("../dist/learned-workflow.js");
 const { COST_WINDOW, costLineOf, workflowCostsOf, fits, workflowDigest, workflowFirstOf, pathMetrics, servedOf, WORKFLOW_FIRST } = await import("../dist/runner/workflow-first.js");
 const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
@@ -352,8 +353,8 @@ test("a quote in no page: the workflow's quote_missing escalate hands the run ba
 
 // H5d's re-pick: a quote miss writes the answer once more (the same step, the draft in its state) before the escalate
 // hands back. The answer step is the body of a loop of 2 until the same quote_missing check passes; the run's metrics
-// keep each loop's exit (`loops`: its label, its passes, whether `until` held), so a re-pick is counted, and its
-// request is the run's like any node's.
+// keep each loop's exit (`loops`: its label, its passes, whether `until` held, and `repick` on the re-pick loop), so a
+// re-pick is counted, and its request is the run's like any node's.
 const QUOTES_MISSING = { predicate: "quote_missing", path: "answer.evidence", field: "quote", pages: ["page"] };
 const repickFlow = { ...citedFlow, root: { node: "chain", steps: [
   { node: "loop", label: "repick", maxIters: 2, until: { predicate: "not", of: QUOTES_MISSING }, body: citedFlow.root.steps[0] },
@@ -375,7 +376,7 @@ test("a quote miss re-picks once: the re-pick's found quote answers alone, one m
   assert.ok(textOf(again.body).includes(MISSED) && !textOf(draft.body).includes(MISSED), "the re-pick reads the failed draft in its state");
   assert.deepEqual(kept.gateway.requests.filter((request) => !isNode(request)), [], "no agent request");
   assert.ok(kept.timeline.some((row) => ["assistant", "final_answer"].includes(row.kind) && (row.text ?? "").includes(FOUND)), "the re-pick's answer is the run's");
-  assert.deepEqual(kept.row.metrics?.loops, [{ node: "repick", iterations: 2, met: true, workflow: "answer" }]);
+  assert.deepEqual(kept.row.metrics?.loops, [{ node: "repick", iterations: 2, met: true, repick: true, workflow: "answer" }]);
   const booked = kept.turns.reduce((sum, turn) => sum + (typeof turn.usd === "number" ? turn.usd : 0), 0);
   assert.ok(Math.abs((kept.row.costUsd ?? 0) - booked) < 1e-9 && kept.requests.filter((request) => request.host === LEARNED_WORKFLOW_TOOL).length === 2, `the run's cost is both node requests' booked $: ${kept.row.costUsd} vs ${booked}`);
 
@@ -385,12 +386,26 @@ test("a quote miss re-picks once: the re-pick's found quote answers alone, one m
   const firstAgent = back.gateway.requests.findIndex((request) => !isNode(request));
   assert.equal(submits({ requests: back.gateway.requests.slice(0, firstAgent) }).length, 2, "the draft and one re-pick, never a third");
   assert.match(textOf(back.gateway.requests[firstAgent].body), /handed the job back at its step "quotes"/);
-  assert.deepEqual(back.row.metrics?.loops, [{ node: "repick", iterations: 2, met: false, workflow: "answer" }]);
+  assert.deepEqual(back.row.metrics?.loops, [{ node: "repick", iterations: 2, met: false, repick: true, workflow: "answer" }]);
 
   const first = await piRun(t, repicking(FOUND));
   assert.deepEqual(first.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["answered"]);
   assert.equal(submits(first.gateway).length, 1, "found first: no re-pick");
-  assert.deepEqual(first.row.metrics?.loops, [{ node: "repick", iterations: 1, met: true, workflow: "answer" }]);
+  assert.deepEqual(first.row.metrics?.loops, [{ node: "repick", iterations: 1, met: true, repick: true, workflow: "answer" }]);
+});
+
+// A composed workflow writing the answer re-picks in its child: the DSL labels the child's loop exit `cite/repick`
+// (scopeDepsToChild), and that exit is the run's re-pick, read on the run (store-reads/learning.ts pathViewOf).
+const composedRepickFlow = { ...citedFlow, root: { node: "chain", steps: [
+  { node: "workflow", label: "cite", input: { question: "{question}", page: "{page}" }, out: "Answer", as: "answer", workflow: repickFlow },
+] } };
+
+test("a composed workflow's re-pick is the run's: its child's loop exit, labelled as the DSL labels it, reads found on the run", async (t) => {
+  const run = await piRun(t, { ...repicking(MISSED, FOUND), flows: [{ name: "answer", description: "Answers from a page, quoting it", workflow: composedRepickFlow }] });
+  assert.deepEqual(run.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["answered"], JSON.stringify(run.row.metrics));
+  assert.equal(submits(run.gateway).length, 2, "the draft and its re-pick");
+  assert.deepEqual(run.row.metrics?.loops, [{ node: "cite/repick", iterations: 2, met: true, repick: true, workflow: "answer" }]);
+  assert.equal((await viewOverStore(run.server, RUN, { origin: "", serverSecrets: () => [] }))?.workflow?.repick, "found");
 });
 
 // The compact re-pick (learn/compile.ts's worked example, compactStateProblems): a fast extract copies the facts from
@@ -416,7 +431,7 @@ test("the compact re-pick: the answer reads the fast extract's facts and its dra
   assert.equal(run.row.state, "ended", JSON.stringify(run.row));
   assert.deepEqual(run.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["answered"], "the first pass ran: its absent draft read as null");
   assert.equal(run.row.metrics?.path, "workflow", JSON.stringify(run.row.metrics));
-  assert.deepEqual(run.row.metrics?.loops, [{ node: "repick", iterations: 2, met: true, workflow: "answer" }]);
+  assert.deepEqual(run.row.metrics?.loops, [{ node: "repick", iterations: 2, met: true, repick: true, workflow: "answer" }]);
   const [facts, ...rest] = submits(run.gateway);
   assert.ok(textOf(facts.body).includes("hand-made wallets"), "the fast extract reads the page");
   const [draft, again, ...more] = rest.filter((request) => textOf(request.body).includes(ANSWER_FROM_FACTS));

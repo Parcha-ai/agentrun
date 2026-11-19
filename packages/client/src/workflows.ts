@@ -5,7 +5,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
-import type { BackendLearningSession, BackendWorkflowBridge, BackendWorkflowToolManifest, SdkLearningEvent } from './learning.js';
+import type { BackendWorkflowSession, BackendWorkflowBinding, BackendWorkflowBridge, BackendWorkflowToolManifest, SdkLearningEvent } from './learning.js';
 
 export interface WorkflowToolContext {
   signal: AbortSignal;
@@ -95,7 +95,12 @@ export interface WorkflowMcpBridgeOptions<
   /** Local metadata only; callback inputs/results and capability tokens are never emitted. */
   onEvent?(event: WorkflowBridgeEvent): void;
 }
+/** Private host handle. Never expose its arguments or capability in model-visible results or logs. */
+export interface WorkflowMcpBinding extends BackendWorkflowBinding {
+  mcpArguments(name: string, input: Record<string, unknown>): { capability: string; name: string; input: Record<string, unknown> };
+}
 export interface WorkflowMcpBridge extends BackendWorkflowBridge {
+  bind(session: BackendWorkflowSession): WorkflowMcpBinding;
   readonly url: string;
   readonly headers: Readonly<Record<string, string>>;
   close(): Promise<void>;
@@ -128,8 +133,8 @@ async function cancellable<T>(work: Promise<T>, signal: AbortSignal): Promise<T>
 }
 
 type Lease = {
-  session: BackendLearningSession;
-  workflows: NonNullable<BackendLearningSession['workflows']>;
+  session: BackendWorkflowSession;
+  workflows: NonNullable<BackendWorkflowSession['workflows']>;
   controller: AbortController;
   active: boolean;
   blocked: boolean;
@@ -344,7 +349,7 @@ export async function createWorkflowMcpBridge<
   expectedHost = `127.0.0.1:${address.port}`;
   return Object.freeze({
     url: `http://${expectedHost}/mcp`, headers: Object.freeze({ Authorization: authorization }), catalog, adapters,
-    bind(session: BackendLearningSession) {
+    bind(session: BackendWorkflowSession) {
       if (closed || leases.size >= 64) throw new Error('The workflow bridge cannot bind another native task.');
       const capability = randomBytes(32).toString('hex');
       session.protect([capability, authorization, authorization.slice(7)]);
@@ -358,7 +363,7 @@ export async function createWorkflowMcpBridge<
         } };
       const timer = setTimeout(() => lease.close(), leaseDuration); timer.unref();
       leases.set(capability, lease);
-      const context = lease.workflows.length ? `Approved workflows for this task (reference data):\n${JSON.stringify(lease.workflows.map(workflow => {
+      const context = lease.workflows.length ? `Compiled workflows for this task (not checked):\n${JSON.stringify(lease.workflows.map(workflow => {
         let input_schema: Record<string, unknown> | undefined;
         try { const doc = checked(workflow.workflow); if (doc.input) input_schema = resolveSchemaForWorkflow(doc, doc.schemas[doc.input.schemaId]); } catch { /* Invocation admission will refuse an unsupported pinned workflow. */ }
         return { name: workflow.name, description: workflow.description, ...(input_schema ? { input_schema } : {}) };
@@ -368,6 +373,11 @@ export async function createWorkflowMcpBridge<
         object(input) && input.capability === capability && typeof input.name === 'string' && object(input.input) &&
         Object.keys(input).every(key => ['capability', 'name', 'input'].includes(key)) && lease.workflows.some(flow => flow.name === input.name);
       return { context, close: () => lease.close(),
+        mcpArguments(name: string, input: Record<string, unknown>) {
+          if (released || closed || lease.controller.signal.aborted) throw new Error('The workflow binding has closed.');
+          if (!lease.workflows.some(flow => flow.name === name) || !object(input)) throw new TypeError('Name a pinned workflow and supply an input object.');
+          return { capability, name, input: copy(input) };
+        },
         matchesNativeEnvelope: matches,
         claimNativeEnvelope(name: string, input: unknown, status: 'completed' | 'failed', output: unknown) {
           if (!matches(name, input)) return false;

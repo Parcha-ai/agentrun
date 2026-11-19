@@ -11,7 +11,8 @@
 // Rule 3, the views: each saved sign-in carries its one secret under `secret`, in the metadata shape every plane gives
 // (signInSecretMeta), beside its own state (held | ready | unreadable). Never the pointer, a prefix, a length or a hash.
 
-import { registerSecretWrite, type SecretMeta, type SecretPredicate, type SecretSource, secretMeta, secretName } from "./secret-writes.js";
+import { agentLink } from "./console-links.js";
+import { registerSecretPage, registerSecretWrite, type SecretMeta, type SecretPredicate, type SecretSource, secretMeta, secretName } from "./secret-writes.js";
 
 export type { SecretMeta };
 
@@ -33,6 +34,8 @@ export const SIGN_IN_SECRET_FIELDS: Readonly<Record<string, SecretPredicate>> = 
   forgetSignIn: () => true,
 };
 for (const [operationId, predicate] of Object.entries(SIGN_IN_SECRET_FIELDS)) registerSecretWrite(operationId, predicate);
+// Where the owner forgets one in the console: the agent's page, which lists its saved sign-ins.
+registerSecretPage("forgetSignIn", (_body, { params: [agentId] }) => (agentId ? agentLink("", agentId) : "/#/agents"));
 
 /** The browser plane's secret write routes, for the planted-secret harness: none. A sign-in is saved inside a run (the
  *  vendor's profile with save:true, kept by the run path in store.signIns), never through an API write, so the harness

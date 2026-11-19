@@ -62,7 +62,7 @@ alpha: `bg-primary/10`. Never write a hex value, `rgb()`, `hsl()`, `white`, `bla
 | `run-active`, `run-error-surface` | `text-run-active`, `bg-run-error` | A working run; a failed run's panel. |
 | `wf-jev`, `wf-parallel`, `wf-openrouter`, `wf-tool`, `wf-exit` | `text-wf-jev` | The workflow graph: who does a step's work. |
 | `chart-agent`, `chart-handed-back`, `chart-workflow` | `fill-chart-agent` | A chart's series, in this order: the path a run took. Marks only; words stay `text-foreground`. |
-| `trace-model`, `trace-tool` | `bg-trace-model` | A run's trace: a model request's bar and a tool call's. Marks only; a word beside each says which, and a failed span is `destructive`. |
+| `trace-model`, `trace-tool` | `bg-trace-model` | A run's trace: a model request's bar and a tool call's. Marks only; a word beside each says which, and a failed span is `destructive`. A mark is never told by its hue alone: one that failed is striped (`trace-hatch`), one that waits is hollow, and a light part has an edge. Every mark carries `trace-mark`, an edge that shows only under forced colours, where a fill is not drawn. |
 
 **A tone is a pair.** The bare name fills, borders and dots. The `-text` name writes words. `text-success` on a
 white page fails contrast; `text-success-text` passes. The same holds for orange: `text-primary` is for a mark on a
@@ -242,6 +242,11 @@ Never write `outline-none` without a `focus-visible:` replacement drawn with the
   Banners sit above the page, outside its scroller. `main` is the page's only scroller.
 - **Breakpoints** are Tailwind's: write mobile first and add `md:` for the desktop layout. `max-sm:` tightens a
   phone. `short:` is for a viewport at most 500px tall (a phone on its side). `roomy:` combines a minimum width of 768px and height of 501px for the desktop shell. Do not add a breakpoint.
+- **A part beside a panel** is laid out by the width of its pane, not the window's: a panel that takes part of the page
+  leaves the rest a width no breakpoint knows. Put `@container` on the pane and `@4xl:` (the pane is 56rem wide) or
+  `@5xl:` (64rem) on the part. The Dev tools table shows its time axis and its Size column this way beside an open call.
+  The stylesheet writes these before the breakpoints, so one never undoes a breakpoint's class: write the breakpoint's
+  side as a range (`hidden max-xl:table-cell @4xl:table-cell`). Do not add a width.
 - **Widths.** A page fills the width it has, so nothing is left empty beside it on a wide screen. What changes with
   the width is how its parts are laid out, never a margin:
   - A page of data (Mission Control, a list, a table) is fluid: its tables stretch and its card grids take more columns.

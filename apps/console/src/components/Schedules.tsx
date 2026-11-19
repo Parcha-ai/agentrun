@@ -1,16 +1,18 @@
 import { agentHash } from "@/components/AgentPage";
-import { ArrowLeft, Blocks, CalendarClock, Copy, GitPullRequest, KeyRound, Pause, Pencil, Play, Plus, Rss, Trash2, Webhook, Zap } from "lucide-react";
+import { ArrowLeft, Blocks, CalendarClock, GitPullRequest, KeyRound, Pause, Pencil, Play, Plus, Rss, Trash2, Webhook, Zap } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { AcceptEditor, ConditionList, EVENT_HINTS, Said } from "@/components/AcceptEditor";
 import { ProblemCard } from "@/components/Problem";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
 import { Chip } from "@/components/ui/chip";
+import { CopyButton } from "@/components/ui/copy-button";
 import { Field as UiField, formColumnsClass, Input, Textarea } from "@/components/ui/field";
 import type { Agent } from "@/lib/agentForm";
 import { agentsByName } from "@/lib/agents";
 import { Picker } from "@/components/ui/picker";
 import { ScheduleWhen } from "@/components/ScheduleWhen";
+import { UnattendedWarning } from "@/components/UnattendedWarning";
 import { ZonePicker } from "@/components/ZonePicker";
 import { type Client, ClientError } from "@/lib/client";
 import { httpHref } from "@/lib/safeUrl";
@@ -371,6 +373,9 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
         </p>
       )}
       {said && <ProblemCard problem={said} className="mt-4" />}
+      {/* Its agent's tools that ask stop a run from it until someone answers (a schedule's later firings skipped meanwhile):
+          said, with the fix. */}
+      {trigger.target.kind === "start_run" && <UnattendedWarning v2={v2} agentId={trigger.target.agent_id} skips={trigger.source.kind === "schedule"} className="mt-4" />}
       {composioNote && <p role="status" data-composio-note className="mt-4 border border-warning/50 bg-warning/10 px-3 py-2 text-body text-warning-text">{composioNote}</p>}
       {hook && fresh && <SecretOnce label="The webhook's new secret" secret={fresh} />}
       {feed && <LastCheck check={feed.last_check ?? null} newest={firings[0]} />}
@@ -576,6 +581,7 @@ function ScheduleForm({ v2, go, trigger, minEvery, now = Date.now }: FormProps &
               ...live.map((a) => ({ value: a.agent_id, label: `${a.definition.name || a.agent_id}${a.kind === "workflow" ? " (workflow)" : ""}` })),
               ...(draft.agentId && agents && !live.some((a) => a.agent_id === draft.agentId) ? [{ value: draft.agentId, label: draft.agentId }] : [])]} />
         </Field>
+        <UnattendedWarning v2={v2} agentId={draft.agentId} skips />
         <Field label="Each run is asked" field="target.input" issue={issues["target.input"]}><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
         <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
           hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : capOptional ? "Uses the agent's default if empty." : "Required: each run this schedule starts stops at this spend."}>
@@ -593,24 +599,6 @@ function ScheduleForm({ v2, go, trigger, minEvery, now = Date.now }: FormProps &
         <Button type="button" size="lg" variant="ghost" onClick={() => go(trigger ? hashOf(trigger.id) : "#/triggers")}>Cancel</Button>
       </div>
     </form>
-  );
-}
-
-/** Writes `text` to the clipboard and says Copied beside it. The clipboard needs a secure page: with none, or a write
- *  the browser refuses, it says to select the text instead. */
-function CopyButton({ text, label }: { text: string; label: string }) {
-  const [said, setSaid] = useState<string | null>(null);
-  const manual = "The browser won't copy here. Select it and copy it.";
-  const copy = () => {
-    const clip = typeof navigator !== "undefined" ? navigator.clipboard : undefined;
-    if (!clip?.writeText) { setSaid(manual); return; }
-    clip.writeText(text).then(() => setSaid("Copied"), () => setSaid(manual));
-  };
-  return (
-    <span className="inline-flex flex-wrap items-center gap-2">
-      <Button type="button" size="sm" onClick={copy}><Copy aria-hidden /> {label}</Button>
-      {said && <span className="font-mono text-label text-muted-foreground" role="status">{said}</span>}
-    </span>
   );
 }
 
@@ -715,6 +703,7 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
             options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
               ...live.map((a) => ({ value: a.agent_id, label: `${a.definition.name || a.agent_id}${a.kind === "workflow" ? " (workflow)" : ""}` }))]} />
         </Field>
+        <UnattendedWarning v2={v2} agentId={draft.agentId} />
         <Field label="Each run is asked" field="target.input" issue={issues["target.input"]}><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
         <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
           hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : "Required: each run this webhook starts stops at this spend."}>
@@ -807,6 +796,7 @@ function GitHubForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
             options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
               ...live.map((a) => ({ value: a.agent_id, label: `${a.definition.name || a.agent_id}${a.kind === "workflow" ? " (workflow)" : ""}` }))]} />
         </Field>
+        <UnattendedWarning v2={v2} agentId={draft.agentId} />
         <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} hint="The event's payload comes with it."><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
         <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
           hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : "Required: each run this trigger starts stops at this spend."}>
@@ -974,6 +964,7 @@ function ComposioForm({ v2, go, noAddress }: { v2: Client; go: (hash: string) =>
             options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
               ...live.map((a) => ({ value: a.agent_id, label: `${a.definition.name || a.agent_id}${a.kind === "workflow" ? " (workflow)" : ""}` }))]} />
         </Field>
+        <UnattendedWarning v2={v2} agentId={draft.agentId} />
         <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} hint="What Composio delivered comes with it."><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
         <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
           hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : "Required: each run this trigger starts stops at this spend."}>
@@ -1285,6 +1276,7 @@ function FeedForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: FeedTri
               options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
                 ...live.map((a) => ({ value: a.agent_id, label: `${a.definition.name || a.agent_id}${a.kind === "workflow" ? " (workflow)" : ""}` }))]} />
           </Field>
+          <UnattendedWarning v2={v2} agentId={draft.agentId} />
           <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} hint="The item comes with it: its title, link, summary and feed.">
             <Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} />
           </Field>

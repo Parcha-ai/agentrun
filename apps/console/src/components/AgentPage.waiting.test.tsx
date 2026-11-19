@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentPage } from "./AgentPage";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import type { AgentLearning, LearnedItem } from "@/lib/learning";
 
 // The agent page's Learning tab carries a count when learned workflow drafts wait for the owner's OK, so the wait is seen
@@ -11,7 +12,7 @@ import type { AgentLearning, LearnedItem } from "@/lib/learning";
 // server, a learning folder that could not be read) or 0: no count, never "0".
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-const agentWith = (learning?: { pending: number }): Agent => ({ agent_id: "qa-learn", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "QA learn", instructions: "Answer.", harness: "pi", skills: [], tools: [], learning: true }, ...(learning ? { learning } : {}) } as Agent);
+const agentWith = (learning?: { pending: number }): Agent => ({ ...SERVED_AGENT, agent_id: "qa-learn", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "QA learn", instructions: "Answer.", harness: "pi", skills: [], tools: [], learning: true }, ...(learning ? { learning } : {}) } as Agent);
 const draft = (name: string): LearnedItem => ({ name, file: `workflows/${name}/workflow.json`, readme: `workflows/${name}/README.md`, description: "d", status: "pending", run: "run-1", bytes: 1, etag: `"card-${name}"` });
 const waiting = draft("trust-acme");
 const view = (workflows: LearnedItem[]): AgentLearning => ({

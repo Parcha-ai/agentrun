@@ -4,6 +4,7 @@ import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
 import { Archive, ArrowUpRight, History, Play } from "lucide-react";
 import { Picker } from "@/components/ui/picker";
 import { ProblemCard } from "@/components/Problem";
+import { RunKind } from "@/components/RunKind";
 import { ScheduleChip } from "@/components/ScheduleChip";
 import { ListSkeleton } from "@/components/Skeleton";
 import { StatusBadge } from "@/components/StatusBadge";
@@ -90,7 +91,7 @@ function RunsTable({ runs, agentName, onOpen }: { runs: Run[]; agentName: (id: s
               <span className="mt-1 block font-mono text-label text-muted-foreground md:hidden">{agentName(r.agent_id)} · {when(r.created_at)}</span>
             </td>
             <td className="hidden px-3 py-2.5 align-top md:table-cell">{agentName(r.agent_id)}</td>
-            <td className="hidden px-3 py-2.5 align-top font-mono text-small text-muted-foreground md:table-cell">{r.kind}</td>
+            <td className="hidden px-3 py-2.5 align-top font-mono text-small text-muted-foreground md:table-cell"><RunKind run={r} /></td>
             <td className="hidden px-3 py-2.5 align-top font-mono text-small text-muted-foreground md:table-cell">{when(r.created_at)}</td>
             <td className="hidden px-3 py-2.5 align-top font-mono text-small text-muted-foreground md:table-cell">{cost(r.cost, { ended: runEnded(r.status) })}</td>
           </tr>

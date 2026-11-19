@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { type Agent, type AgentFields, type SaveProblem, editBody, toolOffers } from "@/lib/agentForm";
+import type { Computer } from "@/lib/v2";
+import { SERVED_AGENT } from "@/test/agent";
 
 // The Computer step's run video (`computer.record`, serve's README "A video of each run"): a switch of provider, or of
 // kind to another that records, keeps it; a kind with no screen drops it and says so; a Recording switch sets and
@@ -13,17 +15,17 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const ready = (id: string, name: string) => ({ id, name, secrets: [], required: [], ready: true, metered: false });
 const KINDS = [
-  { kind: "none", offered: true, groups: [], tools: ["read"], providers: [] },
-  { kind: "sandbox", offered: true, groups: ["exec", "files", "processes"], tools: ["read", "bash"], providers: [ready("docker", "Docker")] },
-  { kind: "desktop", offered: true, groups: ["screen", "input.pointer", "input.keys"], tools: ["read", "screen.shot"], providers: [ready("orgo", "Orgo"), ready("e2b", "E2B")] },
-  { kind: "phone", offered: true, groups: ["screen", "input.touch", "apps"], tools: ["read", "screen.shot"], providers: [ready("phone-harness", "Phone harness")] },
-  { kind: "browser", offered: true, groups: ["cdp"], tools: ["browser"], providers: [ready("browserbase", "Browserbase")] },
+  { kind: "none", offered: true, groups: [], tools: ["read"], settings: [], providers: [] },
+  { kind: "sandbox", offered: true, groups: ["exec", "files", "processes"], tools: ["read", "bash"], settings: ["image", "persistent", "gpu"], providers: [ready("docker", "Docker")] },
+  { kind: "desktop", offered: true, groups: ["screen", "input.pointer", "input.keys"], tools: ["read", "screen.shot"], settings: ["image", "persistent", "surface", "exec", "record"], providers: [ready("orgo", "Orgo"), ready("e2b", "E2B")] },
+  { kind: "phone", offered: true, groups: ["screen", "input.touch", "apps"], tools: ["read", "screen.shot"], settings: ["image", "persistent", "surface", "exec", "record"], providers: [ready("phone-harness", "Phone harness")] },
+  { kind: "browser", offered: true, groups: ["cdp"], tools: ["browser"], settings: ["image", "persistent", "record"], providers: [ready("browserbase", "Browserbase")] },
 ];
 const caps = { harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools: toolOffers([{ name: "read", available: true, harnesses: ["pi"] }]), computers: KINDS };
-const RECORDED = { kind: "desktop", provider: "orgo", record: true };
-const agent = (computer: Record<string, unknown> = RECORDED): Agent => ({
-  agent_id: "filmed", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
-  definition: { version: 1, name: "Filmed", instructions: "Probe.", harness: "pi", skills: [], tools: ["read"], computer } as Agent["definition"],
+const RECORDED: Computer = { kind: "desktop", provider: "orgo", record: true };
+const agent = (computer: Computer = RECORDED): Agent => ({
+  ...SERVED_AGENT, agent_id: "filmed", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
+  definition: { version: 1, name: "Filmed", instructions: "Probe.", harness: "pi", skills: [], tools: ["read"], computer },
 });
 
 function mount(a: Agent, step = "computer", answer: SaveProblem | null = null) {
@@ -63,11 +65,12 @@ describe("AgentEditor, the Computer step's recording", () => {
     const { host, click, save, kind, saved } = mount(agent());
     click(kind("sandbox"));
     const card = host.querySelector('[data-kind="sandbox"]')!;
-    expect(card.textContent).toContain("Recording is off: a sandbox has no screen to record.");
+    expect(card.querySelectorAll('[role="status"]')).toHaveLength(1);
+    expect(card.textContent).toContain("Recording is off");
     await save();
     expect(saved()!.computer).toEqual({ kind: "sandbox", provider: "docker" });
     click(kind("none"));
-    expect(host.querySelector('[data-kind="none"]')!.textContent).toContain("Recording is off: with no computer, there is no screen to record.");
+    expect(host.querySelector('[data-kind="none"]')!.textContent).toContain("Recording is off");
     expect(host.querySelector('[data-kind="sandbox"]')!.textContent).not.toContain("Recording is off");
   });
 

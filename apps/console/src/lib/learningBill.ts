@@ -1,5 +1,5 @@
 import { usd } from "@/lib/costPerRun";
-import type { AuditRow, Bill, Serving } from "@/lib/v2";
+import type { AuditRow, Bill, LearningCost, Serving } from "@/lib/v2";
 
 // The Learning tab's bill, audit line and serving workflow, read as a person reads them. The bill is the server's (GET
 // /v2/agents/{id}/learning/cost `bill`): booked dollars only, every run that does a job with all learning spent for it
@@ -8,21 +8,20 @@ import type { AuditRow, Bill, Serving } from "@/lib/v2";
 // server placed it on. The serving workflow is the promotions read's champion. Nothing here computes a dollar or a node.
 
 const runsWord = (n: number) => `${n} ${n === 1 ? "run" : "runs"}`;
-const dollars = (value: number) => (value >= 1 ? `$${value.toFixed(2)}` : usd(value));
 
 /** The bill's headline and the run its break-even marker stands on (null: none yet, or nothing promoted). The booked
  *  total is the server's `booked_usd`, never the last point's: spend booked after it (a replay after a job of unknown
  *  cost) is in it. */
-export function billWords(bill: Bill): { headline: string; marker: number | null } {
+export function billWords(bill: Bill, takeover: LearningCost["summary"]["takeover"]): { headline: string; marker: number | null } {
   const last = bill.points.at(-1);
   const withheld = bill.withheld ? ` · ${runsWord(bill.withheld)} of unknown cost on neither line` : "";
   if (!last) return { headline: `No run with a known cost yet${withheld}`, marker: null };
-  if (!bill.promoted) return { headline: `No learned workflow serves yet: the bill is the agent's own, ${dollars(bill.booked_usd)} over ${runsWord(bill.points.length)}${withheld}`, marker: null };
+  if (!takeover) return { headline: `No learned workflow serves yet: the bill is the agent's own, ${usd(bill.booked_usd)} over ${runsWord(bill.points.length)}${withheld}`, marker: null };
   if (bill.break_even) {
-    const all = last.agent_usd === null ? "" : `, ${dollars(last.agent_usd)} had the agent done all of it`;
-    return { headline: `Break-even at run ${bill.break_even.n}: ${dollars(bill.booked_usd)} booked over ${runsWord(bill.points.length)}${all}${withheld}`, marker: bill.break_even.n };
+    const all = last.agent_usd === null ? "" : `, ${usd(last.agent_usd)} had the agent done all of it`;
+    return { headline: `Break-even at run ${bill.break_even.n}: ${usd(bill.booked_usd)} booked over ${runsWord(bill.points.length)}${all}${withheld}`, marker: bill.break_even.n };
   }
-  const gap = bill.gap_usd === null ? "" : `: ${dollars(bill.gap_usd)} over the agent for all of it at run ${last.n}`;
+  const gap = bill.gap_usd === null ? "" : `: ${usd(bill.gap_usd)} over the agent for all of it at run ${last.n}`;
   return { headline: `Not yet${gap}${withheld}`, marker: null };
 }
 

@@ -5,6 +5,7 @@ import { AgentEditor } from "./AgentEditor";
 import { AgentRequest } from "./AgentRequest";
 import { AgentPage } from "./AgentPage";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import type { Client } from "@/lib/client";
 import type { NativeBinding } from "@/lib/native";
 import { CODING_AGENT_PREFERENCE } from "@/lib/codingAgentLinks";
@@ -12,7 +13,7 @@ import { CODING_AGENT_PREFERENCE } from "@/lib/codingAgentLinks";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const origin = "https://console.example.test";
 const caps = { harnesses: [{ id: "pi", available: true }], tools: [], thinking: [] };
-const managed: Agent = { agent_id: "support/a", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
+const managed: Agent = { ...SERVED_AGENT, agent_id: "support/a", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Support", instructions: "Answer carefully.", harness: "pi", tools: [], skills: [] } };
 const nativeBinding: NativeBinding = {
   runtime: "claude-code", machine_id: "source-machine", project: "/workspace/project", selector: { kind: "project" }, state: "ready",
@@ -23,7 +24,7 @@ const nativeBinding: NativeBinding = {
 const native: Agent = { ...managed, definition: { ...managed.definition, native: nativeBinding } };
 const sourceAgents = [
   { name: "native", agent: native, expected: "Edit the original native setup" },
-  ...(["claude-agent-sdk", "codex-sdk"] as const).map(runtime => ({ name: runtime, agent: { ...managed, definition: { ...managed.definition, sdk: { runtime } } }, expected: runtime === "claude-agent-sdk" ? "using Claude Agent SDK" : "using Codex SDK" })),
+  ...(["claude-agent-sdk", "codex-sdk", "eve"] as const).map(runtime => ({ name: runtime, agent: { ...managed, definition: { ...managed.definition, sdk: { runtime } } }, expected: runtime === "eve" ? "using Vercel eve" : runtime === "claude-agent-sdk" ? "using Claude Agent SDK" : "using Codex SDK" })),
 ];
 let root: Root | undefined;
 let host: HTMLDivElement;
@@ -105,12 +106,15 @@ describe("rendered handoffs follow the loaded agent's execution binding", () => 
     const prompt = await copy(); expect(prompt).toContain("Help me build an agent"); expect(prompt).toContain(`Prepared request: POST ${origin}/v2/agents`);
     expect(prompt).toContain('"instructions": "Answer carefully."'); expect(prompt).not.toContain("If-Match:");
   });
-  for (const runtime of ["claude-agent-sdk", "codex-sdk"] as const) {
+  for (const runtime of ["claude-agent-sdk", "codex-sdk", "eve"] as const) {
     it(`AgentPage runs ${runtime} through its backend without dispatching on copy`, async () => {
       const agent = { ...managed, definition: { ...managed.definition, sdk: { runtime } } };
       await mount(createElement(AgentPage, { v2: client(agent), agentId: agent.agent_id, go: write }));
-      const prompt = await copy("Run agent"); expect(prompt).toContain(runtime === "claude-agent-sdk" ? "using Claude Agent SDK" : "using Codex SDK");
-      expect(prompt).toContain("application's existing job entrypoint"); expect(prompt).toContain("Do not launch it with AgentRun's managed run API"); expect(prompt).toContain("flushLearning()");
+      const prompt = await copy("Run agent"); expect(prompt).toContain(runtime === "eve" ? "using Vercel eve" : runtime === "claude-agent-sdk" ? "using Claude Agent SDK" : "using Codex SDK");
+      expect(prompt).toContain(runtime === "eve" ? "existing eve project and normal invocation" : "application's existing job entrypoint");
+      expect(prompt).toContain("Do not launch it with AgentRun's managed run API");
+      if (runtime === "eve") { expect(prompt).toContain("eve's own controls"); expect(prompt).not.toContain("flushLearning()"); }
+      else expect(prompt).toContain("flushLearning()");
     });
   }
   for (const [name, agent] of [["managed", managed], ["native", native]] as const) {
@@ -121,7 +125,7 @@ describe("rendered handoffs follow the loaded agent's execution binding", () => 
     });
   }
   it("does not offer the new Run handoff for an archived SDK agent", async () => {
-    const agent = { ...managed, archived_at: "2026-01-01T00:00:00Z", definition: { ...managed.definition, sdk: { runtime: "codex-sdk" } } };
+    const agent = { ...managed, archived_at: "2026-01-01T00:00:00Z", definition: { ...managed.definition, sdk: { runtime: "codex-sdk" as const } } };
     await mount(createElement(AgentPage, { v2: client(agent), agentId: agent.agent_id, go: write }));
     expect(host.querySelector('[aria-label="Run agent options"]')).toBeNull(); expect(copied).not.toHaveBeenCalled(); expect(write).not.toHaveBeenCalled();
   });

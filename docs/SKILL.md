@@ -10,6 +10,13 @@ spend cap on every run, and agents that learn from their own runs. Get the perso
 run in about five minutes, with no Node install, no Terminal steps and no hunt for a key. Never ask for a password, key
 or token in this chat, never print one, and never put one on a command line.
 
+The person saves every secret (a model or tool key, an MCP server's token or headers, the webhook's secret, Slack's incoming-webhook URL, GitHub) in
+the console; the API token you hold can't. Prepare everything else through the API or CLI. A secret write answers `403
+forbidden` with `error.details.console_url`, the console's form with the rest filled in (or build it:
+`<console address>/#/settings/mcp?add=<name>&auth=bearer`, adding `&url=<url>` only when no key or token is in the
+URL). Open that link in their browser for them (`open` on macOS, `xdg-open` on Linux; else give them the link) and tell
+them to paste the secret there and save.
+
 ## How to ask
 
 Ask every choice in this setup with your host's question tool. Call the tool; don't write the choices as chat text.
@@ -94,6 +101,18 @@ only when they already named a place or an AgentRun server (then check its `/v2/
 On **Check**, run the step 4 scan now, while AgentRun installs; it looks at this computer wherever AgentRun runs. On
 **I'll tell you**, ask for the job and its folder (free text, one plain message), and bring it in at step 5.
 
+On **This computer** or **My always-on machine**, before the start, ask once with the
+question tool, header `Local reach`: "Do only you use that machine, and should its agents reach tools or a webhook
+receiver on it?" Recommendation: Not now because it is the safer default and a restart adds it later.
+- Not now (Recommended): runs and the webhook reach nothing local to it.
+- Yes, only me: start the server with `AGENTRUN_MCP_ALLOW_LOOPBACK=1` and `AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` set.
+
+On **Yes, only me**, once the installer has started AgentRun as a service, save both in it; it restarts with them and
+keeps them: `~/.agentrun/bin/agentrun service install --env AGENTRUN_MCP_ALLOW_LOOPBACK=1 --env
+AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1`. Where it runs in the background instead, run `~/.agentrun/bin/agentrun stop`, then
+the installer with both in front of `sh`. On `--vps`, which runs AgentRun in Docker, leave them off. Then check that
+`/v2/capabilities` shows `on: true` for both under `switches`.
+
 ### This computer
 
 First look for a server that already runs here: `AGENTRUN_BASE_URL` is set, or the server `~/.agentrun` records
@@ -117,9 +136,9 @@ machine. It starts AgentRun as a service of this user (launchd on macOS, systemd
 the terminal closes and starts again at login. Where there is no service manager, such as a container, it starts
 AgentRun in the background and says so. Either way it returns once AgentRun answers and prints
 `AgentRun is running at <address>`. Its data is in `~/.agentrun`, and it takes the first free port from 7340 on
-loopback. If it fails, read the lines it printed and explain the error without quoting a token. Give the person the
-address and wait until they say it opens in their browser; a request from here does not show that. They set the owner
-password on the first visit.
+loopback. If it fails, read the lines it printed and explain the error without quoting a token. On a computer with a
+browser it ends by opening the setup page there, where they set the owner password; otherwise open it for them (below).
+Wait until they say the password is set; a request from here does not show that.
 
 The command is now `~/.agentrun/bin/agentrun`. The installer adds `~/.agentrun/bin` to PATH in the shell's startup
 file (`~/.zshrc`, `~/.bashrc`, `~/.bash_profile` on macOS, fish's `conf.d`, else `~/.profile`), which only a new
@@ -133,17 +152,23 @@ service with its own settings; never stop it unasked.
 
 ### My always-on machine
 
-Continue in a session on that machine, or an SSH session they already use. With their OK, run
+The browser is on another device here, so the server needs the address that browser opens. Continue in a session on
+that machine, or an SSH session they already use. With their OK, run
 `curl -fsSL https://agentrun.ai/install | sh -s -- --tailscale`: it installs AgentRun as a service, shares it on their
 own tailnet only (`tailscale serve`, never Funnel) and prints its `https://<machine>.<tailnet DNS name>/` address. When
 Tailscale is missing or signed out, or Linux needs operator rights, it prints the steps and the command to run again;
-pass them on, and never run `sudo` or `tailscale up` for them. It asks for a setup code (below).
+pass them on, and never run `sudo` or `tailscale up` for them. It asks for a setup code: open its page (below).
+When they already put the machine behind HTTPS of their own (their own `tailscale serve`, a reverse proxy), install
+without `--tailscale`, then give the service that address: `~/.agentrun/bin/agentrun service install --port 7340
+--public-url https://<name>/`, with the proxy pointing at port 7340. Where there is no service manager, stop the one
+in the background (`~/.agentrun/bin/agentrun stop`) and have them start it in a terminal they keep open with
+`~/.agentrun/bin/agentrun --no-open --port 7340 --public-url https://<name>/`.
 On a Linux server they rent (Ubuntu or Debian, as root), run `curl -fsSL https://agentrun.ai/install | sh -s -- --vps`
 instead. It runs AgentRun in Docker, gives its agents a shell, keeps it private the same way and prints the setup code.
 
 ### A hosted service
 
-- **Railway:** they open https://railway.com/deploy/agentrun and deploy it from their own Railway account with one
+- **Railway:** they open https://railway.com/deploy/agentrun-1 and deploy it from their own Railway account with one
   click. The template sets up the image, a volume at `/data` and a public domain, and makes the API token and the seal
   key for them. Never create the service yourself with a Railway CLI.
 - **Render:** they open https://render.com/deploy?repo=https://github.com/Parcha-ai/agentrun and confirm the plan
@@ -151,16 +176,30 @@ instead. It runs AgentRun in Docker, gives its agents a shell, keeps it private 
 - **AgentRun Cloud:** hosted for you, by request. They request access at https://console.agentrun.ai/ and follow its
   onboarding; the steps below don't apply. For team onboarding, offer https://calendly.com/d/dtwn-dsp-nx5/agentrun.
 
-### The setup code
+### Open the setup page
 
-A server at a public address asks for a **setup code** before the first password; say where it is with the address.
-On Railway, the service's **Variables** tab holds `AGENTRUN_TOKEN`, and on Render its **Environment** tab does; they
-paste its value into **Setup code**. Elsewhere, the
-server's log has `Set up this server: <address>/setup#code=<code>`: read it privately and give them the newest such
-link. Never put the API token (`AGENTRUN_TOKEN`, or `.token` in the data folder) in the chat. The link works **once**
-and **expires 30 minutes** after it was printed. Then they press **Get a new code**, or you send
-`curl -sS -X POST "$CONSOLE_ADDRESS/v2/setup/code"` (it never returns the code) and read the newest line. A server
-that answers that with 404 has no such button: restarting it prints a new code.
+Open the setup page in the person's browser yourself, with the code filled in: never send a link for them to click
+while you can open it, and never a command that prints or fetches the code.
+
+1. Find the link. Where the installer or `~/.agentrun/bin/agentrun service` started AgentRun, run
+   `~/.agentrun/bin/agentrun open` on that machine: it opens the page with a code that is still good, or prints the
+   link where no browser opens. Otherwise read the server's log privately (`journalctl --user -u <unit>`, `docker logs
+   <container>`, the terminal it runs in): the newest `Set up this server: <address>/setup#code=<code>` (a server at a
+   public address; the code fills in **Setup code**). With no such line, the server is on loopback and needs no code:
+   the link is the console address followed by `setup`.
+2. Open it in a browser they are looking at: `open "<link>"` (macOS), `xdg-open "<link>"` (Linux) or `start ""
+   "<link>"` (Windows) when this session runs on their computer, where the installer has already opened it; else your
+   client's browser or preview tool. Only when you have neither, send the link itself as the first line.
+3. Say it is open and sets the owner password. A link with a code works **once** and **expires 30 minutes** after it
+   was printed: give that clock time with its time zone when you can tell.
+
+The setup link is not the API token: it works once and briefly, so it may go to an opener, a browser tool or the chat.
+Never the API token (`AGENTRUN_TOKEN`, or `.token` in the data folder). On Railway or Render, whose log you may not
+read, open the console address and say where the value for **Setup code** is: they paste `AGENTRUN_TOKEN` there
+themselves. On Railway, the service's **Variables** tab holds `AGENTRUN_TOKEN`, and on Render its **Environment** tab
+does. An expired code: they press **Get a new code**, or you send `curl -sS -X POST "$CONSOLE_ADDRESS/v2/setup/code"`
+(it never returns the code), read the newest line and open it. A server that answers that with 404 has no such button:
+restarting it prints a new code.
 
 ## 4. Look for the agents they already run
 
@@ -244,6 +283,8 @@ because it runs on the plan you already pay for, with no key to find.
 - OpenRouter key: a key with a spend limit you set, pasted in the console.
 - Local model: free, on this computer; offer it only when a model with tool calling is already pulled.
 
+If they already run a LiteLLM or other OpenAI-compatible proxy, they answer **Model gateway** (the tool's free answer).
+
 On **Continue with ChatGPT**, they open `<console address>/#/settings/keys` (Settings → Model keys), press **Continue
 with ChatGPT** and sign in on OpenAI's page themselves. On a server that isn't this computer, the sign-in tab ends on a
 page that won't load: they copy that page's whole address into the console. The sign-in is theirs alone.
@@ -253,16 +294,26 @@ plenty), and paste it into Settings → Model keys, never into this chat; it wor
 and Team plans include monthly API credits: a key from the Claude Console organization linked to the plan, saved
 there, runs the claude-agent harness on them (AgentRun Cloud included). Pro, Free and Enterprise plans don't.
 
+On **Model gateway**, they open `<console address>/#/settings/keys` (Settings → Model keys), press **Use a model
+gateway**, enter its address and key there (never in this chat), press **Test**, pick the default model from the list
+it shows, and save; it works without a restart. Every model then goes to the gateway, not to a provider's key.
+
 On **Local model**, only on this computer, give the service the model; it restarts with it and keeps it:
 
 ```sh
-~/.agentrun/bin/agentrun service install --env AGENT_MODEL_BASE_URL=http://localhost:11434/v1 --env AGENT_MODEL_GATEWAY_IDS=bare --env AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0
+~/.agentrun/bin/agentrun service install --env AGENT_MODEL_BASE_URL=http://localhost:11434/v1 --env AGENT_MODEL_GATEWAY_IDS=bare --env AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0 --env AGENT_MODEL_API_KEY=none
 ```
 
-Where AgentRun runs in the background, run `~/.agentrun/bin/agentrun stop`, then the installer with the same four in
-front of `sh`: `curl -fsSL https://agentrun.ai/install | AGENT_MODEL_BASE_URL=http://localhost:11434/v1
-AGENT_MODEL_GATEWAY_IDS=bare AGENT_MODEL=<tag> AGENT_MODEL_PRICE=0,0,0 sh`. Then confirm `models.ready` in the
-capabilities.
+`AGENT_MODEL_API_KEY=none` is the key Ollama ignores: without one the server refuses each run (`model_key_required`).
+Where AgentRun runs in the background, run `~/.agentrun/bin/agentrun stop`, then the installer with the same five in
+front of `sh`: `curl -fsSL https://agentrun.ai/install | AGENT_MODEL_API_KEY=none AGENT_MODEL_BASE_URL=http://localhost:11434/v1
+AGENT_MODEL_GATEWAY_IDS=bare AGENT_MODEL=<tag> AGENT_MODEL_PRICE=0,0,0 sh`. A background start keeps only what that
+line sets, so on **Yes, only me** (step 3) put `AGENTRUN_MCP_ALLOW_LOOPBACK=1 AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` in
+front of `sh` too. Then confirm `models.ready` in the capabilities, and on **Yes, only me** both switches `on: true`
+under `switches`.
+
+Claude Code through a gateway they already run (LiteLLM, say): restart the server with `ANTHROPIC_BASE_URL=<gateway>
+ANTHROPIC_API_KEY=<its key, or any placeholder when it adds its own>`; the gateway must take Anthropic Messages at `/v1/messages`.
 
 ## 7. Create the first agent and run it
 
@@ -285,6 +336,8 @@ it is the fastest way to a finished result, and the cap bounds the spend.
 ~/.agentrun/bin/agentrun runs start release-notes --wait --timeout 300 --max-cost-usd 0.25 --body '{"input":{"content":"Write release notes: added CSV export to the runs page; fixed the date filter resetting after refresh; renamed workspace settings to Settings."}}'
 ```
 
+If they want an agent to use a service such as Sentry, GitHub or Slack, follow [Give an agent tools](https://github.com/Parcha-ai/agentrun/blob/main/docs/connect-tools.md): connect it as an MCP server in the console and give the agent its tools, never a token in the box.
+
 ## 8. Hand over
 
 `runs start --wait` prints the run's `status`, `result.final_answer`, `cost.usd` and `console_url` once it ends: show
@@ -295,6 +348,10 @@ For a server elsewhere, the commands above run from here with the command alone 
 (`curl -fsSL https://agentrun.ai/install | sh -s -- --no-start`), `--base-url <address>/v2` and its API token, which
 the person saves in their own terminal with `~/.agentrun/bin/agentrun login --base-url <address>/v2` (it reads
 standard input). Or they create and run the agent in the console.
+
+When something doesn't work, at any step, run `~/.agentrun/bin/agentrun doctor` on the machine AgentRun runs on: it
+checks the setup read-only and prints each problem with what to change (`--json` for you to read; exit 3 means no
+server answers).
 
 Report the console address, the run's link and cost, the data folder, `server.version` and any step still pending.
 On this computer, say how it runs: as a service that starts again at login (`~/.agentrun/bin/agentrun service

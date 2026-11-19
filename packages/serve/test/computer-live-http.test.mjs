@@ -36,6 +36,52 @@ test("a runner run's desktop registers its live view: GET /computer is live with
 
 test("the same on a runner on another host than its server: the viewer's row names the runner's host, and the server reaches it there", { timeout: 120_000, skip: LINUX_ONLY }, (t) => desktopRun(t, REMOTE));
 
+// The run page's header takes and hands back through the routes (POST .../computer/take-over and .../hand-back, as the
+// console's Screen tab does with hands=page), never through the viewer's socket, with the run a process of its own as
+// the CLI's runner runs it (run-child-host.ts childLoops): its hold's changes are committed in the run's process, and
+// the viewer is the runner's. The viewer already open on that page hears each change, drives once the person holds the
+// desktop, and is held again once it is handed back, with no reopen.
+test("a take and a hand-back through the routes reach the viewer already open, the run a process of its own: it hears the person's hold, its input goes through, and it hears the hand-back", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { E2B_API_KEY: "fake-test-key" }, ["E2B_API_KEY", "AGENTRUN_RUNNER_LIVE_HOST", "AGENTRUN_RUNNER_HOSTS"]);
+  const desktop = fakeDesktopProvider({ holdShot: 2 });
+  t.after(() => desktop.letGo());
+  const server = await serve(t, { accounts: true, openSetup: true, faux: FAUX, computers: { load: desktop.load }, childRuns: {} });
+  const owner = await clientOwnerSession(server);
+  const asOwner = (method, p, body) => call(server.port, { method, path: p, headers: { cookie: owner.cookie, origin: owner.origin, ...(body ? { "content-type": "application/json" } : {}) }, body });
+  assert.equal((await server.api("POST", "/agents", agent("desk", { computer: { kind: "desktop", provider: "e2b" } }))).status, 201);
+  const runId = (await server.api("POST", "/agents/desk/runs", { input: { content: "Look at the desktop." } })).body.run_id;
+  const path = `/v2/runs/${runId}/computer`;
+  await until(async () => (await asOwner("GET", path)).json?.state === "live", "the run's desktop went live");
+  const [, id, token] = /^\/v2\/runs\/[^/]+\/computer\/live\/v\/([A-Za-z0-9_-]{22})#t=([A-Za-z0-9_-]{43})$/.exec((await asOwner("GET", path)).json.viewer ?? "") ?? [];
+  const c = await connect(`ws://127.0.0.1:${server.port}/v2/runs/${runId}/computer/live/v/${id}/ws`, { origin: owner.origin, headers: { cookie: owner.cookie } });
+  assert.equal(c.status, 101);
+  const ws = c.ws;
+  t.after(() => ws.destroy());
+  ws.sendJson({ type: "hello", token });
+  assert.deepEqual(await next(ws, "ready"), { type: "ready", drive: "agent", takeOver: true, held: false, kind: "desktop", input: "desktop" });
+  await ws.until((m) => m.type === "binary", 10_000);
+  ws.sendJson({ type: "ack" });
+
+  // Take over from the page's header while the agent's second look is in flight: pending, then the person's.
+  await desktop.inShot;
+  await until(async () => (await server.api("GET", `/runs/${runId}`)).body.computer?.state === "ready", "the run's journal says its desktop is up");
+  const taken = await asOwner("POST", `${path}/take-over`, {});
+  assert.equal(taken.status, 200, taken.text);
+  assert.deepEqual(await next(ws, "status"), { type: "status", drive: "pending" });
+  desktop.letGo();
+  assert.deepEqual(await next(ws, "hold"), { type: "hold", held: true });
+  const typed = desktop.nextInput();
+  ws.sendJson({ type: "key", action: "char", key: "q", code: "KeyQ", text: "q", modifiers: 0 });
+  assert.deepEqual(await typed, [{ type: "type", text: "q" }]);
+
+  // Hand back from the page's header: the same viewer is told, and its input is held again.
+  const given = await asOwner("POST", `${path}/hand-back`, {});
+  assert.equal(given.status, 200, given.text);
+  const back = await next(ws, "hold");
+  assert.deepEqual([back.held, back.reason], [false, "given"]);
+  await follow(server.api, runId, ["completed"]);
+});
+
 test("a runner on another host that is not one of the server's runners: its viewer is never dialled, and GET /computer is not live", { timeout: 120_000, skip: LINUX_ONLY }, async (t) => {
   withEnv(t, { E2B_API_KEY: "fake-test-key", AGENTRUN_RUNNER_LIVE_HOST: "127.0.0.2" }, ["E2B_API_KEY", "AGENTRUN_RUNNER_LIVE_HOST", "AGENTRUN_RUNNER_HOSTS"]);
   const desktop = fakeDesktopProvider({ holdShot: 2 });

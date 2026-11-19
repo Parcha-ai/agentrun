@@ -217,6 +217,10 @@ export interface ModelRequest {
    *  the proxy minted for this label: ModelProxy.sideKey): a learned workflow's model node, say. The harness's own
    *  requests carry none, and it cannot send one that does: it holds only the session's key. */
   host?: string;
+  /** The conversation its client says it is asked in (the model proxy's CONVERSATION_HEADER), when it names one: the
+   *  client's own label, opaque to the booking and not written on its record. A host whose harness runs several
+   *  conversations at once (pi's subagents) reads it to know whose request a booking is. */
+  conversation?: string;
   /** Which of the session's routes it came by, when the session has more than one (ModelProxyOptions.route: a proxy beside
    *  the session's, for a model of another tier): the host prices it by its model and this route, so one model id two
    *  routes price apart is held at the price its route books it at. Absent: the session's own route. */
@@ -461,6 +465,10 @@ export interface AdapterSession {
 
 /** The API a harness's model proxy speaks: what its provider, its keys and its catalog follow from. */
 export type Wire = "anthropic-messages" | "openai-responses";
+/** What a harness's facts say its model is reached on: a Wire of the host's proxy, or `plan`: none, its model is its
+ *  vendor's, billed to its owner's plan on the owner's own key (Cursor), so no request of it reaches a proxy of the host's
+ *  and no provider, key or catalog of the host's is its. */
+export type HarnessWire = Wire | "plan";
 
 /** What a harness is, as its adapter states it: the host reads these and never branches on a harness's name. They
  *  describe the harness; none renames or reshapes what its model sees, and none turns its own built-ins, sandbox or
@@ -470,8 +478,8 @@ export interface AdapterFacts {
   readonly id: string;
   /** Its name in a sentence ("Claude", "Codex", "OpenCode"). */
   readonly label: string;
-  /** The API its model proxy speaks. */
-  readonly wire: Wire;
+  /** The API its model proxy speaks, or `plan` where none of the host's is its (HarnessWire). */
+  readonly wire: HarnessWire;
   /** Whether it takes a message mid-turn (else a message waits for the turn's end). */
   readonly steer: boolean;
   /** False when a tool call that started is never run again by a restart, replay-safe or not: the harness's own process

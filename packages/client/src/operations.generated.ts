@@ -67,10 +67,10 @@ export type Agent = {
     default_permission: "allow" | "ask" | "deny";
     permissions: Array<"allow" | "ask" | "deny">;
   }>;
-  kind?: "agentic" | "workflow" | null;
-  revision?: string | null;
-  revisions?: number;
-  archived_at?: string | null;
+  kind: "agentic" | "workflow" | null;
+  revision: string | null;
+  revisions: number;
+  archived_at: string | null;
   learning?: {
     pending: number;
   };
@@ -99,6 +99,10 @@ export type Agent = {
     version: string;
     sha: string | null;
   } | null;
+  run_blockers?: {
+    message: string;
+    fields: Array<InputIssue>;
+  } | null;
   warnings?: Array<InputIssue>;
 };
 
@@ -119,7 +123,7 @@ export type DefinitionInput = {
   workflow?: JsonObject;
   max_cost_usd?: number;
   sdk?: {
-    runtime: "claude-agent-sdk" | "codex-sdk";
+    runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
   };
   native?: {
     runtime: "claude-code" | "codex";
@@ -345,7 +349,7 @@ export type RunSummary = {
   ended_at: Timestamp | null;
   cost: Cost;
   sdk?: {
-    runtime: "claude-agent-sdk" | "codex-sdk";
+    runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
     model: string | null;
     session_id: string | null;
     learning_revision: string | null;
@@ -459,6 +463,12 @@ export type RunSummary = {
     id: string;
     firing_key: string;
   } | null;
+  path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
+  workflow?: {
+    name: string | null;
+    digest: string | null;
+    repick: "found" | "missed" | null;
+  } | null;
 };
 
 export type RunStatus = "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
@@ -467,14 +477,23 @@ export type RunState = "working" | "waiting" | "idle";
 
 export type Cost = {
   usd: number | null;
-  basis: "charge" | "estimate";
+  basis: "charge" | "estimate" | "reported" | "unpriced";
   charge_state?: "held" | "settled" | "released" | null;
   cap_usd?: number | null;
   free?: true;
   so_far_usd?: number;
   unpriced?: number;
   upper_bound?: true;
+  tokens?: {
+    input: number;
+    output: number;
+    cache_read: number;
+    cache_write: number;
+    requests?: number;
+    unmetered?: number;
+  };
   learning_usd?: number | null;
+  tools_usd?: number | null;
   all_in_usd?: number | null;
   plan?: {
     requests: number;
@@ -563,7 +582,7 @@ export type RunCreateInline = {
   model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
-  }>;
+  } | ComposioRunBinding>;
   labels?: Record<string, string>;
   workflow_first?: boolean;
   learning?: "use";
@@ -580,6 +599,11 @@ export type ExternalRef = {
   kind: string;
   id: string;
   version: string | number;
+};
+
+export type ComposioRunBinding = {
+  composio_user_id: string;
+  connected_account_id?: string;
 };
 
 export type Run = {
@@ -599,7 +623,7 @@ export type Run = {
   cost: Cost;
   poll_after_ms: number;
   sdk?: {
-    runtime: "claude-agent-sdk" | "codex-sdk";
+    runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
     model: string | null;
     session_id: string | null;
     learning_revision: string | null;
@@ -748,6 +772,11 @@ export type Run = {
   } | null;
   audit_of?: string | null;
   path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
+  workflow?: {
+    name: string | null;
+    digest: string | null;
+    repick: "found" | "missed" | null;
+  } | null;
 };
 
 export type RunResult = {
@@ -776,7 +805,7 @@ export type MessageCreate = {
   model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
-  }>;
+  } | ComposioRunBinding>;
 };
 
 export type MessageResult = {
@@ -797,7 +826,7 @@ export type RunCreate = {
   model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
-  }>;
+  } | ComposioRunBinding>;
   labels?: Record<string, string>;
   workflow_first?: boolean;
   learning?: "use";
@@ -959,7 +988,7 @@ export type Capabilities = {
     default_reason?: string;
     allow: Array<string>;
   };
-  harnesses?: Array<{
+  harnesses: Array<{
     id: string;
     label: string;
     promises: {
@@ -980,6 +1009,7 @@ export type Capabilities = {
     reason?: string;
     needs?: Array<"key" | "chatgpt">;
     installs?: "on_first_use";
+    card?: string;
   }>;
   tools: Array<{
     name: string;
@@ -1045,6 +1075,11 @@ export type Capabilities = {
     limit: string;
   };
   run_isolation?: "uid" | "process";
+  switches: Record<string, {
+    on: boolean;
+    value: string | null;
+    allows: string;
+  }>;
 };
 
 export type Features = {
@@ -1129,6 +1164,11 @@ export type Features = {
     signing: "standard-webhooks/v1";
     at_rest: "sealed";
   };
+  slack?: {
+    routes: boolean;
+    events: Array<"run.needs_input" | "run.ended" | "trigger.failed">;
+    at_rest: "sealed";
+  };
   triggers?: {
     routes: boolean;
     sources: Array<"schedule" | "webhook" | "github" | "composio" | "email" | "feed">;
@@ -1180,7 +1220,7 @@ export type Usage = {
   from: Timestamp;
   to: Timestamp;
   currency: "USD";
-  basis: "charge" | "estimate";
+  basis: "charge" | "estimate" | "reported" | "unpriced";
   group_by: "meter" | "agent" | "key" | "day" | "region";
   total_usd: number | null;
   lines: Array<UsageLine>;
@@ -1479,6 +1519,7 @@ export type ListLearningPromotionsResponse = {
       alone_min: number;
       attempt: 1 | 2;
       agree_on?: Array<string>;
+      grader?: string;
       n?: number;
       agreed?: number;
       alone?: number;
@@ -1503,6 +1544,7 @@ export type ListLearningPromotionsResponse = {
         draft?: string;
         escalated?: string;
         failed?: true;
+        differs_on?: string;
       }>;
       stopped?: true;
     };
@@ -1563,6 +1605,7 @@ export type ListLearningPromotionsResponse = {
         alone_min: number;
         attempt: 1 | 2;
         agree_on?: Array<string>;
+        grader?: string;
         n?: number;
         agreed?: number;
         alone?: number;
@@ -1587,6 +1630,7 @@ export type ListLearningPromotionsResponse = {
           draft?: string;
           escalated?: string;
           failed?: true;
+          differs_on?: string;
         }>;
         stopped?: true;
       } | null;
@@ -1995,15 +2039,6 @@ export type GetLearningCostResponse = {
     } | null;
   };
   bill: {
-    baseline: {
-      runs: number;
-      mean_usd: number;
-    } | null;
-    promoted: {
-      n: number;
-      run_id: string;
-      at: string;
-    } | null;
     learning_usd: number;
     points: Array<{
       n: number;
@@ -2221,6 +2256,26 @@ export type DeleteComposioSubscriptionResponse = {
 
 /** Forget this server's email account (DELETE /settings/email). */
 
+/** Stop using the saved model gateway: the provider keys are back in force (DELETE /settings/model-gateway). */
+export type DeleteModelGatewayResponse = {
+  source: "env" | "console" | null;
+  base_url: string | null;
+  ids: "as_named" | "bare";
+  models: {
+    default: string | null;
+    fast: string | null;
+    strong: string | null;
+  };
+  set_at_start: Array<string>;
+  secret: {
+    name: string;
+    set: boolean;
+    source: "env" | "console" | "sign-in" | null;
+    changed_at: string | null;
+  };
+  problem: string | null;
+};
+
 /** Turn Mode 2 off: run folders on this server's own disk (DELETE /workspace/archil). */
 export type DeleteWorkspaceArchilResponse = {
   on: boolean;
@@ -2317,6 +2372,26 @@ export type GetGitHubConnectionResponse = {
     id: number;
     account: string;
   }>;
+};
+
+/** The model gateway in force: the environment's, the one saved here, or none (GET /settings/model-gateway). */
+export type GetModelGatewayResponse = {
+  source: "env" | "console" | null;
+  base_url: string | null;
+  ids: "as_named" | "bare";
+  models: {
+    default: string | null;
+    fast: string | null;
+    strong: string | null;
+  };
+  set_at_start: Array<string>;
+  secret: {
+    name: string;
+    set: boolean;
+    source: "env" | "console" | "sign-in" | null;
+    changed_at: string | null;
+  };
+  problem: string | null;
 };
 
 /** Whether run folders are on Archil disks (Mode 2), the settings, and whether its keys are saved (GET /workspace/archil). */
@@ -2447,6 +2522,7 @@ export type ListComputersResponse = {
     offered: boolean;
     groups: Array<string>;
     tools: Array<string>;
+    settings: Array<string>;
     providers: Array<{
       id: string;
       name: string;
@@ -2584,6 +2660,8 @@ export type SaveComposioServerBody = {
   toolkit: string;
   tools: Array<string>;
   user_id?: string;
+  auth_config_id?: string;
+  price_usd?: number;
 };
 export type SaveComposioServerResponse = {
   server: {
@@ -2710,6 +2788,36 @@ export type SaveEmailAccountResponse = {
   password_unreadable: boolean;
 };
 
+/** Use a model gateway for every model, saved here (PUT /settings/model-gateway). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
+export type SaveModelGatewayBody = {
+  base_url: string;
+  api_key?: string | null;
+  ids?: "as_named" | "bare";
+  models?: {
+    default?: string;
+    fast?: string | null;
+    strong?: string | null;
+  };
+};
+export type SaveModelGatewayResponse = {
+  source: "env" | "console" | null;
+  base_url: string | null;
+  ids: "as_named" | "bare";
+  models: {
+    default: string | null;
+    fast: string | null;
+    strong: string | null;
+  };
+  set_at_start: Array<string>;
+  secret: {
+    name: string;
+    set: boolean;
+    source: "env" | "console" | "sign-in" | null;
+    changed_at: string | null;
+  };
+  problem: string | null;
+};
+
 /** Sign out of ChatGPT: the session revoked at OpenAI, then forgotten here (DELETE /settings/chatgpt). */
 export type SignOutChatGPTResponse = {
   revoked: boolean;
@@ -2792,6 +2900,19 @@ export type TestEmailAccountResponse = {
     ok: boolean;
     message: string;
   };
+};
+
+/** Ask a model gateway which models it serves (POST /settings/model-gateway/test). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
+export type TestModelGatewayBody = {
+  base_url?: string;
+  api_key?: string | null;
+};
+export type TestModelGatewayResponse = {
+  ok: true;
+  models: Array<string>;
+} | {
+  ok: false;
+  why: string;
 };
 
 /** Test the Archil account key at its region's control plane (POST /workspace/archil/test). */
@@ -3592,7 +3713,7 @@ export type GetSdkRunResponse = {
 
 /** Register a task executed by an existing backend SDK (POST /agents/{agent_id}/sdk-runs). */
 export type StartSdkRunBody = {
-  runtime: "claude-agent-sdk" | "codex-sdk";
+  runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
   input: string;
   instructions: string;
   model?: string;
@@ -3658,6 +3779,98 @@ export type CallMcpResponse = {
 /** This document (GET /openapi.json). */
 export type GetOpenapiResponse = Record<string, unknown>;
 
+/** Remove Slack; its pending messages are dropped, the log of attempts is kept (DELETE /settings/slack). */
+
+/** Slack's last 50 attempts, newest first (GET /settings/slack/deliveries). */
+export type ListSlackDeliveriesResponse = {
+  attempts: Array<{
+    webhook_id: string;
+    type: "run.needs_input" | "run.ended" | "trigger.failed" | "slack.test";
+    at: string;
+    status_code: number | null;
+    latency_ms: number;
+    error: string | null;
+    retry_at: string | null;
+    redelivery: boolean;
+  }>;
+};
+
+/** Where this server posts run notices in Slack, if it is set; never the URL (GET /settings/slack). */
+export type GetSlackResponse = {
+  configured: false;
+  secret: SecretMeta;
+  events: {
+    "run.needs_input": boolean;
+    "run.ended": boolean;
+    "trigger.failed": boolean;
+  };
+} | {
+  configured: true;
+  url: string;
+  url_state: "sealed" | "unreadable";
+  secret: SecretMeta;
+  events: {
+    "run.needs_input": boolean;
+    "run.ended": boolean;
+    "trigger.failed": boolean;
+  };
+  disabled: {
+    at: string;
+    reason: string;
+  } | null;
+  updated_at: string;
+};
+
+/** Post a message of Slack's log again, once now, under the same id and body (POST /settings/slack/deliveries/{webhook_id}/redeliver). */
+export type RedeliverSlackResponse = {
+  webhook_id: string;
+  type: "run.needs_input" | "run.ended" | "trigger.failed" | "slack.test";
+  at: string;
+  status_code: number | null;
+  latency_ms: number;
+  error: string | null;
+  retry_at: string | null;
+  redelivery: boolean;
+};
+
+/** Set Slack's incoming-webhook URL, or which events it is sent (PUT /settings/slack). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
+export type SaveSlackBody = {
+  url?: string;
+  events?: {
+    "run.needs_input"?: boolean;
+    "run.ended"?: boolean;
+    "trigger.failed"?: boolean;
+  };
+};
+export type SaveSlackResponse = {
+  configured: true;
+  url: string;
+  url_state: "sealed" | "unreadable";
+  secret: SecretMeta;
+  events: {
+    "run.needs_input": boolean;
+    "run.ended": boolean;
+    "trigger.failed": boolean;
+  };
+  disabled: {
+    at: string;
+    reason: string;
+  } | null;
+  updated_at: string;
+};
+
+/** Post a test message to Slack now, once, and say how it went (POST /settings/slack/test). */
+export type TestSlackResponse = {
+  webhook_id: string;
+  type: "run.needs_input" | "run.ended" | "trigger.failed" | "slack.test";
+  at: string;
+  status_code: number | null;
+  latency_ms: number;
+  error: string | null;
+  retry_at: string | null;
+  redelivery: boolean;
+};
+
 /** Counts and cost over every agent and run (GET /stats). */
 export interface GetStatsParams {
   from?: string;
@@ -3681,7 +3894,7 @@ export type GetStatsResponse = {
   }>;
   cost: {
     usd: number | null;
-    basis: "estimate" | null;
+    basis: "reported" | "estimate" | "unpriced" | null;
     unknown_runs: number;
   };
   archived: {
@@ -5229,6 +5442,20 @@ export type RedeliverWebhookResponse = {
   redelivery: boolean;
 };
 
+/** The webhook's new signing secret, shown once; the old one signs nothing from now on (POST /settings/webhook/secret). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code. */
+export type RotateWebhookSecretResponse = {
+  configured: true;
+  url: string;
+  secret: SecretMeta;
+  signing: "sealed" | "unreadable";
+  disabled: {
+    at: string;
+    reason: string;
+  } | null;
+  updated_at: string;
+  signing_secret: string;
+};
+
 /** Set the webhook's URL (PUT /settings/webhook). */
 export type SaveWebhookBody = {
   url: string;
@@ -5348,6 +5575,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   deleteComposioSubscription: {"method":"DELETE","path":"/settings/mcp-servers/{name}/composio/subscription","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteComputer: {"method":"DELETE","path":"/computers/{computer_id}","pathParams":["computer_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   deleteEmailAccount: {"method":"DELETE","path":"/settings/email","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
+  deleteModelGateway: {"method":"DELETE","path":"/settings/model-gateway","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteWorkspaceArchil: {"method":"DELETE","path":"/workspace/archil","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   disconnectGitHub: {"method":"DELETE","path":"/integrations/github","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   finishChatGPTSignIn: {"method":"POST","path":"/settings/chatgpt/sign-in/finish","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5356,6 +5584,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getClaudeLogin: {"method":"GET","path":"/settings/claude-login","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getEmailAccount: {"method":"GET","path":"/settings/email","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getGitHubConnection: {"method":"GET","path":"/integrations/github","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getModelGateway: {"method":"GET","path":"/settings/model-gateway","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getWorkspaceArchil: {"method":"GET","path":"/workspace/archil","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   gitHubCallback: {"method":"GET","path":"/integrations/github/callback","pathParams":[],"multiSegment":[],"query":["code","state"],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   gitHubInstalled: {"method":"GET","path":"/integrations/github/installed","pathParams":[],"multiSegment":[],"query":["installation_id","setup_action","state"],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
@@ -5371,6 +5600,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   saveComposioServer: {"method":"PUT","path":"/settings/mcp-servers/{name}/composio","pathParams":["name"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["toolkit","tools.[]","user_id"],"tagged":false},
   saveComputerKeys: {"method":"PUT","path":"/computers/{provider}/keys","pathParams":["provider"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   saveEmailAccount: {"method":"PUT","path":"/settings/email","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  saveModelGateway: {"method":"PUT","path":"/settings/model-gateway","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["base_url","ids","models.default","models.fast","models.strong"],"tagged":false},
   signOutChatGPT: {"method":"DELETE","path":"/settings/chatgpt","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   startChatGPTSignIn: {"method":"POST","path":"/settings/chatgpt/sign-in","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   startClaudeLogin: {"method":"POST","path":"/settings/claude-login/login","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5378,6 +5608,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   testCalendar: {"method":"POST","path":"/settings/calendar/test","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   testComputer: {"method":"POST","path":"/computers/{provider}/test","pathParams":["provider"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   testEmailAccount: {"method":"POST","path":"/settings/email/test","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  testModelGateway: {"method":"POST","path":"/settings/model-gateway/test","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":true,"publicFields":["base_url"],"tagged":false},
   testWorkspaceArchil: {"method":"POST","path":"/workspace/archil/test","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   turnOffClaudeLogin: {"method":"DELETE","path":"/settings/claude-login","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   turnOnClaudeLogin: {"method":"PUT","path":"/settings/claude-login","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5425,6 +5656,12 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getHealth: {"method":"GET","path":"/health","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   callMcp: {"method":"POST","path":"/mcp","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getOpenapi: {"method":"GET","path":"/openapi.json","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  deleteSlack: {"method":"DELETE","path":"/settings/slack","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
+  listSlackDeliveries: {"method":"GET","path":"/settings/slack/deliveries","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getSlack: {"method":"GET","path":"/settings/slack","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  redeliverSlack: {"method":"POST","path":"/settings/slack/deliveries/{webhook_id}/redeliver","pathParams":["webhook_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  saveSlack: {"method":"PUT","path":"/settings/slack","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":true,"publicFields":[],"tagged":false},
+  testSlack: {"method":"POST","path":"/settings/slack/test","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getStats: {"method":"GET","path":"/stats","pathParams":[],"multiSegment":[],"query":["from","to","agent"],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   applyTemplate: {"method":"POST","path":"/templates/{template}/apply","pathParams":["template"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   deleteTemplate: {"method":"DELETE","path":"/templates/{template}","pathParams":["template"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
@@ -5448,6 +5685,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   listWebhookDeliveries: {"method":"GET","path":"/settings/webhook/deliveries","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getWebhook: {"method":"GET","path":"/settings/webhook","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   redeliverWebhook: {"method":"POST","path":"/settings/webhook/deliveries/{webhook_id}/redeliver","pathParams":["webhook_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  rotateWebhookSecret: {"method":"POST","path":"/settings/webhook/secret","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":true,"publicFields":[],"tagged":false},
   saveWebhook: {"method":"PUT","path":"/settings/webhook","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   testWebhook: {"method":"POST","path":"/settings/webhook/test","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   validateWorkflow: {"method":"POST","path":"/workflows/validate","pathParams":[],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5569,6 +5807,8 @@ export function resources(call: Call) {
       deleteComputer: (computerId: string, options?: RequestOptions): Promise<void> => call("deleteComputer", [computerId], undefined, undefined, options),
       /** Forget this server's email account (DELETE /settings/email). */
       deleteEmailAccount: (options?: RequestOptions): Promise<void> => call("deleteEmailAccount", [], undefined, undefined, options),
+      /** Stop using the saved model gateway: the provider keys are back in force (DELETE /settings/model-gateway). */
+      deleteModelGateway: (options?: RequestOptions): Promise<DeleteModelGatewayResponse> => call("deleteModelGateway", [], undefined, undefined, options),
       /** Turn Mode 2 off: run folders on this server's own disk (DELETE /workspace/archil). */
       deleteWorkspaceArchil: (options?: RequestOptions): Promise<DeleteWorkspaceArchilResponse> => call("deleteWorkspaceArchil", [], undefined, undefined, options),
       /** Disconnect GitHub: the App's credentials gone from this server, and every github trigger off (DELETE /integrations/github). */
@@ -5585,6 +5825,8 @@ export function resources(call: Call) {
       getEmailAccount: (options?: RequestOptions): Promise<GetEmailAccountResponse> => call("getEmailAccount", [], undefined, undefined, options),
       /** Whether a GitHub App is connected, and if so its id, slug and installations, never a secret (GET /integrations/github). */
       getGitHubConnection: (options?: RequestOptions): Promise<GetGitHubConnectionResponse> => call("getGitHubConnection", [], undefined, undefined, options),
+      /** The model gateway in force: the environment's, the one saved here, or none (GET /settings/model-gateway). */
+      getModelGateway: (options?: RequestOptions): Promise<GetModelGatewayResponse> => call("getModelGateway", [], undefined, undefined, options),
       /** Whether run folders are on Archil disks (Mode 2), the settings, and whether its keys are saved (GET /workspace/archil). */
       getWorkspaceArchil: (options?: RequestOptions): Promise<GetWorkspaceArchilResponse> => call("getWorkspaceArchil", [], undefined, undefined, options),
       /** List a saved Composio server's toolkit's events, for a composio trigger (GET /settings/mcp-servers/{name}/composio/events). */
@@ -5611,6 +5853,8 @@ export function resources(call: Call) {
       saveComputerKeys: (provider: string, body: SaveComputerKeysBody, options?: RequestOptions): Promise<SaveComputerKeysResponse> => call("saveComputerKeys", [provider], body, undefined, options),
       /** Save this server's email account, its password sealed (PUT /settings/email). */
       saveEmailAccount: (body: SaveEmailAccountBody, options?: RequestOptions): Promise<SaveEmailAccountResponse> => call("saveEmailAccount", [], body, undefined, options),
+      /** Use a model gateway for every model, saved here (PUT /settings/model-gateway). */
+      saveModelGateway: (body: SaveModelGatewayBody, options?: RequestOptions): Promise<SaveModelGatewayResponse> => call("saveModelGateway", [], body, undefined, options),
       /** Sign out of ChatGPT: the session revoked at OpenAI, then forgotten here (DELETE /settings/chatgpt). */
       signOutChatGpt: (options?: RequestOptions): Promise<SignOutChatGPTResponse> => call("signOutChatGPT", [], undefined, undefined, options),
       /** Start signing in with ChatGPT: the link to open (POST /settings/chatgpt/sign-in). */
@@ -5623,6 +5867,8 @@ export function resources(call: Call) {
       testComputer: (provider: string, options?: RequestOptions): Promise<TestComputerResponse> => call("testComputer", [provider], undefined, undefined, options),
       /** Sign in to the email account's IMAP and SMTP servers, sending nothing (POST /settings/email/test). */
       testEmailAccount: (body?: TestEmailAccountBody, options?: RequestOptions): Promise<TestEmailAccountResponse> => call("testEmailAccount", [], body, undefined, options),
+      /** Ask a model gateway which models it serves (POST /settings/model-gateway/test). */
+      testModelGateway: (body?: TestModelGatewayBody, options?: RequestOptions): Promise<TestModelGatewayResponse> => call("testModelGateway", [], body, undefined, options),
       /** Test the Archil account key at its region's control plane (POST /workspace/archil/test). */
       testWorkspaceArchil: (options?: RequestOptions): Promise<TestWorkspaceArchilResponse> => call("testWorkspaceArchil", [], undefined, undefined, options),
       /** Turn off Claude Code's login on this machine (DELETE /settings/claude-login). */
@@ -5730,6 +5976,20 @@ export function resources(call: Call) {
       /** This document (GET /openapi.json). */
       openapi: (options?: RequestOptions): Promise<GetOpenapiResponse> => call("getOpenapi", [], undefined, undefined, options),
     },
+    slack: {
+      /** Remove Slack; its pending messages are dropped, the log of attempts is kept (DELETE /settings/slack). */
+      delete: (options?: RequestOptions): Promise<void> => call("deleteSlack", [], undefined, undefined, options),
+      /** Slack's last 50 attempts, newest first (GET /settings/slack/deliveries). */
+      deliveries: (options?: RequestOptions): Promise<ListSlackDeliveriesResponse> => call("listSlackDeliveries", [], undefined, undefined, options),
+      /** Where this server posts run notices in Slack, if it is set; never the URL (GET /settings/slack). */
+      get: (options?: RequestOptions): Promise<GetSlackResponse> => call("getSlack", [], undefined, undefined, options),
+      /** Post a message of Slack's log again, once now, under the same id and body (POST /settings/slack/deliveries/{webhook_id}/redeliver). */
+      redeliver: (webhookId: string, options?: RequestOptions): Promise<RedeliverSlackResponse> => call("redeliverSlack", [webhookId], undefined, undefined, options),
+      /** Set Slack's incoming-webhook URL, or which events it is sent (PUT /settings/slack). */
+      save: (body: SaveSlackBody, options?: RequestOptions): Promise<SaveSlackResponse> => call("saveSlack", [], body, undefined, options),
+      /** Post a test message to Slack now, once, and say how it went (POST /settings/slack/test). */
+      test: (options?: RequestOptions): Promise<TestSlackResponse> => call("testSlack", [], undefined, undefined, options),
+    },
     /** Counts and cost over every agent and run (GET /stats). */
     stats: (params?: GetStatsParams, options?: RequestOptions): Promise<GetStatsResponse> => call("getStats", [], undefined, params, options),
     /** Usage by meter over a period (GET /usage). */
@@ -5785,6 +6045,8 @@ export function resources(call: Call) {
       get: (options?: RequestOptions): Promise<GetWebhookResponse> => call("getWebhook", [], undefined, undefined, options),
       /** Send a message of the log again, once now, under the same webhook-id and body (POST /settings/webhook/deliveries/{webhook_id}/redeliver). */
       redeliver: (webhookId: string, options?: RequestOptions): Promise<RedeliverWebhookResponse> => call("redeliverWebhook", [webhookId], undefined, undefined, options),
+      /** The webhook's new signing secret, shown once; the old one signs nothing from now on (POST /settings/webhook/secret). */
+      rotateSecret: (options?: RequestOptions): Promise<RotateWebhookSecretResponse> => call("rotateWebhookSecret", [], undefined, undefined, options),
       /** Set the webhook's URL (PUT /settings/webhook). */
       save: (body: SaveWebhookBody, options?: RequestOptions): Promise<SaveWebhookResponse> => call("saveWebhook", [], body, undefined, options),
       /** Send a `webhook.test` message now, once, and say how it went (POST /settings/webhook/test). */

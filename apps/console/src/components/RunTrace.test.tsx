@@ -32,7 +32,10 @@ const rows = (host: Element) => [...host.querySelectorAll("tbody tr")].filter((t
 const callRows = (host: Element) => [...host.querySelectorAll("section[aria-label='Trace'] > div > table > tbody > tr")];
 const rowOf = (host: Element, text: string) => callRows(host).find((tr) => tr.textContent?.includes(text));
 const panel = (host: Element) => host.querySelector("aside[aria-label='Call details']");
-const tile = (host: Element, label: string) => [...host.querySelectorAll("p.caps")].find((p) => p.textContent === label)?.parentElement;
+const tile = (host: Element, label: string) => [...host.querySelectorAll("dl[aria-label='The run in figures'] dt")].find((dt) => dt.textContent === label)?.parentElement;
+const overviewOf = (host: Element) => host.querySelector("section[aria-label='Overview of the run']")!;
+const zoomSaid = (host: Element) => host.querySelector("[role=group][aria-label=\"Zoom the table's time axis\"] [role=status]")!.textContent;
+const named = (host: Element, name: string) => host.querySelector<HTMLButtonElement>(`button[aria-label='${name}']`)!;
 const pick = async (host: Element, name: string, value: string) => click(host.querySelector(`input[name="${name}"][value="${value}"]`));
 const type = async (input: HTMLInputElement, value: string) => {
   await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value); input.dispatchEvent(new Event("input", { bubbles: true })); });
@@ -63,15 +66,83 @@ describe("the Dev tools tab", () => {
     expect(rowOf(host, "lookup_account")!.textContent).toContain("Not metered");
   });
 
-  it("draws each span on the time axis, a lane for requests and one for calls; a bar opens its span", async () => {
+  it("draws the whole run in an overview, a lane for requests and one for calls; a bar opens its span", async () => {
     const host = await open(TRACE);
-    const lanes = [...host.querySelectorAll("section[aria-label='Calls on the time axis'] p.caps")].map((p) => p.textContent);
-    expect(lanes).toEqual(["Model requests (8)", "Tool calls (16)"]);
-    const bar = host.querySelector<HTMLElement>("button[aria-label^='Tool bash, ok, 38.6 s']")!;
+    const overview = overviewOf(host);
+    expect([...overview.querySelectorAll("p.caps")].map((p) => p.textContent)).toEqual(["Model requests (8)", "Tool calls (16)"]);
+    // The overview is a picture: a screen reader gets one sentence for it, and the keyboard no stop in it.
+    expect(overview.querySelector("[role=img]")!.getAttribute("aria-label")).toBe("The run on a time axis: 8 model requests and 16 tool calls over 3m 45s. The table lists each.");
+    expect(overview.querySelectorAll("[role=img] button, [role=img] [tabindex]")).toHaveLength(0);
+    const bar = overview.querySelector<HTMLElement>("[data-span='t:0:call_10']")!;
     expect(bar.style.left).toBe(`${((54_200 - 3400) / 224_500) * 100}%`);
     await click(bar);
     expect(panel(host)!.textContent).toContain("python extract_filings.py");
-    expect(bar.getAttribute("aria-pressed")).toBe("true");
+    expect(bar.hasAttribute("data-open")).toBe(true);
+    // Every bar and swatch is a mark with an edge that shows under forced colours, where a fill alone is not drawn.
+    expect([...overview.querySelectorAll("[data-span], li > span[aria-hidden], p.caps > span[aria-hidden]")].every((mark) => mark.classList.contains("trace-mark"))).toBe(true);
+    // Its row is now the table's stop for the keyboard.
+    expect(rowOf(host, "extract_filings")!.querySelector("button")!.tabIndex).toBe(0);
+  });
+
+  it("puts each row's bar on the table's own time axis, under marks that name the time", async () => {
+    const host = await open(TRACE);
+    const head = host.querySelector("section[aria-label='Trace'] > div > table > thead th[data-axis]")!;
+    expect(head.querySelector(".sr-only")!.textContent).toBe("On the time axis");
+    expect([...head.querySelectorAll("[aria-hidden] > span")].map((mark) => mark.textContent)).toEqual(["0:00", "1:00", "2:00", "3:00"]);
+    const bar = rowOf(host, "extract_filings")!.querySelector<HTMLElement>("[data-bar]")!;
+    expect(Number.parseFloat(bar.style.left)).toBeCloseTo(((54_200 - 3400) / 224_500) * 100, 6);
+    expect(Number.parseFloat(bar.style.width)).toBeCloseTo((38_600 / 224_500) * 100, 6);
+    // The bar draws what the Started and Duration cells say in figures: a screen reader reads those.
+    expect(bar.closest("td")!.getAttribute("aria-hidden")).toBe("true");
+    // A call that failed is striped as well as red: told by more than its colour.
+    expect(rowOf(host, "northwind-freight-audit\"}")!.querySelector("[data-bar]")!.className).toContain("trace-hatch");
+  });
+
+  it("zooms the table's time axis: the overview frames the part that shows, and the table lists what ran in it", async () => {
+    const host = await open(TRACE);
+    expect(named(host, "Zoom out").disabled).toBe(true);
+    expect(zoomSaid(host)).toBe("");
+    expect(named(host, "Earlier")).toBeNull();
+    await click(named(host, "Zoom in"));
+    // Half the run shows, about its middle: from a quarter of the way in (56.1 s of 3m 45s) to three quarters.
+    expect(zoomSaid(host)).toBe("+0:56.1 to +2:48.3");
+    const band = overviewOf(host).querySelector<HTMLElement>("[data-band]")!;
+    expect([band.style.left, band.style.width]).toEqual(["25%", "50%"]);
+    // What ran between 59.5 s and 171.8 s after the run's start: the long shell command, two requests, the four calls
+    // of the first, the request after them, the mail call and the request that wrote the report.
+    expect(callRows(host)).toHaveLength(9);
+    expect(callRows(host)[0]!.textContent).toContain("extract_filings");
+    expect(host.querySelector("[role=status]")!.textContent).toBe("9 of 24 shown");
+    expect([...host.querySelectorAll("section[aria-label='Trace'] > div > table > thead th[data-axis] [aria-hidden] > span")].map((mark) => mark.textContent)).toEqual(["1:00", "1:30", "2:00", "2:30"]);
+    await click(named(host, "Later"));
+    expect(zoomSaid(host)).toBe("+1:52.2 to +3:44.5");
+    expect(named(host, "Later").disabled).toBe(true);
+    await click(named(host, "Fit the whole run"));
+    expect(zoomSaid(host)).toBe("");
+    expect(callRows(host)).toHaveLength(24);
+  });
+
+  it("a drag across the overview picks the part of the run the table shows; a press that does not move opens a bar", async () => {
+    const host = await open(TRACE);
+    const overview = host.querySelector<HTMLElement>("[data-overview]")!;
+    overview.getBoundingClientRect = () => ({ left: 100, width: 1000, top: 0, height: 60, right: 1100, bottom: 60, x: 100, y: 0, toJSON: () => ({}) });
+    const point = async (type: string, x: number, on: Element = overview) => { await act(async () => { on.dispatchEvent(new MouseEvent(type, { clientX: x, button: 0, bubbles: true })); }); };
+    await point("pointerdown", 300);
+    await point("pointermove", 500);
+    // While the drag goes, the overview shows what it has picked so far: from a fifth of the way in to two fifths.
+    const band = overview.querySelector<HTMLElement>("[data-band]")!;
+    expect(Number.parseFloat(band.style.left)).toBeCloseTo(20, 6);
+    expect(Number.parseFloat(band.style.width)).toBeCloseTo(20, 6);
+    await point("pointerup", 600);
+    expect(zoomSaid(host)).toBe("+0:44.9 to +1:52.2");
+    await click(named(host, "Fit the whole run"));
+    // A press and a release in one place is no drag: the bar under it opens.
+    const bar = overview.querySelector<HTMLElement>("[data-span='t:0:call_10']")!;
+    await point("pointerdown", 330, bar);
+    await point("pointerup", 330, bar);
+    await click(bar);
+    expect(zoomSaid(host)).toBe("");
+    expect(panel(host)!.textContent).toContain("python extract_filings.py");
   });
 
   it("opens a model request to its tokens by kind, the share of its input read from cache, and its cost", async () => {
@@ -137,10 +208,13 @@ describe("the Dev tools tab", () => {
     await pick(host, "trace-kind", "all");
     await type(host.querySelector<HTMLInputElement>("input[aria-label='Filter calls']")!, "bash pip");
     expect(callRows(host)).toHaveLength(1);
-    // A span the filter leaves out stays on the time axis, dimmed.
-    expect(host.querySelector("button[aria-label^='Tool skill']")!.className).toContain("opacity-25");
+    // How many the filter keeps is said as it changes, where a screen reader hears it.
+    expect(host.querySelector("[role=status]")!.textContent).toBe("1 of 24 shown");
+    // A span the filter leaves out stays on the overview, dimmed.
+    expect(host.querySelector("[data-span='t:0:call_01']")!.className).toContain("opacity-25");
     await type(host.querySelector<HTMLInputElement>("input[aria-label='Filter calls']")!, "no-such-call");
-    expect(host.querySelector("[role=status]")!.textContent).toBe("No call matches. Clear the filter to see all 24.");
+    expect(host.querySelector("[role=status]")!.textContent).toBe("0 of 24 shown");
+    expect(host.textContent).toContain("No call matches. Clear the filter to see all 24.");
   });
 
   it("sorts by a column, the most first, and back to the order they started", async () => {
@@ -155,24 +229,77 @@ describe("the Dev tools tab", () => {
     expect(callRows(host)[0]!.textContent).toContain("+0:00.0");
   });
 
-  it("moves from span to span on the time axis with the arrow keys, one stop for the keyboard", async () => {
+  it("the table is one stop for the keyboard: the arrows move from row to row, and an open panel follows", async () => {
     const host = await open(TRACE);
-    const axis = host.querySelector("[role=group][aria-label^='Calls on the time axis']")!;
-    expect(axis.querySelectorAll("button[tabindex='0']")).toHaveLength(1);
-    const key = async (name: string) => { await act(async () => { axis.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true })); }); await settle(); };
-    await key("ArrowRight");
+    const body = host.querySelector("section[aria-label='Trace'] > div > table > tbody")!;
+    const stops = () => body.querySelectorAll("button[tabindex='0']");
+    expect(stops()).toHaveLength(1);
+    expect(stops()[0]).toBe(callRows(host)[0]!.querySelector("button"));
+    const key = async (name: string) => { await act(async () => { body.dispatchEvent(new KeyboardEvent("keydown", { key: name, bubbles: true })); }); await settle(); };
+    // With no panel open, the arrows move the keyboard and open nothing.
+    await key("ArrowDown");
+    expect(document.activeElement).toBe(callRows(host)[1]!.querySelector("button"));
+    expect(panel(host)).toBeNull();
+    await click(document.activeElement);
     expect(panel(host)!.querySelector("h2")!.textContent).toBe("skill");
+    // A screen reader is told the panel opened: it is beside the table, not where the keyboard is.
+    expect(host.querySelector("section[aria-label='Trace'] > p[role=status]")!.textContent).toBe("Details shown for skill. Escape closes them.");
+    // With one open, it follows the row the keyboard is on.
     await key("End");
     expect(panel(host)!.textContent).toContain("+3:42.4");
-    await key("ArrowLeft");
+    await key("ArrowUp");
     expect(panel(host)!.querySelector("h2")!.textContent).toBe("write");
-    expect(axis.querySelectorAll("button[tabindex='0']")).toHaveLength(1);
+    expect(stops()).toHaveLength(1);
+    expect(stops()[0]).toBe(document.activeElement);
+    // Escape closes the panel from the table, where the keyboard is, and leaves it on its row.
+    const row = document.activeElement;
+    await key("Escape");
+    expect(panel(host)).toBeNull();
+    expect(document.activeElement).toBe(row);
+    // With no panel open, Escape is not the table's to take.
+    const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    await act(async () => { body.dispatchEvent(escape); });
+    expect(escape.defaultPrevented).toBe(false);
+  });
+
+  it("a row's name is what it shows, and the cells beside it say how long it took and how it ended", async () => {
+    const host = await open(TRACE);
+    const button = callRows(host)[1]!.querySelector("button")!;
+    // No label of its own in place of its words: speech that names what is seen ("click skill") finds it.
+    expect(button.hasAttribute("aria-label")).toBe(false);
+    expect(button.textContent).toBe('Toolskill{"skill":"supplier-screening"}');
+    expect(button.getAttribute("aria-describedby")!.split(" ").map((id) => document.getElementById(id)!.textContent)).toEqual(["4 ms", "OK"]);
+    // A cell with no figure is a dash to the eye and a word to a screen reader.
+    const cost = [...callRows(host)[1]!.querySelectorAll("td")].at(-2)!;
+    expect(cost.querySelector("[aria-hidden]")!.textContent).toBe("–");
+    expect(cost.querySelector(".sr-only")!.textContent).toBe("None");
+  });
+
+  it("splits a span's time in three: what it waited, how long it ran, and how long what came next took to start", async () => {
+    // The browser step: its request answered at 26.6 s, it started at 26.8 s and ran to 39.2 s, and the next request
+    // started at 39.4 s.
+    const host = await open(TRACE, { open: "t:0:call_08" });
+    const timing = () => panel(host)!.querySelector("section[aria-label='Timing']")!;
+    expect(timing().textContent).toMatch(/^Timing12\.8 s/);
+    expect([...timing().querySelectorAll("dl > div")].map((row) => row.textContent)).toEqual(["Waited to startsince the answer of claude-sonnet-5-5200 ms", "Ran for12.4 s", "Until the next request startedclaude-sonnet-5-5200 ms"]);
+    expect(timing().querySelector("[role=img]")!.getAttribute("aria-label")).toBe("Waited to start 200 ms, Ran for 12.4 s, Until the next request started 200 ms");
+    // What it waited on opens from here: the request that called it.
+    await click(timing().querySelector("button"));
+    expect(panel(host)!.textContent).toContain("+0:20.1");
+    // That request: the fetch before it ended at 23.3 s and it started at 23.5 s; its call started 200 ms after its answer.
+    expect([...timing().querySelectorAll("dl > div")].map((row) => row.textContent)).toEqual(["Waited to startsince the end of web_fetch200 ms", "Answered in3.1 s", "Until its first call startedrun200 ms"]);
   });
 
   it("breaks the run down: what stands out, where the time and the cost went, and by model and by tool", async () => {
     const host = await open(TRACE);
     await pick(host, "trace-view", "breakdown");
     const section = (label: string) => host.querySelector(`section[aria-label='${label}']`)!;
+    // The figures every run has: the first request answered 4.8 s in and the first call started at 5.0 s; the last
+    // request sent the most (2 + 85,712 + 6,886 tokens); three searches ran at once from 5.2 s; and the longest stretch
+    // with nothing going was the 300 ms after the last search ended.
+    expect([...section("Run vitals").querySelectorAll("li")].map((li) => li.textContent)).toEqual([
+      "First answer4.8 sclaude-sonnet-5-5", "First tool call5.0 sskill", "Largest input92.6K tokensRequest 8 of 8", "Most calls at once3First at +0:05.2", "Longest pause300 msAfter web_search",
+    ]);
     expect(section("What stands out").textContent).toContain("1 call failed: web_fetch");
     expect(section("What stands out").textContent).toContain("Most expensive request: $0.1349");
     expect(section("Where the time went").textContent).toMatch(/A model answering1m 26s · 38%.*A tool running2m 15s · 60%.*Neither3\.1 s · 1%/);
@@ -180,7 +307,12 @@ describe("the Dev tools tab", () => {
     expect(section("Each request").querySelectorAll("[role=group] button")).toHaveLength(8);
     expect(section("By model").textContent).toMatch(/claude-sonnet-5-5.*81%.*\$0\.6132/);
     const bash = [...section("By tool").querySelectorAll("tbody tr")].find((tr) => tr.textContent?.startsWith("bash"))!;
-    expect([...bash.querySelectorAll("td")].map((td) => td.textContent)).toEqual(["2", "0", "47.5 s", "8.9 s", "38.6 s", "38.6 s", "–", "51.8 KB"]);
+    expect([...bash.querySelectorAll("td")].map((td) => td.textContent)).toEqual(["2", "0", "47.5 s", "8.9 s", "38.6 s", "38.6 s", "–None", "51.8 KB"]);
+    // The Breakdown's parts are headings of the tab, one level under the page's.
+    expect([...host.querySelectorAll("section[aria-label='Trace'] h2")].map((h) => h.textContent)).toEqual(["Run vitals", "What stands out", "Where the time went", "Where the cost went", "Each request, in the order they ran", "By model", "By tool"]);
+    // A vital opens its span, as a finding does.
+    await click([...section("Run vitals").querySelectorAll("button")].find((b) => b.textContent?.includes("Largest input")));
+    expect(panel(host)!.textContent).toContain("+3:42.4");
     // What stands out opens its span.
     await click([...section("What stands out").querySelectorAll("button")].find((b) => b.textContent?.includes("Slowest call")));
     expect(panel(host)!.querySelector("h2")!.textContent).toBe("mcp:mail/send_draft");
@@ -231,8 +363,8 @@ describe("the Dev tools tab", () => {
   it("a CLI harness's run: says its record keeps no model request, and shows its calls alone", async () => {
     const host = await open(TRACE_CLI);
     expect(host.textContent).toContain("This run's harness keeps no record of each model request");
-    expect(tile(host, "Model requests")?.textContent).toMatch(/–Not kept by this harness/);
-    expect([...host.querySelectorAll("section[aria-label='Calls on the time axis'] p.caps")].map((p) => p.textContent)).toEqual(["Tool calls (5)"]);
+    expect(tile(host, "Model requests")?.textContent).toMatch(/–NoneNot kept by this harness/);
+    expect([...overviewOf(host).querySelectorAll("p.caps")].map((p) => p.textContent)).toEqual(["Tool calls (5)"]);
     expect(callRows(host)).toHaveLength(5);
   });
 
@@ -271,11 +403,11 @@ describe("the Dev tools tab", () => {
     expect(wrote[1]).toBe("Parsed 14 filings\ndirectors: 2\ncharges: 0");
   });
 
-  it("a long run lists its first 300 rows until asked for the rest; every span stays on the time axis", async () => {
+  it("a long run lists its first 300 rows until asked for the rest; every span stays on the overview", async () => {
     const many = Array.from({ length: 320 }, (_, i) => ({ ...TRACE.spans[1]!, id: `t:0:n${i}`, tool_use_id: `n${i}`, started_at: new Date(TRACE_START + i * 100).toISOString(), ended_at: new Date(TRACE_START + i * 100 + 50).toISOString() }));
     const host = await open({ ...TRACE, spans: many });
     expect(callRows(host)).toHaveLength(300);
-    expect(host.querySelectorAll("[role=group][aria-label^='Calls on the time axis'] button")).toHaveLength(320);
+    expect(host.querySelectorAll("[data-overview] [data-span]")).toHaveLength(320);
     await click([...host.querySelectorAll("button")].find((b) => b.textContent === "Show all 320"));
     expect(callRows(host)).toHaveLength(320);
   });
@@ -290,6 +422,39 @@ describe("the Dev tools tab", () => {
     for (const pane of scrolls) expect(pane.className.split(/\s+/)).toContain("relative");
     // Each hidden radio's nearest positioned ancestor is a pane of the tab, never something outside it.
     for (const radio of host.querySelectorAll("input.sr-only")) expect(radio.closest(".relative")?.closest("[data-scroll-pane]")).toBe(host.querySelector("[data-scroll-pane]"));
+  });
+
+  it("beside an open panel the table's time axis and its Size column show by the width of the table's pane, never the window's", async () => {
+    // A window 1536 wide leaves the table 740 px beside the panel, and with its axis and Size it needs some 920: shown
+    // from that window width on (`2xl:`), they made the pane scroll sideways until the window was some 1700 wide.
+    // (jsdom lays nothing out: the widths themselves are measured in a browser, e2e/flows/dev-tools-panel-width.mjs.)
+    const host = await open(TRACE, { open: "m:0:24" });
+    const pane = host.querySelector("section[aria-label='Trace']")!;
+    expect(pane.className.split(/\s+/)).toContain("@container");
+    const table = pane.querySelector(":scope > div > table")!;
+    const at = [...table.querySelectorAll("thead th")].findIndex((th) => th.textContent === "Size");
+    const axis = [...table.querySelectorAll("[data-axis]")];
+    const size = [...table.querySelectorAll("tr")].map((tr) => tr.children[at]!);
+    expect([axis.length, size.length]).toEqual([25, 25]);
+    // Hidden, shown under `xl` (the panel is under the table there) and shown again once the pane is wide enough.
+    for (const cell of axis) expect(cell.className.split(/\s+/).filter((c) => /(^|:)(hidden|table-cell)$/.test(c))).toEqual(["hidden", "md:max-xl:table-cell", "@4xl:table-cell"]);
+    for (const cell of size) expect(cell.className.split(/\s+/).filter((c) => /(^|:)(hidden|table-cell)$/.test(c))).toEqual(["hidden", "max-xl:table-cell", "@5xl:table-cell"]);
+    // With none open the table has the page to itself: its axis from `md` on, its Size column always.
+    await click(named(host, "Close call details"));
+    expect(panel(host)).toBeNull();
+    for (const cell of table.querySelectorAll("[data-axis]")) expect(cell.className.split(/\s+/).filter((c) => /(^|:)(hidden|table-cell)$/.test(c))).toEqual(["hidden", "md:table-cell"]);
+    for (const tr of table.querySelectorAll("tr")) expect(tr.children[at]!.className).not.toMatch(/hidden|table-cell/);
+  });
+
+  it("a cell's hidden words are set against the table's own box, so the ones scrolled out of view do not scroll the pane sideways", async () => {
+    // A dash reads "None" to a screen reader, in words placed out of the flow. Set against the pane, the ones in the part
+    // of a wide table scrolled out of view made the pane scroll sideways under `xl`, over nothing.
+    const host = await open(TRACE);
+    const table = host.querySelector("section[aria-label='Trace'] > div > table")!;
+    // The sample's sixteen calls: five were charged and one says it is not metered, so ten have a dash for a cost.
+    const hidden = [...table.querySelectorAll("td .sr-only")];
+    expect(hidden.map((words) => words.textContent)).toEqual(Array(10).fill("None"));
+    for (const words of hidden) expect(words.closest(".relative")).toBe(table.parentElement);
   });
 
   it("says when spans were left out, and when the run made none", async () => {
@@ -365,6 +530,16 @@ describe("the run page", () => {
     await click(tab(host, "Dev tools"));
     expect(read).toHaveBeenCalledTimes(1);
     expect(callRows(host)).toHaveLength(24);
+  });
+
+  it("ties each view's body to its tab: the open tab names a panel that is there, and the panel names its tab", async () => {
+    const host = await page(async () => TRACE);
+    for (const label of ["Report", "Timeline", "Dev tools"]) {
+      await click(tab(host, label));
+      const body = document.getElementById(tab(host, label)!.getAttribute("aria-controls")!);
+      expect(body?.getAttribute("role"), label).toBe("tabpanel");
+      expect(body!.getAttribute("aria-labelledby"), label).toBe(tab(host, label)!.id);
+    }
   });
 
   it("reads the trace again when a row changes in place: a charge folded into a call's own row adds no row", async () => {

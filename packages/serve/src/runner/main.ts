@@ -8,7 +8,8 @@
 // memory holds: the server's --max-runs default, host.ts maxRunsOf). SIGTERM or SIGINT closes it: each busy run finishes
 // its turn for up to --drain-timeout (default AGENTRUN_DRAIN_TIMEOUT, else RUNNER_DRAIN_TIMEOUT), then every loop left is stopped where it can resume
 // and its run handed back for another runner (a loop that never stops is given up when its claim would run out, and its
-// run is claimable when its lease lapses); then 0. Bad arguments exit 2, a store schema it does not know 3, anything else 1.
+// run is claimable when its lease lapses); then 0. Bad arguments exit 2, a store it cannot open (yet) 3, anything else 1.
+// A run isolation it cannot give (run-child-host.ts runIsolationOf) is said, and it stays up claiming nothing until a stop: 0.
 // An error nothing handles exits 1 at once, said with its stack (lastResort).
 import { mkdirSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -26,7 +27,7 @@ import { FAUX_ENV, FAUX_PREFIX, withoutFaux } from "../model.js";
 import { durationMs, runLine } from "../print.js";
 import { bootSealKey } from "../seal-key.js";
 import { handedSecret, SECRET_NAMES, secret } from "../secrets.js";
-import { migrationsIn, openStore, SchemaVersionUnknown, type Store, storePlace, storeTarget } from "../store/index.js";
+import { migrationsIn, openStore, SchemaVersionUnknown, type Store, StoreAwaitsServer, storePlace, storeTarget } from "../store/index.js";
 import { SCHEMA_VERSION } from "../store/schema.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "../tool-keys.js";
 import { FAUX_BROWSER_ENV } from "../tools.js";
@@ -101,8 +102,8 @@ export class RunnerRefused extends Error {
 }
 
 /** The store, opened as a runner, its kind and its schema version: refused when its schema is one this build does not
- *  know, or not set up yet. The one place the runner opens its store (store/open.ts: Postgres when AGENTRUN_STORE_URL
- *  names one, else SQLite in the data directory). */
+ *  know, not set up yet, or not yet upgraded by its server. The one place the runner opens its store (store/open.ts:
+ *  Postgres when AGENTRUN_STORE_URL names one, else SQLite in the data directory). */
 export async function openRunnerStore(dataDir: string, env: NodeJS.ProcessEnv, warn: (message: string) => void, url: string | undefined): Promise<{ store: Store; kind: string; schema: number }> {
   // The store module owns where the store is (design: only the store adapter knows a file or a schema). The URL is this
   // process's secret (as the launcher handed it over), unless a test hands one.
@@ -114,6 +115,7 @@ export async function openRunnerStore(dataDir: string, env: NodeJS.ProcessEnv, w
     const store = await openStore({ dataDir, role: "runner", env, warn, ...(url === undefined ? {} : { url }) });
     return { store, kind: target.kind, schema: target.kind === "sqlite" ? SCHEMA_VERSION : migrationsIn().at(-1)!.version };
   } catch (error) {
+    if (error instanceof StoreAwaitsServer) throw new RunnerRefused(`The store in ${where} is behind this runner: start the server first, which upgrades the store in place, then the runner.`, { cause: error });
     if (!(error instanceof SchemaVersionUnknown)) throw error;
     const { found, known } = error;
     throw new RunnerRefused(
@@ -462,9 +464,9 @@ export function troubleLine(name: string, event: RunnerEvent): string | undefine
   return undefined;
 }
 
-/** `agentrun-serve runner ...`: the exit code. 2: bad arguments; 3: a store schema this runner does not know (or none
- *  set up yet); 1: anything else; 0: closed on a signal, or --check found a fresh heartbeat. AGENTRUN_RUNNER_NAME names
- *  it when --name does not. */
+/** `agentrun-serve runner ...`: the exit code. 2: bad arguments; 3: a store this runner cannot open (a schema it does not
+ *  know, none set up yet, or one its server has yet to upgrade); 1: anything else; 0: closed on a signal, or --check found
+ *  a fresh heartbeat. AGENTRUN_RUNNER_NAME names it when --name does not. */
 export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessEnv = process.env, hooks: RunnerMainHooks = {}): Promise<number> {
   let args: ReturnType<typeof runnerArgs>;
   try {
@@ -527,8 +529,11 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
     isolation = await runIsolationOf(env, told ? holds.loops : undefined, (line) => void console.error(`agentrun-serve runner: ${line}`));
   } catch (error) {
     if (!(error instanceof RunIsolationRefused)) throw error;
+    // Said, then up and claiming nothing until a stop: in the image's server-and-runner either process's exit stops the
+    // container, which a platform that restarts it (Render, Railway) would loop on, the refusal lost in the restarts.
     console.error(`agentrun-serve runner: ${error.message}`);
-    return 2;
+    await untilSignalled(RUNNER_SIGNALS);
+    return 0;
   }
   if (isolation.kind === "uid" && holds.loops > isolation.slots) console.error(`agentrun-serve runner: each run runs as a user of its own, and the helper reaches ${isolation.slots} slots from slot ${isolation.first}: this runner holds at most ${isolation.slots} runs at once`);
   holds = { ...holds, loops: isolationLoops(isolation, holds.loops) };
@@ -572,7 +577,7 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
   } catch (error) {
     unlisten();
     console.error(`agentrun-serve runner: ${(error as Error)?.message ?? String(error)}`);
-    return error instanceof RunnerRefused && error.cause instanceof SchemaVersionUnknown ? 3 : 1;
+    return error instanceof RunnerRefused && (error.cause instanceof SchemaVersionUnknown || error.cause instanceof StoreAwaitsServer) ? 3 : 1;
   }
   await hooks.started?.(started);
   // From here the handlers below take the stop, with nothing awaited between: no signal falls in a gap.
@@ -594,6 +599,20 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
 
 /** The signals that stop a runner process. */
 const RUNNER_SIGNALS: readonly NodeJS.Signals[] = ["SIGTERM", "SIGINT"];
+
+/** Holds the process up, with nothing else to do, until one of `signals`. */
+function untilSignalled(signals: readonly NodeJS.Signals[]): Promise<void> {
+  return new Promise<void>((resolve) => {
+    // A signal's listener alone does not keep Node's loop alive.
+    const alive = setInterval(() => {}, 2 ** 30);
+    const onSignal = () => {
+      for (const signal of signals) process.off(signal, onSignal);
+      clearInterval(alive);
+      resolve();
+    };
+    for (const signal of signals) process.on(signal, onSignal);
+  });
+}
 
 /** A test's hooks into runnerMain: `started`, awaited once the runner has started claiming and before its stop handlers
  *  take over from the ones its start listened on (the window a stop must not fall through). */

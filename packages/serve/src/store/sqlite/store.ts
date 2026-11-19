@@ -13,9 +13,9 @@ import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
 import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
-  AgentArchived, AgentDeleting, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, type AgentRow, type Agents,
+  AgentArchived, AgentDeleting, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
-  type JournalReads, type LaunchSealedWrite, type RunLabels, type UpdatedRun,
+  type JournalReads, type KeptListing, type LaunchSealedWrite, type RunLabels, type UpdatedRun,
   type ReleasedState, type RunState, type SecureRewriteOptions, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type LearningSpend, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpRemoved, type McpServerRow, type McpServerWrite,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings, type Channels, type ChannelAttemptRow, type ChannelPostRow,
@@ -311,7 +311,7 @@ function isThisVersionsStore(file: string, busyTimeoutMs: number): boolean {
  *  default): makes the data directory, takes the owner lock (StoreOwned when another server holds it) and, on a store with
  *  no schema yet, sets schema SCHEMA_VERSION up in one durable commit. As a runner: makes and sets up nothing. Either
  *  refuses a schema version this build does not know (SchemaVersionUnknown); a runner refuses no schema (or no data
- *  directory) too. */
+ *  directory) too, and a store this build's server has yet to upgrade (StoreAwaitsServer). */
 export async function openSqliteStore(options: SqliteStoreOptions): Promise<Store> {
   // No in-memory store: a caller that names neither place (an undefined passed through) is refused before anything is
   // opened or made, never left to open a path built from "undefined" (its owner lock in the working directory).
@@ -340,38 +340,38 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       await connection.write([...DDL.map((sql) => ({ sql })), { sql: "INSERT INTO store_meta (singleton, schema_version) VALUES (1, ?) ON CONFLICT (singleton) DO NOTHING", params: [SCHEMA_VERSION] }], { full: true });
       found = await versionOf(connection);
     }
-    // Version 11 (0.1.0-beta.43 and before) keeps no listing on a run's row: the server adds it (schema.ts listingUpgrade)
+    // Version 11 (0.1.0-beta.44 and before) keeps no listing on a run's row: the server adds it (schema.ts listingUpgrade)
     // in one durable write once the columns an earlier build of 11 lacked are in, every run behind until its lister builds
     // it. Version 12 names no minting runner on a machine's token and keeps no runner's relay: the server adds them
     // (schema.ts relayUpgrade). A runner refuses 11 and 12 until that server has.
     const upgrading = found === SCHEMA_VERSION - 2 || found === SCHEMA_VERSION - 1;
-    if (upgrading && role === "runner") throw new Error(`Start the AgentRun server to bring this store from version ${found} to ${SCHEMA_VERSION} before opening a runner. The runner does not upgrade this store.`);
+    if (upgrading && role === "runner") throw new StoreAwaitsServer(`bring this store from version ${found} to ${SCHEMA_VERSION}`);
     if (found !== SCHEMA_VERSION && !upgrading) throw new SchemaVersionUnknown(file, found, SCHEMA_VERSION);
     const columns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('revisions')")).map((column) => column.name));
-    if (role === "runner" && (!columns.has("mcp_pin") || !columns.has("monid_pin"))) throw new Error("Start the AgentRun server to install MCP and Monid revision metadata before opening a runner. The runner does not upgrade this store.");
+    if (role === "runner" && (!columns.has("mcp_pin") || !columns.has("monid_pin"))) throw new StoreAwaitsServer("install MCP and Monid revision metadata");
     const nativeOwners=(await connection.all<{name:string}>("PRAGMA table_info(settings)")).some(column=>column.name==='connector_id');
     if(!nativeOwners){
-      if(role==='runner')throw new Error('Native command ownership metadata is not prepared. Start this build’s server before its runners.');
+      if(role==='runner')throw new StoreAwaitsServer('add native command ownership metadata');
       await connection.write([{sql:'ALTER TABLE settings ADD COLUMN connector_id TEXT'}],{full:true});
     }
     // An earlier build of this version kept no bound beside a run's cost (schema.ts RUNS_COST_UPPER_BOUND): the server adds
     // it, every run it ended reading 0, and a runner, which writes it at each end, waits for that server.
     const runColumns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('runs')")).map((column) => column.name));
     if (!runColumns.has("cost_upper_bound")) {
-      if (role === "runner") throw new Error("Start the AgentRun server to add the bound beside each run's cost before opening a runner. The runner does not upgrade this store.");
+      if (role === "runner") throw new StoreAwaitsServer("add the bound beside each run's cost");
       await connection.write([{ sql: RUNS_COST_UPPER_BOUND }], { full: true });
     }
     // An earlier build of this version kept no labels on a run (schema.ts RUNS_LABELS): the server adds the column, nullable,
     // every run it started reading as given none. A runner reads each run through it, so it waits for that server.
     if (!runColumns.has("labels")) {
-      if (role === "runner") throw new Error("Start the AgentRun server to add each run's labels before opening a runner. The runner does not upgrade this store.");
+      if (role === "runner") throw new StoreAwaitsServer("add each run's labels");
       await connection.write([{ sql: RUNS_LABELS }], { full: true });
     }
     // An earlier build of this version kept no package mark on a trigger (schema.ts TRIGGERS_TEMPLATE_ID): the server adds
     // the column, nullable, every trigger made before reading as no package's. A runner reads each trigger through it, so
     // it waits for that server.
     if (!(await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('triggers')")).some((column) => column.name === "template_id")) {
-      if (role === "runner") throw new Error("Start the AgentRun server to add each trigger's package mark before opening a runner. The runner does not upgrade this store.");
+      if (role === "runner") throw new StoreAwaitsServer("add each trigger's package mark");
       await connection.write([{ sql: TRIGGERS_TEMPLATE_ID }], { full: true });
     }
     // The per-run viewer table was renamed browser_viewers → computer_viewers (schema.ts). Its rows are ephemeral, so none
@@ -679,8 +679,12 @@ class SqliteStore implements Store {
           for (const t of off) await writeScopes(tx, t.id, []);
           return off.map(({ id: triggerId, name }) => ({ id: triggerId, name })).sort((a, b) => a.name.localeCompare(b.name));
         }),
-      addRevision: async ({ agentId, ifCurrent, ...revision }) => {
-        await db.transaction((tx) => insertRevision(tx, agentId, revision, now(), ifCurrent));
+      addRevision: async ({ agentId, ifCurrent, description, ...revision }) => {
+        await db.transaction(async (tx) => {
+          await insertRevision(tx, agentId, revision, now(), ifCurrent);
+          // Under the row lock insertRevision took, after its ifCurrent passed: the revision and the description, or neither.
+          if (description !== undefined) await tx.run("UPDATE agents SET description = ? WHERE id = ?", description, agentId);
+        });
       },
       setCurrent: async (agentId, revisionId) => {
         const changed = await db.transaction((tx) => tx.runCounted(
@@ -1105,7 +1109,7 @@ class SqliteStore implements Store {
         return {
           rows: rows.slice(0, limit).map((row) => ({
             row: runOf(row), agentArchivedAt: row.agent_archived_at, listStatus: row.list_status, listMark: Number(row.list_mark), behind: Boolean(Number(row.behind)),
-            listing: row.listing === null ? null : (JSON.parse(row.listing) as { item: Record<string, unknown>; cut: string }),
+            listing: row.listing === null ? null : (JSON.parse(row.listing) as KeptListing),
           })),
           more: rows.length > limit,
         };
