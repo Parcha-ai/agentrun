@@ -12,8 +12,8 @@
 // one, at its public address): the plain address shows the Setup code field and its note; the setup code (or the
 // server's API token) in F, with the owner's password in P, sets the password and signs in; over https the page carries
 // Strict-Transport-Security. Neither file's content is printed. --run ID then opens that run's page and checks the console
-// reads it completed, --screenshot FILE keeps that page as a PNG, and --resolve IP reaches the --url's host at IP (a
-// platform's proxy on this machine: deploy/selfhost/walk.sh).
+// reads it completed, --screenshot FILE keeps that page as a PNG, and --proxy URL sends the browser's requests through
+// that HTTP proxy (a platform's proxy on this machine: deploy/selfhost/walk.sh).
 // No fixed sleeps: every wait is for a condition, with a bound. Exits 0 when every check holds, else 1.
 // Needs the repository built (npm run build). Chrome: CHROME_BIN, else playwright's own; playwright-core: PLAYWRIGHT_CORE
 // (its index.mjs or its index.js: either loads), else the package `playwright-core`.
@@ -93,13 +93,12 @@ async function start(env) {
 }
 
 const arg = (name) => { const at = process.argv.indexOf(name); return at > 1 ? process.argv[at + 1] : undefined; };
-// --resolve IP: the --url's host reached at IP, as curl --resolve does (a platform's proxy on this machine, no DNS). A
-// public name at a loopback or private address is what Chrome's Local Network Access checks refuse
-// (net::ERR_BLOCKED_BY_CLIENT), so they are off for that browser alone.
-const resolve = arg("--resolve");
+// --proxy URL: the browser reaches every address through that HTTP proxy (a platform's own proxy on this machine, which
+// routes by the request's host: no DNS, and no public name at a loopback address, which Chrome 157 refuses).
+const proxy = arg("--proxy");
 const browser = await chromium.launch({
   ...(process.env.CHROME_BIN ? { executablePath: process.env.CHROME_BIN } : {}),
-  ...(resolve && arg("--url") ? { args: [`--host-resolver-rules=MAP ${new URL(arg("--url")).hostname} ${resolve}`, "--disable-features=LocalNetworkAccessChecks,BlockInsecurePrivateNetworkRequests,PrivateNetworkAccessSendPreflights"] } : {}),
+  ...(proxy ? { proxy: { server: proxy } } : {}),
 });
 if (arg("--url")) console.log(`--   Chrome ${browser.version()}`);
 /** A fresh browser page on `url`: the page, and the first document's response headers. */

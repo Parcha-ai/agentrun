@@ -124,7 +124,7 @@ ended_once "first run" "$(api end "$run")" 3
 # password and signs in, and the run's page reads it completed. SCREENSHOT=<file> keeps that page as a PNG.
 (umask 077 && env_of AGENTRUN_TOKEN >"$work/code" && openssl rand -hex 16 >"$work/password")
 shot=${SCREENSHOT:-$work/console.png}
-if ! node "$here/../../apps/console/e2e/setup-code.e2e.mjs" --url "$url" --resolve 127.0.0.1 --setup-code-file "$work/code" \
+if ! node "$here/../../apps/console/e2e/setup-code.e2e.mjs" --url "$url" --proxy http://127.0.0.1:80 --setup-code-file "$work/code" \
   --password-file "$work/password" --run "$run" --screenshot "$shot" >"$work/console.log" 2>&1; then
   # Its checks' FAIL lines, else (Chrome never started) the log's last lines: the code and the password are files, in none.
   why=$(grep -E '^(FAIL|--   Chrome)' "$work/console.log" | tr '\n' ' ')
