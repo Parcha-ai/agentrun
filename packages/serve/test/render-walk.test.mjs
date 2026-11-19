@@ -50,28 +50,44 @@ onStop(async () => writeFileSync(${JSON.stringify(mark)}, "deleted")); console.l
   }
 });
 
-test("the walk tries a request again while Render's edge answers 502, 503 or 504, and takes any other answer as the server's", async () => {
+test("the walk tries a request again only while Render's edge answers (502, 503 or 504, not JSON), a POST under one Idempotency-Key, within its time", async () => {
   const { throughEdge } = await import("../../../deploy/render/walk.mjs");
-  const answers = (statuses) => {
+  // The edge answers in HTML or nothing; the server always in JSON.
+  const edge = (status) => new Response("<html>bad gateway</html>", { status, headers: { "content-type": "text/html" } });
+  const server = (status) => new Response(JSON.stringify({ error: { code: "unavailable" } }), { status, headers: { "content-type": "application/json" } });
+  const answering = (answers) => {
     const sent = [];
-    return { sent, fetch: async (url, init) => { sent.push([url, init?.method]); return new Response("{}", { status: statuses.shift() ?? 201 }); } };
+    return { sent, fetch: async (url, init) => { sent.push(init); return answers.shift() ?? new Response("{}", { status: 201, headers: { "content-type": "application/json" } }); } };
   };
-  const opts = (f, retried) => ({ fetch: f.fetch, waitMs: 1, forMs: 1_000, retried });
 
-  const edge = answers([502, 503, 504]);
+  const flaky = answering([edge(502), edge(503), edge(504)]);
   const retried = { n: 0 };
-  assert.equal((await throughEdge("https://x.onrender.com/v2/setup", { method: "POST" }, opts(edge, retried))).status, 201);
+  const created = await throughEdge("https://x.onrender.com/v2/agents/a/runs", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }, { fetch: flaky.fetch, waitMs: 1, forMs: 1_000, retried });
+  assert.equal(created.status, 201);
   assert.equal(retried.n, 3);
-  assert.deepEqual(edge.sent.map(([, m]) => m), ["POST", "POST", "POST", "POST"]);
+  // Each send of the POST carries the same key, so a create the server did make is replayed, not made again.
+  const keys = flaky.sent.map((init) => new Headers(init.headers).get("idempotency-key"));
+  assert.equal(keys.length, 4);
+  assert.ok(keys[0] && keys.every((k) => k === keys[0]), JSON.stringify(keys));
+  assert.equal(new Headers(flaky.sent[0].headers).get("content-type"), "application/json", "the caller's headers are kept");
 
-  // The server's own refusal is the answer: never sent again.
-  const refused = answers([409]);
-  assert.equal((await throughEdge("https://x.onrender.com/v2/setup", { method: "POST" }, opts(refused, { n: 0 }))).status, 409);
-  assert.equal(refused.sent.length, 1);
+  // The server's own 503 (JSON) and its refusals are its answer: returned at once, never sent again.
+  for (const answer of [server(503), server(409)]) {
+    const once = answering([answer]);
+    assert.equal((await throughEdge("https://x.onrender.com/v2/setup", { method: "POST" }, { fetch: once.fetch, waitMs: 1, forMs: 1_000 })).status, answer.status);
+    assert.equal(once.sent.length, 1);
+  }
 
-  // An edge that keeps failing: its last answer, once the time is up.
-  const down = answers(Array(10_000).fill(502));
-  const t = Date.now();
+  // An edge that keeps failing: its last answer once the time is up, with no send after the deadline.
+  const down = { n: 0, fetch: async () => { down.n++; return edge(502); } };
+  let t = Date.now();
   assert.equal((await throughEdge("https://x.onrender.com/", {}, { fetch: down.fetch, waitMs: 5, forMs: 50 })).status, 502);
   assert.ok(Date.now() - t < 1_000);
+  assert.ok(down.n <= 11, `${down.n} sends in 50 ms at 5 ms apart`);
+
+  // A request that never answers is cut at the time left, not waited on.
+  const hung = (url, init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason)));
+  t = Date.now();
+  await assert.rejects(throughEdge("https://x.onrender.com/", {}, { fetch: hung, waitMs: 5, forMs: 100 }));
+  assert.ok(Date.now() - t < 1_000, `${Date.now() - t} ms`);
 });

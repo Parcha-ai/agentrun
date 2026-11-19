@@ -8,7 +8,7 @@
 //   RENDER_API_KEY=<api key> OPENROUTER_API_KEY=<key> node deploy/render/walk.mjs --owner "<workspace name>"
 // REPORT=<file> puts the report in that file too. Exits 0 on PASS. RENDER_API_KEY, OPENROUTER_API_KEY, AGENTRUN_TOKEN,
 // AGENTRUN_SEAL_KEY and the session cookie are never printed. Render bills by the second: a walk costs about $0.001.
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import { parse } from "yaml";
@@ -35,15 +35,21 @@ export function serviceRequest(blueprint, { ownerId, name, generated }) {
   };
 }
 
-/** A request to the service through Render's edge, which answers 502, 503 or 504 itself while a new deploy takes its
- *  traffic (a 502 came 3 s after the health check passed): those are tried again, every waitMs for up to forMs. Any
- *  other answer is the server's and is returned at once, so a refusal is never sent twice. `retried.n` counts them. */
+/** A request to the service through Render's edge, which answers 502, 503 or 504 itself, not in JSON, while a new deploy
+ *  takes its traffic (a 502 came 3 s after the health check passed). Those are tried again every waitMs until forMs is
+ *  up; any other answer, the server's JSON 503 included, is returned as it is, so a refusal is never sent twice. A POST
+ *  goes under one Idempotency-Key for all its sends: a create the server made before the edge failed is replayed, not
+ *  made again (setup takes no key; a second setup is refused, and the walk fails on it). Every send, and the wait for
+ *  its answer, ends by the deadline. `retried.n` counts the edge's answers. */
 export async function throughEdge(url, init, { fetch: send = fetch, waitMs = 3_000, forMs = 60_000, retried = { n: 0 } } = {}) {
   const end = Date.now() + forMs;
+  const headers = new Headers(init?.headers);
+  if (init?.method === "POST" && !headers.has("idempotency-key")) headers.set("idempotency-key", randomUUID());
   for (;;) {
-    const response = await send(url, init);
-    if (![502, 503, 504].includes(response.status) || Date.now() + waitMs > end) return response;
-    await response.arrayBuffer().catch(() => {});
+    const response = await send(url, { ...init, headers, signal: AbortSignal.timeout(Math.max(1, end - Date.now())) });
+    const fromEdge = [502, 503, 504].includes(response.status) && !/json/i.test(response.headers.get("content-type") ?? "");
+    if (!fromEdge || Date.now() + waitMs >= end) return response;
+    await response.body?.cancel().catch(() => {});
     retried.n++;
     await new Promise((r) => setTimeout(r, waitMs));
   }
