@@ -167,6 +167,11 @@ a harness row carries:
   asks, so its tools are gated only by its config).
 - `billing`: `proxy` or `plan`.
 
+The report's `gate` says how the tool gate was reached: each permission the agent asked for, and each question the gate
+was asked. A permission the adapter can't tie to a call of AgentRun's tools reaches the gate as the agent's own
+(`acp_<kind>`, with the agent's title), as Goose 1.59.2's `agentrun: check echo` does; the check answers it by the tool
+the title names.
+
 `--cap USD` bounds what the check spends (default $0.25). `--data DIR` is the data directory the agent was installed
 into. Exit 0 when every check passed, 1 when the recipe was refused, the binary is not installed or pinned, or a check
 failed, 2 for a wrong flag.
