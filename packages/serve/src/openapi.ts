@@ -1421,8 +1421,6 @@ const TEMPLATE_WHOLE = {
   instructions: { type: "string", description: "The agent's instructions in full (agent.md's body), placeholders unfilled: what a third party's package would tell the agent." },
   skill_files: { type: "object", additionalProperties: { type: "string" }, description: "Every skill file the agent would be given, by path under its skills folder (`<skill>/SKILL.md`, the rules and the answer's schema beside each), in full." },
 };
-/** template-read/1: one package read whole by its id (GET /templates/{template}). */
-const TEMPLATE_READ_MARK = { "x-agentrun-serve": "template-read/1" };
 const TEMPLATE_READ = closed({
   ...TEMPLATE_WHOLE,
   console_url: { type: "string", format: "uri", description: "The package's apply page in the console." },
@@ -3202,7 +3200,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "A bundled package or an imported one, by its id. The package as GET /templates lists it (its `computer_here` read against this server now), with its instructions and skill files in full, placeholders unfilled, as an import's answer shows them: what a person or a coding agent reads before applying it. Nothing is made or changed.",
       parameters: [{ name: "template", in: "path", required: true, schema: { type: "string" }, description: "The package's id (GET /templates `id`), URL-encoded: a bundled one's name, or an imported one's `github%3A<owner>%2F<repo>…`." }],
       responses: { "200": json(TEMPLATE_READ, "The package."), ...errors(401, 404, 429, 500) },
-      ...TEMPLATE_READ_MARK,
+      ...TEMPLATE_MARK,
     },
     delete: {
       operationId: "deleteTemplate", tags: ["local"], summary: "Remove an imported template package",
