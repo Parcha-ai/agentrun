@@ -17,7 +17,7 @@ export const FLY = defineProvider({
 	metered: true,
 	// Its machines dial the server: Fly's exec answers only once the command ends, so nothing reaches into one.
 	connect: "dial",
-	// None: a machine that dials takes no Archil mount yet (its helper's root steps run through exec, which it has none of).
+	// None: a machine that dials takes no Archil mount (mountsOf).
 	mounts: [],
 	// None: its programs run in init's network of their own, their loopback alone (isolation.ts). Open and a list: their
 	// one way out is init's egress proxy, which reaches the public internet alone, and with a list its hosts alone

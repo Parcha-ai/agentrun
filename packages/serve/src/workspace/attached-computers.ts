@@ -63,7 +63,7 @@ const PAIRED_SANDBOX = "only a Linux box paired with computerd and no display ca
 /** What a driver's hello lacks to serve `kind`, by the kind registry's rule (the computer package's SETTING_KINDS, which
  *  servingRefusals reads): "it says desktop but declares no input.pointer, input.keys", "it says android, which no
  *  desktop computer is"; undefined when the hello serves the kind. The one source of a paired computer's words for a
- *  kind it cannot serve: at pairing (servesNoKind) and at a run's start (withPaired's unservedWhy). */
+ *  kind it cannot serve: at pairing (servesNoKind) and at a run's start (pairedEntry's unserved). */
 export function helloLacks(hello: Partial<HelloResult>, kind: ComputerSettingKind): string | undefined {
   const spec = SETTING_KINDS[kind];
   const said = String(hello.kind ?? "nothing");
@@ -87,14 +87,32 @@ export function servesNoKind(name: string, hello: Partial<HelloResult>): string 
   return `${name}'s driver serves no kind: ${lack}: update the driver on ${name}`;
 }
 
+/** Why the paired computer `row`, which serves `kinds`, gives no computer of `kind`: it is a computer of the person's
+ *  own, and either the attach path carries no such kind (ATTACH_CANNOT: a browser), or it is a desktop or a phone asked
+ *  to be a sandbox (PAIRED_SANDBOX), so the agent takes it as the kind it serves, or its driver lacks what the kind needs
+ *  (helloLacks), so the driver is what to update. Undefined where none of these says why. */
+function pairedUnserved(row: PairedComputerRow, kinds: readonly ComputerSettingKind[], kind: ComputerSettingKind): string | undefined {
+  const as = `give this agent ${row.name} as a ${kinds.join(" or ")} computer`;
+  if (kind in ATTACH_CANNOT && kinds.length > 0) return `it is a computer of your own, and a paired computer can't be a ${kind} computer yet; ${as}`;
+  if (kind === "sandbox" && kinds.length > 0) return `it is a computer of your own, and ${PAIRED_SANDBOX}; ${as}`;
+  const lack = helloLacks(row.hello as Partial<HelloResult>, kind);
+  return lack === undefined ? undefined : `it is a computer of your own, and ${lack}; update the driver on ${row.name}`;
+}
+
 /** A paired computer as a provider of `registry`: named by its name and its os, as an agent's computer picker lists it;
- *  the setting kinds its paired hello serves, no keys, the machine's own network ("open": a run never narrows a person's
- *  own machine), never metered. A sandbox (a Linux box with files and exec) takes the run's folder as a synced folder
- *  (the computer package's attachedProvider checks its /workspace); a desktop or a phone takes no mount. */
+ *  the setting kinds its paired hello serves, why it serves each other one (unserved, pairedUnserved's words), no keys,
+ *  the machine's own network ("open": a run never narrows a person's own machine), never metered. A sandbox (a Linux box
+ *  with files and exec) takes the run's folder as a synced folder (the computer package's attachedProvider checks its
+ *  /workspace); a desktop or a phone takes no mount. */
 export function pairedEntry(row: PairedComputerRow, registry: Pick<KindRegistry, "SETTING_KINDS" | "servingRefusals">): ProviderEntry {
   const hello = row.hello as Partial<HelloResult>;
   const configuration = { kind: String(hello.kind ?? ""), groups: Array.isArray(hello.groups) ? [...hello.groups] : [] } as unknown as KindCapabilities;
-  const kinds = (Object.keys(registry.SETTING_KINDS) as ComputerSettingKind[]).filter((kind) => kind !== "none" && !(kind in ATTACH_CANNOT) && registry.servingRefusals(configuration, kind).length === 0);
+  const named = (Object.keys(registry.SETTING_KINDS) as ComputerSettingKind[]).filter((kind) => kind !== "none");
+  const kinds = named.filter((kind) => !(kind in ATTACH_CANNOT) && registry.servingRefusals(configuration, kind).length === 0);
+  const unserved = Object.fromEntries(named.filter((kind) => !kinds.includes(kind)).flatMap((kind) => {
+    const why = pairedUnserved(row, kinds, kind);
+    return why === undefined ? [] : [[kind, why]];
+  }));
   return {
     id: row.id,
     label: typeof hello.os === "string" ? `${row.name} (${hello.os})` : row.name,
@@ -104,30 +122,15 @@ export function pairedEntry(row: PairedComputerRow, registry: Pick<KindRegistry,
     network: ["open"],
     metered: false,
     capabilities: [configuration],
+    unserved,
     defaultImage: Object.fromEntries(kinds.map((kind) => [kind, ATTACHED_IMAGE])),
   };
 }
 
-/** `registry` with each paired computer of `rows` as one more provider (pairedEntry), and the words for one that cannot
- *  serve a kind an agent asks of it: it is a computer of the person's own, and either the attach path carries no such
- *  kind (ATTACH_CANNOT: a browser), or it is a desktop or a phone asked to be a sandbox (PAIRED_SANDBOX), so the agent
- *  takes it as the kind it serves, or its driver lacks what the kind needs (helloLacks), so the driver is what to update. */
+/** `registry` with each paired computer of `rows` as one more provider (pairedEntry). */
 export function withPaired<R extends KindRegistry>(registry: R, rows: readonly PairedComputerRow[]): R {
   if (rows.length === 0) return registry;
-  const byId = new Map(rows.map((row) => [row.id, row]));
-  const unservedWhy = (entry: ProviderEntry, kind: ComputerSettingKind): string | undefined => {
-    const row = byId.get(entry.id);
-    if (row !== undefined && kind in ATTACH_CANNOT && entry.kinds.length > 0) {
-      return `${row.name} is a computer of your own, and a paired computer can't be a ${kind} computer yet: give this agent ${row.name} as a ${entry.kinds.join(" or ")} computer`;
-    }
-    if (row !== undefined && kind === "sandbox" && entry.kinds.length > 0) {
-      return `${row.name} is a computer of your own, and ${PAIRED_SANDBOX}: give this agent ${row.name} as a ${entry.kinds.join(" or ")} computer`;
-    }
-    const lack = row === undefined ? undefined : helloLacks(row.hello as Partial<HelloResult>, kind);
-    if (row === undefined || lack === undefined) return registry.unservedWhy?.(entry, kind);
-    return `${row.name} is a computer of your own, and its driver gives no ${kind} computer: ${lack}. Update the driver on ${row.name}`;
-  };
-  return { ...registry, PROVIDERS: [...registry.PROVIDERS, ...rows.map((row) => pairedEntry(row, registry))], unservedWhy };
+  return { ...registry, PROVIDERS: [...registry.PROVIDERS, ...rows.map((row) => pairedEntry(row, registry))] };
 }
 
 /** The provider of the paired computer `row`: attachedProvider over the hub, or a refusal in ONE_PROCESS_WORDS where this

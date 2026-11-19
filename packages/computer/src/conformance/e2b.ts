@@ -22,6 +22,7 @@ import type { MountKind } from "../mount.js";
 import { type ArchilRunFolderOptions, archilRunFolder, archilSettings } from "./archil.js";
 import { dialOnlyFromServer } from "./dial-only.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
+import { kindFrom } from "./kind.js";
 import type { RunFolder } from "./types.js";
 
 /** The Archil disk's settings for the mount cases, by name (COMPUTER_ARCHIL_*: all five, or none). */
@@ -67,7 +68,6 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 	if (lifetime !== undefined && !/^\d+$/.test(lifetime)) throw new Error(`${E2B_ENV.maxLifetimeMs} is a whole number of milliseconds, such as 3600000 (Hobby) or 86400000 (Pro)`);
 	const domain = env[E2B_ENV.domain] || undefined;
 	const daemonPath = env[E2B_ENV.daemon] || undefined;
-	const kind = env[E2B_ENV.kind] || undefined;
 	const daemonUser = env[E2B_ENV.user] || undefined;
 	const connect = env[E2B_ENV.connect] || undefined;
 	return {
@@ -76,8 +76,7 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 		...(connect === undefined ? {} : { connect: connect as "exec" | "dial" }),
 		...(domain === undefined ? {} : { domain }),
 		...(daemonPath === undefined ? {} : { daemonPath }),
-		// create() refuses any other kind in words.
-		...(kind === undefined ? {} : { kind: kind as "desktop" | "linux" }),
+		...kindFrom(env, E2B_ENV.kind),
 		...(lifetime === undefined ? {} : { maxLifetimeMs: Number(lifetime) }),
 		...(daemonUser === undefined ? {} : { daemonUser }),
 	};

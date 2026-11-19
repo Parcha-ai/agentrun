@@ -71,7 +71,7 @@ async function previousResultOf(store: Store, deps: TriggerTargetDeps, trigger: 
  *  adapter's sealed settings, the failed-firing webhook) stay server-wired. */
 export type TriggerTargets = {
   targetIssues(target: Target): Promise<InputIssue[]>;
-  start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin, title?: string, previous?: boolean): Promise<{ run_id: string }>;
+  start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin, title: string | undefined, previous: boolean): Promise<{ run_id: string }>;
   message(target: Extract<Target, { kind: "message_run" }>, input: Json, key: string, from: MessageOrigin, bound: { max: number; reason: string }): Promise<void | { skipped: string }>;
   statusOf(runId: string): Promise<string | null>;
   runOf(key: string): Promise<{ run_id: string } | null>;
@@ -108,11 +108,11 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
       const wrong = revision ? await deps.start.explainRun(await deps.start.inputIssuesOf(revision, target.input), { input: target.input }, revision) : [];
       return [...start, ...wrong.map((issue) => ({ ...issue, field: `target.${issue.field}` }))];
     },
-    async start(target, given, trigger, from, title, previous = true) {
+    async start(target, given, trigger, from, title, previous) {
       const entry = await deps.needAgent(target.agent_id);
       // An agentic run is handed its trigger's previous result after its message (previousResultOf), so a repeat run
       // (a weekly digest) leaves out what the last one reported. A workflow's input is its own schema's: nothing is added.
-      // A source whose firings are different people's (an email's sender: its adapter's previousResult false) hands none.
+      // `previous` is its adapter's previousResult (carriesPrevious).
       const content = (given as { content?: unknown }).content;
       const handed = previous && entry.revision?.kind === "agentic" && typeof content === "string" ? await previousResultOf(store, deps, trigger) : "";
       const input = handed ? { ...given, content: `${content}${handed}` } : given;

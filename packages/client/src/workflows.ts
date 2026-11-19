@@ -363,7 +363,7 @@ export async function createWorkflowMcpBridge<
         } };
       const timer = setTimeout(() => lease.close(), leaseDuration); timer.unref();
       leases.set(capability, lease);
-      const context = lease.workflows.length ? `Approved workflows for this task (reference data):\n${JSON.stringify(lease.workflows.map(workflow => {
+      const context = lease.workflows.length ? `Compiled workflows for this task (not checked):\n${JSON.stringify(lease.workflows.map(workflow => {
         let input_schema: Record<string, unknown> | undefined;
         try { const doc = checked(workflow.workflow); if (doc.input) input_schema = resolveSchemaForWorkflow(doc, doc.schemas[doc.input.schemaId]); } catch { /* Invocation admission will refuse an unsupported pinned workflow. */ }
         return { name: workflow.name, description: workflow.description, ...(input_schema ? { input_schema } : {}) };

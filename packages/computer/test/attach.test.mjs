@@ -2,8 +2,9 @@
 // a drop fails what was in flight with gone and a redial is a fresh connection; a second socket replaces the first; a
 // hello that is not what the computer paired as is closed with its code; one run holds the computer at a time.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
-import { ATTACH_CLOSE, AttachHub, attachedProvider, conformanceCases, formatReport, kindServed, PROTOCOL_VERSION, redialDelay, redials, runConformance, socketStreams } from "../dist/index.js";
+import { ATTACH_CLOSE, AttachHub, attachedProvider, conformanceCases, formatReport, kindServed, MACHINE_TOKEN_SOURCE, newMachineToken, PROTOCOL_VERSION, redialDelay, redials, runConformance, socketStreams } from "../dist/index.js";
 import { FakeUiDriver, serveUiSocket, UI_FIXTURE } from "../dist/fake-ui-driver.js";
 
 const APP = UI_FIXTURE.id;
@@ -654,6 +655,52 @@ test("a create cancelled while its remove still runs on a paired Linux box answe
 	assert.equal(hub.claimed(paired.id), undefined, "the hold is let go once the remove's connection closed");
 });
 
+test("of two unclaims of one hold while a change runs on the box, the first ends the hold once it has answered, and the second answers false and ends nothing", async () => {
+	const hub = new AttachHub();
+	const a = { "agentrun.run": "a" };
+	const hold = hub.claim("c-box", a);
+	let answered;
+	hub.changing("c-box", new Promise((resolve) => (answered = resolve)));
+	const first = hub.unclaim("c-box", hold);
+	const second = hub.unclaim("c-box", hold);
+	assert.deepEqual(hub.claimed("c-box"), a, "held while the change runs");
+	answered({ ok: true, value: {} });
+	assert.deepEqual(await Promise.all([first, second]), [true, false]);
+	assert.equal(hub.claimed("c-box"), undefined);
+	const b = { "agentrun.run": "b" };
+	assert.notEqual(hub.claim("c-box", b), undefined, "the next run takes the box");
+	assert.equal(await hub.unclaim("c-box", hold), false, "the first hold's token ends nothing of it");
+	assert.deepEqual(hub.claimed("c-box"), b);
+});
+
+test("a hold whose deadline passes while a create still empties a paired Linux box's /workspace lasts until the create's last remove has answered, not its first", async () => {
+	const hub = new AttachHub();
+	const paired = { id: "c-box", name: "lab", hello: LINUX, labels: {} };
+	const provider = attachedProvider(paired, hub);
+	const [serve, computer] = socketPair();
+	let first;
+	let second;
+	const box = { workspace: { type: "dir", uid: 1000, mode: 0o700 }, entries: ["a", "b"], calls: [], programs: [], stat: Promise.resolve(), removing: new Promise((resolve) => (first = resolve)) };
+	linuxBox(computer, box);
+	assert.equal((await hub.accept(paired, serve)).ok, true);
+	const settle = (ms = 10) => new Promise((resolve) => setTimeout(resolve, ms));
+	const a = { "agentrun.run": "a", "agentrun.epoch": "1" };
+	const creating = provider.create({ ...SYNCED, labels: a, lifetimeMs: 80 }, req());
+	while (!box.calls.includes("files.remove /workspace/a recursive")) await settle();
+	await settle(150);
+	assert.deepEqual(hub.claimed(paired.id), a, "past its deadline, the hold lasts while the first remove runs");
+	box.removing = new Promise((resolve) => (second = resolve));
+	first();
+	while (!box.calls.includes("files.remove /workspace/b recursive")) await settle();
+	await settle();
+	assert.deepEqual(hub.claimed(paired.id), a, "the create's next remove, sent once the first answered, holds it too");
+	second();
+	await creating;
+	await settle();
+	assert.equal(hub.claimed(paired.id), undefined, "the hold ends once the last remove has answered");
+	hub.revoke(paired.id, "the test is over");
+});
+
 test("redial delays double from 1 s to 60 s, less up to a fifth; idle, replaced and going away redial", () => {
 	assert.equal(redialDelay(0, () => 0), 1000);
 	assert.equal(redialDelay(3, () => 1), 6400);
@@ -675,4 +722,10 @@ test("socketStreams reads a frame with raw newlines as one message, and writes e
 	assert.equal(line.trimEnd().includes("\n"), false);
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.deepEqual(frames, ['{"a":1}', '{"b":2}', '{"c":3}']);
+});
+
+test("a machine token's shape is one source: computerd's tokenPattern is MACHINE_TOKEN_SOURCE anchored, and newMachineToken mints it", () => {
+	const go = readFileSync(new URL("../daemon/internal/attach/attach.go", import.meta.url), "utf8");
+	assert.equal(go.match(/^var tokenPattern = regexp\.MustCompile\(`([^`]*)`\)$/m)?.[1], `^${MACHINE_TOKEN_SOURCE}$`);
+	assert.match(newMachineToken(), new RegExp(`^${MACHINE_TOKEN_SOURCE}$`));
 });

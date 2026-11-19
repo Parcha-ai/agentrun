@@ -19,7 +19,7 @@ test("SDK compilation delegates explicitly while managed compilation retains wor
     const prompt = compile(adapters);
     assert.doesNotMatch(prompt, /on later runs it runs first|runs on the agent's model/);
     assert.match(prompt, /Execution still requires an explicit MCP tool call/);
-    assert.match(prompt, /existing agent may select a matching workflow during an ordinary task/);
+    assert.match(prompt, /What you write is a compiled workflow: no check has compared it with the agent's own answers/);
   }
   const managed = compile();
   assert.match(managed, /on later runs it runs first/);

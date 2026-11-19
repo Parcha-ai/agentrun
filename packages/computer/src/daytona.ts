@@ -7,8 +7,8 @@
 // the computer is the shared machine-host adapter's (./hosted/provider.ts). Every Daytona fact used here is cited in the
 // README's Daytona section.
 import { randomBytes } from "node:crypto";
-import { connectOf, mountsOf } from "./descriptor.js";
-import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU, DAYTONA_GPU_REGION, DAYTONA_GPU_SNAPSHOT, DAYTONA_NO_DESKTOP, type DaytonaGpuSnapshot, daytonaGpuSnapshot } from "./descriptors/daytona.js";
+import { connectOf, kindRefusal, mountsOf } from "./descriptor.js";
+import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU, DAYTONA_GPU_REGION, DAYTONA_GPU_SNAPSHOT, type DaytonaGpuSnapshot, daytonaGpuSnapshot } from "./descriptors/daytona.js";
 import { COMPUTER_LABEL } from "./drift.js";
 import { type HostCall, type HostDescriptor, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
 import { type ExecPieces, type FramedEvent, framedExec } from "./hosted/framed-exec.js";
@@ -35,7 +35,7 @@ export type DaytonaTimeouts = HostedTimeouts & { retryMs: number };
 
 /**
  * The Daytona provider's options: the key and Daytona's own settings, then the shared adapter's (HostedOptions), kind
- * among them: linux alone, kind desktop refused in DAYTONA_NO_DESKTOP's words.
+ * among them: linux alone, kind desktop refused in its descriptor's unserved words (kindRefusal).
  */
 export interface DaytonaProviderOptions extends Omit<HostedOptions, "desktop" | "maxLifetimeMs" | "timeouts"> {
 	/** The Daytona API key. The caller passes it; this provider never reads the environment and never puts it in a computer. */
@@ -621,7 +621,8 @@ export class DaytonaProvider extends HostedProvider {
 			...hosted
 		} = options ?? ({} as DaytonaProviderOptions);
 		const via = connectOf(DAYTONA, { connect });
-		if (hosted.kind === "desktop") throw new Error(`${DAYTONA.label} gives no desktop computer: ${DAYTONA_NO_DESKTOP}. Make a Daytona sandbox (kind linux), or a desktop on another provider`);
+		const refused = kindRefusal(DAYTONA, { kind: hosted.kind, connect: via });
+		if (refused !== undefined) throw new Error(refused);
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Daytona API key, is required: the provider reads no environment, so the caller passes it");
 		const base = new URL(apiUrl);
 		if (base.protocol !== "https:") throw new Error(`the Daytona API URL must be https, so the key never crosses in the clear: ${base.protocol}`);

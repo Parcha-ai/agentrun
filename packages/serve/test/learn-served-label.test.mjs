@@ -37,8 +37,8 @@ test("a served run carries its path and workflow on its read and on every list r
   const meets = (path, value) => assert.deepEqual(schemaProblems(doc, doc.paths[path].get.responses["200"].content["application/json"].schema, value), [], `${path}: ${JSON.stringify(value)}`);
   const expected = {
     "by-agent": { path: "agent", workflow: null },
-    "served-1": { path: "workflow", workflow: { name: "mcc-guess", digest: DIGEST } },
-    "handed-1": { path: "handed_back", workflow: { name: "mcc-guess", digest: DIGEST } },
+    "served-1": { path: "workflow", workflow: { name: "mcc-guess", digest: DIGEST, repick: null } },
+    "handed-1": { path: "handed_back", workflow: { name: "mcc-guess", digest: DIGEST, repick: null } },
     "replay-1": { path: "replay", workflow: null },
     "no-path": { path: null, workflow: null },
     "at-work": { path: null, workflow: null },
@@ -66,59 +66,46 @@ test("a served run carries its path and workflow on its read and on every list r
   for (const [id, path] of Object.entries(paths)) assert.equal(expected[id].path, path, `${id}: the run views say the path the cost series says`);
 });
 
-test("lists rebuild same-cut legacy cached rows missing execution path fields, while null fields remain current", async (t) => {
-  const { listingOverStore, builtOfNow } = await import("../dist/store-view.js");
-  const server = await serve(t, { learning: "on", runner: false, listerIdleMs: Infinity });
-  const { api, store, baseUrl } = server;
+// A quote miss re-picks a compiled answer once before it hands back (learn/check.ts): the loop's exit is a row of the
+// run's metrics (`loops`, workflow-first.ts pathMetrics). The run views say whether the served workflow's answer re-picked
+// (`workflow.repick`): `found` when its second pass found its quotes, `missed` when it still missed, null with no second
+// pass. Only a row its run marked a re-pick (`repick`: the loop quoteCheckProblems requires, check.ts repickLabels) counts:
+// an ordinary loop that ran twice, another workflow's loop, or a re-pick that ran once is no re-pick of this run's answer.
+test("a served run's workflow says whether its answer re-picked and whether the re-pick found its quotes, on its read and its list row", async (t) => {
+  const { api, store, baseUrl } = await serve(t, { learning: "on", runner: false });
   assert.equal((await api("POST", "/agents", agent("source", { learning: {} }))).status, 201);
   const revisionId = (await store.agents.get("source")).currentRevision;
-  const cases = [
-    { id: "legacy", missing: ["path", "workflow"] },
-    { id: "missing-path", missing: ["path"] },
-    { id: "missing-workflow", missing: ["workflow"] },
-    { id: "old-unknown", missing: ["path", "workflow"], unknown: true },
-    { id: "unknown", missing: [], unknown: true },
-  ];
-  for (const { id, unknown } of cases) {
+  const end = async (id, metrics) => {
     await store.runs.create({ id, agentId: "source", revisionId }, { body: LEARNS });
     const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
-    await store.runs.update(claim, { state: "ended", outcome: "completed", costUsd: 0.04,
-      ...(unknown ? {} : { metrics: { path: "workflow", workflow: "mcc-guess", workflow_digest: DIGEST } }) });
-  }
-  await server.listingSettled();
+    await store.runs.update(claim, { state: "ended", costUsd: 0.04, metrics });
+  };
+  const loop = (iterations, met, workflow = "mcc-guess") => ({ node: "repick", iterations, met, repick: true, workflow });
+  const refine = { node: "refine", iterations: 2, met: true, workflow: "mcc-guess" };
+  await end("repick-found", { path: "workflow", workflow: "mcc-guess", workflow_digest: DIGEST, loops: [refine, loop(2, true)] });
+  await end("repick-missed", { path: "handed_back", workflow: "mcc-guess", workflow_digest: DIGEST, loops: [loop(2, false)] });
+  await end("first-pass", { path: "workflow", workflow: "mcc-guess", workflow_digest: DIGEST, loops: [loop(1, true)] });
+  await end("other-flow", { path: "workflow", workflow: "mcc-guess", workflow_digest: DIGEST, loops: [loop(2, true, "inner-flow"), loop(1, true)] });
+  await end("ordinary-loop", { path: "workflow", workflow: "mcc-guess", workflow_digest: DIGEST, loops: [refine] });
+
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
-  for (const path of ["/runs?agent=source&limit=100", "/agents/source/runs?limit=100"]) {
-    // Read a real listing first so the fixture keeps the server's current secret digest and write mark.
-    assert.equal((await api("GET", path)).status, 200);
-    for (const { id, missing, unknown } of cases) {
-      const before = (await store.runs.listed({ archived: false, limit: 100 })).rows.find(({ row }) => row.id === id);
-      const current = await listingOverStore(store, id, { origin: baseUrl, serverSecrets: () => [] });
-      if (missing.length === 0) {
-        assert.equal(current.item.path, null); assert.equal(current.item.workflow, null);
-        assert.equal(builtOfNow(current, []), true, "null values are current, not absent fields");
-        continue;
-      }
-      const item = { ...before.listing.item, ...(unknown ? {} : { served: { workflow: "mcc-guess", digest: DIGEST } }) };
-      for (const key of missing) delete item[key];
-      assert.equal(await store.runs.putListing(id, before.listMark, { ...current, item, cut: before.listing.cut }), true);
-      const kept = (await store.runs.listed({ archived: false, limit: 100 })).rows.find(({ row }) => row.id === id);
-      assert.equal(kept.behind, false, "neither a row change nor an expiry should invalidate this fixture");
-      assert.equal(kept.listing.cut, before.listing.cut, "the saved-secret digest did not change");
-    }
-    const { status, body } = await api("GET", path);
-    assert.equal(status, 200);
-    const route = path.startsWith("/agents") ? "/agents/{agent_id}/runs" : "/runs";
-    assert.deepEqual(schemaProblems(doc, doc.paths[route].get.responses["200"].content["application/json"].schema, body), []);
-    for (const { id, unknown } of cases) {
-      const item = body.runs.find(row => row.run_id === id);
-      assert.deepEqual({ path: item.path, workflow: item.workflow }, unknown
-        ? { path: null, workflow: null }
-        : { path: "workflow", workflow: { name: "mcc-guess", digest: DIGEST } }, `${path}: ${id}`);
-      assert.equal(Object.hasOwn(item, "served"), false);
-      assert.equal(Object.hasOwn(item, "handed_back"), false);
-      const kept = (await store.runs.listed({ archived: false, limit: 100 })).rows.find(({ row }) => row.id === id);
-      assert.equal(Object.hasOwn(kept.listing.item, "path"), true);
-      assert.equal(Object.hasOwn(kept.listing.item, "workflow"), true);
-    }
+  const meets = (path, value) => assert.deepEqual(schemaProblems(doc, doc.paths[path].get.responses["200"].content["application/json"].schema, value), [], `${path}: ${JSON.stringify(value)}`);
+  const expected = {
+    "repick-found": { path: "workflow", workflow: { name: "mcc-guess", digest: DIGEST, repick: "found" } },
+    "repick-missed": { path: "handed_back", workflow: { name: "mcc-guess", digest: DIGEST, repick: "missed" } },
+    "first-pass": { path: "workflow", workflow: { name: "mcc-guess", digest: DIGEST, repick: null } },
+    "other-flow": { path: "workflow", workflow: { name: "mcc-guess", digest: DIGEST, repick: null } },
+    "ordinary-loop": { path: "workflow", workflow: { name: "mcc-guess", digest: DIGEST, repick: null } },
+  };
+  const shown = ({ path, workflow }) => ({ path, workflow });
+  for (const [id, fields] of Object.entries(expected)) {
+    const { status, body } = await api("GET", `/runs/${id}`);
+    assert.equal(status, 200, JSON.stringify(body));
+    meets("/runs/{run_id}", body);
+    assert.deepEqual(shown(body), fields, `GET /runs/${id}`);
   }
+  const { status, body } = await api("GET", "/runs?agent=source&limit=100");
+  assert.equal(status, 200, JSON.stringify(body));
+  meets("/runs", body);
+  for (const item of body.runs) assert.deepEqual(shown(item), expected[item.run_id], `GET /runs: ${item.run_id}`);
 });

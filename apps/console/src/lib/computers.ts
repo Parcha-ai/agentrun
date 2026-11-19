@@ -23,9 +23,6 @@ export type Dropped = Partial<Pick<Computer, CarriedField>>;
 export type Carried = { computer: Computer; dropped: Dropped };
 type ProviderView = ComputerKindView["providers"][number];
 
-/** The kinds that take `surface` and `exec`, as serve's computer-setting.ts has them. */
-const DRIVEN: ReadonlySet<string> = new Set(["desktop", "phone"]);
-
 /** Whether `value` says something: an absent or default (false record or persistent, true exec) setting carries nothing. */
 const isSet = (field: CarriedField, value: unknown): boolean => value !== undefined && value !== (field === "exec");
 
@@ -34,27 +31,25 @@ const SUBJECT: Record<CarriedField, string> = {
 };
 
 /** Why `field`, set to `value`, can't be taken by `kind` with `provider` picked, in words; undefined when it can. Read
- *  from the served list (GET /v2/computers): the provider's `images`, `persistent` and `gpu`. Which kinds take a surface,
- *  exec or record is the server's computer-setting.ts (`DRIVEN`, `RECORDS`). A persistent computer is kept wherever the
- *  provider lists `persistent`: which of its images keep one, against the default image, isn't read here. */
-export function refusal(field: CarriedField, value: unknown, kind: string, provider: ProviderView | undefined): string | undefined {
+ *  from the served list (GET /v2/computers): the kind's `settings`, and the provider's `images`, `persistent` and `gpu`.
+ *  A persistent computer is kept wherever the provider lists `persistent`: which of its images keep one, against the
+ *  default image, isn't read here. */
+export function refusal(field: CarriedField, value: unknown, kind: ComputerKindView | undefined, provider: ProviderView | undefined): string | undefined {
   const off = (why: string) => `${SUBJECT[field]} is off: ${why}.`;
-  const nothing = kind === "none" ? "with no computer, there is nothing" : `a ${kind} has nothing`;
-  if (field === "record") return RECORDS.has(kind) ? undefined : off(kind === "none" ? "with no computer, there is no screen to record" : `a ${kind} has no screen to record`);
-  if (field === "surface" || field === "exec") return DRIVEN.has(kind) ? undefined : off(`only a desktop or a phone takes it, and ${nothing} to drive`);
-  if (kind === "none") return off(`${nothing} to hold it`);
+  if (kind?.kind === "none") return off("with no computer, there is nothing to hold it");
+  if (!kind?.settings.includes(field)) return off(kind ? `a ${kind.kind} doesn't take it` : "this server doesn't list that kind");
+  if (field === "record" || field === "surface" || field === "exec") return undefined;
   if (!provider) return off("this kind has no ready provider");
   if (field === "gpu") {
     const gpu = value as { type: string; count: number };
-    if (kind !== "sandbox") return off("only a sandbox takes GPUs");
     if (!provider.gpu) return off(`${provider.name} has no GPUs`);
     // Serve's sentence for why a run on this server can't have the provider's GPUs (gpu-words.ts), ending in its own stop.
     if (provider.gpu.why) return `${SUBJECT[field]} is off: ${provider.gpu.why}`;
     if (!provider.gpu.types.includes(gpu.type)) return off(`${provider.name} has no ${gpu.type}`);
     return gpu.count <= provider.gpu.max ? undefined : off(`${provider.name} gives at most ${provider.gpu.max} per computer`);
   }
-  if (field === "image") return provider.images?.includes(value as string) ? undefined : off(`${provider.name} does not offer "${value}" for a ${kind}`);
-  return provider.persistent ? undefined : off(`${provider.name}'s ${kind} keeps no computer between runs`);
+  if (field === "image") return provider.images?.includes(value as string) ? undefined : off(`${provider.name} does not offer "${value}" for a ${kind.kind}`);
+  return provider.persistent ? undefined : off(`${provider.name}'s ${kind.kind} keeps no computer between runs`);
 }
 
 /** `next` with each setting `from` has that `next`'s kind and provider can take; the ones they can't are `dropped`. */
@@ -65,19 +60,17 @@ export function carry(next: Computer, from: Computer | undefined, kind: Computer
   for (const field of CARRIED) {
     const value = from?.[field];
     if (!isSet(field, value)) continue;
-    (refusal(field, value, next.kind, provider) ? dropped : kept)[field] = value;
+    (refusal(field, value, kind, provider) ? dropped : kept)[field] = value;
   }
   return { computer: { ...next, ...kept }, dropped };
 }
 
-/** `computer` recorded (`record: true`) when `on` and its kind records, else without `record` (absent is off). */
+/** `computer` recorded (`record: true`) when `on`, else without `record` (absent is off). The Recording switch shows
+ *  only on a kind whose settings take record. */
 export function recorded(computer: Computer, on: boolean): Computer {
   const { record: _record, ...rest } = computer;
-  return on && RECORDS.has(computer.kind) ? { ...rest, record: true } : rest;
+  return on ? { ...rest, record: true } : rest;
 }
-
-/** The kinds a run's video records (`computer.record`), as serve's computer-setting.ts `record.kinds` has them. */
-export const RECORDS: ReadonlySet<string> = new Set(["desktop", "phone", "browser"]);
 
 /** The place a computer is, as the server keeps place as its view: a sandbox is that provider's box; any other computer
  *  leaves the run's folder on the runner. */

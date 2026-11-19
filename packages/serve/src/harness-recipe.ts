@@ -52,6 +52,16 @@ export type RecipeArchive = ArchiveRelease & { readonly format: "tar.bz2" };
 /** The variables a proxy-billed agent may read the proxy's address from: Goose's, and the Anthropic SDKs'. */
 export const PROXY_HOST_ENVS: readonly string[] = Object.freeze(["ANTHROPIC_HOST", "ANTHROPIC_BASE_URL"]);
 
+/** The variables the agent's environment gets from the adapter and the model proxy, never from a recipe, by part: what
+ *  it takes from the host (`inherited`, run-adapters-acp's INHERITED_ENV), what the adapter sets for the private HOME
+ *  (`reserved`, its RESERVED_ENV), and the proxy's address and key (`proxy`). The loader refuses a recipe that names one;
+ *  the check's env_allowlist expects each. */
+export const AGENT_VARS: Readonly<Record<"inherited" | "reserved" | "proxy", readonly string[]>> = Object.freeze({
+  inherited: Object.freeze(["PATH", "LANG", "TZ"]),
+  reserved: Object.freeze(["HOME", "TMPDIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "GIT_CEILING_DIRECTORIES"]),
+  proxy: Object.freeze([...PROXY_HOST_ENVS, "ANTHROPIC_API_KEY"]),
+});
+
 /** How the agent's model is billed. `proxy`: it speaks Anthropic's Messages API to the address in `hostEnv` (default
  *  ANTHROPIC_HOST) with ANTHROPIC_API_KEY, both the session's model proxy's (the run's cap and books hold), and reads the
  *  run's model from `env`. `plan`: the vendor bills the owner's plan on the recipe's own keys; the adapter stops the run
@@ -98,8 +108,8 @@ const INSTALL_FIELDS = new Set(["install", "installCommand", "postinstall", "pre
 const BINARY_FIELDS = new Set(["command", "binary", "path", "bin", "executable", "exec"]);
 /** Fields that would pass the host's environment through (rule 5). */
 const ENV_FIELDS = new Set(["inheritEnv", "passEnv", "envFrom", "inherit", "envPassthrough", "passthroughEnv"]);
-/** The variables the adapter sets itself (run-adapters-acp's RESERVED_ENV), its allowlist's, and the proxy's. */
-const SET_BY_ADAPTER = new Set(["HOME", "TMPDIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "XDG_STATE_HOME", "GIT_CEILING_DIRECTORIES", "PATH", "LANG", "TZ", "ANTHROPIC_HOST", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY"]);
+/** Every variable of AGENT_VARS. */
+const SET_BY_ADAPTER: ReadonlySet<string> = new Set(Object.values(AGENT_VARS).flat());
 const ENV_NAME = /^[A-Za-z_][A-Za-z0-9_]{0,127}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 const ARCHIVE_FIELDS = new Set(["url", "format", "sha256", "cmd", "binarySha256"]);

@@ -8,7 +8,7 @@ export type {
   TriggerSettings, Channels, ChannelAttemptRow, ChannelPostRow, ChannelToldRow, ImportedFrom, ImportSource, ImportRunInput, JournalReads, RunLabels, RunOrigin, RunOutcome, RunLaunchInput, RunLaunchRow, LaunchSealed, LaunchSealedWrite, Learning,
   LearningProposal, LiveViewerRow, LiveViewers, SignIns, SignInRow, SignInTombstoneRow, UpdatedRun, ViewerKind,
 } from "./store.js";
-export { aadOf, type McpCredential, type OpenedMcpCredential, openMcpCredential, openRunLaunch, openRunMcpAuth, type RunLaunchSecrets, type RunMcpAuth, type RunModelKey, sealColumn, type SealedAt, sealedAt, sealMcpCredential, sealRunLaunch, sealRunMcpAuth, unsealColumn } from "./seal.js";
+export { aadOf, type McpCredential, type OpenedMcpCredential, openMcpCredential, openRunLaunch, openRunMcpAuth, type RunLaunchSecrets, type ComposioBinding, type RunMcpAuth, type RunMcpEntry, type RunModelKey, sealColumn, type SealedAt, sealedAt, sealMcpCredential, sealRunLaunch, sealRunMcpAuth, unsealColumn } from "./seal.js";
 export {
   AgentBodyInvalid, type AgenticBody, bodyOf, canonical, isObject, isSkillPath, type PromptVariant,
   type ModelTiers, type MonidPinBody, type RevisionBodyInput, type RevisionComputer, type RevisionPlace, sha256, type ToolSettings, type WorkflowBody,

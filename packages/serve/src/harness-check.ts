@@ -14,8 +14,8 @@
 // agent asks before a tool call) and billing (proxy | plan).
 // The check spends: four short turns on the run's model, under a cap (default $0.25).
 import { spawnSync } from "node:child_process";
-import { createHash, randomBytes } from "node:crypto";
-import { createReadStream, existsSync, readFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { connect as netConnect, type Socket } from "node:net";
@@ -26,9 +26,9 @@ import { modelPortFor, SessionFenced } from "@parcha/agentrun-kernel";
 import { beforeRequestOf } from "@parcha/agentrun-kernel/kernel/cap";
 import { ACP_PACKAGE } from "./acp-package.js";
 import { priceOf } from "./adapters.js";
-import { archivePlatform } from "./harness-archive.js";
+import { archivePlatform, digestOf } from "./harness-archive.js";
 import { installDirOf } from "./harness-install.js";
-import { loadRecipe, pinnedDigest, type Recipe, recipeBinaryOf, recipeInstallLine, RecipeRefused, releaseFor } from "./harness-recipe.js";
+import { AGENT_VARS, loadRecipe, pinnedDigest, type Recipe, recipeBinaryOf, recipeInstallLine, RecipeRefused, releaseFor } from "./harness-recipe.js";
 import { providerModels } from "./model.js";
 import { providerFor } from "./provider.js";
 import { capModelOf } from "./runner/cli-run-spec.js";
@@ -40,8 +40,6 @@ import { createRequire } from "node:module";
 type AcpCheckPackage = {
   acpAdapter(options: Record<string, unknown>): AgentAdapter;
   gooseProxy(options: Record<string, unknown>): unknown;
-  RESERVED_ENV: readonly string[];
-  GOOSE_OWN_TOOLS: readonly string[];
 };
 
 const requireHere = createRequire(import.meta.url);
@@ -56,13 +54,9 @@ function acpCheckPackage(): AcpCheckPackage | undefined {
   return requireHere(ACP_PACKAGE) as AcpCheckPackage;
 }
 
-/** The variables the agent's process takes from the host (run-adapters-acp's INHERITED_ENV). */
-const INHERITED = ["PATH", "LANG", "TZ"];
 /** The proxy variables the check points at its own egress proxy, in both cases, whatever the recipe sets. */
 const EGRESS_VARS = ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"];
 const NO_PROXY_VARS = ["NO_PROXY", "no_proxy"];
-/** The proxy's variables for the agent: its address (under the recipe's hostEnv) and its key. */
-const PROXY_VARS = ["ANTHROPIC_HOST", "ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY"];
 /** What a shell sets for itself when the binary is a script (its working directory, its depth): never the host's. */
 const SHELL_OWN = ["PWD", "OLDPWD", "SHLVL", "_"];
 
@@ -100,17 +94,11 @@ export interface HarnessCheckReport {
   stage2?: Record<string, Check>;
   stage3?: Record<string, Check>;
   facts?: { resume: "load" | "restart" | "unknown"; tool_gate: "permission" | "config"; billing: "proxy" | "plan" };
-  gate?: { permissionsAsked: { toolCallId: unknown; kind: unknown }[]; asked: { tool: string; about: string; answer: string }[] };
+  gate?: { permissionsAsked: { toolCallId: unknown; kind: unknown }[]; asked: { tool: string; answer: string }[] };
   spendUsd?: number | null;
   checkedAt: string;
   failures: string[];
 }
-
-/** The sha256 of the file at `path`. */
-const fileDigest = (path: string): Promise<string> => new Promise((resolve, reject) => {
-  const hash = createHash("sha256");
-  createReadStream(path).on("error", reject).on("data", (chunk) => hash.update(chunk)).on("end", () => resolve(hash.digest("hex")));
-});
 
 /** The check's session records, in memory for the check's life: one session, opened by each runner in turn. The newest
  *  open holds it; an older writer's append is fenced, as the server's store fences a runner whose claim was taken. */
@@ -256,7 +244,7 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
   const line = recipeInstallLine(loaded.file, options.data, options.env);
   const pin = pinnedDigest(options.data, recipe, release, platform);
   if (!existsSync(binary) || !pin) return refuse("HARNESS_NOT_INSTALLED", `${recipe.label} ${recipe.release.version} is not installed in ${installDirOf(options.data, recipe.id)}; a check never downloads it. Install it with: ${line}`);
-  const found = await fileDigest(binary).catch(() => undefined);
+  const found = await digestOf(binary).catch(() => undefined);
   if (found !== pin.sha256) return refuse(pin.by === "recipe" ? "ACP_BINARY_MISMATCH" : "ACP_BINARY_DRIFT", `${binary} has sha256 ${found ?? "(unreadable)"}, and ${pin.by === "recipe" ? "the recipe pins" : "its first install recorded"} ${pin.sha256}. Install it again with: ${line}`);
   say(`${recipe.label}: the binary is the pinned one (${pin.by === "recipe" ? "the recipe's sha256" : "the first sha256 its install recorded"})`);
 
@@ -292,20 +280,12 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
     { name: "check_echo", description: "Echo the text back, prefixed with ECHO.", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] }, replay: "never", call: async (args) => (echoed.push(args), { text: `ECHO:${(args as { text?: unknown })?.text ?? ""}` }) },
     { name: "check_denied", description: "A tool this run refuses: calling it shows the refusal.", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] }, replay: "never", call: async (args) => (deniedRan.push(args), { text: "this call should never have run" }) },
   ];
-  // The gate answers by the tool a call is about: our own tool by its name (asked at the MCP call), or a permission the
-  // adapter could not tie to a call of ours (`acp_<kind>`) by the tool its title names, as the agent writes it (an agent
-  // whose title form the adapter does not know yet). check_echo is allowed; check_denied, and everything of the agent's
-  // own, is denied.
-  const gateAsked: { tool: string; about: string; answer: string }[] = [];
-  const named = (title: unknown): string => {
-    const words = typeof title === "string" ? title : "";
-    const said = (name: string) => [name, name.replace(/_/g, " ")].some((form) => new RegExp(`(^|[^A-Za-z0-9_]|__)${form}([^A-Za-z0-9_]|$)`).test(words));
-    return tools.map((tool) => tool.name).find(said) ?? words.slice(0, 80);
-  };
-  const gate = async (call: { tool: string; args?: unknown }) => {
-    const about = call.tool.startsWith("acp_") ? named((call.args as { title?: unknown } | undefined)?.title) : call.tool;
-    const answer = about === "check_echo" ? "allow" : "deny";
-    gateAsked.push({ tool: call.tool, about, answer });
+  // The gate allows check_echo alone. Everything else is denied, the agent's own calls (`acp_<kind>`) included, as a
+  // server's gate answers them: a call of ours whose title the adapter can't tie is one of those, so it fails mcp_tool.
+  const gateAsked: { tool: string; answer: string }[] = [];
+  const gate = async (call: { tool: string }) => {
+    const answer = call.tool === "check_echo" ? "allow" : "deny";
+    gateAsked.push({ tool: call.tool, answer });
     return answer === "allow" ? ("allow" as const) : { deny: "harness-check refuses this call on purpose" };
   };
   const forwarded: { method: string; path: string; tools: string[]; text: string }[] = [];
@@ -374,7 +354,7 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
     log,
     // Each start of the agent's process checks the pin again: a binary swapped after the check began never runs.
     beforeStart: async (command: string) => {
-      const now = await fileDigest(command);
+      const now = await digestOf(command);
       starts.push(now);
       if (now !== pin.sha256) throw new Error(`ACP_BINARY_DRIFT: ${command} changed after the check began (sha256 ${now})`);
     },
@@ -421,20 +401,20 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
     const echoReached = messages().some((r) => r.text.includes(`ECHO:${nonce}`));
     stage3.mcp_tool = { ok: t1.status === "completed" && echoed.length >= 1 && (recipe.model.billing !== "proxy" || echoReached), turn: t1.status, ...(t1.error ? { error: t1.error } : {}), calls: echoed.length, resultReachedModel: recipe.model.billing === "proxy" ? echoReached : null };
 
-    // Stage 2: the tools the agent offered its model on its first request.
+    // Stage 2: the tools the agent offered its model on its first request. The proxy refuses a request that offers a tool
+    // its policy does not allow, so one that reached the provider at all passed that rule: the stage is whether one did.
+    // Its refusals are listed beside it, never counted: a port watcher's GET / is refused too.
     if (recipe.model.billing === "proxy") {
       const firstRequest = messages()[0];
       const ours = new Set(tools.map((tool) => `agentrun__${tool.name}`));
-      const own = new Set(acp.GOOSE_OWN_TOOLS);
       const offered = firstRequest?.tools ?? [];
-      const theirs = offered.filter((name) => !ours.has(name));
       const refusals = logs.filter((l) => /refus/i.test(l.message)).map((l) => ({ message: l.message, ...(typeof l.reason === "string" ? { reason: l.reason } : {}) }));
-      stage2.tools_off = { ok: !!firstRequest && theirs.every((name) => own.has(name)), firstRequest: offered, notOurs: theirs, proxyAllows: [...own], ...(refusals.length ? { proxyRefusals: refusals } : {}) };
+      stage2.tools_off = { ok: !!firstRequest, firstRequest: offered, notOurs: offered.filter((name) => !ours.has(name)), ...(refusals.length ? { proxyRefusals: refusals } : {}) };
     } else stage2.tools_off = { ok: null, why: "plan billing: the vendor's model requests never reach this host, so the tools it offers are not seen" };
 
     // Stage 2: the environment is the allowlist.
     if (environ) {
-      const expected = new Set([...INHERITED, ...acp.RESERVED_ENV, ...Object.keys(childVars), ...PROXY_VARS, ...SHELL_OWN]);
+      const expected = new Set([...Object.values(AGENT_VARS).flat(), ...Object.keys(childVars), ...SHELL_OWN]);
       const extra = Object.keys(environ).filter((name) => !expected.has(name)).sort();
       const leaked = Object.entries(environ).filter(([, value]) => hostSecrets.includes(value) || value === canary).map(([name]) => name).sort();
       stage2.env_allowlist = { ok: extra.length === 0 && leaked.length === 0, names: Object.keys(environ).sort(), beyondAllowlist: extra, hostSecretsSeen: leaked };
@@ -451,8 +431,8 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
     const remembered = messages().slice(before).some((r) => r.text.includes(`ECHO:${nonce}`));
     resumeFact = secondOpen ? (secondOpen.loaded ? "load" : "restart") : "unknown";
     stage3.resume = { ok: killed && t2.status === "completed" && !!secondOpen && secondOpen.pid !== firstOpen?.pid && (recipe.model.billing !== "proxy" || remembered), killed, turn: t2.status, ...(t2.error ? { error: t2.error } : {}), newProcess: !!secondOpen && secondOpen.pid !== firstOpen?.pid, loaded: secondOpen?.loaded ?? null, sameSession: !!secondOpen && secondOpen.sessionId === firstOpen?.sessionId, conversationCarried: recipe.model.billing === "proxy" ? remembered : null };
-    const deniedAsked = gateAsked.filter((g) => g.about === "check_denied");
-    stage3.denied_call = { ok: deniedAsked.length >= 1 && deniedAsked.every((g) => g.answer === "deny") && deniedRan.length === 0 && t2.status === "completed", gateAsked: deniedAsked.length, askedAs: [...new Set(deniedAsked.map((g) => g.tool))], ran: deniedRan.length, turn: t2.status };
+    const deniedAsked = gateAsked.filter((g) => g.tool === "check_denied");
+    stage3.denied_call = { ok: deniedAsked.length >= 1 && deniedAsked.every((g) => g.answer === "deny") && deniedRan.length === 0 && t2.status === "completed", gateAsked: deniedAsked.length, ran: deniedRan.length, turn: t2.status };
     await first.session.close();
 
     // Turn 3: another runner, its own directory, from the records.

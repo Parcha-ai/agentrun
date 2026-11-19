@@ -418,6 +418,15 @@ test('MCP read-only annotation requires explicit read-only callbacks and no mode
   }
 });
 
+// Nothing promotes an SDK agent's workflow, so the context the native agent reads calls it compiled and unchecked.
+test('the binding context calls its workflows compiled and not checked, never approved', async t => {
+  const { bridge } = await setup(t);
+  const binding = bridge.bind({ runId: 'context-words', workflows: [accepted(workflow)], protect() {}, async event() {}, markEvidenceIncomplete() {} });
+  assert.match(binding.context, /^Compiled workflows for this task \(not checked\):\n/);
+  assert.doesNotMatch(binding.context, /approved/i);
+  binding.close();
+});
+
 // Durable hosts can keep evidence in their own native result instead of constructing an SDK wrapper session.
 test('a structural durable host binding calls MCP with pinned arguments and expires on close', async t => {
   const { bridge, client, calls } = await setup(t);

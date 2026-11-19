@@ -73,7 +73,7 @@ import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
 import { type RunMoment, type State, type Status } from "./run-view.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, prepareLaunch, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
-import { builtOfNow, factsOverStore, listedItem, momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { builtOfNow, factsOverStore, listedItem, momentOverStore, summaryOverStore, timelineOverStore, toolsUsdOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
 import { createLister } from "./run-listing.js";
 import { HELD_WAITS } from "./runner/journal-kinds.js";
 import { type ServedTimelineDeps, servedTimelineRows } from "./run-timeline-served.js";
@@ -133,7 +133,8 @@ import { toolKeysOverStore } from "./tool-keys-store.js";
 import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
 import { signInsOverStore } from "./sign-ins-store.js";
 import { boundTool, MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as mcpNameOf } from "./mcp-probe.js";
-import { type ComposioControl, composioForget, composioNote, composioSave, composioTools } from "./composio-preset.js";
+import { composioMadeKey, composioPerRun } from "./composio-made.js";
+import { COMPOSIO_PER_RUN, type ComposioControl, composioForget, composioNote, composioSave, composioTools } from "./composio-preset.js";
 import { ComposioTriggers } from "./composio-triggers.js";
 import { type ComposioDropped, loopbackWords, mcpServersOverStore, type SaveGuard } from "./mcp-servers-store.js";
 import { MCP_ALLOW_LOOPBACK_ENV, startSwitches, WEBHOOK_PRIVATE_TARGETS_ENV } from "./start-switches.js";
@@ -192,7 +193,7 @@ import { addressForms, openCalendar } from "./calendar/address.js";
 import { calendarRoute } from "./calendar/routes.js";
 import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, runDiskKey } from "./archil-settings.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
-import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, type KindRegistry, settingsComputerRoute } from "./computers.js";
+import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, settingsComputerRoute } from "./computers.js";
 import { type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { writesHeld } from "./workspace.js";
 import { type AgentDeleteHost, type AgentDeleteStep, type DeleteLearning, deleteExternalAgent, oneAtATime } from "./agent-delete.js";
@@ -1447,7 +1448,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       ? { kinds: fauxOf().kinds, factories: fauxOf().factories, keyTable: fauxOf().keyTable }
       : {
         hostWhy,
-        kinds: { SETTING_KINDS, PROVIDERS: COMPUTER_PROVIDERS, servingRefusals } as unknown as KindRegistry,
+        kinds: { SETTING_KINDS, PROVIDERS: COMPUTER_PROVIDERS, servingRefusals },
         // The one place serve builds a provider (workspace/computer-providers.ts), the claim's makers' own.
         factories: computerProviderFactories(computerProviderMakers(), (id) => storeLedger(store.computerLedger, id)),
         answers: dockerAnswers,
@@ -1520,7 +1521,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const runComputerOf = (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => runComputerRead(store, runId, view, { context: ctx });
   /** The run read's costs (A8, store-reads/learning.ts runAllInOverStore): `cost.usd` its own spend, the
    *  job's (its compile turn is learning's), null while unknown; what learning spent for it
-   *  (`learning_usd`) and the two (`all_in_usd`). A cost known only as a bound keeps its bound, and all-in is unknown. */
+   *  (`learning_usd`) and the two (`all_in_usd`). A cost known only as a bound keeps its bound, and all-in is unknown.
+   *  `tools_usd`: the part of `usd` its paid tool calls cost (store-view.ts toolsUsdOverStore). */
   const allInViewOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
     const cost = (view.cost ?? {}) as { usd?: unknown; upper_bound?: unknown };
     const own = typeof cost.usd === "number" && cost.upper_bound !== true ? cost.usd : null;
@@ -1528,7 +1530,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (!all) return {};
     // A bound stays the view's bound. Otherwise usd is the job's (runCostOf's cost_usd, the same figure the cost series
     // gives): known as it answered even when its compile turn's cost is not; the row's while the run is at work.
-    return { cost: { ...cost, ...(cost.upper_bound === true ? {} : { usd: all.usd }), learning_usd: all.learning_usd, all_in_usd: all.all_in_usd } };
+    return { cost: { ...cost, ...(cost.upper_bound === true ? {} : { usd: all.usd }), tools_usd: await toolsUsdOverStore(store, runId), learning_usd: all.learning_usd, all_in_usd: all.all_in_usd } };
   };
   // The agents accessor the routes call, over the one store (module A): the agents-store functions, with the run-row reads
   // the server makes (store-reads) under `.store`. `.request` is a thin pass-through — the store runs its own transactions,
@@ -3172,10 +3174,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const issues: InputIssue[] = [];
       const mcp = mcp_auth === undefined ? undefined : mcpAuthOf(mcp_auth, issues);
       const auth: Record<string, RunMcpAuth[string]> = {};
-      for (const [server, headers] of Object.entries(mcp ?? {})) {
+      for (const [server, entry] of Object.entries(mcp ?? {})) {
         const row = await getMcpServer(store, server);
-        if (row?.auth !== "per_run") issues.push({ field: `mcp_auth.${server}`, reason: "not_an_option", message: row ? `The MCP server ${server} keeps its own credential (auth ${row.auth}): only a per_run server takes one from a run.` : `No MCP server ${server} is saved here.` });
-        else auth[server] = { headers, origin: new URL(row.url).origin };
+        const field = `mcp_auth.${server}`;
+        if (!row) {
+          issues.push({ field, reason: "not_an_option", message: `No MCP server ${server} is saved here.` });
+          continue;
+        }
+        // A per-run Composio server takes a binding (its key is its own); a per_run server takes headers; no other takes either.
+        const perRunComposio = composioPerRun(row, await store.settings.get(composioMadeKey(server)));
+        if ("composio" in entry) {
+          if (perRunComposio) auth[server] = { composio: entry.composio, origin: new URL(row.url).origin };
+          else issues.push({ field, reason: "not_an_option", message: `The MCP server ${server} is not a per-run Composio server: only one saved through the Composio preset with user_id "${COMPOSIO_PER_RUN}" takes a Composio account from a run.` });
+        } else if (row.auth === "per_run") auth[server] = { headers: entry.headers, origin: new URL(row.url).origin };
+        else issues.push({ field, reason: "not_an_option", message: perRunComposio ? `The MCP server ${server} takes a Composio account from each run, not headers: send {"composio_user_id": "<user>", "connected_account_id": "ca_..."} (the account optional).` : `The MCP server ${server} keeps its own credential (auth ${row.auth}): only a per_run server takes one from a run.` });
       }
       const model = model_key === undefined ? undefined : modelKeyOf(model_key, issues);
       if (issues.length) throw invalid(issues);

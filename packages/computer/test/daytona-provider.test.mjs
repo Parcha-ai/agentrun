@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { create, DaytonaProvider } from "../dist/daytona.js";
-import { AttachHub, checkLifetime, DAYTONA, kindRefusals, MemoryMachineTokens, mountsOf } from "../dist/index.js";
+import { AttachHub, checkLifetime, DAYTONA, kindRefusals, MACHINE_TOKEN_SOURCE, MemoryMachineTokens, mountsOf } from "../dist/index.js";
 import { fakeHost } from "./fake-host.mjs";
 
 const VERSION = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;
@@ -735,7 +735,7 @@ test("connect dial: create sends the boot env as the sandbox's env and its netwo
 	assert.deepEqual(Object.keys(body.env).sort(), BOOT_NAMES);
 	assert.equal(body.env.AGENTRUN_ATTACH_URL, "ws://127.0.0.1:8080/v2/computers/attach");
 	assert.equal(body.env.AGENTRUN_DAEMON_URL, "http://127.0.0.1:8080/v2/computers/daemon?arch=amd64");
-	assert.match(body.env.AGENTRUN_ATTACH_TOKEN, /^art_[0-9a-f]{64}$/);
+	assert.match(body.env.AGENTRUN_ATTACH_TOKEN, new RegExp(`^${MACHINE_TOKEN_SOURCE}$`));
 	assert.match(body.env.AGENTRUN_INIT_ARGS, /^--deadline \S+ --user 2510:2510 --own-network --max-deadline \S+$/);
 	assert.equal(body.networkBlockAll, false, "its root reaches the server; its tools' network none is init's");
 	assert.equal(dial.tokens.check(body.env.AGENTRUN_ATTACH_TOKEN), undefined, "a create Daytona refused has its token revoked");
@@ -760,7 +760,7 @@ test("connect dial: no Archil mount, no GPU and not Daytona's default snapshot, 
 	assert.deepEqual(caps.vendorAgentPorts, [2280], "the toolbox still runs, and its port is still blocked");
 	const mount = provider.check(ARCHIL_SPEC);
 	assert.deepEqual(mount.map(({ field }) => field), ["mount"]);
-	assert.match(mount[0].message, /Daytona's machines dial this server, and a machine that dials takes no Archil mount yet/);
+	assert.ok(mount[0].message.includes(mountsOf(DAYTONA, () => false, true).unmounted.archil), mount[0].message);
 	const gpu = provider.check({ ...SPEC, image: "default", gpu: GPU });
 	assert.ok(gpu.length > 0 && gpu.every(({ field }) => field === "gpu"), JSON.stringify(gpu));
 	assert.ok(gpu.some(({ message }) => /a Daytona computer that dials this server takes no GPU: daytona-gpu holds no agentrun-dial/.test(message)), JSON.stringify(gpu));
@@ -773,12 +773,11 @@ test("connect dial: no Archil mount, no GPU and not Daytona's default snapshot, 
 	assert.equal(rec.requests.length, 0);
 });
 
-// Why Daytona gives no desktop (measured 11-19): its sandboxes run under Sysbox with the host's
-// kernel.apparmor_restrict_unprivileged_userns=1, so the tool user (uid 2510) can't write a user namespace's uid_map or
-// make a network namespace, and the window manager runs in both (desktop.ts).
-const NO_DESKTOP = "Daytona gives no desktop computer: its sandboxes run under AppArmor's restrict_unprivileged_userns, so the tool user can't make the user and network namespaces the window manager runs in. Make a Daytona sandbox (kind linux), or a desktop on another provider";
+// Why Daytona gives no desktop (measured 11-19): PROVIDERS.md, Machines that dial in. The one test that pins the
+// sentence whole; every other one reads DAYTONA.unserved.desktop.
+const NO_DESKTOP = "Daytona gives no desktop computer: its sandboxes run under AppArmor's restrict_unprivileged_userns, so the tool user can't make the user and network namespaces the window manager runs in";
 
-test("kind desktop is refused when the provider is made, on every connect, in words that give the reason, before any request; kind linux stays", () => {
+test("kind desktop is refused when the provider is made, on every connect, in its descriptor's unserved words, before any request; kind linux stays", () => {
 	for (const connect of ["dial", undefined, "exec"]) {
 		const options = { ...(connect ? { connect } : {}), ...(connect === "dial" ? { dial: dialOf() } : {}) };
 		assert.throws(() => setup({}, { ...options, kind: "desktop" }), { message: NO_DESKTOP }, `connect ${connect}`);
@@ -789,7 +788,6 @@ test("kind desktop is refused when the provider is made, on every connect, in wo
 test("Daytona's descriptor offers no desktop, and gives the reason as its unserved desktop: a sandbox alone", () => {
 	assert.deepEqual(DAYTONA.capabilities.map(({ kind }) => kind), ["linux"]);
 	assert.deepEqual(Object.keys(DAYTONA.unserved ?? {}), ["desktop"]);
-	assert.equal(`Daytona gives no desktop computer: ${DAYTONA.unserved?.desktop}. Make a Daytona sandbox (kind linux), or a desktop on another provider`, NO_DESKTOP);
 });
 
 test("Daytona's descriptor declares the connect setting, with no default of its own: a server's settings pass it to create() as connect, else the provider's exec holds", () => {

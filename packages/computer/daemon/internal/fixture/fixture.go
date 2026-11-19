@@ -1,6 +1,6 @@
 // Package fixture is the desktop fixture of src/conformance/fixture.ts: a 200x200 override-redirect window at (0, 0)
 // in four known colors that takes the keyboard focus and logs every input event it gets as one JSON line, so a case
-// checks what input.actions did with no model. It is test-only: computerd-fixture (cmd/fixture) runs it.
+// checks what input.actions did with no model. Only computerd-fixture (cmd/fixture) runs it.
 package fixture
 
 import (
