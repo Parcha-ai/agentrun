@@ -2614,8 +2614,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const rootId = root.id;
           // Read before this claim's own writes (foundEntries), and past the bookkeeping any claim writes on the root before
           // its turn (its session's key, a phase row, a takeover's note, the computer's hold, the learning seed it laid):
-          // none of them is a turn of the follow-up's.
-          const endsRoot = foundEntries.findLast((entry) => !CLAIM_BOOKKEEPING.has(entry.kind))?.kind === KINDS.end;
+          // none of them is a turn of the follow-up's. Nor is the end of a call that started before the run's end: a call a
+          // stop cut while it ran (Codex's write inside its `exec`) has no end of its own before the run's, and a claim's
+          // record ends it interrupted as it opens, after the run's end. Read from the journal alone, so a claim that takes
+          // over from one lost between that end and its turn reads the same; a follow-up's own calls start after the end.
+          const endAt = foundEntries.findLastIndex((entry) => entry.kind === KINDS.end);
+          const callOf = (entry: (typeof foundEntries)[number]) => (entry.data as { callId?: unknown } | null)?.callId;
+          const cutBefore = new Set(foundEntries.slice(0, Math.max(endAt, 0)).filter((entry) => entry.kind === KINDS.callStart).map(callOf));
+          const endsRoot = endAt >= 0 && foundEntries.slice(endAt + 1).every((entry) => CLAIM_BOOKKEEPING.has(entry.kind) || (entry.kind === KINDS.callEnd && cutBefore.has(callOf(entry))));
           const inFlight = (await harness.inspect(context)).submissions.some((one) => one.conversationId === rootId && one.type === "input");
           if (endsRoot && !inFlight && session!.state === "open_turn") await session!.settleOpenTurn();
           // A session still new (a person stopped the run before its first input was sent): the follow-up is its first
