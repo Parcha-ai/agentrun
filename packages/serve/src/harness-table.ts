@@ -246,7 +246,7 @@ function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs:
 
 /** A module's adapter for one run, from `facts` and its builder: the launch serve chooses for the run's model on this
  *  server's keys (providerFor, priceOf), as gooseOf does for the built-in ACP harness. */
-function moduleAdapter(facts: AdapterFacts, build: (launch: ModuleLaunch) => AgentAdapter | Promise<AgentAdapter>, { missing }: ModuleChecks) {
+function moduleAdapter(facts: AdapterFacts, build: (launch: ModuleLaunch) => AgentAdapter | Promise<AgentAdapter>, { missing }: ModuleChecks, host: AcpEntryHost = {}) {
   return async (env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> => {
     const { harnessLog, priceOf } = await import("./adapters.js");
     // What no key fixes is said first, as gooseOf says Goose's binary: a refusal for it names no key.
@@ -259,11 +259,20 @@ function moduleAdapter(facts: AdapterFacts, build: (launch: ModuleLaunch) => Age
       model: provider.modelId,
       provider: { origin: provider.origin, credential: provider.credential, ...(provider.auth ? { auth: provider.auth } : {}) },
       price: priceOf({ ...needs, model: provider.priceModel }),
-      log: harnessLog(facts.id, env),
+      log: host.log ?? harnessLog(facts.id, env),
       ...(needs.confine ? { confine: needs.confine } : {}),
       env,
     });
   };
+}
+
+/** What serve's own check of a recipe (harness-check.ts) gives acpEntryOf beside a module's options, so it runs the
+ *  launch a server runs and still reads it: the log every launch writes to (the check reads the adapter's `acp:` lines),
+ *  and, with `env`, the agent's allowlist and keys read from the launch's environment, not this process's. Never the
+ *  kit's: a module's launches log as their harness. */
+export interface AcpEntryHost {
+  readonly log?: ModuleLaunch["log"];
+  readonly env?: boolean;
 }
 
 /** A module's entry is run on serve's table (its facts' adapter, cli-run-spec.ts), never by a runner's adapter of its
@@ -281,12 +290,14 @@ const ACP_PROMISES: HarnessPromises = Object.freeze({ resume: "load", tool_gate:
 
 /** A module's adapter harness's whole entry (HarnessModuleKit.adapterEntry): the built-in harnesses' builder over the
  *  module's adapter, run from the table (ON_TABLE). */
-const moduleEntry: HarnessModuleKit["adapterEntry"] = (facts, adapter, { missing, ...extra } = {}) =>
-  Object.freeze({ ...adapterEntry(facts, moduleAdapter(facts, adapter, missing ? { missing } : {}), extra), runner: ON_TABLE });
+const moduleEntryOf = (facts: AdapterFacts, adapter: (launch: ModuleLaunch) => AgentAdapter | Promise<AgentAdapter>, { missing, ...extra }: Pick<HarnessEntry, "skillCheck" | "promises" | "hidden"> & ModuleChecks = {}, host: AcpEntryHost = {}): HarnessEntry =>
+  Object.freeze({ ...adapterEntry(facts, moduleAdapter(facts, adapter, missing ? { missing } : {}, host), extra), runner: ON_TABLE });
+const moduleEntry: HarnessModuleKit["adapterEntry"] = (facts, adapter, extra) => moduleEntryOf(facts, adapter, extra);
 
-/** A module's ACP agent's whole entry (HarnessModuleKit.acpEntry): moduleEntry over serve's own ACP adapter. */
-const acpModuleEntry: HarnessModuleKit["acpEntry"] = (options) =>
-  moduleEntry(options.facts, (launch) => {
+/** An ACP agent's whole entry, moduleEntry over serve's own ACP adapter: a module's (HarnessModuleKit.acpEntry, `host`
+ *  none) and a recipe's under harness-check (AcpEntryHost), the one way an ACP agent outside the built-ins starts. */
+export function acpEntryOf(options: AcpEntryOptions, host: AcpEntryHost = {}): HarnessEntry {
+  return moduleEntryOf(options.facts, (launch) => {
     const acp = acpPackage();
     if (!acp) throw new HarnessUnavailable(`${options.facts.label} needs the ACP adapter (${ACP_PACKAGE}) beside this server`);
     return acp.acpAdapter({
@@ -294,9 +305,12 @@ const acpModuleEntry: HarnessModuleKit["acpEntry"] = (options) =>
       proxy: options.proxy(launch),
       ...(options.beforeStart ? { beforeStart: options.beforeStart } : {}),
       ...(launch.confine ? { confine: launch.confine } : {}),
+      ...(host.env ? { env: launch.env } : {}),
       log: launch.log,
     });
-  }, { promises: options.promises ?? ACP_PROMISES, ...(options.missing ? { missing: options.missing } : {}) });
+  }, { promises: options.promises ?? ACP_PROMISES, ...(options.missing ? { missing: options.missing } : {}) }, host);
+}
+const acpModuleEntry: HarnessModuleKit["acpEntry"] = (options) => acpEntryOf(options);
 
 /** The kit a harness module is handed (HarnessModuleKit). */
 const MODULE_KIT: HarnessModuleKit = Object.freeze({

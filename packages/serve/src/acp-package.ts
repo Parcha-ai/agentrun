@@ -33,6 +33,8 @@ export type AcpPackage = {
   gooseAdapter(options: Record<string, unknown>): AgentAdapter;
   /** Any ACP agent's adapter, from its recipe (a harness module's, harness-table.ts acpEntry). */
   acpAdapter(options: Record<string, unknown>): AgentAdapter;
+  /** The model proxy on Anthropic's Messages, Goose's policy (a recipe's under harness-check). */
+  gooseProxy(options: Record<string, unknown>): (session: unknown) => Promise<{ env: Record<string, string>; close(): Promise<void> }>;
   verifyPinnedBinary(path: string, sha256: string): void;
   verifyPinnedBinaryAsync(path: string, sha256: string): Promise<void>;
   treeDigest(root: string): Promise<string>;
