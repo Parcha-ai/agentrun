@@ -470,13 +470,25 @@ test("service install --env: the start-time switches go into the unit at 1, stay
   assert.equal(unitEnv(readFileSync(file, "utf8")).AGENTRUN_MCP_ALLOW_LOOPBACK, "1");
 });
 
+test("service install --env AGENT_MODEL_API_KEY=none: the key a local model with none takes goes into the unit, and KEY= removes it", async () => {
+  const { home, exec, get } = linuxHome();
+  const { io } = ioOf();
+  const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: { PATH: "/usr/bin" }, exec, io, fail, get, waitMs: 5_000 });
+  const file = join(home, ".config", "systemd", "user", UNIT);
+  assert.equal(await service.install({ env: [...MODEL_ENV, "AGENT_MODEL_API_KEY=none"] }), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", ...MODEL_VARS, AGENT_MODEL_API_KEY: "none" });
+  assert.equal(await service.install({ env: ["AGENT_MODEL_API_KEY="] }), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", ...MODEL_VARS });
+});
+
 test("service install --env refuses any other variable by name, and a pair with no =, before it writes anything", async () => {
   const { home, exec, get } = linuxHome();
   const { io } = ioOf();
   const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, exec, io, fail, get, waitMs: 5_000 });
   for (const [pair, said] of [
-    ["OPENROUTER_API_KEY=sk-or-x", /--env takes AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_PRICE, AGENTRUN_MCP_ALLOW_LOOPBACK, AGENTRUN_WEBHOOK_PRIVATE_TARGETS, AGENTRUN_TELEMETRY or DO_NOT_TRACK, not OPENROUTER_API_KEY: a key goes in the console/],
+    ["OPENROUTER_API_KEY=sk-or-x", /--env takes AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_PRICE, AGENT_MODEL_API_KEY, AGENTRUN_MCP_ALLOW_LOOPBACK, AGENTRUN_WEBHOOK_PRIVATE_TARGETS, AGENTRUN_TELEMETRY or DO_NOT_TRACK, not OPENROUTER_API_KEY: a key goes in the console/],
     ["PATH=/x", /not PATH/],
+    ["AGENT_MODEL_API_KEY=sk-or-x", /AGENT_MODEL_API_KEY takes none alone, for a local model that needs no key: a key goes in the console/],
     ["AGENT_MODEL", /--env takes KEY=VALUE, not AGENT_MODEL/],
     ["AGENT_MODEL=a\nb", /AGENT_MODEL's value has a line break/],
   ]) {
