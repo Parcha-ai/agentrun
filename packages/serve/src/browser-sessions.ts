@@ -1,11 +1,11 @@
-// A run's browser sessions, one record each, for an operator who reconciles the run's browser time with its provider's
-// bill (GET /runs/{run_id}/usage `browser_sessions`). Two records on the run's root say a session: its open
+// A run's browser sessions, one record each (GET /runs/{run_id}/usage `browser_sessions`): how long each ran, how it
+// ended, and its provider's id, by which the provider's own dashboard and invoice find it. Two records on the run's root say a session: its open
 // (BROWSER_SESSION_OPEN, written before the provider is asked to create it, browser-cost.ts) and its end
 // (BROWSER_SESSION_ENDED, below, written once pi-browser lets it go). The end carries the provider's session id, when
 // this server saw the session start and end, why it ended, and the provider's own record of it where the provider keeps
 // one (BrowserComputerProvider.sessionUsage: its start, its end, its proxy bytes), read once at that release. The
-// seconds this server charged for it are its BROWSER_CHARGED records'. Nothing is priced here and nothing is rounded:
-// a provider's minimum belongs to whoever bills.
+// seconds this server charged for it are its BROWSER_CHARGED records'. Nothing is priced here and nothing is rounded
+// to a provider's minimum.
 //
 // Unknown is never 0. A session with no end record yet (its run's process lost before the release was told) says
 // `ended_at` null; a provider that keeps no record, or one whose read failed, says so (`provider_record_status`) with

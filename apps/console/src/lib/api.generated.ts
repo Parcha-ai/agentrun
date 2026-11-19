@@ -2890,6 +2890,21 @@ export interface operations {
         unmetered_requests?: number;
         not_metered_calls?: number;
       }[] | null;
+      browser_sessions: {
+        provider: string;
+        tag: string;
+        provider_session_id: string | null;
+        started_at: string | null;
+        ended_at: string | null;
+        release_reason: string | null;
+        charged_seconds: number | null;
+        provider_record: {
+          started_at: string | null;
+          ended_at: string | null;
+          proxy_bytes: number | null;
+        } | null;
+        provider_record_status: "read" | "not_offered" | "not_found" | "failed" | "no_session" | null;
+      }[] | null;
       reason: "running" | "not_booked" | "reopened" | null;
     };
   };
