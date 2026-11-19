@@ -455,6 +455,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       writeFileSync(file, text, { mode: 0o600 });
       own.add(clean.split("\\").join("/"));
     }
+    // The credentials the recipe names are never mirrored either, whatever their names and wherever its state paths reach.
+    for (const path of recipe.credentials ?? []) own.add(homePath(path)!.split("\\").join("/"));
 
     const stopped = new AbortController();
     const signal = AbortSignal.any([ctx.signal, stopped.signal]);
