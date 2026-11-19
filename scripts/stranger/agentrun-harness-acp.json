@@ -1,0 +1,14 @@
+{
+  "package": "@parcha/agentrun-harness-acp",
+  "install": [
+    "run-adapters-acp",
+    "dsl",
+    "run-adapters"
+  ],
+  "companions": [
+    "@parcha/agentrun-dsl",
+    "@parcha/agentrun-kernel"
+  ],
+  "expect": "no-key path missing",
+  "reason": "@parcha/agentrun-harness-acp's README gives no command that runs with no key yet"
+}
