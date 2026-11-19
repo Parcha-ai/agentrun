@@ -152,10 +152,15 @@ test('a receipt cannot upload to a changed server or another agent/session', asy
 });
 
 
-test('Eve supplies original recorded tool payloads only to its private shadow and persists the result before upload', async () => {
+for (const [label, raw, answer] of [
+  ['object', { brief: 'The original answer.' }, 'The original answer.'],
+  ['JSON-looking string', '42', '42'],
+  ['business content', { name: 'raw', content: [{ type: 'text', text: '42' }] }, '{"name":"raw","content":[{"type":"text","text":"42"}]}'],
+  ['business structuredContent', { name: 'raw', structuredContent: { name: 'inner' } }, '{"name":"raw","structuredContent":{"name":"inner"}}'],
+]) test(`Eve preserves ${label} in its private shadow and persists the result before upload`, async () => {
   const engine = await import('@parcha/agentrun-dsl');
   const schema = { type: 'object', properties: { service: { type: 'string' } }, required: ['service'], additionalProperties: false };
-  const output = { type: 'object', properties: { brief: { type: 'string' } }, required: ['brief'], additionalProperties: false };
+  const output = { type: typeof raw === 'string' ? 'string' : 'object', const: raw };
   const workflow = { v: 2, name: 'release', schemas: { Input: schema, Output: output }, input: { schemaId: 'Input' },
     output: { schemaId: 'Output', path: 'result' }, root: { node: 'call', label: 'read', via: 'tool', tool: 'mcp:release/status',
       args: { service: '{service}' }, out: 'Output', as: 'result', deadline_s: 5 } };
@@ -180,7 +185,7 @@ test('Eve supplies original recorded tool payloads only to its private shadow an
   rows.splice(5, 0,
     { type: 'call.requested', data: { callId: 'native-call', owner: { runId: 'model' }, capability: { name: 'release_status', kind: 'tool' }, input: { service: 'private-service' } } },
     { type: 'call.started', data: { callId: 'native-call' } },
-    { type: 'call.settled', data: { callId: 'native-call', outcome: 'completed', output: { brief: 'The original answer.' } } });
+    { type: 'call.settled', data: { callId: 'native-call', outcome: 'completed', output: raw } });
   const reader = { id: source.sessionId, async *stream() {
     for (const [line, row] of rows.entries()) yield { ...row, scope: { turnId: source.turnId },
       meta: { at: '2026-01-01T00:00:00Z', position: { line, index: 0 }, endOfLine: true } };
@@ -191,7 +196,7 @@ test('Eve supplies original recorded tool payloads only to its private shadow an
   assert.equal(callbacks, 0);
   const checks = writes.flatMap(row => row.events ?? []).filter(row => row.type === 'workflow_check');
   assert.equal(checks.length, 2);
-  assert.deepEqual(checks[0], { type: 'workflow_check', id: check.id, digest: check.digest, outcome: 'answered', answer: 'The original answer.' });
+  assert.deepEqual(checks[0], { type: 'workflow_check', id: check.id, digest: check.digest, outcome: 'answered', answer });
   assert.deepEqual(checks[1], checks[0]);
   assert.doesNotMatch(JSON.stringify(writes), /private-service|scoped-private-token|fake-test-key/);
 });

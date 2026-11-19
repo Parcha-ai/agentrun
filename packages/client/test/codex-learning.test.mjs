@@ -122,7 +122,7 @@ test('missing Codex cache counters leave exclusive input unknown rather than inv
 
 test('buffered and synthesized Codex tool starts cannot claim known effect order in local shadow evidence',async()=>{
   const candidate={id:'check-one',revision:'rev',digest:'digest',workflow:{name:'draft',description:'Draft.',workflow:'{}'}};
-  const item={id:'tool-one',type:'mcp_tool_call',server:'release',tool:'publish',arguments:{service:'api'},status:'completed',result:{content:[{type:'text',text:'{"brief":"done"}'}]}};
+  const item={id:'tool-one',type:'mcp_tool_call',server:'release',tool:'publish',arguments:{service:'api'},status:'completed',result:{content:[{type:'text',text:'model-facing'}],structuredContent:{brief:'done',content:'ordinary data'}}};
   for(const mode of ['buffered','missing-start','streamed']) {
     const checked=[], {config,requests}=service({check:candidate});
     config.workflows={catalog:[],adapters:[],bind(){return {context:'',close(){}};},async check(check,turn){
@@ -139,7 +139,9 @@ test('buffered and synthesized Codex tool starts cannot claim known effect order
     const facts=checked[0].events.filter(event=>event.type==='tool');
     assert.equal(facts.length,2);
     assert.equal(facts.some(event=>event.orderUnknown===true),mode!=='streamed',mode);
-    assert.doesNotMatch(JSON.stringify(requests),/orderUnknown/, 'Ordering provenance stays local, outside telemetry.');
+    assert.equal(facts[1].outputFormat,'mcp');
+    assert.deepEqual(facts[1].output,item.result);
+    assert.doesNotMatch(JSON.stringify(requests),/orderUnknown|outputFormat|structuredContent|ordinary data/, 'Raw outputs and transport provenance stay local, outside telemetry.');
   }
 });
 

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { withClaudeAgentLearning } from '../dist/claude.js';
 
-function fixture(context = 'Prefer concise release reports.') {
+function fixture(context = 'Prefer concise release reports.', check) {
   const requests = [];
   const config = { agentId: 'backend-agent', instructions: 'Report release status accurately.', learning: true,
     baseUrl: 'http://127.0.0.1:7340/v2', apiKey: 'fake-test-key', pollIntervalMs: 1,
@@ -11,7 +11,7 @@ function fixture(context = 'Prefer concise release reports.') {
       const body = init?.body ? JSON.parse(init.body) : undefined;
       requests.push({ path, method: init.method, body });
       let value;
-      if (path.endsWith('/sdk-runs') && init.method === 'POST') value = { run_id: 'sdk-1', agent_id: 'backend-agent', console_url: 'http://127.0.0.1/#/runs/sdk-1', token: 'fixture-scoped-key', learning: { enabled: !!context, revision: context ? 'revision-1' : null, context } };
+      if (path.endsWith('/sdk-runs') && init.method === 'POST') value = { run_id: 'sdk-1', agent_id: 'backend-agent', console_url: 'http://127.0.0.1/#/runs/sdk-1', token: 'fixture-scoped-key', learning: { enabled: !!context, revision: context ? 'revision-1' : null, context, ...(check ? { check } : {}) } };
       else if (path.endsWith('/sdk-runs/sdk-1')) value = { run_id: 'sdk-1', state: 'completed', learning: context ? { state: 'merged' } : null };
       else if (path.endsWith('/agents/backend-agent')) value = { agent_id: 'backend-agent', definition: { id: 'backend-agent', sdk: { runtime: 'claude-agent-sdk' }, learning: !!context } };
       else value = { accepted: true };
@@ -21,6 +21,29 @@ function fixture(context = 'Prefer concise release reports.') {
 }
 
 const result = { type: 'result', subtype: 'success', is_error: false, result: 'Ready.', session_id: 'native-session-1', usage: { input_tokens: 5, output_tokens: 3 }, total_cost_usd: 0.01 };
+
+test('Claude captures explicit MCP envelopes and raw built-in outputs without uploading either', async () => {
+  const candidate = { id: 'check-one', revision: 'rev', digest: 'digest', workflow: { name: 'draft', description: 'Draft.', workflow: '{}' } };
+  const payload = { content: [{ type: 'text', text: 'model-facing' }], structuredContent: { name: 'private-result', content: 'ordinary data' } };
+  for (const [name, full, format] of [['mcp__release__status', true, 'mcp'], ['mcp__release__status', false, 'mcp-content'], ['Read', true, undefined]]) {
+    const { config, requests } = fixture('Context.', candidate), checked = [];
+    config.workflows = { catalog: [], adapters: [], bind() { return { context: '', close() {} }; }, async check(check, turn) {
+      checked.push(turn); return { type: 'workflow_check', id: check.id, digest: check.digest, outcome: 'failed', reason: 'fixture' };
+    } };
+    const query = withClaudeAgentLearning(() => (async function* () {
+      yield { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'one', name, input: {} }] } };
+      yield { type: 'user', ...(full ? { tool_use_result: payload } : {}), message: { content: [{ type: 'tool_result', tool_use_id: 'one', content: payload.content }] } };
+      yield result;
+    })(), config);
+    for await (const _ of query({ prompt: 'Report status.' })) {}
+    await query.flushLearning();
+    assert.equal(checked.length, 1);
+    const terminal = checked[0].events.find(event => event.type === 'tool' && event.status === 'completed');
+    assert.equal(terminal.outputFormat, format);
+    assert.deepEqual(terminal.output, full ? payload : payload.content);
+    assert.doesNotMatch(JSON.stringify(requests), /outputFormat|private-result|ordinary data|model-facing/);
+  }
+});
 
 test('Claude wrapper preserves native options, stream events and methods while recording original input', async () => {
   const { config, requests } = fixture();

@@ -107,8 +107,10 @@ export type SdkLearningEvent =
   | { type: 'workflow_check'; id: string; digest: string; outcome: 'answered' | 'handed_back' | 'failed' | 'skipped_write'; answer?: string; reason?: string; skipped?: { tool: string; unmarked?: true } }
   | { type: 'tool'; id: string; name: string; status: 'started' | 'completed' | 'failed'; input?: unknown; output?: unknown; parent_tool_use_id?: string };
 
-/** Local shadow evidence only. A buffered result can pair a timeline but cannot prove effect order or concurrency. */
-export type BackendNativeEvent = SdkLearningEvent & { orderUnknown?: true };
+/** Local shadow evidence only. A buffered result cannot prove effect order. SDK adapters explicitly identify
+ * MCP transport results; original callback values have no outputFormat and are never decoded as transport. */
+export type BackendNativeEvent = SdkLearningEvent & { orderUnknown?: true; outputFormat?: 'mcp' | 'mcp-content' };
+type NativeDetail = { input?: unknown; output?: unknown; orderUnknown?: true; outputFormat?: BackendNativeEvent['outputFormat'] };
 
 export interface SdkLearningUsage {
   /** Uncached input only. Cache reads and writes have their own counters; unknown splits remain null. */
@@ -391,11 +393,12 @@ export class BackendLearningSession implements BackendLearningSnapshot {
     return clone(this.#checkpoint);
   }
 
-  #captureNative(event: BackendNativeEvent, detail: { input?: unknown; output?: unknown; orderUnknown?: true } = {}): void {
+  #captureNative(event: BackendNativeEvent, detail: NativeDetail = {}): void {
     if (!this.#check || event.type !== 'tool' || !this.#nativeComplete) return;
     try {
       const captured = clone({ ...event, ...(detail.input !== undefined ? { input: detail.input } : {}),
-        ...(detail.output !== undefined ? { output: detail.output } : {}), ...(detail.orderUnknown ? { orderUnknown: true as const } : {}) });
+        ...(detail.output !== undefined ? { output: detail.output } : {}), ...(detail.orderUnknown ? { orderUnknown: true as const } : {}),
+        ...(detail.outputFormat ? { outputFormat: detail.outputFormat } : {}) });
       const bytes = size(JSON.stringify(captured));
       if (bytes > 250_000 || this.#nativeBytes + bytes > 3_000_000 || this.#nativeEvents.length >= 10_000) throw new Error('native_evidence_limit');
       this.#safe(captured, true);
@@ -483,7 +486,7 @@ export class BackendLearningSession implements BackendLearningSnapshot {
   /** Observe native SDK tools without counting a positively correlated bridge envelope twice. Candidate starts wait
    *  for their result; every unmatched or unfinished candidate is still ordinary top-level evidence. Raw arguments
    *  and results stay local, and at most sixteen bounded candidates (the bridge's invocation bound) are retained. */
-  nativeEvent(event: SdkLearningEvent, detail: { input?: unknown; output?: unknown; orderUnknown?: true } = {}): Promise<void> {
+  nativeEvent(event: SdkLearningEvent, detail: NativeDetail = {}): Promise<void> {
     if (this.#completion) return reject(new AgentRunUsage('Cannot add SDK evidence after completion.'));
     this.#captureNative(event, detail);
     if (event.type !== 'tool') return this.event(event);
@@ -504,7 +507,9 @@ export class BackendLearningSession implements BackendLearningSnapshot {
     try {
       if (event.status !== 'started' && pending.event.type === 'tool' && event.name === pending.event.name &&
         (detail.input === undefined || JSON.stringify(detail.input) === pending.serialized) &&
-        binding?.claimNativeEnvelope?.(event.name, pending.input, event.status, detail.output)) return Promise.resolve();
+        binding?.claimNativeEnvelope?.(event.name, pending.input, event.status,
+          detail.outputFormat === 'mcp' && detail.output && typeof detail.output === 'object'
+            ? (detail.output as Record<string, unknown>).content : detail.output)) return Promise.resolve();
     } catch { /* A malformed result or binding remains real native tool evidence. */ }
     // Queue both before yielding, so an immediately following completion cannot overtake the retained result.
     return Promise.all([this.event(pending.event), this.event(event)]).then(() => undefined);

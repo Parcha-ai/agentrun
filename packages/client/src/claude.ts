@@ -102,7 +102,7 @@ export function withClaudeAgentLearning<Q extends QueryFunction>(query: Q, confi
     // Registration is asynchronous, while query() keeps its native synchronous shape. Observe the rejection even
     // when the caller closes without iterating; next/control methods still receive the original error.
     ready.catch(() => undefined);
-    const event = (value: Parameters<BackendLearningSession['event']>[0], detail?: { input?: unknown; output?: unknown }) => {
+    const event = (value: Parameters<BackendLearningSession['event']>[0], detail?: Parameters<BackendLearningSession['nativeEvent']>[1]) => {
       if (session) client.track(session.nativeEvent(value, detail));
     };
     const capture = (value: unknown) => {
@@ -125,7 +125,11 @@ export function withClaudeAgentLearning<Q extends QueryFunction>(query: Q, confi
       if (message.type === 'user') {
         for (const block of Array.isArray(object(message.message).content) ? (object(message.message).content as unknown[]).map(object) : []) {
           if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
-            event({ type: 'tool', id: block.tool_use_id, name: tools.get(block.tool_use_id) ?? 'tool', status: block.is_error === true ? 'failed' : 'completed' }, { output: object(message.tool_use_result).content ?? block.content });
+            const name = tools.get(block.tool_use_id) ?? 'tool';
+            const fullResult = message.tool_use_result !== undefined;
+            event({ type: 'tool', id: block.tool_use_id, name, status: block.is_error === true ? 'failed' : 'completed' },
+              { output: fullResult ? message.tool_use_result : block.content,
+                ...(name.startsWith('mcp:') ? { outputFormat: fullResult ? 'mcp' as const : 'mcp-content' as const } : {}) });
           }
         }
       }

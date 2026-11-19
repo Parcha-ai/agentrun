@@ -152,13 +152,24 @@ const answerOf = (output: unknown): string => {
   const values = object(output) ? Object.values(output) : [];
   return typeof output === 'string' ? output : values.length === 1 && typeof values[0] === 'string' ? values[0] : JSON.stringify(output ?? null);
 };
-/** Native SDKs return either the callback value or MCP text/structured content. No prose guessing. */
-function recordedOutput(value: unknown): unknown {
-  if (object(value) && Object.hasOwn(value, 'structuredContent')) return value.structuredContent;
-  if (object(value) && Array.isArray(value.content)) return recordedOutput(value.content);
-  if (Array.isArray(value) && value.length === 1 && object(value[0]) && value[0].type === 'text') return recordedOutput(value[0].text);
-  if (typeof value === 'string') { try { return JSON.parse(value); } catch { return value; } }
-  return value;
+/** Raw values stay raw. Only an SDK adapter identifies transport; the original tool schema resolves text ambiguity. */
+function recordedOutput(value: unknown, format: BackendNativeEvent['outputFormat'], accepts?: (value: unknown) => { valid: boolean }): unknown {
+  if (!format) return value;
+  if (format === 'mcp') {
+    if (!object(value)) return refuse('The recorded MCP result is not an envelope.');
+    if (value.isError === true) return refuse('The recorded MCP result reports a tool failure.');
+    if (Object.hasOwn(value, 'structuredContent')) return value.structuredContent;
+    value = value.content;
+  } else if (format !== 'mcp-content') return refuse('The recorded tool output format is unsupported.');
+  if (Array.isArray(value) && value.length === 1 && object(value[0]) && value[0].type === 'text') value = value[0].text;
+  if (typeof value !== 'string') return refuse('The recorded MCP result has no unambiguous original output.');
+  let parsed: unknown;
+  try { parsed = JSON.parse(value); } catch { return value; }
+  // Text may be a literal string or JSON. Do not guess or recursively decode business fields.
+  if (!accepts) return refuse('MCP text needs the original output schema or structured content for a shadow check.');
+  const rawValid = accepts(value).valid, parsedValid = accepts(parsed).valid;
+  if (rawValid === parsedValid) return refuse('The recorded MCP text has ambiguous or invalid output types.');
+  return rawValid ? value : parsed;
 }
 
 /** Race work with cancellation without pretending an uncooperative callback can be rolled back. */
@@ -311,7 +322,7 @@ function makeWorkflowBridge<
             if (openCall !== event.id || event.status !== 'completed') refuse('The native recording has an uncertain effect outcome.');
             openCall = undefined;
           }
-          call.status = event.status; call.output = recordedOutput(event.output);
+          call.status = event.status; call.output = recordedOutput(event.output, event.outputFormat, tool!.output);
         }
       }
       if ([...byId.values()].some(call => call.status === 'started')) refuse('The native recording has an unfinished tool call.');

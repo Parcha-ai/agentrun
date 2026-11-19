@@ -33,6 +33,70 @@ function setup(t, overrides={}) {
   return {bridge,writes:()=>writes,run:(patch={})=>bridge.check(check,{runId:'native-1',input:'Release api.',events,outcome:{status:'completed',answer:'api released'},...patch})};
 }
 
+for (const [label, value] of [
+  ['JSON number text', '42'], ['JSON null text', 'null'], ['JSON boolean text', 'true'],
+  ['JSON object text', '{"name":"raw"}'],
+  ['business content field', { name: 'raw', content: [{ type: 'text', text: 'transport-looking data' }] }],
+  ['business structuredContent field', { name: 'raw', structuredContent: { name: 'inner' } }],
+]) test(`shadow preserves raw callback output: ${label}`, async t => {
+  const schema = { type: typeof value === 'string' ? 'string' : 'object', const: value };
+  const { bridge, writes } = setup(t, { tools: [{ name: 'mcp:release/publish', description: 'Return the original value.',
+    input_schema: input, output_schema: schema, permission: 'allow', readOnly: true,
+    execute() { assert.fail('A recorded result must not invoke the callback.'); } }] });
+  const candidate = { ...check, workflow: { ...check.workflow, workflow: JSON.stringify({ ...document, schemas: { Input: input, Output: schema } }) } };
+  const result = await bridge.check(candidate, { runId: 'raw-result', input: '{"service":"api"}',
+    events: [events[0], { ...events[1], output: value }], outcome: { status: 'completed', answer: 'Original answer.' } });
+  assert.equal(result.outcome, 'answered', result.reason);
+  assert.equal(result.answer, typeof value === 'string' ? value : JSON.stringify(value));
+  assert.equal(writes(), 0);
+});
+
+test('MCP text requires one interpretation allowed by the original output schema', async t => {
+  for (const [text, schema, expected] of [
+    ['42', { type: 'string' }, '42'], ['42', { type: 'number' }, '42'],
+    ['"42"', { type: 'string' }, undefined], ['42', { type: ['string', 'number'] }, undefined],
+    ['42', undefined, undefined],
+  ]) {
+    const { bridge } = setup(t, { tools: [{ name: 'mcp:release/publish', description: 'Read a value.', input_schema: input,
+      ...(schema ? { output_schema: schema } : {}), permission: 'allow', readOnly: true,
+      execute() { assert.fail('Shadow must not call the tool.'); } }] });
+    const candidate = { ...check, workflow: { ...check.workflow, workflow: JSON.stringify({ ...document, schemas: { Input: input, Output: schema ?? {} } }) } };
+    const result = await bridge.check(candidate, { runId: 'text-result', input: '{"service":"api"}', events: [events[0], {
+      ...events[1], outputFormat: 'mcp-content', output: [{ type: 'text', text }],
+    }], outcome: { status: 'completed', answer: 'Original answer.' } });
+    assert.equal(result.outcome, expected === undefined ? 'failed' : 'answered', JSON.stringify({ text, schema, result }));
+    if (expected !== undefined) assert.equal(result.answer, expected);
+    else assert.match(result.reason, /ambiguous|output schema/);
+  }
+});
+
+test('shadow decodes explicitly marked MCP transport once, preserving business fields inside it', async t => {
+  const value = { name: 'raw', content: [{ type: 'text', text: '42' }], structuredContent: { name: 'inner' } };
+  const schema = { type: 'object', const: value };
+  const { bridge } = setup(t, { tools: [{ name: 'mcp:release/publish', description: 'Return a structured value.',
+    input_schema: input, output_schema: schema, permission: 'allow', readOnly: true,
+    execute() { assert.fail('A recorded result must not invoke the callback.'); } }] });
+  const candidate = { ...check, workflow: { ...check.workflow, workflow: JSON.stringify({ ...document, schemas: { Input: input, Output: schema } }) } };
+  for (const terminal of [
+    { outputFormat: 'mcp', output: { structuredContent: value, content: [{ type: 'text', text: 'model-facing text' }] } },
+    { outputFormat: 'mcp', output: { content: [{ type: 'text', text: JSON.stringify(value) }] } },
+    { outputFormat: 'mcp-content', output: [{ type: 'text', text: JSON.stringify(value) }] },
+  ]) {
+    const result = await bridge.check(candidate, { runId: 'mcp-result', input: '{"service":"api"}',
+      events: [events[0], { ...events[1], ...terminal }], outcome: { status: 'completed', answer: JSON.stringify(value) } });
+    assert.equal(result.outcome, 'answered', result.reason);
+    assert.equal(result.answer, JSON.stringify(value));
+  }
+});
+
+test('an MCP error envelope cannot supply a successful recorded result', async t => {
+  const { run } = setup(t);
+  const result = await run({ events: [events[0], { ...events[1], outputFormat: 'mcp',
+    output: { isError: true, structuredContent: { brief: 'api released' }, content: [{ type: 'text', text: 'Tool failed.' }] } }] });
+  assert.equal(result.outcome, 'failed');
+  assert.match(result.reason, /tool failure/);
+});
+
 test('identical named schemas can be shared by tools and reused across checks',async t=>{
   const named={...input,$id:'https://example.com/release-input'};
   const tool={description:'Read release status.',input_schema:named,output_schema:output,permission:'allow',readOnly:true,
