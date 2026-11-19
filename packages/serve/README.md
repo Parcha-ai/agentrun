@@ -993,6 +993,24 @@ A Daytona computer mounts the run's folder only where `DAYTONA_ARCHIL_EGRESS` na
 egress relay (see Mode 2 above), and then it needs this snapshot. A changed recipe is a new name, so build again after
 an upgrade that changes `box/`. A Daytona [box](#sandbox) never reads it.
 
+**Before unsetting `DAYTONA_ARCHIL_EGRESS` on a server with open runs.** Each open run's folder moves from the Archil
+mount to a synced folder at its next claim. The synced claim reads the folder through Archil's file API, which lists a
+link an exec made (a venv, `node_modules/.bin`) as a file and won't read it. So it takes the folder's links from the
+`sync.json` beside it (`agents/<agent>/runs/<run>/sync.json`), which an Archil computer writes at its park and release
+from 0.1.0-beta.45 on. A run whose last Archil claim ran an earlier release, or never reached its park or release, has
+no record. If its folder holds a link, its next synced claim is refused. New runs and ended runs need nothing.
+Before the switch, run 0.1.0-beta.45 or later with the variable still set and count the runs at risk. The count is
+read-only:
+
+1. List the disk under `agents/*/runs/*/` through the file API. Keep each run with files under `work/` and no
+   `sync.json`.
+2. Keep only the runs whose status isn't ended (`GET /runs`).
+3. Probe each for a link with a one-byte ranged GET of its likely link paths (`node_modules/.bin/*`,
+   `.venv/bin/python*`). A 501 answer means a link.
+
+Claim each run left once on the mount (a message, or a resume), so its park or release records it, or accept that it
+won't continue where it syncs. Unset the variable once the count is 0.
+
 A desktop, a phone and a browser run in either mode. The run's folder is at
 `/workspace` in every computer that mounts it: a sandbox always, and a desktop whose provider mounts the mode's folder
 (Docker's in Mode 1, Agent37's and E2B's in Mode 2). A phone and a browser never mount it. On a desktop that mounts it, the
