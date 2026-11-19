@@ -42,7 +42,7 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
        agentrun-serve runner --check --data DIR [--name NAME]
        agentrun-serve native discover|connect --project PATH [--runtime claude-code|codex] [--agent NAME|--profile NAME] [--url URL] [--data DIR]
 
-  --data DIR       the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
+  --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
   --listen ADDR     the address to listen on (default 127.0.0.1); on any other, every Host name is served and the token
                     is the only lock, so put TLS in front of it
   --port N          the port (default: the first free one from ${DEFAULT_PORT}; 0 is any free port)
@@ -140,15 +140,19 @@ wrong and nothing ran. Real runs cost money: each case's prompt.md caps each of 
 
 // A command's --help (or -h), before the command reads anything else it was given: its own lines of USAGE and the
 // paragraph that says what it does, where there is one, on stdout, exit 0. No store is opened and nothing is written,
-// so `reset-password --help` clears no password and `install-harness goose --help` downloads nothing.
-const HELPED = ["native", "reset-password", "install-harness", "validate-template", "eval-template", "runner", "import"];
+// so `reset-password --help` clears no password and `install-harness goose --help` downloads nothing. A command USAGE
+// has no line for (remote-bridge) has no --help of its own.
 const command = process.argv[2];
 const commandArgs = process.argv.slice(3);
+/** The command's own lines of USAGE, the first "usage:" and the rest under it; empty when USAGE has none for it. */
+const commandUsage = USAGE.split("\n")
+  .filter((line) => line.trimStart().replace(/^usage: /, "").startsWith(`agentrun-serve ${command} `))
+  .map((line, i) => `${i === 0 ? "usage:" : "      "} ${line.trimStart()}`)
+  .join("\n");
 const optionsEnd = commandArgs.indexOf("--");
-if (command !== undefined && HELPED.includes(command) && (optionsEnd === -1 ? commandArgs : commandArgs.slice(0, optionsEnd)).some((arg) => arg === "--help" || arg === "-h")) {
-  const lines = USAGE.split("\n").filter((line) => line.trimStart().replace(/^usage: /, "").startsWith(`agentrun-serve ${command} `));
+if (commandUsage && (optionsEnd === -1 ? commandArgs : commandArgs.slice(0, optionsEnd)).some((arg) => arg === "--help" || arg === "-h")) {
   const about = USAGE.split("\n\n").find((block) => block.startsWith(`\`agentrun-serve ${command}`));
-  console.log([lines.map((line, i) => `${i === 0 ? "usage:" : "      "} ${line.trimStart()}`).join("\n"), ...(about ? [about] : []), "agentrun-serve --help says what the server's own flags and variables do."].join("\n\n"));
+  console.log([commandUsage, ...(about ? [about] : []), "agentrun-serve --help says what the server's own flags and variables do."].join("\n\n"));
   process.exit(0);
 }
 
@@ -160,7 +164,7 @@ if (process.argv[2] === "remote-bridge") {
 
 if (process.argv[2] === "native") {
   const { nativeMain } = await import("./native/cli.js");
-  process.exit(await nativeMain(process.argv.slice(3)));
+  process.exit(await nativeMain(process.argv.slice(3), commandUsage));
 }
 
 if (process.argv[2] === "reset-password") {

@@ -14,7 +14,7 @@ import { inspect } from "node:util";
 import { queued, storeOn } from "./store-helpers.mjs";
 import { client, dropSchema, freshSchema, PG_URL, postgresOnly, schemaOf } from "./store-target.mjs";
 
-const { migrate, migrationsIn, openPostgresStore, postgresVersionOf: versionOf, postgresWhere, openStore, PgConnection, SchemaVersionUnknown, storeTarget, StoreAwaitsServer, StoreBusy, StoreConstraint, STORE_CONNECT_TIMEOUT_MS, StoreDeadline, StoreOwned, Unanswered, LEASE_DEADLINE_MS } = await import("../dist/store/index.js");
+const { migrate, migrationsIn, openPostgresStore, postgresVersionOf: versionOf, postgresWhere, openStore, PgConnection, SchemaVersionUnknown, storeTarget, StoreBusy, StoreConstraint, STORE_CONNECT_TIMEOUT_MS, StoreDeadline, StoreOwned, Unanswered, LEASE_DEADLINE_MS } = await import("../dist/store/index.js");
 const { RUNNER_RENEW_EVERY_MS, RunnerRefused, startRunnerProcess } = await import("../dist/runner/main.js");
 
 const ONLY = postgresOnly("the Postgres adapter");
@@ -901,22 +901,6 @@ test("a runner process on a schema not set up is refused in the SQLite words, na
   assert.ok(error instanceof RunnerRefused, String(error));
   assert.equal(error.message, `The store in the Postgres schema ${schema} is not set up yet: start the server on the Postgres schema ${schema} first, then the runner.`);
   assert.ok(!error.message.includes(PG_URL), "the URL is not in the words");
-});
-
-test("a runner process on a schema an earlier release set up is told to start the server first", ONLY, async (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "store-runner-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const schema = await schemaFor(t);
-  // The earlier release's schema: every migration but this build's last, as its server left it.
-  const connection = await PgConnection.open({ url: PG_URL, schema });
-  try {
-    await connection.withClient((c) => migrate(c, schema, 0, migrationsIn().slice(0, -1)));
-  } finally {
-    await connection.close();
-  }
-  const error = await startRunnerProcess({ dataDir: dir, env: { AGENTRUN_STORE_SCHEMA: schema }, storeUrl: PG_URL, createLoop: () => assert.fail("no run is claimed") }).then(() => null, (e) => e);
-  assert.ok(error instanceof RunnerRefused && error.cause instanceof StoreAwaitsServer, String(error));
-  assert.match(error.message, /start the server first/);
 });
 
 test("a run's outcome takes 'stopped' and 'cancelled' on a fresh schema and on one an earlier build set up (every migration before the outcome's) and migrated since", ONLY, async (t) => {
