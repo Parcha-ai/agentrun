@@ -49,6 +49,7 @@ With `keepOnUninstall: false`, `helm uninstall` removes them with the release. A
 | `keepOnUninstall` | `true` | `helm uninstall` leaves the Secret and the volume the chart made. `false` removes them with the release. |
 | `env` | `{}` | Plain variables by name, such as `AGENTRUN_TELEMETRY: "0"` to turn the usage counts off ([docs/telemetry.md](../../../docs/telemetry.md)). |
 | `resources` | 500m and 2Gi, 2Gi limit | The pod's resources. |
+| `terminationGracePeriodSeconds` | 35 | A stopping pod's time before it is killed: the 6 s drain plus the runner's 25 s. Raise it with a longer `--drain-timeout`. |
 | `image.repository`, `.tag`, `.pullPolicy` | the release's image | `tag` empty means `v<appVersion>`. |
 | `args`, `extraVolumes`, `extraVolumeMounts` | empty | The container's arguments (empty: the image's own), and volumes to add. |
 
@@ -71,9 +72,9 @@ File tools and `web_fetch`, and no shell: a cluster gives the server no Docker. 
 key in the console.
 
 Each run's process runs as a user of its own. The run helper switches to it with three file capabilities (`SETUID`,
-`SETGID`, `SETPCAP`), which the container keeps while dropping every other capability. The pod therefore needs the
-`baseline` Pod Security level (Kubernetes' default), not `restricted`. Where a cluster forbids them, set
-`env.AGENTRUN_RUN_USER: same`: every run then runs as the server's user, still each in a process of its own.
+`SETGID`, `SETPCAP`), which the container keeps while dropping every other capability, and the init container runs as
+root with `CHOWN` and `FOWNER`. The pod therefore needs the `baseline` Pod Security level (Kubernetes' default): a
+namespace that enforces `restricted` rejects it, and the chart doesn't support one.
 
 ## The walk
 

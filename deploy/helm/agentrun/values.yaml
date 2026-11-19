@@ -37,8 +37,12 @@ resources:
   limits:
     memory: 2Gi
 
-# Plain variables, by name. AGENTRUN_TELEMETRY: "0" turns the usage counts off (docs/telemetry.md); AGENTRUN_RUN_USER:
-# same runs every run as the server's user, where the cluster forbids the run helper's capabilities (README.md).
+# How long a stopping pod has before it is killed. The server's runner lets busy runs finish their turn for the drain
+# (--drain-timeout, 6s in the image's command), then gives a loop that does not stop 25 s more: 35 s covers both, as in
+# deploy/compose.yaml. Raise it with a longer drain, or runs wait for their claims to expire before they resume.
+terminationGracePeriodSeconds: 35
+
+# Plain variables, by name. AGENTRUN_TELEMETRY: "0" turns the usage counts off (docs/telemetry.md).
 # Model keys go in the console (Settings, Model keys), never here.
 env: {}
 

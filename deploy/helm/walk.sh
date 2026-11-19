@@ -12,6 +12,11 @@ here=$(cd "$(dirname "$0")" && pwd)
 walk=$(dirname "$here")/walk
 ns=agentrun-walk
 release=agentrun
+# The walk's own namespace: it refuses one that is there already, so its cleanup never deletes what it didn't make.
+kubectl create namespace "$ns" >/dev/null || {
+  echo "walk.sh: namespace $ns is there already (another walk, or what one left): delete it, then walk again" >&2
+  exit 1
+}
 work=$(mktemp -d)
 rows="$work/rows"
 : >"$rows"
@@ -48,16 +53,19 @@ finish() {
 trap finish EXIT
 trap 'exit 130' INT TERM
 
-kubectl create namespace "$ns" >/dev/null
 k create configmap walk-files --from-file="$walk/faux-steps.mjs" --from-file="$walk/api.mjs" >/dev/null
 helm install "$release" "$here/agentrun" -n "$ns" -f "$here/walk-values.yaml" --wait --timeout 5m >"$work/install.log" 2>&1 \
   || { cat "$work/install.log" >&2; fail "installed" "helm install --wait: $(tail -1 "$work/install.log")"; }
 first=$(pod)
-pass "installed" "$(k get pod "$first" -o jsonpath='{.metadata.name} {.status.phase}, image {.spec.containers[0].image}')"
+grace=$(k get pod "$first" -o jsonpath='{.spec.terminationGracePeriodSeconds}')
+[ "$grace" = 35 ] || fail "installed" "the pod's stop grace is ${grace}s, not 35 s (the 6 s drain and the runner's 25 s)"
+pass "installed" "$(k get pod "$first" -o jsonpath='{.metadata.name} {.status.phase}, image {.spec.containers[0].image}'), stop grace ${grace}s"
 
 token=$(k get secret "$release" -o jsonpath='{.data.AGENTRUN_TOKEN}' | base64 -d | wc -c)
 seal=$(k get secret "$release" -o jsonpath='{.data.AGENTRUN_SEAL_KEY}' | base64 -d | base64 -d | wc -c)
-[ "$token" = 64 ] && [ "$seal" = 32 ] || fail "keys made" "AGENTRUN_TOKEN $token characters (not 64), AGENTRUN_SEAL_KEY $seal bytes (not 32)"
+if [ "$token" != 64 ] || [ "$seal" != 32 ]; then
+  fail "keys made" "AGENTRUN_TOKEN $token characters (not 64), AGENTRUN_SEAL_KEY $seal bytes (not 32)"
+fi
 pass "keys made" "Secret $release: AGENTRUN_TOKEN $token characters, AGENTRUN_SEAL_KEY base64 of $seal bytes"
 
 data=$(in_pod stat -c '%U:%G %a' /data)
