@@ -211,21 +211,27 @@ export async function serveViewerFile(req: IncomingMessage, res: ServerResponse,
  *  are seen by no call in this one, so a viewer they end closes within this. */
 export const LIVE_RECHECK_MS = 2_000;
 
-/** The viewers' sockets open now, each with the check of the sessions that let it in. A socket whose sessions no longer
- *  hold is destroyed, which takes its way to the run with it (proxyLiveUpgrade): at once on `recheck()` (a sign-out or a
- *  password set in this process), else within LIVE_RECHECK_MS. The timer runs only while a viewer is open. */
+/** The viewers' sockets open now, each with the check of what let it in: the owner's sessions, or on an API-only server
+ *  the viewer credential's run not ended (viewer-credential.ts), read from the store. A socket whose check no longer holds,
+ *  or fails, is destroyed, which takes its way to the run with it (proxyLiveUpgrade): at once on `recheck()` (a sign-out or
+ *  a password set in this process; a store read as soon as it answers), else within LIVE_RECHECK_MS. The timer runs only
+ *  while a viewer is open. */
 export class OpenViewers {
-  private readonly open = new Map<Duplex, () => boolean>();
+  private readonly open = new Map<Duplex, () => boolean | Promise<boolean>>();
   private timer: NodeJS.Timeout | undefined;
 
-  watch(socket: Duplex, admitted: () => boolean): void {
+  watch(socket: Duplex, admitted: () => boolean | Promise<boolean>): void {
     this.open.set(socket, admitted);
     socket.once("close", () => this.drop(socket));
     this.timer ??= setInterval(() => this.recheck(), LIVE_RECHECK_MS).unref();
   }
 
   recheck(): void {
-    for (const [socket, admitted] of this.open) if (!admitted()) this.end(socket);
+    for (const [socket, admitted] of this.open) {
+      const holds = admitted();
+      if (holds === false) this.end(socket);
+      else if (holds !== true) holds.then((still) => still || this.end(socket), () => this.end(socket));
+    }
   }
 
   /** The server closes: every viewer goes. */

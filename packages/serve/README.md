@@ -2925,11 +2925,22 @@ serves these routes alone:
   key names and whether each is saved, and whether it is ready) and `GET /workspace/archil` (whether runs' folders are
   on Archil, and whether its account key is saved). Neither answers a key's value. Their writes, tests and key choices
   are the console's, refused here;
-- `GET /capabilities`, `GET /health` and `GET /usage`.
+- `GET /capabilities`, `GET /health` and `GET /usage`;
+- a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
+
+A run's computer here takes the server's token, the backend's own, since there is no owner to sign in: `GET
+/runs/{id}/computer`, `POST /runs/{id}/computer/take-over` and `POST /runs/{id}/computer/hand-back`. For its user's
+browser, the backend asks `POST /runs/{id}/computer/viewer` for `{ url, expires_at }`: a link on `AGENTRUN_PUBLIC_URL`
+(refused in words when it is unset) to the run's live page, with a viewer credential in its query that opens that run's
+page and socket, from the public address alone, for 5 minutes. The credential is an HMAC of the run and its expiry under
+a key from the seal key, so every server on the store checks it, across restarts; the run's end (completed, failed or
+cancelled) revokes it and closes a socket open on it, and a stop does not, as the run goes on. The person watches, and
+takes over and hands back in the viewer's own bar; nothing else opens to the credential. A server that is not API-only
+answers the mint `404`, and its live page takes the owner's sign-in alone.
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
 assets, sign-in and setup, every `/settings` route, `POST /mcp`, triggers and their
-`POST /hooks/{id}`, agents, templates, `/openapi.json`, `/llms.txt` and the live views. It has no accounts: there is no
+`POST /hooks/{id}`, agents, templates, `/openapi.json`, `/llms.txt` and a browser's live view. It has no accounts: there is no
 page to sign in to, so no setup code is printed. The token works as it does on every route served. Unset, `0` or
 `false` serve the whole server, as before; any value other than these and `1` or `true` stops the start, in words.
 

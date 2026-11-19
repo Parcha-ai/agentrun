@@ -679,6 +679,15 @@ Route: `POST /runs`.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
+### `agentrun runs create-run-computer-viewer RUN_ID`
+
+Mint a link to the run's live view for the backend's user.
+
+Route: `POST /runs/{run_id}/computer/viewer`.
+
+- `--body JSON|@FILE|-` (application/json): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
 ### `agentrun runs files RUN_ID`
 
 The files the run wrote.

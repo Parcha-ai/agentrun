@@ -1527,6 +1527,13 @@ export interface operations {
     body: components["RunCreate"];
     answer: components["Run"];
   };
+  createRunComputerViewer: {
+    body: Record<string, never>;
+    answer: {
+      url: string;
+      expires_at: string;
+    };
+  };
   createTrigger: {
     body: {
       name?: string;
