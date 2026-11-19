@@ -158,7 +158,7 @@ export async function checkApi(client, log) {
     EnvironmentConfig: { id }, EnvironmentPatchCommit: { environmentId: id, patch: {}, commitMessage: "check" },
     WorkspaceTemplates: { workspaceId: id }, TemplateGenerate: { projectId: id, environmentId: id },
     Template: { code: "agentrun-check-api" },
-    TemplateDeploy: { input: { templateId: id, serializedConfig: formValues(config), workspaceId: id } },
+    TemplateDeploy: { input: { templateId: id, serializedConfig: walkValues(config), workspaceId: id } },
     ProjectRename: { id, name: WALK_PROJECT }, WorkflowStatus: { id }, Project: { id },
     Deployments: { input: { projectId: id, environmentId: id, serviceId: id } },
     Domains: { projectId: id, environmentId: id, serviceId: id }, Variables: { projectId: id, environmentId: id, serviceId: id },
@@ -206,6 +206,14 @@ export function formValues(config) {
   for (const service of Object.values(out.services ?? {})) {
     for (const v of Object.values(service.variables ?? {})) if (v?.defaultValue) v.value = v.defaultValue;
   }
+  return out;
+}
+
+/** The walk's deploy: the form as the template fills it, plus AGENTRUN_TELEMETRY=0, since the walk's server is ours and
+ *  sends no usage counts (docs/telemetry.md). The template itself leaves them on. */
+export function walkValues(config) {
+  const out = formValues(config);
+  for (const service of Object.values(out.services ?? {})) service.variables = { ...service.variables, AGENTRUN_TELEMETRY: { value: "0" } };
   return out;
 }
 
@@ -339,10 +347,10 @@ async function walk(client, { workspaceId, template, step, firstRun, times }) {
   let projectId, environmentId, serviceId;
   try {
     times.clicked = Date.now();
-    const deployed = (await client.call("TemplateDeploy", { input: { templateId: template.id, serializedConfig: formValues(template.serializedConfig), workspaceId } })).templateDeployV2;
+    const deployed = (await client.call("TemplateDeploy", { input: { templateId: template.id, serializedConfig: walkValues(template.serializedConfig), workspaceId } })).templateDeployV2;
     projectId = deployed.projectId;
     await client.call("ProjectRename", { id: projectId, name: `${WALK_PROJECT}-${Date.now()}` });
-    step.pass("template deployed", `into a new project ${projectId}, with the form as the template fills it`);
+    step.pass("template deployed", `into a new project ${projectId}, with the form as the template fills it (and AGENTRUN_TELEMETRY=0)`);
     if (deployed.workflowId) {
       await until(client, "the template's deploy workflow completed", 10 * 60_000, 5_000, async () => {
         const s = (await client.call("WorkflowStatus", { id: deployed.workflowId })).workflowStatus;

@@ -506,8 +506,7 @@ try {
 // (besideRunnerOptions): at most --max-runs runs at once, the rest waiting queued, and on the stop each busy run finishes
 // its turn for up to --drain-timeout.
 let runnerProc: Awaited<ReturnType<typeof runnerBeside>> | undefined;
-// Anonymous usage counts (telemetry.ts, docs/telemetry.md): off with AGENTRUN_TELEMETRY=0 or DO_NOT_TRACK=1, in CI and
-// under --faux. It hears each run's end from the runner beside the server; with --no-runner it counts no runs.
+// Anonymous usage counts (docs/telemetry.md). It hears each run's end from the runner beside the server; with --no-runner it counts no runs.
 const telemetry = startTelemetry({ data: resolve(data), ...(values.faux ? { faux: true } : {}) });
 const { loops, loopsTold, drainMs } = besideRunnerOptions(serveOptions, process.env);
 // A stop asked during the server's start starts no runner: nothing is claimed for the stop to cut.
