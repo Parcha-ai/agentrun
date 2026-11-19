@@ -505,15 +505,12 @@ test("an output retry written on the record but never sent is sent by the next c
 /** A CLI stand-in whose first turn's call is still running when a person stops the run: the call never answers, so its
  *  end never lands before the run's (Codex's code-mode write the stop cut mid-flight), and the turn ends interrupted. Its
  *  resume log keeps that the turn was sent: a session opened again finds it open. `log` counts what the loop did with
- *  that turn (recovered or settled) and each text the session was sent; an open `hangs` says yes to (by its count) never
- *  returns, its runner lost there. */
-function stoppedMidCallCli(tool, log, hangs = () => false) {
+ *  that turn (recovered or settled) and each text the session was sent. */
+function stoppedMidCallCli(tool, log) {
   return {
     id: "stand-in-cli",
     check: () => [],
     async open(spec, io) {
-      log.opens += 1;
-      if (hangs(log.opens)) await new Promise(() => {});
       let state = (await io.writer.read()).some((record) => record.kind === "stand-in.sent") ? "open_turn" : "new";
       let turn;
       const cut = new AbortController();
@@ -559,20 +556,16 @@ function stoppedMidCallCli(tool, log, hangs = () => false) {
   };
 }
 
-for (const [how, lost] of [
-  ["though the next claim first ends the cut call interrupted", false],
-  ["though the claim that ended the cut call was lost before its turn, and another runner takes the run over", true],
-]) test(`a follow-up to a CLI run stopped while its call ran is the reopened run's turn: the cut turn is settled, never carried on, ${how}`, async (t) => {
-  const opened = await stores({ runners: 2 });
+test("a follow-up to a CLI run stopped while its call ran is the reopened run's turn: the run's end ends the cut call, and the cut turn is settled, never carried on", async (t) => {
+  const opened = await stores({ runners: 1 });
   await queue(opened.server, "run-1");
-  const log = { sent: [], recovered: 0, settled: 0, opens: 0 };
+  const log = { sent: [], recovered: 0, settled: 0 };
   let calledNow;
   const called = new Promise((resolve) => (calledNow = resolve));
   // A write the stop cuts while it runs: it never answers, so nothing of this claim ends it.
   const write = { name: "write", description: "Write a file.", inputSchema: { type: "object" }, replay: "never", call: () => { calledNow(); return new Promise(() => {}); } };
   const createLoop = createAdapterLoop(() => ({
-    // Lost: the reopen's first claim hangs opening its session, after its record ended the cut call.
-    adapter: stoppedMidCallCli("write", log, (opens) => lost && opens === 2),
+    adapter: stoppedMidCallCli("write", log),
     session: { key: "root", label: "root", system: [], tools: [write], context: "fresh" },
     input: "Write s1.txt.",
     runCap: { capUsd: () => undefined, modelOf: () => undefined },
@@ -581,12 +574,9 @@ for (const [how, lost] of [
     gate: () => "allow",
   }));
   const first = startRunner({ store: observed(opened.runners[0], recorder()), createLoop, name: "runner-a", ...STEADY });
-  let second;
   t.after(async () => {
     try {
-      if (lost) first.kill();
-      else await first.close();
-      await second?.close();
+      await first.close();
     } finally { await release(opened); }
   });
   const rested = (want, after) => until(async () => {
@@ -597,17 +587,12 @@ for (const [how, lost] of [
   await sendCommand(opened.server, "run-1", { kind: "stop" });
   const stopped = await rested("stopped");
   const cutRecord = await recordAt(opened.server, stopped);
-  assert.deepEqual(cutRecord.entries.filter((entry) => entry.kind === KINDS.callEnd).map((entry) => entry.data.callId), [], "the run's end left the cut call with no end");
+  const cutEnds = cutRecord.entries.filter((entry) => entry.kind === KINDS.callEnd);
+  assert.deepEqual(cutEnds.map((entry) => [entry.data.callId, entry.data.status, entry.data.withRun]), [["call-1", "interrupted", true]], "the run's end ended the cut call interrupted");
+  assert.ok(cutRecord.entries.indexOf(cutEnds[0]) < cutRecord.entries.findLastIndex((entry) => entry.kind === KINDS.end), "before the run's end, nothing of the stopped turn after it");
 
   await opened.server.runs.reopen("run-1", { kind: "steer", body: { text: "go on" } });
   await opened.server.flush?.();
-  if (lost) {
-    await until(async () => log.opens >= 2, "the reopen's first claim began opening its session", 10_000);
-    first.kill();
-    // The lost claim's lease runs out for the next runner at once.
-    opened.clock.skewMs += STEADY.leaseMs * 2;
-    second = startRunner({ store: opened.runners[1], createLoop, name: "runner-b", ...STEADY });
-  }
   const row = await rested("ended", stopped.endedAt ?? 0);
   assert.deepEqual({ recovered: log.recovered, settled: log.settled }, { recovered: 0, settled: 1 }, "the turn the stop cut is settled, never carried on");
   assert.deepEqual(log.sent, ["Write s1.txt.", "go on"], "the follow-up is the session's next turn");

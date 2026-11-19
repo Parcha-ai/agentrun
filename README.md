@@ -387,7 +387,7 @@ computer:
 | --- | --- | --- |
 | `none` | Read and write files in its run folder; no shell (with Archil, commands run on Archil's exec) | none needed |
 | `sandbox` | Run code, install packages, keep processes in the background, on Linux | Docker, Daytona, Modal, E2B, Cloudflare (through a relay Worker you deploy) |
-| `desktop` | See a Linux screen, move the mouse, type | Orgo, E2B, Docker (your own image with an X server), and on dial Daytona, Modal, Cloudflare and Fly Machines (the box image's desktop) |
+| `desktop` | See a Linux screen, move the mouse, type | Orgo, E2B, Docker (your own image with an X server), and on dial Modal, Cloudflare and Fly Machines (the box image's desktop) |
 | `phone` | Tap, swipe, type, open apps and read the screen on Android | phone harness (a rented cloud Android) |
 | `browser` | Browse the web, and hand the controls to you at any point | Browserbase, Kernel |
 
@@ -528,8 +528,8 @@ for the disk, at Render's prices when this was written. Leave the model keys in 
 blank. When it's live, open its URL and paste `AGENTRUN_TOKEN` from the service's Environment tab to set your password.
 Then Continue with ChatGPT (Settings → Model keys, or the first screen), then run your first agent. Or paste a key in
 Render's form, or add it in the console: we recommend an `OPENROUTER_API_KEY` with a dollar cap and an expiration
-date. Do not share it with anyone. Walked on 0.1.0-beta.46 from the service's creation to a finished first run in 85
-seconds (healthy at 77), about a tenth of a cent of Render time.
+date. Do not share it with anyone. Walked from the service's creation through Render's API to a finished first run
+in 85 seconds.
 
 **Self-host on a $5 VPS.**
 

@@ -51,11 +51,11 @@ import { type AgentComputerHold, agentComputerOf, forgetAgentComputer, holdAgent
 import type { MountCheck } from "./attach.js";
 import { type AttachedComputers, pairedProvider, withPaired } from "./attached-computers.js";
 import { computerHold, type HeldComputer, heldHands } from "./computer-hold.js";
-import { deleteKept, endKept, KEEP_MS, type Kept, KEPT_DELETE_MS, KEPT_PULL_MS, keptEnded, type ParkCause, type ParkedEnd, readKept, takeKept, writeKept } from "./computer-kept.js";
+import { deleteKept, endKept, KEEP_MS, type Kept, type ParkCause, type ParkedEnd, readKept, takeKept, writeKept } from "./computer-kept.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
 import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer } from "./resolve-computer.js";
 import type { RunComputer, RunHold } from "./run-tools.js";
-import { claimHolds, fencedStore, type FolderStore, pullFolder, pushFolder, storedFolder } from "./synced-folder.js";
+import { claimHolds, fencedStore, type FolderStore, type HeldFolder, holdSynced, storedFolder } from "./synced-folder.js";
 import type { Workspace } from "./workspace.js";
 
 /** What the claim knows of the run: its id, the claim's epoch, and where its computer setting is (the launch's own, else
@@ -480,8 +480,9 @@ type Renewal = {
   /** The most new ones this claim starts (ComputerForClaimDeps.recreates). */
   readonly max: number;
   /** A new sandbox in place of the lost one, the claim's `times`th, connected and its mount read back: what the lost one
-   *  was made with, under the same claim's labels. Its words, thrown, when it can't be had. */
-  remake(times: number): Promise<ProviderComputer>;
+   *  was made with, under the same claim's labels. A synced folder is held in it through `own` of it (lostAware's
+   *  ownOf). Its words, thrown, when it can't be had. */
+  remake(times: number, own: (held: ProviderComputer) => ComputerClient): Promise<ProviderComputer>;
   /** Told once a new one is up, with its name: the run's Timeline row. */
   started(name: string): void;
   /** The run's end in `words`, once a lost sandbox is past the bound: the run's own stop (ComputerForClaimDeps.stopRun). */
@@ -542,6 +543,20 @@ function lostAware(first: ProviderComputer, renewal: Renewal): ProviderComputer 
     await renewal.stop(spent.message);
     return spent;
   };
+  /** `held`'s own client, for a synced folder's sync, which stays on the machine it holds and starts nothing: a loss it
+   *  finds while `held` is the current one marks it lost as any call's does (lose), so the run's next call starts the new
+   *  one before it runs. Its answers on a machine already lost or replaced stand. */
+  const ownOf = (held: ProviderComputer): ComputerClient => ({
+    async call<M extends DaemonMethod>(method: M, params: DaemonMethods[M]["params"], options?: { signal?: AbortSignal }): Promise<Result<DaemonMethods[M]["result"]>> {
+      const answered = await held.client.call(method, params, options);
+      if (answered.ok || spent || held !== current || lost) return answered;
+      if (!(await goneFrom(held, answered.error)) || spent || held !== current || lost) return answered;
+      return { ok: false, error: await lose(held, answered.error) };
+    },
+    close() {
+      held.client.close();
+    },
+  });
   /** A new one in place of the lost one, or why the run has none now. */
   const renew = async (why: ComputerError): Promise<ComputerError | undefined> => {
     // The lost one's resources go first: a vendor's delete of one it no longer has is done already.
@@ -551,7 +566,7 @@ function lostAware(first: ProviderComputer, renewal: Renewal): ProviderComputer 
     }
     let fresh: ProviderComputer;
     try {
-      fresh = await renewal.remake(made + 1);
+      fresh = await renewal.remake(made + 1, ownOf);
     } catch (error) {
       return { code: "gone", message: `${why.message}; a new sandbox could not be started: ${error instanceof Error ? error.message : String(error)}` };
     }
@@ -603,6 +618,10 @@ function lostAware(first: ProviderComputer, renewal: Renewal): ProviderComputer 
     machine: first.machine,
     hello: first.hello,
     client,
+    // The current one's own (ownOf): a synced folder's sync through it marks a loss it finds and starts nothing.
+    get own() {
+      return ownOf(current);
+    },
     readBack: () => current.readBack(),
     close: () => current.close(),
     async release() {
@@ -610,18 +629,6 @@ function lostAware(first: ProviderComputer, renewal: Renewal): ProviderComputer 
       await current.release();
     },
   };
-}
-
-/** A kept computer's synced folder read back whole onto `store` (the run's disk) through a connection of its own, within
- *  KEPT_PULL_MS, before its end deletes it. Throws in words where it can't be. */
-async function pullKept(provider: ComputerProvider, ref: ProviderComputer["ref"], store: FolderStore): Promise<void> {
-  const connected = await provider.connect(ref);
-  if (!connected.ok) throw new Error(connected.error.message);
-  try {
-    await pullFolder(store, connected.value.client, AbortSignal.timeout(KEPT_PULL_MS));
-  } finally {
-    await connected.value.close();
-  }
 }
 
 /** The computer an earlier claim of the run kept at its park (`kept`), attached again through `provider` and connected,
@@ -810,6 +817,8 @@ export async function computerForClaim(
     const disk = deps.workspace.syncStore?.();
     return disk && holds ? fencedStore(disk, holds) : disk;
   };
+  /** The claim's synced folder, held at the start and again by each new sandbox in place of a lost one. */
+  const folderHeld: HeldFolder = {};
   const table = deps.keyTable ?? KEY_TABLE;
   // The paired computers, each one more provider of the registry (attached-computers.ts): a setting names one by its id.
   const paired = deps.attached ? await deps.attached.rows() : [];
@@ -872,11 +881,11 @@ export async function computerForClaim(
    *  this claim's labels and its own request (the claim's, then which new one), so a retry of it under this epoch finds
    *  the one it made. Where it holds the run's folder (`folder`), the new one holds it too, read back before it serves a
    *  call: a mount's credential of the lost one removed (Mode 2) and a new one asked for; a synced folder pushed in again
-   *  from the disk (synced-folder.ts), whose sync goes on from there (the claim's FolderSync lists the new one). */
+   *  from the disk and held (synced-folder.ts holdSynced), so the claim's sync goes on from the new one's manifest. */
   const renewalOf = (provider: ComputerProvider, entry: ProviderEntry, specNow: () => Promise<ComputerSpec>, folder: MountKind | undefined): Renewal => ({
     provider,
     max: deps.recreates ?? LOST_RECREATES,
-    async remake(times) {
+    async remake(times, own) {
       deps.onStarting?.({ provider: entry.label, kind: "sandbox" });
       const spec = await specNow();
       let mount: ComputerSpec["mount"];
@@ -901,7 +910,7 @@ export async function computerForClaim(
       const again = providerComputer(provider, ref, connected.value);
       if (mount) {
         try {
-          if (store && stored) await pushFolder(store, again.client, stored, deps.signal);
+          if (store && stored) await holdSynced(folderHeld, store, own(again), stored, deps.signal);
           await deps.workspace.attach({ id: ref.id, client: again.client, readBack: () => again.readBack() }, { ...deps.check, epoch: deps.check.epoch ?? launch.epoch, ...(store ? { sync: true as const } : {}) });
         } catch (error) {
           await again.release().catch(() => undefined);
@@ -919,63 +928,27 @@ export async function computerForClaim(
     stop: (words) => (deps.stopRun ?? stopRun)(words),
     may: () => inToolCall() && deps.signal?.aborted !== true,
   });
-  /** A kept synced computer this claim does not take back, ended before anything of this claim reads the run's folder off
-   *  the disk, so no write of the old one lands after: one whose end is under way (the parking runner's timer, reading
-   *  it back) is waited for (keptEnded); one this claim reaches (`providerOf`, its own provider's) it ends, reading it
-   *  back first; one it doesn't is left ending, read back by no one, for the janitor's next pass to delete. */
-  const settleSynced = async (record: Kept, providerOf?: () => Promise<ComputerProvider>): Promise<void> => {
-    const settings = store.settings;
-    if (record.folder !== "sync" || !settings) return;
-    const row = await readKept(settings, launch.runId).catch(() => undefined);
-    if (!row || row.ended || row.id !== record.id) return;
-    const wait = () => keptEnded(settings, launch.runId, KEPT_PULL_MS + KEPT_DELETE_MS, deps.signal);
-    if (row.ending) return wait();
-    const disk = diskOf();
-    const ended = await endKept(settings, launch.runId, row, async () => {
-      const provider = providerOf ? await providerOf() : undefined;
-      if (!provider) throw new Error("left to the janitor");
-      if (disk) await pullKept(provider, row, disk).catch(() => undefined);
-      await deleteKept(provider, row);
-    }).catch(() => true);
-    if (!ended) await wait();
-  };
   const side: ClaimSide = {
     keysOf: providerKeys(kinds, keyOf),
     answers: deps.answers ?? (async () => false),
     ...(deps.daemon ? { daemon: deps.daemon } : {}),
-    // The computer an earlier claim kept at the run's park, when it is this setting's (its provider and kind) and its
-    // time is not over: taken off its row first (computer-kept.ts takeKept), so its end and this claim never both have it,
-    // then attached and connected again. Its mount, where it has one, stays the one it was made with: its credential is
-    // this claim's from here (inheritMount). Never the agent's own computer, a paired one or --faux's.
+    // The computer an earlier claim kept at the run's park, when it is this setting's (its provider and kind, holding the
+    // run's folder the same way) and its time is not over: taken off its row first (computer-kept.ts takeKept), so its
+    // end and this claim never both have it, then attached and connected again. Its mount, where it has one, stays the
+    // one it was made with: its credential is this claim's from here (inheritMount). Never the agent's own computer, a
+    // paired one or --faux's. One that isn't this setting's is left to the launch's releaseOlderClaims and its keep's end.
     async reattach(entry, { kind, keys, configuration, folder, gpu, persistent, signal }) {
       const record = kept;
       kept = undefined;
       if (!record || !store.settings) return undefined;
-      if (persistent || paired.some((row) => row.id === entry.id) || (deps.launch && (deps.launches?.(entry.id) ?? true)) || record.provider !== entry.id || record.kind !== kind) {
-        await settleSynced(record);
-        return undefined;
-      }
+      if (persistent || paired.some((row) => row.id === entry.id) || (deps.launch && (deps.launches?.(entry.id) ?? true)) || record.provider !== entry.id || record.kind !== kind || record.folder !== folder) return undefined;
       try {
         // Its time over, or its end took it first (ending or ended): a new one, said so.
         if (record.ending || record.ended || now() >= record.until || !(await takeKept(store.settings, launch.runId, record))) {
           lapsed = true;
-          await settleSynced(record, () => vendorProvider(entry, keys, configuration));
           return undefined;
         }
         const provider = await vendorProvider(entry, keys, configuration);
-        // One kept holding the run's folder another way than this claim holds it (its provider's keys changed since the
-        // park: an Archil mount where the run now takes a synced folder) is not taken back: it goes now (a synced folder
-        // read back first), its mount's token with it, so nothing holds the folder but the new one.
-        if (record.folder !== folder) {
-          const disk = record.folder === "sync" ? diskOf() : undefined;
-          if (disk) await pullKept(provider, record, disk).catch(() => undefined);
-          await deleteKept(provider, record).catch(() => undefined);
-          if (record.folder === "archil") {
-            deps.inheritMount?.();
-            await deps.revokeMount?.().catch(() => undefined);
-          }
-          return undefined;
-        }
         const taken = await keptLaunch(provider, record, signal);
         if (!taken) return undefined;
         deps.inheritMount?.();
@@ -1063,13 +1036,6 @@ export async function computerForClaim(
   const setting = await settingOf(launch, store);
   const resolved = await resolveComputer(setting, deps.mode, kinds, side);
   if ("refused" in resolved) throw unavailable(resolved.refused);
-  // A kept computer this setting can't take back (no computer now, or another kind or provider: reattach sees only its
-  // own) is settled before anything reads the run's folder off the disk (settleSynced: a synced one's alone).
-  if (kept && (resolved.kind !== kept.kind || resolved.provider !== kept.provider)) {
-    const record = kept;
-    kept = undefined;
-    await settleSynced(record);
-  }
   if (resolved.kind === "none") return { computer: undefined, release: noop };
   const refusedKind = deps.refuseKind?.(resolved.kind);
   if (refusedKind) throw unavailable(refusedKind);
@@ -1083,7 +1049,7 @@ export async function computerForClaim(
   let started: Awaited<ReturnType<typeof resolved.start>>;
   try {
     // The mount check carries the claim's epoch (a disk read-back under another epoch is refused) unless it names one.
-    started = await resolved.start({ workspace: deps.workspace, check: { ...deps.check, epoch: deps.check.epoch ?? launch.epoch }, ...(holds ? { holds } : {}), ...(deps.signal ? { signal: deps.signal } : {}) });
+    started = await resolved.start({ workspace: deps.workspace, check: { ...deps.check, epoch: deps.check.epoch ?? launch.epoch }, ...(holds ? { holds } : {}), held: folderHeld, ...(deps.signal ? { signal: deps.signal } : {}) });
   } catch (error) {
     await revoke().catch(() => undefined);
     throw error;
@@ -1158,10 +1124,8 @@ export async function computerForClaim(
       }
       const ref = keeps.computer.ref;
       // A synced folder's delta lands on the disk before the computer is kept (an Archil mount's modes and links are
-      // recorded); one that does not land lets it go as the run's end does, and the park throws the release's words. The
-      // timer's read-back below writes after this claim is gone: the kept row's end, which a later claim waits for or
-      // takes first, is its fence, not the claim's.
-      const synced = resolved.folder === "sync" ? deps.workspace.syncStore?.() : undefined;
+      // recorded); one that does not land lets it go as the run's end does, and the park throws the release's words.
+      // What is written in it after this is the disk's only if a claim takes it back (pullFolder).
       if (started.sync && !(await started.sync()).ok) {
         await release();
         return false;
@@ -1184,12 +1148,10 @@ export async function computerForClaim(
         await keeps.computer.close();
       })();
       await released;
-      // Its end at its time, by this process; the janitor's (computer-kept.ts sweepKept) whatever becomes of it. A synced
-      // folder is read back whole first, through a connection of its own: what its programs wrote since the park. Its
-      // row reads ending meanwhile, so a claim that comes then waits for it (keptEnded) before it reads the disk.
+      // Its end at its time, by this process; the janitor's (computer-kept.ts sweepKept) whatever becomes of it. Either
+      // deletes it, a synced folder with no read-back.
       const timer = setTimeout(() => {
         void endKept(settings, launch.runId, row, async () => {
-          if (synced) await pullKept(keeps.provider, ref, synced).catch(() => undefined);
           await deleteKept(keeps.provider, ref);
           await revoke().catch(() => undefined);
         }).catch(() => undefined);

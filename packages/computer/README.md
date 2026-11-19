@@ -1644,7 +1644,7 @@ when it runs (`settingsFromEnv`) and passes each to `create()` as the option in 
 (`apiKey`, required), `COMPUTER_DAYTONA_API_URL` (`apiUrl`), `COMPUTER_DAYTONA_DAEMON` (`daemonPath`),
 `COMPUTER_DAYTONA_ARCH` (`arch`), `COMPUTER_DAYTONA_TARGET` (`target`), `COMPUTER_DAYTONA_CLASS` (`sandboxClass`),
 `COMPUTER_DAYTONA_USER` (`daemonUser`), `COMPUTER_DAYTONA_GPU_SNAPSHOT` (`gpuSnapshot`) and `COMPUTER_DAYTONA_CONNECT`
-(`connect`); `createProvider()` alone also reads `COMPUTER_DAYTONA_KIND` (`kind`, `desktop` on dial only). It exports `createProvider()` and `createDriftedProvider()` (which builds a
+(`connect`); `createProvider()` alone also reads `COMPUTER_DAYTONA_KIND` (`kind`; `desktop` is refused with the reason, on every connect). It exports `createProvider()` and `createDriftedProvider()` (which builds a
 daemon of another version with Go), and reads `COMPUTER_DAYTONA_SNAPSHOT` (the run's image; unset, `"default"`,
 Daytona's default snapshot, or on dial the box image's snapshot, `agentrun-box-<recipe hash>`). It never reads `DAYTONA_API_KEY`, `DAYTONA_API_URL` or `DAYTONA_TARGET`, not even as a
 fallback: on a host that runs other Daytona work they may hold another organization's key. Those are serve's names,
@@ -1681,11 +1681,12 @@ default) a Daytona sandbox dials the server instead ([PROVIDERS.md](PROVIDERS.md
 no exec and no upload, and nothing goes through the toolbox: create sends the boot env as `CreateSandbox.env` and
 `networkBlockAll: false` (the machine's root reaches the server; network none is init's, inside), and the snapshot's
 entrypoint runs `agentrun-dial`. No Archil mount, no GPU, and not `image: "default"` (Daytona's default snapshot holds
-no `agentrun-dial`): `check()` refuses each in words. Labels as on exec. A dial sandbox may be a desktop
-(`kind: "desktop"`): the box snapshot's X server and xfwm4, started over the socket it dialed, with the snapshot's 2 CPUs
-and 4 GB. On exec a Daytona computer is kind `linux` alone, and the constructor refuses `kind: "desktop"` in words. The
-descriptor's desktop configuration selects `connect: "dial"` itself, so a server whose `daytonaConnect` is exec still
-makes its desktop over dial. **Unverified**: Xvfb and the window manager on Daytona (no live run yet). What each part rests on:
+no `agentrun-dial`): `check()` refuses each in words. Labels as on exec. A Daytona computer is kind `linux` alone, on
+dial as on exec: the constructor refuses `kind: "desktop"` with the reason, and the descriptor declares no desktop
+(`unserved.desktop`). The window manager runs as the tool user inside a user and a network namespace of its own, and
+Daytona's sandboxes run under Sysbox with `kernel.apparmor_restrict_unprivileged_userns=1`, where the tool user can't
+write a user namespace's `uid_map` or make a network namespace (measured 11-19; [PROVIDERS.md](PROVIDERS.md#machines-that-dial-in)).
+What each part of a dial sandbox rests on:
 
 - **A snapshot, never an image.** A create names a snapshot; a snapshot is made from "any publicly accessible image"
   whose tag is not `latest`, `lts` or `stable` ([docs: create snapshots](https://www.daytona.io/docs/en/snapshots.md#create-snapshots)).

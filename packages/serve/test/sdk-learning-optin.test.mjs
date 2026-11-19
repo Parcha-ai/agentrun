@@ -11,7 +11,7 @@ const manifest = { workflow_tools: [{ name: "mcp:backend/status", description: "
 const disabled = { enabled: false, revision: null, context: "", workflows: [] };
 const input = { input: "Report release status.", instructions: "Keep the backend policy and tools." };
 
-for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
+for (const runtime of ["claude-agent-sdk", "codex-sdk", "eve"]) {
   test(`${runtime} omitted and false learning stay Off through completion without a compile model`, async (t) => {
     const server = await serve(t, { runner: false });
     const { api, store, data } = server;

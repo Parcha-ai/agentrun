@@ -65,3 +65,60 @@ test("a served run carries its path and workflow on its read and on every list r
   assert.deepEqual(paths, { "by-agent": "agent", "served-1": "workflow", "handed-1": "handed_back", "replay-1": "replay" }, JSON.stringify(cost.runs));
   for (const [id, path] of Object.entries(paths)) assert.equal(expected[id].path, path, `${id}: the run views say the path the cost series says`);
 });
+
+test("lists rebuild same-cut legacy cached rows missing execution path fields, while null fields remain current", async (t) => {
+  const { listingOverStore, builtOfNow } = await import("../dist/store-view.js");
+  const server = await serve(t, { learning: "on", runner: false, listerIdleMs: Infinity });
+  const { api, store, baseUrl } = server;
+  assert.equal((await api("POST", "/agents", agent("source", { learning: {} }))).status, 201);
+  const revisionId = (await store.agents.get("source")).currentRevision;
+  const cases = [
+    { id: "legacy", missing: ["path", "workflow"] },
+    { id: "missing-path", missing: ["path"] },
+    { id: "missing-workflow", missing: ["workflow"] },
+    { id: "old-unknown", missing: ["path", "workflow"], unknown: true },
+    { id: "unknown", missing: [], unknown: true },
+  ];
+  for (const { id, unknown } of cases) {
+    await store.runs.create({ id, agentId: "source", revisionId }, { body: LEARNS });
+    const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
+    await store.runs.update(claim, { state: "ended", outcome: "completed", costUsd: 0.04,
+      ...(unknown ? {} : { metrics: { path: "workflow", workflow: "mcc-guess", workflow_digest: DIGEST } }) });
+  }
+  await server.listingSettled();
+  const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
+  for (const path of ["/runs?agent=source&limit=100", "/agents/source/runs?limit=100"]) {
+    // Read a real listing first so the fixture keeps the server's current secret digest and write mark.
+    assert.equal((await api("GET", path)).status, 200);
+    for (const { id, missing, unknown } of cases) {
+      const before = (await store.runs.listed({ archived: false, limit: 100 })).rows.find(({ row }) => row.id === id);
+      const current = await listingOverStore(store, id, { origin: baseUrl, serverSecrets: () => [] });
+      if (missing.length === 0) {
+        assert.equal(current.item.path, null); assert.equal(current.item.workflow, null);
+        assert.equal(builtOfNow(current, []), true, "null values are current, not absent fields");
+        continue;
+      }
+      const item = { ...before.listing.item, ...(unknown ? {} : { served: { workflow: "mcc-guess", digest: DIGEST } }) };
+      for (const key of missing) delete item[key];
+      assert.equal(await store.runs.putListing(id, before.listMark, { ...current, item, cut: before.listing.cut }), true);
+      const kept = (await store.runs.listed({ archived: false, limit: 100 })).rows.find(({ row }) => row.id === id);
+      assert.equal(kept.behind, false, "neither a row change nor an expiry should invalidate this fixture");
+      assert.equal(kept.listing.cut, before.listing.cut, "the saved-secret digest did not change");
+    }
+    const { status, body } = await api("GET", path);
+    assert.equal(status, 200);
+    const route = path.startsWith("/agents") ? "/agents/{agent_id}/runs" : "/runs";
+    assert.deepEqual(schemaProblems(doc, doc.paths[route].get.responses["200"].content["application/json"].schema, body), []);
+    for (const { id, unknown } of cases) {
+      const item = body.runs.find(row => row.run_id === id);
+      assert.deepEqual({ path: item.path, workflow: item.workflow }, unknown
+        ? { path: null, workflow: null }
+        : { path: "workflow", workflow: { name: "mcc-guess", digest: DIGEST } }, `${path}: ${id}`);
+      assert.equal(Object.hasOwn(item, "served"), false);
+      assert.equal(Object.hasOwn(item, "handed_back"), false);
+      const kept = (await store.runs.listed({ archived: false, limit: 100 })).rows.find(({ row }) => row.id === id);
+      assert.equal(Object.hasOwn(kept.listing.item, "path"), true);
+      assert.equal(Object.hasOwn(kept.listing.item, "workflow"), true);
+    }
+  }
+});
