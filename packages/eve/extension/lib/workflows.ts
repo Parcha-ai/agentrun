@@ -70,7 +70,8 @@ export function workflowScope(record: TurnRecord): WorkflowEvidenceScope | undef
 export function workflowInstructions(record: TurnRecord, options?: EveWorkflowOptions): string {
   if (!record.workflowBinding || !record.receipt.learning.enabled || !record.receipt.learning.workflows?.length) return '';
   const workflows = record.receipt.learning.workflows.map(({ name, description, workflow }) => {
-    let input_schema, original_tools;
+    let input_schema;
+    let original_tools: WorkflowBinding['aliases'] | undefined;
     try {
       const document = JSON.parse(workflow);
       if (options && document.input) input_schema = options.engine.resolveSchemaForWorkflow(document, document.schemas[document.input.schemaId]);
