@@ -22,9 +22,11 @@ import { agent, client, follow, printed, scratch, startServe } from "./support.m
 
 const { ATTACH_PATH, ATTACH_SUBPROTOCOL, AttachHub, HostedProvider, MAX_LINE_BYTES, RUN_LABEL } = await import("@parcha/agentrun-computer");
 const { fakeHost } = await import("../../computer/test/fake-host.mjs");
-const { createAttachRoutes, sha256Hex } = await import("../dist/computer-attach.js");
-const { LIVE_PROOF_HEADER } = await import("../dist/live-reach.js");
-const { openRunnerStore } = await import("../dist/runner/main.js");
+const { createAttachRoutes, liveRelays, sha256Hex } = await import("../dist/computer-attach.js");
+const { LIVE_PROOF_HEADER, liveReachOf } = await import("../dist/live-reach.js");
+const { ofStore, openRunnerStore, startRunnerProcess } = await import("../dist/runner/main.js");
+const { keepPresence } = await import("../dist/runner/presence.js");
+const { openSqliteStore } = await import("../dist/store/index.js");
 const { bootSealKey } = await import("../dist/seal-key.js");
 const { fauxComputers } = await import("../dist/faux-computers.js");
 
@@ -40,6 +42,7 @@ const CLI = new URL("../dist/cli.js", import.meta.url).pathname;
 /** A faux model that takes a screenshot, types, then answers "Typed it." (the attach end-to-end test's). */
 const FAUX_ATTACH = new URL("./fixtures/faux-attach.mjs", import.meta.url).pathname;
 const TOKEN = `ar_test_${"d".repeat(40)}`;
+const YEAR_MS = 365 * 24 * 3_600_000;
 /** A machine token as the server mints one: art_ and its random part. Never in a log line or an error. */
 const MINTED = /art_[A-Za-z0-9_-]{16,}/;
 /** The fix a runner with no relay names for a dial provider (workspace/attached-computers.ts ONE_PROCESS_FIX). */
@@ -150,14 +153,24 @@ async function runnerSide(t, data) {
   return { store, seal, warned };
 }
 
-/** A runner's relay over the runner's side, its log lines kept, closed at the test's end. */
+/** A runner's word that it is there over the runner's side (presence.ts), as a runner process keeps it, closed at the
+ *  test's end after its relay. */
+function presenceOf(t, side, runner) {
+  const presence = keepPresence(side.store.runners, runner, null);
+  t.after(() => presence.close());
+  return presence;
+}
+
+/** A runner's relay over the runner's side, on its presence, its log lines kept, closed at the test's end. */
 async function relayOf(t, side, address, runner = "runner-a") {
   const { startRunnerRelay } = await relayModule();
   const lines = [];
-  const relay = await startRunnerRelay({ store: side.store, sealKey: side.seal.key, runner, env: { AGENTRUN_PUBLIC_URL: address }, log: (line) => void lines.push(line) });
+  const presence = presenceOf(t, side, runner);
+  const relay = await startRunnerRelay({ store: side.store, sealKey: side.seal.key, runner, presence, env: { AGENTRUN_PUBLIC_URL: address }, log: (line) => void lines.push(line) });
   assert.ok(relay, "a runner with the server's public address has a relay");
+  assert.equal(relay.incarnation, presence.incarnation, "the relay's incarnation is its runner's");
   t.after(() => relay.close());
-  return { relay, lines };
+  return { relay, lines, presence };
 }
 
 /** Every machine's socket a test dialed, ended at the file's end (one a test paused never answers a close). */
@@ -219,7 +232,7 @@ async function standIn(t, store, runner, incarnation, onSocket) {
     for (const ws of wss.clients) ws.terminate();
     return new Promise((resolve) => (http.closeAllConnections(), http.close(() => resolve())));
   });
-  await store.runnerRelays.put({ runner, incarnation, host: "127.0.0.1", port: http.address().port });
+  await store.runners.put({ runner, incarnation, refused: null, host: "127.0.0.1", port: http.address().port });
 }
 
 test("a close on either side of a relayed socket closes the other: the machine's close takes it off the runner's hub, and the runner's revoke closes the machine's socket with 4401", { timeout: 60_000 }, async (t) => {
@@ -247,8 +260,8 @@ test("a dial whose runner is gone (its relay closed), whose listener does not an
   const side = await runnerSide(t, data);
   const { startRunnerRelay } = await relayModule();
 
-  // Gone: its relay closed, its row with it.
-  const gone = await startRunnerRelay({ store: side.store, sealKey: side.seal.key, runner: "runner-gone", env: { AGENTRUN_PUBLIC_URL: address } });
+  // Gone: its relay closed, its row answering nowhere.
+  const gone = await startRunnerRelay({ store: side.store, sealKey: side.seal.key, runner: "runner-gone", presence: presenceOf(t, side, "runner-gone"), env: { AGENTRUN_PUBLIC_URL: address } });
   const left = await gone.dial.tokens.mint("m-gone", MINT("run-gone"));
   await gone.close();
   const refusedGone = await Promise.race([machine(address, left).opened, sleep(10_000).then(() => "hung")]);
@@ -262,7 +275,7 @@ test("a dial whose runner is gone (its relay closed), whose listener does not an
   await new Promise((resolve) => dead.listen(0, "127.0.0.1", resolve));
   const port = dead.address().port;
   await new Promise((resolve) => dead.close(resolve));
-  await side.store.runnerRelays.put({ runner: "runner-dead", incarnation: "inc-dead", host: "127.0.0.1", port });
+  await side.store.runners.put({ runner: "runner-dead", incarnation: "inc-dead", refused: null, host: "127.0.0.1", port });
   const { token: deadToken } = await mintedFor(side.store, "runner-dead", "inc-dead", "m-dead", "run-dead");
   const refusedDead = await Promise.race([machine(address, deadToken).opened, sleep(15_000).then(() => "hung")]);
   assert.equal(refusedDead.status, 503, JSON.stringify(refusedDead));
@@ -275,7 +288,7 @@ test("a dial whose runner is gone (its relay closed), whose listener does not an
 
   // Restarted: the same runner's name under a new incarnation; the old machine's re-dial is refused, the new one's lands.
   // The earlier process's listener still up (it has not noticed): only its row's incarnation tells the server.
-  const before = await startRunnerRelay({ store: side.store, sealKey: side.seal.key, runner: "runner-r", env: { AGENTRUN_PUBLIC_URL: address } });
+  const before = await startRunnerRelay({ store: side.store, sealKey: side.seal.key, runner: "runner-r", presence: presenceOf(t, side, "runner-r"), env: { AGENTRUN_PUBLIC_URL: address } });
   t.after(() => before.close());
   const old = await before.dial.tokens.mint("m-old", MINT("run-old"));
   const { relay: after } = await relayOf(t, side, address, "runner-r");
@@ -295,13 +308,72 @@ test("a dial whose runner is gone (its relay closed), whose listener does not an
   assert.doesNotMatch(waited.message, MINTED);
 });
 
+test("one incarnation per runner process: its word that it is there and the tokens its relay mints name the same process, and a token its earlier process minted is refused as restarted since", { timeout: 60_000 }, async (t) => {
+  const { data, address } = await relayServer(t);
+  const side = await runnerSide(t, data);
+  /** A runner process named runner-one over the server's data, with the server's public address: the dial its relay
+   *  hands its loops (no run is queued, so none is claimed). */
+  const start = async () => {
+    let dial;
+    const started = await startRunnerProcess({
+      dataDir: data, name: "runner-one", env: { AGENTRUN_PUBLIC_URL: address }, warn: () => undefined,
+      createLoop: ofStore((_store, _key, given) => ((dial = given), () => assert.fail("no run is queued here"))),
+    });
+    t.after(() => started.close());
+    assert.ok(dial, "a runner with the server's public address hands its loops its relay's dial");
+    return { started, dial };
+  };
+  const rowOf = async () => (await side.store.runners.list()).find((row) => row.runner === "runner-one");
+  const first = await start();
+  const token = await first.dial.tokens.mint("m-first", MINT("run-first"));
+  const minted = await side.store.mintedTokens.byToken(sha256Hex(token));
+  const row = await until(rowOf, Boolean, "the runner's word that it is there");
+  assert.equal(row.incarnation, minted?.incarnation, "the runner's row and the token its relay minted name one incarnation");
+  assert.equal(row.host, "127.0.0.1", "its row says where its relay answers");
+  assert.equal(typeof row.port, "number");
+  const landed = machine(address, token);
+  assert.equal(await landed.opened, true, "its machine's dial lands");
+  landed.ws.close();
+  // Its next process under the same name (a restart): the earlier process's token is refused, in words that say so.
+  await first.started.close();
+  await start();
+  await until(rowOf, (one) => one !== undefined && one.incarnation !== row.incarnation, "the restart's row");
+  const refused = await Promise.race([machine(address, token).opened, sleep(10_000).then(() => "hung")]);
+  assert.equal(refused.status, 503, JSON.stringify(refused));
+  assert.match(refused.body, /^a dial for run run-first \(machine m-first\): runner runner-one, which made it, restarted since/);
+});
+
+test("a relay's liveness is read on the store's clock: over a store whose clock is a year behind this process's, a runner whose relay said it is there is live, and its machine's dial is relayed to it", { timeout: 60_000 }, async (t) => {
+  const store = await openSqliteStore({ file: join(await scratch(t), "store.sqlite"), now: () => Date.now() - YEAR_MS });
+  t.after(() => store.close());
+  let took = false;
+  await standIn(t, store, "runner-behind", "inc-behind", () => void (took = true));
+  // The server's attach socket over that store, reading its runners' relays.
+  const routes = createAttachRoutes({ store, hub: new AttachHub(), relay: { runners: store.runners, reach: liveReachOf({}, randomBytes(32)) } });
+  const http = createServer((_req, res) => void res.writeHead(404).end());
+  http.on("upgrade", (req, socket, head) => routes.upgrade(req, socket, head, (status, words = "") => socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\ncontent-length: ${Buffer.byteLength(words)}\r\n\r\n${words}`)));
+  await new Promise((resolve) => http.listen(0, "127.0.0.1", resolve));
+  t.after(async () => {
+    await routes.close();
+    http.closeAllConnections();
+    await new Promise((resolve) => http.close(() => resolve()));
+  });
+  const { token } = await mintedFor(store, "runner-behind", "inc-behind", "m-behind", "run-behind");
+  const dial = machine(`http://127.0.0.1:${http.address().port}`, token);
+  assert.equal(await dial.opened, true, "its dial is relayed: on the store's clock its runner is there");
+  await until(async () => took, Boolean, "the runner's listener took the socket");
+  dial.ws.close();
+  // And the server's read of which runners relay (server.ts relayed, Settings → Computers): the same row, on the same clock.
+  assert.deepEqual((await liveRelays(store.runners)).map((one) => [one.runner, one.host]), [["runner-behind", "127.0.0.1"]]);
+});
+
 test("a real dial provider's create on a runner apart ends at once in the server's words when the server will not relay its machine's dial (the runner answers at a host this server does not dial), not at createMs", { timeout: 60_000 }, async (t) => {
   const { data, lines, address } = await relayServer(t);
   const side = await runnerSide(t, data);
-  const { relay } = await relayOf(t, side, address, "runner-far");
+  const { relay, presence } = await relayOf(t, side, address, "runner-far");
   // The runner's row names a host the server was not given (AGENTRUN_RUNNER_HOSTS): a runner on another host the
   // server's operator did not list.
-  await side.store.runnerRelays.put({ runner: "runner-far", incarnation: relay.incarnation, host: "runner-far.example", port: relay.port });
+  await presence.relay({ host: "runner-far.example", port: relay.port });
   // A dial host whose machine dials the server's public address with its token, as agentrun-dial does.
   const fake = fakeHost({ facts: { connect: "dial", lifetime: "janitor" }, onBoot: (m) => void machine(address, m.boot.AGENTRUN_ATTACH_TOKEN) });
   const daemonPath = join(await scratch(t), "computerd");

@@ -21,7 +21,7 @@ import {
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings, type Channels, type ChannelAttemptRow, type ChannelPostRow,
   RevisionMoved, SignInHandedTo, SignInMissing, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
   type ComputerLedger, type ComputerLedgerRow, type PairedComputerRow, type PairedComputers, RUN_CHANGES_PAGE, type RunChangeCursor,
-  type ImportedTemplates, type MintedTokenRow, type MintedTokens, type RunnerRelayRow, type RunnerRelays, type SecureRewrite,
+  type ImportedTemplates, type MintedTokenRow, type MintedTokens, type SecureRewrite,
   RUNNER_ROWS_KEPT_MS, type RunnerRow, type Runners,
 } from "../store.js";
 
@@ -213,10 +213,8 @@ type PairedRecord = { id: string; name: string; hello: string; driver: string; l
 const pairedOf = (r: PairedRecord): PairedComputerRow => ({ id: r.id, name: r.name, hello: JSON.parse(r.hello), driver: r.driver, labels: JSON.parse(r.labels), pairingId: r.pairing_id, createdAt: r.created_at, seenAt: r.seen_at, revokedAt: r.revoked_at });
 type MintedRecord = { machine: string; kind: string; os: string; arch: string; expires_at: number; revoked_at: number | null; created_at: number; runner: string | null; incarnation: string | null; run: string | null; refused: string | null };
 const mintedOf = (r: MintedRecord): MintedTokenRow => ({ machine: r.machine, kind: r.kind, os: r.os, arch: r.arch, expiresAt: r.expires_at, revokedAt: r.revoked_at, createdAt: r.created_at, runner: r.runner, incarnation: r.incarnation, run: r.run, refused: r.refused });
-type RelayRecord = { runner: string; incarnation: string; host: string; port: number; seen_at: number };
-const relayOf = (r: RelayRecord): RunnerRelayRow => ({ runner: r.runner, incarnation: r.incarnation, host: r.host, port: Number(r.port), seenAt: Number(r.seen_at) });
-type RunnerRecord = { runner: string; incarnation: string; refused: string | null; seen_at: number | string };
-const runnerOf = (r: RunnerRecord): RunnerRow => ({ runner: r.runner, incarnation: r.incarnation, refused: r.refused, seenAt: Number(r.seen_at) });
+type RunnerRecord = { runner: string; incarnation: string; refused: string | null; host: string | null; port: number | string | null; seen_at: number | string };
+const runnerOf = (r: RunnerRecord): RunnerRow => ({ runner: r.runner, incarnation: r.incarnation, refused: r.refused, host: r.host, port: r.port === null ? null : Number(r.port), seenAt: Number(r.seen_at) });
 type TriggerSettingRecord = { adapter: string; scope: string; field: string; sealed: string; updated_at: number };
 const triggerSettingOf = (r: TriggerSettingRecord): TriggerSettingRow => ({ adapter: r.adapter, scope: r.scope, field: r.field, sealed: r.sealed, updatedAt: r.updated_at });
 type McpOauthRecord = { state: string; server: string; sealed: Uint8Array; working: string | null; expires_at: number };
@@ -377,6 +375,12 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       if (role === "runner") throw new StoreAwaitsServer("add each trigger's package mark");
       await connection.write([{ sql: TRIGGERS_TEMPLATE_ID }], { full: true });
     }
+    // An earlier build of version 13 kept each runner's relay in a table of its own (runner_relays), which the server's
+    // open below drops for runners (schema.ts RUNNERS). A runner says it is there, and where its relay answers, through
+    // runners alone, so it waits for that server.
+    if (role === "runner" && !(await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('runners')")).some((column) => column.name === "host")) {
+      throw new StoreAwaitsServer("keep each runner's word that it is there and its relay in one table (runners)");
+    }
     // The per-run viewer table was renamed browser_viewers → computer_viewers (schema.ts). Its rows are ephemeral, so none
     // migrate; the server drops a stale browser_viewers an earlier build of this version left, so none lingers beside it.
     // An earlier build of this version made no one-answer index on commands (schema.ts COMMANDS_ONE_ANSWER), or one that
@@ -400,7 +404,9 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         { sql: IMPORTED_TEMPLATES },
         // Nor any hosted machine's minted token (schema.ts MINTED_TOKENS).
         { sql: MINTED_TOKENS },
-        // Nor any runner's word that it is there (schema.ts RUNNERS).
+        // Nor any runner's word that it is there (schema.ts RUNNERS), and it kept each runner's relay in runner_relays:
+        // dropped, its rows heartbeats that each relay's runner writes again within its renewal, so none is copied.
+        { sql: "DROP TABLE IF EXISTS runner_relays" },
         { sql: RUNNERS },
         { sql: NATIVE_COMMANDS_INDEX },
       ], { full: true });
@@ -534,7 +540,6 @@ class SqliteStore implements Store {
   readonly computerLedger: ComputerLedger;
   readonly pairedComputers: PairedComputers;
   readonly mintedTokens: MintedTokens;
-  readonly runnerRelays: RunnerRelays;
   readonly runners: Runners;
   readonly importedTemplates: ImportedTemplates;
   readonly triggerSettings: TriggerSettings;
@@ -1759,39 +1764,17 @@ class SqliteStore implements Store {
       },
     };
 
-    const RELAYS = "SELECT runner, incarnation, host, port, seen_at FROM runner_relays";
-    this.runnerRelays = {
-      put: async ({ runner, incarnation, host, port }) => {
-        await db.write([{
-          sql: "INSERT INTO runner_relays (runner, incarnation, host, port, seen_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT (runner) DO UPDATE SET incarnation = excluded.incarnation, host = excluded.host, port = excluded.port, seen_at = excluded.seen_at",
-          params: [runner, incarnation, host, port, now()],
-        }]);
-      },
-      seen: async (runner, incarnation) => {
-        const [result] = await db.write([{ sql: "UPDATE runner_relays SET seen_at = ? WHERE runner = ? AND incarnation = ?", params: [now(), runner, incarnation] }]);
-        return (result?.changes ?? 0) === 1;
-      },
-      get: async (runner) => {
-        const row = await db.get<RelayRecord>(`${RELAYS} WHERE runner = ?`, runner);
-        return row === undefined ? undefined : relayOf(row);
-      },
-      list: async () => (await db.all<RelayRecord>(`${RELAYS} ORDER BY runner`)).map(relayOf),
-      remove: async (runner, incarnation) => {
-        await db.write([{ sql: "DELETE FROM runner_relays WHERE runner = ? AND incarnation = ?", params: [runner, incarnation] }]);
-      },
-    };
-
     // Stamped and judged on the deadlines' clock (fence.ts storeNow: the database's on Postgres), the one a claim's lease
-    // runs on, so a runner on another host whose own clock is behind the server's never reads as gone.
-    const RUNNERS_SELECT = "SELECT runner, incarnation, refused, seen_at FROM runners";
+    // runs on, so a runner on another host whose own clock is behind the server's never reads as gone (nor its relay).
+    const RUNNERS_SELECT = "SELECT runner, incarnation, refused, host, port, seen_at FROM runners";
     this.runners = {
-      put: async ({ runner, incarnation, refused }) => {
+      put: async ({ runner, incarnation, refused, host = null, port = null }) => {
         const n = clock();
         await db.write([
           { sql: `DELETE FROM runners WHERE seen_at < ${n.sql} - ${d.bigintParam}`, params: [...n.params, RUNNER_ROWS_KEPT_MS] },
           {
-            sql: `INSERT INTO runners (runner, incarnation, refused, seen_at) VALUES (?, ?, ?, ${n.sql}) ON CONFLICT (runner) DO UPDATE SET incarnation = excluded.incarnation, refused = excluded.refused, seen_at = excluded.seen_at`,
-            params: [runner, incarnation, refused, ...n.params],
+            sql: `INSERT INTO runners (runner, incarnation, refused, host, port, seen_at) VALUES (?, ?, ?, ?, ?, ${n.sql}) ON CONFLICT (runner) DO UPDATE SET incarnation = excluded.incarnation, refused = excluded.refused, host = excluded.host, port = excluded.port, seen_at = excluded.seen_at`,
+            params: [runner, incarnation, refused, host, port, ...n.params],
           },
         ]);
       },

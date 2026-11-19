@@ -11,6 +11,7 @@
 // run is claimable when its lease lapses); then 0. Bad arguments exit 2, a store it cannot open (yet) 3, anything else 1.
 // A run isolation it cannot give (run-child-host.ts runIsolationOf) is said, and it stays up claiming nothing until a stop: 0.
 // An error nothing handles exits 1 at once, said with its stack (lastResort).
+import { randomUUID } from "node:crypto";
 import { mkdirSync, statSync, utimesSync, writeFileSync, writeSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
@@ -50,7 +51,7 @@ import { RUN_PROCESS_MIB, runnerMemory } from "./memory-claim.js";
 import { childLoops, isolationLoops, type RunIsolation, RunIsolationRefused, runIsolationOf } from "./run-child-host.js";
 import { sweepEndedScratch } from "./scratch-sweep.js";
 import { RUNNER_RENEW_EVERY_MS, runnerName, startRunner, type Runner, type RunnerEvent, type RunnerMemory } from "./runner.js";
-import { keepPresence } from "./presence.js";
+import { keepPresence, type Presence } from "./presence.js";
 
 export { RUNNER_RENEW_EVERY_MS } from "./runner.js";
 
@@ -269,6 +270,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
   let seal: Awaited<ReturnType<typeof bootSealKey>> | undefined;
   let janitor: ReturnType<typeof startJanitor> | undefined;
   let relay: RunnerRelay | undefined;
+  let presence: Presence | undefined;
   try {
     // The server's seal key, booted the one way the server boots it (seal-key.ts): the one handed over, else the one in
     // this data directory, checked against what the store records. A runner on a store whose secrets another key sealed
@@ -276,9 +278,13 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
     // or records a key.
     seal = await bootSealKey(store, options.dataDir, { given: handedSecret(SEAL_KEY_ENV) ?? env[SEAL_KEY_ENV], role: "runner" });
     const name = options.name ?? runnerName();
+    // One incarnation for this process: its word in the store that it is there (presence.ts) and its relay's minted
+    // tokens and proofs name the same one, so the server's "restarted since" and the runner's row speak of one process.
+    // The presence first, then the relay says where it answers on the presence's row.
+    presence = keepPresence(store.runners, name, null, { warn, incarnation: randomUUID() });
     // Its relay (dial-relay.ts), where its environment names the server's public address: a machine that dials the
     // server lands in this runner's hub, through the server. Its log lines are the runner's warnings.
-    relay = await startRunnerRelay({ store, sealKey: seal.key, runner: name, env, log: warn });
+    relay = await startRunnerRelay({ store, sealKey: seal.key, runner: name, presence, env, log: warn });
     const made = options.createLoop ?? ofStore((opened, sealKey, dial) => runnerLoop(opened, options.dataDir, undefined, sealKey, undefined, dial));
     // A factory of the store (marked by ofStore) is given the store; a loop factory is used as is.
     const parts = isStoreFactory(made) ? made(store, seal.key, relay?.dial) : made;
@@ -294,6 +300,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       store,
       createLoop,
       name,
+      presence,
       ...(options.loops ? { loops: options.loops } : {}),
       ...(options.drainMs ? { drainMs: options.drainMs } : {}),
       memory,
@@ -304,6 +311,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
   } catch (error) {
     await janitor?.close();
     await relay?.close();
+    await presence?.close();
     seal?.release();
     await store.close();
     throw error;
@@ -311,6 +319,7 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
   let closing: Promise<void> | undefined;
   const held = seal;
   const relayed = relay;
+  const kept = presence;
   return {
     runner,
     store: { kind, schema },
@@ -319,8 +328,10 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       (closing ??= (async () => {
         // The janitor's sweep is cut and waited for on its own bound, beside the runner's close, never before it.
         await Promise.all([janitor?.close(), runner.close()]);
-        // Its relay after its runs: a run's release revokes its machine's token through it.
+        // Its relay after its runs: a run's release revokes its machine's token through it. Then its word that it is
+        // there: it claims no more.
         await relayed?.close();
+        await kept.close();
         // A first-use install its claims started, stopped as they let go: its npm ends before this process can.
         await claimInstallsStopped();
         await store.close();

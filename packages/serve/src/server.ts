@@ -183,7 +183,7 @@ import { recordingsFolder } from "./workspace/paths.js";
 import { heldRoute, holdIssues, runComputerRead } from "./computer-held-routes.js";
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runComputerKind } from "./computer-routes.js";
 import { ATTACH_PATH, AttachHub, type HostedDial, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
-import { type AttachTiming, createAttachRoutes, pairedView, RELAY_STALE_MS } from "./computer-attach.js";
+import { type AttachTiming, createAttachRoutes, liveRelays, pairedView } from "./computer-attach.js";
 import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
 import { COMPUTER_TOOLS, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
@@ -1206,7 +1206,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const reach = liveReachOf(process.env, seal.key);
   const attach = createAttachRoutes({
     store, hub: attachHub, machinesOnly: options.apiOnly === true, runnerApart: options.runnerApart === true,
-    relay: { relays: store.runnerRelays, reach },
+    relay: { runners: store.runners, reach },
     ...(options.attachTiming ? { timing: options.attachTiming } : {}),
     log: (event, fields) => (log ? log(logLine(event, fields)) : void process.stderr.write(`agentrun-serve: ${logLine(event, fields)}\n`)),
   });
@@ -1448,8 +1448,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     paired: { rows: () => store.pairedComputers.list(), viewOf: (row, serves) => pairedView(row, attachHub, serves, options.runnerApart === true) },
     runnerApart: options.runnerApart === true,
     // A runner in a process of its own that relays its dials (dial-relay.ts): one whose attach listener said it is there
-    // within RELAY_STALE_MS, at a host this server dials.
-    relayed: async () => (await store.runnerRelays.list()).some((row) => row.seenAt >= Date.now() - RELAY_STALE_MS && dialHost(row.host, reach) !== undefined),
+    // within PRESENCE_STALE_MS on the store's clock (liveRelays), at a host this server dials.
+    relayed: async () => (await liveRelays(store.runners)).some((row) => dialHost(row.host, reach) !== undefined),
     ...(options.faux
       // --faux's providers stand in for every vendor's, a local one's daemon included.
       ? { kinds: fauxOf().kinds, factories: fauxOf().factories, keyTable: fauxOf().keyTable }

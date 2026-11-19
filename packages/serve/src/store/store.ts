@@ -1262,38 +1262,17 @@ export interface MintedTokens {
   refuse(tokenSha256: string, words: string): Promise<void>;
 }
 
-/** Where a runner in a process of its own takes the dials relayed to it (store schema `runner_relays`, dial-relay.ts): its
- *  attach listener's host and port, under the runner's name and its incarnation (its process since its start), and when
- *  it last said it was there. */
-export interface RunnerRelayRow {
-  readonly runner: string;
-  readonly incarnation: string;
-  /** The host the server reaches it at: loopback, or the runner's live host (live-reach.ts). */
-  readonly host: string;
-  readonly port: number;
-  readonly seenAt: number;
-}
-
-/** The runners' attach listeners (dial-relay.ts). */
-export interface RunnerRelays {
-  /** Keeps `row` for its runner, replacing any earlier incarnation's, seen now. */
-  put(row: Omit<RunnerRelayRow, "seenAt">): Promise<void>;
-  /** Marks the runner's row seen now, while it is still this incarnation's. False when it is not. */
-  seen(runner: string, incarnation: string): Promise<boolean>;
-  /** The runner's row, whichever incarnation's, or undefined. */
-  get(runner: string): Promise<RunnerRelayRow | undefined>;
-  /** Every runner's row. */
-  list(): Promise<RunnerRelayRow[]>;
-  /** The runner's row gone, while it is still this incarnation's. */
-  remove(runner: string, incarnation: string): Promise<void>;
-}
-
-/** A runner's word that it is there (store schema `runners`, runner/presence.ts): its name, its incarnation (its start),
- *  why it refused to claim any run (its words; null for one that claims) and when it last said it was there. */
+/** A runner's word that it is there (store schema `runners`, runner/presence.ts): its name, its incarnation (its process
+ *  since its start: the one its relay's minted tokens and proofs name), why it refused to claim any run (its words; null
+ *  for one that claims), where its relay's attach listener takes the dials the server relays to it (dial-relay.ts; null
+ *  for a runner with no relay) and when it last said it was there. */
 export interface RunnerRow {
   readonly runner: string;
   readonly incarnation: string;
   readonly refused: string | null;
+  /** The host the server reaches its relay at: loopback, or the runner's live host (live-reach.ts). Null with no relay. */
+  readonly host: string | null;
+  readonly port: number | null;
   readonly seenAt: number;
 }
 
@@ -1304,8 +1283,8 @@ export const RUNNER_ROWS_KEPT_MS = 24 * 60 * 60_000;
 /** Every runner's word that it is there (runner/presence.ts). */
 export interface Runners {
   /** Keeps `row` for its runner, replacing any earlier incarnation's, seen now; rows no runner renewed for
-   *  RUNNER_ROWS_KEPT_MS go in the same write. */
-  put(row: Omit<RunnerRow, "seenAt">): Promise<void>;
+   *  RUNNER_ROWS_KEPT_MS go in the same write. Its host and port go together: both absent (or null) for no relay. */
+  put(row: Omit<RunnerRow, "seenAt" | "host" | "port"> & { readonly host?: string | null; readonly port?: number | null }): Promise<void>;
   /** Marks the runner's row seen now, while it is still this incarnation's. False when it is not (or there is none). */
   seen(runner: string, incarnation: string): Promise<boolean>;
   /** Every runner's row, by name. */
@@ -1536,9 +1515,7 @@ export interface Store {
   readonly pairedComputers: PairedComputers;
   /** The tokens minted for hosted machines that dial this server, each kept as its SHA-256. */
   readonly mintedTokens: MintedTokens;
-  /** Where each runner in a process of its own takes the dials relayed to it. */
-  readonly runnerRelays: RunnerRelays;
-  /** Every runner's word that it is there, and whether it refused to claim. */
+  /** Every runner's word that it is there, whether it refused to claim, and where its relay takes the dials relayed to it. */
   readonly runners: Runners;
   /** The template packages imported from GitHub, their files kept as read. */
   readonly importedTemplates: ImportedTemplates;

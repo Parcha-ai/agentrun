@@ -26,7 +26,7 @@ import { Unanswered } from "../store/postgres/connection.js";
 import { clearWaitEnded } from "../browser-wait-ended.js";
 import { heldRedactor, processSecretRedactor, type Redact } from "./redact.js";
 import { type LiveTickerOptions, withLiveTicker } from "./live-ticker.js";
-import { keepPresence } from "./presence.js";
+import { keepPresence, type Presence } from "./presence.js";
 
 /** Tries of the re-read after a claim or release commit was answered Unanswered (the commit may have landed). */
 const UNKNOWN_READS = 5;
@@ -92,6 +92,10 @@ export interface RunnerOptions {
   live?: false | LiveTickerOptions;
   /** This runner's name in the runs it claims (runs.runner). Default: host, pid and a random part. */
   name?: string;
+  /** Its word in the store that it is there (presence.ts), kept by its caller (runner/main.ts, whose relay says where it
+   *  answers on the same row, under the same incarnation): used as is, never closed here. Default: one of its own,
+   *  removed at its close. */
+  presence?: Presence;
   /** Most runs held at once. */
   loops?: number;
   /** How long a claim lasts unless renewed. */
@@ -1004,8 +1008,8 @@ export function startRunner(options: RunnerOptions): Runner {
   };
 
   // Its word in the store that a runner that claims is here (presence.ts), for as long as it runs: a server reads a
-  // refusal left by an earlier runner as over once this is there.
-  const presence = store.runners ? keepPresence(store.runners, name, null, { warn: (line) => emit({ type: "error", step: "presence", message: line }) }) : undefined;
+  // refusal left by an earlier runner as over once this is there. One its caller keeps is its caller's to close.
+  const presence = options.presence ? undefined : store.runners ? keepPresence(store.runners, name, null, { warn: (line) => emit({ type: "error", step: "presence", message: line }) }) : undefined;
   poll();
   commandTimer = setTimeout(deliverAll, commandPollMs);
   // A run queued in this process is claimed now (claimNow). A command written for a run this runner holds is handed on
