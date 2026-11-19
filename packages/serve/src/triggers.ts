@@ -151,7 +151,7 @@ export type TriggerDeps = {
   /** Starts the target's run with `input`, as POST /agents/{id}/runs would, under `origin`, titled `title` (its
    *  trigger's, never its input's); its first message is the trigger's (`from`, never the person's); ApiError when
    *  refused. */
-  /** `previous` false: the run is handed no previous result (its adapter's previousResult). */
+  /** `previous` true: the run is handed its trigger's previous result (its adapter's previousResult, carriesPrevious); default none. */
   start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin, title: string, previous?: boolean): Promise<{ run_id: string }>;
   /** Queues `input` for the target's run as a command row (answers false) under `key`, as the trigger's (`from`), within
    *  `bound` (store.triggers.message: at most `max` of this trigger's rows untaken for the run, else skipped with

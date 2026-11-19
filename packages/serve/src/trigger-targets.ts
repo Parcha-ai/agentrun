@@ -108,11 +108,12 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
       const wrong = revision ? await deps.start.explainRun(await deps.start.inputIssuesOf(revision, target.input), { input: target.input }, revision) : [];
       return [...start, ...wrong.map((issue) => ({ ...issue, field: `target.${issue.field}` }))];
     },
-    async start(target, given, trigger, from, title, previous = true) {
+    async start(target, given, trigger, from, title, previous = false) {
       const entry = await deps.needAgent(target.agent_id);
       // An agentic run is handed its trigger's previous result after its message (previousResultOf), so a repeat run
       // (a weekly digest) leaves out what the last one reported. A workflow's input is its own schema's: nothing is added.
-      // A source whose firings are different people's (an email's sender: its adapter's previousResult false) hands none.
+      // Only a source that opts in hands it (its adapter's previousResult: a schedule's); one whose firings are different
+      // events (an email's sender, a new issue) hands none.
       const content = (given as { content?: unknown }).content;
       const handed = previous && entry.revision?.kind === "agentic" && typeof content === "string" ? await previousResultOf(store, deps, trigger) : "";
       const input = handed ? { ...given, content: `${content}${handed}` } : given;
