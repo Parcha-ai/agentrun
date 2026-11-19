@@ -116,11 +116,11 @@ test("a pi run with a side request of no known cost beside its cut request at it
   assert.deepEqual(usage?.usage, { usd: null, requests: 3, so_far_usd: 0.01, unpriced: 2 }, `the usage row: ${JSON.stringify(usage)}`);
 });
 
-test("an ended run whose end stored its cost unknown (its read failed) while its booking is priced: the view reads the booking, the column keeps the end's unknown", async (t) => {
+test("an ended run whose end stored its cost unknown (its read failed) while its booking is priced: the view reads the booking and heals the column the list reads", async (t) => {
   const records = booking().slice(0, 2);
   const { cost, listed } = await endedRun(t, { harness: "claude-agent", root: cliRecord.slice(0, 2), records, costUsd: null });
-  assert.equal(listed.costUsd ?? null, null, "the list reads the column");
   assert.equal(cost.usd, 0.01, `the view reads the priced booking, never a bare null: ${JSON.stringify(cost)}`);
+  assert.equal(listed.costUsd, 0.01, "the list reads the column the view healed");
   assert.equal(cost.unknown, undefined);
 });
 

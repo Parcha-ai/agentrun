@@ -301,15 +301,16 @@ test("the end's cost read fails once: the end reads it again, and the stored cos
   assert.equal(reads, 2, "read twice");
 });
 
-test("the end's cost read fails every time: the end stores it unknown, and the view reads the priced booking, never a bare null", { timeout: 120_000 }, async (t) => {
+test("the end's cost read fails every time: the end stores it unknown, and the run read reads the priced booking and heals the store, never a bare null", { timeout: 120_000 }, async (t) => {
   const warned = [];
   t.mock.method(console, "warn", (...args) => warned.push(args.join(" ")));
-  const { row, view, listed } = await endedRun(t, (spec) => ({ ...spec, endCost: async () => Promise.reject(new Error("the store is down")) }));
+  const { server, row, view, listed, entries } = await endedRun(t, (spec) => ({ ...spec, endCost: async () => Promise.reject(new Error("the store is down")) }));
   assert.equal(row.state, "ended");
-  // The stored column keeps the end's answer; the run's read reads its booking, priced, so the next GET heals what the
-  // end could not read.
-  assert.deepEqual([row.costUsd, listed.costUsd ?? null], [null, null], "the column keeps the end's unknown");
-  assert.equal(view.cost.usd, REQUEST_USD, `the view reads the booking: ${JSON.stringify(view.cost)}`);
+  assert.equal(entries.findLast((entry) => entry.kind === "agentrun.end")?.data?.costUsd, null, "the end stored it unknown");
+  // The run read reads its booking, priced, and writes it back where the end could not (Runs.healCost): one figure on
+  // every reader again, the booked one.
+  const healed = (await server.runs.get("run-1")).costUsd;
+  assert.deepEqual([healed, listed.costUsd ?? null, view.cost.usd], [REQUEST_USD, REQUEST_USD, REQUEST_USD], `healed on every reader: ${JSON.stringify(view.cost)}`);
   assert.equal(view.cost.unknown, undefined);
   assert.ok(warned.some((line) => /its end's cost failed .*the end is written with its cost unknown/.test(line)), `the end says why: ${JSON.stringify(warned)}`);
 });

@@ -21,6 +21,9 @@ const { openSqliteStore } = await import("../dist/store/index.js");
 const { runCostOf } = await import("../dist/runner/metrics.js");
 const { runEntries, runTimeline } = await import("../dist/store-reads/journal.js");
 const { viewOverStore } = await import("../dist/store-view.js");
+const { listRuns } = await import("../dist/store-reads/runs.js");
+const { stats: statsOverStore } = await import("../dist/store-reads/stats.js");
+const { agentCostOverStore } = await import("../dist/store-reads/learning.js");
 const { REQUEST_STARTED } = await import("../dist/timeline/index.js");
 
 const ROOT = 1;
@@ -59,9 +62,10 @@ function journalOf(steps) {
 
 /** Run-1, a pi run that does not learn, under a $5 cap, written as its runner writes it: its journal, its end entry with
  *  the cost its booking gives (runCostOf), then the store's end. Before that end is written the run reads working, never
- *  completed. Returns GET /v2/runs/run-1 from a server over the store, the store's row, and the usage row its settled
- *  timeline ends with. */
-async function endedRun(t, steps, { endRead = "read" } = {}) {
+ *  completed. Returns GET /v2/runs/run-1 from a server over the store (none with `read` false), the store's row as the end
+ *  left it, the usage row its settled timeline ends with, the server's client, and the lines it logged. `stored`: the
+ *  figure the end stores in place of its booking's. `store`: no server; the store open, with the row and usage row. */
+async function endedRun(t, steps, { endRead = "read", stored, read: reads = true, store: keep = false } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "run-cost-ended-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const data = join(dir, "agents");
@@ -79,19 +83,45 @@ async function endedRun(t, steps, { endRead = "read" } = {}) {
   await commitWrites(journal, writes, ctx);
   // `failed`: the end's read of the booking failed within its bound, so the end stores the cost unknown (adapter-loop.ts
   // endPatchOf), whatever the booking says.
-  const costUsd = endRead === "failed" ? null : runCostOf(await runEntries(store, "run-1", ctx)).usd;
+  const costUsd = stored !== undefined ? stored : endRead === "failed" ? null : runCostOf(await runEntries(store, "run-1", ctx)).usd;
   await commitWrites(journal, [{ type: "entry", value: { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.end", data: { state: "ended", costUsd } } }], ctx);
   assert.equal((await viewOverStore(store, "run-1", { origin: "", serverSecrets: () => [] })).status, "working", "no completed read before the store's end");
   await store.runs.update(claim, { state: "ended", outcome: "completed", summary: "done", costUsd, metrics: { path: "agent", workflow: null }, endedAt: Date.now() });
   const row = await store.runs.get("run-1");
   const usageRow = (await runTimeline(store, "run-1", ctx, { settled: true })).findLast((one) => one.kind === "usage")?.usage;
+  if (keep) {
+    t.after(() => store.close());
+    return { store, row, usageRow };
+  }
   await store.close();
-  const server = await startServe({ data, port: 0, faux: FAUX, listerIdleMs: Infinity });
+  const lines = [];
+  const server = await startServe({ data, port: 0, faux: FAUX, listerIdleMs: Infinity, log: (line) => lines.push(line) });
   t.after(() => server.close());
-  const read = await client(server.baseUrl, server.token)("GET", "/runs/run-1");
+  const api = client(server.baseUrl, server.token);
+  if (!reads) return { row, usageRow, api, lines };
+  const read = await api("GET", "/runs/run-1");
   assert.equal(read.status, 200, JSON.stringify(read.body));
   assert.equal(read.body.status, "completed");
-  return { cost: read.body.cost, row, usageRow };
+  return { cost: read.body.cost, row, usageRow, api, lines };
+}
+
+/** The start sweep's one count line (cost-heal.ts), once it has read every run it reads: no ids in it. */
+async function swept(lines) {
+  for (let waited = 0; waited < 30_000; waited += 50) {
+    const line = lines.find((one) => one.includes("cost_heal"));
+    if (line) return line;
+    await new Promise((next) => setTimeout(next, 50));
+  }
+  assert.fail(`no cost_heal line: ${JSON.stringify(lines)}`);
+}
+
+/** Run-1's cost as every reader of the store's figure reads it: /stats (agent-1's), /usage's total and its unpriced
+ *  count, and the learning cost per run (GET /agents/agent-1/learning/cost: its run and its unknown count). */
+async function readersOf(api) {
+  const stats = (await api("GET", "/stats")).body;
+  const usage = (await api("GET", "/usage")).body;
+  const bill = (await api("GET", "/agents/agent-1/learning/cost")).body;
+  return { stats: stats.cost?.usd ?? null, usage: usage.total_usd, usageUnpriced: usage.unpriced_runs, bill: bill.runs?.[0]?.cost_usd ?? null, billUnknown: bill.unknown_cost_runs, unattributed: bill.bill?.unattributed_usd, said: JSON.stringify({ stats: stats.cost, usage, bill }) };
 }
 
 const near = (got, want) => typeof got === "number" && Math.abs(got - want) < 1e-9;
@@ -143,4 +173,58 @@ test("an ended run whose end could not read its booking, with no booked request 
   assert.equal(row.costUsd, null);
   billable(cost);
   assert.deepEqual([cost.usd, cost.all_in_usd, cost.unknown, cost.unpriced], [null, null, "booking_unread", undefined], JSON.stringify(cost));
+});
+
+// The store heals: an ended run whose end stored its cost unknown while its booking is priced gets the booked figure
+// written back (Runs.healCost), by its run read or by the server's start sweep, so every reader of the stored figure
+// reads it. Only a null becomes a figure: a stored figure is never written over, and a run whose booking cannot be read
+// keeps its null.
+const priced = [["answered", 0.05], ["answered", 0.07], ["answered", 0.11]];
+
+test("the store heals on a read: once the run read reads its priced booking, the stored cost, the list, the stats and the learning cost read the booked total", { timeout: 60_000 }, async (t) => {
+  const { store } = await endedRun(t, priced, { endRead: "failed", store: true });
+  const deps = { origin: "", serverSecrets: () => [] };
+  assert.equal((await store.runs.get("run-1")).costUsd, null, "the end stored it unknown");
+  assert.ok(near((await viewOverStore(store, "run-1", deps)).cost.usd, 0.23));
+  assert.ok(near((await store.runs.get("run-1")).costUsd, 0.23), "the read wrote the booked figure back");
+  assert.ok(near((await listRuns(store, { agent: "agent-1" }, ctx)).find((one) => one.id === "run-1")?.costUsd, 0.23), "the list");
+  const stats = await statsOverStore(store);
+  assert.ok(near(stats.cost.usd, 0.23), `the stats: ${JSON.stringify(stats.cost)}`);
+  const bill = await agentCostOverStore(store, "agent-1");
+  assert.ok(near(bill.runs[0]?.cost_usd, 0.23) && bill.unknown_cost_runs === 0 && bill.bill.unattributed_usd === 0, `the learning cost and its bill: ${JSON.stringify(bill)}`);
+  // A second read writes nothing: the figure is there.
+  const row = await store.runs.get("run-1");
+  assert.equal(await store.runs.healCost("run-1", { epoch: row.epoch, endedAt: row.endedAt }, 0.5), false, "never over a stored figure");
+  assert.ok(near((await store.runs.get("run-1")).costUsd, 0.23));
+});
+
+test("the store heals at the server's start: a run nobody reads again gets its booked total on /stats, /usage and the learning cost, and one count line with no ids", { timeout: 60_000 }, async (t) => {
+  const { api, lines } = await endedRun(t, priced, { endRead: "failed", read: false });
+  const line = await swept(lines);
+  assert.match(line, /read=1\b/);
+  assert.match(line, /healed=1\b/);
+  assert.match(line, /failed=0\b/);
+  assert.doesNotMatch(line, /run-1/, "no ids");
+  const readers = await readersOf(api);
+  assert.ok(near(readers.stats, 0.23) && near(readers.usage, 0.23) && readers.usageUnpriced === 0 && near(readers.bill, 0.23) && readers.billUnknown === 0 && readers.unattributed === 0, readers.said);
+  const run = (await api("GET", "/runs/run-1")).body.cost;
+  assert.ok(near(run.usd, 0.23) && near(run.all_in_usd, 0.23), JSON.stringify(run));
+});
+
+test("a stored figure is never written over: an end that stored $0.30 keeps it on every reader, whatever its booking sums to", { timeout: 60_000 }, async (t) => {
+  // The sweep never lists it (store-heal-cost.test.mjs: costUnknown), and its run read finds nothing to heal.
+  const { api } = await endedRun(t, priced, { stored: 0.3, read: false });
+  assert.equal((await api("GET", "/runs/run-1")).body.cost.usd, 0.3);
+  const readers = await readersOf(api);
+  assert.ok(readers.stats === 0.3 && readers.usage === 0.3 && readers.bill === 0.3, readers.said);
+});
+
+test("a run whose booking cannot be read keeps its null in the store: the sweep reads it, heals nothing, and every reader counts it unknown", { timeout: 60_000 }, async (t) => {
+  const { api, lines } = await endedRun(t, [], { endRead: "failed", read: false });
+  const line = await swept(lines);
+  assert.match(line, /read=1\b/);
+  assert.match(line, /healed=0\b/);
+  assert.equal((await api("GET", "/runs/run-1")).body.cost.unknown, "booking_unread");
+  const readers = await readersOf(api);
+  assert.ok(readers.stats === null && readers.usage === 0 && readers.usageUnpriced === 1 && readers.bill === null && readers.billUnknown === 1 && readers.unattributed === null, readers.said);
 });
