@@ -82,6 +82,12 @@ test("a paired computer is one more provider of the registry: its id, its name, 
   const entry = pairedEntry(row, registry);
   assert.deepEqual({ ...entry, capabilities: entry.capabilities.map((one) => one.kind) }, {
     id: "cmp-abc", label: "vesper-mac (macos)", kinds: ["desktop"], keys: [], mounts: [], network: ["open"], metered: false, capabilities: ["desktop"], defaultImage: { desktop: "attached" },
+    // Each kind it doesn't serve, with why: what the resolver says in its one "<label> gives no <kind> computer" shape.
+    unserved: {
+      sandbox: "it is a computer of your own, and only a Linux box paired with computerd and no display can be a sandbox computer; give this agent vesper-mac as a desktop computer",
+      phone: "it is a computer of your own, and it says desktop, which no phone computer is; update the driver on vesper-mac",
+      browser: "it is a computer of your own, and a paired computer can't be a browser computer yet; give this agent vesper-mac as a desktop computer",
+    },
   });
   const phone = pairedEntry({ ...row, hello: { ...HELLO, os: "android", kind: "android", groups: ["screen", "input.touch", "apps", "ui"] } }, registry);
   assert.deepEqual({ kinds: phone.kinds, label: phone.label }, { kinds: ["phone"], label: "vesper-mac (android)" }, "a phone pairs as a phone, named by its os");
@@ -109,7 +115,7 @@ test("a hello that serves no kind is said in words naming what its driver lacks,
   // Paired before its driver lost a group: its run is refused saying why, then the providers to pick instead.
   const registry = withPaired({ SETTING_KINDS, PROVIDERS, servingRefusals }, [{ id: "cmp-abc", name: "vesper-mac", hello: screenOnly, driver: "0.2.0", labels: {}, createdAt: 1, seenAt: null, revokedAt: null }]);
   const { refused } = await resolveComputer({ kind: "desktop", provider: "cmp-abc" }, 1, registry, {});
-  assert.match(refused, /^vesper-mac is a computer of your own, and its driver gives no desktop computer: it says desktop but declares no input\.pointer, input\.keys\. Update the driver on vesper-mac, or pick one of /);
+  assert.match(refused, /^vesper-mac \(macos\) gives no desktop computer: it is a computer of your own, and it says desktop but declares no input\.pointer, input\.keys; update the driver on vesper-mac\. Pick one of /);
   const cloud = PROVIDERS.find((entry) => entry.kinds.includes("desktop"));
   assert.match(refused, new RegExp(cloud.label), "the cloud computers to pick instead");
 });
@@ -124,7 +130,7 @@ test("a paired Mac never runs a run's shell or holds its folder, granted exec an
       assert.deepEqual({ refused: desktop.refused, folder: desktop.folder, ports: desktop.ports }, { refused: undefined, folder: undefined, ports: ["screen", "input"] }, `Mode ${mode}, groups ${one.hello.groups}`);
     }
     const { refused } = await resolveComputer({ kind: "sandbox", provider: "cmp-abc" }, mode, withPaired({ SETTING_KINDS, PROVIDERS, servingRefusals }, [row]), keys);
-    assert.match(refused, /^vesper-mac is a computer of your own, and only a Linux box paired with computerd and no display can be a sandbox computer: give this agent vesper-mac as a desktop computer, or pick one of /);
+    assert.match(refused, /^vesper-mac \(macos\) gives no sandbox computer: it is a computer of your own, and only a Linux box paired with computerd and no display can be a sandbox computer; give this agent vesper-mac as a desktop computer\. Pick one of /);
   }
 });
 

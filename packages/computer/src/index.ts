@@ -152,7 +152,6 @@ export {
 // Types only: the phone ledger serve backs with its store. The provider itself loads through the registry.
 export type { PhoneLedger, PhoneLedgerEntry } from "./phone-harness.js";
 export {
-	type ComputerSettingKind,
 	configurationOf,
 	entryOf,
 	imagesOf,
@@ -161,12 +160,10 @@ export {
 	kindServed,
 	type ProviderEntry,
 	PROVIDERS,
-	SETTING_KIND_NAMES,
-	SETTING_KINDS,
-	type SettingKindSpec,
 	serves,
 	servingRefusals,
 	type TestConnection,
 	type TestConnectionOptions,
 } from "./kinds.js";
+export { type ComputerSettingKind, SETTING_KIND_NAMES, SETTING_KINDS, type SettingKindSpec } from "./setting-kinds.js";
 export * from "./conformance/index.js";

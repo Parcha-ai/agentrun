@@ -59,7 +59,6 @@ test("createProvider() names the variable it needs, and makes no request without
 		gpuSnapshot: "COMPUTER_DAYTONA_GPU_SNAPSHOT",
 		archilEgress: "COMPUTER_DAYTONA_ARCHIL_EGRESS",
 		connect: "COMPUTER_DAYTONA_CONNECT",
-		kind: "COMPUTER_DAYTONA_KIND",
 	});
 	for (const name of Object.values(DAYTONA_ENV)) assert.match(name, /^COMPUTER_DAYTONA_/, `${name} is not a bare DAYTONA_ name`);
 });
