@@ -2886,7 +2886,7 @@ export const COMMANDS = [
     "bodyTypes": [],
     "secretBody": false,
     "raw": false,
-    "summary": "A run's usage lines: tokens by model, paid tools by who charged, browser time by provider"
+    "summary": "What a run cost, by model, by who charged for its tools, and by browser provider"
   },
   {
     "command": [

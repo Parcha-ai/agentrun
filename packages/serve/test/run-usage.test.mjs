@@ -1,4 +1,5 @@
-// GET /runs/{run_id}/usage: a run's usage lines by meter and dimension, joining to its read's cost.usd. A faux model at a
+// GET /runs/{run_id}/usage: a run's cost line by line (by model, by who charged, by browser provider), joining to its
+// read's cost.usd. A faux model at a
 // fixed price per request, faux monid and a fake MCP server on loopback, the real server and runner; no network, no key.
 import assert from "node:assert/strict";
 import { join } from "node:path";
@@ -42,7 +43,7 @@ test("a run with a priced MCP call and a monid call: a tokens line for its model
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   const { view, usage } = await ran(api, "both", [PAID, ENRICH], ['Call mcp__fake__paid with {"query":"ada"}', 'Call monid__faux__person__enrich with {"body":{"name":"Ada"}}'].join("\n"));
   assert.equal(view.status, "completed", JSON.stringify(view.error));
-  assert.equal(usage.final, true);
+  assert.equal(usage.ended_at, view.ended_at, "the lines cover the run to its end");
   assert.equal(usage.reason, null);
   assert.equal(usage.currency, "USD");
 
@@ -59,9 +60,12 @@ test("a run with a priced MCP call and a monid call: a tokens line for its model
   assert.equal(model.basis, view.cost.basis, "the run's basis, over its one model");
 
   const tools = usage.lines.filter((line) => line.meter === "tools");
-  assert.deepEqual(tools.map((line) => [line.dimension, line.quantity, line.unit, line.usd, line.basis]), [["fake", 1, "call", 0.05, "estimate"], ["monid", 1, "call", 0.003, "estimate"]]);
+  // monid's answer says what it charged: its own figure. The MCP tool's is the price its owner saved here.
+  assert.deepEqual(tools.map((line) => [line.charged_by, line.quantity, line.unit, line.usd, line.basis]), [["fake", 1, "call", 0.05, "estimate"], ["monid", 1, "call", 0.003, "reported"]]);
+  // The run's own model, sent by this server on its provider's route (the faux one here): named, with its provider.
+  assert.deepEqual([model.model, model.provider, model.charged_by], ["faux-1", "faux", null]);
 
-  assert.equal(micro(usage.total_usd), micro(view.cost.usd), "the lines' join is the run's cost.usd");
+  assert.equal(micro(usage.total.usd), micro(view.cost.usd), "the lines' join is the run's cost.usd");
   assert.equal(micro(usage.lines.reduce((sum, line) => sum + line.usd, 0)), micro(view.cost.usd), "and the lines sum to it");
   assert.equal(micro(tools.reduce((sum, line) => sum + line.usd, 0)), micro(view.cost.tools_usd), "the tools lines are cost.tools_usd");
 });
@@ -73,7 +77,7 @@ test("a run with no paid call: one tokens line, the whole cost", { timeout: 120_
   assert.equal(usage.lines.length, 1, JSON.stringify(usage.lines));
   assert.equal(usage.lines[0].meter, "tokens");
   assert.equal(usage.lines[0].requests, 1);
-  assert.equal(micro(usage.total_usd), micro(view.cost.usd));
+  assert.equal(micro(usage.total.usd), micro(view.cost.usd));
 });
 
 test("a run whose paid call charged an unknown amount: its tools line and the total are null, never $0", { timeout: 120_000 }, async (t) => {
@@ -84,7 +88,8 @@ test("a run whose paid call charged an unknown amount: its tools line and the to
   const tools = usage.lines.find((line) => line.meter === "tools");
   assert.equal(tools.usd, null, JSON.stringify(tools));
   assert.equal(tools.quantity, 1, "the call was made");
-  assert.equal(usage.total_usd, null);
+  assert.equal(usage.total.usd, null);
+  assert.equal(usage.total.so_far_usd, view.cost.so_far_usd, "what is known of it, as the run's cost says it");
   assert.ok(usage.lines.find((line) => line.meter === "tokens").usd > 0, "the model's requests are still known");
 });
 
@@ -99,6 +104,6 @@ test("a run still at work has no lines yet, and says so; an unknown run is a 404
   await follow(api, run.body.run_id, ["input_required"], { deadlineMs: 60_000 });
   const usage = await api("GET", `/runs/${run.body.run_id}/usage`);
   assert.equal(usage.status, 200);
-  assert.deepEqual(usage.body, { run_id: run.body.run_id, final: false, currency: "USD", total_usd: null, lines: null, reason: "running" });
+  assert.deepEqual(usage.body, { run_id: run.body.run_id, ended_at: null, currency: "USD", total: null, lines: null, reason: "running" });
   assert.equal((await api("GET", "/runs/run_nope/usage")).status, 404);
 });

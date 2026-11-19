@@ -3,9 +3,9 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RunDetail } from "@/components/RunDetail";
 import { RunTrace } from "@/components/RunTrace";
-import { TRACE, TRACE_CLI, TRACE_END, TRACE_LIVE, TRACE_LIVE_NOW, TRACE_START, TRACE_USD } from "@/components/RunTrace.sample";
+import { TRACE, TRACE_CLI, TRACE_END, TRACE_LIVE, TRACE_LIVE_NOW, TRACE_START, TRACE_USD, USAGE_CLI } from "@/components/RunTrace.sample";
 import { messageFeatures } from "@/fixtures";
-import type { Run, RunTrace as Trace } from "@/lib/v2";
+import type { Run, RunTrace as Trace, RunUsage } from "@/lib/v2";
 
 // The run page's Dev tools tab: every model request and tool call of the run in one table and on one time axis, each
 // opening to what it used and cost, and the run's totals by tool and by model. Read from GET /v2/runs/{id}/trace.
@@ -368,6 +368,64 @@ describe("the Dev tools tab", () => {
     expect(callRows(host)).toHaveLength(5);
   });
 
+  it("splits a CLI harness's run's cost by line from the server's booking: by model, by the vendor that charged, by browser provider", async () => {
+    const readUsage = vi.fn(async () => USAGE_CLI);
+    const host = await open(TRACE_CLI, { readUsage, view: "breakdown" });
+    expect(readUsage).toHaveBeenCalledTimes(1);
+    const cost = host.querySelector("section[aria-label='Where the cost went']")!;
+    // The run's total beside the heading: one of its charges is not known, so it is what is known, never a whole figure.
+    expect(cost.querySelector("h2")!.parentElement!.textContent).toBe("Where the cost wentUnknown, $0.4379 known");
+    // One part a line, named by its model, the vendor that charged for a tool, or the browser provider.
+    expect([...cost.querySelectorAll("ul li")].map((li) => li.textContent)).toEqual(["claude-sonnet-5-5$0.4125 · 94%", "monid · tools$0.0150 · 3%", "browserbase · browser timeUnknown, $0.0104 known · 2%"]);
+    const table = cost.querySelector("[role=region]")!;
+    expect(document.getElementById(table.getAttribute("aria-labelledby")!)!.textContent).toBe("Cost by line");
+    expect([...table.querySelectorAll("thead th")].map((th) => th.textContent)).toEqual(["Line", "Quantity", "Cost", "Basis"]);
+    expect([...table.querySelectorAll("tbody tr")].map((tr) => [...tr.children].map((cell) => cell.textContent))).toEqual([
+      ["claude-sonnet-5-5Tokens", "184,220 tokens", "$0.4125", "Reported"],
+      ["monid · toolsTool charges2 calls not metered: no price is set, so they are outside the cost", "3 calls", "$0.0150", "Estimate"],
+      ["browserbase · browser timeBrowser time", "312 seconds", "Unknown, $0.0104 known", "Estimate"],
+    ]);
+    // A charge not known is never $0.
+    expect(cost.textContent).not.toMatch(/\$0(?![.\d])/);
+    // The lines are a part of Where the cost went, not a heading of the tab.
+    expect([...host.querySelectorAll("h2, h3")].map((h) => h.textContent)).not.toContain("Cost by line");
+  });
+
+  it("gives a CLI run that called no tool its cost by line, though its trace has no span", async () => {
+    const host = await open({ ...TRACE_CLI, spans: [] }, { readUsage: async () => USAGE_CLI });
+    const cost = host.querySelector("section[aria-label='Where the cost went']")!;
+    expect(cost.querySelector("h2")!.parentElement!.textContent).toBe("Where the cost wentUnknown, $0.4379 known");
+    expect([...cost.querySelectorAll("tbody tr")].map((tr) => tr.children[0]!.textContent)).toEqual(["claude-sonnet-5-5Tokens", "monid · toolsTool charges2 calls not metered: no price is set, so they are outside the cost", "browserbase · browser timeBrowser time"]);
+    expect(host.textContent).not.toContain("This run made no model request and called no tool.");
+  });
+
+  it("says a line's cost at most where it is a bound, and the provider its tokens went to", async () => {
+    const usage: RunUsage = { ...USAGE_CLI, total: { usd: 0.4379, upper_bound: true }, lines: [{ ...USAGE_CLI.lines![0]!, provider: "anthropic", usd: 0.4125, upper_bound: true }] };
+    const host = await open(TRACE_CLI, { readUsage: async () => usage, view: "breakdown" });
+    const cost = host.querySelector("section[aria-label='Where the cost went']")!;
+    expect(cost.querySelector("h2")!.parentElement!.textContent).toBe("Where the cost wentat most $0.4379");
+    expect([...cost.querySelectorAll("tbody tr")].map((tr) => [...tr.children].map((cell) => cell.textContent))).toEqual([["claude-sonnet-5-5Tokens · sent to anthropic", "184,220 tokens", "at most $0.4125", "Reported"]]);
+  });
+
+  it("with no lines yet keeps the trace's own split and says why: the run is at work, or its cost can't be split", async () => {
+    const running: RunUsage = { ...USAGE_CLI, ended_at: null, total: null, lines: null, reason: "running" };
+    const host = await open(TRACE, { readUsage: async () => running, view: "breakdown" });
+    const cost = () => host.querySelector("section[aria-label='Where the cost went']")!;
+    expect(cost().textContent).toMatch(/claude-sonnet-5-5\$0\.6132 · 97%.*Tool charges\$0\.0204 · 3%/);
+    expect(cost().textContent).toContain("Cost by line appears when the run ends.");
+    expect(cost().querySelector("[role=region]")).toBeNull();
+    act(() => root?.unmount());
+    const cli = await open(TRACE_CLI, { readUsage: async () => ({ ...running, reason: "not_booked" as const }), view: "breakdown" });
+    expect(cli.querySelector("section[aria-label='Where the cost went']")!.textContent).toContain("This run's cost is its harness's own figure, so it can't be split by line.");
+  });
+
+  it("a usage read that fails leaves the trace's own split, and no error", async () => {
+    const host = await open(TRACE, { readUsage: async () => { throw new Error("no such route"); }, view: "breakdown" });
+    const cost = host.querySelector("section[aria-label='Where the cost went']")!;
+    expect(cost.textContent).toMatch(/claude-sonnet-5-5\$0\.6132 · 97%/);
+    expect(host.textContent).not.toContain("no such route");
+  });
+
   it("a workflow run's requests carry tokens and no cost: none is said, and the panel says why", async () => {
     const spans = TRACE.spans.map((s) => (s.kind === "model" ? { ...s, usd: null } : s));
     const host = await open({ ...TRACE, model_requests: "tokens_only", spans }, { open: "m:0:24" });
@@ -562,6 +620,18 @@ describe("the run page", () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(600); });
     vi.useRealTimers();
     expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it("reads the run's usage lines beside its trace once the Dev tools tab is open", async () => {
+    const readUsage = vi.fn(async () => USAGE_CLI);
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    act(() => root!.render(createElement(RunDetail, { run: RUN, agentName: "supplier-screening", messages: messageFeatures, harnessSteers: true, rows: [], files: [], readTrace: async () => TRACE_CLI, readUsage, traceAt: { now: TRACE_END, view: "breakdown" } })));
+    await settle();
+    expect(readUsage).not.toHaveBeenCalled();
+    await click(tab(host, "Dev tools"));
+    expect(readUsage).toHaveBeenCalledTimes(1);
+    expect(host.querySelector("section[aria-label='Where the cost went'] [role=region]")!.textContent).toContain("monid · tools");
   });
 
   it("has no Dev tools tab where it cannot", async () => {

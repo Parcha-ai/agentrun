@@ -413,6 +413,7 @@ __all__ = [
     "GetRunUsageResponse",
     "GetRunUsageResponseLinesItem",
     "GetRunUsageResponseLinesItemTokens",
+    "GetRunUsageResponseTotal",
     "GetSdkRunResponse",
     "GetSlackResponse",
     "GetSlackResponseObject1",
@@ -5779,16 +5780,28 @@ UnarchiveRunResponse: TypeAlias = "dict[str, Any]"
 
 class GetRunUsageResponse(TypedDict):
     run_id: Id
-    final: bool
+    ended_at: str | None
     currency: Literal["USD"]
-    total_usd: float | None
+    total: GetRunUsageResponseTotal | None
     lines: list[GetRunUsageResponseLinesItem] | None
     reason: Literal["running", "not_booked", "reopened"] | None
 
 
+class _GetRunUsageResponseTotalRequired(TypedDict):
+    usd: float | None
+
+
+class GetRunUsageResponseTotal(_GetRunUsageResponseTotalRequired, total=False):
+    so_far_usd: float
+    unpriced: int
+    upper_bound: Literal[True]
+
+
 class _GetRunUsageResponseLinesItemRequired(TypedDict):
     meter: Literal["tokens", "tools", "browser_time"]
-    dimension: str
+    model: str | None
+    provider: str | None
+    charged_by: str | None
     quantity: float | None
     unit: Literal["token", "call", "second"]
     basis: Literal["reported", "estimate", "unpriced"]
@@ -5802,6 +5815,7 @@ class GetRunUsageResponseLinesItem(_GetRunUsageResponseLinesItemRequired, total=
     requests: int
     tokens: GetRunUsageResponseLinesItemTokens
     unmetered_requests: int
+    not_metered_calls: int
 
 
 class GetRunUsageResponseLinesItemTokens(TypedDict):
@@ -9627,7 +9641,7 @@ class RunsResource(Group):
         return self._call("unarchiveRun", (run_id,), None, None, timeout=timeout)
 
     def usage(self, run_id: str, *, timeout: float | None = None) -> GetRunUsageResponse:
-        """A run's usage lines: tokens by model, paid tools by who charged, browser time by provider (GET /runs/{run_id}/usage)."""
+        """What a run cost, by model, by who charged for its tools, and by browser provider (GET /runs/{run_id}/usage)."""
         return self._call("getRunUsage", (run_id,), None, None, timeout=timeout)
 
 

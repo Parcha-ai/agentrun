@@ -2860,12 +2860,19 @@ export interface operations {
     body: never;
     answer: {
       run_id: components["Id"];
-      final: boolean;
+      ended_at: string | null;
       currency: "USD";
-      total_usd: number | null;
+      total: {
+        usd: number | null;
+        so_far_usd?: number;
+        unpriced?: number;
+        upper_bound?: true;
+      } | null;
       lines: {
         meter: "tokens" | "tools" | "browser_time";
-        dimension: string;
+        model: string | null;
+        provider: string | null;
+        charged_by: string | null;
         quantity: number | null;
         unit: "token" | "call" | "second";
         basis: "reported" | "estimate" | "unpriced";
@@ -2881,6 +2888,7 @@ export interface operations {
           cache_write: number;
         };
         unmetered_requests?: number;
+        not_metered_calls?: number;
       }[] | null;
       reason: "running" | "not_booked" | "reopened" | null;
     };

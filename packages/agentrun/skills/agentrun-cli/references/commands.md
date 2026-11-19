@@ -861,7 +861,7 @@ Route: `POST /runs/{run_id}/unarchive`.
 
 ### `agentrun runs usage RUN_ID`
 
-A run's usage lines: tokens by model, paid tools by who charged, browser time by provider.
+What a run cost, by model, by who charged for its tools, and by browser provider.
 
 Route: `GET /runs/{run_id}/usage`.
 

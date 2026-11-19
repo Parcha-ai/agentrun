@@ -3656,15 +3656,22 @@ export type GetRunTraceResponse = {
 /** Show the archived run in the lists again (POST /runs/{run_id}/unarchive). */
 export type UnarchiveRunResponse = Record<string, unknown>;
 
-/** A run's usage lines: tokens by model, paid tools by who charged, browser time by provider (GET /runs/{run_id}/usage). */
+/** What a run cost, by model, by who charged for its tools, and by browser provider (GET /runs/{run_id}/usage). */
 export type GetRunUsageResponse = {
   run_id: Id;
-  final: boolean;
+  ended_at: string | null;
   currency: "USD";
-  total_usd: number | null;
+  total: {
+    usd: number | null;
+    so_far_usd?: number;
+    unpriced?: number;
+    upper_bound?: true;
+  } | null;
   lines: Array<{
     meter: "tokens" | "tools" | "browser_time";
-    dimension: string;
+    model: string | null;
+    provider: string | null;
+    charged_by: string | null;
     quantity: number | null;
     unit: "token" | "call" | "second";
     basis: "reported" | "estimate" | "unpriced";
@@ -3680,6 +3687,7 @@ export type GetRunUsageResponse = {
       cache_write: number;
     };
     unmetered_requests?: number;
+    not_metered_calls?: number;
   }> | null;
   reason: "running" | "not_booked" | "reopened" | null;
 };
@@ -5988,7 +5996,7 @@ export function resources(call: Call) {
       trace: (runId: string, options?: RequestOptions): Promise<GetRunTraceResponse> => call("getRunTrace", [runId], undefined, undefined, options),
       /** Show the archived run in the lists again (POST /runs/{run_id}/unarchive). */
       unarchive: (runId: string, options?: RequestOptions): Promise<UnarchiveRunResponse> => call("unarchiveRun", [runId], undefined, undefined, options),
-      /** A run's usage lines: tokens by model, paid tools by who charged, browser time by provider (GET /runs/{run_id}/usage). */
+      /** What a run cost, by model, by who charged for its tools, and by browser provider (GET /runs/{run_id}/usage). */
       usage: (runId: string, options?: RequestOptions): Promise<GetRunUsageResponse> => call("getRunUsage", [runId], undefined, undefined, options),
     },
     sdkRuns: {
