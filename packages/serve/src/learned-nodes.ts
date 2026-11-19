@@ -22,10 +22,10 @@ export const LEARNED_NODES_MAX = 64;
  *  node has no model. */
 export type LearnedNode = { readonly label: string; readonly kind: string; readonly status: string; readonly duration_ms: number; readonly model?: string; readonly tier?: string };
 /** One loop's exit (the DSL's `loop.exited`): its label, how many passes its body ran and whether its `until` held (false:
- *  it reached maxIters). A compiled answer's quote re-pick (learn/check.ts) is a loop of 2 until its quote check passes:
- *  `iterations` 2 is a re-pick, `met` whether it found its quotes. Rows, uncapped, are a run's metrics' `loops`, each
- *  naming the workflow whose call ran it (`workflow`). */
-export type LoopRow = { readonly node: string; readonly iterations: number; readonly met: boolean; readonly workflow?: string };
+ *  it reached maxIters). A compiled answer's quote re-pick (learn/check.ts repickLabels) is a loop of 2 until its quote
+ *  check passes, marked `repick`: `iterations` 2 there is a re-pick, `met` whether it found its quotes; any other loop is
+ *  unmarked. Rows, uncapped, are a run's metrics' `loops`, each naming the workflow whose call ran it (`workflow`). */
+export type LoopRow = { readonly node: string; readonly iterations: number; readonly met: boolean; readonly repick?: true; readonly workflow?: string };
 
 /** The LEARNED_NODES entry that counts for each learned_workflow call in `entries`, by the call's id, as its index in
  *  `entries`. A call run again (after a park or a crash: it nests calls) keeps an entry each time; the one that counts is

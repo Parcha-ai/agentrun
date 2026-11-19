@@ -594,12 +594,13 @@ export function pathViewOf(run: Pick<RunRecord, "metrics" | "state">, kind: stri
  *  its second pass found its quotes, `missed` when it still missed them. */
 export type Repick = "found" | "missed";
 /** Whether the workflow a run's record names re-picked its answer, from its metrics' loop rows (workflow-first.ts
- *  pathMetrics `loops`, LoopRow): its last loop of that workflow that ran a second pass, found when its `until` held. Null
- *  when none did, and for a loop another workflow ran (a composed one's names it). */
+ *  pathMetrics `loops`, LoopRow): its last re-pick loop (marked `repick`, learn/check.ts repickLabels) of that workflow
+ *  that ran a second pass, found when its `until` held. Null when none did: an ordinary loop that ran twice is no
+ *  re-pick, nor is a loop of another workflow the run called. */
 function repickOfRow(row: Pick<RunRecord, "metrics">): Repick | null {
   const { workflow, loops } = (row.metrics ?? {}) as { workflow?: unknown; loops?: unknown };
   if (typeof workflow !== "string" || !Array.isArray(loops)) return null;
-  const last = (loops as Partial<LoopRow>[]).findLast((loop) => loop?.workflow === workflow && typeof loop.iterations === "number" && loop.iterations >= 2);
+  const last = (loops as Partial<LoopRow>[]).findLast((loop) => loop?.repick === true && loop.workflow === workflow && typeof loop.iterations === "number" && loop.iterations >= 2);
   return last ? (last.met === true ? "found" : "missed") : null;
 }
 

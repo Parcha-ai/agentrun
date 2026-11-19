@@ -506,13 +506,24 @@ const REPICK_PASSES = 2;
 type QuoteRead = { readonly path: unknown; readonly field: unknown; readonly pages: readonly unknown[] };
 const quoteMissingText = ({ path, field, pages }: QuoteRead): string =>
   `{"predicate": "quote_missing", "path": ${JSON.stringify(path)}${field ? `, "field": ${JSON.stringify(field)}` : ""}, "pages": ${JSON.stringify(pages)}}`;
+/** The quote_missing a re-pick loop waits on: `step`'s, when it is a loop of REPICK_PASSES until `not` of a quote_missing. */
+const repickCheckOf = (step: unknown): Record<string, unknown> | undefined =>
+  isNode(step) && step.node === "loop" && step.maxIters === REPICK_PASSES && isObject(step.until) && step.until.predicate === "not" && isObject(step.until.of) && step.until.of.predicate === "quote_missing" ? step.until.of : undefined;
 /** Whether `step` is the re-pick of an answer `check` reads: a loop of REPICK_PASSES until that check's quote_missing (its
  *  path, field and pages) no longer holds. */
 const repicks = (step: unknown, check: QuoteRead): boolean => {
-  if (!isNode(step) || step.node !== "loop" || step.maxIters !== REPICK_PASSES || !isObject(step.until) || step.until.predicate !== "not" || !isObject(step.until.of)) return false;
-  const of = step.until.of;
-  return of.predicate === "quote_missing" && of.path === check.path && (of.field ?? "") === check.field && JSON.stringify(of.pages) === JSON.stringify(check.pages);
+  const of = repickCheckOf(step);
+  return !!of && of.path === check.path && (of.field ?? "") === check.field && JSON.stringify(of.pages) === JSON.stringify(check.pages);
 };
+/** The labels of `workflow`'s quote re-pick loops: the steps of its top-level chain (or its root) that are a loop of
+ *  REPICK_PASSES until `not` of a quote_missing, the shape quoteCheckProblems requires of the step writing a quoted
+ *  answer. What marks a loop's exit a re-pick (learned-nodes.ts LoopRow `repick`): any other loop that ran twice is an
+ *  ordinary loop. */
+export function repickLabels(workflow: unknown): Set<string> {
+  const root = isObject(workflow) ? workflow.root : undefined;
+  const steps = isNode(root) && root.node === "chain" && Array.isArray(root.steps) ? (root.steps as unknown[]) : [root];
+  return new Set(steps.filter((step) => repickCheckOf(step)).map((step) => String((step as Record<string, unknown>).label)));
+}
 /** Whether a step's `state` map names state key `key` as the whole marked placeholder `"{answer?}"` (a whole string):
  *  null on a re-pick loop's first pass, before any draft exists, and the failed draft on its second. No path below the
  *  key counts (`"{answer.x?}"`, `"{state.answer?}"`, unmarked `"{answer}"`): paths are not validated, so only the key
