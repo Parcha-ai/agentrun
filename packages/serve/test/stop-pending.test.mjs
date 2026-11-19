@@ -12,6 +12,9 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { KINDS } from "../dist/runner/journal-kinds.js";
+import { BROWSER_HANDOVER_KIND } from "../dist/browser-commands.js";
+import { COMPUTER_HANDOVER_KIND } from "../dist/computer-commands.js";
+import { standsOnPerson } from "../dist/store-view.js";
 import { agent, follow, retried, scratch, serve, startInProcessRunner, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 import { ofType, PRIVATE_OK, receiver } from "./webhook-support.mjs";
@@ -128,6 +131,21 @@ for (const harness of ["pi", "codex"]) {
     }
   });
 }
+
+test("a turn stands on a person while a call's approval or a hand-over has no answer in its journal, a hand-over past its expiry too, until its expiry is written as its answer", () => {
+  const past = { asked_at: new Date(Date.now() - 120_000).toISOString(), expires_at: new Date(Date.now() - 60_000).toISOString() };
+  const ask = { kind: KINDS.ask, data: { callId: "c1", tool: "web_fetch", args: {}, requestedAt: past.asked_at } };
+  const answered = { kind: KINDS.answer, data: { callId: "c1", decision: "allow" } };
+  const browser = { kind: BROWSER_HANDOVER_KIND, data: { state: "waiting", id: "b1", session: "s1", instruction: "Sign in.", completion_condition: "Signed in.", ...past } };
+  const browserExpired = { kind: BROWSER_HANDOVER_KIND, data: { state: "expired", id: "b1", at: Date.parse(past.expires_at) } };
+  const computer = { kind: COMPUTER_HANDOVER_KIND, data: { state: "waiting", id: "d1", instruction: "Approve on the phone.", completion_condition: "Approved.", ...past } };
+  const computerExpired = { kind: COMPUTER_HANDOVER_KIND, data: { state: "expired", id: "d1" } };
+  const stands = (entries) => standsOnPerson(entries, []);
+  assert.deepEqual(
+    [stands([]), stands([ask]), stands([ask, answered]), stands([browser]), stands([browser, browserExpired]), stands([computer]), stands([computer, computerExpired])],
+    [false, true, false, true, false, true, false],
+  );
+});
 
 test("a run whose harness ended its turn on its own, with no stop, reads input_required and idle with nothing pending, in its read and in the list, and its run.needs_input names no kind", { timeout: 60_000 }, async (t) => {
   const hook = await receiver(t);
