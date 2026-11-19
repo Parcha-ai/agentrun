@@ -4,6 +4,7 @@
 // an operator's gateway (a faux one on loopback), priced by AGENT_MODEL_PRICE. The fixture is tl-learning's (the learned
 // workflow tiers' fallback run, three requests at $0.000014 each, which read $0.000028).
 import assert from "node:assert/strict";
+import { promoteChecked } from "./learned-workflow-seed-support.mjs";
 import { test } from "node:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -51,9 +52,11 @@ test("a pi run's cost is its whole booking: its learned workflow node's request 
   const gw = await startFauxGateway({ call: script, text: "done" });
   t.after(() => gw.close());
   withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL_API_KEY: ["not-a-secret", "gateway"].join("-"), AGENT_MODEL: "gpt-run", AGENT_MODEL_PRICE: PRICE.join(",") }, ["ANTHROPIC_BASE_URL", "OPENROUTER_API_KEY", "AGENT_MODEL_FAST", "AGENT_MODEL_FAST_PRICE", "AGENT_MODEL_STRONG", "AGENT_MODEL_STRONG_PRICE"]);
-  const { api, data } = await serve(t, { learning: "on", faux: undefined });
+  const { api, data, store } = await serve(t, { learning: "on", faux: undefined });
   assert.equal((await api("POST", "/agents", agent("node-cost", { learning: true, harness: "pi", instructions: ASK }))).status, 201);
   await folderWith(data, "node-cost", flowFiles("answer", answerFlow()));
+  // The cost assertion concerns execution of an already checked workflow.
+  await promoteChecked(store.settings, "node-cost", [{ name: "answer", workflow: answerFlow() }]);
   const started = await api("POST", "/agents/node-cost/runs", { input: { content: ASK }, max_cost_usd: 5 });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
