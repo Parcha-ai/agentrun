@@ -116,6 +116,10 @@ test("bindings are checked: a well-formed one starts the run; a bad user, an acc
   const good = await s.api("POST", "/agents/reader/runs", { input: { content: "Hi" }, mcp_auth: bind(USER_A, ACCOUNT_A) }, asToken);
   assert.equal(good.status, 202, `a well-formed binding starts the run, from the API token: ${JSON.stringify(good.body)}`);
   await follow(s.api, good.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+  // The shortest account id taken is 8 characters, so the run's redactors (which hold a value of 8 or more) hold every one.
+  const shortest = await s.api("POST", "/agents/reader/runs", { input: { content: "Hi" }, mcp_auth: bind(USER_A, "ca_abcde") }, asToken);
+  assert.equal(shortest.status, 202, `an 8-character account id starts the run: ${JSON.stringify(shortest.body)}`);
+  await follow(s.api, shortest.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
   const before = (await s.api("GET", "/runs")).body.runs.length;
   // A per_run server that takes headers from each run: a binding is for a per-run Composio server alone.
   const gateway = await startFakeMcp();
@@ -128,6 +132,7 @@ test("bindings are checked: a well-formed one starts the run; a bad user, an acc
     [bind("x".repeat(129)), "mcp_auth.mail.composio_user_id", "invalid"],
     [bind("has space"), "mcp_auth.mail.composio_user_id", "invalid"],
     [bind(USER_A, "acct-1"), "mcp_auth.mail.connected_account_id", "invalid"],
+    [bind(USER_A, "ca_abcd"), "mcp_auth.mail.connected_account_id", "invalid"],
     [bind(USER_A, `ca_${"x".repeat(200)}`), "mcp_auth.mail.connected_account_id", "invalid"],
     [{ mail: { headers: { authorization: "Bearer x" } } }, "mcp_auth.mail", "not_an_option"],
     [{ mail: { composio_user_id: USER_A, headers: { authorization: "Bearer x" } } }, "mcp_auth.mail.headers", "not_allowed"],
@@ -215,4 +220,15 @@ test("a binding naming another user's account, or a user with no account, gets C
   assert.doesNotMatch(stranger.answer, /The tool said: 5\b/, "the call ran nothing");
   assert.match(stranger.answer, /No connected account found for user ID/, stranger.answer);
   assert.equal(stranger.answer.includes("grep-user-carol-0003"), false, "the bound user is cut from what the run shows, Composio's words included");
+});
+
+test("the console's edit form previews a per-run server at its saved address ({name, url, auth}): listed as the listing-only user, as a preview by name is", async (t) => {
+  const s = await setup(t);
+  const shown = (await s.api("GET", "/settings/mcp-servers/mail")).body.url;
+  const from = s.composio.mcpLog.length;
+  const previewed = await s.api("POST", "/settings/mcp-servers/preview", { name: "mail", url: shown, auth: { type: "headers", headers: { "x-api-key": s.composio.apiKey } } });
+  assert.equal(previewed.status, 200, `the edit form's preview listed its tools: ${JSON.stringify(previewed.body)}`);
+  const listings = s.composio.mcpLog.slice(from).map((entry) => new URL(entry.path, "http://composio.test").searchParams);
+  const users = [...new Set(listings.map((query) => query.get("user_id")))];
+  assert.ok(users.length === 1 && users[0] && !COMPOSIO_USER_ID.test(users[0]), `listed as a user no binding can name: ${users}`);
 });
