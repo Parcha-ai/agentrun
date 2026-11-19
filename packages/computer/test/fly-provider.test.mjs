@@ -240,7 +240,7 @@ test("the constructor refuses a missing token, an app that is no Fly app name, a
 test("fly is in the registry, and its conformance module reads COMPUTER_FLY_* alone and refuses a dialKit off the public server", async () => {
 	assert.ok(registry.providerIds.includes("fly"));
 	assert.equal((await registry.providerModule("fly")).create, create);
-	assert.deepEqual(flyModule.ENV, { token: "COMPUTER_FLY_API_TOKEN", app: "COMPUTER_FLY_APP" });
+	assert.deepEqual(flyModule.ENV, { token: "COMPUTER_FLY_API_TOKEN", app: "COMPUTER_FLY_APP", kind: "COMPUTER_FLY_KIND" });
 	assert.throws(() => flyModule.settingsFromEnv({ FLY_API_TOKEN: TOKEN, COMPUTER_FLY_APP: APP }), /needs COMPUTER_FLY_API_TOKEN and COMPUTER_FLY_APP/);
 	const env = { COMPUTER_FLY_API_TOKEN: TOKEN, COMPUTER_FLY_APP: APP };
 	assert.equal(flyModule.createProvider({ env }).capabilities().maxLifetimeMs, 30 * 60_000);

@@ -68,10 +68,10 @@ export interface components {
       default_permission: "allow" | "ask" | "deny";
       permissions: ("allow" | "ask" | "deny")[];
     }[];
-    kind?: "agentic" | "workflow" | null;
-    revision?: string | null;
-    revisions?: number;
-    archived_at?: string | null;
+    kind: "agentic" | "workflow" | null;
+    revision: string | null;
+    revisions: number;
+    archived_at: string | null;
     learning?: {
       pending: number;
     };
@@ -99,6 +99,10 @@ export interface components {
       id: string;
       version: string;
       sha: string | null;
+    } | null;
+    run_blockers?: {
+      message: string;
+      fields: components["InputIssue"][];
     } | null;
     warnings?: components["InputIssue"][];
   };
@@ -164,7 +168,7 @@ export interface components {
       default_reason?: string;
       allow: string[];
     };
-    harnesses?: {
+    harnesses: {
       id: string;
       label: string;
       promises: {
@@ -250,17 +254,30 @@ export interface components {
       limit: string;
     };
     run_isolation?: "uid" | "process";
+    switches: Record<string, {
+      on: boolean;
+      value: string | null;
+      allows: string;
+    }>;
   };
   CommitSha: string;
   Cost: {
     usd: number | null;
-    basis: "charge" | "estimate";
+    basis: "charge" | "estimate" | "reported" | "unpriced";
     charge_state?: "held" | "settled" | "released" | null;
     cap_usd?: number | null;
     free?: true;
     so_far_usd?: number;
     unpriced?: number;
     upper_bound?: true;
+    tokens?: {
+      input: number;
+      output: number;
+      cache_read: number;
+      cache_write: number;
+      requests?: number;
+      unmetered?: number;
+    };
     learning_usd?: number | null;
     all_in_usd?: number | null;
     plan?: {
@@ -283,7 +300,7 @@ export interface components {
     workflow?: components["JsonObject"];
     max_cost_usd?: number;
     sdk?: {
-      runtime: "claude-agent-sdk" | "codex-sdk";
+      runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
     };
     native?: {
       runtime: "claude-code" | "codex";
@@ -481,7 +498,7 @@ export interface components {
       detail: string;
     }[];
   };
-  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "replay_conflict" | "agent_not_external" | "runs_in_flight" | "learning_busy" | "model_key_required";
+  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "slack_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "replay_conflict" | "agent_not_external" | "runs_in_flight" | "learning_busy" | "model_key_required";
   ExternalRef: {
     source: string;
     kind: string;
@@ -568,6 +585,11 @@ export interface components {
       routes: boolean;
       events: ("run.needs_input" | "run.ended" | "trigger.failed")[];
       signing: "standard-webhooks/v1";
+      at_rest: "sealed";
+    };
+    slack?: {
+      routes: boolean;
+      events: ("run.needs_input" | "run.ended" | "trigger.failed")[];
       at_rest: "sealed";
     };
     triggers?: {
@@ -782,7 +804,7 @@ export interface components {
     cost: components["Cost"];
     poll_after_ms: number;
     sdk?: {
-      runtime: "claude-agent-sdk" | "codex-sdk";
+      runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
       model: string | null;
       session_id: string | null;
       learning_revision: string | null;
@@ -931,14 +953,10 @@ export interface components {
     } | null;
     audit_of?: string | null;
     path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
-    served?: {
-      workflow: string | null;
+    workflow?: {
+      name: string | null;
       digest: string | null;
-    };
-    handed_back?: {
-      workflow: string | null;
-      digest: string | null;
-    };
+    } | null;
   };
   RunCreate: {
     input: Record<string, unknown>;
@@ -1030,7 +1048,7 @@ export interface components {
     ended_at: components["Timestamp"] | null;
     cost: components["Cost"];
     sdk?: {
-      runtime: "claude-agent-sdk" | "codex-sdk";
+      runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
       model: string | null;
       session_id: string | null;
       learning_revision: string | null;
@@ -1144,14 +1162,11 @@ export interface components {
       id: string;
       firing_key: string;
     } | null;
-    served?: {
-      workflow: string | null;
+    path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
+    workflow?: {
+      name: string | null;
       digest: string | null;
-    };
-    handed_back?: {
-      workflow: string | null;
-      digest: string | null;
-    };
+    } | null;
   };
   SecretMeta: {
     name: string;
@@ -1283,7 +1298,7 @@ export interface components {
     from: components["Timestamp"];
     to: components["Timestamp"];
     currency: "USD";
-    basis: "charge" | "estimate";
+    basis: "charge" | "estimate" | "reported" | "unpriced";
     group_by: "meter" | "agent" | "key" | "day" | "region";
     total_usd: number | null;
     lines: components["UsageLine"][];
@@ -1875,6 +1890,31 @@ export interface operations {
       };
     };
   };
+  deleteModelGateway: {
+    body: never;
+    answer: {
+      source: "env" | "console" | null;
+      base_url: string | null;
+      ids: "as_named" | "bare";
+      models: {
+        default: string | null;
+        fast: string | null;
+        strong: string | null;
+      };
+      set_at_start: string[];
+      secret: {
+        name: string;
+        set: boolean;
+        source: "env" | "console" | "sign-in" | null;
+        changed_at: string | null;
+      };
+      problem: string | null;
+    };
+  };
+  deleteSlack: {
+    body: never;
+    answer: never;
+  };
   deleteTemplate: {
     body: never;
     answer: never;
@@ -2344,15 +2384,6 @@ export interface operations {
         } | null;
       };
       bill: {
-        baseline: {
-          runs: number;
-          mean_usd: number;
-        } | null;
-        promoted: {
-          n: number;
-          run_id: string;
-          at: string;
-        } | null;
         learning_usd: number;
         points: {
           n: number;
@@ -2460,6 +2491,27 @@ export interface operations {
       listed_at: string;
       updated_at: string;
       secret?: components["SecretMeta"];
+    };
+  };
+  getModelGateway: {
+    body: never;
+    answer: {
+      source: "env" | "console" | null;
+      base_url: string | null;
+      ids: "as_named" | "bare";
+      models: {
+        default: string | null;
+        fast: string | null;
+        strong: string | null;
+      };
+      set_at_start: string[];
+      secret: {
+        name: string;
+        set: boolean;
+        source: "env" | "console" | "sign-in" | null;
+        changed_at: string | null;
+      };
+      problem: string | null;
     };
   };
   getNative: {
@@ -2801,6 +2853,33 @@ export interface operations {
       learning: unknown;
     };
   };
+  getSlack: {
+    body: never;
+    answer: {
+      configured: false;
+      secret: components["SecretMeta"];
+      events: {
+        "run.needs_input": boolean;
+        "run.ended": boolean;
+        "trigger.failed": boolean;
+      };
+    } | {
+      configured: true;
+      url: string;
+      url_state: "sealed" | "unreadable";
+      secret: components["SecretMeta"];
+      events: {
+        "run.needs_input": boolean;
+        "run.ended": boolean;
+        "trigger.failed": boolean;
+      };
+      disabled: {
+        at: string;
+        reason: string;
+      } | null;
+      updated_at: string;
+    };
+  };
   getStats: {
     body: never;
     answer: {
@@ -2820,7 +2899,7 @@ export interface operations {
       }[];
       cost: {
         usd: number | null;
-        basis: "estimate" | null;
+        basis: "reported" | "estimate" | "unpriced" | null;
         unknown_runs: number;
       };
       archived: {
@@ -3873,6 +3952,21 @@ export interface operations {
     body: never;
     answer: components["RunList"];
   };
+  listSlackDeliveries: {
+    body: never;
+    answer: {
+      attempts: {
+        webhook_id: string;
+        type: "run.needs_input" | "run.ended" | "trigger.failed" | "slack.test";
+        at: string;
+        status_code: number | null;
+        latency_ms: number;
+        error: string | null;
+        retry_at: string | null;
+        redelivery: boolean;
+      }[];
+    };
+  };
   listTemplates: {
     body: never;
     answer: {
@@ -4625,6 +4719,19 @@ export interface operations {
       })[];
     };
   };
+  redeliverSlack: {
+    body: never;
+    answer: {
+      webhook_id: string;
+      type: "run.needs_input" | "run.ended" | "trigger.failed" | "slack.test";
+      at: string;
+      status_code: number | null;
+      latency_ms: number;
+      error: string | null;
+      retry_at: string | null;
+      redelivery: boolean;
+    };
+  };
   redeliverWebhook: {
     body: never;
     answer: {
@@ -4781,6 +4888,21 @@ export interface operations {
     answer: {
       secret: components["SecretMeta"];
       signing_secret?: string;
+    };
+  };
+  rotateWebhookSecret: {
+    body: never;
+    answer: {
+      configured: true;
+      url: string;
+      secret: components["SecretMeta"];
+      signing: "sealed" | "unreadable";
+      disabled: {
+        at: string;
+        reason: string;
+      } | null;
+      updated_at: string;
+      signing_secret: string;
     };
   };
   saveCalendar: {
@@ -4984,6 +5106,62 @@ export interface operations {
       };
     };
   };
+  saveModelGateway: {
+    body: {
+      base_url: string;
+      api_key?: string | null;
+      ids?: "as_named" | "bare";
+      models?: {
+        default?: string;
+        fast?: string | null;
+        strong?: string | null;
+      };
+    };
+    answer: {
+      source: "env" | "console" | null;
+      base_url: string | null;
+      ids: "as_named" | "bare";
+      models: {
+        default: string | null;
+        fast: string | null;
+        strong: string | null;
+      };
+      set_at_start: string[];
+      secret: {
+        name: string;
+        set: boolean;
+        source: "env" | "console" | "sign-in" | null;
+        changed_at: string | null;
+      };
+      problem: string | null;
+    };
+  };
+  saveSlack: {
+    body: {
+      url?: string;
+      events?: {
+        "run.needs_input"?: boolean;
+        "run.ended"?: boolean;
+        "trigger.failed"?: boolean;
+      };
+    };
+    answer: {
+      configured: true;
+      url: string;
+      url_state: "sealed" | "unreadable";
+      secret: components["SecretMeta"];
+      events: {
+        "run.needs_input": boolean;
+        "run.ended": boolean;
+        "trigger.failed": boolean;
+      };
+      disabled: {
+        at: string;
+        reason: string;
+      } | null;
+      updated_at: string;
+    };
+  };
   saveToolKey: {
     body: {
       values: Record<string, string>;
@@ -5122,7 +5300,7 @@ export interface operations {
   };
   startSdkRun: {
     body: {
-      runtime: "claude-agent-sdk" | "codex-sdk";
+      runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
       input: string;
       instructions: string;
       model?: string;
@@ -5208,6 +5386,32 @@ export interface operations {
         ok: boolean;
         message: string;
       };
+    };
+  };
+  testModelGateway: {
+    body: {
+      base_url?: string;
+      api_key?: string | null;
+    };
+    answer: {
+      ok: true;
+      models: string[];
+    } | {
+      ok: false;
+      why: string;
+    };
+  };
+  testSlack: {
+    body: never;
+    answer: {
+      webhook_id: string;
+      type: "run.needs_input" | "run.ended" | "trigger.failed" | "slack.test";
+      at: string;
+      status_code: number | null;
+      latency_ms: number;
+      error: string | null;
+      retry_at: string | null;
+      redelivery: boolean;
     };
   };
   testWebhook: {

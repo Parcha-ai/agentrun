@@ -15,6 +15,10 @@ import { byConsoleSession, byOwnerSession } from "./page.js";
 /** The one refusal a secret write from anything but the owner's session gets (403 forbidden). */
 export const SECRET_WRITE_REFUSAL = "Saving, replacing or removing a secret takes the owner's signed-in session in the console; the API token can't write secrets.";
 
+/** The refusal's words with where to finish it: the one sentence, then "Finish it in the console: <link>" when the
+ *  operation has a console page (registerSecretPage). The same link is the error's `details.console_url`. */
+export const secretWriteRefusal = (link?: string): string => (link ? `${SECRET_WRITE_REFUSAL} Finish it in the console: ${link}` : SECRET_WRITE_REFUSAL);
+
 // ---- who may write a secret ------------------------------------------------------------------------------------------
 
 /**
@@ -133,6 +137,39 @@ export async function writesSecretFor(operationId: string, body: unknown, reques
   return stored ? (await stored(body, request)) === true : false;
 }
 
+// ---- where a refused secret write is finished ------------------------------------------------------------------------
+//
+// The rule stays: the token never writes a secret. What a refusal adds is where the person finishes it: the console's page
+// for that operation, as a path from the console's root ("/#/settings/mcp?add=<name>&url=..."), which the dispatch puts
+// after the address people open the console at (server.ts linkOrigin). A page built from the request carries only what
+// is no secret (an MCP server's name, its URL when nothing in it could be a credential, the kind of credential), so the
+// person pastes the secret alone. Never a value, a header, a client secret, or anything secret-shaped.
+
+/** An operation's console page: a fixed path, or one built from the request's non-secret fields. */
+export type SecretPage = string | ((body: unknown, request: SecretRequest) => string | Promise<string>);
+
+const pages = new Map<string, SecretPage>();
+
+/** Where in the console the owner finishes `operationIds` (each a registered secret write). */
+export function registerSecretPage(operationIds: string | readonly string[], page: SecretPage): void {
+  for (const operationId of typeof operationIds === "string" ? [operationIds] : operationIds) pages.set(operationId, page);
+}
+
+/** Whether `operationId` names its console page. */
+export const hasSecretPage = (operationId: string): boolean => pages.has(operationId);
+
+/** The console page that finishes this request of `operationId`, a path from the console's root; undefined when the
+ *  console has none for it, or the page could not be built (then the refusal carries no link). */
+export async function secretPageFor(operationId: string, body: unknown, request: SecretRequest): Promise<string | undefined> {
+  const page = pages.get(operationId);
+  if (typeof page !== "function") return page;
+  try {
+    return await page(body, request);
+  } catch {
+    return undefined;
+  }
+}
+
 // ---- the API document's marks ----------------------------------------------------------------------------------------
 
 type Json = Record<string, unknown>;
@@ -168,10 +205,11 @@ export function markedOperations(doc: Json): string[] {
   return out;
 }
 
-/** The marked operations of `doc` no plane registered a predicate for (`registered`): each a route a secret could take
- *  past the dispatch check. Empty is the only passing answer. */
+/** The marked operations of `doc` no plane registered a predicate for (`registered`) nor said on purpose to write no
+ *  secret (registerNotSecretWrite: a preview's marked fields are kept nowhere): each a route a secret could take past
+ *  the dispatch check. Empty is the only passing answer. */
 export const unguardedOperations = (doc: Json, registered: readonly string[]): string[] =>
-  markedOperations(doc).filter((operationId) => !registered.includes(operationId));
+  markedOperations(doc).filter((operationId) => !registered.includes(operationId) && notSecretWriteReason(operationId) === undefined);
 
 // ---- one metadata shape for every secret's view ----------------------------------------------------------------------
 //

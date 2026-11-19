@@ -425,7 +425,7 @@ async function until(done, what) {
   assert.ok(done(), what);
 }
 
-test("a synced folder's park lands its delta on the disk before the computer is kept; its end at its time reads the folder back whole, then deletes it", async (t) => {
+test("a synced folder's park lands its delta on the disk before the computer is kept; its end at its time deletes it with no read-back, so what was written while kept is lost", async (t) => {
   const one = await syncedServer();
   const first = await one.claim(3);
   assert.equal(first.keeps, "sandbox");
@@ -441,56 +441,13 @@ test("a synced folder's park lands its delta on the disk before the computer is 
     t.mock.timers.tick(KEEP_MS);
     t.mock.timers.reset();
     await until(() => deletes(one.account).includes("c1"), "deleted at its time");
-    assert.equal(text(one.disk.files.get(`${RUN_ROOT}/while-kept.log`)), "written while kept\n", "read back before the delete");
+    assert.equal(one.disk.files.has(`${RUN_ROOT}/while-kept.log`), false, "no read-back before the delete");
     const after = one.account.calls.slice(before).map(([verb, , how]) => (how ? `${verb} ${how}` : verb));
-    assert.deepEqual(after, ["connect", "close", "release delete"], "a connection of its own, closed, then the delete");
+    assert.deepEqual(after, ["release delete"], "the delete alone, as the janitor's");
     assert.equal(one.mounts.revoked, 1);
   } finally {
     t.mock.timers.reset();
   }
-});
-
-/** Where in the vendor's calls `verb` of `id` (with `how`) first is. */
-const callAt = (account, verb, id, how) => account.calls.findIndex(([v, i, h]) => v === verb && i === id && h === how);
-
-test("a claim that comes while the keep's end reads the synced folder back waits for that end: its new sandbox is made once the old one is read back and deleted", async (t) => {
-  const one = await syncedServer();
-  const first = await one.claim(3);
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  try {
-    assert.equal(await first.park("approval"), true);
-    one.account.computer.plant.file("/workspace/while-kept.log", "written while kept\n");
-    let letGo;
-    one.disk.hold = new Promise((resolve) => { letGo = resolve; });
-    t.mock.timers.tick(KEEP_MS);
-    t.mock.timers.reset();
-    await until(() => one.store.settings.rows.get(keptKeyOf("run-1"))?.ending === true, "its end began");
-    one.clock.now = T0 + KEEP_MS;
-    const resuming = one.claim(5, { hadComputer: async () => true });
-    await new Promise((resolve) => setTimeout(resolve, 300));
-    assert.deepEqual(creates(one.account), ["c1"], "nothing made while the end reads the folder back");
-    one.disk.hold = undefined;
-    letGo();
-    const resumed = await resuming;
-    assert.equal(text(one.disk.files.get(`${RUN_ROOT}/while-kept.log`)), "written while kept\n");
-    assert.ok(callAt(one.account, "release", "c1", "delete") < callAt(one.account, "create", "c2"), "the old one deleted before the new one is made");
-    assert.equal(resumed.replaced?.lapsed, true);
-    await resumed.release();
-  } finally {
-    t.mock.timers.reset();
-  }
-});
-
-test("a claim after a synced keep's time whose end never began (the parking runner gone) ends it itself: read back, deleted, then its new sandbox made", async () => {
-  const one = await syncedServer();
-  assert.equal(await (await one.claim(3)).park("approval"), true);
-  one.account.computer.plant.file("/workspace/while-kept.log", "written while kept\n");
-  one.clock.now = T0 + KEEP_MS;
-  const resumed = await one.claim(5, { hadComputer: async () => true });
-  assert.equal(text(one.disk.files.get(`${RUN_ROOT}/while-kept.log`)), "written while kept\n");
-  assert.ok(callAt(one.account, "release", "c1", "delete") < callAt(one.account, "create", "c2"), "the old one deleted before the new one is made");
-  assert.equal((await readKept(one.store.settings, "run-1")).ended, true, "its row ended, so no timer reads it back after");
-  await resumed.release();
 });
 
 test("a synced folder's park whose delta does not land keeps nothing: the computer goes as at the run's end, saying writes may be lost, no row", async () => {
@@ -555,15 +512,16 @@ test("a claim's own end or park lets its final writes through: the epoch one pas
   assert.equal(text(one.disk.files.get(`${RUN_ROOT}/last.txt`)), "written after the end commit\n");
 });
 
-test("a kept computer holding the run's folder another way is not taken back: a claim that syncs it deletes it, removes its mount token and makes a new one", async () => {
+test("a kept computer holding the run's folder another way is not taken back: as any kind or provider mismatch, the claim's launch deletes it as an older claim's and makes a new one, its row and mount token left to its keep's end", async () => {
   const one = await syncedServer();
-  const made = await one.account.provider.create({ labels: { "agentrun.epoch": "3" }, mount: { kind: "archil", disk: "dsk-1", region: "aws-us-east-1", folder: "acme/r1/work" } });
+  const made = await one.account.provider.create({ labels: { "agentrun.run": "run-1", "agentrun.epoch": "3" }, mount: { kind: "archil", disk: "dsk-1", region: "aws-us-east-1", folder: "acme/r1/work" } });
   await writeKept(one.store.settings, "run-1", { provider: "daytona", kind: "sandbox", id: made.value.id, name: made.value.name, epoch: 3, until: T0 + KEEP_MS, folder: "archil" });
   const resumed = await one.claim(5, { hadComputer: async () => true });
   assert.deepEqual(creates(one.account), ["c1", "c2"], "a new sandbox");
   assert.deepEqual(deletes(one.account), ["c1"], "the kept one deleted, never attached");
   assert.equal(one.account.calls.some(([verb, id]) => verb === "attach" && id === "c1"), false);
-  assert.deepEqual([one.mounts.inherited, one.mounts.revoked], [1, 1], "its Archil token is this claim's, removed at once");
+  assert.deepEqual([one.mounts.inherited, one.mounts.revoked], [0, 0], "its Archil token is still the parking claim's");
+  assert.equal((await readKept(one.store.settings, "run-1")).id, "c1", "its row is left to its keep's end");
   assert.equal(resumed.computer.kind, "sandbox");
   await resumed.release();
 });

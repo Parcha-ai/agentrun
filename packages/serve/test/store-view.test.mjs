@@ -77,7 +77,7 @@ test("a completed run's view reads the whole answer, cost and shape from the sto
     archived_at: null,
     imported_from: null,
     trigger: null,
-    learning: null,
+    learning: null, path: "agent", workflow: null,
     poll_after_ms: 0,
     last_progress_at: null,
   });
@@ -88,7 +88,7 @@ test("a completed run's view reads the whole answer, cost and shape from the sto
     run_id: "run-1", agent_id: "agent-1", agent_version: 1, console_url: `${ORIGIN}/#/runs/run-1`, revision: "rev-1", kind: "agentic", labels: {},
     sha: null, status: "completed", state: "idle", title: "Book a room", created_at: iso(T0), ended_at: iso(T0 + 5_000),
     error: null, review: null, pending: null, cost: { usd: 0.25, basis: "estimate", charge_state: null, cap_usd: null },
-    archived_at: null, imported_from: null, trigger: null, learning: null,
+    archived_at: null, imported_from: null, trigger: null, learning: null, path: "agent", workflow: null,
   });
 
   // Its moment reads terminal, completed, steering nothing.
@@ -110,8 +110,8 @@ test("a queued run (created, not yet claimed) reads queued and working, its cost
     status: "queued", state: "working", title: "Queued run", input: { message: "Hi" }, file_ids: [], place: { mode: "runner" }, claim: null,
     created_at: iso(T0), updated_at: iso(T0), ended_at: null,
     result: null, error: null, review: null, pending: null,
-    cost: { usd: 0, basis: "estimate", charge_state: null, cap_usd: null }, audit_of: null,
-    approvals: "ask", archived_at: null, imported_from: null, trigger: null, learning: null, poll_after_ms: 1000, last_progress_at: null,
+    cost: { usd: 0, basis: "unpriced", charge_state: null, cap_usd: null }, audit_of: null,
+    approvals: "ask", archived_at: null, imported_from: null, trigger: null, learning: null, path: null, workflow: null, poll_after_ms: 1000, last_progress_at: null,
   });
   const moment = await momentOverStore(store, "run-1");
   assert.equal(moment.terminal, false);
@@ -165,8 +165,8 @@ test("a working run reads working/working and live, its updated_at and last_prog
     status: "working", state: "working", title: "Working run", input: { message: "Do it." }, file_ids: [], place: { mode: "runner" }, claim: { runner: "runner-a", epoch: 1, until: iso(T0 + 60_000) },
     created_at: iso(T0), updated_at: iso(T0 + 10_000), ended_at: null,
     result: null, error: null, review: null, pending: null,
-    cost: { usd: 0, basis: "estimate", charge_state: null, cap_usd: null }, audit_of: null,
-    approvals: "ask", archived_at: null, imported_from: null, trigger: null, learning: null, poll_after_ms: 1000, last_progress_at: iso(T0 + 10_000),
+    cost: { usd: 0, basis: "unpriced", charge_state: null, cap_usd: null }, audit_of: null,
+    approvals: "ask", archived_at: null, imported_from: null, trigger: null, learning: null, path: null, workflow: null, poll_after_ms: 1000, last_progress_at: iso(T0 + 10_000),
   });
   const moment = await momentOverStore(store, "run-1", liveDeps);
   assert.equal(moment.working, true);
@@ -326,7 +326,7 @@ test("a run parked at its cap reads input_required with the budget pending card"
   // One cap mode, the worst case: no overshoot bound on the card or the cost, and no cap_mode on the run.
   // What it spent and what it held for steps still running, apart; the raise covers both (0.3 + 0.1 + 10 x 1, up).
   assert.deepEqual(view.pending, { kind: "budget", cap_usd: 0.5, spent_usd: 0.3, held_usd: 0.1, needs_usd: 1, least_cap_usd: 1.4, suggested_cap_usd: 11, said: "Out of budget. Raise the cap to at least $1.40 to continue.", at: iso(T0 + 1_000) });
-  assert.deepEqual(view.cost, { usd: 0, basis: "estimate", charge_state: null, cap_usd: 0.5 });
+  assert.deepEqual(view.cost, { usd: 0, basis: "unpriced", charge_state: null, cap_usd: 0.5 });
   assert.equal("cap_mode" in view, false);
   assert.equal(view.result, null);
   assert.equal(view.error, null);
@@ -517,8 +517,8 @@ test("a failed run's view serves its error from the row, with an unknown cost", 
     status: "failed", state: "idle", title: "Try it", input: {}, file_ids: [], place: { mode: "runner" }, claim: null,
     created_at: iso(T0), updated_at: iso(T0 + 3_000), ended_at: iso(T0 + 3_000),
     result: null, error: { code: "run_failed", message: "The model refused.", retryable: false }, review: null, pending: null,
-    cost: { usd: null, basis: "estimate", charge_state: null, cap_usd: null }, audit_of: null,
-    approvals: "ask", archived_at: null, imported_from: null, trigger: null, learning: null, poll_after_ms: 0, last_progress_at: null,
+    cost: { usd: null, basis: "unpriced", charge_state: null, cap_usd: null }, audit_of: null,
+    approvals: "ask", archived_at: null, imported_from: null, trigger: null, learning: null, path: "agent", workflow: null, poll_after_ms: 0, last_progress_at: null,
   });
   const moment = await momentOverStore(store, "run-1");
   assert.equal(moment.terminalKind, "failed");

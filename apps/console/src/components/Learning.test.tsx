@@ -3,9 +3,10 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LearningTab, type LearningProps } from "./Learning";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { ClientError } from "@/lib/client";
 import type { AgentLearning, Corrections, LearnedItem, LearningFile } from "@/lib/learning";
-import { BILL, EMPTY_BILL, hour } from "@/lib/learningBill.fixture";
+import { BILL, EMPTY_BILL, hour, TAKEOVER } from "@/lib/learningBill.fixture";
 import type { AuditRow, LearningCost, LearningLoop, Promotions, Run } from "@/lib/v2";
 
 // The agent's Learning tab: its owner's corrections (corrections.md, edited whole on its version), the workflow drafts
@@ -14,7 +15,7 @@ import type { AuditRow, LearningCost, LearningLoop, Promotions, Run } from "@/li
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const agent = (learning?: boolean, extra: Partial<Agent["definition"]> = {}): Agent => ({
-  agent_id: "refunds", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
+  ...SERVED_AGENT, agent_id: "refunds", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Refund policy finder", instructions: "Find it.", harness: "pi", skills: [], tools: ["read", "write"], ...(learning === undefined ? {} : { learning }), ...extra },
 });
 const TEXT = "# Learned\n\n- Open /policies/refund-policy before anything else.\n- Keep the answer to three lines.\n";
@@ -479,6 +480,33 @@ describe("the switch and the empty states", () => {
     expect(t.text()).toContain("Another revision was saved first. · precondition_failed");
     expect(sw.getAttribute("aria-checked")).toBe("false");
   });
+  it("enabling an existing eve agent enables learning for its next ordinary task", async () => {
+    const t = await open(agent(false, { sdk: { runtime: "eve" } }));
+    await act(async () => { (t.host.querySelector('[role="switch"]') as HTMLButtonElement).click(); });
+    await settle();
+    const put = t.calls.find((call) => call.startsWith("put "))!;
+    expect(JSON.parse(put.slice(4, put.lastIndexOf(" ")))).toMatchObject({
+      definition: { learning: true, sdk: { runtime: "eve" }, version: 2 }, note: "Learning on",
+    });
+    expect(put.endsWith('"rv1"')).toBe(true);
+    expect(t.agents.at(-1)?.definition.learning).toBe(true);
+  });
+  it("turning eve learning Off still saves false", async () => {
+    const t = await open(agent(undefined, { learning: true, sdk: { runtime: "eve" } }));
+    await act(async () => { (t.host.querySelector('[role="switch"]') as HTMLButtonElement).click(); });
+    await settle();
+    expect(t.agents.at(-1)?.definition.learning).toBe(false);
+  });
+  it.each([true, { compile_after: 5, agree_min: 0.95 }] as const)("an enable click preserves the freshly read %s mode without another revision", async learning => {
+    const current = agent(false, { sdk: { runtime: "eve" } });
+    const t = await open(current);
+    // Another client saved a mode after this page rendered Off. getAgent reads that latest value.
+    current.definition.learning = learning;
+    await act(async () => { (t.host.querySelector('[role="switch"]') as HTMLButtonElement).click(); });
+    await settle();
+    expect(t.calls.some(call => call.startsWith("put "))).toBe(false);
+    expect(t.agents.at(-1)?.definition.learning).toBe(learning);
+  });
   it("with learning on and nothing learned yet: says so, how many runs looked back, and the corrections can be written", async () => {
     const t = await open(agent(true), { learning: async () => none(), runs: [RUNS[0], RUNS[2]] });
     expect(t.text()).toContain("Nothing learned yet");
@@ -910,7 +938,7 @@ describe("learning-loop integration with source-owned execution", () => {
     expect(story.querySelector('[data-testid="stage-took_over"]')).toBeNull();
     expect(story.querySelector('[data-testid="stage-cheaper"]')).toBeNull();
   });
-  it.each(["claude-agent-sdk", "codex-sdk"] as const)("%s keeps launches in the backend and workflows explicitly bound", async runtime => {
+  it.each(["claude-agent-sdk", "codex-sdk", "eve"] as const)("%s keeps launches in the backend and workflows explicitly bound", async runtime => {
     const t = await open(agent(true, { sdk: { runtime } }));
     const story = t.host.querySelector('[data-testid="loop-story"]')!;
     expect(story.textContent).toContain("Your backend keeps launching each run");
@@ -954,7 +982,7 @@ describe("the bill", () => {
   it("shows the booked bill against the agent for all of it, the break-even marker and the audit line, and no equal-cache figure", async () => {
     const digest = "d".repeat(16);
     const runs = BILL.points.map((p) => ({ n: p.n, run_id: p.run_id, started_at: hour(p.n), path: p.n < 4 ? "agent" as const : "workflow" as const, workflow: p.n < 4 ? null : "answer", digest: p.n < 4 ? null : digest, took_over: p.n === 4, audited: p.n >= 5, cost_usd: 1, cost_upper_bound: false, learning_usd: 0, total_usd: 1 }));
-    const cost: LearningCost = { agent: "refunds", runs, total_runs: runs.length, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [], bill: BILL };
+    const cost: LearningCost = { agent: "refunds", runs, total_runs: runs.length, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: TAKEOVER, before: null, after: null, after_state: "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [], bill: BILL };
     const promotions: Promotions = {
       agent: "refunds",
       promotions: [{ workflow: "answer", digest, at: hour(4), decided: "promote", reason: "checked", check: { compile_after: 20, agree_min: 0.9, alone_min: 0.8, attempt: 1, n: 10, agreed: 9, alone: 9 } }],

@@ -10,7 +10,7 @@ import { spawn } from "node:child_process";
 import { accessSync, chmodSync, constants as fsConstants, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { defaultData, removeOwnRecord, SERVER_FILE, writeDurableSync } from "./server-fs.js";
-import { REPEAT_MS, stopOnSignals } from "./stop-signals.js";
+import { REPEAT_MS, stopOnce, stopOnSignals } from "./stop-signals.js";
 import { resetPassword } from "./owner.js";
 import { banner } from "./print.js";
 import { type ApiToken, parseTokens } from "./api-token.js";
@@ -36,10 +36,13 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
        agentrun-serve install-harness goose [--data DIR]
+       agentrun-serve install-harness --recipe FILE [--data DIR]
+       agentrun-serve check-harness --recipe FILE [--model PROVIDER/MODEL] [--data DIR] [--report FILE] [--cap USD]
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL | --on-data DIR] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
        agentrun-serve runner --data DIR [--loops N] [--drain-timeout D] [--name NAME]
        agentrun-serve runner --check --data DIR [--name NAME]
+       agentrun-serve native discover|connect --project PATH [--runtime claude-code|codex] [--agent NAME|--profile NAME] [--url URL] [--data DIR]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
   --listen ADDR     the address to listen on (default 127.0.0.1); on any other, every Host name is served and the token
@@ -94,12 +97,12 @@ or not (ChatGPT-plan requests don't count): the next is not sent and the run fai
 end, and per refused credential; AGENTRUN_LOG=quiet leaves out the request lines.
 
 AGENTRUN_TELEMETRY=0 (or DO_NOT_TRACK=1) turns off the anonymous usage counts (docs/telemetry.md): a random id, the
-version, the platform and how many runs as a range, never prompts, files or keys. Off in CI and under --faux too;
+version, the platform and how many runs as a range, never prompts, files or keys. Off in CI, under a test runner and under --faux too;
 AGENTRUN_TELEMETRY=debug prints each event on stderr and sends none.
 
 AGENTRUN_API_ONLY=1 serves the run routes alone, for a server behind its caller's backend: a run's launch, read, list,
 timeline, messages, stop, cancel, kill and cap raise, its files and uploads, an agent's Archil disk, capabilities, health
-and usage. Every other address (the page, sign-in, setup, settings, MCP, triggers and their hooks, the rest of agents)
+and usage; the computers list, the workspace's Archil disk and an agent's delete (DELETE /agents/{id}). Every other address (the page, sign-in, setup, settings, MCP, triggers and their hooks, the rest of agents)
 is a 404, and there are no accounts.
 
 The page is for one person, who signs in with a password (AGENTRUN_ACCOUNTS=0 turns this off; the token works for
@@ -137,6 +140,24 @@ model request from MODULE, as the server's --faux does. Progress goes to stderr,
 as JSON to --report FILE. Exit 0 when every case passed, 1 when one failed, 2 when the flags, the package or a case are
 wrong and nothing ran. Real runs cost money: each case's prompt.md caps each of its runs (max_cost_usd).`;
 
+// A command's --help (or -h), before the command reads anything else it was given: its own lines of USAGE and the
+// paragraph that says what it does, where there is one, on stdout, exit 0. No store is opened and nothing is written,
+// so `reset-password --help` clears no password and `install-harness goose --help` downloads nothing. A command USAGE
+// has no line for (remote-bridge) has no --help of its own.
+const command = process.argv[2];
+const commandArgs = process.argv.slice(3);
+/** The command's own lines of USAGE, the first "usage:" and the rest under it; empty when USAGE has none for it. */
+const commandUsage = USAGE.split("\n")
+  .filter((line) => line.trimStart().replace(/^usage: /, "").startsWith(`agentrun-serve ${command} `))
+  .map((line, i) => `${i === 0 ? "usage:" : "      "} ${line.trimStart()}`)
+  .join("\n");
+const optionsEnd = commandArgs.indexOf("--");
+if (commandUsage && (optionsEnd === -1 ? commandArgs : commandArgs.slice(0, optionsEnd)).some((arg) => arg === "--help" || arg === "-h")) {
+  const about = USAGE.split("\n\n").find((block) => block.startsWith(`\`agentrun-serve ${command}`));
+  console.log([commandUsage, ...(about ? [about] : []), "agentrun-serve --help says what the server's own flags and variables do."].join("\n\n"));
+  process.exit(0);
+}
+
 if (process.argv[2] === "remote-bridge") {
   const { runRemoteWorkerBridge } = await import("./native/remote-worker-bridge.js");
   await runRemoteWorkerBridge();
@@ -145,7 +166,7 @@ if (process.argv[2] === "remote-bridge") {
 
 if (process.argv[2] === "native") {
   const { nativeMain } = await import("./native/cli.js");
-  process.exit(await nativeMain(process.argv.slice(3)));
+  process.exit(await nativeMain(process.argv.slice(3), commandUsage));
 }
 
 if (process.argv[2] === "reset-password") {
@@ -169,12 +190,33 @@ if (process.argv[2] === "install-harness") {
   const usage = (message: string): never => (console.error(`agentrun-serve install-harness: ${message}\n\n${USAGE}`), process.exit(2));
   const read = () => {
     try {
-      return parseArgs({ args: process.argv.slice(3), options: { data: { type: "string" } }, allowPositionals: true });
+      return parseArgs({ args: process.argv.slice(3), options: { data: { type: "string" }, recipe: { type: "string" } }, allowPositionals: true });
     } catch (error) {
       return usage((error as Error).message);
     }
   };
   const { values, positionals } = read();
+  // A recipe's harness (harness-recipe.ts): the recipe loaded under its five rules first, so a refused one downloads
+  // nothing; then its release for this platform, as the Goose install does it.
+  if (values.recipe !== undefined) {
+    if (positionals.length) usage("it takes a harness's name or --recipe FILE, not both.");
+    const [{ ArchiveInstallFailed }, { installRecipe, loadRecipe, recipeCheckLine, RecipeRefused }] = await Promise.all([import("./harness-archive.js"), import("./harness-recipe.js")]);
+    const data = resolve(values.data ?? defaultData());
+    try {
+      const { recipe, file } = loadRecipe(values.recipe);
+      const said = { downloaded: "the archive is downloaded and its sha256 matches the recipe", unpacked: "unpacked", verified: "the binary's sha256 is checked" } as const;
+      const { version, installed, binary, pinnedBy } = await installRecipe(recipe, file, data, { onStep: (step) => console.error(`${recipe.label}: ${said[step]}`) });
+      const held = { recipe: "the recipe's pin", "first-seen": "the first sha256 an earlier install recorded", recorded: "its sha256 recorded now, as the first one; a later binary that differs is refused" }[pinnedBy];
+      console.log(installed === "already"
+        ? `${recipe.label} ${version} is installed in ${dirname(binary)} (already: the pinned binary is there, so nothing was downloaded; held to ${held}).`
+        : `${recipe.label} ${version} is installed in ${dirname(binary)} (now; the binary held to ${held}). Check it with: ${recipeCheckLine(file, data)} --model PROVIDER/MODEL`);
+      process.exit(0);
+    } catch (error) {
+      if (!(error instanceof ArchiveInstallFailed) && !(error instanceof RecipeRefused)) throw error;
+      console.error(error.message);
+      process.exit(1);
+    }
+  }
   const { GOOSE_ID, installGoose } = await import("./harness-goose.js");
   if (positionals.length !== 1) usage(`it takes one harness: ${GOOSE_ID}.`);
   if (positionals[0] !== GOOSE_ID) usage(`it installs ${GOOSE_ID}, not ${positionals[0]}: claude-agent and codex install on first use, and pi and opencode come with AgentRun.`);
@@ -196,6 +238,33 @@ if (process.argv[2] === "install-harness") {
     console.error(error.message);
     process.exit(1);
   }
+}
+
+// A recipe's agent run for real and judged (harness-check.ts): its report written as JSON, its stages and the three facts
+// (resume, tool_gate, billing) printed. 0 when every stage passed, 1 when the recipe was refused, its binary is not the
+// installed and pinned one, or a stage failed, 2 for usage. It spends: four short turns on --model, under --cap.
+// `agentrun harness-check` runs it; its own word is check-harness, as install-harness is `agentrun harness install`'s.
+if (process.argv[2] === "check-harness") {
+  const usage = (message: string): never => (console.error(`agentrun-serve check-harness: ${message}\n\n${USAGE}`), process.exit(2));
+  const read = () => {
+    try {
+      return parseArgs({ args: process.argv.slice(3), options: { recipe: { type: "string" }, data: { type: "string" }, model: { type: "string" }, report: { type: "string" }, cap: { type: "string" } } });
+    } catch (error) {
+      return usage((error as Error).message);
+    }
+  };
+  const { values } = read();
+  if (!values.recipe) usage("--recipe FILE names the recipe to check.");
+  const cap = values.cap === undefined ? undefined : Number(values.cap);
+  if (cap !== undefined && !(Number.isFinite(cap) && cap > 0 && cap <= 5)) usage("--cap is the most the check may spend, in USD, above 0 and at most 5.");
+  const [{ harnessCheck, printedFacts, writeReport }, { withSecrets }] = await Promise.all([import("./harness-check.js"), import("./secrets.js")]);
+  const data = resolve(values.data ?? defaultData());
+  const report = await harnessCheck({ recipe: values.recipe!, data, env: withSecrets(process.env), ...(values.model ? { model: values.model } : {}), ...(cap !== undefined ? { capUsd: cap } : {}), say: (line) => console.error(line) });
+  const file = resolve(values.report ?? `harness-check-${"id" in report.recipe ? report.recipe.id : "recipe"}.json`);
+  await writeReport(file, report);
+  for (const line of printedFacts(report)) console.log(line);
+  console.log(`report: ${file}`);
+  process.exit(report.ok ? 0 : 1);
 }
 
 // A template package folder checked by the one validator the server runs on the packages it ships (templates.ts): what
@@ -260,21 +329,9 @@ if (process.argv[2] === "eval-template") {
     if (!writable) usage(`--report's folder ${folder} is not a folder this command can write in, or the report's path is a folder or a file it can't write.`);
   }
   // The first Ctrl-C (or a stop) cancels the run in progress and cleans up what the eval made, as its end does: a run
-  // left going would go on spending. A second one leaves at once; one within a second of the first is the same Ctrl-C,
-  // reaching this process twice (stop-signals.ts REPEAT_MS).
-  const stop = new AbortController();
-  let stoppedAt = 0;
-  const onStop = () => {
-    if (stop.signal.aborted) {
-      if (Date.now() - stoppedAt > REPEAT_MS) process.exit(130);
-      return;
-    }
-    stoppedAt = Date.now();
-    console.error("agentrun-serve eval-template: stopping: cancelling the run in progress and cleaning up (again to leave now)");
-    stop.abort();
-  };
-  process.on("SIGINT", onStop);
-  process.on("SIGTERM", onStop);
+  // left going would go on spending. A second one leaves at once (stop-signals.ts stopOnce).
+  const stop = stopOnce(() => console.error("agentrun-serve eval-template: stopping: cancelling the run in progress and cleaning up (again to leave now)"));
+  stop.hook();
   try {
     const report = await evalTemplate({
       dir: resolve(positionals[0]!), cases: given.case, ...(given.runs !== undefined ? { runs: Number(given.runs) } : {}),
@@ -451,8 +508,7 @@ try {
 // (besideRunnerOptions): at most --max-runs runs at once, the rest waiting queued, and on the stop each busy run finishes
 // its turn for up to --drain-timeout.
 let runnerProc: Awaited<ReturnType<typeof runnerBeside>> | undefined;
-// Anonymous usage counts (telemetry.ts, docs/telemetry.md): off with AGENTRUN_TELEMETRY=0 or DO_NOT_TRACK=1, in CI and
-// under --faux. It hears each run's end from the runner beside the server; with --no-runner it counts no runs.
+// Anonymous usage counts (docs/telemetry.md). It hears each run's end from the runner beside the server; with --no-runner it counts no runs.
 const telemetry = startTelemetry({ data: resolve(data), ...(values.faux ? { faux: true } : {}) });
 const { loops, loopsTold, drainMs } = besideRunnerOptions(serveOptions, process.env);
 // A stop asked during the server's start starts no runner: nothing is claimed for the stop to cut.

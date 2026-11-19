@@ -17,11 +17,15 @@ export type ComposioControl = { readonly baseUrl?: string; readonly fetch?: type
 const BASE = "https://backend.composio.dev";
 /** The one Composio user a server's actions run as, unless the owner names another. */
 export const COMPOSIO_USER = "agentrun";
-const TOOLKIT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+/** A Composio toolkit's slug, as a save takes it once trimmed and lower-cased. */
+export const COMPOSIO_TOOLKIT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const TOOLKIT = COMPOSIO_TOOLKIT;
 const USER_ID = /^[A-Za-z0-9._@-]{1,128}$/;
 const PAGE = 200;
 const MAX_PAGES = 10;
 const MAX_TOOLS = 500;
+/** The longest action slug a save takes: Composio's are far shorter. */
+const MAX_SLUG = 128;
 const WAIT_MS = 20_000;
 
 export type ComposioTool = { slug: string; name: string; description: string };
@@ -120,40 +124,11 @@ export async function composioTools(body: unknown, control: ComposioControl, sig
   return { toolkit, no_auth: needsNoAuth(kit), tools };
 }
 
-/** Edit distance (Levenshtein). */
-function distance(a: string, b: string): number {
-  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
-  for (let i = 1; i <= a.length; i++) {
-    const row = [i];
-    for (let j = 1; j <= b.length; j++) row[j] = Math.min(prev[j]! + 1, row[j - 1]! + 1, prev[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
-    prev = row;
-  }
-  return prev[b.length]!;
-}
-
-/** The listed slug a missing one most likely means, when one is obvious: the same slug in another case, the one listed
- *  slug that only adds or drops a trailing _WORD, else the one within a typo's reach (an edit distance of at most
- *  max(2, length/10)). */
-function likelySlug(slug: string, listed: readonly string[]): string | undefined {
+/** The listed slug a missing one means when it is that slug in another case (linear_list_issues for LINEAR_LIST_ISSUES). */
+const likelySlug = (slug: string, slugs: readonly string[]): string | undefined => {
   const want = slug.toUpperCase();
-  const same = listed.find((s) => s.toUpperCase() === want);
-  if (same) return same;
-  const extended = listed.filter((s) => s.toUpperCase().startsWith(`${want}_`) || want.startsWith(`${s.toUpperCase()}_`)).sort((a, b) => a.length - b.length);
-  if (extended.length === 1 || (extended.length > 1 && extended[0]!.length < extended[1]!.length)) return extended[0];
-  const reach = Math.max(2, Math.floor(want.length / 10));
-  let best: { slug: string; d: number } | undefined;
-  let tie = false;
-  for (const s of listed) {
-    // An edit distance is at least the length difference: a slug that far off is skipped before the O(n·m) distance, so a
-    // huge pasted value against a big toolkit costs one length compare per action.
-    if (Math.abs(s.length - want.length) > reach) continue;
-    const d = distance(want, s.toUpperCase());
-    if (d > reach) continue;
-    if (!best || d < best.d) [best, tie] = [{ slug: s, d }, false];
-    else if (d === best.d) tie = true;
-  }
-  return best && !tie ? best.slug : undefined;
-}
+  return slugs.find((s) => s.toUpperCase() === want);
+};
 
 /** The address Composio's generate answers, made one this server's client can use: the helper actions that connect an
  *  account left off, and the path ended in /mcp (Composio redirects the bare one, which the client refuses on purpose). */
@@ -174,7 +149,7 @@ export async function composioSave<T extends { tools?: readonly { name: string }
   const tools = Array.isArray(rest.tools) ? rest.tools : [];
   const user = rest.user_id === undefined ? COMPOSIO_USER : typeof rest.user_id === "string" ? rest.user_id : "";
   const issues: InputIssue[] = [];
-  if (!tools.length || tools.length > MAX_TOOLS || !tools.every((t) => typeof t === "string" && t)) issues.push(issue("tools", "invalid", `Send the slugs of the actions to grant: 1 to ${MAX_TOOLS} of them.`));
+  if (!tools.length || tools.length > MAX_TOOLS || !tools.every((t) => typeof t === "string" && t && t.length <= MAX_SLUG)) issues.push(issue("tools", "invalid", `Send the slugs of the actions to grant: 1 to ${MAX_TOOLS} of them, each at most ${MAX_SLUG} characters.`));
   if (!USER_ID.test(user)) issues.push(issue("user_id", "invalid", "A user_id is letters, digits and . _ @ - (at most 128)."));
   if (issues.length) throw invalid(issues);
   const ask = asking(control, key, signal);
@@ -191,16 +166,14 @@ export async function composioSave<T extends { tools?: readonly { name: string }
     // allowing a slug it doesn't have, which then serves nothing under that name. A list longer than MAX_PAGES refuses
     // nothing on what it didn't read; the check after the save (not_served) still names an action left out.
     const offered = await toolkitTools(ask, toolkit);
-    const known = new Set(offered.tools.map((tool) => tool.slug));
-    const unknown = offered.complete ? [...new Set(tools as string[])].filter((slug) => !known.has(slug)) : [];
+    const slugs = offered.tools.map((tool) => tool.slug);
+    const unknown = offered.complete ? [...new Set(tools as string[])].filter((slug) => !slugs.includes(slug)) : [];
     if (unknown.length) {
-      // A slug past 128 characters is named by its first 64 and its length, so the refusal never carries a pasted megabyte back.
       const names = unknown.map((slug) => {
-        const likely = likelySlug(slug, [...known]);
-        const shown = slug.length > 128 ? `${slug.slice(0, 64)}… (${slug.length} characters)` : slug;
-        return likely ? `${shown} (did you mean ${likely}?)` : shown;
+        const likely = likelySlug(slug, slugs);
+        return likely ? `${slug} (did you mean ${likely}?)` : slug;
       });
-      throw invalid([issue("tools", "not_found", `Composio's ${toolkit} toolkit has no action ${names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} or ${names.at(-1)}`}: pick from its list (POST /settings/mcp-servers/composio/tools). Nothing was saved.`)]);
+      throw invalid([issue("tools", "not_found", `Composio's ${toolkit} toolkit has no action ${listed(names, "or")}: pick from its list (POST /settings/mcp-servers/composio/tools). Nothing was saved.`)]);
     }
     const noAuth = needsNoAuth(kit);
     let authConfig: string | undefined;
@@ -257,8 +230,8 @@ export async function composioSave<T extends { tools?: readonly { name: string }
     });
     // Composio's server can leave out an action it was allowed (HACKERNEWS_GET_FRONTPAGE, live 11-13): say which, so a grant
     // doesn't vanish without a word. A toolkit with no account yet still lists its actions, so this holds before the connect.
-    const listed = new Set((server.tools ?? []).map((tool) => tool.name));
-    const missing = (tools as string[]).filter((slug) => !listed.has(slug));
+    const served = new Set((server.tools ?? []).map((tool) => tool.name));
+    const missing = (tools as string[]).filter((slug) => !served.has(slug));
     return { server, ...(connect ? { connect_url: connect } : {}), ...(missing.length ? { not_served: missing } : {}) };
   } catch (error) {
     if (url && savedUrl && (await savedUrl().catch(() => undefined)) === url) throw error;
@@ -305,8 +278,8 @@ export const composioServerId = (address: string): string | undefined => {
 /** A thing at Composio as the words name it; `removed`: as a removal names it (an account its connect link with it). */
 const named = (thing: Thing | { kind: "mcp"; id: string }, removed = false): string =>
   thing.kind === "mcp" ? `the MCP server ${thing.id}` : thing.kind === "auth_config" ? `the auth config ${thing.id}` : `the connected account ${thing.id}${removed ? " (its connect link with it)" : ""}`;
-/** "a", "a and b", "a, b and c". */
-const listed = (items: string[]): string => (items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} and ${items.at(-1)}`);
+/** "a", "a and b", "a, b and c" (or "a, b or c"). */
+const listed = (items: string[], word = "and"): string => (items.length < 2 ? items.join("") : `${items.slice(0, -1).join(", ")} ${word} ${items.at(-1)}`);
 
 /** What a delete's answer says it did at Composio, in words: what it removed, what it kept and why (another saved server
  *  uses it, or this server didn't make it), and what is left, with where to remove that by hand. `removed`: nothing is

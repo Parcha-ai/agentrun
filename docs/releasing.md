@@ -49,6 +49,13 @@ Regenerate schemas, packaged demo data and the dependency inventory when their s
 
 ## Prepare publication
 
+The eve extension (`@parcha/agentrun-eve`) is listed in the release plan and clean-package checks,
+but remains held with `private: true` until its npm bootstrap and trusted publisher are configured.
+Its runtime dependencies include the matching client and DSL, so dependency layering publishes it
+after both once the hold is lifted. The package verifier additionally mounts the exact archives in
+an isolated eve application, typechecks it and builds production output without application-level
+build overrides. Keep the candidate's unpublished status explicit until registry verification passes.
+
 Confirm publishing access to the `@parcha` npm organization. New packages need an initial authenticated publication before a trusted publisher can be associated with them. Arrange that bootstrap with the package owner; the release workflow does not create accounts, grant ownership or complete this first-publication setup. `@parcha/agentrun-serve`, `@parcha/agentrun-decisions`, `@parcha/agentrun-computer` and `@parcha/agentrun-harness-acp` are new in the publish set: each needs that bootstrap and its trusted publisher before the first release that publishes it, or that release stops at it. The existing `@parcha/agentrun` package is separate.
 
 Once each package exists, configure its trusted publisher for this repository's `release.yml` workflow. This workflow publishes directly, so the association must allow direct publishing. Configure the `npm-release` GitHub environment with maintainer review and allowed tags. Subsequent workflow releases use OIDC and provenance. See [npm trust](https://docs.npmjs.com/cli/v11/commands/npm-trust/) for publisher configuration.

@@ -16,6 +16,9 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$here/../.." && pwd)
 dir=/opt/agentrun
+# The walk's server is ours, so it sends no usage counts (docs/telemetry.md). sudo drops CI, so the installer is told
+# outright, and it writes the setting into .env, where the server reads it.
+export AGENTRUN_TELEMETRY=0
 api=http://127.0.0.1:7340/v2
 again='curl -fsSL https://agentrun.ai/install | sh -s -- --vps'
 fake=/var/run/tailscale/fake
@@ -83,6 +86,7 @@ serve=$(curl -fsS https://registry.npmjs.org/@parcha%2fagentrun/latest | jq -r '
 [ "$(setting AGENTRUN_IMAGE)" = "ghcr.io/parcha-ai/agentrun-server:v$serve" ] || die "the image is $(setting AGENTRUN_IMAGE), not the release's v$serve"
 said "$logs/1.log" "AgentRun v$serve is running at"
 [ "$(stat -c '%a %U' "$dir/.env")" = "600 root" ] || die ".env is $(stat -c '%a %U' "$dir/.env")"
+[ "$(setting AGENTRUN_TELEMETRY)" = 0 ] || die "the installer did not carry AGENTRUN_TELEMETRY=0 into .env"
 [ "$(stat -c '%a' "$dir")" = 700 ] || die "$dir is mode $(stat -c '%a' "$dir")"
 setting AGENTRUN_TOKEN | grep -qE '^[0-9a-f]{64}$' || die "the token is not 32 random bytes in hex"
 [ "$(setting AGENTRUN_SEAL_KEY | base64 -d | wc -c)" = 32 ] || die "the seal key is not 32 bytes in base64"
@@ -111,6 +115,18 @@ said "$logs/2.log" "Kept the API token and the seal key in $dir/.env"
 [ "$(secrets)" = "$first" ] || die "the token or the seal key changed"
 [ "$(container)" = "$before" ] || die "the container was made again with nothing changed"
 healthy
+
+# docs/telemetry.md's opt-out is running the installer again with AGENTRUN_TELEMETRY=0. An earlier run that turned the
+# counts on left AGENTRUN_TELEMETRY=1 in .env (written here, so this server never starts with it): the 0 replaces it.
+step "2b. counts turned on in .env by an earlier run, then the installer again with AGENTRUN_TELEMETRY=0: .env says 0"
+sed -i 's/^AGENTRUN_TELEMETRY=.*/AGENTRUN_TELEMETRY=1/' "$dir/.env"
+[ "$(setting AGENTRUN_TELEMETRY)" = 1 ] || die "the walk could not set AGENTRUN_TELEMETRY=1 in .env"
+piped_install 600 "$logs/2b.log" --vps
+[ "$(setting AGENTRUN_TELEMETRY)" = 0 ] || die "running again with AGENTRUN_TELEMETRY=0 kept AGENTRUN_TELEMETRY=$(setting AGENTRUN_TELEMETRY) in .env: the opt-out did nothing"
+[ "$(grep -c '^AGENTRUN_TELEMETRY=' "$dir/.env")" = 1 ] || die ".env has more than one AGENTRUN_TELEMETRY line"
+[ "$(secrets)" = "$first" ] || die "the token or the seal key changed"
+healthy
+before=$(container)
 
 step "3. an upgrade${image[*]:+ to the image built from this checkout}, on the faux model: the same token, the data kept"
 if [ ${#image[@]} -gt 0 ]; then

@@ -215,7 +215,7 @@ describe("a synced folder against computerd in a user namespace", { skip }, () =
   const modalSide = (computer) => ({ ...claim(() => computer), keysOf: async () => ({ MODAL_TOKEN_ID: "fake-test-key", MODAL_TOKEN_SECRET: "not-a-secret" }) });
   const archilMount = { kind: "archil", disk: "d1", region: "aws-us-east-1", folder: ROOT, token: "not-a-secret" };
   /** A computer with `disk`'s folder `prefix` under its Archil mount, as the file API wrote it: every file at the default
-   *  mode and no link. Its mount.sync answers done, and every method it is called with is recorded. */
+   *  mode and no link. */
   const mounted = (disk, prefix) => {
     const computer = computerd();
     for (const [key, bytes] of disk.files) {
@@ -225,9 +225,7 @@ describe("a synced folder against computerd in a user namespace", { skip }, () =
       writeFileSync(path, bytes);
       chmodSync(path, 0o644);
     }
-    const calls = [];
-    const client = { async call(method, params, options) { calls.push(method); return method === "mount.sync" ? { ok: true, value: { exitCode: 0, stdout: "", stderr: "" } } : computer.client.call(method, params, options); }, close() {} };
-    return { ...computer, client, calls, readBack: async () => ({ ok: true, value: { kind: "archil", epoch: EPOCH } }) };
+    return { ...computer, readBack: async () => ({ ok: true, value: { kind: "archil", epoch: EPOCH } }) };
   };
 
   before(async () => {
@@ -298,35 +296,29 @@ describe("a synced folder against computerd in a user namespace", { skip }, () =
     await three.release();
   });
 
-  it("a run synced before, claimed again where its provider takes the Archil mount: the modes and links sync.json kept are put back over the mount and synced before any tool runs, then sync.json is emptied; a run never synced pushes nothing", async () => {
+  it("a link a synced claim recorded, then a plain file an Archil claim wrote at its path: the Archil claim empties sync.json at its start, so the next synced claim pushes the file's new contents, not the old link", async () => {
     const disk = new FakeArchilDisk();
     const workspace = archilWorkspace(disk, ROOT);
     const first = computerd();
     const one = await (await resolveComputer(DAYTONA, 2, KINDS, claim(() => first))).start({ workspace, check: CHECK });
-    await sh(one.computer.computer.client, "mkdir -p bin && printf '#!/bin/sh\\necho hi\\n' > bin/run && chmod 0755 bin/run && printf s > secret && chmod 0600 secret && ln -s bin/run go");
+    await sh(one.computer.computer.client, "printf old > target && ln -s target go");
     await one.release();
-    assert.deepEqual(JSON.parse(text(disk.files.get(META))), { modes: { "bin/run": 0o755, secret: 0o600 }, links: { go: "bin/run" } });
+    assert.deepEqual(JSON.parse(text(disk.files.get(META))).links, { go: "target" });
 
-    const resolved = await resolveComputer(MODAL, 2, KINDS, modalSide(undefined));
+    // Claimed next where its provider takes the Archil mount (Modal): an exec writes a plain file at the link's path,
+    // which the mount lands on the disk as that file.
+    const resolved = await resolveComputer(MODAL, 2, KINDS, modalSide(mounted(disk, ROOT)));
     assert.equal(resolved.folder, "archil", "Modal takes the Archil mount here");
-
-    const third = mounted(disk, ROOT);
-    const two = await (await resolveComputer(MODAL, 2, KINDS, modalSide(third))).start({ workspace: { syncStore: () => workspace.syncStore(), mountSpec: async () => archilMount }, check: CHECK });
-    assert.equal((await stat(third, "bin/run")).mode, 0o755);
-    assert.equal((await stat(third, "secret")).mode, 0o600);
-    assert.deepEqual([(await stat(third, "go")).type, (await stat(third, "go")).target], ["symlink", "bin/run"]);
-    assert.equal(await sh(third.client, "./go"), "hi\n");
-    assert.ok(third.calls.lastIndexOf("mount.sync") > third.calls.lastIndexOf("tar.push.end"), `the mount synced after the push: ${third.calls}`);
-    assert.deepEqual(JSON.parse(text(disk.files.get(META))), { modes: {}, links: {} }, "the mount holds them now");
+    const two = await resolved.start({ workspace: { syncStore: () => workspace.syncStore(), mountSpec: async () => archilMount }, check: CHECK });
+    assert.deepEqual(JSON.parse(text(disk.files.get(META))), { modes: {}, links: {} }, "emptied at the Archil claim's start");
+    await sh(two.computer.computer.client, "printf new > go");
+    disk.files.set(`${ROOT}/go`, Buffer.from("new"));
     await two.release();
 
-    // A run whose folder was never synced: nothing to put back, no push.
-    const other = runKey("acme", "r2");
-    disk.files.set(`${other}/a.txt`, Buffer.from("a"));
-    const fourth = mounted(disk, other);
-    const otherSpace = archilWorkspace(disk, other);
-    const three = await (await resolveComputer(MODAL, 2, KINDS, modalSide(fourth))).start({ workspace: { syncStore: () => otherSpace.syncStore(), mountSpec: async () => ({ ...archilMount, folder: other }) }, check: CHECK });
-    assert.deepEqual(fourth.calls.filter((method) => method.startsWith("tar.push")), [], "no push");
+    const third = computerd();
+    const three = await (await resolveComputer(DAYTONA, 2, KINDS, claim(() => third))).start({ workspace, check: CHECK });
+    assert.equal((await stat(third, "go")).type, "file", "the file the Archil claim wrote, not the link sync.json had");
+    assert.equal(await sh(third.client, "cat go"), "new");
     await three.release();
   });
 

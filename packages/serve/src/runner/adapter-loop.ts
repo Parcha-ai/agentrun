@@ -535,13 +535,16 @@ function sideTurnsOf(records: readonly SessionRecord[]): Set<number> {
   return side;
 }
 
-/** What the request that just answered cost, from the session's records, and the bookings that answer gives (`turns`):
- *  every runner.turn record no answer was given yet (`given`). A side request's booking (sideTurnsOf) is given and never
- *  read: it is no answer's, and it stays on the run's ledger and cap. The answer reads the session's own requests
- *  booked since the answer before it, their booked figures summed (pi asks one at a time, so that is its own; were a
- *  retry ever booked without an answer of its own, it would be summed in), null when any is unknown; undefined when none
- *  is booked. Each booking is given once, so one unknown figure stays that answer's, never every later answer's. */
-export function bookingOfAnswer(records: readonly SessionRecord[], given: ReadonlySet<number>): { turns: number[]; usd: number | null | undefined } {
+/** What the request that just answered cost, from the session's records, and the bookings that answer gives (`turns`),
+ *  among the runner.turn records no answer was given yet (`given`). The answer reads its own conversation's (`own`: the
+ *  turns its conversation asked; absent, every turn): a booking of a conversation asking beside it (a subagent's child,
+ *  answering at about the same time) is left for that conversation's answer, neither read nor given. A side request's
+ *  booking (sideTurnsOf) is given and never read: it is no answer's, and it stays on the run's ledger and cap. The answer
+ *  reads its conversation's requests booked since the answer before it, their booked figures summed (a conversation asks
+ *  one at a time, so that is its own; were a retry ever booked without an answer of its own, it would be summed in), null
+ *  when any is unknown; undefined when none is booked. Each booking is given once, so one unknown figure stays that
+ *  answer's, never every later answer's. */
+export function bookingOfAnswer(records: readonly SessionRecord[], given: ReadonlySet<number>, own: (turn: number) => boolean = () => true): { turns: number[]; usd: number | null | undefined } {
   const side = sideTurnsOf(records);
   const turns: number[] = [];
   let usd: number | null | undefined;
@@ -549,8 +552,12 @@ export function bookingOfAnswer(records: readonly SessionRecord[], given: Readon
     if (record.kind !== RUNNER_RECORDS.turn) continue;
     const turn = record.data as { turn?: unknown; usd?: unknown; bookedUsd?: unknown; rule?: unknown; billing?: unknown };
     if (typeof turn.turn !== "number" || given.has(turn.turn)) continue;
+    if (side.has(turn.turn)) {
+      turns.push(turn.turn);
+      continue;
+    }
+    if (!own(turn.turn)) continue;
     turns.push(turn.turn);
-    if (side.has(turn.turn)) continue;
     // By the kernel's one rule (turnCostOf): an answer with no price of its own is unknown, never the hold it was booked at
     // for the cap; one billed to a person's plan is $0 to the run.
     const figure = turn.usd === undefined && turn.bookedUsd === undefined ? undefined : turnCostOf(turn).usd;
@@ -619,9 +626,10 @@ interface CliRecord {
   nestedIn(callId: string, parent: string): void;
   /** The calls parked at their gate and never sent, still with no end: what a stop withdraws on the record. */
   unsentParked(): string[];
-  /** The calls whose start is marked `nests` (a tool that only nests calls; a harness's own call that calls nest in, Codex's
-   *  `exec`) still with no end: what a run's end closes, interrupted, after the rows of the calls they made. */
-  openNests(): string[];
+  /** The calls started with no end, an unsent park aside (the stop refuses those): what a run's end closes, interrupted,
+   *  a call that only nests calls (its start marked `nests`: Codex's `exec`) after the rows of the calls it made. None on
+   *  a record whose harness says each call's end itself (`endsItsCalls`). */
+  openCalls(): string[];
   /** An end written elsewhere in a commit of the loop's own (the stop's withdrawal, in its end's commit): kept as this
    *  record's. */
   noteEnd(callId: string, status: CallStatus, output?: string): void;
@@ -852,7 +860,10 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
     },
     nestedIn: (callId, parent) => void parents.set(callId, parent),
     unsentParked: () => [...parked].filter((callId) => !sent.has(callId) && started.get(callId) === false),
-    openNests: () => [...nesting].filter((callId) => started.get(callId) === false),
+    openCalls: () =>
+      endsItsCalls
+        ? []
+        : [...started.keys()].filter((callId) => started.get(callId) === false && !(parked.has(callId) && !sent.has(callId))).sort((a, b) => Number(nesting.has(a)) - Number(nesting.has(b))),
     noteEnd(callId, status, output) {
       started.set(callId, true);
       ends.set(callId, { status, ...(output === undefined ? {} : { output }) });
@@ -2342,6 +2353,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const port = booking.models;
         unbooked = 0;
         bookingsWriting = 0;
+        // The conversation each request of this claim was asked in, by its turn, where its client named one.
+        const askedIn = new Map<number, string>();
         const counted: typeof port = {
           beforeRequest: async (request) => {
             // The CLI's next request of its main model after its question to the person: never admitted, it asks for the
@@ -2368,6 +2381,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               else carried = undefined;
             }
             unbooked += 1;
+            // The conversation that asked, as its client named it (pi's, one of several asking at once): whose answer reads
+            // this request's booking (bookedCost).
+            const conversation = (request as { conversation?: string }).conversation;
+            if (ticket && conversation !== undefined) askedIn.set(ticket.turn, conversation);
             // The harness's own side call (a title request on its smaller model): never a typical cost of its main requests.
             if (ticket && (request as { side?: boolean }).side) notOwn.add(ticket.turn);
             // The main model's request as the cap prices it: what the run keeps back to answer is priced on it (wrapUp).
@@ -2412,13 +2429,20 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         };
         // What the request that just answered cost, once the session's requests are booked (bookingOfAnswer): its own
         // booking's figure, null when unknown; a side request's is given and never read. A refused request's record is its $0.
+        // Its own is its conversation's (`conversation`, as the answer's harness names it and as its requests named it:
+        // askedIn): with several conversations asking at once (pi's subagents), each answer reads the bookings of its
+        // own conversation's requests, never one a conversation beside it is still to read. An answer that names no
+        // conversation reads those of the requests that named none.
         // The bookings already given to an answer: every one the session holds when it opens (an earlier claim's), then each
         // this claim gives.
         const given = new Set(turnsOf(await writer.read().catch(() => [] as SessionRecord[])));
-        const bookedCost = async (): Promise<number | null | undefined> => {
+        const bookedCost = async (conversation?: string): Promise<number | null | undefined> => {
           await bookingsSettled();
-          const booking = bookingOfAnswer(await writer.read().catch(() => [] as SessionRecord[]), given);
-          for (const turn of booking.turns) given.add(turn);
+          const booking = bookingOfAnswer(await writer.read().catch(() => [] as SessionRecord[]), given, (turn) => askedIn.get(turn) === conversation);
+          for (const turn of booking.turns) {
+            given.add(turn);
+            askedIn.delete(turn);
+          }
           return booking.usd;
         };
         // The gate a CLI's tool bridge asks before anything of a call: a call it refuses never reaches its host tool, so its
@@ -2494,7 +2518,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // each call it makes named under it, so its rows read as a codemode script's do on every other harness. Its start is
         // marked `nests`, so a crash leaves it open: its harness ends it (ownCalls.ended) from its CLI's own answer to it after
         // the resume, which comes after the rows of the calls it made, never as an interrupted end ahead of them. One no answer
-        // of its CLI ends (a stop while it waits, a crash no resume follows) the run's end closes, interrupted (openNests).
+        // of its CLI ends (a stop while it waits, a crash no resume follows) the run's end closes, interrupted (openCalls).
         const ownCalls: OwnCalls | undefined = record
           ? {
               opened: (callId, name, input) => ownWrite(record.start(callId, name, input, false, true).catch(unlessSealed)),
@@ -4026,12 +4050,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const ends = cliRecord ?? (await openCliRecord(on, theGate.journal, context, now, undefined, true));
     const recordEnds = ends.unsentParked();
     const notRun = data.state === "stopped" ? STOPPED_WHILE_WAITING : ENDED_WHILE_WAITING;
-    // A call that only nests calls (a harness's own: Codex's `exec`) still open when the run ends: nothing will end it now
-    // (a stop while its call waited, a crash whose next drive never resumed its CLI's thread), so it ends with the run,
-    // interrupted, after the rows of its calls (their withdrawals above it in this commit). Its own end on its way is
+    // A CLI's call still open when the run ends: nothing will end it now (a stop that cut it while it ran, a stop while its
+    // call waited, a crash whose next drive never resumed its CLI's thread), so it ends with the run, interrupted, in the
+    // end's commit: nothing of the stopped turn lands after the end. One that only nests calls (a harness's own: Codex's
+    // `exec`) ends after the rows of its calls (their withdrawals above it in this commit); its own end on its way is
     // written first. Marked `withRun`: a park or a stop failed nothing, so its row reads interrupted, never failed.
     while (ownWrites.size > 0) await Promise.allSettled([...ownWrites]);
-    const cutOpen = ends.openNests();
+    const cutOpen = ends.openCalls();
     const ended = theGate.expect(writesEntry(KINDS.end), { run, ...(also.length ? { also } : {}), ...(take.length ? { take } : {}) });
     // A seal while the end is committed fails it before it is awaited: handled here, read by the await below.
     ended.catch(() => undefined);

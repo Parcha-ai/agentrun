@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor, type EditorCaps, type Revision } from "./AgentEditor";
 import { PerHarness } from "./ToolSettings";
 import { type Agent, DECISION, toolOffers, toolsOnSwitch, WORKFLOW } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { placesOf } from "@/lib/place";
 
 // The agent editor's tools follow the harness: what it shows ticked, and what Save sends, is what the chosen harness runs
@@ -21,7 +22,7 @@ const caps: EditorCaps = {
   mcpHarnesses: ["pi", "claude-agent"],
 };
 const MCP = "mcp:crm/find_contact";
-const agent = (over: Partial<Agent> = {}): Agent => ({ agent_id: "a1", kind: "agentic", revision: "rv2", revisions: 2, archived_at: null,
+const agent = (over: Partial<Agent> = {}): Agent => ({ ...SERVED_AGENT, agent_id: "a1", kind: "agentic", revision: "rv2", revisions: 2, archived_at: null,
   definition: { version: 1, name: "mcp-test", instructions: "Do it.", harness: "pi", skills: [], tools: ["read", "ask_person", MCP] }, ...over });
 const revisions: Revision[] = [{ revision: "rv2", version: 2, current: true, note: null, created_at: "2026-11-10T00:00:00Z" }, { revision: "rv1", version: 1, current: false, note: null, created_at: "2026-11-09T00:00:00Z" }];
 

@@ -1,4 +1,4 @@
-import { nativeOf } from "./native/binding.js";
+import { NATIVE_RUN_OVERRIDES_UNSUPPORTED, nativeOf, nativeRunOverrides } from "./native/binding.js";
 import { launchNative } from "./native/connection.js";
 // The write half of the run's server cut (design 2.1, "the runner takes every run"): the functions the v2 routes call to
 // start a run and to act on one (message, stop, raise, approve, archive), over the one store (A). The old per-run-process
@@ -658,7 +658,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   const { revision } = pinned;
   const native = nativeOf(revision.body);
   if (native && !nativeOf(entry.revision?.body)?.connected) throw new ApiError("agent_not_runnable", "This native connection is disconnected. Reconnect its source project before starting any revision.");
-  if(native && (body.effort!==undefined || fileIds.length || body.archil_disk!==undefined))throw new ApiError("input_invalid","Native jobs use their original effort and project files. Run effort overrides, uploaded file_ids and Archil disks are unavailable; edit the native configuration or source project instead.");
+  if (native && nativeRunOverrides(body).length) throw new ApiError("input_invalid", NATIVE_RUN_OVERRIDES_UNSUPPORTED);
   if (fileIds.length) await deps.readyFiles(fileIds);
   const rbody = revision.body as StartBody;
   const input = body.input as Json;

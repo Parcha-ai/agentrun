@@ -7,7 +7,7 @@ const object = (properties: Record<string, unknown>, required = Object.keys(prop
   properties,
   required,
 });
-export const SDK_BINDING = object({ runtime: { enum: ["claude-agent-sdk", "codex-sdk"] } });
+export const SDK_BINDING = object({ runtime: { enum: ["claude-agent-sdk", "codex-sdk", "eve"] } });
 const usage = object(
   Object.fromEntries(
     ["input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens", "cost_usd"].map((key) => [

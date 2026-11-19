@@ -4,16 +4,18 @@
 // tokens are what its end carried back, never recomputed here. Every number but archivedAgents and archivedRuns leaves
 // out what is archived; a run's archive is its own or its agent's.
 import type { Store } from "../store/store.js";
-import { runReadState, type RunReadState } from "./runs.js";
+import { costOfRun, runReadState, type RunReadState } from "./runs.js";
 import { isShadowRun, shadowRunId } from "../learn/audit.js";
+import { type CostBasis, joinedBasis, storedBasisOf } from "../runner/metrics.js";
 
 /** The run states the stats count by, as the old store named them. */
 export type RunState = RunReadState;
 const RUN_STATES: readonly RunState[] = ["running", "completed", "failed", "stopped", "escalated"];
 export type RunCounts = Record<RunState, number> & { total: number };
 /** `usd` sums the `known` runs' costs (those that ended with one); null when there are none, never 0. A run still running,
- *  or one that ended with no cost, is `unknown`. */
-export type CostSum = { usd: number | null; known: number; unknown: number };
+ *  or one that ended with no cost, is `unknown`. `basis`: how the summed costs were reached (metrics.ts joinedBasis over
+ *  each one's stored basis, storedBasisOf). */
+export type CostSum = { usd: number | null; known: number; unknown: number; basis: CostBasis };
 export type StoreStats = {
   agents: number;
   archivedAgents: number;
@@ -40,7 +42,7 @@ export async function stats(store: Store): Promise<StoreStats> {
   const runs = await store.runs.list({});
 
   // Per agent, the runs whose own archive is null (shown) and the count whose own archive is set (hidden).
-  const shown = new Map<string, { counts: RunCounts; costUsd: number; known: number; shadowUsd: number }>();
+  const shown = new Map<string, { counts: RunCounts; costUsd: number; known: number; shadowUsd: number; bases: CostBasis[] }>();
   const hidden = new Map<string, number>();
   const running: string[] = [];
   // Each revision's kind, read once: an agentic run a person stopped reads running (runReadState).
@@ -59,18 +61,25 @@ export async function stats(store: Store): Promise<StoreStats> {
       continue;
     }
     let g = shown.get(run.agentId);
-    if (g === undefined) shown.set(run.agentId, (g = { counts: emptyCounts(), costUsd: 0, known: 0, shadowUsd: 0 }));
+    if (g === undefined) shown.set(run.agentId, (g = { counts: emptyCounts(), costUsd: 0, known: 0, shadowUsd: 0, bases: [] }));
     const shadow = shadows.get(shadowRunId(run.id));
-    if (shadow && runReadState(shadow, "agentic") !== "running" && shadow.costUsd !== null) g.shadowUsd += shadow.costUsd;
+    if (shadow && runReadState(shadow, "agentic") !== "running" && shadow.costUsd !== null) {
+      g.shadowUsd += shadow.costUsd;
+      g.bases.push(storedBasisOf(shadow.metrics, shadow.costUsd));
+    }
     g.counts.total += 1;
     g.counts[state] += 1;
-    if (state !== "running" && run.costUsd !== null) {
-      g.costUsd += run.costUsd;
+    // Its cost as its read says it (costOfRun): an imported session's catalog estimate when its source priced none.
+    const cost = costOfRun(run);
+    if (state !== "running" && cost !== null) {
+      g.costUsd += cost;
       g.known += 1;
+      g.bases.push(storedBasisOf(run.metrics, cost));
     }
   }
 
-  const stats: StoreStats = { agents: 0, archivedAgents: 0, runs: emptyCounts(), archivedRuns: 0, cost: { usd: null, known: 0, unknown: 0 }, byAgent: [], running };
+  const stats: StoreStats = { agents: 0, archivedAgents: 0, runs: emptyCounts(), archivedRuns: 0, cost: { usd: null, known: 0, unknown: 0, basis: "unpriced" }, byAgent: [], running };
+  const bases: CostBasis[] = [];
   for (const agent of agents) {
     const g = shown.get(agent.id);
     const counts = g?.counts ?? emptyCounts();
@@ -88,6 +97,8 @@ export async function stats(store: Store): Promise<StoreStats> {
     if (known > 0 || (g?.shadowUsd ?? 0) > 0) stats.cost.usd = (stats.cost.usd ?? 0) + (g?.costUsd ?? 0) + (g?.shadowUsd ?? 0);
     stats.cost.known += known;
     stats.cost.unknown += counts.total - known;
+    bases.push(...(g?.bases ?? []));
   }
+  stats.cost.basis = joinedBasis(bases);
   return stats;
 }

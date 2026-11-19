@@ -89,7 +89,7 @@ test("the summary's replay is the serving promotion's record, read from the stor
 
 // Where a revision took over is the server's (took_over), never found by time in the console: a promotion is written at a
 // claim, after the runs queued before it started, so a search by start time skipped the run it took over at.
-test("took_over marks the first run each revision served, over every run (a limited read keeps it): the first is the summary's takeover and the bill's promoted", async (t) => {
+test("took_over marks the first run each revision served, over every run (a limited read keeps it): the first is the summary's takeover", async (t) => {
   const store = await agentOn(t);
   const offering = { ...LEARNS, learning: { ...LEARNS.learning, workflows: ["answer"] } };
   const end = async (id, metrics, costUsd) => {
@@ -107,7 +107,7 @@ test("took_over marks the first run each revision served, over every run (a limi
   const cost = await agentCostOverStore(store, "agent-1");
   assert.deepEqual(cost.runs.map((run) => [run.run_id, run.path, run.took_over]), [["run-1", "agent", false], ["run-2", "workflow", true], ["run-3", "workflow", false], ["run-4", "handed_back", true], ["run-5", "replay", false], ["run-6", "workflow", false]]);
   const first = cost.runs.find((run) => run.took_over);
-  assert.deepEqual([cost.summary.takeover, cost.bill.promoted?.run_id], [{ n: first.n, run_id: first.run_id }, first.run_id], "one source for where it took over");
+  assert.deepEqual(cost.summary.takeover, { n: first.n, run_id: first.run_id }, "one source for where it took over");
   const latest = await agentCostOverStore(store, "agent-1", 4);
   assert.deepEqual(latest.runs.map((run) => [run.run_id, run.took_over]), [["run-3", false], ["run-4", true], ["run-5", false], ["run-6", false]], "a limited read never marks the first run it lists");
 });

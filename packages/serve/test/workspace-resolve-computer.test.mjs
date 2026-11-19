@@ -107,10 +107,16 @@ test("the module's own table takes archil mounts on Modal and E2B, not Daytona: 
 
 test("a setting the registry does not give is refused in words that name the setting, the registry's own reasons in them", async () => {
   assert.deepEqual(await resolve({ kind: "laptop", provider: "docker" }, 1), { refused: "This agent's computer: \"laptop\" is not a setting kind: none, sandbox, desktop, phone, browser. Set it in Settings → Computers." });
-  assert.deepEqual(await resolve({ kind: "desktop" }, 1), { refused: "A desktop computer needs a provider: pick one of Docker, Daytona, Modal, E2B, Agent37, Cloudflare, Fly Machines, Orgo, boxd for this agent's computer in Settings → Computers." });
+  assert.deepEqual(await resolve({ kind: "desktop" }, 1), { refused: "A desktop computer needs a provider: pick one of Docker, Modal, E2B, Agent37, Cloudflare, Fly Machines, Orgo, boxd for this agent's computer in Settings → Computers." });
   assert.deepEqual(await resolve({ kind: "desktop", provider: "morph" }, 2), {
-    refused: "Morph gives no desktop computer: kind desktop is a desktop machine, not a linux one; kind desktop needs groups screen, input.pointer, input.keys, which the provider does not declare. Pick one of Docker, Daytona, Modal, E2B, Agent37, Cloudflare, Fly Machines, Orgo, boxd for this agent's computer in Settings → Computers.",
+    refused: "Morph gives no desktop computer: kind desktop is a desktop machine, not a linux one; kind desktop needs groups screen, input.pointer, input.keys, which the provider does not declare. Pick one of Docker, Modal, E2B, Agent37, Cloudflare, Fly Machines, Orgo, boxd for this agent's computer in Settings → Computers.",
   });
+  // A kind the provider's descriptor refuses with its own reason (unserved) is refused in that reason, never the generic one.
+  for (const mode of [1, 2]) {
+    assert.deepEqual(await resolve({ kind: "desktop", provider: "daytona" }, mode), {
+      refused: "Daytona gives no desktop computer: its sandboxes run under AppArmor's restrict_unprivileged_userns, so the tool user can't make the user and network namespaces the window manager runs in. Pick one of Docker, Modal, E2B, Agent37, Cloudflare, Fly Machines, Orgo, boxd for this agent's computer in Settings → Computers.",
+    });
+  }
   assert.deepEqual(await resolve({ kind: "phone", provider: "nokia" }, 2), { refused: "\"nokia\" is no computer provider this server knows: pick one of Phone harness for this agent's computer in Settings → Computers." });
 });
 

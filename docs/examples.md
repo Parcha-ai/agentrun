@@ -54,6 +54,7 @@ After `npm ci --ignore-scripts` and `npm run build`:
 | --- | --- | --- |
 | [Support answers](support-quickstart.md) | `npm run demo:support` | Connect your search tool and agent; check an answer before returning it. |
 | [Typed research](authoring.md) | `npm run demo` | Reuse one research component across questions and stop when evidence is missing. |
+| [Read a public page with Browser Use](tutorials/monid-browser-use.md) | Start a run in the AgentRun console | Grant Browser Use through Monid and extract a heading from a public page. |
 | [Rank a list](../examples/rank-candidates.mjs) | `npm run demo:rank` | Score candidates against your brief, drop duplicates, cap each bucket, keep the top k; call it from another workflow. |
 | [Standalone TypeScript app](../examples/starter/README.md) | Follow the app's install steps, then `npm test` and `npm start` | Build outside this checkout with public package imports. |
 
@@ -72,5 +73,6 @@ Keep an existing backend agent's native SDK and tools while AgentRun checks lear
 | [Claude Agent SDK](tutorials/claude-sdk-learning.md) | [Release reporter](../examples/sdk-learning/claude.mjs) | The existing in-process MCP tool still executes; an accepted note or skill affects a fresh session. |
 | [Codex SDK](tutorials/codex-sdk-learning.md) | [Release reporter](../examples/sdk-learning/codex.mjs) | The existing native shell still reads a status file; an accepted revision is supplied to a fresh thread. |
 | [SDK workflow learning via MCP](tutorials/sdk-workflow-learning.md) | [Claude](../examples/sdk-learning/workflow-claude.mjs) / [Codex](../examples/sdk-learning/workflow-codex.mjs) | A generated and checked workflow invokes the original tool callbacks on a fresh request with changed data; an Off control gets the same task. |
+| [Vercel eve extension](tutorials/eve-learning.md) | [Existing eve release reporter](../examples/eve-learning/README.md) | Keep the original eve app and tools; compare owner corrections or compiled workflow reuse with a fresh Off control on the same agent. |
 
 Follow the [setup and execution instructions](../examples/sdk-learning/README.md). These examples use real models only with `--live`, compare learning On with an Off control, and preserve the result for inspection in the console. They require this development checkout's client and server, plus the backend's existing SDK credentials and a configured server grading model.

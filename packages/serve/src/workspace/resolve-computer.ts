@@ -20,15 +20,16 @@
 // command there would run on the server itself. runShellOf reads it off a setting before anything starts (the tool
 // plane shows bash unavailable by it), and the claim's runTools takes the same rule over the computer it started.
 import { hostToolDefs, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
-import { archilSync, type BrowserFeatures, type BrowserFile, type BrowserSpec, type ComputerClient, type ComputerSettingKind, configurationOf, connectOf, type GpuSpec, type Group, type HelloResult, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, mountsOf, type ProviderEntry, type Result, syncingClient } from "@parcha/agentrun-computer";
+import { type BrowserFeatures, type BrowserFile, type BrowserSpec, type ComputerClient, type ComputerSettingKind, configurationOf, connectOf, type GpuSpec, type Group, type HelloResult, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, mountsOf, type ProviderEntry, type Result, syncingClient } from "@parcha/agentrun-computer";
 import { type DockerDaemon, noDockerWords } from "../docker-daemon.js";
 import { gpuRefused } from "../gpu-words.js";
 import { recordedClient } from "../computer-calls.js";
 import type { Recording, RecordWatch } from "../computer-record.js";
 import type { MountCheck } from "./attach.js";
 import type { AgentComputer, RunComputer } from "./run-tools.js";
-import { fencedStore, finalSyncWords, type FolderStore, pullFolder, pushFolder, recordMeta, recordWords, restoreMeta, type StoredFolder, storedFolder, syncOf } from "./synced-folder.js";
+import { emptyMeta, fencedStore, finalSyncWords, type HeldFolder, holdSynced, pullFolder, recordMeta, recordWords, type StoredFolder, storedFolder, syncOf } from "./synced-folder.js";
 import type { Workspace } from "./workspace.js";
+import { restartWith } from "../start-switches.js";
 
 /** The setting kind (what an agent is given, not a computer's capabilities().kind), a machine's kind and groups, and one
  *  provider of the kind registry: the computer module's own types. Where a run's shell is: the kernel registry's. */
@@ -65,6 +66,11 @@ export type LaunchedComputer = {
   readonly id: string;
   readonly groups: readonly (Group | string)[];
   readonly client?: ComputerClient;
+  /** The client of the machine `client` reaches now, where `client` may go on to a new one in its place (a sandbox
+   *  started again once its provider lost it: computer-for-claim.ts lostAware). A synced folder's sync lists through it,
+   *  so a sync never starts the new one and reads it against the lost one's manifest; a loss it finds is marked, so the
+   *  run's next call starts the new one. Absent where `client` is it. */
+  readonly own?: ComputerClient;
   readonly hello?: HelloResult;
   readBack?(): Promise<Result<MountReadBack>>;
   readonly browser?: ClaimBrowser;
@@ -238,7 +244,7 @@ export const aLabel = (label: string, start = false): string => `${start ? "A" :
 /** Why a computer that needs a network is refused where this server's AGENTRUN_BOX_ALLOW is none, in words that name the
  *  fix: the operator said no network at all, and the computer can't run without one. */
 export const noNetworkRefusal = (label: string, kind: string): string =>
-  `This agent's computer is ${aLabel(label)} ${kind}, which needs a network (the vendor's own, or public addresses from this machine), and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in ${SETTINGS}, or set AGENTRUN_BOX_ALLOW to a host list.`;
+  `This agent's computer is ${aLabel(label)} ${kind}, which needs a network (the vendor's own, or public addresses from this machine), and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in ${SETTINGS}, or ${restartWith("AGENTRUN_BOX_ALLOW set to a host list")}.`;
 
 /** Whether an agent's computer `setting` can be had in `mode` now, by the answers the claim gives (resolveComputer: the
  *  kind, the provider and what it serves, the mode's mount, the provider's keys by `keyOf`): ok, or its refusal in words
@@ -298,9 +304,10 @@ export type ResolvedComputer = {
   /** Starts the computer, mounting `workspace`'s folder when it mounts (a synced folder pushed in from the store
    *  `workspace` keeps it in before the computer is handed on); `check` is the mount check attach runs (the claim's
    *  epoch bound in); `holds`: whether the claim may still write the run's disk (synced-folder.ts claimHolds), asked
-   *  before each write of the folder there (fencedStore). A computer that cannot be had throws with code
-   *  computer_unavailable and the words. */
-  start(run: { readonly workspace: Workspace; readonly check: MountCheck; readonly holds?: () => Promise<boolean>; readonly signal?: AbortSignal }): Promise<StartedComputer>;
+   *  before each write of the folder there (fencedStore); `held`: the claim's synced folder, which a new sandbox in
+   *  place of a lost one holds again (computer-for-claim.ts renewalOf), absent where nothing does. A computer that
+   *  cannot be had throws with code computer_unavailable and the words. */
+  start(run: { readonly workspace: Workspace; readonly check: MountCheck; readonly holds?: () => Promise<boolean>; readonly held?: HeldFolder; readonly signal?: AbortSignal }): Promise<StartedComputer>;
 };
 
 const SETTINGS = "Settings → Computers";
@@ -416,12 +423,14 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
   // operator names its image, so the folder it holds is the one the start and the readiness check said.
   const entry = registry.PROVIDERS.find((one) => one.id === setting.provider);
   if (!entry) return { refused: `${JSON.stringify(setting.provider)} is no computer provider this server knows: pick ${pick}` };
-  // The configurations of the provider that serve the kind; none, and the registry says why, by its closest one.
+  // The configurations of the provider that serve the kind; none, and its descriptor's own why (unserved), else the
+  // registry's, by its closest one.
   const serving = servingOf(registry, entry, kind);
   if (serving.length === 0) {
     const own = registry.unservedWhy?.(entry, kind);
     if (own !== undefined) return { refused: `${own}, or pick ${pick}` };
-    const why = entry.capabilities.map((one) => registry.servingRefusals(one, kind)).sort((a, b) => a.length - b.length)[0] ?? [];
+    const unserved = entry.unserved?.[kind];
+    const why = unserved !== undefined ? [unserved] : (entry.capabilities.map((one) => registry.servingRefusals(one, kind)).sort((a, b) => a.length - b.length)[0] ?? []);
     return { refused: `${entry.label} gives no ${kind} computer${why.length > 0 ? `: ${why.join("; ")}` : ""}. Pick ${pick}` };
   }
   // The configuration the setting's image selects: one the provider does not offer for the kind is refused, naming those
@@ -483,19 +492,26 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
     mounts,
     ...(folder ? { folder } : {}),
     ports,
-    async start({ workspace, check, holds, signal }) {
+    async start({ workspace, check, holds, held, signal }) {
       // A computer kept at the run's park, attached again: it mounts what it mounted, read back under its own epoch.
       const again = await side.reattach?.(entry, { kind, keys, configuration, ...(folder ? { folder } : {}), ...(gpu ? { gpu: { type: gpu.type, count: gpu.count } } : {}), ...(persistent ? { persistent: true as const } : {}), ...(signal ? { signal } : {}) });
-      // The run's disk as the runner keeps the folder on it, each write fenced by the claim.
-      const diskOf = (): FolderStore | undefined => {
-        const disk = workspace.syncStore?.();
-        return disk && holds ? fencedStore(disk, holds) : disk;
-      };
-      // A synced folder's store: for a new computer, listed and held to the caps before it is rented.
-      const store = folder === "sync" ? diskOf() : undefined;
+      // The run's disk as the runner keeps the folder on it, each write fenced by the claim. A synced folder's store: for
+      // a new computer, listed and held to the caps before it is rented. Under an Archil mount, its sync.json emptied
+      // here and written again at the park and release.
+      const disk = folder === "sync" || folder === "archil" ? workspace.syncStore?.() : undefined;
+      const fenced = disk && holds ? fencedStore(disk, holds) : disk;
+      const store = folder === "sync" ? fenced : undefined;
       if (folder === "sync" && store === undefined) {
         await again?.release().catch(() => undefined);
         throw unavailable(`${entry.label} could not start a ${kind} computer: this run's folder can't be synced into a computer here`);
+      }
+      if (folder === "archil" && fenced) {
+        try {
+          await emptyMeta(fenced);
+        } catch (error) {
+          await again?.release().catch(() => undefined);
+          throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
       let stored: StoredFolder | undefined;
       if (store && !again) {
@@ -515,27 +531,20 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
         if (said && !said.up && said.absent) throw unavailable(noDockerWords(kind, registry.PROVIDERS, mode));
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
       }
-      // A folder synced on an earlier claim, now under a new Archil mount: the modes and links its sync.json keeps, which
-      // the mount never reads, put back (and the mount synced) before any tool runs. One that can't be lets the computer go.
-      const synced = folder === "archil" ? diskOf() : undefined;
-      if (synced && launched.client && !again) {
-        try {
-          await restoreMeta(synced, syncingClient(launched.client, archilSync(launched.client)), signal);
-        } catch (error) {
-          await launched.release().catch(() => undefined);
-          throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
       // A synced folder, before any tool runs there: pushed into a new computer, or pulled whole from a kept one (whose
-      // copy may be newer than the disk's). One that can't be had lets the computer go.
+      // copy may be newer than the disk's), through the machine's own client. One that can't be had lets the computer go.
       let sync: (() => Promise<Result<void>>) | undefined;
-      if (store && launched.client) {
+      const own = launched.own ?? launched.client;
+      if (store && own) {
+        const folderHeld = held ?? {};
         try {
-          sync = syncOf(again ? await pullFolder(store, launched.client, signal) : await pushFolder(store, launched.client, stored!, signal));
+          if (again) folderHeld.folder = await pullFolder(store, own, signal);
+          else await holdSynced(folderHeld, store, own, stored!, signal);
         } catch (error) {
           await launched.release().catch(() => undefined);
           throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
         }
+        sync = syncOf(folderHeld);
       }
       const checked = mounts ? { ...check, ...(again ? { epoch: again.epoch } : {}), ...(folder === "sync" ? { sync: true as const } : {}) } : undefined;
       const computer = runComputerOf(kind, launched, checked, { ...(setting.surface ? { surface: setting.surface } : {}), ...(noPrograms(setting) ? { exec: false as const } : {}) }, sync);
@@ -543,11 +552,11 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
         await launched.release();
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${computer}`);
       }
-      const own = launched.client;
-      if (!sync && synced && own) {
-        // An Archil mount's park and release: its modes and links recorded in sync.json first (recordMeta), for a later
-        // claim that syncs the folder; the computer goes whatever that answered, and a failed one is said.
-        const record = () => recordMeta(synced, own);
+      if (folder === "archil" && fenced && own) {
+        // An Archil mount's park and release: its modes and links recorded in sync.json first (recordMeta), read through
+        // the machine's own client as it is then (a lost one's replacement, never the lost one; asking it starts none),
+        // for a later claim that syncs the folder; the computer goes whatever that answered, and a failed one is said.
+        const record = () => recordMeta(fenced, launched.own ?? own);
         return {
           computer,
           sync: record,

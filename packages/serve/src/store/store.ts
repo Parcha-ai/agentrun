@@ -156,12 +156,10 @@ export interface ListedRun {
   /** The listing is behind now (Runs.behind's three ways): a list builds it before it shows it. */
   readonly behind: boolean;
 }
-/** A run's listing as its row keeps it (Runs.putListing's item, cut and format): `format` is whatever the server that
- *  wrote it stamped, nothing on a row written before listings carried one, so a list compares it, never trusts it. */
+/** A run's listing as its row keeps it (Runs.putListing's item and cut). */
 export interface KeptListing {
   readonly item: Record<string, unknown>;
   readonly cut: string;
-  readonly format?: unknown;
 }
 /** Whether `run`, of a revision of `kind`, was stopped by a person and waits for them (state 'stopped', outcome 'stopped',
  *  an agentic run started here): its turn is over, the run is not. A workflow's stop, a cancel and an imported run's stop
@@ -172,8 +170,6 @@ export interface RunListing {
   readonly item: Record<string, unknown>;
   /** The digest of the server's secrets the item was cut of. */
   readonly cut: string;
-  /** The listing format its item was built under (store-view.ts LISTING_FORMAT). */
-  readonly format: number;
   readonly status: string;
   readonly live: boolean;
   readonly until: number | null;
@@ -693,8 +689,9 @@ export interface Agents {
   /** Adds a revision and makes it the agent's current one, in one commit. With `ifCurrent` (a revision id, or null for
    *  none), only while that is still the agent's current revision, compared in the same transaction under the agent row's
    *  lock: RevisionMoved, and nothing written, when another writer (this server's, or another server's on the same store)
-   *  moved it first. */
-  addRevision(revision: NewRevision & { agentId: string; ifCurrent?: string | null }): Promise<void>;
+   *  moved it first. `description` (a string, or null for none), when given, is the agent's new description, written in the
+   *  same commit: a revision refused by `ifCurrent` leaves it as it was. Absent, the description stays. */
+  addRevision(revision: NewRevision & { agentId: string; ifCurrent?: string | null; description?: string | null }): Promise<void>;
   /** Makes `revisionId`, one of the agent's own, its current one. StoreConstraint when it is not a revision of `agentId`. */
   setCurrent(agentId: string, revisionId: string): Promise<void>;
   revision(id: string): Promise<RevisionRow | undefined>;
@@ -1677,6 +1674,15 @@ export class StoreFromEarlierVersion extends Error {
     );
     this.name = "StoreFromEarlierVersion";
     this.found = found;
+  }
+}
+
+/** A store this release's server upgrades in place at its start, which a runner never does: the runner waits for that
+ *  start. `what`: what the server does to it. */
+export class StoreAwaitsServer extends Error {
+  constructor(what: string) {
+    super(`Start the AgentRun server to ${what} before opening a runner. The runner does not upgrade this store.`);
+    this.name = "StoreAwaitsServer";
   }
 }
 

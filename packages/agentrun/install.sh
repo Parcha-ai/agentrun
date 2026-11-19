@@ -537,9 +537,12 @@ vps_install() {
   vps_docker
   command -v openssl > /dev/null 2>&1 || vps_apt install openssl
 
-  if ! docker image inspect "$image" > /dev/null 2>&1; then
-    say "Pulling $image ..."
-    docker pull -q "$image" > /dev/null || fail "could not pull $image"
+  # Pulled on every run, so a tag that moves (an --image like :beta) is the registry's now, not what an earlier run left;
+  # a tag already current pulls nothing. An image no registry has (built here) is used as it is.
+  say "Pulling $image ..."
+  if ! docker pull -q "$image" > /dev/null; then
+    docker image inspect "$image" > /dev/null 2>&1 || fail "could not pull $image"
+    say "Could not pull $image, so the copy already on this server runs."
   fi
 
   # Where it is reached: every address with --public; else the tailnet's https address when Tailscale is logged in, or
@@ -726,7 +729,7 @@ vps_files() {
   gid=$(stat -c %g /var/run/docker.sock) || fail "this Docker has no /var/run/docker.sock to give AgentRun"
   {
     if [ -f "$env_file" ]; then
-      grep -v -E '^(AGENTRUN_TOKEN|AGENTRUN_SEAL_KEY|AGENTRUN_IMAGE|AGENTRUN_BIND|AGENTRUN_PUBLIC_URL|AGENTRUN_TRUSTED_PROXIES|DOCKER_GID)=' "$env_file" || true
+      grep -v -E '^(AGENTRUN_TOKEN|AGENTRUN_SEAL_KEY|AGENTRUN_IMAGE|AGENTRUN_BIND|AGENTRUN_PUBLIC_URL|AGENTRUN_TRUSTED_PROXIES|DOCKER_GID|AGENTRUN_TELEMETRY|DO_NOT_TRACK)=' "$env_file" || true
     else
       echo "# AgentRun's settings for Docker Compose. The installer (--vps) keeps AGENTRUN_TOKEN and AGENTRUN_SEAL_KEY, and"
       echo "# writes the lines after them on every run. Lines of your own (a model key, AGENTRUN_BOX_ALLOW) stay; keep this"
@@ -739,6 +742,21 @@ vps_files() {
     printf 'AGENTRUN_PUBLIC_URL=%s\n' "$url"
     printf 'AGENTRUN_TRUSTED_PROXIES=%s\n' "$trusted"
     printf 'DOCKER_GID=%s\n' "$gid"
+    # The usage counts' switches (docs/telemetry.md) set where this runs reach the server, which reads .env alone. One
+    # rule, as `service install --env` keeps them: a value set here wins (running again with AGENTRUN_TELEMETRY=0 turns
+    # the counts off), and with none the line .env has stays; with neither, under CI it is off. The server trims a value,
+    # so this does too.
+    for name in AGENTRUN_TELEMETRY DO_NOT_TRACK; do
+      eval "value=\${$name:-}"
+      value=$(printf '%s' "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+      case $value in *[!A-Za-z0-9]*) value= ;; esac
+      if [ -z "$value" ] && [ -f "$env_file" ] && grep -q -E "^$name=" "$env_file"; then
+        printf '%s=%s\n' "$name" "$(sed -n "s/^$name=//p" "$env_file" | tail -n 1)"
+        continue
+      fi
+      if [ "$name" = AGENTRUN_TELEMETRY ] && [ -z "$value" ] && [ -n "${CI:-}" ]; then value=0; fi
+      if [ -n "$value" ]; then printf '%s=%s\n' "$name" "$value"; fi
+    done
   } > "$work/env"
   chmod 600 "$work/env"
   mv -f "$work/env" "$env_file"

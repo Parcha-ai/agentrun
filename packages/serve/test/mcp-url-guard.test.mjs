@@ -77,7 +77,7 @@ test("loopback is a local install's alone: a server listening on loopback with n
   // A server its operator never said is a local install (a hosted one, its public address set or not): refused, in words
   // naming the variable that says so.
   const hosted = await serve(t, { runner: false, publicUrl: "https://agents.example.test", mcpLoopback: false });
-  const machine = (url) => `${new URL(url).hostname} is this machine; set AGENTRUN_MCP_ALLOW_LOOPBACK=1 when starting the server, only on a machine you alone use.`;
+  const machine = (url) => `${new URL(url).hostname} is this machine; restart the server with AGENTRUN_MCP_ALLOW_LOOPBACK=1 to allow it, only on a machine you alone use.`;
   for (const [who, api] of [["a token", hosted.api], ["the owner", asOwner(hosted)]]) {
     refusedOnUrl(await api("POST", "/settings/mcp-servers/preview", { url: fake.url, auth: { type: "none" } }), machine(fake.url), `${who}'s preview`);
     refusedOnUrl(await api("PUT", "/settings/mcp-servers/here", { url: fake.url, auth: { type: "none" } }), machine(fake.url), `${who}'s save`);

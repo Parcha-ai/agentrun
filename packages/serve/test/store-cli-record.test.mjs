@@ -71,7 +71,7 @@ test("a claude-agent run reads the same rows and final answer over the store as 
   const view = await viewOverStore(store, "cli", deps);
   assert.deepEqual(view.result, { output: null, final_answer: "There are two files." });
   assert.equal(view.status, "completed");
-  assert.deepEqual(view.cost, { usd: null, basis: "estimate", charge_state: null, cap_usd: null, so_far_usd: 0, unpriced: 1 });
+  assert.deepEqual(view.cost, { usd: null, basis: "unpriced", charge_state: null, cap_usd: null, so_far_usd: 0, unpriced: 1 });
 });
 
 test("a CLI record's rows are dated by when each entry was written; an entry with no time of its own reads the run's start, never epoch 0", async (t) => {

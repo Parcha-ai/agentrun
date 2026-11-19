@@ -54,10 +54,10 @@ test("bookedSpend counts a request the booking holds no answer for yet (no runne
     // Sent, its answer not booked yet (in flight, or a process that went down before it was).
     e(7, 4, "runner.request", { turn: 2, model: "claude-haiku-5-5" }),
   ];
-  assert.deepEqual(bookedSpend(entries, "model"), { usd: null, known: 0.002, bounded: 0, unpriced: 1, atMost: 0, requests: 2, unmetered: 1, models: { "claude-haiku-5-5": 2 }, tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 } });
+  assert.deepEqual(bookedSpend(entries, "model"), { usd: null, known: 0.002, bounded: 0, unpriced: 1, atMost: 0, requests: 2, unmetered: 1, models: { "claude-haiku-5-5": 2 }, tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, priced: { reported: 0, estimated: 0 } });
   // Once it is booked, it is counted at its cost.
   const answered = [...entries, e(7, 5, "runner.turn", { turn: 2, usd: 0.001, bookedUsd: 0.001, usage: { input: 2, output: 1, cacheRead: 0, cacheWrite: 0 }, rule: "answered" })];
-  assert.deepEqual(bookedSpend(answered, "model"), { usd: 0.003, known: 0.003, bounded: 0, unpriced: 0, atMost: 0, requests: 2, unmetered: 0, models: { "claude-haiku-5-5": 2 }, tokens: { input: 12, output: 6, cacheRead: 0, cacheWrite: 0 } });
+  assert.deepEqual(bookedSpend(answered, "model"), { usd: 0.003, known: 0.003, bounded: 0, unpriced: 0, atMost: 0, requests: 2, unmetered: 0, models: { "claude-haiku-5-5": 2 }, tokens: { input: 12, output: 6, cacheRead: 0, cacheWrite: 0 }, priced: { reported: 0, estimated: 0 } });
 });
 
 test("an agent run's cost counts its decisions beside its model requests and paid tool calls, and stays unknown when any part is (LS-07)", async () => {
@@ -136,7 +136,7 @@ test("bookedSpend reads an answer with no price of its own as a cost unknown, ne
     // Answered at no known price (a model serve has no price for): the booking's rule books it at its hold for the cap.
     e(7, 3, "runner.turn", { turn: 1, usd: null, bookedUsd: 0, usage: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, rule: "answered" }),
   ];
-  assert.deepEqual(bookedSpend(entries, "model"), { usd: null, known: 0, bounded: 0, unpriced: 1, atMost: 0, requests: 1, unmetered: 0, models: { "not-a-catalog-model": 1 }, tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 } });
+  assert.deepEqual(bookedSpend(entries, "model"), { usd: null, known: 0, bounded: 0, unpriced: 1, atMost: 0, requests: 1, unmetered: 0, models: { "not-a-catalog-model": 1 }, tokens: { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 }, priced: { reported: 0, estimated: 0 } });
 });
 
 // A CLI harness's run (claude-agent, codex, opencode): its record (the loop's agentrun.* entries) carries no usage, so its
@@ -220,4 +220,41 @@ test("a CLI run on Claude through OpenRouter, or by its dotted name, counts its 
     const metrics = cliRunMetrics(root, bookedSpend(all, "model"), { model: chosen });
     assert.deepEqual(metrics.models, { [chosen]: 1, "claude-sonnet-5-5": 1 }, chosen);
   }
+});
+
+test("a booking's cost basis: `reported` when every priced request had the gateway's own figure, `estimate` once a price table priced one, `unpriced` when none was priced", async () => {
+  const { bookedSpend, costBasisOf, joinedBasis, storedBasisOf } = await import("../dist/runner/metrics.js");
+  const e = (id, data) => ({ conversationId: 7, id, kind: "runner.turn", data });
+  const key = { conversationId: 1, id: 0, kind: "agentrun.session.key", data: { key: "harness", conversation: 7 } };
+  const usage = { input: 10, output: 5, cacheRead: 0, cacheWrite: 0 };
+  // As the proxy books them: a reported figure keeps the table's beside it (tableUsd); a table's figure is `estimated`.
+  const reported = (turn) => e(turn, { turn, usd: 0.004, tableUsd: 0.003, bookedUsd: 0.004, usage, rule: "answered" });
+  const table = (turn) => e(turn, { turn, usd: 0.003, estimated: true, bookedUsd: 0.003, usage, rule: "answered" });
+  const refused = (turn) => e(turn, { turn, usd: 0, bookedUsd: 0, rule: "nothing:status" });
+  const unknown = (turn) => e(turn, { turn, usd: null, estimated: true, usage, rule: "answered" });
+  const plan = (turn) => e(turn, { turn, usd: null, estimated: true, billing: "plan", usage, rule: "answered" });
+  const cutAtHold = (turn) => e(turn, { turn, usd: null, estimated: true, cut: true, bookedUsd: 0.5, atMost: true, rule: "cut" });
+  const basis = (...turns) => costBasisOf(bookedSpend([key, ...turns], "model"));
+  assert.equal(basis(reported(1), reported(2)), "reported");
+  assert.equal(basis(reported(1), table(2)), "estimate", "one request priced from the table makes the whole an estimate");
+  assert.equal(basis(reported(1), refused(2)), "reported", "a request refused at $0 was priced by no one");
+  assert.equal(basis(reported(1), unknown(2)), "reported", "an unknown figure is unpriced, beside the reported ones");
+  assert.equal(basis(reported(1), plan(2)), "reported", "a plan's request costs no dollars: priced by no one");
+  assert.equal(basis(refused(1), unknown(2), plan(3)), "unpriced");
+  assert.equal(basis(reported(1), cutAtHold(2)), "estimate", "a cut request counted at its hold is no figure of the provider's");
+  assert.equal(basis(), "unpriced", "no request, nothing priced");
+  assert.deepEqual(bookedSpend([key, reported(1), table(2), refused(3)], "model").priced, { reported: 1, estimated: 1 });
+  // The sum of several runs' costs, and a run whose end stored no basis (it ended before this was stored, or its figure is
+  // a harness's own): an estimate when it cost anything.
+  assert.equal(joinedBasis(["reported", "unpriced", "reported"]), "reported");
+  assert.equal(joinedBasis(["reported", "estimate"]), "estimate");
+  assert.equal(joinedBasis([]), "unpriced");
+  assert.equal(storedBasisOf({ costBasis: "reported" }, 0.1), "reported");
+  assert.equal(storedBasisOf({ input: 3 }, 0.1), "estimate");
+  assert.equal(storedBasisOf(null, 0), "unpriced");
+  assert.equal(storedBasisOf({ costBasis: "made-up" }, null), "unpriced");
+  // An imported session's catalog estimate (import.ts costBasis "catalog", read by costOfRun) is an estimate, a $0 one too.
+  assert.equal(storedBasisOf({ costUsdEst: 0.2, costBasis: "catalog" }, 0.2), "estimate");
+  assert.equal(storedBasisOf({ costUsdEst: 0, costBasis: "catalog" }, 0), "estimate");
+  assert.equal(storedBasisOf({ costBasis: "catalog" }, null), "unpriced");
 });

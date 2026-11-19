@@ -90,7 +90,11 @@ test("a 384 MB server: claude-agent is unavailable with why in capabilities, its
   // The details hold the contract's blocked shape (openapi.ts): nothing unbound, nothing missing, and the harness.
   assert.deepEqual([refused.status, refused.body.error.code, refused.body.error.message, refused.body.error.details], [409, "agent_not_runnable", why, { unbound: [], missing: {}, harness: "claude-agent" }], JSON.stringify(refused.body));
   assert.equal(refused.headers.get("retry-after"), null);
+  // The agent's read says the same before anyone presses Run: the run's own check, its message and fields.
+  const read = (await api("GET", "/agents/big")).body;
+  assert.deepEqual([read.run_blockers?.message, read.run_blockers?.fields.map((f) => f.field)], [why, ["definition.harness"]], JSON.stringify(read.run_blockers));
   assert.equal((await api("POST", "/agents", agent("small"))).status, 201);
+  assert.equal((await api("GET", "/agents/small")).body.run_blockers, null, "an agent that runs here reads no blockers");
   const run = await api("POST", "/agents/small/runs", { input: { content: "hi" } });
   assert.equal(run.status, 202, JSON.stringify(run.body));
   await follow(api, run.body.run_id, ["completed"]);

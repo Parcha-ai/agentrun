@@ -424,6 +424,39 @@ describe("the Dev tools tab", () => {
     for (const radio of host.querySelectorAll("input.sr-only")) expect(radio.closest(".relative")?.closest("[data-scroll-pane]")).toBe(host.querySelector("[data-scroll-pane]"));
   });
 
+  it("beside an open panel the table's time axis and its Size column show by the width of the table's pane, never the window's", async () => {
+    // A window 1536 wide leaves the table 740 px beside the panel, and with its axis and Size it needs some 920: shown
+    // from that window width on (`2xl:`), they made the pane scroll sideways until the window was some 1700 wide.
+    // (jsdom lays nothing out: the widths themselves are measured in a browser, e2e/flows/dev-tools-panel-width.mjs.)
+    const host = await open(TRACE, { open: "m:0:24" });
+    const pane = host.querySelector("section[aria-label='Trace']")!;
+    expect(pane.className.split(/\s+/)).toContain("@container");
+    const table = pane.querySelector(":scope > div > table")!;
+    const at = [...table.querySelectorAll("thead th")].findIndex((th) => th.textContent === "Size");
+    const axis = [...table.querySelectorAll("[data-axis]")];
+    const size = [...table.querySelectorAll("tr")].map((tr) => tr.children[at]!);
+    expect([axis.length, size.length]).toEqual([25, 25]);
+    // Hidden, shown under `xl` (the panel is under the table there) and shown again once the pane is wide enough.
+    for (const cell of axis) expect(cell.className.split(/\s+/).filter((c) => /(^|:)(hidden|table-cell)$/.test(c))).toEqual(["hidden", "md:max-xl:table-cell", "@4xl:table-cell"]);
+    for (const cell of size) expect(cell.className.split(/\s+/).filter((c) => /(^|:)(hidden|table-cell)$/.test(c))).toEqual(["hidden", "max-xl:table-cell", "@5xl:table-cell"]);
+    // With none open the table has the page to itself: its axis from `md` on, its Size column always.
+    await click(named(host, "Close call details"));
+    expect(panel(host)).toBeNull();
+    for (const cell of table.querySelectorAll("[data-axis]")) expect(cell.className.split(/\s+/).filter((c) => /(^|:)(hidden|table-cell)$/.test(c))).toEqual(["hidden", "md:table-cell"]);
+    for (const tr of table.querySelectorAll("tr")) expect(tr.children[at]!.className).not.toMatch(/hidden|table-cell/);
+  });
+
+  it("a cell's hidden words are set against the table's own box, so the ones scrolled out of view do not scroll the pane sideways", async () => {
+    // A dash reads "None" to a screen reader, in words placed out of the flow. Set against the pane, the ones in the part
+    // of a wide table scrolled out of view made the pane scroll sideways under `xl`, over nothing.
+    const host = await open(TRACE);
+    const table = host.querySelector("section[aria-label='Trace'] > div > table")!;
+    // The sample's sixteen calls: five were charged and one says it is not metered, so ten have a dash for a cost.
+    const hidden = [...table.querySelectorAll("td .sr-only")];
+    expect(hidden.map((words) => words.textContent)).toEqual(Array(10).fill("None"));
+    for (const words of hidden) expect(words.closest(".relative")).toBe(table.parentElement);
+  });
+
   it("says when spans were left out, and when the run made none", async () => {
     expect((await open({ ...TRACE, dropped: 310 })).textContent).toContain("This is the run's first 24 requests and calls. 310 later ones are not shown.");
     act(() => root?.unmount());

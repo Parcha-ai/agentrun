@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { RunBar } from "./RunBar";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 // The shared picker helper: importing it installs the ResizeObserver stub the picker's positioning needs (jsdom has none).
 import "@/test/picker";
 
@@ -13,7 +14,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
 const agent: Agent = {
-  agent_id: "thinker", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
+  ...SERVED_AGENT, agent_id: "thinker", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Thinker", instructions: "Think.", harness: "pi", skills: [], tools: ["read"] },
 };
 

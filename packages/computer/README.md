@@ -16,7 +16,7 @@ import { checkMount, readBackOf, WORKSPACE, type MountSpec } from "@parcha/agent
 
 The package root holds the protocol, the registry and the descriptors, and loads no provider: a provider loads by its
 id (`providerFor(id, options)`, which imports that one provider's file), or from its subpath (`/docker`, `/daytona`,
-`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`). A provider's
+`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`, `/smolcloud`). A provider's
 option types (`DockerProviderOptions`, `ModalProviderOptions` and the like) come from its subpath too, not the root.
 
 The package carries the daemon for Linux amd64 and arm64 in `dist/`, so a provider runs it with no Go on the host. A
@@ -444,6 +444,7 @@ in the kernel's tool registry, keyed by these groups.
   | daytona | sandbox: `DAYTONA_DEFAULT_SNAPSHOT` ("default") |
   | modal | none: `prepareImage()` answers the box image (`boxImageRef()`) |
   | e2b | none: `prepareImage()` answers the box template (`boxE2bTemplate()`), for a sandbox and a desktop alike |
+  | smolcloud | none: `prepareImage()` answers the box image (`boxImageRef()`) |
   | orgo | desktop: `ORGO_BASE_IMAGE` ("linux") |
   | phone-harness | phone: `PHONE_IMAGE` ("android") |
   | browserbase, kernel, local | browser: `BROWSER_IMAGE` ("chromium") |
@@ -669,6 +670,7 @@ live under:
   | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | Browserbase's `apiKey`, `projectId`: the names pi-browser reads today |
   | `KERNEL_API_KEY` | Kernel's `apiKey`: the name pi-browser reads today |
   | `BOXD_API_KEY`, `BOXD_ORG`, `BOXD_REGION` | boxd's `apiKey`, `org` and `region` (unset: the key's own org, the API's home region) |
+  | `SMOLCLOUD_API_KEY` | smol cloud's `apiKey` |
 
 - **the conformance CLI and the live harness** (`src/conformance/`: the CLI, each provider's conformance module and the
   sweeps) read their own `COMPUTER_<ID>_*` names, the ones the live scripts set, through each module's
@@ -1374,7 +1376,7 @@ The conformance module, `dist/conformance/modal.js` (`--provider modal`), reads 
 (`settingsFromEnv`) and passes each to `create()` as its option: `COMPUTER_MODAL_TOKEN_ID` and
 `COMPUTER_MODAL_TOKEN_SECRET` (never `MODAL_TOKEN_ID` or `MODAL_TOKEN_SECRET`: a host may hold a production token under
 those names, and with only them set it refuses, naming the `COMPUTER_MODAL_` pair), `COMPUTER_MODAL_APP`, and, if set,
-`COMPUTER_MODAL_SERVER_URL` and `COMPUTER_MODAL_CONNECT` (`connect`). It builds its provider only with `AGENTRUN_COMPUTER_LIVE_MODAL=1` set, checked before
+`COMPUTER_MODAL_SERVER_URL` and `COMPUTER_MODAL_CONNECT` (`connect`); `createProvider()` alone also reads `COMPUTER_MODAL_KIND` (`kind`, `desktop` on dial only). It builds its provider only with `AGENTRUN_COMPUTER_LIVE_MODAL=1` set, checked before
 anything else. Its `createDriftedProvider()` uploads a daemon it builds with Go as version `<version>-drift`, so Go must
 be on PATH. Every computer of a run gets `maxLifetimeMs` 30 minutes. Core `provider.stop` expects Modal's refusal (it
 declares no stop), and the Full `provider.janitor` case is skipped (`lifetime:janitor`, `release:stop`).
@@ -1642,7 +1644,7 @@ when it runs (`settingsFromEnv`) and passes each to `create()` as the option in 
 (`apiKey`, required), `COMPUTER_DAYTONA_API_URL` (`apiUrl`), `COMPUTER_DAYTONA_DAEMON` (`daemonPath`),
 `COMPUTER_DAYTONA_ARCH` (`arch`), `COMPUTER_DAYTONA_TARGET` (`target`), `COMPUTER_DAYTONA_CLASS` (`sandboxClass`),
 `COMPUTER_DAYTONA_USER` (`daemonUser`), `COMPUTER_DAYTONA_GPU_SNAPSHOT` (`gpuSnapshot`) and `COMPUTER_DAYTONA_CONNECT`
-(`connect`). It exports `createProvider()` and `createDriftedProvider()` (which builds a
+(`connect`); `createProvider()` alone also reads `COMPUTER_DAYTONA_KIND` (`kind`; `desktop` is refused with the reason, on every connect). It exports `createProvider()` and `createDriftedProvider()` (which builds a
 daemon of another version with Go), and reads `COMPUTER_DAYTONA_SNAPSHOT` (the run's image; unset, `"default"`,
 Daytona's default snapshot, or on dial the box image's snapshot, `agentrun-box-<recipe hash>`). It never reads `DAYTONA_API_KEY`, `DAYTONA_API_URL` or `DAYTONA_TARGET`, not even as a
 fallback: on a host that runs other Daytona work they may hold another organization's key. Those are serve's names,
@@ -1679,11 +1681,12 @@ default) a Daytona sandbox dials the server instead ([PROVIDERS.md](PROVIDERS.md
 no exec and no upload, and nothing goes through the toolbox: create sends the boot env as `CreateSandbox.env` and
 `networkBlockAll: false` (the machine's root reaches the server; network none is init's, inside), and the snapshot's
 entrypoint runs `agentrun-dial`. No Archil mount, no GPU, and not `image: "default"` (Daytona's default snapshot holds
-no `agentrun-dial`): `check()` refuses each in words. Labels as on exec. A dial sandbox may be a desktop
-(`kind: "desktop"`): the box snapshot's X server and xfwm4, started over the socket it dialed, with the snapshot's 2 CPUs
-and 4 GB. On exec a Daytona computer is kind `linux` alone, and the constructor refuses `kind: "desktop"` in words. The
-descriptor's desktop configuration selects `connect: "dial"` itself, so a server whose `daytonaConnect` is exec still
-makes its desktop over dial. **Unverified**: Xvfb and the window manager on Daytona (no live run yet). What each part rests on:
+no `agentrun-dial`): `check()` refuses each in words. Labels as on exec. A Daytona computer is kind `linux` alone, on
+dial as on exec: the constructor refuses `kind: "desktop"` with the reason, and the descriptor declares no desktop
+(`unserved.desktop`). The window manager runs as the tool user inside a user and a network namespace of its own, and
+Daytona's sandboxes run under Sysbox with `kernel.apparmor_restrict_unprivileged_userns=1`, where the tool user can't
+write a user namespace's `uid_map` or make a network namespace (measured 11-19; [PROVIDERS.md](PROVIDERS.md#machines-that-dial-in)).
+What each part of a dial sandbox rests on:
 
 - **A snapshot, never an image.** A create names a snapshot; a snapshot is made from "any publicly accessible image"
   whose tag is not `latest`, `lts` or `stable` ([docs: create snapshots](https://www.daytona.io/docs/en/snapshots.md#create-snapshots)).
@@ -2826,6 +2829,74 @@ Every run left no computer behind. On 2026-11-14, the host on the shared adapter
 On 2026-11-16, `kind linux` passed Core again and `kind desktop` did not: 0 cases failed, but six Core cases were
 skipped, five because the run passed no `--fixture`, and `apps.launch-terminate` because boxd's own image lists none
 of the stock apps. The desktop snapshot above is the fix for the last; it has not run live yet.
+
+## smol cloud
+
+```ts
+import { providerFor } from "@parcha/agentrun-computer";
+
+// The key is the caller's to pass (serve's SMOLCLOUD_API_KEY).
+const smol = await providerFor("smolcloud", { apiKey });
+const made = await smol.create({ image: "alpine:3.20", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
+```
+
+A smol cloud computer is kind `linux`, a [smol cloud](https://smolmachines.com) machine: a microVM booted from any OCI
+image, with its own kernel. With no image named, it starts from the box image, the public registry tag
+`prepareImage()` answers (`boxImageRef()`), which smol cloud pulls at create. smol cloud runs on the shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)):
+`src/smolcloud.ts` is its `MachineHost`, over smol cloud's REST API (`https://api.smolmachines.com`,
+`Authorization: Bearer <key>`) with `fetch` and the shared REST client.
+
+| MachineHost | smol cloud |
+| --- | --- |
+| `create` | `POST /v1/machines` named `agr-<computer name>`, the image on an amd64 node, the labels, the spec's size (2 CPUs and 4 GiB unless it names one), `autoStopSeconds: 0` (the idle stop off), `ttlSeconds` to the request's backstop, `start: true`; a 409 is `exists` |
+| `get` | `GET /v1/machines/{id}`: `started` is running, `creating` starting, `created`, `stopped`, `pausing` and `paused` stopped, `error` and `deleting` gone (with smol cloud's `error` as why), `deleted` none |
+| `list` | `GET /v1/machines?label=k=v`, one `label` per label |
+| `delete` | `DELETE /v1/machines/{id}`; a 404 is done |
+| `exec` | a resumable exec started interactive (`POST /v1/machines/{id}/execs`), through `framedExec`: output read by offset with a 25 s long poll (`GET .../execs/{execId}?after=&wait=25`), stdin as numbered base64 frames of 48 KiB (`POST .../stdin`, safe to resend), `eof` to end it, `DELETE` to kill it |
+| `upload` | `PUT /v1/machines/{id}/files/{path}`, the bytes as they are |
+| `extend` | `PATCH /v1/machines/{id}/labels` with the deadline label alone |
+
+What smol cloud refuses or this host works around:
+
+- An argv with an empty word is refused (400 `command arguments cannot be empty`), and the adapter's scripts pass one
+  for an unset option. Such an argv runs as one quoted line, `/bin/sh -c 'exec <argv>'`; any other runs as given. The
+  API's own shell form (`command` as a string) is not used: it runs `sh -lc`, a login shell.
+- An account without a card runs 4 machines at once, so a run takes `--concurrency 4`. The cap answers 422 with the
+  status's own code; its words (`concurrency limit reached: ...`) are read as `limit`.
+- Labels: at most 32, keys of `[a-z0-9._/-]`, values up to 255 characters (`facts.labels.count` is 32).
+- Machines are placed on amd64 nodes (`source.arch`), so the daemon uploaded is `computerd-linux-amd64`; smol cloud
+  has arm64 nodes too, unused here.
+- No mount of the run's folder yet, and no desktop. smol cloud binds each machine's own storage disk at `/workspace`
+  (an ext4 mount of `/dev/vda`), and a synced folder can be held only where nothing is mounted there, so the
+  descriptor says so in `unmounted.sync` and serve's Mode 2 refuses a smol cloud sandbox in those words. An Archil
+  mount is untried (`/dev/fuse` opens in the guest).
+
+### Conformance on smol cloud
+
+```sh
+AGENTRUN_COMPUTER_LIVE_SMOLCLOUD=1 COMPUTER_SMOLCLOUD_API_KEY=... \
+  npm run conformance -w @parcha/agentrun-computer -- --provider smolcloud --long --concurrency 4
+node packages/computer/dist/conformance/sweep.js --provider smolcloud --before /tmp/smolcloud-before.json   # then --after
+```
+
+The conformance module, `dist/conformance/smolcloud.js`, checks `AGENTRUN_COMPUTER_LIVE_SMOLCLOUD=1` first, then reads
+`COMPUTER_SMOLCLOUD_API_KEY` (`apiKey`, required), `COMPUTER_SMOLCLOUD_API_URL` (`apiUrl`) and
+`COMPUTER_SMOLCLOUD_IMAGE` (the run's image, default the box image), never `SMOLCLOUD_API_KEY`. Every computer of a run
+lives at most 30 minutes. The live sweep is the shared one; its scope is the key's account.
+
+### Live runs
+
+On 2026-11-17, against smol cloud with an account key: the exec pre-check passed every check (8 MiB through `cat` in
+40 s, the stdin frames one after another; the daemon goes in through `upload` instead). The `--long` run at
+`--concurrency 4` passed Core 67/67 and Full 9/37 (the rest not declared) in 40 minutes; Full's `lifetime.idle` timed
+out while the test host lost DNS, and passed when run again on its own. An account without a card runs at most 4
+machines at once, and a create past that answers `422`, read as `limit`.
+
+On 2026-11-18, from the box image: the exec pre-check passed every check (8 MiB through `cat` in 33 s), and the
+`--long` run at `--concurrency 4` passed Core 67/67 and Full 10/41 (the rest not declared, `mount:sync` among them) in
+18 minutes. An earlier run that day, before the descriptor said `unmounted.sync`, had every `mount.sync` case refused
+at create: the read back found an ext4 mount of `/dev/vda` at `/workspace`. The sweep after the last run read
+`{"swept":0,"gone":0,"stillThere":[],"leftAlone":0}`.
 
 ## Conformance
 

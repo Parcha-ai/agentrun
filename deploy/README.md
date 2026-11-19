@@ -74,7 +74,7 @@ Hobby plan is $5 a month and includes $5 of usage. Use Hobby or above, because t
 Claude Code and Codex (about 1 GB, installed onto the volume on first use).
 
 <!-- railway-button: publish-and-walk.sh prints this line's replacement once the template is published -->
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/agentrun?utm_medium=integration&utm_source=button&utm_campaign=agentrun)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/agentrun-1?utm_medium=integration&utm_source=button&utm_campaign=agentrun)
 
 Once you click, Railway shows the service's variables, all filled in: the token and the seal key are made for you, and
 there's nothing to type. Railway pulls the image, mounts a volume at `/data` and gives the service an `up.railway.app` domain.
@@ -285,7 +285,9 @@ the server, which reaches the runner's viewer. Each runner names the host the se
 (`AGENTRUN_RUNNER_LIVE_HOST`; its viewers listen there, or on `AGENTRUN_RUNNER_LIVE_BIND`), and the server dials only
 the hosts in its `AGENTRUN_RUNNER_HOSTS`. Every request the server makes of a runner's viewer is signed with a key
 derived from the seal key, and a runner takes no other. The hop is plain HTTP: keep the server and its runners on a
-private network of their own, as this stack does. With neither setting, viewers stay on loopback, which is right when
+private network of their own, as this stack does. The attach relay's `ws://` hop, from the server to the runner that
+made a dial computer, carries that machine's bearer token over the same private network, so the same rule covers it.
+With neither setting, viewers stay on loopback, which is right when
 the server and its runner share a machine (the default image's command).
 
 **Postgres.** The `pg` profile runs a Postgres for the store. In `.env`:
