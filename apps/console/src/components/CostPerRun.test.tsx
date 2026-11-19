@@ -100,7 +100,7 @@ describe("the execution mix's arithmetic", () => {
   });
   it("steps the cost axis cleanly from 0 to its top: never a quarter of 5", () => {
     expect(niceAxis(0.005).ticks).toEqual([0, 0.001, 0.002, 0.003, 0.004, 0.005]);
-    expect(niceAxis(1).ticks).toEqual([0, 0.25, 0.5, 0.75, 1]);
+    expect(niceAxis(1).ticks).toEqual([0, 0.2, 0.4, 0.6, 0.8, 1]);
     expect(niceAxis(0.25).ticks).toEqual([0, 0.05, 0.1, 0.15, 0.2, 0.25]);
     expect(niceAxis(2).ticks).toEqual([0, 0.5, 1, 1.5, 2]);
   });
