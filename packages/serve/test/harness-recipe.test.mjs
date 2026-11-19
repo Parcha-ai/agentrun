@@ -5,7 +5,9 @@
 //     the private HOME (RECIPE_PATH_OUTSIDE), only the owner's command installs it (RECIPE_INSTALLS_ITSELF, and a check
 //     of one not installed says that command: HARNESS_NOT_INSTALLED), an allowlist environment (RECIPE_ENV_NOT_ALLOWLIST).
 //   - The owner's install takes the recipe's archive, its sha256 checked, and records the binary's first sha256 where the
-//     recipe pins none: a binary that differs later is refused, by the check (ACP_BINARY_DRIFT) and by a reinstall.
+//     recipe pins none (the installer's one first-seen path, harness-archive.ts binaryRecord): a binary that differs
+//     later is refused, by the check and by a reinstall alike (HARNESS_BINARY_MISMATCH). It unpacks the formats the
+//     installer does (tar.bz2, tar.gz) and the loader takes those alone.
 //   - harness-check runs the installed agent for real (here a stand-in ACP agent whose model is a scripted Anthropic
 //     origin on loopback: test/fixtures/model-acp-agent.mjs) and passes it through stages 2 and 3, printing the three facts.
 import assert from "node:assert/strict";
@@ -29,16 +31,17 @@ const MODEL = "anthropic/claude-haiku-4-5";
 const sha256 = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const linux = process.platform === "linux" ? false : "the agent's environment and its kill are read from /proc";
 
-/** A release of the stand-in agent: `./agent`, a script that runs it, packed in a .tar.bz2. `extra` changes its bytes. */
-async function release(t, extra = "") {
+/** A release of the stand-in agent: `./agent`, a script that runs it, packed in a .tar.bz2 (or a .tar.gz: `pack` "gz").
+ *  `extra` changes its bytes. */
+async function release(t, extra = "", pack = "bz2") {
   const dir = await scratch(t);
   const tree = join(dir, "tree");
   mkdirSync(tree);
   const body = `#!/bin/sh\n${extra}exec '${process.execPath}' '${AGENT}' "$@"\n`;
   writeFileSync(join(tree, "agent"), body);
   chmodSync(join(tree, "agent"), 0o755);
-  const archive = join(dir, "agent.tar.bz2");
-  const packed = spawnSync("tar", ["-cjf", archive, "-C", tree, "./agent"], { encoding: "utf8" });
+  const archive = join(dir, `agent.tar.${pack}`);
+  const packed = spawnSync("tar", [pack === "gz" ? "-czf" : "-cjf", archive, "-C", tree, "./agent"], { encoding: "utf8" });
   assert.equal(packed.status, 0, packed.stderr);
   const bytes = readFileSync(archive);
   return { bytes, archiveSha: sha256(bytes), binarySha: sha256(Buffer.from(body)) };
@@ -125,7 +128,19 @@ const BROKEN = [
   ["rule 5, an allowlist environment: the host's environment passed through", RECIPE_CODES.env, () => recipeOf(undefined, { passEnv: true })],
   ["rule 5, an allowlist environment: a value read from the host's environment", RECIPE_CODES.env, () => recipeOf(undefined, { env: { MODEL_AGENT_CACHE: "$HOME/.cache" } })],
   ["rule 5, an allowlist environment: a variable the adapter sets", RECIPE_CODES.env, () => recipeOf(undefined, { env: { HOME: "/root" } })],
+  ["its own id: an id the server's harness table already has (cursor)", RECIPE_CODES.invalid, () => recipeOf(undefined, { id: "cursor" })],
 ];
+
+test("a recipe is refused under every id the server's harness table already has, and every reserved one", async () => {
+  const { BUILTIN_HARNESS_IDS } = await import("../dist/harness-table.js");
+  const { HARNESS_ID_PATTERN, RESERVED_HARNESS_IDS } = await import("../dist/harness.js");
+  assert.ok(BUILTIN_HARNESS_IDS.includes("goose") && BUILTIN_HARNESS_IDS.includes("cursor"), BUILTIN_HARNESS_IDS.join(", "));
+  for (const id of [...BUILTIN_HARNESS_IDS, ...RESERVED_HARNESS_IDS].filter((each) => new RegExp(HARNESS_ID_PATTERN).test(each))) {
+    const refused = refusalOf(recipeOf(undefined, { id }));
+    assert.equal(refused.code, RECIPE_CODES.invalid, `${id}: ${refused.message}`);
+    assert.match(refused.message, new RegExp(`id ${id} `));
+  }
+});
 
 for (const [name, code, make] of BROKEN) {
   test(`the loader refuses ${name}: ${code}`, () => {
@@ -189,10 +204,25 @@ test("the owner's install: the archive's sha256 checked, the binary's first sha2
   chmodSync(join(data, "harnesses", "model-agent", "agent"), 0o755);
   writeFileSync(join(data, "harnesses", "model-agent", "agent"), "#!/bin/sh\necho swapped\n");
   await assert.rejects(installRecipe(movedRecipe, moved, data, { fetch: servedFetch(other.bytes) }), (error) => error instanceof ArchiveInstallFailed && error.code === "HARNESS_BINARY_MISMATCH" && error.message.includes(first.binarySha));
-  // And the check refuses the swapped binary: drift from the first one seen.
+  // And the check refuses the swapped binary by the installer's code: one pin, one code.
   const run = await check(t, file, data);
   assert.equal(run.status, 1);
-  assert.equal(run.report.refused.code, "ACP_BINARY_DRIFT", run.report.refused.message);
+  assert.equal(run.report.refused.code, "HARNESS_BINARY_MISMATCH", run.report.refused.message);
+});
+
+test("a recipe's archive is in a format the installer unpacks (tar.bz2, tar.gz): a .tar.gz installs, a zip is refused by the loader", async (t) => {
+  const data = join(await scratch(t), "agents");
+  const built = await release(t, "", "gz");
+  const file = await recipeFile(t, recipeOf(built.archiveSha, { release: { registry: "model-agent", version: "1.0.0", archives: { [PLATFORM]: { url: URL_OF, format: "tar.gz", sha256: built.archiveSha, cmd: "./agent" } } } }));
+  const { recipe } = loadRecipe(file);
+  const now = await installRecipe(recipe, file, data, { fetch: servedFetch(built.bytes) });
+  assert.equal(now.installed, "now");
+  assert.equal(readFileSync(firstSeenOf(data, recipe, PLATFORM), "utf8").trim(), built.binarySha);
+  const zip = recipeOf();
+  zip.release.archives[PLATFORM].format = "zip";
+  const refused = refusalOf(zip);
+  assert.equal(refused.code, RECIPE_CODES.binary);
+  assert.match(refused.message, /tar\.bz2 and tar\.gz/);
 });
 
 /** The stand-in agent installed from `recipe` (or `recipe(origin)`) into a fresh data directory, and a scripted origin
@@ -320,6 +350,13 @@ test("harness-check passes a plan-billed agent that reaches its vendor through H
   assert.equal(refusalOf(recipeOf(undefined, { keys: ["MODEL_AGENT_API_KEY"], model: { billing: "plan", maxTurns: 8, maxToolCalls: 8, hosts: ["vendor.example:65536"] } })).code, RECIPE_CODES.invalid);
   assert.equal(parseRecipe(JSON.stringify(recipeOf(undefined, { keys: ["MODEL_AGENT_API_KEY"], model: { billing: "plan", maxTurns: 8, maxToolCalls: 8, hosts: ["vendor.example:65535", "api.vendor.example"] } }))).model.hosts.length, 2);
   assert.equal(refusalOf(recipeOf(undefined, { model: { billing: "proxy", wire: "anthropic-messages", env: "MODEL_AGENT_MODEL", hosts: ["vendor.example"] } })).code, RECIPE_CODES.invalid);
+  // The key is handed the one way a run's is (the adapter's recipe.keys, read by name at its start): a host without it
+  // is refused before the agent starts, naming the key, and the vendor hears nothing.
+  const keyless = await installed(t, planned);
+  const missing = await check(t, keyless.file, keyless.data, cliEnv());
+  assert.equal(missing.status, 1);
+  assert.match(`${missing.stdout}\n${JSON.stringify(missing.report)}`, /ACP_KEY_MISSING: [^"\n]*MODEL_AGENT_API_KEY/);
+  assert.equal(keyless.origin.messages().length, 0);
 });
 
 test("harness-check finds a host key the recipe copied under another name, though the server keeps its keys off the environment's enumeration", { skip: linux, timeout: 120_000 }, async (t) => {
