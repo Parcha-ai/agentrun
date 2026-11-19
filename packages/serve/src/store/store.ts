@@ -156,12 +156,10 @@ export interface ListedRun {
   /** The listing is behind now (Runs.behind's three ways): a list builds it before it shows it. */
   readonly behind: boolean;
 }
-/** A run's listing as its row keeps it (Runs.putListing's item, cut and format): `format` is whatever the server that
- *  wrote it stamped, nothing on a row written before listings carried one, so a list compares it, never trusts it. */
+/** A run's listing as its row keeps it (Runs.putListing's item and cut). */
 export interface KeptListing {
   readonly item: Record<string, unknown>;
   readonly cut: string;
-  readonly format?: unknown;
 }
 /** Whether `run`, of a revision of `kind`, was stopped by a person and waits for them (state 'stopped', outcome 'stopped',
  *  an agentic run started here): its turn is over, the run is not. A workflow's stop, a cancel and an imported run's stop
@@ -172,8 +170,6 @@ export interface RunListing {
   readonly item: Record<string, unknown>;
   /** The digest of the server's secrets the item was cut of. */
   readonly cut: string;
-  /** The listing format its item was built under (store-view.ts LISTING_FORMAT). */
-  readonly format: number;
   readonly status: string;
   readonly live: boolean;
   readonly until: number | null;

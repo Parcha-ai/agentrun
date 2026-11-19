@@ -828,7 +828,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       // compares its answer with the other one through its grader, handed in by the run's process (runner/compare-end.ts).
       // This runner reads both answers and the learning ledger, which no run's process may.
       if (launch.replay || launch.audit) {
-        const compare = compareEndOfRun(launch, { store, revisionId: run.revisionId, folder: await folderNow(), log, redact: cut });
+        const compare = compareEndOfRun(launch, { store, folder: await folderNow(), log, redact: cut });
         const grade = input.grade;
         const rows = compare && grade && typeof input.grader === "string"
           ? await compare({ runId: claim.runId, agentId: run.agentId, claim, outcome: input.outcome === "failed" ? "failed" : "completed", ...(input.cut === undefined ? {} : { cut: "faulted" as const }), grader: input.grader, grade: (request) => grade(request), ask: input.ask, signal: input.signal })

@@ -20,18 +20,18 @@ export type Placed = CostRun & { at: number };
  *  its own and none is numbered as a job. Before the first job read and after the last, the gap is the half a run the
  *  plot shows. */
 export function placed(runs: readonly CostRun[]): Placed[] {
-  const job = (r: CostRun) => r.path !== "replay" && r.n !== null;
-  const first = runs.find(job)?.n ?? 1;
-  const last = runs.findLast(job)?.n ?? first;
+  const jobs = jobsOf(runs);
+  const first = jobs[0]?.n ?? 1;
+  const last = jobs.at(-1)?.n ?? first;
   const out: Placed[] = [];
   let gap: CostRun[] = [];
   let from = first - 0.5;
   const lay = (to: number) => { gap.forEach((r, k) => out.push({ ...r, at: from + ((to - from) * (k + 1)) / (gap.length + 1) })); gap = []; };
   for (const r of runs) {
-    if (!job(r)) { gap.push(r); continue; }
-    lay(r.n!);
-    from = r.n!;
-    out.push({ ...r, at: r.n! });
+    if (r.n === null) { gap.push(r); continue; }
+    lay(r.n);
+    from = r.n;
+    out.push({ ...r, at: r.n });
   }
   lay(last + 0.5);
   return out;
@@ -41,9 +41,9 @@ export function placed(runs: readonly CostRun[]): Placed[] {
 export type Point = Placed & { total_usd: number };
 export const plotted = (runs: readonly CostRun[]): Point[] => placed(runs).filter((r): r is Point => r.total_usd !== null);
 
-/** A run that does a job: numbered on the run axis, as the bill numbers it (a replay has no number). */
+/** A run that does a job: numbered on the run axis, as the bill numbers it (the server numbers every run but a replay). */
 export type Job = CostRun & { n: number };
-export const jobsOf = (runs: readonly CostRun[]): Job[] => runs.filter((r): r is Job => r.path !== "replay" && r.n !== null);
+export const jobsOf = (runs: readonly CostRun[]): Job[] => runs.filter((r): r is Job => r.n !== null);
 
 /** The rolling mean's window: about a fifteenth of the runs, from 3 to 25, so a few runs still draw a line and a
  *  thousand do not flatten it to nothing. */
@@ -61,13 +61,6 @@ export function rollingMean(points: readonly Point[], window: number): number[] 
   return out;
 }
 
-/** A clean top for an axis: 1, 2, 2.5 or 5 times a power of ten, at or above `max`. */
-export function niceTop(max: number): number {
-  if (!(max > 0)) return 1;
-  const p = 10 ** Math.floor(Math.log10(max));
-  return [1, 2, 2.5, 5, 10].map((k) => k * p).find((v) => v >= max * (1 - 1e-9))!;
-}
-
 /** An axis just above `max`: the smallest clean step (1, 2, 2.5 or 5 times a power of ten) that reaches it in five steps
  *  or fewer, its top the step it reaches it at, and its ticks from 0 ($1.18 reads 0 to $1.25 by $0.25, never to $2). */
 export function niceAxis(max: number): { top: number; ticks: number[] } {
@@ -79,25 +72,15 @@ export function niceAxis(max: number): { top: number; ticks: number[] } {
   return { top: ticks.at(-1)!, ticks };
 }
 
-/** The y axis' ticks from 0 to `top` (a niceTop): a clean step (1, 2 or 5 times a power of ten, 2.5 for a top of 10), four
- *  or five steps, never a quarter of 5 ($0.00125). */
-export function yTicksOf(top: number): number[] {
-  const p = 10 ** Math.floor(Math.log10(top) + 1e-9);
-  const lead = Math.round((top / p) * 10) / 10;
-  const step = ({ 1: 0.25, 2: 0.5, 2.5: 0.5, 5: 1, 10: 2.5 } as Record<number, number>)[lead] ?? top / 4;
-  const ticks: number[] = [];
-  for (let i = 0; i * step * p <= top * (1 + 1e-9); i++) ticks.push(Math.round(i * step * p * 1e12) / 1e12);
-  return ticks;
-}
-
-/** The y axis' top: over the 95th percentile of the runs, the rolling mean and the level before learning, so one runaway
- *  run does not squash the rest to the floor. A run above it is drawn at the top, and counted (`above`). */
-export function yTopOf(points: readonly Point[], mean: readonly number[], before: number | null): { top: number; above: number } {
-  if (!points.length) return { top: 1, above: 0 };
+/** The y axis: its top (niceAxis) over the 95th percentile of the runs, the rolling mean and the level before learning, so
+ *  one runaway run does not squash the rest to the floor, and its ticks. A run above the top is drawn at it, and counted
+ *  (`above`). */
+export function yTopOf(points: readonly Point[], mean: readonly number[], before: number | null): { top: number; ticks: number[]; above: number } {
+  if (!points.length) return { ...niceAxis(0), above: 0 };
   const sorted = points.map((p) => p.total_usd).sort((a, b) => a - b);
   const p95 = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.95))]!;
-  const top = niceTop(Math.max(p95, ...mean, before ?? 0) * 1.08);
-  return { top, above: points.filter((p) => p.total_usd > top).length };
+  const { top, ticks } = niceAxis(Math.max(p95, ...mean, before ?? 0) * 1.08);
+  return { top, ticks, above: points.filter((p) => p.total_usd > top).length };
 }
 
 /** Up to `most` ticks of run numbers from `first` to `last`: whole runs, a clean step. */

@@ -5,7 +5,7 @@ import { RunsList } from "./RunsList";
 import { RunHeader } from "./RunHeader";
 import type { Run } from "@/lib/v2";
 
-// A run a learned workflow answered alone (the server's `served`, its path as GET .../learning/cost places it) says so on
+// A run a learned workflow answered alone (the server's `path` `workflow`, as GET .../learning/cost places it) says so on
 // the runs list and on its run page, with the Learning tab's workflow series mark beside the words; every other run reads
 // its kind, and a run the workflow handed back reads as the agent's, its hand-back named on the run page alone.
 const base: Run = {
@@ -13,8 +13,8 @@ const base: Run = {
   run_id: "r1", agent_id: "mcc", agent_version: 2, revision: "rv2", kind: "agentic", status: "completed", state: "idle", title: "Coffee shop",
   created_at: "2026-11-18T06:00:00Z", ended_at: "2026-11-18T06:00:03Z", result: null, error: null, cost: { usd: 0.002, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null,
 };
-const SERVED: Run = { ...base, run_id: "r-served", served: { workflow: "mcc-guess", digest: "d".repeat(16) } };
-const HANDED: Run = { ...base, run_id: "r-handed", handed_back: { workflow: "mcc-guess", digest: "d".repeat(16) } };
+const SERVED: Run = { ...base, run_id: "r-served", path: "workflow", workflow: { name: "mcc-guess", digest: "d".repeat(16) } };
+const HANDED: Run = { ...base, run_id: "r-handed", path: "handed_back", workflow: { name: "mcc-guess", digest: "d".repeat(16) } };
 const AGENT: Run = { ...base, run_id: "r-agent" };
 
 const host = (html: string) => {
@@ -56,6 +56,6 @@ describe("a served run's page header", () => {
     expect(facts(AGENT)).toBe("agentic · rev 2 · on the server");
   });
   it("a served run whose workflow is not named reads Learned workflow alone", () => {
-    expect(facts({ ...SERVED, served: { workflow: null, digest: null } })).toBe("Learned workflow · rev 2 · on the server");
+    expect(facts({ ...SERVED, workflow: { name: null, digest: null } })).toBe("Learned workflow · rev 2 · on the server");
   });
 });
