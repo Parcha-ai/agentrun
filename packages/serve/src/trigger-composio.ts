@@ -216,6 +216,9 @@ export const composio: TriggerAdapter = {
   label: "Composio trigger",
   delivery: "push",
   owner: false,
+  // Each event is its own (one issue, one message, often a different sender's): one run's answer (about alice's) is never
+  // handed to the next (bob's).
+  previousResult: false,
   // Each project's subscription secret, Composio's own, sealed under its hook's scope, and each trigger's sealed config
   // value under its own (configScope): composio-triggers.ts keeps them.
   settings: { scope: "server", fields: { [COMPOSIO_SECRET]: {}, [CONFIG_SECRET]: {}, [CONFIG_UNLISTED]: { public: true } } },
