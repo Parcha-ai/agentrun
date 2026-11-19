@@ -260,14 +260,13 @@ function liveOf(runRow: RunRow, now: number): boolean {
   return !FINAL_STATES.includes(runRow.state) && runRow.runner !== null && runRow.claimedUntil !== null && runRow.claimedUntil >= now;
 }
 
-/** Whether the run's turn stands on a person: a tool call asked for their approval with no answer in its journal, or a
- *  browser or desktop hand-over neither answered in its journal nor by a hand-back row. By the journal alone, never by the
- *  clock: a hand-over past its expiry still holds the turn until its expiry is written as its answer, and only then does
- *  the turn go on. Such a turn has no model request in flight. */
-export function standsOnPerson(entries: readonly { kind: string; data?: unknown }[], commands: Awaited<ReturnType<Store["commands"]>>): boolean {
-  const journal = entries as unknown as Parameters<typeof browserAskOf>[0];
-  return [...asksOf(entries as Parameters<typeof asksOf>[0]).values()].some((approval) => !approval.resolved) ||
-    browserAskOf(journal, commands, Number.NEGATIVE_INFINITY) !== undefined ||
+/** Whether the run's turn stands on a person: a tool call asked for their approval with no answer in its journal (the
+ *  view's `approvals`, asksOf), or a browser or desktop hand-over neither answered in its journal nor by a hand-back row.
+ *  By the journal alone, never by the clock: a hand-over past its expiry still holds the turn until its expiry is written
+ *  as its answer, and only then does the turn go on. Such a turn has no model request in flight. */
+export function standsOnPerson(approvals: ReadonlyMap<string, { readonly resolved?: true }>, entries: readonly { kind: string; data?: unknown }[], commands: Awaited<ReturnType<Store["commands"]>>): boolean {
+  return [...approvals.values()].some((approval) => !approval.resolved) ||
+    browserAskOf(entries as unknown as Parameters<typeof browserAskOf>[0], commands, Number.NEGATIVE_INFINITY) !== undefined ||
     computerAskOf(entries as unknown as Parameters<typeof computerAskOf>[0], commands, Number.NEGATIVE_INFINITY) !== undefined;
 }
 
@@ -379,7 +378,8 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // sum as its cost. A turn that stands on a person (standsOnPerson) has no request in flight to book: the runner that takes
   // the stop claims the run with that turn still open, and it reads stopped under that claim too, never working between the
   // stop's answer and its end.
-  const asked = !terminal && stopAsked(row, runRow, await commandsNow()) && (!working || standsOnPerson(records.entries, await commandsNow()));
+  const commands = terminal ? [] : await commandsNow();
+  const asked = !terminal && stopAsked(row, runRow, commands) && (!working || standsOnPerson(approvals, records.entries, commands));
   // A call asked before an end in the journal reads withdrawn in that end's words; a stopped or failed run's (states no
   // reopen leaves) whose journal holds no end, by its row (answersOf `final`); every call still waiting once a stop is
   // asked (stopAsked).

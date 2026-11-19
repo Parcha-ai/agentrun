@@ -14,6 +14,7 @@ import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { KINDS } from "../dist/runner/journal-kinds.js";
 import { BROWSER_HANDOVER_KIND } from "../dist/browser-commands.js";
 import { COMPUTER_HANDOVER_KIND } from "../dist/computer-commands.js";
+import { asksOf } from "../dist/run-view.js";
 import { standsOnPerson } from "../dist/store-view.js";
 import { agent, follow, retried, scratch, serve, startInProcessRunner, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
@@ -41,12 +42,12 @@ async function reads(api, runId) {
   return { one: [one.status, one.state, one.pending], listed: [item.status, item.state, item.pending] };
 }
 
-/** Reads run `runId` until `done` holds of its read, within `deadlineMs`. */
+/** Reads run `runId` until `done` (sync or async) holds of its read, within `deadlineMs`. */
 async function until(api, runId, done, what, deadlineMs = 30_000) {
   const end = Date.now() + deadlineMs;
   for (;;) {
     const seen = await reads(api, runId);
-    if (done(seen)) return seen;
+    if (await done(seen)) return seen;
     assert.ok(Date.now() < end, `run ${runId}: ${what}; it reads ${JSON.stringify(seen)}`);
     await sleep(200);
   }
@@ -123,8 +124,10 @@ for (const harness of ["pi", "codex"]) {
       // Let go as a runner lets go; the next runner takes the stop, ends the turn and lets the run go stopped.
       await store.release(claim, { state: "parked", wakeAt: null });
       runner = await runnerOf();
-      const ended = async () => (await store.runs.get(runId))?.state === "stopped" && (await api("GET", `/runs/${runId}`)).body.claim === null;
-      for (const end = Date.now() + 30_000; !(await ended()); await sleep(100)) assert.ok(Date.now() < end, `${harness}: the stop is taken`);
+      await until(api, runId, async () => {
+        const taken = await store.runs.get(runId);
+        return taken?.state === "stopped" && taken.runner === null;
+      }, `${harness}: the stop is taken and the run let go`);
       assert.deepEqual(await reads(api, runId), { one: ["input_required", "idle", { kind: "stopped" }], listed: ["input_required", "idle", { kind: "stopped" }] }, `${harness}: taken, it reads stopped`);
     } finally {
       await runner?.();
@@ -140,7 +143,7 @@ test("a turn stands on a person while a call's approval or a hand-over has no an
   const browserExpired = { kind: BROWSER_HANDOVER_KIND, data: { state: "expired", id: "b1", at: Date.parse(past.expires_at) } };
   const computer = { kind: COMPUTER_HANDOVER_KIND, data: { state: "waiting", id: "d1", instruction: "Approve on the phone.", completion_condition: "Approved.", ...past } };
   const computerExpired = { kind: COMPUTER_HANDOVER_KIND, data: { state: "expired", id: "d1" } };
-  const stands = (entries) => standsOnPerson(entries, []);
+  const stands = (entries) => standsOnPerson(asksOf(entries), entries, []);
   assert.deepEqual(
     [stands([]), stands([ask]), stands([ask, answered]), stands([browser]), stands([browser, browserExpired]), stands([computer]), stands([computer, computerExpired])],
     [false, true, false, true, false, true, false],
