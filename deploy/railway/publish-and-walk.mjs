@@ -77,6 +77,12 @@ export const OPS = {
 export const BUTTON_MARK = "<!-- railway-button: publish-and-walk.sh prints this line's replacement once the template is published -->";
 export const buttonLine = (code) => `[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/new/template/${code}?utm_medium=integration&utm_source=button&utm_campaign=agentrun)`;
 export const BUTTON_PLACEHOLDER = `<!-- ${buttonLine("TEMPLATE_CODE")} -->`;
+/** The template code of the README's button (the line after the mark), or undefined while it is the placeholder. */
+export function buttonCode(readme) {
+  const lines = readme.split("\n");
+  const line = lines[lines.indexOf(BUTTON_MARK) + 1] ?? "";
+  return line.startsWith("<!--") ? undefined : /railway\.com\/new\/template\/([A-Za-z0-9-]+)/.exec(line)?.[1];
+}
 
 /** A GraphQL call's errors, as one Error naming the operation. */
 class Refused extends Error {
@@ -217,8 +223,10 @@ export function walkValues(config) {
   return out;
 }
 
-/** Waits for `check` to return a value (not undefined), asking every `everyMs`, for at most `forMs`; else throws `what`. */
-async function until(client, what, forMs, everyMs, check) {
+/** Waits for `check` to return a value (not undefined), asking every `everyMs`, for at most `forMs`; else throws `what`.
+ *  The walks' shared steps (until, rows, firstVisit, setUp, firstRunOf, report) take a client of `http` (fetch's shape)
+ *  and `sleep`: Railway's, or deploy/render/walk.mjs's through Render's edge. */
+export async function until(client, what, forMs, everyMs, check) {
   const end = Date.now() + forMs;
   for (;;) {
     const got = await check();
@@ -229,7 +237,7 @@ async function until(client, what, forMs, everyMs, check) {
 }
 
 /** The walk's report rows, `step | PASS or FAIL | evidence`, as deploy/walk's are. */
-function rows(log) {
+export function rows(log) {
   const all = [];
   return {
     all,
@@ -392,11 +400,7 @@ async function walk(client, { workspaceId, template, step, firstRun, times }) {
     times.healthy = Date.now();
     step.pass("healthy", `GET ${base}/v2/health: 200 ${JSON.stringify(health)}, ${minutes(times.healthy - times.clicked)} after the deploy started`);
 
-    const page = await client.http(`${base}/`, { headers: { accept: "text/html" } });
-    if (page.status !== 200 || !/text\/html/.test(page.headers.get("content-type") ?? "")) throw new Error(`GET ${base}/ answered ${page.status} ${page.headers.get("content-type")}, not the console`);
-    const session = await (await client.http(`${base}/v2/auth/session`)).json();
-    if (!(session.accounts === true && session.password_set === false && session.setup_code === true)) throw new Error(`the first visit's session read is ${JSON.stringify(session)}, not one that asks for the setup code`);
-    step.pass("first visit asks for the setup code", `GET / is the console; GET /v2/auth/session: ${JSON.stringify(session)}`);
+    await firstVisit(client, { base, step });
 
     const line = await until(client, "the setup line in the deploy's log", 3 * 60_000, 10_000, async () => {
       const logs = (await client.call("DeploymentLogs", { id: deployment.id, filter: "Set up this server" })).deploymentLogs;
@@ -404,16 +408,7 @@ async function walk(client, { workspaceId, template, step, firstRun, times }) {
     });
     step.pass("setup link at the domain", `the log's line starts "Set up this server: ${base}/setup#code=" (the code not shown) and is ${line.length} characters`);
 
-    const setup = await client.http(`${base}/v2/setup`, {
-      method: "POST",
-      headers: { "content-type": "application/json", origin: base },
-      body: JSON.stringify({ code: vars.AGENTRUN_TOKEN, password: randomBytes(18).toString("base64url") }),
-    });
-    const signedIn = await setup.json().catch(() => ({}));
-    if (setup.status !== 201 || signedIn.signed_in !== true) throw new Error(`POST /v2/setup with AGENTRUN_TOKEN as the code answered ${setup.status} ${JSON.stringify(signedIn)}`);
-    const cookie = (setup.headers.get("set-cookie") ?? "").split(";")[0];
-    times.setUp = Date.now();
-    step.pass("token works as the setup code", `POST ${base}/v2/setup with AGENTRUN_TOKEN as the code: 201, signed in${cookie ? " (a session cookie, not shown)" : ""}`);
+    const cookie = await setUp(client, { base, token: vars.AGENTRUN_TOKEN, step, times });
 
     if (firstRun) await firstRunOf(client, { base, token: vars.AGENTRUN_TOKEN, cookie, key: firstRun.key, model: firstRun.model, step, times });
   } finally {
@@ -441,10 +436,34 @@ async function walk(client, { workspaceId, template, step, firstRun, times }) {
   }
 }
 
+/** A person's first visit at `base`: GET / is the console, and the session read asks for the setup code. */
+export async function firstVisit(client, { base, step }) {
+  const page = await client.http(`${base}/`, { headers: { accept: "text/html" } });
+  if (page.status !== 200 || !/text\/html/.test(page.headers.get("content-type") ?? "")) throw new Error(`GET ${base}/ answered ${page.status} ${page.headers.get("content-type")}, not the console`);
+  const session = await (await client.http(`${base}/v2/auth/session`)).json();
+  if (!(session.accounts === true && session.password_set === false && session.setup_code === true)) throw new Error(`the first visit's session read is ${JSON.stringify(session)}, not one that asks for the setup code`);
+  step.pass("first visit asks for the setup code", `GET / is the console; GET /v2/auth/session: ${JSON.stringify(session)}`);
+}
+
+/** Setup with the server's token as the code and a password of the walk's: signed in. Returns the session cookie. */
+export async function setUp(client, { base, token, step, times }) {
+  const setup = await client.http(`${base}/v2/setup`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: base },
+    body: JSON.stringify({ code: token, password: randomBytes(18).toString("base64url") }),
+  });
+  const signedIn = await setup.json().catch(() => ({}));
+  if (setup.status !== 201 || signedIn.signed_in !== true) throw new Error(`POST /v2/setup with AGENTRUN_TOKEN as the code answered ${setup.status} ${JSON.stringify(signedIn)}`);
+  const cookie = (setup.headers.get("set-cookie") ?? "").split(";")[0];
+  times.setUp = Date.now();
+  step.pass("token works as the setup code", `POST ${base}/v2/setup with AGENTRUN_TOKEN as the code: 201, signed in${cookie ? " (a session cookie, not shown)" : ""}`);
+  return cookie;
+}
+
 /** The person's first run: the model key saved in the console's Settings (a secret takes the owner's signed-in session,
  *  never the API token), then over the API with the deploy's AGENTRUN_TOKEN a no-tool agent on pi on the given model, one
  *  run of it to completion, and what its model cost. */
-async function firstRunOf(client, { base, token, cookie, key, model, step, times }) {
+export async function firstRunOf(client, { base, token, cookie, key, model, step, times }) {
   if (!cookie) throw new Error("POST /v2/setup set no session cookie, so the model key can't be saved as the console saves it");
   const saved = await client.http(`${base}/v2/settings/tool-keys/${FIRST_RUN.keyId}`, {
     method: "PUT",
@@ -465,12 +484,13 @@ async function firstRunOf(client, { base, token, cookie, key, model, step, times
   const started = await api("POST", `/agents/${agent.agent_id}/runs`, { input: { content: FIRST_RUN.input } });
   const run = await until(client, `run ${started.run_id} ended`, 10 * 60_000, 3_000, async () => {
     const r = await api("GET", `/runs/${started.run_id}`);
-    return ["completed", "failed", "cancelled"].includes(r.status) ? r : undefined;
+    // A run waiting for input never completes by itself: it ends the wait too, and the walk fails on it.
+    return ["completed", "failed", "cancelled", "input_required"].includes(r.status) ? r : undefined;
   });
   times.finished = Date.now();
   times.runId = started.run_id;
   times.modelUsd = run.cost?.usd ?? null;
-  if (run.status !== "completed") throw new Error(`run ${started.run_id} ended ${run.status}: ${JSON.stringify(run.error ?? null)}`);
+  if (run.status !== "completed") throw new Error(`run ${started.run_id} ended ${run.status}: ${JSON.stringify(run.error ?? run.pending ?? null)}`);
   const result = typeof run.result === "string" ? run.result : run.result?.content ?? JSON.stringify(run.result ?? null);
   times.result = result;
   step.pass("first run finished", `run ${started.run_id}: completed, model cost $${times.modelUsd}, ${minutes(times.finished - times.clicked)} after the deploy started; it wrote ${result.length} characters: ${JSON.stringify(result.slice(0, 160))}`);
@@ -632,7 +652,7 @@ async function readStdin() {
 }
 
 async function main(argv) {
-  const usage = "usage: publish-and-walk.sh WORKSPACE_ID [--expect-workspace NAME] [--walk CODE | --template CODE] [--first-run [--model ID]] [--secrets-stdin] | --dry-run [WORKSPACE_ID] | --check-api";
+  const usage = "usage: publish-and-walk.sh WORKSPACE_ID [--expect-workspace NAME] [--walk [CODE] | --template CODE] [--first-run [--model ID]] [--secrets-stdin] | --dry-run [WORKSPACE_ID] | --check-api";
   const log = (line) => console.error(line);
   const flag = (name) => {
     const i = argv.indexOf(name);
@@ -646,7 +666,10 @@ async function main(argv) {
     log(`Every operation against ${API}, with no token:`);
     return (await checkApi(liveClient({}), log)) ? 1 : 0;
   }
-  const walkCode = flag("--walk");
+  // --walk CODE, or --walk alone: the template the README's button deploys.
+  const walkAt = argv.indexOf("--walk");
+  const walkGiven = walkAt >= 0 && argv[walkAt + 1] !== undefined && !argv[walkAt + 1].startsWith("-");
+  const walkCode = walkAt < 0 ? undefined : walkGiven ? argv.splice(walkAt, 2)[1] : (argv.splice(walkAt, 1), buttonCode(readFileSync(README, "utf8")) ?? "");
   const templateCode = flag("--template");
   const expectWorkspace = flag("--expect-workspace");
   const model = flag("--model");
