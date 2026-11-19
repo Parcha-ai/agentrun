@@ -95,7 +95,7 @@ test('the server image is built natively per architecture from the start, pushed
   assert.match(tag.run, /--tag "\$IMAGE:\$RELEASE_TAG" --tag "\$IMAGE:beta"/, 'the release tag and beta, as before');
 });
 
-test('the Helm chart is pushed at the tag\'s version once its image is tagged, with this run\'s token; its logged-out read holds nothing', () => {
+test('the Helm chart is packaged from Chart.yaml as it stands and pushed once its image is tagged, with this run\'s token; its logged-out read holds nothing', () => {
   const { chart } = jobs;
   const read = jobs['chart-public'];
   assert.deepEqual(needs('chart'), ['image-release'], 'the image the chart installs is tagged first');
@@ -108,9 +108,9 @@ test('the Helm chart is pushed at the tag\'s version once its image is tagged, w
   assert.equal(checkout.with.ref, '${{ inputs.tag }}');
   assert.equal(checkout.with['persist-credentials'], false);
   assert.ok(chart.steps.some(step => step.run === 'test "$(git rev-parse HEAD)" = "$GITHUB_SHA"'), 'the checkout is the provenance commit');
-  const packaged = stepAt('chart', /helm package deploy\/helm\/agentrun --version "\$\{RELEASE_TAG#v\}" --app-version "\$\{RELEASE_TAG#v\}" /);
+  const packaged = stepAt('chart', /^helm lint deploy\/helm\/agentrun\nhelm package deploy\/helm\/agentrun --destination "\$RUNNER_TEMP\/chart"\n$/);
   const pushed = stepAt('chart', /helm push "\$RUNNER_TEMP\/chart\/agentrun-\$\{RELEASE_TAG#v\}\.tgz" "\$CHART"\n\s*helm registry logout ghcr\.io/);
-  assert.ok(packaged >= 0 && pushed > packaged, 'packaged at the tag\'s version and appVersion (whatever Chart.yaml says), then pushed and logged out');
+  assert.ok(packaged >= 0 && pushed > packaged, 'packaged at Chart.yaml\'s version (no --version or --app-version: the release pull request\'s CI holds it to the tag), then pushed and logged out');
   const push = chart.steps[pushed];
   assert.equal(push.env.GH_TOKEN, '${{ secrets.GITHUB_TOKEN }}', 'only the push step holds the token');
   assert.match(push.run, /--password-stdin/, 'never on a command line');

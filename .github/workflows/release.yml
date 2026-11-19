@@ -447,8 +447,7 @@ jobs:
         run: node packages/computer/box/build-e2b.mjs --image "$BOX_IMAGE" --public
 
   # The Helm chart (deploy/helm/agentrun) as oci://ghcr.io/parcha-ai/charts/agentrun, once the image it installs is tagged
-  # (image-release). Packaged at the tag's version and appVersion, so it installs this release's image whatever Chart.yaml
-  # says (the release pull request moves Chart.yaml with render.yaml; railway-template.test.mjs holds the three together).
+  # (image-release). Packaged from Chart.yaml, which the release pull request moves (railway-template.test.mjs).
   # The same GITHUB_TOKEN with packages: write as image-release, in this job alone: no environment and no secret. A re-run
   # pushes the same version again. A failed push stops the GitHub release.
   chart:
@@ -472,10 +471,10 @@ jobs:
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v4.3.1
-      - name: Package the chart at the release's version
+      - name: Package the chart
         run: |
           helm lint deploy/helm/agentrun
-          helm package deploy/helm/agentrun --version "${RELEASE_TAG#v}" --app-version "${RELEASE_TAG#v}" --destination "$RUNNER_TEMP/chart"
+          helm package deploy/helm/agentrun --destination "$RUNNER_TEMP/chart"
       - name: Push it
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
