@@ -3134,6 +3134,88 @@ export const COMMANDS = [
   },
   {
     "command": [
+      "slack",
+      "deliveries"
+    ],
+    "operationId": "listSlackDeliveries",
+    "method": "GET",
+    "path": "/settings/slack/deliveries",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Slack's last 50 attempts, newest first"
+  },
+  {
+    "command": [
+      "slack",
+      "get"
+    ],
+    "operationId": "getSlack",
+    "method": "GET",
+    "path": "/settings/slack",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Where this server posts run notices in Slack, if it is set; never the URL"
+  },
+  {
+    "command": [
+      "slack",
+      "redeliver"
+    ],
+    "operationId": "redeliverSlack",
+    "method": "POST",
+    "path": "/settings/slack/deliveries/{webhook_id}/redeliver",
+    "pathParams": [
+      "webhook_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Post a message of Slack's log again, once now, under the same id and body"
+  },
+  {
+    "command": [
+      "slack",
+      "test"
+    ],
+    "operationId": "testSlack",
+    "method": "POST",
+    "path": "/settings/slack/test",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Post a test message to Slack now, once, and say how it went"
+  },
+  {
+    "command": [
       "stats"
     ],
     "operationId": "getStats",
@@ -3837,6 +3919,12 @@ export const SECRET_ROUTES = [
       "url",
       "auth.type"
     ]
+  },
+  {
+    "operationId": "saveSlack",
+    "method": "PUT",
+    "path": "/settings/slack",
+    "publicFields": []
   },
   {
     "operationId": "saveToolKey",

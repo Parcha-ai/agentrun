@@ -147,8 +147,11 @@ test("a Composio link carries the toolkit as the preset takes it: trimmed and lo
   assert.equal(refusedWithLink(bad, origin), `${origin}/#/settings/mcp`);
 });
 
-test("every other secret write links to its own page: a trigger's, the webhook's, an agent's sign-ins, each settings page", async (t) => {
+test("every other secret write links to its own page: a trigger's, the webhook's, Slack's, an agent's sign-ins, each settings page", async (t) => {
   const { origin, token } = await started(t);
+  // A Slack incoming-webhook URL no Slack has, built from parts: its token, the credential, is a fresh fake.
+  const slackToken = fake("slack").replace(/-/g, "");
+  const slackUrl = ["https://hooks.slack.com", "services", "TTEST0000", "BTEST0000", slackToken].join("/");
   const pages = [
     ["POST", "/triggers/trg_abc/secret", undefined, "/#/triggers/trg_abc"],
     ["DELETE", "/settings/webhook", undefined, "/#/settings/webhook"],
@@ -159,10 +162,13 @@ test("every other secret write links to its own page: a trigger's, the webhook's
     ["DELETE", "/integrations/github", undefined, "/#/settings/github"],
     ["PUT", "/workspace/archil", { disk: "d", token: fake("archil") }, "/#/settings/workspace"],
     ["DELETE", "/settings/chatgpt", undefined, "/#/settings/keys"],
+    ["PUT", "/settings/slack", { url: slackUrl }, "/#/settings/slack"],
+    ["DELETE", "/settings/slack", undefined, "/#/settings/slack"],
   ];
   for (const [method, path, body, page] of pages) {
     const res = await token(method, path, body);
     assert.equal(refusedWithLink(res, origin), `${origin}${page}`, `${method} ${path}`);
+    assert.ok(!res.text.includes(slackToken), `${method} ${path}: the refusal never holds Slack's URL`);
   }
 });
 

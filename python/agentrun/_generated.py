@@ -273,6 +273,7 @@ __all__ = [
     "FeaturesMcpClient",
     "FeaturesMessages",
     "FeaturesRuns",
+    "FeaturesSlack",
     "FeaturesTimeline",
     "FeaturesToolKeys",
     "FeaturesTriggers",
@@ -405,6 +406,12 @@ __all__ = [
     "GetRunTraceResponseSpansItem",
     "GetRunTraceResponseSpansItemTokens",
     "GetSdkRunResponse",
+    "GetSlackResponse",
+    "GetSlackResponseObject1",
+    "GetSlackResponseObject1Events",
+    "GetSlackResponseObject2",
+    "GetSlackResponseObject2Disabled",
+    "GetSlackResponseObject2Events",
     "GetStatsResponse",
     "GetStatsResponseAnalytics",
     "GetStatsResponseAnalyticsByDayItem",
@@ -582,6 +589,8 @@ __all__ = [
     "ListRevisionsResponseRevisionsItemMcpPinValueToolsItem",
     "ListRunFilesResponse",
     "ListRunsResponse",
+    "ListSlackDeliveriesResponse",
+    "ListSlackDeliveriesResponseAttemptsItem",
     "ListTemplatesResponse",
     "ListTemplatesResponseTemplatesItem",
     "ListTemplatesResponseTemplatesItemAuthor",
@@ -715,6 +724,7 @@ __all__ = [
     "ReceiveHookComposioResponseObject2FiringsItem1",
     "ReceiveHookComposioResponseObject2FiringsItem1Error",
     "ReceiveHookComposioResponseObject2FiringsItem2",
+    "RedeliverSlackResponse",
     "RedeliverWebhookResponse",
     "RefreshMcpServerResponse",
     "RefreshMcpServerResponseServer",
@@ -835,6 +845,11 @@ __all__ = [
     "SaveMcpServerResponseComposio",
     "SaveMcpServerResponseOauth",
     "SaveMcpServerResponseToolsItem",
+    "SaveSlackBody",
+    "SaveSlackBodyEvents",
+    "SaveSlackResponse",
+    "SaveSlackResponseDisabled",
+    "SaveSlackResponseEvents",
     "SaveToolKeyBody",
     "SaveWebhookBody",
     "SaveWebhookResponse",
@@ -860,6 +875,7 @@ __all__ = [
     "SignOutChatGPTResponse",
     "SkillFileInfo",
     "SkillFiles",
+    "SlackResource",
     "Source",
     "StartChatGPTSignInResponse",
     "StartClaudeLoginResponse",
@@ -890,6 +906,7 @@ __all__ = [
     "TestEmailAccountResponse",
     "TestEmailAccountResponseImap",
     "TestEmailAccountResponseSmtp",
+    "TestSlackResponse",
     "TestWebhookResponse",
     "TestWorkspaceArchilResponse",
     "TestWorkspaceArchilResponseObject1",
@@ -5839,6 +5856,7 @@ class Features(_FeaturesRequired, total=False):
     mcp_client: FeaturesMcpClient
     tool_permissions: bool
     webhooks: FeaturesWebhooks
+    slack: FeaturesSlack
     triggers: FeaturesTriggers
 
 
@@ -5926,6 +5944,12 @@ class FeaturesWebhooks(TypedDict):
     routes: bool
     events: list[Literal["run.needs_input", "run.ended", "trigger.failed"]]
     signing: Literal["standard-webhooks/v1"]
+    at_rest: Literal["sealed"]
+
+
+class FeaturesSlack(TypedDict):
+    routes: bool
+    events: list[Literal["run.needs_input", "run.ended", "trigger.failed"]]
     at_rest: Literal["sealed"]
 
 
@@ -6172,6 +6196,99 @@ class CallMcpResponseError(TypedDict):
 
 
 GetOpenapiResponse: TypeAlias = "dict[str, Any]"
+
+
+class ListSlackDeliveriesResponse(TypedDict):
+    attempts: list[ListSlackDeliveriesResponseAttemptsItem]
+
+
+class ListSlackDeliveriesResponseAttemptsItem(TypedDict):
+    webhook_id: str
+    type: Literal["run.needs_input", "run.ended", "trigger.failed", "slack.test"]
+    at: str
+    status_code: int | None
+    latency_ms: int
+    error: str | None
+    retry_at: str | None
+    redelivery: bool
+
+
+GetSlackResponse: TypeAlias = "GetSlackResponseObject1 | GetSlackResponseObject2"
+
+
+class GetSlackResponseObject1(TypedDict):
+    configured: Literal[False]
+    secret: SecretMeta
+    events: GetSlackResponseObject1Events
+
+
+GetSlackResponseObject1Events = TypedDict("GetSlackResponseObject1Events", {"run.needs_input": "bool", "run.ended": "bool", "trigger.failed": "bool"})
+
+
+class GetSlackResponseObject2(TypedDict):
+    configured: Literal[True]
+    url: str
+    url_state: Literal["sealed", "unreadable"]
+    secret: SecretMeta
+    events: GetSlackResponseObject2Events
+    disabled: GetSlackResponseObject2Disabled | None
+    updated_at: str
+
+
+GetSlackResponseObject2Events = TypedDict("GetSlackResponseObject2Events", {"run.needs_input": "bool", "run.ended": "bool", "trigger.failed": "bool"})
+
+
+class GetSlackResponseObject2Disabled(TypedDict):
+    at: str
+    reason: str
+
+
+class RedeliverSlackResponse(TypedDict):
+    webhook_id: str
+    type: Literal["run.needs_input", "run.ended", "trigger.failed", "slack.test"]
+    at: str
+    status_code: int | None
+    latency_ms: int
+    error: str | None
+    retry_at: str | None
+    redelivery: bool
+
+
+class SaveSlackBody(TypedDict, total=False):
+    url: str
+    events: SaveSlackBodyEvents
+
+
+SaveSlackBodyEvents = TypedDict("SaveSlackBodyEvents", {"run.needs_input": "bool", "run.ended": "bool", "trigger.failed": "bool"}, total=False)
+
+
+class SaveSlackResponse(TypedDict):
+    configured: Literal[True]
+    url: str
+    url_state: Literal["sealed", "unreadable"]
+    secret: SecretMeta
+    events: SaveSlackResponseEvents
+    disabled: SaveSlackResponseDisabled | None
+    updated_at: str
+
+
+SaveSlackResponseEvents = TypedDict("SaveSlackResponseEvents", {"run.needs_input": "bool", "run.ended": "bool", "trigger.failed": "bool"})
+
+
+class SaveSlackResponseDisabled(TypedDict):
+    at: str
+    reason: str
+
+
+class TestSlackResponse(TypedDict):
+    webhook_id: str
+    type: Literal["run.needs_input", "run.ended", "trigger.failed", "slack.test"]
+    at: str
+    status_code: int | None
+    latency_ms: int
+    error: str | None
+    retry_at: str | None
+    redelivery: bool
 
 
 class GetStatsResponse(TypedDict):
@@ -8784,6 +8901,12 @@ OPERATIONS: dict[str, Operation] = {
     "getHealth": Operation(method="GET", path="/health", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "callMcp": Operation(method="POST", path="/mcp", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getOpenapi": Operation(method="GET", path="/openapi.json", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "deleteSlack": Operation(method="DELETE", path="/settings/slack", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
+    "listSlackDeliveries": Operation(method="GET", path="/settings/slack/deliveries", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getSlack": Operation(method="GET", path="/settings/slack", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "redeliverSlack": Operation(method="POST", path="/settings/slack/deliveries/{webhook_id}/redeliver", path_params=("webhook_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "saveSlack": Operation(method="PUT", path="/settings/slack", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=(), tagged=False),
+    "testSlack": Operation(method="POST", path="/settings/slack/test", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getStats": Operation(method="GET", path="/stats", path_params=(), multi_segment=(), query=("from", "to", "agent"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "applyTemplate": Operation(method="POST", path="/templates/{template}/apply", path_params=("template",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "deleteTemplate": Operation(method="DELETE", path="/templates/{template}", path_params=("template",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
@@ -9370,6 +9493,34 @@ class ServerResource(Group):
         return self._call("getOpenapi", (), None, None, timeout=timeout)
 
 
+class SlackResource(Group):
+    """client.slack: one method per operation."""
+
+    def delete(self, *, timeout: float | None = None) -> None:
+        """Remove Slack; its pending messages are dropped, the log of attempts is kept (DELETE /settings/slack)."""
+        return self._call("deleteSlack", (), None, None, timeout=timeout)
+
+    def deliveries(self, *, timeout: float | None = None) -> ListSlackDeliveriesResponse:
+        """Slack's last 50 attempts, newest first (GET /settings/slack/deliveries)."""
+        return self._call("listSlackDeliveries", (), None, None, timeout=timeout)
+
+    def get(self, *, timeout: float | None = None) -> GetSlackResponse:
+        """Where this server posts run notices in Slack, if it is set; never the URL (GET /settings/slack)."""
+        return self._call("getSlack", (), None, None, timeout=timeout)
+
+    def redeliver(self, webhook_id: str, *, timeout: float | None = None) -> RedeliverSlackResponse:
+        """Post a message of Slack's log again, once now, under the same id and body (POST /settings/slack/deliveries/{webhook_id}/redeliver)."""
+        return self._call("redeliverSlack", (webhook_id,), None, None, timeout=timeout)
+
+    def save(self, body: SaveSlackBody, *, timeout: float | None = None) -> SaveSlackResponse:
+        """Set Slack's incoming-webhook URL, or which events it is sent (PUT /settings/slack). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
+        return self._call("saveSlack", (), body, None, timeout=timeout)
+
+    def test(self, *, timeout: float | None = None) -> TestSlackResponse:
+        """Post a test message to Slack now, once, and say how it went (POST /settings/slack/test)."""
+        return self._call("testSlack", (), None, None, timeout=timeout)
+
+
 class TemplateResource(Group):
     """client.template: one method per operation."""
 
@@ -9508,6 +9659,7 @@ class Resources:
     revisions: RevisionsResource
     sdk_runs: SdkRunsResource
     server: ServerResource
+    slack: SlackResource
     template: TemplateResource
     tool_keys: ToolKeysResource
     tool_settings: ToolSettingsResource
@@ -9528,6 +9680,7 @@ class Resources:
         self.revisions = RevisionsResource(call)
         self.sdk_runs = SdkRunsResource(call)
         self.server = ServerResource(call)
+        self.slack = SlackResource(call)
         self.template = TemplateResource(call)
         self.tool_keys = ToolKeysResource(call)
         self.tool_settings = ToolSettingsResource(call)

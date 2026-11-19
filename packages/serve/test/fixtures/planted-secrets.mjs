@@ -254,6 +254,20 @@ registerPlant({
 });
 
 registerPlant({
+  name: "Slack incoming-webhook URL",
+  write: async ({ owner, token }) => {
+    const secret = `PLANTED${randomBytes(9).toString("hex").toUpperCase()}`.slice(0, 24);
+    const url = `https://hooks.slack.com/services/TPLANTED0/BPLANTED0/${secret}`;
+    const saved = await owner("PUT", "/v2/settings/slack", { url });
+    if (saved.status !== 201) throw new Error(`Slack was not set: ${saved.status} ${saved.text}`);
+    // The token turns an event off (no secret write): its answer is read like any other.
+    const events = await token("PUT", "/v2/settings/slack", { events: { "trigger.failed": false } });
+    if (events.status !== 200) throw new Error(`the token could not change Slack's events: ${events.status} ${events.text}`);
+    return [url, secret];
+  },
+});
+
+registerPlant({
   name: "template apply's webhook trigger secrets",
   mints: ["applyTemplate"],
   write: async ({ owner }) => {

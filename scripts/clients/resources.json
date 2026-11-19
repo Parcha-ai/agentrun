@@ -1,5 +1,5 @@
 {
-  "secretBody": ["saveToolKey", "saveMcpServer", "previewMcpServer", "startMcpOAuth", "listComposioTools", "saveComposioServer", "rotateTriggerSecret", "rotateWebhookSecret"],
+  "secretBody": ["saveToolKey", "saveMcpServer", "previewMcpServer", "startMcpOAuth", "listComposioTools", "saveComposioServer", "rotateTriggerSecret", "rotateWebhookSecret", "saveSlack"],
   "publicFields": {
     "saveMcpServer": ["url", "auth.type"],
     "previewMcpServer": ["url", "auth.type", "name"],
@@ -123,6 +123,12 @@
     "testWebhook": ["webhook", "test"],
     "listWebhookDeliveries": ["webhook", "deliveries"],
     "redeliverWebhook": ["webhook", "redeliver"],
+    "getSlack": ["slack", "get"],
+    "saveSlack": ["slack", "save"],
+    "deleteSlack": ["slack", "delete"],
+    "testSlack": ["slack", "test"],
+    "listSlackDeliveries": ["slack", "deliveries"],
+    "redeliverSlack": ["slack", "redeliver"],
     "createQuote": ["quotes", "create"],
     "getUsage": ["usage"],
     "getStats": ["stats"]

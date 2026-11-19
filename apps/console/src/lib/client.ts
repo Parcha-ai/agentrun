@@ -7,7 +7,7 @@ import type { AgentLearning, Corrections, LearningChange, LearningDiff, Learning
 import type { ComposioTools, McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginView, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Webhook, WebhookAttempt, WebhookRotated, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
+import type { ApiError, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginView, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Slack, SlackAttempt, SlackBody, SlackFeature, Webhook, WebhookAttempt, WebhookRotated, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
@@ -68,7 +68,7 @@ export type HarnessOfferView = { id: string; label?: string; promises?: { resume
 
 /** `models.ready`: whether an agent that names no model runs here; when not, `needs` says what would make it: a model
  *  provider's key, or another default model. */
-export type Capabilities = { harnesses: HarnessOfferView[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; mcp_client?: McpClientFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number; failures_to_pause?: number; public_url?: boolean } }; limits: { max_upload_bytes: number | null; max_files_per_run: number; free_model_requests?: number }; models: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" | "chatgpt" } };
+export type Capabilities = { harnesses: HarnessOfferView[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; slack?: SlackFeature; mcp_client?: McpClientFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number; failures_to_pause?: number; public_url?: boolean } }; limits: { max_upload_bytes: number | null; max_files_per_run: number; free_model_requests?: number }; models: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" | "chatgpt" } };
 export type Client = ReturnType<typeof createClient>;
 
 /** The paths whose 401 is the answer to signing in (a wrong password, a wrong setup code), not a session that ended. */
@@ -344,6 +344,17 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     rotateWebhookSecret: () => call<WebhookRotated>("POST", "/settings/webhook/secret"),
     /** A `webhook.test` message, tried once now: its attempt. */
     testWebhook: () => call<WebhookAttempt>("POST", "/settings/webhook/test", { body: {} }),
+    /** Slack, never its URL (a serve extension). */
+    slack: () => call<Slack>("GET", "/settings/slack"),
+    /** Saves Slack's URL (the owner's session alone), its events, or both: the answer is Slack as saved, never the URL. */
+    saveSlack: (body: SlackBody) => call<Slack>("PUT", "/settings/slack", { body }),
+    removeSlack: () => call<unknown>("DELETE", "/settings/slack"),
+    /** A test message, posted once now: its attempt. */
+    testSlack: () => call<SlackAttempt>("POST", "/settings/slack/test", { body: {} }),
+    /** Slack's last attempts, newest first. */
+    slackDeliveries: () => call<{ attempts: SlackAttempt[] }>("GET", "/settings/slack/deliveries"),
+    /** A message of Slack's log posted again, once now: its attempt. */
+    redeliverSlack: (id: string) => call<SlackAttempt>("POST", `/settings/slack/deliveries/${encodeURIComponent(id)}/redeliver`, { body: {} }),
     /** The server's email account, never its password (a serve extension). */
     emailAccount: () => call<EmailAccount>("GET", "/settings/email"),
     /** Saves the account: the server seals its password and answers the account without it. */

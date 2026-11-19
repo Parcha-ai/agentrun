@@ -14,7 +14,7 @@ build. Inspect `/v2/capabilities` and `/v2/openapi.json` before using an optiona
 existing instance is not permission to start a replacement or change its destination.
 
 Secrets are saved by the person in the console, never with the API token: a model or tool key, an MCP server's token
-or headers, the webhook's secret, GitHub. Prepare everything else through the API. A secret write answers `403
+or headers, the webhook's secret, Slack's incoming-webhook URL, GitHub. Prepare everything else through the API. A secret write answers `403
 forbidden` with `error.details.console_url`, the console's form with the rest filled in (or build it:
 `<console>/#/settings/mcp?add=<name>&auth=bearer`, adding `&url=<url>` only when no key or token is in the URL).
 Open that link in the person's browser for them and tell them to paste the secret there and save. Never ask for a
