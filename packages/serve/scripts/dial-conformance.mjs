@@ -137,9 +137,14 @@ const NO_PAIRING = new Proxy(
 /** computerd-fixture for linux/amd64, which the server's image builds next to computerd (packages/serve/docker/Dockerfile). */
 export const FIXTURE_PATH = fileURLToPath(new URL("../../computer/dist/computerd-fixture-linux-amd64", import.meta.url));
 
-/** What a run of `kind` checks effects with: a desktop's computerd-fixture (its screen and input cases skip without it, and Core cannot pass), none otherwise. */
-export function fixtureFor(kind, path = FIXTURE_PATH) {
+/**
+ * What a run of `kind` checks effects with: a desktop's computerd-fixture (its screen and input cases skip without it, and
+ * Core cannot pass), none otherwise. A full run without the binary is refused; a narrowed one (`only`) goes on without it,
+ * and a case that needs it skips in its own words.
+ */
+export function fixtureFor(kind, only, path = FIXTURE_PATH) {
 	if (kind !== "desktop") return undefined;
+	if (!existsSync(path) && only !== undefined) return undefined;
 	if (!existsSync(path)) throw new Error(`a desktop run needs computerd-fixture at ${path}: the server's image builds it; elsewhere, go build -o ${path} ./cmd/fixture in packages/computer/daemon with GOOS=linux GOARCH=amd64`);
 	return path;
 }
@@ -368,7 +373,7 @@ async function main({ provider: name, only, exit }, env, state) {
 		const image = typeof module.conformanceImage === "function" ? await module.conformanceImage(options, { signal: controller.signal }) : undefined;
 		if (typeof image !== "string" || image === "") throw new Error(`${name}: its conformance module names no image (conformanceImage())`);
 		const cases = casesFor(provider.capabilities().kind);
-		const fixture = fixtureFor(provider.capabilities().kind);
+		const fixture = fixtureFor(provider.capabilities().kind, only);
 		if (only !== undefined) {
 			// A name that is no group or case id would narrow the run to nothing, which must not read as a pass.
 			const known = new Set(cases.flatMap((one) => [one.id, one.group]));
