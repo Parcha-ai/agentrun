@@ -7,7 +7,7 @@ import { routeOf as sdkModelRoute } from "./runner/model-route.js";
 import { answerSkill } from './skill-route.js';
 import { RemoteConnectors, verifyRemote, REMOTE_COMPLETION_BODY_BYTES } from './native/remote.js';
 import { REMOTE_HISTORY_BODY_BYTES } from './native/history.js';
-import { nativeOf, nativeModelOverrides, nativeExecutionOverrides, NATIVE_MODEL_SETTINGS_UNSUPPORTED, NATIVE_EXECUTION_SETTINGS_UNSUPPORTED, NATIVE_TOOL_BUDGET_UNSUPPORTED } from "./native/binding.js";
+import { nativeOf, nativeModelOverrides, nativeExecutionOverrides, NATIVE_MODEL_SETTINGS_UNSUPPORTED, NATIVE_EXECUTION_SETTINGS_UNSUPPORTED, NATIVE_TOOL_BUDGET_UNSUPPORTED, NATIVE_CAP_UNSUPPORTED } from "./native/binding.js";
 import { discoverNative } from "./native/discovery.js";
 import { isNativeRuntime } from "./native/runtimes.js";
 import { connectNative, launchNative, updateNative, verifyConnection } from "./native/connection.js";
@@ -2551,7 +2551,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       if (execution.length) throw new ApiError("agent_not_runnable", NATIVE_EXECUTION_SETTINGS_UNSUPPORTED, { fields: execution.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_EXECUTION_SETTINGS_UNSUPPORTED })) });
       if (((revision.body as { maxToolCalls?: number }).maxToolCalls ?? 0) > 0) throw new ApiError("agent_not_runnable", NATIVE_TOOL_BUDGET_UNSUPPORTED, { fields: [{ field: "definition.max_tool_calls", reason: "not_an_option", message: NATIVE_TOOL_BUDGET_UNSUPPORTED }] });
       if (!native.remote && (options.apiOnly || options.publicUrl || !isLoopback(host))) throw new ApiError("agent_not_runnable", "Native connections run only on an AgentRun server bound to loopback on the source machine, without a public URL.");
-      if (capped) throw new ApiError("agent_not_runnable", "Native runs retain their own limits; AgentRun cannot enforce a dollar cap on this connection. Remove max_cost_usd and use native limits.");
+      if (capped) throw new ApiError("agent_not_runnable", NATIVE_CAP_UNSUPPORTED);
       if(native.remote)await new RemoteConnectors(store).assertReady(native);else await launchNative(native); return;
     }
     const shape = { ...shapeOf(revision), place, ...(revision.body.place ? {} : { unnamed: true as const }) };
