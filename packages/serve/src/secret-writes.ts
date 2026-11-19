@@ -205,11 +205,11 @@ export function markedOperations(doc: Json): string[] {
   return out;
 }
 
-/** The marked operations of `doc` no plane registered a predicate for (`registered`) nor said on purpose to write no
- *  secret (registerNotSecretWrite: a preview's marked fields are kept nowhere): each a route a secret could take past
- *  the dispatch check. Empty is the only passing answer. */
-export const unguardedOperations = (doc: Json, registered: readonly string[]): string[] =>
-  markedOperations(doc).filter((operationId) => !registered.includes(operationId) && notSecretWriteReason(operationId) === undefined);
+/** The marked operations of `doc` no plane registered a predicate for nor said on purpose to write no secret
+ *  (registerNotSecretWrite: a preview's marked fields are kept nowhere): each a route a secret could take past the
+ *  dispatch check. Empty is the only passing answer. */
+export const unguardedOperations = (doc: Json): string[] =>
+  markedOperations(doc).filter((operationId) => !registry.has(operationId) && notSecretWriteReason(operationId) === undefined);
 
 // ---- one metadata shape for every secret's view ----------------------------------------------------------------------
 //
