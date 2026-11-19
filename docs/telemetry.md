@@ -3,9 +3,8 @@
 AgentRun's server counts how many servers run, so the project knows whether it is used and which versions are. The
 counts are anonymous, and one setting turns them off.
 
-**The counts are on.** The release that turned them on says so in its changelog; every release before it sends
-nothing, since its key (`TELEMETRY_KEY` in [`packages/serve/src/telemetry.ts`](../packages/serve/src/telemetry.ts)) is
-empty. The first start that can send only prints the notice below.
+**The counts are on** from the release that set the key; earlier releases send nothing. The first start that can send
+only prints the notice below.
 
 ## Turn it off
 
@@ -39,8 +38,9 @@ Turned off, the server writes no id and sends nothing.
 AGENTRUN_TELEMETRY=debug npx @parcha/agentrun
 ```
 
-Each event is printed on stderr in the form it would be sent, at every start, and none is sent. Debug never replaces
-the notice: the first start that can send after it still prints the notice and sends nothing.
+Each event is printed on stderr in the form it would be sent, at every start, and none is sent. Debug writes nothing
+either, so it never replaces the notice: the first start that can send after it still prints the notice and sends
+nothing.
 
 ## When it sends
 
@@ -58,6 +58,7 @@ first.
 
 | Field | Example | What it is |
 | --- | --- | --- |
+| `api_key` | `phc_…` | The project's public write-only key, the same in every event |
 | `event` | `server_started` | One of the three names above |
 | `distinct_id` | `b8d015a7-…` | A random id made for this data directory, kept in `.telemetry.json` there |
 | `timestamp` | `2026-11-17T10:00:00.000Z` | When the event was made |

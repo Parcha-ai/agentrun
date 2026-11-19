@@ -24,7 +24,7 @@ import { DOCTOR } from '../packages/agentrun/lib/doctor.mjs';
 import { OPEN, SERVICE, STOP } from '../packages/agentrun/lib/service.mjs';
 import { SKILL_INSTALL } from '../packages/agentrun/lib/skill.mjs';
 import { TEMPLATE_EVAL, TEMPLATE_INSTALL, TEMPLATE_VALIDATE } from '../packages/agentrun/lib/template.mjs';
-import { HARNESS_INSTALL } from '../packages/agentrun/lib/harness.mjs';
+import { HARNESS_CHECK, HARNESS_INSTALL } from '../packages/agentrun/lib/harness.mjs';
 import { allCommands, recipeProblems, referenceText, skillText } from './clients/skill.mjs';
 import { pythonProblems, pythonText } from './clients/python.mjs';
 import { clientProblems, clientText } from './clients/typescript.mjs';
@@ -40,9 +40,9 @@ const PYTHON = 'python/agentrun/_generated.py';
 const TYPES = 'apps/console/src/lib/api.generated.ts';
 // Words the launcher keeps for itself or for the server it starts, and the CLI's own commands of one word: no command
 // may begin with one.
-const RESERVED = ['api', 'help', 'import', 'reset-password', 'login', 'logout', 'skill', 'service', 'stop', 'doctor'];
+const RESERVED = ['api', 'help', 'import', 'reset-password', 'login', 'logout', 'skill', 'service', 'stop', 'doctor', 'harness-check'];
 // The CLI's hand-written commands: none may be a generated one too.
-const HAND = { flags: FLAGS, all: ALL, wait: WAIT, local: [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL, TEMPLATE_INSTALL, HARNESS_INSTALL, ...SERVICE, STOP, OPEN, DOCTOR] };
+const HAND = { flags: FLAGS, all: ALL, wait: WAIT, local: [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL, TEMPLATE_INSTALL, HARNESS_INSTALL, HARNESS_CHECK, ...SERVICE, STOP, OPEN, DOCTOR] };
 const SCALAR = ['string', 'number', 'integer', 'boolean'];
 const GLOBAL_FLAGS = ['base-url', 'data', 'body', 'body-type', 'help'];
 // Headers the CLI sets itself.

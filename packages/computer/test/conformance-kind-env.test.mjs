@@ -53,11 +53,12 @@ test("Modal: COMPUTER_MODAL_KIND=desktop on dial gives a desktop provider; on ex
 	await assert.rejects(modal.createProvider({ env: { ...MODAL, COMPUTER_MODAL_KIND: "desktop" }, ModalClient }), /a Modal desktop is made on connect "dial" alone/);
 });
 
-test("Daytona: COMPUTER_DAYTONA_KIND=desktop on dial gives a desktop provider; on exec the provider refuses in its words; unset stays linux", () => {
+test("Daytona: COMPUTER_DAYTONA_KIND=desktop is refused by the provider in words that give the reason, on dial and on exec; unset stays linux", () => {
 	const on = { ...DAYTONA, COMPUTER_DAYTONA_CONNECT: "dial" };
-	assert.equal(daytona.createProvider({ env: { ...on, COMPUTER_DAYTONA_KIND: "desktop" }, dial: dial() }).capabilities().kind, "desktop");
+	const why = { message: /^Daytona gives no desktop computer: its sandboxes run under AppArmor's restrict_unprivileged_userns/ };
+	assert.throws(() => daytona.createProvider({ env: { ...on, COMPUTER_DAYTONA_KIND: "desktop" }, dial: dial() }), why);
+	assert.throws(() => daytona.createProvider({ env: { ...DAYTONA, COMPUTER_DAYTONA_KIND: "desktop" } }), why);
 	assert.equal(daytona.createProvider({ env: on, dial: dial() }).capabilities().kind, "linux");
 	assert.equal(daytona.createProvider({ env: DAYTONA }).capabilities().kind, "linux");
 	assert.equal("kind" in daytona.settingsFromEnv({ ...on, COMPUTER_DAYTONA_KIND: "desktop" }), false);
-	assert.throws(() => daytona.createProvider({ env: { ...DAYTONA, COMPUTER_DAYTONA_KIND: "desktop" } }), /a Daytona desktop is made on connect "dial" alone/);
 });

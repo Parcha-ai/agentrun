@@ -123,6 +123,23 @@ test("a learning SDK completion with no workflow binding asks no model turn: its
   await assertPublicTotals(server, { cost: SDK_USAGE.cost_usd });
 });
 
+test("Eve's native task is booked once without an obsolete reflection charge", async t => {
+  const server = await completedSdk(t, { runtime: "eve", evidenceComplete: true });
+  const sent = [];
+  await server.start(route(sent));
+  assert.equal(sent.length, 0, "an Eve task without a workflow binding does not ask a model");
+  await assertPublicTotals(server, { cost: 0.25 });
+  const run = (await server.api("GET", `/runs/${server.runId}`)).body;
+  assert.equal(run.sdk.runtime, "eve");
+  const cost = await server.api("GET", "/agents/sdk-usage/learning/cost");
+  assert.equal(cost.status, 200, JSON.stringify(cost.body));
+  assert.deepEqual(cost.body.runs.map(row => [row.run_id, row.path, row.cost_usd, row.learning_usd, row.total_usd]),
+    [[server.runId, "agent", 0.25, 0, 0.25]]);
+  assert.deepEqual(cost.body.bill.points, [{ n: 1, run_id: server.runId, actual_usd: 0.25, agent_usd: 0.25 }]);
+  assert.equal(cost.body.bill.booked_usd, 0.25, "the bill books the native task once");
+  assert.deepEqual([cost.body.total_runs, cost.body.unknown_path_runs, cost.body.unknown_cost_runs], [1, 0, 0]);
+});
+
 test("a learning SDK completion remains in the cost series with its aggregate", async t => {
   const server = await completedSdk(t);
   await server.start(route([]));
@@ -143,7 +160,7 @@ for (const status of ["failed", "cancelled"]) test(`a ${status} SDK completion k
   assert.equal(cost.unknown_path_runs, 0);
 });
 
-for (const runtime of ["claude-agent-sdk", "codex-sdk"]) for (const status of ["failed", "cancelled"])
+for (const runtime of ["claude-agent-sdk", "codex-sdk", "eve"]) for (const status of ["failed", "cancelled"])
   test(`a ${status} ${runtime} completion closes learning, atomically with its end`, async t => {
     const server = await completedSdk(t, { status, runtime });
     const sent = [], asker = route(sent);

@@ -244,7 +244,7 @@ test("the route says whether a run has a browser at all: off with why when its a
   const again = await serve(t, { data: first.data, accounts: true, fauxBrowser: FAUX_BROWSER });
   const signed = await call(again.port, { method: "POST", path: "/v2/auth/sign-in", headers: own(again), body: { password: PASSWORD } });
   assert.equal(signed.status, 200, signed.text);
-  const why = "browserbase is picked, and it needs a Browserbase key: save one in Settings → Tool keys (or set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID where the server starts)";
+  const why = "browserbase is picked, and it needs a Browserbase key: save one in Settings → API Keys (or set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID where the server starts)";
   assert.deepEqual((await browserOfRun(again, cookieOf(signed), browsed)).json, { state: "off", hold: "agent", why });
   assert.deepEqual((await call(again.port, { path: `/v2/runs/${browsed}/browser`, headers: { cookie: cookieOf(signed) } })).json, { state: "off", reason: why });
 });

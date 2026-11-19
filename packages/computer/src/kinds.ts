@@ -137,6 +137,8 @@ export interface ProviderEntry {
 	readonly metered: boolean;
 	/** Its static capabilities: the machine kind and groups of each configuration it offers. */
 	readonly capabilities: readonly KindCapabilities[];
+	/** Setting kinds it doesn't serve, each with why in its own words, said in place of servingRefusals' (descriptor.ts). */
+	readonly unserved?: Readonly<Partial<Record<ComputerSettingKind, string>>>;
 	/**
 	 * The image a computer of each setting kind starts from when its setting names none. A kind with no entry has no
 	 * default, and the caller refuses the setting in words. Docker's sandbox has none: its image is made (prepareImage).
