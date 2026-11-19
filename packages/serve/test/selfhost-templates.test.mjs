@@ -124,7 +124,7 @@ test("each deploy makes a token and a seal key this server takes, from the platf
       assert.deepEqual(Object.keys(env).sort(), ["AGENTRUN_PUBLIC_URL", "AGENTRUN_SEAL_KEY", "AGENTRUN_TOKEN"], `${name}: no model key, nothing to type`);
       assert.equal(tokenProblem(env.AGENTRUN_TOKEN), undefined, name);
       assert.ok(env.AGENTRUN_TOKEN.length >= 64, `${name}: 256 bits or more`);
-      assert.equal(sealKeyOf(env.AGENTRUN_SEAL_KEY)?.length, 32, `${name}: the seal key is 32 bytes in base64 (${env.AGENTRUN_SEAL_KEY})`);
+      assert.equal(sealKeyOf(env.AGENTRUN_SEAL_KEY)?.length, 32, `${name}: the seal key is 32 bytes in base64 (it has ${env.AGENTRUN_SEAL_KEY.length} characters)`);
       assert.equal(env.AGENTRUN_PUBLIC_URL, url, name);
     }
   }
