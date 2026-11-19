@@ -79,6 +79,7 @@ Tools and integrations
 
 Computers
 
+- A run on a computer that mounts its folder attaches again when the run is a process of its own, as it is under every runner since beta.46: such a run was refused about 25 s in, saying the computer did not hold the run's folder (#3288).
 - A smol cloud provider: `providerFor("smolcloud", { apiKey })` makes each computer a smol cloud microVM booted from an OCI image, the box image by default, as a sandbox; Settings takes `SMOLCLOUD_API_KEY`. No mount and no desktop yet, and a synced folder's refusal says why (#3163, #3218). <!-- changes/computer-smolcloud-provider.md --> <!-- changes/computer-smolcloud-mount-words.md -->
 - `GET /v2/computers` lists each kind's `settings`, which the console's Computer step reads (#3250). A dial desktop whose display is down fails `connect` and `watch` as drift, where it answered with no screen (#3250). <!-- changes/computers-kind-settings.md --> <!-- changes/dial-desktop-display-down.md -->
 - A Linux desktop waits 100 ms after a key action before the batch's next one, so an app acts on the shortcut first (#3215). A paired Linux box stays held until each remove and KILL its create sent has answered (#3214). <!-- changes/computerd-key-settle.md --> <!-- changes/paired-hold-waits-destructive.md -->

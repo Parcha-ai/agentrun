@@ -157,6 +157,7 @@
   (2026-11-19, one workflow run of three requests): the same token counts and the same cost. A rate limit or server
   error from Particle is still not seen live.
 - The OpenAPI document now lists `403 forbidden` on the four secret writes that left it out: `DELETE /v2/agents/{agent_id}/sign-ins/{key}`, `POST /v2/settings/mcp-servers/{name}/oauth/start`, `POST /v2/integrations/github/connect` and `DELETE /v2/integrations/github`. The server already refused each one to the API token. <!-- changes/secret-writes-document-403.md -->
+- A run on a computer that mounts its folder attaches again when the run is a process of its own (every runner since v0.1.0-beta.46). The run's process hands its mount check to the runner's Workspace across the run channel, where the check's read-back is a handle answered as a promise; attach compared the computer's read-back against that unawaited promise, so every such run was refused about 25 seconds in with `does not hold this run's folder at /workspace: it mounts <the right folder> ..., not undefined:/undefined in undefined`. Attach now awaits the expected read-back. <!-- changes/attach-readback-across-run-channel.md -->
 
 ## 0.1.0-beta.46 (2026-11-18)
 
