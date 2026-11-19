@@ -301,11 +301,26 @@ Route: `PUT /files/{file_id}`.
 
 ### `agentrun harness install HARNESS`
 
-Install a harness AgentRun runs only once its owner installs it (goose), then restart AgentRun.
+Install a harness AgentRun runs only once its owner installs it (goose, or a recipe file's), then restart AgentRun.
 
 Route: none, it runs on this machine.
 
+- `--recipe FILE` (string, this CLI's own): in place of HARNESS: a recipe file (docs/harness-recipe.md), checked against its five rules before anything is downloaded
 - `--data DIR` (string, this CLI's own): the data directory of the AgentRun it is for (default ~/.agentrun, where npx @parcha/agentrun keeps it)
+
+## harness-check
+
+### `agentrun harness-check`
+
+Run a recipe's installed agent for real and check it (tools off, env allowlist, pins, limits, no side requests, resume, a denied call, an MCP tool): a JSON report and three facts. Real models cost money.
+
+Route: none, it runs on this machine.
+
+- `--recipe FILE` (string, this CLI's own): the recipe file (docs/harness-recipe.md); its agent installed first with agentrun harness install --recipe FILE
+- `--model PROVIDER/MODEL` (string, this CLI's own): the run's model, for a recipe billed through the proxy (openrouter/anthropic/claude-haiku-4.5, anthropic/claude-haiku-4-5)
+- `--report FILE` (string, this CLI's own): where the JSON report goes (default ./harness-check-ID.json)
+- `--cap USD` (string, this CLI's own): the most the check may spend (default 0.25)
+- `--data DIR` (string, this CLI's own): the data directory the recipe's agent was installed into (default ~/.agentrun)
 
 ## home
 
