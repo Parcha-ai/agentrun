@@ -54,7 +54,7 @@ import { freeCeilingMessage, overCapMessage, SPEND_CAP_REACHED } from "@parcha/a
 import { type BookedSpend, bookedSpend, cliModelWorked, type CostBasis, costBasisOf, costWordsOf, planSpend, type RunCost, runCostOf, storedBasisOf } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
-import { laidOf, roundsOf, runLearningEnd, servedViewOf, usedOnly } from "./store-reads/learning.js";
+import { laidOf, pathViewOf, roundsOf, runLearningEnd, usedOnly } from "./store-reads/learning.js";
 import { inReflect, reflectRanges } from "./runner/end-of-run.js";
 import { correctionCount } from "./learn/corrections.js";
 import { isCliRecord, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
@@ -700,9 +700,9 @@ async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: Store
     cost: costOfView(run, deps.toolsCost === true),
     // The run an audit's shadow run audits (launch.audit, runner/audit.ts); null for any other run.
     audit_of: launch?.audit?.of ?? null,
-    // The learned workflow that answered it alone (`served`) or ran first and handed it back (`handed_back`), as its record
-    // keeps its path, the read the cost per run makes (store-reads/learning.ts servedViewOf); neither on any other run.
-    ...servedViewOf(runRow, row.kind, launch ? learningStartOf(launch) : undefined),
+    // The path it took and the learned workflow that served it, as its record keeps them: the read the cost per run makes
+    // (store-reads/learning.ts pathViewOf).
+    ...pathViewOf(runRow, row.kind, launch ? learningStartOf(launch) : undefined),
     // Whether it ran unattended (its revision's approvals, as it started): never, an ask allowed at its gate; ask, the default.
     approvals: run.approvalsMode,
     archived_at: row.archivedAt ?? null,
@@ -739,8 +739,7 @@ export function summaryOfView(view: Record<string, unknown>): Record<string, unk
     created_at, ended_at, error, review, pending, cost, archived_at, imported_from, trigger, labels,
     learning: learning ? shortOf(learning as Parameters<typeof shortOf>[0]) : null,
     // Read off the run's record, so a list carries it with no read of the run's journal.
-    ...(view.served ? { served: view.served } : {}),
-    ...(view.handed_back ? { handed_back: view.handed_back } : {}),
+    path: view.path, workflow: view.workflow,
   };
 }
 
@@ -766,7 +765,6 @@ export async function listingOverStore(store: Store, runId: string, deps: ViewDe
   return {
     item: { ...summary, console_url: null, archived_at: null },
     cut,
-    format: LISTING_FORMAT,
     status,
     live: run.live,
     until: expiries.length ? Math.min(...expiries) : null,
@@ -774,18 +772,11 @@ export async function listingOverStore(store: Store, runId: string, deps: ViewDe
   };
 }
 
-/** The format of a listing's item (listingOverStore, summaryOfView): moved whenever what a list item holds changes (2:
- *  `served` and `handed_back`). A run's row is current by its mark and its clock alone (Runs.behind), which an upgrade moves
- *  neither of, so a row the server built under another format, or under none, is built again by the next list that reads
- *  it (builtOfNow), once, and is current after. */
-export const LISTING_FORMAT = 2;
-
-/** Whether `listing` is one this server would build now: of this listing format (LISTING_FORMAT), and cut of the server's
- *  secrets as they are now. A list builds any other again before it shows it (server.ts runsPage): the run's view cuts a
- *  value whole where it holds a secret (a note's name reads [redacted]), which cutting the built item again could not do,
- *  and an item of another format lacks what this one's view says. */
+/** Whether `listing` is cut of the server's secrets as they are now. A list builds any other again before it shows it
+ *  (server.ts runsPage): the run's view cuts a value whole where it holds a secret (a note's name reads [redacted]), which
+ *  cutting the built item again could not do. */
 export function builtOfNow(listing: KeptListing, serverSecrets: readonly string[]): boolean {
-  return listing.format === LISTING_FORMAT && listing.cut === secretsDigest(serverSecrets);
+  return listing.cut === secretsDigest(serverSecrets);
 }
 
 /** A listing's list item as a list serves it (listingOverStore): its console link at `origin`, its archive time now

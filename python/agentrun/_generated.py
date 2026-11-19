@@ -345,11 +345,9 @@ __all__ = [
     "GetLearningCorrectionsResponse",
     "GetLearningCostResponse",
     "GetLearningCostResponseBill",
-    "GetLearningCostResponseBillBaseline",
     "GetLearningCostResponseBillBreakEven",
     "GetLearningCostResponseBillHoldsItem",
     "GetLearningCostResponseBillPointsItem",
-    "GetLearningCostResponseBillPromoted",
     "GetLearningCostResponseBillRevisionsItem",
     "GetLearningCostResponseRunsItem",
     "GetLearningCostResponseSummary",
@@ -774,7 +772,6 @@ __all__ = [
     "RunErrorDetails",
     "RunFile",
     "RunFileList",
-    "RunHandedBack",
     "RunImportedFrom",
     "RunLearning",
     "RunLearningWorkflowsItem",
@@ -797,11 +794,9 @@ __all__ = [
     "RunReview",
     "RunSdk",
     "RunSdkUsage",
-    "RunServed",
     "RunState",
     "RunStatus",
     "RunSummary",
-    "RunSummaryHandedBack",
     "RunSummaryImportedFrom",
     "RunSummaryLearning",
     "RunSummaryLearningWorkflowsItem",
@@ -819,9 +814,10 @@ __all__ = [
     "RunSummaryReview",
     "RunSummarySdk",
     "RunSummarySdkUsage",
-    "RunSummaryServed",
     "RunSummaryTrigger",
+    "RunSummaryWorkflow",
     "RunTrigger",
+    "RunWorkflow",
     "RunsResource",
     "SaveCalendarBody",
     "SaveCalendarResponse",
@@ -2460,8 +2456,8 @@ class RunSummary(_RunSummaryRequired, total=False):
     pending: RunSummaryPending1 | RunSummaryPending2 | RunSummaryPending3 | RunSummaryPending4 | RunSummaryPending5 | RunSummaryPending6 | None
     imported_from: RunSummaryImportedFrom | None
     trigger: RunSummaryTrigger | None
-    served: RunSummaryServed
-    handed_back: RunSummaryHandedBack
+    path: Literal["agent", "handed_back", "workflow", "replay", "audit"] | None
+    workflow: RunSummaryWorkflow | None
 
 
 RunStatus: TypeAlias = "Literal[\"queued\", \"working\", \"paused\", \"input_required\", \"completed\", \"failed\", \"cancelled\"]"
@@ -2700,13 +2696,8 @@ class RunSummaryTrigger(TypedDict):
     firing_key: str
 
 
-class RunSummaryServed(TypedDict):
-    workflow: str | None
-    digest: str | None
-
-
-class RunSummaryHandedBack(TypedDict):
-    workflow: str | None
+class RunSummaryWorkflow(TypedDict):
+    name: str | None
     digest: str | None
 
 
@@ -3229,8 +3220,6 @@ class GetLearningCostResponseSummaryReplay(TypedDict):
 
 
 class GetLearningCostResponseBill(TypedDict):
-    baseline: GetLearningCostResponseBillBaseline | None
-    promoted: GetLearningCostResponseBillPromoted | None
     learning_usd: float
     points: list[GetLearningCostResponseBillPointsItem]
     break_even: GetLearningCostResponseBillBreakEven | None
@@ -3240,17 +3229,6 @@ class GetLearningCostResponseBill(TypedDict):
     revisions: list[GetLearningCostResponseBillRevisionsItem]
     unattributed_usd: float | None
     holds: list[GetLearningCostResponseBillHoldsItem]
-
-
-class GetLearningCostResponseBillBaseline(TypedDict):
-    runs: int
-    mean_usd: float
-
-
-class GetLearningCostResponseBillPromoted(TypedDict):
-    n: int
-    run_id: str
-    at: str
 
 
 class GetLearningCostResponseBillPointsItem(TypedDict):
@@ -5017,8 +4995,7 @@ class Run(_RunRequired, total=False):
     trigger: RunTrigger | None
     audit_of: str | None
     path: Literal["agent", "handed_back", "workflow", "replay", "audit"] | None
-    served: RunServed
-    handed_back: RunHandedBack
+    workflow: RunWorkflow | None
 
 
 class _RunResultRequired(TypedDict):
@@ -5227,13 +5204,8 @@ class RunTrigger(TypedDict):
     firing_key: str
 
 
-class RunServed(TypedDict):
-    workflow: str | None
-    digest: str | None
-
-
-class RunHandedBack(TypedDict):
-    workflow: str | None
+class RunWorkflow(TypedDict):
+    name: str | None
     digest: str | None
 
 

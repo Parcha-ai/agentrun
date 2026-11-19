@@ -33,7 +33,7 @@ describe("markers on the run axis", () => {
     ];
     expect(markersOf(runs, records).map((m) => [m.kind, m.n, m.workflow])).toEqual([["hold", 3, "sort-invoice"], ["hold", 3, "tag-vendor"]]);
   });
-  it("one numbering: a promotion written while its first served run started stands on that run (the takeover's, the bill's promoted), and a replay is never a marker's run", () => {
+  it("one numbering: a promotion written while its first served run started stands on that run (the takeover's), and a replay is never a marker's run", () => {
     // Jobs 1-3 by the agent, two replays (no number), then job 4, the first the workflow served: its promotion was written
     // as job 4 was claimed, after it started. A hold written between the replays stands on the next job.
     const replay = (h: number, id: string): CostRun => ({ ...run(0, "replay"), n: null, run_id: id, started_at: at(h) });
