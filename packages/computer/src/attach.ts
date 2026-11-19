@@ -149,8 +149,13 @@ export interface MachineMint {
 	run?: string;
 }
 
-/** A new machine token, a paired computer's or a hosted machine's: `art_` and 32 random bytes in base64url, the one
- *  shape computerd takes. */
+/** A machine token's shape, as a RegExp source without anchors or flags: `art_` and 43 base64url characters (32 bytes).
+ *  computerd takes this alone (daemon/internal/attach/attach.go tokenPattern, the same source anchored); a scrub
+ *  builds its global RegExp from it. */
+export const MACHINE_TOKEN_SOURCE = "art_[A-Za-z0-9_-]{43}";
+
+/** A new machine token, a paired computer's or a hosted machine's: `art_` and 32 random bytes in base64url
+ *  (MACHINE_TOKEN_SOURCE). */
 export const newMachineToken = (): string => `art_${randomBytes(32).toString("base64url")}`;
 
 /**

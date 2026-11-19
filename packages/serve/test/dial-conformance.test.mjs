@@ -13,14 +13,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { driftedVersion, fixtureFor, patchVersion, reachesThisRun } from "../scripts/dial-conformance.mjs";
+import { MACHINE_TOKEN_SOURCE, newMachineToken } from "@parcha/agentrun-computer";
+import { driftedVersion, fixtureFor, patchVersion, reachesThisRun, scrubMachineTokens } from "../scripts/dial-conformance.mjs";
 
 const SCRIPT = fileURLToPath(new URL("../scripts/dial-conformance.mjs", import.meta.url));
 const FIXTURE = fileURLToPath(new URL("./fixtures/dial-fake-provider.mjs", import.meta.url));
 const DAEMON = fileURLToPath(new URL("../../computer/dist/computerd-linux-amd64", import.meta.url));
 /** The computer package's version: what its computerd says, as the build stamps it. */
 const VERSION = JSON.parse(readFileSync(new URL("../../computer/package.json", import.meta.url), "utf8")).version;
-const MINTED = /art_[0-9a-f]{64}/;
+const MINTED = new RegExp(MACHINE_TOKEN_SOURCE);
 /** Why the runs that serve the daemon skip, or false: the fixture's machines run the served build's `computerd version`. */
 const BUILT = !existsSync(DAEMON) ? "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)" : process.arch !== "x64" && "the fixture's machines run the amd64 computerd, and this machine is not x86-64";
 /** What the fake's daemon answers: Core's provider and drift groups whole, and health but for the declaration and the
@@ -105,6 +106,13 @@ test("a run whose Core does not pass still prints its report between the markers
   assert.deepEqual(report.results.map(({ id, status }) => [id, status]), [["health.declared", "skip"]]);
   assert.equal(report.core, "fail");
   assert.equal(ran.code, 1, ran.stderr);
+});
+
+test("every machine token in what the script writes is redacted by its shape, one this run never minted too (a token a second mint replaced)", () => {
+  const minted = newMachineToken();
+  const replaced = newMachineToken();
+  const said = scrubMachineTokens(`fail provider.dial-token: dialed with ${minted}, then "${replaced}"\n`);
+  assert.equal(said, `fail provider.dial-token: dialed with art_[redacted], then "art_[redacted]"\n`);
 });
 
 test("a desktop run is given computerd-fixture (without it the screen and input cases skip and Core cannot pass); another kind gets none", () => {
