@@ -4,8 +4,8 @@ import assert from 'node:assert/strict';
 import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { ACP_CODES, CURSOR_CODES, CURSOR_INSTALL, CURSOR_LIMITS, CURSOR_PIN, cursorAdapter, cursorCard, cursorFacts, cursorRecipe, cursorRootOf, recipeFile, recipeProblems, RESERVED_ENV, treeDigest, verifyPinnedTree } from '@parcha/agentrun-harness-acp';
-import { scratch } from './helpers.mjs';
+import { ACP_CODES, CURSOR_CODES, CURSOR_INSTALL, CURSOR_LIMITS, CURSOR_PIN, cursorAdapter, cursorCard, cursorFacts, cursorRecipe, cursorRelease, cursorRootOf, recipeFile, recipeProblems, RESERVED_ENV, treeDigest, verifyPinnedTree } from '@parcha/agentrun-harness-acp';
+import { onCursorPin, scratch } from './helpers.mjs';
 
 const BINARY = '/opt/agents/cursor-2026.11.13/dist-package/cursor-agent';
 
@@ -111,14 +111,21 @@ test('the tree digest is of every file, link and folder by its path, and moves w
   await assert.rejects(verifyPinnedTree(join(root, 'nowhere'), first), (error) => error.code === ACP_CODES.binaryUnreadable);
 });
 
-test("Cursor's adapter refuses a launcher that is not the pin's, and one outside its pinned path", () => {
+test("Cursor's adapter refuses a launcher that is not the pin's, and one outside its pinned path; on a host no release is pinned for, ACP_BINARY_UNPINNED first", () => {
   const root = scratch();
   const binary = join(root, 'dist-package', 'cursor-agent');
   mkdirSync(dirname(binary), { recursive: true });
   writeFileSync(binary, '#!/bin/sh\necho not cursor\n');
-  assert.throws(() => cursorAdapter({ binary, sessionsDir: root }), (error) => error.code === ACP_CODES.binaryMismatch);
-  assert.throws(() => cursorAdapter({ binary: join(root, 'cursor-agent'), sessionsDir: root }), /pinned path/);
+  onCursorPin(() => {
+    assert.throws(() => cursorAdapter({ binary, sessionsDir: root }), (error) => error.code === ACP_CODES.binaryMismatch);
+    assert.throws(() => cursorAdapter({ binary: join(root, 'cursor-agent'), sessionsDir: root }), /pinned path/);
+  }, () => cursorAdapter({ binary, sessionsDir: root }));
   assert.equal(cursorRootOf(binary, './dist-package/cursor-agent'), root);
+});
+
+test('cursorRelease is the pin for a platform CURSOR_PIN names, with its digests, and none for any other', () => {
+  assert.equal(cursorRelease('linux-x86_64'), CURSOR_PIN.archives['linux-x86_64']);
+  for (const platform of ['darwin-aarch64', 'darwin-x86_64', 'linux-aarch64', 'windows-x86_64', 'plan9']) assert.equal(cursorRelease(platform), undefined, platform);
 });
 
 test("its facts: plan billed (no wire of the host's), its own model, no steer, the owner's install line", () => {

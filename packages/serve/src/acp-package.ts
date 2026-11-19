@@ -25,6 +25,8 @@ export type AcpPackage = {
   readonly CURSOR_LIMITS: { readonly maxTurns: number; readonly maxToolCalls: number };
   cursorCard(limits: { readonly maxTurns: number; readonly maxToolCalls: number }): string;
   cursorAdapter(options: Record<string, unknown>): AgentAdapter;
+  /** Cursor's release pinned for `platform` (default this host's), its launcher's and tree's digests; undefined where none is. */
+  cursorRelease(platform?: string): { readonly cmd: string; readonly binarySha256: string; readonly treeSha256: string } | undefined;
   /** The form a model id an ACP agent lists takes (Cursor's `gpt-5.4-nano[reasoning=medium]` among them). */
   readonly MODEL_ID: RegExp;
   acpPlatform(): string | undefined;

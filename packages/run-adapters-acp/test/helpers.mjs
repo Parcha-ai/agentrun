@@ -8,7 +8,21 @@ import { fileURLToPath } from 'node:url';
 import { foldSession } from '@parcha/agentrun-kernel/kernel';
 import { journalRecords, transcriptOf } from '@parcha/agentrun-kernel/process';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
-import { acpAdapter } from '@parcha/agentrun-harness-acp';
+import assert from 'node:assert/strict';
+import { ACP_CODES, acpAdapter, CURSOR_PIN, cursorRelease } from '@parcha/agentrun-harness-acp';
+
+/** Whether Cursor has a release pinned for this host (cursorRelease, the adapter's own test). CURSOR_PIN pins
+ *  linux-x86_64 alone: on any other host (a Mac) Cursor's adapter is refused ACP_BINARY_UNPINNED before it reads a file. */
+export const CURSOR_PINNED = cursorRelease() !== undefined;
+/** Why a test on the real Cursor cannot run on this host, or false. */
+export const CURSOR_UNPINNED_WHY = !CURSOR_PINNED && `Cursor ${CURSOR_PIN.version} is pinned for ${Object.keys(CURSOR_PIN.archives).join(', ')} alone; here its adapter is refused ${ACP_CODES.binaryUnpinned}`;
+
+/** Where Cursor is pinned for this host, `pinned()`, the checks that need its pin; where it is not, that `make()` (a
+ *  Cursor adapter made) is refused ACP_BINARY_UNPINNED, by its code. */
+export function onCursorPin(pinned, make) {
+  if (CURSOR_PINNED) return pinned();
+  assert.throws(make, (error) => error.code === ACP_CODES.binaryUnpinned, 'refused ACP_BINARY_UNPINNED where no release is pinned');
+}
 
 export const FAKE = fileURLToPath(new URL('./fake-acp-agent.mjs', import.meta.url));
 const ROOT = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'agentrun-acp-test-'));

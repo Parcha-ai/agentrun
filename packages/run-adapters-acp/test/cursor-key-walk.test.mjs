@@ -18,7 +18,7 @@ import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { acpPlatform, CURSOR_PIN, cursorAdapter } from '@parcha/agentrun-harness-acp';
-import { fakeEvents, fakeRecipe, openSession, scratch, until } from './helpers.mjs';
+import { CURSOR_UNPINNED_WHY, fakeEvents, fakeRecipe, openSession, scratch, until } from './helpers.mjs';
 
 const RECORD = fileURLToPath(new URL('./cursor-walk.json', import.meta.url));
 const sha = (text) => createHash('sha256').update(text).digest('hex');
@@ -149,7 +149,8 @@ test("the walk was run on the pin: cursor-walk.json names the digests CURSOR_PIN
 });
 
 const CURSOR = process.env.AGENTRUN_TEST_CURSOR;
-const live = process.platform !== 'linux' ? 'Linux alone: Cursor is pinned for linux-x86_64, and the walk finds its processes in /proc'
+const live = CURSOR_UNPINNED_WHY ? CURSOR_UNPINNED_WHY
+  : process.platform !== 'linux' ? 'Linux alone: the walk finds Cursor\'s processes in /proc'
   : !CURSOR ? 'AGENTRUN_TEST_CURSOR is not set: it names the folder holding the pinned Cursor\'s dist-package'
   : !process.env.CURSOR_API_KEY ? 'CURSOR_API_KEY is not set: the walk runs on the owner\'s Cursor key'
   : process.env.AGENTRUN_TEST_CURSOR_LIVE !== '1' ? 'AGENTRUN_TEST_CURSOR_LIVE is not 1: the walk spends two short turns on the key\'s plan'

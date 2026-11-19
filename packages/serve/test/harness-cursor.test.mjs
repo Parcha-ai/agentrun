@@ -18,8 +18,14 @@ const [{ harnessIds, harnessOf }, { harnessOffers }, { DATA_ENV }, { HarnessUnav
   import("../dist/harness-table.js"), import("../dist/harness.js"), import("../dist/files.js"), import("../dist/provider.js"), import("../dist/run-secrets.js"), import("../dist/runner/cli-run-spec.js"), import("../dist/key-refusal.js"),
 ]);
 
+const { CURSOR_PIN, cursorRelease } = await import("@parcha/agentrun-harness-acp");
+/** Whether Cursor has a release pinned for this host (cursorRelease, the one test serve's lookup makes). CURSOR_PIN pins
+ *  linux-x86_64 alone: on any other host (a Mac) Cursor is refused ACP_BINARY_UNPINNED before its install is looked at,
+ *  and the tests here that look at one assert that refusal instead (refusedHere). */
+const PINNED = cursorRelease() !== undefined;
 const CURSOR = process.env.AGENTRUN_TEST_CURSOR;
-const needsCursor = CURSOR ? false : "AGENTRUN_TEST_CURSOR is not set: it names the folder holding Cursor 2026.11.13-eacade1's dist-package";
+const needsCursor = !PINNED ? `Cursor ${CURSOR_PIN.version} is pinned for ${Object.keys(CURSOR_PIN.archives).join(", ")} alone; here it is refused ACP_BINARY_UNPINNED`
+  : CURSOR ? false : "AGENTRUN_TEST_CURSOR is not set: it names the folder holding Cursor 2026.11.13-eacade1's dist-package";
 const BUILTINS = ["pi", "claude-agent", "codex", "opencode"];
 const PROMISES = { resume: "load", tool_gate: "permission", billing: "plan" };
 const KEY = "CURSOR_API_KEY";
@@ -43,8 +49,10 @@ function withEnv(t, vars) {
   Object.assign(process.env, vars);
 }
 
-/** Says the code a missing Cursor is refused with and the command that installs it into `data`. */
-const namesInstall = (data) => (text) => /HARNESS_NOT_INSTALLED/.test(text) && text.includes(`agentrun harness install cursor --data ${data}`);
+/** Whether `text` refuses Cursor here as it must: where it is pinned for this host, by `code` (default
+ *  HARNESS_NOT_INSTALLED: an install missing) and the command that installs it into `data`; where it is not, by
+ *  ACP_BINARY_UNPINNED, which comes before any install is looked at. */
+const refusedHere = (data, code = "HARNESS_NOT_INSTALLED") => (text) => (PINNED ? text.includes(code) && text.includes(`agentrun harness install cursor --data ${data}`) : text.includes("ACP_BINARY_UNPINNED"));
 
 test("cursor is one entry of the table: Cursor, billed to its plan on its own key, its promises; listed only while its pinned release is installed", async (t) => {
   const data = await dataWith(t);
@@ -54,7 +62,7 @@ test("cursor is one entry of the table: Cursor, billed to its plan on its own ke
   assert.deepEqual(cursor.ownKeys, [KEY]);
   assert.equal(cursor.installs, undefined, "never installed on first use");
   assert.deepEqual([...harnessIds(env)], BUILTINS, "not installed: not listed");
-  assert.ok(namesInstall(data)(cursor.hidden(env)), cursor.hidden(env));
+  assert.ok(refusedHere(data)(cursor.hidden(env)), cursor.hidden(env));
   assert.deepEqual((await harnessOffers(env)).map((offer) => offer.id), BUILTINS, "nor offered");
 
   // A launcher that is not the pinned one is not installed either: refused by its digest, never run.
@@ -62,8 +70,7 @@ test("cursor is one entry of the table: Cursor, billed to its plan on its own ke
   writeFileSync(join(data, "harnesses", "cursor", "dist-package", "cursor-agent"), "#!/bin/sh\necho not cursor\n", { mode: 0o755 });
   const mismatched = { [DATA_ENV]: data };
   assert.deepEqual([...harnessIds(mismatched)], BUILTINS);
-  assert.match(cursor.hidden(mismatched), /ACP_BINARY_MISMATCH/);
-  assert.ok(cursor.hidden(mismatched).includes(`agentrun harness install cursor --data ${data}`), cursor.hidden(mismatched));
+  assert.ok(refusedHere(data, "ACP_BINARY_MISMATCH")(cursor.hidden(mismatched)), cursor.hidden(mismatched));
 });
 
 test("its model is one Cursor lists, named cursor/<model-id>; none named is Cursor's own default; another vendor's is refused in words", async (t) => {
@@ -113,9 +120,10 @@ test("not installed, a run's adapter is refused naming the code and the command,
   const realFetch = globalThis.fetch;
   globalThis.fetch = async (...args) => (fetched.push(String(args[0])), realFetch(...args));
   t.after(() => (globalThis.fetch = realFetch));
-  await assert.rejects(cursor.adapter(env, needs), (error) => error instanceof HarnessUnavailable && error.fix === "install" && namesInstall(data)(error.message));
+  // Where no release is pinned for this host, installing fixes nothing: the refusal names no fix.
+  await assert.rejects(cursor.adapter(env, needs), (error) => error instanceof HarnessUnavailable && error.fix === (PINNED ? "install" : undefined) && refusedHere(data)(error.message));
   const refused = await cursor.refusal(env, needs, { atStart: false });
-  assert.ok(namesInstall(data)(refused?.reason ?? ""), refused?.reason);
+  assert.ok(refusedHere(data)(refused?.reason ?? ""), refused?.reason);
   assert.deepEqual(fetched, [], "nothing on a run's path downloads");
   assert.equal(existsSync(join(data, "harnesses", "cursor")), false, "nor installs");
 });
@@ -127,11 +135,11 @@ test("a server whose data has no Cursor lists none, saves an agent on it with a 
   const saved = await api("POST", "/agents", agent("cursory", { harness: "cursor", model: "cursor/gpt-5.4-nano" }));
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
   assert.deepEqual(saved.body.warnings.map((w) => [w.field, w.reason]), [["definition.harness", "not_set_up_here"]]);
-  assert.ok(namesInstall(data)(saved.body.warnings[0].message), saved.body.warnings[0].message);
+  assert.ok(refusedHere(data)(saved.body.warnings[0].message), saved.body.warnings[0].message);
   const run = await api("POST", "/agents/cursory/runs", { input: { content: "hi" } });
   assert.equal(run.status, 409, JSON.stringify(run.body));
   assert.equal(run.body.error.code, "agent_not_runnable");
-  assert.ok(namesInstall(data)(run.body.error.message), run.body.error.message);
+  assert.ok(refusedHere(data)(run.body.error.message), run.body.error.message);
 });
 
 test("installed and verified with no key, Cursor is listed and refused for want of CURSOR_API_KEY; with one, it runs here", { skip: needsCursor, timeout: 120_000 }, async (t) => {

@@ -69,10 +69,10 @@ function lookup(env: NodeJS.ProcessEnv): { missing: CursorMissing } | Found {
   const data = dataOf(env);
   const root = cursorDirOf(data);
   const line = cursorInstallLine(acp, data, env);
-  const { version, archives } = acp.CURSOR_PIN;
+  const { version } = acp.CURSOR_PIN;
   const platform = acp.acpPlatform();
-  const release = platform ? archives[platform] : undefined;
-  if (!release?.binarySha256 || !release.treeSha256) return { missing: { code: "ACP_BINARY_UNPINNED", message: `ACP_BINARY_UNPINNED: Cursor ${version} has no release pinned for ${platform ?? `${process.platform}-${process.arch}`}, so it does not run here` } };
+  const release = acp.cursorRelease(platform);
+  if (!release) return { missing: { code: "ACP_BINARY_UNPINNED", message: `ACP_BINARY_UNPINNED: Cursor ${version} has no release pinned for ${platform ?? `${process.platform}-${process.arch}`}, so it does not run here` } };
   const binary = join(root, release.cmd);
   if (!existsSync(binary)) return { missing: { code: acp.CURSOR_CODES.notInstalled, message: `${acp.CURSOR_CODES.notInstalled}: Cursor ${version} is not installed in ${root}. Install it with: ${line}` } };
   return {
