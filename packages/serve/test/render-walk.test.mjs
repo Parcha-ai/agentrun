@@ -49,3 +49,29 @@ onStop(async () => writeFileSync(${JSON.stringify(mark)}, "deleted")); console.l
     assert.equal(exit, code, `${signal}: exits ${code}`);
   }
 });
+
+test("the walk tries a request again while Render's edge answers 502, 503 or 504, and takes any other answer as the server's", async () => {
+  const { throughEdge } = await import("../../../deploy/render/walk.mjs");
+  const answers = (statuses) => {
+    const sent = [];
+    return { sent, fetch: async (url, init) => { sent.push([url, init?.method]); return new Response("{}", { status: statuses.shift() ?? 201 }); } };
+  };
+  const opts = (f, retried) => ({ fetch: f.fetch, waitMs: 1, forMs: 1_000, retried });
+
+  const edge = answers([502, 503, 504]);
+  const retried = { n: 0 };
+  assert.equal((await throughEdge("https://x.onrender.com/v2/setup", { method: "POST" }, opts(edge, retried))).status, 201);
+  assert.equal(retried.n, 3);
+  assert.deepEqual(edge.sent.map(([, m]) => m), ["POST", "POST", "POST", "POST"]);
+
+  // The server's own refusal is the answer: never sent again.
+  const refused = answers([409]);
+  assert.equal((await throughEdge("https://x.onrender.com/v2/setup", { method: "POST" }, opts(refused, { n: 0 }))).status, 409);
+  assert.equal(refused.sent.length, 1);
+
+  // An edge that keeps failing: its last answer, once the time is up.
+  const down = answers(Array(10_000).fill(502));
+  const t = Date.now();
+  assert.equal((await throughEdge("https://x.onrender.com/", {}, { fetch: down.fetch, waitMs: 5, forMs: 50 })).status, 502);
+  assert.ok(Date.now() - t < 1_000);
+});

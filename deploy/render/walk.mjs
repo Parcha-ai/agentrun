@@ -35,6 +35,20 @@ export function serviceRequest(blueprint, { ownerId, name, generated }) {
   };
 }
 
+/** A request to the service through Render's edge, which answers 502, 503 or 504 itself while a new deploy takes its
+ *  traffic (a 502 came 3 s after the health check passed): those are tried again, every waitMs for up to forMs. Any
+ *  other answer is the server's and is returned at once, so a refusal is never sent twice. `retried.n` counts them. */
+export async function throughEdge(url, init, { fetch: send = fetch, waitMs = 3_000, forMs = 60_000, retried = { n: 0 } } = {}) {
+  const end = Date.now() + forMs;
+  for (;;) {
+    const response = await send(url, init);
+    if (![502, 503, 504].includes(response.status) || Date.now() + waitMs > end) return response;
+    await response.arrayBuffer().catch(() => {});
+    retried.n++;
+    await new Promise((r) => setTimeout(r, waitMs));
+  }
+}
+
 async function main() {
   const { values: args } = parseArgs({ options: { owner: { type: "string" } } });
   const { RENDER_API_KEY: key, OPENROUTER_API_KEY: orKey } = process.env;
@@ -115,24 +129,27 @@ async function main() {
     t.healthy = Date.now();
     row("healthy", "PASS", `GET ${base}/v2/health: 200 ${JSON.stringify(health)}, ${since(t.healthy)}`);
 
-    const page = await fetch(`${base}/`, { headers: { accept: "text/html" } });
+    // From here on, every request to the service goes through the edge's retries (throughEdge).
+    const edge = { n: 0 };
+    const atService = (url, init) => throughEdge(url, init, { retried: edge });
+    const page = await atService(`${base}/`, { headers: { accept: "text/html" } });
     if (page.status !== 200 || !/text\/html/.test(page.headers.get("content-type") ?? "")) throw new Error(`GET ${base}/ answered ${page.status} ${page.headers.get("content-type")}, not the console`);
-    const session = await (await fetch(`${base}/v2/auth/session`)).json();
+    const session = await (await atService(`${base}/v2/auth/session`)).json();
     if (session.password_set !== false || session.setup_code !== true) throw new Error(`the first visit does not ask for the setup code: ${JSON.stringify(session)}`);
     row("first visit asks for the setup code", "PASS", `GET / is the console; GET /v2/auth/session: ${JSON.stringify(session)}`);
-    const setup = await fetch(`${base}/v2/setup`, { method: "POST", headers: { "content-type": "application/json", origin: base }, body: JSON.stringify({ code: token, password: randomBytes(18).toString("base64url") }) });
+    const setup = await atService(`${base}/v2/setup`, { method: "POST", headers: { "content-type": "application/json", origin: base }, body: JSON.stringify({ code: token, password: randomBytes(18).toString("base64url") }) });
     const signedIn = await setup.json().catch(() => ({}));
     if (setup.status !== 201 || signedIn.signed_in !== true) throw new Error(`POST /v2/setup with AGENTRUN_TOKEN as the code answered ${setup.status} ${JSON.stringify(signedIn)}`);
     const cookie = (setup.headers.get("set-cookie") ?? "").split(";")[0];
     t.setUp = Date.now();
-    row("token works as the setup code", "PASS", `POST /v2/setup: 201, signed in (session cookie not shown), ${since(t.setUp)}`);
+    row("token works as the setup code", "PASS", `POST /v2/setup: 201, signed in (session cookie not shown), ${since(t.setUp)}${edge.n ? `; the Render edge answered 502, 503 or 504 ${edge.n} time(s) first, tried again` : ""}`);
 
-    const saved = await fetch(`${base}/v2/settings/tool-keys/openrouter`, { method: "PUT", headers: { cookie, origin: base, "content-type": "application/json" }, body: JSON.stringify({ values: { OPENROUTER_API_KEY: orKey } }) });
+    const saved = await atService(`${base}/v2/settings/tool-keys/openrouter`, { method: "PUT", headers: { cookie, origin: base, "content-type": "application/json" }, body: JSON.stringify({ values: { OPENROUTER_API_KEY: orKey } }) });
     if (saved.status !== 204) throw new Error(`PUT /v2/settings/tool-keys/openrouter answered ${saved.status}: ${(await saved.text()).slice(0, 300)}`);
     row("model key saved", "PASS", "OPENROUTER_API_KEY saved in Settings with the owner's session: 204 (value not shown)");
 
     const api = async (method, path, payload) => {
-      const r = await fetch(`${base}/v2${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, ...(payload ? { body: JSON.stringify(payload) } : {}) });
+      const r = await atService(`${base}/v2${path}`, { method, headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, ...(payload ? { body: JSON.stringify(payload) } : {}) });
       const got = await r.json().catch(() => ({}));
       if (r.status >= 300) throw new Error(`${method} /v2${path} answered ${r.status}: ${got.error?.message ?? JSON.stringify(got).slice(0, 300)}`);
       return got;
