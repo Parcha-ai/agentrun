@@ -4,7 +4,7 @@
 // that is no token, a placeholder, and a parameter that only resembles a credential's name are left as written.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { redacted } from "../dist/key-refusal.js";
+import { redacted, redactedAnswer } from "../dist/key-refusal.js";
 import { redactSecrets, secretShapes } from "../dist/learn/secrets.js";
 import { traceSpans } from "../dist/run-trace.js";
 import { timelineOf } from "../dist/timeline/index.js";
@@ -81,6 +81,33 @@ test("both shapes are read in linear time on a text made to be slow", () => {
     const took = performance.now() - began;
     assert.ok(took < 500, `took ${Math.round(took)} ms on ${JSON.stringify(text.slice(0, 24))}`);
   }
+});
+
+test("a URL whose credential's value holds more parameters of the same name is read once, not once from each", () => {
+  // The value runs to the next separator and may hold "?" and "=", so every nested "?token=" starts a match that ends
+  // where the first does. Read from each, 128 KB took over a second.
+  const nested = "?token=a".repeat(16_000);
+  const began = performance.now();
+  const out = redactSecrets(nested, [], 1 << 20);
+  const took = performance.now() - began;
+  assert.equal(out, "?token=[redacted]");
+  assert.ok(took < 300, `took ${Math.round(took)} ms`);
+});
+
+test("a long answer shows no Bearer token wherever its pieces are cut: the scheme and its token are read together", () => {
+  // An answer is redacted in pieces of about 8 KB cut at whitespace (redactedAnswer). The token follows whitespace, so
+  // a cut there would leave the scheme at the end of one piece and the token at the head of the next, read by neither.
+  for (const header of [`Authorization: ${SCHEME} ${TOKEN}`, `{"authorization":"${SCHEME} ${TOKEN}"}`, `${SCHEME}   ${TOKEN}`]) {
+    for (let pad = 8_140; pad <= 8_200; pad++) {
+      const out = redactedAnswer(`${"x".repeat(pad)} ${header} and the rest of the answer.`, []);
+      assert.ok(!out.includes(TOKEN), `${pad} characters before ${JSON.stringify(header)}`);
+      assert.ok(out.endsWith(`${header.replace(TOKEN, "[redacted]")} and the rest of the answer.`), `${pad}: ${out.slice(-90)}`);
+    }
+  }
+  // No whitespace before the scheme to cut at instead: the scheme and its token are read as one piece, and one longer
+  // than a piece is shown as "[redacted]", as any run of that length with no whitespace is.
+  const long = ["a1", "B2"].join("").repeat(2_047);
+  assert.ok(!redactedAnswer(`k:${SCHEME} ${long} end`, []).includes(long.slice(0, 20)));
 });
 
 test("a run's trace shows neither: a tool call's input and result previews are cut of both, as its Timeline rows are", () => {
