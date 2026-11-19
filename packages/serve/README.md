@@ -185,6 +185,10 @@ One line at start, `event=boxes`, says which boxes this server has ([Sandbox](#s
 package and pins; [harnesses](#harnesses)), the bulk of its start; quiet keeps it too. It is made at the start only: a
 PUT of `/settings/tools` and a save or delete of a tool key change no harness's offer, so they remake capabilities at
 once without checking again (a key some harness reads would, with `why=key`).
+`event=cost_heal read=<n> healed=<n> failed=<n>` says, once after the start, what the start's sweep did: the ended runs
+whose stored cost was unknown that it read, those whose priced booking it wrote back, and those it could not read (each
+heals on its next read). The rest stay unknown: a charge of no known cost, or a booking with no request to read. It
+names no run, and a store with no such run says nothing; quiet keeps it too.
 
 ## Anonymous usage counts
 
@@ -279,7 +283,18 @@ copy: a service that loses it loses them). With no
 `AGENTRUN_TOKEN` from the Environment tab, or the code the start prints in the service's log (`Set up this server: ...`). On another host, set `AGENTRUN_PUBLIC_URL` to
 the address people open before the first start; without it, whoever opens the console first sets the password. Set
 `AGENT_MODEL` and the provider's key there too. Render waits 30 s after SIGTERM, above the image's 6 s drain; it does not
-let a service with a disk change that.
+let a service with a disk change that. It sets `AGENTRUN_RUN_USER=same` (every run as the server's own user, each still
+a process of its own), as Railway's template does: neither platform has been shown to keep the image helper's file
+capabilities.
+
+A runner that refuses to claim (its run isolation refused: an `AGENTRUN_RUN_USER` it does not know, or a helper that
+can't switch users) stays up and says so in the store. While every runner there has refused, and one at least is there,
+the server refuses a run's start, and a message to a run, with 503 `runner_refused` in the runner's words and their fix;
+`GET /v2/capabilities` has them in `runner_refused` (null otherwise); `GET /v2/health` answers 200 `degraded`, its
+`runner` check `refused` and the words in `runner_refused`, so a platform's health check never restarts the service over
+a setting; and a run already queued ends `failed` with error code `runner_refused`. A run a runner claimed is left to it.
+A server with `--no-runner` and no runner started yet refuses nothing: runs queue for the runner to come. Once a runner
+that can claim is there, the refusal is gone.
 
 ## The disk, and earlier data directories
 
@@ -2045,10 +2060,10 @@ trigger in the console, with each step's API call.
 
 A preset server is saved for one Composio user. To let each run act as its own person's account instead, save it with
 `user_id: "per_run"` (a word reserved for this, never a Composio user id): the server keeps no user and no connected
-account in its address, looks up no account and makes no connect link. Composio refuses an address that names no user, even to list its tools, so
-the save, a refresh, a preview and an agent's save list them as `agentrun~tool-listing`, a user no save or run can name,
-never stored and never used for a call. Each run then names the account its calls of that server run as, in `mcp_auth`
-on its start or on a message:
+account in its address, looks up no account and makes no connect link. Composio refuses an address that names no user,
+even to list its tools, so the save, a refresh, a preview and an agent's save list them as `agentrun~tool-listing`, a
+user no save or run can name, never stored and never used for a call. Each run then names the account its calls of that
+server run as, in `mcp_auth` on its start or on a message:
 
 ```sh
 curl -X POST "$BASE/v2/agents/$AGENT/runs" -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
@@ -2059,15 +2074,17 @@ curl -X POST "$BASE/v2/agents/$AGENT/runs" -H "authorization: Bearer $TOKEN" -H 
 (`ca_...`), and without it Composio picks the user's account for the toolkit. Each request to the server carries that
 user and account, the Composio key staying the server's own. The binding is kept as a `per_run` server's headers are:
 sealed into the run's launch, erased by the write that ends the run, never on the server's row, the run's view, its
-timeline, its trace or a log line, and its values are cut from whatever the run shows. The binding's ids are held by
-the run's redactors as any secret of 8 characters or more; a shorter Composio user id is an identifier, not a
-credential, and a conversation can still quote it, but no row, journal entry, timeline item or log line carries it as a
-field (an account id is always 8 or more: `ca_` and 5 to 64 characters). A message's binding replaces
-the run's for the turn it starts. A run that names no account has its calls of the server answered, unsent, that it
-was handed none, so a per-run server never calls as a default account. A malformed user or account is `422
-input_invalid` at `mcp_auth.<server>.composio_user_id` or `.connected_account_id`; headers for such a server, or a
-binding for any other server, are `422` at `mcp_auth.<server>`, and no run starts. A per-run server makes no Composio
-trigger: a trigger runs as one account. A server saved for one user before this mode keeps calling as that user.
+timeline, its trace or a log line, and its values are cut from whatever the run shows. A message's binding replaces the
+run's for the turn it starts. A run that names no account has its calls of the server answered, unsent, that it was
+handed none, so a per-run server never calls as a default account. A malformed user or account is `422 input_invalid` at
+`mcp_auth.<server>.composio_user_id` or `.connected_account_id`, and so is a binding to the preset's default user
+`agentrun` (`not_allowed`: the user single-user preset servers call as); headers for such a server, or a binding for any
+other server, are `422` at `mcp_auth.<server>`, and no run starts. A per-run server makes no Composio trigger: a trigger
+runs as one account. A server saved for one user before this mode keeps calling as that user.
+
+With `user_id: "per_run"`, whoever can start a run chooses its Composio user, so the host (Grep, say) owns which user
+each run binds: it binds each run to its own person and never takes the ids from that person. Only `agentrun` is
+refused, so a host must not bind a per-run server to a `user_id` that a single-user server calls as.
 
 What can go wrong, told apart:
 
@@ -2638,14 +2655,14 @@ A string that is an address carrying a credential, in any scheme (`https`, `post
 (`token`, `api_key`, `access_token`, `sig`) that has a value. An address with none stays as it is; one whose user part
 holds no secret (`ssh://git@host`) is sealed all the same. A field the event's schema marks with `format: "password"` or
 `writeOnly: true` is sealed whatever its name; the create reads the event's schema from Composio for this. A create with
-such a value below the config's top level is refused `422`, naming it.
-Composio's trigger schemas rarely mark a field secret, so the name mostly decides. A
-number is sealed as its decimal text and stays a number in what Composio gets; a run's output is cut of that text when
-it is 8 characters or more, as a string's is. The value is kept in the composio source's sealed settings, next to the subscription's
-secret. Composio gets it once, in the instance's upsert. Every answer has `"[sealed]"` in its place, and
-`source.sealed_config` names the field. The events list names these fields per event under `sealed`, and the console
-takes them as passwords. A PATCH that leaves a sealed field out or sends `"[sealed]"` keeps it. Any other value is a
-change to the config and is refused, as every config change is: to change a key, delete the trigger and make a new one.
+such a value below the config's top level is refused `422`, naming it. Composio's trigger schemas rarely mark a field
+secret, so the name mostly decides. A number is sealed as its decimal text and stays a number in what Composio gets; a
+run's output is cut of that text when it is 8 characters or more, as a string's is. The value is kept in the composio
+source's sealed settings, next to the subscription's secret. Composio gets it once, in the instance's upsert. Every
+answer has `"[sealed]"` in its place, and `source.sealed_config` names the field. The events list names these fields per
+event under `sealed`, and the console takes them as passwords. A PATCH that leaves a sealed field out or sends
+`"[sealed]"` keeps it. Any other value is a change to the config and is refused, as every config change is: to change a
+key, delete the trigger and make a new one.
 The trigger's delete retires the value into a sealed row until the runs that saw it end. A trigger saved by an earlier server with such a value in plain text is answered
 masked by the same rule at once, at any depth (one below the top level named in `sealed_config` by its JSON Pointer),
 and sealed at the next start by the same rule. After that start, without holding it up, the server reads the schema of

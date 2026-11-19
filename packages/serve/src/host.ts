@@ -71,7 +71,11 @@ export function maxRunsOf(env: NodeJS.ProcessEnv, given?: number): number {
   return value;
 }
 
-export type Health = { status: "ok" | "failing"; checks: { store: "ok" | "does_not_open"; disk: "ok" | "below_floor" | "cannot_check" } };
+/** The server's health. `degraded`: it serves, and every runner here refused to claim any run (`checks.runner` refused,
+ *  `runner_refused` their words, runner/presence.ts); answered 200 like ok, since a platform whose health check restarts a
+ *  service it reads as down would restart it in a loop, and a restart changes no runner's setting. `failing` (503) is the
+ *  store or the disk. */
+export type Health = { status: "ok" | "degraded" | "failing"; checks: { store: "ok" | "does_not_open"; disk: "ok" | "below_floor" | "cannot_check"; runner?: "refused" }; runner_refused?: string };
 
 /** How long health waits for the store's one read before it reads as failing (ms). */
 export const HEALTH_STORE_MS = 2_000;
@@ -79,10 +83,12 @@ export const HEALTH_STORE_MS = 2_000;
 /** Whether the server's store (`store`, the one it opened: SQLite in the data directory, or Postgres when
  *  AGENTRUN_STORE_URL names one) answers one read within HEALTH_STORE_MS, and the data directory's disk has
  *  `minFreeBytes` free; a disk it cannot measure fails. Says no path and no number. `fsStat` is node's statfs unless a
- *  test gives another. */
-export async function healthOf(store: Pick<Store, "agents">, data: string, minFreeBytes: number, fsStat: typeof statfs = statfs): Promise<Health> {
+ *  test gives another. `refused`: why no runner here can take a run (runner/presence.ts runnersRefused), read only when
+ *  the store answered; health is then degraded, with a runner check that says so and their words. */
+export async function healthOf(store: Pick<Store, "agents">, data: string, minFreeBytes: number, fsStat: typeof statfs = statfs, refused?: () => Promise<string | undefined>): Promise<Health> {
   let answered: Health["checks"]["store"] = "ok";
   let timer: NodeJS.Timeout | undefined;
+  const deadline = Date.now() + HEALTH_STORE_MS;
   try {
     // One indexed read of an id no agent has: the store's own connection, never a second open of a file.
     const read = whenFree(() => store.agents.get("health-check"), REQUEST_BUSY_MS);
@@ -97,7 +103,18 @@ export async function healthOf(store: Pick<Store, "agents">, data: string, minFr
   }
   const free = await fsStat(data).then((fs) => fs.bavail * fs.bsize, () => undefined);
   const disk = free === undefined ? "cannot_check" : free >= minFreeBytes ? "ok" : "below_floor";
-  return { status: answered === "ok" && disk === "ok" ? "ok" : "failing", checks: { store: answered, disk } };
+  if (answered !== "ok" || disk !== "ok") return { status: "failing", checks: { store: answered, disk } };
+  // The runners' read within what is left of the same HEALTH_STORE_MS: one that does not answer in time is not read (ok),
+  // so health never waits on a store that answered once and is now slow (a pool filled between the two reads).
+  let words: string | undefined;
+  if (refused) {
+    const read = refused();
+    read.catch(() => undefined);
+    words = await Promise.race([read, new Promise<undefined>((resolve) => {
+      timer = setTimeout(resolve, Math.max(0, deadline - Date.now()), undefined);
+    })]).catch(() => undefined).finally(() => clearTimeout(timer));
+  }
+  return words === undefined ? { status: "ok", checks: { store: answered, disk } } : { status: "degraded", checks: { store: answered, disk, runner: "refused" }, runner_refused: words };
 }
 
 /** Whether `--open` opens a browser here: not in CI, and on Linux or FreeBSD only with a display. */

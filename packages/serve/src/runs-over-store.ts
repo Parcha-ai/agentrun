@@ -31,6 +31,7 @@ import { type LaunchDisk, launchBody, type RunLaunch } from "./run-launch.js";
 import { modelKeyRequired, serverKeyMissing } from "./run-model-key.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
+import { runnersRefused } from "./runner/presence.js";
 import { AgentDeleting, AnswerTaken, ExternalBodyConflict, type LaunchSealed, type NewRevision, type RevisionRow, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint, StoreLaunchMissing } from "./store/index.js";
 import { canonical } from "./store/agent-body.js";
 import { toolingOf } from "./tools.js";
@@ -173,13 +174,16 @@ export type MessageMode = "steer" | "answer" | "follow_up";
  *  run's state. `answers: false` is a trigger's message, which never answers a person: refused while the run waits on one,
  *  and never a deny of an approval. The mode is the label the v2 answer reports, from the run's moment. `queue`: the steer's
  *  write when it is not this run's own (a trigger's: its firing marked with it, within its bound, store.triggers.message),
- *  which may skip it, in words. */
+ *  which may skip it, in words. A runner applies every message, so while every runner here refused to claim, any message
+ *  (a person's or a trigger's) is refused in their words first, as a start is (prepareLaunch, runner/presence.ts). */
 export async function message(
-  store: RunsStore & Pick<Store, "agents">,
+  store: RunsStore & Pick<Store, "agents" | "runners">,
   moment: RunMoment,
   content: string,
   { requestId, answers = true, origin, queue, launchSealed, beforeSubmit }: { requestId?: string; answers?: boolean; origin?: unknown; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void>; launchSealed?: LaunchSealed; beforeSubmit?: (runId: string, content: string) => Promise<void> | void } = {},
 ): Promise<{ mode: MessageMode; messageId: string; skipped?: string }> {
+  const refused = await runnersRefused(store.runners);
+  if (refused !== undefined) throw new ApiError("runner_refused", refused);
   if (moment.importedSource !== undefined) throw importedRefusal(moment);
   const launchBody = await controlLaunchBody(store, moment.id);
   if (isObject(launchBody) && launchBody.sdk) throw new ApiError("not_continuable", "Backend SDK runs are single-task sessions. Start a new SDK call for another task.");
@@ -415,6 +419,9 @@ type StartBody = { readonly maxCostUsd?: number; readonly place?: unknown; reado
 export interface StartDeps {
   /** A new run id; defaults to a UUIDv7. */
   readonly newRunId?: () => string;
+  /** Why no runner here can take a run, in their words, while every runner there refused to claim (runner/presence.ts
+   *  runnersRefused); undefined while one can, or none is there yet. A start is refused with it (runner_refused). */
+  runnersRefused?(): Promise<string | undefined>;
   /** The create body's field issues, before the agent is read (server.ts runBodyIssues). */
   runBodyIssues(body: Json): InputIssue[];
   /** The revision a run starts on (server.ts pinnedOf): the body's pin, else the agent's current; undefined when none. */
@@ -667,6 +674,10 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // The run's own cap, else the agent's default: the caller chose its own.
   const cap = typeof body.max_cost_usd === "number" ? body.max_cost_usd : rbody.maxCostUsd;
   if (capped && cap === undefined) throw invalid([{ field: "max_cost_usd", reason: "missing", message: "Every run a trigger starts is capped: give the trigger's target a max_cost_usd or set the agent's." }]);
+  // A run no runner here can claim is never taken to wait for good: refused in the runners' words, once the request reads
+  // right and before anything is pinned or made for it (runner/presence.ts).
+  const refused = await deps.runnersRefused?.();
+  if (refused !== undefined) throw new ApiError("runner_refused", refused);
   const place = resolvePlace(rbody.place as Place | undefined, deps.fallbackPlace(revision.kind, revision.kind === "agentic" ? (rbody.tools ?? []) : []));
   // Checked as pinned: an earlier revision with no pin is pinned now, once (StartDeps.pinFirst); one that could not be, as
   // its server could not be listed, is refused with the rest (runnable).

@@ -13,6 +13,8 @@ import { PAYLOAD_KEPT_BYTES, type TriggerAdapter } from "./trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { CORRECTIONS_CAP } from "./learn/index.js";
 import { ERROR_STATUS } from "./errors.js";
+import { COMPUTER_UNAVAILABLE_CODE } from "./computer-lost.js";
+import { RUNNER_REFUSED_CODE } from "./runner/presence.js";
 import { TAKE_OVER_MINUTES } from "./computer-routes.js";
 import { HOLD_MAX_MINUTES, HOLD_MINUTES } from "./computer-held.js";
 import { CALL_MS, PROTOCOL_METHODS } from "./computer-channel.js";
@@ -104,8 +106,16 @@ const json = (schema: unknown, description: string) => ({ description, content: 
 const HEALTH = {
   type: "object", additionalProperties: false, required: ["status", "checks"],
   properties: {
-    status: { enum: ["ok", "failing", "warming"] },
-    checks: { type: "object", additionalProperties: false, required: ["store", "disk"], properties: { store: { enum: ["ok", "does_not_open", "opening"] }, disk: { enum: ["ok", "below_floor", "cannot_check"] } } },
+    status: { enum: ["ok", "degraded", "failing", "warming"], description: "`degraded` (answered 200, as `ok` is): the server serves, and every runner here refused to claim any run (`checks.runner`), so a platform's health check never restarts it over a runner's setting. `failing` (503): the store or the disk." },
+    checks: {
+      type: "object", additionalProperties: false, required: ["store", "disk"],
+      properties: {
+        store: { enum: ["ok", "does_not_open", "opening"] },
+        disk: { enum: ["ok", "below_floor", "cannot_check"] },
+        runner: { enum: ["refused"], description: "Present only while every runner here refused to claim any run (its run isolation refused): no run starts until one is started again as `runner_refused` says.", "x-agentrun-serve": "runners/1" },
+      },
+    },
+    runner_refused: { type: "string", description: "With `checks.runner`: why no runner here can take a run, in the runners' own words and their fix.", "x-agentrun-serve": "runners/1" },
   },
 };
 
@@ -1693,7 +1703,7 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
       security: [{ ownerSession: [] }],
       parameters: [AGENT_ID, { name: "name", in: "path", required: true, description: "The learned workflow's folder name, `workflows/<name>/`.", schema: { type: "string" } }, { name: "digest", in: "path", required: true, description: "The revision: the first 16 hex of its workflow.json's sha256.", schema: { type: "string" } }],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, properties: { inputs: { oneOf: [{ const: "held" }, { type: "integer", minimum: 1, maximum: COMPILE_AFTER_MAX }], default: "held", description: "`held`: the runs it was last checked on; a number: the agent's newest that many completed runs." } } } } } },
-      responses: { "202": { description: "The replay started: its runs are queued.", headers: { Location: ref("headers/Location") }, content: { "application/json": { schema: closed({ replay: { type: "string", description: "The replay's id." }, inputs: { ...COUNT, description: "How many graded inputs it replays: one replay run each." } }) } } }, ...errors(400, 401, 403, 404, 409, 422, 429, 500) }, ...MARK,
+      responses: { "202": { description: "The replay started: its runs are queued.", headers: { Location: ref("headers/Location") }, content: { "application/json": { schema: closed({ replay: { type: "string", description: "The replay's id." }, inputs: { ...COUNT, description: "How many graded inputs it replays: one replay run each." } }) } } }, ...errors(400, 401, 403, 404, 409, 422, 429, 500, 503) }, ...MARK,
     },
   },
   "/agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}": {
@@ -3142,7 +3152,7 @@ const SO_FAR = {
 /** composioperrun/1: the Composio user (and connected account) a per-run Composio server's calls run as, for one run. */
 const COMPOSIO_RUN_BINDING: Json = {
   ...closedWith({
-    composio_user_id: { type: "string", pattern: "^[A-Za-z0-9._@-]{1,128}$", description: "The Composio user this run's calls of that server run as." },
+    composio_user_id: { type: "string", pattern: "^[A-Za-z0-9._@-]{1,128}$", description: "The Composio user this run's calls of that server run as. The preset's default user `agentrun` is refused (422 not_allowed): it is the one single-user preset servers call as." },
   }, {
     connected_account_id: { type: "string", pattern: "^ca_[A-Za-z0-9_-]{5,64}$", description: "The user's connected account they run on (Composio's `ca_...` id). Absent: Composio picks the user's account for the toolkit." },
   }),
@@ -3179,6 +3189,8 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   Cost: {
     ...SO_FAR,
+    // costunknown/1: why an ended run's cost is unknown when no charge it counts says so.
+    unknown: { type: "string", enum: ["booking_unread"], description: "Set only on a run that has ended, beside a null `usd` that neither `unpriced` nor `upper_bound` explains: why its cost is unknown. `booking_unread`: its end could not read the run's booking within its bound and stored the cost unknown, and this read found no booked request to read it from. A reader that bills holds the run, as on any null. Absent whenever the booking reads: an end that stored its cost unknown while the booking is priced reads the booking's figure (and `unpriced` with `so_far_usd` beside a null for a charge of no known cost).", "x-agentrun-serve": "costunknown/1" },
     // costbasis/1: a run's tokens beside its cost.
     tokens: {
       type: "object", additionalProperties: false, required: ["input", "output", "cache_read", "cache_write"],
@@ -3623,6 +3635,11 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       enum: ["uid", "process"],
       description: "How this host keeps one run from another: each run is a process of its own under the runner, and with `uid` each runs as a user of its own (the image's helper, a uid from 1001 per slot), so a run's tools read no other run's folder or memory, nor the data directory's store. `process`: every run as the runner's own user, where the host has no helper (a local install) or `AGENTRUN_RUN_USER=same` says so.",
       "x-agentrun-serve": "serve/1",
+    },
+    runner_refused: {
+      type: ["string", "null"],
+      description: "Why no runner here can take a run, in the runners' own words and their fix (`AGENTRUN_RUN_USER=same`, for one), while every runner here refused to claim any run (its run isolation refused); null while one can, or while none is there yet (a server with `--no-runner` whose runner has not started). While it is set a run's start is 503 `runner_refused` and a run still queued fails with that code.",
+      "x-agentrun-serve": "runners/1",
     },
     switches: {
       type: "object",
@@ -4176,9 +4193,24 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   const own = Object.keys(ERROR_STATUS).filter((code) => Array.isArray(errorCode.enum) && !errorCode.enum.includes(code));
   if (own.length) {
     errorCode.enum = [...errorCode.enum!, ...own];
-    // The newest addition that widened it: a client that validates against mcpservers/1 refuses budget_reached.
-    errorCode["x-agentrun-serve"] = "cappause/1";
+    // The newest addition that widened it: a client that validates against cappause/1 refuses runner_refused.
+    errorCode["x-agentrun-serve"] = "runners/1";
     fields.push(...own.map((code) => `ErrorCode.${code}`));
+  }
+  // A start (or a message) while every runner here refused to claim any run: 503 runner_refused, not retryable, in the
+  // runners' words and their fix (runner/presence.ts).
+  const errorBodyCode = ((schemas.ErrorBody as Json).properties as Record<string, Json>).code!;
+  errorBodyCode["x-agentrun-serve-note"] = `503 \`${RUNNER_REFUSED_CODE}\` (POST /agents/{agent_id}/runs, POST /runs, a learned workflow's replay, POST /agents/{agent_id}/sdk-runs, POST /runs/{run_id}/messages): every runner of this server refused to claim any run (its run isolation refused), so the run would wait queued for good. Not retryable: no try again changes it until a runner that can claim is started. Its message is the runners' own words and their fix (\`set AGENTRUN_RUN_USER=same\`, for one), as \`GET /capabilities\`' \`runner_refused\` says them; a trigger's firing fails with the same code and words.`;
+  noted.push("ErrorBody.code");
+  // A failed run's own codes beside the contract's (store-view.ts errorOfRow): a run whose sandbox was lost more times than
+  // its claim starts new ones (computer-lost.ts), and a run still queued while every runner here refused to claim
+  // (runner/presence.ts).
+  const runErrorCode = schemas.RunErrorCode as Json & { enum?: string[] };
+  const runOwn = [COMPUTER_UNAVAILABLE_CODE, RUNNER_REFUSED_CODE].filter((code) => Array.isArray(runErrorCode.enum) && !runErrorCode.enum.includes(code));
+  if (runOwn.length) {
+    runErrorCode.enum = [...runErrorCode.enum!, ...runOwn];
+    runErrorCode["x-agentrun-serve"] = "runners/1";
+    fields.push(...runOwn.map((code) => `RunErrorCode.${code}`));
   }
   const details = ((schemas.ErrorBody as Json).properties as Record<string, Json>).details!;
   details["x-agentrun-serve-details"] = {

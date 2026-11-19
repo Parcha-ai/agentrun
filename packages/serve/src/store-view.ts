@@ -14,6 +14,7 @@ import { currentLearning, holdsForOk, type ItemStatus, type Learning, learningVi
 import { said } from "./learning-words.js";
 import { CONTENT_FILTER_WORDS, contentFiltered, MODERATED } from "./content-filter.js";
 import { COMPUTER_UNAVAILABLE_CODE, lostEndMessage } from "./computer-lost.js";
+import { refusedEndMessage, RUNNER_REFUSED_CODE } from "./runner/presence.js";
 import { launchOf } from "./handed-values.js";
 import { learningStartOf, type RunLaunch, seedFailed } from "./run-launch.js";
 import {
@@ -163,6 +164,9 @@ const errorOfRow = (summary: string | null): { code: string; message: string; re
   if (over !== undefined) return { code: SPEND_CAP_REACHED, message: over, retryable: false };
   const lost = lostEndMessage(summary);
   if (lost !== undefined) return { code: COMPUTER_UNAVAILABLE_CODE, message: lost, retryable: false };
+  // A run still queued when every runner here refused to claim (runner/presence.ts refusedEnd): runner_refused.
+  const refused = refusedEndMessage(summary);
+  if (refused !== undefined) return { code: RUNNER_REFUSED_CODE, message: refused, retryable: false };
   if (summary !== null && contentFiltered(summary)) return { code: MODERATED, message: CONTENT_FILTER_WORDS, retryable: false };
   return { code: "run_failed", message: summary ?? "The run failed.", retryable: false };
 };
@@ -252,6 +256,12 @@ interface StoreRun {
   /** Whether the run's last end wrote its cost (EndData.costUsd present: a figure or null), so the stored column holds the
    *  end's answer. False for an end whose spec reads no cost, which leaves the column as it was. */
   readonly endSaidCost?: boolean;
+  /** Whether its end stored its cost unknown while this read, which reads its cost from its booking (an ended agentic run
+   *  not native, or workflow, not imported), found no booked request: the end could not read the booking, nor can this. */
+  readonly endUnread?: boolean;
+  /** The figure its store's unknown cost heals to (Runs.healCost), at the end it was read at: set while its stored cost is
+   *  null with no bound and its booking gives an exact figure (no hold counted in it). */
+  readonly heal?: { readonly epoch: number; readonly endedAt: number; readonly usd: number };
 }
 
 /** A runner holds the run's claim now: it is not in a final state, a runner is named on its row, and its lease has not run
@@ -288,10 +298,26 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
   };
   if (!(await store.runs.get(runId))) return undefined;
   const run = await underCut(async () => (await cutOf()) ?? "unreadable", (cut) => store.snapshot((snapshot) => storeRunIn(snapshot, runId, deps, cut)));
+  // An ended run whose end stored its cost unknown while its booking is priced: its store is healed now, after the
+  // snapshot (which may not write), so every reader of the stored cost (the list, /stats, /usage, the learning bill)
+  // reads the figure this read shows. One conditional write (Runs.healCost); a failure is said and the next read tries again.
+  if (run?.heal) await healStoredCost(store, runId, run.heal);
   if (!run?.shownEnd || !holdsForOk(run.shownEnd as Learning) || !deps.statuses) return run && { ...run, learningEnd: run.shownEnd };
   // What the learning end held for its owner's OK reads as it stands now on its agent's folder's main (learning.ts
   // currentLearning); its record stays as the merge wrote it.
   return { ...run, learningEnd: currentLearning(run.shownEnd, await deps.statuses(run.row.agent)) };
+}
+
+/** Heals run `runId`'s stored unknown cost to the figure its booking gives (Runs.healCost), at the end it was read at.
+ *  True when written; false when another write got there first, or when the write failed (said, never thrown: a read
+ *  never fails on its heal, and the next read or start sweep writes it again). */
+export async function healStoredCost(store: Store, runId: string, heal: NonNullable<StoreRun["heal"]>): Promise<boolean> {
+  try {
+    return await store.runs.healCost(runId, heal, heal.usd);
+  } catch (error) {
+    console.warn(`[serve] an ended run's cost read from its booking could not be stored: ${(error as Error).message}; the next read stores it`);
+    return false;
+  }
 }
 
 /** `storeRunOf`'s reads, over `store` (a snapshot) and the run's cut. */
@@ -467,10 +493,13 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // its state: its so-far figures beside a stored unknown (costOfView reads the figure itself from the stored column). A
   // workflow's end stores it by the same rule (workflow-spec.ts); a native run's end reads its own, so it keeps the
   // reading below.
-  const bookedCost = terminal && (row.kind === "workflow" || (row.kind === "agentic" && !native)) && !row.importedFrom ? runCostOf(records.entries as never, { unbooked: isCliRecord(records.entries as never) && cliModelWorked(records.entries as never) }) : undefined;
+  const bookedCost = bookedCostOf(row, native !== undefined, records.entries);
   const endCost = bookedCost?.requests ? bookedCost : undefined;
-  const endSaidCost = endCost ? ((records.entries.findLast((entry) => entry.kind === KINDS.end)?.data as EndData | undefined)?.costUsd !== undefined) : false;
-  return { ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan, model, ...(endCost ? { endCost, endSaidCost } : {}) };
+  const endSaid = (records.entries.findLast((entry) => entry.kind === KINDS.end)?.data as EndData | undefined)?.costUsd;
+  const endSaidCost = endCost ? endSaid !== undefined : false;
+  const endUnread = bookedCost !== undefined && !endCost && endSaid === null;
+  const heal = healOf(endCost, runRow);
+  return { ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan, model, ...(endCost ? { endCost, endSaidCost } : {}), ...(endUnread ? { endUnread } : {}), ...(heal ? { heal } : {}) };
 }
 
 /** A run's learning as the view shows it: its end from the store (what it held for the owner's OK as it reads now), in a
@@ -500,10 +529,11 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   // Its decisions' booked cost joins its usage row's (costView), one unknown making it unknown.
   const decisions = run.decisions;
   // An ended run that booked its requests reads the cost its end stored by its booking (runCostOf), the answer the list,
-  // usage and stats read too: one figure on every reader. Its end reads that cost again when a read fails
-  // (loop.ts readAgain), so a null is kept only when the booking could not be read within the end's bound. The booking,
-  // read in the snapshot that read its state, adds only what the stored figure agrees with: what is known so far when both
-  // are unknown. An end that wrote no cost (a spec that reads none) left the column alone: the booking is the answer then.
+  // usage and stats read too. Its end reads that cost again when a read fails (loop.ts readAgain), and stores it unknown
+  // only when the booking could not be read within the end's bound: then this read, which reads the booking in the
+  // snapshot that read its state, says what the booking says (a figure, or unknown with what is known so far), so a late
+  // read heals on the next GET and never reads as a null with no reason. An end that wrote no cost (a spec that reads
+  // none) left the column alone: the booking is the answer then too.
   const booked = run.endCost;
   const said = booked !== undefined && run.endSaidCost === true;
   // Its cost in the Cost's words (CostWords), each figure by the one rule (costWordsOf): a hold is never spend, so while
@@ -514,8 +544,12 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   // beside it only where the two agree (the same unknown, the same bound); a bound its end stored is said so
   // (cost_upper_bound), the bound the list and the column read too.
   const bookedWords = booked ? costWordsOf([booked]) : undefined;
-  const words = !booked ? (imported ? { usd: costOfRun(run.runRow) } : costWordsOfView(run.rows, stored, decisions)) : !said ? bookedWords! : stored !== null && stored !== undefined ? { usd: stored } : storedAtMost !== null ? { ...(bookedWords!.upper_bound ? bookedWords : {}), usd: storedAtMost, upper_bound: true as const } : bookedWords!.usd === null ? bookedWords! : { usd: null };
+  const words = !booked ? (imported ? { usd: costOfRun(run.runRow) } : costWordsOfView(run.rows, stored, decisions)) : !said ? bookedWords! : stored !== null && stored !== undefined ? { usd: stored } : storedAtMost !== null ? { ...(bookedWords!.upper_bound ? bookedWords : {}), usd: storedAtMost, upper_bound: true as const } : bookedWords!;
   const usd = words.usd;
+  // A run whose end stored its cost unknown and whose booking this read finds no request in, its cost unknown with
+  // nothing else to say why (no charge counted unpriced, no bound): the booking could not be read. Said in `unknown`,
+  // never a bare null.
+  const unread = run.endUnread && usd === null && words.unpriced === undefined && !words.upper_bound ? { unknown: "booking_unread" as const } : undefined;
   const counted = words.so_far_usd !== undefined && words.unpriced !== undefined ? { so_far_usd: words.so_far_usd, unpriced: words.unpriced } : undefined;
   const upper = words.upper_bound ? { upper_bound: true as const } : undefined;
   // A request billed to a person's plan costs no dollars, however it ended (the kernel's turnCostOf): every reader counts it
@@ -529,7 +563,7 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   // The run's cap as it stands (its view's meta: the newest raise's, else the launch's).
   const cap = run.view.meta.max_cost_usd;
   const tokens = tokensOfView(run);
-  return { usd, basis: basisOfView(run, words), charge_state: null, cap_usd: cap ?? null, ...(soFar ?? {}), ...(upper ?? {}), ...(plan ? { plan: { requests: plan.requests, tokens: plan.tokens, on } } : {}), ...(tokens ? { tokens } : {}) };
+  return { usd, basis: basisOfView(run, words), charge_state: null, cap_usd: cap ?? null, ...(soFar ?? {}), ...(upper ?? {}), ...(unread ?? {}),...(plan ? { plan: { requests: plan.requests, tokens: plan.tokens, on } } : {}), ...(tokens ? { tokens } : {}) };
 }
 
 /** What run `runId`'s paid tool calls cost, the run read's `cost.tools_usd` (server.ts allInViewOf): the charges its
@@ -578,6 +612,36 @@ function tokensOfView(run: StoreRun): Record<string, number> | undefined {
   const requests = count(stored?.requests);
   if (requests === 0 && input + output === 0) return undefined;
   return { input, output, cache_read: count(stored?.cacheRead) ?? 0, cache_write: count(stored?.cacheWrite) ?? 0, ...(requests === undefined ? {} : { requests }), ...(count(stored?.unmetered) === undefined ? {} : { unmetered: count(stored?.unmetered)! }) };
+}
+
+/** An ended run's booking by the one rule its end stored its cost by (metrics.ts runCostOf). Undefined for a run still
+ *  going, a native run (its end reads its own), or an imported one. */
+function bookedCostOf(row: { readonly state: string; readonly kind: string; readonly importedFrom?: unknown }, native: boolean, entries: readonly unknown[]): RunCost | undefined {
+  if (row.state === "running" || !(row.kind === "workflow" || (row.kind === "agentic" && !native)) || row.importedFrom) return undefined;
+  return runCostOf(entries as never, { unbooked: isCliRecord(entries as never) && cliModelWorked(entries as never) });
+}
+
+/** What an ended run's stored cost heals to (Runs.healCost), at the end it was read at: its booking's figure, when that
+ *  booking has a request and an exact figure (no hold counted in it) while the stored cost is null with no bound. */
+function healOf(endCost: RunCost | undefined, runRow: RunRow): StoreRun["heal"] {
+  if (!endCost || endCost.usd === null || endCost.atMost !== 0) return undefined;
+  if (runRow.costUsd !== null || runRow.costAtMostUsd !== null || runRow.endedAt === null) return undefined;
+  return { epoch: runRow.epoch, endedAt: runRow.endedAt, usd: endCost.usd };
+}
+
+/** The start sweep's heal of run `runId` (cost-heal.ts): the same rule as its run read's (bookedCostOf, healOf), from its
+ *  row, its launch and its journal alone, so a sweep over many runs reads no timeline and no learning folder. True when
+ *  it wrote the booking's figure; a failed read or write throws, for the sweep to count. */
+export async function healedOverStore(store: Store, runId: string): Promise<boolean> {
+  const heal = await store.snapshot(async (snapshot) => {
+    const runRow = await snapshot.runs.get(runId);
+    const row = runRow && (await readRun(snapshot, runId, BACKGROUND_CONTEXT));
+    if (!runRow || !row) return undefined;
+    const launch = await launchOf(snapshot, runId);
+    const booked = bookedCostOf(row, Boolean(launch?.native), (await journalRecords(snapshot.readJournal(runId), BACKGROUND_CONTEXT)).entries);
+    return healOf(booked?.requests ? booked : undefined, runRow);
+  });
+  return heal !== undefined && (await store.runs.healCost(runId, heal, heal.usd));
 }
 
 /** GET /runs/{id}'s answer from the store, byte-identical to runs.ts's view for the same run. Undefined for an unknown run. */

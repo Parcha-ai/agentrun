@@ -1,5 +1,0 @@
----
-packages: @parcha/agentrun-serve, @parcha/agentrun, @parcha/agentrun-harness-acp
-kind: feature
----
-Bring your own harness, door 1: a recipe. A JSON file names an ACP agent's registry release (the archive's URL and sha256, the binary inside it), its model billing (through AgentRun's model proxy, or the owner's plan with turn and tool-call limits), its literal env, files and session folders in the private HOME, and what it declares. `agentrun harness install --recipe FILE` installs the release, and `agentrun harness-check --recipe FILE --model PROVIDER/MODEL` runs it for real: the agent's own tools off, its environment an allowlist, the cap or plan limits, the pinned binary at every start, no side request (stage 2); a SIGKILL then resume, a denied call, one of AgentRun's tools over MCP, a second runner (stage 3). It writes a JSON report and prints the three facts a harness row carries: `resume`, `tool_gate`, `billing`. See [HARNESS.md](https://github.com/Parcha-ai/agentrun/blob/main/HARNESS.md#a-recipe) and [HARNESS-SCORECARD.md](https://github.com/Parcha-ai/agentrun/blob/main/HARNESS-SCORECARD.md), which rates 25 agents.

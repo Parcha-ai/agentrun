@@ -14,6 +14,9 @@ import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
 import { agent, follow, secretWritePath, serve, serverLog, storeBytes, whenFree } from "./support.mjs";
 
 const { UNUSABLE } = await import("../dist/mcp-probe.js");
+const { COMPOSIO_USER } = await import("../dist/composio-preset.js");
+const { composioMadeKey } = await import("../dist/composio-made.js");
+const { ISSUE_ADDED } = await import("./fixtures/fake-composio.mjs");
 
 secretWritePath(["PUT"], /^\/settings\/mcp-servers\/[^/]+\/composio$/);
 
@@ -28,7 +31,8 @@ const USER_B = "grep-user-bob-0002";
 const ACCOUNT_B = "ca_bob_gmail_0002";
 const OWNER = "owner-0001";
 // Each Composio user's connected accounts, as the fake's MCP endpoint checks a call against them.
-const MCP_ACCOUNTS = { [USER_A]: [ACCOUNT_A], [USER_B]: [ACCOUNT_B], [OWNER]: ["ca_owner_gmail_0001"] };
+// The preset's default user (`agentrun`) has its own account too: the one a single-user preset server calls as.
+const MCP_ACCOUNTS = { [USER_A]: [ACCOUNT_A], [USER_B]: [ACCOUNT_B], [OWNER]: ["ca_owner_gmail_0001"], [COMPOSIO_USER]: ["ca_shared_gmail_0001"] };
 const COMPOSIO_USER_ID = /^[A-Za-z0-9._@-]{1,128}$/;
 const CALL = 'Call mcp__mail__add with {"a":2,"b":3}';
 const bind = (user, account) => ({ mail: { composio_user_id: user, ...(account ? { connected_account_id: account } : {}) } });
@@ -144,6 +148,26 @@ test("bindings are checked: a well-formed one starts the run; a bad user, an acc
   assert.equal((await s.api("GET", "/runs")).body.runs.length, before, "no run made");
 });
 
+test("a binding to the preset's default user is 422 on a run's start and on a message, nothing sent; a binding to another user calls as that user", async (t) => {
+  const s = await setup(t);
+  const bound = await runOnce(s, bind(USER_A, ACCOUNT_A));
+  assert.equal(toolCalls(bound.sent).length, 1, `a binding to another user reaches Composio: ${bound.answer}`);
+  assert.deepEqual(bound.sent.map(asWho), bound.sent.map(() => [USER_A, ACCOUNT_A]), "as that user and account");
+  const before = (await s.api("GET", "/runs")).body.runs.length;
+  const from = s.composio.mcpLog.length;
+  const expect = (refused, what) => {
+    const issue = refused.body.error?.fields?.[0];
+    assert.deepEqual([refused.status, refused.body.error?.code, issue?.field, issue?.reason], [422, "input_invalid", "mcp_auth.mail.composio_user_id", "not_allowed"], `${what} binding the preset's default user ${COMPOSIO_USER} is refused: ${JSON.stringify(refused.body)}`);
+    assert.match(issue.message, /shared default/, "the refusal says it is the preset's shared default user");
+  };
+  for (const mcp_auth of [bind(COMPOSIO_USER), bind(COMPOSIO_USER, "ca_shared_gmail_0001")]) {
+    expect(await s.api("POST", "/agents/reader/runs", { input: { content: CALL }, mcp_auth }), "a run's start");
+    expect(await s.api("POST", `/runs/${bound.id}/messages`, { content: CALL, mcp_auth }), "a message");
+  }
+  assert.equal((await s.api("GET", "/runs")).body.runs.length, before, "no run made");
+  assert.equal(toolCalls(s.composio.mcpLog.slice(from)).length, 0, "nothing sent to Composio");
+});
+
 test("a message's binding replaces the run's: the turn it starts calls Composio as the new user, never the old one", async (t) => {
   const s = await setup(t);
   const first = await runOnce(s, bind(USER_A, ACCOUNT_A));
@@ -231,4 +255,72 @@ test("the console's edit form previews a per-run server at its saved address ({n
   const listings = s.composio.mcpLog.slice(from).map((entry) => new URL(entry.path, "http://composio.test").searchParams);
   const users = [...new Set(listings.map((query) => query.get("user_id")))];
   assert.ok(users.length === 1 && users[0] && !COMPOSIO_USER_ID.test(users[0]), `listed as a user no binding can name: ${users}`);
+});
+
+const LITERAL = "per_run";
+const ISSUES_TRIGGER = { name: "issues", source: { kind: "composio", server: "gh", event: ISSUE_ADDED.slug, config: { owner: "many-drop", repo: "agentrun-scratch" } }, target: { kind: "start_run", agent_id: "triage", input: { content: "Triage this issue." }, max_cost_usd: 0.5 } };
+
+/** A server saved before the per-run mode for a Composio user literally named per_run: Composio's generate names the
+ *  user in the address, and a save then kept it there (user_id=per_run), its record with no per_run marker. Made as a
+ *  seed user's GitHub server `gh`, then its row and record rewritten to what that save left, with an agent `triage` allowed
+ *  its `add`. `triggered`: a Composio trigger `issues` made on it first, as the seed user. */
+async function literalPerRunServer(t, { triggered = false } = {}) {
+  const composio = await startFakeComposio({ toolkits: { github: { no_auth: false, tools: [ADD] } }, active: ["github"], mcpAccounts: { ...MCP_ACCOUNTS, [LITERAL]: ["ca_literal_github_0001"] } });
+  t.after(() => composio.close());
+  const server = await serve(t, { faux: FAUX_MCP, composioControl: { baseUrl: composio.baseUrl }, publicUrl: "https://agentrun.example.com" });
+  const s = { composio, server, api: server.api };
+  const saved = await s.api("PUT", "/settings/mcp-servers/gh/composio", { api_key: composio.apiKey, toolkit: "github", tools: ["add"], user_id: "seed-user-0003" });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  // The agent `triage`, allowed its `add`, pinned at the address it is saved with: before the rewrite only when the
+  // trigger needs it first.
+  const triage = async () => {
+    const made = await whenFree(() => s.api("POST", "/agents", agent("triage", { tools: ["mcp:gh/add"], tool_settings: { "mcp:gh/add": { permission: "allow" } } })));
+    assert.equal(made.status, 201, JSON.stringify(made.body));
+  };
+  if (triggered) {
+    await triage();
+    const trigger = await s.api("POST", "/triggers", ISSUES_TRIGGER);
+    assert.equal(trigger.status, 201, JSON.stringify(trigger.body));
+  }
+  const row = await server.store.mcp.server("gh");
+  const url = new URL(row.url);
+  url.searchParams.set("user_id", LITERAL);
+  assert.ok(await server.store.mcp.rewrite({ name: row.name, url: url.href, auth: row.auth, protocol: row.protocol, tools: row.tools, prices: row.prices, serverInfo: row.serverInfo, instructions: row.instructions }, row.sealed), "the row rewritten");
+  const record = await server.store.settings.get(composioMadeKey("gh"));
+  assert.equal(record.per_run, undefined, "the seed save wrote no per_run marker");
+  await server.store.settings.put(composioMadeKey("gh"), { ...record, user: LITERAL });
+  if (!triggered) await triage();
+  return s;
+}
+test("a server saved before the per-run mode for a Composio user literally named per_run (its record names that user, with no per_run marker) stays that user's: no binding switches it to another user, its runs call as it, and it makes a trigger as its account", async (t) => {
+  const s = await literalPerRunServer(t);
+  const { composio } = s;
+  // No user switch: a binding for it is refused as for any server that keeps its own account.
+  const before = (await s.api("GET", "/runs")).body.runs.length;
+  const from = composio.mcpLog.length;
+  const switched = await s.api("POST", "/agents/triage/runs", { input: { content: 'Call mcp__gh__add with {"a":2,"b":3}' }, mcp_auth: { gh: { composio_user_id: USER_A, connected_account_id: ACCOUNT_A } } });
+  assert.deepEqual([switched.status, switched.body.error?.fields?.[0]?.field, switched.body.error?.fields?.[0]?.reason], [422, "mcp_auth.gh", "not_an_option"], `a run's caller can't switch the server to another user: ${JSON.stringify(switched.body)}`);
+  assert.equal((await s.api("GET", "/runs")).body.runs.length, before, "no run made");
+  assert.equal(toolCalls(composio.mcpLog.slice(from)).length, 0, "nothing sent");
+  // Its runs call as its fixed user, with no binding.
+  const run = await runOnce(s, undefined, { agentId: "triage", content: 'Call mcp__gh__add with {"a":2,"b":3}' });
+  assert.equal(toolCalls(run.sent).length, 1, run.answer);
+  assert.deepEqual(run.sent.map(asWho), run.sent.map(() => [LITERAL, null]), "every request as its saved user");
+  // It has its account: a Composio trigger is made on it, as that user.
+  const trigger = await s.api("POST", "/triggers", ISSUES_TRIGGER);
+  assert.equal(trigger.status, 201, `a trigger is made on it: ${JSON.stringify(trigger.body)}`);
+  assert.deepEqual(composio.calls.filter((call) => /^\/api\/v3\/trigger_instances\/[^/]+\/upsert$/.test(call.path)).map((call) => call.body?.user_id), [LITERAL], "made at Composio as its user");
+});
+
+test("saving that server again with user_id per_run while a Composio trigger uses it is 409 composio_in_use: turning it per-run would leave the trigger's account", async (t) => {
+  const s = await literalPerRunServer(t, { triggered: true });
+  const before = await s.server.store.mcp.server("gh");
+  const again = await s.api("PUT", "/settings/mcp-servers/gh/composio", { api_key: s.composio.apiKey, toolkit: "github", tools: ["add"], user_id: "per_run" });
+  assert.deepEqual([again.status, again.body.error?.code], [409, "composio_in_use"], `a save that turns it per-run is refused while the trigger uses it: ${JSON.stringify(again.body)}`);
+  assert.equal((await s.server.store.mcp.server("gh")).url, before.url, "the server is as it was");
+  // Beside it, the same save of a server no trigger uses goes through: the refusal is the trigger's.
+  const free = await literalPerRunServer(t);
+  const turned = await free.api("PUT", "/settings/mcp-servers/gh/composio", { api_key: free.composio.apiKey, toolkit: "github", tools: ["add"], user_id: "per_run" });
+  assert.equal(turned.status, 200, JSON.stringify(turned.body));
+  assert.equal(new URL((await free.server.store.mcp.server("gh")).url).searchParams.has("user_id"), false, "saved per-run: its address names no user");
 });

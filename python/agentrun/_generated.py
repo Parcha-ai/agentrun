@@ -2479,6 +2479,7 @@ class Cost(_CostRequired, total=False):
     so_far_usd: float
     unpriced: int
     upper_bound: Literal[True]
+    unknown: Literal["booking_unread"]
     tokens: CostTokens
     learning_usd: float | None
     tools_usd: float | None
@@ -2576,7 +2577,7 @@ class RunError(_RunErrorRequired, total=False):
     details: RunErrorDetails
 
 
-RunErrorCode: TypeAlias = "Literal[\"run_failed\", \"moderated\", \"agent_not_runnable\", \"needs_connection\", \"needs_reconnect\", \"connection_revoked\", \"output_invalid\", \"spend_cap_reached\", \"wall_clock_timeout\", \"input_expired\", \"internal\"]"
+RunErrorCode: TypeAlias = "Literal[\"run_failed\", \"moderated\", \"agent_not_runnable\", \"needs_connection\", \"needs_reconnect\", \"connection_revoked\", \"output_invalid\", \"spend_cap_reached\", \"wall_clock_timeout\", \"input_expired\", \"internal\", \"computer_unavailable\", \"runner_refused\"]"
 
 
 NextAction: TypeAlias = "RequestAction | PersonAction"
@@ -5910,6 +5911,7 @@ class Capabilities(_CapabilitiesRequired, total=False):
     home: CapabilitiesHome
     secrets: CapabilitiesSecrets
     run_isolation: Literal["uid", "process"]
+    runner_refused: str | None
 
 
 class _CapabilitiesServerRequired(TypedDict):
@@ -6266,14 +6268,22 @@ class CapabilitiesSwitchesValue(TypedDict):
     allows: str
 
 
-class GetHealthResponse(TypedDict):
-    status: Literal["ok", "failing", "warming"]
+class _GetHealthResponseRequired(TypedDict):
+    status: Literal["ok", "degraded", "failing", "warming"]
     checks: GetHealthResponseChecks
 
 
-class GetHealthResponseChecks(TypedDict):
+class GetHealthResponse(_GetHealthResponseRequired, total=False):
+    runner_refused: str
+
+
+class _GetHealthResponseChecksRequired(TypedDict):
     store: Literal["ok", "does_not_open", "opening"]
     disk: Literal["ok", "below_floor", "cannot_check"]
+
+
+class GetHealthResponseChecks(_GetHealthResponseChecksRequired, total=False):
+    runner: Literal["refused"]
 
 
 class _CallMcpBodyRequired(TypedDict):
