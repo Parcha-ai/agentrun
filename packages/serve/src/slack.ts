@@ -35,8 +35,8 @@ registerSecretPage(["saveSlack", "deleteSlack"], "/#/settings/slack");
 registerNotSecretWrite("testSlack", "A test send posts to the saved URL and writes none.");
 registerNotSecretWrite("redeliverSlack", "A redelivery posts a logged message to the saved URL again and writes none.");
 
-/** Slack's channel in the store (channel_posts, channel_attempts, channel_told) and its URL's adapter in trigger_settings. */
-export const SLACK_CHANNEL = "slack-out";
+import { SLACK_CHANNEL, slackUrlForms } from "./slack-url.js";
+export { SLACK_CHANNEL, slackUrlForms };
 /** The store setting that holds Slack's shortened URL, its events, when it was set, and why it is off. */
 export const SLACK_SETTING = "slack-out";
 /** The one host an incoming-webhook URL may name. */
@@ -76,13 +76,6 @@ type SlackConfig = OutboundConfig & { events?: Partial<Events> };
 
 /** Slack's URL's metadata, named slack:outbound: set or not, pasted in the console, and when. */
 export const slackSecretMeta = (set: boolean, changedAt: string | null): SecretMeta => secretMeta(secretName("slack", "outbound"), { set, source: "console", changedAt });
-
-/** The forms of a Slack URL a run might echo, each cut from what the server shows: the URL whole and its token (the path's
- *  last part, the credential itself). */
-export function slackUrlForms(url: string): string[] {
-  const token = URL.parse(url)?.pathname.split("/").pop() ?? "";
-  return token.length >= 16 ? [url, token] : [url];
-}
 
 /** What Slack takes beside the webhook's options: `serverSecrets`, every secret the server holds (server.ts serverSecrets),
  *  read at each message, so a secret saved since is cut too (key-refusal.ts redacted, the rule a run's view takes);
