@@ -25,8 +25,18 @@ from the Secret. Set your password with the token on the first screen. Then Cont
   listing it.
 - **A Service** on port 7340, and an **Ingress** when `ingress.enabled` is true.
 
-`helm uninstall` removes all of it, the volume and the keys included. To keep your data across an uninstall, bring
-your own with `persistence.existingClaim` and `existingSecret`. The chart never makes or removes either of those.
+`helm uninstall` removes the Deployment, the Service and the Ingress, and **keeps the Secret and the volume**
+(`helm.sh/resource-policy: keep`): every run, and the seal key everything sealed is read with, survive it. An install
+with the same release name in the same namespace takes them up again, the same token included. To remove them too,
+after `helm uninstall`:
+
+```sh
+kubectl -n agentrun delete secret agentrun
+kubectl -n agentrun delete pvc agentrun
+```
+
+With `keepOnUninstall: false`, `helm uninstall` removes them with the release. A Secret or a claim of your own
+(`existingSecret`, `persistence.existingClaim`) is never made or removed by the chart.
 
 ## Values
 
@@ -36,6 +46,7 @@ your own with `persistence.existingClaim` and `existingSecret`. The chart never 
 | `ingress.enabled`, `.host`, `.className`, `.tlsSecret`, `.annotations` | off | An Ingress for `host`, with TLS from `tlsSecret` when set. |
 | `existingSecret` | empty | A Secret of yours with `AGENTRUN_TOKEN` (32 characters or more) and `AGENTRUN_SEAL_KEY` (`openssl rand -base64 32`). Each of its keys becomes a variable. |
 | `persistence.size`, `.storageClass`, `.existingClaim` | 10Gi, default, empty | The volume for `/data`. |
+| `keepOnUninstall` | `true` | `helm uninstall` leaves the Secret and the volume the chart made. `false` removes them with the release. |
 | `env` | `{}` | Plain variables by name, such as `AGENTRUN_TELEMETRY: "0"` to turn the usage counts off ([docs/telemetry.md](../../../docs/telemetry.md)). |
 | `resources` | 500m and 2Gi, 2Gi limit | The pod's resources. |
 | `image.repository`, `.tag`, `.pullPolicy` | the release's image | `tag` empty means `v<appVersion>`. |
@@ -69,5 +80,7 @@ Each run's process runs as a user of its own. The run helper switches to it with
 `deploy/helm/walk.sh`, which CI runs on kind (`.github/workflows/helm-walk.yml`), takes about 3 minutes, most of it
 the image pull. It installs the chart with its own image on a faux model (no key, no network, the counts off) and
 waits until it's ready. It checks the keys, the data directory, each run's own user and the runner's memory, then
-runs a first run to completed. Then it upgrades onto a new pod and checks that the keys and the run were kept. Last, it
-uninstalls and checks that nothing is left, the volume included.
+runs a first run to completed. Then it upgrades onto a new pod and checks that the keys and the run were kept. It
+uninstalls and checks that the Secret and the volume were kept, then installs again under the same name and checks that
+the first run is still listed with the same token. Last, it uninstalls, deletes the kept Secret and volume, and checks
+that nothing is left.

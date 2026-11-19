@@ -3,8 +3,10 @@
 # chart's own image, on the faux model of deploy/walk/faux-steps.mjs (no key, no network) and the counts off
 # (walk-values.yaml). It installs and waits for ready, checks what the chart made (the keys, the data directory, each
 # run's own user, the memory the runner budgets), runs a first run to completed, upgrades onto a new pod and checks the
-# keys and the run were kept, then uninstalls and checks nothing of the release is left, its volume included. Needs
-# helm, kubectl, node and a cluster with a default StorageClass. REPORT=<file> puts the report in that file too.
+# keys and the run were kept. It uninstalls and checks the Secret and the volume were kept (keepOnUninstall), installs
+# again under the same name and checks the first run is still listed with the same token, then uninstalls, deletes the
+# kept Secret and volume, and checks nothing of the release is left. Needs helm, kubectl, node and a cluster with a
+# default StorageClass. REPORT=<file> puts the report in that file too.
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 walk=$(dirname "$here")/walk
@@ -38,6 +40,7 @@ finish() {
   fi
   report "$code"
   helm uninstall "$release" -n "$ns" --wait >/dev/null 2>&1 || true
+  k delete secret,pvc -l "app.kubernetes.io/instance=$release" >/dev/null 2>&1 || true
   kubectl delete namespace "$ns" --wait=false >/dev/null 2>&1 || true
   rm -rf "$work"
   exit "$code"
@@ -102,6 +105,26 @@ again=$(get "$(api start "$agent" 2 0)" run)
 ended_once "a run after the upgrade" "$(api end "$again")" 2
 
 helm uninstall "$release" -n "$ns" --wait --timeout 3m >/dev/null
+# helm uninstall --wait waits for what it deletes, not for the pod under them: the pod goes within its grace.
+want="persistentvolumeclaim/$release pv/$(k get pvc "$release" -o jsonpath='{.spec.volumeName}') secret/$release"
+tries=0
+while kept=$(left | sort | tr '\n' ' ' | sed 's/ $//') && [ "$kept" != "$want" ]; do
+  tries=$((tries + 1))
+  [ "$tries" -le 120 ] || fail "uninstall keeps" "60 s after helm uninstall: $kept (not the Secret, the claim and its volume alone)"
+  sleep 0.5
+done
+pass "uninstall keeps" "helm uninstall left $kept"
+
+helm install "$release" "$here/agentrun" -n "$ns" -f "$here/walk-values.yaml" --wait --timeout 5m >"$work/reinstall.log" 2>&1 \
+  || { cat "$work/reinstall.log" >&2; fail "reinstalled" "helm install --wait: $(tail -1 "$work/reinstall.log")"; }
+[ "$(keys_hash)" = "$before" ] || fail "reinstalled" "the Secret's data changed across the uninstall and install"
+listed=$(get "$(api run "$run")" status)
+[ "$listed" = completed ] || fail "reinstalled" "the first run reads $listed after the reinstall"
+pass "reinstalled" "pod $(pod): the same Secret data (sha256 $before), and the first run reads $listed with the same token"
+
+helm uninstall "$release" -n "$ns" --wait --timeout 3m >/dev/null
+k delete secret "$release" >/dev/null
+k delete pvc "$release" --wait=true >/dev/null
 k delete configmap walk-files >/dev/null
 tries=0
 while [ -n "$(left)" ]; do
@@ -109,4 +132,4 @@ while [ -n "$(left)" ]; do
   [ "$tries" -le 120 ] || fail "uninstalled" "still there 60 s after helm uninstall: $(left | tr '\n' ' ')"
   sleep 0.5
 done
-pass "uninstalled" "nothing labelled app.kubernetes.io/instance=$release in $ns, and no volume bound to a claim there"
+pass "uninstalled" "after helm uninstall and deleting the kept Secret and claim: nothing labelled app.kubernetes.io/instance=$release in $ns, and no volume bound to a claim there"

@@ -16,6 +16,11 @@ publicUrl: ""
 # make new keys at every render. The chart then makes no Secret, and helm uninstall leaves yours.
 existingSecret: ""
 
+# helm uninstall leaves the Secret and the volume the chart made (helm.sh/resource-policy: keep), so every run and the
+# seal key survive it, and an install with the same release name in the same namespace takes them up again. false: an
+# uninstall removes them with the release.
+keepOnUninstall: true
+
 persistence:
   size: 10Gi
   # Empty: the cluster's default StorageClass.

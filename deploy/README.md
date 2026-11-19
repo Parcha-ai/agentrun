@@ -153,7 +153,8 @@ helm install agentrun deploy/helm/agentrun --namespace agentrun --create-namespa
 
 One pod, the server and its runner, on a 10 GiB volume, from the release's image; the token and seal key are made as a
 Secret at install and kept on upgrade. Its agents get file tools and `web_fetch` but no shell, as on Render. The
-chart's [README](helm/agentrun/README.md) covers its values, Argo CD and Flux, and what `helm uninstall` removes.
+chart's [README](helm/agentrun/README.md) covers its values, Argo CD and Flux, and what survives `helm uninstall`
+(the Secret and the volume, by default).
 
 ## The first visit's setup code
 
@@ -373,7 +374,8 @@ this checkout's image, or walks `AGENTRUN_IMAGE` when set.
   the run completes with each step done once.
 
 `helm/walk.sh`, which CI runs on a kind cluster (`helm-walk.yml`), walks the Helm chart the same way: install, a first
-run to completed, an upgrade that keeps the keys and the run, and an uninstall that leaves nothing.
+run to completed, an upgrade that keeps the keys and the run, an uninstall and a reinstall that keep them too, and a
+last uninstall that, with the kept Secret and volume deleted, leaves nothing.
 
 Two walk the Railway template:
 

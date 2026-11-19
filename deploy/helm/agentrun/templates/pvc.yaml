@@ -5,6 +5,10 @@ metadata:
   name: {{ .Release.Name }}
   labels:
     {{- include "agentrun.labels" . | nindent 4 }}
+  {{- if .Values.keepOnUninstall }}
+  annotations:
+    helm.sh/resource-policy: keep
+  {{- end }}
 spec:
   accessModes: ["ReadWriteOnce"]
   {{- with .Values.persistence.storageClass }}
