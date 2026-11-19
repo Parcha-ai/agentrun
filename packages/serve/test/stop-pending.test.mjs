@@ -12,7 +12,7 @@ import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { KINDS } from "../dist/runner/journal-kinds.js";
-import { agent, follow, retried, scratch, serve, withEnv } from "./support.mjs";
+import { agent, follow, retried, scratch, serve, startInProcessRunner, withEnv } from "./support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 import { ofType, PRIVATE_OK, receiver } from "./webhook-support.mjs";
 
@@ -91,6 +91,41 @@ for (const harness of ["pi", "codex"]) {
     const moved = await until(api2, runId, ({ one }) => one[0] !== "input_required" || one[1] === "waiting", "continued by the message", 55_000);
     assert.notEqual(moved.one[2]?.kind, "stopped", `${harness}: continued, it no longer reads stopped`);
     assert.notEqual(moved.listed[2]?.kind, "stopped", `${harness}: nor in the list`);
+  });
+
+  // The runner that takes a stop claims the run first, and the run's turn (parked on its approval) is still open under that
+  // claim until the end commit takes the stop. This holds that moment open (the test claims the run as that runner does,
+  // with no runner beside it to race), so the read and the list item are read inside it, not by luck of timing.
+  test(`${harness}: a stop asked of a run parked on its approval reads stopped while a runner holds the run to take it, never working, in its read and in the list, and still once its runner has ended it`, { timeout: 150_000 }, async (t) => {
+    withEnv(t, { FAUX_WEB_LOG: join(await scratch(t), "dialled.txt") });
+    const server = await serve(t, { ...GATE, runner: false });
+    const { api, store, data } = server;
+    const runnerOf = () => startInProcessRunner(data, { ...GATE, mcpOwn: server.own });
+    let runner = await runnerOf();
+    try {
+      assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+      const runId = await fetching(api, `held-${harness}`, harness);
+      await follow(api, runId, ["input_required"], { deadlineMs: 55_000 });
+      await until(api, runId, ({ one, listed }) => one[2]?.kind === "approval" && listed[2]?.kind === "approval", "parked on its approval");
+      // Its runner goes (the run stays parked, no claim), the stop is asked, and the run is claimed to take it.
+      await runner();
+      runner = undefined;
+      const stop = await api("POST", `/runs/${runId}/stop`, {});
+      assert.deepEqual([stop.status, stop.body.stopped, stop.body.status, stop.body.state], [200, true, "input_required", "idle"], JSON.stringify(stop.body));
+      const claim = await store.claim(runId, "taking-runner", { leaseMs: 60_000 });
+      assert.ok(claim, "the stop wakes the parked run: it is claimed to take it");
+      const held = (await api("GET", `/runs/${runId}`)).body.claim;
+      assert.equal(held?.runner, "taking-runner", "the read is made while that claim holds the run");
+      assert.deepEqual(await reads(api, runId), { one: ["input_required", "idle", { kind: "stopped" }], listed: ["input_required", "idle", { kind: "stopped" }] }, `${harness}: held to take the stop, it reads stopped`);
+      // Let go as a runner lets go; the next runner takes the stop, ends the turn and lets the run go stopped.
+      await store.release(claim, { state: "parked", wakeAt: null });
+      runner = await runnerOf();
+      const ended = async () => (await store.runs.get(runId))?.state === "stopped" && (await api("GET", `/runs/${runId}`)).body.claim === null;
+      for (const end = Date.now() + 30_000; !(await ended()); await sleep(100)) assert.ok(Date.now() < end, `${harness}: the stop is taken`);
+      assert.deepEqual(await reads(api, runId), { one: ["input_required", "idle", { kind: "stopped" }], listed: ["input_required", "idle", { kind: "stopped" }] }, `${harness}: taken, it reads stopped`);
+    } finally {
+      await runner?.();
+    }
   });
 }
 

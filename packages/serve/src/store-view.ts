@@ -359,14 +359,27 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // person's messages not yet taken.
   let commandRows: Awaited<ReturnType<Store["commands"]>> | undefined;
   const commandsNow = async () => (commandRows ??= await store.commands(runId, 0));
+  // The browser hand-over the agent waits on (E2c's reader over the run's hand-over entries and hand-back commands), read
+  // against the server's clock. Only a run with a hand-over entry fetches its commands, so a run with none reads none and
+  // makes no extra store read beyond the one a running run's stop and cancel already make.
+  const browserAsk = records.entries.some((e) => e.kind === BROWSER_HANDOVER_KIND)
+    ? browserAskOf(records.entries as unknown as Parameters<typeof browserAskOf>[0], await commandsNow(), deps.now?.() ?? Date.now())
+    : undefined;
+  // The agent's ask on its desktop or phone, read the same way (computer-commands.ts): only a run with one fetches its rows.
+  const computerAsk = records.entries.some((e) => e.kind === COMPUTER_HANDOVER_KIND)
+    ? computerAskOf(records.entries as unknown as Parameters<typeof computerAskOf>[0], await commandsNow(), deps.now?.() ?? Date.now())
+    : undefined;
   // A person's stop of an agentic run (stoppedByPerson: its row reads running, readRun) is main's stop mark: the run is
   // stopped while no message is newer than the stop (statusOf: input_required and idle), and a message reopens it. A stop
   // asked for and not yet taken (stopAsked) is the mark too once nothing works: between the turn's cut and the end that
   // takes the stop, a read would otherwise see the cut turn's input_required with nothing pending; a run waiting (on an
   // approval, a person, a browser) reads stopped from the stop's answer on. While its turn still works it reads working:
   // the cut is what books the request it cuts (its cost unknown), so a run read stopped before the cut would say the known
-  // sum as its cost.
-  const asked = !terminal && !working && stopAsked(row, runRow, await commandsNow());
+  // sum as its cost. A turn that stands on a call waiting for a person (no answer in its journal) or on a hand-over has no
+  // request in flight to book: the runner that takes the stop claims the run with that turn still open, and it reads
+  // stopped under that claim too, never working between the stop's answer and its end.
+  const waitsOnPerson = [...approvals.values()].some((approval) => !approval.resolved) || browserAsk !== undefined || computerAsk !== undefined;
+  const asked = !terminal && (!working || waitsOnPerson) && stopAsked(row, runRow, await commandsNow());
   // A call asked before an end in the journal reads withdrawn in that end's words; a stopped or failed run's (states no
   // reopen leaves) whose journal holds no end, by its row (answersOf `final`); every call still waiting once a stop is
   // asked (stopAsked).
@@ -390,16 +403,6 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // Whether a workflow run stands paused in its process now (its parked row with the pause's words, its newest pause not
   // resumed), the `paused` fact the status table reads for a paused workflow.
   const paused = pausedOf(runRow, records.entries);
-  // The browser hand-over the agent waits on (E2c's reader over the run's hand-over entries and hand-back commands), read
-  // against the server's clock. Only a run with a hand-over entry fetches its commands, so a run with none reads none and
-  // makes no extra store read beyond the one a running run's stop and cancel already make.
-  const browserAsk = records.entries.some((e) => e.kind === BROWSER_HANDOVER_KIND)
-    ? browserAskOf(records.entries as unknown as Parameters<typeof browserAskOf>[0], await commandsNow(), deps.now?.() ?? Date.now())
-    : undefined;
-  // The agent's ask on its desktop or phone, read the same way (computer-commands.ts): only a run with one fetches its rows.
-  const computerAsk = records.entries.some((e) => e.kind === COMPUTER_HANDOVER_KIND)
-    ? computerAskOf(records.entries as unknown as Parameters<typeof computerAskOf>[0], await commandsNow(), deps.now?.() ?? Date.now())
-    : undefined;
   // The person's messages its runner has not taken yet (steer rows neither taken nor refused): the file path's `submitted`.
   // A run that waits on its person (a parked question) and has just been answered reads as going on from the answer's
   // row, never input_required again until its runner places it, as main's run read once the message was submitted.
