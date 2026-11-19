@@ -87,6 +87,18 @@ test('a step that exits 0 while its background child holds its pipes: it resolve
   assert.ok(Date.now() - started < 2_000, `settled in ${Date.now() - started} ms, well before the 4000 ms limit`);
 });
 
+test('a step that exits 0 just before its limit: waiting for its leftover child does not count as a timeout', async (t) => {
+  const { dir, pidOf } = scratch(t);
+  // The step exits after ~50 ms; its child ignores SIGTERM (inherited across exec) and lives ~400 ms more, so the
+  // cleanup after exit runs past the 200 ms limit, inside the 600 ms grace.
+  const step = runStep('sh', ['-c', '(trap "" TERM; exec sleep 0.4) >/dev/null 2>&1 & echo $! > pidfile; sleep 0.05; echo ok-text-from-step'],
+    { cwd: dir, env: process.env, timeout: 200, grace: 600 });
+  const { stdout, error, alive: left } = await settle(pidOf, step);
+  assert.equal(error, undefined, String(error?.message));
+  assert.equal(stdout, 'ok-text-from-step\n');
+  assert.equal(left, false, 'the child is gone when the step settles');
+});
+
 test('a step that floods its output and ignores SIGTERM: what it keeps stays within the cap', async (t) => {
   const { dir } = scratch(t);
   // It ignores SIGTERM, so it keeps writing through the grace until SIGKILL.
