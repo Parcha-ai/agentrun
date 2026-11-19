@@ -142,9 +142,11 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	assert.deepEqual([extra.cloudflare.prepareImage, extra.cloudflare.local], [true, undefined]);
 	// Fly Machines start from the box image's registry tag, which Fly pulls at each create.
 	assert.deepEqual([extra.fly.prepareImage, extra.fly.local], [true, undefined]);
+	// smol cloud machines start from the same tag, which smol cloud pulls at each create.
+	assert.deepEqual([extra.smolcloud.prepareImage, extra.smolcloud.local], [true, undefined]);
 	for (const [id, fields] of Object.entries(extra)) {
 		if (!["modal", "e2b", "daytona"].includes(id)) assert.equal(fields.settings, undefined, id);
-		if (!["docker", "agent37", "modal", "e2b", "boxd", "morph", "cloudflare", "fly"].includes(id)) assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
+		if (!["docker", "agent37", "modal", "e2b", "boxd", "morph", "cloudflare", "fly", "smolcloud"].includes(id)) assert.deepEqual([fields.prepareImage, fields.local], [undefined, undefined], id);
 		if (id !== "phone-harness" && id !== "orgo") assert.equal(fields.ledger, undefined, id);
 		if (!["local-chrome", "browserbase", "kernel", "phone-harness"].includes(id)) assert.equal(fields.hostEnv, undefined, id);
 		if (id !== "orgo") assert.equal(fields.parked, undefined, id);
@@ -157,7 +159,7 @@ test("PROVIDERS is one entry per descriptor, in the registry's order, with the d
 	const mounts = Object.fromEntries(PROVIDERS.map((entry) => [entry.id, entry.mounts]));
 	assert.deepEqual(mounts.docker, ["bind"]);
 	for (const id of ["morph", "boxd"]) assert.deepEqual(mounts[id], ["sync"], id);
-	for (const id of ["orgo", "phone-harness", "browserbase", "kernel", "local-chrome"]) assert.deepEqual(mounts[id], [], id);
+	for (const id of ["orgo", "phone-harness", "browserbase", "kernel", "local-chrome", "smolcloud"]) assert.deepEqual(mounts[id], [], id);
 });
 
 test("PROVIDERS' default images: each kind is one of the entry's own, and each value is its descriptor's constant", async () => {
