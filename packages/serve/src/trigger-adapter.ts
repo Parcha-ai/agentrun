@@ -35,11 +35,8 @@ export type TriggerAdapter = {
   /** `clock`: it fires on its own times, read by the engine's timer (a source that polls, on each). `push`: a request delivered to the server fires it,
    *  keyed by the sender's own id, which a retry repeats. */
   delivery: "clock" | "push";
-  /** Whether a run it starts is handed its trigger's last completed result (trigger-targets.ts previousResultOf). true
-   *  only for a source whose runs repeat one job (a schedule's weekly digest), which then leaves out what the last one
-   *  reported. Default false: a source whose firings are different events (alice's mail, then bob's; a new issue, a
-   *  form submission) never hands one run's answer to the next, where bob's run could read, and a draft reply quote,
-   *  what the agent answered about alice's. */
+  /** Whether a run it starts is handed its trigger's last completed result (previousResultOf). Default false. true only
+   *  for a source whose runs repeat one job, never for one whose firings are different events. */
   previousResult?: boolean;
   /** Whether its words are its owner's (a run's message origin `owner`): true only when the owner wrote them as they set
    *  it up; never for words that come from outside. */
