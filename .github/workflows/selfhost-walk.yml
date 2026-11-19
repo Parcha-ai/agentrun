@@ -23,12 +23,23 @@ on:
       - 'deploy/walk/rows.sh'
       - '.github/workflows/selfhost-walk.yml'
   workflow_dispatch:
+  # The daily walk (ways-in-daily.yml): image names an artifact of this run, a docker save of the image to walk in place
+  # of the release's (main's, built once for every row).
+  workflow_call:
+    inputs:
+      image:
+        type: string
+        default: ''
+      # The platforms to walk, as JSON: the daily walk takes one per call, a row each.
+      platforms:
+        type: string
+        default: '["coolify", "dokploy"]'
 
 permissions:
   contents: read
 
 concurrency:
-  group: selfhost-walk-${{ github.ref }}
+  group: ${{ github.workflow }}-selfhost-walk-${{ github.ref }}-${{ inputs.platforms }}
   cancel-in-progress: true
 
 jobs:
@@ -39,7 +50,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [coolify, dokploy]
+        platform: ${{ fromJSON(inputs.platforms || '["coolify", "dokploy"]') }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -49,8 +60,26 @@ jobs:
           node-version: 24
       # overlay.mjs's yaml.
       - run: npm ci --ignore-scripts
+      - name: The image to walk
+        if: ${{ inputs.image }}
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ inputs.image }}
+          path: ${{ runner.temp }}/image
+      - name: Load it
+        if: ${{ inputs.image }}
+        run: |
+          image=$(docker load -i "$RUNNER_TEMP/image/image.tar" | sed -n 's/^Loaded image: //p' | head -n 1)
+          echo "WALK_IMAGE=$image" >> "$GITHUB_ENV"
       - name: Walk
         run: REPORT="$RUNNER_TEMP/selfhost-walk.md" sh deploy/selfhost/walk.sh "${{ matrix.platform }}"
       - name: Report
         if: always()
         run: '[ ! -f "$RUNNER_TEMP/selfhost-walk.md" ] || cat "$RUNNER_TEMP/selfhost-walk.md" >> "$GITHUB_STEP_SUMMARY"'
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: walk-report-${{ matrix.platform }}
+          path: ${{ runner.temp }}/selfhost-walk.md
+          if-no-files-found: ignore

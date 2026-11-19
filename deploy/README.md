@@ -417,6 +417,13 @@ this checkout's image, or walks `AGENTRUN_IMAGE` when set.
 `helm/walk.sh` (CI: `helm-walk.yml`, on kind) walks the chart: install, a first run, upgrade, uninstall and reinstall.
 `selfhost/walk.sh coolify|dokploy` (CI: `selfhost-walk.yml`, each platform on a VM of its own) installs the platform, deploys
 the template through its API, makes a first run and removes it with its volume.
+Both walk the release's image, or `WALK_IMAGE` when set.
+
+Every day, `ways-in-daily.yml` walks every way in on main, whatever changed: the README's `npx @parcha/agentrun` as
+published (`packages/agentrun/test/npx-walk.sh`), main's launcher (`install-walk.yml`), and Docker Compose, Railway's
+service, Helm, Coolify and Dokploy on main's image, built once for every row. Its summary is one table, each way in and
+its result, with each walk's report under it. A red run opens the issue `ways in: <rows> broke`, or updates the open
+one, and the next green run closes it.
 
 Two walk the Railway template:
 

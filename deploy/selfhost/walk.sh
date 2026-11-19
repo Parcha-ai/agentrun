@@ -6,6 +6,8 @@
 # the memory the runner budgets (the template's limit), and a first run to completed on the faux model of deploy/walk/faux-steps.mjs (no key, no network; overlay.mjs, with
 # the counts off). Then it removes the service and its volume through the platform's API and checks nothing is left.
 # Needs sudo, docker, curl, jq and node with this checkout's node_modules. REPORT=<file> puts the report in that file too.
+# WALK_IMAGE=<image> walks that image, on this Docker, in place of the template's (the daily walk's, main's): pushed to a
+# registry of the walk's own on 127.0.0.1:5000, which the platform pulls it from as it pulls any image.
 set -eu
 platform=${1:?usage: walk.sh coolify|dokploy}
 here=$(cd "$(dirname "$0")" && pwd)
@@ -32,7 +34,7 @@ in_c() { docker exec "$container" "$@"; }
 api() { in_c env WALK_BASE=http://127.0.0.1:7340/v2 node /walk/api.mjs "$@"; }
 # A variable of the server's container, as the platform set it: read for its shape, never printed.
 env_of() { docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$container" | sed -n "s/^$1=//p"; }
-container='' removed=''
+container='' removed='' registry=''
 
 finish() {
   code=$?
@@ -44,6 +46,7 @@ finish() {
   fi
   report "$code"
   [ -n "$removed" ] || remove >/dev/null 2>&1 || true
+  [ -z "$registry" ] || docker rm -f "$registry" >/dev/null 2>&1 || true
   rm -rf "$work"
   exit "$code"
 }
@@ -55,6 +58,21 @@ made() { [ -n "$1" ] && [ "$1" != null ]; }
 install
 pass "installed" "$platform $version, its API answering with a key the walk made"
 
+if [ -n "${WALK_IMAGE:-}" ]; then
+  # After the install: Coolify's restarts Docker.
+  registry='walk-registry'
+  docker run -d --restart always --name "$registry" -p 127.0.0.1:5000:5000 registry:3.0.0 >/dev/null
+  tries=0
+  until curl -fsS http://127.0.0.1:5000/v2/ >/dev/null 2>&1; do
+    tries=$((tries + 1))
+    [ "$tries" -le 60 ] || fail "image pushed" "the walk's registry on 127.0.0.1:5000 did not answer within 30 s"
+    sleep 0.5
+  done
+  docker tag "$WALK_IMAGE" 127.0.0.1:5000/agentrun-walk:walk
+  docker push -q 127.0.0.1:5000/agentrun-walk:walk >/dev/null || fail "image pushed" "docker push of $WALK_IMAGE to the walk's registry"
+  pass "image pushed" "$WALK_IMAGE, in place of the template's, as 127.0.0.1:5000/agentrun-walk:walk"
+  WALK_IMAGE=127.0.0.1:5000/agentrun-walk:walk
+fi
 node "$here/overlay.mjs" "$template" "$walk" >"$work/compose.yml"
 deploy "$work/compose.yml"
 tries=0
