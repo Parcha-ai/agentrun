@@ -1,7 +1,7 @@
 // Cursor's recipe as the package ships it (recipes/cursor.json) and as the loader types it for a run: what was measured
 // on Cursor 2026.11.13-eacade1 over ACP (harness S0), its pin, its facts and the card its owner reads. No binary is run.
 import assert from 'node:assert/strict';
-import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { ACP_CODES, CURSOR_CODES, CURSOR_INSTALL, CURSOR_LIMITS, CURSOR_PIN, cursorAdapter, cursorCard, cursorFacts, cursorRecipe, cursorRelease, cursorRootOf, recipeFile, recipeProblems, RESERVED_ENV, treeDigest, verifyPinnedTree } from '@parcha/agentrun-harness-acp';
@@ -99,12 +99,17 @@ test('the tree digest is of every file, link and folder by its path, and moves w
   writeFileSync(join(root, 'dist-package', 'cursor-agent'), '#!/bin/sh\n');
   writeFileSync(join(root, 'dist-package', 'node_modules', 'x', 'index.js'), 'one');
   symlinkSync('cursor-agent', join(root, 'dist-package', 'agent'));
+  // A file is digested once per identity (path, inode, size, mtime, ctime), so each rewrite of the same size also gets its
+  // own mtime: on a file system whose clock ticks coarser than two writes, the writes alone could share one identity.
+  const index = join(root, 'dist-package', 'node_modules', 'x', 'index.js');
+  const rewrite = (text, second) => { writeFileSync(index, text); utimesSync(index, second, second); };
+  rewrite('one', 1_000_001);
   const first = await treeDigest(root);
   assert.match(first, /^[0-9a-f]{64}$/);
   await verifyPinnedTree(root, first);
-  writeFileSync(join(root, 'dist-package', 'node_modules', 'x', 'index.js'), 'two');
+  rewrite('two', 1_000_002);
   await assert.rejects(verifyPinnedTree(root, first), (error) => error.code === ACP_CODES.binaryMismatch && /changed since it was installed/.test(error.message));
-  writeFileSync(join(root, 'dist-package', 'node_modules', 'x', 'index.js'), 'one');
+  rewrite('one', 1_000_003);
   assert.equal(await treeDigest(root), first, 'the same bytes, the same digest');
   writeFileSync(join(root, 'dist-package', 'extra.js'), '');
   assert.notEqual(await treeDigest(root), first, 'a file added moves it');

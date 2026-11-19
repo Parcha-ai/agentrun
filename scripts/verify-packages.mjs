@@ -74,9 +74,9 @@ const allowedExtraFiles = {
   'run-adapters': ['package/vendor/durable-harness/UPSTREAM.json', 'package/vendor/o200k/o200k_base.tiktoken', 'package/vendor/o200k/LICENSE'],
   'run-adapters-claude-agent': ['package/vendor/durable-harness/UPSTREAM.json'],
   'run-adapters-codex': ['package/vendor/durable-harness/UPSTREAM.json'],
-  // The ACP adapter reads Goose's recipe from its own folder (src/goose.ts recipeFile) and starts its stdio MCP bridge by path
-  // (src/harness.ts STDIO_BRIDGE).
-  'run-adapters-acp': ['package/recipes/goose.json', 'package/dist/host/mcp-stdio.js', 'package/dist/facts.js'],
+  // The ACP adapter reads Goose's and Cursor's recipes from its own folder (src/goose.ts recipeFile) and starts its stdio MCP
+  // bridge by path (src/harness.ts STDIO_BRIDGE).
+  'run-adapters-acp': ['package/recipes/goose.json', 'package/recipes/cursor.json', 'package/dist/host/mcp-stdio.js', 'package/dist/facts.js'],
   // The server's bin is its launcher, which hands the server its secrets over a pipe (launcher/agentrun-serve).
   // And the locks the CLI harnesses' first use installs by (src/harness-install.ts): each the package.json it locks and
   // npm's lock, metadata naming the package at its pin and every package of its tree by sha512, never the CLI itself.
@@ -189,9 +189,9 @@ const daemonMachines = { amd64: 0x3e, arm64: 0xb7 };
 const egressCode = ['egress-main.js', 'egress-proxy.js', 'egress-table.js'];
 const requiredFiles = {
   computer: ['package/LICENSE', 'package/NOTICE', 'package/README.md', 'package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/mount.js', 'package/dist/mount.d.ts', 'package/box/recipe.mjs', ...egressCode.map(file => `package/dist/docker/${file}`), ...Object.keys(daemonMachines).map(arch => `package/dist/computerd-linux-${arch}`), `package/dist/${DAEMON_RECORD}`],
-  // What serve loads of the ACP adapter at runtime: its entry, Goose's recipe (recipeFile), and the stdio MCP bridge an
-  // agent's MCP client starts by path (STDIO_BRIDGE), which no import reaches, so the import smoke alone misses it.
-  'run-adapters-acp': ['package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/facts.js', 'package/dist/host/mcp-stdio.js', 'package/recipes/goose.json'],
+  // What serve loads of the ACP adapter at runtime: its entry, Goose's and Cursor's recipes (recipeFile), and the stdio MCP
+  // bridge an agent's MCP client starts by path (STDIO_BRIDGE), which no import reaches, so the import smoke alone misses it.
+  'run-adapters-acp': ['package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/facts.js', 'package/dist/host/mcp-stdio.js', 'package/recipes/goose.json', 'package/recipes/cursor.json'],
   eve: ['package/LICENSE', 'package/NOTICE', 'package/README.md', 'package/dist/index.mjs', 'package/dist/index.d.ts', 'package/dist/tools/index.mjs', 'package/dist/tools/index.d.ts', 'package/dist/extension/_manifest.json', 'package/dist/extension/extension.mjs', 'package/dist/extension/hooks/learning.mjs', 'package/dist/extension/instructions.mjs', 'package/dist/extension/tools/learned_workflow.mjs'],
 };
 
