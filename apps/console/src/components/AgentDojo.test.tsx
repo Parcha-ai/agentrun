@@ -5,7 +5,7 @@ import { AgentDojo } from "./AgentDojo";
 import { createClient } from "@/lib/client";
 import type { Agent } from "@/lib/agentForm";
 import { SERVED_AGENT } from "@/test/agent";
-import type { AgentLearning, LearnedItem } from "@/lib/learning";
+import type { AgentLearning, LearnedItem, LearningModelAccess } from "@/lib/learning";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root | undefined;
@@ -17,12 +17,12 @@ const draft = (name: string, status: LearnedItem["status"] = "serving", run = "r
 const view = (id: string, fields: Partial<AgentLearning> = {}): AgentLearning => ({ agent: id, main: null, corrections: "", workflows: [], log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 }, impact: null, ...fields });
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 type Call = { path: string; query: URLSearchParams; method: string };
-async function mount(answer: (call: Call) => Response | Promise<Response>, server: "on" | "off" | null | undefined = "on") {
+async function mount(answer: (call: Call) => Response | Promise<Response>, server: "on" | "off" | null | undefined = "on", modelAccess?: LearningModelAccess) {
   const calls: Call[] = [];
   const fetch = (async (url: string, init?: RequestInit) => { const u = new URL(url, "https://console.example.test"); const call = { path: u.pathname, query: u.searchParams, method: init?.method ?? "GET" }; calls.push(call); return answer(call); }) as typeof globalThis.fetch;
   host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
   const v2 = createClient({ fetch });
-  await act(async () => root!.render(createElement(AgentDojo, { v2, server })));
+  await act(async () => root!.render(createElement(AgentDojo, { v2, server, modelAccess })));
   return { calls, v2 };
 }
 const metric = (name: string) => host.querySelector(`[aria-label="${name}"]`)?.textContent;
@@ -30,6 +30,61 @@ const refresh = () => host.querySelector<HTMLButtonElement>('button[aria-label="
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; vi.useRealTimers(); vi.restoreAllMocks(); });
 
 describe("Learning Dojo", () => {
+  it("explains missing default model access in an empty Dojo and links to Model keys", async () => {
+    const missing: LearningModelAccess = { location: "server", ready: false, model: "provider/learning-model", needs: "key", reason: "No model credential is configured." };
+    await mount(() => json({ agents: [], next_cursor: null }), "on", missing);
+    expect(host.textContent).toContain("This is the server default");
+    expect(host.textContent).toContain("No model credential is configured.");
+    expect(host.textContent).toContain("Settings → API Keys → Model keys");
+    expect(host.querySelector('a[href="#/settings/keys"]')?.textContent).toBe("Set up model access");
+    expect(host.textContent).toContain("No agents yet");
+  });
+
+  it("uses each agent's actual model access instead of blocking native and custom routes on a missing default", async () => {
+    const missing: LearningModelAccess = { location: "server", ready: false, model: "provider/default", needs: "key", reason: "No credential for this model." };
+    const access: Record<string, LearningModelAccess> = {
+      blocked: missing,
+      custom: { ...missing, ready: true, model: "provider/custom", needs: null, reason: null },
+      native: { location: "native", ready: true, model: null, needs: null, reason: null },
+    };
+    await mount(({ path }) => json(path === "/v2/agents" ? { agents: Object.keys(access).map(id => agent(id)), next_cursor: null }
+      : view(path.split("/")[3], { learning_model: access[path.split("/")[3]] })), "on", missing);
+    const cards = [...host.querySelectorAll("article")];
+    const blocked = cards.find(card => card.querySelector("h3")?.textContent === "blocked")!;
+    expect(blocked.textContent).toContain("Needs model access");
+    expect(blocked.textContent).toContain("provider/default");
+    expect(blocked.querySelector('a[href="#/settings/keys"]')).not.toBeNull();
+    for (const name of ["custom", "native"]) {
+      const card = cards.find(one => one.querySelector("h3")?.textContent === name)!;
+      expect(card.textContent).toContain("Learning on");
+      expect(card.querySelector('a[href="#/settings/keys"]')).toBeNull();
+    }
+    expect(host.textContent).toContain("1 agent needs model access");
+    expect(host.textContent).not.toContain("This is the server default");
+  });
+
+  it("does not infer a per-agent model failure when its learning response has no access status", async () => {
+    const missing: LearningModelAccess = { location: "server", ready: false, model: null, needs: "model", reason: "No default model." };
+    await mount(({ path }) => json(path === "/v2/agents" ? { agents: [agent("older-server")], next_cursor: null } : view("older-server")), "on", missing);
+    expect(host.querySelector("article")?.textContent).toContain("Learning on");
+    expect(host.textContent).not.toContain("needs model access");
+    expect(host.querySelector('a[href="#/settings/keys"]')).toBeNull();
+  });
+
+  it("clears missing-model setup after refreshing with configured access, even when the default is still missing", async () => {
+    let saved = false;
+    const missing: LearningModelAccess = { location: "server", ready: false, model: null, needs: "model", reason: "Choose a learning model." };
+    await mount(({ path }) => json(path === "/v2/agents" ? { agents: [agent("alpha")], next_cursor: null }
+      : view("alpha", { learning_model: saved ? { ...missing, ready: true, model: "provider/selected", needs: null, reason: null } : missing })), "on", missing);
+    expect(host.querySelector("article")?.textContent).toContain("Choose a model for learning");
+    expect(host.querySelector('article a[href="#/settings/keys"]')).not.toBeNull();
+    saved = true;
+    await act(async () => refresh().click());
+    expect(host.querySelector("article")?.textContent).toContain("Learning on");
+    expect(host.textContent).not.toContain("needs model access");
+    expect(host.querySelector('a[href="#/settings/keys"]')).toBeNull();
+  });
+
   it("reads all agent pages, aggregates actual learning, and links changes to their runs", async () => {
     const alpha = view("alpha", { corrections: lines(2),
       workflows: [draft("draft", "pending"), draft("review"), draft("old", "retired")],

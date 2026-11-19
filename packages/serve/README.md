@@ -3561,9 +3561,20 @@ job, once it repeats: after `learning.compile_after` completed runs (20 by defau
 for the whole job as one workflow, which is checked in code, replayed on the agent's own past inputs, and served as one
 tool once it agrees with the agent's own answers. The console reads `GET /v2/agents/{id}/learning` for the agent's
 corrections, workflows and history, and `GET /v2/runs/{id}/learning` and its `/diff` for an individual result.
-Observation requires no model key; producing new learning requires an agentic run executed or reported through this
-server with learning enabled and a configured compile model. Connected SDK checks run in the application, as described
-below.
+Observation requires no model key. Creating workflow drafts requires an agentic run executed or reported through this
+server with learning enabled and access to its configured compile model. For a connected SDK agent, compilation runs
+on this server; shadow execution and tool access remain in the original application, as described below.
+
+Set up **Settings → API Keys → Model keys** with a provider key that matches the learning model, such as OpenRouter,
+Anthropic or OpenAI, or a supported server sign-in. An unrelated provider key, tool API key, AgentRun connection key or
+decision-provider key does not supply compiler access. Background compilation cannot borrow a caller's per-request
+gateway key. The new SDK shadow comparison is deterministic and needs no separate Jev key. Native project connections
+use their original runtime's sign-in for corrections; learned workflows are not available on that connection.
+
+The agent's Learning tab and Learning Dojo show missing setup for that agent's actual model. `learning_model` in
+`GET /v2/agents/{id}/learning` describes that route; the same field in capabilities describes the server default.
+`ready` means the route and credentials are configured, not that quota or provider availability has been verified.
+These reads make no paid request, and saving a matching key refreshes the setup guidance.
 
 Importing Claude Code, Codex or pi session history does not replay learning or connect a live learning stream.
 Before/after cost and duration are observations, not an accuracy evaluation.

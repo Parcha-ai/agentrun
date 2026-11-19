@@ -143,6 +143,13 @@ export interface components {
     features: components["Features"];
     regions: components["Region"][];
     limits: components["Limits"];
+    learning_model: {
+      location: "server" | "native";
+      ready: boolean;
+      model: string | null;
+      needs: "key" | "model" | null;
+      reason: string | null;
+    };
     learning: {
       pending: true;
       approve: boolean;
@@ -2132,6 +2139,13 @@ export interface operations {
   getAgentLearning: {
     body: never;
     answer: {
+      learning_model: {
+        location: "server" | "native";
+        ready: boolean;
+        model: string | null;
+        needs: "key" | "model" | null;
+        reason: string | null;
+      };
       agent: string;
       main: string | null;
       corrections: string;

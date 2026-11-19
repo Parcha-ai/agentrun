@@ -47,6 +47,7 @@ __all__ = [
     "CapabilitiesHarnessesItemPromises",
     "CapabilitiesHome",
     "CapabilitiesLearning",
+    "CapabilitiesLearningModel",
     "CapabilitiesLinks",
     "CapabilitiesModels",
     "CapabilitiesPlaces",
@@ -303,6 +304,7 @@ __all__ = [
     "GetAgentLearningResponseImpact",
     "GetAgentLearningResponseImpactAfter",
     "GetAgentLearningResponseImpactBefore",
+    "GetAgentLearningResponseLearningModel",
     "GetAgentLearningResponseLog",
     "GetAgentLearningResponseLogItemsItem",
     "GetAgentLearningResponseLogItemsItemBy1",
@@ -3272,6 +3274,7 @@ class GetLearningCostResponseBillHoldsItem(TypedDict):
 
 
 class GetAgentLearningResponse(TypedDict):
+    learning_model: GetAgentLearningResponseLearningModel
     agent: str
     main: str | None
     corrections: str
@@ -3279,6 +3282,14 @@ class GetAgentLearningResponse(TypedDict):
     log: GetAgentLearningResponseLog
     counts: GetAgentLearningResponseCounts
     impact: GetAgentLearningResponseImpact | None
+
+
+class GetAgentLearningResponseLearningModel(TypedDict):
+    location: Literal["server", "native"]
+    ready: bool
+    model: str | None
+    needs: Literal["key", "model"] | None
+    reason: str | None
 
 
 class _GetAgentLearningResponseWorkflowsItemRequired(TypedDict):
@@ -5940,6 +5951,7 @@ class _CapabilitiesRequired(TypedDict):
     features: Features
     regions: list[Region]
     limits: Limits
+    learning_model: CapabilitiesLearningModel
     learning: CapabilitiesLearning
     places: CapabilitiesPlaces
     harnesses: list[CapabilitiesHarnessesItem]
@@ -6155,6 +6167,14 @@ class LimitsMaxCostUsd(TypedDict):
 
 
 Usd: TypeAlias = "float"
+
+
+class CapabilitiesLearningModel(TypedDict):
+    location: Literal["server", "native"]
+    ready: bool
+    model: str | None
+    needs: Literal["key", "model"] | None
+    reason: str | None
 
 
 class _CapabilitiesLearningRequired(TypedDict):
