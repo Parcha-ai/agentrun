@@ -1046,7 +1046,7 @@ const RUN_PATH: Record<string, Json> = {
     oneOf: [closed({
       name: { type: ["string", "null"], description: "The learned workflow, by name (GET /agents/{agent_id}/learning/promotions names it); null when its launch offered none by that name." },
       digest: { type: ["string", "null"], description: "The revision that ran: the first 16 hex of its workflow.json's sha256, as GET /agents/{agent_id}/learning/cost `runs[].digest` names it; null when its record names none." },
-      repick: { oneOf: [{ enum: ["found", "missed"] }, { type: "null" }], description: "Whether its answer re-picked (a quote miss re-picks a compiled answer once before it hands back), from the run's loop rows (metrics `loops`): `found`, the second pass found its quotes; `missed`, it still missed them, and the quote check after it handed the run back. Null when the answer passed on its first pass, or the run kept no loop row of this workflow." },
+      repick: { oneOf: [{ enum: ["found", "missed"] }, { type: "null" }], description: "`found` or `missed`: the answer's quote re-pick ran and found, or still missed, its quotes. Null: no re-pick ran." },
     }), { type: "null" }],
     description: "The learned workflow that served the run, as its end recorded it: present on a run with `path` `workflow` (its answer is the workflow's) or `handed_back` (its answer is the agent's), null on every other run. Read off the run's record, so every row of a runs list carries it.",
     "x-agentrun-serve": "path/1",
