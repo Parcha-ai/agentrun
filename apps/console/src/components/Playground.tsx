@@ -60,8 +60,6 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
     else if (!agents.some((a) => a.agent_id === agentId)) setAgentId(agents[0]?.agent_id ?? "");
   }, [agents, initialAgent]); // eslint-disable-line react-hooks/exhaustive-deps
   const agent = agents.find((a) => a.agent_id === agentId);
-  // The agent's own default cap, which an empty max_cost_usd box leaves in force (as the run bar says it).
-  const agentCap = typeof agent?.definition.max_cost_usd === "number" ? agent.definition.max_cost_usd : null;
   const native = nativeReadinessOf(agent);
   const sdk = backendSdkOf(agent?.definition);
   const kind = agent?.kind ?? "agentic";
@@ -72,6 +70,15 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   // against the revision it runs), else the current one's. The fields start again for another agent, or a changed
   // schema.
   const picked = revision ? revisions.find((r) => r.revision === revision)?.definition : undefined;
+  // The default cap an empty max_cost_usd box leaves in force (as the run bar says it): the picked revision's, since the
+  // server runs with the cap of the revision it runs, else the current one's. A number is that cap and null is none;
+  // undefined is a picked revision whose definition the page does not hold, so the box names no amount.
+  const capFrom = revision ? picked : agent?.definition;
+  const defaultCap = !capFrom ? undefined : typeof capFrom.max_cost_usd === "number" && capFrom.max_cost_usd > 0 ? capFrom.max_cost_usd : null;
+  const whoseCap = revision ? "that revision's" : "the agent's";
+  const capNote = defaultCap === undefined ? `This run's spend cap in dollars. Empty uses ${whoseCap} default cap, or none if it has none.`
+    : defaultCap === null ? "This run's spend cap in dollars. Empty runs it with no cap."
+    : `This run's spend cap in dollars. Empty uses ${whoseCap} default cap, ${capWords(defaultCap)}.`;
   const schemaKey = kind === "agentic" ? JSON.stringify((picked ?? agent?.definition)?.input_schema ?? null) : "null";
   const shape = useMemo(() => (kind === "agentic" ? agentInputOf(JSON.parse(schemaKey)) : null), [kind, schemaKey]);
   const form = shape?.kind === "fields" ? shape.form : null;
@@ -213,8 +220,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                   <Input id="playground-repo" value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/name" />
                 </Label>}
                 {kind === "agentic" && !native && (
-                  <Label htmlFor="playground-cap" name="max_cost_usd" note={agentCap !== null ? `This run's spend cap in dollars. Empty uses the agent's default cap, ${capWords(agentCap)}.` : "This run's spend cap in dollars. Empty runs it with no cap."} error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
-                    <Input id="playground-cap" value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder={agentCap !== null ? capWords(agentCap) : "e.g. 0.50"} className={field} />
+                  <Label htmlFor="playground-cap" name="max_cost_usd" note={capNote} error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
+                    <Input id="playground-cap" value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder={typeof defaultCap === "number" ? capWords(defaultCap) : "e.g. 0.50"} className={field} />
                     <p className="mt-1.5 text-small text-muted-foreground"><SpendCapMinimum /></p>
                   </Label>
                 )}
