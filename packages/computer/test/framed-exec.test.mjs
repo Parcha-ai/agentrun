@@ -260,9 +260,10 @@ test("the pid wrapper's line is the pid and its start time, and the kill script 
 	for (let at = 0; at < 100 && kids.length < 2; at++) {
 		await pause(20);
 		kids = under(pid);
+		// Before the assert below, so a setup that fails still cleans up the children it found.
+		starts = new Map(kids.map((kid) => [kid, stat(kid)?.[19]]));
 	}
 	assert.equal(kids.length, 2, "sleep and cat");
-	starts = new Map(kids.map((kid) => [kid, stat(kid)?.[19]]));
 	const kill = (startTime) => spawnSync("sh", ["-c", PID_KILL, "sh", pid, startTime]).status;
 	assert.equal(kill(String(Number(start) + 1)), 0);
 	assert.equal(child.exitCode ?? child.signalCode, null, "another start time: another process, let be");
