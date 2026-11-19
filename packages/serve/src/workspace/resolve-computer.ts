@@ -27,7 +27,7 @@ import { recordedClient } from "../computer-calls.js";
 import type { Recording, RecordWatch } from "../computer-record.js";
 import type { MountCheck } from "./attach.js";
 import type { AgentComputer, RunComputer } from "./run-tools.js";
-import { emptyMeta, fencedStore, finalSyncWords, type HeldFolder, holdSynced, pullFolder, type StoredFolder, storedFolder, syncOf } from "./synced-folder.js";
+import { emptyMeta, fencedStore, finalSyncWords, type HeldFolder, holdSynced, pullFolder, recordMeta, recordWords, type StoredFolder, storedFolder, syncOf } from "./synced-folder.js";
 import type { Workspace } from "./workspace.js";
 import { restartWith } from "../start-switches.js";
 
@@ -288,7 +288,8 @@ export async function computerReadiness(setting: ComputerSetting, mode: 1 | 2, g
 export type StartedComputer = {
   readonly computer: RunComputer | undefined;
   release(): Promise<void>;
-  /** A synced folder's delta, landed on the run's disk now (a park lands it before the computer is kept). */
+  /** What the run's disk keeps of the folder beyond what the computer wrote, now (a park lands it before the computer is
+   *  kept): a synced folder's delta, or an Archil mount's modes and links in sync.json (recordMeta). */
   readonly sync?: () => Promise<Result<void>>;
 };
 
@@ -493,7 +494,8 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
       // A computer kept at the run's park, attached again: it mounts what it mounted, read back under its own epoch.
       const again = await side.reattach?.(entry, { kind, keys, configuration, ...(folder ? { folder } : {}), ...(gpu ? { gpu: { type: gpu.type, count: gpu.count } } : {}), ...(persistent ? { persistent: true as const } : {}), ...(signal ? { signal } : {}) });
       // The run's disk as the runner keeps the folder on it, each write fenced by the claim. A synced folder's store: for
-      // a new computer, listed and held to the caps before it is rented. Under an Archil mount, its sync.json emptied.
+      // a new computer, listed and held to the caps before it is rented. Under an Archil mount, its sync.json emptied
+      // here and written again at the park and release.
       const disk = folder === "sync" || folder === "archil" ? workspace.syncStore?.() : undefined;
       const fenced = disk && holds ? fencedStore(disk, holds) : disk;
       const store = folder === "sync" ? fenced : undefined;
@@ -547,6 +549,21 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
       if (typeof computer === "string") {
         await launched.release();
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${computer}`);
+      }
+      if (folder === "archil" && fenced && own) {
+        // An Archil mount's park and release: its modes and links recorded in sync.json first (recordMeta), read through
+        // the machine's own client, for a later claim that syncs the folder; the computer goes whatever that answered,
+        // and a failed one is said.
+        const record = () => recordMeta(fenced, own);
+        return {
+          computer,
+          sync: record,
+          async release() {
+            const recorded = await record();
+            await launched.release();
+            if (!recorded.ok) throw new Error(recordWords(recorded.error.message));
+          },
+        };
       }
       if (!sync) return { computer, release: () => launched.release() };
       const final = sync;
