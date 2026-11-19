@@ -111,3 +111,20 @@ test("a learning run a follow-up opened again: its job's paid calls can't be tol
   assert.equal(micro(second.cost.usd), micro(first.cost.usd), `usd stays the first round's job: ${JSON.stringify(second.cost)}`);
   assert.equal(second.cost.tools_usd, null, `tools_usd: unknown once a follow-up opened the run again: ${JSON.stringify(second.cost)}`);
 });
+
+test("a run still at work: tools_usd is null, never a figure read apart from usd's, which a paid call booked between the two reads would put past usd (#3234 review)", { timeout: 120_000 }, async (t) => {
+  // Accounts on: an owner can answer an ask, so the gate parks the call (with accounts off it refuses it at once).
+  const { api, calls } = await server(t, { accounts: true, openSetup: true });
+  // The enrich call runs (allowed) and is booked; web_fetch asks a person first (the server's setting), so the run waits
+  // at its gate, not ended, and nothing is fetched.
+  assert.equal((await api("PUT", "/settings/tools", { web_fetch: { permission: "ask" } })).status, 200);
+  const saved = await api("POST", "/agents", agent("working", { tools: [ENRICH, "web_fetch"], tool_settings: allowed(ENRICH) }));
+  assert.equal(saved.status, 201, JSON.stringify(saved.body));
+  const run = await api("POST", "/agents/working/runs", { input: { content: ['Call monid__faux__person__enrich with {"body":{"name":"Ada"}}', 'Call web_fetch with {"url":"https://example.invalid/"}'].join("\n") } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await follow(api, run.body.run_id, ["input_required"], { deadlineMs: 60_000 });
+  const view = (await api("GET", `/runs/${run.body.run_id}`)).body;
+  assert.equal(view.pending?.kind, "approval", `the run waits on the second call's approval: ${JSON.stringify(view.pending)}`);
+  assert.equal(readFileSync(calls, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((one) => one.path === "/v1/run" && one.endpoint === "/person/enrich").length, 1, "the paid call ran before the wait");
+  assert.equal(view.cost.tools_usd, null, `a run at work: tools_usd is unknown until it ends: ${JSON.stringify(view.cost)}`);
+});
