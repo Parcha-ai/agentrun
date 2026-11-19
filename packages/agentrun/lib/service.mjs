@@ -553,7 +553,7 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
     },
     /** `agentrun stop`: the AgentRun install.sh started in the background, stopped as Ctrl-C would (SIGTERM, which the
      *  launcher passes on to the server), then SIGKILL past stopWaitMs. Exit 0 once the launcher and its server have
-     *  ended, 3 when none is running, 1 when one outlives its SIGKILL. install.sh stops it with the same steps in sh, so an
+     *  ended, 3 when none is running, 1 when one outlives its SIGKILL or runs in the foreground (named, and left running). install.sh stops it with the same steps in sh, so an
      *  install of a version with no `agentrun stop` stops it too. */
     async background() {
       const file = join(root, "agentrun.pid");
@@ -583,6 +583,18 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
       };
       if (!ours(pid)) {
         rmSync(file, { force: true });
+        // A server in the foreground (`npx @parcha/agentrun` in a terminal) has no pid file, only the record every server
+        // writes, and it runs from npm's folder, not this install's. One whose process runs and whose recorded address
+        // answers /health ok is named, with how to stop it, and left running: Ctrl-C there is its stop.
+        let record;
+        try {
+          record = JSON.parse(readFileSync(join(root, ".server.json"), "utf8"));
+        } catch {}
+        const live = Number.isInteger(record?.pid) && record.pid > 1 && ![undefined, "Z"].includes(processOf(record.pid)?.state);
+        if (live && (await healthOf(root, { fetch: get })).health === "ok") {
+          say(`AgentRun is running in the foreground (pid ${record.pid}); press Ctrl-C in its terminal.`);
+          return 1;
+        }
         say(`No AgentRun started in the background is running.${installed() ? " AgentRun runs as a service here: agentrun service stop stops it." : ""}`);
         return 3;
       }

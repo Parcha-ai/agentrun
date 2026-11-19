@@ -101,7 +101,7 @@ start a new agent from a template.
    ```
 
    It starts the server and one runner on port 7340 (or the next free one), keeps everything in `~/.agentrun`, and
-   opens the console in your browser.
+   opens the console in your browser. It runs in that terminal until you press Ctrl-C there, which stops it.
 
 2. **Continue with ChatGPT, or add a model key.** In the console, set a password, then press **Continue with ChatGPT**
    (on the first screen, or under **Settings → Model keys**) and sign in on OpenAI's page: Codex and pi agents run on

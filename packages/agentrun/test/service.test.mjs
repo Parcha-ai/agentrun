@@ -3,7 +3,7 @@
 // and the wiring from the bin. The installer's flags and its refusals.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -627,6 +627,26 @@ test("stop: the AgentRun the installer started in the background, and its server
   assert.equal(await service().background(), 3);
   assert.equal(existsSync(pidFile), false);
   assert.match(out.join(""), /^No AgentRun started in the background is running\.\n/);
+
+  // A server in the foreground (`npx @parcha/agentrun` in a terminal): no pid file, its record naming a live process that
+  // answers /health ok. It is named, with how to stop it, and left running; exit 1. A record whose server does not
+  // answer (one a crash left, its pid another process's by now) is none running.
+  const answers = (ok) => async () => (ok ? { ok: true, json: async () => ({ status: "ok" }) } : Promise.reject(Object.assign(new Error("refused"), { name: "TypeError" })));
+  const foreground = await holder(home, { pidFile: false });
+  try {
+    writeFileSync(join(home, ".agentrun", ".server.json"), JSON.stringify({ base_url: "http://127.0.0.1:7340/v2", pid: foreground.child.pid }));
+    out.splice(0);
+    assert.equal(await serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, io, fail, get: answers(true) }).background(), 1);
+    assert.equal(out.join(""), `AgentRun is running in the foreground (pid ${foreground.child.pid}); press Ctrl-C in its terminal.\n`);
+    assert.equal(foreground.child.exitCode ?? foreground.child.signalCode, null, "left running");
+    out.splice(0);
+    assert.equal(await serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, io, fail, get: answers(false) }).background(), 3);
+    assert.match(out.join(""), /^No AgentRun started in the background is running\.\n/);
+  } finally {
+    foreground.child.kill("SIGKILL");
+    await foreground.exited;
+  }
+  rmSync(join(home, ".agentrun", ".server.json"));
 
   // With a service installed, it says the service has a stop of its own.
   mkdirSync(join(home, ".config", "systemd", "user"), { recursive: true });
