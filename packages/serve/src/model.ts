@@ -82,12 +82,13 @@ function onVendor(vendor: string): readonly string[] {
 
 /** The harnesses `row`'s key runs on `env`'s server: its own (`harnesses`), then each harness this server lists only once its
  *  owner installs it (Goose: harness-table.ts hidden, listed by harnessIds) whose wire runs the row's vendor's models, or
- *  any, on OpenRouter's. One not installed here is never named. */
+ *  any, on OpenRouter's. One not installed here is never named, nor one billed to its own plan (Cursor: no model key of
+ *  ours runs it). */
 export function keyHarnesses(row: (typeof MODEL_KEYS)[number], env: NodeJS.ProcessEnv): readonly string[] {
   const installed = harnessIds(env).filter((id) => !row.harnesses.includes(id) && builtinHarness(id)?.hidden !== undefined);
   return [...row.harnesses, ...installed.filter((id) => {
     const facts = adapterFactsOf(id);
-    return facts !== undefined && (row.id === "openrouter" || WIRES[facts.wire].vendor === row.id);
+    return facts !== undefined && facts.wire !== "plan" && (row.id === "openrouter" || WIRES[facts.wire].vendor === row.id);
   })];
 }
 

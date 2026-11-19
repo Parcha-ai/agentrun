@@ -26,6 +26,10 @@ export const ACP_CODES = Object.freeze({
   binaryUnreadable: "ACP_BINARY_UNREADABLE",
   /** No digest is pinned for the agent's binary on this platform, and none was given. */
   binaryUnpinned: "ACP_BINARY_UNPINNED",
+  /** A key the recipe runs on (recipe.keys) is not in the host's environment: the agent was not started. */
+  keyMissing: "ACP_KEY_MISSING",
+  /** The run's model (recipe.model) is not one the agent lists for its key: no prompt was sent. */
+  modelUnlisted: "ACP_MODEL_UNLISTED",
 } as const);
 
 export interface AcpFacts {

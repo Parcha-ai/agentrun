@@ -6185,6 +6185,7 @@ class CapabilitiesHarnessesItem(_CapabilitiesHarnessesItemRequired, total=False)
     reason: str
     needs: list[Literal["key", "chatgpt"]]
     installs: Literal["on_first_use"]
+    card: str
 
 
 class CapabilitiesHarnessesItemPromises(TypedDict):

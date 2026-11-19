@@ -1,8 +1,11 @@
 // Cursor's recipe as the package ships it (recipes/cursor.json) and as the loader types it for a run: what was measured
 // on Cursor 2026.11.13-eacade1 over ACP (harness S0), its pin, its facts and the card its owner reads. No binary is run.
 import assert from 'node:assert/strict';
+import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import { test } from 'node:test';
-import { ACP_CODES, CURSOR_CODES, CURSOR_INSTALL, CURSOR_LIMITS, CURSOR_PIN, cursorCard, cursorFacts, cursorRecipe, recipeFile, recipeProblems, RESERVED_ENV } from '@parcha/agentrun-harness-acp';
+import { ACP_CODES, CURSOR_CODES, CURSOR_INSTALL, CURSOR_LIMITS, CURSOR_PIN, cursorAdapter, cursorCard, cursorFacts, cursorRecipe, cursorRootOf, recipeFile, recipeProblems, RESERVED_ENV, treeDigest, verifyPinnedTree } from '@parcha/agentrun-harness-acp';
+import { scratch } from './helpers.mjs';
 
 const BINARY = '/opt/agents/cursor-2026.11.13/dist-package/cursor-agent';
 
@@ -76,7 +79,7 @@ test('recipeProblems refuses a key that is no variable name, one the adapter set
   assert.match(recipeProblems({ ...base, model: 'a b' }).join(' '), /model/);
 });
 
-test('the pin: Cursor 2026.11.13-eacade1, its archive by the first digest recorded (the registry lists none), its launcher, node and code by theirs', () => {
+test('the pin: Cursor 2026.11.13-eacade1, its archive by the first digest recorded (the registry lists none), its launcher and every file it unpacks to by theirs', () => {
   assert.equal(CURSOR_PIN.id, 'cursor');
   assert.equal(CURSOR_PIN.version, '2026.11.13-eacade1');
   const linux = CURSOR_PIN.archives['linux-x86_64'];
@@ -84,9 +87,37 @@ test('the pin: Cursor 2026.11.13-eacade1, its archive by the first digest record
   assert.equal(linux.format, 'tar.gz');
   assert.equal(linux.sha256, 'c02e4321f20d691ee03af94d29948dc3a81c6c34e7328da7bb1afade4c75812f');
   assert.equal(linux.cmd, './dist-package/cursor-agent');
-  assert.match(linux.binarySha256, /^[0-9a-f]{64}$/);
-  assert.deepEqual(Object.keys(linux.files).sort(), ['./dist-package/index.js', './dist-package/node']);
-  for (const digest of Object.values(linux.files)) assert.match(digest, /^[0-9a-f]{64}$/);
+  assert.equal(linux.binarySha256, '2ccc9a8e167797641448b5e5c936f006ba137a2555f117f38c5eb76a5238a233');
+  assert.equal(linux.treeSha256, 'b224cfc7d2aa702ae4c9335fba6a4fc4b04250584bf615a8dcefa946ac5e64f6');
+  assert.deepEqual(Object.keys(CURSOR_PIN.archives), ['linux-x86_64'], 'pinned where it was measured, nowhere else');
+});
+
+test('the tree digest is of every file, link and folder by its path, and moves when any one of them changes', async () => {
+  const root = scratch();
+  mkdirSync(join(root, 'dist-package', 'node_modules', 'x'), { recursive: true });
+  writeFileSync(join(root, 'dist-package', 'cursor-agent'), '#!/bin/sh\n');
+  writeFileSync(join(root, 'dist-package', 'node_modules', 'x', 'index.js'), 'one');
+  symlinkSync('cursor-agent', join(root, 'dist-package', 'agent'));
+  const first = await treeDigest(root);
+  assert.match(first, /^[0-9a-f]{64}$/);
+  await verifyPinnedTree(root, first);
+  writeFileSync(join(root, 'dist-package', 'node_modules', 'x', 'index.js'), 'two');
+  await assert.rejects(verifyPinnedTree(root, first), (error) => error.code === ACP_CODES.binaryMismatch && /changed since it was installed/.test(error.message));
+  writeFileSync(join(root, 'dist-package', 'node_modules', 'x', 'index.js'), 'one');
+  assert.equal(await treeDigest(root), first, 'the same bytes, the same digest');
+  writeFileSync(join(root, 'dist-package', 'extra.js'), '');
+  assert.notEqual(await treeDigest(root), first, 'a file added moves it');
+  await assert.rejects(verifyPinnedTree(join(root, 'nowhere'), first), (error) => error.code === ACP_CODES.binaryUnreadable);
+});
+
+test("Cursor's adapter refuses a launcher that is not the pin's, and one outside its pinned path", () => {
+  const root = scratch();
+  const binary = join(root, 'dist-package', 'cursor-agent');
+  mkdirSync(dirname(binary), { recursive: true });
+  writeFileSync(binary, '#!/bin/sh\necho not cursor\n');
+  assert.throws(() => cursorAdapter({ binary, sessionsDir: root }), (error) => error.code === ACP_CODES.binaryMismatch);
+  assert.throws(() => cursorAdapter({ binary: join(root, 'cursor-agent'), sessionsDir: root }), /pinned path/);
+  assert.equal(cursorRootOf(binary, './dist-package/cursor-agent'), root);
 });
 
 test("its facts: plan billed (no wire of the host's), its own model, no steer, the owner's install line", () => {

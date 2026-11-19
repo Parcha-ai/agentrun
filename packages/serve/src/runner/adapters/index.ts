@@ -11,6 +11,7 @@ import { facts as openCodeFacts } from "../../harness-opencode/facts.js";
 import { harnessOf } from "../../harness-table.js";
 import { acpPackage } from "../../acp-package.js";
 import { GOOSE_ID } from "../../harness-goose.js";
+import { CURSOR_ID } from "../../harness-cursor.js";
 import { piAdapter, type PiAdapterOptions } from "./pi.js";
 
 /** What every adapter is given for one claim, from the run's launch. */
@@ -127,6 +128,19 @@ export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
         sessionsDir: launch.sessionsDir,
         ...extra,
       });
+    },
+  },
+  // Cursor, where the same package is beside serve: on the launcher `extra.binary` names, which its owner installed
+  // (harness-cursor.ts), and its owner's key read by name from `extra.env`; billed to the owner's Cursor plan, so the
+  // launch's provider and price are never its. A run on serve's table builds its adapter from its entry (adapters.ts
+  // cursorOf).
+  [CURSOR_ID]: {
+    record: "loop",
+    adapter: async (launch, extra = {}) => {
+      const acp = acpPackage();
+      if (!acp) throw new Error("Cursor's adapter (@parcha/agentrun-harness-acp) is not installed beside this runner");
+      if (typeof extra.binary !== "string") throw new Error("Cursor's runner adapter needs the installed launcher's path (extra.binary)");
+      return acp.cursorAdapter({ sessionsDir: launch.sessionsDir, ...extra });
     },
   },
 };

@@ -40,6 +40,8 @@ export const CALL_STREAM = "acp.call";
 export const PERMISSION_STREAM = "acp.permission";
 /** One record per tool call the agent announced (or MCP call it made unannounced): the calls a plan-billed run counts. */
 export const TOOLS_STREAM = "acp.tools";
+/** The model chosen for the agent's session (recipe.model, as the agent lists it), one record each time one is chosen. */
+export const MODEL_STREAM = "acp.model";
 
 /** How long a session waits for the agent to start and answer initialize, or open its session. */
 export const START_MS = 60_000;
@@ -130,7 +132,11 @@ interface Runtime {
   /** The permission call ids this agent process's requests took: each request of the open turn takes one of its own. */
   claimed: Set<string>;
   ownIds: Set<string>;
+  /** The kind each tool_call was announced with: an update that names the call later is held to it (ourTool). */
+  kinds: Map<string, string>;
   mirror: StateMirror;
+  /** Its private HOME was removed with its process (recipe.credentials): nothing is mirrored from it any more. */
+  wiped: boolean;
   loading: boolean;
   current?: Current;
   dispose(): Promise<void>;
@@ -234,9 +240,18 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
   const names = new Set(listed.map((tool) => tool.name));
   let runtime: Runtime | undefined;
 
+  /** The recipe's refusal `text` (the agent's stderr, an error it answered) says, as `<code>: <words>`; undefined when it
+   *  says none of them. */
+  const refusalIn = (text: string): string | undefined => {
+    const refusal = recipe.refusals?.find((r) => text.includes(r.says));
+    return refusal && `${refusal.code}: ${refusal.words}`;
+  };
+
   /** Mirror the agent's session store into `journal` (the caller flushes). A failure is said and never thrown: the next
    *  point takes the mirror again, and a turn's outcome is never lost to it. */
   const mirrorInto = (rt: Runtime, journal: NativeJournal) => {
+    // A HOME removed with its process holds nothing to take: read now, it would say the agent deleted its whole store.
+    if (rt.wiped) return;
     try {
       rt.mirror.take(journal);
     } catch (error) {
@@ -276,6 +291,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         if (!cur) return;
         if (cur.turn) cur.turn.final = "";
         countCall(rt, cur, update.toolCallId);
+        if (typeof update.kind === "string") rt.kinds.set(update.toolCallId, update.kind);
         // Only a call whose kind has no effects of its own can be ours (ourTool): a shell titled as our tool never takes an
         // MCP call's id, and never passes the permission shortcut below.
         const tool = ourTool(update as { title?: string | null; name?: string | null; kind?: string | null }, names);
@@ -283,8 +299,24 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         return;
       }
       case "tool_call_update": {
+        if (!cur) return;
+        // A call the agent named only after announcing it (Cursor's MCP calls: a tool_call titled "MCP: tool" with no
+        // input, then this update titled `agentrun: <tool>` with {providerIdentifier, toolName, args}): taken as ours
+        // here, under the id its tool_call already counted. Its kind is the tool_call's, which ourTool already let
+        // through, or this update's own when it names one.
+        if (!rt.calls.has(update.toolCallId)) {
+          // Held to both kinds, the tool_call's and the update's: a shell renamed by a later update is never ours.
+          const title = update.title ?? null;
+          const announcedAs = ourTool({ title, kind: rt.kinds.get(update.toolCallId) ?? null }, names);
+          const tool = announcedAs && ourTool({ title, kind: update.kind ?? null }, names) === announcedAs ? announcedAs : undefined;
+          if (tool) {
+            const raw = update.rawInput as { toolName?: unknown; args?: unknown } | null | undefined;
+            const args = raw && raw.toolName === tool && typeof raw.args === "object" && raw.args !== null && !Array.isArray(raw.args) ? raw.args : raw;
+            rt.calls.add(update.toolCallId, tool, args);
+          }
+        }
         // Its status is the agent's word only: what it changes is the mirror of the agent's session store.
-        if (!cur || (update.status !== "completed" && update.status !== "failed")) return;
+        if (update.status !== "completed" && update.status !== "failed") return;
         mirrorInto(rt, cur.journal);
         void cur.journal.flush().catch(() => {});
         return;
@@ -395,6 +427,17 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const root = options.cwd === undefined ? join(base, "work") : normalize(options.cwd);
     const home = join(base, "home");
     const tmp = join(base, "tmp");
+    // The recipe's keys, read by name from the host's environment (a host may hold them readable by name alone), refused
+    // before anything starts when one is not there.
+    const hostEnv = options.env ?? process.env;
+    const keyEnv: Record<string, string> = {};
+    const absent: string[] = [];
+    for (const name of recipe.keys ?? []) {
+      const value = hostEnv[name];
+      if (typeof value === "string" && value !== "") keyEnv[name] = value;
+      else absent.push(name);
+    }
+    if (absent.length) throw new Error(`${ACP_CODES.keyMissing}: ${recipe.label ?? recipe.id} runs on ${absent.join(" and ")}, which this host does not hold; the agent was not started`);
     mkdirSync(base, { recursive: true, mode: 0o700 });
     // Everything the agent kept goes: what it starts with is the session's records, never an earlier process's files.
     for (const dir of [home, tmp]) {
@@ -416,7 +459,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const stopped = new AbortController();
     const signal = AbortSignal.any([ctx.signal, stopped.signal]);
     const key = randomBytes(32).toString("base64url");
-    const rt = { ctx, loading: false, fresh: true, firstBlocks: [], calls: new CallIds(), counted: new Set(), claimed: new Set(), ownIds: new Set(), sessionId: "", mirror: new StateMirror(home, (recipe.state ?? []).map((p) => homePath(p)!), own, records, log) } as unknown as Runtime;
+    const rt = { ctx, loading: false, fresh: true, wiped: false, firstBlocks: [], calls: new CallIds(), counted: new Set(), claimed: new Set(), ownIds: new Set(), kinds: new Map(), sessionId: "", mirror: new StateMirror(home, (recipe.state ?? []).map((p) => homePath(p)!), own, records, log) } as unknown as Runtime;
     const mcp = await startMcpServer({ tools: listed.map((t) => ({ name: t.name, description: t.description, inputSchema: t.inputSchema as Record<string, unknown> })), key, log, call: (name, args, callSignal) => onMcpCall(rt, name, args, callSignal) });
     let proxy: { env: Record<string, string>; close(): Promise<void> } | undefined;
     let agent: AgentProcess | undefined;
@@ -434,6 +477,18 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         if (agent) await Promise.race([agent.exited, sleep(EXIT_WAIT_MS)]);
         await mcp.close().catch(() => {});
         await closeProxy();
+        // A recipe that names a credential the agent derives from its key (Cursor's auth.json): its HOME and tmp go with
+        // its process, whole, so no credential outlives the drive. What the next start needs comes back from the records.
+        if (recipe.credentials?.length) {
+          rt.wiped = true;
+          for (const dir of [home, tmp]) {
+            try {
+              rmSync(dir, { recursive: true, force: true });
+            } catch (error) {
+              log("acp: the agent's private HOME could not be removed", { dir, error: message(error).slice(0, 300) });
+            }
+          }
+        }
       })());
     ctx.signal.addEventListener("abort", () => void rt.dispose(), { once: true });
     try {
@@ -454,6 +509,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         cwd: root,
         env: {
           ...(recipe.env ?? {}),
+          ...keyEnv,
           ...(proxy?.env ?? {}),
           HOME: home,
           TMPDIR: tmp,
@@ -474,8 +530,12 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       const live = agent;
       const startMs = options.startMs ?? START_MS;
       const ask = <T>(what: string, run: () => Promise<T>) =>
-        within(unlessAborted(run(), signal), startMs, what).catch((error: unknown) => {
+        within(unlessAborted(run(), signal), startMs, what).catch(async (error: unknown) => {
           if (signal.aborted) throw signal.reason;
+          // An agent that says why on its way out: its stderr is read once it has ended.
+          if (!live.alive() || live.connection.signal.aborted) await Promise.race([live.exited, sleep(500)]);
+          const named = refusalIn(`${live.stderrTail()}\n${message(error)}`);
+          if (named) throw new Error(named);
           if (!live.alive() || live.connection.signal.aborted) throw new Error(`${ACP_CODES.agentExited}: the agent ended during ${what}: ${live.stderrTail().trim().slice(-300) || message(error)}`);
           throw new Error(`acp: ${what} failed: ${message(error).slice(0, 300)}`);
         });
@@ -496,11 +556,13 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       const instructions = options.instructions?.trim() ? options.instructions : undefined;
       const systemPrompt: SystemPrompt | undefined = instructions && caps.sessionCapabilities?.systemPrompt ? { mode: "append", content: [{ type: "text", text: instructions }] } : undefined;
       const last = journalRecords<{ sessionId?: unknown }>(ctx.state(), SESSION_STREAM).map((r) => r.data?.sessionId).filter((id): id is string => typeof id === "string").at(-1);
+      /** What session/load or session/new answered: the models it lists, for one. */
+      let opening: unknown;
       if (recipe.declares.load && last) {
         // The agent's history comes back as session/update notifications before the answer: kept off the timeline.
         rt.loading = true;
         try {
-          await ask("session/load", () => live.connection.agent.request("session/load", { sessionId: last, cwd: root, mcpServers: [server], ...(systemPrompt ? { systemPrompt } : {}) }));
+          opening = await ask("session/load", () => live.connection.agent.request("session/load", { sessionId: last, cwd: root, mcpServers: [server], ...(systemPrompt ? { systemPrompt } : {}) }));
           rt.sessionId = last;
           rt.fresh = false;
         } catch (error) {
@@ -519,6 +581,25 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         if (instructions && !systemPrompt) rt.firstBlocks.push(`Instructions for this session, from the host that runs you:\n\n${instructions}`);
         const context = contextNote(ctx.state());
         if (context) rt.firstBlocks.push(context);
+        opening = opened;
+      }
+      if (recipe.model !== undefined) {
+        // The run's model, among those the agent lists for its key: by its id, else by its name before the brackets.
+        // A loaded session that lists none keeps the one chosen for it before (MODEL_STREAM).
+        const models = (opening as { models?: { availableModels?: unknown } } | undefined)?.models?.availableModels;
+        const ids = Array.isArray(models) ? models.map((m) => (m as { modelId?: unknown })?.modelId).filter((id): id is string => typeof id === "string") : undefined;
+        const before = journalRecords<{ modelId?: unknown }>(ctx.state(), MODEL_STREAM).map((r) => r.data?.modelId).filter((id): id is string => typeof id === "string").at(-1);
+        const wanted = recipe.model;
+        const chosen = ids ? (ids.find((id) => id === wanted) ?? ids.find((id) => id.split("[")[0] === wanted)) : rt.fresh ? undefined : before;
+        if (!chosen) {
+          const said = ids?.length ? `it lists ${ids.join(", ")}` : "it lists none";
+          throw new Error(`${ACP_CODES.modelUnlisted}: the model ${JSON.stringify(wanted)} is not one ${recipe.label ?? recipe.id} lists for this key (${said}); no prompt was sent`);
+        }
+        await ask("session/set_model", () => live.connection.agent.request("session/set_model", { sessionId: rt.sessionId, modelId: chosen }));
+        if (chosen !== before) {
+          journal.append(MODEL_STREAM, { modelId: chosen });
+          await journal.flush();
+        }
       }
       log("acp: the agent's session is open", { sessionId: rt.sessionId, loaded: !rt.fresh, pid: live.pid });
       return rt;
@@ -621,6 +702,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         const result = await unlessAborted(Promise.race([asked, pastLimit]), ctx.signal);
         if (result === "past limit") {
           log("acp: the agent went on past the plan's limit after session/cancel; its process is ended", { waitedMs: LIMIT_STOP_MS });
+          // Its store is taken before its process ends: a recipe with a credential loses its HOME with it.
+          mirrorInto(agent, journal);
           await agent.dispose();
           if (runtime === agent) runtime = undefined;
         } else answer = result;
@@ -645,7 +728,8 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       let outcome: Outcome;
       if (turn.limitHit) outcome = { status: "failed", error: turn.limitHit };
       else if (failure !== undefined) {
-        outcome = { status: "failed", error: agent.agent.alive() && !agent.agent.connection.signal.aborted ? `acp: session/prompt failed: ${message(failure).slice(0, 300)}` : `${ACP_CODES.agentExited}: the agent ended during the turn: ${agent.agent.stderrTail().trim().slice(-300) || message(failure).slice(0, 300)}` };
+        const named = refusalIn(`${agent.agent.stderrTail()}\n${message(failure)}`);
+        outcome = { status: "failed", error: named ?? (agent.agent.alive() && !agent.agent.connection.signal.aborted ? `acp: session/prompt failed: ${message(failure).slice(0, 300)}` : `${ACP_CODES.agentExited}: the agent ended during the turn: ${agent.agent.stderrTail().trim().slice(-300) || message(failure).slice(0, 300)}`) };
       } else {
         const reason = answer?.stopReason;
         if (reason === "end_turn") outcome = { status: "completed" };

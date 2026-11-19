@@ -4,10 +4,12 @@
 // first-use install does (harness-install.ts):
 //   - the archive is downloaded with node's fetch into a fresh folder beside `<data>/harnesses/<harness>`, its sha256
 //     taken as it arrives, and refused unless it is the pin's before anything reads it;
-//   - the verified archive is unpacked there by the system's tar (`tar -xjf`, a fixed argument list, no shell, an
-//     environment of PATH alone): node has no bzip2 of its own, and the repository carries none;
-//   - the binary's sha256 is checked there against the pin, and only then is the folder renamed into place and made
-//     read-only. What was there before goes aside first, then away;
+//   - the verified archive is unpacked there by the system's tar (`tar -xjf` for Goose's tar.bz2, `-xzf` for Cursor's
+//     tar.gz; a fixed argument list, no shell, an environment of PATH alone): node has no bzip2 of its own, and the
+//     repository carries none;
+//   - the binary's sha256 is checked there against the pin, and where the pin holds one the digest of every file beside
+//     it (Cursor's launcher runs its own node on a hundred files of code), and only then is the folder renamed into place
+//     and made read-only. What was there before goes aside first, then away;
 //   - a crash part way leaves that fresh folder (its name the sweep's) and never a half install: the next install removes it.
 // One install at a time on a data directory, under the hold first-use installs take (takeHold). The installer is handed no
 // key of the server's: fetch carries no header of ours, and tar's environment is PATH alone.
@@ -37,10 +39,15 @@ export const ARCHIVE_CODES = Object.freeze({
 } as const);
 export type ArchiveCode = (typeof ARCHIVE_CODES)[keyof typeof ARCHIVE_CODES];
 
-/** One platform's release, as a pin holds it (the ACP registry's: acp's AcpArchivePin). */
-export type ArchiveRelease = { readonly url: string; readonly format: string; readonly sha256: string; readonly cmd: string; readonly binarySha256?: string };
-/** A harness installed from an archive: its id and name, its pin, and the command that installs it (said on every failure). */
-export type ArchiveHarness = { readonly id: string; readonly label: string; readonly retry: string; readonly pin: { readonly version: string; readonly archives: Readonly<Partial<Record<string, ArchiveRelease>>> } };
+/** One platform's release, as a pin holds it (the ACP registry's: acp's AcpArchivePin). `treeSha256`: the digest of
+ *  every file it unpacks to (acp's treeDigest), for a binary that is a launcher of the code beside it (Cursor's). */
+export type ArchiveRelease = { readonly url: string; readonly format: string; readonly sha256: string; readonly cmd: string; readonly binarySha256?: string; readonly treeSha256?: string };
+/** A harness installed from an archive: its id and name, its pin, and the command that installs it (said on every failure).
+ *  `tree`: how a tree's digest is taken (acp's treeDigest), needed where a release pins one. */
+export type ArchiveHarness = { readonly id: string; readonly label: string; readonly retry: string; readonly pin: { readonly version: string; readonly archives: Readonly<Partial<Record<string, ArchiveRelease>>> }; readonly tree?: (root: string) => Promise<string> };
+
+/** How tar unpacks each format this installer takes: node has neither bzip2 nor a tar of its own. */
+const TAR_FLAG: Readonly<Record<string, string>> = Object.freeze({ "tar.bz2": "-xjf", "tar.gz": "-xzf" });
 
 /** A failed install, by its code (ARCHIVE_CODES): its message says why, and the command that tries again. */
 export class ArchiveInstallFailed extends Error {
@@ -102,12 +109,16 @@ export async function installArchive(harness: ArchiveHarness, dir: string, optio
   const release = platform ? harness.pin.archives[platform] : undefined;
   if (!platform || !release) throw fail(ARCHIVE_CODES.platform, `${named} has no release pinned for ${platform ?? `${process.platform}-${process.arch}`}`);
   if (!release.binarySha256) throw fail(ARCHIVE_CODES.platform, `${named}'s binary on ${platform} has no sha256 pinned, so what its archive unpacks to cannot be checked`);
-  if (release.format !== "tar.bz2") throw fail(ARCHIVE_CODES.platform, `${named}'s archive on ${platform} is ${release.format}, and this installer unpacks tar.bz2 alone`);
+  const flag = TAR_FLAG[release.format];
+  if (!flag) throw fail(ARCHIVE_CODES.platform, `${named}'s archive on ${platform} is ${release.format}, and this installer unpacks ${Object.keys(TAR_FLAG).join(" and ")} alone`);
+  if (release.treeSha256 && !harness.tree) throw fail(ARCHIVE_CODES.platform, `${named}'s files on ${platform} are pinned by a tree digest, and this install was given no way to take one`);
   const binary = binaryUnder(dir, release.cmd);
   if (!binary) throw fail(ARCHIVE_CODES.platform, `${named}'s pinned path ${release.cmd} is not inside its folder`);
   const pinned = release.binarySha256;
-  /** Whether the pinned binary is in place: a file whose sha256 is the pin's. */
-  const inPlace = async (): Promise<boolean> => (await lstat(binary).catch(() => undefined)) !== undefined && (await digestOf(binary).catch(() => undefined)) === pinned;
+  /** Whether the pinned binary is in place: a file whose sha256 is the pin's, in a folder whose tree is the pin's where
+   *  it pins one. */
+  const inPlace = async (): Promise<boolean> =>
+    (await lstat(binary).catch(() => undefined)) !== undefined && (await digestOf(binary).catch(() => undefined)) === pinned && (!release.treeSha256 || (await harness.tree!(dir).catch(() => undefined)) === release.treeSha256);
   if (await inPlace()) return { installed: "already", binary };
 
   const parent = dirname(dir);
@@ -121,7 +132,7 @@ export async function installArchive(harness: ArchiveHarness, dir: string, optio
     // What an earlier install left part way (a crash between the unpack and the rename): never read, removed now.
     await sweepLeftovers(dir);
     work = await mkdtemp(join(parent, leftoverPrefix(dir)));
-    const archive = join(work, "archive.tar.bz2");
+    const archive = join(work, `archive.${release.format}`);
     const timeoutMs = options.timeoutMs ?? ARCHIVE_TIMEOUT_MS;
     const maxBytes = options.maxBytes ?? ARCHIVE_MAX_BYTES;
 
@@ -158,7 +169,7 @@ export async function installArchive(harness: ArchiveHarness, dir: string, optio
     await mkdir(tree);
     const PATH = (options.env ?? process.env).PATH ?? "/usr/bin:/bin";
     await new Promise<void>((done, reject) => {
-      execFile(options.tar ?? "tar", ["-xjf", archive, "-C", tree, "--no-same-owner", "--no-same-permissions"], { env: { PATH, LC_ALL: "C" }, timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (error, _stdout, stderr) => {
+      execFile(options.tar ?? "tar", [flag, archive, "-C", tree, "--no-same-owner", "--no-same-permissions"], { env: { PATH, LC_ALL: "C" }, timeout: timeoutMs, maxBuffer: 1024 * 1024 }, (error, _stdout, stderr) => {
         if (error) reject(fail(ARCHIVE_CODES.unpack, `tar could not unpack ${named}'s archive: ${String(stderr).trim() || error.message}`));
         else done();
       });
@@ -171,6 +182,11 @@ export async function installArchive(harness: ArchiveHarness, dir: string, optio
     if (!found?.isFile()) throw fail(ARCHIVE_CODES.unpack, `${named}'s archive holds no file at ${release.cmd}`);
     const binarySha = await digestOf(unpacked);
     if (binarySha !== pinned) throw fail(ARCHIVE_CODES.binary, `${named}'s binary from its archive has sha256 ${binarySha}, and the pin is ${pinned}; it was not put in place`);
+    // Every file beside it, where the pin holds their digest: a launcher's code is as much the harness as the launcher.
+    if (release.treeSha256) {
+      const treeSha = await harness.tree!(tree);
+      if (treeSha !== release.treeSha256) throw fail(ARCHIVE_CODES.binary, `${named}'s files from its archive have the tree sha256 ${treeSha}, and the pin is ${release.treeSha256}; they were not put in place`);
+    }
     await options.onStep?.("verified");
 
     // Into place whole: what was there (a binary that is not the pin's, a folder by hand) goes aside first, then away.

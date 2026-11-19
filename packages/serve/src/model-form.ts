@@ -37,7 +37,9 @@ export function formOf(env: NodeJS.ProcessEnv, vendor: string, id: string): stri
  *  (harness.ts harnessOffers drops those it does not run). Behind serve's gateway every id is the gateway's own string, so
  *  the host's tier models stand for what it runs; with the faux model none is offered. */
 export function pickerCandidates(env: NodeJS.ProcessEnv, harness: string): string[] {
-  if (env[FAUX_ENV]) return [];
+  // A harness billed to its own plan (Cursor) runs its vendor's models, listed by its vendor for its owner's key alone: its
+  // entry's default is offered (harness.ts harnessOffers' default_model), and none of ours.
+  if (env[FAUX_ENV] || adapterFactsOf(harness)?.wire === "plan") return [];
   // The gateway serves the harnesses whose wire goes through it (pi, and the OpenAI Responses wire: providerFor); the
   // Anthropic Messages wire never does, so Claude is offered Anthropic's models on its own key.
   const facts = adapterFactsOf(harness);

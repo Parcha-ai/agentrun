@@ -1,0 +1,20 @@
+{
+  "id": "cursor",
+  "label": "Cursor",
+  "args": ["--disable-auto-update", "acp"],
+  "keys": ["CURSOR_API_KEY"],
+  "files": {
+    ".cursor/cli-config.json": "{\"version\":1,\"permissions\":{\"allow\":[],\"deny\":[\"Write(**)\"]},\"approvalMode\":\"allowlist\"}\n"
+  },
+  "state": [".cursor/acp-sessions"],
+  "credentials": [".config/cursor/auth.json"],
+  "refusals": [
+    {
+      "says": "disabled headless Cursor CLI usage",
+      "code": "CURSOR_HEADLESS_DISABLED",
+      "words": "your Cursor team administrator has disabled headless Cursor CLI usage, so AgentRun does not run Cursor on this key; ask them to allow it in Cursor's team settings"
+    }
+  ],
+  "declares": { "load": true, "mcp": "http" },
+  "billing": { "kind": "plan", "maxTurns": 20, "maxToolCalls": 100 }
+}
