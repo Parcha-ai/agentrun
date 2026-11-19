@@ -707,7 +707,7 @@ func TestPairAttachAndUnpairKeepTheTokenInItsFileAlone(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("runs as root: root's token file is /etc/agentrun/computer.token, which a test must not write")
 	}
-	token := "art_" + strings.Repeat("Zz_-", 10) + "Q0w"
+	token := "art_" + strings.Repeat("0f", 32)
 	config := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", config)
 	t.Setenv("AGENTRUN_ATTACH_TOKEN", "")

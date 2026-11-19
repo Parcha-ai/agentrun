@@ -353,7 +353,7 @@ test("a dial host takes no Archil mount, in words, and declares a synced folder 
 	assert.deepEqual(provider.capabilities().mount, ["sync"]);
 	const refused = await create(provider, { ...SPEC, mount: { kind: "archil", disk: "dsk-0123456789abcdef", region: "aws-us-east-1", folder: "agents/a/runs/r/work" } });
 	assert.equal(refused.ok, false);
-	assert.match(refused.error.message, /mount: Fakehost's machines dial this server, and a machine that dials takes no Archil mount yet/);
+	assert.match(refused.error.message, /mount: Fakehost's machines dial this server, and a machine that dials takes no Archil mount/);
 	assert.equal(fake.creates(), 0);
 });
 
@@ -425,40 +425,21 @@ test("the linux exception is a minted desktop's alone, on its own os and arch: a
 	assert.equal(again.message, "Test Box paired as a linux desktop on amd64 and now says linux linux on amd64: pair it again");
 });
 
-test("a dial desktop whose display isn't up is a linux computer: its screen, input, apps, ui and watch calls are refused in words, never sent", async () => {
-	const { fake, provider, hub, tokens } = setup({ facts: { windowManager: true } }, { kind: "desktop" });
+test("a dial desktop whose display is down fails connect and watch as drift, as on exec; once it answers again, connect is a desktop's", async () => {
+	const { fake, provider } = setup({ facts: { windowManager: true } }, { kind: "desktop" });
 	const ref = made(await create(provider));
-	const token = fake.calls.find(([what]) => what === "create")[1].boot.env.AGENTRUN_ATTACH_TOKEN;
-	// The hub holds the hello the machine dialed with, before its display: the live one, linux, never the token's kind.
-	assert.equal(tokens.check(token)?.mint.kind, "desktop");
-	assert.equal(hub.hello(ref.name)?.kind, "linux");
-	// Its display goes (an X server that died): its hello says linux again.
+	// Its display goes (an X server that died): its hello says linux.
 	const m = fake.machines.get(ref.id);
 	m.xvfb = undefined;
 	m.displayUp = false;
-	const connection = made(await provider.connect(ref));
-	assert.equal(connection.hello.kind, "linux");
-	assert.deepEqual(connection.hello.groups, ["exec", "files", "processes"]);
-	const sent = fake.requests.length;
-	for (const [method, params] of [
-		["screen.shot", {}],
-		["input.actions", { actions: [{ type: "click", x: 1, y: 1 }] }],
-		["apps.list", {}],
-		["ui.observe", {}],
-	]) {
-		const refused = await connection.client.call(method, params);
-		assert.equal(refused.ok, false, method);
-		assert.equal(refused.error.code, "unsupported", method);
-		assert.equal(refused.error.message, `${ref.name}'s display isn't up yet: ${method} was not sent, and it is a linux computer until its daemon's hello says desktop`);
-	}
-	assert.deepEqual(made(await connection.client.call("ping", {})), {}, "its shell's calls go through");
-	assert.deepEqual(fake.requests.slice(sent).map(({ method }) => method), ["ping"], "no display call reached the daemon");
-	await connection.close();
+	const refused = await provider.connect(ref);
+	assert.equal(refused.ok, false);
+	assert.equal(refused.error.code, "refused");
+	assert.match(refused.error.message, /does not match this provider: hello: the daemon reports kind linux, expected desktop/);
 	const watched = await provider.watch(ref, { frame() {}, ended() {} });
 	assert.equal(watched.ok, false);
-	assert.equal(watched.error.code, "unsupported");
-	assert.match(watched.error.message, /display isn't up yet: screen\.watch was not sent/);
-	assert.ok(!fake.requests.some(({ method }) => method === "screen.watch"), "nor did the watch");
+	assert.match(watched.error.message, /does not match this provider: hello: the daemon reports kind linux, expected desktop/);
+	assert.ok(!fake.requests.some(({ method }) => method === "screen.watch"), "no watch was sent");
 	// Once its display answers again, the next connect is a desktop's.
 	m.displayUp = true;
 	const up = made(await provider.connect(ref));

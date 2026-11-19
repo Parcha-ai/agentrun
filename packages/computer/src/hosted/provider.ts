@@ -13,15 +13,15 @@ import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 import { ATTACH_PATH, type AttachHub, DAEMON_PATH, type MachineTokens } from "../attach.js";
 import { CreateRequests, endedWords, otherSpecWords, readBackDiffer } from "../create-requests.js";
-import { syncs } from "../descriptor.js";
-import { DESKTOP_GROUPS, type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
+import { mountsOf, syncs } from "../descriptor.js";
+import { type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
 import { COMPUTER_LABEL, DAEMON_IN_COMPUTER, DEADLINE_LABEL, helloDrift, type ProbeReport, probeNetworkDrift, probeNotes, probeReportOf, show, WORK } from "../drift.js";
 import { BACKSTOP_MARGIN_MS, type HostCall, type HostFacts, type Machine, type MachineHost, type MachineRequest } from "../host.js";
 import { readOwnNetwork, TOOL_USER } from "../isolation.js";
 import { releaseOlder } from "../janitor.js";
 import type { KindCapabilities } from "../kinds.js";
 import { EPOCH_LABEL, epochOf, RUN_LABEL } from "../labels.js";
-import { checkMount, type MountReadBack } from "../mount.js";
+import { checkMount, type MountKind, type MountReadBack, type Unmounted } from "../mount.js";
 import {
 	ARCHIL_TOOL_UID,
 	type ArchilEgress,
@@ -170,8 +170,6 @@ const USER = /^(\d+):(\d+)$/;
 /** A spec's user, where the host takes one: a uid, or uid:gid, in numbers (a uid alone is its own gid). */
 const SPEC_USER = /^(\d+)(?::(\d+))?$/;
 const MAX_ID = 4_294_967_294;
-/** The calls of a desktop's display (DESKTOP_GROUPS): screen, input, apps and ui. */
-const DISPLAY_METHOD = /^(screen|input|apps|ui)\./;
 const DEFAULTS: HostedTimeouts = {
 	requestMs: 30_000,
 	createMs: 120_000,
@@ -326,6 +324,8 @@ export class HostedProvider implements ComputerProvider {
 	readonly #extending = new Map<string, Promise<void>>();
 	/** A dial host's server: what its machines reach, and what holds their tokens and sockets. */
 	readonly #dial: HostedDial | undefined;
+	/** The host's descriptor's mounts as its machines reach this server (mountsOf): a dial host's take no Archil mount. */
+	readonly #mounts: { mounts: MountKind[]; unmounted: Unmounted };
 
 	constructor(host: MachineHost, options: HostedOptions) {
 		const {
@@ -378,6 +378,8 @@ export class HostedProvider implements ComputerProvider {
 		this.#timeouts = merged;
 		this.#probeTargets = [...probeTargets];
 		this.#dial = host.facts.connect === "dial" ? options.dial : undefined;
+		// The descriptor's keyed mounts are the host's already (Daytona's): no key is read here.
+		this.#mounts = mountsOf({ ...host.descriptor, connect: host.facts.connect }, () => false);
 		// Extend only where the end can follow it: the host moves its timer or its deadline label.
 		if (host.extend) this.extend = (ref, ttlMs, context) => this.#extendSerial(ref, ttlMs, context?.signal);
 	}
@@ -402,7 +404,7 @@ export class HostedProvider implements ComputerProvider {
 			release: ["delete"],
 			// A synced folder is derived for this configuration alone (descriptor.ts syncs), whatever the descriptor's list
 			// says: a dial machine takes one too, its /workspace made by the box image's agentrun-dial.
-			mount: [...descriptor.mounts.filter((kind) => kind !== "sync" && !(this.#dialing && kind === "archil")), ...(syncs(descriptor, this.#configuration) ? (["sync"] as const) : [])],
+			mount: [...this.#mounts.mounts.filter((kind) => kind !== "sync"), ...(syncs(descriptor, this.#configuration) ? (["sync"] as const) : [])],
 			vendorAgentPorts: [...facts.vendorAgentPorts],
 			...(gpu === undefined ? {} : { gpu: structuredClone(gpu) }),
 			...(facts.user === undefined ? {} : { user: [...facts.user] }),
@@ -418,9 +420,7 @@ export class HostedProvider implements ComputerProvider {
 		const label = this.#label;
 		// An Archil mount's own rules hold only where the provider takes one; elsewhere checkMount's refusal says why alone.
 		const archil = (mount as { kind?: unknown } | undefined)?.kind === "archil" && (capabilities.mount ?? []).includes("archil");
-		// A machine that dials takes no Archil mount yet: its helper's steps run as root through exec, which it has none of.
-		const unmounted = this.#dialing ? { ...this.host.descriptor.unmounted, archil: `${label}'s machines dial this server, and a machine that dials takes no Archil mount yet` } : this.host.descriptor.unmounted;
-		refusals.push(...checkMount(mount, capabilities.mount ?? [], unmounted), ...(archil ? archilRefusals(given as unknown as ComputerSpec) : []));
+		refusals.push(...checkMount(mount, capabilities.mount ?? [], this.#mounts.unmounted), ...(archil ? archilRefusals(given as unknown as ComputerSpec) : []));
 		// A synced folder reads back under the run's claim epoch, as an Archil mount does: nothing in the computer holds one.
 		if ((mount as { kind?: unknown } | undefined)?.kind === "sync" && (capabilities.mount ?? []).includes("sync")) {
 			const epoch = epochOf(typeof labels === "object" && labels !== null ? (labels as Record<string, string>) : undefined);
@@ -1304,15 +1304,10 @@ export class HostedProvider implements ComputerProvider {
 
 	/** The live view: screen.watch on a connection of the watch's own (daemonWatch); a linux computer has no screen. */
 	watch(ref: ComputerRef, handlers: ScreenWatchHandlers, options?: WatchOptions): Promise<Result<ScreenWatch>> {
-		return daemonWatch({ connect: (one) => this.#connect(one, "screen.watch") }, ref, handlers, options);
+		return daemonWatch(this, ref, handlers, options);
 	}
 
-	connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
-		return this.#connect(ref);
-	}
-
-	/** connect; `watching`, a watch's: a dial desktop whose display isn't up yet refuses it in words, as its client does. */
-	async #connect(ref: ComputerRef, watching?: "screen.watch"): Promise<Result<ComputerConnection>> {
+	async connect(ref: ComputerRef): Promise<Result<ComputerConnection>> {
 		const problem = this.#refProblem(ref);
 		if (problem) return this.#fail("invalid", problem);
 		const found = await this.#own(ref);
@@ -1323,20 +1318,8 @@ export class HostedProvider implements ComputerProvider {
 		const opened = await this.#open(ref);
 		if (!opened.ok) return opened;
 		const { kind, groups } = this.capabilities();
-		// A dial desktop says linux until its display answers (attach.ts helloMismatch), and until a hello says desktop it is
-		// a linux computer: its screen, input, apps and ui calls are refused here in words, never sent.
-		const dark = this.#dialing && kind === "desktop" && opened.value.hello?.kind === "linux";
-		const expected = dark ? { kind: "linux" as const, groups: groups.filter((group) => !(DESKTOP_GROUPS as readonly string[]).includes(group)) } : { kind, groups };
-		const drifted = helloDrift(opened.value.hello, { version: VERSION, ...expected, arch: this.host.facts.arch, fence: true });
-		const notUp = (method: string) => this.#fail("unsupported", `${ref.name}'s display isn't up yet: ${method} was not sent, and it is a linux computer until its daemon's hello says desktop`);
-		if (drifted.length === 0 && dark && watching) {
-			await opened.value.close();
-			return notUp(watching);
-		}
-		if (drifted.length === 0 && dark) {
-			const client = opened.value.client;
-			return ok({ ...opened.value, client: { call: (method, params, options) => (DISPLAY_METHOD.test(method) ? Promise.resolve(notUp(method)) : client.call(method, params, options)), close: () => client.close() } });
-		}
+		// A desktop whose display is down says linux (an X server that died): drift, on dial as on exec.
+		const drifted = helloDrift(opened.value.hello, { version: VERSION, kind, groups, arch: this.host.facts.arch, fence: true });
 		// An Archil computer's client syncs the run's folder after every call that may change it, before it answers. A synced
 		// folder's sync is its runner's (the sink is serve's), which wraps the client itself.
 		if (drifted.length === 0) return recordedFolder(found.value.labels)?.mount?.kind !== "archil" ? opened : ok({ ...opened.value, client: syncingClient(opened.value.client, archilSync(opened.value.client)) });

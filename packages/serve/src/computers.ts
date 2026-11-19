@@ -10,7 +10,7 @@
 import { type ComputerProvider, connectOf, type GpuCapability, imagesOf } from "@parcha/agentrun-computer";
 import { BOX_ALLOW_ENV, boxAllowOf } from "./box-settings.js";
 import { KEY_TABLE, type KeyChoice, keyChoices, type KeyTable, type OptionsAnswer, type ProviderFactories, type ProviderSettings, providerOptions, settingOptions, testConnection } from "./computer-keys.js";
-import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting, gpuOf } from "./computer-setting.js";
+import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting, gpuOf, kindSettings } from "./computer-setting.js";
 import { inArchilMode } from "./archil-settings.js";
 import { daemonUp, type DockerDaemon, noDockerWords } from "./docker-daemon.js";
 import { ApiError, invalid } from "./errors.js";
@@ -197,8 +197,9 @@ export function networkWords(network: readonly string[] | undefined, kind?: Comp
   if (network?.length === 2 && network.includes("open") && network.includes("allow")) return OPERATOR_LIST_WORDS;
   return undefined;
 }
-/** A kind; kind none, the one "no computer" choice, carries its ShellChoice itself (it has no providers). */
-export type KindView = { kind: ComputerKind; offered: boolean; why?: string; groups: string[]; tools: string[]; providers: ProviderView[] } & Partial<ShellChoice>;
+/** A kind; kind none, the one "no computer" choice, carries its ShellChoice itself (it has no providers). `settings`: the
+ *  fields its computer may set beside kind and provider (computer-setting.ts kindSettings). */
+export type KindView = { kind: ComputerKind; offered: boolean; why?: string; groups: string[]; tools: string[]; settings: string[]; providers: ProviderView[] } & Partial<ShellChoice>;
 export type TestView = { ok: true; detail: string } | { ok: false; why: string };
 /** A picked key's choices (GET /v2/computers/{provider}/choices): its KEY, as PUT …/keys takes it, then the values the
  *  vendor's list offers, each saved as it is and shown by its label, and `saved`, the one whose value is saved now, where
@@ -346,7 +347,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
         const why = offered ? undefined
           : serving.length && serving.every(refusedOpen) ? `every provider of a ${kind} computer needs a network, and this server's ${BOX_ALLOW_ENV} is none (no network)`
           : serving.length ? `no provider of a ${kind} computer can reach this server's run folders` : `no provider serves a ${kind} computer`;
-        return { kind, offered, ...(why ? { why } : {}), groups: [...spec.required, ...spec.optional], tools: [...tools(kind)], providers, ...(kind === "none" ? choice({ kind: "none" }) : {}) };
+        return { kind, offered, ...(why ? { why } : {}), groups: [...spec.required, ...spec.optional], tools: [...tools(kind)], settings: kindSettings(kind), providers, ...(kind === "none" ? choice({ kind: "none" }) : {}) };
       }),
       paired,
     };

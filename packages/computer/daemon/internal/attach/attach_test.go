@@ -273,6 +273,8 @@ func TestFromEnvRefusesAMissingOrMalformedURLOrTokenWithoutSayingIt(t *testing.T
 		{"wss://agentrun.example.com", testToken},
 		{"wss://agentrun.example.com/v2/computers/attach", ""},
 		{"wss://agentrun.example.com/v2/computers/attach", "art_" + strings.Repeat("A", 64)},
+		// 32 bytes in base64url: no machine token, whoever minted it.
+		{"wss://agentrun.example.com/v2/computers/attach", "art_" + strings.Repeat("Zz_-", 10) + "Q0w"},
 		{"wss://agentrun.example.com/v2/computers/attach", testToken + "\r\nX-Other: 1"},
 	} {
 		t.Setenv(URLEnv, tc[0])
@@ -287,11 +289,5 @@ func TestFromEnvRefusesAMissingOrMalformedURLOrTokenWithoutSayingIt(t *testing.T
 	cfg, err := FromEnv("/run/agentrun/computerd.sock", subprotocol, 1<<20)
 	if err != nil || cfg.Heartbeat != 20*time.Second || cfg.Idle != time.Minute || cfg.Steady != time.Minute || cfg.Options.Token != testToken {
 		t.Fatalf("%+v, %v", cfg, err)
-	}
-	// A paired computer's token, as serve's pair route makes it: art_ and 32 bytes in base64url.
-	paired := "art_" + strings.Repeat("Zz_-", 10) + "Q0w"
-	t.Setenv(TokenEnv, paired)
-	if cfg, err := FromEnv("/run/agentrun/computerd.sock", subprotocol, 1<<20); err != nil || cfg.Options.Token != paired {
-		t.Fatalf("a paired computer's token: %v", err)
 	}
 }

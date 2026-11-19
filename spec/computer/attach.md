@@ -68,8 +68,8 @@ under the code's owner, with its name, its `hello` and the time. The answer:
 - The computer's id is `cmp-` and 16 lowercase letters and digits: an id an agent's computer setting names as its
   provider, `{"kind":"desktop","provider":"cmp-8f2k3jq7m4xw9tnb"}`.
 
-- The token is the machine's long-lived credential: 32 random bytes in base64url, prefixed `art_` so a secret scanner
-  knows it. It is shown only in this answer. The app keeps it in the OS's keychain (the macOS login keychain, Android's
+- The token is the machine's long-lived credential: `art_` and 64 lowercase hex (32 random bytes), the one shape of
+  every machine token, a paired computer's or a hosted machine's; the prefix lets a secret scanner know it. It is shown only in this answer. The app keeps it in the OS's keychain (the macOS login keychain, Android's
   Keystore-backed storage), or, on a box with no keychain, a file only its user can read ([A Linux box](#a-linux-box)),
   and never in a log. The server keeps only its SHA-256.
 - It belongs to this one machine: one token per paired computer, never shared. It has no expiry of its own: a machine

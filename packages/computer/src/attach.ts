@@ -288,9 +288,10 @@ interface Live {
 export class AttachHub {
 	readonly #live = new Map<string, Live>();
 	/** The run holding each computer: the hold's own token, its labels, and its deadline with the timer that ends it. */
-	readonly #claims = new Map<string, { hold: string; labels: Record<string, string>; deadline?: Date; timer?: ReturnType<typeof setTimeout>; ending?: Promise<boolean> }>();
-	/** The calls still running on each computer that change it (changing): no hold on it ends before each has ended. */
-	readonly #changing = new Map<string, Set<Promise<unknown>>>();
+	readonly #claims = new Map<string, { hold: string; labels: Record<string, string>; deadline?: Date; timer?: ReturnType<typeof setTimeout> }>();
+	/** The call still running on each computer that changes it (changing): no hold on it ends before it has ended. A
+	 *  create sends them one at a time, and none after its abort. */
+	readonly #changing = new Map<string, Promise<unknown>>();
 	/** The sockets still saying hello, by computer: a revoke closes them too, so none comes back after it. */
 	readonly #pending = new Map<string, Set<AttachSocket>>();
 	/** Each computer's connections given out, by the function that closes one. */
@@ -456,40 +457,34 @@ export class AttachHub {
 	 * on the computer ends before that (unclaim).
 	 */
 	changing(id: string, answer: Promise<unknown>): void {
-		const running = this.#changing.get(id) ?? new Set<Promise<unknown>>();
-		this.#changing.set(id, running);
-		running.add(answer);
+		this.#changing.set(id, answer);
 		void answer.finally(() => {
-			running.delete(answer);
-			if (running.size === 0 && this.#changing.get(id) === running) this.#changing.delete(id);
+			if (this.#changing.get(id) === answer) this.#changing.delete(id);
 		});
 	}
 
 	/** Resolves once no call that changes the computer runs (changing): at once while none does. */
 	async unchanged(id: string): Promise<void> {
-		for (let running = this.#changing.get(id); running !== undefined; running = this.#changing.get(id)) await Promise.allSettled(running);
+		await Promise.allSettled([this.#changing.get(id)]);
 	}
 
 	/**
 	 * Ends the hold named by its token, and closes the connections it was given: at once, or while a call that changes
-	 * the computer still runs (changing), once each has ended, so no next run is given a computer an earlier call still
-	 * changes. A token of a hold already ended (a late release, after the deadline gave the computer to another run)
-	 * ends nothing: false.
+	 * the computer still runs (changing), once it has ended, so no next run is given a computer an earlier call still
+	 * changes. A token of a hold already ended (a late release, after the deadline gave the computer to another run), or
+	 * ended by another unclaim while this one waited, ends nothing: false.
 	 */
-	unclaim(id: string, hold: string): Promise<boolean> {
+	async unclaim(id: string, hold: string): Promise<boolean> {
 		const held = this.#claims.get(id);
-		if (held === undefined || held.hold !== hold) return Promise.resolve(false);
+		if (held === undefined || held.hold !== hold) return false;
 		if (this.#changing.has(id)) {
-			held.ending ??= this.unchanged(id).then(() => {
-				held.ending = undefined;
-				return this.unclaim(id, hold);
-			});
-			return held.ending;
+			await this.unchanged(id);
+			if (this.#claims.get(id) !== held) return false;
 		}
 		clearTimeout(held.timer);
 		this.#claims.delete(id);
 		this.#closeGiven(id);
-		return Promise.resolve(true);
+		return true;
 	}
 
 	/** A hold past its deadline ends at once, whether or not its timer has run yet (once its changing calls end). */

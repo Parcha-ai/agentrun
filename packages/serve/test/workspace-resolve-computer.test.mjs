@@ -55,10 +55,11 @@ function claim(root, saved = SAVED) {
 const resolve = (setting, mode, root = scratch(), saved, kinds = KINDS) => resolveComputer(setting, mode, kinds, claim(root, saved));
 const KIND_REGISTRY = KINDS;
 /** A setting resolved as the run's folder kind it holds, or its refusal. */
-const folderOf = (resolved) => ("refused" in resolved ? resolved : { mounts: resolved.mounts, folder: resolved.folder });
+const folderOf = (resolved) => ("refused" in resolved ? resolved : { folder: resolved.folder });
 /** Mode 2's Daytona sandbox, with GPUs or without: it takes no Archil mount, so it holds a synced folder. */
-const SYNCED = { mounts: true, folder: "sync" };
-const shape =(resolved) =>("refused" in resolved ? resolved : { kind: resolved.kind, provider: resolved.provider, mounts: resolved.mounts, ports: resolved.ports });
+const SYNCED = { folder: "sync" };
+/** A setting resolved as its kind, provider, whether it holds the run's folder, and its ports, or its refusal. */
+const shape =(resolved) =>("refused" in resolved ? resolved : { kind: resolved.kind, provider: resolved.provider, mounts: resolved.folder !== undefined, ports: resolved.ports });
 
 test("no setting is the server's default: in Mode 1 Docker's sandbox where Docker answers here, else no computer; in Mode 2 no computer", async () => {
   const answering = (ids) => ({ ...claim(scratch()), answers: async (id) => ids.includes(id) });
@@ -92,17 +93,17 @@ test("Mode 2: Docker's sandbox is refused; a remote sandbox mounts from Archil, 
     refused: "Mode 2 keeps workspaces on Archil; a local Docker computer can't mount them. Pick a remote sandbox for this agent's computer in Settings → Computers, or no computer.",
   });
   assert.deepEqual(shape(await resolve({ kind: "sandbox", provider: "modal" }, 2)), { kind: "sandbox", provider: "modal", mounts: true, ports: ["files", "exec", "processes"] });
-  assert.deepEqual(folderOf(await resolve({ kind: "sandbox", provider: "modal" }, 2)), { mounts: true, folder: "archil" });
+  assert.deepEqual(folderOf(await resolve({ kind: "sandbox", provider: "modal" }, 2)), { folder: "archil" });
   assert.deepEqual(folderOf(await resolve({ kind: "sandbox", provider: "daytona" }, 2)), SYNCED, "Daytona takes no Archil mount");
-  assert.equal((await resolve({ kind: "desktop", provider: "docker" }, 2)).mounts, false, "Docker binds a folder of this machine, and Mode 2's is on Archil");
-  assert.equal((await resolve({ kind: "desktop", provider: "e2b" }, 2)).mounts, true);
+  assert.equal((await resolve({ kind: "desktop", provider: "docker" }, 2)).folder, undefined, "Docker binds a folder of this machine, and Mode 2's is on Archil");
+  assert.equal((await resolve({ kind: "desktop", provider: "e2b" }, 2)).folder, "archil");
   assert.deepEqual(shape(await resolve({ kind: "desktop", provider: "orgo" }, 2)), { kind: "desktop", provider: "orgo", mounts: false, ports: ["screen", "input"] });
 });
 
 test("the module's own table takes archil mounts on Modal and E2B, not Daytona: Mode 2 mounts a Modal or E2B sandbox and an E2B desktop, and syncs a Daytona sandbox", async () => {
   for (const provider of ["modal", "e2b"]) assert.deepEqual(shape(await resolve({ kind: "sandbox", provider }, 2, scratch(), SAVED, KINDS)), { kind: "sandbox", provider, mounts: true, ports: ["files", "exec", "processes"] });
   assert.deepEqual(folderOf(await resolve({ kind: "sandbox", provider: "daytona" }, 2, scratch(), SAVED, KINDS)), SYNCED);
-  assert.equal((await resolve({ kind: "desktop", provider: "e2b" }, 2, scratch(), SAVED, KINDS)).mounts, true);
+  assert.equal((await resolve({ kind: "desktop", provider: "e2b" }, 2, scratch(), SAVED, KINDS)).folder, "archil");
 });
 
 test("a setting the registry does not give is refused in words that name the setting, the registry's own reasons in them", async () => {
@@ -245,7 +246,7 @@ test("runShellOf, read off the setting, is the shell runHands gives the run over
     await started.release();
   }
   assert.deepEqual(new Set(table.map(([setting]) => setting.kind)), new Set(Object.keys(KIND_REGISTRY.SETTING_KINDS)), "every setting kind is in the table");
-  assert.equal((await resolve({ kind: "desktop", provider: "docker", exec: false }, 1)).mounts, false, "a desktop whose agent has no exec is never given the run's folder");
+  assert.equal((await resolve({ kind: "desktop", provider: "docker", exec: false }, 1)).folder, undefined, "a desktop whose agent has no exec is never given the run's folder");
   for (const [setting, mode] of [[{ kind: "sandbox", provider: "daytona" }, 1], [{ kind: "sandbox", provider: "docker" }, 2], [{ kind: "laptop", provider: "docker" }, 1], [{ kind: "desktop" }, 2], [{ kind: "phone", provider: "nokia" }, 2]]) {
     assert.ok("refused" in (await resolve(setting, mode)), `${setting.kind} in Mode ${mode} is refused`);
     assert.equal(runShellOf(setting, mode, KIND_REGISTRY), "none", `a refused setting runs nothing: ${setting.kind} ${setting.provider ?? ""} in Mode ${mode}`);
@@ -314,7 +315,12 @@ test("registryHere: Daytona mounts Archil only where DAYTONA_ARCHIL_EGRESS has a
   assert.deepEqual(daytona(await here({ DAYTONA_ARCHIL_EGRESS: "  " })).mounts, ["sync"], "a value of whitespace alone is none");
   const relayed = await here({ DAYTONA_ARCHIL_EGRESS: "192.0.2.40:18100:42050", AGENTRUN_DAYTONA_SNAPSHOT: "agentrun-archil-0123456789ab" });
   assert.deepEqual([daytona(relayed).mounts, daytona(relayed).unmounted, daytona(relayed).imageNamed], [["sync", "archil"], {}, true]);
-  for (const entry of REAL.filter((one) => one.id !== "daytona")) assert.equal(relayed.PROVIDERS.find((one) => one.id === entry.id), entry, entry.id);
+  // Every other provider as it is, but that one whose machines dial says why it takes no Archil mount, as it does itself.
+  for (const entry of REAL.filter((one) => one.id !== "daytona")) {
+    const kept = relayed.PROVIDERS.find((one) => one.id === entry.id);
+    if (kept !== entry) assert.deepEqual(kept, { ...entry, unmounted: { ...entry.unmounted, archil: `${entry.label}'s machines dial this server, and a machine that dials takes no Archil mount` } }, entry.id);
+  }
+  assert.deepEqual(relayed.PROVIDERS.filter((one, at) => one !== REAL[at]).map((one) => one.id).sort(), ["cloudflare", "daytona", "fly"]);
   // A Mode 2 Daytona sandbox has its computer's shell either way: with the egress and its image named, its folder an
   // Archil mount; without, a synced folder.
   const { resolveComputer: resolveHere } = await import("../dist/workspace/index.js");

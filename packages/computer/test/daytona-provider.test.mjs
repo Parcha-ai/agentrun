@@ -762,7 +762,7 @@ test("connect dial: no Archil mount, no GPU and not Daytona's default snapshot, 
 	assert.deepEqual(caps.vendorAgentPorts, [2280], "the toolbox still runs, and its port is still blocked");
 	const mount = provider.check(ARCHIL_SPEC);
 	assert.deepEqual(mount.map(({ field }) => field), ["mount"]);
-	assert.match(mount[0].message, /Daytona's machines dial this server, and a machine that dials takes no Archil mount yet/);
+	assert.match(mount[0].message, /Daytona's machines dial this server, and a machine that dials takes no Archil mount$/);
 	const gpu = provider.check({ ...SPEC, image: "default", gpu: GPU });
 	assert.ok(gpu.length > 0 && gpu.every(({ field }) => field === "gpu"), JSON.stringify(gpu));
 	assert.ok(gpu.some(({ message }) => /a Daytona computer that dials this server takes no GPU: daytona-gpu holds no agentrun-dial/.test(message)), JSON.stringify(gpu));

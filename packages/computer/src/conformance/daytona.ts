@@ -14,6 +14,7 @@ import type { MountKind } from "../mount.js";
 import { type ArchilRunFolderOptions, archilRunFolder, archilSettings } from "./archil.js";
 import { dialOnlyFromServer } from "./dial-only.js";
 import { buildDriftDaemon, DRIFT_VERSION } from "./drift-daemon.js";
+import { kindFrom } from "./kind.js";
 import type { RunFolder } from "./types.js";
 
 /** The Archil disk's settings for the mount cases, by name (COMPUTER_ARCHIL_*: all five, or none). */
@@ -116,11 +117,10 @@ export interface DaytonaModuleOptions {
 
 /** The provider's options: what this module reads from the environment (settingsFromEnv), with the run's bounds. */
 function optionsOf({ env = process.env, fetch, webSocket, timeouts, onNote, dial, daemonPath }: DaytonaModuleOptions): DaytonaProviderOptions {
-	const kind = env[DAYTONA_ENV.kind] || undefined;
 	return {
 		...settingsFromEnv(env),
-		// create() refuses any other kind, and desktop without dial, in words.
-		...(kind === undefined ? {} : { kind: kind as "desktop" | "linux" }),
+		// create() refuses desktop without dial in words.
+		...kindFrom(env, DAYTONA_ENV.kind),
 		...(daemonPath === undefined ? {} : { daemonPath }),
 		autoStopMinutes: CONFORMANCE_AUTO_STOP_MINUTES,
 		autoDeleteMinutes: CONFORMANCE_AUTO_DELETE_MINUTES,

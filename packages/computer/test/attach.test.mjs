@@ -654,6 +654,24 @@ test("a create cancelled while its remove still runs on a paired Linux box answe
 	assert.equal(hub.claimed(paired.id), undefined, "the hold is let go once the remove's connection closed");
 });
 
+test("of two unclaims of one hold while a change runs on the box, the first ends the hold once it has answered, and the second answers false and ends nothing", async () => {
+	const hub = new AttachHub();
+	const a = { "agentrun.run": "a" };
+	const hold = hub.claim("c-box", a);
+	let answered;
+	hub.changing("c-box", new Promise((resolve) => (answered = resolve)));
+	const first = hub.unclaim("c-box", hold);
+	const second = hub.unclaim("c-box", hold);
+	assert.deepEqual(hub.claimed("c-box"), a, "held while the change runs");
+	answered({ ok: true, value: {} });
+	assert.deepEqual(await Promise.all([first, second]), [true, false]);
+	assert.equal(hub.claimed("c-box"), undefined);
+	const b = { "agentrun.run": "b" };
+	assert.notEqual(hub.claim("c-box", b), undefined, "the next run takes the box");
+	assert.equal(await hub.unclaim("c-box", hold), false, "the first hold's token ends nothing of it");
+	assert.deepEqual(hub.claimed("c-box"), b);
+});
+
 test("redial delays double from 1 s to 60 s, less up to a fifth; idle, replaced and going away redial", () => {
 	assert.equal(redialDelay(0, () => 0), 1000);
 	assert.equal(redialDelay(3, () => 1), 6400);
