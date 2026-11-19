@@ -254,6 +254,7 @@ test("at the claim: a computer this server cannot give is refused in words that 
   assert.match(await routes.claimRefusal({ kind: "sandbox", provider: "daytona" }), /can't mount this server's run folders.*Settings → Computers/);
   assert.equal(await routes.claimRefusal({ kind: "phone", provider: "phone-harness" }), "Phone harness needs PHONE_HARNESS_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/phone-harness/keys)");
   assert.equal(await routes.claimRefusal({ kind: "browser", provider: "e2b" }), "E2B does not serve a browser computer (kind browser is a browser machine, not a linux one; kind browser needs groups cdp, which the provider does not declare; kind browser is a browser machine, not a desktop one): set this agent's computer to one it serves (Settings → Computers)", "servingRefusals' words");
+  assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "daytona" }), "Daytona does not serve a desktop computer (its sandboxes run under AppArmor's restrict_unprivileged_userns, so the tool user can't make the user and network namespaces the window manager runs in): set this agent's computer to one it serves (Settings → Computers)", "the descriptor's own reason (unserved), not servingRefusals'");
   assert.match(await routes.claimRefusal({ kind: "desktop", provider: "nobody" }), /names the provider nobody, which this server does not have/);
   // ORGO_WORKSPACE_ID is picked, not required: unsaved, the provider uses the key's account's one workspace.
   assert.equal(await routes.claimRefusal({ kind: "desktop", provider: "orgo" }), "Orgo needs ORGO_API_KEY saved: save it in Settings → Computers (PUT /v2/computers/orgo/keys)");
@@ -353,7 +354,7 @@ test("each choice says where its runs have their shell, the host tools that give
 /** The words a person reads when no Docker daemon answers here, over the fixture registry: a Mode 1 sandbox (its vendors
  *  need Archil first) and a desktop in either mode. */
 const NO_DOCKER_SANDBOX = "No Docker on this server: Render and most hosted services run none. A vendor sandbox (Modal, E2B or Agent37) needs Archil turned on in Settings → Workspace.";
-const NO_DOCKER_DESKTOP = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. Daytona, Modal, E2B, Agent37, Cloudflare, Fly Machines, Orgo or boxd for a desktop.";
+const NO_DOCKER_DESKTOP = "No Docker on this server: Render and most hosted services run none. Use a vendor computer, e.g. Modal, E2B, Agent37, Cloudflare, Fly Machines, Orgo or boxd for a desktop.";
 
 test("no Docker daemon here: Docker is not ready, in words that name the vendors of each kind, and the claim refuses it in the same words", async (t) => {
   const asked = [];

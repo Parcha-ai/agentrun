@@ -238,6 +238,7 @@ test("a descriptor is checked when it is defined: its id, keys, settings and con
 	assert.deepEqual(descriptorProblems({ ...good, unmounted: { archil: "Archil's client hangs here" } }), [], "a kind it doesn't take, with why");
 	const relay = { ...good, keys: [...good.keys, { name: "ACME_RELAY", option: "relay", required: false }], unmounted: { archil: "Archil's client hangs here" }, mountsWith: { archil: "ACME_RELAY" } };
 	assert.deepEqual(descriptorProblems(relay), [], "a kind it takes once the operator sets one of its keys");
+	assert.deepEqual(descriptorProblems({ ...good, unserved: { desktop: "its window manager can't start there" } }), [], "a setting kind it doesn't serve, with why");
 	for (const [change, words] of [
 		[{ id: "Acme Cloud" }, /id "Acme Cloud" is not lowercase letters, digits and hyphens/],
 		[{ label: " " }, /label is not a name in words/],
@@ -256,6 +257,9 @@ test("a descriptor is checked when it is defined: its id, keys, settings and con
 		[{ unmounted: { archil: "it hangs" }, mountsWith: { nfs: "ACME_KEY" } }, /mountsWith maps mount kinds/],
 		[{ unmounted: { archil: "it hangs" }, mountsWith: ["archil"] }, /mountsWith maps mount kinds/],
 		[{ keys: [{ name: "ACME_KEY", option: "apiKey", required: true }, { name: "ACME_RELAY", option: "relay", required: false }], mountsWith: { archil: "ACME_RELAY" } }, /each kind of mountsWith is in unmounted too/],
+		[{ unserved: { desktop: " " } }, /unserved maps setting kinds to why, in words/],
+		[{ unserved: { none: "nothing to serve" } }, /unserved maps setting kinds to why, in words/],
+		[{ unserved: ["desktop"] }, /unserved maps setting kinds to why, in words/],
 		[{ network: [] }, /network is not a list of the network forms/],
 		[{ network: ["vpn"] }, /network is not a list of the network forms/],
 		[{ load: "./acme.js" }, /load is not a function/],

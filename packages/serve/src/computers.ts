@@ -71,6 +71,9 @@ export interface ProviderEntry {
   readonly network?: readonly string[];
   readonly metered: boolean;
   readonly capabilities: readonly KindCapabilities[];
+  /** Kinds it doesn't serve, each with why in its own words (Daytona's desktop), as its descriptor says: the claim's
+   *  refusal says them in place of servingRefusals'. */
+  readonly unserved?: Readonly<Partial<Record<ComputerKind, string>>>;
   /** The image a computer of each kind starts from when its setting names none. */
   readonly defaultImage?: Partial<Record<ComputerKind, string>>;
   /** Its provider makes its image ready before the first create (its descriptor's prepareImage). */
@@ -430,7 +433,8 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
   }
 
   /** Why a run of an agent whose computer is `computer` cannot have it here, in words naming the setting to fill;
-   *  undefined when it can. Checked at the claim: the provider must serve the kind (servingRefusals' words), fit this
+   *  undefined when it can. Checked at the claim: the provider must serve the kind (its descriptor's unserved words,
+   *  else servingRefusals'), fit this
    *  server's folder mode, give a sandbox the GPUs it asks for (checkGpu's words), have its daemon answer where it binds
    *  a folder of this machine (Docker), find what it runs on this machine (hostWhy's words), and have every required key
    *  saved; a key refusal names the route that saves them. */
@@ -442,7 +446,8 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     const set = new Set([...(await sealedKeyNames(store)), ...listed.keys.filter((key) => envValue(env, key.name) !== undefined).map((key) => key.name)]);
     const provider = entryHere(listed, (name) => set.has(name) || envValue(env, name) !== undefined, settingOptions(listed.id, settings, keyTable));
     if (!provider.kinds.includes(computer.kind)) {
-      const words = [...new Set(provider.capabilities.flatMap((capabilities) => kinds.servingRefusals(capabilities, computer.kind)))];
+      const unserved = provider.unserved?.[computer.kind];
+      const words = unserved !== undefined ? [unserved] : [...new Set(provider.capabilities.flatMap((capabilities) => kinds.servingRefusals(capabilities, computer.kind)))];
       return `${provider.label} does not serve a ${computer.kind} computer${words.length ? ` (${words.join("; ")})` : ""}: set this agent's computer to one it serves (Settings → Computers)`;
     }
     const mode = await modeNow();

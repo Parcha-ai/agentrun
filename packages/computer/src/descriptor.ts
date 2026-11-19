@@ -97,6 +97,12 @@ export interface ProviderDescriptor<Module extends ProviderModule = ProviderModu
 	 */
 	readonly capabilities: readonly KindCapabilities[];
 	/**
+	 * Setting kinds its capabilities don't serve though a caller would ask it for one, each with why, in words: serve
+	 * refuses a setting of that kind on it with these words in place of servingRefusals' (Daytona's desktop: the window
+	 * manager can't start in its sandboxes).
+	 */
+	readonly unserved?: Readonly<Partial<Record<ComputerSettingKind, string>>>;
+	/**
 	 * The image a computer of each setting kind starts from when its setting names none. A kind with no entry has no
 	 * default, and the caller refuses the setting in words (Docker's sandbox: the server builds its image, prepareImage).
 	 */
@@ -180,6 +186,7 @@ export function descriptorProblems(value: unknown): string[] {
 		if (entries === undefined || entries.some(([kind, key]) => (kind !== "bind" && kind !== "archil") || typeof key !== "string" || !optional(key))) problems.push("mountsWith maps mount kinds (bind, archil) to the name of one of its keys that is not required");
 		else if (entries.some(([kind]) => typeof d.unmounted?.[kind as MountKind] !== "string")) problems.push("each kind of mountsWith is in unmounted too, with why while its key is unset");
 	}
+	if (d.unserved !== undefined && (typeof d.unserved !== "object" || d.unserved === null || Array.isArray(d.unserved) || Object.entries(d.unserved).some(([kind, why]) => kind === "none" || typeof why !== "string" || why.trim() === ""))) problems.push("unserved maps setting kinds to why, in words");
 	if (!Array.isArray(d.network) || d.network.length === 0 || d.network.some((form) => form !== "none" && form !== "open" && form !== "allow")) problems.push("network is not a list of the network forms its computers make (none, open, allow)");
 	if (!Array.isArray(d.capabilities) || d.capabilities.length === 0) problems.push("capabilities is not a list of one configuration or more");
 	else if (d.capabilities.some((one) => typeof one?.kind !== "string" || !Array.isArray(one.groups))) problems.push("each configuration is a machine kind and its groups");
