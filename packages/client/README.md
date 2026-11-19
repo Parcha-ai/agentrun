@@ -1,13 +1,42 @@
 # @parcha/agentrun-client
 
 A typed TypeScript client for an AgentRun server you host yourself, the open platform's server: one method per operation of
-its API, typed from the OpenAPI document it serves, plus waiting for a run and following its timeline. No dependencies: it
-uses `fetch`, on Node.js 24.22.3 or newer.
+its API, typed from the OpenAPI document it serves, plus waiting for a run and following its timeline. The base API client has no dependencies: it
+uses `fetch`, on Node.js 24.22.3 or newer. Optional workflow helpers use the peers documented below.
 
 ## Install
 
 ```sh
 npm install @parcha/agentrun-client
+```
+
+## Check the installation without credentials
+
+Save this as `check-agentrun.mjs`, then run `node check-agentrun.mjs`. It exercises the installed client's
+request and response handling using an injected local response and a fake key. It contacts no server and
+does not test a live connection or model.
+
+```js
+import assert from "node:assert/strict";
+import { AgentRun } from "@parcha/agentrun-client";
+
+const client = new AgentRun({
+  baseUrl: "https://agentrun.example.com/v2",
+  apiKey: "not-a-secret",
+  fetch: async (url, request) => {
+    assert.equal(String(url), "https://agentrun.example.com/v2/agents");
+    assert.equal(request.method, "GET");
+    return Response.json({ agents: [], next_cursor: null });
+  },
+});
+assert.deepEqual(await client.agents.list(), { agents: [], next_cursor: null });
+console.log("AgentRun client loaded; offline request passed. No server was contacted.");
+```
+
+Expected output:
+
+```text
+AgentRun client loaded; offline request passed. No server was contacted.
 ```
 
 ## Construct
@@ -80,10 +109,12 @@ checkout; these new exports are not a guarantee about the current npm release.
 | Codex SDK client, project and tools | [Preserve native threads, add checked learning](../../docs/tutorials/codex-sdk-learning.md) |
 
 Your backend still starts and cancels tasks. The wrapper records original source policy/input, assistant text,
-tool names/status and usage; raw tool arguments/results and SDK credentials are not sent. AgentRun supplies the
+tool names/status and usage. With an explicit workflow bridge, bounded arguments/results for its registered tools also supply compilation evidence; other raw tool payloads and SDK credentials are not sent. AgentRun supplies the
 owner's corrections (`corrections.md`, whole) to the next fresh task, and compiles a workflow once the agent has
-enough completed runs.
+enough completed runs. A compiled draft is checked on a separate native task before the server promotes it: the client checks it against that task's recorded tool evidence (missing reads are refused unless the host enables `shadowReadFallback` for explicitly read-only callbacks), and the server compares its result with the native answer. Drafts are not offered as executable workflows to the native model.
 `learning: true` opts in on first registration only; existing agents keep their console setting.
+
+Checks involving writes require complete serial native tool recordings and a serial workflow that preserves every original call in order. Buffered Codex results cannot prove write order, so those drafts remain unpromoted. Read-only turns may reuse and reorder recorded reads. See the workflow cookbook for the full evidence requirements.
 
 Both wrappers expose `flushLearning()`. Await it before shutdown or before testing a fresh run's use of newly
 accepted learning. Errors in persistence or learning surface there without replacing the original SDK result/error.
@@ -94,12 +125,37 @@ For executable workflow learning, explicitly configure `createWorkflowMcpBridge`
 `@parcha/agentrun-client/workflows` with your existing backend tool callbacks, live permission policy and an explicit `engine` object containing
 `inspectWorkflow`, `runWorkflow` and `resolveSchemaForWorkflow`. Your backend imports and supplies its interpreter
 (for example, `import * as engine from "@parcha/agentrun-dsl"`); the client imports no workflow engine.
-The optional MCP entry point requires `@modelcontextprotocol/sdk`.
+The workflow entry point requires `ajv` and `ajv-formats`; the MCP bridge additionally requires `@modelcontextprotocol/sdk`. Install these optional peers explicitly when using the bridge:
+
+```sh
+npm install @modelcontextprotocol/sdk@1.32.2 ajv@8.18.0 ajv-formats@3.0.1
+```
+
+The in-process executor uses the same validators without loading the MCP SDK.
 Set the bridge's optional `nativeMcpServerName` to the exact name you configure for its endpoint in the native SDK.
 Only a native envelope matching one actual bridge completion's capability, arguments, status and result is correlated;
 without that binding, native tool evidence is retained and the cost path can read `handed_back`.
 The [workflow cookbook](../../docs/tutorials/sdk-workflow-learning.md) covers native MCP setup, checked promotion,
 run-scoped access, cancellation, and tests proving the next task reuses a workflow with fresh inputs.
+
+## Durable host integrations
+
+The `BackendLearningClient` export from `@parcha/agentrun-client/learning` is the shared lifecycle beneath the wrappers and Eve extension. A durable host can admit a turn with `client.begin(source, signal, { idempotencyKey })`, keep `session.checkpoint()`, then restore it with `client.resume(checkpoint)` after a restart. Resume validates the server, agent and runtime and reuses the original admission. The checkpoint includes a scoped credential: persist it as private host state, never in a model prompt, tool result or log.
+
+For a finite recorded turn, call:
+
+```ts
+await session.submit(events, outcome, {
+  evidenceComplete: true,
+  nativeEvents, // Original tool arguments/results, retained locally for the shadow check.
+  waitForLearning: false,
+  onCheckpoint: async checkpoint => {
+    await savePrivateCheckpoint(checkpoint);
+  },
+});
+```
+
+`events` is the bounded transcript sent to the server; `nativeEvents` is separate local evidence and is not uploaded by this argument. `onCheckpoint` must durably save each shadow `started` or `complete` marker before returning. A restored completed check reuses its result without calling tools again. A restored started check with no result records an unknown failure rather than repeat uncertain host work. Retry delivery with the same events and outcome through a restored session; this does not open another native task. `waitForLearning: false` waits for evidence submission only, while the server finishes learning independently.
 
 ## Errors
 

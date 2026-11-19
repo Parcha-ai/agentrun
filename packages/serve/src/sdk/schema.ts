@@ -31,6 +31,12 @@ const event = {
   oneOf: [
     object({ type: { const: "text" }, text: { ...text, maxLength: 128000 } }),
     object({ type: { const: "session" }, session_id: { ...text, maxLength: 256 } }),
+    object({
+      type: { const: "workflow_check" }, id: { ...text, maxLength: 256 }, digest: { ...text, maxLength: 256 },
+      outcome: { enum: ["answered", "handed_back", "failed", "skipped_write"] },
+      answer: { ...text, maxLength: 128000 }, reason: { ...text, maxLength: 8000 },
+      skipped: object({ tool: { ...text, maxLength: 256 }, unmarked: { const: true } }, ["tool"]),
+    }, ["type", "id", "digest", "outcome"]),
     object(
       {
         type: { const: "tool" },
@@ -60,8 +66,9 @@ const learning = object({
   enabled: { type: "boolean" },
   revision: { type: ["string", "null"] },
   context: { ...text, description: "The agent's corrections.md as the run reads it under # Learned; empty when Off or nothing is learned yet." },
-  workflows: { type: "array", items: object({ name: text, workflow: text, description: text }), description: "Active, capability-compatible learned workflows pinned to this run; empty without a backend workflow bridge or when learning is Off." },
-});
+  workflows: { type: "array", items: object({ name: text, workflow: text, description: text }), description: "Promoted, capability-compatible learned workflows pinned to this run; empty without a backend workflow bridge, during an independent shadow-check turn, or when learning is Off." },
+  check: { ...object({ id: text, revision: text, digest: text, workflow: object({ name: text, workflow: text, description: text }) }), description: "One compiled draft reserved for a shadow check against this run's native answer. Keep outside the model context; replay only recorded tool results after the native turn and submit workflow_check evidence." },
+}, ["enabled", "revision", "context", "workflows"]);
 export const SDK_PATHS = {
   "/agents/{agent_id}/sdk-runs": {
     post: {
@@ -69,7 +76,7 @@ export const SDK_PATHS = {
       operationId: "startSdkRun",
       summary: "Register a task executed by an existing backend SDK",
       description:
-        "Requires an SDK agent definition. Captures the actual original policy and input, pins approved learning, and returns a credential scoped to this run. The backend retains all model/tool/auth settings. Learning requires a configured server reflection/grading model; learning Off needs no server model key.",
+        "Requires an SDK agent definition. Captures the actual original policy and input, pins promoted workflows and any compiled shadow-check candidate separately, and returns a credential scoped to this run. The backend retains all model/tool/auth settings. Learning requires a configured server reflection/grading model; learning Off needs no server model key.",
       parameters: [id("agent_id"), { ...key, required: true }],
       requestBody: body(
         object(

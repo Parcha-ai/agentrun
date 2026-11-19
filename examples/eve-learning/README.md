@@ -107,17 +107,18 @@ npm run validate:workflows -- --live --output /tmp/eve-workflow-proof.json
 
 Use a new agent id that does not already exist. The validator creates that dedicated agent with learning Off and refuses to overwrite an existing agent or settings changed outside the proof.
 
-This performs at most eight native model tasks, plus the server's compiler calls:
+This performs at most nine native model tasks, plus the server's compiler calls:
 
 1. Run the original two-tool procedure with learning Off.
 2. Enable `learning: { compile_after: 5 }`, teach the repeatable procedure, then run up to four ordinary practice tasks. The server counts completed native traces, including the connected Off baseline; compilation can therefore happen after the third practice task. The default cadence is 20 completed runs. Practice stops as soon as a committed workflow exists.
 3. Require a new workflow from a run in this proof, successful compiler static and synthesized dry-run checks, a matching document digest, and its run-owned learning commit. No corrections, skills or workflow files are written by the validator.
-4. Ask about `demo-worker` in a fresh session without repeating the procedure. Require the committed revision, a completed `agentrun__learned_workflow` invocation, both original callback bindings, a fresh observation UUID and changed version `3.1.2`. Verify the workflow parent and callback children also reached the canonical server timeline.
-5. Turn the **same agent** Off and submit the same task in another fresh session. Require direct native tools, no workflow invocation and no learning revision.
+4. Run an independent native task against `demo-worker`; the compiled candidate stays out of model context. Its local shadow check reuses recorded results and must promote the candidate before reuse.
+5. Ask about `demo-worker` in a fresh session without repeating the procedure. Require the committed revision, a completed `agentrun__learned_workflow` invocation, both original callback bindings, a fresh observation UUID and changed version `3.1.2`. Verify the workflow parent and callback children also reached the canonical server timeline.
+6. Turn the **same agent** Off and submit the same task in another fresh session. Require direct native tools, no workflow invocation and no learning revision.
 
-A committed workflow passed compilation, static validation and a dry run with synthesized results. That is **not** a runtime promotion grade: the SDK can offer a committed workflow while a separate runtime check is still checking or holding it. The proof reports these states separately and never claims independent promotion.
+Compilation, static validation and a synthesized dry run produce a draft. The independent native shadow check must compare it with the agent's actual answer and promote it before any reuse. A checking or held draft stops this proof. The proof records the checking run separately from compilation and from the later workflow invocation.
 
-The validator uses the version-checked public API and leaves learning Off. Direct-tool fallback does not pass workflow reuse. Missing compilation, a changed digest, foreign provenance, pending owner review or incomplete telemetry stops the proof; it never seeds a workflow, forces approval or raises its task limit to get a pass. The original pre-extension baseline adds one task, for at most nine total.
+The validator uses the version-checked public API and leaves learning Off. Direct-tool fallback does not pass workflow reuse. Missing compilation, a changed digest, foreign provenance, pending owner review or incomplete telemetry stops the proof; it never seeds a workflow, forces approval or raises its task limit to get a pass. The original pre-extension baseline adds one task, for at most ten total.
 
 It checkpoints each session id as soon as eve returns it. To resume after inspecting an interruption:
 
@@ -127,9 +128,9 @@ npm run validate:workflows -- --live --resume /tmp/eve-workflow-proof.json
 
 Resume re-reads actual native histories and AgentRun records; it never resubmits a recorded task. A submission without a confirmed session id is uncertain and stops. The proof contains native answers, fictional callback facts, committed workflow documents and metadata for inspection; private workflow signatures and credentials are excluded.
 
-The tool-only workflow needs no Jev key or extra workflow-model credential. Eve still needs its original model route, and the AgentRun server needs its compilation model route. This first eve bridge accepts explicitly read-only callbacks only, with no model nodes, judge nodes, shell/code execution or implicit permissions. See the [workflow extension details](../../docs/tutorials/eve-learning.md#execute-committed-workflows-with-existing-tools).
+The tool-only workflow needs no Jev key or extra workflow-model credential. Eve still needs its original model route, and the AgentRun server needs its compilation model route. This first eve bridge accepts explicitly read-only callbacks only, with no model nodes, judge nodes, shell/code execution or implicit permissions. See the [workflow extension details](../../docs/tutorials/eve-learning.md#execute-promoted-workflows-with-existing-tools).
 
-Offline checks use scripted native/model receipts and a real local MCP bridge/interpreter, without model calls:
+Offline checks use scripted native/model receipts and the shared in-process bridge/interpreter, without model calls:
 
 ```sh
 npm run test:workflows

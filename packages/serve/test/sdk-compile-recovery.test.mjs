@@ -65,15 +65,23 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
     } })).status, 201);
     const { route, requests } = scriptedRoute(corrected);
     let sequence = 0;
-    const completeRun = async (served = []) => {
+    const completeRun = async (served = [], checking = false) => {
       const started = await server.api("POST", `/agents/${agentId}/sdk-runs`, {
         runtime, input: `Check release ${++sequence}.`, instructions, workflow_tools: [tool],
       }, { "Idempotency-Key": `compile-results-${sequence}` });
       assert.equal(started.status, 201, JSON.stringify(started.body));
-      // A refused draft is never eligible for execution on a later SDK run; a draft its checks passed is committed and
-      // offered from the next run on (learning-end.ts commitDirect).
+      // Static/dry-run admission commits a draft; only its independent native check can make it executable.
       assert.deepEqual(started.body.learning.workflows.map(flow => flow.name), served);
       const id = started.body.run_id;
+      if (checking) {
+        const check = started.body.learning.check;
+        assert.equal(check.workflow.name, "release-status");
+        assert.equal((await client(server.baseUrl, started.body.token)("POST", `/sdk-runs/${id}/events`, { sequence: 1, events: [
+          { type: "tool", id: "native", name: tool.name, status: "started", input: {} },
+          { type: "tool", id: "native", name: tool.name, status: "completed", output: { ready: true } },
+          { type: "workflow_check", id: check.id, digest: check.digest, outcome: "answered", answer: '{"ready":true}' },
+        ] })).status, 200);
+      }
       const completed = await client(server.baseUrl, started.body.token)("POST", `/sdk-runs/${id}/complete`, {
         status: "completed", answer: '{"ready":true}', usage: { cost_usd: 0.25, input_tokens: 20, output_tokens: 5, cache_read_tokens: 0, cache_write_tokens: 0 },
       });
@@ -123,10 +131,17 @@ for (const runtime of ["claude-agent-sdk", "codex-sdk"]) {
       const { promotions } = (await server.api("GET", `/agents/${agentId}/learning/promotions`)).body;
       assert.deepEqual(promotions.map(({ decided, check }) => [decided, check?.attempt, check?.n, check?.stopped ?? false]), [["hold", 1, 0, false], ["hold", 2, 0, true]], JSON.stringify(promotions));
     }
+    if (corrected) {
+      const shadow = await completeRun([], true);
+      assert.equal(shadow.learning.compiled, null, "the independent check does not compile another draft");
+    }
     const next = await completeRun(corrected ? ["release-status"] : []);
     assert.equal(next.learning.compiled, null, corrected ? "a committed workflow is not compiled again" : "a recompile that failed its checks stops: nothing compiles again");
     assert.deepEqual(next.learning.draft_errors, []);
     assert.equal(requests.filter(request => request.compile).length, asked, "the next run does not pay for another compiler attempt");
-    assert.deepEqual((await server.api("GET", `/runs/${id}/learning`)).body, learning, "later runs do not erase the original attempt history");
+    const original = (await server.api("GET", `/runs/${id}/learning`)).body;
+    assert.deepEqual(original.compiled.attempts, learning.compiled.attempts, "later promotion does not erase the original compiler attempt history");
+    assert.equal(original.run, learning.run);
+    assert.deepEqual(original.draft_errors, learning.draft_errors);
   });
 }

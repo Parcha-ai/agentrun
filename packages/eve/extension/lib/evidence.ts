@@ -7,6 +7,8 @@ import { readWorkflowResult, type WorkflowEvidenceScope, type WorkflowToolResult
 export interface TurnEvidence {
   settled: boolean;
   events: SdkLearningEvent[];
+  /** Original tool payloads for shadow comparison only; never upload these as telemetry. */
+  nativeEvents?: SdkLearningEvent[];
   outcome?: SdkLearningOutcome;
   complete: boolean;
   reason?: string;
@@ -16,7 +18,7 @@ const MAX_EVENTS = 10_000, MAX_HISTORY_BYTES = 4_000_000, MAX_TEXT = 128_000, RE
 const identifier = (value: unknown): value is string => typeof value === 'string' && value.length > 0 && value.length <= 256;
 
 /** Read recorded facts only; this never follows live work or launches an Eve task. */
-export async function collectTurn(reader: SessionReader, turnId: string, startIndex = 0, workflow?: WorkflowEvidenceScope): Promise<TurnEvidence> {
+export async function collectTurn(reader: SessionReader, turnId: string, startIndex = 0, workflow?: WorkflowEvidenceScope, captureNative = false): Promise<TurnEvidence> {
   if (!identifier(reader.id) || !identifier(turnId) || !Number.isSafeInteger(startIndex) || startIndex < 0)
     return unavailable('invalid_history_request');
   const records: ReaderEvent[] = [];
@@ -94,6 +96,8 @@ export async function collectTurn(reader: SessionReader, turnId: string, startIn
   }
   const textById = new Map(parts(view, { turnId, kind: 'text' }).map(part => [part.partId, part]));
   const events: SdkLearningEvent[] = [{ type: 'session', session_id: reader.id }];
+  const nativeEvents: SdkLearningEvent[] = [];
+  const inputs = new Map(records.flatMap(event => event.type === 'call.requested' && !event.data.inputRef ? [[event.data.callId, event.data.input] as const] : []));
   const models = new Set<string>();
   const requestedCalls = new Set<string>(), startedCalls = new Set<string>(), finishedCalls = new Set<string>();
   let deliveries = 0, textLength = 0;
@@ -142,8 +146,12 @@ export async function collectTurn(reader: SessionReader, turnId: string, startIn
         events.push(...(event.type === 'call.started' ? trace.slice(0, 1) : trace.slice(1)));
       } else {
         const name = workflow?.aliases.find(alias => alias.nativeName === call.name)?.name ?? call.name;
-        events.push({ type: 'tool', id: call.callId, name,
-          status: event.type === 'call.started' ? 'started' : event.data.outcome === 'completed' ? 'completed' : 'failed' });
+        const fact: SdkLearningEvent = { type: 'tool', id: call.callId, name,
+          status: event.type === 'call.started' ? 'started' : event.data.outcome === 'completed' ? 'completed' : 'failed' };
+        events.push(fact);
+        const output = event.type === 'call.settled' ? callOutputSource(view, call.callId)?.output : undefined;
+        if (captureNative) nativeEvents.push({ ...fact, ...(inputs.has(call.callId) ? { input: inputs.get(call.callId) } : {}),
+          ...(output === undefined ? {} : { output }) });
       }
     }
     if (event.type === 'content.completed' && textById.has(event.data.partId)) {
@@ -185,7 +193,7 @@ export async function collectTurn(reader: SessionReader, turnId: string, startIn
   if (!settled) return { settled: false, complete: false, events, reason };
   const status = recorded.outcome;
   if (status !== 'completed' && status !== 'failed' && status !== 'cancelled') incomplete('unknown_turn_outcome');
-  return { settled: true, complete: reason === undefined, events,
+  return { settled: true, complete: reason === undefined, events, ...(captureNative ? { nativeEvents } : {}),
     ...(reason ? { reason } : {}),
     outcome: { status: status === 'completed' || status === 'cancelled' ? status : 'failed', answer, session_id: reader.id,
       ...(status === 'failed' ? { error: 'The original Eve turn failed. Inspect its source session.' } : {}),

@@ -418,11 +418,11 @@ test('MCP read-only annotation requires explicit read-only callbacks and no mode
   }
 });
 
-// Nothing promotes an SDK agent's workflow, so the context the native agent reads calls it compiled and unchecked.
-test('the binding context calls its workflows compiled and not checked, never approved', async t => {
+// SDK admission now withholds drafts; only a champion compared against a native answer enters this binding.
+test('the binding describes the server-promoted snapshot without claiming owner approval', async t => {
   const { bridge } = await setup(t);
   const binding = bridge.bind({ runId: 'context-words', workflows: [accepted(workflow)], protect() {}, async event() {}, markEvidenceIncomplete() {} });
-  assert.match(binding.context, /^Compiled workflows for this task \(not checked\):\n/);
+  assert.match(binding.context, /^Compiled workflows for this task \(passed the agent-answer check\):\n/);
   assert.doesNotMatch(binding.context, /approved/i);
   binding.close();
 });

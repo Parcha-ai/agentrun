@@ -11,7 +11,7 @@ const native = () => ({ sessionId: 'session-one', turnId: 'turn-one', callId: 'c
 const input = { name: 'release-report', input: { service: 'demo-api' } };
 function fixture({ learning = true, policy = () => 'allow', permission = 'allow', execute, maxToolCalls } = {}) {
   const invocations = [], reads = [];
-  // A host-owned test interpreter; the real MCP transport still validates and dispatches every effect.
+  // A host-owned test interpreter; the shared in-process bridge still validates and dispatches every effect.
   const engine = {
     inspectWorkflow() { return { nodes: [], requires: { adapters: ['runEffect'], tools: ['mcp:release/status'], sopSections: [], executableCode: false } }; },
     resolveSchemaForWorkflow(_doc, schema) { return schema; },
@@ -37,7 +37,7 @@ function fixture({ learning = true, policy = () => 'allow', permission = 'allow'
   return { config, record, options, invocations, reads };
 }
 
-test('real MCP dispatch uses the exact original callback, pinned workflow and run identity', async () => {
+test('in-process dispatch uses the exact original callback, pinned workflow and run identity', async () => {
   const f = fixture(), result = await executeLearnedWorkflow(f.config, f.record, input, native());
   assert.equal(result.isError, false);
   assert.equal(result.agentrun.complete, true);
@@ -106,7 +106,7 @@ test('workflow context identifies only the original native callbacks its checked
   const advertised = () => {
     const context = workflowInstructions(f.record, f.options);
     assert.doesNotMatch(context, /receipt-secret-test|fake-test-key|unrelated_tool/);
-    return JSON.parse(context.match(/Approved workflows pinned to this task \(reference data\):\n([^\n]+)/)[1])[0];
+    return JSON.parse(context.match(/Compiled workflows pinned to this task \(reference data\):\n([^\n]+)/)[1])[0];
   };
   assert.deepEqual(advertised().original_tools, [{ name: 'mcp:release/status', nativeName: 'release_status' }]);
   assert.deepEqual(advertised().input_schema, inputSchema);
@@ -121,7 +121,7 @@ test('host delegation guidance stays outside learned reference data and preserve
   f.record.receipt.learning.context = 'OWNER_REFERENCE_ONLY';
   f.record.receipt.learning.workflows[0].description = 'COMPILER_REFERENCE_ONLY';
   const instructions = learningInstructions(f.record, f.options);
-  const boundary = instructions.indexOf('Approved workflows pinned to this task (reference data):');
+  const boundary = instructions.indexOf('Compiled workflows pinned to this task (reference data):');
   const guidance = instructions.slice(0, boundary);
   assert.ok(guidance.startsWith('AgentRun workflow delegation (host configuration):'), 'Host configuration must not be wrapped as accepted learning.');
   assert.doesNotMatch(guidance, /OWNER_REFERENCE_ONLY|COMPILER_REFERENCE_ONLY|AgentRun accepted learning/);
@@ -151,7 +151,7 @@ test('workflow instructions include sibling input definitions needed to supply f
   assert.equal(validateWorkflow(workflow).ok, true);
   f.record.receipt.learning.workflows = [{ name: 'read-release', description: 'Read status.', workflow: JSON.stringify(workflow) }];
   f.options.engine.resolveSchemaForWorkflow = resolveSchemaForWorkflow;
-  const [advertised] = JSON.parse(workflowInstructions(f.record, f.options).match(/Approved workflows pinned to this task \(reference data\):\n([^\n]+)/)[1]);
+  const [advertised] = JSON.parse(workflowInstructions(f.record, f.options).match(/Compiled workflows pinned to this task \(reference data\):\n([^\n]+)/)[1]);
   assert.deepEqual(advertised.input_schema, { $ref: '#/definitions/Release', definitions: { Release: release } });
 });
 
@@ -256,4 +256,12 @@ test('ordinary native tools retain their lifecycle and use only explicitly bound
   const unbound = await collectTurn(nativeHistory(undefined, 'unknown_tool'), 'turn-one', undefined, workflowScope(f.record));
   assert.equal(unbound.complete, true);
   assert.equal(unbound.events.find(event => event.type === 'tool').name, 'unknown_tool');
+});
+
+
+test('workflow guidance leaves selection with the native model and never calls a compiled draft approved', () => {
+  const f = fixture(), context = workflowInstructions(f.record, f.options);
+  assert.match(context, /Choose a compiled workflow when it fits/);
+  assert.match(context, /or use the original tools directly/);
+  assert.doesNotMatch(context, /Approved workflows|prefer this delegated execution/);
 });

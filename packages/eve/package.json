@@ -44,7 +44,8 @@
     "@parcha/agentrun-client": "0.1.0-beta.47",
     "@parcha/agentrun-dsl": "0.1.0-beta.47",
     "zod": "4.6.6",
-    "@modelcontextprotocol/sdk": "1.32.2"
+    "ajv": "8.18.0",
+    "ajv-formats": "3.0.1"
   },
   "devDependencies": {
     "eve": "1.0.0"
