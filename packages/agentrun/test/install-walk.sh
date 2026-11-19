@@ -192,6 +192,8 @@ skill_line() {
   line=$(grep -m 1 -F -- "$1" "$here/../../docs/SKILL.md") || die "docs/SKILL.md has no line starting $1"
   printf '%s' "$line"
 }
+# The prompt's lines start with a literal ~/, which skill_line looks for as written: nothing here expands it.
+# shellcheck disable=SC2088
 first_run_walk() {
   local t0 t_install t_model t_ready t_create t_run total local_model create start ready out nodebin served='' model_log
   local_model=$(skill_line '~/.agentrun/bin/agentrun service install --env AGENT_MODEL_BASE_URL=http://localhost:11434/v1 ')
