@@ -983,5 +983,19 @@ class Rules(unittest.TestCase):
             self.assertEqual((str(back), vars(back)), (str(error), vars(error)))
 
 
+
+class GeneratedNames(unittest.TestCase):
+    """A type the client exported keeps its name when the server's document adds a choice beside it."""
+
+    def test_mcp_auth_headers_shape_keeps_its_names(self):
+        # mcp_auth's per_run headers entry, exported by these names since mcpperrun/1; composioperrun/1 added the per-run
+        # Composio binding as a second choice of the same field.
+        for name in ("RunCreateMcpAuthValue", "RunCreateInlineMcpAuthValue", "MessageCreateMcpAuthValue"):
+            with self.subTest(name=name):
+                self.assertTrue(hasattr(agentrun, name), f"agentrun.{name} is importable")
+                self.assertIn(name, agentrun.__all__)
+                self.assertEqual(getattr(agentrun, name).__required_keys__, frozenset({"headers"}), f"{name} is the headers shape")
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -68,6 +68,7 @@ __all__ = [
     "CompleteSdkRunBody",
     "CompleteSdkRunBodyUsage",
     "CompleteSdkRunResponse",
+    "ComposioRunBinding",
     "ConnectGitHubBody",
     "ConnectGitHubResponse",
     "ConnectNativeBody",
@@ -4928,7 +4929,7 @@ class RunCreateInline(_RunCreateInlineRequired, total=False):
     max_cost_usd: float
     quote_id: str
     model_key: str
-    mcp_auth: dict[str, RunCreateInlineMcpAuthValue]
+    mcp_auth: dict[str, RunCreateInlineMcpAuthValue | ComposioRunBinding]
     labels: dict[str, str]
     workflow_first: bool
     learning: Literal["use"]
@@ -4947,6 +4948,14 @@ class ExternalRef(TypedDict):
 
 class RunCreateInlineMcpAuthValue(TypedDict):
     headers: dict[str, str]
+
+
+class _ComposioRunBindingRequired(TypedDict):
+    composio_user_id: str
+
+
+class ComposioRunBinding(_ComposioRunBindingRequired, total=False):
+    connected_account_id: str
 
 
 class RunCreateInlineArchilDisk(TypedDict):
@@ -5469,7 +5478,7 @@ class _MessageCreateRequired(TypedDict):
 
 class MessageCreate(_MessageCreateRequired, total=False):
     model_key: str
-    mcp_auth: dict[str, MessageCreateMcpAuthValue]
+    mcp_auth: dict[str, MessageCreateMcpAuthValue | ComposioRunBinding]
 
 
 class MessageCreateMcpAuthValue(TypedDict):
@@ -5530,7 +5539,7 @@ class RunCreate(_RunCreateRequired, total=False):
     max_cost_usd: float
     quote_id: str
     model_key: str
-    mcp_auth: dict[str, RunCreateMcpAuthValue]
+    mcp_auth: dict[str, RunCreateMcpAuthValue | ComposioRunBinding]
     labels: dict[str, str]
     workflow_first: bool
     learning: Literal["use"]

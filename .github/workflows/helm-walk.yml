@@ -19,12 +19,19 @@ on:
       - 'deploy/walk/rows.sh'
       - '.github/workflows/helm-walk.yml'
   workflow_dispatch:
+  # The daily walk (ways-in-daily.yml): image names an artifact of this run, a docker save of the image to walk in place
+  # of the release's (main's, built once for every row).
+  workflow_call:
+    inputs:
+      image:
+        type: string
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: helm-walk-${{ github.ref }}
+  group: ${{ github.workflow }}-helm-walk-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -43,6 +50,14 @@ jobs:
       - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
         with:
           cluster_name: helm-walk
+      - name: The image to walk
+        if: ${{ inputs.image }}
+        uses: ./.github/actions/walk-image
+        with:
+          artifact: ${{ inputs.image }}
+      - name: Into the cluster
+        if: ${{ inputs.image }}
+        run: kind load docker-image "$AGENTRUN_IMAGE" --name helm-walk
       - name: helm lint
         run: helm lint deploy/helm/agentrun
       - name: The public address the server gets is the one NOTES prints
@@ -52,3 +67,10 @@ jobs:
       - name: Report
         if: always()
         run: '[ ! -f "$RUNNER_TEMP/helm-walk.md" ] || cat "$RUNNER_TEMP/helm-walk.md" >> "$GITHUB_STEP_SUMMARY"'
+      - name: Keep the report
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: walk-report-helm
+          path: ${{ runner.temp }}/helm-walk.md
+          if-no-files-found: ignore

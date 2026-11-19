@@ -6,12 +6,15 @@
 # keys and the run were kept. It uninstalls and checks only the Secret, the claim and its volume are left, then installs
 # again under the same name and checks the first run is still listed with the same token. Its cleanup removes the
 # release, the kept Secret and claim, and its namespace. Needs helm, kubectl, node and a cluster with a default
-# StorageClass. REPORT=<file> puts the report in that file too.
+# StorageClass. REPORT=<file> puts the report in that file too. AGENTRUN_IMAGE=<repository>:<tag> walks that image in
+# place of the chart's own (the daily walk's, main's, loaded into the cluster first).
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 walk=$(dirname "$here")/walk
 ns=agentrun-walk
 release=agentrun
+image_args=''
+[ -z "${AGENTRUN_IMAGE:-}" ] || image_args="--set-string image.repository=${AGENTRUN_IMAGE%:*},image.tag=${AGENTRUN_IMAGE##*:}"
 # The walk's own namespace: it refuses one that is there already, so its cleanup never deletes what it didn't make.
 kubectl create namespace "$ns" >/dev/null || {
   echo "walk.sh: namespace $ns is there already (another walk, or what one left): delete it, then walk again" >&2
@@ -54,7 +57,8 @@ trap finish EXIT
 trap 'exit 130' INT TERM
 
 k create configmap walk-files --from-file="$walk/faux-steps.mjs" --from-file="$walk/api.mjs" >/dev/null
-helm install "$release" "$here/agentrun" -n "$ns" -f "$here/walk-values.yaml" --wait --timeout 5m >"$work/install.log" 2>&1 \
+# shellcheck disable=SC2086 # image_args: two words, or none
+helm install "$release" "$here/agentrun" -n "$ns" -f "$here/walk-values.yaml" $image_args --wait --timeout 5m >"$work/install.log" 2>&1 \
   || { cat "$work/install.log" >&2; fail "installed" "helm install --wait: $(tail -1 "$work/install.log")"; }
 first=$(pod)
 pass "installed" "$(k get pod "$first" -o jsonpath='{.metadata.name} {.status.phase}, image {.spec.containers[0].image}')"
@@ -88,7 +92,8 @@ run=$(get "$(api start "$agent" 3 0)" run)
 ended_once "first run" "$(api end "$run")" 3
 
 before=$(keys_hash)
-helm upgrade "$release" "$here/agentrun" -n "$ns" -f "$here/walk-values.yaml" --set-string env.WALK_UPGRADED=1 --wait --timeout 5m >"$work/upgrade.log" 2>&1 \
+# shellcheck disable=SC2086 # image_args: two words, or none
+helm upgrade "$release" "$here/agentrun" -n "$ns" -f "$here/walk-values.yaml" $image_args --set-string env.WALK_UPGRADED=1 --wait --timeout 5m >"$work/upgrade.log" 2>&1 \
   || { cat "$work/upgrade.log" >&2; fail "upgraded" "helm upgrade --wait: $(tail -1 "$work/upgrade.log")"; }
 # Recreate ends the old pod before it makes the new one, and --wait returns once that one is ready.
 second=$(pod)
@@ -114,7 +119,8 @@ while kept=$(left | sort | tr '\n' ' ' | sed 's/ $//') && [ "$kept" != "$want" ]
 done
 pass "uninstall keeps" "helm uninstall left $kept"
 
-helm install "$release" "$here/agentrun" -n "$ns" -f "$here/walk-values.yaml" --wait --timeout 5m >"$work/reinstall.log" 2>&1 \
+# shellcheck disable=SC2086 # image_args: two words, or none
+helm install "$release" "$here/agentrun" -n "$ns" -f "$here/walk-values.yaml" $image_args --wait --timeout 5m >"$work/reinstall.log" 2>&1 \
   || { cat "$work/reinstall.log" >&2; fail "reinstalled" "helm install --wait: $(tail -1 "$work/reinstall.log")"; }
 [ "$(keys_hash)" = "$before" ] || fail "reinstalled" "the Secret's data changed across the uninstall and install"
 listed=$(get "$(api run "$run")" status)

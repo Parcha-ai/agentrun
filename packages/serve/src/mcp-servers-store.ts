@@ -18,8 +18,8 @@ import { checkPrivateHosts, privateOAuthHosts, savePrivateOAuthHosts } from "./m
 import { credentialMark } from "./mcp-secret-writes.js";
 import { type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import { type ClientKind, dialAt, issuerOf, LOOPBACK, MAX_PENDING, MCP_SETTINGS_PAGE, mcpServerAt, McpSignIns, type OAuthNetwork, type Pending, type PendingStore, reasonOf, SIGN_IN_AGAIN, systemNetwork, type TokenSet } from "./mcp-oauth.js";
-import { type Cleanup, cleanupOf, composioMadeKey, type ComposioMade, droppedOf, madeToWrite, recordedMade, releasedOf, storedMade } from "./composio-made.js";
-import { COMPOSIO_USER, composioServerId } from "./composio-preset.js";
+import { type Cleanup, cleanupOf, composioMadeKey, type ComposioMade, composioPerRun, droppedOf, madeToWrite, recordedMade, releasedOf, storedMade } from "./composio-made.js";
+import { COMPOSIO_PER_RUN, COMPOSIO_USER, composioListingAddress, composioServerId } from "./composio-preset.js";
 import { mcpSourceKey, type RecordedRow, recordedForAnother, sourceOf, type SourceRecord, sourceToWrite, standInGiven, storedSource, toolkitGiven } from "./mcp-sources.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import { GITHUB_MCP_ONLY, GITHUB_MCP_ORIGIN, githubMcpUrl } from "./github.js";
@@ -225,7 +225,7 @@ export class McpServersOverStore {
       const kept = await this.need(name);
       const url = new URL(kept.url);
       const send = await this.reached(kept.auth, url, stop);
-      return marked(kept.url, await this.signInNoted(url, this.listServer(url, await this.withAppToken(kept.auth, url, (await this.opened(name, kept, "name")).headers, stop), send, stop), stop));
+      return marked(kept.url, await this.signInNoted(url, this.listServer(url, await this.withAppToken(kept.auth, url, (await this.opened(name, kept, "name")).headers, stop), send, stop, await this.perRunComposio(name, kept)), stop));
     }
     // `name` with a url: the saved server the form is editing. Its address as every read shows it (shownUrl), sent back
     // unchanged, is the saved one here too (as save and sign-in map it): the browser never gets the real address back.
@@ -236,7 +236,9 @@ export class McpServersOverStore {
     // A per_run server's are optional too: they only list its tools, for a server that lists them only to a caller it knows.
     if (auth.type !== "none" && auth.type !== "github_app" && auth.type !== "per_run" && !auth.headers) throw invalid([credentialMissing(auth.type, "A preview needs the credential it is to connect with.")]);
     const send = await this.reached(auth.type, url, stop);
-    return marked(url.href, await this.signInNoted(url, this.listServer(url, await this.withAppToken(auth.type, url, auth.headers ?? {}, stop), send, stop), stop));
+    // The edit form of a per-run Composio server at its saved address lists it as a preview by name does.
+    const perRun = !!saved && auth.type === "headers" && saved.url === url.href && (await this.perRunComposio(String(editing), saved));
+    return marked(url.href, await this.signInNoted(url, this.listServer(url, await this.withAppToken(auth.type, url, auth.headers ?? {}, stop), send, stop, perRun), stop));
   }
 
   /** What an agent's save pins of the saved server `name` (mcp-gateway.ts mcpPinOf): its URL, its tools as it lists them
@@ -255,7 +257,7 @@ export class McpServersOverStore {
     };
     const send = await this.reached(row.auth, url, stop);
     try {
-      return pinned((await this.listServer(url, await this.withAppToken(row.auth, url, (await this.opened(name, row, "name")).headers, stop), send, stop)).tools);
+      return pinned((await this.listServer(url, await this.withAppToken(row.auth, url, (await this.opened(name, row, "name")).headers, stop), send, stop, await this.perRunComposio(name, row))).tools);
     } catch (error) {
       if ((row.auth === "per_run" || row.auth === "oauth") && error instanceof ApiError && error.code === "auth_required") return pinned((row.tools as McpTool[]) ?? []);
       throw error;
@@ -337,7 +339,9 @@ export class McpServersOverStore {
     } else if (auth.type !== "none") {
       credential = { type: "headers", headers: headers! };
     }
-    const listed = await this.listServer(url, await this.withAppToken(auth.type, url, headers ?? {}, stop), send, stop);
+    // A per-run Composio server, made so now (`stands`) or saved so and kept at its address by an ordinary save.
+    const perRun = Boolean(stands?.per_run) || (!made && was !== undefined && auth.type === "headers" && was.url === url.href && (await this.perRunComposio(name, was)));
+    const listed = await this.listServer(url, await this.withAppToken(auth.type, url, headers ?? {}, stop), send, stop, perRun);
     // The Composio preset prices each action it granted (its price_usd): one its server doesn't list goes unpriced, as the
     // preset's answer names it (not_served), never a refusal. An owner's prices name only tools the server lists.
     const asked = made && prices ? pricesListed(prices, listed.tools) : prices;
@@ -358,7 +362,7 @@ export class McpServersOverStore {
     const write = async () => {
       if (guard && wasPreset) {
         const stood = recordedMade(await this.store.settings.get(composioMadeKey(name)), was!.createdAt);
-        if (moved || (made && stands && (!stood || stood.user !== stands.user || (stood.auth_config?.id ?? null) !== (stands.auth_config?.id ?? null)))) await guard.inUse();
+        if (moved || (made && stands && (!stood || stood.user !== stands.user || Boolean(stood.per_run) !== Boolean(stands.per_run) || (stood.auth_config?.id ?? null) !== (stands.auth_config?.id ?? null)))) await guard.inUse();
       }
       const saved = keeping
         // Re-applied only onto a row that still holds a credential of this auth type, at the address this save read: never
@@ -427,7 +431,7 @@ export class McpServersOverStore {
     const was = await this.need(name);
     const send = await this.reached(was.auth, new URL(was.url), stop);
     const open = await this.opened(name, was, "name");
-    const listed = await this.listServer(new URL(was.url), await this.withAppToken(was.auth, new URL(was.url), open.headers, stop), send, stop);
+    const listed = await this.listServer(new URL(was.url), await this.withAppToken(was.auth, new URL(was.url), open.headers, stop), send, stop, await this.perRunComposio(name, was));
     const before = new Map((was.tools as McpTool[]).map((tool) => [tool.name, canonical(tool)]));
     const after = new Map(listed.tools.map((tool) => [tool.name, canonical(tool)]));
     // A refresh re-lists the tools and leaves the credential as it is (rewriteKeeping: a run's refreshed set kept meanwhile
@@ -594,9 +598,16 @@ export class McpServersOverStore {
     }
   }
 
-  private listServer(url: URL, headers: HeaderMap, send: typeof fetch, stop?: AbortSignal): Promise<Listed> {
+  /** `perRun`: the server is a per-run Composio server, whose saved address names no user, which Composio refuses even
+   *  for a listing: listed as composio-preset.ts COMPOSIO_LISTING_USER, at that address alone. */
+  private listServer(url: URL, headers: HeaderMap, send: typeof fetch, stop?: AbortSignal, perRun = false): Promise<Listed> {
     // The shared probe (mcp-probe.listServer), bound also to this server's own stop, each request sent as `send` (reached).
-    return listServer(url, headers, this.version, AbortSignal.any([this.stopped.signal, ...(stop ? [stop] : [])]), send);
+    return listServer(perRun ? composioListingAddress(url) : url, headers, this.version, AbortSignal.any([this.stopped.signal, ...(stop ? [stop] : [])]), send);
+  }
+
+  /** Whether the saved server `row` (named `name`) is a per-run Composio server (composio-made.ts composioPerRun). */
+  private async perRunComposio(name: string, row: { auth: string; createdAt: number }): Promise<boolean> {
+    return composioPerRun(row, await this.store.settings.get(composioMadeKey(name)));
   }
 
   /** How a request to the MCP server at `url` goes, or a 422 on url before anything is sent to it (or a token minted for
@@ -674,10 +685,13 @@ export class McpServersOverStore {
     const { source, toolkit } = await this.sourceOf(row);
     if (source !== "composio" || row.auth !== "headers") throw refuse(`${name} is not a Composio server: only one saved with Settings → MCP servers → Composio makes Composio triggers.`);
     if (!toolkit) throw refuse(`${name} is a Composio server of no toolkit this server can name: save it again with its toolkit's slug.`);
+    const recorded = await this.store.settings.get(composioMadeKey(name));
+    // A trigger runs as one Composio account, and a per-run server has none: each run names its own.
+    if (refusal === "field" && composioPerRun(row, recorded)) throw refuse(`${name} takes its Composio account from each run (saved with user_id "${COMPOSIO_PER_RUN}"), and a trigger runs as one account: save a Composio server for that account to make its triggers.`);
     const { headers } = await this.opened(name, row, refusal === "field" ? "source.server" : "api_key");
     const key = Object.entries(headers).find(([header]) => header.toLowerCase() === "x-api-key")?.[1];
     if (!key) throw refuse(`${name}'s saved credential holds no Composio key: save it again with its key.`);
-    const config = recordedMade(await this.store.settings.get(composioMadeKey(name)), row.createdAt)?.auth_config?.id;
+    const config = recordedMade(recorded, row.createdAt)?.auth_config?.id;
     return { key, user: new URL(row.url).searchParams.get("user_id") || COMPOSIO_USER, toolkit, ...(config ? { auth_config: config } : {}) };
   }
 

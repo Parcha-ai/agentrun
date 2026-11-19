@@ -1298,8 +1298,10 @@ Offline regressions cover streamed native tools, continuation, reasoning, cache 
 errors, credential scoping and actual Pi conversation retries. A live pass against Particle's API (2026-11-18, twelve
 checks) saved a key, then completed a plain run, tool calls continued after the model's reasoning, a follow-up, a
 cancel, a capped run and a workflow's model nodes. Replies reported cached input tokens and no cache writes, and each
-priced run's cost equaled its tokens at list price. Not yet seen live: a rate limit or server error from Particle,
-and the estimate against Particle's own bill. The protocol fixtures alone are not evidence of live compatibility.
+priced run's cost equaled its tokens at list price. A later workflow run (2026-11-19, three requests) matched
+Particle's usage page: the same cached, uncached and output token counts, and the same cost to the six decimals the
+page shows. Not yet seen live: a rate limit or server error from Particle. The protocol fixtures alone are not
+evidence of live compatibility.
 
 ### On a ChatGPT plan
 
@@ -2038,6 +2040,34 @@ you price them (`price_usd`, or the server's `prices`). Composio's own meta tool
 that connect an account are left off the server's address. Deleting the server in Settings deletes what its save made in Composio too, with the saved key: the Composio MCP server, the connected account its connect link started (the link with it) and the auth config it made (Composio's "already gone" is fine). What another saved server uses is kept until the last of them goes, and what was there before the save (an auth config or account you had) is never deleted. The `DELETE` answers `200 {deleted: true, composio: {removed, note}}`: the note says what it removed, what it kept and why, and, when Composio refuses or does not answer, what is left to remove in Composio yourself (`removed: false`; the server is still forgotten here). The console shows it. A save that fails removes in Composio what it made there and never what it found, and its error names what is left when Composio refuses that too (a 422 on a field says it in `details.composio` as well). A save over a preset server removes, once it is saved, the Composio MCP server its earlier save made, and what that save made and the new one no longer stands on (the account of another `user_id`, the auth config of another toolkit), with the key it was made with, unless another saved server uses it, and answers `composio: {removed, note}` saying so. An ordinary `PUT` that moves a preset server to another address makes it another service's server: it removes what the preset made for it in Composio as its delete would, and answers `composio` too. While Composio triggers use the server, that move, and a preset save over it as another `user_id` or auth config, are refused as its delete is (`409 composio_in_use`, naming them). Preset saves and MCP server deletes run one at a time, so a delete never removes what a save in progress reuses; an ordinary save of a preset server lists its tools at once and takes its turn only to write the server and clean up.
 [Connect Composio tools and triggers](../../docs/tutorials/composio.md) walks through the preset and a Composio
 trigger in the console, with each step's API call.
+
+#### One Composio server, an account per run
+
+A preset server is saved for one Composio user. To let each run act as its own person's account instead, save it with
+`user_id: "per_run"` (a word reserved for this, never a Composio user id): the server keeps no user and no connected
+account in its address, looks up no account and makes no connect link. Composio refuses an address that names no user, even to list its tools, so
+the save, a refresh, a preview and an agent's save list them as `agentrun~tool-listing`, a user no save or run can name,
+never stored and never used for a call. Each run then names the account its calls of that server run as, in `mcp_auth`
+on its start or on a message:
+
+```sh
+curl -X POST "$BASE/v2/agents/$AGENT/runs" -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
+  -d '{"input": {"content": "..."}, "mcp_auth": {"mail": {"composio_user_id": "user-1234", "connected_account_id": "ca_abc123"}}}'
+```
+
+`composio_user_id` is a Composio user id; `connected_account_id`, optional, is one of that user's connected accounts
+(`ca_...`), and without it Composio picks the user's account for the toolkit. Each request to the server carries that
+user and account, the Composio key staying the server's own. The binding is kept as a `per_run` server's headers are:
+sealed into the run's launch, erased by the write that ends the run, never on the server's row, the run's view, its
+timeline, its trace or a log line, and its values are cut from whatever the run shows. The binding's ids are held by
+the run's redactors as any secret of 8 characters or more; a shorter Composio user id is an identifier, not a
+credential, and a conversation can still quote it, but no row, journal entry, timeline item or log line carries it as a
+field (an account id is always 8 or more: `ca_` and 5 to 64 characters). A message's binding replaces
+the run's for the turn it starts. A run that names no account has its calls of the server answered, unsent, that it
+was handed none, so a per-run server never calls as a default account. A malformed user or account is `422
+input_invalid` at `mcp_auth.<server>.composio_user_id` or `.connected_account_id`; headers for such a server, or a
+binding for any other server, are `422` at `mcp_auth.<server>`, and no run starts. A per-run server makes no Composio
+trigger: a trigger runs as one account. A server saved for one user before this mode keeps calling as that user.
 
 What can go wrong, told apart:
 
