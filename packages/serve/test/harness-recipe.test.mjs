@@ -172,9 +172,11 @@ test("the owner's install: the archive's sha256 checked, the binary's first sha2
   const asked = [];
   const now = await installRecipe(recipe, file, data, { fetch: servedFetch(first.bytes, asked) });
   assert.equal(now.installed, "now");
+  assert.equal(now.pinnedBy, "recorded");
   assert.equal(readFileSync(firstSeenOf(data, recipe, PLATFORM), "utf8").trim(), first.binarySha, "the first sha256 recorded");
   const again = await installRecipe(recipe, file, data, { fetch: servedFetch(first.bytes, asked) });
   assert.equal(again.installed, "already");
+  assert.equal(again.pinnedBy, "first-seen");
   assert.equal(asked.length, 1, "a rerun with the binary in place downloads nothing");
 
   // An archive the recipe does not pin is refused before it unpacks.

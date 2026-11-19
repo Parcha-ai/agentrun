@@ -181,16 +181,16 @@ if (process.argv[2] === "install-harness") {
   // nothing; then its release for this platform, as the Goose install does it.
   if (values.recipe !== undefined) {
     if (positionals.length) usage("it takes a harness's name or --recipe FILE, not both.");
-    const [{ ArchiveInstallFailed }, { installRecipe, loadRecipe, RecipeRefused }] = await Promise.all([import("./harness-archive.js"), import("./harness-recipe.js")]);
+    const [{ ArchiveInstallFailed }, { installRecipe, loadRecipe, recipeCheckLine, RecipeRefused }] = await Promise.all([import("./harness-archive.js"), import("./harness-recipe.js")]);
     const data = resolve(values.data ?? defaultData());
     try {
       const { recipe, file } = loadRecipe(values.recipe);
-      const pinned = Object.values(recipe.release.archives).some((archive) => archive.binarySha256);
-      const said = { downloaded: "the archive is downloaded and its sha256 matches the recipe", unpacked: "unpacked", verified: pinned ? "the binary's sha256 matches the recipe" : "the binary's sha256 matches the first one recorded (or is recorded now)" } as const;
-      const { version, installed, binary } = await installRecipe(recipe, file, data, { onStep: (step) => console.error(`${recipe.label}: ${said[step]}`) });
+      const said = { downloaded: "the archive is downloaded and its sha256 matches the recipe", unpacked: "unpacked", verified: "the binary's sha256 is checked" } as const;
+      const { version, installed, binary, pinnedBy } = await installRecipe(recipe, file, data, { onStep: (step) => console.error(`${recipe.label}: ${said[step]}`) });
+      const held = { recipe: "the recipe's pin", "first-seen": "the first sha256 an earlier install recorded", recorded: "its sha256 recorded now, as the first one; a later binary that differs is refused" }[pinnedBy];
       console.log(installed === "already"
-        ? `${recipe.label} ${version} is installed in ${dirname(binary)} (already: the pinned binary is there, so nothing was downloaded).`
-        : `${recipe.label} ${version} is installed in ${dirname(binary)} (now). Check it with: agentrun harness-check --recipe ${file}`);
+        ? `${recipe.label} ${version} is installed in ${dirname(binary)} (already: the pinned binary is there, so nothing was downloaded; held to ${held}).`
+        : `${recipe.label} ${version} is installed in ${dirname(binary)} (now; the binary held to ${held}). Check it with: ${recipeCheckLine(file, data)} --model PROVIDER/MODEL`);
       process.exit(0);
     } catch (error) {
       if (!(error instanceof ArchiveInstallFailed) && !(error instanceof RecipeRefused)) throw error;

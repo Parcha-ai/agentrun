@@ -303,6 +303,13 @@ export async function installRecipe(recipe: Recipe, file: string, data: string, 
   const release = releaseFor(recipe, platform);
   const record = platform ? firstSeenRecord(firstSeenOf(data, recipe, platform)) : undefined;
   const binary = release && !release.binarySha256 && record ? { binaryRecord: record } : {};
+  const before = release && !release.binarySha256 ? record?.read() : undefined;
   const done = await installArchive({ id: recipe.id, label: recipe.label, retry: recipeInstallLine(file, data, env), pin: { version: recipe.release.version, archives: recipe.release.archives } }, installDirOf(data, recipe.id), { ...options, ...binary });
-  return { version: recipe.release.version, ...done };
+  // What the binary was held to: the recipe's pin, the first digest an earlier install recorded, or this one's, recorded now.
+  const pinnedBy: "recipe" | "first-seen" | "recorded" = release?.binarySha256 ? "recipe" : before ? "first-seen" : "recorded";
+  return { version: recipe.release.version, pinnedBy, ...done };
 }
+
+/** The owner's command that checks the recipe at `file`, installed into `data`. */
+export const recipeCheckLine = (file: string, data: string, env: NodeJS.ProcessEnv = process.env): string =>
+  `agentrun harness-check --recipe ${shellWord(file)}${resolve(data) === commandData(env) ? "" : ` --data ${shellWord(data)}`}`;
