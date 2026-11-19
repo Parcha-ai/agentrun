@@ -4,14 +4,13 @@
 //    registry.json): its version and, per platform, its archive's URL and sha256, and the sha256 of the binary the archive
 //    unpacks to where it was measured. An installer verifies the archive, then the binary; a host checks the binary
 //    again at each start (`verifyPinnedBinary`).
-//  - An agent the registry lists with no digest (Cursor) has no pin to meet: its first verified digest is recorded, and a
-//    later binary that differs from it is refused (`verifyFirstSeen`), so a binary that changed under the host is seen
-//    before it runs.
+//  - An agent the registry lists with no digest (Cursor) is pinned here by what its first download held; a binary no
+//    pin names has its first digest recorded by the server's installer alone (agentrun-serve, harness-archive.ts
+//    installArchive's binaryRecord), the one first-seen path.
 // Every check reads the file's bytes (the kernel's chunked sha256, kept once per file identity) and never executes it.
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { lstat, readdir, readlink } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { checkedOnce, checkedOnceAsync, type BinaryCheck } from "@parcha/agentrun-kernel/host";
 import { ACP_CODES } from "./facts.js";
 
@@ -29,7 +28,7 @@ export interface AcpArchivePin {
   /** The binary's path inside the archive (the registry's `cmd`). */
   readonly cmd: string;
   /** The sha256 of the binary the archive unpacks to, where it was measured. Absent: unmeasured on this platform, so an
-   *  installer records the first one it unpacks from the verified archive (`verifyFirstSeen`). */
+   *  installer records the first one it unpacks from the verified archive (agentrun-serve's binaryRecord). */
   readonly binarySha256?: string;
   /** The digest of every file the archive unpacks to (treeDigest), for an agent whose binary is a launcher of the code
    *  beside it (Cursor's `cursor-agent` runs its own `node` on `index.js` and a hundred chunks): checked by the installer
@@ -97,7 +96,7 @@ export function acpPlatform(platform: string = process.platform, arch: string = 
   return os && cpu ? (`${os}-${cpu}` as AcpPlatform) : undefined;
 }
 
-/** A binary the adapter will not start: its code says why (ACP_CODES.binaryMismatch, binaryDrift, binaryUnreadable). */
+/** A binary the adapter will not start: its code says why (ACP_CODES.binaryMismatch, binaryUnreadable). */
 export class AcpBinaryRefused extends Error {
   constructor(readonly code: string, message: string) {
     super(`${code}: ${message}`);
@@ -138,67 +137,6 @@ export async function verifyPinnedBinaryAsync(path: string, sha256: string): Pro
     throw unreadable(path, error);
   }
   if (found !== sha256) throw new AcpBinaryRefused(ACP_CODES.binaryMismatch, `the binary at ${path} has sha256 ${found}, and the pin is ${sha256}`);
-}
-
-/** Where an agent with no registry digest keeps the first digest verified for it. */
-export interface DigestRecord {
-  /** The digest recorded, or undefined before the first. */
-  read(): string | undefined;
-  /** Records the first digest. */
-  write(sha256: string): void;
-}
-
-/** A DigestRecord in a file of its own: one line, the sha256. */
-export function fileDigestRecord(file: string): DigestRecord {
-  return {
-    read() {
-      let text: string;
-      try {
-        text = readFileSync(file, "utf8");
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
-        throw error;
-      }
-      const recorded = text.trim();
-      if (!SHA256.test(recorded)) throw new Error(`acp: the recorded digest in ${file} is not a sha256`);
-      return recorded;
-    },
-    write(sha256) {
-      mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-      // `wx`: a record another process wrote first is never overwritten; its digest is the one that holds.
-      writeFileSync(file, `${sha256}\n`, { mode: 0o600, flag: "wx" });
-    },
-  };
-}
-
-/** The binary at `path`, against the first digest `record` holds: with none, its digest is recorded and it passes; with
- *  one, a binary that differs is refused (ACP_CODES.binaryDrift). Answers its digest. */
-export function verifyFirstSeen(path: string, record: DigestRecord): string {
-  const recorded = record.read();
-  if (recorded) {
-    try {
-      verifyPinnedBinary(path, recorded);
-    } catch (error) {
-      if (error instanceof AcpBinaryRefused && error.code === ACP_CODES.binaryMismatch) throw new AcpBinaryRefused(ACP_CODES.binaryDrift, `the binary at ${path} differs from the first one recorded for it (${recorded})`);
-      throw error;
-    }
-    return recorded;
-  }
-  let found: string;
-  try {
-    found = checkedOnce(path, "first-seen", digestOf(path), () => false);
-  } catch (error) {
-    throw unreadable(path, error);
-  }
-  try {
-    record.write(found);
-  } catch (error) {
-    // Another process recorded one first: that one holds.
-    if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error;
-    const first = record.read();
-    if (first !== found) throw new AcpBinaryRefused(ACP_CODES.binaryDrift, `the binary at ${path} has sha256 ${found}, and the first one recorded is ${first}`);
-  }
-  return found;
 }
 
 /** The digest of the tree at `root`: the sha256 of one line per entry under it, in byte order of its path from `root`

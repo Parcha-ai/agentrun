@@ -8,6 +8,6 @@ export type { ConfineChild } from "./host/child.js";
 export { GOOSE_INSTALL, GOOSE_NOT_INSTALLED, gooseFacts } from "./goose-facts.js";
 export { gooseAdapter, gooseRecipe, recipeFile, type AcpRecipeFile, type AcpRecipeName, type GooseAdapterOptions, type GooseRecipeOptions } from "./goose.js";
 export { applyGoose, GOOSE_BETAS, GOOSE_OWN_TOOLS, gooseProxy, goosePolicy, gooseRoutes, gooseToolName, gooseUsage, limitGooseOutput, type GoosePolicyOptions, type GooseProvider, type GooseProxyOptions } from "./host/goose-proxy.js";
-export { acpPlatform, AcpBinaryRefused, CURSOR_PIN, fileDigestRecord, GOOSE_PIN, treeDigest, verifyFirstSeen, verifyPinnedBinary, verifyPinnedBinaryAsync, verifyPinnedTree, type AcpArchivePin, type AcpBinaryPin, type AcpPlatform, type DigestRecord } from "./pinned-binary.js";
+export { acpPlatform, AcpBinaryRefused, CURSOR_PIN, GOOSE_PIN, treeDigest, verifyPinnedBinary, verifyPinnedBinaryAsync, verifyPinnedTree, type AcpArchivePin, type AcpBinaryPin, type AcpPlatform } from "./pinned-binary.js";
 export { CURSOR_CODES, CURSOR_INSTALL, CURSOR_LIMITS, cursorCard, cursorFacts, type CursorLimits } from "./cursor-facts.js";
 export { cursorAdapter, cursorRecipe, cursorRootOf, type CursorAdapterOptions, type CursorRecipeOptions } from "./cursor.js";

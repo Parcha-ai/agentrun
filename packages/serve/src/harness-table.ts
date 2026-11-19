@@ -275,6 +275,10 @@ const BUILTIN: Readonly<Record<HarnessId, HarnessEntry>> = Object.freeze({
   ...(CURSOR_FACTS ? { [CURSOR_FACTS.id]: cursorEntry(CURSOR_FACTS) } : {}),
 } as Record<HarnessId, HarnessEntry>);
 
+/** The ids of the harnesses this server has built in (Goose and Cursor where their package is beside it, as a recipe
+ *  needs it too): a recipe or module never takes one (harness-recipe.ts). */
+export const BUILTIN_HARNESS_IDS: readonly string[] = Object.freeze(Object.keys(BUILTIN));
+
 const loaded = new Map<string, Readonly<Record<string, HarnessEntry>>>();
 const requireHere = createRequire(import.meta.url);
 

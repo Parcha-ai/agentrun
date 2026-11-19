@@ -47,7 +47,11 @@ export type ArchiveRelease = { readonly url: string; readonly format: string; re
 export type ArchiveHarness = { readonly id: string; readonly label: string; readonly retry: string; readonly pin: { readonly version: string; readonly archives: Readonly<Partial<Record<string, ArchiveRelease>>> }; readonly tree?: (root: string) => Promise<string> };
 
 /** How tar unpacks each format this installer takes: node has neither bzip2 nor a tar of its own. */
-const TAR_FLAG: Readonly<Record<string, string>> = Object.freeze({ "tar.bz2": "-xjf", "tar.gz": "-xzf" });
+const TAR_FLAG: Readonly<Record<ArchiveFormat, string>> = Object.freeze({ "tar.bz2": "-xjf", "tar.gz": "-xzf" });
+/** An archive format this installer unpacks. */
+export type ArchiveFormat = "tar.bz2" | "tar.gz";
+/** The formats this installer unpacks, the one list a recipe's loader checks a release against (harness-recipe.ts). */
+export const ARCHIVE_FORMATS: readonly ArchiveFormat[] = Object.freeze(Object.keys(TAR_FLAG) as ArchiveFormat[]);
 
 /** A failed install, by its code (ARCHIVE_CODES): its message says why, and the command that tries again. */
 export class ArchiveInstallFailed extends Error {
@@ -113,8 +117,8 @@ export async function installArchive(harness: ArchiveHarness, dir: string, optio
   const release = platform ? harness.pin.archives[platform] : undefined;
   if (!platform || !release) throw fail(ARCHIVE_CODES.platform, `${named} has no release pinned for ${platform ?? `${process.platform}-${process.arch}`}`);
   if (!release.binarySha256 && !options.binaryRecord) throw fail(ARCHIVE_CODES.platform, `${named}'s binary on ${platform} has no sha256 pinned, so what its archive unpacks to cannot be checked`);
-  const flag = TAR_FLAG[release.format];
-  if (!flag) throw fail(ARCHIVE_CODES.platform, `${named}'s archive on ${platform} is ${release.format}, and this installer unpacks ${Object.keys(TAR_FLAG).join(" and ")} alone`);
+  const flag = (TAR_FLAG as Readonly<Record<string, string>>)[release.format];
+  if (!flag || !Object.hasOwn(TAR_FLAG, release.format)) throw fail(ARCHIVE_CODES.platform, `${named}'s archive on ${platform} is ${release.format}, and this installer unpacks ${ARCHIVE_FORMATS.join(" and ")} alone`);
   if (release.treeSha256 && !harness.tree) throw fail(ARCHIVE_CODES.platform, `${named}'s files on ${platform} are pinned by a tree digest, and this install was given no way to take one`);
   const binary = binaryUnder(dir, release.cmd);
   if (!binary) throw fail(ARCHIVE_CODES.platform, `${named}'s pinned path ${release.cmd} is not inside its folder`);

@@ -8,7 +8,9 @@
 //  2. A pinned binary. The binary is the release's archive for this platform, as the ACP registry lists it: an https URL
 //     and its sha256. A recipe names no command, path or binary of its own. The binary's own sha256 is pinned when the
 //     recipe gives it; where it does not (the registry lists only the archive's), the install records the first one it
-//     unpacks from the verified archive, and a binary that differs from it later is refused (drift).
+//     unpacks from the verified archive (harness-archive.ts binaryRecord, the one first-seen path), and a binary that
+//     differs from it later is refused by the installer's code (HARNESS_BINARY_MISMATCH). The archive is in a format the
+//     installer unpacks (ARCHIVE_FORMATS: tar.bz2, tar.gz).
 //  3. Private paths. The files it writes and the state it keeps are paths inside the session's private HOME; the binary
 //     is a path inside its own folder.
 //  4. The owner installs it. Only `agentrun harness install --recipe FILE` downloads and unpacks it (installRecipe), into
@@ -22,8 +24,9 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { isAbsolute, join, normalize, resolve, sep } from "node:path";
-import { HARNESS_ID_PATTERN, HARNESSES, RESERVED_HARNESS_IDS } from "./harness.js";
-import { type ArchiveInstallOptions, archivePlatform, type ArchiveRelease, installArchive } from "./harness-archive.js";
+import { HARNESS_ID_PATTERN, RESERVED_HARNESS_IDS } from "./harness.js";
+import { ARCHIVE_FORMATS, type ArchiveFormat, type ArchiveInstallOptions, archivePlatform, type ArchiveRelease, installArchive } from "./harness-archive.js";
+import { BUILTIN_HARNESS_IDS } from "./harness-table.js";
 import { commandData } from "./harness-goose.js";
 import { harnessesOf, installDirOf, shellWord } from "./harness-install.js";
 import { keyShaped } from "./secret-name.js";
@@ -47,7 +50,7 @@ export const RECIPE_CODES = Object.freeze({
 export type RecipeCode = (typeof RECIPE_CODES)[keyof typeof RECIPE_CODES];
 
 /** One platform's release of the agent, copied from its ACP registry entry (`distribution.binary.<platform>`). */
-export type RecipeArchive = ArchiveRelease & { readonly format: "tar.bz2" };
+export type RecipeArchive = ArchiveRelease & { readonly format: ArchiveFormat };
 
 /** The variables a proxy-billed agent may read the proxy's address from: Goose's, and the Anthropic SDKs'. */
 export const PROXY_HOST_ENVS: readonly string[] = Object.freeze(["ANTHROPIC_HOST", "ANTHROPIC_BASE_URL"]);
@@ -138,7 +141,7 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
 
   const idPattern = new RegExp(HARNESS_ID_PATTERN);
   if (typeof r.id !== "string" || !idPattern.test(r.id)) say(RECIPE_CODES.invalid, `id must match ${HARNESS_ID_PATTERN}`);
-  else if ((HARNESSES as readonly string[]).includes(r.id) || r.id === "goose" || RESERVED_HARNESS_IDS.includes(r.id)) say(RECIPE_CODES.invalid, `id ${r.id} is a harness AgentRun already has, or a name its runs carry; give yours its own`);
+  else if (BUILTIN_HARNESS_IDS.includes(r.id) || RESERVED_HARNESS_IDS.includes(r.id)) say(RECIPE_CODES.invalid, `id ${r.id} is a harness AgentRun already has, or a name its runs carry; give yours its own`);
   if (typeof r.label !== "string" || !r.label.trim() || r.label.length > 80) say(RECIPE_CODES.invalid, "label is the harness's name in a sentence, 1 to 80 characters");
 
   // Rule 2: the release.
@@ -167,7 +170,7 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
         if (!url || url.protocol !== "https:" || url.username || url.password) say(RECIPE_CODES.binary, `${at}.url must be the registry's https URL of the archive`);
         if (typeof archive.sha256 !== "string" || !SHA256.test(archive.sha256)) say(RECIPE_CODES.binary, `${at}.sha256 must be the archive's sha256 as the registry lists it, 64 lowercase hex digits`);
         if (archive.binarySha256 !== undefined && (typeof archive.binarySha256 !== "string" || !SHA256.test(archive.binarySha256))) say(RECIPE_CODES.binary, `${at}.binarySha256, when given, is the unpacked binary's sha256, 64 lowercase hex digits`);
-        if (archive.format !== "tar.bz2") say(RECIPE_CODES.binary, `${at}.format: the installer unpacks tar.bz2 archives alone`);
+        if (!(ARCHIVE_FORMATS as readonly unknown[]).includes(archive.format)) say(RECIPE_CODES.binary, `${at}.format: the installer unpacks ${ARCHIVE_FORMATS.join(" and ")} archives alone`);
         if (typeof archive.cmd !== "string" || !archive.cmd || isAbsolute(archive.cmd) || !insideHome(archive.cmd)) say(RECIPE_CODES.paths, `${at}.cmd is the binary's path inside the archive (./agent), never one outside it`);
       }
     }

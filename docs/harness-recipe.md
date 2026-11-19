@@ -11,7 +11,7 @@ two ways to bring another one:
   section.
 
 A recipe fits an ACP agent that the [ACP registry](https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json)
-lists with a binary release packed as `.tar.bz2`. Today a recipe is checked and installed; a server does not yet run one
+lists with a binary release packed as `.tar.bz2` or `.tar.gz`. Today a recipe is checked and installed; a server does not yet run one
 as a harness of its own. A recipe that passes `harness-check` is what that server-side step will take.
 
 ## What you need
@@ -31,13 +31,13 @@ refused (`RECIPE_INVALID`, or the code of the rule it would break).
 
 | Field | Required | What it holds |
 | --- | --- | --- |
-| `id` | yes | The harness's id: lowercase letters, digits and `-`, starting with a letter, at most 40 characters. Not one AgentRun already has (`pi`, `claude-agent`, `codex`, `opencode`, `goose`) nor a name its runs carry (`learning`, `sdk`, `workflow`, `claude-agent-sdk`, `codex-sdk`). |
+| `id` | yes | The harness's id: lowercase letters, digits and `-`, starting with a letter, at most 40 characters. Not an id the server's harness table already has (`pi`, `claude-agent`, `codex`, `opencode`, `goose`, `cursor`) nor a name its runs carry (`learning`, `sdk`, `workflow`, `claude-agent-sdk`, `codex-sdk`). |
 | `label` | yes | The harness's name in a sentence, 1 to 80 characters. |
 | `release` | yes | Where the binary comes from: `{ "registry": ID, "version": VERSION, "archives": { PLATFORM: ARCHIVE } }`. `registry` is the agent's id in the ACP registry, `version` its version there. |
-| `release.archives.PLATFORM` | at least one | `PLATFORM` as the registry names it: `linux-x86_64`, `linux-aarch64`, `darwin-aarch64`, `darwin-x86_64`. `ARCHIVE` is `{ "url", "format", "sha256", "cmd", "binarySha256"? }`: `url` the registry's `archive` (https), `format` `"tar.bz2"`, `sha256` the registry's `sha256` of the archive (64 lowercase hex digits; when the registry lists none, the sha256 of the archive you downloaded and checked yourself), `cmd` the registry's `cmd` (the binary's path inside the archive, `./agent`). `binarySha256`, when you know it, is the sha256 of the unpacked binary; leave it out and the first install records it (rule 2). |
+| `release.archives.PLATFORM` | at least one | `PLATFORM` as the registry names it: `linux-x86_64`, `linux-aarch64`, `darwin-aarch64`, `darwin-x86_64`. `ARCHIVE` is `{ "url", "format", "sha256", "cmd", "binarySha256"? }`: `url` the registry's `archive` (https), `format` `"tar.bz2"` or `"tar.gz"` (the formats the installer unpacks), `sha256` the registry's `sha256` of the archive (64 lowercase hex digits; when the registry lists none, the sha256 of the archive you downloaded and checked yourself), `cmd` the registry's `cmd` (the binary's path inside the archive, `./agent`). `binarySha256`, when you know it, is the sha256 of the unpacked binary; leave it out and the first install records it (rule 2). |
 | `args` | no | The arguments that start the agent in ACP mode over stdio: the registry's `args` (`["acp"]`). |
 | `model` | yes | Who bills the model. `{ "billing": "proxy", "wire": "anthropic-messages", "env": NAME, "hostEnv"?: "ANTHROPIC_HOST" \| "ANTHROPIC_BASE_URL" }`, or `{ "billing": "plan", "maxTurns": N, "maxToolCalls": M, "hosts"?: [HOST, ...] }`. See [Billing](#billing). |
-| `keys` | no | The names of keys saved for this harness alone (a vendor's API key the agent reads). A plan-billed agent needs at least one. Never a key the server holds for anything else (rule 1). |
+| `keys` | no | The names of keys saved for this harness alone (a vendor's API key the agent reads). A plan-billed agent needs at least one. Never a key the server holds for anything else (rule 1). Each is read by name where the check or the run starts, and handed to the agent under the same name; a start where one is not set is refused before the agent runs (`ACP_KEY_MISSING`). |
 | `env` | no | Variables the agent gets, each written out as a literal string: `{ "NAME": "value" }`. The place for an agent's switches (turn off its own tools, its telemetry, its session naming). No key, nothing read from the host (rule 5). |
 | `files` | no | Files written into the session's private HOME before the agent starts: `{ "path/in/home": "content" }`. A path is relative to HOME (`.config/agent/config.yaml`, or `$HOME/.config/...`). |
 | `state` | no | Folders in the private HOME where the agent keeps its sessions (`.local/share/agent/sessions`). AgentRun copies them into the session's records after each turn, so a session survives a crash and moves to another runner. |
@@ -86,7 +86,7 @@ with that rule's code. `agentrun harness install --recipe` and `agentrun harness
    registry lists it: an https URL and its sha256. A recipe names no `command`, `binary` or `path` of its own. The
    binary's sha256 is pinned when the recipe gives `binarySha256`; when it doesn't (some registry entries list only the
    archive's digest, or none), the owner's install records the first one it unpacks from the verified archive, and a
-   binary that differs later is refused (`ACP_BINARY_DRIFT` at a check, `HARNESS_BINARY_MISMATCH` at a reinstall).
+   binary that differs later is refused, at a check and a reinstall alike (`HARNESS_BINARY_MISMATCH`).
 3. **Private paths** (`RECIPE_PATH_OUTSIDE`). Every `files` path and `state` folder is inside the session's private
    HOME: no absolute path, no `..`. The archive's `cmd` stays inside the agent's own folder.
 4. **The owner installs it** (`RECIPE_INSTALLS_ITSELF`). Only `agentrun harness install --recipe FILE` downloads and
@@ -204,7 +204,7 @@ A refused recipe prints one line, `harness-check: refused: <CODE>: <every proble
 
 ## Limits today
 
-- The installer unpacks `.tar.bz2` archives alone; most registry agents ship `.tar.gz` or `.zip`, or an npm or uv
+- The installer unpacks `.tar.bz2` and `.tar.gz` archives alone; some registry agents ship `.zip`, or an npm or uv
   package with no archive at all. See [HARNESS-SCORECARD.md](../HARNESS-SCORECARD.md).
 - Proxy billing takes Anthropic's Messages API as Goose speaks it (tool names, betas). An agent on another wire is
   plan-billed, or needs a harness module.

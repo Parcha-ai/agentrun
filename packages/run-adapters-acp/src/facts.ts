@@ -20,8 +20,6 @@ export const ACP_CODES = Object.freeze({
   refusal: "ACP_REFUSAL",
   /** The agent's binary is not the pinned one: its sha256 differs from the pin's. */
   binaryMismatch: "ACP_BINARY_MISMATCH",
-  /** The binary of an agent with no registry digest differs from the first one recorded for it. */
-  binaryDrift: "ACP_BINARY_DRIFT",
   /** The agent's binary cannot be read to be checked. */
   binaryUnreadable: "ACP_BINARY_UNREADABLE",
   /** No digest is pinned for the agent's binary on this platform, and none was given. */
