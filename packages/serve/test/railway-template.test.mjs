@@ -150,7 +150,13 @@ test("a first run: the source project made, the template generated and checked, 
   assert.ok(at("POST /v2/setup") > at("GET /v2/auth/session"));
   const generated = client.calls.find((c) => c.op === "TemplateDeploy").variables.input;
   assert.equal(generated.templateId, "<template>");
-  assert.deepEqual(differences(loadTemplate(), generated.serializedConfig), []);
+  // The walk deploys the template as its form fills it, plus AGENTRUN_TELEMETRY=0: the walk's server is ours.
+  const deployed = structuredClone(generated.serializedConfig);
+  const walkVars = Object.values(deployed.services)[0].variables;
+  assert.deepEqual(walkVars.AGENTRUN_TELEMETRY, { value: "0" });
+  delete walkVars.AGENTRUN_TELEMETRY;
+  assert.deepEqual(differences(loadTemplate(), deployed), []);
+  assert.equal(Object.values(loadTemplate().services)[0].variables.AGENTRUN_TELEMETRY, undefined, "the template leaves the counts on");
   const env = (await client.call("Variables", {})).variables;
   for (const secret of [env.AGENTRUN_TOKEN, env.AGENTRUN_SEAL_KEY]) assert.ok(!lines.some((l) => l.includes(secret)), "a generated secret was printed");
   assert.ok(lines.some((l) => l.includes(buttonLine("<code>"))), "the README's button line is printed");
