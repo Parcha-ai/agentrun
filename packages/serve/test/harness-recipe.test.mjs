@@ -143,9 +143,9 @@ test("one list names the variables the adapter and the proxy set, by part, and i
   assert.deepEqual([...AGENT_VARS.inherited].sort(), [...INHERITED_ENV].sort(), "the adapter's INHERITED_ENV");
   assert.deepEqual([...AGENT_VARS.proxy].sort(), ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_HOST"]);
   assert.ok(PROXY_HOST_ENVS.every((name) => AGENT_VARS.proxy.includes(name)), "the proxy's address is one of its variables");
-  // A recipe names none of them, in env or as its model's variable.
+  // A recipe names none of them, in env or as its model's variable (the proxy's key is refused as a key first).
   for (const name of Object.values(AGENT_VARS).flat()) {
-    assert.equal(refusalOf(recipeOf(undefined, { env: { [name]: "x" } })).code, RECIPE_CODES.env, name);
+    assert.ok([RECIPE_CODES.env, RECIPE_CODES.keys].includes(refusalOf(recipeOf(undefined, { env: { [name]: "x" } })).code), name);
     assert.equal(refusalOf(recipeOf(undefined, { model: { billing: "proxy", wire: "anthropic-messages", env: name } })).code, RECIPE_CODES.env, name);
   }
 });
