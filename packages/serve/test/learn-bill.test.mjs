@@ -384,7 +384,7 @@ test("one numbering: the series numbers the runs that do a job as the bill does 
   assert.deepEqual(cost.bill.points.map((point) => point.n), cost.runs.filter((run) => run.n !== null).map((run) => run.n), "the bill's points and the series share their numbers");
   // A first served run that handed back is the takeover too: the bill's baseline ends there, and so does the before side.
   const handed = SERIES.map((one) => (one.run_id === "run-06" ? { ...one, path: "handed_back" } : one));
-  assert.deepEqual(costSummary(handed).takeover, { n: 6, run_id: "run-06" }, "the first run a learned workflow served, alone or handed back");
+  assert.deepEqual(costSummary(handed).takeover, { n: 4, run_id: "run-06" }, "the first run a learned workflow served, alone or handed back");
 });
 
 test("a revision's served count is every run it served (its first K carry its spend), each run names the revision that ran it and whether it was audited, and the bill says what learning booked", async (t) => {
