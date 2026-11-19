@@ -515,7 +515,7 @@ export type RunError = {
   };
 };
 
-export type RunErrorCode = "run_failed" | "moderated" | "agent_not_runnable" | "needs_connection" | "needs_reconnect" | "connection_revoked" | "output_invalid" | "spend_cap_reached" | "wall_clock_timeout" | "input_expired" | "internal";
+export type RunErrorCode = "run_failed" | "moderated" | "agent_not_runnable" | "needs_connection" | "needs_reconnect" | "connection_revoked" | "output_invalid" | "spend_cap_reached" | "wall_clock_timeout" | "input_expired" | "internal" | "computer_unavailable" | "runner_refused";
 
 export type NextAction = RequestAction | PersonAction;
 
@@ -1073,6 +1073,7 @@ export type Capabilities = {
     limit: string;
   };
   run_isolation?: "uid" | "process";
+  runner_refused?: string | null;
   switches: Record<string, {
     on: boolean;
     value: string | null;
@@ -3756,11 +3757,13 @@ export type GetCapabilitiesResponse = Capabilities;
 
 /** Whether this server can serve (GET /health). */
 export type GetHealthResponse = {
-  status: "ok" | "failing" | "warming";
+  status: "ok" | "degraded" | "failing" | "warming";
   checks: {
     store: "ok" | "does_not_open" | "opening";
     disk: "ok" | "below_floor" | "cannot_check";
+    runner?: "refused";
   };
+  runner_refused?: string;
 };
 
 /** The MCP endpoint: this API's tools, for a coding agent (POST /mcp). */

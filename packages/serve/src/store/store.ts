@@ -863,6 +863,12 @@ export interface Runs {
    *  other state (or none) is left as it is, false. Its claim, if one holds it while it parks, is let go as before: the
    *  release sets wake_at as the loop's end says. */
   wake(runId: string): Promise<boolean>;
+  /** Ends `failed`, its summary `summary`, every run still queued that no runner ever claimed (epoch 0), each in a
+   *  transaction of its own, as an end does: its untaken commands refused and its launch's secrets erased in the same
+   *  write. A run a runner claimed (at any epoch since) is left as it is, and so is one a claim takes meanwhile: the
+   *  write is fenced on epoch 0. Answers the runs it ended. What the server does with runs no runner here can claim
+   *  (runner/presence.ts). */
+  failUnclaimed(summary: string): Promise<string[]>;
   /** The runs a runner may claim, oldest first: queued; parked with an untaken command or its wake_at passed; running with
    *  no runner (released at a runner's shutdown: it stays running, a run that started keeps that fact) or its claim run
    *  out. */
@@ -1286,6 +1292,32 @@ export interface RunnerRelays {
   remove(runner: string, incarnation: string): Promise<void>;
 }
 
+/** A runner's word that it is there (store schema `runners`, runner/presence.ts): its name, its incarnation (its start),
+ *  why it refused to claim any run (its words; null for one that claims) and when it last said it was there. */
+export interface RunnerRow {
+  readonly runner: string;
+  readonly incarnation: string;
+  readonly refused: string | null;
+  readonly seenAt: number;
+}
+
+/** How long a runner's row is kept once it stopped saying it is there (a runner that died without its close): its next
+ *  put removes every row older than this. */
+export const RUNNER_ROWS_KEPT_MS = 24 * 60 * 60_000;
+
+/** Every runner's word that it is there (runner/presence.ts). */
+export interface Runners {
+  /** Keeps `row` for its runner, replacing any earlier incarnation's, seen now; rows no runner renewed for
+   *  RUNNER_ROWS_KEPT_MS go in the same write. */
+  put(row: Omit<RunnerRow, "seenAt">): Promise<void>;
+  /** Marks the runner's row seen now, while it is still this incarnation's. False when it is not (or there is none). */
+  seen(runner: string, incarnation: string): Promise<boolean>;
+  /** Every runner's row, by name. */
+  list(): Promise<RunnerRow[]>;
+  /** The runner's row gone, while it is still this incarnation's. */
+  remove(runner: string, incarnation: string): Promise<void>;
+}
+
 /** A template package imported from GitHub (store schema `imported_templates`, POST /v2/templates/import): its id
  *  (`github:<owner>/<repo>[/<path>]`), its source as given, the commit SHA read, its publisher (the GitHub account), and
  *  its files as they were read, by path, base64. The server checks them again (templates.ts readPackage) as it loads them
@@ -1507,6 +1539,8 @@ export interface Store {
   readonly mintedTokens: MintedTokens;
   /** Where each runner in a process of its own takes the dials relayed to it. */
   readonly runnerRelays: RunnerRelays;
+  /** Every runner's word that it is there, and whether it refused to claim. */
+  readonly runners: Runners;
   /** The template packages imported from GitHub, their files kept as read. */
   readonly importedTemplates: ImportedTemplates;
   /** Each trigger source's sealed settings (design 2.1): a value per adapter, scope and field. */

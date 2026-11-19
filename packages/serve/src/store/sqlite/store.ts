@@ -11,7 +11,7 @@ import { backfillNativeCommandOwners, nativeCommandOwner, validConnectorId } fro
 import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
-import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNNERS, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
   AgentArchived, AgentDeleting, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -22,6 +22,7 @@ import {
   RevisionMoved, SignInHandedTo, SignInMissing, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
   type ComputerLedger, type ComputerLedgerRow, type PairedComputerRow, type PairedComputers, RUN_CHANGES_PAGE, type RunChangeCursor,
   type ImportedTemplates, type MintedTokenRow, type MintedTokens, type RunnerRelayRow, type RunnerRelays, type SecureRewrite,
+  RUNNER_ROWS_KEPT_MS, type RunnerRow, type Runners,
 } from "../store.js";
 
 /** The seq a run-change cursor names (Runs.changedSince): only a cursor this store handed back, a whole number. */
@@ -214,6 +215,8 @@ type MintedRecord = { machine: string; kind: string; os: string; arch: string; e
 const mintedOf = (r: MintedRecord): MintedTokenRow => ({ machine: r.machine, kind: r.kind, os: r.os, arch: r.arch, expiresAt: r.expires_at, revokedAt: r.revoked_at, createdAt: r.created_at, runner: r.runner, incarnation: r.incarnation, run: r.run, refused: r.refused });
 type RelayRecord = { runner: string; incarnation: string; host: string; port: number; seen_at: number };
 const relayOf = (r: RelayRecord): RunnerRelayRow => ({ runner: r.runner, incarnation: r.incarnation, host: r.host, port: Number(r.port), seenAt: Number(r.seen_at) });
+type RunnerRecord = { runner: string; incarnation: string; refused: string | null; seen_at: number | string };
+const runnerOf = (r: RunnerRecord): RunnerRow => ({ runner: r.runner, incarnation: r.incarnation, refused: r.refused, seenAt: Number(r.seen_at) });
 type TriggerSettingRecord = { adapter: string; scope: string; field: string; sealed: string; updated_at: number };
 const triggerSettingOf = (r: TriggerSettingRecord): TriggerSettingRow => ({ adapter: r.adapter, scope: r.scope, field: r.field, sealed: r.sealed, updatedAt: r.updated_at });
 type McpOauthRecord = { state: string; server: string; sealed: Uint8Array; working: string | null; expires_at: number };
@@ -397,6 +400,8 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         { sql: IMPORTED_TEMPLATES },
         // Nor any hosted machine's minted token (schema.ts MINTED_TOKENS).
         { sql: MINTED_TOKENS },
+        // Nor any runner's word that it is there (schema.ts RUNNERS).
+        { sql: RUNNERS },
         { sql: NATIVE_COMMANDS_INDEX },
       ], { full: true });
       await backfillNativeCommandOwners(connection);
@@ -530,6 +535,7 @@ class SqliteStore implements Store {
   readonly pairedComputers: PairedComputers;
   readonly mintedTokens: MintedTokens;
   readonly runnerRelays: RunnerRelays;
+  readonly runners: Runners;
   readonly importedTemplates: ImportedTemplates;
   readonly triggerSettings: TriggerSettings;
   readonly channels: Channels;
@@ -1233,6 +1239,31 @@ class SqliteStore implements Store {
         const rows = await db.all<{ id: string }>(`SELECT id FROM runs WHERE ${claimable.sql} ORDER BY started_at, id${bounded ? " LIMIT ?" : ""}`, ...claimable.params, ...(bounded ? [limit] : []));
         return rows.map((row) => row.id);
       },
+      failUnclaimed: async (summary) => {
+        // Queued is only ever written at a run's insert (epoch 0); a claim moves it to running and its epoch on. Each run
+        // in a transaction of its own, fenced on that, so a claim that takes one meanwhile leaves it to its runner.
+        const queued = await db.all<{ id: string }>("SELECT id FROM runs WHERE state = 'queued' AND epoch = 0 AND runner IS NULL ORDER BY started_at, id");
+        const failed: string[] = [];
+        for (const { id } of queued) {
+          const ended = await db.transaction(async (tx) => {
+            await d.lockRow(tx, "runs", "id", id, "update");
+            const at = now();
+            const n = storeNow(d, () => at);
+            const row = await tx.get<{ id: string }>(
+              `UPDATE runs SET state = 'failed', summary = ?, ended_at = ?, left_running_at = ${n.sql}, epoch = epoch + 1 WHERE id = ? AND state = 'queued' AND epoch = 0 AND runner IS NULL RETURNING id`,
+              summary, at, ...n.params, id,
+            );
+            if (!row) return false;
+            // As an end does: its untaken commands refused, its launch's secrets erased, in this same commit.
+            await refuseLeftovers(tx, id, "failed", at, d);
+            return true;
+          });
+          if (!ended) continue;
+          failed.push(id);
+          wakeCommands(this.where, { runId: id, what: "answered" });
+        }
+        return failed;
+      },
       heldAt: async (runId) => {
         const n = clock();
         const row = await db.get<{ epoch: number | string }>(`SELECT epoch FROM runs WHERE id = ? AND runner IS NOT NULL AND claimed_until >= ${n.sql}`, runId, ...n.params);
@@ -1747,6 +1778,27 @@ class SqliteStore implements Store {
       list: async () => (await db.all<RelayRecord>(`${RELAYS} ORDER BY runner`)).map(relayOf),
       remove: async (runner, incarnation) => {
         await db.write([{ sql: "DELETE FROM runner_relays WHERE runner = ? AND incarnation = ?", params: [runner, incarnation] }]);
+      },
+    };
+
+    this.runners = {
+      put: async ({ runner, incarnation, refused }) => {
+        const at = now();
+        await db.write([
+          { sql: "DELETE FROM runners WHERE seen_at < ?", params: [at - RUNNER_ROWS_KEPT_MS] },
+          {
+            sql: "INSERT INTO runners (runner, incarnation, refused, seen_at) VALUES (?, ?, ?, ?) ON CONFLICT (runner) DO UPDATE SET incarnation = excluded.incarnation, refused = excluded.refused, seen_at = excluded.seen_at",
+            params: [runner, incarnation, refused, at],
+          },
+        ]);
+      },
+      seen: async (runner, incarnation) => {
+        const [result] = await db.write([{ sql: "UPDATE runners SET seen_at = ? WHERE runner = ? AND incarnation = ?", params: [now(), runner, incarnation] }]);
+        return (result?.changes ?? 0) === 1;
+      },
+      list: async () => (await db.all<RunnerRecord>("SELECT runner, incarnation, refused, seen_at FROM runners ORDER BY runner")).map(runnerOf),
+      remove: async (runner, incarnation) => {
+        await db.write([{ sql: "DELETE FROM runners WHERE runner = ? AND incarnation = ?", params: [runner, incarnation] }]);
       },
     };
 

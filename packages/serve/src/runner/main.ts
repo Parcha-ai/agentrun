@@ -49,6 +49,7 @@ import { RUN_PROCESS_MIB, runnerMemory } from "./memory-claim.js";
 import { childLoops, isolationLoops, type RunIsolation, RunIsolationRefused, runIsolationOf } from "./run-child-host.js";
 import { sweepEndedScratch } from "./scratch-sweep.js";
 import { RUNNER_RENEW_EVERY_MS, runnerName, startRunner, type Runner, type RunnerEvent, type RunnerMemory } from "./runner.js";
+import { keepPresence } from "./presence.js";
 
 export { RUNNER_RENEW_EVERY_MS } from "./runner.js";
 
@@ -534,7 +535,12 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
     // Said, then up and claiming nothing until a stop: in the image's server-and-runner either process's exit stops the
     // container, which a platform that restarts it (Render, Railway) would loop on, the refusal lost in the restarts.
     console.error(`agentrun-serve runner: ${error.message}`);
-    await untilSignalled(RUNNER_SIGNALS);
+    // And said in the store until the stop (presence.ts), so the server, in its own process or on another host, refuses a
+    // launch in these words and fails the runs left queued while no runner that claims is there.
+    const stop = untilSignalled(RUNNER_SIGNALS);
+    const word = await refusedInStore(args.dataDir, env, name ?? runnerName(), error.message);
+    await stop;
+    await word?.close();
     return 0;
   }
   if (isolation.kind === "uid" && holds.loops > isolation.slots) console.error(`agentrun-serve runner: each run runs as a user of its own, and the helper reaches ${isolation.slots} slots from slot ${isolation.first}: this runner holds at most ${isolation.slots} runs at once`);
@@ -603,6 +609,27 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
 const RUNNER_SIGNALS: readonly NodeJS.Signals[] = ["SIGTERM", "SIGINT"];
 
 /** Holds the process up, with nothing else to do, until one of `signals`. */
+/** A runner whose run isolation was refused, its `words` kept in its store (presence.ts) until the close, which also
+ *  closes the store. A store that does not open (not set up yet, a schema this runner does not know) is said, and the
+ *  runner stays up claiming nothing all the same: undefined. */
+async function refusedInStore(dataDir: string, env: NodeJS.ProcessEnv, name: string, words: string): Promise<{ close(): Promise<void> } | undefined> {
+  const warn = (line: string) => void console.error(`agentrun-serve runner: ${line}`);
+  let store: Store;
+  try {
+    ({ store } = await openRunnerStore(dataDir, env, warn, undefined));
+  } catch (error) {
+    warn(`the server is not told that this runner claims nothing, since its store did not open: ${(error as Error)?.message ?? String(error)}`);
+    return undefined;
+  }
+  const presence = keepPresence(store.runners, name, words, { warn });
+  return {
+    async close() {
+      await presence.close();
+      await store.close();
+    },
+  };
+}
+
 function untilSignalled(signals: readonly NodeJS.Signals[]): Promise<void> {
   return new Promise<void>((resolve) => {
     // A signal's listener alone does not keep Node's loop alive.

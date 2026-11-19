@@ -26,6 +26,7 @@ import { Unanswered } from "../store/postgres/connection.js";
 import { clearWaitEnded } from "../browser-wait-ended.js";
 import { heldRedactor, processSecretRedactor, type Redact } from "./redact.js";
 import { type LiveTickerOptions, withLiveTicker } from "./live-ticker.js";
+import { keepPresence } from "./presence.js";
 
 /** Tries of the re-read after a claim or release commit was answered Unanswered (the commit may have landed). */
 const UNKNOWN_READS = 5;
@@ -1002,6 +1003,9 @@ export function startRunner(options: RunnerOptions): Runner {
     else poll();
   };
 
+  // Its word in the store that a runner that claims is here (presence.ts), for as long as it runs: a server reads a
+  // refusal left by an earlier runner as over once this is there.
+  const presence = store.runners ? keepPresence(store.runners, name, null, { warn: (line) => emit({ type: "error", step: "presence", message: line }) }) : undefined;
   poll();
   commandTimer = setTimeout(deliverAll, commandPollMs);
   // A run queued in this process is claimed now (claimNow). A command written for a run this runner holds is handed on
@@ -1125,11 +1129,15 @@ export function startRunner(options: RunnerOptions): Runner {
       // The live view's last tick, once every loop has ended or been given up: a draining run kept its live view to the
       // end of its loop.
       await ticker?.close();
+      // It claims no more: its word that it is here goes.
+      await presence?.close();
     },
     kill() {
       killed = true;
       closed = true;
       stopTimers();
+      // A crash says nothing more: its word goes stale, as a dead runner's does.
+      presence?.stop();
       // A crash writes nothing more: the live view's ticker stops at once, beside a new holder of its runs.
       ticker?.stop();
     },

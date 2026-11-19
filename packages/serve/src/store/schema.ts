@@ -18,7 +18,7 @@
 // The template packages imported from GitHub (imported_templates) are a table of their own that nothing
 // else reads, so it needs no version: the server adds it at its open to a store an earlier build of this version made
 // (IMPORTED_TEMPLATES), as it does the one-answer index. A hosted machine's minted token (minted_tokens, MINTED_TOKENS) is
-// added the same way.
+// added the same way, and so is each runner's word that it is there and whether it refused to claim (runners, RUNNERS).
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -115,6 +115,18 @@ export const RUNNER_RELAYS = `CREATE TABLE IF NOT EXISTS runner_relays (
     incarnation TEXT NOT NULL,
     host TEXT NOT NULL,
     port INTEGER NOT NULL,
+    seen_at INTEGER NOT NULL
+  ) STRICT`;
+
+/** Each runner's word that it is there (runner/presence.ts), every runner's, beside a server or in a process of its own:
+ *  its name, its incarnation (its start), why it refused to claim any run (`refused`, its words; null for one that claims)
+ *  and when it last said it was there. The server reads them for whether any runner here can take a run (a launch's 503
+ *  runner_refused, capabilities' runner_refused, health's runner check). In STORE_DDL, and added at a server open to a
+ *  store an earlier build of this version made, as IMPORTED_TEMPLATES is. */
+export const RUNNERS = `CREATE TABLE IF NOT EXISTS runners (
+    runner TEXT PRIMARY KEY,
+    incarnation TEXT NOT NULL,
+    refused TEXT,
     seen_at INTEGER NOT NULL
   ) STRICT`;
 
@@ -563,6 +575,7 @@ export const STORE_DDL: readonly string[] = [
   IMPORTED_TEMPLATES,
   MINTED_TOKENS,
   RUNNER_RELAYS,
+  RUNNERS,
 
   // An agent's saved browser sign-ins (design 2.1, the browser sign-in rules): one live row per agent and browser provider, its
   // pointer (the vendor's context or profile id) sealed with the store's one rule (store/seal.ts, AAD
