@@ -58,7 +58,8 @@ export interface HarnessEntry {
   /** What it promises (HarnessPromises). Absent: a native harness's (NATIVE_PROMISES). */
   readonly promises?: HarnessPromises;
   /** The runner's harness for it (runner/adapters/index.ts RunnerHarness): absent on a built-in, whose runner is the
-   *  runner's own (RUNNER_HARNESSES); a harness module's entry brings its own. */
+   *  runner's own (RUNNER_HARNESSES, else ON_TABLE for one run from its facts and adapter: Goose, Cursor); a harness
+   *  module's entry brings its own. */
   readonly runner?: RunnerHarness;
   /** Whether it takes a message mid-turn; else a message waits for the turn's end. */
   readonly steer: boolean;

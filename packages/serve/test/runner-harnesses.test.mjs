@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 
-const { RUNNER_HARNESSES, resolveHarness } = await import("../dist/runner/adapters/index.js");
+const { ON_TABLE, RUNNER_HARNESSES, resolveHarness } = await import("../dist/runner/adapters/index.js");
 
 const dir = mkdtempSync(join(tmpdir(), "runner-harnesses-"));
 after(() => rmSync(dir, { recursive: true, force: true }));
@@ -25,14 +25,18 @@ test("runner harnesses: pi keeps its own record; each CLI's (claude-agent, codex
   assert.equal(resolveHarness("claude-agent").record, "loop");
   assert.equal(resolveHarness("codex").record, "loop");
   assert.equal(resolveHarness("opencode").record, "loop");
-  assert.equal(resolveHarness("goose").record, "loop");
-  assert.equal(resolveHarness("cursor").record, "loop");
+  // Goose and Cursor run from their table entries (facts and adapter): one shared runner, whose adapter is never asked.
+  assert.equal(resolveHarness("goose"), ON_TABLE);
+  assert.equal(resolveHarness("cursor"), ON_TABLE);
+  assert.equal(ON_TABLE.record, "loop");
   assert.equal(resolveHarness("no-such-harness"), undefined);
   assert.equal(resolveHarness("__proto__"), undefined, "a name is looked up as data, never through the prototype");
-  // The runner's static table: goose and cursor are in it wherever their package is beside serve (here, always),
-  // installed or not. Whether a server lists one is the harness table's (harnessIds), read once it is installed and
-  // verified.
-  assert.deepEqual(Object.keys(RUNNER_HARNESSES).sort(), ["claude-agent", "codex", "cursor", "goose", "opencode", "pi"]);
+  // The runner's static table: the built-ins whose runner adapter builds their run.
+  assert.deepEqual(Object.keys(RUNNER_HARNESSES).sort(), ["claude-agent", "codex", "opencode", "pi"]);
+});
+
+test("runner harnesses: the shared runner of a table-run entry refuses to build an adapter, in words", async () => {
+  await assert.rejects(ON_TABLE.adapter(launch()), /runs from its table entry/);
 });
 
 test("runner harnesses: each builds its adapter from the launch", async () => {
