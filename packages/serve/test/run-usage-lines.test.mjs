@@ -98,3 +98,11 @@ test("browser seconds with no charge booked for them: the seconds are said, thei
   assert.deepEqual(lines, [{ meter: "browser_time", dimension: "steel", quantity: 12, unit: "second", basis: "unpriced", usd: null }]);
   assert.equal(total_usd, null);
 });
+
+test("a run's usage is read in one snapshot of the store: no read is made outside it, so a follow-up that reopens the run can't land between two", async () => {
+  const { runUsageOverStore } = await import("../dist/run-usage.js");
+  const outside = new Proxy({}, { get: (_, key) => { throw new Error(`read outside the snapshot: ${String(key)}`); } });
+  const inside = { runs: { get: async () => ({ id: "run_1", state: "running" }) } };
+  const store = new Proxy(outside, { get: (target, key) => (key === "snapshot" ? (read) => read(inside) : target[key]) });
+  assert.deepEqual(await runUsageOverStore(store, "run_1"), { run_id: "run_1", final: false, currency: "USD", total_usd: null, lines: null, reason: "running" });
+});

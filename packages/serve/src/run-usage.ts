@@ -155,19 +155,22 @@ export function usageLinesOf(entries: readonly EntryLike[]): { lines: UsageLine[
 
 /** Run `runId`'s usage lines (GET /runs/{run_id}/usage); undefined for an unknown run. No lines (`reason`) while it is at
  *  work, for a run whose figure is not its booking's, and for a learning run a follow-up opened again: the cases where
- *  `cost.tools_usd` is null for the same reasons. */
+ *  `cost.tools_usd` is null for the same reasons. Its state, launch, learning rounds and journal are read in one snapshot
+ *  of the store (one moment): a follow-up that reopens the run between two reads can't put its requests under `final`. */
 export async function runUsageOverStore(store: Store, runId: string): Promise<RunUsage | undefined> {
-  const run = await store.runs.get(runId);
-  if (!run) return undefined;
-  const none = (reason: UsageReason, final: boolean): RunUsage => ({ run_id: runId, final, currency: "USD", total_usd: null, lines: null, reason });
-  if (!FINAL_STATES.includes(run.state)) return none("running", false);
-  const launch = await launchOf(store, runId);
-  if (run.importedFrom || launch?.native || launch?.sdk) return none("not_booked", true);
-  if ((await roundsOf(store, runId)).length > 1) return none("reopened", true);
-  const records = await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT);
-  if (unbookedCli(records.entries as never)) return none("not_booked", true);
-  const turns = reflectRanges(records.submissions ?? [], records.entries);
-  const entries = records.entries.filter((entry) => !inReflect(turns, Number(entry.id))) as EntryLike[];
-  const { lines, total_usd } = usageLinesOf(entries);
-  return { run_id: runId, final: true, currency: "USD", total_usd, lines, reason: null };
+  return store.snapshot(async (snapshot) => {
+    const run = await snapshot.runs.get(runId);
+    if (!run) return undefined;
+    const none = (reason: UsageReason, final: boolean): RunUsage => ({ run_id: runId, final, currency: "USD", total_usd: null, lines: null, reason });
+    if (!FINAL_STATES.includes(run.state)) return none("running", false);
+    const launch = await launchOf(snapshot, runId);
+    if (run.importedFrom || launch?.native || launch?.sdk) return none("not_booked", true);
+    if ((await roundsOf(snapshot, runId)).length > 1) return none("reopened", true);
+    const records = await journalRecords(snapshot.readJournal(runId), BACKGROUND_CONTEXT);
+    if (unbookedCli(records.entries as never)) return none("not_booked", true);
+    const turns = reflectRanges(records.submissions ?? [], records.entries);
+    const entries = records.entries.filter((entry) => !inReflect(turns, Number(entry.id))) as EntryLike[];
+    const { lines, total_usd } = usageLinesOf(entries);
+    return { run_id: runId, final: true, currency: "USD", total_usd, lines, reason: null };
+  });
 }
