@@ -6,6 +6,17 @@ const GITHUB_TOKEN = /gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}/;
 const JWT = /eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/;
 /** A Standard Webhooks signing secret: `whsec_` and base64, this server's or any other's. */
 const WEBHOOK_SECRET = /whsec_[A-Za-z0-9+/]{24,}={0,2}/;
+/** The token after a `Bearer` scheme (RFC 6750's characters), in any case: twenty characters or more with a digit among
+ *  them, so a word after "bearer" ("bearer authentication/authorization"), a placeholder (`<token>`, `$TOKEN`,
+ *  `YOUR_API_KEY`) and a challenge's parameter (`Bearer realm="x"`) are none. The token alone is the match: the scheme
+ *  before it stays, so a reader still sees a header was there. The scheme is at most three blanks before the token, and
+ *  the digit is looked for only through the token's own characters, so the reading stays linear. */
+const BEARER_TOKEN = /(?<=\bBearer\s{1,3})(?=[A-Za-z._~+/-]*\d)[A-Za-z0-9._~+/-]{20,}={0,2}/i;
+/** The value of a URL parameter named like a credential, after `?` or `&`: sixteen characters or more, to the next
+ *  separator. The name is the whole parameter's (`token`, never `page_token`), and the value alone is the match, so the
+ *  name stays. A signed URL's signature is one: whoever holds the URL holds what it grants. No bracket is a value's
+ *  character (a URL writes one percent-encoded), so a value already cut to "[redacted]" is never read as one. */
+const URL_CREDENTIAL = /(?<=[?&](?:api[_-]?key|access[_-]?token|auth[_-]?token|id[_-]?token|refresh[_-]?token|client[_-]?secret|x-amz-signature|x-amz-security-token|x-goog-signature|token|secret|password|passwd|signature|sig)=)[^\s&#"'`<>\\[\]]{16,}/i;
 
 /** A bank account number beside its word: "account", "acct", "a/c" or "bank account", maybe "number", "no.", "#", ":"
  *  or "is" after it, then six digits or more, single dashes or spaces between them. A count before the word ("4
@@ -31,6 +42,8 @@ const SHAPES: readonly (readonly [string, RegExp])[] = [
   ["JWT", JWT],
   ["webhook signing secret", WEBHOOK_SECRET],
   ["URL with a password", /:\/\/[^\s/?#@:]+:[^\s/?#@]*@/],
+  ["bearer token", BEARER_TOKEN],
+  ["URL parameter named like a credential", URL_CREDENTIAL],
 ];
 
 /** The kinds of secret-shaped text in `text`. */
