@@ -1,0 +1,13 @@
+# walk.sh's values: the image's own command plus the faux model of deploy/walk/faux-steps.mjs (no key, no network), with
+# it and the walk's API client mounted from the ConfigMap walk.sh makes; and the usage counts off.
+args: ["server-and-runner", "--data", "/data", "--listen", "0.0.0.0", "--port", "7340", "--drain-timeout", "6s", "--faux", "/walk/faux-steps.mjs"]
+env:
+  AGENTRUN_TELEMETRY: "0"
+extraVolumes:
+  - name: walk
+    configMap:
+      name: walk-files
+extraVolumeMounts:
+  - name: walk
+    mountPath: /walk
+    readOnly: true
