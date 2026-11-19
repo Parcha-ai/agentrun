@@ -29,7 +29,7 @@ import type { Duplex } from "node:stream";
 import { type ActionMapper, createActionMapper, type InputAction, redactWords, type Result, type ScreenFrame, type ScreenWatch, type ScreenWatchHandlers, type ViewerEvent, type WatchOptions } from "@parcha/agentrun-computer";
 import { acceptWebSocket, CLOSE_CODES, encodeFrame, tokenMatches, type WsConn } from "@parcha/pi-browser/live-view";
 import type { LiveViewerStore } from "./browser-live.js";
-import { provenFor, type RunnerLive } from "./live-reach.js";
+import { liveForRun, provenFor, type RunnerLive } from "./live-reach.js";
 import { type ComputerCallStore, computerHoldOf, handBackComputer, takeOverComputer } from "./computer-commands.js";
 import { type ComputerHoldChange, onComputerHold } from "./runner/computer-journal.js";
 import { sealColumn, sealedAt } from "./store/seal.js";
@@ -189,7 +189,8 @@ export const claimViewOpener = (at?: RunnerLive) => (args: ClaimViewArgs): Promi
     store, sealKey: args.sealKey, claim, kind: args.kind, input: args.input, tag: args.tag, watch: args.watch,
     hold: viewerHoldOf(PLACES, store, claim.runId, args.hold as RunnersHold),
     ...(args.gone ? { gone: args.gone } : {}),
-    ...(at ? { at } : {}),
+    // Proved under the claim's run's own key (live-reach.ts liveForRun), as the server asks it.
+    ...(at ? { at: liveForRun(at, claim.runId) } : {}),
   });
 };
 /** The opener on the server's own machine: loopback. */

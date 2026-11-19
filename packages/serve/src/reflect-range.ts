@@ -5,7 +5,6 @@
 import type { TimelineEvent } from "./timeline/index.js";
 import { LEARNING_LABEL } from "./learning.js";
 import { said } from "./learning-words.js";
-import { askedForDryRun } from "./learn/reflect.js";
 import { askedForCompile } from "./learn/compile.js";
 import type { Status } from "./run-view.js";
 
@@ -35,7 +34,7 @@ export function labelled(reflect: Reflect | undefined, rows: TimelineEvent[]): T
   return rows.map((row) => (!reflects(reflect, row.id) ? row : {
     ...row, agent_label: LEARNING_LABEL,
     ...(row.kind === "final_answer" ? { kind: "text_block" as const } : {}),
-    // The turn asked again for a draft whose dry run failed says so; every other message of the turn is its ask.
-    ...(row.kind === "user_message" ? ((words) => ({ summary: words, text: words }))(askedForDryRun(row.text) ? said.askedDryRun : askedForCompile(row.text) === "again" ? said.askedCompileAgain : askedForCompile(row.text) ? said.askedCompile : said.asked) : {}),
+    // The compile turn's ask, or its ask again once the checks sent a draft back; any other message of the turn, its own.
+    ...(row.kind === "user_message" ? ((words) => ({ summary: words, text: words }))(askedForCompile(row.text) === "again" ? said.askedCompileAgain : askedForCompile(row.text) ? said.askedCompile : said.asked) : {}),
   }));
 }

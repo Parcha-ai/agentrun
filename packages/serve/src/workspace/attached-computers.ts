@@ -3,6 +3,8 @@
 // configuration is the kind and groups it paired as. An agent's computer setting names it as its provider, {kind:
 // "desktop", provider: "cmp-..."}, so a run resolves, checks and claims it on the one path every computer takes
 // (resolve-computer.ts, computer-for-claim.ts), and the computer package's attachedProvider stands in for a vendor's.
+// A Linux box with no display (computerd's hello says linux, with files and exec) is a sandbox: in Mode 2 it holds the
+// run's folder as a synced folder in its own /workspace, as a hosted computer that dials does.
 //
 // Its socket is held by the AttachHub of the server's process: a runner in that process (the CLI's start, its runner
 // beside the server) takes it; a runner of its own process cannot reach it and refuses it in ONE_PROCESS_WORDS.
@@ -17,8 +19,21 @@ export const PAIRED_ID_PREFIX = "cmp-";
 /** The image a paired computer's spec names: none is made, so this only says what it is. */
 export const ATTACHED_IMAGE = "attached";
 
+/** How to start a server so its runs can use a paired computer, in one line: the same words wherever it is said. */
+export const ONE_PROCESS_FIX = "start the image with the server options alone, without server-and-runner (outside the image: agentrun-serve without --no-runner)";
+
 /** The words a run gets when its agent's computer is a paired computer and its runner is not in the server's process. */
-export const ONE_PROCESS_WORDS = "a paired computer's socket is held by the serve process it dialed, and this runner runs in a process of its own: start AgentRun as one process (agentrun serve, with its runner beside it, not --no-runner) to use a paired computer";
+export const ONE_PROCESS_WORDS = `a paired computer's socket is held by the server process it dialed, and this runner runs in a process of its own: ${ONE_PROCESS_FIX}`;
+
+/** What a pairing code, the pair answer and each paired computer say on a server whose runner runs in a process of its
+ *  own (--no-runner; the image's server-and-runner): the computer pairs, and no run here can use it. */
+export const RUNNER_APART_WORDS = `no run on this server can use a paired computer: its runner runs in a process of its own, and the computer's socket is held by the server's: ${ONE_PROCESS_FIX}`;
+
+/** What a provider whose machines dial this server (the computer package's connectOf "dial": Fly Machines, Cloudflare,
+ *  and E2B, Daytona or Modal set to dial) says on such a server: its row in GET /v2/computers and its test. Its
+ *  machines' sockets are taken by the server's attach hub, and a runner of its own process has none, so its create
+ *  refuses (the computer package's hosted/provider.ts, naming the same fix). */
+export const dialApartWords = (label: string): string => `no run on this server can use ${label}: its machines dial this server, and its runner runs in a process of its own, with no attach hub to take their socket: ${ONE_PROCESS_FIX}`;
 
 /** What the claim reads of the paired computers: the store's rows (removed ones left out), and the server's hub where
  *  the runner shares its process (absent: a runner of its own process). */
@@ -36,13 +51,14 @@ export const pairedOf = (row: PairedComputerRow): PairedComputer => ({
 });
 
 /** The setting kinds the attach path cannot serve, with why and what to pair instead: a browser session needs a CDP
- *  connection, which the attach socket does not carry, and a sandbox needs the run's folder mounted, which a paired
- *  computer has no mount for (resolve-computer.ts refuses a sandbox without one). Kind-based, never by OS: a driver whose hello serves one of
+ *  connection, which the attach socket does not carry. Kind-based, never by OS: a driver whose hello serves one of
  *  these and no other kind is refused at pairing, and a paired row of one serves nothing. */
 const ATTACH_CANNOT: Readonly<Partial<Record<ComputerSettingKind, string>>> = {
   browser: "a paired computer can't serve browser sessions yet, so pair a desktop or phone driver",
-  sandbox: "a paired computer can't mount a run's folder yet, so no agent could run a sandbox on it: pair a desktop or phone driver",
 };
+
+/** Which paired computer is a sandbox: a Linux box's computerd, its hello kind linux (no display), with files and exec. */
+const PAIRED_SANDBOX = "only a Linux box paired with computerd and no display can be a sandbox computer";
 
 /** What a driver's hello lacks to serve `kind`, by the kind registry's rule (the computer package's SETTING_KINDS, which
  *  servingRefusals reads): "it says desktop but declares no input.pointer, input.keys", "it says android, which no
@@ -72,8 +88,9 @@ export function servesNoKind(name: string, hello: Partial<HelloResult>): string 
 }
 
 /** A paired computer as a provider of `registry`: named by its name and its os, as an agent's computer picker lists it;
- *  the setting kinds its paired hello serves, no keys, no mount, the machine's own network ("open": a run never narrows
- *  a person's own machine), never metered. */
+ *  the setting kinds its paired hello serves, no keys, the machine's own network ("open": a run never narrows a person's
+ *  own machine), never metered. A sandbox (a Linux box with files and exec) takes the run's folder as a synced folder
+ *  (the computer package's attachedProvider checks its /workspace); a desktop or a phone takes no mount. */
 export function pairedEntry(row: PairedComputerRow, registry: Pick<KindRegistry, "SETTING_KINDS" | "servingRefusals">): ProviderEntry {
   const hello = row.hello as Partial<HelloResult>;
   const configuration = { kind: String(hello.kind ?? ""), groups: Array.isArray(hello.groups) ? [...hello.groups] : [] } as unknown as KindCapabilities;
@@ -83,7 +100,7 @@ export function pairedEntry(row: PairedComputerRow, registry: Pick<KindRegistry,
     label: typeof hello.os === "string" ? `${row.name} (${hello.os})` : row.name,
     kinds,
     keys: [],
-    mounts: [],
+    mounts: kinds.includes("sandbox") ? ["sync"] : [],
     network: ["open"],
     metered: false,
     capabilities: [configuration],
@@ -93,8 +110,8 @@ export function pairedEntry(row: PairedComputerRow, registry: Pick<KindRegistry,
 
 /** `registry` with each paired computer of `rows` as one more provider (pairedEntry), and the words for one that cannot
  *  serve a kind an agent asks of it: it is a computer of the person's own, and either the attach path carries no such
- *  kind (ATTACH_CANNOT: a sandbox, which would run the agent's shell there, or a browser), so the agent takes it as the
- *  kind it serves, or its driver lacks what the kind needs (helloLacks), so the driver is what to update. */
+ *  kind (ATTACH_CANNOT: a browser), or it is a desktop or a phone asked to be a sandbox (PAIRED_SANDBOX), so the agent
+ *  takes it as the kind it serves, or its driver lacks what the kind needs (helloLacks), so the driver is what to update. */
 export function withPaired<R extends KindRegistry>(registry: R, rows: readonly PairedComputerRow[]): R {
   if (rows.length === 0) return registry;
   const byId = new Map(rows.map((row) => [row.id, row]));
@@ -102,6 +119,9 @@ export function withPaired<R extends KindRegistry>(registry: R, rows: readonly P
     const row = byId.get(entry.id);
     if (row !== undefined && kind in ATTACH_CANNOT && entry.kinds.length > 0) {
       return `${row.name} is a computer of your own, and a paired computer can't be a ${kind} computer yet: give this agent ${row.name} as a ${entry.kinds.join(" or ")} computer`;
+    }
+    if (row !== undefined && kind === "sandbox" && entry.kinds.length > 0) {
+      return `${row.name} is a computer of your own, and ${PAIRED_SANDBOX}: give this agent ${row.name} as a ${entry.kinds.join(" or ")} computer`;
     }
     const lack = row === undefined ? undefined : helloLacks(row.hello as Partial<HelloResult>, kind);
     if (row === undefined || lack === undefined) return registry.unservedWhy?.(entry, kind);

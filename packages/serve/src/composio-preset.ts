@@ -17,7 +17,9 @@ export type ComposioControl = { readonly baseUrl?: string; readonly fetch?: type
 const BASE = "https://backend.composio.dev";
 /** The one Composio user a server's actions run as, unless the owner names another. */
 export const COMPOSIO_USER = "agentrun";
-const TOOLKIT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+/** A Composio toolkit's slug, as a save takes it once trimmed and lower-cased. */
+export const COMPOSIO_TOOLKIT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const TOOLKIT = COMPOSIO_TOOLKIT;
 const USER_ID = /^[A-Za-z0-9._@-]{1,128}$/;
 const PAGE = 200;
 const MAX_PAGES = 10;
@@ -96,20 +98,63 @@ function needsNoAuth(kit: Json): boolean {
 
 const notFound = (toolkit: string) => `Composio has no toolkit ${toolkit}: use its slug (github, slack, gmail...).`;
 
+/** A toolkit's actions, every page (at most MAX_PAGES), at its latest version: without toolkit_versions Composio lists its
+ *  base version (00000000_00), which leaves out the actions added since (linear 21 of 48, stripe 33 of 435, live 11-18),
+ *  though its MCP servers serve them. `complete`: the list ended within MAX_PAGES. */
+async function toolkitTools(ask: Ask, toolkit: string): Promise<{ tools: ComposioTool[]; complete: boolean }> {
+  const tools: ComposioTool[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < MAX_PAGES; page++) {
+    const listed = await ask("listing the toolkit's actions", "GET", `/api/v3/tools?toolkit_slug=${encodeURIComponent(toolkit)}&toolkit_versions=latest&limit=${PAGE}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, undefined, notFound(toolkit));
+    for (const item of Array.isArray(listed.items) ? listed.items : []) if (isObject(item) && text(item.slug)) tools.push({ slug: text(item.slug), name: text(item.name) || text(item.slug), description: text(item.description) });
+    cursor = text(listed.next_cursor) || undefined;
+    if (!cursor) return { tools, complete: true };
+  }
+  return { tools, complete: false };
+}
+
 /** POST /settings/mcp-servers/composio/tools: a toolkit's actions, for the console's picker, and whether it needs no sign-in. */
 export async function composioTools(body: unknown, control: ComposioControl, signal?: AbortSignal): Promise<{ toolkit: string; no_auth: boolean; tools: ComposioTool[] }> {
   const { key, toolkit } = head(body);
   const ask = asking(control, key, signal);
   const kit = await ask("reading the toolkit", "GET", `/api/v3/toolkits/${encodeURIComponent(toolkit)}`, undefined, notFound(toolkit));
-  const tools: ComposioTool[] = [];
-  let cursor: string | undefined;
-  for (let page = 0; page < MAX_PAGES; page++) {
-    const listed = await ask("listing the toolkit's actions", "GET", `/api/v3/tools?toolkit_slug=${encodeURIComponent(toolkit)}&limit=${PAGE}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, undefined, notFound(toolkit));
-    for (const item of Array.isArray(listed.items) ? listed.items : []) if (isObject(item) && text(item.slug)) tools.push({ slug: text(item.slug), name: text(item.name) || text(item.slug), description: text(item.description) });
-    cursor = text(listed.next_cursor) || undefined;
-    if (!cursor) break;
-  }
+  const { tools } = await toolkitTools(ask, toolkit);
   return { toolkit, no_auth: needsNoAuth(kit), tools };
+}
+
+/** Edit distance (Levenshtein). */
+function distance(a: string, b: string): number {
+  let prev = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const row = [i];
+    for (let j = 1; j <= b.length; j++) row[j] = Math.min(prev[j]! + 1, row[j - 1]! + 1, prev[j - 1]! + (a[i - 1] === b[j - 1] ? 0 : 1));
+    prev = row;
+  }
+  return prev[b.length]!;
+}
+
+/** The listed slug a missing one most likely means, when one is obvious: the same slug in another case, the one listed
+ *  slug that only adds or drops a trailing _WORD, else the one within a typo's reach (an edit distance of at most
+ *  max(2, length/10)). */
+function likelySlug(slug: string, listed: readonly string[]): string | undefined {
+  const want = slug.toUpperCase();
+  const same = listed.find((s) => s.toUpperCase() === want);
+  if (same) return same;
+  const extended = listed.filter((s) => s.toUpperCase().startsWith(`${want}_`) || want.startsWith(`${s.toUpperCase()}_`)).sort((a, b) => a.length - b.length);
+  if (extended.length === 1 || (extended.length > 1 && extended[0]!.length < extended[1]!.length)) return extended[0];
+  const reach = Math.max(2, Math.floor(want.length / 10));
+  let best: { slug: string; d: number } | undefined;
+  let tie = false;
+  for (const s of listed) {
+    // An edit distance is at least the length difference: a slug that far off is skipped before the O(n·m) distance, so a
+    // huge pasted value against a big toolkit costs one length compare per action.
+    if (Math.abs(s.length - want.length) > reach) continue;
+    const d = distance(want, s.toUpperCase());
+    if (d > reach) continue;
+    if (!best || d < best.d) [best, tie] = [{ slug: s, d }, false];
+    else if (d === best.d) tie = true;
+  }
+  return best && !tie ? best.slug : undefined;
 }
 
 /** The address Composio's generate answers, made one this server's client can use: the helper actions that connect an
@@ -144,6 +189,21 @@ export async function composioSave<T extends { tools?: readonly { name: string }
   let url: string | undefined;
   try {
     const kit = await ask("reading the toolkit", "GET", `/api/v3/toolkits/${encodeURIComponent(toolkit)}`, undefined, notFound(toolkit));
+    // Every slug is one the toolkit lists (at its latest version), before anything is made: Composio makes a server
+    // allowing a slug it doesn't have, which then serves nothing under that name. A list longer than MAX_PAGES refuses
+    // nothing on what it didn't read; the check after the save (not_served) still names an action left out.
+    const offered = await toolkitTools(ask, toolkit);
+    const known = new Set(offered.tools.map((tool) => tool.slug));
+    const unknown = offered.complete ? [...new Set(tools as string[])].filter((slug) => !known.has(slug)) : [];
+    if (unknown.length) {
+      // A slug past 128 characters is named by its first 64 and its length, so the refusal never carries a pasted megabyte back.
+      const names = unknown.map((slug) => {
+        const likely = likelySlug(slug, [...known]);
+        const shown = slug.length > 128 ? `${slug.slice(0, 64)}… (${slug.length} characters)` : slug;
+        return likely ? `${shown} (did you mean ${likely}?)` : shown;
+      });
+      throw invalid([issue("tools", "not_found", `Composio's ${toolkit} toolkit has no action ${names.length < 2 ? names.join("") : `${names.slice(0, -1).join(", ")} or ${names.at(-1)}`}: pick from its list (POST /settings/mcp-servers/composio/tools). Nothing was saved.`)]);
+    }
     const noAuth = needsNoAuth(kit);
     let authConfig: string | undefined;
     let madeConfig = false;

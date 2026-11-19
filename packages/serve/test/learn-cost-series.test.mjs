@@ -26,10 +26,10 @@ const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { CONFORMANCE_TIMING } = await import("../dist/runner/conformance/harness.js");
 
-const LEARNS = { input: { content: "Go." }, title: "t", place: { mode: "runner" }, learning: { given: [], seed: "a".repeat(40), section: "", seedNotes: 0 } };
+const LEARNS = { input: { content: "Go." }, title: "t", place: { mode: "runner" }, learning: { seed: "a".repeat(40), section: "" } };
 const PLAIN = { input: { content: "Go." }, title: "t", place: { mode: "runner" } };
 const dropped = { state: "dropped", reason: "empty", detail: "nothing to keep" };
-const proposed = { state: "proposed", proposal: { notes: [] }, detail: "proposed" };
+const merged = { state: "merged", reason: null, merged: "b".repeat(40), corrections: 1, detail: "Kept your correction." };
 
 async function agentOn(t) {
   const { store } = await storeOn(t);
@@ -37,37 +37,20 @@ async function agentOn(t) {
   return store;
 }
 
-test("a follow-up's end beside a kept learning that names no learning run queues none: the series lists the agent's runs alone", async (t) => {
+test("a follow-up's end beside a kept learning: the series lists the agent's runs alone, the run's whole cost once", async (t) => {
   const store = await agentOn(t);
   await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: LEARNS });
-  // Its first end keeps a learning with nothing to grade: no learning run.
   const first = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
   await store.runs.update(first, { state: "ended", costUsd: 0.01, metrics: { path: "agent" } }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: dropped } }] });
-  // A person's follow-up opens it again; its end keeps another learning and queues the learning run that would grade it.
+  // A person's follow-up opens it again; its end keeps its second round's learning (its correction, merged).
   const steer = await store.runs.reopen("run-1", { kind: "steer", body: { content: "And again." } });
   const second = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
-  await store.runs.update(second, { state: "ended", costUsd: 0.03, metrics: { path: "agent" } }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: proposed } }, { table: "learning_run", row: { id: "run-1-learning" } }], take: [steer.id] });
+  await store.runs.update(second, { state: "ended", costUsd: 0.03, metrics: { path: "agent" } }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: merged, round: 2 } }], take: [steer.id] });
 
-  assert.equal(await store.runs.get("run-1-learning"), undefined, "no learning run that no kept learning names");
   assert.deepEqual((await store.runs.list({ agentId: "agent-1" })).map((run) => run.id), ["run-1"]);
   const cost = await agentCostOverStore(store, "agent-1");
   assert.deepEqual(cost.runs.map((run) => [run.run_id, run.path, run.cost_usd, run.total_usd]), [["run-1", "agent", 0.03, 0.03]], "the run's whole cost, its follow-up's included");
   assert.equal(cost.total_runs, 1);
-});
-
-test("a learning run its kept learning names is no run of the series: its spend is that run's learning_usd, all-in", async (t) => {
-  const store = await agentOn(t);
-  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: LEARNS });
-  const source = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
-  await store.runs.update(source, { state: "ended", costUsd: 0.05, metrics: { path: "agent" } }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: proposed } }, { table: "learning_run", row: { id: "run-1-learning" } }] });
-  assert.equal((await store.runs.get("run-1-learning"))?.state, "queued", "queued with the kept learning that names it");
-  assert.equal((await store.learning.proposal("run-1"))?.learningRunId, "run-1-learning");
-  // Graded: the learning run ends at its grade's cost.
-  const grade = await store.claim("run-1-learning", "runner-b", { leaseMs: 60_000 });
-  await store.runs.update(grade, { state: "ended", costUsd: 0.02 });
-  const cost = await agentCostOverStore(store, "agent-1");
-  assert.deepEqual(cost.runs.map((run) => [run.run_id, run.cost_usd, run.learning_usd, run.total_usd]), [["run-1", 0.05, 0.02, 0.07]]);
-  assert.deepEqual([cost.total_runs, cost.unknown_path_runs], [1, 0]);
 });
 
 test("a run that learns whose record names no path is left out and counted, never the agent's at $0; one that does not learn reads agent", async (t) => {
@@ -102,6 +85,31 @@ test("the summary's replay is the serving promotion's record, read from the stor
   const check = { compile_after: 20, agree_min: 0.8, alone_min: 0.5, attempt: 1, n: 40, agreed: 34, alone: 40, of: [] };
   await recordPromotion(store.settings, "agent-1", { workflow: "answer", digest: "d".repeat(16), at: "2026-11-12T00:00:00Z", decided: "promote", reason: "as good as the agent", check }, () => true);
   assert.deepEqual((await agentCostOverStore(store, "agent-1")).summary.replay, { n: 40, workflow_pct: 85, agent_pct: 100, cleared: true, agreed: 34, alone: 40, agree_min: 0.8 });
+});
+
+// Where a revision took over is the server's (took_over), never found by time in the console: a promotion is written at a
+// claim, after the runs queued before it started, so a search by start time skipped the run it took over at.
+test("took_over marks the first run each revision served, over every run (a limited read keeps it): the first is the summary's takeover and the bill's promoted", async (t) => {
+  const store = await agentOn(t);
+  const offering = { ...LEARNS, learning: { ...LEARNS.learning, workflows: ["answer"] } };
+  const end = async (id, metrics, costUsd) => {
+    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: offering });
+    await store.runs.update(await store.claim(id, "runner-a", { leaseMs: 60_000 }), { state: "ended", costUsd, metrics });
+  };
+  const served = (path, digest) => ({ path, workflow: "answer", workflow_digest: digest });
+  await end("run-1", { path: "agent" }, 0.9);
+  await end("run-2", served("workflow", "d".repeat(16)), 0.1);
+  await end("run-3", served("workflow", "d".repeat(16)), 0.1);
+  // A newer revision serves from run 4 (handed back: still served by it); a replay of a third one serves no one.
+  await end("run-4", served("handed_back", "e".repeat(16)), 0.5);
+  await end("run-5", served("replay", "f".repeat(16)), 0.05);
+  await end("run-6", served("workflow", "e".repeat(16)), 0.1);
+  const cost = await agentCostOverStore(store, "agent-1");
+  assert.deepEqual(cost.runs.map((run) => [run.run_id, run.path, run.took_over]), [["run-1", "agent", false], ["run-2", "workflow", true], ["run-3", "workflow", false], ["run-4", "handed_back", true], ["run-5", "replay", false], ["run-6", "workflow", false]]);
+  const first = cost.runs.find((run) => run.took_over);
+  assert.deepEqual([cost.summary.takeover, cost.bill.promoted?.run_id], [{ n: first.n, run_id: first.run_id }, first.run_id], "one source for where it took over");
+  const latest = await agentCostOverStore(store, "agent-1", 4);
+  assert.deepEqual(latest.runs.map((run) => [run.run_id, run.took_over]), [["run-3", false], ["run-4", true], ["run-5", false], ["run-6", false]], "a limited read never marks the first run it lists");
 });
 
 const FAUX_HARNESS = new URL("./fixtures/faux-harness.mjs", import.meta.url).pathname;

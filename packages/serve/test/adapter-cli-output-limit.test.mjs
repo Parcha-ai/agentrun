@@ -5,13 +5,15 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { observed, queue, recorder, stores, until } from "./runner-support.mjs";
+import { observed, queue, recorder, STEADY_LEASE, stores, until } from "./runner-support.mjs";
 
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { journalRecords } = await import("../dist/runner/journal-reader.js");
 const { cutAtLimit } = await import("../dist/runner/loop-contract.js");
-const TIMING = { leaseMs: 600, renewEveryMs: 150, stopMarginMs: 200, pollMs: 20, commandPollMs: 30 };
+// One claim per case: a lease no stall of a loaded machine outlasts, so a stall never hands the run to a second claim
+// whose turn the case would then read.
+const TIMING = { ...STEADY_LEASE, pollMs: 20, commandPollMs: 30 };
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 
 /** A CLI stand-in whose one turn says `text` (a list: a message boundary, text_end, between pieces) and ends with `end`

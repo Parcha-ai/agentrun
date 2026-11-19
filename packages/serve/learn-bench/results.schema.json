@@ -6,7 +6,7 @@
   "type": "object",
   "required": ["schema", "bench", "series", "hard_stop"],
   "properties": {
-    "schema": { "const": "learning-bench/2" },
+    "schema": { "const": "learning-bench/3" },
     "hard_stop": { "type": ["string", "null"], "description": "Why the bench stopped early (its spend cap, its deadline, a stop), or null." },
     "bench": {
       "type": "object",
@@ -16,7 +16,7 @@
         "frozen": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Each frozen file's sha256 (the runner, the bench wrapper)." },
         "models": {
           "type": "object", "description": "Model names only, never a key.",
-          "properties": { "pi": { "type": ["string", "null"] }, "claude-agent": { "type": ["string", "null"] }, "learning_grader": { "type": ["string", "null"], "description": "The server's grade model; null: each run graded on its agent's own." }, "eval_grader": { "type": ["string", "null"], "description": "The llm graders' model; null: the server's default." } }
+          "properties": { "pi": { "type": ["string", "null"] }, "claude-agent": { "type": ["string", "null"] }, "eval_grader": { "type": ["string", "null"], "description": "The llm graders' model; null: the server's default." } }
         },
         "caps": { "type": "object", "properties": { "harness_max_runs": { "type": "object", "additionalProperties": { "type": "integer" }, "description": "A harness's step runs bounded by count, where the server cannot see its spend." }, "bench_max_usd": { "type": "number" }, "deadline_s": { "type": "integer" }, "step_cap_default_usd": { "type": "number" } } },
         "started_at": { "type": "string" }, "ended_at": { "type": "string" }
@@ -54,24 +54,22 @@
                   "items": { "type": "object", "required": ["grader", "type", "pass", "reason"], "properties": { "grader": { "type": "string" }, "type": { "type": "string" }, "pass": { "type": "boolean" }, "reason": { "type": "string" }, "ungraded": { "type": "boolean", "const": true, "description": "Present when the check could not be graded (the run did not finish, the grader run failed or gave no verdict, the bench's deadline): pass is false, but it is no verdict." }, "cost_usd": { "type": ["number", "null"] }, "run_id": { "type": "string" } } }
                 },
                 "answer": { "type": "string", "description": "The run's final answer as the graders read it, its first 4000 characters." },
-                "cost_usd": { "type": ["number", "null"], "description": "The step's run, whole: its job's turns and its end-of-run learning turn (its learning run, the grade, is apart)." },
+                "cost_usd": { "type": ["number", "null"], "description": "The step's run, whole: its job's turns and its end-of-run learning turn." },
                 "cost_unpriced": { "type": "boolean", "description": "The run completed having booked no request (no usage row with requests, no tokens) and its cost read $0: a usage the server does not see, so its costs read null. A known $0 (requests booked at a zero price) is not this." },
                 "usage": { "type": ["object", "null"], "description": "The run's usage row (its timeline's): requests, tokens and cost as the server counted them." },
                 "cost_view": { "type": ["object", "null"], "description": "The run view's cost object as served (usd, basis, charge_state, cap)." },
                 "work_cost_usd": { "type": ["number", "null"], "description": "The job's own turns: what the run had cost when its job answered (its kept learning row's job_cost_usd); the whole run for one that did not learn or look back." },
-                "reflect_cost_usd": { "type": ["number", "null"], "description": "The end-of-run learning turn (the kept row's look_back_usd); 0 for a run that did not learn or look back." },
+                "reflect_cost_usd": { "type": ["number", "null"], "description": "The end-of-run compile turn (the kept row's look_back_usd); 0 for a run that did not learn." },
                 "eval_grader_cost_usd": { "type": ["number", "null"], "description": "Its llm graders' runs." },
                 "learning": { "type": ["object", "null"], "description": "on: the run's learning as it settled.", "properties": { "state": { "type": ["string", "null"] }, "reason": { "type": ["string", "null"] }, "detail": { "type": ["string", "null"] } } },
-                "grade_cost_usd": { "type": ["number", "null"], "description": "on: its learning run's grade cost (GET /runs/{id}/learning cost_usd.grade), a known $0 included; null when the server says it is unknown." },
-                "learned": { "type": ["object", "null"], "description": "on: what its learning merged, by name: notes, skills, workflows." },
-                "workflow_proposed": { "type": "boolean", "description": "on: its learning kept a workflow draft or put one to the grader." },
+                "learned": { "type": ["object", "null"], "description": "on: what its learning merged: corrections (lines added to corrections.md) and workflows (by name).", "properties": { "corrections": { "type": "integer", "minimum": 0 }, "workflows": { "type": "array", "items": { "type": "string" } } } },
+                "workflow_proposed": { "type": "boolean", "description": "on: its learning kept a workflow." },
                 "learned_workflow_calls": { "type": "integer", "minimum": 0 },
                 "tools": { "type": "array", "items": { "type": "string" }, "description": "The tools the run called (its timeline)." },
                 "approvals": { "type": "array", "description": "on: pending items the owner approved after the step (--approve, the default).", "items": { "type": "object", "properties": { "file": { "type": "string" }, "status": { "type": "integer" } } } },
-                "verdict": { "type": ["array", "null"], "description": "on: the grader's word on each item it was shown: file, keep, pending (held for the owner's OK), origin (you or run), the rubric question it failed, why." },
-                "kept_texts": { "type": ["object", "null"], "additionalProperties": { "type": ["string", "null"] }, "description": "on: each note, skill or workflow this step's learning kept, by file, its text as the folder holds it." },
+                "kept_texts": { "type": ["object", "null"], "additionalProperties": { "type": ["string", "null"] }, "description": "on: corrections.md when this step's learning added to it, and each workflow it kept, by file, its text as the folder holds it." },
                 "tokens": { "type": ["object", "null"], "description": "The run's tokens as its end stored them (input, cache_read, cache_write, output, requests, unmetered); null when it booked no request." },
-                "active_after": { "type": ["object", "null"], "description": "on: the agent's active learned items after the step, each name with the sha256 of its text: notes, skills, workflows.", "properties": { "notes": { "type": "object", "additionalProperties": { "type": "string" } }, "skills": { "type": "object", "additionalProperties": { "type": "string" } }, "workflows": { "type": "object", "additionalProperties": { "type": "string" } } } }
+                "active_after": { "type": ["object", "null"], "description": "on: what the agent served after the step, each file with the sha256 of its text: corrections (corrections.md, empty while it is), its line count, active workflows, and the workflow READMEs waiting for the owner's OK.", "properties": { "corrections": { "type": "object", "additionalProperties": { "type": "string" } }, "correction_lines": { "type": "integer", "minimum": 0 }, "workflows": { "type": "object", "additionalProperties": { "type": "string" } }, "pending": { "type": "array", "items": { "type": "string" } } } }
               }
             }
           },
@@ -92,7 +90,7 @@
               "work_cost_per_run_usd": { "type": ["number", "null"], "description": "The job's own turns, per run." },
               "cost_trend_usd_per_run": { "type": ["number", "null"], "description": "The least-squares slope of the work cost over the steps' order: below 0, the work got cheaper as it went." },
               "reflect_cost_per_run_usd": { "type": ["number", "null"], "description": "on: the end-of-run learning turn, per run." },
-              "learning_overhead_usd_per_run": { "type": ["number", "null"], "description": "on: what learning adds to a run: its end-of-run turn and its grade. A grade of unknown cost counts 0, so with grade_cost_unknown_steps above 0 this is a lower bound." },
+              "learning_overhead_usd_per_run": { "type": ["number", "null"], "description": "on: what learning adds to a run: its end-of-run compile turn." },
               "cost_first_usd": { "type": ["number", "null"] }, "cost_last_usd": { "type": ["number", "null"] },
               "workflow_proposal_rate": { "type": ["number", "null"], "description": "on: teach steps whose learning proposed a workflow, over the teach steps." },
               "reuse_rate": { "type": ["number", "null"], "description": "on: steps after a workflow was first kept that called learned_workflow; null before one is kept." },
@@ -101,16 +99,16 @@
                 "anyOf": [
                   {
                     "type": "object",
-                    "required": ["kept_step", "steps_after", "call_steps", "call_passes", "tokens_per_pass_workflow", "tokens_per_pass_skill_only", "workflow_steps_known", "skill_only_steps_known"],
+                    "required": ["kept_step", "steps_after", "call_steps", "call_passes", "tokens_per_pass_workflow", "tokens_per_pass_agent", "workflow_steps_known", "agent_steps_known"],
                     "properties": {
                       "kept_step": { "type": "string", "description": "The step whose learning first kept a workflow." },
                       "steps_after": { "type": "integer", "description": "Steps after it." },
                       "call_steps": { "type": "integer", "description": "Of those, the steps that called learned_workflow." },
                       "call_passes": { "type": "integer", "description": "Of the calling steps, those that passed." },
                       "tokens_per_pass_workflow": { "type": ["integer", "null"], "description": "Input + output tokens per passing step over the calling steps whose tokens are known; null when none is, or none passed." },
-                      "tokens_per_pass_skill_only": { "type": ["integer", "null"], "description": "The same over the skill-only steps: every step after the one that first learned a skill that called no workflow." },
+                      "tokens_per_pass_agent": { "type": ["integer", "null"], "description": "The same over the series' steps that called no workflow." },
                       "workflow_steps_known": { "type": "integer", "description": "Calling steps whose tokens are fully known." },
-                      "skill_only_steps_known": { "type": "integer", "description": "Skill-only steps whose tokens are fully known." }
+                      "agent_steps_known": { "type": "integer", "description": "Steps that called no workflow whose tokens are fully known." }
                     }
                   },
                   { "type": "null" }
@@ -124,7 +122,7 @@
                     "change_step": { "type": "string" },
                     "pass_rate_after": { "type": ["number", "null"], "description": "Steps after the change that passed." },
                     "change_graders_pass_rate": { "type": ["number", "null"], "description": "Graders named change-*.md in the steps after it that passed: the new rule checked alone." },
-                    "skill_updated": { "type": ["boolean", "null"], "description": "An active skill's text differs at the series' end from just before the change; null with no skill." },
+                    "corrections_updated": { "type": ["boolean", "null"], "description": "corrections.md differs at the series' end from just before the change; null while it is empty." },
                     "workflow_updated": { "type": ["boolean", "null"], "description": "An active workflow's text differs at the end from just before the change; null with no workflow." },
                     "workflow_follows": { "type": ["boolean", "null"], "description": "Every step after the change that called learned_workflow passed its change graders; null when none called it." }
                   }
@@ -134,8 +132,6 @@
               "plant_graders": { "type": ["integer", "null"], "description": "How many such graders graded." },
               "plant_ungraded": { "type": ["integer", "null"], "description": "on: how many such graders could not grade (ungraded), apart from wrong_keeps." },
               "ungraded_checks": { "type": "integer", "description": "The series' checks that could not be graded (ungraded)." },
-              "grade_cost_usd": { "type": ["number", "null"], "description": "on: the learning runs' grade cost." },
-              "grade_cost_unknown_steps": { "type": ["integer", "null"], "description": "on: merged steps whose grade cost the server says is unknown (null)." },
               "eval_grader_cost_usd": { "type": ["number", "null"] },
               "approvals": { "type": "integer" },
               "cost_unknown_steps": { "type": "integer", "description": "Steps whose run cost is unknown (cost_unpriced)." }

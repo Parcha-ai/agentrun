@@ -1,5 +1,5 @@
 ---
-description: A learned note says "skip junior job posts"; this week Quillforge posts its first role in Germany, a junior one, and names a new CRO. The digest leaves the junior post out and keeps the CRO.
+description: A learned correction says "skip junior job posts"; this week Quillforge posts its first role in Germany, a junior one, and names a new CRO. The digest leaves the junior post out and keeps the CRO.
 runs: 3
 max_cost_usd: 1.00
 ---

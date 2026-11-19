@@ -78,6 +78,27 @@ for (const [what, hold] of [
   });
 }
 
+test("a store the server it replaces is still closing (its last connection's checkpoint holds the file) is opened once it lets go, never refused 'database is locked'", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const data = join(root, "data");
+  await (await openSqliteStore({ dataDir: data, role: "server" })).close();
+  // Another process holds the store file exclusively, as a closing server's checkpoint does, for a moment.
+  const holder = spawn(process.execPath, ["-e", `
+    const { DatabaseSync } = require("node:sqlite");
+    const db = new DatabaseSync(process.env.HELD_STORE);
+    db.exec("PRAGMA locking_mode = EXCLUSIVE");
+    db.exec("BEGIN EXCLUSIVE");
+    process.stdout.write("held\\n");
+    setTimeout(() => { db.exec("COMMIT"); db.close(); }, 500);
+  `], { env: { ...process.env, HELD_STORE: join(data, "store.sqlite") }, stdio: ["ignore", "pipe", "inherit"] });
+  const gone = new Promise((resolve) => holder.once("exit", resolve));
+  t.after(async () => { if (holder.exitCode === null && holder.signalCode === null) holder.kill("SIGKILL"); await gone; });
+  await new Promise((resolve) => createInterface({ input: holder.stdout }).once("line", resolve));
+  const store = await openSqliteStore({ dataDir: data, role: "server" });
+  await store.close();
+  assert.equal(await gone, 0);
+});
+
 test("a server started right after another's stop begins serves once the old one is gone, never exits 1", { timeout: 120_000 }, async (t) => {
   const root = await scratch(t);
   const data = join(root, "data");

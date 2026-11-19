@@ -2,7 +2,7 @@
 // our box image, the public registry tag its prepareImage() answers (box-image.ts), which Modal pulls at the first create.
 import { defineProvider } from "../descriptor.js";
 import type { GpuCapability } from "../provider.js";
-import { SANDBOX } from "./shared.js";
+import { LINUX_DESKTOP, SANDBOX } from "./shared.js";
 
 /**
  * The GPU types Modal takes, by its own names (guide/gpu, 11-10): "A100" is the 40 GB one, "A100-40GB" its explicit
@@ -14,8 +14,8 @@ export const MODAL_GPU_TYPES = ["T4", "L4", "A10", "L40S", "A100", "A100-40GB", 
 export const MODAL_GPU_MAX = 8;
 /**
  * The GPUs Modal offers, as capabilities().gpu and its configuration declare them: on gVisor, Modal's one GPU runtime;
- * preemptible, as Modal may end a GPU container to free capacity; no mount yet, the Archil client's FUSE mount not
- * being proven on gVisor; and the loopback fence made inside a user namespace, as gVisor's root may not make a network
+ * preemptible, as Modal may end a GPU container to free capacity; a synced folder alone, the Archil client's FUSE mount
+ * not being proven on gVisor; and the loopback fence made inside a user namespace, as gVisor's root may not make a network
  * namespace itself (a live probe, 11-11: unshare -n refused, unshare -Urn allowed).
  */
 export const MODAL_GPU: Readonly<GpuCapability> = Object.freeze({
@@ -23,7 +23,7 @@ export const MODAL_GPU: Readonly<GpuCapability> = Object.freeze({
 	max: MODAL_GPU_MAX,
 	isolation: "gvisor",
 	preemptible: true,
-	mounts: [],
+	mounts: ["sync" as const],
 	// Its gVisor runtime gives /dev/fuse (modal-6, 11-11: a character device 10:229 that opens), but Archil's FUSE mount
 	// under gVisor is not proven safe for the Archil client.
 	unmounted: Object.freeze({ why: "Archil's FUSE mount isn't proven on Modal's gVisor runtime (#2279)", yet: true }),
@@ -44,14 +44,18 @@ export const MODAL = defineProvider({
 		{ name: "modalApp", option: "app", default: "agentrun" },
 		{ name: "modalConnect", option: "connect" },
 	],
+	connect: "either",
 	metered: true,
 	mounts: ["archil"],
 	// None: its programs run in a network of their own, their loopback alone (isolation.ts), and the sandbox is made with
 	// its network blocked. Open and a list: the sandbox's network is not blocked, and its programs' one way out is init's
 	// egress proxy, which reaches the public internet alone, and with a list its hosts alone (hosted/network.ts).
 	network: ["none", "open", "allow"],
-	// A linux computer, with GPUs when asked.
-	capabilities: [{ ...SANDBOX, gpu: MODAL_GPU }],
+	// A linux computer, with GPUs when asked; or, on connect dial alone, a desktop with none: the box image's X server and
+	// xfwm4, started through computerd over the socket the sandbox dialed, at the adapter's default size of 2 CPUs and
+	// 4 GiB (modal.ts). The desktop's configuration selects dial itself, whatever modalConnect says: a provider on connect
+	// exec refuses kind desktop when it is made.
+	capabilities: [{ ...SANDBOX, gpu: MODAL_GPU }, { ...LINUX_DESKTOP, options: { kind: "desktop", connect: "dial" } }],
 	// No default image: every computer starts from the box image its prepareImage() answers.
 	prepareImage: true,
 	load: () => import("../modal.js"),

@@ -195,6 +195,20 @@ export function asksOf(entries: readonly JournalEntry[]): Map<string, Approval> 
   return map;
 }
 
+/** Whether a person's stop of a run stands asked and not yet taken: an agentic run (readRun's kind) still reading running,
+ *  with a stop command its runner has neither taken nor refused. The runner cuts the turn first and takes the stop row in
+ *  the commit that ends the run stopped, so between the two the run is stopped all the same: its view says so (stopped
+ *  pending) and every call still waiting reads withdrawn (answersOf `final`), as the stop's answer endpoint already says
+ *  (runs-over-store endBefore: an answer after the stop is 409 withdrawn). */
+export function stopAsked(
+  view: { kind?: string; state?: string } | null | undefined,
+  run: { importedFrom: unknown } | null | undefined,
+  commands: readonly { kind: string; takenAt: number | null; refused: string | null }[],
+): boolean {
+  return view?.state === "running" && view.kind === "agentic" && run?.importedFrom === null &&
+    commands.some((command) => command.kind === "stop" && command.takenAt === null && command.refused === null);
+}
+
 /** The answers a run got to its asks, from its journal's `agentrun.answer` entries, by the call's id (the key the moment
  *  and the pending views read as run.meta.approvals): a person's allow or deny with any note, or a withdrawal taken when
  *  the run was stopped or cancelled while the call waited. The first answer for a call stands, but for a stop's

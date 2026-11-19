@@ -8,18 +8,18 @@
 //   - the claim lays the revision's skills, and the build writes nothing the delegation refuses;
 //   - a second claim (epoch 2) of the same run, its folder already holding the skills (one edited by the run since),
 //     mounts the folder again, writes no skill again and keeps the first claim's files as they are.
-//   - a learning run's seed (its notes into .learning/, its learned skill into .agents/skills/) is laid before the mount
-//     too, and the spec says it laid the learned skill (learningLaid): layLearningSeed never throws, so a build that
-//     succeeds says nothing about whether the seed was laid.
+//   - a learning run reads its seed from its learning folder on the disk and writes nothing of it into the run's folder
+//     (its corrections reach it in its instructions): no write is refused, nothing goes under .learning/, and the spec
+//     says what it handed the run (learningLaid).
 // On the old order (the lay after computerForClaim) the first test's build fails with the disk's 409, after the
-// Workspace's 60 s queue, and the learning test's seed is refused and taken back.
+// Workspace's 60 s queue.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
 const { adapterRunSpecFromLaunch } = await import("../dist/runner/adapter-run-spec.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
 const { FakeArchilDisk } = await import("./fixtures/archil-fake.mjs");
-const { KEY, LEARNED_KEY, mode2Run, putsOf, SKILL, SKILL_KEY } = await import("./fixtures/mode2-mounted-run.mjs");
+const { KEY, mode2Run, putsOf, SKILL, SKILL_KEY } = await import("./fixtures/mode2-mounted-run.mjs");
 
 for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFromLaunch], ["the CLI spec (opencode)", "opencode", cliRunSpecFromLaunch]]) {
   test(`${name} in Mode 2: a revision's skills are laid on the disk before the computer's mount takes the write delegation`, async (t) => {
@@ -54,19 +54,14 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
     assert.equal(Buffer.from(disk.files.get(SKILL_KEY)).toString("utf8"), `${SKILL}Edited by the run.\n`, "the first claim's skill, as the run left it");
   });
 
-  test(`${name} in Mode 2: a learning run's seed, its notes and its learned skill, is laid on the disk before the mount`, async (t) => {
+  test(`${name} in Mode 2: a learning run reads its seed from the disk's learning folder and writes none of it into the run's folder`, async (t) => {
     const disk = new FakeArchilDisk();
     const run = await mode2Run(t, { harness, disk, learns: true });
     const { spec } = await run.claimNext(build);
     assert.deepEqual(disk.refusedByDelegation, [], "no write to the run's folder was refused by the mount's delegation");
-    assert.deepEqual(spec.learningLaid?.skills, ["summarize"], "the spec says the claim laid the learned skill");
-    // The lay writes the skill's front matter back in its own form (its values quoted): its name and body are the seed's.
-    const learned = Buffer.from(disk.files.get(LEARNED_KEY) ?? []).toString("utf8");
-    assert.match(learned, /^---\nname: "?summarize"?\n[\s\S]*\n---\nSummarize every source in one line\.\n$/, `the learned skill is on the disk: ${JSON.stringify(learned)}`);
-    const notePut = disk.calls.findIndex((call) => call.op === "putObject" && call.key.startsWith(`${KEY}/.learning/`) && call.key.endsWith("retry-slowly.md"));
-    const learnedPut = disk.calls.findIndex((call) => call.op === "putObject" && call.key === LEARNED_KEY);
+    assert.ok(run.read.count > 0, "the claim read the agent's learning folder on its Archil disk");
+    assert.deepEqual(spec.learningLaid, { workflows: [] }, "the spec says what the claim handed the run: no learned workflow");
+    assert.deepEqual(putsOf(disk, `${KEY}/.learning`), [], "nothing of the seed is put in the run's folder");
     assert.equal(run.mounts.length, 1, "the computer mounted the run's folder once");
-    assert.ok(notePut >= 0 && notePut < run.mounts[0].at, `the seed's note was put in .learning/ before the mount (put at call ${notePut}, the mount after call ${run.mounts[0].at})`);
-    assert.ok(learnedPut >= 0 && learnedPut < run.mounts[0].at, `the learned skill was put before the mount (put at call ${learnedPut}, the mount after call ${run.mounts[0].at})`);
   });
 }

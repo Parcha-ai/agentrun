@@ -67,10 +67,10 @@ test("the five wrong bodies of a coding agent's first tries: each 422 names the 
   await cleared("POST", "/agents", { definition: {} }, "definition.name", DOC.name);
   await cleared("POST", "/agents", { definition: {} }, "definition.instructions", field(empty, "definition.instructions").example);
 
-  // 3. A switch given a word it doesn't take: it is true, false, "notes" or the loop's numbers.
+  // 3. A switch given a word it doesn't take: it is true, false or the loop's numbers.
   const word = { definition: { name: "Business due diligence", instructions: "Research.", tools: ["web_search", "web_fetch"], learning: "on" } };
   const learning = await refused("POST", "/agents", word);
-  assert.deepEqual(field(learning, "definition.learning"), { field: "definition.learning", reason: "wrong_type", message: `definition.learning is true, false, "notes" or an object of the loop's numbers ({compile_after?, agree_min?, alone_min?, audit_every?, audit_every_later?, audit_later_after?, hold_window?, hold_disagree?, stop_window?}, on with those set), e.g. true`, example: true });
+  assert.deepEqual(field(learning, "definition.learning"), { field: "definition.learning", reason: "wrong_type", message: `definition.learning is true, false or an object of the loop's numbers ({compile_after?, agree_min?, alone_min?, agree_on?, audit_every?, audit_every_later?, audit_later_after?, hold_window?, hold_disagree?, stop_window?}, on with those set), e.g. true`, example: true });
   await cleared("POST", "/agents", word, "definition.learning", true);
 
   // 4 and 5. A run's input as a string, then under another name: it is an object, and content is what it needs.

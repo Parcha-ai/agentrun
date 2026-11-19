@@ -3,7 +3,7 @@ import { Bone } from "@/components/Skeleton";
 import { Chip } from "@/components/ui/chip";
 import { problem, ProblemCard } from "@/components/learningProblem";
 import type { Client } from "@/lib/client";
-import { type Block, blockSizeOf, blocksOf, level, nearest, PATHS, pathOf, pct, plotted, type Point, rollingMean, runTicks, timesOf, usd, windowOf, yTicksOf, yTopOf } from "@/lib/costPerRun";
+import { type Block, blockSizeOf, blocksOf, gutterFor, jobsOf, level, nearest, PATHS, pathOf, pct, plotted, type Point, rollingMean, runTicks, spread, timesOf, usd, windowOf, yTicksOf, yTopOf } from "@/lib/costPerRun";
 import { when } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { counted, handBacksOf, type Marker, MARKER_LETTER, MARKER_WORDS, markersOf, replayLine, WITHHELD_NEXT, withheldWords } from "@/lib/learningLoop";
@@ -15,7 +15,8 @@ import type { CostRun, LearningCost, Promotion } from "@/lib/v2";
 // after it, with "N times cheaper" once 20 runs or more stand behind it. One y axis, in dollars; a table of every run.
 // Under it, on the same run axis, the execution mix: in blocks of runs, the share each path took. Above the plot, a lane of
 // the loop's markers on the same axis (the agent's promotion records): a new revision replaying, promoted or held,
-// each a lettered flag on the first run it bore on. A replay run is a hollow muted dot, out of the rolling mean.
+// each a lettered flag on the first run it bore on. The run axis numbers the runs that do a job, as the bill does; a replay
+// run does none, so it has no number: a hollow muted dot between the jobs it came between, out of the rolling mean.
 
 /** How many runs the chart reads: the server's default. */
 const LIMIT = 1000;
@@ -23,7 +24,7 @@ const LIMIT = 1000;
 export const HOW = "Turn learning on and run the same job about 20 times: each run's cost shows here, and where a learned workflow takes the job over, the line falls.";
 type LearningExecution = "hosted" | "native" | "sdk";
 const howFor = (execution: LearningExecution) => execution === "native"
-  ? "Native run costs include reported model usage and AgentRun learning. Compare repeated jobs; accepted notes and skills do not enable workflow takeover."
+  ? "Native run costs include reported model usage and AgentRun learning. Compare repeated jobs; corrections do not enable workflow takeover."
   : execution === "sdk"
     ? "SDK run costs include reported backend usage and AgentRun learning. Your backend keeps launching jobs and binds the tools an accepted workflow can use."
     : HOW;
@@ -59,6 +60,8 @@ export function CostPerRun({ v2, agentId, on, quiet = false, promotions, onCost,
 }
 
 const M = { top: 30, right: 16, bottom: 30, left: 60 };
+/** Under this wide the levels have no labels and the plot no gutter for them: the legend and the headline say them. */
+const LABELS_FROM = 520;
 /** The marker lane above the plot: a row of flags is this tall; flags closer than FLAG_GAP stack into the next row. */
 const FLAG_ROW = 17;
 const FLAG_GAP = 16;
@@ -72,6 +75,8 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
   const window = windowOf(job.length);
   const mean = useMemo(() => rollingMean(job, window), [job, window]);
   const markers = useMemo(() => markersOf(data.runs, promotions), [data.runs, promotions]);
+  // The runs that do a job: the run axis is theirs, numbered as the bill numbers them.
+  const jobs = useMemo(() => jobsOf(data.runs), [data.runs]);
   const { summary: s } = data;
   const back = handBacksOf(data);
   const fig = useRef<HTMLElement>(null);
@@ -106,11 +111,11 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
           {notes.map((n) => <p key={n} className="mx-auto mt-1 max-w-prose text-small text-muted-foreground">{n}</p>)}
         </div>
         {/* Who finished each run does not need a cost: the strip draws on the runs' own axis whenever there are runs. */}
-        {data.runs.length > 0 && (() => {
-          const w = Math.max(300, room), slot = (w - M.left - M.right) / (data.runs.at(-1)!.n - data.runs[0]!.n + 1);
+        {jobs.length > 0 && (() => {
+          const w = Math.max(300, room), from = jobs[0]!.n, slot = (w - M.left - M.right) / (jobs.at(-1)!.n - from + 1);
           return (
             <figure ref={fig} className="px-4 pb-3">
-              <Mix runs={data.runs} width={w} x={(n) => M.left + (n - data.runs[0]!.n + 0.5) * slot} step={slot} plot={[M.left, w - M.right]} takeover={s.takeover?.n ?? null} />
+              <Mix runs={data.runs} width={w} x={(n) => M.left + (n - from + 0.5) * slot} step={slot} plot={[M.left, w - M.right]} takeover={s.takeover?.n ?? null} />
             </figure>
           );
         })()}
@@ -121,13 +126,21 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
   // The mix sits under the plot at the card's width, on the plot's own run axis: a run's column is under its dot, and the
   // takeover's marker runs through both.
   const width = Math.max(300, room);
-  const plotW = width - M.left - M.right;
-  // The axis is every run read (the mix draws the ones whose cost is unknown too), each run one equal slot of the plot and
-  // its dot at the slot's middle: a block of runs in the mix is then whole slots, its edges on slot edges.
-  const first = data.runs[0]!.n, last = data.runs.at(-1)!.n;
-  const slot = plotW / (last - first + 1);
-  const x = (n: number) => M.left + (n - first + 0.5) * slot;
+  // The axis is every job read (the mix draws the ones whose cost is unknown too), each job one equal slot of the plot and
+  // its dot at the slot's middle: a block of runs in the mix is then whole slots, its edges on slot edges. A replay stands
+  // half a slot after the job it followed, on a slot's edge (placed).
+  const first = jobs[0]?.n ?? 1, last = jobs.at(-1)?.n ?? first;
   const before = s.before;
+  const afterFrom = s.takeover ? Math.max(s.takeover.n, first) : null;
+  // The levels' words, in a gutter right of the plot as wide as they need; under LABELS_FROM wide none (the legend and the
+  // headline say them). The headline says the ratio; the labels only the levels.
+  const levelWords = width < LABELS_FROM ? [] : [
+    ...(before ? [{ key: "before", words: `Before ${level(before.mean_usd)}`, usd: before.mean_usd }] : []),
+    ...(afterFrom !== null && s.after ? [{ key: "after", words: `After ${level(s.after.mean_usd)}`, usd: s.after.mean_usd }] : []),
+  ];
+  const plotW = width - M.left - (levelWords.length ? gutterFor(levelWords.map((l) => l.words)) : M.right);
+  const slot = plotW / (last - first + 1);
+  const x = (at: number) => M.left + (at - first + 0.5) * slot;
   const { top, above } = yTopOf(points, mean, before?.mean_usd ?? null);
   // Each flag's row: the first whose last flag is far enough left of it, so flags never sit on each other at any width.
   const rowOf: number[] = [];
@@ -147,8 +160,7 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
   // The takeover's marker shows when its run is on the plot; the level after it shows either way, from the plot's left
   // edge when the takeover is older than the runs read.
   const takeover = s.takeover && s.takeover.n >= first ? s.takeover : null;
-  const afterFrom = s.takeover ? Math.max(s.takeover.n, first) : null;
-  const line = job.map((p, i) => `${i ? "L" : "M"}${x(p.n).toFixed(1)},${y(mean[i]!).toFixed(1)}`).join("");
+  const line = job.map((p, i) => `${i ? "L" : "M"}${x(p.at).toFixed(1)},${y(mean[i]!).toFixed(1)}`).join("");
   const at = active === null ? null : points[active]!;
   const cheaper = s.times_cheaper !== null ? `${timesOf(s.times_cheaper)} cheaper` : null;
   // The headline: the server's own figure, which never flatters learning (before: the agent's own $ a run, learning left
@@ -159,6 +171,8 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
   const afterWords = s.after ? `${level(s.after.mean_usd)} all-in over ${servedWord(s.after.runs)} after` : s.takeover && s.after_state === "cost_unknown" ? "no served run's cost known yet" : null;
   const headline = s.before && afterWords ? `${level(s.before.mean_usd)} a run before takeover, ${afterWords}${cheaper ? `: ${cheaper}` : ""}${backWords ? ` · ${backWords}` : ""}` : null;
   const unknown = data.unknown_cost_runs + data.unknown_path_runs;
+  // The levels' labels in the gutter, each at its level, pushed apart to a line's room when close: never on a dot or a line.
+  const levels = spread(levelWords.map((l) => ({ ...l, at: y(l.usd) })), T + 4, T + H);
 
   const pick = (e: PointerEvent<SVGSVGElement>) => {
     const r = e.currentTarget.getBoundingClientRect();
@@ -182,10 +196,12 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
     setActive((i) => Math.min(points.length - 1, Math.max(0, move(i ?? (e.key === "ArrowLeft" ? points.length : -1)))));
   };
   const readout = (p: Point) => [
-    `Run ${p.n}`,
+    p.n === null ? "Replay run" : `Run ${p.n}`,
     `${usd(p.total_usd)} all-in${p.learning_usd ? ` (${usd(p.cost_usd ?? 0)} the run, ${usd(p.learning_usd)} learning)` : ""}`,
     `${pathOf(p.path).label}${p.workflow ? `: ${p.workflow}` : ""}`,
-    p.learned_revision ? `Learned revision ${p.learned_revision.slice(0, 7)}` : "Nothing learned yet",
+    // A missing digest only means the revision is not known: a run that took the workflow itself still ran it.
+    ...(p.digest ? [`Workflow revision ${p.digest.slice(0, 7)}`] : p.path === "agent" ? ["No learned workflow ran"] : []),
+    ...(p.audited ? ["Audited: a shadow run of the agent checked it"] : []),
     ...(p.path === "replay" ? ["A replay: learning's spend, out of the line"] : []),
   ];
   const shownFlag = flag === null ? null : markers[flag] ?? null;
@@ -242,31 +258,26 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
             ))}
             {/* The runs: faint dots, a run past the top drawn on it; a replay run a hollow ring. */}
             {points.map((p, i) => p.path === "replay"
-              ? <circle key={p.run_id} cx={x(p.n)} cy={y(p.total_usd)} r={i === active ? 0 : 2.5} className="fill-none stroke-muted-foreground" strokeWidth={1.25} />
-              : <circle key={p.run_id} cx={x(p.n)} cy={y(p.total_usd)} r={i === active ? 0 : 3} className={cn(pathOf(p.path).fill)} fillOpacity={0.65} />)}
-            {before && (
-              <g>
-                <path d={`M${M.left},${y(before.mean_usd)}H${M.left + plotW}`} className="stroke-muted-foreground" strokeWidth={1.5} strokeDasharray="6 4" />
-                <Label x={M.left + plotW - 4} y={y(before.mean_usd) - 6} anchor="end">Before takeover {level(before.mean_usd)}</Label>
-              </g>
-            )}
+              ? <circle key={p.run_id} cx={x(p.at)} cy={y(p.total_usd)} r={i === active ? 0 : 2.5} className="fill-none stroke-muted-foreground" strokeWidth={1.25} />
+              : <circle key={p.run_id} cx={x(p.at)} cy={y(p.total_usd)} r={i === active ? 0 : 3} className={cn(pathOf(p.path).fill)} fillOpacity={0.65} />)}
+            {before && <path d={`M${M.left},${y(before.mean_usd)}H${M.left + plotW}`} className="stroke-muted-foreground" strokeWidth={1.5} strokeDasharray="6 4" />}
+            {/* The takeover on the left edge of its run's slot, as its promotion's flag line and the mix's line: one line for
+                one moment, never half a run off the P beside it. The level after starts there too. */}
             {takeover && (
-              <g>
-                <path d={`M${x(takeover.n)},${T - 4}V${T + H}`} className="stroke-chart-workflow" strokeWidth={1.5} />
-                <Label x={x(takeover.n) + (markerLeft ? -6 : 6)} y={T + 6} anchor={markerLeft ? "end" : "start"}>Workflow took over, run {takeover.n}</Label>
+              <g data-testid="takeover">
+                <path d={`M${x(takeover.n) - slot / 2},${T - 4}V${T + H}`} className="stroke-chart-workflow" strokeWidth={1.5} />
+                <Label x={x(takeover.n) - slot / 2 + (markerLeft ? -6 : 6)} y={T + 6} anchor={markerLeft ? "end" : "start"}>Workflow took over, run {takeover.n}</Label>
               </g>
             )}
-            {afterFrom !== null && s.after && (
-              <g>
-                <path d={`M${x(afterFrom)},${y(s.after.mean_usd)}H${M.left + plotW}`} className="stroke-foreground" strokeWidth={1} strokeDasharray="2 3" />
-                <Label x={M.left + plotW - 4} y={y(s.after.mean_usd) - 8} anchor="end" strong>{width < 520 ? "Served" : `Served after takeover (${servedWord(s.after.runs)})`} {level(s.after.mean_usd)}{cheaper ? ` · ${cheaper}` : ""}</Label>
-              </g>
-            )}
+            {afterFrom !== null && s.after && <path d={`M${x(afterFrom) - slot / 2},${y(s.after.mean_usd)}H${M.left + plotW}`} className="stroke-foreground" strokeWidth={1} strokeDasharray="2 3" />}
             <path d={line} fill="none" className="stroke-foreground" strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
+            {levels.map((l) => (
+              <text key={l.key} data-testid="level-label" x={M.left + plotW + 6} y={l.at} dy="0.32em" className={cn("text-label", l.key === "after" ? "fill-foreground font-semibold" : "fill-muted-foreground")}>{l.words}</text>
+            ))}
             {at && (
               <g>
-                <path d={`M${x(at.n)},${T}V${T + H}`} className="stroke-border-strong" strokeWidth={1} />
-                <circle cx={x(at.n)} cy={y(at.total_usd)} r={5} className={cn(pathOf(at.path).fill, "stroke-card")} strokeWidth={2} />
+                <path d={`M${x(at.at)},${T}V${T + H}`} className="stroke-border-strong" strokeWidth={1} />
+                <circle cx={x(at.at)} cy={y(at.total_usd)} r={5} className={cn(pathOf(at.path).fill, "stroke-card")} strokeWidth={2} />
               </g>
             )}
           </svg>
@@ -277,8 +288,8 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
             </div>
           )}
           {at && (
-            <div className={cn("pointer-events-none absolute z-raised whitespace-nowrap border bg-card px-2 py-1 font-mono text-label shadow-float", x(at.n) > width * 0.6 && "-translate-x-full")}
-              style={{ left: x(at.n) > width * 0.6 ? x(at.n) - 10 : x(at.n) + 10, top: T }}>
+            <div className={cn("pointer-events-none absolute z-raised whitespace-nowrap border bg-card px-2 py-1 font-mono text-label shadow-float", x(at.at) > width * 0.6 && "-translate-x-full")}
+              style={{ left: x(at.at) > width * 0.6 ? x(at.at) - 10 : x(at.at) + 10, top: T }}>
               {readout(at).map((l, i) => <span key={l} className={cn("block", i === 0 ? "font-semibold" : "text-muted-foreground")}>{l}</span>)}
               <span className="block text-muted-foreground">{when(at.started_at)}</span>
             </div>
@@ -288,7 +299,7 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
         </div>
         <Mix runs={data.runs} width={width} x={x} step={slot} plot={[M.left, M.left + plotW]} takeover={s.takeover?.n ?? null} />
         <p className="mt-1 text-small text-muted-foreground">
-          Each dot is a run: its own cost plus what learning spent for it (the look-back and the grade). The line is the mean of the last {window} runs{points.some((p) => p.path === "replay") ? ", replay runs (hollow) left out" : ""}.
+          Each dot is a run: its own cost plus what learning spent for it (its compile turn and its audit's shadow run). The line is the mean of the last {window} runs{points.some((p) => p.path === "replay") ? ", replay runs (hollow) left out" : ""}.
           {above ? ` ${above === 1 ? "1 run costs" : `${above} runs cost`} more than ${usd(top)} and ${above === 1 ? "is" : "are"} drawn at the top.` : ""}
           {s.before ? " The dashed line is what a run cost the agent before a learned workflow took over, learning left out; after it, every run counts learning in, so the drop never flatters learning." : ""}
         </p>
@@ -300,10 +311,10 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
           <thead className="sticky top-0 z-sticky bg-card"><tr className="caps text-label text-muted-foreground">{["Run", "Started", "Path", "Revision", "Run $", "Learning $", "All-in $"].map((h) => <th key={h} className="py-1 pr-4 text-left font-normal">{h}</th>)}</tr></thead>
           <tbody>{data.runs.map((r) => (
             <tr key={r.run_id}>
-              <td className="py-0.5 pr-4">{r.n}</td>
+              <td className="py-0.5 pr-4">{r.n ?? "-"}</td>
               <td className="pr-4">{when(r.started_at)}</td>
               <td className="pr-4">{pathOf(r.path).label}{r.workflow ? `: ${r.workflow}` : ""}</td>
-              <td className="pr-4">{r.learned_revision?.slice(0, 7) ?? "-"}</td>
+              <td className="pr-4">{r.digest?.slice(0, 7) ?? "-"}{r.audited && <span data-testid="audited" className="ml-2"><Chip tone="muted" title="An audit's shadow run of the agent checked this run; its cost is in Learning $.">audited</Chip></span>}</td>
               <td className="pr-4">{r.cost_usd === null ? "unknown" : usd(r.cost_usd)}</td>
               <td className="pr-4">{r.learning_usd === null ? "unknown" : usd(r.learning_usd)}</td>
               <td className="pr-4">{r.total_usd === null ? "unknown" : usd(r.total_usd)}</td>
@@ -342,7 +353,8 @@ const runsOf = (b: Block) => (b.from === b.to ? `Run ${b.from}` : `Runs ${b.from
  *  passes), with the takeover's marker. A hover names a block's runs and counts. */
 function Mix({ runs, width, x, step, plot, takeover }: { runs: readonly CostRun[]; width: number; x: (n: number) => number; step: number; plot: [number, number]; takeover: number | null }) {
   const height = MIX_H;
-  const size = blockSizeOf(runs.length);
+  // Blocks of the runs that do a job: a replay does none, so it is in no block (blocksOf).
+  const size = blockSizeOf(jobsOf(runs).length);
   const blocks = useMemo(() => blocksOf(runs, size), [runs, size]);
   const [hover, setHover] = useState<number | null>(null);
   if (!blocks.length) return null;

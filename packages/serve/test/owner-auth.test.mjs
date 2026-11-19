@@ -326,6 +326,16 @@ test("asking for a setup code while the password is being set prints none: the s
   assert.equal(lines.length, 1, "only the first code was ever printed");
 });
 
+test("a server reached from other machines prints its setup link at their addresses too, with the same code, each time a code is printed", async (t) => {
+  const lines = [];
+  const me = new Owner(await scratch(t), false, (line) => lines.push(line));
+  me.attach("http://127.0.0.1:7401", ["http://192.0.2.10:7401"]);
+  const code = new URL(me.setupLink()).hash.slice("#code=".length);
+  assert.deepEqual(lines, [`Set up this server: http://127.0.0.1:7401/setup#code=${code} (or paste AGENTRUN_TOKEN)`, `From another machine: http://192.0.2.10:7401/setup#code=${code}`]);
+  me.setupLink();
+  assert.equal(lines.length, 2, "a code still good is not printed again");
+});
+
 test("a revoked session is kept only until it would have ended: its record goes with its expiry, and the owner file stays small", async (t) => {
   mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
   t.after(() => mock.timers.reset());

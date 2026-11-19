@@ -55,6 +55,7 @@ import type { Journal, Store } from "../store/store.js";
 import { SUBMIT_TOOL } from "../workflow/host-tools.js";
 import { endCostOf, runCostOf } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
+import { warnHoldShort } from "../print.js";
 
 /** The one session key the workflow's model requests book under (the run's one booking sums it, runBooking). */
 const SESSION = WORKFLOW_SESSION;
@@ -425,7 +426,11 @@ export function workflowSpecOf(deps: WorkflowSpecDeps): (claim: { runId: string;
           label: SESSION,
           // The model booking is the run's rule itself (no second booking); a refusal parks the run through the loop's hook.
           beforeRequest: parkOnRefusal(run.before, hooks, flight, steps),
-          onEvent: async (event) => { if (event.type === "request_start") await deps.store.flush(); },
+          // A model node's request billed past the bound its hold was priced on: the cap's warn line (print.ts warnHoldShort).
+          onEvent: async (event) => {
+            if (event.type === "request_start") await deps.store.flush();
+            warnHoldShort(claim.runId, "workflow", event);
+          },
         });
         // An earlier claim's requests, before the workflow sends anything: one this runner's lost claim saw answer, its
         // record refused, is booked at what it reported (waiting, bounded, for one still in flight); one a dead runner left

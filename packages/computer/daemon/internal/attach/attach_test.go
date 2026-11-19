@@ -263,6 +263,8 @@ func TestTheRedialDelayDoublesToAMinuteLessUpToAFifth(t *testing.T) {
 }
 
 func TestFromEnvRefusesAMissingOrMalformedURLOrTokenWithoutSayingIt(t *testing.T) {
+	// No token file: an empty AGENTRUN_ATTACH_TOKEN finds none to read.
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	for _, tc := range [][2]string{
 		{"", testToken},
 		{"https://agentrun.example.com/v2/computers/attach", testToken},
@@ -285,5 +287,11 @@ func TestFromEnvRefusesAMissingOrMalformedURLOrTokenWithoutSayingIt(t *testing.T
 	cfg, err := FromEnv("/run/agentrun/computerd.sock", subprotocol, 1<<20)
 	if err != nil || cfg.Heartbeat != 20*time.Second || cfg.Idle != time.Minute || cfg.Steady != time.Minute || cfg.Options.Token != testToken {
 		t.Fatalf("%+v, %v", cfg, err)
+	}
+	// A paired computer's token, as serve's pair route makes it: art_ and 32 bytes in base64url.
+	paired := "art_" + strings.Repeat("Zz_-", 10) + "Q0w"
+	t.Setenv(TokenEnv, paired)
+	if cfg, err := FromEnv("/run/agentrun/computerd.sock", subprotocol, 1<<20); err != nil || cfg.Options.Token != paired {
+		t.Fatalf("a paired computer's token: %v", err)
 	}
 }

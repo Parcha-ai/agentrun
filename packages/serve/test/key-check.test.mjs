@@ -198,7 +198,7 @@ test("a check never follows a redirect: a provider that answers 302 to another o
   }
 });
 
-const ROWS = { monid: "Monid", parallel: "Parallel", browserbase: "Browserbase", kernel: "Kernel", typesafe: "TypeSafe (Jev)", anthropic: "Anthropic", openai: "OpenAI", openrouter: "OpenRouter" };
+const ROWS = { monid: "Monid", parallel: "Parallel", browserbase: "Browserbase", kernel: "Kernel", typesafe: "TypeSafe (Jev)", anthropic: "Anthropic", openai: "OpenAI", openrouter: "OpenRouter", particle: "Particle" };
 
 test("each provider's check is one documented call that costs nothing, on the key, at the base this server sends that provider's calls to", async () => {
   const { KEY_CHECKS, checkKey } = await import("../dist/key-check.js");
@@ -212,6 +212,7 @@ test("each provider's check is one documented call that costs nothing, on the ke
     typesafe: ["GET", "https://api.typesafe.ai/v1/models", { authorization: `Bearer ${key}` }],
     anthropic: ["GET", "https://api.anthropic.com/v1/models?limit=1", { "x-api-key": key, "anthropic-version": "2023-06-01" }],
     openrouter: ["GET", "https://openrouter.ai/api/v1/key", { authorization: `Bearer ${key}` }],
+    particle: ["GET", "https://api.particle.ai/v1/models", { authorization: `Bearer ${key}` }],
   };
   assert.deepEqual(Object.keys(KEY_CHECKS).sort(), Object.keys(expected).sort(), "every check is here, and no other");
   for (const [id, [method, url, auth]] of Object.entries(expected)) {

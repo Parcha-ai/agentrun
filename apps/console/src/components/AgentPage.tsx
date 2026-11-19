@@ -41,10 +41,10 @@ type TabProps = { agent: Agent; v2: Client; go: (hash: string) => void; stats?: 
 /** What the server gives beside the agent: `analytics`, once its stats are read. */
 type Server = { analytics: boolean };
 
-/** What the Learning tab takes beside a tab's own: the notes an address points at (`focus`), the server's learning
- *  switch, and the agent as the tab's write left it (`onAgent`, a new revision). `learning` beside the server's: whether
- *  it has learning at all, undefined until its capabilities are read. */
-type LearningTabProps = { focus?: string[]; learning?: "on" | "off" | null; onAgent?: (agent: Agent) => void; places?: Places | null; onChanged?: () => void };
+/** What the Learning tab takes beside a tab's own: the server's learning switch, and the agent as the tab's write left it
+ *  (`onAgent`, a new revision). `learning` beside the server's: whether it has learning at all, undefined until its
+ *  capabilities are read. */
+type LearningTabProps = { learning?: "on" | "off" | null; onAgent?: (agent: Agent) => void; places?: Places | null; onChanged?: () => void };
 type LearningServer = { learning?: boolean };
 
 /** The page's tabs, in order, each at `#/agents/{id}/{tab}`. A tab shows only on an agent it has content for; a new one
@@ -53,7 +53,7 @@ const TABS: { id: string; label: string; shows: (a: Agent, server: Server & Lear
   { id: "runs", label: "Runs", shows: () => true, Body: RunsTab },
   { id: "versions", label: "Versions", shows: () => true, Body: AgentVersions },
   { id: "workflow", label: "Workflow", shows: (a) => a.kind === "workflow", Body: WorkflowTab },
-  { id: "learning", label: "Learning", shows: (a, server) => a.kind === "agentic" && server.learning !== false, Body: (p) => <LearningTab agent={p.agent} v2={p.v2} focus={p.focus} server={p.learning} onAgent={p.onAgent} places={p.places} onChanged={p.onChanged} /> },
+  { id: "learning", label: "Learning", shows: (a, server) => a.kind === "agentic" && server.learning !== false, Body: (p) => <LearningTab agent={p.agent} v2={p.v2} server={p.learning} onAgent={p.onAgent} onChanged={p.onChanged} /> },
   { id: "analytics", label: "Analytics", shows: (_, server) => server.analytics, Body: AnalyticsTab },
 ];
 
@@ -63,9 +63,8 @@ export const agentHash = (id: string, view?: string) => `#/agents/${encodeURICom
 
 /** One agent's page (`#/agents/{id}`): its current revision's harness, model and thinking, a compact overview and a tab per thing it has. `efforts` are the server's (capabilities `features.efforts`).
  *  `learning`: the server's learning switch, undefined until its capabilities are read and null when it has none;
- *  `notes`: the notes an address in the Learning tab points at. `places`: the server's places (capabilities `places`), for
- *  where a revision that names no place runs. */
-export function AgentPage({ v2, agentId, routePrefix, harnesses, go, tab, learning, notes, places }: { v2: Client; agentId: string; routePrefix?: string | null; harnesses?: HarnessInfo[]; efforts?: string[]; go: (hash: string) => void; tab?: string; limits?: UploadLimits; learning?: "on" | "off" | null; notes?: string[]; places?: Places | null }) {
+ *  `places`: the server's places (capabilities `places`), for where a revision that names no place runs. */
+export function AgentPage({ v2, agentId, routePrefix, harnesses, go, tab, learning, places }: { v2: Client; agentId: string; routePrefix?: string | null; harnesses?: HarnessInfo[]; efforts?: string[]; go: (hash: string) => void; tab?: string; limits?: UploadLimits; learning?: "on" | "off" | null; places?: Places | null }) {
   const [agent, setAgent] = useState<Agent | null>(null);
   // The agent's read failed: a 404 is an agent this server has no record of; anything else is said in words.
   const [error, setError] = useState<{ cause: unknown } | null>(null);
@@ -115,12 +114,12 @@ export function AgentPage({ v2, agentId, routePrefix, harnesses, go, tab, learni
     ? <NotHere what="agent" id={agentId} list={{ href: "#/agents", label: "Open the agents list" }} />
     : <ProblemCard problem={problem(error.cause, "the agent")} onRetry={() => setTries((n) => n + 1)} />;
   if (!agent) return <AgentSkeleton />;
-  return <AgentDetail key={agent.agent_id} agent={agent} onAgent={onAgent} onSignInsAgent={setAgent} reread={reread} onChanged={onChanged} poll={poll} afterForget={afterForget} stale={stale} v2={v2} go={go} stats={stats} analytics={analytics} places={places} routePrefix={routePrefix} harnesses={harnesses} tab={tab} learning={learning} notes={notes} />;
+  return <AgentDetail key={agent.agent_id} agent={agent} onAgent={onAgent} onSignInsAgent={setAgent} reread={reread} onChanged={onChanged} poll={poll} afterForget={afterForget} stale={stale} v2={v2} go={go} stats={stats} analytics={analytics} places={places} routePrefix={routePrefix} harnesses={harnesses} tab={tab} learning={learning} />;
 }
 
-function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, afterForget, stale, v2, go, stats, analytics, routePrefix, harnesses, tab, learning, notes, places }: {
+function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, afterForget, stale, v2, go, stats, analytics, routePrefix, harnesses, tab, learning, places }: {
   agent: Agent; onAgent: (agent: Agent) => void; onSignInsAgent: (agent: Agent) => void; reread: (quiet?: boolean, raise?: boolean) => Promise<boolean>; onChanged: () => void; poll: () => void; afterForget: () => Promise<boolean>; stale: boolean; v2: Client; go: (hash: string) => void;
-  stats: Stats | null | undefined; analytics: boolean | undefined; routePrefix?: string | null; harnesses?: HarnessInfo[]; tab?: string; learning?: "on" | "off" | null; notes?: string[]; places?: Places | null;
+  stats: Stats | null | undefined; analytics: boolean | undefined; routePrefix?: string | null; harnesses?: HarnessInfo[]; tab?: string; learning?: "on" | "off" | null; places?: Places | null;
 }) {
   const history = useRunHistory(agent, v2, reread, () => reread(false, false));
   const [factsOpen, setFactsOpen] = useState(false);
@@ -167,6 +166,11 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
   // Explain a known absent default without blocking observation or the handoff that can configure it.
   // Explicit models and older servers leave readiness to the execution path.
   const needsModel = !sdk && !native && !workflow && !off && !d.model && !fallback && harnesses?.some((h) => h.id === (d.harness ?? "pi") && h.default_model === null);
+  // What the run's own check would refuse now (the agent read's run_blockers), each once: a harness this server doesn't
+  // run, or a model it has none of, is said by its own banner above, not twice.
+  const refused = agent.archived_at ? null : agent.run_blockers;
+  const blockers = !refused ? [] : !refused.fields.length ? [refused.message]
+    : refused.fields.filter((b) => !(offText && b.field === "definition.harness") && !(needsModel && b.field === "definition.model")).map((b) => b.message);
   const facts: [string, string, string?][] = [
     ...(sdk ? [["Runtime", backendSdkLabel(sdk.runtime)], ["Model", "Reported per run"], ["Execution", "Your backend"]] as [string, string, string?][] : native ? [["Runtime", native.runtime], ["Model", native.model ?? "Native default"], ["Selector", native.selector.kind === "project" ? "Project default" : native.selector.name ?? native.selector.kind], ["Machine", native.machine_id]] as [string, string, string?][] : workflow ? [] : [["Harness", d.harness ?? "pi"], ["Model", model.text, model.title], ["Thinking", d.thinking ?? "default"], ["Runs", runsLabel]] as [string, string, string?][]),
     ["Revision", `rev ${d.version} of ${agent.revisions}`],
@@ -223,6 +227,12 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
           </dl>
           {offText && <Banner tone="warning" aria-label="Harness not available">{offText}</Banner>}
           {!agent.archived_at && needsModel && <Banner>Running this agent needs a configured model. <a href="#/settings/keys" className="text-primary-text underline underline-offset-2">Set up models in Settings</a></Banner>}
+          {blockers.length > 0 && (
+            <Banner tone="warning" aria-label="Runs refused">
+              <p>A run of this agent is refused until this is fixed:</p>
+              <ul className="mt-1 list-disc space-y-0.5 pl-5">{blockers.map((message, i) => <li key={i}>{message}</li>)}</ul>
+            </Banner>
+          )}
           {stale && <Banner tone="error">Couldn't refresh this agent. <Button size="sm" onClick={() => void reread()}>Retry</Button></Banner>}
           {/* Keep the create answer's warnings beside its configuration; a later read carries none. */}
           {agent.warnings?.length ? (
@@ -251,7 +261,7 @@ function AgentDetail({ agent, onAgent, onSignInsAgent, reread, onChanged, poll, 
         <section ref={workspaceScroll} className="scroll-quiet min-w-0 lg:-ml-1 lg:-mr-4 lg:min-h-0 lg:overflow-y-auto lg:overflow-x-hidden lg:pb-6 lg:pl-1 lg:pr-2.5" aria-label="Agent workspace">
           <Tabs id="agent-views" label="Agent views" value={at.id} onChange={(value) => go(agentHash(agent.agent_id, value))} tabs={tabs.map((t) => ({ id: t.id, label: <>{t.label}{t.id === "learning" && <WaitingCount n={itemsWaiting} className="ml-1.5" />}</> }))} className="mb-5 overflow-x-auto px-0 md:px-0" />
           <div {...tabPanelProps("agent-views", at.id)} aria-label={waiting ? undefined : at.label}>
-            {waiting ? <ListSkeleton label="Loading the tab" rows={4} /> : <at.Body agent={agent} v2={v2} go={go} stats={stats} history={history} focus={notes} learning={learning} onAgent={onAgent} onChanged={onChanged} places={places} />}
+            {waiting ? <ListSkeleton label="Loading the tab" rows={4} /> : <at.Body agent={agent} v2={v2} go={go} stats={stats} history={history} learning={learning} onAgent={onAgent} onChanged={onChanged} places={places} />}
           </div>
         </section>
       </main>

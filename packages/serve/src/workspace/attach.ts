@@ -81,8 +81,9 @@ const MOUNT_AT: typeof WORKSPACE = "/workspace";
 
 /** What attach runs of D, passed in (the cutover passes D's own): the read-back a mount made as `spec` asks gives, and
  *  the claim's epoch it is read back under (D reads an Archil mount back with the computer's claim epoch; a bind takes
- *  none). */
-export type MountCheck = { readonly readBackOf: (spec: MountSpec, epoch?: number) => MountReadBack; readonly epoch?: number };
+ *  none). `sync`: the claim made the computer a synced folder of the Workspace (resolve-computer.ts), so it reads back
+ *  as one, under the epoch. */
+export type MountCheck = { readonly readBackOf: (spec: MountSpec, epoch?: number) => MountReadBack; readonly epoch?: number; readonly sync?: true };
 
 /** A computer as attach takes it: its ref, its computerd client, and D's read-back of what it mounts at /workspace. */
 export interface AttachableComputer {
@@ -428,6 +429,7 @@ const held = (back: MountReadBack): { exclusive?: unknown; epoch?: unknown } => 
 const shown = (back: MountReadBack): string => {
   if ("other" in back) return back.other;
   if (back.kind === "bind") return `a bind of ${back.path}`;
+  if (back.kind === "sync") return `a synced folder under epoch ${back.epoch}`;
   const { exclusive, epoch } = held(back);
   const hold = exclusive === undefined ? "" : exclusive === true ? ", exclusive" : ", not exclusive";
   return `${back.disk}:/${back.folder} in ${back.region}${hold}${epoch === undefined ? "" : ` under epoch ${String(epoch)}`}`;

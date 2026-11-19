@@ -1,18 +1,18 @@
 import type { NativeBinding } from "./native";
 import { type Place, type Places, computerOfPlace, placeOf } from "./place";
 import type { ClientError } from "./client";
-import type { NoteProblem } from "./learning";
+import type { LearningProblem } from "./learning";
 import type { AgentTool, Approvals, Computer, ServedAgent, ToolSettings } from "./v2";
 import { decisionStarter, STARTER_PROVIDERS } from "./decisionStarter";
 import { workflowStarter } from "./workflowStarter";
 
 export type HarnessId = "pi" | "claude-agent" | "codex" | "opencode";
-/** `learning`: whether the agent's runs learn, and what (an agentic revision's; absent is off): true, notes, skills and
- *  learned workflows; an object, the same with the loop's numbers set (compile_after, agree_min, alone_min); "notes",
- *  notes and skills alone. */
-export type LearningSetting = boolean | "notes" | { compile_after?: number; agree_min?: number; alone_min?: number };
-/** Whether a definition's `learning` is on: true, "notes" or an object of the loop's numbers. */
-export const learningOn = (learning: unknown): boolean => learning === true || learning === "notes" || (typeof learning === "object" && learning !== null && !Array.isArray(learning));
+/** `learning`: whether the agent's runs learn (an agentic revision's; absent is off): true, its owner's corrections and a
+ *  learned workflow; an object, the same with the loop's numbers set (compile_after, agree_min, alone_min) and the answer
+ *  fields its check and audit compare on (agree_on). */
+export type LearningSetting = boolean | { compile_after?: number; agree_min?: number; alone_min?: number; agree_on?: string[] };
+/** Whether a definition's `learning` is on: true or an object of the loop's numbers. */
+export const learningOn = (learning: unknown): boolean => learning === true || (typeof learning === "object" && learning !== null && !Array.isArray(learning));
 /** `max_cost_usd`: the agent's default spend cap per run, in dollars, for a run (or a trigger) with no cap of its own; an
  *  agentic revision's only. Absent or 0 is none, and an edit clears it only with an explicit 0. */
 export type Definition = { native?: NativeBinding; version: number; approvals?: Approvals; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; learning?: LearningSetting; max_cost_usd?: number; skills: string[]; tools: string[]; tool_settings?: ToolSettings; [field: string]: unknown };
@@ -22,8 +22,8 @@ export type SaveWarning = { field: string; reason: string; message: string };
 /** `warnings`: on a create's or an edit's answer only (never on a read of the agent); the console keeps a create's for
  *  the agent's page that opens after it (client.ts). */
 /** The console's agent, and of the served agent (GET /v2/agents/{id}, generated) its `sign_ins`, which only that read
- *  carries (a list's agents and a write's answer have none). */
-export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; native_status?: NativeBinding; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[]; learning?: { pending: number } } & Partial<Pick<ServedAgent, "sign_ins">>;
+ *  carries (a list's agents and a write's answer have none), as its `run_blockers`. */
+export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; native_status?: NativeBinding; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[]; learning?: { pending: number } } & Partial<Pick<ServedAgent, "sign_ins" | "template" | "run_blockers">>;
 export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd" | "approvals">> & { workflowText?: string; maxCostText?: string; place?: Place; computer?: Computer };
 
 /** The body of a definition edit: the current definition with the edited fields; name and
@@ -267,18 +267,19 @@ export function saveError(e: ClientError): SaveProblem {
   return { kind: "other", message: e.message };
 }
 
-/** What a refused note write means for the Learning tab, as saveError does for a definition: a stale If-Match (412) is
- *  a change made since the note was read, or, creating one, a name already taken; a 400 with `problems` lists what the
- *  checks refuse; anything else is shown as the server said it. */
-export type NoteSaveProblem = { kind: "conflict" } | { kind: "taken" } | { kind: "refused"; problems: NoteProblem[] } | { kind: "other"; message: string; code: string };
-export function noteSaveError(e: ClientError, creating = false): NoteSaveProblem {
-  if (e.status === 412 || e.code === "precondition_failed") return creating ? { kind: "taken" } : { kind: "conflict" };
+/** What a refused learning write means for the Learning tab (corrections.md, or a workflow draft's approve, retire or
+ *  restore), as saveError does for a definition: a stale If-Match (412) is a change made since the file was read; a 400
+ *  with `problems` lists what the checks refuse; anything else is shown as the server said it. */
+export type LearningWriteProblem = { kind: "conflict" } | { kind: "refused"; problems: LearningProblem[] } | { kind: "other"; message: string; code: string };
+export function learningWriteError(e: ClientError): LearningWriteProblem {
+  if (e.status === 412 || e.code === "precondition_failed") return { kind: "conflict" };
   if (e.problems?.length) return { kind: "refused", problems: e.problems };
   return { kind: "other", message: e.fields?.[0]?.message ?? e.message, code: e.code };
 }
 
-/** The warnings that name `field` of the definition, or a part of it (`tools` takes `definition.tools[2]`). */
-export function warningsFor(warnings: SaveWarning[] | undefined, field: string): SaveWarning[] {
+/** The warnings (or a refusal's issues) that name `field` of the definition, or a part of it (`tools` takes
+ *  `definition.tools[2]`). */
+export function warningsFor<T extends { field: string }>(warnings: readonly T[] | undefined, field: string): T[] {
   const at = `definition.${field}`;
   return (warnings ?? []).filter((w) => w.field === at || w.field.startsWith(`${at}[`) || w.field.startsWith(`${at}.`) || w.field.startsWith(`${at}/`));
 }

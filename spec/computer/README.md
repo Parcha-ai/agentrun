@@ -57,15 +57,18 @@ Each choice below cost us something, and we say what.
 | Provider | Kinds | Isolation | Agent network | Run folder mount | GPU | Keeps state |
 |---|---|---|---|---|---|---|
 | Docker (local) | sandbox, Linux desktop | container | none, open, allowlist | bind | – | – |
-| E2B | sandbox, Linux desktop | microVM | none | Archil | – | – |
-| Modal | sandbox | VM (gVisor with a GPU) | none | Archil (not with a GPU) | T4 to B300, up to 8 | – |
-| Daytona | sandbox | container, or VM | none | – | H100 ×1 | – |
-| Agent37 | sandbox, Linux desktop | gVisor or VM | none | Archil | – | – |
+| E2B | sandbox, Linux desktop | microVM | none | Archil, synced | – | – |
+| Modal | sandbox | VM (gVisor with a GPU) | none | Archil, synced (synced alone with a GPU) | T4 to B300, up to 8 | – |
+| Daytona | sandbox | container, or VM | none | synced | H100 ×1 | – |
+| Agent37 | sandbox, Linux desktop | gVisor or VM | none | Archil, synced | – | – |
 | Orgo | Linux desktop | VM | none | – | – | yes, resumes |
 | Phone harness | Android phone | VM | open | – | – | – |
 | Browserbase, Kernel | browser (CDP, live view) | the vendor's | open | – | – | – |
 | Local Chrome | browser (CDP) | the host | open, allowlist | – | – | – |
-| boxd | sandbox, Linux desktop | microVM | none | – | – | – |
+| boxd | sandbox, Linux desktop | microVM | none | synced | – | – |
+
+A synced folder is a plain `/workspace` the runner fills before the agent's tools run and reads back after each call
+that may change it, over the computer's own file and exec calls: no FUSE, so a GPU host takes one too.
 
 Every row is declared in `packages/computer/src/descriptors/`, and the conformance suite holds each provider to
 its declaration. A Mac or an Android phone of your own can also attach with its own driver
@@ -77,8 +80,8 @@ its declaration. A Mac or an Android phone of your own can also attach with its 
    at the end of a run. Our shape is `persistence: { keepsState, resume }`. Is that enough to describe your snapshots,
    your pause and resume, and a fork?
 2. **GPUs and FUSE.** We mount the agent's run folder with a FUSE client (Archil). Modal's GPU runtime (gVisor) isn't
-   proven with it, and Daytona's GPU hosts have no `/dev/fuse`. Should a GPU machine expose FUSE, or should storage
-   reach it another way?
+   proven with it, and Daytona's GPU hosts have no `/dev/fuse`, so those take the synced folder, which copies what
+   changed after each call. Should a GPU machine expose FUSE, or is a synced folder the way storage should reach it?
 3. **Egress policy.** Agent programs on hosted vendors get no network today, because we can't verify an allowlist from
    outside. How would you want an allowlist expressed, so you can enforce it and we can check it from inside?
 4. **Desktop streaming.** We stream a desktop's screen through `computerd` (`screen.watch`: frames, then input). Some

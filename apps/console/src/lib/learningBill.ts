@@ -3,7 +3,7 @@ import type { AuditRow, Bill, Serving } from "@/lib/v2";
 
 // The Learning tab's bill, audit line and serving workflow, read as a person reads them. The bill is the server's (GET
 // /v2/agents/{id}/learning/cost `bill`): booked dollars only, every run that does a job with all learning spent for it
-// (its look-back and grade, its audit's shadow run, its revision's compile and check), cumulative, against the agent for
+// (its compile turn, its audit's shadow run, its revision's compile and check), cumulative, against the agent for
 // all of it (the mean of the agent's own runs before its first served run, times the runs), with each hold at the run the
 // server placed it on. The serving workflow is the promotions read's champion. Nothing here computes a dollar or a node.
 
@@ -30,22 +30,35 @@ export function billWords(bill: Bill): { headline: string; marker: number | null
 export type Audits = readonly AuditRow[] | "loading" | "failed";
 
 /** A learned workflow's audit line: its newest audit rows against the hold bar (the serving read's, null when it has
- *  none), every row of the ledger with a verdict (null while the ledger is unread: never 0 of 0), and why its runs are
- *  not audited (null when they are). */
-export type AuditLineOf = { workflow: string; recent: { rows: number; agreed: number; window: number; disagree: number } | null; all: { rows: number; agreed: number } | null; off: string | null };
+ *  none), every row of the ledger with a verdict (null while the ledger is unread: never 0 of 0), why its runs are not
+ *  audited (null when they are) and how many of its runs an audit's shadow ran for that the ledger has no row of yet
+ *  (`pending`: an audit is scored at a later run's start; null while the ledger is unread). */
+export type AuditLineOf = { workflow: string; recent: { rows: number; agreed: number; window: number; disagree: number } | null; all: { rows: number; agreed: number } | null; off: string | null; pending: number | null };
 
-/** Each learned workflow's audit line, from what serves (`serving`) and the audit ledger (`audits`). */
-export function auditLinesOf(serving: readonly Serving[], audits: Audits): AuditLineOf[] {
+/** A run of the cost series as the audit line counts it: the learned workflow that served it and whether an audit's
+ *  shadow ran for it (CostRun `audited`). */
+type AuditedRun = { run_id: string; workflow: string | null; audited: boolean };
+
+/** Each learned workflow's audit line, from what serves (`serving`), the audit ledger (`audits`) and the runs of the cost
+ *  series (`runs`), so the line and the runs a shadow was charged to tell one count. */
+export function auditLinesOf(serving: readonly Serving[], audits: Audits, runs: readonly AuditedRun[] = []): AuditLineOf[] {
   return serving.map((one) => {
-    const rows = typeof audits === "string" ? null : audits.filter((row) => row.workflow === one.workflow && row.agreed !== null);
+    const ledger = typeof audits === "string" ? null : audits.filter((row) => row.workflow === one.workflow);
+    const rows = ledger === null ? null : ledger.filter((row) => row.agreed !== null);
+    const scored = new Set(ledger?.filter((row) => row.source === "shadow").map((row) => row.run));
     return {
       workflow: one.workflow,
       recent: one.audit ? { rows: one.audit.rows, agreed: one.audit.rows - one.audit.disagreed, window: one.audit.window, disagree: one.audit.disagree } : null,
       all: rows === null ? null : { rows: rows.length, agreed: rows.filter((row) => row.agreed).length },
       off: one.audits_off,
+      pending: ledger === null ? null : runs.filter((run) => run.audited && run.workflow === one.workflow && !scored.has(run.run_id)).length,
     };
   });
 }
+
+/** What learning booked a run, from the bill: what it booked beyond the jobs' own cost (`learning_usd`: compile turns,
+ *  audits' shadow runs, replays) over the runs that did a job; null before any. */
+export const learningPerRun = (bill: Bill): number | null => (bill.points.length ? bill.learning_usd / bill.points.length : null);
 
 /** The champion as the promotions read gives it (`serving[].champion`), its nodes and the check it was promoted on. */
 export type Champion = NonNullable<Serving["champion"]>;

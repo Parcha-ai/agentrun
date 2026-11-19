@@ -11,12 +11,12 @@ import type { ModelCost, Provider, ProviderStreams } from "@earendil-works/pi-ai
 import type { Wire } from "@parcha/agentrun-kernel";
 import type { ThinkingLevelMap } from "./port-models.js";
 import { DEFAULT_HARNESS, PLAN_HARNESSES } from "./harness.js";
-import { HARNESS_MODULES_ENV, HARNESS_TABLE_ENV, type HarnessEntry, harnessOf } from "./harness-table.js";
+import { builtinHarness, HARNESS_MODULES_ENV, HARNESS_TABLE_ENV, type HarnessEntry, harnessIds, harnessOf } from "./harness-table.js";
 import type { Revision } from "./agent-rows.js";
-import { gatewayBase } from "./provider.js";
+import { gatewayBase, modelGatewayBase } from "./provider.js";
 import { modelFormWhy } from "./model-form.js";
 // Leaves, which the key rows below read as this module loads, in any import order (wires.ts, adapter-facts.ts).
-import { ADAPTER_FACTS } from "./adapter-facts.js";
+import { ADAPTER_FACTS, adapterFactsOf } from "./adapter-facts.js";
 import { WIRES } from "./wires.js";
 import { authContextOf } from "./secrets.js";
 import { EXPIRED, PLAN_DEFAULT_MODEL, PLAN_ORIGIN, PLAN_PROVIDER, planOf, signedIn, SIGNED_OUT } from "./chatgpt-plan.js";
@@ -69,18 +69,31 @@ export const MODEL_NODES = ["agent", "decide", "extract", "report"] as const;
 export const MODEL_KEYS: readonly { id: string; label: string; field: string; model: string; harnesses: readonly string[]; byVendor?: Readonly<Record<string, string>> }[] = Object.freeze([
   { id: "anthropic", label: "Anthropic", field: "ANTHROPIC_API_KEY", model: "anthropic/claude-sonnet-5-5", harnesses: onVendor("anthropic") },
   { id: "openai", label: "OpenAI", field: "OPENAI_API_KEY", model: "openai/gpt-6.1-sol", harnesses: onVendor("openai") },
+  // Particle's direct API is Chat Completions; the adapter harnesses need Messages or HTTP Responses.
+  { id: "particle", label: "Particle", field: "PARTICLE_API_KEY", model: "particle/particle-1", harnesses: [DEFAULT_HARNESS] },
   // OpenRouter serves both wires: every harness runs on its key, an adapter harness on its wire's vendor's model there.
   { id: "openrouter", label: "OpenRouter", field: "OPENROUTER_API_KEY", model: "openrouter/openai/gpt-6.1-sol", harnesses: [DEFAULT_HARNESS, ...ADAPTER_FACTS.map((facts) => facts.id)], byVendor: { anthropic: "anthropic/claude-sonnet-5.5", openai: "openai/gpt-6.1-sol" } },
 ]);
 
-/** pi, and the adapter harnesses whose wire (their facts') runs `vendor`'s models: those that talk to its own API. */
+/** pi, and the built-in adapter harnesses whose wire (their facts') runs `vendor`'s models: those that talk to its own API. */
 function onVendor(vendor: string): readonly string[] {
   return [DEFAULT_HARNESS, ...ADAPTER_FACTS.filter((facts) => WIRES[facts.wire].vendor === vendor).map((facts) => facts.id)];
 }
 
+/** The harnesses `row`'s key runs on `env`'s server: its own (`harnesses`), then each harness this server lists only once its
+ *  owner installs it (Goose: harness-table.ts hidden, listed by harnessIds) whose wire runs the row's vendor's models, or
+ *  any, on OpenRouter's. One not installed here is never named. */
+export function keyHarnesses(row: (typeof MODEL_KEYS)[number], env: NodeJS.ProcessEnv): readonly string[] {
+  const installed = harnessIds(env).filter((id) => !row.harnesses.includes(id) && builtinHarness(id)?.hidden !== undefined);
+  return [...row.harnesses, ...installed.filter((id) => {
+    const facts = adapterFactsOf(id);
+    return facts !== undefined && (row.id === "openrouter" || WIRES[facts.wire].vendor === row.id);
+  })];
+}
+
 /** `row`'s default for `harness`: the one for its wire's vendor (`byVendor`, OpenRouter's), else the row's. */
 const rowModel = (row: (typeof MODEL_KEYS)[number], harness: string): string => {
-  const facts = ADAPTER_FACTS.find((f) => f.id === harness);
+  const facts = adapterFactsOf(harness);
   return (facts && row.byVendor?.[WIRES[facts.wire].vendor]) ?? row.model;
 };
 
@@ -125,7 +138,7 @@ export function hostModel(env: NodeJS.ProcessEnv, tier: Tier = "default", harnes
   if (PLAN_HARNESSES.includes(harness) && signedIn(env) && !env.AGENT_MODEL_BASE_URL) return `${PLAN_PROVIDER}/${planModel(env)}`;
   // On Claude Code's login on this machine, claude-agent runs Anthropic's model on it by default (provider.ts).
   if (onClaudeLogin(env, harness)) return LOGIN_DEFAULT_MODEL;
-  const row = MODEL_KEYS.find((row) => env[row.field] && (row.harnesses as readonly string[]).includes(harness));
+  const row = MODEL_KEYS.find((row) => env[row.field] && (row.harnesses.includes(harness) || keyHarnesses(row, env).includes(harness)));
   return row ? rowModel(row, harness) : env[DEFAULT_MODEL_ENV] || undefined;
 }
 /** The plan's model a run that names none takes: GPT-6.1 Sol where the plan lists it, else the plan's first. */
@@ -216,11 +229,11 @@ export async function chooseModel(env: NodeJS.ProcessEnv, ref: string | PinnedMo
     // A gateway its key may not go to (the one base rule, gatewayBase) runs no model, in its words: capabilities read it
     // not ready, a save warns, and a run is refused before its process starts, so the key is never handed to one.
     try {
-      gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL);
+      modelGatewayBase(env.AGENT_MODEL_BASE_URL);
     } catch (error) {
       return { why: (error as Error).message, host: true, needs: "key" };
     }
-    if (!named) return { why: `${none}: name the gateway's model in AGENT_MODEL where AgentRun starts, or add a model key in Settings → Model keys.`, host: true, needs: "key" };
+    if (!named) return { why: `${none}: name the gateway's model in AGENT_MODEL where AgentRun starts, or pick its models in Settings → Model keys → Use a model gateway.`, host: true, needs: "key" };
     // A revision's model, and a key's default (MODEL_KEYS: "provider/model"), go as the gateway takes its ids (bare: the
     // part after the provider), that provider pricing them; the host's own AGENT_MODEL or tier id goes as configured.
     // A name equal to one of the host's configured ids (the picker lists them: model-form.ts pickerCandidates) is that
@@ -268,7 +281,7 @@ async function pinnedChoice(env: NodeJS.ProcessEnv, { pinned, ref }: PinnedModel
   if (!env.AGENT_MODEL_BASE_URL) return { why: "This run started on the model gateway, and AGENT_MODEL_BASE_URL names none here.", host: true, needs: "key" };
   // The one base rule (gatewayBase) holds for a pinned run as for any: its key never goes to a gateway it may not.
   try {
-    gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL);
+    modelGatewayBase(env.AGENT_MODEL_BASE_URL);
   } catch (error) {
     return { why: (error as Error).message, host: true, needs: "key" };
   }
@@ -312,6 +325,7 @@ export const PROVIDER_KEYS: Readonly<Record<string, readonly string[]>> = {
   opencode: ["OPENCODE_API_KEY"],
   "opencode-go": ["OPENCODE_API_KEY"],
   openrouter: ["OPENROUTER_API_KEY"],
+  particle: ["PARTICLE_API_KEY"],
   "qwen-token-plan": ["QWEN_TOKEN_PLAN_API_KEY"],
   "qwen-token-plan-cn": ["QWEN_TOKEN_PLAN_CN_API_KEY"],
   "qwen-token-plan-individual": ["QWEN_TOKEN_PLAN_API_KEY"],
@@ -456,7 +470,7 @@ export async function runModels(env: NodeJS.ProcessEnv, ref: string | PinnedMode
   // One base rule for every harness (provider.ts' gatewayBase): one trailing /v1 off, then the API under <base>/v1, so
   // <gw>/api and <gw>/api/v1 both reach <gw>/api/v1/responses and <gw>/api/v1/messages, as OpenRouter serves them. pi-ai's
   // Responses client takes the base with its /v1, its Messages client adds /v1/messages itself.
-  const base = gatewayBase("AGENT_MODEL_BASE_URL", env.AGENT_MODEL_BASE_URL!);
+  const base = modelGatewayBase(env.AGENT_MODEL_BASE_URL!);
   const baseUrl = `${base}/v1`;
   const [{ openAIResponsesApi }, { anthropicMessagesApi }] = await Promise.all([import("@earendil-works/pi-ai/api/openai-responses.lazy"), import("@earendil-works/pi-ai/api/anthropic-messages.lazy")]);
   const catalog = await catalogPrices();

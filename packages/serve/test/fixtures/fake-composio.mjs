@@ -1,7 +1,10 @@
 // A fake Composio on loopback: the REST calls the Composio preset makes (composio-preset.ts), each recorded, and the MCP
 // endpoint its generate call names, a fake MCP server (fake-mcp-server.mjs) at /v3/mcp/<id>/mcp. As the real one does, it
 // answers a request without the right x-api-key 401, and /v3/mcp/<id> without the /mcp suffix with a redirect.
-// `toolkits`: by slug, `{ no_auth, tools: [{ slug, name, description }] }`; as the real one, a toolkit's own answer says
+// `toolkits`: by slug, `{ no_auth, tools: [{ slug, name, description }], latest? }`: `tools` is what its tool list answers
+// without toolkit_versions (the toolkit's base version, as the real one's), `latest` the tools only toolkit_versions=latest
+// lists besides them (the real one's base version leaves out tools added since; linear 21 of 48 live 11-18). `toolsPage`
+// pages the tool list at most that many a page, by `cursor` and `next_cursor`. As the real one, a toolkit's own answer says
 // no_auth only as `auth_config_details[].mode` "NO_AUTH" (only the toolkit list has a `no_auth` field). `authConfigs`: by toolkit slug, the auth configs
 // it already has. `active`: toolkit slugs the user already has an ACTIVE connected account for, under the auth config the
 // call names. `accounts`: by toolkit slug, the user's accounts as `{ status, auth_config, id?, created_at? }` (an ACTIVE one under another
@@ -73,7 +76,7 @@ export const STAR_ADDED = {
 /** When an account was made, as Composio lists it, for one that names no other. */
 const ACCOUNT_MADE = "2026-11-13T20:26:18.916Z";
 
-export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, authConfigs = {}, active = [], accounts = {}, fail, noTools = false, listStatus, subscription, triggerTypes = { github: [ISSUE_ADDED, STAR_ADDED] }, pageSize, instancePage, madeSecret } = {}) {
+export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, authConfigs = {}, active = [], accounts = {}, fail, noTools = false, listStatus, subscription, triggerTypes = { github: [ISSUE_ADDED, STAR_ADDED] }, pageSize, toolsPage, instancePage, madeSecret } = {}) {
   const calls = [];
   const strays = [];
   const mcpKeys = [];
@@ -136,7 +139,11 @@ export async function startFakeComposio({ apiKey = "fake-test-key", toolkits, au
     const slug = url.searchParams.get("toolkit_slug");
     if (req.method === "GET" && url.pathname === "/api/v3/tools") {
       const known = toolkits[slug];
-      return known ? reply(200, { items: known.tools, next_cursor: null }) : reply(404, { error: { message: `Toolkit ${slug} not found` } });
+      if (!known) return reply(404, { error: { message: `Toolkit ${slug} not found` } });
+      const all = [...known.tools, ...(url.searchParams.get("toolkit_versions") === "latest" ? known.latest ?? [] : [])];
+      const from = Number(url.searchParams.get("cursor") ?? 0);
+      const size = Math.max(1, toolsPage ?? all.length);
+      return reply(200, { items: all.slice(from, from + size), next_cursor: from + size < all.length ? String(from + size) : null });
     }
     const one = /^\/api\/v3\/toolkits\/([^/]+)$/.exec(url.pathname);
     if (req.method === "GET" && one) return toolkits[one[1]] ? reply(200, { slug: one[1], auth_config_details: [{ mode: toolkits[one[1]].no_auth === true ? "NO_AUTH" : "OAUTH2" }] }) : reply(404, { error: { message: "Toolkit not found" } });

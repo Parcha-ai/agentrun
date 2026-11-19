@@ -98,9 +98,9 @@ async function run(t, script, { fail, fails = 1, retry, tools = {}, beforeBooked
       ...session.adapter,
       open: (sessionSpec, io) => {
         models = io.models;
-        const bookedCost = async () => {
+        const bookedCost = async (...asked) => {
           if (beforeBooked) await beforeBooked(costs.length, models);
-          const usd = await io.bookedCost();
+          const usd = await io.bookedCost(...asked);
           costs.push(usd);
           // The ledger as this answer read it; the last answer's read is the run's whole ledger.
           booked = (await io.writer.read()).filter((record) => record.kind === "runner.turn").map((record) => record.data.usd);

@@ -234,3 +234,13 @@ test("a server whose Docker daemon is another machine's, by DOCKER_HOST, DOCKER_
     assert.deepEqual(fake.runs(), []);
   }
 });
+
+// A CLI server in a container under --faux (the --vps walk's) names its mountinfo in its own environment, which the
+// runner beside it does not inherit (runner/main.ts besideRunEnv): the server hands it over with the other switches.
+test("a --faux server hands its runner the mountinfo it reads, from its options or its own environment", async (t) => {
+  const { fauxEnvOf } = await import("../dist/server.js");
+  withEnv(t, { AGENTRUN_SERVE_FAUX_MOUNTINFO: "/proc/self/mountinfo" });
+  assert.equal(fauxEnvOf({ faux: PROBE }).AGENTRUN_SERVE_FAUX_MOUNTINFO, "/proc/self/mountinfo");
+  assert.equal(fauxEnvOf({ faux: PROBE, fauxMountinfo: "/tmp/given-mountinfo" }).AGENTRUN_SERVE_FAUX_MOUNTINFO, "/tmp/given-mountinfo");
+  assert.equal(fauxEnvOf({}).AGENTRUN_SERVE_FAUX_MOUNTINFO, undefined);
+});

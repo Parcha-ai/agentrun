@@ -26,6 +26,7 @@ import { maxRunsOf } from "../dist/host.js";
 import { claimInstallsStopped } from "../dist/harness-install.js";
 import { runnerMemory } from "../dist/runner/memory-claim.js";
 import { dispatchRunner } from "../dist/runner/harness-loops.js";
+import { childLoops } from "../dist/runner/run-child-host.js";
 import { runnerComputers } from "../dist/runner/main.js";
 import { routeOf } from "../dist/runner/model-route.js";
 import { withoutFaux } from "../dist/model.js";
@@ -67,6 +68,9 @@ export const SECRET_WRITE_PATHS = [
   // The server's calendar (calendar/routes.ts): its read, its save and removal, and its test.
   { methods: ["GET", "PUT", "DELETE"], path: /^\/settings\/calendar$/ },
   { methods: ["POST"], path: /^\/settings\/calendar\/test$/ },
+  // The model gateway saved in the console (model-gateway.ts): its save, removal and test.
+  { methods: ["PUT", "DELETE"], path: /^\/settings\/model-gateway$/ },
+  { methods: ["POST"], path: /^\/settings\/model-gateway\/test$/ },
 ];
 /** Adds a secret write the client sends from the owner's session (`methods` on `path`, a RegExp over the /v2 path). */
 export const secretWritePath = (methods, path) => void SECRET_WRITE_PATHS.push({ methods, path });
@@ -103,7 +107,10 @@ export const webhookLookup = async (host) => {
   return (await systemLookup(host, { all: true })).map((one) => one.address);
 };
 
-export const startServe = async (options) => launchFor(await startServeBuilt({ webhookLookup, ...options }));
+/** Where a test server posts Slack's messages unless its test runs a fake Slack (ServeOptions.slackTarget): a closed
+ *  port on this machine, so no test ever reaches Slack. */
+export const NO_SLACK = "http://127.0.0.1:9";
+export const startServe = async (options) => launchFor(await startServeBuilt({ webhookLookup, slackTarget: NO_SLACK, ...options }));
 
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 
@@ -340,7 +347,7 @@ const FAST_MODEL_RETRY = { retry: { enabled: true, maxRetries: 8, baseDelayMs: 1
  *  stops the runner and closes its store handle, and whose `beats()` counts the runner's polls and renewal passes
  *  (RunnerOptions.onBeat), so a test can wait for polls to pass without a clock. `computers`: a test's kind registry and
  *  provider loader for the run's claim-time computer. */
-export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, gradeTimeoutMs, computerForClaim, computers: own, mcpOwn, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, failRunsUpdate, fauxVendorApi, evalFakes, ...switches } = {}) {
+export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, gradeTimeoutMs, computerForClaim, computers: own, mcpOwn, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, failRunsUpdate, fauxVendorApi, evalFakes, childRuns, ...switches } = {}) {
   const opened = await openSqliteStore({ dataDir: data, role: "runner" });
   // The runner's store, as a crash would leave its writes: once kill() has run, a journal commit of its loops never
   // lands while the test runs (a dead process writes nothing more), and fails when the runner's handle is closed.
@@ -403,7 +410,12 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
   let runner;
   let beats = 0;
   try {
-    const createLoop = dispatchRunner({ env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computerForClaim ?? computers.computerForClaim, computerDeps: computers.computerDeps, mcpLoopback: true, ...(mcpOwn ? { mcpOwn } : {}), ...(githubApi ? { githubApi } : {}), ...(githubWeb ? { githubWeb } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}), ...(harnessLocks ? { harnessLocks } : {}), ...(evalFakes ? { evalFakes } : {}), modelRetry, ...(gradeTimeoutMs ? { gradeBound: () => AbortSignal.timeout(gradeTimeoutMs) } : {}) });
+    const deps = { env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computerForClaim ?? computers.computerForClaim, computerDeps: computers.computerDeps, mcpLoopback: true, ...(mcpOwn ? { mcpOwn } : {}), ...(githubApi ? { githubApi } : {}), ...(githubWeb ? { githubWeb } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}), ...(harnessLocks ? { harnessLocks } : {}), ...(evalFakes ? { evalFakes } : {}), modelRetry, ...(gradeTimeoutMs ? { gradeBound: () => AbortSignal.timeout(gradeTimeoutMs) } : {}) };
+    // `childRuns` (a test's): each run a process of its own (run-child-host.ts childLoops), as the CLI's start runs them,
+    // its keys and calls the runner's across the channel; the same user unless `childRuns.isolation` says otherwise (a
+    // stand-in helper's), its lines on `childRuns.log`.
+    const childLog = childRuns?.log ?? (() => {});
+    const createLoop = childRuns ? childLoops({ deps: { ...deps, log: childLog }, isolation: childRuns.isolation ?? { kind: "process", why: "a test's runner" }, log: childLog }) : dispatchRunner(deps);
     runner = startRunner({
       ...(runnerTiming ?? {}),
       store,
@@ -453,7 +465,7 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
   );
 }
 
-export async function serve(t, { harnesses: asked, runner: wantRunner = true, computerForClaim, evalFakes, ...options } = {}) {
+export async function serve(t, { harnesses: asked, runner: wantRunner = true, computerForClaim, evalFakes, childRuns, ...options } = {}) {
   const harnesses = asked ?? (Object.hasOwn(options, "faux") && options.faux === undefined);
   const dir = options.data ? undefined : await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "agentrun-serve-"));
   const data = options.data ?? join(dir, "agents");
@@ -466,7 +478,7 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, co
   // wants the server alone. Its loop is the switch's dispatch (learning wired; pi/workflow the server's own, E2r).
   // `evalFakes`: a template eval's fakes by agent id (runner/beside.ts evalFakes), for the runner alone.
   // `mcpOwn`: the server's own addresses (Serve.own), as the CLI's runner beside it is told them (runner/beside.ts).
-  const runnerOptions = { ...options, faux: Object.hasOwn(options, "faux") ? options.faux : FAUX, mcpOwn: server.own, ...(computerForClaim ? { computerForClaim } : {}), ...(evalFakes ? { evalFakes } : {}) };
+  const runnerOptions = { ...options, faux: Object.hasOwn(options, "faux") ? options.faux : FAUX, mcpOwn: server.own, ...(computerForClaim ? { computerForClaim } : {}), ...(evalFakes ? { evalFakes } : {}), ...(childRuns ? { childRuns } : {}) };
   let closeRunner = wantRunner === false ? undefined : await startInProcessRunner(data, runnerOptions);
   // Runners a test crashed (crashRunner), closed with the rest at the stop.
   const crashed = [];

@@ -110,7 +110,7 @@ describe("the replay of an agent's learned workflows", () => {
     expect(none.textContent).toBe("");
     expect(v2.learnedWorkflowRevisions).not.toHaveBeenCalled();
     act(() => root!.unmount());
-    const host = mount(createElement(WorkflowReplay, { v2, agentId: "a", workflows: [{ name: "old", status: "retired" }, { name: "sorter", status: "active" }] }));
+    const host = mount(createElement(WorkflowReplay, { v2, agentId: "a", workflows: [{ name: "old", status: "retired" }, { name: "sorter", status: "serving" }] }));
     await flush();
     expect(v2.learnedWorkflowRevisions).toHaveBeenCalledWith("a", "sorter", 50);
     expect(host.textContent).toContain("Learned workflow");
@@ -121,7 +121,7 @@ describe("the replay of an agent's learned workflows", () => {
   it("names a failed read and reads again on Try again", async () => {
     let fail = true;
     const v2 = client(async () => { if (fail) throw new ClientError(503, "unavailable", "The folder is busy.", true); return read(REVS); });
-    const host = mount(createElement(WorkflowReplay, { v2, agentId: "a", workflows: [{ name: "sorter", status: "active" }] }));
+    const host = mount(createElement(WorkflowReplay, { v2, agentId: "a", workflows: [{ name: "sorter", status: "serving" }] }));
     await flush();
     expect(host.textContent).toContain("Try again");
     fail = false;
@@ -145,7 +145,7 @@ describe("the workflow card: standing", () => {
     expect(standing()).toContain("approved by its owner");
     act(() => (host.querySelector('button[aria-label="Previous revision"]') as HTMLButtonElement).click());
     expect(standing()).toContain("Served");
-    expect(standing()).toContain("Checked on 20 inputs of the agent's own runs: 18 answered alone (90%, 70% needed), 17 of those said what the agent said (94%, 80% needed), 2 handed back");
+    expect(standing()).toContain("Checked on 20 inputs of the agent's own runs: 18 answered alone (90%, 70% needed), 17 of those said what the agent said (94%, 80% needed; compared the whole answer), 2 handed back");
   });
 
   // One promoted on its check says how many inputs it was decided on, in green; one held because its check had nothing

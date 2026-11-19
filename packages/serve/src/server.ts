@@ -1,7 +1,8 @@
 import { maintainObservations, Observations } from './observation/observer.js';
 import { isObservationRoute, observationHttp } from './observation/http.js';
 import { SdkRuns, sdkOf, sdkRunSecret } from "./sdk/runs.js";
-import { gradeRouteFor } from "./runner/harness-loops.js";
+import { askRouteOf } from "./runner/sdk-ask.js";
+import { PI_WIRES } from "./runner/adapter-run-spec.js";
 import { routeOf as sdkModelRoute } from "./runner/model-route.js";
 import { answerSkill } from './skill-route.js';
 import { RemoteConnectors, verifyRemote, REMOTE_COMPLETION_BODY_BYTES } from './native/remote.js';
@@ -42,17 +43,17 @@ import { DATA_ENV, syncDir, TOKEN_FILE, writeDurable } from "./server-fs.js";
 import { homePath, hostOwnedOf, type OwnedReadAt } from "./home-path.js";
 import { chooseModel, EFFORTS, FAUX_ENV, FAUX_UPSTREAM_ENV, MODEL_NODES, type ModelNeeds, modelSource, THINKING_LEVELS, unpricedModels, withoutFaux } from "./model.js";
 import { DEFAULT_HARNESS, HARNESSES, type HarnessCapability, harnessOfBody, harnessOffers } from "./harness.js";
-import { HARNESS_MODULES_ENV, HARNESS_TABLE_ENV, harnessIds, harnessModulesEnv, harnessOf, harnessTable } from "./harness-table.js";
+import { HARNESS_MODULES_ENV, HARNESS_TABLE_ENV, harnessIds, harnessModulesEnv, harnessOf, harnessTable, tableIds } from "./harness-table.js";
 import { claudeCliIn, HarnessInstall, type HarnessInstaller, installDirOf, NPM_STOP_GRACE_MS, npmInstall } from "./harness-install.js";
 import { DEFAULT_PORT, healthOf, hostMemory, maxRunsOf, runsThatFit } from "./host.js";
-import { DEFAULT_HOST, listenOn, minFreeMibOf, takeOver, urlOf } from "./listen-first.js";
+import { DEFAULT_HOST, elsewhereOf, listenOn, minFreeMibOf, takeOver, urlOf } from "./listen-first.js";
 import { IMPORT_ASKED, type ImportCandidate, MAX_CANDIDATES } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
-import { gradeModelOf, LEARNING_LABEL, learningBudgetOf, learningFolderOf, type LearningMode, learningOf, learnsOf, RUN_LEARNING_USE, seedOf } from "./learning.js";
+import { LEARNING_LABEL, learningFolderOf, secretsShown, type LearningMode, learningOf, learnsOf, RUN_LEARNING_USE, seedOf } from "./learning.js";
 import { askReplay, type ReplayAsk, ReplayRefused, replayView } from "./runner/promotion.js";
-import { agentLearning, learningLog, learningNotes, noteBody, pendingCount, promotable, readNote, secretsShown, sendNote, statusesOf, workflowAtDigest, workflowRevisions, writeNote } from "./learning-routes.js";
-import type { DraftDecisions } from "./learn/skills.js";
+import { agentLearning, changeWorkflow, correctionsView, correctionsWrite, learningLog, pendingCount, readLearnedFile, sendText, statusesOf, textBody, workflowAtDigest, workflowRevisions } from "./learning-routes.js";
+import type { DraftDecisions } from "./learn/workflow-draft.js";
 import { answerLlms, MCP_PATH, mcpEndpoint } from "./mcp.js";
 import { openapiDocument, servedOpenapi, UNSUPPORTED } from "./openapi.js";
 import { boxAvailability, boxesLine, defaultPlaceOf, NEW_AGENT_TOOLS, newAgentPlace, noBoxReason, type Place, placesOf, resolvePlace } from "./place.js";
@@ -60,20 +61,23 @@ import { boxAllowOf, boxAllowSetIn } from "./box-settings.js";
 import { dockerLimitsOf } from "./workspace/computer-deps.js";
 import { Owner, passwordProblem, SESSION_MS } from "./owner.js";
 import { acceptedTokens, type ApiToken, bearerCheck, tokenProblem } from "./api-token.js";
-import { answerPage, byConsoleSession, byOwnerSession, ConsoleSessions, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, signedIn } from "./page.js";
-import { hostFix, hostName, loopbackNames } from "./host-check.js";
+import { answerPage, byConsoleSession, byOwnerSession, ConsoleSessions, consoleEntry, heldSessions, isJson, overHttps, ownerCookie, ownOrigin, sendHostRefused, sendMoved, sendMovedPage, signedIn } from "./page.js";
+import { hostFix, hostName, loopbackNames, movedFix } from "./host-check.js";
+import { movedAddress, publicAddressChanged, readPublicAddress } from "./public-address.js";
 import { computerViewerLink, familyReaches, type LiveFamily, type LiveHandover, liveViewerById, liveViewerFor, liveViewerLink, OpenViewers, proxyLiveUpgrade, serveViewerFile, viewerAnswers } from "./browser-live.js";
 import { browserHandBack, handBackTarget } from "./browser-commands.js";
 import { type ComputerOf, computerView, type JournalEntry, lapsedOf, sessionIn } from "./computer-view.js";
 import { readKept } from "./workspace/computer-kept.js";
-import { liveReachOf } from "./live-reach.js";
+import { dialHost, liveReachOf, reachForRun } from "./live-reach.js";
 import { screenWaitEnded } from "./browser-wait-ended.js";
 import { durationMs, logLine } from "./print.js";
 import { type RunMoment, type State, type Status } from "./run-view.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, prepareLaunch, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
-import { factsOverStore, momentOverStore, settledStatusOf, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { builtOfNow, factsOverStore, listedItem, momentOverStore, summaryOverStore, timelineOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { createLister } from "./run-listing.js";
 import { HELD_WAITS } from "./runner/journal-kinds.js";
-import { servedTimelineRows } from "./run-timeline-served.js";
+import { type ServedTimelineDeps, servedTimelineRows } from "./run-timeline-served.js";
+import { servedRunTrace } from "./run-trace.js";
 import { servedRunDiff, servedRunLearning } from "./run-learning-served.js";
 import { agentPointers, WITHHELD_LEARNING } from "./handed-values.js";
 import { runCutValues } from "./run-cut.js";
@@ -96,7 +100,7 @@ import { gradeRow, notAuditableOf } from "./runner/audit.js";
 import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf } from "./learn/audit.js";
 import { auditLoopOf, COMPILE_AFTER_MAX } from "./learning-setting.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
-import { championOf, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown, servingOf, shownDeep } from "./learn/promote.js";
+import { championOf, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown, servingOf, servingStateOf, shownDeep } from "./learn/promote.js";
 import { workflowNodesOf } from "./learn/workflow-nodes.js";
 import { deleteLearning } from "./learn/delete.js";
 import { runModelRef } from "./model.js";
@@ -111,19 +115,19 @@ import { hostAddressesOnce, noHostAddresses, unionOf } from "./docker-host-addre
 import { DOCUMENTS_ENV } from "./pdf-pages.js";
 import { type Blocker, blockersOf, CODE_NODES_ENV, issueOf, NOT_SET_UP, type RevisionShape } from "./runnable.js";
 import { hostSecrets, SECRET_NAMES, secret, type StoredKeys, withSecrets } from "./secrets.js";
-import { isSecretWriteOperation, SECRET_WRITE_REFUSAL, type SecretRequest, secretsWritableFields, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
+import { isSecretWriteOperation, type SecretRequest, secretPageFor, secretsWritableFields, secretWriteRefusal, secretWriterFacts, writesSecretFor, writesSecretsAllowed } from "./secret-writes.js";
 import { ChatGPTPlan, planOf, PlanSignInRefused, SIGN_OUT_UNCONFIRMED, withPlan } from "./chatgpt-plan.js";
+import { modelGatewayRoute, readSavedGateway, type SavedGateway, withSavedGateway } from "./model-gateway.js";
 import { CLAUDE_LOGIN_ROUTES, ClaudeLoginRefused, claudeLoginOf, claudeLoginRouteOff, claudeLoginSwitchedOff, claudeLoginSetting, claudeLoginView, type ClaudeLoginDeps, dropRefusedLogin, envAtPlace, LOGIN_HARNESS, loginOf, startLoginHere, turnOffClaudeLogin, turnOnClaudeLogin, whyNotOneOwner, withClaudeLogin } from "./claude-login.js";
-import { bootSealKey, withSealKey } from "./seal-key.js";
+import { bootSealKey, parametersDigest, withSealKey } from "./seal-key.js";
 import { ServerLockHeldError, takeServerLock } from "./server-lock.js";
 import { DRAIN_TIMEOUT } from "./runner/beside.js";
 import { analyticsFilter, analyticsView, statsView } from "./stats.js";
+import { type CostBasis, joinedBasis } from "./runner/metrics.js";
 import { agentLoopOverStore } from "./store-reads/loop.js";
 import { printable } from "./learn/index.js";
-import { agentCostOverStore, agentLearningOverStore, allInOf, costRunOf, learningCountsOverStore, learningSpendOverStore, runAllInOverStore, runLearningEnd, shadowSpendOf } from "./store-reads/learning.js";
-import { figuresOf, LearningBatches, type RunSnap } from "./learning-batch.js";
+import { agentCostOverStore, agentLearningOverStore, allInOf, costRunOf, costStopOverStore, learningCountsOverStore, learningSpendOverStore, runAllInOverStore, runLearningEnd } from "./store-reads/learning.js";
 import { costCsv, learningCostQuery, RUN_PATHS } from "./learning-cost.js";
-import { evalOf, evalsOf, recordEval } from "./learning-evals.js";
 import { keyOf, SEAL_KEY_ENV, TOOL_FIELDS } from "./tool-keys.js";
 import { toolKeysOverStore } from "./tool-keys-store.js";
 import { SIGN_INS_DIR, vendorsOver } from "./sign-ins.js";
@@ -132,6 +136,7 @@ import { boundTool, MCP_AUTH_TYPES, marked, mcpAuthOf, type McpTool, nameOf as m
 import { type ComposioControl, composioForget, composioNote, composioSave, composioTools } from "./composio-preset.js";
 import { ComposioTriggers } from "./composio-triggers.js";
 import { type ComposioDropped, loopbackWords, mcpServersOverStore, type SaveGuard } from "./mcp-servers-store.js";
+import { MCP_ALLOW_LOOPBACK_ENV, startSwitches, WEBHOOK_PRIVATE_TARGETS_ENV } from "./start-switches.js";
 import type { SourceRecord } from "./mcp-sources.js";
 import { getMcpServer, listMcpServers } from "./mcp-store.js";
 import { privateHostsRoute, saveServerOwn } from "./mcp-private-hosts.js";
@@ -139,8 +144,9 @@ import { metaToolOf } from "./mcp-meta.js";
 import { type McpPin, mcpPinOf } from "./mcp-gateway.js";
 import { LOOPBACK, MCP_SETTINGS_PAGE, signInCookie, startedHere } from "./mcp-oauth.js";
 import { type RunNotice, WEBHOOK_EVENTS, WEBHOOK_FILE, waitMarkerOf, Webhooks } from "./webhooks.js";
+import { SLACK_EVENTS, SlackPosts } from "./slack.js";
 import { appPermissionWarnings } from "./template-github-permissions.js";
-import { templateApplied, templateTriggerSecret, templateWebhookSecrets, triggerMade, triggerRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
+import { templateApplied, templateTriggerSecret, templateWebhookSecrets, triggerMade, triggerRotated, webhookRotated, webhookSaved, withTriggerSecret } from "./trigger-secrets-shown.js";
 import { type SealedSettingsOverStore } from "./sealed-settings-store.js";
 import { type ServerSecrets } from "./server-secrets.js";
 import { openServerSecretsOverStore } from "./server-secrets-store.js";
@@ -150,7 +156,7 @@ import { FAUX_GITHUB, FAUX_GITHUB_FILE, startFauxGitHub } from "./github-faux.js
 import { GITHUB_API } from "./github.js";
 import { bindingOf, REPO_NAME } from "./run-repo.js";
 import { HookCut, receivePush } from "./push-handler.js";
-import type { TriggerAdapter } from "./trigger-adapter.js";
+import type { Source, TriggerAdapter } from "./trigger-adapter.js";
 import { shownTrigger, TRIGGER_ADAPTERS } from "./trigger-adapters.js";
 import { SEALED_FIELD, SEALED_MASK } from "./trigger-composio.js";
 import { webhook } from "./trigger-webhook.js";
@@ -175,7 +181,7 @@ import { recordingsFolder } from "./workspace/paths.js";
 import { heldRoute, holdIssues, runComputerRead } from "./computer-held-routes.js";
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runComputerKind } from "./computer-routes.js";
 import { ATTACH_PATH, AttachHub, type HostedDial, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
-import { createAttachRoutes, pairedView } from "./computer-attach.js";
+import { type AttachTiming, createAttachRoutes, pairedView, RELAY_STALE_MS } from "./computer-attach.js";
 import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
 import { COMPUTER_TOOLS, hostToolDefs } from "@parcha/agentrun-kernel/kernel";
 import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
@@ -364,6 +370,16 @@ export type ServeOptions = {
   console?: string;
   /** How long a run's process may finish its turn after SIGTERM (default 30s): `8s`, `500ms`, `1m`. */
   drainTimeout?: string;
+  /** How often the runs' listings' builder looks again when it found nothing to build (run-listing.ts; default
+   *  LISTER_IDLE_MS). `Infinity`: it builds only when Serve.listingSettled asks, so a test reads what a list builds alone. */
+  listerIdleMs?: number;
+  /** No runner beside this server in its process (the CLI's --no-runner, the image's server-and-runner): a paired
+   *  computer's socket is held here, where no run reaches it, so a pairing code, the pair answer and each paired computer
+   *  say so and how to start the server instead (attached-computers.ts RUNNER_APART_WORDS). */
+  runnerApart?: boolean;
+  /** For tests: the attach socket's liveness timing (computer-attach.ts AttachTiming), a relayed dial's included; the
+   *  protocol's by default. */
+  attachTiming?: AttachTiming;
   /** The most runs at once (default: AGENTRUN_MAX_RUNS, else as many pi runs as this host's memory holds: host.ts),
    *  beside the memory each run's harness reserves; over either, 429. */
   maxRuns?: number;
@@ -374,21 +390,15 @@ export type ServeOptions = {
   /** The lines a person reads about a stop on this data root: this server's, as its close begins and runs' processes are
    *  left to finish their turn. Default: standard error, after `agentrun-serve: `. */
   notice?: (line: string) => void;
-  /** The model the grader runs on (`--grade-model`; default AGENTRUN_SERVE_GRADE_MODEL, else the strong tier,
-   *  AGENT_MODEL_STRONG, else each run's agent's own model). */
-  gradeModel?: string;
   /** Whether runs learn (`--learning`; default AGENTRUN_SERVE_LEARNING, else `on`). `on`: a run of an agent whose
    *  definition says `learning: true` starts from what its agent learned. `off`: no run this server starts does, whatever
    *  its agent's definition says, and its `learning` is null. */
   learning?: LearningMode;
-  /** A test's seam: how often a learning batch's loop looks at its run, in ms (learning-batch.ts; default 1000). */
-  batchPollMs?: number;
-  /** How much of what a run learned its instructions hold under `# Learned`, in UTF-8 bytes (`--learning-budget`;
-   *  default AGENTRUN_SERVE_LEARNING_BUDGET, else 8000): every note whole while they fit, else the notes that bear on
-   *  the run's input whole and a line for each of the rest (learning.ts learnedParts, its note selector). */
-  learningBudget?: number;
   /** A test's seam: the triggers' clock and timer (triggers.ts), in place of Date.now and setTimeout. */
   triggerClock?: TriggerClock;
+  /** A test's seam: awaited by a template apply with agent_id right after it read that agent, inside its turn on the
+   *  agent (applyTemplate), so a test can hold an update there and write meanwhile. */
+  templateApplyRead?: (agentId: string) => Promise<void>;
   /** A test's and a template eval's seam: the URL a feed trigger's read of `url` goes to in its place (a fake feed on
    *  loopback, feed/feed-faux.ts); null when it serves no feed at `url` (read as unreachable, nothing sent); undefined
    *  to read it as it is. The trigger, its payload and its words keep `url`. */
@@ -427,6 +437,9 @@ export type ServeOptions = {
   templateImportApi?: string;
   /** The waits before each try again of a webhook delivery (default 5 s, 5 min, 30 min, 2 h, 5 h and 10 h: webhooks.ts RETRY_MS). */
   webhookRetryMs?: readonly number[];
+  /** The bound on one webhook try, whole milliseconds under the 60 s claim it holds its message by (default 15 s:
+   *  webhooks.ts TIMEOUT_MS); any other value refuses the server's start. */
+  webhookTimeoutMs?: number;
   /** Whether the outbound webhook may send to a private network or this machine: off by default, so no caller of the API
    *  can make the server POST inside its own network. The operator's AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1 turns it on. */
   webhookPrivateTargets?: boolean;
@@ -434,11 +447,14 @@ export type ServeOptions = {
    *  (webhooks.ts), in place of the system resolver's. A test's server answers its example hosts here, so no CI
    *  runner's resolver decides what a test sees. */
   webhookLookup?: (host: string) => Promise<string[]>;
+  /** A test's seam: the origin Slack's messages are posted to in place of https://hooks.slack.com, each URL's path kept
+   *  (slack.ts sendTo), so no test reaches Slack. */
+  slackTarget?: string;
 };
 
 /** Each test switch a run's process reads, by the variable it reads it from: set only under `faux`, but the faux
  *  harness's, which scripts the harnesses with or without it. */
-const FAUX_SWITCHES = [["fauxBrowser", FAUX_BROWSER_ENV], ["fauxWeb", FAUX_WEB_ENV], ["fauxJev", FAUX_JEV_ENV], ["fauxParallel", FAUX_PARALLEL_ENV], ["fauxOpenrouter", FAUX_OPENROUTER_ENV], ["fauxMonid", FAUX_MONID_ENV], ["fauxUpstream", FAUX_UPSTREAM_ENV], ["fauxExa", FAUX_EXA_ENV], ["fauxMountinfo", FAUX_MOUNTINFO_ENV]] as const;
+const FAUX_SWITCHES = [["fauxBrowser", FAUX_BROWSER_ENV], ["fauxWeb", FAUX_WEB_ENV], ["fauxJev", FAUX_JEV_ENV], ["fauxParallel", FAUX_PARALLEL_ENV], ["fauxOpenrouter", FAUX_OPENROUTER_ENV], ["fauxMonid", FAUX_MONID_ENV], ["fauxUpstream", FAUX_UPSTREAM_ENV], ["fauxExa", FAUX_EXA_ENV]] as const;
 
 /** The switches a run's process gets, each module path resolved: the owner's harness modules (harnessModules), and the test
  *  switches, which are empty outside tests. A test's in-process runner takes the same (test/support.mjs
@@ -449,6 +465,10 @@ export function fauxEnvOf(options: ServeOptions): NodeJS.ProcessEnv {
   if (!options.faux) return env;
   env[FAUX_ENV] = resolve(options.faux);
   for (const [option, name] of FAUX_SWITCHES) if (options[option]) env[name] = resolve(options[option]);
+  // The mountinfo the server itself reads (fauxMountinfo in serve), also when its own environment names it: a CLI server
+  // in a container hands it to the runner beside it, whose environment drops every faux variable it inherited.
+  const mountinfo = options.fauxMountinfo ?? process.env[FAUX_MOUNTINFO_ENV];
+  if (mountinfo) env[FAUX_MOUNTINFO_ENV] = resolve(mountinfo);
   return env;
 }
 
@@ -478,7 +498,9 @@ export type Serve = { url: string; baseUrl: string; port: number; token: string;
    *  never reach this server, as its own reads never do. */
   own: readonly string[];
   /** What a stop waits on: the runs whose processes still finish their turn, and the longest it waits on them. */
-  stopping(): { runs: number; boundMs: number } };
+  stopping(): { runs: number; boundMs: number };
+  /** Resolves once every run's listing is current (run-listing.ts Lister.settled): for tests and benchmarks. */
+  listingSettled(): Promise<void> };
 
 const isLoopback = (host: string) => host === "localhost" || host === "::1" || /^127\./.test(host);
 
@@ -567,6 +589,8 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/runs\/([^/]+)\/grade$/, name: "gradeRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/unarchive$/, name: "unarchiveRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/graph$/, name: "getRunGraph" },
+  // A run's trace (run-trace.ts): each model request and tool call as a span, with its time, tokens and cost.
+  { method: "GET", pattern: /^\/runs\/([^/]+)\/trace$/, name: "getRunTrace" },
   { method: "POST", pattern: /^\/workflows\/validate$/, name: "validateWorkflow" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/pause$/, name: "pauseRun" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/resume$/, name: "resumeRun" },
@@ -633,6 +657,11 @@ export const ROUTES: readonly Route[] = [
   { method: "PUT", pattern: /^\/settings\/claude-login$/, name: "turnOnClaudeLogin" },
   { method: "DELETE", pattern: /^\/settings\/claude-login$/, name: "turnOffClaudeLogin" },
   { method: "POST", pattern: /^\/settings\/claude-login\/login$/, name: "startClaudeLogin" },
+  // The model gateway saved in the console (model-gateway.ts): its save, removal and test the owner's session's alone.
+  { method: "GET", pattern: /^\/settings\/model-gateway$/, name: "getModelGateway" },
+  { method: "PUT", pattern: /^\/settings\/model-gateway$/, name: "saveModelGateway" },
+  { method: "DELETE", pattern: /^\/settings\/model-gateway$/, name: "deleteModelGateway" },
+  { method: "POST", pattern: /^\/settings\/model-gateway\/test$/, name: "testModelGateway" },
   { method: "GET", pattern: /^\/settings\/mcp-servers$/, name: "listMcpServers" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/preview$/, name: "previewMcpServer" },
   { method: "POST", pattern: /^\/settings\/mcp-servers\/composio\/tools$/, name: "listComposioTools" },
@@ -659,9 +688,16 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/settings\/webhook$/, name: "getWebhook" },
   { method: "PUT", pattern: /^\/settings\/webhook$/, name: "saveWebhook" },
   { method: "DELETE", pattern: /^\/settings\/webhook$/, name: "deleteWebhook" },
+  { method: "POST", pattern: /^\/settings\/webhook\/secret$/, name: "rotateWebhookSecret" },
   { method: "POST", pattern: /^\/settings\/webhook\/test$/, name: "testWebhook" },
   { method: "GET", pattern: /^\/settings\/webhook\/deliveries$/, name: "listWebhookDeliveries" },
   { method: "POST", pattern: /^\/settings\/webhook\/deliveries\/([^/]+)\/redeliver$/, name: "redeliverWebhook" },
+  { method: "GET", pattern: /^\/settings\/slack$/, name: "getSlack" },
+  { method: "PUT", pattern: /^\/settings\/slack$/, name: "saveSlack" },
+  { method: "DELETE", pattern: /^\/settings\/slack$/, name: "deleteSlack" },
+  { method: "POST", pattern: /^\/settings\/slack\/test$/, name: "testSlack" },
+  { method: "GET", pattern: /^\/settings\/slack\/deliveries$/, name: "listSlackDeliveries" },
+  { method: "POST", pattern: /^\/settings\/slack\/deliveries\/([^/]+)\/redeliver$/, name: "redeliverSlack" },
   { method: "GET", pattern: /^\/triggers$/, name: "listTriggers" },
   { method: "POST", pattern: /^\/triggers$/, name: "createTrigger" },
   { method: "GET", pattern: /^\/triggers\/([^/]+)$/, name: "getTrigger" },
@@ -688,22 +724,15 @@ export const ROUTES: readonly Route[] = [
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/cost$/, name: "getLearningCost" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/promotions$/, name: "listLearningPromotions" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/audits$/, name: "listLearningAudits" },
-  { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/batches$/, name: "createLearningBatch" },
-  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/batches$/, name: "listLearningBatches" },
-  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/batches\/([^/]+)$/, name: "getLearningBatch" },
-  { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/batches\/([^/]+)\/cancel$/, name: "cancelLearningBatch" },
-  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/evals$/, name: "listLearningEvals" },
-  { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/evals$/, name: "recordLearningEval" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/loop$/, name: "getLearningLoop" },
-  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/notes$/, name: "listLearningNotes" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/log$/, name: "listLearningLog" },
+  { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/corrections$/, name: "getLearningCorrections" },
+  { method: "PUT", pattern: /^\/agents\/([^/]+)\/learning\/corrections$/, name: "putLearningCorrections" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)$/, name: "readLearningFile" },
-  { method: "PUT", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)$/, name: "writeLearningFile" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/retire$/, name: "retireLearningFile" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/approve$/, name: "approveLearningFile" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/files\/([^/]+)\/restore$/, name: "restoreLearningFile" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/workflows\/([^/]+)\/revisions$/, name: "listLearnedWorkflowRevisions" },
-  { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/workflows\/([^/]+)\/promote$/, name: "promoteLearnedWorkflow" },
   { method: "POST", pattern: /^\/agents\/([^/]+)\/learning\/workflows\/([^/]+)\/revisions\/([^/]+)\/replays$/, name: "startLearnedWorkflowReplay" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/workflows\/([^/]+)\/revisions\/([^/]+)\/replays\/([^/]+)$/, name: "getLearnedWorkflowReplay" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/learning$/, name: "getRunLearning" },
@@ -778,10 +807,14 @@ export function offersEnvOf(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return Object.defineProperties({}, descriptors) as NodeJS.ProcessEnv;
 }
 
+/** The model gateway's variables, which a gateway saved in the console sets (model-gateway.ts withSavedGateway): which
+ *  harnesses run, and on what, follow them. */
+const GATEWAY_VARS = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_GATEWAY_IDS", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG"] as const;
+
 /** What of `env` a write can change that the harnesses' offers are made from: each secret but the tool keys' fields (a
  *  saved key is one of those; the rest of the environment is the server's start's). Held to tell whether a write needs
  *  the offers probed again, never shown. */
-const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] => [...SECRET_NAMES.filter((name) => !TOOL_FIELDS.includes(name)).map((name) => env[name]), planOf(env)?.state, planOf(env)?.models.join(" "), claudeLoginOf(env)?.dir];
+const offersInputs = (env: NodeJS.ProcessEnv): readonly (string | undefined)[] => [...SECRET_NAMES.filter((name) => !TOOL_FIELDS.includes(name)).map((name) => env[name]), ...GATEWAY_VARS.map((name) => env[name]), planOf(env)?.state, planOf(env)?.models.join(" "), claudeLoginOf(env)?.dir];
 
 /** A sign-in step's answer; its refusal (a stale or bad pasted address, no sign-in waiting, OpenAI's no) a 400 in words. */
 async function planStep<T>(step: () => Promise<T>): Promise<T> {
@@ -809,39 +842,46 @@ async function needsOf(env: NodeJS.ProcessEnv): Promise<ModelState> {
  *  AGENTRUN_SERVE_LEARNING's when not given), its tool settings (`toolSettings`, what each web tool resolves to) and the
  *  box offers (`boxes`, what the server found at the start, place-offers.ts), with whether a revision that names no
  *  model runs (needsOf). The server makes it once at its start and then remakes only the parts a write changes
- *  (startHolding), so a key saved later can make a harness, a provider or the default model available with no restart.
- *  `gradeModel` is its `--grade-model`. */
-export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number, stored?: StoredKeys, learning?: LearningMode, toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = [], gradeModel?: string) {
+ *  (startHolding), so a key saved later can make a harness, a provider or the default model available with no restart. */
+export async function readingOf(base: NodeJS.ProcessEnv, maxRuns: number, stored?: StoredKeys, learning?: LearningMode, toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = []) {
   const env = withSecrets(base, "all", stored);
   const offers = await harnessOffers(offersEnvOf(env));
-  return { env, offers, caps: capabilitiesWith(env, maxRuns, offers, learning ?? learningOf(env), await needsOf(env), toolSettings, boxes, gradeModel) };
+  return { env, offers, caps: capabilitiesWith(env, maxRuns, offers, learning ?? learningOf(env), await needsOf(env), toolSettings, boxes) };
 }
 
 /** The capabilities document GET /v2/capabilities answers for `env`: each harness's offer resolved, its `default_model`
  *  included (harnessOffers), and whether a revision that names no model runs here (`models.ready`, and what it `needs`
  *  when not), so what this returns is what the route serves and what the document's schema holds.
  *  `learning` is the server's learning switch (`--learning`), AGENTRUN_SERVE_LEARNING's when not given; with this
- *  server's tool settings, what each web tool resolves to (tool-plane.ts); `boxes`, the box offers its places show;
- *  `gradeModel`, its `--grade-model`. */
+ *  server's tool settings, what each web tool resolves to (tool-plane.ts); `boxes`, the box offers its places show. */
 
-export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), learning: LearningMode = learningOf(env), toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = [], gradeModel?: string) {
-  return capabilitiesWith(env, maxRuns, await harnessOffers(env), learning, await needsOf(env), toolSettings, boxes, gradeModel);
+export async function capabilities(env: NodeJS.ProcessEnv = withSecrets(process.env), maxRuns = maxRunsOf(env), learning: LearningMode = learningOf(env), toolSettings: ToolSettingsMap = {}, boxes: readonly BoxOffer[] = []) {
+  return capabilitiesWith(env, maxRuns, await harnessOffers(env), learning, await needsOf(env), toolSettings, boxes);
 }
 
-/** capabilities.learning: whether the caller may approve a note that waits, and what that needs when not. */
-type LearningCaps = { grade_model: string | null; pending: true; approve: boolean; approve_needs?: "password" };
+/** The start-time switches a server takes as options (ServeOptions mcpLoopback, webhookPrivateTargets). */
+type SwitchedOn = { mcpLoopback: boolean; webhookPrivateTargets: boolean };
+/** Those switches as `env` sets them, the CLI's way, for a server whose options name neither. */
+const switchedOnBy = (env: NodeJS.ProcessEnv, options: { mcpLoopback?: boolean; webhookPrivateTargets?: boolean } = {}): SwitchedOn => ({
+  mcpLoopback: options.mcpLoopback ?? env[MCP_ALLOW_LOOPBACK_ENV] === "1",
+  webhookPrivateTargets: options.webhookPrivateTargets ?? env[WEBHOOK_PRIVATE_TARGETS_ENV] === "1",
+});
+
+/** capabilities.learning: whether the caller may approve a workflow draft that waits, and what that needs when not. */
+type LearningCaps = { pending: true; approve: boolean; approve_needs?: "password" };
 
 /** The capabilities document as `req`'s caller reads it: approving takes the owner's password session alone, so only
  *  that caller reads `approve: true`; every other (a token, a run, accounts off) reads `approve_needs: "password"`. */
 export function forCaller<T extends { learning: LearningCaps }>(caps: T, ownerSession: boolean): T {
-  return ownerSession ? { ...caps, learning: { grade_model: caps.learning.grade_model, pending: caps.learning.pending, approve: true } } : caps;
+  return ownerSession ? { ...caps, learning: { pending: caps.learning.pending, approve: true } } : caps;
 }
 
 /** The capabilities document from offers already resolved, under the server's learning switch, tool settings and box
  *  offers: cheap, made again after each key or tool-settings write with the offers the server holds; and `needs` as
  *  needsOf says it for a revision that names no model (null when it runs). `runnerShell`: the sandbox-only tools a run
- *  on the runner has a shell for here (tools.ts shellTools; bash in Mode 2), available with no box. */
-function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, { needs, priced }: ModelState, toolSettings: ToolSettingsMap, boxes: readonly BoxOffer[], gradeModel?: string, refused: Readonly<Record<string, string>> = {}, runnerShell?: ReadonlySet<string>) {
+ *  on the runner has a shell for here (tools.ts shellTools; bash in Mode 2), available with no box. `switched`: the two
+ *  start-time switches the server takes as options (switchedOnBy reads them from `env`, as the CLI sets them). */
+function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, { needs, priced }: ModelState, toolSettings: ToolSettingsMap, boxes: readonly BoxOffer[], refused: Readonly<Record<string, string>> = {}, runnerShell?: ReadonlySet<string>, isolation: "uid" | "process" = "process", switched: SwitchedOn = switchedOnBy(env)) {
   const models = { ...modelSource(env), ready: needs === null, needs, priced };
   // Both limits apply: the cap on the count, and the memory each run reserves (host.ts).
   const memory = hostMemory();
@@ -855,21 +895,26 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     server: { name: "@parcha/agentrun-serve", version: VERSION, platform: process.platform },
     /** What runs a run here (the contract's `runtimes`, informational): this server's runners, over its one store. */
     runtimes: ["runner"],
+    /** How a run is kept from another here (run-child-host.ts runIsolationOf): each a process of its own, and `uid`, each
+     *  a user of its own too. */
+    run_isolation: isolation,
     /** The harnesses a revision may name (`definition.harness`), whether this server runs each, and how many at once. */
     // `keys`, what a model key would unlock, is the key rows' (listToolKeys), never served here.
     harnesses: harnesses.map(({ keys: _keys, ...offer }) => ({ ...offer, max_concurrent_runs: Math.min(maxRuns, runsThatFit(offer.id, memory, env)) })),
     /** The places a revision may name (`definition.place`), this host's default, and whether this server has each box. */
     places: placesOf(boxes, boxAllowOf(env)),
     models,
-    /** What grades a run's proposed notes: the model this server names for it (learning.ts gradeModelOf), or null when
-     *  each run is graded on its agent's own model; and `pending`: a risky rule, the user's or the run's own, is kept to
-     *  wait for its owner's OK, served to no run; `approve`: whether the caller can approve one, which takes the owner's
-     *  password session (forCaller), and `approve_needs` when not. */
-    learning: { grade_model: gradeModelOf(env, gradeModel) ?? null, pending: true, approve: false, approve_needs: "password" } as LearningCaps,
+    /** `pending`: a workflow draft with a call no price covers is kept to wait for its owner's OK, served to no run;
+     *  `approve`: whether the caller can approve one, which takes the owner's password session (forCaller), and
+     *  `approve_needs` when not. */
+    learning: { pending: true, approve: false, approve_needs: "password" } as LearningCaps,
     /** Every tool a revision may name (the closed table in tools.ts): available here, or the variables it is missing; a
      *  web tool, what it resolves to on each harness under this server's tool settings; `key`, the tool key that unlocks
      *  it (tool-keys.ts), when one does. */
     tools,
+    /** The switches only the operator sets, in the server's environment at its start (start-switches.ts): each one's state,
+     *  the value it read and what it allows. Never a secret's value. */
+    switches: startSwitches(env, switched),
     /** How this server holds its secrets (secrets.ts, the launcher), and what that does not cover. */
     secrets: {
       names: [...SECRET_NAMES],
@@ -926,6 +971,9 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
        *  ends (webhooks.ts); its secret kept sealed under the same seal key. */
       // Always sealed: the server starts with its seal key (seal-key.ts bootSealKey), so nothing is kept in the clear.
       webhooks: { routes: true, events: [...WEBHOOK_EVENTS], signing: "standard-webhooks/v1", at_rest: "sealed" },
+      /** /settings/slack: one Slack incoming-webhook URL each of `events` is posted to as a readable message (slack.ts); the
+       *  URL kept sealed, never shown. */
+      slack: { routes: true, events: [...SLACK_EVENTS], at_rest: "sealed" },
       /** /triggers: what starts an agent's capped runs with no caller (triggers.ts). */
       triggers: { routes: true, sources: [...SOURCE_KINDS], targets: [...TARGET_KINDS], min_every_s: MIN_EVERY_S, history_kept: HISTORY_KEPT, catchup_window_s: CATCHUP_WINDOW_S, failures_to_pause: FAILURES_TO_PAUSE, webhook: { signing: "standard-webhooks/v1", signatures: [...SCHEME_NAMES], tolerance_s: HOOK_TOLERANCE_S, max_body_bytes: webhook.push!.maxBodyBytes, payload_kept_bytes: PAYLOAD_KEPT_BYTES, at_rest: "sealed" } },
     },
@@ -957,6 +1005,11 @@ function cursorOf(value: string | null): number {
   if (!Number.isSafeInteger(offset) || offset < 0) throw new ApiError("bad_request", "cursor is not one this server gave");
   return offset;
 }
+/** How many runs still going whose listing is behind a status-filtered list reads at once before it builds them all and
+ *  reads its page (runsPage). */
+const UNLISTED_AT_ONCE = 50;
+/** Most builds of one run's listing a list makes when writes keep moving its mark (runsPage listNow). */
+const LIST_TRIES = 3;
 const nextCursor = (offset: number, total: number) => (offset < total ? Buffer.from(String(offset)).toString("base64url") : null);
 function limitOf(value: string | null): number {
   if (value === null) return 20;
@@ -1006,7 +1059,6 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   const boxAllow = boxAllowOf(process.env);
   const maxRuns = maxRunsOf(process.env, options.maxRuns);
   const learning = learningOf(process.env, options.learning);
-  const learningBudget = learningBudgetOf(process.env, options.learningBudget);
   // A limit on a run's requests on free models that is no whole number above 0 stops the start, naming its variable.
   freeModelRequestsOf(process.env);
   const minFreeMib = minFreeMibOf(process.env);
@@ -1021,7 +1073,7 @@ export async function startServe(options: ServeOptions): Promise<Serve> {
   // store handle it opened.
   const stops: Array<() => Promise<void>> = [];
   try {
-    return await startHolding(options, data, { maxRuns, minFreeBytes, learning, learningBudget, boxAllow, templates }, stops);
+    return await startHolding(options, data, { maxRuns, minFreeBytes, learning, boxAllow, templates }, stops);
   } catch (error) {
     for (const stop of stops) await stop().catch(() => undefined);
     throw error;
@@ -1048,8 +1100,8 @@ async function whileReplaced<T>(take: () => Promise<T> | T, held: (error: unknow
   }
 }
 
-async function startHolding(options: ServeOptions, data: string, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; learningBudget: number; boxAllow: readonly string[] | "none"; templates: Package[] }, stops: Array<() => Promise<void>>): Promise<Serve> {
-  const { maxRuns, minFreeBytes, learning, learningBudget, boxAllow, templates } = checked;
+async function startHolding(options: ServeOptions, data: string, checked: { maxRuns: number; minFreeBytes: number; learning: LearningMode; boxAllow: readonly string[] | "none"; templates: Package[] }, stops: Array<() => Promise<void>>): Promise<Serve> {
+  const { maxRuns, minFreeBytes, learning, boxAllow, templates } = checked;
   /** What an agent's view says of its learning: how many learned items wait for its owner's OK, for an agent that learns
    *  on this server (learning on, its current revision `learning: true`); none for another, or when the count cannot be
    *  read (the view never fails for it). */
@@ -1073,8 +1125,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const base = { ...withoutFaux(process.env), [DATA_ENV]: data, ...(options.allowCodeNodes ? { [CODE_NODES_ENV]: "1" } : {}), ...(options.faux ? { [FAUX_ENV]: resolve(options.faux) } : {}), ...(options.harnessTable ? { [HARNESS_TABLE_ENV]: resolve(options.harnessTable) } : {}), ...harnessModulesEnv(options.harnessModules ?? [], data) };
   // The table, loaded once here: a harness module that is missing, names a built-in harness or gives half an entry refuses
   // the start, in words, before anything else opens.
-  // The harness ids a definition may name here: the table's, the built-in ones and those the modules add.
-  const harnesses = harnessIds(base);
+  // The harness ids a definition may name here: the table's, the built-in ones and those the modules add, and one the
+  // table hides until its owner installs it (tableIds: Goose), whose save warns with the command that installs it.
+  const harnesses = tableIds(base);
   // The one store (module A), opened here as this data root's single owner, before the settings layers that read it: its
   // owner lock holds the store to this server (the data root's own lock follows), and it refuses a data directory an
   // earlier version wrote, in words, to start fresh (no oldHomes/oldLayout checks, no migration). Every agent, run, setting and sign-in is a row; the
@@ -1113,7 +1166,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // which the runner beside the server shares (Serve.attachHub), so one process holds them. A second server on this
   // store is refused above (its owner lock).
   const attachHub = new AttachHub();
-  const attach = createAttachRoutes({ store, hub: attachHub, machinesOnly: options.apiOnly === true, log: (event, fields) => (log ? log(logLine(event, fields)) : void process.stderr.write(`agentrun-serve: ${logLine(event, fields)}\n`)) });
   // The data root's own lock, once the store is held (so a deploy on Postgres waits at the store's owner lock first): the
   // store's lock holds one store, but the data root also holds what the server writes beside it (its token, its seal key,
   // uploads, harness installs, learning folders), which two servers on two stores (two Postgres schemas, or SQLite and
@@ -1140,6 +1192,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // there is no keeping one in the clear.
   const seal = await bootSealKey(store, data);
   stops.push(async () => seal.release());
+  // Its runners on other hosts (AGENTRUN_RUNNER_HOSTS): a viewer's row naming one of their hosts is dialled there, with
+  // the proxy's proof under the seal key (live-reach.ts); any other host is never dialled. A hosted machine a runner in a
+  // process of its own made is relayed to that runner's attach listener the same way (dial-relay.ts).
+  const reach = liveReachOf(process.env, seal.key);
+  const attach = createAttachRoutes({
+    store, hub: attachHub, machinesOnly: options.apiOnly === true, runnerApart: options.runnerApart === true,
+    relay: { relays: store.runnerRelays, reach },
+    ...(options.attachTiming ? { timing: options.attachTiming } : {}),
+    log: (event, fields) => (log ? log(logLine(event, fields)) : void process.stderr.write(`agentrun-serve: ${logLine(event, fields)}\n`)),
+  });
   // This server's own key on every environment it reads its secrets from, so a reader opens what this store holds with the
   // key checked against it, never another data directory's that this process booted too (secrets.ts holds one made key).
   const own = (env: NodeJS.ProcessEnv): NodeJS.ProcessEnv => withSealKey(env, seal.text);
@@ -1210,7 +1272,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const loginRefused = whyNotOneOwner({ apiOnly: options.apiOnly === true, tokens: tokens.length });
   await dropRefusedLogin(store.settings, loginOff ?? loginRefused, (line) => (log ? log(logLine("claude_login", { line })) : void process.stderr.write(`agentrun-serve: ${line}\n`)));
   let claudeLogin = loginOf(await claudeLoginSetting(store.settings), data, base);
-  let env = withClaudeLogin(withPlan(own(withSecrets(base, "all", storedKeys)), plan), claudeLogin);
+  // The model gateway saved in the console (model-gateway.ts), its key opened: laid over every reading of env, where the
+  // environment names no gateway of its own. Read again at each save or removal (gatewayChanged).
+  let savedGateway: SavedGateway | undefined = await readSavedGateway(store, seal.key);
+  /** The server's environment as a reading of it sees it: its secrets and saved keys, the ChatGPT sign-in, Claude Code's
+   *  login, and the saved model gateway. */
+  const readEnv = (from: NodeJS.ProcessEnv): NodeJS.ProcessEnv => withSavedGateway(withClaudeLogin(withPlan(own(withSecrets(from, "all", storedKeys)), plan), claudeLogin), savedGateway);
+  let env = readEnv(base);
   let offers!: HarnessCapability[];
   let caps!: ReturnType<typeof capabilitiesWith>;
   // Whether a revision that names no model runs (needsOf): made from env alone, so remade with it, before the caps.
@@ -1219,7 +1287,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // With accounts off no one can answer an ask (the answer route takes the owner's session alone): each tool ask is
   // offered for says it needs the password sign-in, as learning's approve does.
   const askNeeds = (made: ReturnType<typeof capabilitiesWith>) => (options.accounts ? made : { ...made, tools: made.tools.map((tool) => (tool.permissions.includes("ask") ? { ...tool, ask_needs: "password" as const } : tool)) });
-  const compose = (runnerShell?: ReadonlySet<string>) => askNeeds(capabilitiesWith(env, maxRuns, offers, learning, needs, settings.get(), boxOffers, options.gradeModel, toolKeys.refused(), runnerShell));
+  // How this host keeps runs apart, as its runners decide it from the same setting and helper: `uid` where the helper can
+  // switch and AGENTRUN_RUN_USER is not `same`. A helper that cannot switch is a runner that refuses to start, in words
+  // naming the setting; no run here is then a user of its own, so `process`. Imported here, as the runner beside it
+  // imports it (runner/beside.ts): its module reaches the runner's, which reach back to this one's.
+  const { runIsolationName, runIsolationOf } = await import("./runner/run-child-host.js");
+  const isolation = await runIsolationOf(base, 1, () => {}).then(runIsolationName, () => "process" as const);
+  // The start-time switches as this server was started: its options, else the CLI's variables. mcpLoopback is the
+  // option alone, as everywhere it is read here (localInstall): the CLI sets it from AGENTRUN_MCP_ALLOW_LOOPBACK.
+  const switched: SwitchedOn = { mcpLoopback: options.mcpLoopback === true, webhookPrivateTargets: switchedOnBy(process.env, options).webhookPrivateTargets };
+  const compose = (runnerShell?: ReadonlySet<string>) => askNeeds(capabilitiesWith(env, maxRuns, offers, learning, needs, settings.get(), boxOffers, toolKeys.refused(), runnerShell, isolation, switched));
   const recompose = () => void (caps = compose());
   // What the offers held now were made from (offersInputs), and the latest probe: one a later probe overtook is dropped.
   let offersFrom: readonly (string | undefined)[] | undefined;
@@ -1238,16 +1315,31 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  (needsOf may wait, and another write lands meanwhile): the latest write's `needs` stands, an earlier one's that
    *  finishes after it is dropped. */
   let needsAsked = 0;
+  // The runs' listings' builder (run-listing.ts): each run's listing, built from its view once per change, so a runs list
+  // reads rows alone. A list builds a listing it finds behind through it too (runsPage). Its own passes start once this
+  // server listens and knows its own address (ownOriginOf, below). Its items keep no console link (a list adds the one for
+  // the address its request reached), so the origin here is never served.
+  const lister = createLister(store, () => viewDepsFor(ownOriginOf()), {
+    log: (what, error) => log?.(logLine(what, { error: error.message })),
+    ...(options.listerIdleMs !== undefined ? { idleMs: options.listerIdleMs } : {}),
+  });
   const keysChanged = async () => {
     // A run's learning, view, list and timeline row are cut of the keys saved now by the run view at read time (it reads
-    // serverSecrets live, store-view), so a key change needs no cache invalidation here.
-    env = withClaudeLogin(withPlan(own(withSecrets(base, "all", storedKeys)), plan), claudeLogin);
+    // serverSecrets live, store-view), and a list builds a listing cut of other keys again (builtOfNow). A failed run's error words
+    // name a refused key by the keys and settings, so those listings are built again.
+    await lister.keysChanged();
+    env = readEnv(base);
     const mine = ++needsAsked;
     const next = await needsOf(env);
     if (mine === needsAsked) needs = next;
     const inputs = offersInputs(env);
     if (offersFrom && inputs.length === offersFrom.length && inputs.every((value, i) => value === offersFrom![i])) recompose();
     else await probe("key");
+  };
+  /** After the model gateway is saved or removed in the console: the saved gateway read again, then env, as a key's save. */
+  const gatewayChanged = async () => {
+    savedGateway = await readSavedGateway(store, seal.key);
+    await keysChanged();
   };
   /** The sign-in as the store holds it now: a runner may have renewed it, or found it expired. A change reads env again. */
   const planNow = async () => {
@@ -1304,10 +1396,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const sealKey = seal.key;
   // SDK runs' credentials are signed with a key from the seal key, never an API token: a rotation leaves them working.
   const sdkSecret = sdkRunSecret(sealKey);
-  // Its runners on other hosts (AGENTRUN_RUNNER_HOSTS): a viewer's row naming one of their hosts is dialled there, with
-  // the proxy's proof under the seal key (live-reach.ts); any other host is never dialled.
-  const reach = liveReachOf(env, sealKey);
-  const answers = (handover: LiveHandover): Promise<boolean> => viewerAnswers(handover, reach);
+  // Each run's viewers are asked under that run's key (live-reach.ts reachForRun).
+  const answers = (runId: string) => (handover: LiveHandover): Promise<boolean> => viewerAnswers(handover, reachForRun(reach, runId));
   // Settings → Computers and the owner's Archil settings, over the one store (computers.ts, archil-routes.ts), built once
   // at the first request, when the server's own address is known (--faux's desktop view is a page on it). The real kind
   // registry and each provider's create() are the computer package's (kinds.ts, providers.ts providerFor); under --faux,
@@ -1347,7 +1437,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // A provider's key set where the server starts is one of its secrets, held off process.env (secrets.ts): read by name
     // from what the server was started with, as computerReady below reads it.
     store, sealKey, tools: kindTools, mode: folderModeOf(store, process.env), env: withSecrets(process.env, "own"),
-    paired: { rows: () => store.pairedComputers.list(), viewOf: (row, serves) => pairedView(row, attachHub, serves) },
+    paired: { rows: () => store.pairedComputers.list(), viewOf: (row, serves) => pairedView(row, attachHub, serves, options.runnerApart === true) },
+    runnerApart: options.runnerApart === true,
+    // A runner in a process of its own that relays its dials (dial-relay.ts): one whose attach listener said it is there
+    // within RELAY_STALE_MS, at a host this server dials.
+    relayed: async () => (await store.runnerRelays.list()).some((row) => row.seenAt >= Date.now() - RELAY_STALE_MS && dialHost(row.host, reach) !== undefined),
     ...(options.faux
       // --faux's providers stand in for every vendor's, a local one's daemon included.
       ? { kinds: fauxOf().kinds, factories: fauxOf().factories, keyTable: fauxOf().keyTable }
@@ -1425,7 +1519,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** A run's computer on its read: its revision's computer setting, else the one its place says; absent for none. */
   const runComputerOf = (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => runComputerRead(store, runId, view, { context: ctx });
   /** The run read's path and costs (A8, store-reads/learning.ts runAllInOverStore): `path`; `cost.usd` its own spend, the
-   *  job's (its look-back and compile turns are learning's), null while unknown; what learning spent for it
+   *  job's (its compile turn is learning's), null while unknown; what learning spent for it
    *  (`learning_usd`) and the two (`all_in_usd`). A cost known only as a bound keeps its bound, and all-in is unknown. */
   const allInViewOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
     const cost = (view.cost ?? {}) as { usd?: unknown; upper_bound?: unknown };
@@ -1433,7 +1527,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const all = await runAllInOverStore(store, runId, own);
     if (!all) return {};
     // A bound stays the view's bound. Otherwise usd is the job's (runCostOf's cost_usd, the same figure the cost series
-    // gives): known as it answered even when its look-back's cost is not; the row's while the run is at work.
+    // gives): known as it answered even when its compile turn's cost is not; the row's while the run is at work.
     return { path: all.path, cost: { ...cost, ...(cost.upper_bound === true ? {} : { usd: all.usd }), learning_usd: all.learning_usd, all_in_usd: all.all_in_usd } };
   };
   // The agents accessor the routes call, over the one store (module A): the agents-store functions, with the run-row reads
@@ -1445,7 +1539,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     list: (options: { archived?: boolean } = {}) => listAgents(store, options),
     create: (body: DefinitionBody, check?: SaveCheck, fresh?: { place: RevisionPlace; tools: readonly string[] }, template?: TemplatePackage) =>
       createAgent(store, body, { ...(check ? { check } : {}), ...(fresh ? { fresh } : {}), ...(template ? { template } : {}) }),
-    commit: (entry: AgentEntry, body: DefinitionBody, options: { ifCurrent?: string | null; check?: SaveCheck; contract?: boolean } = {}) => commitAgent(store, entry, body, options),
+    commit: (entry: AgentEntry, body: DefinitionBody, options: { ifCurrent?: string | null; check?: SaveCheck; contract?: boolean; template?: TemplatePackage; fromPackage?: boolean } = {}) => commitAgent(store, entry, body, options),
     revisions: (id: string) => agentRevisions(store, id),
     revision: (agentId: string, revisionId: string) => agentRevision(store, agentId, revisionId),
     setCurrent: (entry: AgentEntry, revisionId: string) => setCurrentRevision(store, entry, revisionId),
@@ -1462,6 +1556,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   ({ secrets: secretStores, settings: triggerSettings } = await openServerSecretsOverStore(store, data, env, adapters, (fields) => (log ? log(logLine("trigger", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("trigger", fields)}\n`))));
   secretStores.add("server", () => tokens.map((entry) => entry.token));
+  // The model gateway's key saved in the console (model-gateway.ts): cut from everything shown, as every saved key is.
+  secretStores.add("model-gateway", () => (savedGateway?.key ? [savedGateway.key] : []));
   // The email account's password (email/account.ts), and each one saved since this server started: cut from everything
   // it shows, so a tool's error or a model's text that ever echoed it shows it nowhere.
   const emailPasswords = new Set<string>();
@@ -1486,8 +1582,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const signIns = signInsOverStore(store, sealKey, vendorsOver(() => env, checkFetch));
   const webhooks = new Webhooks(store, sealKey, (fields) => (log ? log(logLine("webhook", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("webhook", fields)}\n`)), {
     ...(options.webhookRetryMs ? { retryMs: options.webhookRetryMs } : {}),
+    // Any bound given reaches Webhooks' check (0 and NaN are refused there, never dropped for the default).
+    ...(options.webhookTimeoutMs !== undefined ? { timeoutMs: options.webhookTimeoutMs } : {}),
     ...(options.webhookLookup ? { lookup: options.webhookLookup } : {}),
-    privateTargets: options.webhookPrivateTargets ?? process.env.AGENTRUN_WEBHOOK_PRIVATE_TARGETS === "1",
+    privateTargets: switched.webhookPrivateTargets,
   });
   // The outbound webhook's secret, as it stands (set by a PUT, gone with a DELETE), and each it held before.
   stops.push(() => webhooks.close());
@@ -1495,6 +1593,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // Where an earlier version kept the webhook: no longer read.
   if (existsSync(join(data, WEBHOOK_FILE))) log?.(logLine("webhook", { condition: "webhook_left_over", file: join(data, WEBHOOK_FILE), effect: "not read: the webhook is kept in the store now; set it again with PUT /v2/settings/webhook" }));
   secretStores.add("webhook", () => webhooks.signingSecrets());
+  // Slack (slack.ts): the webhook's outbox under its own channel, its URL the credential, sealed and cut like a secret.
+  const slack = new SlackPosts(store, sealKey, (fields) => (log ? log(logLine("slack", fields)) : void process.stderr.write(`agentrun-serve: ${logLine("slack", fields)}\n`)), {
+    ...(options.webhookRetryMs ? { retryMs: options.webhookRetryMs } : {}),
+    ...(options.webhookTimeoutMs !== undefined ? { timeoutMs: options.webhookTimeoutMs } : {}),
+    ...(options.webhookLookup ? { lookup: options.webhookLookup } : {}),
+    privateTargets: options.webhookPrivateTargets ?? process.env.AGENTRUN_WEBHOOK_PRIVATE_TARGETS === "1",
+    ...(options.slackTarget ? { sendTo: options.slackTarget } : {}),
+    // Each message's strings (an agent's name, a run's title, a trigger's error) cut of every secret the server holds.
+    serverSecrets: () => serverSecrets(),
+  });
+  stops.push(() => slack.close());
+  await slack.load();
+  secretStores.add("slack", () => slack.urlForms());
   const uploads = new Uploads(join(data, UPLOADS_DIR));
   // Under the data directory's lock and before this server answers anything, so no PUT of its own is in flight: an upload
   // temp file found now is a crashed one's.
@@ -1532,6 +1643,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // A capped start prices each OpenRouter Decisions model a workflow pins (runnable.ts) from OpenRouter's public catalog,
   // read once for this server (and again after a read that failed), through the faux one under --faux.
   let pricing: Promise<{ priceOf(model: string): Promise<unknown> }> | undefined;
+  const readPrices = new Map<string, unknown>();
   const decisionPrice = async (model: string): Promise<unknown> => {
     const making = (pricing ??= (async () => {
       const [{ openrouterProvider }, faux] = await Promise.all([import("@parcha/agentrun-decisions"), fauxFetch(fauxEnvOf(options), FAUX_OPENROUTER_ENV)]);
@@ -1539,8 +1651,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     })());
     // One that could not be made is made again next time: a rejection is never kept.
     const provider = await making.catch((error: unknown) => { if (pricing === making) pricing = undefined; throw error; });
-    return provider.priceOf(model);
+    const price = await provider.priceOf(model);
+    readPrices.set(model, price);
+    return price;
   };
+  /** A decision model's price as a save or a start last read it from the catalog (null: the catalog lists none), and
+   *  never a read of the catalog of its own: what a GET, which waits on no other service, prices by. A model none has
+   *  priced answers PRICE_NOT_READ, which blockersOf takes for a price (no blocker): whether its run is refused is not
+   *  known until a start asks. */
+  const PRICE_NOT_READ = { notRead: true } as const;
+  const readDecisionPrice = async (model: string): Promise<unknown> => (readPrices.has(model) ? readPrices.get(model) : PRICE_NOT_READ);
   // The run write half (runs-over-store): the server INSERTs a queued run and its launch (startRun), and writes command
   // rows (message/stop/cancel/raise/approve/archive) a run's runner reads and applies. No per-run process, no HTTP door,
   // no box relay here — a runner (its own process, sharing only this store) claims and runs every run. The leaves a start
@@ -1585,19 +1705,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Whether that is the operator's own setting, not the default: a browser is held to an operator's list alone.
     ...(boxAllowSetIn(process.env) ? { boxAllowSet: true as const } : {}),
     modelOf,
-    // The run's learning start, decided at start as the old file-backed start decided it (learning-run.ts onStart/seedFor):
-    // the server's learning switch, the budget its # Learned section fits, the agent's seed read now from its learning folder
-    // (git), and the host's secrets as they are shown now to cut the notes a run is given, a loopback address kept (local),
-    // as the run's .learning/ files keep it: the run's own machine, which an agent with no read tool learns of only here.
-    // runs-over-store.learningStartFor pins the result (given/seed/section/seedNotes) in the launch for the runner; a seed
-    // that cannot be read starts the run with nothing learned (a fault never refuses it). The runner's spec builders read
-    // it back as the run's end-of-run step (runner/learning-end.ts learningEndOfRun, in adapter-run-spec.ts and
-    // cli-run-spec.ts).
+    // The run's learning start: the server's learning switch, the agent's seed read now from its learning folder (git), and
+    // the host's secrets as they are shown now to cut the corrections a run is given, a loopback address kept (local): the
+    // run's own machine. runs-over-store.learningStartFor pins the result (seed, section, workflows) in the launch for the
+    // runner; a seed that cannot be read starts the run with nothing learned (a fault never refuses it). The runner's spec
+    // builders read it back as the run's end-of-run step (runner/learning-end.ts learningEndOfRun).
     learning,
-    learningBudget,
-    // The model the server names to grade what a run proposes (capabilities' learning.grade_model), carried on each learning
-    // start for the runner's learning run to grade on: none, the agent's own.
-    ...(gradeModelOf(env, options.gradeModel) ? { gradeModel: gradeModelOf(env, options.gradeModel) } : {}),
     seedFor: async (agentId: string) => {
       // The switch runs no git in this process (learning.ts seedOf: the folder's own script and file API, which checks git
       // itself); a git or folder fault surfaces here as a seedOf error, so the run starts with nothing learned, never refused.
@@ -1611,59 +1724,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     },
     shown: () => secretsShown(serverSecrets(), { local: true }),
   };
-  /** What a learning batch's loop reads of a run, from its view. Its `cost_usd` is the exact cost: a batch's figures say
-   *  no "at most", so a view cost marked `upper_bound` reads null there, as the run's stored cost does (RunRow.costUsd). */
-  const batchRunView = async (runId: string): Promise<RunSnap | undefined> => {
-    const v = (await viewOverStore(store, runId, viewDepsFor(ownOriginOf()))) as Record<string, any> | undefined;
-    if (!v) return undefined;
-    return { status: String(v.status), ended_at: v.ended_at ?? null, answer: typeof v.result?.final_answer === "string" ? v.result.final_answer : null, cost_usd: typeof v.cost?.usd === "number" && v.cost.upper_bound !== true ? v.cost.usd : null, learning_state: typeof v.learning?.state === "string" ? v.learning.state : null, error: typeof v.error?.message === "string" ? v.error.message : null };
-  };
-  // Learn from a CSV (learning-batch.ts): a batch's loop runs in this process over the run write half and the run view; its
-  // state is the store's settings, so a batch still running when the server stopped takes up again as it starts. Its reads
-  // (create's answer, read, list, cancel) cut its text as the learning routes do (learningShown, below).
-  const batches = new LearningBatches({
-    settings: store.settings,
-    learning: async (agentId) => {
-      const entry = await needAgent(agentId);
-      if (entry.agent.archivedAt) return { learns: false, why: "it is archived." };
-      if (learning === "off") return { learns: false, why: "this server's learning is off (--learning)." };
-      // A batch starts runs and sends their follow-ups with no caller's model key: none to spend on a server with none.
-      const off = noServerKeyFor(env, "Learning from a CSV");
-      if (off) return { learns: false, why: off };
-      if (entry.revision?.kind !== "agentic" || !learnsOf((entry.revision.body as { learning?: unknown }).learning)) return { learns: false, why: "its current revision does not say learning: true. Turn learning on first." };
-      return { learns: true };
-    },
-    // A row's run starts under the row's key (the store's run origin, as an Idempotency-Key's run does), so a start the
-    // server stopped before its row kept the id is found again, never started twice.
-    find: async (key) => (await agents.request(() => agents.store.runOfOrigin(key)))?.runId,
-    start: async (agentId, body, key) => (await startRunOf(await needAgent(agentId), body as Json, { origin: { key } })).id,
-    view: (runId) => batchRunView(runId),
-    // Sent already: a steer the run's commands hold with these words, not refused (a follow-up to an ended run is one too,
-    // its reopen's).
-    sent: async (runId, content) => (await store.commands(runId, 0)).some((c) => c.kind === "steer" && c.refused === null && (c.body as { text?: unknown } | undefined)?.text === content),
-    message: async (runId, content) => void (await message(store, await needRun(runId), content)),
-    // A run that is not there has nothing to stop; any other failure is the loop's (the row stays live and owned).
-    cancel: async (runId) => {
-      const moment = ID.test(runId) ? await momentOverStore(store, runId, viewDepsFor(ownOriginOf())) : undefined;
-      if (moment) await cancel(store, moment);
-    },
-    figures: async (runId) => {
-      const stored = await store.runs.get(runId);
-      if (!stored) return undefined;
-      // A run still going has no stored cost yet (its column is written at its end): its live cost, from its view, stands in,
-      // so a batch's cost now and the cost it books are costRunOf both.
-      const run = FINAL_STATES.includes(stored.state) ? stored : { ...stored, costUsd: (await batchRunView(runId))?.cost_usd ?? null };
-      // Every round the run kept (a review follow-up opens a round of its own), in order: what each one learned and merged.
-      const newest = await store.learning.proposal(runId);
-      const ends = await Promise.all(Array.from({ length: newest?.round ?? 1 }, (_, i) => runLearningEnd(store, runId, i + 1)));
-      // A run still going names no path yet (its end writes it): the batch reads it as the agent's until then. Its all-in
-      // is not known while its audit's shadow run is queued or running (shadowSpendOf): the batch closes no row on it.
-      return figuresOf((await costRunOf(store, run, 0)) ?? { path: "agent", ...(await allInOf(store, run)) }, ends, (await shadowSpendOf(store, runId)).open);
-    },
-    // A batch's reads are the learning routes' reads: the same cut, the same 403 when a sign-in can't be read here.
-    shown: (agentId) => learningShown(agentId),
-    ...(options.batchPollMs ? { pollMs: options.batchPollMs } : {}),
-  });
   // A run's served view and its live moment, from the store (store-view): `origin` is where this request reaches the
   // console, the secrets are cut live, and the sign-ins give the handed-pointer cut. Trigger and background reads (no
   // request) use the server's public address, else its own.
@@ -1687,7 +1747,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   // What a run held for its owner's OK reads as it stands on its agent's learning folder's main (statusesOf).
   const statuses = (agentId: string) => statusesOf(data, agentId);
-  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => own(withSecrets(process.env, "all", storedKeys)), statuses });
+  const viewDepsFor = (origin: string): ViewDeps => ({ origin, serverSecrets, signIns, keyEnv: () => withSavedGateway(own(withSecrets(process.env, "all", storedKeys)), savedGateway), statuses });
   // A run read as a whole (its own read, its archive) lists its recordings too, from its recordings folder on this machine
   // (run-recordings.ts), where the runner beside it wrote them; every other read of the view opens no file.
   const recordings = (agentId: string, runId: string, endedAt: number | null) => recordingsOf(recordingsFolder(data, agentId, runId), endedAt);
@@ -1709,11 +1769,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     withheld: (_store, runId) => withheldOverStore(store, runId, viewDepsFor(ownOriginOf())),
     cutValues: (_store, runId) => runCutValues({ serverSecrets, signIns }, store, runId),
     context: ctx,
-    liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId, answers),
+    liveViewer: (runId: string) => liveViewerLink(store, sealKey, runId, answers(runId)),
   };
   // The run timeline reader over the store (run-reads-over-store runTimelines): one change-numbered RowLog per run, synced
   // from its journal (store-reads) on each read, its view (viewOverStore) for status/state/cost and whether it is final.
   // The route frames the SSE around its `page`, which long-polls the journal, byte-identical to the old live run's page.
+  const servedTimelineDeps: ServedTimelineDeps = { serverSecrets, signIns, keyEnv: () => withSavedGateway(own(withSecrets(process.env, "all", storedKeys)), savedGateway), statuses };
   const timelines = runTimelines({
     context: ctx,
     // The run's rows as served (run-timeline-served.ts), by its one cut (run-cut.ts, read for each page: a secret rotated
@@ -1721,7 +1782,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // shows and each browser sign-in pointer the run was handed; its decision rows among them, its error rows in the
     // error's words. A run whose hand can't be read back here is withheld: none of its rows. A run's Timeline is read
     // from its journal, which keeps what the run said whole.
-    timelineRows: (forStore, runId, context, calls) => servedTimelineRows({ serverSecrets, signIns, keyEnv: () => own(withSecrets(process.env, "all", storedKeys)), statuses }, forStore, runId, context, calls),
+    timelineRows: (forStore, runId, context, calls) => servedTimelineRows(servedTimelineDeps, forStore, runId, context, calls),
     runView: (forStore, runId) => viewOverStore(forStore, runId, viewDepsFor(ownOriginOf())),
   });
   const triggerDeps: TriggerTargetDeps = {
@@ -1886,7 +1947,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // queue a firing takes — how many of a trigger's messages wait for a busy run — is route-1's store.triggers.
     ...targets,
     settings: (adapterId) => triggerSettings.get(adapterId),
-    notify: (failed, key) => webhooks.emitTrigger(failed, key),
+    // The webhook and Slack each hear of it: told once both have it (or neither is set), again while either has not.
+    notify: async (failed, key) => {
+      const told = await Promise.all([webhooks.emitTrigger(failed, key), slack.emitTrigger(failed, key)]);
+      return told.find((one) => one === "unsaved" || one === "closed") ?? (told.includes("queued") ? "queued" : "off");
+    },
     // A Composio trigger's instance, and the project's subscription, are made and kept on Composio with its server's key.
     upstream: (kind) => (kind === "composio" ? composioTriggers : undefined),
   });
@@ -2030,7 +2095,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   stops.push(async () => triggers.close());
   // The firing loop runs against the server's own opened store: due firings start their runs through the run write half,
   // times missed while it was down are recorded, and the timer is armed for the next. (A test may inject its own store.)
-  void batches.resume().catch((error: Error) => void process.stderr.write(`agentrun-serve: the learning batches' resume: ${error.message}\n`));
   void triggers.start().catch((error: Error) => void process.stderr.write(`agentrun-serve: the triggers' start: ${error.message}\n`));
   // The App's installations repaired from GitHub's own, once, as the server starts: events missed while it was down. It
   // never rejects, and close (or a start that fails) aborts it and waits for it before it closes.
@@ -2248,12 +2312,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const learning = await learningOfAgent(entry);
     const native = nativeOf(entry.revision?.body);
     const nativeStatus = native?.remote ? await new RemoteConnectors(store).status(native) : undefined;
-    const runs = (await listRunsOverStore(store, { agent: entry.agent.id }, ctx)).filter((run) => !isShadowRun(run.id));
+    // Counted in the store, one read per agent: no run is read for it.
+    const runs = await store.runs.counts(entry.agent.id);
     return {
       ...(nativeStatus ? {nativeStatus} : {}),
       signIns: await signIns.view(entry.agent.id),
       ...(learning ? { learning } : {}),
-      runs: { count: runs.length, live: runs.filter((run) => run.state === "running").length },
+      runs: { count: runs.count, live: runs.live },
       // The agent's own computer (a persistent setting), as this server records it: the view's own_computer.
       ownComputer: agentComputerView(await agentComputerOf(store, entry.agent.id)),
     };
@@ -2321,7 +2386,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     store,
     deleteLearning: learningDelete,
     refuse: async (agentId) => void (await triggers.agentArchived(agentId)),
-    stopLearningBatches: (agentId) => batches.stopAll(agentId),
     cancel: async (runId) => {
       const moment = await momentOverStore(store, runId, viewDepsFor(ownOriginOf()));
       if (!moment) return true;
@@ -2447,14 +2511,37 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
 
   // ---- runs -----------------------------------------------------------------------------------------------------------
 
+  /** Why a run of the agent's current revision started now with no overrides would be refused (409 agent_not_runnable),
+   *  as the run's own check says it (runnable, at the place the run resolves to): its message and fields, for the agent
+   *  page to show before Run. Null when nothing keeps it from running, for an agent with no revision or archived (its
+   *  page says so), or when the check is not one a read makes: a native or SDK agent's (which launches or asks its
+   *  backend), and a revision whose MCP tools its first run pins (pinFirst writes the pin; until then a read would warn
+   *  of a pin the run makes). A read asks no other service, so it prices by readDecisionPrice. */
+  async function runBlockersOf(entry: AgentEntry): Promise<{ message: string; fields: InputIssue[] } | null> {
+    const revision = entry.revision as unknown as Revision | undefined;
+    if (!revision || entry.agent.archivedAt) return null;
+    const body = revision.body as AgenticBody & Partial<WorkflowBody>;
+    if (nativeOf(body) || sdkOf(body)) return null;
+    const tools = revision.kind === "agentic" ? (body.tools ?? []) : [];
+    if (!(revision as { mcpPin?: unknown }).mcpPin && tools.some((tool) => mcpToolOf(tool))) return null;
+    try {
+      await runnable(revision, resolvePlace(body.place as Place | undefined, fallbackPlace(revision.kind, tools)), { capped: body.maxCostUsd !== undefined, price: readDecisionPrice });
+      return null;
+    } catch (error) {
+      if (error instanceof ApiError && error.code === "agent_not_runnable") return { message: error.message, fields: error.extra.fields ?? [] };
+      return null;
+    }
+  }
+
   /** A workflow revision's shape as runnable.ts checks it: its workflow, tools, harness, place and tool settings. */
   const workflowShape = ({ workflow, tools, harness, place, toolSettings, approvals }: { workflow: unknown; tools?: readonly string[]; harness?: string; place?: RevisionShape["place"]; toolSettings?: RevisionShape["toolSettings"]; approvals?: "never" }): RevisionShape => ({ kind: "workflow", workflow, tools: tools ?? [], ...(harness ? { harness } : {}), ...(place ? { place } : {}), ...(toolSettings ? { toolSettings } : {}), ...(approvals === "never" ? { approvals } : {}) });
   const shapeOf = (revision: Revision): RevisionShape => (revision.kind === "agentic" ? { kind: "agentic", ...revision.body } : workflowShape(revision.body));
 
   /** What keeps `revision` from running here at `place` (its own, else this host's default), checked before anything
    *  starts with the checks a save makes (runnable.ts): one a save refused, or one a setting of this host fixes that it
-   *  does not have yet. `capped`: the run has a spend cap, which a web tool's resolution reads (tool-plane.ts). */
-  async function runnable(revision: Revision, place: Place, { capped = false }: { capped?: boolean } = {}): Promise<void> {
+   *  does not have yet. `capped`: the run has a spend cap, which a web tool's resolution reads (tool-plane.ts). `price`:
+   *  what prices an OpenRouter decision model under that cap; a start's reads OpenRouter's catalog (decisionPrice). */
+  async function runnable(revision: Revision, place: Place, { capped = false, price = decisionPrice }: { capped?: boolean; price?: (model: string) => Promise<unknown> } = {}): Promise<void> {
     if (sdkOf(revision.body)) throw new ApiError("agent_not_runnable", "This agent runs in its backend SDK. Call its SDK wrapper to start a task; AgentRun does not launch its tools or credentials.");
     const native = nativeOf(revision.body);
     if (native) {
@@ -2497,7 +2584,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     };
     const monid = (revision as { monidPin?: MonidPinBody | null }).monidPin ?? undefined;
     // Claude Code's login on this machine is a runner place's alone: a sandbox run is checked for a key, as it runs.
-    const blockers = await blockersOf(envAtPlace(env, shape.place), shape, settings.get(), { capped, boxes: boxOffers, computerReady, shellOf, offers, mcp: revision.kind === "agentic" ? pinnedTools : mcpTools, monid, decisionPrice });
+    const blockers = await blockersOf(envAtPlace(env, shape.place), shape, settings.get(), { capped, boxes: boxOffers, computerReady, shellOf, offers, mcp: revision.kind === "agentic" ? pinnedTools : mcpTools, monid, decisionPrice: price });
     if (!blockers.length) return;
     const message = blockers.map((b) => b.message).join(" ");
     // Each blocker as a 422 names its issue: its field, reason and message, and the fix when it has one.
@@ -2643,6 +2730,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     return pinned && { monid: pinned.pin, warnings: pinned.warnings.map(({ tool, message }) => ({ field: `definition.tools[${tools.indexOf(tool)}]`, reason: PRICED_BY_USAGE, message })) };
   }
 
+  /** The tools an agentic definition that names none is given where it runs (`place`): in a box, the box's shell tools
+   *  (NEW_AGENT_TOOLS); elsewhere none named, the runner's own. One rule for a new agent (createAgentOf) and for an apply
+   *  with agent_id of a package that names none (applyWith), whose agent is where its fresh apply put it. */
+  const defaultToolsAt = (place: unknown): readonly string[] | undefined => (isObject(place) && place.mode === "sandbox" ? NEW_AGENT_TOOLS : undefined);
+
+  /** The definition an apply with agent_id writes onto agent `entry` from its package's `definition`: its id, name and
+   *  description are the agent's own, kept from its creation; a package that names no tools gets those its agent's place
+   *  gives one (defaultToolsAt: the shell tools in the box its fresh apply put it in), as a fresh apply would. */
+  const updateDefinition = (entry: AgentEntry, definition: Json): Json => {
+    const kept = Object.fromEntries(Object.entries(definition).filter(([key]) => key !== "name" && key !== "description"));
+    const current = (entry.revision?.body ?? {}) as { place?: unknown };
+    const tools = kept.tools === undefined && kept.workflow === undefined && kept.computer === undefined ? defaultToolsAt(kept.place ?? current.place) : undefined;
+    return tools ? { ...kept, tools: [...tools] } : kept;
+  };
+
   /** POST /agents' body made into its agent, as that route makes one, with what this host still lacks for it. A new agent
    *  that names no place is given this server's box (place.ts defaultPlaceOf), stamped on its revision, when it names no
    *  tools (it gets bash) or a tool that needs a shell; one whose tools need none, or that names a tool the box refuses
@@ -2652,12 +2754,46 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const definition = checkDefinitionBody(body, { harnesses });
     const named = Array.isArray(definition.definition.tools) ? definition.definition.tools : [];
     const place = fallbackPlace("agentic", definition.definition.tools === undefined ? NEW_AGENT_TOOLS : named);
+    const tools = defaultToolsAt(place);
     const entry = await agents.create(definition, async (revision) => {
       const saved = await saveable(revision);
       warnings = saved.warnings;
       return saved.stamp;
-    }, place.mode === "sandbox" ? { place, tools: NEW_AGENT_TOOLS } : undefined, template);
+    }, place.mode === "sandbox" && tools ? { place, tools } : undefined, template);
     return { entry, warnings };
+  }
+
+  /** A definition edit's body made into a new revision of agent `entry`, as PUT /agents/{id}/definition makes one
+   *  (commitAgent: the definition's checks and what this host refuses of it, saveable), with what this host still lacks for
+   *  it; then its computer reconciled. `template`: the package an apply with agent_id wrote it from; `fromPackage`: the
+   *  body is that package's whole definition, so what it leaves out that the package owns is gone (commitAgent). */
+  async function reviseAgentOf(entry: AgentEntry, body: Json, options: { contract?: boolean; ifCurrent?: string | null; template?: TemplatePackage; fromPackage?: boolean } = {}): Promise<{ entry: AgentEntry; warnings: InputIssue[] }> {
+    let warnings: InputIssue[] = [];
+    const check = async (revision: NewRevision, on: RevisionRow | null) => {
+      // The pins of the revision this try builds on (commitAgent's read, a retry's newer one) carry what it kept.
+      const saved = await saveable(revision, on);
+      warnings = saved.warnings;
+      return saved.stamp;
+    };
+    const edited = await agents.commit(entry, checkDefinitionBody(body, { creating: false, harnesses }), { check, ...options });
+    reconcileComputer(entry.agent.id);
+    return { entry: edited, warnings };
+  }
+
+  /** The agent an apply with agent_id writes onto: one the template `pkg` made (the package id its revisions keep), live.
+   *  None by that id is 404; one made otherwise, or from another template, is 422 under agent_id, in words that say which;
+   *  an archived one is 409 agent_archived. */
+  async function templateAgentOf(id: string, pkg: Package): Promise<AgentEntry> {
+    const entry = await needAgent(id);
+    const from = entry.template?.id;
+    if (from !== pkg.id) {
+      const message = from
+        ? `The agent ${id} was made from the ${from} template, not ${pkg.id}: apply ${from} with agent_id to update it, or apply ${pkg.id} without agent_id to make a new agent.`
+        : `The agent ${id} was not made from a template, so the ${pkg.name} template can't update it: apply without agent_id to make a new agent.`;
+      throw invalid([{ field: "agent_id", reason: "not_an_option", message }]);
+    }
+    if (entry.agent.archivedAt) throw new ApiError("agent_archived", `The agent ${id} is archived: unarchive it, then apply the ${pkg.name} template onto it again.`);
+    return entry;
   }
 
   /** A replay's ports for agent `entry` (runner/promotion.ts askReplay, replayView): its learning folder where this server
@@ -2681,47 +2817,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
   };
 
-  /** Agent `source`'s learned workflow `raw` made into a workflow agent of its own, as POST /agents makes one
-   *  (createAgentOf: the definition's checks, the workflow's validation and what this host refuses of it). Only an active
-   *  one, checked again as a restore checks it (learning-routes.ts promotable). Its revision is a workflow revision of the
-   *  learned workflow.json, its tools those its call nodes call (each one the source agent has and its gate allows), and
-   *  the source's policy as it is now: its own tool settings, its approvals and its default cap, never more. Named
-   *  `body.name`, else the workflow's own; its id is the workflow's name, with -2, -3 and on past an agent's id or name
-   *  already here. The learned workflow stays where it is, unchanged. */
-  async function promoteOf(source: AgentEntry, raw: string, body: Json): Promise<{ entry: AgentEntry; warnings: InputIssue[] }> {
-    const extra = unknownFields(body, ["name"]);
-    if (body.name !== undefined && (typeof body.name !== "string" || body.name.trim() === "" || body.name.length > 200)) extra.push({ field: "name", reason: "wrong_type", message: "name is the new agent's name: text of 1 to 200 characters" });
-    if (extra.length) throw invalid(extra);
-    const id = source.agent.id;
-    const learned = await promotable(data, id, raw, { refuse: await learningValues(id), draftTools: () => learnedDraftToolsOf(id, source) });
-    // Its policy from the same read of the source as the tools checked above: one revision's, whatever is saved meanwhile.
-    const policy = (source.revision?.body ?? {}) as { toolSettings?: Record<string, unknown>; approvals?: string; maxCostUsd?: number };
-    const promoted = (agentId: string) => ({
-      id: agentId,
-      name: typeof body.name === "string" ? body.name.trim() : agentId,
-      ...(learned.description ? { description: learned.description } : {}),
-      workflow: learned.workflow,
-      tools: learned.calls,
-      ...(policy.toolSettings ? { tool_settings: policy.toolSettings } : {}),
-      ...(policy.approvals === "never" ? { approvals: "never" } : {}),
-      ...(policy.maxCostUsd !== undefined ? { max_cost_usd: policy.maxCostUsd } : {}),
-    });
-    const note = `Made from the learned workflow ${learned.name} of agent ${id}.`;
-    // Another promotion (or a create) may take the id between the read and the write: the next one is tried.
-    for (let tries = 0; ; tries++) {
-      const all = [...(await agents.list()), ...(await agents.list({ archived: true }))];
-      const taken = new Set(all.flatMap((entry) => [entry.agent.id, entry.agent.name]));
-      let n = 1;
-      while (taken.has(n === 1 ? learned.name : `${learned.name}-${n}`)) n++;
-      const agentId = n === 1 ? learned.name : `${learned.name}-${n}`;
-      try {
-        return await createAgentOf({ definition: promoted(agentId), note });
-      } catch (error) {
-        if (!(error instanceof ApiError && error.code === "agent_exists") || tries >= 4) throw error;
-      }
-    }
-  }
-
   /** A template package applied: its parameters and the owner's grants checked (422), then the secrets and required MCP
    *  servers it names (409, nothing made; an MCP server it can do without is skipped, with a warning), then its
    *  agent made as POST /agents makes one, granted the MCP tools the owner ticked (grants) alone, with no permission written
@@ -2730,9 +2825,48 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  picks, then each trigger on it as POST /triggers makes one. A trigger refused undoes the apply: the triggers made
    *  before it are deleted and the agent is archived (an agent store keeps every agent), and the refusal is the answer, a 422's fields under `triggers.<i>`; a
    *  github trigger GitHub is not connected for is skipped instead, with a warning there, and one made is said there. A webhook
-   *  trigger's secret is not in the answer (the Idempotency-Key record would keep it): POST /triggers/{id}/secret makes one. */
+   *  trigger's secret is not in the answer (the Idempotency-Key record would keep it): POST /triggers/{id}/secret makes one.
+   *  With `agent_id` (an agent this template made, templateAgentOf), the same checks, then a new revision of that agent in
+   *  place of a new one (its runs and its learning stay), and its triggers reconciled by name (below); a refused trigger
+   *  removes the ones this apply made, and the agent is not archived. A fresh apply warns of a live agent the same
+   *  package and parameters made (the keyed digest of the parameters kept on its revision: never the parameters).
+   *
+   *  Overlapping updates of one agent: this server runs them one after the other (`applying`, a chain per agent id), each
+   *  from its read of the agent to its last trigger removed, so two never reconcile the same triggers at once. And each
+   *  writes its revision only onto the revision it read (ifCurrent): one whose read went stale meanwhile (an edit, or an
+   *  apply on another server) is 412 precondition_failed before it touches a trigger. Across several servers sharing one
+   *  store the chain is per process, so the 412 is what holds there. */
   async function applyTemplate(template: Package, body: Json) {
-    const { parameters, grants: asked, servers: picks, model: override, choice, approvals } = applyBodyOf(template, body);
+    const id = typeof body.agent_id === "string" && body.agent_id.trim() ? body.agent_id.trim() : undefined;
+    if (id === undefined) return applyWith(template, body);
+    const turn = (applying.get(id) ?? Promise.resolve()).then(() => applyWith(template, body));
+    const settled = turn.then(() => undefined, () => undefined);
+    applying.set(id, settled);
+    try {
+      return await turn;
+    } finally {
+      if (applying.get(id) === settled) applying.delete(id);
+    }
+  }
+  /** The template applies with agent_id in flight on this server, by agent id: each one's turn settled (applyTemplate). */
+  const applying = new Map<string, Promise<void>>();
+
+  /** A trigger write an update made on its agent's condition (TriggerOwn.onAgent) that found no such trigger there:
+   *  false, for one a PATCH moved to another agent (or a delete removed) meanwhile; any other failure as it is. */
+  const movedAway = (error: unknown): false => {
+    if (error instanceof ApiError && error.code === "not_found") return false;
+    throw error;
+  };
+  /** applyTemplate's work, in its turn on the agent where it has agent_id. */
+  async function applyWith(template: Package, body: Json) {
+    const { parameters, grants: asked, servers: picks, model: override, choice, approvals, agentId } = applyBodyOf(template, body);
+    // With agent_id, the apply writes a new revision of that agent (one this template made) in place of making another:
+    // everything below checks the package as a fresh apply does, through the same code.
+    const onto = agentId === undefined ? undefined : await templateAgentOf(agentId, template);
+    // An update's triggers are reconciled by name with the ones the agent has (below), read with the agent: each write to
+    // one is made only while it is still this agent's (TriggerOwn.onAgent), so one a PATCH moves away meanwhile is left.
+    const had = onto ? await store.triggers.list(onto.agent.id) : [];
+    if (onto && options.templateApplyRead) await options.templateApplyRead(onto.agent.id);
     // A model choice's own keys are needed as the package's are: missing, the apply is refused and nothing is made.
     const missing = [...new Set([...template.secrets, ...(choice?.secrets ?? [])])].filter((name) => !secret(name, storedKeys));
     // Each MCP need on the saved server whose source and toolkit match (the owner's pick when several do, never a silent
@@ -2796,9 +2930,77 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (refusedTriggers.length) throw invalid(refusedTriggers);
     // POST /agents' and POST /triggers' own body limit: parameters filled in more than once can grow a package past it.
     for (const one of [made.agent, ...made.triggers]) if (Buffer.byteLength(JSON.stringify(one)) > MAX_BODY) throw new ApiError("payload_too_large", `the ${pkg.name} template, its parameters filled in, makes a body over ${MAX_BODY} bytes`, { details: { limit: "max_body_bytes" } });
-    // The agent keeps where it came from (its first revision's package): the package's id, version and, imported, its SHA.
-    const { entry, warnings } = await createAgentOf(made.agent, { id: pkg.id, version: pkg.version, sha: pkg.origin?.sha ?? null });
+    // The package's triggers by name, as this apply makes them (a feed it left empty is not made, so not listed either).
+    const listed = new Set(made.triggers.flatMap((trigger, i) => (emptyFeeds.has(i) ? [] : [String(trigger.name).trim()])));
+    // The triggers to remove: each of the agent's that an apply of this package marked as its own (TriggerRow.templateId)
+    // and whose name the package no longer lists. A trigger the owner made, one a PATCH moved here from another agent (or
+    // away and back), and one made before the mark was kept carry none, and are left. One whose removal fails keeps its
+    // mark, so the next update removes it.
+    const removing = had.filter((row) => row.templateId === pkg.id && !listed.has(row.name));
+    const hadByName = new Map(had.map((row) => [row.name, row]));
+    // A Composio trigger the update keeps by name whose fixed part is unchanged (its server, event and config, each sealed
+    // value the package sends again, filled in from a parameter in the clear, the same as the one sealed:
+    // ComposioTriggers.resent) is changed in place, its sealed values left out of the PATCH so it keeps them sealed. One
+    // whose fixed part changed (another key too) is made again, as one of another kind is (below): its instance on
+    // Composio was made from that part. Read before the revision is written; neither holds a sealed value.
+    const resent = new Map<number, Source>();
+    const remade = new Set<number>();
+    for (const [i, trigger] of made.triggers.entries()) {
+      const was = emptyFeeds.has(i) ? undefined : hadByName.get(String(trigger.name).trim());
+      if (!was || !isObject(trigger.source) || trigger.source.kind !== "composio" || !isObject(was.source) || was.source.kind !== "composio") continue;
+      try {
+        resent.set(i, composioTriggers.resent(was.source as Source, was.id, trigger.source as Source));
+      } catch (error) {
+        if (!(error instanceof ApiError && error.code === "input_invalid")) throw error;
+        remade.add(i);
+      }
+    }
+    // A trigger the agent has by a package trigger's name is the package's to keep by its mark (TriggerRow.templateId).
+    // Marked with this package, it is changed in place, or made again when its kind or its Composio fixed part changed.
+    // Unmarked (the owner's, or made by an apply before the mark was kept: the two can't be told apart), it is adopted only
+    // by a change in place, and marked then. Marked with another package, it is not this one's. One this package would
+    // have to make again without being its own, or another package's, refuses the apply with nothing written (409 under
+    // triggers.<i>): the owner renames or deletes it, then applies again.
+    const notOurs: InputIssue[] = made.triggers.flatMap((trigger, i) => {
+      const was = emptyFeeds.has(i) ? undefined : hadByName.get(String(trigger.name).trim());
+      if (!was || was.templateId === pkg.id) return [];
+      const kind = isObject(trigger.source) ? String(trigger.source.kind) : "";
+      const wasKind = isObject(was.source) ? String(was.source.kind) : "";
+      if (was.templateId === null && kind === wasKind && !remade.has(i)) return [];
+      const why = was.templateId !== null
+        ? `is another template package's (${was.templateId}), not the ${pkg.name} template's`
+        : `is not the ${pkg.name} template's, and keeping it would mean removing it and making it again: ${kind === wasKind ? "its Composio server, event or config differs from the package's" : `it is a ${wasKind} trigger, and the package's is a ${kind} one`}`;
+      return [{ field: `triggers.${i}.name`, reason: "not_allowed", message: `The agent's trigger ${was.name} ${why}. Nothing was changed: rename or delete that trigger, then apply the template again.` }];
+    });
+    if (notOurs.length) throw new ApiError("name_taken", notOurs.length === 1 ? notOurs[0]!.message : `${notOurs.length} of the agent's triggers have the names of the ${pkg.name} template's and are not its own. Nothing was changed: rename or delete each, then apply the template again.`, { fields: notOurs });
+    // The agent keeps where it came from (the package on the revision the apply writes): the package's id, version and,
+    // imported, its SHA; and a keyed digest of the parameters it was given (never the parameters: one may be a credential).
+    // Which triggers are the package's is on each trigger (its mark), not here.
+    const digest = parametersDigest(sealKey, stable(parameters));
+    const origin: TemplatePackage = { id: pkg.id, version: pkg.version, sha: pkg.origin?.sha ?? null, parameters_digest: digest };
+    // A fresh apply of what already made a live agent here (the same package and parameters) still makes one, and says
+    // which is there: an apply with its agent_id updates that one instead. Read before this apply's agent is made.
+    const twins: InputIssue[] = onto ? [] : (await agents.list())
+      .filter((one) => one.template?.id === pkg.id && one.template.parameters_digest === digest)
+      .map((one) => ({ field: "agent_id", reason: "duplicate", message: `The agent ${one.agent.id} was made from the ${pkg.name} template with these parameters, and this apply made another. To change that one instead, apply with agent_id ${one.agent.id}.` }));
+    // An update writes the package as a new revision of the agent, as an edit does (its id, name and description are the
+    // agent's own, kept from its creation), but what the package owns and leaves out is gone (fromPackage); only onto the
+    // revision it read, else 412 with nothing changed. A fresh apply makes the agent as POST /agents does.
+    const { entry, warnings } = onto
+      ? await reviseAgentOf(onto, { ...made.agent, definition: updateDefinition(onto, made.agent.definition as Json) }, { template: origin, fromPackage: true, ifCurrent: onto.revision?.id ?? null }).catch((error: unknown) => {
+        if (error instanceof ApiError && error.code === "precondition_failed") throw new ApiError("precondition_failed", `The agent ${onto.agent.id} changed while this apply of the ${pkg.name} template read it (an edit, or another apply, wrote a revision): nothing was changed. Apply it with agent_id again to update the agent as it is now.`);
+        throw error;
+      })
+      : await createAgentOf(made.agent, origin);
+    // An update's triggers are reconciled by name with the ones the agent has: the package's trigger of a name the agent
+    // has (of the same kind) is changed in place, keeping its id, a feed's seen items, a webhook's secret and whether the
+    // owner turned it off (an unmarked one is adopted so, and only so: notOurs above), its settings the package's whole
+    // (catchup_window_s and max_active_runs the package leaves out back to their defaults, as a fresh apply makes them); a new name is made; one the package
+    // marked and no longer lists is removed (`removing`). Each trigger the apply makes or keeps is marked as the package's; each write to one the agent had is made only while it
+    // is still the agent's: one a PATCH moved away meanwhile is neither changed nor removed, and its name is made anew.
     const ids: string[] = [];
+    // The triggers this apply made (never one it changed in place): what a refusal's undo removes.
+    const madeNow: string[] = [];
     // Each webhook trigger's signing secret, minted as it is made: handed back in the apply's first answer alone, as POST
     // /triggers hands back its own, so the owner can give it to the sender.
     const secrets: { trigger_id: string; secret: string }[] = [];
@@ -2806,12 +3008,46 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // a composio one Composio can't reach or run as here) is skipped, never the apply: the agent stands, and the answer
     // says what to do (a warning under triggers.<i>). Kept with its refusal, whose words the warning carries.
     const unconnected = new Map<number, ApiError>();
+    // Each trigger the package no longer lists whose sender kept what it has of it (a Composio instance): kept here, marked,
+    // for the next update to remove, and said in the answer.
+    const leftThere: InputIssue[] = [];
     try {
       for (const [i, trigger] of made.triggers.entries()) {
         if (emptyFeeds.has(i)) continue;
+        const aimed: Json = { ...trigger, target: { ...(trigger.target as Json), agent_id: entry.agent.id } };
+        let was = hadByName.get(String(trigger.name).trim());
+        const own = { templateId: pkg.id, onAgent: entry.agent.id };
         try {
-          const { id: madeId, secret } = await triggers.create({ ...trigger, target: { ...(trigger.target as Json), agent_id: entry.agent.id } });
+          if (was && isObject(trigger.source) && isObject(was.source) && was.source.kind === trigger.source.kind && !remade.has(i)) {
+            const { enabled: _owners, source: given, ...sent } = aimed;
+            // The package's source, sent only when it says something other than the stored one: a PATCH's source puts the
+            // trigger on from now (its next time and an every_s grid restarted, a poll kicked), so an update that leaves a
+            // schedule as it was never moves it. An every_s schedule with no start_at is the stored one's grid (the time
+            // its first apply made it), as it says no other; a Composio one is its `resent` form.
+            const ours = resent.get(i) ?? (isObject(given) && given.kind === "schedule" && given.every_s !== undefined && given.start_at === undefined && isObject(was.source) && was.source.every_s === given.every_s && typeof was.source.start_at === "string" ? { ...given, start_at: was.source.start_at } : given);
+            // Compared as a create keeps it (Triggers.sourceAsKept: a feed's every_s the package leaves out is the default the
+            // trigger was made with), so a package that says no more than it did never moves it.
+            const source = stable(resent.has(i) ? ours : (triggers.sourceAsKept(ours) ?? ours)) === stable(was.source) ? undefined : ours;
+            // The package's settings whole: one its version leaves out goes back to what a fresh apply makes (POST
+            // /triggers' default), never kept from the version before. PATCH reads null as no cap.
+            const patch = { ...sent, catchup_window_s: sent.catchup_window_s ?? CATCHUP_WINDOW_S, max_active_runs: sent.max_active_runs ?? null };
+            if (await triggers.update(was.id, source ? { ...patch, source } : patch, own).then(() => true, movedAway)) {
+              ids.push(was.id);
+              continue;
+            }
+            was = undefined;
+          }
+          // Of another kind now (a trigger's source kind is fixed), or a Composio one whose fixed part changed: the old one
+          // goes, then the new one is made, off where the owner turned the old one off. The old one's instance on Composio
+          // goes first (Triggers.remove on its agent's condition): one Composio did not delete leaves the old trigger here
+          // as it was (on or off, marked, its config sealed) and the new one unmade, so two instances never watch, and the
+          // apply fails with its revision standing, as a refused trigger's does; the next apply finds the old one again.
+          const left = was ? await triggers.remove(was.id, own).catch(movedAway) : false;
+          if (left === false) was = undefined;
+          else if (isObject(left) && isObject(left.composio) && left.composio.done === false) throw new ApiError("upstream_failed", `The ${pkg.name} template's trigger ${String(trigger.name).trim()} changed, so its old Composio trigger instance must go before the new one is made, and Composio didn't delete it: the new one was not made, and the old trigger is kept here as it was. ${String(left.composio.note ?? "")} Then apply again.`.trim());
+          const { id: madeId, secret } = await triggers.create(was && !was.enabled ? { ...aimed, enabled: false } : aimed, { templateId: pkg.id });
           ids.push(madeId);
+          madeNow.push(madeId);
           if (secret) secrets.push({ trigger_id: madeId, secret });
         } catch (error) {
           if (error instanceof ApiError && isObject(trigger.source) && notSetUpYet(trigger.source.kind, error.code)) {
@@ -2822,8 +3058,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           throw error;
         }
       }
+      // Each trigger the package marked and no longer lists, while it is still the agent's.
+      for (const row of removing) {
+        const left = await triggers.remove(row.id, { onAgent: entry.agent.id }).catch(movedAway);
+        if (isObject(left) && isObject(left.composio) && left.composio.done === false) leftThere.push({ field: "triggers", reason: "upstream_failed", message: `The trigger ${row.name} (${row.id}), which the ${pkg.name} template no longer lists, is kept until its Composio trigger instance is gone. ${String(left.composio.note ?? "")} The next update of the agent from the template removes the trigger.` });
+      }
     } catch (error) {
-      for (const id of ids.reverse()) {
+      // An update's revision and the triggers it changed stand; what it made is removed. A fresh apply is undone whole.
+      for (const id of madeNow.reverse()) {
         try {
           await triggers.remove(id);
         } catch (undo) {
@@ -2832,7 +3074,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       // Archived through the trigger engine, as POST /agents/{id}/archive is: a trigger the undo could not remove is turned
       // off in that same store transaction with the reason agent_archived, never with none, and unarchive answers it.
-      await triggers.agentArchived(entry.agent.id).catch((undo: Error) => log?.(logLine("template_undo_failed", { template: pkg.name, agent: entry.agent.id, message: undo.message })));
+      if (!onto) await triggers.agentArchived(entry.agent.id).catch((undo: Error) => log?.(logLine("template_undo_failed", { template: pkg.name, agent: entry.agent.id, message: undo.message })));
       throw error;
     }
     // A pinned send whose destination parameter was not given is denied, never let go anywhere: said, by its gate name.
@@ -2861,8 +3103,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const minted = new Map(secrets.map(({ trigger_id, secret }) => [trigger_id, secret]));
     // Which saved server each MCP need runs on (null: none here, said under mcp.<toolkit>).
     const used = Object.fromEntries(mapped.map(({ need, server }) => [need.toolkit, server]));
-    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, servers: used, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...appShort] };
-    return { applied, minted };
+    const applied = { template: pkg.id, version: pkg.version, agent_id: entry.agent.id, servers: used, trigger_ids: ids, ...templateWebhookSecrets([...minted.keys()], new Date().toISOString()), warnings: [...skipped, ...kept, ...modelWarnings, ...computerWarnings, ...unpinned, ...warnings, ...hooks, ...githubTriggers, ...composioSkipped, ...feedsSkipped, ...leftThere, ...appShort, ...twins] };
+    return { applied, minted, updated: onto !== undefined };
   }
 
   /** A run create's issues told from the input this server checks (explain.ts): an agentic run's input schema in force
@@ -3138,17 +3380,55 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // `label=<key>:<value>`, once: only the runs holding it (run-labels.ts), filtered in the store.
     const labels = labelFilter(url.searchParams.getAll("label"));
     const vd = viewDepsFor(origin);
-    // An audit's shadow run is no row of the list (learn/audit.ts): it is read by id, and its cost is its served run's.
-    let rows = (await listRunsOverStore(store, { ...filter, ...(labels ? { labels } : {}) }, ctx)).filter((row) => Boolean(row.archivedAt) === archived && !isShadowRun(row.id));
+    // The page from the runs' rows alone (store/schema.ts RUN_LISTING_COLUMNS): filtered (`status` on the listing's status),
+    // ordered and cut to the page in one query, so a list costs the same at ten runs and at thousands, however long their
+    // journals. An audit's shadow run is no row of the list (learn/audit.ts): it is read by id, and its cost is its served
+    // run's. A run's archive is its own or its agent's.
+    const where = { ...(filter.agent !== undefined ? { agentId: filter.agent } : {}), ...(filter.revision !== undefined ? { revisionId: filter.revision } : {}), ...(labels ? { labels } : {}), archived };
+    // A listing is built by the server's lister (run-listing.ts) once per change, so a list finds it current. One that is
+    // behind (a write landed since, or the lister has not reached it since the store was upgraded) is built here, written
+    // back, and shown as built: for a status filter, first every run still going whose listing is behind (its row's
+    // list_status may say what it was, or nothing; a settled run's says what it is, from the write that settled it), all
+    // of them read before any is built, UNLISTED_AT_ONCE to a read, so the page's offset counts the rows as they now stand;
+    // then any row of the page. With nothing running, none is behind: two reads, whatever the runs. The runs still going
+    // are all a filter builds beside its page, and the lister builds them too, so only a list soon after an upgrade
+    // builds many.
+    // A write that lands while a listing is built moves the run's mark, so the listing is not written (Runs.putListing),
+    // and a run still going is left with no status on its row: the build is made again from the mark that write left, up
+    // to LIST_TRIES builds, so a filter never leaves off a run because a write met its build. Each is the lister's build
+    // (Lister.build), so a held listing built here has its agent's learning folder read by the lister's passes after it.
+    const listNow = async (runId: string, read: number) => {
+      for (let mark: number | undefined = read, tries = 1; ; tries++) {
+        const { listing, written } = await lister.build(runId, mark, vd);
+        if (!listing || written || tries === LIST_TRIES) return listing;
+        if ((mark = await store.runs.listMark(runId)) === undefined) return listing;
+      }
+    };
     if (status !== null) {
-      // The v2 status is the run view's (store-view over the journal), per row; a settled run's is its row's (settledStatusOf),
-      // so only the runs still going are read over their journals.
-      const statuses = await Promise.all(rows.map((row) => settledStatusOf(row.state) ?? viewOverStore(store, row.id, vd).then((v) => v?.status as Status | undefined)));
-      rows = rows.filter((_, i) => statuses[i] === (status as Status));
+      const going: { id: string; mark: number }[] = [];
+      // Each read starts after the last row read (ListedFilter.after), never at an offset: the lister may build a row read
+      // before the next read, which would shift an offset past a row not read yet.
+      for (let after: { startedAt: number; id: string } | undefined; ; ) {
+        const read = await store.runs.listed({ ...where, going: true, limit: UNLISTED_AT_ONCE, ...(after ? { after } : {}) });
+        going.push(...read.rows.map(({ row, listMark }) => ({ id: row.id, mark: listMark })));
+        const last = read.rows.at(-1)?.row;
+        if (!read.more || !last) break;
+        after = { startedAt: last.startedAt, id: last.id };
+      }
+      for (const { id, mark } of going) await listNow(id, mark);
     }
-    // summaryOverStore reads each run's view (its version, status, cost and learning among them); no versions map is needed.
-    const page = await Promise.all(rows.slice(offset, offset + limit).map((row) => summaryOverStore(store, row.id, vd)));
-    return { runs: page, next_cursor: nextCursor(offset + limit, rows.length) };
+    const page = await store.runs.listed({ ...where, ...(status !== null ? { status } : {}), limit, offset });
+    const secrets = serverSecrets();
+    const runs: Record<string, unknown>[] = [];
+    for (const { row, agentArchivedAt, listing, listMark, behind } of page.rows) {
+      // One cut of other secrets (a secret saved since, or the server's own keys at another start), or built under another
+      // listing format (a server before this one), is built again too: at most the page's `limit` builds, and each writes
+      // its listing back, so the next list finds it current.
+      const kept = listing === null || behind || !builtOfNow(listing, secrets) ? await listNow(row.id, listMark) : listing;
+      // A run whose status moved between the two reads is left off this page, never shown under a status it has left.
+      if (kept && (status === null || kept.item.status === status)) runs.push(listedItem(kept, origin, row.archivedAt ?? agentArchivedAt, secrets));
+    }
+    return { runs, next_cursor: nextCursor(offset + limit, offset + limit + (page.more ? 1 : 0)) };
   }
 
   async function timeline(req: IncomingMessage, res: ServerResponse, url: URL, runId: string): Promise<void> {
@@ -3274,6 +3554,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Tool calls run with no price (an MCP tool its owner set none for): outside every cost, counted on `tools`.
     let notMetered = 0;
     const total = { usd: 0, unpriced: 0 };
+    // How the runs' costs in the window were reached (metrics.ts joinedBasis over each run's costBasis).
+    const bases: CostBasis[] = [];
     // The browser_time line's seconds: its ended runs' (their stores keep each charge's), none once a live run is in it.
     let browserSeconds: number | null = 0;
     // A cost that is unknown adds no dollars, so no sum turns unknown; it is counted as unpriced instead, so it never
@@ -3293,6 +3575,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // A running run's cost is its booked-so-far spend (store-reads/runs listRuns reads it over the store with
       // spentOverStore); an ended run's is its stored cost. A null cost (a running run with none yet) counts unpriced.
       const usd = row.costUsd ?? null;
+      bases.push(row.costBasis);
       const key = group === "agent" ? row.agent : group === "day" ? row.startedAt.slice(0, 10) : group === "meter" ? "tokens" : "local";
       // By meter, what a run's paid tools charged (monid's) is `tools`, its browser session time `browser_time`, the rest
       // `tokens`, all from the same records: a live run's rows (a call still marked is no charge), else its store as it
@@ -3330,7 +3613,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
     const round = (v: number) => Math.round(v * 1e6) / 1e6;
     return {
-      from: new Date(from).toISOString(), to: new Date(to).toISOString(), currency: "USD", basis: "estimate", group_by: group, total_usd: round(total.usd), unpriced_runs: total.unpriced,
+      from: new Date(from).toISOString(), to: new Date(to).toISOString(), currency: "USD", basis: joinedBasis(bases), group_by: group, total_usd: round(total.usd), unpriced_runs: total.unpriced,
       lines: [...lines].map(([key, line]) => ({ group: key, ...(group === "meter" ? { meter: key } : {}), ...(key === "browser_time" && group === "meter" && browserSeconds !== null ? { quantity: round(browserSeconds), unit: "second" } : {}), usd: round(line.usd), unpriced_runs: line.unpriced, ...(group === "meter" && key === "tools" && notMetered ? { not_metered_calls: notMetered } : {}) })),
       account: null,
     };
@@ -3626,7 +3909,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const health = await healthOf(store, data, minFreeBytes);
       return send(res, health.status === "ok" ? 200 : 503, health);
     }
-    // Approving a note the grader held for its owner's OK (a risky rule a run's user asked for) takes the owner's
+    // Approving a learned workflow held for its owner's OK (a step calls a tool with no price) takes the owner's
     // signed-in page alone: never a token, which a run's process, an agent's MCP client or a script may hold, nor a
     // page cookie a token can mint (accounts off). The page's cookie stands in for the token only on its own origin
     // with a JSON body (page.ts), so this is CSRF-checked as every page write is. With no credential at all it is 401,
@@ -3634,20 +3917,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // Restoring a retired one puts it back in every later run, as an approval does: the same owner's session alone.
     if (found.name === "restoreLearningFile" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
       authFailed(`/v2${path}`, "restore_without_session");
-      throw new ApiError("forbidden", owner ? "Restoring a retired note takes the owner's password sign-in in the console, never a token." : "Restoring a retired note takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
+      throw new ApiError("forbidden", owner ? "Restoring a retired workflow takes the owner's password sign-in in the console, never a token." : "Restoring a retired workflow takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
     if (found.name === "approveLearningFile" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
       authFailed(`/v2${path}`, "approve_without_session");
-      throw new ApiError("forbidden", owner ? "Approving a note takes the owner's password sign-in in the console, never a token." : "Approving a note takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
-    }
-    // Making a learned workflow an agent of its own gives it runs of its own, outside any agentic run's turn: the owner's
-    // click alone, the same session as an approval.
-    if (found.name === "promoteLearnedWorkflow" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
-      authFailed(`/v2${path}`, "promote_without_session");
-      throw new ApiError("forbidden", owner ? "Making a learned workflow an agent takes the owner's password sign-in in the console, never a token." : "Making a learned workflow an agent takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
+      throw new ApiError("forbidden", owner ? "Approving a workflow takes the owner's password sign-in in the console, never a token." : "Approving a workflow takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
     // A replay its owner starts runs the agent's graded inputs again at its cost, and may promote a revision that then
-    // serves first: the same session as making one an agent.
+    // serves first: the same session as an approval.
     if (found.name === "startLearnedWorkflowReplay" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
       authFailed(`/v2${path}`, "replay_without_session");
       throw new ApiError("forbidden", owner ? "Replaying a learned workflow's revision takes the owner's password sign-in in the console, never a token." : "Replaying a learned workflow's revision takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
@@ -3686,7 +3963,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const checked: SecretRequest = { params, store };
       if (await writesSecretFor(found.name, body, checked)) {
         authFailed(`/v2${path}`, "secret_without_session");
-        throw new ApiError("forbidden", SECRET_WRITE_REFUSAL);
+        // Where the person finishes it: the operation's console page, filled with what the request held that is no
+        // secret (secretPageFor), at the address people open the console at.
+        const page = await secretPageFor(found.name, body, { params, store });
+        const link = page === undefined ? undefined : `${linkOrigin(req)}${page}`;
+        throw new ApiError("forbidden", secretWriteRefusal(link), link === undefined ? {} : { details: { console_url: link } });
       }
       secretSeen = checked.seen;
     }
@@ -3737,14 +4018,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "startSdkRun": {
         if(!req.headers["idempotency-key"])throw new ApiError("bad_request","An SDK run requires Idempotency-Key so a retried start never duplicates execution.");
         const body=await bodyOf(req),entry=await needAgent(id);
-        let gradeModel=gradeModelOf(env,options.gradeModel);
-        if(!gradeModel && sdkOf(entry.revision?.body) && learnsOf((entry.revision!.body as AgenticBody).learning) && learning!=="off"){
-          try{const chosen=await runModelRef(env,(await pinnedOf(entry,{}))!.revision);if(chosen)gradeModel=`${chosen.provider}/${chosen.modelId}`;}catch{}
+        // A learning SDK run's compile turn is asked on its agent's own model: checked reachable before the run starts.
+        let compileModel: string | undefined;
+        if(sdkOf(entry.revision?.body) && learnsOf((entry.revision!.body as AgenticBody).learning) && learning!=="off"){
+          try{const chosen=await runModelRef(env,(await pinnedOf(entry,{}))!.revision);if(chosen)compileModel=`${chosen.provider}/${chosen.modelId}`;}catch{}
         }
         const sdk=new SdkRuns(store,data,sdkSecret,serverSecrets,tokens.map((entry) => entry.token));
-        const answer=await idempotent(req,path,body,async origin=>({status:201,body:await sdk.start(entry,body,{...startDeps,...(gradeModel?{gradeModel}:{})},origin,async model=>{
-          try{const route=await gradeRouteFor({model,agentId:id},env,sdkModelRoute);await route.provider.credential();}catch{throw new ApiError("agent_not_runnable","Self-improving SDK runs need a working server model key and grading model. Configure Model keys or turn self-improving off.");}
-        },linkOrigin(req))}));
+        const compile={...(compileModel?{model:compileModel}:{}),check:async(model:string)=>{
+          try{const route=await askRouteOf(model,env,(one)=>sdkModelRoute(one,env,"default",PI_WIRES));await route.provider.credential();}catch{throw new ApiError("agent_not_runnable","Self-improving SDK runs need a working server model key to compile workflows. Configure Model keys or turn self-improving off.");}
+        }};
+        const answer=await idempotent(req,path,body,async origin=>({status:201,body:await sdk.start(entry,body,startDeps,origin,compile,linkOrigin(req))}));
         // Re-read the pinned receipt even on an in-memory replay: credentials saved since
         // the first response must still be withheld without reselecting a different seed.
         const receipt=await sdk.receipt((answer.body as {run_id:string}).run_id,linkOrigin(req));
@@ -3819,7 +4102,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           return tool ? toolEffect(tool.annotations) : undefined;
         };
         const tools = revision && tooling ? agentTools(env, settings.get(), tooling, caps.tools.map((tool) => tool.name), await shellOfRevision(revision), effectOf) : [];
-        return send(res, 200, { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), tools }, { etag: etagOf(entry) });
+        return send(res, 200, { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), tools, run_blockers: await runBlockersOf(entry) }, { etag: etagOf(entry) });
       }
       case "updateDefinition": {
         const entry = await needAgent(id);
@@ -3844,15 +4127,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         }
         // The check above is a fast path; the store compares If-Match again inside the commit, so of two edits that read
         // the same revision exactly one lands.
-        let warnings: InputIssue[] = [];
-        const check = async (revision: NewRevision, on: RevisionRow | null) => {
-          // The pins of the revision this try builds on (commitAgent's read, a retry's newer one) carry what it kept.
-          const saved = await saveable(revision, on);
-          warnings = saved.warnings;
-          return saved.stamp;
-        };
-        const edited = await agents.commit(entry, checkDefinitionBody(contract ? { definition: body } : body, { creating: false, harnesses }), { check, contract, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
-        reconcileComputer(id);
+        const { entry: edited, warnings } = await reviseAgentOf(entry, contract ? { definition: body } : body, { contract, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
         return send(res, 200, { ...agentView(edited, linkOrigin(req), await agentExtra(edited)), warnings }, { etag: etagOf(edited) });
       }
       case "listRevisions": {
@@ -4081,10 +4356,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const view = await computerView({
           viewer: async () => {
             if (family === "browser") {
-              const link = await liveViewerLink(store, sealKey, run.id, answers);
+              const link = await liveViewerLink(store, sealKey, run.id, answers(run.id));
               return link === undefined ? undefined : { kind: "browser" as const, viewer: link.viewer };
             }
-            return computerViewerLink(store, sealKey, run.id, answers);
+            return computerViewerLink(store, sealKey, run.id, answers(run.id));
           },
           computer: () => (viewed ? { kind: viewed } : computerOf(kept, env, family, own)),
           session: (kind) => sessionIn(kind, entries, run.terminal || (parked && kind !== "browser")),
@@ -4238,6 +4513,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // The workflow run's graph from its journal over the store (run-reads-over-store): an agentic run has none (404),
         // a run whose output is withheld is refused (403), as the route refused it.
         return send(res, 200, await runGraphView(store, id, runReadsDeps));
+      case "getRunTrace":
+        await needRun(id);
+        // The run's spans over its served Timeline rows and its journal (run-trace.ts): cut by the run's one cut, as its
+        // Timeline is; a run withheld is refused (403), as its graph is.
+        return send(res, 200, await servedRunTrace(servedTimelineDeps, store, id, ctx));
       case "pauseRun":
       case "resumeRun": {
         // A workflow run's pause or resume is a command its runner reads and applies (runs-over-store.pauseOrResume): an
@@ -4379,6 +4659,19 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           if (error instanceof ClaudeLoginRefused) throw new ApiError(error.code, error.message);
           throw error;
         }
+      }
+      // The model gateway saved in the console (model-gateway.ts): never through `idempotent`, as its body may hold the
+      // key; a save or removal makes the reading again (gatewayChanged), so capabilities and the next run see it at once.
+      case "getModelGateway":
+      case "saveModelGateway":
+      case "deleteModelGateway":
+      case "testModelGateway": {
+        // The test's body is optional (none: the gateway in force is asked); a save's is not.
+        const sent = Number(req.headers["content-length"] ?? 0) > 0 || req.headers["transfer-encoding"] !== undefined;
+        const body = found.name === "saveModelGateway" || (found.name === "testModelGateway" && sent) ? await bodyOf(req) : undefined;
+        if ((found.name === "saveModelGateway" || found.name === "deleteModelGateway") && stopping.signal.aborted) throw new ApiError("unavailable", "The server is shutting down: the model gateway was not changed.");
+        const answer = await modelGatewayRoute({ store, sealKey: seal.key, env: own(withSecrets(base, "own")), changed: gatewayChanged }, found.name, { ...(body !== undefined ? { body } : {}), signal: stopping.signal });
+        return send(res, 200, answer, { "cache-control": "no-store" });
       }
       // Never through `idempotent`: its record keeps the body, and a body may hold a credential.
       case "listMcpServers":
@@ -4522,11 +4815,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // definition's: an archived agent's too.
       case "getAgentLearning": {
         await needAgent(id);
-        // The agent's learning view: its notes, skills, workflows and log from its learning folder; its run-fared counts, each
-        // note's runs (given it and that read it) and its impact over the one store (agentLearningOverStore), from each run's
-        // launch, journal and learning end.
-        const { counts, impact, notes } = await agentLearningOverStore(store, id);
-        return send(res, 200, await agentLearning(data, id, await learningShown(id), counts, impact, notes));
+        // The agent's learning view: its corrections, workflows and log from its learning folder; its run-fared counts and
+        // its impact over the one store (agentLearningOverStore), from each run's launch, journal and learning end.
+        const { counts, impact } = await agentLearningOverStore(store, id);
+        // Each workflow's status past its README.md's: where it stands as GET .../learning/promotions says it (servingStateOf
+        // over the same records and the money rule's decision, costStopOverStore), so the view never says a workflow serves
+        // that does not run first.
+        const records = await promotionsOf(store.settings, id);
+        const costStop = await costStopOverStore(store, id);
+        return send(res, 200, await agentLearning(data, id, await learningShown(id), counts, impact, (workflow) => servingStateOf(records, workflow, costStop)));
       }
       case "getLearningCost": {
         await needAgent(id);
@@ -4553,7 +4850,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const shownRead = promotionsShown(records, shown);
         // A ledger that can't be read now leaves each audit line at no rows, never the read refused.
         const loop = auditLoopOf((entry.revision?.body as { learning?: unknown } | undefined)?.learning);
-        const lines = servingLinesOf(records, await auditsOfAgent(id).catch(() => []), loop);
+        // Each one's state with the money rule's decision a run's launch reads (costStopOverStore): a champion it stopped
+        // running first reads `stopped`.
+        const lines = servingLinesOf(records, await auditsOfAgent(id).catch(() => []), loop, await costStopOverStore(store, id));
         // Why its runs are never audited, when the agent can call a tool that writes (learn/audit.ts auditWriterOf, the
         // rule startAudit reads); and how many of the serving revision's runs a trigger started (never audited).
         const writer = auditWriterOf(entry.revision ?? undefined);
@@ -4589,38 +4888,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const rows = await auditsOfAgent(id);
         return send(res, 200, { agent: id, audits: rows.map((row) => ({ ...row, workflow: shown.name(row.workflow), run: shown.text(row.run), shadow_run: row.shadow_run === null ? null : shown.text(row.shadow_run), digest: shown.text(row.digest) })) });
       }
-      case "createLearningBatch": {
-        await needAgent(id);
-        const body = await bodyOf(req);
-        const made = await agentWrite(id, () => batches.create(id, body));
-        return send(res, 202, await batches.read(id, made.id), { location: `/v2/agents/${encodeURIComponent(id)}/learning/batches/${made.id}` });
-      }
-      case "listLearningBatches":
-        await needAgent(id);
-        return send(res, 200, await batches.list(id));
-      case "getLearningBatch":
-        await needAgent(id);
-        return send(res, 200, await batches.read(id, second!));
-      case "cancelLearningBatch":
-        await needAgent(id);
-        // A cancel writes the batch's header: in the agent's delete turn (agentWrite), as every write to its learning is.
-        return send(res, 200, await agentWrite(id, () => batches.cancel(id, second!)));
-      case "listLearningEvals": {
-        await needAgent(id);
-        // The agent's eval records (learning-evals.ts), newest first, the latest the one shown: only ever what was posted.
-        const evals = await evalsOf(store, id);
-        return send(res, 200, { agent: id, latest: evals[0] ?? null, evals });
-      }
-      case "recordLearningEval": {
-        const body = await bodyOf(req);
-        await needAgent(id);
-        const answer = await agentWrite(id, () => idempotent(req, `/agents/${id}/learning/evals`, body, async () => {
-          const result = evalOf(body, new Date());
-          await recordEval(store, id, result);
-          return { status: 201, body: result };
-        }));
-        return send(res, answer.status, answer.body, answer.headers);
-      }
       case "getLearningLoop": {
         await needAgent(id);
         // The loop's own record over the one store (store-reads/loop.ts): compile turns, aggregates only.
@@ -4632,52 +4899,48 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const compiles = await Promise.all(read.compiles.map(async (one) => {
           const cut = await runCutValues({ serverSecrets, signIns }, store, one.run_id).catch(() => "unreadable" as const);
           const workflow = one.workflow === null ? null : shown.name(one.workflow);
-          if (cut === "unreadable") return { ...one, workflow, from_notes: one.from_notes.map(shown.name), attempts: one.attempts.map(({ ok }) => ({ ok, errors: [] })), draft_errors: [], withheld: true };
+          if (cut === "unreadable") return { ...one, workflow, attempts: one.attempts.map(({ ok }) => ({ ok, errors: [] })), draft_errors: [], withheld: true };
           const all = [...values, ...cut.values];
           const said = (error: string) => shown.text(printable({ rule: "workflow", detail: error }, all).detail);
-          return { ...one, workflow, from_notes: one.from_notes.map(shown.name), attempts: one.attempts.map(({ ok, errors }) => ({ ok, errors: errors.map(said) })), draft_errors: one.draft_errors.map(said), withheld: false };
+          return { ...one, workflow, attempts: one.attempts.map(({ ok, errors }) => ({ ok, errors: errors.map(said) })), draft_errors: one.draft_errors.map(said), withheld: false };
         }));
         return send(res, 200, { agent: id, completed_runs: read.completed_runs, compiles });
       }
-      case "listLearningNotes":
       case "listLearningLog":
         await needAgent(id);
-        if (found.name === "listLearningNotes") {
-          // The notes from the agent's learning folder, each with its runs over the one store (agentLearningOverStore's noteRuns).
-          const { notes } = await agentLearningOverStore(store, id);
-          return send(res, 200, await learningNotes(data, id, url.searchParams, await learningShown(id), notes));
-        }
         return send(res, 200, await learningLog(data, id, url.searchParams, await learningShown(id)));
+      case "getLearningCorrections": {
+        await needAgent(id);
+        // corrections.md whole, as every run of the agent is served it under # Learned, with its ETag in the body and the header.
+        const read = await correctionsView(data, id, await learningShown(id));
+        return send(res, 200, read, { etag: read.etag });
+      }
+      case "putLearningCorrections": {
+        await needAgent(id);
+        const text = await textBody(req, MAX_BODY);
+        // What it refuses is what the reads cut: the host's secrets and the agent's sign-in pointers.
+        const refuse = await learningValues(id);
+        // A write to the agent's learning: in its delete turn (agentWrite), the body read before, outside it.
+        const written = await agentWrite(id, () => correctionsWrite(data, id, { text, ifMatch: typeof req.headers["if-match"] === "string" ? req.headers["if-match"] : undefined, refuse }));
+        return send(res, 200, written, { etag: written.etag });
+      }
       case "listLearnedWorkflowRevisions":
         await needAgent(id);
         return send(res, 200, await workflowRevisions(data, id, second!, url.searchParams, await learningShown(id)));
       case "readLearningFile":
         await needAgent(id);
-        return sendNote(res, 200, await readNote(data, id, second!, await learningShown(id)));
-      case "writeLearningFile":
+        return sendText(res, 200, await readLearnedFile(data, id, second!, await learningShown(id)));
       case "retireLearningFile":
       case "approveLearningFile":
       case "restoreLearningFile": {
         await needAgent(id);
-        const header = (name: string) => (typeof req.headers[name] === "string" ? (req.headers[name] as string) : undefined);
-        const body = found.name === "writeLearningFile" ? await noteBody(req, MAX_BODY) : undefined;
-        // What it refuses is what the reads cut: a note shown cut is never saved over the hidden text.
         const refuse = await learningValues(id);
-        const written = await agentWrite(id, () => writeNote(data, id, second!, { ifMatch: header("if-match"), ifNoneMatch: header("if-none-match"), body, refuse, approve: found.name === "approveLearningFile", restore: found.name === "restoreLearningFile", draftTools: () => learnedDraftToolsOf(id) }));
-        // A name holding a secret (one the checks let by) is never echoed, not even as where the note is.
-        const shown = secretsShown(refuse);
-        const located = written.status === 201 && shown.name(written.file) === written.file;
-        return sendNote(res, written.status, { ...written, text: shown.text(written.text) }, located ? { location: `/v2/agents/${encodeURIComponent(id)}/learning/files/${written.file}` } : {});
-      }
-      case "promoteLearnedWorkflow": {
-        // The source read once the body is in, as it is then: what promoteOf checks and what it copies are that one read.
-        const body = await bodyOf(req);
-        const source = await needAgent(id);
-        const answer = await idempotent(req, `/agents/${id}/learning/workflows/${second}/promote`, body, async () => {
-          const { entry, warnings } = await promoteOf(source, second!, body);
-          return { status: 201, body: { ...agentView(entry, linkOrigin(req), await agentExtra(entry)), warnings }, headers: { location: `/v2/agents/${entry.agent.id}`, etag: etagOf(entry) } };
-        });
-        return send(res, answer.status, answer.body, answer.headers);
+        const action = found.name === "approveLearningFile" ? "approve" : found.name === "restoreLearningFile" ? "restore" : "retire";
+        // A change to a workflow is a write to the agent's learning: in its delete turn (agentWrite).
+        const written = await agentWrite(id, () => changeWorkflow(data, id, second!, { action, ifMatch: typeof req.headers["if-match"] === "string" ? req.headers["if-match"] : undefined, refuse, draftTools: () => learnedDraftToolsOf(id) }));
+        // A run's list row that read a workflow held for the owner's OK says what the folder says now, at the next list.
+        await lister.learningChanged(id);
+        return sendText(res, written.status, { ...written, text: secretsShown(refuse).text(written.text) });
       }
       case "startLearnedWorkflowReplay": {
         const body = await bodyOf(req);
@@ -4727,6 +4990,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const saved = await webhooks.save(await bodyOf(req));
         return send(res, saved.created ? 201 : 200, webhookSaved(saved.view, saved.secret, mayHoldSecrets(req)));
       }
+      case "rotateWebhookSecret": {
+        // A secret write: the dispatch's one check let only the owner's session this far (trigger-secrets-shown.ts). Never
+        // through `idempotent`, whose record would keep the secret. It takes no body, as a trigger's rotation takes none.
+        if (req.headers["transfer-encoding"] !== undefined || Number(req.headers["content-length"] ?? 0) !== 0) {
+          throw invalid([{ field: "body", reason: "not_allowed", message: "Rotating the webhook's secret takes no body: send none, and the new secret is made here." }]);
+        }
+        const rotated = await webhooks.rotate();
+        return send(res, 200, webhookRotated(rotated.view, rotated.secret), { "cache-control": "no-store" });
+      }
       case "deleteWebhook":
         await webhooks.remove();
         return void res.writeHead(204, { "cache-control": "no-store" }).end();
@@ -4736,6 +5008,23 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await webhooks.attemptsView());
       case "redeliverWebhook":
         return send(res, 200, await webhooks.redeliver(id));
+      case "getSlack":
+        return send(res, 200, slack.slackView());
+      case "saveSlack": {
+        // A body with `url` is a secret write: the dispatch's one check let only the owner's session this far
+        // (slack.ts registers it). The URL is never in the answer.
+        const saved = await slack.saveSlack(await bodyOf(req));
+        return send(res, saved.created ? 201 : 200, saved.view);
+      }
+      case "deleteSlack":
+        await slack.remove();
+        return void res.writeHead(204, { "cache-control": "no-store" }).end();
+      case "testSlack":
+        return send(res, 200, await slack.test());
+      case "listSlackDeliveries":
+        return send(res, 200, await slack.attemptsView());
+      case "redeliverSlack":
+        return send(res, 200, await slack.redeliver(id));
       case "listTriggers":
         return send(res, 200, { triggers: (await triggers.list()).triggers.map(withSecretOf) });
       case "createTrigger": {
@@ -4783,13 +5072,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const answer = await idempotent(req, `/templates/${encodeURIComponent(pkg.id)}/apply`, body, async () => {
           const made = await applyTemplate(pkg, body);
           minted = made.minted;
-          return { status: 201, body: made.applied, headers: { location: `/v2/agents/${made.applied.agent_id}` } };
+          // 200 for an update of the agent agent_id named, 201 for an agent made.
+          return { status: made.updated ? 200 : 201, body: made.applied, headers: { location: `/v2/agents/${made.applied.agent_id}` } };
         });
         // Each webhook trigger's secret, to the owner's session in this first answer alone (trigger-secrets-shown.ts
         // templateApplied): the record above never held it, so a replay under the key shows none.
         const replayed = answer.headers?.["idempotent-replayed"] === "true";
         const shown = replayed ? "replay" : mayHoldSecrets(req) ? "first" : "token";
-        return send(res, answer.status, answer.status === 201 ? templateApplied(answer.body as Json, minted, shown) : answer.body, answer.headers);
+        return send(res, answer.status, answer.status === 201 || answer.status === 200 ? templateApplied(answer.body as Json, minted, shown) : answer.body, answer.headers);
       }
       case "rotateTriggerSecret":
         // A secret write: the dispatch's one check let only the owner's session this far (trigger-secrets-shown.ts).
@@ -4862,6 +5152,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
   })();
 
+  // The public address this server last served at, kept in its data folder (public-address.ts): a change signs the owner
+  // out and leaves earlier webhook messages' links on the old address, so the start says so, in one line, once it serves
+  // (below), when it also remembers the new address: a start that fails changes neither.
+  const address = readPublicAddress(data, options.publicUrl);
+  // The earlier address's name (`moved.from`), whose console a browser is redirected from to the new address (`moved.to`,
+  // parsed: a Location header carries no raw name in another script): set only when the server has a public address now
+  // and the earlier name is none it answers to.
+  const moved = movedAddress(address.earlier, options.publicUrl, loopbackNames(host, options.allowHosts, options.publicUrl));
+
   let names: Set<string> | undefined;
   // The listener: the CLI's, bound early and answering warming until the takeover below (listen-first.ts), or a new one.
   const server = options.listener ?? createServer();
@@ -4894,6 +5193,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       url = new URL(req.url ?? "/", "http://serve");
     } catch {
       return fail(new ApiError("bad_request", "the request target is not a URL"));
+    }
+    // Under the server's earlier public address (public-address.ts): a browser that opens the console is sent on to the new
+    // address, whatever the listener. No other route is: on loopback, the rest is refused as any other name is, in words
+    // that name the new address. That name passes the Host check for this one fixed answer alone, which reads nothing of
+    // the request but its path: it is a name this server's operator set before, and a page that rebound it reads no data.
+    if (moved !== undefined && hostName(req.headers.host) === moved.from) {
+      const browser = /\btext\/html\b/i.test(String(req.headers.accept ?? ""));
+      if (browser && (req.method === "GET" || req.method === "HEAD") && consoleEntry((req.url ?? "/").split("?")[0]!)) return sendMoved(res, moved.to);
+      if (names) return browser ? sendMovedPage(req, res, moved.to) : fail(new ApiError("forbidden", `unexpected Host header: ${movedFix(moved.to)}`));
     }
     // On loopback, a Host that is not one of its names (host-check.ts) is a page that rebound a name of its own to this
     // address. A browser is shown a page that says which names work; a script, the same in the error.
@@ -4970,7 +5278,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const admitted = () => held.some((value) => owner.valid(value));
       if (!admitted()) return deny("401 Unauthorized");
       viewers.watch(socket, admitted);
-      proxyLiveUpgrade(req, socket, head, handover, viewing[3]!, () => { piping = true; }, reach);
+      proxyLiveUpgrade(req, socket, head, handover, viewing[3]!, () => { piping = true; }, reachForRun(reach, run!.id));
     })().catch(() => (piping ? void socket.destroy() : deny("500 Internal Server Error")));
   };
   // The CLI's early listener answers with this server's routes from here on, where a new one would start to listen.
@@ -4991,8 +5299,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   if (isLoopback(host)) names = loopbackNames(host, options.allowHosts, options.publicUrl);
   // An address of every interface is reached on this machine at its loopback one.
   const url = urlOf(server, host);
-  owner?.attach(options.publicUrl ?? url);
+  owner?.attach(options.publicUrl ?? url, options.publicUrl ? [] : elsewhereOf(host, (server.address() as AddressInfo).port));
   webhooks.attach(options.publicUrl ?? url);
+  slack.attach(options.publicUrl ?? url);
   // A local install is the one server an MCP server's URL may be on loopback for (anywhere else, loopback is this machine's
   // other services: mcp-oauth.ts mcpServerAt), and only as its operator says (mcpLoopback), never inferred from where it
   // listens: a hosted container listens on loopback behind its proxy too.
@@ -5006,6 +5315,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await new Promise<void>((done) => server.close(() => done()));
     throw error;
   });
+  // It serves: the public address it serves at is remembered now, and a change of it said (above).
+  address.keep((said) => void process.stderr.write(`agentrun-serve: ${said}\n`));
+  if (address.changed) {
+    const line = logLine("public_url_changed", { from: address.changed.from ?? "none", to: address.changed.to ?? "none", warning: publicAddressChanged });
+    if (log) log(line);
+    else process.stderr.write(`agentrun-serve: ${line}\n`);
+  }
+  // The lister's own passes (above), once this server listens and knows its own address (ownOriginOf).
+  lister.start();
   // A run's end and its wait are the outbound webhook's run.ended and run.needs_input (webhooks.ts). The runners write them
   // to the store and this server runs no run, so it follows the store's run-change feed (Store.runs.changedSince): every
   // run reaching a final state, or let go by its runner (parked, or running with none), once, in order, under a cursor
@@ -5019,12 +5337,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  status input_required and idle, a message continues it) and not have ended: its view says which. */
   const stopRow = (row: RunRow) => row.state === "stopped" && row.outcome === "stopped" && row.importedFrom === null;
   const endOf = (row: RunRow) => ({ id: row.id, state: final(row) ? row.state : "running", ...(final(row) && row.endedAt !== null ? { endedAt: new Date(row.endedAt).toISOString() } : {}), ...(stopRow(row) ? { stop: true } : {}) });
+  /** Agent `agentId`'s name as the store holds it now, for a webhook notice: its id when it has none, or is gone. */
+  const agentNameOf = async (agentId: string): Promise<string> => (await store.agents.get(agentId))?.name || agentId;
   /** The run as the store holds it now, with its notice (the run list's own view of it); null when there is no such run. */
   const endNotice = async (id: string) => {
     const row = await store.runs.get(id);
     const summary = row && (await summaryOverStore(store, id, viewDepsFor(ownOriginOf())));
     if (!row || !summary) return null;
-    return { ...endOf(row), notice: { run_id: id, agent_id: row.agentId, status: String(summary.status), title: typeof summary.title === "string" ? summary.title : "" } };
+    return { ...endOf(row), notice: { run_id: id, agent_id: row.agentId, agent_name: await agentNameOf(row.agentId), status: String(summary.status), title: typeof summary.title === "string" ? summary.title : "" } };
   };
   /** The run-end read's look at a run: its end from its row alone when it has none, or one told already; else its
    *  endNotice. The run's view redacts the run's words (its title, its output) on every build, and the newest runs are
@@ -5054,6 +5374,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (view?.status !== "input_required") return (readWaits.set(row.id, seen), true);
     const rows = (await timelineOverStore(store, row.id, viewDepsFor(ownOriginOf()))) ?? [];
     const card = (view.pending as { kind?: unknown } | null | undefined)?.kind;
+    // A stop asked for and not yet taken reads stopped (store-view's stopAsked) before its row ends: it is told once the
+    // runner's end commit ends the row (a change the feed brings), under the one marker that end gives it.
+    if (card === "stopped" && row.endedAt === null) return true;
     // One marker per ask, so the held read and the let-go read of one ask agree, whatever row shows last. A stop's is when
     // its stop ended the row: rows its stopped turn still streams in (a late result, a charge) never move it.
     const marker = card === "stopped" && row.endedAt !== null ? `stopped:${new Date(row.endedAt).toISOString()}` : waitMarkerOf(rows, view.pending as Parameters<typeof waitMarkerOf>[1], view.state === "waiting", LEARNING_LABEL);
@@ -5062,7 +5385,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // whose card is withheld is a question. A run idle on nothing named (its harness ended its turn on its own) names no kind.
     const kind = typeof card === "string" && waitKinds.has(card) ? card : view.state === "waiting" ? "question" : undefined;
     const wait = kind === undefined ? undefined : ({ kind } as NonNullable<RunNotice["pending"]>);
-    const notice: RunNotice = { run_id: row.id, agent_id: row.agentId, status: "input_required", title: typeof view.title === "string" ? view.title : "", ...(wait ? { pending: wait } : {}) };
+    const notice: RunNotice = { run_id: row.id, agent_id: row.agentId, agent_name: await agentNameOf(row.agentId), status: "input_required", title: typeof view.title === "string" ? view.title : "", ...(wait ? { pending: wait } : {}) };
     if (!(await toldAll(row.id, waitSubscribers.map((tell) => () => tell(notice, wait, marker))))) return false;
     readWaits.set(row.id, seen);
     return true;
@@ -5083,6 +5406,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   });
   runNotices.onWaits(async (run, _wait, marker) => {
     if ((await webhooks.emit("run.needs_input", run, marker)) === "unsaved") throw new Error("its run.needs_input is not saved yet");
+  });
+  // Slack hears the same moments, under its own ledger (slack.ts).
+  runNotices.onEnded(async (run, marker) => {
+    if ((await slack.emit("run.ended", run, marker)) === "unsaved") throw new Error("its Slack run.ended is not saved yet");
+  });
+  runNotices.onWaits(async (run, _wait, marker) => {
+    if ((await slack.emit("run.needs_input", run, marker)) === "unsaved") throw new Error("its Slack run.needs_input is not saved yet");
   });
   /** Every call of `calls` made: false when one threw (said once for the run), so the run is told again. */
   const toldAll = async (id: string, calls: ReadonlyArray<() => unknown>): Promise<boolean> => {
@@ -5224,8 +5554,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     const rows = await store.runs.list({});
     // An end catchUp cannot read, or whose notice the store refused, is said there and left for each read to try
     // (endsLeft): it is before the feed's head, so no change of the feed brings it back.
-    const unsaved = await webhooks.catchUp(rows.filter((row) => !row.importedFrom && !isShadowRun(row.id)).map(endOf), (id) => endNotice(id).catch((error: Error) => (endsLeft.add(id), Promise.reject(error))));
+    const ends = rows.filter((row) => !row.importedFrom && !isShadowRun(row.id)).map(endOf);
+    const unsaved = await webhooks.catchUp(ends, (id) => endNotice(id).catch((error: Error) => (endsLeft.add(id), Promise.reject(error))));
     for (const id of unsaved) endsLeft.add(id);
+    for (const id of await slack.catchUp(ends, (id) => endNotice(id).catch((error: Error) => (endsLeft.add(id), Promise.reject(error))))) endsLeft.add(id);
     // A run that stands at a person's stop waits too (tellWait reads its view: one its stop ended reads no wait).
     for (const row of rows) if (!closing && (letGo(row) || stopRow(row)) && !(await tellWait(row).catch((error: Error) => (sayUnread(row.id, error.message), false)))) waitsLeft.add(row.id);
   };
@@ -5263,9 +5595,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The ends' follower stops before the webhooks it feeds and the store it reads.
     clearTimeout(endsTimer);
     await endsRead;
-    // A learning batch's loop ends where it stands, still running: it takes up when a server starts on this data again.
-    await batches.halt();
     await webhooks.close();
+    await slack.close();
     // An upgraded socket is no connection closeAllConnections ends, and server.close waits for it.
     viewers.close();
     await attach.close();
@@ -5274,6 +5605,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await githubStopped;
     // --faux-github's fake GitHub API, once nothing asks it anything.
     await fauxGitHub?.close();
+    // The listings' builder ends its pass before the store it reads and writes closes.
+    await lister.stop();
     // The store's EXCLUSIVE lock is the one-server lock: closing it releases it for the next server.
     await store.close();
     dataLock.release();
@@ -5299,5 +5632,6 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     close: () => (stopped ??= stop()),
     // No per-run process drains here: the runner owns a run's turn, so a stop waits on none.
     stopping: () => ({ runs: 0, boundMs: 0 }),
+    listingSettled: () => lister.settled(),
   };
 }

@@ -20,9 +20,11 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { ALL, FLAGS, WAIT } from '../packages/agentrun/lib/follow.mjs';
 import { SECRETS } from '../packages/agentrun/lib/login.mjs';
-import { SERVICE, STOP } from '../packages/agentrun/lib/service.mjs';
+import { DOCTOR } from '../packages/agentrun/lib/doctor.mjs';
+import { OPEN, SERVICE, STOP } from '../packages/agentrun/lib/service.mjs';
 import { SKILL_INSTALL } from '../packages/agentrun/lib/skill.mjs';
 import { TEMPLATE_EVAL, TEMPLATE_INSTALL, TEMPLATE_VALIDATE } from '../packages/agentrun/lib/template.mjs';
+import { HARNESS_INSTALL } from '../packages/agentrun/lib/harness.mjs';
 import { allCommands, recipeProblems, referenceText, skillText } from './clients/skill.mjs';
 import { pythonProblems, pythonText } from './clients/python.mjs';
 import { clientProblems, clientText } from './clients/typescript.mjs';
@@ -38,9 +40,9 @@ const PYTHON = 'python/agentrun/_generated.py';
 const TYPES = 'apps/console/src/lib/api.generated.ts';
 // Words the launcher keeps for itself or for the server it starts, and the CLI's own commands of one word: no command
 // may begin with one.
-const RESERVED = ['api', 'help', 'import', 'reset-password', 'login', 'logout', 'skill', 'service', 'stop'];
+const RESERVED = ['api', 'help', 'import', 'reset-password', 'login', 'logout', 'skill', 'service', 'stop', 'doctor'];
 // The CLI's hand-written commands: none may be a generated one too.
-const HAND = { flags: FLAGS, all: ALL, wait: WAIT, local: [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL, TEMPLATE_INSTALL, ...SERVICE, STOP] };
+const HAND = { flags: FLAGS, all: ALL, wait: WAIT, local: [...SECRETS, SKILL_INSTALL, TEMPLATE_VALIDATE, TEMPLATE_EVAL, TEMPLATE_INSTALL, HARNESS_INSTALL, ...SERVICE, STOP, OPEN, DOCTOR] };
 const SCALAR = ['string', 'number', 'integer', 'boolean'];
 const GLOBAL_FLAGS = ['base-url', 'data', 'body', 'body-type', 'help'];
 // Headers the CLI sets itself.
@@ -84,7 +86,8 @@ function flagType(shape) {
   return types.length === 1 && SCALAR.includes(types[0]) ? { type: types[0] } : undefined;
 }
 
-const firstLine = (text) => (text ?? '').split('\n')[0].trim();
+// A description's first paragraph, its hard-wrapped lines joined: its first line alone can stop mid-sentence.
+const firstLine = (text) => (text ?? '').trim().split(/\n\s*\n/)[0].replace(/\s*\n\s*/g, ' ');
 const JSON_TYPE = /^application\/(?:[\w.+-]+\+)?json$/;
 const COMPONENT = '#/components/schemas/';
 // The JSON Schema types the client's types are made of, and the keywords that shape a value beyond them.

@@ -86,13 +86,15 @@ export const KINDS = {
    *  later claim that asks the same turn again reads the first ask's (the commit of main a compile turn was asked at among
    *  them), never its own. Neither a call nor a message: the reader passes over it. */
   endOfRunKept: "agentrun.end-of-run.kept",
+  /** A replay run's or an audit shadow's grader verdict (learn/promote.ts Compared), from its end-of-run step, written on
+   *  the root before its end: its metrics carry it (`replay.compared`, `audit.compared`). Neither a call nor a message. */
+  compared: "agentrun.learning.compared",
   /** How the run's job's own turn ended (JobEndData: the end it gives the run, a CLI's error answer), as the claim that
    *  read it decided, written on the root before the end-of-run step asks its first turn. A claim that finds that turn
    *  open ends the run on the newest one, never working the job's end out again. Neither a call nor a message. */
   jobEnd: "agentrun.end-of-run.job",
-  /** What a learning run's claim laid of its seed: the learned skills it was given (`skills`, by name) and the learned
-   *  workflows its learned_workflow tool runs (`workflows`, by name). Written once per claim, on the root; the newest is
-   *  what the run was given. Neither a call nor a message. */
+  /** What a learning run's claim laid of its seed: the learned workflows its learned_workflow tool runs (`workflows`, by
+   *  name). Written once per claim, on the root; the newest is what the run was given. Neither a call nor a message. */
   learningLaid: "agentrun.learning.laid",
   /** The claim made the run a computer of its own (`computer`: its kind, desktop, sandbox or phone; computer-for-claim.ts
    *  ClaimComputer.made): written on the root at the claim's first pass. A later claim's computer is a new one, and this

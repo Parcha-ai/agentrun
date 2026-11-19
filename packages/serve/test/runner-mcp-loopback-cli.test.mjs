@@ -127,9 +127,9 @@ test("a server started without AGENTRUN_MCP_ALLOW_LOOPBACK=1 refuses an upgraded
   await started(t, serverArgs, base, /^agentrun-serve on /m);
   const refused = await api("POST", "/agents/earlier/runs", { input: CALL });
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
-  assert.match(refused.body.error.message, /The MCP tool mcp:fake\/add was not pinned when this revision was saved: its server fake can't be listed here to pin it: 127\.0\.0\.1 is this machine; set AGENTRUN_MCP_ALLOW_LOOPBACK=1 when starting the server/);
+  assert.match(refused.body.error.message, /The MCP tool mcp:fake\/add was not pinned when this revision was saved: its server fake can't be listed here to pin it: 127\.0\.0\.1 is this machine; restart the server with AGENTRUN_MCP_ALLOW_LOOPBACK=1 to allow it, only on a machine you alone use\./);
   const resaved = await api("POST", "/agents", agent("again", { tools: [ADD], approvals: "never" }));
   assert.equal(resaved.status, 422, "a save is refused the same way");
-  assert.match(JSON.stringify(resaved.body), /set AGENTRUN_MCP_ALLOW_LOOPBACK=1/);
+  assert.match(JSON.stringify(resaved.body), /restart the server with AGENTRUN_MCP_ALLOW_LOOPBACK=1 to allow it/);
   assert.equal(fake.log.filter((entry) => entry.method === "tools/call").length, 0, "nothing called");
 });

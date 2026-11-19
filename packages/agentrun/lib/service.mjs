@@ -3,13 +3,14 @@
 // unit on Linux; never a system service, never sudo. The service runs the installer's command (~/.agentrun/bin/agentrun,
 // install.sh), which brings its own Node, with --no-open and the interactive launcher's rules for the data directory and
 // port, and writes to ~/.agentrun/logs/agentrun.log. With --tailscale it is also served on the person's tailnet
-// (tailscale.mjs); with --env, on a local model (MODEL_ENV). `agentrun stop` stops the AgentRun the installer starts in the
+// (tailscale.mjs); with --env, on a local model (MODEL_ENV) or with a start-time switch on (SWITCH_ENV). `agentrun stop` stops the AgentRun the installer starts in the
 // background where there is no service manager (a container): its pid is in ~/.agentrun/agentrun.pid.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, readSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { publicUrlOf } from "./public-url.mjs";
 import { TAILNET_PORT, tailnetOf, targetOf } from "./tailscale.mjs";
 
 export const LABEL = "ai.agentrun.server";
@@ -113,6 +114,11 @@ export const unitEnv = (text) =>
 /** The variables `service install --env` sets: a local model's (AGENT_MODEL_BASE_URL in front of a gateway such as
  *  Ollama's). Never a key: a unit file is plain text, and keys are sealed in the console. */
 export const MODEL_ENV = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_GATEWAY_IDS", "AGENT_MODEL", "AGENT_MODEL_PRICE"];
+/** The start-time switches `service install --env` also sets (the server's start-switches.ts): yes-or-no, on at `1`
+ *  alone, and only on a machine its owner alone uses. A server reads them at its start, so the service restarts. */
+export const SWITCH_ENV = ["AGENTRUN_MCP_ALLOW_LOOPBACK", "AGENTRUN_WEBHOOK_PRIVATE_TARGETS"];
+/** Every variable `service install --env` sets, and an installed service keeps. */
+const SERVICE_ENV = [...MODEL_ENV, ...SWITCH_ENV];
 
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
@@ -232,11 +238,28 @@ async function healthOf(data, { fetch: get = fetch, since = 0 } = {}) {
   try {
     const response = await get(`${record.base_url.replace(/\/+$/, "")}/health`, { signal: AbortSignal.timeout(3_000) });
     const body = await response.json().catch(() => ({}));
-    return { url, health: response.ok && body?.status === "ok" ? "ok" : `${response.status} ${body?.status ?? ""}`.trim(), checks: body?.checks };
+    return { url, answered: true, health: response.ok && body?.status === "ok" ? "ok" : `${response.status} ${body?.status ?? ""}`.trim(), checks: body?.checks };
   } catch (error) {
-    return { url, health: `not answering (${error?.cause?.code ?? error?.name})` };
+    return { url, answered: false, health: `not answering (${error?.cause?.code ?? error?.name})` };
   }
 }
+
+/** Whether a browser can be opened here: not in CI, and on Linux or FreeBSD only with a display (serve's host.ts canOpen). */
+export const canOpen = (env, platform) => !env.CI && (platform === "darwin" || (["linux", "freebsd"].includes(platform) && Boolean(env.DISPLAY || env.WAYLAND_DISPLAY)));
+/** Starts `command` on `args` for the browser and leaves it running: an opener can stay in the foreground until the
+ *  browser it starts closes, so nothing waits for its exit (serve's --open spawns it the same way). True once it started,
+ *  false when it could not (no such command). */
+export const launchOpener = (command, args, env) => new Promise((done) => {
+  const child = spawn(command, args, { env, stdio: "ignore", detached: true });
+  child.once("error", () => done(false));
+  child.once("spawn", () => {
+    child.unref();
+    done(true);
+  });
+});
+/** The newest setup link a server printed to `log` (`Set up this server: <link> ...`), or undefined. */
+export const SETUP_LINE = /^Set up this server: (https?:\/\/\S+\/setup#code=[A-Za-z0-9_-]+)/;
+const SETUP_TAIL = 2_000;
 
 /** The last `count` lines of a file, read back from its end only as far as they go: the log is appended to forever. */
 const tailOf = (file, count) => {
@@ -266,7 +289,7 @@ const tailOf = (file, count) => {
 };
 
 /** Every service command, given what it runs on; the entries below bind it to this machine. */
-export function serviceOf({ platform = process.platform, home = homedir(), uid = process.getuid?.(), user = userInfo().username, env = process.env, exec, io, fail, get = fetch, waitMs = HEALTH_WAIT_MS, kill = process.kill.bind(process), stopWaitMs = STOP_WAIT_MS }) {
+export function serviceOf({ platform = process.platform, home = homedir(), uid = process.getuid?.(), user = userInfo().username, env = process.env, exec, io, fail, get = fetch, waitMs = HEALTH_WAIT_MS, kill = process.kill.bind(process), stopWaitMs = STOP_WAIT_MS, launch = launchOpener }) {
   exec ??= (command, args, options = {}) => spawnSync(command, args, { encoding: "utf8", ...options });
   const root = join(home, ".agentrun");
   const program = join(root, "bin", "agentrun");
@@ -284,9 +307,9 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
   };
   const argsNow = () => manager.args(readFileSync(manager.file, "utf8")).slice(1);
 
-  /** Waits for the server started at `since` to answer /health ok, then says where it is; exit 0, or 1 with the log's
-   *  last lines. */
-  async function started(since, data) {
+  /** Waits for the server started at `since` to answer /health ok, then says where it is, runs `ready` and opens its
+   *  setup page while it has no owner; exit 0, or 1 with the log's last lines. */
+  async function started(since, data, ready = () => {}) {
     const deadline = Date.now() + waitMs;
     let last = {};
     while (Date.now() < deadline) {
@@ -295,6 +318,10 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
         say(`AgentRun is running at ${last.url} (${manager.name}).`);
         say(`Logs: ${log}`);
         for (const note of manager.notes()) say(note);
+        // The tailnet's serve entry first: the setup link names that address.
+        ready();
+        // A server with no owner yet: its setup page, open in the browser with the code filled in.
+        await openPage(data, { setupOnly: true, url: last.url });
         return 0;
       }
       await new Promise((done) => setTimeout(done, 500));
@@ -305,34 +332,117 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
     return 1;
   }
 
+  /** The newest setup link in the service's log. */
+  const newestSetup = () => {
+    for (const line of tailOf(log, SETUP_TAIL).reverse()) {
+      const found = SETUP_LINE.exec(line);
+      if (found) return found[1];
+    }
+    return undefined;
+  };
+
+  /** `agentrun open`, and the end of a start: the page to open first, in this machine's browser. With no owner yet, the
+   *  setup page: its code filled in when setup takes one (a code still good is kept; an expired or spent one is replaced
+   *  first, as the page's Get a new code does), or `/setup` where setup takes none. With an owner, the console, unless
+   *  `setupOnly`. The link is printed for the person at this terminal as well, for when no browser opens (an opener can
+   *  start and still find none): theirs to open, and a setup code works once and for 30 minutes, unlike the API token,
+   *  which never leaves its file. The code comes from the log the service (or the installer's background start) writes,
+   *  so only for the data folder that log is for: another server prints its own elsewhere. Exit 0, or 1 when no server
+   *  answers. */
+  async function openPage(data, { setupOnly = false, url = undefined } = {}) {
+    let unwell;
+    if (url === undefined) {
+      // A record a crash or a forced stop left behind names an address no server answers. A server that answers with a
+      // failed check (low disk is a 503) still serves its console and its setup page: it opens, and the check is said.
+      const now = await healthOf(data, { fetch: get });
+      if (now.answered) url = now.url;
+      if (now.answered && now.health !== "ok") {
+        const failing = Object.entries(now.checks ?? {}).filter(([, value]) => value !== "ok").map(([name, value]) => `${name}: ${value}`);
+        unwell = failing.length ? `${now.health} (${failing.join(", ")})` : now.health;
+      }
+    }
+    if (!url) {
+      if (setupOnly) return 0;
+      io.stderr.write(`No AgentRun answers for ${data}: start it with agentrun service start, or agentrun.\n`);
+      return 1;
+    }
+    const record = JSON.parse(readFileSync(join(data, ".server.json"), "utf8"));
+    const api = record.base_url.replace(/\/+$/, "");
+    const ask = async (path, init) => {
+      try {
+        const response = await get(`${api}${path}`, { ...init, signal: AbortSignal.timeout(5_000) });
+        return response.ok ? await response.json().catch(() => ({})) : undefined;
+      } catch {
+        return undefined;
+      }
+    };
+    if (unwell) say(`Its health check answers ${unwell}; agentrun service status says more.`);
+    const logged = resolve(data) === (installed() ? dataOf(argsNow(), home) : resolve(root));
+    const session = await ask("/auth/session");
+    let link;
+    let coded = false;
+    if (session?.accounts !== false && session?.password_set === false) {
+      if (session.setup_code) {
+        const before = logged ? newestSetup() : undefined;
+        const renewed = await ask("/setup/code", { method: "POST" });
+        // A new code goes to the log as the answer is sent: wait for its line.
+        for (let waited = 0; logged && renewed?.printed && newestSetup() === before && waited < 3_000; waited += 100) await new Promise((done) => setTimeout(done, 100));
+        link = logged ? newestSetup() : undefined;
+        coded = link !== undefined;
+        if (!link) {
+          link = url;
+          say(`Its setup code is in the log of the terminal or service AgentRun runs in: the newest line "Set up this server:".`);
+        }
+      } else link = `${url}setup`;
+    } else if (setupOnly) return 0;
+    else link = url;
+    const opener = platform === "darwin" ? "open" : "xdg-open";
+    const opened = canOpen(env, platform) && (await launch(opener, [link], env));
+    const setup = !(link === url && session?.password_set !== false);
+    if (opened) {
+      say(setup ? "Opened the setup page in your browser: set the owner password there." : "Opened the console in your browser.");
+      say(`If no browser opened, open ${link}`);
+    } else say(setup ? `Set the owner password at the setup page: ${link}` : `The console: ${link}`);
+    if (coded) say("Its setup code works once and for 30 minutes; agentrun open gives a new one after that.");
+    return 0;
+  }
+
   return {
-    async install({ data, port, tailscale, env: sets = [] }) {
+    open: ({ data, "setup-only": setupOnly }) => openPage(resolve(data ?? root), { setupOnly }),
+    async install({ data, port, tailscale, env: sets = [], "public-url": given }) {
       if (port !== undefined && !/^\d+$/.test(port)) throw fail(2, `--port takes a port number, not ${port}.`);
       const changes = sets.map((pair) => {
         const at = pair.indexOf("=");
         if (at < 1) throw fail(2, `--env takes KEY=VALUE, not ${pair}.`);
         const key = pair.slice(0, at);
-        if (!MODEL_ENV.includes(key)) throw fail(2, `--env takes ${MODEL_ENV.slice(0, -1).join(", ")} or ${MODEL_ENV.at(-1)}, not ${key}: a key goes in the console (Settings → Model keys), never in a service file.`);
+        if (!SERVICE_ENV.includes(key)) throw fail(2, `--env takes ${SERVICE_ENV.slice(0, -1).join(", ")} or ${SERVICE_ENV.at(-1)}, not ${key}: a key goes in the console (Settings → Model keys), never in a service file.`);
         if (/[\0-\x1f]/.test(pair)) throw fail(2, `${key}'s value has a line break or another control character.`);
+        if (SWITCH_ENV.includes(key) && !["", "1"].includes(pair.slice(at + 1))) throw fail(2, `${key} takes 1 (on) or nothing (off), not ${pair.slice(at + 1)}: the server reads it as on at 1 alone.`);
         return [key, pair.slice(at + 1)];
       });
+      // --public-url goes on the service's command line, so every start of it (a restart, a login) has it, and with it
+      // the launcher's AGENTRUN_TRUSTED_PROXIES=loopback.
+      let publicUrl = given === undefined ? undefined : publicUrlOf(given);
+      if (publicUrl?.error !== undefined) throw fail(2, publicUrl.error);
       need();
       if (!existsSync(program)) throw fail(1, `AgentRun's service runs the installed command, ${program}, and it is not there. Install it first: ${INSTALL_COMMAND}`);
       const why = manager.available();
       if (why !== undefined) throw fail(1, `AgentRun can't run as a service here: ${why}. Start it in a terminal with ${program}.`);
-      // An installed service keeps its local model's variables; --env KEY=VALUE sets one, KEY= removes it.
-      const model = installed() ? Object.fromEntries(Object.entries(manager.env(readFileSync(manager.file, "utf8"))).filter(([key]) => MODEL_ENV.includes(key))) : {};
+      // An installed service keeps its local model's variables and its switches; --env KEY=VALUE sets one, KEY= removes it.
+      const model = installed() ? Object.fromEntries(Object.entries(manager.env(readFileSync(manager.file, "utf8"))).filter(([key]) => SERVICE_ENV.includes(key))) : {};
       for (const [key, value] of changes) {
         if (value === "") delete model[key];
         else model[key] = value;
       }
-      // --tailscale, --no-tailscale or --env on an installed service changes that only: its data folder and port stay
-      // unless named (the installer passes the flag alone).
-      if ((tailscale !== undefined || changes.length > 0) && installed()) {
+      // --tailscale, --no-tailscale, --env or --public-url on an installed service changes that only: its data folder, port
+      // and public address stay unless named (the installer passes the flag alone). --tailscale names its own address instead.
+      if ((tailscale !== undefined || changes.length > 0 || given !== undefined) && installed()) {
         const now = argsNow();
         const option = (name) => (now.includes(name) ? now[now.indexOf(name) + 1] : undefined);
         data ??= option("--data");
         port ??= option("--port");
+        const kept = option("--public-url");
+        if (publicUrl === undefined && tailscale !== true && kept !== undefined && publicUrlOf(kept).url !== undefined) publicUrl = publicUrlOf(kept);
       }
       const again = (flag) => [`agentrun service install ${flag}`, ...(port !== undefined ? [`--port ${port}`] : []), ...(data !== undefined ? [`--data ${resolve(data)}`] : [])].join(" ");
       const tailnet = tailnetOf({ platform, root, uid, exec, say, fail, again: again("--tailscale") });
@@ -341,10 +451,13 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
       // On the tailnet the port is fixed, so the serve entry and the server still agree after a restart.
       const served = share ? (port ?? TAILNET_PORT) : port;
       if (share && Number(served) === 0) throw fail(2, `--tailscale serves a fixed port, and --port 0 has the system pick another at each start: name a port, or leave --port out for ${TAILNET_PORT}.`);
+      if (share && publicUrl !== undefined) {
+        throw fail(2, `--public-url and --tailscale each set the address people open, and --tailscale names its own (this machine's tailnet name). Leave out --public-url, or take AgentRun off the tailnet with --no-tailscale.`);
+      }
       if (!share) tailnet.off(again("--no-tailscale"));
       // The server knows the address people open: its host check takes the name, and its setup takes the printed code.
       const at = share ? tailnet.address(targetOf(served)) : undefined;
-      const args = ["--no-open", ...(data !== undefined ? ["--data", resolve(data)] : []), ...(served !== undefined ? ["--port", served] : [])];
+      const args = ["--no-open", ...(data !== undefined ? ["--data", resolve(data)] : []), ...(served !== undefined ? ["--port", served] : []), ...(publicUrl !== undefined ? ["--public-url", publicUrl.url] : [])];
       const vars = { ...model, ...(at ? { AGENTRUN_PUBLIC_URL: at.url, AGENTRUN_TRUSTED_PROXIES: "loopback" } : {}) };
       mkdirSync(join(root, "logs"), { recursive: true, mode: 0o700 });
       mkdirSync(join(manager.file, ".."), { recursive: true });
@@ -352,9 +465,9 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
       const since = Date.now();
       manager.install();
       say(`Installed AgentRun's service (${manager.file}): it keeps running after this terminal closes, and starts again at login.`);
-      const code = await started(since, dataOf(args, home));
-      if (code === 0 && at) tailnet.serve(served, at.host);
-      return code;
+      return started(since, dataOf(args, home), () => {
+        if (at) tailnet.serve(served, at.host);
+      });
     },
     async status() {
       need();
@@ -489,7 +602,7 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
 }
 
 const VERBS = [
-  ["install", "Install AgentRun as a service of this user and start it: it keeps running after the terminal closes and starts again at login", [["--port N", "the port to listen on (default: the first free from 7340; 7340 with --tailscale)"], ["--data DIR", "the data directory (default ~/.agentrun)"], ["--tailscale", "also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off"], ["--env KEY=VALUE", `a local model's variable for the server (${MODEL_ENV.join(", ")}), kept until KEY= removes it; repeatable`]], { port: { type: "string" }, tailscale: { type: "boolean" }, env: { type: "string", multiple: true } }],
+  ["install", "Install AgentRun as a service of this user and start it: it keeps running after the terminal closes and starts again at login", [["--port N", "the port to listen on (default: the first free from 7340; 7340 with --tailscale)"], ["--data DIR", "the data directory (default ~/.agentrun)"], ["--tailscale", "also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off"], ["--env KEY=VALUE", `a local model's variable for the server (${MODEL_ENV.join(", ")}), or a start-time switch at 1 (${SWITCH_ENV.join(", ")}), kept until KEY= removes it; repeatable`], ["--public-url URL", "the https address people open it at, through a proxy you run in front of it (your own tailscale serve, a reverse proxy); kept for every restart"]], { port: { type: "string" }, tailscale: { type: "boolean" }, env: { type: "string", multiple: true }, "public-url": { type: "string" } }],
   ["status", "Say whether the service is installed and running, the console's address and its health (exit 0 healthy, 1 not, 3 not installed)", [], {}],
   ["start", "Start the service and wait until it answers", [], {}],
   ["stop", "Stop the service (it starts again at the next login)", [], {}],
@@ -508,6 +621,16 @@ export const SERVICE = VERBS.map(([verb, summary, help, options]) => ({
   options,
   run: ({ values, io, env, cli }) => serviceOf({ env, io, fail: cli.fail })[verb](values),
 }));
+
+/** `agentrun open` (cli.mjs LOCAL). */
+export const OPEN = {
+  command: ["open"],
+  pathParams: [],
+  summary: "Open AgentRun in this machine's browser: the setup page, its code filled in, until the owner's password is set; the console after (where no browser opens, it prints the link)",
+  help: [["--data DIR", "the data directory of the AgentRun to open (default ~/.agentrun)"], ["--setup-only", "open nothing once the owner's password is set (the installer's last step)"]],
+  options: { "setup-only": { type: "boolean" } },
+  run: ({ values, io, env, cli }) => serviceOf({ env, io, fail: cli.fail }).open(values),
+};
 
 /** `agentrun stop` (cli.mjs LOCAL). */
 export const STOP = {

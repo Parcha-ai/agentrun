@@ -4,8 +4,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { LearningChips } from "./LearningChips";
 import type { Run } from "@/lib/v2";
 
-// A run whose learning kept nothing for a reason other than "nothing new" (the grader turned it away, a check refused
-// it, it was skipped or stopped) says so on its page: a "Kept nothing" chip with the server's own sentence, linking to
+// A run whose learning kept nothing for a reason other than "nothing new" (the checks refused the workflow it compiled,
+// it was skipped or stopped) says so on its page: a "Kept nothing" chip with the server's own sentence, linking to
 // the agent's Learning tab. A run with nothing new to remember stays silent.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
@@ -21,11 +21,11 @@ const mount = (learning: Run["learning"], link = true) => {
   act(() => root!.render(createElement(LearningChips, { run: run(learning), link })));
   return host;
 };
-const SAID = "Not kept: it's about one shop's returns portal, and a skill it wrote is lost with it.";
+const SAID = "Not kept: the checks refused the workflow it compiled.";
 
 describe("LearningChips, a run that kept nothing", () => {
-  it("turned away by the grader: a Kept nothing chip with the server's sentence, linking to the Learning tab", () => {
-    const host = mount({ at: "2026-11-03T16:52:09Z", state: "dropped", reason: "grader", detail: SAID });
+  it("refused by the checks: a Kept nothing chip with the server's sentence, linking to the Learning tab", () => {
+    const host = mount({ at: "2026-11-03T16:52:09Z", state: "dropped", reason: "checker", detail: SAID });
     expect(host.textContent).toContain("Kept nothing");
     expect(host.textContent).toContain(SAID);
     const link = [...host.querySelectorAll("a")].find((a) => a.textContent?.includes("Kept nothing"));
@@ -44,7 +44,7 @@ describe("LearningChips, a run that kept nothing", () => {
   });
 
   it("in a row, which is itself a link, the chip is text that says the sentence in its title", () => {
-    const host = mount({ at: "2026-11-03T16:52:09Z", state: "dropped", reason: "grader", detail: SAID }, false);
+    const host = mount({ at: "2026-11-03T16:52:09Z", state: "dropped", reason: "checker", detail: SAID }, false);
     expect(host.querySelector("a")).toBeNull();
     expect(host.querySelector(`[title="Kept nothing: ${SAID}"]`)?.textContent).toContain("Kept nothing");
   });

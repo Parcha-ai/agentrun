@@ -68,8 +68,8 @@ function demoFixture({ held = false } = {}) {
     if (path.includes('/learning/files/')) return Response.json({ version: 1, root: { kind: 'call', tool: 'mcp:release/release_status' } });
     if (path.endsWith('/learning')) {
       const ready = (counts.get('fixture-on') ?? 0) >= 5;
-      return Response.json({ main: ready ? 'promoted' : 'seed', skills: [{ status: 'active', run: 'teach', name: 'release-brief' }],
-        workflows: ready ? [{ name: 'release-brief', file: 'workflows/release-brief/workflow.json', status: held ? 'pending' : 'active', run: 'practice' }] : [] });
+      return Response.json({ main: ready ? 'promoted' : 'seed', corrections: '',
+        workflows: ready ? [{ name: 'release-brief', file: 'workflows/release-brief/workflow.json', status: held ? 'pending' : 'checking', run: 'practice' }] : [] });
     }
     throw new Error(`Unexpected ${options?.method}: ${path}`);
   };
@@ -134,7 +134,7 @@ for (const runtime of ['claude', 'codex']) test(`${runtime} example wires native
       uploads.push(options?.body ?? '');
       if (path.endsWith('/agents/fixture')) return Response.json({ definition: { sdk: { runtime: `${runtime === 'claude' ? 'claude-agent' : 'codex'}-sdk` } } });
       if (path.endsWith('/sdk-runs')) return Response.json({ run_id: 'reuse', agent_id: 'fixture', token: 'fixture-scoped', console_url: 'https://console.example/#/runs/reuse',
-        learning: { enabled: true, revision: 'accepted', context: '', skills: [], workflows: [{ name: 'release-brief', description: 'Read and format release data.', workflow: JSON.stringify(workflow) }] } });
+        learning: { enabled: true, revision: 'accepted', context: '', workflows: [{ name: 'release-brief', description: 'Read and format release data.', workflow: JSON.stringify(workflow) }] } });
       if (path.endsWith('/sdk-runs/reuse')) return Response.json({ run_id: 'reuse', state: 'completed', learning: { state: 'dropped' } });
       return Response.json({ accepted: true });
     },

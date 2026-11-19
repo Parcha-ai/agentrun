@@ -7,7 +7,7 @@
 // the computer is the shared machine-host adapter's (./hosted/provider.ts). Every Daytona fact used here is cited in the
 // README's Daytona section.
 import { randomBytes } from "node:crypto";
-import { mountsOf } from "./descriptor.js";
+import { connectOf, mountsOf } from "./descriptor.js";
 import { DAYTONA, DAYTONA_DEFAULT_SNAPSHOT, DAYTONA_GPU, DAYTONA_GPU_REGION, DAYTONA_GPU_SNAPSHOT, type DaytonaGpuSnapshot, daytonaGpuSnapshot } from "./descriptors/daytona.js";
 import { COMPUTER_LABEL } from "./drift.js";
 import { type HostCall, type HostDescriptor, HostError, type HostFacts, type Machine, type MachineHost, type MachineProcess, type MachineRequest } from "./host.js";
@@ -16,7 +16,7 @@ import { HostedProvider, type HostedOptions, type HostedTimeouts, timeoutsOf } f
 import { boundOf, orThrow, pause as sleep } from "./hosted/process.js";
 import { allPages, jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { shellLine } from "./hosted/scripts.js";
-import { connectOf, dateOf, isWhole, sizeRefusals } from "./hosted/values.js";
+import { dateOf, execDesktopRefusal, isWhole, sizeRefusals } from "./hosted/values.js";
 import { MAX_LINE_BYTES } from "./protocol.js";
 import { type ComputerSpec, checkGpu, type Refusal } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, ok, type Result, vendorFail } from "./result.js";
@@ -33,8 +33,11 @@ export type WebSocketFactory = (url: string, init: { headers: Record<string, str
 /** The adapter's bounds, and Daytona's own: the first pause before a retried request (each next one doubles). */
 export type DaytonaTimeouts = HostedTimeouts & { retryMs: number };
 
-/** The Daytona provider's options: the key and Daytona's own settings, then the shared adapter's (HostedOptions). */
-export interface DaytonaProviderOptions extends Omit<HostedOptions, "kind" | "desktop" | "maxLifetimeMs" | "timeouts"> {
+/**
+ * The Daytona provider's options: the key and Daytona's own settings, then the shared adapter's (HostedOptions), kind
+ * among them: a desktop on connect dial alone.
+ */
+export interface DaytonaProviderOptions extends Omit<HostedOptions, "desktop" | "maxLifetimeMs" | "timeouts"> {
 	/** The Daytona API key. The caller passes it; this provider never reads the environment and never puts it in a computer. */
 	apiKey: string;
 	/** Default https://app.daytona.io/api. */
@@ -232,6 +235,8 @@ class DaytonaHost implements MachineHost {
 			maxLifetimeMs: MAX_LIFETIME_MS,
 			arch: options.arch,
 			vendorAgentPorts: [TOOLBOX_PORT],
+			// A snapshot of box/Dockerfile has xfwm4 (box/install.sh's desktop step), for a desktop (connect dial alone).
+			windowManager: true,
 			...(options.connect === "dial" ? { connect: options.connect } : {}),
 		};
 		if (options.connect === "exec") {
@@ -617,7 +622,8 @@ export class DaytonaProvider extends HostedProvider {
 			timeouts = {},
 			...hosted
 		} = options ?? ({} as DaytonaProviderOptions);
-		const via = connectOf(connect, "Daytona");
+		const via = connectOf(DAYTONA, { connect });
+		if (hosted.kind === "desktop" && via === "exec") throw new Error(execDesktopRefusal("Daytona", "a snapshot of box/Dockerfile"));
 		if (typeof apiKey !== "string" || apiKey === "") throw new Error("options.apiKey, the Daytona API key, is required: the provider reads no environment, so the caller passes it");
 		const base = new URL(apiUrl);
 		if (base.protocol !== "https:") throw new Error(`the Daytona API URL must be https, so the key never crosses in the clear: ${base.protocol}`);
@@ -653,6 +659,6 @@ export class DaytonaProvider extends HostedProvider {
 			pollMs,
 			connect: via,
 		});
-		super(host, { ...hosted, kind: "linux", timeouts: hostedTimeouts });
+		super(host, { ...hosted, timeouts: hostedTimeouts });
 	}
 }

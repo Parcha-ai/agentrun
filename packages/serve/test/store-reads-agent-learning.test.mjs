@@ -1,9 +1,8 @@
-// An agent's learning view from the one store (GET /agents/{id}/learning, learning-run.ts ofAgent): each note's runs
-// (given it, read it) and what learning changed (learningImpact), read from its runs' launches (the notes each was
-// given, learningStartOf), their journals (the notes each job read) and their learning ends (when the job answered,
-// what it and looking back cost), never a run's files. The figures are today's rules (learning-run.ts noteRuns,
-// learningImpact, figuresOf): a run that looked back answered when its job did, at its job's cost; one that learns
-// counts its look-back and its grade as learning's own cost.
+// An agent's learning view from the one store (GET /agents/{id}/learning, learning-run.ts ofAgent): what learning changed
+// (learningImpact), read from its runs' launches (the corrections and workflows each started from, learningStartOf), their
+// journals (the learned workflows each claim laid) and their learning ends (when the job answered, what it and looking
+// back cost), never a run's files. The figures are today's rules (learning-run.ts learningImpact, figuresOf): a run that
+// looked back answered when its job did, at its job's cost; one that learns counts its look-back as learning's own cost.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
@@ -18,20 +17,16 @@ const ROOT = 1;
 const iso = (ms) => new Date(ms).toISOString();
 
 /** Run `id` of agent-1, started at `start` (ms), ended `seconds` later at `usd` (with `bound`, stored as the most it can
- *  have cost, a request cut at its hold counted in it). `learning`: its launch's learning start; `read`: the files its job read; `kept`: its kept learning row's proposal. */
-async function run(store, clock, { id, start, seconds, usd, bound = false, learning, read = [], kept }) {
+ *  have cost, a request cut at its hold counted in it). `learning`: its launch's learning start, its claim laying the
+ *  learned workflows it names (KINDS.learningLaid); `kept`: its kept learning row's proposal. */
+async function run(store, clock, { id, start, seconds, usd, bound = false, learning, kept }) {
   clock.now = start;
   await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Go." }, title: id, place: { mode: "runner" }, ...(learning ? { learning } : {}) } });
   const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
-  if (read.length) {
+  if (learning?.workflows?.length) {
     const journal = store.journal(claim);
-    const writes = [{ type: "conversation", value: { id: ROOT } }];
-    for (const [i, file] of read.entries()) {
-      const call = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.assistant", model: [{ role: "assistant", stopReason: "toolUse", content: [{ type: "toolCall", id: `c${i}`, name: "read", arguments: { path: `.learning/${file}` } }], timestamp: start + i }] };
-      const result = { id: await journal.mintId(), conversationId: ROOT, kind: "pi.tool-result", model: [{ role: "toolResult", toolCallId: `c${i}`, toolName: "read", content: [{ type: "text", text: "the note" }], isError: false, timestamp: start + i }] };
-      writes.push({ type: "entry", value: call }, { type: "entry", value: result });
-    }
-    await commitWrites(journal, writes, context);
+    const laid = { id: await journal.mintId(), conversationId: ROOT, kind: "agentrun.learning.laid", data: { workflows: learning.workflows } };
+    await commitWrites(journal, [{ type: "conversation", value: { id: ROOT } }, { type: "entry", value: laid }], context);
   }
   const also = kept ? [{ table: "learning_proposals", row: { turn: {}, proposal: kept } }] : [];
   await store.runs.update(claim, { state: "ended", costUsd: usd, ...(bound ? { costUpperBound: true } : {}), endedAt: start + seconds * 1000 }, { also });
@@ -39,58 +34,53 @@ async function run(store, clock, { id, start, seconds, usd, bound = false, learn
 
 /** A drop with nothing to keep, after a look back: the job answered `seconds` in at `job`, looking back cost `back`. */
 const lookedBack = (start, seconds, job, back) => ({ state: "dropped", reason: "empty", detail: "Nothing to keep.", answered_at: iso(start + seconds * 1000), job_cost_usd: job, look_back_usd: back });
+/** A learning start from main's commit, laying the learned workflow `answer`. */
+const FROM_WORKFLOW = { seed: "a".repeat(40), section: "", workflows: ["answer"] };
 
-test("an agent's notes' runs and its impact from the store: given and read by note, and before and after its first note", async (t) => {
+test("an agent's impact from the store: before and after its first run started from a learned workflow", async (t) => {
   const { store, clock } = await storeOn(t);
   await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
-  // Two runs before any note (learning not started), then two that started from notes and looked back.
+  // Two runs before anything learned (learning not started), then two that started from a learned workflow and looked back.
   await run(store, clock, { id: "r1", start: T0, seconds: 10, usd: 0.1 });
   await run(store, clock, { id: "r2", start: T0 + 100_000, seconds: 20, usd: 0.3 });
-  const both = { given: [{ file: "a.md", name: "Alpha" }, { file: "b.md", name: "Beta" }], seed: "a".repeat(40), section: "# Learned\n", seedNotes: 2 };
-  await run(store, clock, { id: "r3", start: T0 + 1_000_000, seconds: 45, usd: 0.25, learning: both, read: ["a.md"], kept: lookedBack(T0 + 1_000_000, 30, 0.2, 0.05) });
-  const one = { given: [{ file: "a.md", name: "Alpha" }], seed: "a".repeat(40), section: "# Learned\n", seedNotes: 2 };
-  await run(store, clock, { id: "r4", start: T0 + 2_000_000, seconds: 70, usd: 0.47, learning: one, kept: lookedBack(T0 + 2_000_000, 50, 0.4, 0.07) });
+  await run(store, clock, { id: "r3", start: T0 + 1_000_000, seconds: 45, usd: 0.25, learning: FROM_WORKFLOW, kept: lookedBack(T0 + 1_000_000, 30, 0.2, 0.05) });
+  await run(store, clock, { id: "r4", start: T0 + 2_000_000, seconds: 70, usd: 0.47, learning: FROM_WORKFLOW, kept: lookedBack(T0 + 2_000_000, 50, 0.4, 0.07) });
 
   const view = await agentLearningOverStore(store, "agent-1");
-  assert.deepEqual(Object.fromEntries(view.notes), { "a.md": { given: 2, read: 1 }, "b.md": { given: 1, read: 0 } }, "each note: the runs given it and the runs that read it");
   assert.deepEqual(view.impact, {
-    // Before: their rows' end and cost; no learning of their own.
-    before: { runs: 2, median_duration_s: 15, median_cost_usd: 0.2, cost_runs: 2, median_learning_usd: null },
-    // After: to their job's answer at their job's cost; learning's own cost their look-back and their grade (none graded: 0).
-    after: { runs: 2, median_duration_s: 40, median_cost_usd: 0.3, cost_runs: 2, median_learning_usd: 0.06 },
+    // Before: to their rows' end. After: to their job's answer. What a run costs, learning included, is the cost read's
+    // (its takeover's before and after, its bill), never a median here.
+    before: { runs: 2, median_duration_s: 15 },
+    after: { runs: 2, median_duration_s: 40 },
   });
   assert.deepEqual(view.counts, { merged: 0, dropped: { empty: 2 }, in_progress: 0 }, "its counts, as before");
 });
 
-test("a run whose stored cost is only the most it can have cost counts in the impact's runs and durations, never in its costs: no median_cost_usd or cost_runs reads a bound as spend", async (t) => {
+test("a run whose stored cost is only the most it can have cost counts in the impact's runs and durations", async (t) => {
   const { store, clock } = await storeOn(t);
   await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
   await run(store, clock, { id: "r1", start: T0, seconds: 10, usd: 0.1 });
   await run(store, clock, { id: "r2", start: T0 + 100_000, seconds: 20, usd: 0.3 });
-  // A run before any note that a crash cut mid-request: its stored $0.9 counts that request at its hold, a ceiling.
+  // A run before anything learned that a crash cut mid-request: its stored $0.9 counts that request at its hold, a ceiling.
   await run(store, clock, { id: "r0", start: T0 + 200_000, seconds: 30, usd: 0.9, bound: true });
-  const both = { given: [{ file: "a.md", name: "Alpha" }, { file: "b.md", name: "Beta" }], seed: "a".repeat(40), section: "# Learned\n", seedNotes: 2 };
-  await run(store, clock, { id: "r3", start: T0 + 1_000_000, seconds: 45, usd: 0.25, learning: both, read: ["a.md"], kept: lookedBack(T0 + 1_000_000, 30, 0.2, 0.05) });
-  const one = { given: [{ file: "a.md", name: "Alpha" }], seed: "a".repeat(40), section: "# Learned\n", seedNotes: 2 };
-  await run(store, clock, { id: "r4", start: T0 + 2_000_000, seconds: 70, usd: 0.47, learning: one, kept: lookedBack(T0 + 2_000_000, 50, 0.4, 0.07) });
+  await run(store, clock, { id: "r3", start: T0 + 1_000_000, seconds: 45, usd: 0.25, learning: FROM_WORKFLOW, kept: lookedBack(T0 + 1_000_000, 30, 0.2, 0.05) });
+  await run(store, clock, { id: "r4", start: T0 + 2_000_000, seconds: 70, usd: 0.47, learning: FROM_WORKFLOW, kept: lookedBack(T0 + 2_000_000, 50, 0.4, 0.07) });
 
   const { impact } = await agentLearningOverStore(store, "agent-1");
-  assert.deepEqual(impact?.before, { runs: 3, median_duration_s: 20, median_cost_usd: 0.2, cost_runs: 2, median_learning_usd: null }, `the bounded run is a run of unknown cost: ${JSON.stringify(impact)}`);
+  assert.deepEqual(impact?.before, { runs: 3, median_duration_s: 20 }, `the bounded run is a run, its time as any other's: ${JSON.stringify(impact)}`);
 });
 
-test("a run started from a seed of notes counts on the after side by the seed's notes (main's seed_notes), though its budget gave it none", async (t) => {
+test("a run started from its owner's corrections counts on the after side by its # Learned section, though it laid no workflow", async (t) => {
   const { store, clock } = await storeOn(t);
   await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
   await run(store, clock, { id: "r1", start: T0, seconds: 10, usd: 0.1 });
   await run(store, clock, { id: "r2", start: T0 + 100_000, seconds: 20, usd: 0.3 });
-  // The seed held three notes; its budget laid one in the first run's prompt, and none in the second's.
-  const some = { given: [{ file: "a.md", name: "Alpha" }], seed: "a".repeat(40), section: "# Learned\n", seedNotes: 3 };
-  await run(store, clock, { id: "r3", start: T0 + 1_000_000, seconds: 45, usd: 0.25, learning: some, kept: lookedBack(T0 + 1_000_000, 30, 0.2, 0.05) });
-  const none = { given: [], seed: "a".repeat(40), section: "", seedNotes: 3 };
-  await run(store, clock, { id: "r4", start: T0 + 2_000_000, seconds: 70, usd: 0.47, learning: none, kept: lookedBack(T0 + 2_000_000, 50, 0.4, 0.07) });
+  const corrected = { seed: "a".repeat(40), section: "# Learned\n- Answer in one line.\n" };
+  await run(store, clock, { id: "r3", start: T0 + 1_000_000, seconds: 45, usd: 0.25, learning: corrected, kept: lookedBack(T0 + 1_000_000, 30, 0.2, 0.05) });
+  await run(store, clock, { id: "r4", start: T0 + 2_000_000, seconds: 70, usd: 0.47, learning: corrected, kept: lookedBack(T0 + 2_000_000, 50, 0.4, 0.07) });
 
   const { impact } = await agentLearningOverStore(store, "agent-1");
-  assert.equal(impact?.after.runs, 2, `both started from the seed's three notes: ${JSON.stringify(impact)}`);
+  assert.equal(impact?.after.runs, 2, `both started from the owner's correction: ${JSON.stringify(impact)}`);
   assert.equal(impact?.before.runs, 2);
 });
 
@@ -99,14 +89,14 @@ test("runs that only use what the agent learned (learning: use, no proposal) cou
   await store.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: true } });
   await run(store, clock, { id: "r1", start: T0, seconds: 10, usd: 0.1 });
   await run(store, clock, { id: "r2", start: T0 + 100_000, seconds: 20, usd: 0.3 });
-  // Two runs that used the seed's notes; a `use` run keeps no proposal.
-  const used = { given: [{ file: "a.md", name: "Alpha" }], seed: "a".repeat(40), section: "# Learned\n", seedNotes: 1, use: true };
+  // Two runs that used the learned workflow; a `use` run keeps no proposal.
+  const used = { ...FROM_WORKFLOW, use: true };
   await run(store, clock, { id: "r3", start: T0 + 1_000_000, seconds: 40, usd: 0.2, learning: used });
   await run(store, clock, { id: "r4", start: T0 + 2_000_000, seconds: 60, usd: 0.4, learning: used });
 
   const { impact } = await agentLearningOverStore(store, "agent-1");
   assert.deepEqual(impact, {
-    before: { runs: 2, median_duration_s: 15, median_cost_usd: 0.2, cost_runs: 2, median_learning_usd: null },
-    after: { runs: 2, median_duration_s: 50, median_cost_usd: 0.3, cost_runs: 2, median_learning_usd: 0 },
+    before: { runs: 2, median_duration_s: 15 },
+    after: { runs: 2, median_duration_s: 50 },
   });
 });

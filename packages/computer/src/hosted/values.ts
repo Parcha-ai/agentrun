@@ -9,14 +9,9 @@ export const DOMAIN = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z
 
 export const isWhole =(value: unknown): value is number => typeof value === "number" && Number.isSafeInteger(value);
 
-/**
- * How a provider that can do both reaches its machines (its descriptor's connect setting): exec (the default), a bridge
- * through the vendor's exec for each connection; dial, the machine's computerd dials the server (HostFacts.connect).
- */
-export function connectOf(value: unknown, label: string): "exec" | "dial" {
-	if (value === undefined || value === "exec" || value === "dial") return value ?? "exec";
-	throw new Error(`connect is how ${label} reaches its machines, "exec" (the default) or "dial", not ${JSON.stringify(value)}`);
-}
+/** Why a provider of both makes no desktop on exec (label: "Modal"): its desktop is the box image's, started over the dial. */
+export const execDesktopRefusal = (label: string, image: string) =>
+	`a ${label} desktop is made on connect "dial" alone, from ${image}, its X server started over the socket its machine dials: connect "exec" makes kind linux`;
 
 /** A vendor whose computer has its image's size: a spec's cpus or memoryMb, refused in words (computer: "an E2B computer"). */
 export function sizeRefusals(spec: Partial<ComputerSpec>, computer: string, image: string): Refusal[] {

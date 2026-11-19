@@ -4,11 +4,13 @@
 // what it lacks is said as steps, and AgentRun runs on this machine meanwhile. The entry added is recorded in
 // ~/.agentrun/tailscale.json, so `off` removes that entry and no other serve setting.
 //
-// Run as a script, it is the installer's step where AgentRun runs in the background (no service manager):
-//   node tailscale.mjs address PORT AGAIN      prints the https address to start the server with, or nothing
-//   node tailscale.mjs serve PORT AGAIN URL    serves the loopback PORT at URL, the address printed, and says where
-//   node tailscale.mjs off                     removes the entry it added
-import { spawnSync } from "node:child_process";
+// Run as a script, it is the installer's step where AgentRun runs in the background (no service manager), and its --vps
+// step, run in the server's image with this machine's tailscale and its socket mounted:
+//   node tailscale.mjs address PORT AGAIN          prints the https address to start the server with, or nothing
+//   node tailscale.mjs serve PORT AGAIN URL [LOG]  serves the loopback PORT at URL, the address printed, and says where;
+//                                                  LOG is where the setup code's line is (default ~/.agentrun's log)
+//   node tailscale.mjs off                         removes the entry it added
+import { execFile, spawnSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -24,8 +26,9 @@ const DENIED = /Access denied/i;
 const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule serve proxies to the server on this machine
 export const targetOf = (port) => `http://${LOOPBACK}:${port}`;
 
-/** Tailscale on this machine, driven through `exec` (spawnSync's shape); `again` is the command that runs this step again. */
-export function tailnetOf({ platform = process.platform, root = join(homedir(), ".agentrun"), uid = process.getuid?.(), exec, say, fail, again }) {
+/** Tailscale on this machine, driven through `exec` (spawnSync's shape); `again` is the command that runs this step again;
+ *  `log`, where the server's setup code line is. */
+export function tailnetOf({ platform = process.platform, root = join(homedir(), ".agentrun"), uid = process.getuid?.(), exec, say, fail, again, log = join(root, "logs", "agentrun.log") }) {
   // The Mac app's CLI is in the app, and on PATH only when someone put it there.
   let bin;
   const run = (args, options) => {
@@ -116,7 +119,7 @@ export function tailnetOf({ platform = process.platform, root = join(homedir(), 
       if (handlerOf(config ?? {}, host)?.Proxy !== target) throw fail(1, `tailscale serve did not serve ${target} at https://${host}/ (tailscale serve status shows what it serves).`);
       writeFileSync(state, `${JSON.stringify({ url: `https://${host}/`, proxy: target })}\n`, { mode: 0o600 });
       say(`AgentRun is on your tailnet at https://${host}/ (tailscale serve): only your devices on your tailnet open it; nothing is on the public internet.`);
-      say(`It asks for a setup code on the first visit: the newest "Set up this server" line in ${join(root, "logs", "agentrun.log")} has the link.`);
+      say(`It asks for a setup code on the first visit: the newest "Set up this server" line in ${log} has the link.`);
       say(PRICE);
       return true;
     },
@@ -147,13 +150,59 @@ export function tailnetOf({ platform = process.platform, root = join(homedir(), 
   };
 }
 
-/** The installer's step for an AgentRun in the background. Exit 1 on a refusal, said on stderr. */
-function script([verb, port, again, url]) {
+/** How long a start waits for `tailscale status --json` before it says nothing about Tailscale. */
+export const HINT_TIMEOUT_MS = 2_000;
+
+/** This machine's name on its tailnet (`Self.DNSName`, without its last dot), read with `tailscale status --json`, the
+ *  one Tailscale command a start runs: it changes nothing. Undefined when Tailscale is not on PATH, is not running or
+ *  signed in (BackendState other than Running), names no machine, or does not answer within `timeoutMs`. Never throws. */
+export function tailnetNameOf({ env = process.env, timeoutMs = HINT_TIMEOUT_MS } = {}) {
+  return new Promise((done) => {
+    let child;
+    const timer = setTimeout(() => {
+      child?.kill("SIGKILL");
+      done(undefined);
+    }, timeoutMs);
+    timer.unref();
+    const end = (name) => {
+      clearTimeout(timer);
+      done(name);
+    };
+    try {
+      child = execFile("tailscale", ["status", "--json"], { env, encoding: "utf8", maxBuffer: 4 * 1024 * 1024, timeout: timeoutMs, killSignal: "SIGKILL" }, (error, stdout) => {
+        if (error) return end(undefined);
+        try {
+          const status = JSON.parse(stdout);
+          const name = String(status?.Self?.DNSName ?? "").replace(/\.$/, "").toLowerCase();
+          end(status?.BackendState === "Running" && /^[a-z0-9-]+(\.[a-z0-9-]+)+$/.test(name) ? name : undefined);
+        } catch {
+          end(undefined);
+        }
+      });
+      child.on("error", () => end(undefined));
+      child.unref();
+    } catch {
+      end(undefined);
+    }
+  });
+}
+
+/** What a start on loopback with no public address says when Tailscale runs here: the tailnet address it could have, and
+ *  the two steps to it. `tailscale serve` keeps it on the tailnet; Funnel, which would put it on the internet, is never
+ *  named. The restart names the port, so the serve entry and the server agree after it. */
+export const tailnetHint = (name, port) => [
+  `Tailscale is running here: AgentRun could be at https://${name}/ for your devices on your tailnet, and no one else. To serve it there:`,
+  `  1. tailscale serve --bg ${port}`,
+  `  2. Stop AgentRun and start it again with --port ${port} --public-url https://${name}/ added to its command`,
+].join("\n");
+
+/** The installer's step for an AgentRun in the background or under --vps. Exit 1 on a refusal, said on stderr. */
+function script([verb, port, again, url, log]) {
   const fail = (code, message) => Object.assign(new Error(message), { code });
   // `address` prints the address alone on stdout, for the installer to read; what it says goes to stderr.
   const say = (line) => (verb === "address" ? process.stderr : process.stdout).write(`${line}\n`);
   const exec = (command, args, options = {}) => spawnSync(command, args, { encoding: "utf8", ...options });
-  const tailnet = tailnetOf({ exec, say, fail, again });
+  const tailnet = tailnetOf({ exec, say, fail, again, ...(log ? { log } : {}) });
   try {
     if (verb === "address") {
       const at = tailnet.address(targetOf(port));

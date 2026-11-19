@@ -245,7 +245,7 @@ test("the server's routes: a token's PUT is 403 in the one secret-write refusal 
 
   const refused = await call(server.port, { method: "PUT", path, headers: byToken, body: { hosts: [AS] } });
   assert.equal(refused.status, 403, refused.text);
-  assert.equal(refused.json?.error?.message, SECRET_WRITE_REFUSAL);
+  assert.ok(String(refused.json?.error?.message).startsWith(SECRET_WRITE_REFUSAL));
   assert.deepEqual((await call(server.port, { path, headers: byToken })).json, { hosts: [] }, "nothing saved");
 
   const owner = asOwner(server);

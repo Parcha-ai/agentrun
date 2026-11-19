@@ -7,7 +7,7 @@ import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { ApiError, invalid } from "./errors.js";
 import { appJwt, GITHUB_FIELDS, GITHUB_SCOPE, GITHUB_WEB, githubCall, githubTargetOf, mintInstallationToken } from "./github.js";
 import type { SealedSettingsOverStore } from "./sealed-settings-store.js";
-import { registerSecretWrite } from "./secret-writes.js";
+import { registerSecretPage, registerSecretWrite } from "./secret-writes.js";
 import type { Held } from "./template-github-permissions.js";
 import { isObject, type Json } from "./validate.js";
 
@@ -15,6 +15,7 @@ import { isObject, type Json } from "./validate.js";
 // takes), and disconnecting drops them: each a secret write, from the owner's session alone, whatever its request.
 registerSecretWrite("connectGitHub", () => true);
 registerSecretWrite("disconnectGitHub", () => true);
+registerSecretPage(["connectGitHub", "disconnectGitHub"], "/#/settings/github");
 
 /** What every GitHub App Connect GitHub makes asks of the repositories it is installed on (its manifest's
  *  default_permissions): the least its templates need. Applying a template warns from each installation's real permissions

@@ -27,6 +27,8 @@ import type { Claim } from "./loop-contract.js";
 import { mcpClaim, type McpClaimStep } from "./mcp-claim.js";
 import { registryListing } from "../mcp-pin-first.js";
 import type { GithubAppAccess, GithubTimer } from "./mcp-github.js";
+import { type HeldMcp, type HeldMcpTool, heldOrThrow } from "./held.js";
+import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 
 /** The GitHub App access for a claim (runner/github-app.ts githubAppAccess, tl-triggers'): the server's App, read from
  *  the store with the runner's seal key, bound to the repository the run's launch input names. */
@@ -199,4 +201,70 @@ export async function mcpForClaim(options: McpForClaimOptions): Promise<ClaimMcp
     fresh: () => step.fresh(),
     release: () => held.abort(),
   };
+}
+
+/** A claim's MCP as the runner hands it to the run's own process (held.ts HeldMcp): what the gate reads of each tool,
+ *  read now, and each call made here, its answer and its error cut by `cut` (the runner's redactor) before they cross. */
+export function heldMcpOf(mcp: ClaimMcp, cut: (text: string) => string): HeldMcp {
+  return {
+    tools: mcp.tools.map((tool): HeldMcpTool => {
+      const catalog = mcp.catalogOf(tool.name) ?? tool.name;
+      const declared = mcp.argumentsOf(catalog);
+      const price = mcp.priceOf(catalog);
+      const effect = mcp.effectOf(catalog);
+      return {
+        name: tool.name,
+        description: tool.description,
+        inputSchema: tool.inputSchema,
+        catalog,
+        ...(declared ? { arguments: [...declared] } : {}),
+        ...(price !== undefined ? { price } : {}),
+        ...(effect !== undefined ? { effect } : {}),
+        call: async (args, context) => {
+          try {
+            const answer = await tool.call(args, { ...(context.signal ? { signal: context.signal } : {}), ...(context.callId ? { callId: context.callId } : {}) } as never);
+            return { text: cut(answer.text), ...(answer.isError ? { isError: true as const } : {}) };
+          } catch (error) {
+            throw Object.assign(new Error(cut(error instanceof Error ? error.message : String(error))), { name: error instanceof Error ? error.name : "Error" });
+          }
+        },
+      };
+    }),
+    fresh: () => mcp.fresh(),
+    release: async () => mcp.release(),
+  };
+}
+
+/** The claim's MCP in the run's own process (run-child.ts), from what its runner holds (heldMcpOf). */
+export function claimMcpOfHeld(held: HeldMcp): ClaimMcp {
+  const byWire = new Map(held.tools.map((tool) => [tool.name, tool]));
+  const byCatalog = new Map(held.tools.map((tool) => [tool.catalog, tool]));
+  return {
+    tools: held.tools.map((tool): HostTool => ({
+      name: tool.name,
+      description: tool.description,
+      inputSchema: tool.inputSchema as HostTool["inputSchema"],
+      replay: "never",
+      call: (args, context) => tool.call(args, { ...(context.signal ? { signal: context.signal } : {}), ...(context.callId ? { callId: context.callId } : {}) }),
+    })),
+    catalogOf: (tool) => byWire.get(tool)?.catalog,
+    argumentsOf: (name) => {
+      const declared = byCatalog.get(name)?.arguments;
+      return declared ? new Set(declared) : undefined;
+    },
+    priceOf: (name) => byCatalog.get(name)?.price,
+    effectOf: (name) => byCatalog.get(name)?.effect,
+    fresh: () => held.fresh(),
+    release: () => void held.release().catch(() => undefined),
+  };
+}
+
+/** The claim's MCP where the run is: mcpForClaim with the runner's seal key, else its runner's (held.ts), the gateway's
+ *  record of each call appended to the run's root through this process's own harness. */
+export async function mcpWhereHeld(options: Omit<McpForClaimOptions, "sealKey"> & { readonly sealKey: Buffer | undefined }): Promise<ClaimMcp | undefined> {
+  if (options.sealKey) return mcpForClaim({ ...options, sealKey: options.sealKey });
+  const at = heldOrThrow("a run's MCP");
+  const appendRoot = (entry: unknown) => options.harness.commit((async (tx: { appendEntry(conversation: number, entry: unknown): Promise<unknown> }) => void (await tx.appendEntry(ROOT_CONVERSATION_ID, entry))) as never, BACKGROUND_CONTEXT) as Promise<void>;
+  const given = await at.mcp({ appendRoot });
+  return given ? claimMcpOfHeld(given) : undefined;
 }

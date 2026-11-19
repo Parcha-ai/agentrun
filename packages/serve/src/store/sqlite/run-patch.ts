@@ -13,11 +13,6 @@ import { writeLaunch } from "./run-launch.js";
  *  list of runs names. */
 export const NOT_A_LEARNING_RUN = "id NOT IN (SELECT learning_run_id FROM learning_proposals WHERE learning_run_id IS NOT NULL)";
 
-/** A learning run's launch: harness "learning", its input the run that learned (and the round it grades, past the first),
- *  where it runs (on the runner, no box: its only writes are the learning folder's one script), `model`, the grade model
- *  when one is named (gradeModelOf; none: the agent's own grades it, as main's), and `max_cost_usd`, what the run's cap
- *  left for its grade (`capUsd`: a figure that is not one is no room, $0, never no cap; none for an uncapped run). */
-export const learningLaunchOf = (runId: string, model?: string, round = 1, capUsd?: number) => ({ harness: "learning", input: { runId, ...(round > 1 ? { round } : {}) }, title: `Learning from ${runId}`, place: { mode: "runner" }, ...(model ? { model } : {}), ...(capUsd !== undefined ? { max_cost_usd: Number.isFinite(capUsd) && capUsd > 0 ? capUsd : 0 } : {}) });
 
 /** The lock a write of a run's sign_in_handed and a sign-in's forget both take (Dialect.lockKey): the forget's check of
  *  the running runs' hashes and a launch's write of them are serialized, as SQLite's one writer serializes them. */
@@ -105,38 +100,14 @@ export async function applyRunPatch(tx: Pick<SqliteExecutor, "run" | "get">, cla
       case "channel_told":
         await tx.run("INSERT INTO channel_told (channel, run_id, marker, at) VALUES (?, ?, ?, ?) ON CONFLICT DO NOTHING", each.row.channel, claim.runId, each.row.marker, now);
         break;
-      // The run's kept learning of one round, of the run's own agent, naming the learning run the same end queues (wherever
-      // the end lists it); kept once a round (an end replayed after a crash keeps the first).
-      case "learning_proposals": {
-        const queued = also.find((one): one is Extract<AlsoRow, { table: "learning_run" }> => one.table === "learning_run");
+      // The run's kept learning of one round, of the run's own agent; kept once a round (an end replayed after a crash
+      // keeps the first).
+      case "learning_proposals":
         await tx.run(
-          "INSERT INTO learning_proposals (run_id, round, agent_id, turn, proposal, learning_run_id, created_at) SELECT id, ?, agent_id, ?, ?, ?, ? FROM runs WHERE id = ? ON CONFLICT (run_id, round) DO NOTHING",
-          each.row.round ?? 1, JSON.stringify(each.row.turn ?? null), JSON.stringify(each.row.proposal ?? null), queued?.row.id ?? null, now, claim.runId,
+          "INSERT INTO learning_proposals (run_id, round, agent_id, turn, proposal, created_at) SELECT id, ?, agent_id, ?, ?, ? FROM runs WHERE id = ? ON CONFLICT (run_id, round) DO NOTHING",
+          each.row.round ?? 1, JSON.stringify(each.row.turn ?? null), JSON.stringify(each.row.proposal ?? null), now, claim.runId,
         );
         break;
-      }
-      // The learning run is queued after every row of the end (below): only once its kept learning names it.
-      case "learning_run":
-        break;
-    }
-  }
-  // The learning run: queued, of the run's agent and revision, started once (the same id again adds nothing), and only
-  // when the run's kept learning names it. A kept learning is kept once (above): a follow-up's end that keeps another
-  // beside one already kept that names no learning run (dropped: nothing to grade) queues none, so no learning run is
-  // ever left that no kept learning names. Such a run would be no run's grade: every list of runs would show it as the
-  // agent's own run (NOT_A_LEARNING_RUN reads the kept learning), and its spend would be booked on no run.
-  for (const each of also) {
-    if (each.table !== "learning_run") continue;
-    const named = await tx.get("SELECT 1 AS found FROM learning_proposals WHERE run_id = ? AND learning_run_id = ?", claim.runId, each.row.id);
-    if (!named) continue;
-    await tx.run(
-      "INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) SELECT ?, agent_id, revision_id, 'queued', 0, ? FROM runs WHERE id = ? ON CONFLICT (id) DO NOTHING",
-      each.row.id, now, claim.runId,
-    );
-    // Its launch row, with it: harness "learning" (the runner's loop factory picks the learning loop by it), its input
-    // the run that learned. Written once, as the run is.
-    if (!(await tx.get("SELECT 1 AS found FROM run_launch WHERE run_id = ?", each.row.id))) {
-      await writeLaunch(tx, each.row.id, { body: learningLaunchOf(claim.runId, each.row.model, each.row.round, each.row.capUsd) }, now);
     }
   }
   return runOf(row);

@@ -4,7 +4,7 @@
 import type { Context } from "@earendil-works/chord/context";
 import { type Meters, meterFiguresFrom, spentFrom } from "../cap.js";
 import type { Store } from "../store/store.js";
-import { bookedListSpend, bookedSpend, cliModelWorked, costIsBooked } from "../runner/metrics.js";
+import { bookedListSpend, bookedSpend, cliModelWorked, type CostBasis, costBasisOf, costIsBooked } from "../runner/metrics.js";
 import { isCliRecord, runEntries, withPaidCosts } from "./journal.js";
 
 /** A CLI run whose model answered or called a tool with no model request booked (metrics.ts cliModelWorked): what it
@@ -13,7 +13,19 @@ const unbookedCli = (entries: Parameters<typeof cliModelWorked>[0]): boolean => 
 
 /** What a run has spent, as the cap reads it, from the one store's journal: its model requests and its paid tool calls. */
 export async function spentOverStore(store: Store, runId: string, context: Context): Promise<number | null> {
+  return spentOf(await runEntries(store, runId, context));
+}
+
+/** What a run has spent (spentOverStore) and how its model requests were priced so far (metrics.ts costBasisOf), from one
+ *  read of its journal; `basis` undefined while it booked no model request. */
+export async function spendOverStore(store: Store, runId: string, context: Context): Promise<{ usd: number | null; basis: CostBasis | undefined }> {
   const entries = await runEntries(store, runId, context);
+  const model = bookedSpend(entries, "model");
+  return { usd: spentOf(entries), basis: model.requests > 0 ? costBasisOf(model) : undefined };
+}
+
+/** spentOverStore over a run's journal `entries`. */
+function spentOf(entries: Awaited<ReturnType<typeof runEntries>>): number | null {
   // A run whose record carries no cost of its own (a CLI harness's, a workflow's) reads what its sessions booked for the
   // requests that answered (metrics.ts bookedListSpend), its record's answers reading $0: 0 before any request, an
   // unknown booked spend unknown (null). A request still out is held, not spent: its hold never shows as spend.

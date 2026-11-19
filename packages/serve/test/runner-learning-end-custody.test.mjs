@@ -1,12 +1,12 @@
-// The runner's learning end never learns what a run was handed of its agent's sign-in (runner/learning-end.ts, the
-// server's learning-run.ts refused(run) moved): a run marked as handed its pointer (its row's sign_in_handed, the runner's
-// bind at its claim), whose user words, transcript and end-of-run answer all quote that pointer, ends and learns
-// through a real runner, its learning run graded and merged on the same runner. Neither the learning folder (every file,
-// its snapshot and its diffs) nor the run's kept learning (learning_proposals: its turn and its proposal) holds the
-// pointer, plain, JSON-escaped, URL-encoded or a slice of it. A run whose mark can't be read back (a pointer that no
-// longer opens here) learns nothing: its learning is dropped saying why, and no learning run is queued. Fail closed:
-// never a check over a shorter list. A note that writes the pointer's identifier uppercased and its dashes dropped is
-// refused the same: nothing of it, however written, reaches the folder or the kept learning.
+// The runner's learning end never learns what a run was handed of its agent's sign-in (runner/learning-end.ts
+// learningEndOfRun's `refuse`): a run marked as handed its pointer (its row's sign_in_handed, the runner's bind at its
+// claim), whose input, transcript, owner's correction and compile drafts all quote that pointer, ends and learns through
+// a real runner, its end committing on the same runner. Neither the learning folder (every file, its snapshot) nor the
+// run's kept learning (learning_proposals) holds the pointer, plain, JSON-escaped, URL-encoded or a slice of it; the clean
+// draft the compile turn writes after its leaky one is still committed. A run whose mark can't be read back (a pointer
+// that no longer opens here) learns nothing: its learning is dropped saying why, and nothing is merged. Fail closed: never
+// a check over a shorter list. A draft and a correction that write the pointer's identifier uppercased and its dashes
+// dropped are refused the same: nothing of it, however written, reaches the folder or the kept learning.
 import assert from "node:assert/strict";
 import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
@@ -17,10 +17,11 @@ import { after, test } from "node:test";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
+import { mergesOf, repoOf } from "./learn-support.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
-const { learningLoopFactory } = await import("../dist/runner/learning-factory.js");
 const { learningEndOfRun } = await import("../dist/runner/learning-end.js");
+const { sendCommand } = await import("../dist/runner/commands.js");
 const { learningFolderOf, seedOf } = await import("../dist/learning.js");
 const { pointerHash, saveSignIn, signInsOverStore } = await import("../dist/sign-ins-store.js");
 const { agentLearningFolder } = await import("../dist/workspace/index.js");
@@ -36,18 +37,21 @@ const POINTER = `ctx/${randomUUID()}`;
 /** Every form of the pointer the scan looks for: as written, JSON-escaped, URL-encoded, and a slice of it. */
 const FORMS = [...new Set([POINTER, JSON.stringify(POINTER).slice(1, -1), encodeURIComponent(POINTER), POINTER.slice(6, 26)])];
 const holds = (text) => FORMS.filter((form) => text.includes(form));
-
-/** The end-of-run turn's answer: one note that quotes the pointer, and one that doesn't. */
-const LEAKY = `---\nname: Session to reuse\ndescription: Open the browser on the saved session\ntype: reference\n---\nOpen the browser on session ${POINTER} before anything else.\n`;
-const CLEAN = "---\nname: Retry slowly\ndescription: Back off between retries\ntype: reference\n---\nWait a little longer after each failed call.\n";
-/** The end-of-run answer with `leaky` and the clean note. */
-const reflected = (leaky) => `\`\`\`note session-to-reuse.md\n${leaky}\`\`\`\n\n\`\`\`note retry-slowly.md\n${CLEAN}\`\`\`\n\nReflected.`;
-/** The pointer's identifier as a note may write it to get past a check of its plain forms: uppercased, no dashes. */
+/** The pointer's identifier as a text may write it to get past a check of its plain forms: uppercased, no dashes. */
 const FOLDED = POINTER.slice(4).replaceAll("-", "").toUpperCase();
 /** Whether `text` holds the pointer's identifier however written: in any case, its separators dropped. */
 const holdsFolded = (text) => text.toLowerCase().replace(/[-_:.]/g, "").includes(FOLDED.toLowerCase());
-/** The grader keeps every item it is shown. */
-const KEEP = JSON.stringify({ merge: true, reason: "Worth keeping.", items: [{ file: "session-to-reuse.md", decision: "keep", general: true, why: "useful" }, { file: "retry-slowly.md", decision: "keep", general: true, why: "useful" }] });
+
+/** A compile draft of workflow `answer` whose README description is `description` (the agent's one tool is `read`). */
+const draft = (description) => `\`\`\`\`workflow answer\n---\ndescription: ${description}\nexample: {"content":"What is six times seven?"}\n---\n${JSON.stringify({
+  v: 2, name: "answer",
+  schemas: { In: { type: "object", properties: { content: { type: "string" } }, required: ["content"] }, Answer: { type: "object", properties: { answer: { type: "number" }, confidence: { type: "number" } }, required: ["answer", "confidence"] } },
+  input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" },
+  root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question.", out: "Answer", as: "answer" }] },
+})}\n\`\`\`\``;
+const CLEAN = draft("Answers a question as a number; use when asked");
+/** The owner's correction and the first draft's description, quoting `pointer` as written. */
+const wordsOf = (pointer) => ({ feedback: `Open the browser on session ${pointer} before anything else.`, leaky: draft(`Opens session ${pointer} then answers; use when asked`) });
 
 /** Writes run `runId`'s sign_in_handed as `mark` (JSON), on a connection of its own (no writer writes a malformed mark, so
  *  runs.update can't). The runner's store holds its write lock in this process (a claim poll, a renewal: a transaction its
@@ -71,14 +75,13 @@ async function writeMark(file, runId, mark) {
   }
 }
 
-/** A store in a directory of its own; agent-1 learns and has a saved Browserbase sign-in; run-1 starts from its seed on
- *  a Browserbase plane, the person's words quoting the pointer. The runner runs run-1 on the adapter loop (bound to the
- *  pointer whose hash is `handed` at its claim, as the runner's bind writes it; or, with `mark`, its row's
- *  sign_in_handed set to that value as written, which no writer writes) with the learning end over the store's
- *  sign-ins (and `stored`, the server's sealed secrets as the learning end reads them, when given), and any learning
- *  run it queues on the learning loop, whose grader keeps everything. `leaky`: the note the end-of-run answer quotes the
- *  pointer in. */
-async function world(t, { handed, mark, leaky = LEAKY, stored }) {
+/** A store in a directory of its own; agent-1 learns, due to compile at every run, and has a saved Browserbase sign-in;
+ *  run-1 starts from its seed on a Browserbase plane, its input quoting the pointer, its owner's feedback (queued before
+ *  the claim) quoting `pointer`. The runner runs run-1 on the adapter loop (bound to the pointer whose hash is `handed` at
+ *  its claim, as the runner's bind writes it; or, with `mark`, its row's sign_in_handed set to that value as written,
+ *  which no writer writes) with the learning end over the store's sign-ins (and `stored`, the server's sealed secrets as
+ *  the learning end reads them, when given). The compile turn writes a draft quoting `pointer`, then a clean one. */
+async function world(t, { handed, mark, pointer = POINTER, stored }) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-learning-custody-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const runners = [];
@@ -89,16 +92,17 @@ async function world(t, { handed, mark, leaky = LEAKY, stored }) {
     await server.close().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
   });
-  // A notes job (`learning: "notes"`): its run looks back at every end, so its end-of-run answer is read.
-  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: "notes" } });
+  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: { compile_after: 1 } } });
   await saveSignIn(server, KEY, { agentId: "agent-1", provider: "browserbase", pointer: POINTER });
   const seed = await seedOf(dir, "agent-1");
-  const launch = { input: { content: `Log in with the session ${POINTER}.` }, title: "t", place: { mode: "runner" }, plane: { browser: "browserbase" }, learning: { given: [], seed: seed.sha, section: "", seedNotes: 0, notesOnly: true } };
+  const launch = { input: { content: `Log in with the session ${POINTER}.` }, title: "t", place: { mode: "runner" }, plane: { browser: "browserbase" }, learning: { seed: seed.sha, section: "" } };
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
+  const words = wordsOf(pointer);
+  await sendCommand(server, "run-1", { kind: "steer", body: { text: words.feedback } });
 
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
   stores.push(store);
-  const script = piAdapterSpec({ script: [{ say: `Logged in on ${POINTER}.` }, { say: reflected(leaky) }], tools: {}, hooks: quiet });
+  const script = piAdapterSpec({ script: [{ say: `Logged in on ${POINTER}.` }, { say: `Noted: ${pointer}.` }, { say: words.leaky }, { say: CLEAN }], tools: {}, hooks: quiet });
   const spec = async (claim, run) => {
     if (mark === undefined) await store.runs.update(claim, { signInHanded: [handed] });
     else await writeMark(join(dir, "store.sqlite"), claim.runId, mark);
@@ -106,44 +110,24 @@ async function world(t, { handed, mark, leaky = LEAKY, stored }) {
   };
   const signIns = signInsOverStore(store, KEY, { remove: async () => {} });
   const endOfRun = learningEndOfRun(launch, { store, data: dir, env: {}, learningFolder: (agentId) => learningFolderOf(dir, agentId), signIns, ...(stored ? { stored } : {}) });
-  const createLoop = (deps) => {
-    const job = createAdapterLoop(spec)({ ...deps, endOfRun });
-    const learn = learningLoopFactory({ store, data: dir, ask: async () => ({ text: KEEP, usd: 0 }) })(deps);
-    return {
-      start: (claim) => (claim.runId === "run-1" ? job.start(claim) : learn.start(claim)),
-      command: (row) => job.command(row),
-      stop: async (reason) => {
-        await learn.stop?.(reason);
-        return job.stop(reason);
-      },
-    };
-  };
-  runners.push(startRunner({ store, createLoop, name: "runner-a", ...TIMING }));
+  runners.push(startRunner({ store, createLoop: (deps) => createAdapterLoop(spec)({ ...deps, endOfRun }), name: "runner-a", ...TIMING }));
 
-  const until = async (check, what) => {
+  /** Run-1 ended: its kept learning. */
+  const learned = async () => {
     const deadline = Date.now() + WAIT_MS;
     for (;;) {
-      const found = await check();
-      if (found) return found;
-      if (Date.now() > deadline) throw new Error(`not within ${WAIT_MS} ms: ${what}`);
+      const row = await server.runs.get("run-1");
+      if (row.state === "ended" && row.runner === null) break;
+      if (Date.now() > deadline) throw new Error(`not within ${WAIT_MS} ms: run-1 ended`);
       await new Promise((resolve) => setTimeout(resolve, 20));
     }
+    return server.learning.proposal("run-1");
   };
-  /** Run-1 ended, and its learning run too when it queued one: its kept learning. */
-  const learned = async () => {
-    await until(async () => {
-      const row = await server.runs.get("run-1");
-      return row.state === "ended" && row.runner === null;
-    }, "run-1 ended");
-    const kept = await server.learning.proposal("run-1");
-    if (kept?.learningRunId) await until(async () => (await server.runs.get(kept.learningRunId))?.state === "ended", "its learning run ended");
-    return kept;
-  };
-  return { dir, server, learned };
+  return { dir, server, learned, merges: () => mergesOf(repoOf(dir, "agent-1"), "run-1") };
 }
 
-/** Every file of the agent's learning folder but git's own (its working tree, `.agentrun/snapshot.json`, its diffs), by
- *  path, as text. */
+/** Every file of the agent's learning folder but git's own (its working tree, `.agentrun/snapshot.json`), by path, as
+ *  text. */
 function folderFiles(dir) {
   const root = agentLearningFolder(dir, "agent-1");
   const files = {};
@@ -159,25 +143,30 @@ function folderFiles(dir) {
   return files;
 }
 
-test("a run handed its sign-in pointer, quoting it in its words, its transcript and its end-of-run answer, learns nothing that holds it: not in the learning folder, not in its kept learning", { timeout: 120_000 }, async (t) => {
+test("a run handed its sign-in pointer, quoting it in its input, its transcript, its owner's correction and a draft, learns nothing that holds it: its clean draft is committed, the rest refused", { timeout: 120_000 }, async (t) => {
   const w = await world(t, { handed: pointerHash(POINTER) });
   const kept = await w.learned();
   assert.ok(kept, "the run kept its learning");
-  assert.deepEqual(holds(JSON.stringify(kept)), [], `its kept learning (turn and proposal) holds the pointer: ${JSON.stringify(kept).slice(0, 600)}`);
+  assert.deepEqual([kept.proposal?.state, kept.proposal?.workflows], ["merged", [{ file: "workflows/answer/workflow.json", name: "answer" }]], JSON.stringify(kept.proposal));
+  assert.notEqual(kept.proposal.corrections, 1, "the correction quoting the pointer is refused");
+  assert.deepEqual(kept.proposal.compiled?.attempts?.map(({ ok }) => ok), [false, true], "the leaky draft is refused, the clean one passes");
+  assert.equal(w.merges().length, 1, "one merge on main, by the run");
+  assert.deepEqual(holds(JSON.stringify(kept)), [], `its kept learning holds the pointer: ${JSON.stringify(kept).slice(0, 600)}`);
   const files = folderFiles(w.dir);
   assert.ok(Object.keys(files).some((path) => path.endsWith("snapshot.json")), `the folder's snapshot is scanned: ${Object.keys(files).join(", ")}`);
+  assert.ok(Object.keys(files).some((path) => path.endsWith("workflows/answer/workflow.json")), "the clean draft is in the folder");
   for (const [path, text] of Object.entries(files)) assert.deepEqual(holds(text), [], `${path} holds the pointer`);
 });
 
-test("a run whose handed mark can't be read back here learns nothing: its learning is dropped saying why, and no learning run is queued", { timeout: 120_000 }, async (t) => {
+test("a run whose handed mark can't be read back here learns nothing: its learning is dropped saying why, and nothing is merged", { timeout: 120_000 }, async (t) => {
   // Handed a pointer whose hash matches no sign-in this store opens: what it was handed can't be known.
   const w = await world(t, { handed: pointerHash(`ctx/${randomUUID()}`) });
   const kept = await w.learned();
   assert.ok(kept, "the run kept its learning's end");
   assert.equal(kept.proposal?.state, "dropped", JSON.stringify(kept.proposal));
-  assert.equal(kept.proposal?.reason, "propose_failed", JSON.stringify(kept.proposal));
+  assert.equal(kept.proposal?.reason, "reflect_failed", JSON.stringify(kept.proposal));
   assert.match(kept.proposal?.detail ?? "", /sign-in/, "the drop says why: what the run was handed of its sign-in");
-  assert.ok(!kept.learningRunId, "no learning run queued");
+  assert.deepEqual(w.merges(), [], "nothing merged");
   assert.deepEqual(holds(JSON.stringify(kept)), [], "its kept learning holds no pointer");
   for (const [path, text] of Object.entries(folderFiles(w.dir))) assert.deepEqual(holds(text), [], `${path} holds the pointer`);
 });
@@ -185,37 +174,38 @@ test("a run whose handed mark can't be read back here learns nothing: its learni
 // A mark no writer writes (main's handedMark: anything but a non-empty array of SHA-256 hashes) can't say what the run
 // was handed: the run learns nothing, as for a mark that can't be read back.
 for (const [what, markOf] of [["a legacy true", () => true], ["an object", (hash) => ({ hash })], ["the empty array", () => []], ["an array with a non-hash entry", (hash) => [hash, "not a hash"]]]) {
-  test(`a run whose sign_in_handed is ${what} learns nothing: dropped saying why, no learning run, no pointer kept`, { timeout: 120_000 }, async (t) => {
+  test(`a run whose sign_in_handed is ${what} learns nothing: dropped saying why, nothing merged, no pointer kept`, { timeout: 120_000 }, async (t) => {
     const w = await world(t, { mark: markOf(pointerHash(POINTER)) });
     const kept = await w.learned();
     assert.ok(kept, "the run kept its learning's end");
-    assert.deepEqual([kept.proposal?.state, kept.proposal?.reason], ["dropped", "propose_failed"], JSON.stringify(kept.proposal));
+    assert.deepEqual([kept.proposal?.state, kept.proposal?.reason], ["dropped", "reflect_failed"], JSON.stringify(kept.proposal));
     assert.match(kept.proposal?.detail ?? "", /sign-in/, "the drop says why");
-    assert.ok(!kept.learningRunId, "no learning run queued");
+    assert.deepEqual(w.merges(), [], "nothing merged");
     assert.deepEqual(holds(JSON.stringify(kept)), [], "its kept learning holds no pointer");
     for (const [path, text] of Object.entries(folderFiles(w.dir))) assert.deepEqual(holds(text), [], `${path} holds the pointer`);
   });
 }
 
-test("a run handed its sign-in pointer whose note writes it uppercased and without its dashes learns nothing that holds it, however written", { timeout: 120_000 }, async (t) => {
-  const folded = LEAKY.replace(POINTER, FOLDED);
-  assert.ok(!folded.includes(POINTER) && folded.includes(FOLDED), "the note writes the pointer's identifier folded");
-  const w = await world(t, { handed: pointerHash(POINTER), leaky: folded });
+test("a run handed its sign-in pointer whose correction and draft write it uppercased and without its dashes learns nothing that holds it, however written", { timeout: 120_000 }, async (t) => {
+  const words = wordsOf(FOLDED);
+  assert.ok(!words.leaky.includes(POINTER) && words.leaky.includes(FOLDED), "the draft writes the pointer's identifier folded");
+  const w = await world(t, { handed: pointerHash(POINTER), pointer: FOLDED });
   const kept = await w.learned();
   assert.ok(kept, "the run kept its learning");
+  assert.deepEqual(kept.proposal.compiled?.attempts?.map(({ ok }) => ok), [false, true], "the folded draft is refused, the clean one passes");
   assert.equal(holdsFolded(JSON.stringify(kept)), false, `its kept learning holds the pointer: ${JSON.stringify(kept).slice(0, 600)}`);
   const files = folderFiles(w.dir);
   assert.ok(Object.keys(files).some((path) => path.endsWith("snapshot.json")), "the folder's snapshot is scanned");
   for (const [path, text] of Object.entries(files)) assert.equal(holdsFolded(text), false, `${path} holds the pointer`);
 });
 
-test("a run whose server secrets can't be read learns nothing: its learning is dropped saying why, and no learning run is queued", { timeout: 120_000 }, async (t) => {
+test("a run whose server secrets can't be read learns nothing: its learning is dropped saying why, and nothing is merged", { timeout: 120_000 }, async (t) => {
   // Its sign-in reads back; the server's sealed secrets do not (the store's read throws): never a check over a shorter list.
   const w = await world(t, { handed: pointerHash(POINTER), stored: async () => { throw new Error("the store is gone"); } });
   const kept = await w.learned();
   assert.ok(kept, "the run kept its learning's end");
-  assert.deepEqual([kept.proposal?.state, kept.proposal?.reason], ["dropped", "propose_failed"], JSON.stringify(kept.proposal));
+  assert.deepEqual([kept.proposal?.state, kept.proposal?.reason], ["dropped", "reflect_failed"], JSON.stringify(kept.proposal));
   assert.match(kept.proposal?.detail ?? "", /server's secrets/, "the drop says why");
-  assert.ok(!kept.learningRunId, "no learning run queued");
+  assert.deepEqual(w.merges(), [], "nothing merged");
   assert.deepEqual(holds(JSON.stringify(kept)), [], "its kept learning holds no pointer");
 });

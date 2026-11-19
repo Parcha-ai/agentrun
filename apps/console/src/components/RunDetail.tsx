@@ -6,6 +6,7 @@ import { type RunActions, RunHeader } from "@/components/RunHeader";
 import { RunError } from "@/components/RunError";
 import { ArtifactViewer, listedFiles, RunFiles } from "@/components/RunFiles";
 import { RunResult } from "@/components/RunResult";
+import { RunTrace } from "@/components/RunTrace";
 import { NativeRun } from "@/components/NativeRun";
 import { RunLearningResult } from "@/components/RunLearningResult";
 import { keptUntilOf, ScreenPanel, useRunScreen } from "@/components/RunScreen";
@@ -15,7 +16,7 @@ import { RunChanges, useRunChanges } from "@/components/RunChanges";
 import { RunGrade } from "@/components/RunGrade";
 import { RunUsed, useRunLearning } from "@/components/RunUsed";
 import { Timeline, Working } from "@/components/Timeline";
-import { Tabs } from "@/components/ui/tabs";
+import { tabPanelProps, Tabs } from "@/components/ui/tabs";
 import { APPROVAL_ROW, approvalOf } from "@/lib/approval";
 import { askedAt, askOf, computerRefusal } from "@/lib/computerAsk";
 import { runEnded } from "@/lib/format";
@@ -25,7 +26,7 @@ import { isEscalated, type MessageFeatures, type RunView, runState } from "@/lib
 import { cn } from "@/lib/utils";
 import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
 import { latest, NO_ANSWER, pendingQuestion } from "@/lib/viewing";
-import type { ComputerHoldAnswer, Computers, GradeAnswer, GradeBody, HandBackOutcome, Run, RunComputer, RunFile, RunLearningRead, TimelineRow } from "@/lib/v2";
+import type { ComputerHoldAnswer, Computers, GradeAnswer, GradeBody, HandBackOutcome, Run, RunComputer, RunFile, RunLearningRead, RunTrace as RunTraceData, TimelineRow } from "@/lib/v2";
 
 export type RunDetailProps = {
   run: Run;
@@ -75,8 +76,13 @@ export type RunDetailProps = {
   onGrade?: (body: GradeBody) => Promise<GradeAnswer>;
   /** The recorded grader result and provenance, read only when the Learning tab opens. */
   readLearningResult?: () => Promise<RunLearningResultData | null>;
+  /** Reads the run's trace (GET /v2/runs/{id}/trace): the Dev tools tab, offered when given and read only while it is open. */
+  readTrace?: () => Promise<RunTraceData>;
+  /** How the Dev tools tab opens, for a story or a test: its clock (a span still going is drawn to it), the span open and
+   *  the view shown. */
+  traceAt?: { now?: number; open?: string; view?: "calls" | "breakdown" };
 };
-type Tab = "graph" | "report" | "timeline" | "files" | "screen" | "learning";
+type Tab = "graph" | "report" | "timeline" | "trace" | "files" | "screen" | "learning";
 
 /** The message box's words while a tool call waits on an approval: a message declines the call, and the agent reads it. */
 const DECLINES = { label: "Decline and say what to do instead", placeholder: "Tell the agent what to do instead...", does: "Sending it declines the waiting call; the agent reads your message." };
@@ -115,7 +121,7 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
 }
 
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
-export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, outputSchema, readFile, fileUrl, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readLearning, readLearningResult, readComputer, computerEvery, onTakeOver, onHandBack, readComputers, onGrade }: RunDetailProps) {
+export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, outputSchema, readFile, fileUrl, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readLearning, readLearningResult, readComputer, computerEvery, onTakeOver, onHandBack, readComputers, onGrade, readTrace, traceAt }: RunDetailProps) {
   // A run paused at its spend cap takes no message until its cap is raised (409 budget_reached): no composer for it.
   const native = run.native;
   const sdk = backendSdkOf(run);
@@ -160,7 +166,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   const close = () => { reads.cancel(); setOpen(null); };
   // What the run's learning changed: read once, shown under the report and under the timeline's look-back.
   const changes = useRunChanges(run, readLearningDiff);
-  // The run's learning, read once and again when it ends: the learned skills and workflows it used, and its grade with the
+  // The run's learning, read once and again when it ends: the learned workflows it used, and its grade with the
   // round it opened. A grade this page sends is kept beside it from the PUT's answer, so a tab switch, a read still
   // pending or one begun before the grade still shows it.
   const { read: learning, grade: runGrade, graded } = useRunLearning(run, view.final, readLearning);
@@ -227,14 +233,21 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // A story or a deep link can open a file on first render.
   useEffect(() => { if (openFile && readFile) void show(openFile); }, [openFile]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ...(run.learning ? [["learning", "Learning"] as [Tab, string]] : []), ["files", `Files ${listedFiles(files, showHidden).length}`], ...(hasScreen ? [["screen", "Screen"] as [Tab, string]] : [])];
+  // The run moved: its rows as held are another array each time a page added, dropped or changed one (a charge folded
+  // into a call's own row changes it and adds none), so the Dev tools tab reads its trace again by that, never by a count.
+  const moved = useRef({ rows, times: 0 });
+  if (moved.current.rows !== rows) moved.current = { rows, times: moved.current.times + 1 };
+  const tabs: [Tab, string][] = [...(graphView ? [["graph", "Graph"] as [Tab, string]] : []), ["report", "Report"], ["timeline", "Timeline"], ...(readTrace ? [["trace", "Dev tools"] as [Tab, string]] : []), ...(run.learning ? [["learning", "Learning"] as [Tab, string]] : []), ["files", `Files ${listedFiles(files, showHidden).length}`], ...(hasScreen ? [["screen", "Screen"] as [Tab, string]] : [])];
   return (
     // On a short screen (a phone on its side) the page scrolls as a whole, in <main>: the header, the tabs and the composer
     // keep their own heights and the tab body takes what it needs, instead of what is left of 390 px (nothing).
     <div className="flex h-full min-h-0 flex-col short:h-auto">
       <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} />
       <Tabs id="run-views" label="Run views" value={tab} onChange={(value) => setTab(value as Tab)} tabs={tabs.map(([id, label]) => ({ id, label }))} />
-      {tab === "graph" ? <div className="min-h-0 flex-1 short:min-h-96">{graphView}</div> : <div data-scroll-pane className="min-h-0 flex-1 overflow-auto short:flex-none short:overflow-visible">
+      {tab === "graph" ? <div {...tabPanelProps("run-views", tab)} className="min-h-0 flex-1 short:min-h-96">{graphView}</div>
+        // The Dev tools tab is a page of data: it fills the width and scrolls in its own panes.
+        : tab === "trace" && readTrace ? <RunTrace run={run} read={readTrace} version={`${moved.current.times}:${run.status}:${run.ended_at ?? ""}`} live={view.live} panel={tabPanelProps("run-views", tab)} {...traceAt} />
+        : <div {...tabPanelProps("run-views", tab)} data-scroll-pane className="min-h-0 flex-1 overflow-auto short:flex-none short:overflow-visible">
         <div className="mx-auto max-w-4xl space-y-6 px-5 py-8 md:px-8">
           {native && <NativeRun native={native} agentId={run.agent_id} />}
           {run.status === "failed" && run.error && <RunError error={run.error} title={isEscalated(run.status, run.error) ? "The run escalated" : undefined} />}

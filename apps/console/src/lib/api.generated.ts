@@ -37,8 +37,7 @@ export interface components {
       issues: string[];
       capabilities: {
         launch: boolean;
-        notes: boolean;
-        skills: boolean;
+        learning: boolean;
         workflows: false;
         approval: "native" | "unavailable";
         usage: boolean;
@@ -101,6 +100,10 @@ export interface components {
       version: string;
       sha: string | null;
     } | null;
+    run_blockers?: {
+      message: string;
+      fields: components["InputIssue"][];
+    } | null;
     warnings?: components["InputIssue"][];
   };
   AgentCreate: {
@@ -141,7 +144,6 @@ export interface components {
     regions: components["Region"][];
     limits: components["Limits"];
     learning: {
-      grade_model: string | null;
       pending: true;
       approve: boolean;
       approve_needs?: "password";
@@ -220,7 +222,7 @@ export interface components {
       default_permission: "allow" | "ask" | "deny";
       permissions: ("allow" | "ask" | "deny")[];
       ask_needs?: "password";
-      key?: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "openrouter";
+      key?: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "particle" | "openrouter";
     }[];
     workflows?: {
       nodes: string[];
@@ -251,17 +253,31 @@ export interface components {
       condition: string;
       limit: string;
     };
+    run_isolation?: "uid" | "process";
+    switches: Record<string, {
+      on: boolean;
+      value: string | null;
+      allows: string;
+    }>;
   };
   CommitSha: string;
   Cost: {
     usd: number | null;
-    basis: "charge" | "estimate";
+    basis: "charge" | "estimate" | "reported" | "unpriced";
     charge_state?: "held" | "settled" | "released" | null;
     cap_usd?: number | null;
     free?: true;
     so_far_usd?: number;
     unpriced?: number;
     upper_bound?: true;
+    tokens?: {
+      input: number;
+      output: number;
+      cache_read: number;
+      cache_write: number;
+      requests?: number;
+      unmetered?: number;
+    };
     learning_usd?: number | null;
     all_in_usd?: number | null;
     plan?: {
@@ -307,8 +323,7 @@ export interface components {
       issues: string[];
       capabilities: {
         launch: boolean;
-        notes: boolean;
-        skills: boolean;
+        learning: boolean;
         workflows: false;
         approval: "native" | "unavailable";
         usage: boolean;
@@ -448,10 +463,11 @@ export interface components {
       } | undefined;
     };
     approvals?: "ask" | "never";
-    learning?: true | false | "notes" | {
+    learning?: boolean | {
       compile_after?: number;
       agree_min?: number;
       alone_min?: number;
+      agree_on?: string[];
       audit_every?: number;
       audit_every_later?: number;
       audit_later_after?: number;
@@ -482,7 +498,7 @@ export interface components {
       detail: string;
     }[];
   };
-  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "learned_not_active" | "replay_conflict" | "agent_not_external" | "runs_in_flight" | "learning_busy" | "model_key_required";
+  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "slack_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "replay_conflict" | "agent_not_external" | "runs_in_flight" | "learning_busy" | "model_key_required";
   ExternalRef: {
     source: string;
     kind: string;
@@ -569,6 +585,11 @@ export interface components {
       routes: boolean;
       events: ("run.needs_input" | "run.ended" | "trigger.failed")[];
       signing: "standard-webhooks/v1";
+      at_rest: "sealed";
+    };
+    slack?: {
+      routes: boolean;
+      events: ("run.needs_input" | "run.ended" | "trigger.failed")[];
       at_rest: "sealed";
     };
     triggers?: {
@@ -865,36 +886,14 @@ export interface components {
       };
     };
     learning?: {
-      state: "seeded" | "reflecting" | "proposed" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_timeout" | "reflect_failed" | "empty" | "unparsed" | "propose_failed" | "checker" | "grader" | "grade_failed" | "use" | null;
+      state: "seeded" | "reflecting" | "merged" | "dropped";
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
       detail: string | null;
       at: string;
-      given?: {
-        file: string;
-        name: string;
-      }[];
-      read?: {
-        file: string;
-        name: string;
-      }[];
-      learned?: {
-        file: string;
-        name: string;
-        supersedes: string[];
-      }[];
-      skills?: {
-        file: string;
-        name: string;
-        pending?: true;
-      }[];
       workflows?: {
         file: string;
         name: string;
         pending?: true;
-      }[];
-      pending?: {
-        file: string;
-        name: string;
       }[];
     } | null;
     review?: {
@@ -954,6 +953,14 @@ export interface components {
     } | null;
     audit_of?: string | null;
     path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
+    served?: {
+      workflow: string | null;
+      digest: string | null;
+    };
+    handed_back?: {
+      workflow: string | null;
+      digest: string | null;
+    };
   };
   RunCreate: {
     input: Record<string, unknown>;
@@ -1095,35 +1102,13 @@ export interface components {
     effort?: components["Effort"];
     error?: components["RunError"] | null;
     learning?: {
-      state: "seeded" | "reflecting" | "proposed" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_timeout" | "reflect_failed" | "empty" | "unparsed" | "propose_failed" | "checker" | "grader" | "grade_failed" | "use" | null;
+      state: "seeded" | "reflecting" | "merged" | "dropped";
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
       detail: string | null;
-      given?: {
-        file: string;
-        name: string;
-      }[];
-      read?: {
-        file: string;
-        name: string;
-      }[];
-      learned?: {
-        file: string;
-        name: string;
-        supersedes: string[];
-      }[];
-      skills?: {
-        file: string;
-        name: string;
-        pending?: true;
-      }[];
       workflows?: {
         file: string;
         name: string;
         pending?: true;
-      }[];
-      pending?: {
-        file: string;
-        name: string;
       }[];
     } | null;
     review?: {
@@ -1181,6 +1166,14 @@ export interface components {
       id: string;
       firing_key: string;
     } | null;
+    served?: {
+      workflow: string | null;
+      digest: string | null;
+    };
+    handed_back?: {
+      workflow: string | null;
+      digest: string | null;
+    };
   };
   SecretMeta: {
     name: string;
@@ -1293,8 +1286,8 @@ export interface components {
     tool_input?: Record<string, unknown>;
     tool_result_text?: string | null;
     learning?: {
-      state: "seeded" | "reflecting" | "proposed" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_timeout" | "reflect_failed" | "empty" | "unparsed" | "propose_failed" | "checker" | "grader" | "grade_failed" | "use" | null;
+      state: "seeded" | "reflecting" | "merged" | "dropped";
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
       detail: string | null;
     };
   };
@@ -1312,7 +1305,7 @@ export interface components {
     from: components["Timestamp"];
     to: components["Timestamp"];
     currency: "USD";
-    basis: "charge" | "estimate";
+    basis: "charge" | "estimate" | "reported" | "unpriced";
     group_by: "meter" | "agent" | "key" | "day" | "region";
     total_usd: number | null;
     lines: components["UsageLine"][];
@@ -1350,6 +1343,7 @@ export interface operations {
       parameters?: Record<string, unknown>;
       servers?: Record<string, string>;
       grants?: string[];
+      agent_id?: string;
       overrides?: {
         model?: string;
         choice?: string;
@@ -1419,68 +1413,6 @@ export interface operations {
         code: string;
         message: string;
       };
-    };
-  };
-  cancelLearningBatch: {
-    body: never;
-    answer: {
-      id: string;
-      agent_id: string;
-      created_at: string;
-      ended_at: string | null;
-      status: "running" | "completed" | "cancelled" | "stopped";
-      stopped: "cap" | "cost_unknown" | "learning_off" | null;
-      inputs: string[];
-      answer: string;
-      answer_field: string | null;
-      effort: string | null;
-      max_cost_usd: number;
-      total: number;
-      finished: number;
-      right: number;
-      wrong: number;
-      failed: number;
-      spent_usd: number;
-      unknown_cost_rows: number;
-      paths: {
-        agent: number;
-        handed_back: number;
-        workflow: number;
-      };
-      lessons: {
-        notes: string[];
-        skills: string[];
-        workflows: string[];
-      };
-      revisions: {
-        row: number;
-        commit: string | null;
-        workflows: string[];
-      }[];
-      cost_usd: number | null;
-      remaining_usd: number | null;
-      current: number | null;
-      rows: {
-        n: number;
-        state: "pending" | "running" | "done" | "failed";
-        reference: string;
-        run_id?: string;
-        answer?: string | null;
-        right?: boolean;
-        reviewed?: boolean;
-        path?: "agent" | "handed_back" | "workflow";
-        cost_usd?: number | null;
-        learning_usd?: number | null;
-        total_usd?: number | null;
-        learned?: {
-          notes: string[];
-          skills: string[];
-          workflows: string[];
-        };
-        merged?: string | null;
-        error?: string;
-      }[];
-      error?: string;
     };
   };
   cancelRun: {
@@ -1559,8 +1491,7 @@ export interface operations {
         issues: string[];
         capabilities: {
           launch: boolean;
-          notes: boolean;
-          skills: boolean;
+          learning: boolean;
           workflows: false;
           approval: "native" | "unavailable";
           usage: boolean;
@@ -1586,81 +1517,13 @@ export interface operations {
     body: components["RunCreateInline"];
     answer: components["Run"];
   };
-  createLearningBatch: {
-    body: {
-      inputs: string[];
-      answer: string;
-      rows: Record<string, string>[];
-      max_cost_usd: number;
-      answer_field?: string;
-      effort?: string;
-    };
-    answer: {
-      id: string;
-      agent_id: string;
-      created_at: string;
-      ended_at: string | null;
-      status: "running" | "completed" | "cancelled" | "stopped";
-      stopped: "cap" | "cost_unknown" | "learning_off" | null;
-      inputs: string[];
-      answer: string;
-      answer_field: string | null;
-      effort: string | null;
-      max_cost_usd: number;
-      total: number;
-      finished: number;
-      right: number;
-      wrong: number;
-      failed: number;
-      spent_usd: number;
-      unknown_cost_rows: number;
-      paths: {
-        agent: number;
-        handed_back: number;
-        workflow: number;
-      };
-      lessons: {
-        notes: string[];
-        skills: string[];
-        workflows: string[];
-      };
-      revisions: {
-        row: number;
-        commit: string | null;
-        workflows: string[];
-      }[];
-      cost_usd: number | null;
-      remaining_usd: number | null;
-      current: number | null;
-      rows: {
-        n: number;
-        state: "pending" | "running" | "done" | "failed";
-        reference: string;
-        run_id?: string;
-        answer?: string | null;
-        right?: boolean;
-        reviewed?: boolean;
-        path?: "agent" | "handed_back" | "workflow";
-        cost_usd?: number | null;
-        learning_usd?: number | null;
-        total_usd?: number | null;
-        learned?: {
-          notes: string[];
-          skills: string[];
-          workflows: string[];
-        };
-        merged?: string | null;
-        error?: string;
-      }[];
-      error?: string;
-    };
-  };
   createPairing: {
     body: never;
     answer: {
       id: string;
       code: string;
       expires_at: string;
+      runs_refused: string | null;
     };
   };
   createQuote: {
@@ -2034,6 +1897,31 @@ export interface operations {
       };
     };
   };
+  deleteModelGateway: {
+    body: never;
+    answer: {
+      source: "env" | "console" | null;
+      base_url: string | null;
+      ids: "as_named" | "bare";
+      models: {
+        default: string | null;
+        fast: string | null;
+        strong: string | null;
+      };
+      set_at_start: string[];
+      secret: {
+        name: string;
+        set: boolean;
+        source: "env" | "console" | "sign-in" | null;
+        changed_at: string | null;
+      };
+      problem: string | null;
+    };
+  };
+  deleteSlack: {
+    body: never;
+    answer: never;
+  };
   deleteTemplate: {
     body: never;
     answer: never;
@@ -2104,8 +1992,7 @@ export interface operations {
         issues: string[];
         capabilities: {
           launch: boolean;
-          notes: boolean;
-          skills: boolean;
+          learning: boolean;
           workflows: false;
           approval: "native" | "unavailable";
           usage: boolean;
@@ -2147,8 +2034,7 @@ export interface operations {
         issues: string[];
         capabilities: {
           launch: boolean;
-          notes: boolean;
-          skills: boolean;
+          learning: boolean;
           workflows: false;
           approval: "native" | "unavailable";
           usage: boolean;
@@ -2245,63 +2131,13 @@ export interface operations {
     answer: {
       agent: string;
       main: string | null;
-      index: string;
-      notes: {
-        items: {
-          file: string;
-          name: string;
-          description: string;
-          type: "user" | "feedback" | "project" | "reference";
-          status: "active" | "superseded" | "retired" | "pending";
-          origin: "you" | "run";
-          superseded_by: string | null;
-          text: string;
-          etag: string;
-          runs: {
-            given: number;
-            read: number;
-          };
-          retired?: {
-            at: string;
-            by: "person" | "run" | "host";
-            from?: "active" | "pending";
-            why?: "unreadable";
-          };
-          last_change?: {
-            kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned" | "superseded";
-            by: "person" | "run";
-            at: string;
-          };
-        }[];
-        total: number;
-        next_cursor: string | null;
-      };
-      skills: {
-        name: string;
-        file: string;
-        description: string;
-        status: "active" | "pending" | "retired";
-        run: string | null;
-        bytes: number;
-        etag: string;
-        retired?: {
-          at: string;
-          by: "person" | "run" | "host";
-          from?: "active" | "pending";
-          why?: "unreadable";
-        };
-        last_change?: {
-          kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned" | "superseded";
-          by: "person" | "run";
-          at: string;
-        };
-      }[];
+      corrections: string;
       workflows: {
         name: string;
         file: string;
         readme: string;
         description: string;
-        status: "active" | "pending" | "retired";
+        status: "serving" | "checking" | "held" | "stopped" | "pending" | "retired";
         run: string | null;
         bytes: number;
         etag: string;
@@ -2312,7 +2148,7 @@ export interface operations {
           why?: "unreadable";
         };
         last_change?: {
-          kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned" | "superseded";
+          kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned";
           by: "person" | "run";
           at: string;
         };
@@ -2342,16 +2178,10 @@ export interface operations {
         before: {
           runs: number;
           median_duration_s: number;
-          median_cost_usd: number | null;
-          cost_runs: number;
-          median_learning_usd: number | null;
         };
         after: {
           runs: number;
           median_duration_s: number;
-          median_cost_usd: number | null;
-          cost_runs: number;
-          median_learning_usd: number | null;
         };
       } | null;
     };
@@ -2484,66 +2314,12 @@ export interface operations {
       reason?: string;
     };
   };
-  getLearningBatch: {
+  getLearningCorrections: {
     body: never;
     answer: {
-      id: string;
-      agent_id: string;
-      created_at: string;
-      ended_at: string | null;
-      status: "running" | "completed" | "cancelled" | "stopped";
-      stopped: "cap" | "cost_unknown" | "learning_off" | null;
-      inputs: string[];
-      answer: string;
-      answer_field: string | null;
-      effort: string | null;
-      max_cost_usd: number;
-      total: number;
-      finished: number;
-      right: number;
-      wrong: number;
-      failed: number;
-      spent_usd: number;
-      unknown_cost_rows: number;
-      paths: {
-        agent: number;
-        handed_back: number;
-        workflow: number;
-      };
-      lessons: {
-        notes: string[];
-        skills: string[];
-        workflows: string[];
-      };
-      revisions: {
-        row: number;
-        commit: string | null;
-        workflows: string[];
-      }[];
-      cost_usd: number | null;
-      remaining_usd: number | null;
-      current: number | null;
-      rows: {
-        n: number;
-        state: "pending" | "running" | "done" | "failed";
-        reference: string;
-        run_id?: string;
-        answer?: string | null;
-        right?: boolean;
-        reviewed?: boolean;
-        path?: "agent" | "handed_back" | "workflow";
-        cost_usd?: number | null;
-        learning_usd?: number | null;
-        total_usd?: number | null;
-        learned?: {
-          notes: string[];
-          skills: string[];
-          workflows: string[];
-        };
-        merged?: string | null;
-        error?: string;
-      }[];
-      error?: string;
+      text: string;
+      etag: string;
+      cap_bytes: 2048;
     };
   };
   getLearningCost: {
@@ -2551,12 +2327,14 @@ export interface operations {
     answer: {
       agent: string;
       runs: {
-        n: number;
+        n: number | null;
         run_id: string;
         started_at: string;
         path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
         workflow: string | null;
-        learned_revision: string | null;
+        digest: string | null;
+        took_over: boolean;
+        audited: boolean;
         cost_usd: number | null;
         cost_upper_bound: boolean;
         learning_usd: number | null;
@@ -2622,6 +2400,7 @@ export interface operations {
           run_id: string;
           at: string;
         } | null;
+        learning_usd: number;
         points: {
           n: number;
           run_id: string;
@@ -2668,7 +2447,6 @@ export interface operations {
         round: number;
         at: string;
         workflow: string | null;
-        from_notes: string[];
         attempts: {
           ok: boolean;
           errors: string[];
@@ -2731,6 +2509,27 @@ export interface operations {
       secret?: components["SecretMeta"];
     };
   };
+  getModelGateway: {
+    body: never;
+    answer: {
+      source: "env" | "console" | null;
+      base_url: string | null;
+      ids: "as_named" | "bare";
+      models: {
+        default: string | null;
+        fast: string | null;
+        strong: string | null;
+      };
+      set_at_start: string[];
+      secret: {
+        name: string;
+        set: boolean;
+        source: "env" | "console" | "sign-in" | null;
+        changed_at: string | null;
+      };
+      problem: string | null;
+    };
+  };
   getNative: {
     body: never;
     answer: {
@@ -2755,8 +2554,7 @@ export interface operations {
         issues: string[];
         capabilities: {
           launch: boolean;
-          notes: boolean;
-          skills: boolean;
+          learning: boolean;
           workflows: false;
           approval: "native" | "unavailable";
           usage: boolean;
@@ -2968,28 +2766,18 @@ export interface operations {
     body: never;
     answer: {
       run: string;
-      state: "seeded" | "reflecting" | "proposed" | "merged" | "dropped";
-      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_timeout" | "reflect_failed" | "empty" | "unparsed" | "propose_failed" | "checker" | "grader" | "grade_failed" | "use" | null;
+      state: "seeded" | "reflecting" | "merged" | "dropped";
+      reason: "seed_failed" | "no_budget" | "unknown_cost" | "cancelled" | "crashed" | "reflect_failed" | "empty" | "checker" | "use" | null;
       detail: string | null;
       at: string;
       seed: string | null;
       merged: string | null;
-      pending: {
+      workflows: {
         file: string;
         name: string;
+        pending?: true;
       }[];
-      verdict: {
-        merge: boolean;
-        reason: string;
-        items: {
-          file: string;
-          keep: boolean;
-          pending?: true;
-          origin?: "you" | "run";
-          question?: string;
-          why: string;
-        }[];
-      } | null;
+      corrections: number;
       problems: {
         rule: string;
         path?: string;
@@ -2997,7 +2785,6 @@ export interface operations {
       }[];
       compiled: {
         workflow: string;
-        from_notes: string[];
         attempts: {
           ok: boolean;
           errors: string[];
@@ -3006,51 +2793,13 @@ export interface operations {
         promoted: boolean | null;
       } | null;
       draft_errors: string[];
-      cost_usd: {
-        grade: number | null;
-      };
-      tokens: {
-        grade: {
-          input: number;
-          cache_read: number;
-          cache_write: number;
-          output: number;
-        } | null;
-      };
       used: {
-        skills: {
-          name: string;
-          read: boolean;
-        }[];
         workflows: {
           name: string;
           calls: number;
           failed: number;
         }[];
       };
-      given?: {
-        file: string;
-        name: string;
-      }[];
-      read?: {
-        file: string;
-        name: string;
-      }[];
-      learned?: {
-        file: string;
-        name: string;
-        supersedes: string[];
-      }[];
-      skills?: {
-        file: string;
-        name: string;
-        pending?: true;
-      }[];
-      workflows?: {
-        file: string;
-        name: string;
-        pending?: true;
-      }[];
       graded?: {
         run_id: string;
         correct: boolean;
@@ -3059,7 +2808,7 @@ export interface operations {
         path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
         workflow: string | null;
         workflow_digest: string | null;
-        feedback: "look_back" | null;
+        feedback: "correction" | null;
         feedback_status: "running" | "ended" | "not_run" | null;
       };
     } | null;
@@ -3077,6 +2826,40 @@ export interface operations {
       }[];
     };
   };
+  getRunTrace: {
+    body: never;
+    answer: {
+      run_id: components["Id"];
+      model_requests: "priced" | "tokens_only" | "not_recorded";
+      spans: {
+        id: string;
+        kind: "model" | "tool";
+        parent_id: string | null;
+        name: string;
+        agent_label: string | null;
+        started_at: components["Timestamp"];
+        ended_at: string | null;
+        status: "ok" | "failed" | "refused" | "interrupted" | "waiting" | "running";
+        stop_reason: string | null;
+        tokens: {
+          input: number;
+          cache_read: number;
+          cache_write: number;
+          output: number;
+          reasoning?: number;
+        } | null;
+        usd: number | null;
+        decision: boolean;
+        charged: boolean;
+        not_metered: boolean;
+        tool_use_id: string | null;
+        input_preview: string | null;
+        result_preview: string | null;
+        result_size_bytes: number | null;
+      }[];
+      dropped: number;
+    };
+  };
   getSdkRun: {
     body: never;
     answer: {
@@ -3084,6 +2867,33 @@ export interface operations {
       state: "running" | "processing" | "completed" | "failed" | "cancelled";
       learning_run_id?: string;
       learning: unknown;
+    };
+  };
+  getSlack: {
+    body: never;
+    answer: {
+      configured: false;
+      secret: components["SecretMeta"];
+      events: {
+        "run.needs_input": boolean;
+        "run.ended": boolean;
+        "trigger.failed": boolean;
+      };
+    } | {
+      configured: true;
+      url: string;
+      url_state: "sealed" | "unreadable";
+      secret: components["SecretMeta"];
+      events: {
+        "run.needs_input": boolean;
+        "run.ended": boolean;
+        "trigger.failed": boolean;
+      };
+      disabled: {
+        at: string;
+        reason: string;
+      } | null;
+      updated_at: string;
     };
   };
   getStats: {
@@ -3105,7 +2915,7 @@ export interface operations {
       }[];
       cost: {
         usd: number | null;
-        basis: "estimate" | null;
+        basis: "reported" | "estimate" | "unpriced" | null;
         unknown_runs: number;
       };
       archived: {
@@ -3469,7 +3279,7 @@ export interface operations {
       path: "agent" | "handed_back" | "workflow" | "replay" | "audit";
       workflow: string | null;
       workflow_digest: string | null;
-      feedback: "look_back" | null;
+      feedback: "correction" | null;
       expected?: Record<string, unknown>;
     };
   };
@@ -3530,8 +3340,7 @@ export interface operations {
         issues: string[];
         capabilities: {
           launch: boolean;
-          notes: boolean;
-          skills: boolean;
+          learning: boolean;
           workflows: false;
           approval: "native" | "unavailable";
           usage: boolean;
@@ -3568,8 +3377,7 @@ export interface operations {
         issues: string[];
         capabilities: {
           launch: boolean;
-          notes: boolean;
-          skills: boolean;
+          learning: boolean;
           workflows: false;
           approval: "native" | "unavailable";
           usage: boolean;
@@ -3666,7 +3474,7 @@ export interface operations {
         budget: {
           per_run_usd: number;
         } | null;
-        learning: boolean;
+        learning: boolean | Record<string, unknown>;
         approvals_default: "ask" | "never";
         triggers: Record<string, unknown>[];
         skills: string[];
@@ -3762,6 +3570,7 @@ export interface operations {
         kind: string;
         serves: ("none" | "sandbox" | "desktop" | "phone" | "browser")[];
         unserved: string | null;
+        runs_refused: string | null;
         os: string;
         os_version: string | null;
         device: {
@@ -3803,6 +3612,7 @@ export interface operations {
           }[];
           required: string[];
           ready: boolean;
+          runs_refused: string | null;
           shell: "computer" | "local" | "none";
           host_tools: string[];
           why?: string;
@@ -3904,81 +3714,6 @@ export interface operations {
       }[];
     };
   };
-  listLearningBatches: {
-    body: never;
-    answer: {
-      batches: {
-        id: string;
-        agent_id: string;
-        created_at: string;
-        ended_at: string | null;
-        status: "running" | "completed" | "cancelled" | "stopped";
-        stopped: "cap" | "cost_unknown" | "learning_off" | null;
-        inputs: string[];
-        answer: string;
-        answer_field: string | null;
-        effort: string | null;
-        max_cost_usd: number;
-        total: number;
-        finished: number;
-        right: number;
-        wrong: number;
-        failed: number;
-        spent_usd: number;
-        unknown_cost_rows: number;
-        paths: {
-          agent: number;
-          handed_back: number;
-          workflow: number;
-        };
-        lessons: {
-          notes: string[];
-          skills: string[];
-          workflows: string[];
-        };
-        revisions: {
-          row: number;
-          commit: string | null;
-          workflows: string[];
-        }[];
-        cost_usd: number | null;
-        remaining_usd: number | null;
-        error?: string;
-      }[];
-    };
-  };
-  listLearningEvals: {
-    body: never;
-    answer: {
-      agent: string;
-      latest: {
-        id: string;
-        name: string;
-        n: number;
-        correct: number;
-        label_source: string | null;
-        cost_per_task_usd: number | null;
-        baseline_cost_per_task_usd: number | null;
-        learned_revision: string | null;
-        accuracy: number;
-        ci: number[];
-        recorded_at: string;
-      } | null;
-      evals: {
-        id: string;
-        name: string;
-        n: number;
-        correct: number;
-        label_source: string | null;
-        cost_per_task_usd: number | null;
-        baseline_cost_per_task_usd: number | null;
-        learned_revision: string | null;
-        accuracy: number;
-        ci: number[];
-        recorded_at: string;
-      }[];
-    };
-  };
   listLearningLog: {
     body: never;
     answer: {
@@ -3993,39 +3728,6 @@ export interface operations {
         at: string;
         reason: string;
         files: string[];
-      }[];
-      total: number;
-      next_cursor: string | null;
-    };
-  };
-  listLearningNotes: {
-    body: never;
-    answer: {
-      items: {
-        file: string;
-        name: string;
-        description: string;
-        type: "user" | "feedback" | "project" | "reference";
-        status: "active" | "superseded" | "retired" | "pending";
-        origin: "you" | "run";
-        superseded_by: string | null;
-        text: string;
-        etag: string;
-        runs: {
-          given: number;
-          read: number;
-        };
-        retired?: {
-          at: string;
-          by: "person" | "run" | "host";
-          from?: "active" | "pending";
-          why?: "unreadable";
-        };
-        last_change?: {
-          kind: "approved" | "edited" | "created" | "retired" | "restored" | "learned" | "superseded";
-          by: "person" | "run";
-          at: string;
-        };
       }[];
       total: number;
       next_cursor: string | null;
@@ -4046,6 +3748,8 @@ export interface operations {
           agree_min: number;
           alone_min: number;
           attempt: 1 | 2;
+          agree_on?: string[];
+          grader?: string;
           n?: number;
           agreed?: number;
           alone?: number;
@@ -4070,6 +3774,7 @@ export interface operations {
             draft?: string;
             escalated?: string;
             failed?: true;
+            differs_on?: string;
           }[];
           stopped?: true;
         };
@@ -4129,6 +3834,8 @@ export interface operations {
             agree_min: number;
             alone_min: number;
             attempt: 1 | 2;
+            agree_on?: string[];
+            grader?: string;
             n?: number;
             agreed?: number;
             alone?: number;
@@ -4153,6 +3860,7 @@ export interface operations {
               draft?: string;
               escalated?: string;
               failed?: true;
+              differs_on?: string;
             }[];
             stopped?: true;
           } | null;
@@ -4260,6 +3968,21 @@ export interface operations {
     body: never;
     answer: components["RunList"];
   };
+  listSlackDeliveries: {
+    body: never;
+    answer: {
+      attempts: {
+        webhook_id: string;
+        type: "run.needs_input" | "run.ended" | "trigger.failed" | "slack.test";
+        at: string;
+        status_code: number | null;
+        latency_ms: number;
+        error: string | null;
+        retry_at: string | null;
+        redelivery: boolean;
+      }[];
+    };
+  };
   listTemplates: {
     body: never;
     answer: {
@@ -4339,7 +4062,7 @@ export interface operations {
         budget: {
           per_run_usd: number;
         } | null;
-        learning: boolean;
+        learning: boolean | Record<string, unknown>;
         approvals_default: "ask" | "never";
         triggers: Record<string, unknown>[];
         skills: string[];
@@ -4351,11 +4074,11 @@ export interface operations {
     body: never;
     answer: {
       keys: {
-        id: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "openrouter";
+        id: "parallel" | "monid" | "browserbase" | "kernel" | "typesafe" | "anthropic" | "openai" | "particle" | "openrouter";
         kind: "tool" | "model";
         label: string;
         unlocks: string[];
-        harnesses: ("pi" | "claude-agent" | "codex" | "opencode")[];
+        harnesses: string[];
         fields: {
           name: string;
           set: boolean;
@@ -4627,6 +4350,7 @@ export interface operations {
     answer: {
       computer: string;
       token: string;
+      runs_refused: string | null;
     };
   };
   pauseRun: {
@@ -4687,11 +4411,15 @@ export interface operations {
       }[];
     };
   };
-  promoteLearnedWorkflow: {
+  putLearningCorrections: {
     body: {
-      name?: string;
+      text: string;
     };
-    answer: components["Agent"];
+    answer: {
+      text: string;
+      etag: string;
+      cap_bytes: 2048;
+    };
   };
   putMcpPrivateHosts: {
     body: {
@@ -5007,28 +4735,17 @@ export interface operations {
       })[];
     };
   };
-  recordLearningEval: {
-    body: {
-      name: string;
-      n: number;
-      correct: number;
-      label_source?: string | null;
-      cost_per_task_usd?: number | null;
-      baseline_cost_per_task_usd?: number | null;
-      learned_revision?: string | null;
-    };
+  redeliverSlack: {
+    body: never;
     answer: {
-      id: string;
-      name: string;
-      n: number;
-      correct: number;
-      label_source: string | null;
-      cost_per_task_usd: number | null;
-      baseline_cost_per_task_usd: number | null;
-      learned_revision: string | null;
-      accuracy: number;
-      ci: number[];
-      recorded_at: string;
+      webhook_id: string;
+      type: "run.needs_input" | "run.ended" | "trigger.failed" | "slack.test";
+      at: string;
+      status_code: number | null;
+      latency_ms: number;
+      error: string | null;
+      retry_at: string | null;
+      redelivery: boolean;
     };
   };
   redeliverWebhook: {
@@ -5189,6 +4906,21 @@ export interface operations {
       signing_secret?: string;
     };
   };
+  rotateWebhookSecret: {
+    body: never;
+    answer: {
+      configured: true;
+      url: string;
+      secret: components["SecretMeta"];
+      signing: "sealed" | "unreadable";
+      disabled: {
+        at: string;
+        reason: string;
+      } | null;
+      updated_at: string;
+      signing_secret: string;
+    };
+  };
   saveCalendar: {
     body: {
       url: string;
@@ -5272,6 +5004,7 @@ export interface operations {
       }[];
       required: string[];
       ready: boolean;
+      runs_refused: string | null;
       shell: "computer" | "local" | "none";
       host_tools: string[];
       why?: string;
@@ -5387,6 +5120,62 @@ export interface operations {
         removed: boolean;
         note: string;
       };
+    };
+  };
+  saveModelGateway: {
+    body: {
+      base_url: string;
+      api_key?: string | null;
+      ids?: "as_named" | "bare";
+      models?: {
+        default?: string;
+        fast?: string | null;
+        strong?: string | null;
+      };
+    };
+    answer: {
+      source: "env" | "console" | null;
+      base_url: string | null;
+      ids: "as_named" | "bare";
+      models: {
+        default: string | null;
+        fast: string | null;
+        strong: string | null;
+      };
+      set_at_start: string[];
+      secret: {
+        name: string;
+        set: boolean;
+        source: "env" | "console" | "sign-in" | null;
+        changed_at: string | null;
+      };
+      problem: string | null;
+    };
+  };
+  saveSlack: {
+    body: {
+      url?: string;
+      events?: {
+        "run.needs_input"?: boolean;
+        "run.ended"?: boolean;
+        "trigger.failed"?: boolean;
+      };
+    };
+    answer: {
+      configured: true;
+      url: string;
+      url_state: "sealed" | "unreadable";
+      secret: components["SecretMeta"];
+      events: {
+        "run.needs_input": boolean;
+        "run.ended": boolean;
+        "trigger.failed": boolean;
+      };
+      disabled: {
+        at: string;
+        reason: string;
+      } | null;
+      updated_at: string;
     };
   };
   saveToolKey: {
@@ -5550,10 +5339,6 @@ export interface operations {
         enabled: boolean;
         revision: string | null;
         context: string;
-        skills: {
-          name: string;
-          files: Record<string, string>;
-        }[];
         workflows: {
           name: string;
           workflow: string;
@@ -5617,6 +5402,32 @@ export interface operations {
         ok: boolean;
         message: string;
       };
+    };
+  };
+  testModelGateway: {
+    body: {
+      base_url?: string;
+      api_key?: string | null;
+    };
+    answer: {
+      ok: true;
+      models: string[];
+    } | {
+      ok: false;
+      why: string;
+    };
+  };
+  testSlack: {
+    body: never;
+    answer: {
+      webhook_id: string;
+      type: "run.needs_input" | "run.ended" | "trigger.failed" | "slack.test";
+      at: string;
+      status_code: number | null;
+      latency_ms: number;
+      error: string | null;
+      retry_at: string | null;
+      redelivery: boolean;
     };
   };
   testWebhook: {
@@ -6045,8 +5856,7 @@ export interface operations {
         issues: string[];
         capabilities: {
           launch: boolean;
-          notes: boolean;
-          skills: boolean;
+          learning: boolean;
           workflows: false;
           approval: "native" | "unavailable";
           usage: boolean;
@@ -6069,11 +5879,5 @@ export interface operations {
       content_type?: string | null;
       unreadable?: true;
     };
-  };
-  writeLearningFile: {
-    body: {
-      text: string;
-    };
-    answer: never;
   };
 }

@@ -49,7 +49,7 @@ test("a save that would drop a saved MCP server's credential is the owner's alon
   const { fake, page, token } = await withSavedServer(t);
   const dropped = await token("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "none" } });
   assert.equal(dropped.status, 403, dropped.text);
-  assert.equal(dropped.json?.error?.message, gate.SECRET_WRITE_REFUSAL);
+  assert.ok(String(dropped.json?.error?.message).startsWith(gate.SECRET_WRITE_REFUSAL));
   assert.equal((await savedAuth(page))?.auth?.type, "bearer", "the bearer is still saved");
   // A save that keeps it (the same auth type, no value) is still the token's to make.
   const keep = await token("PUT", "/settings/mcp-servers/fake", { url: fake.url, auth: { type: "bearer" } });
@@ -98,7 +98,7 @@ test("a secret write's path segment that is not valid percent-encoding is answer
   const token = asToken(server);
   const odd = await token("POST", "/settings/mcp-servers/%/oauth/start", { url: "https://mcp.example.test/mcp" });
   assert.equal(odd.status, 403, odd.text);
-  assert.equal(odd.json?.error?.message, gate.SECRET_WRITE_REFUSAL);
+  assert.ok(String(odd.json?.error?.message).startsWith(gate.SECRET_WRITE_REFUSAL));
 });
 
 test("removing an MCP server that holds a credential is the owner's alone: the token is refused and the server stays; the console removes it as the page does", async (t) => {
@@ -131,7 +131,7 @@ test("a sign-in's start is the owner's alone: the token is refused, and gets no 
 
 test("every operation on a secret's route is in the one gate's registry, or said on purpose to write none, with why: an unregistered one is named", () => {
   const doc = openapiDocument(() => undefined);
-  const secretRoutes = [/^\/settings\/mcp-servers(\/|$)/, /^\/integrations\/github(\/|$)/, /^\/agents\/\{[^}]+\}\/sign-ins(\/|$)/, /^\/settings\/tool-keys(\/|$)/, /^\/computers(\/|$)/, /^\/workspace(\/|$)/, /^\/triggers\/\{[^}]+\}\/secret$/];
+  const secretRoutes = [/^\/settings\/mcp-servers(\/|$)/, /^\/integrations\/github(\/|$)/, /^\/agents\/\{[^}]+\}\/sign-ins(\/|$)/, /^\/settings\/tool-keys(\/|$)/, /^\/computers(\/|$)/, /^\/workspace(\/|$)/, /^\/triggers\/\{[^}]+\}\/secret$/, /^\/settings\/slack(\/|$)/, /^\/settings\/model-gateway(\/|$)/];
   const unregistered = [];
   const noReason = [];
   for (const [path, item] of Object.entries(doc.paths)) {

@@ -14,8 +14,7 @@ export const DEFAULT_HARNESS: HarnessId = "pi";
 /** What a harness id is, as the API says it (openapi.ts): a harness module's id that is not one refuses the start. */
 export const HARNESS_ID_PATTERN = "^[a-z][a-z0-9-]{0,39}$";
 /** The names serve's own runs carry where a harness id goes, so a harness module may not take one (its start is refused):
- *  `learning`, a learning run's launch harness, which the runner's loop choice keys on (harness-loops.ts,
- *  learning-factory.ts LEARNING_HARNESS) and the stores' learning queries match; `sdk`, an SDK run's launch harness
+ *  `learning`, the launch harness the stores' learning queries match; `sdk`, an SDK run's launch harness
  *  (sdk/runs.ts); and the names analytics files a run's harness under: `workflow`, a workflow revision's, and each SDK
  *  runtime's (sdk/schema.ts SDK_BINDING). Also every name a plain object already has that the id pattern admits
  *  (`constructor`): serve looks harnesses up by id in plain objects, where such an id would read Object's own member. */
@@ -115,9 +114,9 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
           // lacks only a key is (a save warns of that, never refuses).
           const { MODEL_REF } = await import("./validate.js");
           const { providerFor, HarnessUnavailable } = await import("./provider.js");
-          const { ADAPTER_FACTS } = await import("./adapter-facts.js");
+          const { adapterFactsOf } = await import("./adapter-facts.js");
           const { FAUX_ENV } = await import("./model.js");
-          const facts = ADAPTER_FACTS.find((f) => f.id === offer.id);
+          const facts = adapterFactsOf(offer.id);
           for (const id of new Set([...pickerCandidates(env, offer.id), ...free.map((m) => m.id)])) {
             if (!MODEL_REF.test(id)) continue;
             const chosen = await entry.model(env, id, true);

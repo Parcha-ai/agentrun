@@ -5,8 +5,8 @@ import { runLabel, when } from "@/lib/format";
 import { kindOf, MARKER_LETTER, MARKER_WORDS, type MarkerKind, recordOf, replayLine, standingOf, stoppedOf } from "@/lib/learningLoop";
 import type { LearningCost, LearningLoop, LoopCompile, Promotion, Serving } from "@/lib/v2";
 
-// The learning feed: what the loop did, newest first. A compile turn (a run's end, any round of it, wrote a workflow from
-// its notes: which notes went in, each attempt, and where that revision stands now, as the replay card says it) and each promotion record (a revision replaying,
+// The learning feed: what the loop did, newest first. A compile turn (a run's end, any round of it, wrote a workflow of
+// its job: each attempt, and where that revision stands now, as the replay card says it) and each promotion record (a revision replaying,
 // promoted or held, with its numbers). A draft the checks refused says what they said, in their words, never a
 // silent nothing; a run whose handed values can't be read says the words are withheld.
 
@@ -64,9 +64,6 @@ function Compiled({ compile: c, promotions, serving, stopped }: { compile: LoopC
         {c.workflow ? <span className="min-w-0 break-all font-mono text-body font-semibold">{c.workflow}</span> : <span className="text-body text-muted-foreground">no workflow kept</span>}
         {standing && <Chip tone={standing.tone}>{standing.text}</Chip>}
       </div>
-      {c.from_notes.length > 0 && (
-        <p className="mt-1 break-words text-small text-muted-foreground">From {c.from_notes.length === 1 ? "1 note" : `${c.from_notes.length} notes`}: <span className="font-mono text-foreground">{c.from_notes.join(", ")}</span></p>
-      )}
       {c.attempts.length > 0 && (
         <p className="mt-0.5 text-small text-muted-foreground">{c.attempts.length === 1 ? "1 attempt" : `${c.attempts.length} attempts`}{refused.length ? `, ${refused.length} refused by the checks` : ""}{failed ? ": it tries again on a later run." : "."}</p>
       )}
@@ -96,7 +93,8 @@ function Decided({ record }: { record: Promotion }) {
         <span className="font-mono text-label text-muted-foreground">{record.digest.slice(0, 7)}</span>
       </div>
       <p className="mt-1 break-words text-small text-muted-foreground">{replayLine(record)}</p>
-      {record.check?.n ? record.reason && <p className="mt-0.5 line-clamp-2 break-words text-small text-muted-foreground">{record.reason}</p> : null}
+      {/* Whole, never clamped: a hold's reason ends with what to do (name the fields its answers are compared on). */}
+      {record.check?.n ? record.reason && <p className="mt-0.5 break-words text-small text-muted-foreground">{record.reason}</p> : null}
       <Meta at={record.at} />
     </div>
   );

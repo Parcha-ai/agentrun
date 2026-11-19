@@ -47,9 +47,9 @@ test("listRuns gives each run the old row shape, newest first, with state from A
     ["run-done", "completed", "agentic"],
   ]);
   const done = rows.find((r) => r.id === "run-done");
-  assert.deepEqual(done, { id: "run-done", agent: "agent-1", revision: "rev-1", kind: "agentic", state: "completed", startedAt: iso(T0), endedAt: iso(T0), costUsd: 0.25, summary: "all done" });
+  assert.deepEqual(done, { id: "run-done", agent: "agent-1", revision: "rev-1", kind: "agentic", state: "completed", startedAt: iso(T0), endedAt: iso(T0), costUsd: 0.25, costBasis: "estimate", summary: "all done" });
   // A queued run that booked nothing yet shows cost 0 (its booked spend), and no end, summary or import.
-  assert.deepEqual(rows.find((r) => r.id === "run-live"), { id: "run-live", agent: "agent-1", revision: "rev-1", kind: "agentic", state: "running", startedAt: iso(T0 + 2_000), costUsd: 0 });
+  assert.deepEqual(rows.find((r) => r.id === "run-live"), { id: "run-live", agent: "agent-1", revision: "rev-1", kind: "agentic", state: "running", startedAt: iso(T0 + 2_000), costUsd: 0, costBasis: "unpriced" });
 });
 
 test("listRuns filters by agent and by revision", async (t) => {
@@ -81,7 +81,7 @@ test("readRun reads one run with its agent's name, or undefined for an unknown r
   await store.runs.create({ id: "r", agentId: "agent-1", revisionId: "rev-1" });
   await endWith(store, "r", { state: "failed", summary: "it broke" });
   const run = await readRun(store, "r", context);
-  assert.deepEqual(run, { id: "r", agent: "agent-1", revision: "rev-1", kind: "agentic", state: "failed", startedAt: iso(T0), endedAt: iso(T0), summary: "it broke", agentName: "First agent" });
+  assert.deepEqual(run, { id: "r", agent: "agent-1", revision: "rev-1", kind: "agentic", state: "failed", startedAt: iso(T0), endedAt: iso(T0), summary: "it broke", costBasis: "unpriced", agentName: "First agent" });
   assert.equal(await readRun(store, "nope", context), undefined);
 });
 

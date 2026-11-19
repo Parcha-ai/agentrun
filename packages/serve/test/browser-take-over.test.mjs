@@ -315,6 +315,32 @@ test("the agent asks: input_required with pending.kind browser, a waiting row an
   ws.destroy();
 });
 
+test("a stop while the agent waits on the browser is told once, as stopped: from the stop's answer on the run reads its browser wait until the turn is cut and stopped after, never a wait with nothing pending, and no notice of it goes out before its end, under another id", { timeout: 180_000 }, async (t) => {
+  const got = [];
+  const receiver = createServer((req, res) => { const chunks = []; req.on("data", (c) => chunks.push(c)); req.on("end", () => { try { got.push({ id: req.headers["webhook-id"], body: JSON.parse(Buffer.concat(chunks).toString("utf8")) }); } catch { /* not a message */ } res.writeHead(200).end(); }); });
+  await new Promise((resolve) => receiver.listen(0, "127.0.0.1", resolve));
+  t.after(() => new Promise((resolve) => (receiver.close(resolve), receiver.closeAllConnections())));
+  const w = await watched(t, { faux: BROWSE_HANDOFF, env: { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, hook: { url: `http://127.0.0.1:${receiver.address().port}/hook` } });
+  const told = () => [...new Map(got.filter((m) => m.body.type === "run.needs_input" && m.body.data.run_id === w.runId).map((m) => [m.id, m.body.data.pending?.kind ?? null])).values()];
+  assert.ok(await until(() => told().includes("browser"), 30_000), "run.needs_input for the hand-over ask");
+  const stop = await w.server.api("POST", `/runs/${w.runId}/stop`, {});
+  assert.equal(stop.body.stopped, true, JSON.stringify(stop.body));
+  // From the stop's answer on: the browser wait while its turn is still open (the runner has not cut it yet), then stopped,
+  // though the runner may not have taken the stop row yet; never input_required with nothing pending.
+  const reads = [];
+  for (const end = Date.now() + 30_000; ; await sleep(25)) {
+    const view = await w.view();
+    reads.push(view.pending?.kind ?? null);
+    if (view.pending?.kind === "stopped") break;
+    assert.ok(Date.now() < end, `the run reads stopped: ${JSON.stringify(reads)}`);
+  }
+  assert.deepEqual(reads.filter((kind) => kind !== "browser" && kind !== "stopped"), [], `every read is the browser wait or stopped: ${JSON.stringify(reads)}`);
+  assert.ok(await until(() => told().includes("stopped"), 30_000), "run.needs_input for the stop");
+  // Past a held wait's re-read (1 s) and the feed's: nothing more is told.
+  await sleep(3_000);
+  assert.deepEqual(told(), ["browser", "stopped"], "told once each: the stop under its end's one id");
+});
+
 test("an ask nobody answers expires: the agent hears expired, the timeline says so, and a hand-back after it is 409 with expired", { timeout: 180_000 }, async (t) => {
   const w = await watched(t, { faux: BROWSE_HANDOFF, env: { FAUX_BROWSER_PERSON_MS: "1500,60000" } });
   const answered = await until(async () => /Hand-off:/.test((await w.view()).pending?.question ?? "") && (await w.view()).pending.question, 30_000);

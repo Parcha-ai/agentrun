@@ -19,6 +19,14 @@
 # Either way it returns once AgentRun answers, and prints its address. With --tailscale it is also served over HTTPS on
 # the person's own tailnet (lib/tailscale.mjs), on port 7340. Options: --help.
 #
+# With --vps it sets up a Linux server someone rents (Ubuntu or Debian, as root) in place of this user's install: Docker
+# Engine and its compose plugin from Docker's apt repository when Docker is missing (an existing Docker is never
+# changed), then /opt/agentrun with a compose file and an .env (mode 600) holding the API token and the seal key, made
+# once and kept. Docker Compose runs the release's published server image with this machine's Docker socket, so a run's
+# computer can be a Docker sandbox. It is private: on the person's tailnet when Tailscale is logged in (the same
+# lib/tailscale.mjs, run in that image with this machine's tailscale and its socket), else on loopback with the steps to
+# add Tailscale; on every address only with --public. Running it again upgrades to the release it names.
+#
 # The whole script is one function, called on its last line, so a download cut short runs nothing.
 
 set -eu
@@ -31,23 +39,37 @@ main() {
   node_version=
   start=default
   ts_flag=
+  vps=
+  vps_public=
+  image=
+  this_computer=
 
   while [ $# -gt 0 ]; do
     case $1 in
       --version) [ $# -ge 2 ] || fail "--version takes a version or npm tag"; version=$2; shift ;;
       --version=*) version=${1#--version=} ;;
-      --package) [ $# -ge 2 ] || fail "--package takes a tarball"; tarball=$2; shift ;;
-      --package=*) tarball=${1#--package=} ;;
-      --node-version) [ $# -ge 2 ] || fail "--node-version takes a Node.js version"; node_version=${2#v}; shift ;;
-      --node-version=*) node_version=${1#--node-version=}; node_version=${node_version#v} ;;
-      --no-start) start=none ;;
-      --service) start=service ;;
-      --tailscale | --no-tailscale) ts_flag=$1 ;;
+      --package) [ $# -ge 2 ] || fail "--package takes a tarball"; tarball=$2; this_computer=--package; shift ;;
+      --package=*) tarball=${1#--package=}; this_computer=--package ;;
+      --node-version) [ $# -ge 2 ] || fail "--node-version takes a Node.js version"; node_version=${2#v}; this_computer=--node-version; shift ;;
+      --node-version=*) node_version=${1#--node-version=}; node_version=${node_version#v}; this_computer=--node-version ;;
+      --no-start) start=none; this_computer=$1 ;;
+      --service) start=service; this_computer=$1 ;;
+      --tailscale | --no-tailscale) ts_flag=$1; this_computer=$1 ;;
+      --vps) vps=1 ;;
+      --public) vps_public=1 ;;
+      --image) [ $# -ge 2 ] || fail "--image takes an image"; image=$2; shift ;;
+      --image=*) image=${1#--image=} ;;
       -h | --help) usage; return 0 ;;
       *) fail "unknown option $1 (see --help)" ;;
     esac
     shift
   done
+  if [ -n "$vps" ]; then
+    [ -z "$this_computer" ] || fail "$this_computer is for an install on this computer; --vps runs AgentRun in Docker (see --help)"
+    vps_install
+    return 0
+  fi
+  [ -z "$vps_public$image" ] || fail "--public and --image go with --vps (see --help)"
   if [ -n "$node_version" ] && ! printf '%s\n' "$node_version" | grep -qx '[0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*'; then
     fail "--node-version $node_version is not a Node.js version (X.Y.Z)"
   fi
@@ -196,6 +218,20 @@ Options:
                     (tailscale serve, never Funnel; Tailscale must be installed and logged in, and it says how when
                     not); --no-tailscale takes it off
   -h, --help        this help
+
+On a Linux server you rent (Ubuntu or Debian, as root):
+
+  curl -fsSL https://agentrun.ai/install | sh -s -- --vps
+
+  --vps             AgentRun in Docker Compose in /opt/agentrun, its agents' shell in Docker sandboxes. It installs
+                    Docker Engine from Docker's apt repository when Docker is missing, and serves AgentRun on your
+                    tailnet when Tailscale is logged in; without Tailscale, AgentRun stays on this server's loopback and
+                    the installer says how to add it. Running it again upgrades AgentRun and keeps its token and seal key.
+                    The server gets this machine's Docker socket, which is root on it: keep the server for AgentRun alone
+  --public          with --vps: listen on every address of the server, port 7340, over plain HTTP, in place of the
+                    tailnet or loopback. AGENTRUN_PUBLIC_URL names the address when the server's own is not public
+  --image IMAGE     with --vps: run IMAGE in place of the release's ghcr.io/parcha-ai/agentrun-server image
+  --version V       with --vps: the release of that @parcha/agentrun version or tag (default: latest)
 EOF
 }
 
@@ -443,6 +479,8 @@ start_background() {
   say "AgentRun is running at $url"
   say "It runs in the background until this machine or container stops. $(shown_shim) stop stops it; its log is $log."
   [ -z "$public" ] || tailnet serve 7340 "$public" || exit 1
+  # With no owner yet, its setup page in the browser, the code filled in (or the link, where no browser opens).
+  "$shim" open --setup-only || true
 }
 
 # tailscale.mjs of the version installed, on its Node: `address PORT`, `serve PORT URL` or `off`.
@@ -477,6 +515,280 @@ add_to_path() {
   printf '\n%s\n' "$line" >> "$rc"
   say "Added ~/.agentrun/bin to PATH in $rc. A new terminal will have agentrun; in this one, run:"
   say "  $line"
+}
+
+# --vps: AgentRun in Docker Compose in /opt/agentrun on a server someone rents, as root. As Coolify's and Dokploy's
+# one-line installers do: Docker when it is missing, secrets made once with openssl into an .env that later runs keep.
+vps_install() {
+  vps_dir=/opt/agentrun
+  port=7340
+  loopback=http://127.0.0.1:7340 # key-gate: loopback-rule the server it starts, on the loopback of this server
+  again="curl -fsSL https://agentrun.ai/install | sh -s -- --vps${vps_public:+ --public}"
+  [ "$(uname -s)" = Linux ] || fail "--vps sets up a Linux server; this is $(uname -s)"
+  [ "$(id -u)" = 0 ] || fail "--vps installs Docker and writes $vps_dir, so it runs as root: curl -fsSL https://agentrun.ai/install | sudo sh -s -- --vps${vps_public:+ --public}"
+  need curl
+  mkdir -p "$vps_dir/tailscale"
+  chmod 700 "$vps_dir" "$vps_dir/tailscale"
+  work=$(mktemp -d "$vps_dir/.install.XXXXXX")
+  trap 'rm -rf "$work"' EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  vps_image
+  vps_docker
+  command -v openssl > /dev/null 2>&1 || vps_apt install openssl
+
+  # Pulled on every run, so a tag that moves (an --image like :beta) is the registry's now, not what an earlier run left;
+  # a tag already current pulls nothing. An image no registry has (built here) is used as it is.
+  say "Pulling $image ..."
+  if ! docker pull -q "$image" > /dev/null; then
+    docker image inspect "$image" > /dev/null 2>&1 || fail "could not pull $image"
+    say "Could not pull $image, so the copy already on this server runs."
+  fi
+
+  # Where it is reached: every address with --public; else the tailnet's https address when Tailscale is logged in, or
+  # this server's loopback, with the steps to add Tailscale said.
+  bind=127.0.0.1 # key-gate: loopback-rule the port is published on the loopback of this server unless --public
+  trusted=
+  if [ -n "$vps_public" ]; then
+    bind=0.0.0.0
+    url=${AGENTRUN_PUBLIC_URL:-}
+    if [ -z "$url" ]; then
+      address=$(ip -4 route get 1.1.1.1 2> /dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n 1)
+      [ -n "$address" ] || fail "--public: this server's IPv4 address is unknown (ip route get); name it, then run again: curl -fsSL https://agentrun.ai/install | AGENTRUN_PUBLIC_URL=http://<address>:$port/ sh -s -- --vps --public"
+      url=http://$address:$port/
+    fi
+    say "--public: AgentRun listens on every address of this server, port $port, over plain HTTP, at $url"
+    say "  Anyone who reaches that address reaches its console and API, and the setup code, your password and the API"
+    say "  token cross the network unencrypted. Run again without --public to use Tailscale, or put a TLS proxy in front."
+  else
+    url=$(vps_tailnet address) || exit 1
+    if [ -n "$url" ]; then
+      # tailscale serve reaches the server through Docker's bridge, a private range, and names each visitor.
+      trusted=uniquelocal
+    else
+      url=$loopback/
+    fi
+  fi
+
+  vps_files
+  say "Starting AgentRun $release in Docker Compose ($vps_dir) ..."
+  if ! vps_compose up -d --wait --wait-timeout 300 > "$work/up.log" 2>&1; then
+    tail -n 20 "$work/up.log" >&2
+    vps_compose logs --no-color --tail 40 agentrun >&2 || true
+    fail "AgentRun did not come up healthy within 5 minutes (the lines above say why; cd $vps_dir && docker compose logs has them all)"
+  fi
+
+  # Its first visit must ask for the setup code: a server that would take a password from anyone is stopped.
+  host=${url#*://}
+  host=${host%%/*}
+  session=$(curl -fsS --max-time 10 -H "Host: $host" "$loopback/v2/auth/session") || session=
+  owned=
+  case $session in
+    *'"password_set":true'* | *'"password_set": true'*) owned=1 ;;
+    *'"setup_code":true'* | *'"setup_code": true'*) ;;
+    *)
+      vps_compose stop > /dev/null 2>&1 || true
+      fail "AgentRun answered with no setup code asked (${session:-no answer}), so whoever reached it first could take it; it was stopped"
+      ;;
+  esac
+
+  if [ "$trusted" = uniquelocal ]; then
+    vps_tailnet serve "$url" "\`docker compose logs\` in $vps_dir" || exit 1
+  fi
+
+  say ""
+  say "AgentRun $release is running at $url"
+  if [ "$bind" != 0.0.0.0 ] && [ -z "$trusted" ]; then
+    say "It is on this server only. From your computer: ssh -N -L $port:127.0.0.1:$port root@<this server>, then open $url" # key-gate: loopback-rule the ssh tunnel line to the loopback port
+  fi
+  if [ -n "$owned" ]; then
+    say "This server has its owner: sign in at $url"
+  else
+    # A good code is kept and a new one printed only when the last is expired or spent (POST /v2/setup/code).
+    curl -fsS --max-time 10 -X POST -H "Host: $host" "$loopback/v2/setup/code" > /dev/null 2>&1 || true
+    line=
+    waited=0
+    while [ -z "$line" ] && [ "$waited" -lt 10 ]; do
+      line=$(vps_compose logs --no-color --no-log-prefix agentrun 2> /dev/null | sed -n 's/.*\(Set up this server: .*\)$/\1/p' | tail -n 1)
+      [ -n "$line" ] || sleep 1
+      waited=$((waited + 1))
+    done
+    say "${line:-Set up this server: its link is in the log (below)}"
+    say "The code works once, for 30 minutes. Read the newest one later: cd $vps_dir && docker compose logs agentrun | grep 'Set up this server' | tail -n 1"
+  fi
+  say "The API token is AGENTRUN_TOKEN in $vps_dir/.env. Agents get a shell in Docker sandboxes on this server: AgentRun has"
+  say "its Docker socket, which is root here, so keep this server for AgentRun alone."
+}
+
+# The image of the release asked for: the server the launcher of that version (or tag) depends on, whose release tag is
+# v<that version>. --image names one in its place.
+vps_image() {
+  if [ -n "$image" ]; then
+    release=$image
+    return 0
+  fi
+  case $version in *[!A-Za-z0-9.+-]*) fail "--version $version is not a version or npm tag" ;; esac
+  manifest=$(download "$registry/@parcha%2fagentrun/$version") || fail "$package has no version or tag $version on $registry"
+  server=$(printf '%s' "$manifest" | tr ',{}' '\n\n\n' | sed -n 's/^"@parcha\/agentrun-serve":"\([^"]*\)"$/\1/p' | sort -u)
+  case $server in "" | *[!A-Za-z0-9.+-]*) fail "$package $version names no single server version (@parcha/agentrun-serve)" ;; esac
+  release=v$server
+  image=ghcr.io/parcha-ai/agentrun-server:$release
+}
+
+# Docker Engine 26 or later with its compose plugin: one already here is used as it is, never changed; with none, Docker
+# Engine from Docker's own apt repository, as https://docs.docker.com/engine/install/ubuntu/ (and debian/) set it up.
+vps_docker() {
+  if command -v docker > /dev/null 2>&1; then
+    engine=$(docker version --format '{{.Server.Version}}' 2> /dev/null) ||
+      fail "Docker is installed here, and its daemon does not answer (docker version). Start it (systemctl start docker), then run again: $again"
+    say "Docker Engine $engine is already here; the installer leaves it as it is."
+  else
+    vps_install_docker
+  fi
+  major=${engine%%.*}
+  case $major in "" | *[!0-9]*) fail "Docker says its version is $engine, which is not Docker Engine's" ;; esac
+  [ "$major" -ge 26 ] || fail "Docker sandboxes need Docker Engine 26 or later (a named volume's subpath), and this one is $engine. Upgrade it, then run again: $again"
+  compose=$(docker compose version --short 2> /dev/null) ||
+    fail "This Docker has no compose plugin (docker compose). Install it (https://docs.docker.com/compose/install/linux/), then run again: $again"
+  say "Docker Compose $compose"
+}
+
+vps_install_docker() {
+  [ -r /etc/os-release ] || fail "Docker is not installed, and this server has no /etc/os-release to say which Linux it is. Install Docker Engine 26 or later with its compose plugin (https://docs.docker.com/engine/install/), then run again: $again"
+  distro=$(. /etc/os-release && printf '%s' "${ID:-}")
+  codename=$(. /etc/os-release && printf '%s' "${UBUNTU_CODENAME:-${VERSION_CODENAME:-}}")
+  case $distro in
+    ubuntu | debian) ;;
+    *) fail "Docker is not installed, and the installer installs it on Ubuntu or Debian only (this is ${distro:-unknown}). Install Docker Engine 26 or later with its compose plugin (https://docs.docker.com/engine/install/), then run again: $again" ;;
+  esac
+  [ -n "$codename" ] || fail "/etc/os-release names no release codename for Docker's apt repository"
+  repo=https://download.docker.com/linux/$distro
+  say "Installing Docker Engine and its compose plugin from Docker's apt repository ($repo) ..."
+  vps_apt update
+  vps_apt install ca-certificates
+  if grep -qs download.docker.com /etc/apt/sources.list /etc/apt/sources.list.d/*; then
+    say "Docker's apt repository is already in this server's apt sources; installing from it."
+  else
+    install -m 0755 -d /etc/apt/keyrings
+    download "$repo/gpg" > "$work/docker.asc" || fail "could not download $repo/gpg"
+    install -m 0644 "$work/docker.asc" /etc/apt/keyrings/docker.asc
+    printf 'Types: deb\nURIs: %s\nSuites: %s\nComponents: stable\nArchitectures: %s\nSigned-By: /etc/apt/keyrings/docker.asc\n' \
+      "$repo" "$codename" "$(dpkg --print-architecture)" > "$work/docker.sources"
+    install -m 0644 "$work/docker.sources" /etc/apt/sources.list.d/docker.sources
+    vps_apt update
+  fi
+  vps_apt install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  waited=0
+  until engine=$(docker version --format '{{.Server.Version}}' 2> /dev/null); do
+    [ "$waited" -lt 30 ] || fail "Docker Engine is installed, and its daemon does not answer (systemctl status docker says why)"
+    sleep 1
+    waited=$((waited + 1))
+  done
+  say "Installed Docker Engine $engine"
+}
+
+vps_apt() {
+  if ! DEBIAN_FRONTEND=noninteractive apt-get -y -qq -o Dpkg::Use-Pty=0 "$@" > "$work/apt.log" 2>&1; then
+    tail -n 20 "$work/apt.log" >&2
+    fail "apt-get $* failed (its last lines are above)"
+  fi
+}
+
+# Compose reads the shell's variables before .env: those it reads here come from .env alone, and its files from here.
+vps_compose() { (cd "$vps_dir" && unset AGENTRUN_IMAGE AGENTRUN_BIND DOCKER_GID AGENTRUN_SEAL_KEY AGENTRUN_TOKEN AGENTRUN_PUBLIC_URL AGENTRUN_TRUSTED_PROXIES COMPOSE_FILE COMPOSE_PROJECT_NAME COMPOSE_PROFILES COMPOSE_ENV_FILES && docker compose "$@"); }
+
+# lib/tailscale.mjs of the image, run in it as root with this server's tailscale and its socket: `address`, or `serve URL
+# LOG`. Its record of the serve entry is kept in $vps_dir/tailscale.
+vps_tailnet() {
+  verb=$1
+  shift
+  ts=$(command -v tailscale 2> /dev/null) || ts=
+  sock=
+  [ -z "$ts" ] || [ ! -d /var/run/tailscale ] || sock=/var/run/tailscale
+  docker run --rm --network none --user 0:0 -e HOME=/root -v "$vps_dir/tailscale:/root/.agentrun" \
+    ${ts:+-v} ${ts:+"$ts:/usr/local/bin/tailscale:ro"} ${sock:+-v} ${sock:+"$sock:$sock"} \
+    --entrypoint node "$image" /opt/agentrun/packages/agentrun/lib/tailscale.mjs "$verb" "$port" "$again" "$@"
+}
+
+# .env: the token and the seal key made once and kept, then the settings this run chose; any other line stays as it is.
+# compose.yaml: written again on every run (changes of one's own go in compose.override.yaml beside it).
+vps_files() {
+  env_file=$vps_dir/.env
+  token=$(sed -n 's/^AGENTRUN_TOKEN=//p' "$env_file" 2> /dev/null | tail -n 1)
+  seal=$(sed -n 's/^AGENTRUN_SEAL_KEY=//p' "$env_file" 2> /dev/null | tail -n 1)
+  made=
+  if [ -z "$token" ]; then
+    token=$(openssl rand -hex 32)
+    made="the API token"
+  fi
+  if [ -z "$seal" ]; then
+    seal=$(openssl rand -base64 32)
+    made="${made:+$made and }the seal key"
+  fi
+  [ -n "$token" ] && [ -n "$seal" ] || fail "openssl made no API token or seal key"
+  gid=$(stat -c %g /var/run/docker.sock) || fail "this Docker has no /var/run/docker.sock to give AgentRun"
+  {
+    if [ -f "$env_file" ]; then
+      grep -v -E '^(AGENTRUN_TOKEN|AGENTRUN_SEAL_KEY|AGENTRUN_IMAGE|AGENTRUN_BIND|AGENTRUN_PUBLIC_URL|AGENTRUN_TRUSTED_PROXIES|DOCKER_GID)=' "$env_file" || true
+    else
+      echo "# AgentRun's settings for Docker Compose. The installer (--vps) keeps AGENTRUN_TOKEN and AGENTRUN_SEAL_KEY, and"
+      echo "# writes the lines after them on every run. Lines of your own (a model key, AGENTRUN_BOX_ALLOW) stay; keep this"
+      echo "# file's seal key: every saved secret is sealed under it."
+    fi
+    printf 'AGENTRUN_TOKEN=%s\n' "$token"
+    printf 'AGENTRUN_SEAL_KEY=%s\n' "$seal"
+    printf 'AGENTRUN_IMAGE=%s\n' "$image"
+    printf 'AGENTRUN_BIND=%s\n' "$bind"
+    printf 'AGENTRUN_PUBLIC_URL=%s\n' "$url"
+    printf 'AGENTRUN_TRUSTED_PROXIES=%s\n' "$trusted"
+    printf 'DOCKER_GID=%s\n' "$gid"
+  } > "$work/env"
+  chmod 600 "$work/env"
+  mv -f "$work/env" "$env_file"
+  if [ -n "$made" ]; then
+    say "Made $made in $env_file (mode 600), kept on every later run"
+  else
+    say "Kept the API token and the seal key in $env_file"
+  fi
+
+  cat > "$work/compose.yaml" << 'EOF'
+# AgentRun, written by its installer (curl -fsSL https://agentrun.ai/install | sh -s -- --vps) on every run: put changes
+# of your own in compose.override.yaml beside this file, which Docker Compose reads too. .env holds the settings.
+#
+# The server gets this server's Docker socket, so a run's computer can be a Docker sandbox: a container beside the
+# server's, with no socket, every capability dropped, no network but its egress proxy, and of the data volume only its
+# run's folder. Whatever reaches that socket is root on this server: keep the server for AgentRun alone.
+name: agentrun
+services:
+  agentrun:
+    image: ${AGENTRUN_IMAGE:?run the installer again}
+    ports:
+      - "${AGENTRUN_BIND:?run the installer again}:7340:7340"
+    volumes:
+      - agentrun-data:/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    group_add:
+      - "${DOCKER_GID:?run the installer again}"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:7340/v2/health').then(({ ok, status }) => { if (!ok) throw new Error(String(status)) })"] # key-gate: loopback-rule the servers own loopback, its health check
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+      start_interval: 2s
+    # Every line of .env reaches the server: the installer's, and a model key, a price or AGENTRUN_BOX_ALLOW you add.
+    env_file: .env
+    environment:
+      AGENTRUN_BOXES: docker
+      AGENTRUN_SEAL_KEY: ${AGENTRUN_SEAL_KEY:?run the installer again}
+      AGENTRUN_TOKEN: ${AGENTRUN_TOKEN:?run the installer again}
+      AGENTRUN_PUBLIC_URL: ${AGENTRUN_PUBLIC_URL:?run the installer again}
+    restart: unless-stopped
+    stop_grace_period: 15s
+volumes:
+  agentrun-data:
+EOF
+  mv -f "$work/compose.yaml" "$vps_dir/compose.yaml"
 }
 
 main "$@"

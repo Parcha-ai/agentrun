@@ -85,7 +85,7 @@ test("capabilities come from the host's descriptor (network, mounts, the kind's 
 		groups: DESKTOP_GROUPS,
 		maxLifetimeMs: 24 * HOUR,
 		release: ["delete"],
-		mount: ["archil"],
+		mount: ["archil", "sync"],
 		vendorAgentPorts: [7777],
 	});
 	assert.deepEqual(setup().provider.capabilities().groups, LINUX_GROUPS, "linux by default");
@@ -96,9 +96,13 @@ test("capabilities come from the host's descriptor (network, mounts, the kind's 
 	assert.equal(setup({}, { timer: "none" }).provider.extend, undefined, "no extend where the host has none");
 	assert.throws(() => setup({ maxLifetimeMs: 25 * HOUR }), /at most 86400000 ms, the longest Fakehost keeps a computer/);
 	assert.throws(() => setup({ daemonUser: "0:0" }), /root or in root's group/);
-	// The descriptor is the network's and the mounts' one source: the host's facts name neither.
+	// The descriptor is the network's and the mounts' one source: the host's facts name neither. A synced folder is derived
+	// from a configuration with exec and files, unless the descriptor says why not.
 	const unmounted = setup({ descriptor: { ...FAKE_DESCRIPTOR, mounts: [], unmounted: { archil: "Archil mounts don't work on Fakehost" } } }).provider;
-	assert.deepEqual(unmounted.capabilities().mount, []);
+	assert.deepEqual(unmounted.capabilities().mount, ["sync"]);
+	const unsynced = setup({ descriptor: { ...FAKE_DESCRIPTOR, mounts: [], unmounted: { sync: "no /workspace on Fakehost" } } }).provider;
+	assert.deepEqual(unsynced.capabilities().mount, []);
+	assert.deepEqual(unsynced.check({ ...SPEC, mount: { kind: "sync" } }), [{ field: "mount", message: "no /workspace on Fakehost" }]);
 	assert.match(unmounted.check({ ...SPEC, mount: { kind: "archil", disk: "d", region: "r", folder: "f", token: "t" } })[0].message, /Archil mounts don't work on Fakehost/);
 	assert.deepEqual(setup(WITH_GPU).provider.capabilities().gpu, { types: ["H100"], max: 1 }, "the kind's GPUs, from its configuration");
 	assert.equal(setup({ ...WITH_GPU, kind: "desktop" }).provider.capabilities().gpu, undefined, "a desktop configuration offers none");

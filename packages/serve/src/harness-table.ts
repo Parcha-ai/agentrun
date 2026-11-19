@@ -14,6 +14,8 @@ import type { ModelProxyOptions } from "@parcha/agentrun-kernel/host";
 import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
 import { facts as openCodeFacts } from "./harness-opencode/facts.js";
+import { GOOSE_FACTS } from "./adapter-facts.js";
+import { gooseHidden } from "./harness-goose.js";
 import type { AdapterNeeds } from "./adapters.js";
 import { DEFAULT_HARNESS, HARNESS_ID_PATTERN, type HarnessId, PLAN_HARNESSES, RESERVED_HARNESS_IDS } from "./harness.js";
 import { HARNESS_INSTALLS, type HarnessInstallEntry, type HarnessPins } from "./harness-install.js";
@@ -87,6 +89,10 @@ export interface HarnessEntry {
   skillCheck?(): Promise<SkillCheck | undefined>;
   /** What its first-use install needs (installs). */
   pins?(): Promise<HarnessPins>;
+  /** Why it is not listed on `env` (harnessIds: capabilities, the tools' harnesses), in words that end with what to do;
+   *  undefined while it is. One its owner installs (Goose: harness-goose.ts) is listed only once it is there and verified.
+   *  It is still in the table, so a run or a save naming it is refused with these words. */
+  hidden?(env: NodeJS.ProcessEnv): string | undefined;
 }
 
 /** What a test's table module exports: entries by id, each merged over the built-in one of that id (all of it, for one
@@ -130,7 +136,7 @@ const PI: HarnessEntry = Object.freeze({
 const onOpenRouter = (id: string, vendor: string): boolean => new RegExp(`^openrouter/${vendor}/[^/]+$`).test(id);
 
 /** An adapter harness's entry, from its facts and the factory that builds its adapter. */
-function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs: AdapterNeeds) => Promise<AgentAdapter>, extra: Pick<HarnessEntry, "skillCheck" | "pins"> = {}): HarnessEntry {
+function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs: AdapterNeeds) => Promise<AgentAdapter>, extra: Pick<HarnessEntry, "skillCheck" | "pins" | "promises" | "hidden"> = {}): HarnessEntry {
   const { wire, id } = facts;
   const { vendor, gateway } = WIRES[wire];
   const installs = HARNESS_INSTALLS[id];
@@ -193,11 +199,19 @@ const BUILTIN: Readonly<Record<HarnessId, HarnessEntry>> = Object.freeze({
   [openCodeFacts.id]: adapterEntry(openCodeFacts, async (env, needs) => (await import("./adapters.js")).opencodeOf(env, needs), {
     // Checked as OpenCode is handed them (servedSkills, opencodeOf's): one size check on what it gets.
     skillCheck: async () => {
-      const [{ packageSkillCheck }, { servedSkills }] = await Promise.all([import("./adapters.js"), import("./learn/skills.js")]);
+      const [{ packageSkillCheck }, { servedSkills }] = await Promise.all([import("./adapters.js"), import("./learn/workflow-draft.js")]);
       const check = await packageSkillCheck(() => import("./harness-opencode/index.js"));
       return check && ((skills) => check(servedSkills(skills)));
     },
   }),
+  // Goose, over ACP, where its package is beside serve (acp-package.ts): its owner installs its pinned binary
+  // (`agentrun harness install goose`, harness-goose.ts), never a run; listed only once it is installed and verified.
+  ...(GOOSE_FACTS ? {
+    [GOOSE_FACTS.id]: adapterEntry(GOOSE_FACTS, async (env, needs) => (await import("./adapters.js")).gooseOf(env, needs), {
+      promises: Object.freeze({ resume: "load", tool_gate: "permission", billing: "proxy" }),
+      hidden: gooseHidden,
+    }),
+  } : {}),
 } as Record<HarnessId, HarnessEntry>);
 
 const loaded = new Map<string, Readonly<Record<string, HarnessEntry>>>();
@@ -286,8 +300,13 @@ export function harnessModulePaths(names: readonly string[], data: string): stri
 /** HARNESS_MODULES_ENV for the harness modules `names` names: none for none. */
 export const harnessModulesEnv = (names: readonly string[], data: string): NodeJS.ProcessEnv => (names.length ? { [HARNESS_MODULES_ENV]: JSON.stringify(harnessModulePaths(names, data)) } : {});
 
-/** The ids of the harnesses `env`'s table has, in its order: the built-in ones (pi first), then those its modules add. */
-export const harnessIds = (env: NodeJS.ProcessEnv): readonly string[] => Object.keys(harnessTable(env));
+/** The ids of the harnesses `env`'s table lists, in its order: the built-in ones (pi first), then those its modules add;
+ *  not one its entry hides on `env` (HarnessEntry.hidden: Goose until it is installed). */
+export const harnessIds = (env: NodeJS.ProcessEnv): readonly string[] => Object.entries(harnessTable(env)).filter(([, entry]) => entry.hidden?.(env) === undefined).map(([id]) => id);
+
+/** The ids of every harness `env`'s table has, hidden ones too: those a definition may name (a save warns of a hidden one,
+ *  a run is refused with why). */
+export const tableIds = (env: NodeJS.ProcessEnv): readonly string[] => Object.keys(harnessTable(env));
 
 /** The built-in entry of harness `id` (none: the default, pi), for what a test's entry never changes: its memory (host.ts),
  *  which a stand-in reserves as the harness it stands in for does, so tests admit as a real server does. */

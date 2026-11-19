@@ -4,8 +4,8 @@
 // forward, where a response reports its usage). The core:
 //  - admits a request only with the session's key (compared in constant time), on a route the policy lists, by exact
 //    path text, with no query or one the route lists exactly: an absolute URL, `..`, `//` or `%` escapes never match. A
-//    route may be answered here with a status alone, with no key (a client's connectivity check), or be free (a token
-//    count, which the runner never pays);
+//    route may be answered here with a status alone, with no key (a client's connectivity check), or with a body the
+//    policy fixed, with the key (a client's list of models), or be free (a token count, which the runner never pays);
 //  - parses the body strictly (one JSON value, no duplicate key at any depth, so a check on one `model` cannot pass while
 //    the provider reads another), then has the policy shape it (or refuse it);
 //  - asks the runner before every paid request (`beforeRequest`, where a turn cap or the host's budget refuses it) and
@@ -39,6 +39,10 @@ export interface ProxyRoute {
   readonly headers?: readonly string[];
   /** Answered here with this status and an empty body, never forwarded (a client's connectivity check). */
   readonly local?: number;
+  /** With `local`: the JSON text it is answered with in place of an empty body (a client's list of models, answered
+   *  with the session's own so the provider's list is never asked for), and then only to the session's key or a side
+   *  key. */
+  readonly localJson?: string;
   /** Not a paid request (a token count): forwarded without asking the runner, and no usage is reported. */
   readonly free?: boolean;
 }
@@ -549,6 +553,8 @@ export interface ProxyRequest {
   noted?: true;
   /** The label of the side key it came under (ModelProxy.sideKey): the host's own request, beside the harness's. */
   host?: string;
+  /** The conversation its client says it is asked in (CONVERSATION_HEADER), when it names one: its client's own label. */
+  conversation?: string;
   /** Aborted when its client goes before it is admitted (ModelRequest.signal): a wait for room ends then. */
   signal?: AbortSignal;
 }
@@ -710,6 +716,15 @@ const RETRY_HEADERS = ["retry-after", "retry-after-ms", "x-should-retry"] as con
 const ID_HEADER = /^(?:[a-z0-9]+[-_])*(?:request|call)[-_]id$/;
 /** What an id looks like: nothing else (a cookie, a token, prose) is ever kept. */
 const ID_VALUE = /^[A-Za-z0-9_.:-]{1,200}$/;
+
+/** The request header by which a session's client names the conversation a request is asked in: its own label for it,
+ *  opaque here. The host is told it with the request (ProxyRequest.conversation), so it knows which of several
+ *  conversations asking at once a booking is; it is never forwarded to the provider. */
+export const CONVERSATION_HEADER = "x-agentrun-conversation";
+/** A conversation's label as CONVERSATION_HEADER carries it: id-shaped (ID_VALUE), else undefined (never sent, never told). */
+export function conversationLabel(value: unknown): string | undefined {
+  return typeof value === "string" && ID_VALUE.test(value) ? value : undefined;
+}
 
 /** The ids a response's headers give its request, by header name, so a run's books can be joined to the provider's (or
  *  a gateway's) request by request; undefined when there are none. Only id-named headers with id-shaped values. */
@@ -1159,16 +1174,25 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
       const e = error as ProxyRefusal;
       return refuse(res, e.status ?? 403, e.message, req);
     }
-    // A local route forwards nothing and answers only a status, so it needs no key: a client's connectivity check
-    // (the Claude Agent CLI's `HEAD /api/hello`) is sent without one.
+    // A local route forwards nothing. One that answers only a status needs no key: a client's connectivity check (the
+    // Claude Agent CLI's `HEAD /api/hello`) is sent without one. One that answers a body says something of the session
+    // (its model, to Goose's `GET /v1/models`), so it takes a key as every other route does.
     if (route.local !== undefined) {
-      res.writeHead(route.local, { "content-length": "0" });
-      return res.end();
+      if (route.localJson === undefined) {
+        res.writeHead(route.local, { "content-length": "0" });
+        return res.end();
+      }
+      const sent = policy.keyOf(req.headers);
+      if (!sameKey(sent, key) && sideOf(sent) === undefined) return refuse(res, 401, "this session's key is required", req);
+      res.writeHead(route.local, { "content-type": "application/json", "content-length": String(Buffer.byteLength(route.localJson)) });
+      return res.end(route.localJson);
     }
     // The session's key (the harness's requests), or a side key the host holds (its own, labelled).
     const sentKey = policy.keyOf(req.headers);
     const host = sameKey(sentKey, key) ? undefined : sideOf(sentKey);
     if (host === undefined && !sameKey(sentKey, key)) return refuse(res, 401, "this session's key is required", req);
+    // The conversation its client names for it, told to the host with its admission; no header sent on carries it.
+    const conversation = conversationLabel(req.headers[CONVERSATION_HEADER]);
     const chunks: Buffer[] = [];
     let size = 0;
     for await (const chunk of req) {
@@ -1397,6 +1421,7 @@ export async function startModelProxy(options: ModelProxyOptions, key: string): 
         ...(effort === undefined ? {} : { effort }),
         ...(feeUsd > 0 ? { feeUsd } : {}),
         ...(host === undefined ? {} : { host }),
+        ...(conversation === undefined ? {} : { conversation }),
         ...(options.route === undefined ? {} : { route: options.route }),
       });
     } catch (error) {

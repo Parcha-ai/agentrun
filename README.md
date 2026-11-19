@@ -81,7 +81,7 @@ laptop, in one container, or as a server with runners. Apache-2.0.
 create an account or sign in. For help setting up your team's workflows,
 [talk to us](https://calendly.com/d/dtwn-dsp-nx5/agentrun).
 
-Prefer your own machine or infrastructure? Start locally below, or [self-host on Railway, Render or Docker](#deploy-it).
+Prefer your own machine or infrastructure? Start locally below, or [self-host on Railway, Render, a VPS or Docker](#deploy-it).
 The [getting-started guide](docs/getting-started.md) explains the three options.
 
 <a id="start-in-three-steps"></a>
@@ -206,41 +206,35 @@ cost, by day, by harness and by tool.
 
 ## Agents that learn the work
 
-Turn it on with `"learning": true` in an agent's definition. At the end of every run, the agent gets one more turn to
-say what it would keep. AgentRun checks it, grades it, and commits the keepers to the agent's own git folder. The next
-run starts from there.
+Turn it on with `"learning": true` in an agent's definition. An agent learns two things, both kept in its own git
+folder, and every run starts from that folder's `main`.
 
 ```mermaid
 flowchart LR
     start["Run starts from<br/>the agent's main"] --> work["Run does the job"]
-    work --> propose["Last turn proposes<br/>notes, a skill, a workflow"]
-    propose --> check["Code checks,<br/>then one grader"]
+    work --> fin["Run's end: your words to corrections.md,<br/>a workflow draft when one is due"]
+    fin --> check["Code checks,<br/>then one replay check"]
     check -->|kept| commit["Commit to main"]
     commit --> start
 ```
 
-- **Notes** are short markdown files, one fact each, in Claude Code's memory format.
-- **Skills** are how to do a job again, and only a run that finished the job can write one.
-- **Learned workflows** run as one tool call on any harness, under the run's own cap and tool permissions. Once a
-  learned skill has served 3 runs, the next run is asked for that job as a workflow draft, and a draft is dry-run
-  before it's kept: no model is asked and no tool runs.
+- **Corrections** are your words. A grade's words, or a message you send after a run's first answer, become one line
+  of the agent's `corrections.md` at that run's end. Every later run is given the file whole, under `# Learned`.
+- **Learned workflows** run as one tool call on any harness, under the run's own cap and tool permissions. Once the
+  agent has 20 completed runs (`learning: { "compile_after": 20 }` is the default), one run's end compiles the job into
+  a workflow draft. Code checks the draft and dry-runs it (no model is asked and no tool runs), then it is replayed
+  once on those runs' inputs and serves only when it answers enough of them alone and agrees with the agent's answers.
 
-The agent's **Learning** tab shows every note, skill and workflow and the log of changes, and each run shows which
-notes it was given and opened. Retire anything there, or with `npx @parcha/agentrun learning retire` and the note's
-ETag. Git keeps the history, so a retired note can come back.
+The agent's **Learning** tab shows its corrections, its workflows and the log of changes. Edit the corrections there,
+or with `PUT /v2/agents/{id}/learning/corrections`. Git keeps the history.
 
 <details>
-<summary>What gets kept, and what gets dropped</summary>
+<summary>What gets kept, and what gets refused</summary>
 
-Each agent has a learning folder: plain git with one branch, `main`. A run reads the index of active notes in its
-instructions and gets the learned skills beside its own. Code checks every proposal first. An item that breaks a rule of
-its own (a size or count limit, its name, its shape) is left out and the rest goes on. A secret or a hidden character
-anywhere in the answer, a file outside the folder, a deletion or a full index drops the whole answer, since no item of
-it can be trusted. Then one grader judges what it says, and AgentRun commits what passes. A risky rule waits for your
-OK. A rule the run found in a page or a pasted email, or a note that holds an account number, is dropped.
-
-Once an agent's notes outgrow the learning budget, each run gets the ones that bear on its first message, whole, and a
-line for each of the rest. A run that only ran a learned workflow isn't asked what to keep.
+Each agent has a learning folder: plain git with one branch, `main`. Over a cap a write is refused whole, never cut:
+2048 bytes for `corrections.md`, 16384 for a draft's `workflow.json`, 1024 for its README. A secret or a secret's
+shape in a correction or a draft refuses it too. A held draft gets one revision, shown the inputs it disagreed on;
+held again, it stops, and nothing compiles again until you act.
 
 </details>
 
@@ -393,7 +387,7 @@ computer:
 | --- | --- | --- |
 | `none` | Read and write files in its run folder; no shell (with Archil, commands run on Archil's exec) | none needed |
 | `sandbox` | Run code, install packages, keep processes in the background, on Linux | Docker, Daytona, Modal, E2B, Cloudflare (through a relay Worker you deploy) |
-| `desktop` | See a Linux screen, move the mouse, type | Orgo, E2B, Docker (your own image with an X server) |
+| `desktop` | See a Linux screen, move the mouse, type | Orgo, E2B, Docker (your own image with an X server), and on dial Daytona, Modal, Cloudflare and Fly Machines (the box image's desktop) |
 | `phone` | Tap, swipe, type, open apps and read the screen on Android | phone harness (a rented cloud Android) |
 | `browser` | Browse the web, and hand the controls to you at any point | Browserbase, Kernel |
 
@@ -515,7 +509,7 @@ into the console.
 
 **Self-host on Railway.**
 
-[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/agentrun)
+[![Deploy on Railway](https://railway.com/button.svg)](https://railway.com/deploy/agentrun-1)
 
 The button deploys the published template: the image, a volume at `/data`, a domain, and the token and seal key made
 for you. About $5 a month on Railway's Hobby plan, which includes $5 of usage; agents get no shell. When it's live, open
@@ -535,6 +529,24 @@ blank. When it's live, open its URL and paste `AGENTRUN_TOKEN` from the service'
 Then Continue with ChatGPT (Settings → Model keys, or the first screen), then run your first agent. Or paste a key in
 Render's form, or add it in the console: we recommend an `OPENROUTER_API_KEY` with a dollar cap and an expiration
 date. Do not share it with anyone.
+
+**Self-host on a $5 VPS.**
+
+On a fresh Linux server you rent (Ubuntu or Debian), as root:
+
+```sh
+curl -fsSL https://agentrun.ai/install | sh -s -- --vps
+```
+
+It installs Docker if the server has none, runs the published image with Docker Compose in `/opt/agentrun`, and makes
+the token and seal key once, in `/opt/agentrun/.env` (mode 600). Its agents get a shell in Docker sandboxes. It stays
+private. With [Tailscale](https://tailscale.com) logged in, only your own tailnet reaches it. Without Tailscale,
+AgentRun listens on the server's loopback and the installer prints the steps to add it. `--public` opens port 7340 to
+the internet over plain HTTP instead, and warns you first. It prints the address and the setup code. Run it again to
+upgrade.
+A Hetzner Cloud CPX02 (1 GB) is from €5.49 a month before VAT and a DigitalOcean Basic Droplet (1 GiB) is $6, at their
+prices when this was written. The server gets the VPS's Docker socket, which is root on it, so keep the VPS for
+AgentRun alone. Details: [deploy/README.md](deploy/README.md#one-command-on-a-server-you-rent).
 
 <details>
 <summary>Docker Compose: a server and two runners</summary>
@@ -577,7 +589,8 @@ Every saved secret (model and tool keys, MCP credentials, sign-ins, webhook sign
 `AGENTRUN_SEAL_KEY`; keep it, because losing it loses what it sealed. Secrets are write-only: the console shows each
 one as set or missing, and only the console can paste, replace or remove one (your signed-in session, or the
 launcher's console on loopback when accounts are off). A key set where the server starts wins over a pasted one. The
-API token can't write a secret or approve a tool call. A run gets only the keys its own model and tools need, and
+API token can't write a secret or approve a tool call: its secret write is refused with a console link
+(`error.details.console_url`) to the form, filled in except for the secret. A run gets only the keys its own model and tools need, and
 nothing a run learns can keep a secret it was handed. [SECURITY.md](SECURITY.md) says how to report a vulnerability.
 
 The server counts itself anonymously (a random id, its version, its platform): never prompts, files or keys.
@@ -593,6 +606,7 @@ The server counts itself anonymously (a random id, its version, its platform): n
 - [The CLI's skill](packages/agentrun/skills/agentrun-cli/SKILL.md) and [every command](packages/agentrun/skills/agentrun-cli/references/commands.md)
 - [Connect existing agents and import history](docs/native-agents.md), locally or from another machine
 - [Deploying](deploy/README.md), [computers](packages/computer/README.md), [templates](packages/serve/templates/README.md)
+- [Give an agent tools](docs/connect-tools.md): Sentry, GitHub, Slack and other services as MCP servers, with no token in the box
 - [Connect Composio tools and triggers](docs/tutorials/composio.md)
 - [The workflow language](packages/dsl/README.md), [authoring](docs/authoring.md), [the guide](docs/guide.md)
 - [Changelog](CHANGELOG.md) and [contributing](CONTRIBUTING.md)

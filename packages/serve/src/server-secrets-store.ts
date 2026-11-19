@@ -7,6 +7,7 @@ import { sealedSettingsOverStore, type SealedSettingsOverStore } from "./sealed-
 import { besideTheStore, type ServerSecrets } from "./server-secrets.js";
 import { SEAL_KEY_ENV, sealKeyOf } from "./tool-keys.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
+import { SLACK_CHANNEL, SLACK_URL_SPEC, slackUrlForms } from "./slack.js";
 import { WEBHOOK_CHANNEL, WEBHOOK_SECRET_SPEC } from "./webhooks.js";
 import type { TriggerSettings } from "./store/index.js";
 
@@ -36,6 +37,12 @@ export async function openServerSecretsOverStore(
   );
   await webhookSettings.load();
   secrets.add("webhook", () => webhookSettings.values());
+  // Slack's incoming-webhook URL, and each it held before (slack.ts): the URL is the credential, cut as a secret is.
+  const slackSettings = sealedSettingsOverStore(store, SLACK_CHANNEL, SLACK_URL_SPEC, key, (fields) =>
+    fields.condition === "trigger_setting_unopened" ? say({ condition: "unreadable", name: SEAL_KEY_ENV, data, effect: "this server's Slack URL cannot be read under this seal key, so it is not cut" }) : say(fields),
+  );
+  await slackSettings.load();
+  secrets.add("slack", () => slackSettings.values().flatMap(slackUrlForms));
   const settings = new Map<string, SealedSettingsOverStore>();
   for (const adapter of adapters) {
     if (!adapter.settings) continue;

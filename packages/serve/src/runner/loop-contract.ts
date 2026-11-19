@@ -6,6 +6,7 @@ import { money } from "@parcha/agentrun-kernel/kernel/cap";
 import { refusedText } from "../refusal-words.js";
 import type { AlsoRow, Claim, Command, Journal } from "../store/store.js";
 import type { Redact } from "./redact.js";
+import type { Compared, GraderReply } from "../learn/promote.js";
 
 // The store's own: a claim (its epoch fences every write made under it; `until` in epoch ms) and a command row (taken_at
 // set once, by the loop's journal commit that applies it or by the runner's refusal, with `refused` its reason).
@@ -31,9 +32,8 @@ export type EndOfRunAnswer = ({ readonly ended: true; readonly answer: string } 
 
 /**
  * The end-of-run step (the learning lane's end-of-run turn): asked once, after the job's last turn ended and before the
- * loop writes the run's end. `ask` sends one more turn through the run's own session, its origin `reflect`: while it
- * runs the loop refuses its writes and edits under work/.learning/ (REFLECT_NOTE_ONLY), and it is aborted at
- * `deadlineMs`. The rows it returns are staged into the end commit, so they land in that commit's one transaction or not
+ * loop writes the run's end. `ask` sends one more turn through the run's own session (the compile turn's attempts),
+ * its origin `reflect`, aborted at `deadlineMs`. The rows it returns are staged into the end commit, so they land in that commit's one transaction or not
  * at all. A stop or a lost claim aborts `signal`: no end is written, and the next claim asks again (the turn's request
  * id is one per run, so its model is asked once).
  */
@@ -59,8 +59,13 @@ export type EndOfRunTurn = (input: {
    *  earlier claim (or this one) started, readable before `ask`, so a step that skips or is cut never asks, and still
    *  closes that look-back with its first ask's figures. Undefined when none asked it, or the loop keeps no record (pi's). */
   keptOf?(round: number): EndOfRunKept | undefined;
+  /** A replay run's or an audit shadow's grader (learn/promote.ts): its fast model's name (`grader`), and one request to
+   *  it (`grade`), sent through the run's own session on its one cap, booked as the run's spend; a refusal of that cap
+   *  never parks the run (`refused`). Absent when the run has no grader route (no fast model, or agree_on named). */
+  readonly grader?: string;
+  grade?(request: { readonly system: string; readonly user: string }): Promise<GraderReply>;
   readonly signal: AbortSignal;
-}) => Promise<{ readonly also: readonly AlsoRow[] } | undefined>;
+}) => Promise<{ readonly also: readonly AlsoRow[]; readonly compared?: Compared } | undefined>;
 
 /** How a loop's start() ended. The run's own outcome (state, cost) is already in the journal's last commit. */
 export type LoopEnd =

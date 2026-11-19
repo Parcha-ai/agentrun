@@ -236,7 +236,7 @@ for(const source of ['ancestor local','ancestor agent','worktree control'])test(
  if(source==='worktree control')await f.put(join(f.project,'.git'),'gitdir: ../main/.git/worktrees/fixture\n');
  const target=(await discoverNative({project:f.project,runtime:'claude-code',env:f.env})).targets[0];
  assert.equal(target.model,null,'discovery cannot claim an effective model from unresolved source scopes');
- assert.equal(target.capabilities.launch,true);assert.equal(target.capabilities.notes,false);
+ assert.equal(target.capabilities.launch,true);assert.equal(target.capabilities.learning,false);
  const launched=await launchNative({...target,connected:true},f.env);assert.equal(launched.state,'ready');
  assert.match((await snapshotNativeInstructions(launched)).incomplete,/Claude.*policy/i);
 });
@@ -262,7 +262,7 @@ for(const kind of ['nested','duplicate','symlink'])test(`Claude ${kind} agent de
   const agents=join(f.project,'.claude','agents');await fsPromises.mkdir(agents,{recursive:true});await fsPromises.symlink(source,join(agents,'reviewer.md'));
  }else await f.put(join(f.env.CLAUDE_CONFIG_DIR,'agents',kind==='nested'?'nested/other.md':'second.md'),'---\nname: reviewer\n---\nOTHER_POLICY');
  const target=(await discoverNative({project:f.project,runtime:'claude-code',env:f.env})).targets[0];
- assert.equal(target.capabilities.launch,true);assert.equal(target.capabilities.notes,false);assert.match((await snapshotNativeInstructions(target)).incomplete,/Claude.*policy/i);
+ assert.equal(target.capabilities.launch,true);assert.equal(target.capabilities.learning,false);assert.match((await snapshotNativeInstructions(target)).incomplete,/Claude.*policy/i);
 });
 
 const claudeImports = [

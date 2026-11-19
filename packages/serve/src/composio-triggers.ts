@@ -12,7 +12,8 @@
 //   resuming and deleting follow on Composio once the change holds here, and so does the server turning a trigger off
 //   itself (triggers.ts); what Composio could not do is said, with what to do by hand.
 // - One project's steps run one at a time (serial): a create's setup, its save here and its undo, a pause, a delete, a
-//   rotate, the subscription's delete and the saved server's delete. Each reads the triggers holding what it would undo,
+//   rotate, the subscription's delete and the saved server's delete; a template update's removal (removedThere) deletes
+//   its trigger here in the same step, once Composio is done. Each reads the triggers holding what it would undo,
 //   turn off or delete as they are then, so it never removes what another holds, a pause or resume sets the instance as
 //   its triggers now stand, and a create re-reads its saved server before it saves, so no trigger outlives its server.
 // - A config field named like a credential (trigger-composio.ts sealedConfigFields) is sealed at the create, each under
@@ -22,7 +23,7 @@
 //   its key in the clear is answered masked all the same (shownSource), and sealed at the next start (sealKept).
 // No public address (AGENTRUN_PUBLIC_URL): Composio can't reach this server, so making one is refused before Composio is
 // asked anything.
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { ApiError, invalid } from "./errors.js";
 import { type Ask, asking, type ComposioControl } from "./composio-preset.js";
 import type { Source } from "./trigger-adapter.js";
@@ -75,6 +76,18 @@ const sealedOf = (source: Source): string[] => (Array.isArray(source[SEALED_FIEL
 /** The settings field a sealed config value is kept under: one the list of the server's secrets can hold (8 bytes or
  *  more, no whitespace), else the unlisted one. */
 const configFieldFor = (value: string) => (!/\s/.test(value) && Buffer.byteLength(value, "utf8") >= 8 ? CONFIG_SECRET : CONFIG_UNLISTED);
+
+/** The keys of a sealed_config name's place in the config: a top-level name as it is, a JSON Pointer's unescaped. */
+const placeOf = (name: string): string[] => (name.startsWith("/") ? name.slice(1).split("/").map((key) => key.replace(/~1/g, "/").replace(/~0/g, "~")) : [name]);
+/** The value at `path` in `config` where it is still kept in the clear (a trigger an earlier server saved), as text. */
+const clearAt = (config: unknown, path: readonly string[]): string | undefined => {
+  let node: unknown = config;
+  for (const key of path) node = isObject(node) ? node[key] : Array.isArray(node) ? node[Number(key)] : undefined;
+  return (typeof node === "string" || typeof node === "number") && node !== SEALED_MASK ? String(node) : undefined;
+};
+/** Whether two secrets are equal, in time that does not depend on where they differ: each digested first, so two of
+ *  different lengths compare as two equal-length buffers. */
+const sameSecret = (a: string, b: string): boolean => timingSafeEqual(createHash("sha256").update(a, "utf8").digest(), createHash("sha256").update(b, "utf8").digest());
 
 /** `said` with each of `values` (sealed config values) put as the mask. */
 /** An error's words for a log line: none with sealed config values (`values`) in play, as a quote of one may be in a form
@@ -171,6 +184,31 @@ export class ComposioTriggers implements TriggerUpstream {
     });
   }
 
+  /** A source sent whole again for trigger `id` (`was`), as an apply with agent_id sends its package's, its credentials in
+   *  the clear: each sealed field whose value it sends is the value sealed (compared in constant time) is left out, so the
+   *  PATCH keeps it (patched); then patched's own check, so another value, or any other change to the config, is refused
+   *  here, before the caller writes anything, in patched's words (none holds a value). The answer is the source to PATCH
+   *  the trigger with: no sealed value is in it. */
+  resent(was: Source, id: string, given: Source): Source {
+    const config = isObject(given.config) ? (structuredClone(given.config) as Json) : given.config;
+    if (isObject(config)) {
+      for (const name of sealedOf(shownSource(was))) {
+        const path = placeOf(name);
+        let node: unknown = config;
+        for (const key of path.slice(0, -1)) node = isObject(node) ? node[key] : undefined;
+        const last = path.at(-1)!;
+        if (!isObject(node)) continue;
+        const sent = node[last];
+        if (!(typeof sent === "string" || typeof sent === "number") || sent === SEALED_MASK) continue;
+        const kept = this.deps.sealed.get(configScope(id, name), CONFIG_SECRET) ?? this.deps.sealed.get(configScope(id, name), CONFIG_UNLISTED) ?? clearAt(was.config, path);
+        if (kept !== undefined && sameSecret(String(sent), kept)) delete node[last];
+      }
+    }
+    const source: Source = { ...given, config };
+    this.patched(was, source);
+    return source;
+  }
+
   patched(was: Source, given: Source): Source {
     const fixed = "A Composio trigger's server, event and config made its instance on Composio, so they stay: to change one (a sealed key too), delete the trigger and make a new one.";
     for (const field of ["server", "event", "instance_id", "hook"]) if (given[field] !== undefined && given[field] !== was[field]) throw invalid([{ field: `source.${field}`, reason: "not_allowed", message: fixed }]);
@@ -212,23 +250,48 @@ export class ComposioTriggers implements TriggerUpstream {
     // Its sealed config goes with it, whatever Composio says below; read first, so Composio's words about its instance are
     // withheld (asking).
     const values = this.sealedValues([{ id, source }]);
+    await this.forgotten(source, id);
+    return this.leftThere(source, id, values);
+  }
+
+  async removedThere(source: Source, id: string, here: () => Promise<void>): Promise<Json | undefined> {
+    return this.leftThere(source, id, this.sealedValues([{ id, source }]), here);
+  }
+
+  async forgotten(source: Source, id: string): Promise<void> {
     for (const name of sealedOf(source)) await this.deps.sealed.remove(configScope(id, name)).catch((error: unknown) => this.deps.say({ condition: "composio_sealed_config_not_removed", trigger: id, field: name, error: String((error as Error)?.message ?? error) }));
+  }
+
+  /** The trigger `id`'s instance on Composio deleted, or turned off while other triggers hold it (none of them on), or
+   *  kept (one of them on): undefined when that is done, else what is left there, said. `values`: its sealed config's,
+   *  withheld from Composio's words. `here`, once that is done, in the same step of the project's: the trigger's delete
+   *  here, so the next removal of a trigger sharing the instance reads the holders without it (two removals at once
+   *  never each keep the instance for the other); its refusal is thrown, never said as Composio's. */
+  private async leftThere(source: Source, id: string, values: readonly string[], here?: () => Promise<void>): Promise<Json | undefined> {
     const instance = instanceOf(source);
     let left = "delete" as Left;
-    try {
-      // Kept while another trigger holds it, and off once none of those is on, as a pause leaves it.
-      const credential = await this.deps.credential(String(source.server), "field");
-      await this.serial(credential.key, async () => this.leave(this.ask(credential, "nothing was changed", values), instance, (left = await this.leftWith(instance, id))));
-      return undefined;
-    } catch (error) {
-      const said = String((error as Error)?.message ?? error);
-      if (left === "off") {
-        this.deps.say({ condition: "composio_instance_not_turned", trigger: id, instance, on: "false", error: said });
-        return { composio: { done: false, note: `Composio didn't turn the trigger instance ${instance} off, and no trigger left that holds it is on: turn it off there yourself: ${DASHBOARD}` } };
-      }
-      this.deps.say({ condition: "composio_instance_not_removed", trigger: id, instance, error: said });
-      return { composio: { done: false, note: `Composio didn't delete the trigger instance ${instance}: remove it there yourself: ${DASHBOARD}` } };
+    let failed = undefined as { error: unknown } | undefined;
+    // Kept while another trigger holds it, and off once none of those is on, as a pause leaves it.
+    const credential = await this.deps.credential(String(source.server), "field").catch((error: unknown) => void (failed = { error }));
+    if (credential) {
+      await this.serial(credential.key, async () => {
+        try {
+          await this.leave(this.ask(credential, "nothing was changed", values), instance, (left = await this.leftWith(instance, id)));
+        } catch (error) {
+          failed = { error };
+          return;
+        }
+        await here?.();
+      });
     }
+    if (failed === undefined) return undefined;
+    const said = String((failed.error as Error)?.message ?? failed.error);
+    if (left === "off") {
+      this.deps.say({ condition: "composio_instance_not_turned", trigger: id, instance, on: "false", error: said });
+      return { composio: { done: false, note: `Composio didn't turn the trigger instance ${instance} off, and no trigger left that holds it is on: turn it off there yourself: ${DASHBOARD}` } };
+    }
+    this.deps.say({ condition: "composio_instance_not_removed", trigger: id, instance, error: said });
+    return { composio: { done: false, note: `Composio didn't delete the trigger instance ${instance}: remove it there yourself: ${DASHBOARD}` } };
   }
 
   // ---- the routes of a saved Composio server ---------------------------------------------------------------------------

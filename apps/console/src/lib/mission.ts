@@ -10,7 +10,7 @@ export type MissionView = {
   runs: { total: number; active: number; needsInput: number; failed: number; statusUnknown: number; needsReview: number };
   perAgent: { agentId: string; name: string; runs: number }[];
   /** `usd` sums the runs whose cost is known; `unknownRuns` counts the rest. No known cost at all is null, never 0. */
-  cost: { usd: number | null; basis: "estimate" | null; unknownRuns: number };
+  cost: { usd: number | null; basis: Stats["cost"]["basis"]; unknownRuns: number };
   recent: Run[];
   /** The runs' tokens, time, tools and success over the range the page asked for. */
   analytics: Analytics;
@@ -27,7 +27,8 @@ export function costLine(c: MissionView["cost"]): string {
  *  known sum. */
 export function costParts(c: MissionView["cost"]): { total: string; note?: string } {
   if (c.usd === null) return { total: "Unknown" };
-  const total = cost({ usd: c.usd, basis: "estimate", charge_state: null, cap_usd: null });
+  // The server's basis for the sum (GET /v2/stats): an estimate says est., a reported sum says so.
+  const total = cost({ usd: c.usd, basis: c.basis ?? "estimate", charge_state: null, cap_usd: null });
   return { total, ...(c.unknownRuns ? { note: `${c.unknownRuns} ${c.unknownRuns === 1 ? "run" : "runs"} unknown` } : {}) };
 }
 
@@ -37,8 +38,9 @@ export type Stats = {
   agents: number;
   runs: { total: number; active: number; needs_input: number; failed: number; status_unknown: number; needs_review: number };
   per_agent: { agent_id: string; name: string; runs: number }[];
-  /** `basis`: "estimate" when `usd` is a number, null when it is null (GET /v2/stats). */
-  cost: { usd: number | null; basis: "estimate" | null; unknown_runs: number };
+  /** `basis`: how the summed costs were reached when `usd` is a number (`reported`, `estimate` or `unpriced`), null when it
+   *  is null (GET /v2/stats). */
+  cost: { usd: number | null; basis: "reported" | "estimate" | "unpriced" | null; unknown_runs: number };
   archived?: { agents: number; runs: number };
   /** Over the runs `from`, `to` and `agent` pick (every other number is the whole store's). */
   analytics: Analytics;
@@ -85,7 +87,10 @@ export function cachedShare(t: Analytics["totals"]): number | null {
   const input = t.input + t.cache_read + t.cache_write;
   return input ? t.cache_read / input : null;
 }
-/** A group's cost with the store's basis (the page's), said as costParts says it: never $0 for a cost not known. */
+/** A group's cost with the store's basis (the page's), said as costParts says it: never $0 for a cost not known. The
+ *  analytics' runs are among the runs GET /v2/stats sums (archived ones out of both), so a store that reads `reported`
+ *  priced every one of a group's runs that way; a store that reads `estimate` labels each group `est.`, the cautious word
+ *  for a group that may be all reported, until the API says a group's own basis. */
 export const groupCost = (g: AnalyticsGroup, basis: MissionView["cost"]["basis"]) => costParts({ usd: g.cost_usd, basis, unknownRuns: g.unknown_cost_runs });
 /** What a token sum leaves out, said so a partial figure never reads as complete: "tokens from 3 of 5 runs". */
 export const coverage = (g: Pick<AnalyticsGroup, "runs" | "runs_with_metrics">) => (g.runs_with_metrics < g.runs ? `tokens from ${g.runs_with_metrics} of ${g.runs} runs` : undefined);

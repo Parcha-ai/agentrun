@@ -33,18 +33,40 @@ machine or container stops, and `agentrun stop` stops it (a SIGTERM, then a SIGK
 after 45 seconds). Either way the installer returns once AgentRun answers, and prints its address. `sh -s -- --no-start`
 installs only, `--version V` installs another version, `--node-version V` installs that Node.js (at least the floor),
 and `--service` fails where there is no service manager. Running it again upgrades, or installs an older version, and
-first stops the AgentRun it started in the background itself, whatever version that is.
+first stops the AgentRun it started in the background itself, whatever version that is. An older version does not start on
+a store a later one has upgraded: its server says so and exits, and the store is left as it was. Until the owner's
+password is set, it ends by opening the setup page in this machine's browser with the setup code filled in, or, where no browser
+opens (a remote machine), by printing that link.
+
+`agentrun open` does the same at any time: the setup page with a code that is still good (it asks the server for a new
+one when the last has run out) until the password is set, the console after. It reads the code from the service's log,
+`~/.agentrun/logs/agentrun.log`.
 
 `agentrun service status` prints the console's address and its health. `start`, `stop`, `restart`, `logs [--follow]`,
 `upgrade [--version V]` (the installer again, then a restart) and `uninstall` (the data stays) do what they say, and
-`agentrun service install [--port N] [--data DIR]` installs the service after a `--no-start`. For a local model, such
+`agentrun service install [--port N] [--data DIR] [--public-url URL]` installs the service after a `--no-start`. For a local model, such
 as Ollama's, `agentrun service install --env AGENT_MODEL_BASE_URL=<its /v1 address> --env AGENT_MODEL_GATEWAY_IDS=bare --env
 AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0` writes those variables into the
-service and restarts it. They stay through restarts, upgrades and later installs, and `--env KEY=` removes one. `--env`
-takes those four names alone: model keys go in the console, never in a service file. On Linux, a user's
+service and restarts it. They stay through restarts, upgrades and later installs, and `--env KEY=` removes one. On a machine
+you alone use, `--env AGENTRUN_MCP_ALLOW_LOOPBACK=1 --env AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` turns on the two start-time
+switches the same way (a switch takes `1` alone). `--env` takes those six names alone: model keys go in the console,
+never in a service file. On Linux, a user's
 services stop at logout unless lingering is on: `install` and `status` print the one `sudo loginctl enable-linger` line
 when it is off. To remove AgentRun, run `agentrun service uninstall`, then delete `~/.agentrun/bin`, `~/.agentrun/lib`,
 `~/.agentrun/node` and the `PATH` line; the rest of `~/.agentrun` is your data.
+
+When something doesn't work, `agentrun doctor` (or `npx @parcha/agentrun doctor`) checks the whole setup in one go and
+prints, for each problem, what to change and where it is documented: the Node.js it runs on, whether a server answers
+for the data directory (`--data`, default `~/.agentrun`) and its version, the service (installed, running, lingering on
+Linux), whether a browser elsewhere can open the server's address from this session (an SSH tunnel, `tailscale serve`
+on your tailnet, `--public-url` or `--allow-host`), whether the console's password is set (when it is not, the fix
+is `agentrun open`), whether a model and which harnesses are ready, the server's start-time switches, and Docker for the
+boxes. It only reads: it changes no file, starts and stops nothing, and makes only GET requests. It reads the server
+record `DIR/.server.json` as every command does: one that is not a private file of yours, or whose address is not a plain
+http or https URL, is refused, and one whose process has exited is stale; nothing is sent to the address either names. It reads capabilities with the server's own token in
+`DIR/.token`, and prints no token, key or setup code. `--json` prints the checks for an agent (`{exit, server, checks:
+[{id, status, summary, fix, docs}]}`, each `status` `ok`, `warn`, `fail`, `info` or `skip`). Exit 0 when nothing
+failed (warnings allowed), 1 when a check failed, 3 when no server answers.
 
 On a machine you keep on (a Mac mini, a home server, a VPS), `--tailscale` also puts AgentRun on your own
 [Tailscale](https://tailscale.com) network, at `https://<machine>.<your tailnet's DNS name>/`, which only your devices
@@ -65,6 +87,43 @@ Tailscale's operator may change what it serves, it prints the one `sudo tailscal
 `agentrun service uninstall` removes the serve entry it added and no other. Tailscale's Personal plan is free: up to 6
 users, unlimited user devices ([pricing](https://tailscale.com/pricing)). The https address needs MagicDNS and HTTPS
 certificates turned on in your tailnet's [DNS settings](https://login.tailscale.com/admin/dns).
+
+Behind a proxy of your own instead (your own `tailscale serve`, a reverse proxy with HTTPS), pass the address people
+open with `--public-url`, and keep the port the proxy points at fixed:
+
+```sh
+npx @parcha/agentrun --port 7340 --public-url https://box.tailnet.example/
+agentrun service install --port 7340 --public-url https://box.tailnet.example/
+```
+
+The server takes it as its public address, as it takes `AGENTRUN_PUBLIC_URL`: its links name it, a browser that sends
+that name as `Host` is let in on loopback (any other gets "unexpected Host header"), and its first visit asks for the
+setup code. On loopback (no `--listen`, or a loopback one) it also sets `AGENTRUN_TRUSTED_PROXIES=loopback`, as
+`--tailscale` does, so sign-in limits count each visitor by the address the proxy names rather than everyone as one;
+an `AGENTRUN_TRUSTED_PROXIES` you set stays as it is (an empty one trusts no proxy), and with `--listen` on another address nothing is trusted. The
+service keeps the flag on its command line, so every restart has both, and so does a later `agentrun service install
+--env` or `--no-tailscale` (`--tailscale` replaces it with the tailnet address). A later `--public-url` changes the address
+alone: the data folder and port stay. It must be an `https://` address, or
+`http://` on this machine (`localhost`, `127.0.0.1`), with no path beyond `/` and no user name or password; anything else
+is refused with exit 2 before the server starts. `AGENTRUN_PUBLIC_URL` still works; given with `--public-url`, the two
+must name the same address. `--public-url` and `--tailscale` don't go together: `--tailscale` names its own.
+
+Started on loopback with no public address, where `tailscale` is on `PATH` and signed in, the command reads
+`tailscale status --json` (at most 2 seconds, and it changes nothing) and says once, on stderr, the address your tailnet
+could open it at and the two steps to it: `tailscale serve --bg <port>`, which keeps it on your tailnet, then a restart
+with `--port <port> --public-url https://<machine>.<tailnet>/`. It never runs either, never suggests Funnel, says
+nothing when Tailscale is missing, signed out or slow, and says nothing in CI.
+
+On a Linux server you rent (Ubuntu or Debian, as root), `--vps` sets up AgentRun in Docker Compose instead, with a
+shell for its agents in Docker sandboxes, on your tailnet when Tailscale is logged in and on the server's loopback
+otherwise:
+
+```sh
+curl -fsSL https://agentrun.ai/install | sh -s -- --vps
+```
+
+[Deploying AgentRun](https://github.com/Parcha-ai/agentrun/blob/main/deploy/README.md#one-command-on-a-server-you-rent)
+says what it installs and writes, and what `--public` exposes.
 
 The server binds its port first and says so; this command then names the address on stderr at once, and prints its line
 on stdout once the server is ready, which on a cold, slow disk can take minutes. A start that fails says why on stderr:
@@ -90,10 +149,10 @@ this app uses your ChatGPT plan. Manage usage in your ChatGPT settings. The sign
 agents on this server with it.
 
 Or add a model key. With no `AGENT_MODEL`, the server runs a current model of the first provider it has a key for,
-Anthropic, then OpenAI, then OpenRouter: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `OPENROUTER_API_KEY` in your
-environment, or a key saved in the console's Settings → Model keys, which counts from the save on. Signed in with
-ChatGPT, pi and Codex run on the plan's model by default, key or not, unless `AGENT_MODEL` names another. Other
-commands are the server's:
+Anthropic, then OpenAI, then Particle (pi only), then OpenRouter: `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`PARTICLE_API_KEY` or `OPENROUTER_API_KEY` in your environment, or a key saved in the console's Settings → Model
+keys, which counts from the save on. Signed in with ChatGPT, pi and Codex run on the plan's model by default, key or
+not, unless `AGENT_MODEL` names another. Other commands are the server's:
 `npx @parcha/agentrun import` brings in your local Claude Code, Codex and pi sessions, and
 `npx @parcha/agentrun reset-password` clears the console's password. `--data DIR` and `--port N` change where it keeps
 its data and the port it takes.

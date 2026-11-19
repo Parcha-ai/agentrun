@@ -15,7 +15,7 @@ const { journalRecords, messagesOf } = await import("../dist/runner/journal-read
 const { emptyState, snapshotOf, translate } = await import("../dist/live/translate.js");
 const { reflectRequestId, REFLECT_LABEL } = await import("../dist/runner/end-of-run.js");
 const { said } = await import("../dist/learning-words.js");
-const { reflectDryRun } = await import("../dist/learn/index.js");
+const { compileAgain } = await import("../dist/learn/compile.js");
 const { LEARNING_LABEL } = await import("../dist/learning.js");
 
 const ROOT = 1;
@@ -77,13 +77,12 @@ test("the replayed timeline labels the end-of-run turn's rows learning: its mess
   assert.ok(rows.some((row) => row.kind === "final_answer" && row.agent_label !== LEARNING_LABEL && row.text === "the job's answer"), JSON.stringify(shown));
 });
 
-test("the turn asked once more for a draft whose dry run failed reads so on the timeline, in the host's words, never the ask itself", async (t) => {
-  const asked = reflectDryRun("workflows/invoice-total/workflow.json", 'output: path "total" has no input or upstream producer');
+test("the compile turn asked once more for a draft whose dry run failed reads so on the timeline, in the host's words, never the ask itself", async (t) => {
+  const asked = compileAgain(['workflows/invoice-total/workflow.json: its dry run failed: output: path "total" has no input or upstream producer'], 2);
   const { store } = await journaled(t, Infinity, { again: asked });
   const rows = await runTimeline(store, "run-1", context, { settled: true });
   const turn = rows.filter((row) => row.agent_label === LEARNING_LABEL);
-  assert.deepEqual(turn.map((row) => [row.kind, row.text]), [["user_message", said.asked], ["text_block", "a note"], ["user_message", said.askedDryRun], ["text_block", "a fixed draft"]], JSON.stringify(rows.map((row) => [row.kind, row.text])));
-  assert.match(said.askedDryRun, /did not pass its dry run/);
+  assert.deepEqual(turn.map((row) => [row.kind, row.text]), [["user_message", said.asked], ["text_block", "a note"], ["user_message", said.askedCompileAgain], ["text_block", "a fixed draft"]], JSON.stringify(rows.map((row) => [row.kind, row.text])));
   assert.equal(rows.some((row) => row.text === asked || String(row.text).includes("upstream producer")), false, "what the model was asked shows on no row");
 });
 

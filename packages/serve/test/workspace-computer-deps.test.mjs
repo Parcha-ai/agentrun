@@ -21,10 +21,16 @@ import { fauxComputers } from "../dist/faux-computers.js";
 import { DEFAULT_BOX_ALLOW } from "../dist/box-settings.js";
 import { startServe } from "../dist/index.js";
 import { putSealedKey } from "../dist/server-keys.js";
-import { computerDepsFrom, computerSpecOf, dockerHostAddressesOf, dockerVolumeOf, localWorkspace } from "../dist/workspace/index.js";
+import { computerDepsFrom as depsFrom, computerSpecOf, dockerHostAddressesOf, dockerVolumeOf, localWorkspace } from "../dist/workspace/index.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
 import { withEnv } from "./support.mjs";
+
+/** The composer with this machine's Docker answering up, unless a test gives its own. A failed Docker launch asks the
+ *  daemon, and one that does not answer within DAEMON_ASK_MS is told as no Docker at all (docker-daemon.ts), which would
+ *  stand in for the refusal a test reads; a loaded CI host's Docker answers late. No Docker is docker-daemon.test.mjs's
+ *  and workspace-resolve-computer.test.mjs's. */
+const computerDepsFrom = (options) => depsFrom({ daemon: async () => ({ up: true }), ...options });
 
 const dirs = [];
 after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
@@ -321,7 +327,7 @@ test("AGENTRUN_DAYTONA_SNAPSHOT is the image of a Daytona computer and of no oth
 // A vendor-hosted computer that runs only on the vendor's own network (the cloud phone's provider declares ["open"]):
 // under a list, the server's default or the operator's own, it runs open, never refused for the list (this server's
 // list can't reach it); under an explicit none, the operator's word for no network at all, it is refused in words.
-const NO_NETWORK_PHONE = "This agent's computer is a Phone harness phone, which needs a network (the vendor's own, or public addresses from this machine), and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in Settings → Computers, or set AGENTRUN_BOX_ALLOW to a host list.";
+const NO_NETWORK_PHONE = "This agent's computer is a Phone harness phone, which needs a network (the vendor's own, or public addresses from this machine), and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in Settings → Computers, or restart the server with AGENTRUN_BOX_ALLOW set to a host list.";
 
 test("a cloud phone under a list, the server's default or the operator's, or with no box_allow, runs on the vendor's own network, and its provider's check takes the spec", async () => {
   const spec = computerSpecOf({});
@@ -384,7 +390,8 @@ test("a desktop under the default list is open, under the operator's list that l
   const desktops = PROVIDERS.filter((one) => one.kinds.includes("desktop") && one.network?.includes("open"));
   assert.deepEqual(desktops.map((one) => one.id).filter((id) => ["docker", "agent37", "e2b"].includes(id)).sort(), ["agent37", "docker", "e2b"], "Docker's, Agent37's and E2B's desktops make open");
   for (const entry of desktops) {
-    const spec = (env, run) => computerSpecOf({ AGENTRUN_DOCKER_IMAGE: image, ...env })(entry, "desktop", { networks: entry.network, maxLifetimeMs: 3_600_000, ...run });
+    // Daytona's desktop starts from the operator's snapshot of box/Dockerfile, as its dial needs.
+    const spec = (env, run) => computerSpecOf({ AGENTRUN_DOCKER_IMAGE: image, AGENTRUN_DAYTONA_SNAPSHOT: "agentrun-box-0123456789ab", ...env })(entry, "desktop", { networks: entry.network, maxLifetimeMs: 3_600_000, ...run });
     assert.equal(spec({}, { boxAllow: [...DEFAULT_BOX_ALLOW] }).network, "open", `${entry.id}: the launch's default list`);
     assert.equal(spec({}, {}).network, "open", `${entry.id}: no box_allow, this server's default list`);
     assert.deepEqual(spec({}, { boxAllow: ["example.com"], boxAllowSet: true }).network, { allow: ["example.com"] }, `${entry.id}: the launch's operator list`);
@@ -469,7 +476,8 @@ test("each provider's default image comes from the computer package's registry (
   // Any other kind with no default image: refused, naming the provider.
   assert.throws(() => spec({ ...entryOf("e2b"), prepareImage: undefined, defaultImage: { desktop: "desktop" } }, "sandbox", {}), { code: "computer_unavailable", message: /^E2B has no image for a sandbox computer here/ });
   assert.equal(computerSpecOf({ AGENTRUN_DOCKER_IMAGE: "example.org/x@sha256:" + "b".repeat(64) })(entryOf("docker"), "desktop", {}).image, "example.org/x@sha256:" + "b".repeat(64), "the image the owner named");
-  // Through the claim: refused before anything is made, computer_unavailable in those words.
+  // Through the claim: refused before anything is made, computer_unavailable in those words (on a machine whose Docker
+  // answers: computerDepsFrom above).
   const root = scratch();
   const sealKey = randomBytes(32);
   const store = await savedKeysStore(sealKey);

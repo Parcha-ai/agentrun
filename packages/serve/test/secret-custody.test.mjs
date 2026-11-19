@@ -59,16 +59,17 @@ const TOOL_KEYS = ["MONID_API_KEY", ...BROWSER];
 const MODEL_KEYS = [...new Set([...Object.values(PROVIDER_KEYS).flat(), "AGENT_MODEL_API_KEY"])].filter((name) => !DECISION_KEYS.includes(name));
 /** Amazon Bedrock's keys, which pi-ai's table of keys by provider leaves out as ambient: its request reads them itself. */
 const BEDROCK = ["AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN"];
-/** The keys pi-ai reads for each of its built-in providers, by its own table (findEnvKeys, asked of an environment that
- *  sets every name), and the names each provider's auth asks its context for when none is set. */
+/** The keys the runtime catalog reads: pi-ai's built-ins and serve's local providers. Ask pi-ai's own table
+ *  (findEnvKeys, with every name set) and each provider's auth context with none set. */
 async function piAiKeys() {
   const { findEnvKeys } = await import("@earendil-works/pi-ai/compat");
   const { builtinModels } = await import("@earendil-works/pi-ai/providers/all");
+  const { withLocalModels } = await import("../dist/local-models.js");
   const every = new Proxy({}, { get: () => "set" });
   const out = {};
-  for (const { id } of builtinModels().getProviders()) {
+  for (const { id } of withLocalModels(builtinModels()).getProviders()) {
     const asked = new Set();
-    await builtinModels({ authContext: { env: async (name) => void asked.add(name), fileExists: async () => false } }).getAuth(id);
+    await withLocalModels(builtinModels({ authContext: { env: async (name) => void asked.add(name), fileExists: async () => false } })).getAuth(id);
     out[id] = { table: findEnvKeys(id, every) ?? [], asked: [...asked] };
   }
   return out;
@@ -97,7 +98,9 @@ function processes() {
   return out;
 }
 
-/** What each descriptor of `pid` points at, and what any pipe of it has unread (read without blocking). */
+/** What each descriptor of `pid` points at, and what any pipe of it has unread (read without blocking). A pipe whose two
+ *  ends `pid` holds both is its event loop's own (a wake-up, or libuv's signal lock once it has a child to reap): no other
+ *  process writes it, and a read takes the byte the loop waits on, which leaves the process blocked for good. */
 function descriptors(pid) {
   const out = [];
   let fds = [];
@@ -106,15 +109,20 @@ function descriptors(pid) {
   } catch {
     return out;
   }
+  const targets = new Map();
   for (const fd of fds) {
-    let target;
     try {
-      target = readlinkSync(`/proc/${pid}/fd/${fd}`);
-    } catch {
-      continue;
-    }
+      targets.set(fd, readlinkSync(`/proc/${pid}/fd/${fd}`));
+    } catch {}
+  }
+  // A descriptor's access mode is the low two bits of its octal flags: 0 read, 1 write.
+  const writes = (fd) => (Number.parseInt(/^flags:\s+([0-7]+)/m.exec(read(`/proc/${pid}/fdinfo/${fd}`)?.toString() ?? "")?.[1] ?? "0", 8) & 3) === 1;
+  const pipes = [...targets].filter(([, target]) => target.startsWith("pipe:"));
+  const written = new Set(pipes.filter(([fd]) => writes(fd)).map(([, target]) => target));
+  const own = new Set(pipes.filter(([fd, target]) => !writes(fd) && written.has(target)).map(([, target]) => target));
+  for (const [fd, target] of targets) {
     let unread = Buffer.alloc(0);
-    if (target.startsWith("pipe:") || target.endsWith(" (deleted)")) {
+    if ((target.startsWith("pipe:") && !own.has(target)) || target.endsWith(" (deleted)")) {
       try {
         const own = openSync(`/proc/${pid}/fd/${fd}`, constants.O_RDONLY | constants.O_NONBLOCK);
         const chunks = [];
@@ -237,9 +245,9 @@ function noSecretAnywhere(root, ...canaries) {
 }
 
 // The launcher's custody: the secrets reach the server over a pipe, so none is in the environment or command line of any
-// process of the user, the launcher's pipe is closed, and no pipe holds one unread. The runner is beside the server, in the
-// same process (a run's own process is gone: custody of a run's keys is custody-runner-e2e.test.mjs), so a run going while the
-// processes are read is read too.
+// process of the user, the launcher's pipe is closed, and no pipe holds one unread. The runner is beside the server, and a run
+// going is a process of its own under it (its keys come over a descriptor, never its environment: run-custody.test.mjs), so
+// the run's process is read too while the processes are read.
 test("started by its launcher, no process of its user holds a secret in its environment, command line or a pipe, a run going included", { timeout: 120_000 }, async (t) => {
   const { canary, secrets } = canaries();
   // Without the store URL, which names a Postgres store (its own case, below).
@@ -396,7 +404,7 @@ test("secretsFor: a tool key's fields only for a revision naming a tool its row 
   // Only a `tool` row's fields are scoped by the tools: a row of another kind (a model's) leaves its field to the model,
   // so a run on OpenAI's model gets OpenAI's key, unless the same row is a tool key's that unlocks none of its tools.
   const { TOOL_KEYS: ROWS } = await import("../dist/tool-keys.js");
-  assert.deepEqual(ROWS.map((row) => [row.id, row.kind]), [["parallel", "tool"], ["monid", "tool"], ["browserbase", "tool"], ["kernel", "tool"], ["typesafe", "tool"], ["anthropic", "model"], ["openai", "model"], ["openrouter", "model"]]);
+  assert.deepEqual(ROWS.map((row) => [row.id, row.kind]), [["parallel", "tool"], ["monid", "tool"], ["browserbase", "tool"], ["kernel", "tool"], ["typesafe", "tool"], ["anthropic", "model"], ["openai", "model"], ["particle", "model"], ["openrouter", "model"]]);
   const onOpenai = revision("agentic", { instructions: "Answer.", tools: [], model: "openai/gpt-6.1-sol" });
   assert.deepEqual(await secretsOf(onOpenai, ROWS), [...without(...TOOL_KEYS), "OPENAI_API_KEY"].sort((a, b) => RUN_SECRETS.indexOf(a) - RUN_SECRETS.indexOf(b)), "OPENAI_API_KEY with them, the tool keys still not");
   assert.deepEqual(await secretsOf(onOpenai, ROWS.map((row) => (row.id === "openai" ? { ...row, kind: "tool" } : row))), without(...TOOL_KEYS), "the same row as a tool key is scoped");
@@ -483,10 +491,10 @@ test("every name pi-ai's providers read is a held key handed by provider, or nam
   const unlisted = Object.entries(keys).flatMap(([id, read]) => reads(id, read).filter((name) => !SECRET_NAMES.includes(name)).map((name) => `${id} ${name}`));
   assert.deepEqual(unlisted, [], "each is held as OPENAI_API_KEY is, so no environment holds it: add it to the launcher's SECRETS, or to NOT_HANDED with its reason");
   // And each is handed to a run on its provider's model: model.ts' PROVIDER_KEYS names every one under its provider,
-  // and only providers pi-ai has, every name on the launcher's list.
+  // and only providers the runtime catalog has, every name on the launcher's list.
   const unhanded = Object.entries(keys).flatMap(([id, read]) => reads(id, read).filter((name) => !(PROVIDER_KEYS[id] ?? []).includes(name)).map((name) => `${id} ${name}`));
   assert.deepEqual(unhanded, [], "add it to model.ts' PROVIDER_KEYS under its provider");
-  assert.deepEqual(Object.keys(PROVIDER_KEYS).filter((id) => !(id in keys)), [], "a provider pi-ai does not have");
+  assert.deepEqual(Object.keys(PROVIDER_KEYS).filter((id) => !(id in keys)), [], "a provider the runtime catalog does not have");
   assert.deepEqual(Object.values(PROVIDER_KEYS).flat().filter((name) => !SECRET_NAMES.includes(name)), [], "a provider's key the launcher does not hold");
   // A name no run is handed and named like a key is cut from every run's environment; a setting passes.
   assert.deepEqual(Object.keys(NOT_HANDED).filter((name) => keyShaped(name)), ["AWS_WEB_IDENTITY_TOKEN_FILE", "AWS_CONTAINER_CREDENTIALS_RELATIVE_URI", "AWS_CONTAINER_CREDENTIALS_FULL_URI", "GOOGLE_APPLICATION_CREDENTIALS"]);

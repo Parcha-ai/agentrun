@@ -5,6 +5,17 @@ import type { AdapterFacts } from "@parcha/agentrun-kernel";
 import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
 import { facts as openCodeFacts } from "./harness-opencode/facts.js";
+import { acpPackage } from "./acp-package.js";
 
-/** The adapter harnesses' facts: claude-agent's, codex's and opencode's. */
+/** The adapter harnesses' facts: claude-agent's, codex's and opencode's, the built-in harnesses the API names (HARNESSES). */
 export const ADAPTER_FACTS: readonly AdapterFacts[] = Object.freeze([claudeFacts, codexFacts, openCodeFacts]);
+
+/** Goose's facts (its package's, acp-package.ts), or undefined where that package is not beside serve: then the table has
+ *  no goose row. Goose is listed only while its owner has installed it, so it is not one of HARNESSES. */
+export const GOOSE_FACTS: AdapterFacts | undefined = acpPackage()?.gooseFacts;
+
+/** Every adapter harness's facts: the built-in ones, then Goose's where its package is. */
+export const EVERY_ADAPTER_FACTS: readonly AdapterFacts[] = Object.freeze([...ADAPTER_FACTS, ...(GOOSE_FACTS ? [GOOSE_FACTS] : [])]);
+
+/** The facts of the adapter harness `id`, built-in or Goose; undefined for pi and for an id no adapter states. */
+export const adapterFactsOf = (id: string): AdapterFacts | undefined => EVERY_ADAPTER_FACTS.find((facts) => facts.id === id);

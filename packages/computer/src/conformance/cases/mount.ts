@@ -10,11 +10,22 @@
 // disk once the computer lets the folder go; a new claim takes the folder from a lower epoch, whose computer is gone;
 // the token is nowhere a tool can read it; and, on one computer, a tool reaches no network while its writes reach the
 // disk as each call returns.
+//
+// A synced folder has no disk of the provider's: the runner holds the copy (a SyncSink), pushes it in at the claim and
+// lands each call's delta on it before the call answers (FolderSync under syncingClient). Its cases hold that copy in
+// memory, as a runner would hold it, and check what the provider's computer gives the runner: a push restores modes and
+// links, a change is on the copy before the call that made it answers, a delete reaches it, and a folder past a cap
+// fails the call in words.
 import { randomBytes } from "node:crypto";
+import { pushTar } from "../../files.js";
 import { EPOCH_LABEL, RUN_LABEL, runLabels as claimLabels } from "../../labels.js";
 import { MOUNT_KINDS, type MountKind, type MountSpec, readBackOf, WORKSPACE } from "../../mount.js";
-import { MAX_OUTPUT_BYTES } from "../../protocol.js";
+import { syncingClient } from "../../mount-archil.js";
+import { type ComputerClient, type FileEntry, MAX_LIST_DEPTH, MAX_OUTPUT_BYTES } from "../../protocol.js";
 import type { ComputerRef, ComputerSpec } from "../../provider.js";
+import { ok, type Result } from "../../result.js";
+import { type FolderMeta, FolderSync, SYNC_MAX_ENTRIES, type SyncSink } from "../../sync-folder.js";
+import { type TarEntry, tarStream } from "../../tar.js";
 import type { Case, CaseContext, RunFolder } from "../types.js";
 import { assertIsolated, assertRootRunsClosed } from "./isolation.js";
 import { b64, CASE_LABEL, decode } from "./util.js";
@@ -78,8 +89,9 @@ export async function mounted(t: CaseContext, folder: RunFolder, epoch: number, 
 
 const text = (bytes: Uint8Array | undefined) => (bytes === undefined ? undefined : Buffer.from(bytes).toString("utf8"));
 
-/** "mounts the run's folder" for one kind: on a computer of its own, made with a fresh run folder from the run. */
-const runFolder = (kind: MountKind): Case =>
+/** "mounts the run's folder" for one kind: on a computer of its own, made with a fresh run folder from the run. A synced
+ *  folder's cases are the sync-* ones, below. */
+const runFolder = (kind: Exclude<MountKind, "sync">): Case =>
 	mount(
 		`run-folder-${kind}`,
 		async (t) => {
@@ -269,8 +281,160 @@ const archilLoopToolEdit = mount(
 	{ needs: ["mount:archil", "exec", "files"], timeoutMs: 600_000 },
 );
 
+/** The runner's copy of a synced folder, in memory: its files, its empty directories, its modes and links, and each
+ *  write in order ("put a", "remove a", ...). */
+class CopySink implements SyncSink {
+	readonly files = new Map<string, Uint8Array>();
+	readonly dirs = new Set<string>();
+	kept: FolderMeta = { modes: {}, links: {} };
+	readonly writes: string[] = [];
+	async put(path: string, body: Uint8Array): Promise<Result<void>> {
+		this.writes.push(`put ${path}`);
+		this.files.set(path, body);
+		return ok(undefined);
+	}
+	async mkdir(path: string): Promise<Result<void>> {
+		this.writes.push(`mkdir ${path}`);
+		this.dirs.add(path);
+		return ok(undefined);
+	}
+	async remove(path: string, type: "file" | "dir"): Promise<Result<void>> {
+		this.writes.push(`remove ${path}`);
+		if (type === "file") this.files.delete(path);
+		else this.dirs.delete(path);
+		return ok(undefined);
+	}
+	async meta(meta: FolderMeta): Promise<Result<void>> {
+		this.writes.push("meta");
+		this.kept = meta;
+		return ok(undefined);
+	}
+}
+
+/**
+ * A computer made with a synced folder, its copy `entries` held by the runner and pushed into /workspace as one tar
+ * (none: an empty folder), the computer's listing read as the manifest, and its client under syncingClient, as a runner
+ * hands it to the tools: each call that may change the folder answers once its delta is on the copy.
+ */
+async function synced(t: CaseContext, name: string, entries: readonly TarEntry[] = []): Promise<{ copy: CopySink; client: ComputerClient; own: ComputerClient; folder: FolderSync }> {
+	const copy = new CopySink();
+	for (const entry of entries) {
+		if (entry.type === "file") copy.files.set(entry.name, entry.body ?? new Uint8Array());
+		else if (entry.type === "dir" && !entries.some((other) => other.name.startsWith(`${entry.name}/`))) copy.dirs.add(entry.name);
+	}
+	const kept: RunFolder = {
+		mount: { kind: "sync" },
+		read: async (path) => copy.files.get(path),
+		write: async (path, data) => void copy.files.set(path, data),
+		close: async () => {},
+	};
+	const { ref } = await mounted(t, kept, EPOCH, name);
+	const connected = await t.connect(ref);
+	if (entries.length > 0) t.ok(await pushTar(connected.client, WORKSPACE, tarStream(entries)), `tar.push of the run's folder into ${WORKSPACE}`);
+	const folder = new FolderSync(connected.client, copy);
+	t.ok(await folder.baseline(), `files.list of ${WORKSPACE} pushed in, as the manifest`);
+	const client = syncingClient(connected.client, async () => {
+		const done = await folder.sync();
+		return done.ok ? ok(undefined) : done;
+	});
+	return { copy, client, own: connected.client, folder };
+}
+
+/** /workspace as files.list gives it, by path relative to it. */
+async function listed(t: CaseContext, client: ComputerClient): Promise<Map<string, FileEntry>> {
+	const page = await t.call("files.list", { path: WORKSPACE, depth: MAX_LIST_DEPTH }, client);
+	return new Map(page.entries.map((entry) => [entry.path.slice(WORKSPACE.length + 1), entry]));
+}
+
+const SYNC_NEEDS: Case["needs"] = ["mount:sync", "exec", "files"];
+
+/** "on the copy before the answer": a program's write, a files.write and a new tree land before their call answers. */
+const syncDurable = mount(
+	"sync-durable",
+	async (t) => {
+		const { copy, client } = await synced(t, "mount-sync-durable");
+		const nonce = randomBytes(6).toString("hex");
+		const ran = await t.exec(["sh", "-c", `printf '%s\\n' ${nonce} > exec-${nonce}.txt`], { cwd: WORKSPACE }, client);
+		t.equal(ran.exitCode, 0, `a program's write at ${WORKSPACE}: its exit code (${ran.err.trim()})`);
+		t.equal(text(copy.files.get(`exec-${nonce}.txt`)), `${nonce}\n`, `exec-${nonce}.txt, written by a program, on the runner's copy when exec.run answered`);
+		const body = `written by files.write ${nonce}\n`;
+		await t.call("files.write", { path: `${WORKSPACE}/write-${nonce}.txt`, data: b64(body) }, client);
+		t.equal(text(copy.files.get(`write-${nonce}.txt`)), body, `write-${nonce}.txt, written by files.write, on the runner's copy when it answered`);
+		// A new tree (npm install's node_modules), pulled as one tar, and an empty directory, with no bytes.
+		const tree = await t.exec(["sh", "-c", `mkdir -p tree/a/b tree/empty && printf ${nonce} > tree/a/b/leaf`], { cwd: WORKSPACE }, client);
+		t.equal(tree.exitCode, 0, `a program's new tree at ${WORKSPACE}: its exit code (${tree.err.trim()})`);
+		t.equal(text(copy.files.get("tree/a/b/leaf")), nonce, "tree/a/b/leaf, in a tree a program made, on the runner's copy when exec.run answered");
+		t.assert(copy.dirs.has("tree/empty"), `tree/empty, an empty directory a program made, is not on the runner's copy: ${copy.writes.join(", ")}`);
+	},
+	{ needs: SYNC_NEEDS },
+);
+
+/** "a push restores modes and links": the runner's copy pushed in reads back with its modes and its link, a program runs
+ *  from it, and a sync after it writes nothing, since the copy holds it all. */
+const syncPush = mount(
+	"sync-push",
+	async (t) => {
+		const nonce = randomBytes(6).toString("hex");
+		const entries: TarEntry[] = [
+			{ name: "run.sh", type: "file", mode: 0o755, body: Buffer.from(`#!/bin/sh\necho ran ${nonce}\n`) },
+			{ name: "empty", type: "dir", mode: 0o755 },
+			{ name: "private", type: "dir", mode: 0o700 },
+			{ name: "private/key.txt", type: "file", mode: 0o600, body: Buffer.from(nonce) },
+			{ name: "link", type: "symlink", mode: 0o777, link: "run.sh" },
+		];
+		const { copy, client, own } = await synced(t, "mount-sync-push", entries);
+		const seen = await listed(t, own);
+		for (const { name, type, mode, link } of entries) {
+			const entry = t.present(seen.get(name), `${name}, pushed in, listed at ${WORKSPACE}`);
+			t.equal(entry.type, type, `${name}: its type`);
+			if (link !== undefined) t.equal(entry.target, link, `${name}: the link's target, as pushed`);
+			else t.equal((entry.mode & 0o7777).toString(8), mode.toString(8), `${name}: its mode, as pushed`);
+		}
+		const ran = await t.exec(["./run.sh"], { cwd: WORKSPACE }, client);
+		t.equal(ran.out, `ran ${nonce}\n`, `./run.sh, pushed in with mode 755, run at ${WORKSPACE} (${ran.err.trim()})`);
+		t.deepEqual(copy.writes, [], "what the sync after the push wrote to the runner's copy, which already holds the folder");
+	},
+	{ needs: SYNC_NEEDS },
+);
+
+/** "a delete reaches the copy": a file removed, a tree removed and a file moved, on the copy when the call answers; the
+ *  moved file's new path put before its old one is removed. */
+const syncDelete = mount(
+	"sync-delete",
+	async (t) => {
+		const nonce = randomBytes(6).toString("hex");
+		const file = (name: string): TarEntry => ({ name, type: "file", mode: 0o644, body: Buffer.from(`${name} ${nonce}`) });
+		const { copy, client } = await synced(t, "mount-sync-delete", [file("gone.txt"), file("keep.txt"), file("move-me.txt"), { name: "dir", type: "dir", mode: 0o755 }, file("dir/a.txt"), { name: "dir/sub", type: "dir", mode: 0o755 }, file("dir/sub/b.txt")]);
+		const ran = await t.exec(["sh", "-c", "rm gone.txt && rm -rf dir && mv move-me.txt moved.txt"], { cwd: WORKSPACE }, client);
+		t.equal(ran.exitCode, 0, `rm, rm -rf and mv at ${WORKSPACE}: the exit code (${ran.err.trim()})`);
+		t.deepEqual([...copy.files.keys()].sort(), ["keep.txt", "moved.txt"], "the files on the runner's copy when exec.run answered");
+		t.equal(text(copy.files.get("moved.txt")), `move-me.txt ${nonce}`, "moved.txt: the moved file's bytes");
+		t.deepEqual([...copy.dirs], [], "the empty directories on the runner's copy");
+		t.assert(copy.writes.indexOf("put moved.txt") < copy.writes.indexOf("remove move-me.txt"), `the moved file is put at its new path before its old one is removed: ${copy.writes.join(", ")}`);
+		t.assert(copy.writes.indexOf("remove dir/sub/b.txt") < copy.writes.indexOf("remove dir/sub") && copy.writes.indexOf("remove dir/sub") < copy.writes.indexOf("remove dir"), `a tree is removed deepest first: ${copy.writes.join(", ")}`);
+	},
+	{ needs: SYNC_NEEDS },
+);
+
+/** "a cap refuses": a folder grown past SYNC_MAX_ENTRIES fails the call that grew it, kind limit, in words naming the cap,
+ *  and nothing past the cap reaches the copy. */
+const syncCap = mount(
+	"sync-cap",
+	async (t) => {
+		const { copy, client } = await synced(t, "mount-sync-cap");
+		const grown = await client.call("exec.run", { argv: ["sh", "-c", `mkdir many && cd many && seq 1 ${SYNC_MAX_ENTRIES} | xargs touch`], cwd: WORKSPACE, timeoutMs: 120_000 });
+		t.assert(!grown.ok, `exec.run that made ${SYNC_MAX_ENTRIES + 1} entries answered as if the folder were synced`);
+		if (grown.ok) return;
+		t.equal(grown.error.code, "limit", `the failure's code (${grown.error.message})`);
+		t.equal(grown.error.message, `exec.run ran, but the run's folder could not be made durable: the run's folder holds more than ${SYNC_MAX_ENTRIES} entries, the most a synced folder holds`, "the failure's words");
+		t.deepEqual(copy.writes, [], "what reached the runner's copy");
+	},
+	{ needs: SYNC_NEEDS, timeoutMs: 600_000 },
+);
+
 /** A mount of each kind the provider does not declare, with a token this case alone knows. */
 function undeclaredMount(kind: MountKind, token: string): MountSpec {
+	if (kind === "sync") return { kind };
 	return kind === "bind" ? { kind, path: "/" } : { kind, disk: "conformance-disk", region: "conformance-region", folder: "agents/conformance/runs/r/work", token };
 }
 
@@ -282,6 +446,10 @@ export const mountCases: Case[] = [
 	archilToken,
 	archilIsolatedDurable,
 	archilLoopToolEdit,
+	syncDurable,
+	syncPush,
+	syncDelete,
+	syncCap,
 	mount("undeclared-kind", async (t) => {
 		const declared = t.provider.capabilities().mount ?? [];
 		const undeclared = MOUNT_KINDS.filter((kind) => !declared.includes(kind));

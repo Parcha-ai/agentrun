@@ -30,6 +30,7 @@ import { definitionBodyIssues, inputIssues, inputSchemaOf, isObject, type Json, 
 import { schemaCheck } from "./answer-json.js";
 import { webFixtureOf } from "./web-fake.js";
 import { APPROVALS, type Approvals } from "./approvals.js";
+import { agreeOnOf, type LearningSetting, learningSettingIssue, learningSettingOf, pathSegments } from "./learning-setting.js";
 
 /** The packages this server ships. */
 /** What applying a template reads of the server beyond its package (server.ts wires it): the GitHub connection, the
@@ -207,7 +208,9 @@ export type Package = {
   secrets: string[];
   /** Each run's limit: its spend cap (the agent's max_cost_usd). */
   budget?: { per_run_usd: number };
-  learning?: boolean;
+  /** The agent's `learning`, as a definition takes it: true, false, or the loop's settings (agree_on, each path a required
+   *  field of the output schema). */
+  learning?: LearningSetting;
   /** Whether the agent asks its person before a tool runs (`ask`) or runs unattended (`never`): the package's default,
    *  shown to the owner at apply. A template whose job runs on triggers says never. Deny and pins hold either way. */
   approvals?: "ask" | "never";
@@ -227,6 +230,24 @@ export class PackageError extends Error {
   constructor(readonly dir: string, readonly problems: string[]) {
     super(`${dir} is not a valid package:\n${problems.map((p) => `- ${p}`).join("\n")}`);
   }
+}
+
+/** Why an agree_on path is not a required field of the answer's JSON Schema at every level, in words; undefined when it
+ *  is (each segment a property of an object schema's `properties`, named in its `required`, and each parent typed
+ *  `object` alone: one that may be null or another type holds no path, even on two identical answers). */
+function undeclaredPath(schema: Json, path: string): string | undefined {
+  let node: unknown = schema;
+  const segments = pathSegments(path);
+  for (const [i, segment] of segments.entries()) {
+    const of = i ? segments.slice(0, i).join(".") : "the answer";
+    if (!(isObject(node) && node.type === "object")) return `does not make ${of} an object only: an answer may give it as null or another type, and a path through it never resolves`;
+    const properties = isObject(node) && isObject(node.properties) ? node.properties : undefined;
+    if (!properties || !Object.hasOwn(properties, segment)) return `does not declare: ${segment} is no property of ${of}`;
+    const required = (node as Json).required;
+    if (!(Array.isArray(required) && required.includes(segment))) return `does not require: an answer may leave ${segment} out of ${of}, and a path missing on both sides never agrees`;
+    node = properties[segment];
+  }
+  return undefined;
 }
 
 /** The source kinds whose accept rules a parameter may fill: a github trigger's, a webhook trigger's (a provider that
@@ -707,7 +728,8 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
   // Each run's limit: its spend cap (per_run_usd, the agent's max_cost_usd), required once a budget is given.
   const perRun = (value: unknown) => typeof value === "number" && Number.isFinite(value) && value > 0;
   if (f.budget !== undefined && !(isObject(f.budget) && !unknownFields(f.budget, ["per_run_usd"]).length && perRun(f.budget.per_run_usd))) bad(MANIFEST, "budget is {per_run_usd: a number above 0}");
-  if (f.learning !== undefined && typeof f.learning !== "boolean") bad(MANIFEST, "learning is true or false");
+  const learningIssue = f.learning === undefined ? undefined : learningSettingIssue(f.learning, "learning");
+  if (learningIssue) bad(MANIFEST, learningIssue);
   if (f.approvals !== undefined && f.approvals !== "ask" && f.approvals !== "never") bad(MANIFEST, "approvals is ask (the agent asks its person before a tool runs) or never (it runs unattended; deny and pins still hold)");
   const triggers = f.triggers === undefined ? [] : Array.isArray(f.triggers) ? (f.triggers as unknown[]) : (bad(MANIFEST, "triggers is a list of POST /v2/triggers bodies"), []);
   const triggerNames = new Set<string>();
@@ -749,6 +771,18 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
       } catch {
         bad(f.output.schema as string, "is not a JSON object");
       }
+    }
+  }
+  // Each agree_on path is a required field of the answer's schema at every level: one an answer may leave out is
+  // missing on both sides, and a missing path never agrees, so the check could never promote on it.
+  // With no output schema there is nothing to check the paths against, and nothing makes an answer hold them: refused.
+  if (!learningIssue && f.output === undefined && (agreeOnOf(f.learning) ?? []).length) {
+    bad(MANIFEST, "learning.agree_on names fields of the answer, so the package declares the answer's schema (output: {schema}) that holds them");
+  }
+  if (!learningIssue && isObject(outputSchema)) {
+    for (const [i, path] of (agreeOnOf(f.learning) ?? []).entries()) {
+      const why = undeclaredPath(outputSchema, path);
+      if (why) bad(MANIFEST, `learning.agree_on[${i}] is ${path}, which ${(f.output as { schema: string }).schema} ${why}`);
     }
   }
   const instructions = manifest?.body.trim() ?? "";
@@ -897,7 +931,7 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
     ...(typeof f.license === "string" ? { license: f.license } : {}), ...(isObject(f.author) ? { author: f.author } : {}), ...(typeof f.repository === "string" ? { repository: f.repository } : {}),
     ...(typeof f.category === "string" ? { category: f.category as NonNullable<Package["category"]> } : {}), tags,
     ...(harness ? { harness } : {}), ...(isObject(f.model) ? { model: { ...(f.model as NonNullable<Package["model"]>), ...(choices ? { choices } : {}) } } : {}), ...(typeof f.effort === "string" ? { effort: f.effort } : {}),
-    ...(tools ? { tools } : {}), mcp, ...(computer ? { computer } : {}), ...(toolPolicy ? { toolPolicy } : {}), ...(f.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}), parameters, ...(inputSchema ? { inputSchema } : {}), secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number } } : {}), ...(typeof f.learning === "boolean" ? { learning: f.learning } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
+    ...(tools ? { tools } : {}), mcp, ...(computer ? { computer } : {}), ...(toolPolicy ? { toolPolicy } : {}), ...(f.checkout === "pull_request" ? { checkout: "pull_request" as const } : {}), parameters, ...(inputSchema ? { inputSchema } : {}), secrets, ...(isObject(f.budget) ? { budget: { per_run_usd: f.budget.per_run_usd as number } } : {}), ...(f.learning !== undefined ? { learning: learningSettingOf(f.learning as LearningSetting) } : {}), ...(f.approvals === "ask" || f.approvals === "never" ? { approvals: f.approvals } : {}),
     triggers: triggers as Json[], ...(isObject(f.output) ? { output: { schema: f.output.schema as string } } : {}), ...(isObject(outputSchema) ? { outputSchema } : {}), instructions, skills, evals,
   };
   // What an apply makes, made here with each parameter's default, else a sample of its type, and checked as POST
@@ -1017,12 +1051,14 @@ export class TemplateRegistry {
   }
 }
 
-/** POST /v2/templates/{name}/apply's body (`{parameters, grants?, overrides?: {model?, choice?, approvals?}}`), checked
+/** POST /v2/templates/{name}/apply's body (`{parameters, grants?, servers?, overrides?: {model?, choice?, approvals?}, agent_id?}`), checked
  *  against the package: the parameters as given (a blank one at its default), the MCP tools the owner allows (each one the
  *  package lists, by its gate name), and the model asked for in place of the package's: one of its own (`model`), or one
  *  of the package's model choices by id (`choice`), never both. 422 naming every field that is wrong. */
-export function applyBodyOf(p: Package, body: Json): { parameters: Json; grants: string[]; servers: Record<string, string>; model?: string; choice?: ModelChoice; approvals?: Approvals } {
-  const issues: InputIssue[] = unknownFields(body, ["parameters", "grants", "servers", "overrides"]);
+export function applyBodyOf(p: Package, body: Json): { parameters: Json; grants: string[]; servers: Record<string, string>; model?: string; choice?: ModelChoice; approvals?: Approvals; agentId?: string } {
+  const issues: InputIssue[] = unknownFields(body, ["parameters", "grants", "servers", "overrides", "agent_id"]);
+  // The agent an update writes onto (the server checks it was made from this package): text, else a 422 with the rest.
+  if (body.agent_id !== undefined && !(typeof body.agent_id === "string" && body.agent_id.trim())) issues.push({ field: "agent_id", reason: "wrong_type", message: `agent_id is the id of an agent the ${p.name} template made: the apply writes a new revision of it in place of making another` });
   const listed = p.mcp.flatMap(({ toolkit, tools }) => tools.map((tool) => mcpToolName(toolkit, tool)));
   const grants: string[] = [];
   if (body.grants !== undefined && !Array.isArray(body.grants)) issues.push({ field: "grants", reason: "wrong_type", message: "grants is a list of the package's MCP tools, by the package's own names (mcp:<toolkit>/<tool>), the owner allows" });
@@ -1063,7 +1099,7 @@ export function applyBodyOf(p: Package, body: Json): { parameters: Json; grants:
     else if (overrides.choice !== undefined && !choice) issues.push({ field: "overrides.choice", reason: "not_an_option", message: choices.length ? `overrides.choice is one of ${choices.map((one) => one.id).join(", ")}: the package's model choices, by id.` : `The package ${p.name} offers no model choices: leave overrides.choice out.` });
   }
   if (issues.length) throw invalid(issues);
-  return { parameters, grants, servers, ...(isObject(overrides) && typeof overrides.model === "string" ? { model: overrides.model } : {}), ...(choice ? { choice } : {}), ...(isObject(overrides) && (overrides.approvals === "ask" || overrides.approvals === "never") ? { approvals: overrides.approvals } : {}) };
+  return { parameters, grants, servers, ...(typeof body.agent_id === "string" ? { agentId: body.agent_id.trim() } : {}), ...(isObject(overrides) && typeof overrides.model === "string" ? { model: overrides.model } : {}), ...(choice ? { choice } : {}), ...(isObject(overrides) && (overrides.approvals === "ask" || overrides.approvals === "never") ? { approvals: overrides.approvals } : {}) };
 }
 
 /** The model a package's agent gets here, as `{model?, warning?}`: its `prefer` when this server runs it on `harness`
