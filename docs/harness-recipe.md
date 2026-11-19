@@ -112,7 +112,7 @@ with that rule's code. `agentrun harness install --recipe` and `agentrun harness
   only the `anthropic-beta` values Goose 1.59.2 sends.
 - **`plan`**: the agent calls its vendor itself, on the owner's plan and the recipe's own `keys`. AgentRun never sees
   those requests, so the adapter stops the run itself after `maxTurns` turns or `maxToolCalls` tool calls
-  (`ACP_TURN_LIMIT`, `ACP_TOOL_CALL_LIMIT`). `hosts` (up to 16, each `host` or `host:port`, port 443 by default) names
+  (`ACP_TURN_LIMIT`, `ACP_TOOL_CALL_LIMIT`). `hosts` (up to 16, each `host` or `host:port` with a port from 1 to 65535, 443 by default) names
   where the vendor's model is: `harness-check` tunnels the agent's `CONNECT` to those hosts and refuses the rest, so
   list every host the agent needs for a turn.
 

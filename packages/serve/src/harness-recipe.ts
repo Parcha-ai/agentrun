@@ -61,7 +61,11 @@ export type RecipeModel =
   | { readonly billing: "plan"; readonly maxTurns: number; readonly maxToolCalls: number; readonly hosts?: readonly string[] };
 
 /** A host a plan-billed agent's vendor is on, as model.hosts names it: a lowercase host name, with an optional port. */
-const VENDOR_HOST = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::[1-9][0-9]{0,4})?$/;
+const VENDOR_HOST = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*(?::([1-9][0-9]{0,4}))?$/;
+const vendorHost = (host: string): boolean => {
+  const port = VENDOR_HOST.exec(host)?.[1];
+  return VENDOR_HOST.test(host) && (port === undefined || Number(port) <= 65535);
+};
 
 /** A recipe file, as the loader passes it. */
 export interface Recipe {
@@ -203,7 +207,7 @@ export function recipeProblems(parsed: unknown): { code: RecipeCode; words: stri
     if (!Number.isInteger(model.maxTurns) || (model.maxTurns as number) < 1) say(RECIPE_CODES.invalid, "plan billing needs maxTurns, a whole number of turns of at least 1");
     if (!Number.isInteger(model.maxToolCalls) || (model.maxToolCalls as number) < 0) say(RECIPE_CODES.invalid, "plan billing needs maxToolCalls, a whole number of calls");
     if (!strings(r.keys) || !r.keys.length) say(RECIPE_CODES.keys, "a plan-billed agent runs on its vendor's key: name it in keys");
-    if (model.hosts !== undefined && (!strings(model.hosts) || model.hosts.length > 16 || !model.hosts.every((host) => VENDOR_HOST.test(host)))) say(RECIPE_CODES.invalid, "model.hosts lists at most 16 hosts the vendor's model is on, each a host name with an optional :port (default 443)");
+    if (model.hosts !== undefined && (!strings(model.hosts) || model.hosts.length > 16 || !model.hosts.every(vendorHost))) say(RECIPE_CODES.invalid, "model.hosts lists at most 16 hosts the vendor's model is on, each a host name with an optional :port from 1 to 65535 (default 443)");
     for (const field of Object.keys(model)) if (!["billing", "maxTurns", "maxToolCalls", "hosts"].includes(field)) say(RECIPE_CODES.invalid, `model.${field} is not a field of plan billing`);
   } else say(RECIPE_CODES.invalid, 'model.billing is "proxy" or "plan"');
 
