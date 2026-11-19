@@ -238,7 +238,9 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   const moved = useRef({ rows, times: 0 });
   if (moved.current.rows !== rows) moved.current = { rows, times: moved.current.times + 1 };
   // A run paused at its cap shows its raise form under the banner; the header's Raise the cap goes there (one form, not two).
+  // The Graph and Dev tools tabs fill the page and show no banner, so on them the header's button opens its own form.
   const bannerRaise = !!(view.needsYou && budget && typeof budget.cap_usd === "number" && actions?.onRaiseCap);
+  const bannerShown = tab !== "graph" && !(tab === "trace" && readTrace);
   const bannerRaiseRef = useRef<HTMLDivElement>(null);
   const toBannerRaise = () => {
     const box = bannerRaiseRef.current;
@@ -250,7 +252,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
     // On a short screen (a phone on its side) the page scrolls as a whole, in <main>: the header, the tabs and the composer
     // keep their own heights and the tab body takes what it needs, instead of what is left of 390 px (nothing).
     <div className="flex h-full min-h-0 flex-col short:h-auto">
-      <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} raiseBelow={bannerRaise ? toBannerRaise : undefined} />
+      <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} raiseBelow={bannerRaise && bannerShown ? toBannerRaise : undefined} />
       <Tabs id="run-views" label="Run views" value={tab} onChange={(value) => setTab(value as Tab)} tabs={tabs.map(([id, label]) => ({ id, label }))} />
       {tab === "graph" ? <div {...tabPanelProps("run-views", tab)} className="min-h-0 flex-1 short:min-h-96">{graphView}</div>
         // The Dev tools tab is a page of data: it fills the width and scrolls in its own panes.
