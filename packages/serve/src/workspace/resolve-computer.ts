@@ -20,14 +20,14 @@
 // command there would run on the server itself. runShellOf reads it off a setting before anything starts (the tool
 // plane shows bash unavailable by it), and the claim's runTools takes the same rule over the computer it started.
 import { hostToolDefs, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
-import { archilSync, type BrowserFeatures, type BrowserFile, type BrowserSpec, type ComputerClient, type ComputerSettingKind, configurationOf, connectOf, type GpuSpec, type Group, type HelloResult, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, mountsOf, type ProviderEntry, type Result, syncingClient } from "@parcha/agentrun-computer";
+import { type BrowserFeatures, type BrowserFile, type BrowserSpec, type ComputerClient, type ComputerSettingKind, configurationOf, connectOf, type GpuSpec, type Group, type HelloResult, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, mountsOf, type ProviderEntry, type Result, syncingClient } from "@parcha/agentrun-computer";
 import { type DockerDaemon, noDockerWords } from "../docker-daemon.js";
 import { gpuRefused } from "../gpu-words.js";
 import { recordedClient } from "../computer-calls.js";
 import type { Recording, RecordWatch } from "../computer-record.js";
 import type { MountCheck } from "./attach.js";
 import type { AgentComputer, RunComputer } from "./run-tools.js";
-import { fencedStore, finalSyncWords, type FolderStore, type HeldFolder, holdSynced, pullFolder, recordMeta, recordWords, restoreMeta, type StoredFolder, storedFolder, syncOf } from "./synced-folder.js";
+import { fencedStore, finalSyncWords, type HeldFolder, holdSynced, pullFolder, type StoredFolder, storedFolder, syncOf } from "./synced-folder.js";
 import type { Workspace } from "./workspace.js";
 import { restartWith } from "../start-switches.js";
 
@@ -283,8 +283,7 @@ export async function computerReadiness(setting: ComputerSetting, mode: 1 | 2, g
 export type StartedComputer = {
   readonly computer: RunComputer | undefined;
   release(): Promise<void>;
-  /** What the run's disk keeps of the folder beyond what the computer wrote, now (a park lands it before the computer is
-   *  kept): a synced folder's delta, or an Archil mount's modes and links in sync.json (recordMeta). */
+  /** A synced folder's delta, landed on the run's disk now (a park lands it before the computer is kept). */
   readonly sync?: () => Promise<Result<void>>;
 };
 
@@ -488,13 +487,10 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
     async start({ workspace, check, holds, held, signal }) {
       // A computer kept at the run's park, attached again: it mounts what it mounted, read back under its own epoch.
       const again = await side.reattach?.(entry, { kind, keys, configuration, ...(folder ? { folder } : {}), ...(gpu ? { gpu: { type: gpu.type, count: gpu.count } } : {}), ...(persistent ? { persistent: true as const } : {}), ...(signal ? { signal } : {}) });
-      // The run's disk as the runner keeps the folder on it, each write fenced by the claim.
-      const diskOf = (): FolderStore | undefined => {
-        const disk = workspace.syncStore?.();
-        return disk && holds ? fencedStore(disk, holds) : disk;
-      };
-      // A synced folder's store: for a new computer, listed and held to the caps before it is rented.
-      const store = folder === "sync" ? diskOf() : undefined;
+      // A synced folder's store: the run's disk as the runner keeps the folder on it, each write fenced by the claim; for
+      // a new computer, listed and held to the caps before it is rented.
+      const disk = folder === "sync" ? workspace.syncStore?.() : undefined;
+      const store = disk && holds ? fencedStore(disk, holds) : disk;
       if (folder === "sync" && store === undefined) {
         await again?.release().catch(() => undefined);
         throw unavailable(`${entry.label} could not start a ${kind} computer: this run's folder can't be synced into a computer here`);
@@ -517,17 +513,6 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
         if (said && !said.up && said.absent) throw unavailable(noDockerWords(kind, registry.PROVIDERS, mode));
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
       }
-      // A folder synced on an earlier claim, now under a new Archil mount: the modes and links its sync.json keeps, which
-      // the mount never reads, put back (and the mount synced) before any tool runs. One that can't be lets the computer go.
-      const synced = folder === "archil" ? diskOf() : undefined;
-      if (synced && launched.client && !again) {
-        try {
-          await restoreMeta(synced, syncingClient(launched.client, archilSync(launched.client)), signal);
-        } catch (error) {
-          await launched.release().catch(() => undefined);
-          throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
-        }
-      }
       // A synced folder, before any tool runs there: pushed into a new computer, or pulled whole from a kept one (whose
       // copy may be newer than the disk's). One that can't be had lets the computer go.
       let sync: (() => Promise<Result<void>>) | undefined;
@@ -547,21 +532,6 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
       if (typeof computer === "string") {
         await launched.release();
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${computer}`);
-      }
-      const own = launched.client;
-      if (!sync && synced && own) {
-        // An Archil mount's park and release: its modes and links recorded in sync.json first (recordMeta), for a later
-        // claim that syncs the folder; the computer goes whatever that answered, and a failed one is said.
-        const record = () => recordMeta(synced, own);
-        return {
-          computer,
-          sync: record,
-          async release() {
-            const recorded = await record();
-            await launched.release();
-            if (!recorded.ok) throw new Error(recordWords(recorded.error.message));
-          },
-        };
       }
       if (!sync) return { computer, release: () => launched.release() };
       const final = sync;

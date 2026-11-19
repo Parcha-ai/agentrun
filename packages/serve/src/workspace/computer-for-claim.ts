@@ -913,15 +913,16 @@ export async function computerForClaim(
     keysOf: providerKeys(kinds, keyOf),
     answers: deps.answers ?? (async () => false),
     ...(deps.daemon ? { daemon: deps.daemon } : {}),
-    // The computer an earlier claim kept at the run's park, when it is this setting's (its provider and kind) and its
-    // time is not over: taken off its row first (computer-kept.ts takeKept), so its end and this claim never both have it,
-    // then attached and connected again. Its mount, where it has one, stays the one it was made with: its credential is
-    // this claim's from here (inheritMount). Never the agent's own computer, a paired one or --faux's.
+    // The computer an earlier claim kept at the run's park, when it is this setting's (its provider and kind, holding the
+    // run's folder the same way) and its time is not over: taken off its row first (computer-kept.ts takeKept), so its
+    // end and this claim never both have it, then attached and connected again. Its mount, where it has one, stays the
+    // one it was made with: its credential is this claim's from here (inheritMount). Never the agent's own computer, a
+    // paired one or --faux's. One that isn't this setting's is left to the launch's releaseOlderClaims and its keep's end.
     async reattach(entry, { kind, keys, configuration, folder, gpu, persistent, signal }) {
       const record = kept;
       kept = undefined;
       if (!record || !store.settings) return undefined;
-      if (persistent || paired.some((row) => row.id === entry.id) || (deps.launch && (deps.launches?.(entry.id) ?? true)) || record.provider !== entry.id || record.kind !== kind) return undefined;
+      if (persistent || paired.some((row) => row.id === entry.id) || (deps.launch && (deps.launches?.(entry.id) ?? true)) || record.provider !== entry.id || record.kind !== kind || record.folder !== folder) return undefined;
       try {
         // Its time over, or its end took it first (ending or ended): a new one, said so.
         if (record.ending || record.ended || now() >= record.until || !(await takeKept(store.settings, launch.runId, record))) {
@@ -929,17 +930,6 @@ export async function computerForClaim(
           return undefined;
         }
         const provider = await vendorProvider(entry, keys, configuration);
-        // One kept holding the run's folder another way than this claim holds it (its provider's keys changed since the
-        // park: an Archil mount where the run now takes a synced folder) is not taken back: it goes now, its mount's
-        // token with it, so nothing holds the folder but the new one.
-        if (record.folder !== folder) {
-          await deleteKept(provider, record).catch(() => undefined);
-          if (record.folder === "archil") {
-            deps.inheritMount?.();
-            await deps.revokeMount?.().catch(() => undefined);
-          }
-          return undefined;
-        }
         const taken = await keptLaunch(provider, record, signal);
         if (!taken) return undefined;
         deps.inheritMount?.();
