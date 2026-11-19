@@ -165,10 +165,12 @@ export class ComposioTriggers implements TriggerUpstream {
         // trigger leaves it as the triggers holding it then would (the upsert turned it on): deleted, off, or as it is.
         undo.push(async () => this.leave(ask, instance, await this.leftWith(instance, id)));
         if (!enabled && (await this.leftWith(instance, id)) !== "keep") await ask("turning the trigger instance off", "PATCH", `/api/v3/trigger_instances/manage/${enc(instance)}`, { status: "disable" });
-        // The saved server is still there, under the key this was made with: one deleted (or saved again with another
-        // key) meanwhile is refused here, and what was made is undone, so no trigger names a server that is gone.
+        // The saved server is still there, under the key and on the auth config this was made with: one deleted (or saved
+        // again with another key, or onto another config, whose accounts the instance's isn't) meanwhile is refused here,
+        // and what was made is undone, so no trigger names a server that is gone or an account it doesn't serve.
         const now = await this.deps.credential(server, "field");
         if (now.key !== credential.key) throw invalid([{ field: "source.server", reason: "invalid", message: `${server} was saved again with another Composio key while this trigger was being made: nothing was saved, make it again.` }]);
+        if (now.auth_config !== credential.auth_config) throw invalid([{ field: "source.server", reason: "invalid", message: `${server} was saved again on another auth config while this trigger was being made: nothing was saved, make it again.` }]);
         // Each credential of its config sealed, the trigger keeping the mask in its place: Composio's upsert above was the
         // one place it went.
         undo.push(async () => {
