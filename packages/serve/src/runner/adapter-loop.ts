@@ -629,6 +629,9 @@ interface CliRecord {
   /** The calls whose start is marked `nests` (a tool that only nests calls; a harness's own call that calls nest in, Codex's
    *  `exec`) still with no end: what a run's end closes, interrupted, after the rows of the calls they made. */
   openNests(): string[];
+  /** The calls this record ended interrupted as it opened (started, never ended: a fault cut them, or a stop ended the run
+   *  while they ran). Those ends are this claim's own, written before a reopen reads the run's last entry. */
+  readonly endedOnOpen: ReadonlySet<string>;
   /** An end written elsewhere in a commit of the loop's own (the stop's withdrawal, in its end's commit): kept as this
    *  record's. */
   noteEnd(callId: string, status: CallStatus, output?: string): void;
@@ -719,9 +722,11 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
     else if (entry.kind === KINDS.turnEnd && turnsOpen > 0) turnsOpen -= 1;
     if ((entry.kind === KINDS.message || entry.kind === KINDS.input) && typeof data.requestId === "string") followUps.add(data.requestId);
   }
+  const endedOnOpen = new Set<string>();
   for (const [callId, ended] of started) {
     if (endsItsCalls || ended || (parked.has(callId) && !sent.has(callId)) || nesting.has(callId)) continue;
     await append(KINDS.callEnd, { callId, status: "interrupted" });
+    endedOnOpen.add(callId);
     started.set(callId, true);
     ends.set(callId, { status: "interrupted" });
   }
@@ -860,6 +865,7 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
     nestedIn: (callId, parent) => void parents.set(callId, parent),
     unsentParked: () => [...parked].filter((callId) => !sent.has(callId) && started.get(callId) === false),
     openNests: () => [...nesting].filter((callId) => started.get(callId) === false),
+    endedOnOpen,
     noteEnd(callId, status, output) {
       started.set(callId, true);
       ends.set(callId, { status, ...(output === undefined ? {} : { output }) });
@@ -2614,8 +2620,11 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const rootId = root.id;
           // Read before this claim's own writes (foundEntries), and past the bookkeeping any claim writes on the root before
           // its turn (its session's key, a phase row, a takeover's note, the computer's hold, the learning seed it laid):
-          // none of them is a turn of the follow-up's.
-          const endsRoot = foundEntries.findLast((entry) => !CLAIM_BOOKKEEPING.has(entry.kind))?.kind === KINDS.end;
+          // none of them is a turn of the follow-up's. Nor is a call's interrupted end this claim's record wrote as it opened
+          // (endedOnOpen): a call a stop cut while it ran (Codex's write inside its `exec`) has no end of its own before the
+          // run's, and the end the record gives it lands after the run's end.
+          const ownEnd = (entry: (typeof foundEntries)[number]) => entry.kind === KINDS.callEnd && record?.endedOnOpen.has(String((entry.data as { callId?: unknown } | null)?.callId)) === true;
+          const endsRoot = foundEntries.findLast((entry) => !CLAIM_BOOKKEEPING.has(entry.kind) && !ownEnd(entry))?.kind === KINDS.end;
           const inFlight = (await harness.inspect(context)).submissions.some((one) => one.conversationId === rootId && one.type === "input");
           if (endsRoot && !inFlight && session!.state === "open_turn") await session!.settleOpenTurn();
           // A session still new (a person stopped the run before its first input was sent): the follow-up is its first
