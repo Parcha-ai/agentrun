@@ -98,24 +98,27 @@ test('a step that exits 0 while its background child holds its pipes: it resolve
 
 test('a step that exits 0 while a process outside its group holds its pipes: it resolves with its stdout and lets go of them', { timeout: 20_000 }, async (t) => {
   const { dir, pidOf } = scratch(t);
-  // setsid gives the background sleep a session of its own, out of reach of the group kill, and it inherits the pipes. The
-  // step exits once the pid is written from inside the new session, and says ok only if setsid didn't fork ($!). Its
-  // caller exits only if runStep stops waiting on the pipes and lets go of them; else it lives as long as the sleep, past
-  // this test's 20 s limit.
-  const outside = `setsid sh -c 'echo $$ > pidfile; exec sleep 37' & until [ -s pidfile ]; do sleep 0.01; done; [ "$(cat pidfile)" = "$!" ] && echo ok-text-from-step`;
-  const run = caller(dir, `process.stdout.write(await runStep('sh', ['-c', ${JSON.stringify(outside)}], { cwd: process.cwd(), env: process.env, timeout: 10_000, grace: 200 }));`);
+  // The step starts a detached node (a session of its own, out of reach of the group kill) that inherits the pipes, writes
+  // its own pid once it is running there and lives 37 s. The step exits once that pid is written. Its caller exits only
+  // if runStep stops waiting on the pipes and lets go of them; else it lives as long as the grandchild, past this test's
+  // 20 s limit.
+  const grandchild = "require('node:fs').writeFileSync('pidfile', String(process.pid)); setTimeout(() => {}, 37_000);";
+  const outside = `const { spawn } = require('node:child_process'); const { existsSync } = require('node:fs');
+spawn(process.execPath, ['-e', ${JSON.stringify(grandchild)}], { detached: true, stdio: 'inherit' }).unref();
+const ready = () => (existsSync('pidfile') ? console.log('ok-text-from-step') : setTimeout(ready, 10));
+ready();`;
+  const run = caller(dir, `process.stdout.write(await runStep(process.execPath, ['-e', ${JSON.stringify(outside)}], { cwd: process.cwd(), env: process.env, timeout: 10_000, grace: 200 }));`);
   const [code] = await run.closed;
   assert.equal(code, 0, run.output);
   assert.equal(run.output, 'ok-text-from-step\n');
-  assert.equal(alive(pidOf()), true, 'the sleep outside the group was running all along: the test kills it');
-  assert.match(readFileSync(`/proc/${pidOf()}/cmdline`, 'utf8'), /^sleep\x0037\x00$/, 'the pid is the sleep itself');
+  assert.equal(alive(pidOf()), true, 'the grandchild outside the group was running all along: the test kills it');
 });
 
 test('a step that exits 0 just before its limit: waiting for its leftover child does not count as a timeout', async (t) => {
   const { dir, pidOf } = scratch(t);
-  // The step exits at once; its child ignores SIGTERM (inherited across exec) and lives 1.5 s more, so the cleanup
-  // after exit runs past the 1000 ms limit, inside the 3000 ms grace.
-  const step = runStep('sh', ['-c', '(trap "" TERM; exec sleep 1.5) >/dev/null 2>&1 & echo $! > pidfile; echo ok-text-from-step'],
+  // The step exits once its child ignores SIGTERM (the trap is inherited across exec; `ready` is written after it), and the
+  // child lives 1.5 s more, so the cleanup after exit runs past the 1000 ms limit, inside the 3000 ms grace.
+  const step = runStep('sh', ['-c', '(trap "" TERM; : > ready; exec sleep 1.5) >/dev/null 2>&1 & echo $! > pidfile; until [ -e ready ]; do sleep 0.01; done; echo ok-text-from-step'],
     { cwd: dir, env: process.env, timeout: 1_000, grace: 3_000 });
   const { stdout, error, alive: left } = await settle(pidOf, step);
   assert.equal(error, undefined, String(error?.message));
