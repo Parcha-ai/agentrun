@@ -8,8 +8,8 @@
 //   own-tools  offers its own `shell` tool beside ours on every request, as an agent whose tools are not off;
 //   side       asks its HTTPS proxy for telemetry.invalid:443 once at start, as an agent that phones home;
 //   no-load    advertises no session/load, so a restart is a new session told the conversation;
-//   goose-title titles each call as Goose 1.59.2 does (`agentrun: check echo`), which the adapter does not tie to a
-//              tool of ours, so the host's gate is asked about it as the agent's own (`acp_other`);
+//   goose-title titles each call as Goose 1.59.2 does (`agentrun: check echo`), which the adapter ties to our tool,
+//              so the host's gate is asked about it by the bridge, at the MCP call;
 //   plan       billed on its vendor's plan: its model is MODEL_AGENT_VENDOR (host:port), reached through HTTPS_PROXY's
 //              CONNECT on its own key MODEL_AGENT_API_KEY, as a plan-billed agent reaches its vendor beyond loopback.
 // Its model is MODEL_AGENT_MODEL; the proxy's address is ANTHROPIC_HOST, else ANTHROPIC_BASE_URL (the recipe's hostEnv).

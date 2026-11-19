@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Switch } from "@/components/ui/switch";
-import { BY_THE_MINUTE, type Carried, type CarriedField, carry, type Dropped, METERED, pickable, pickKind, RECORDS, recorded, refusal, whyNot } from "@/lib/computers";
+import { BY_THE_MINUTE, type Carried, type CarriedField, carry, type Dropped, METERED, pickable, pickKind, recorded, refusal, whyNot } from "@/lib/computers";
 import { cn } from "@/lib/utils";
 import type { Computer, ComputerKindView } from "@/lib/v2";
 
@@ -10,8 +10,8 @@ const kindName = (kind: string) => kind.charAt(0).toUpperCase() + kind.slice(1);
 /** The agent's computer, in the editor's Computer step: a card per kind the server lists (one it can't give here greyed,
  *  with its words and a link to the Computers settings), then the picked kind's providers (one not ready disabled, with
  *  why; a metered one says so, and, but for a browser, that its minutes aren't counted in a run's spending cap), the
- *  Recording switch for a kind that records (a switch of kind or provider keeps every setting the new pick can take, the
- *  image, persistent, GPU, surface, exec and record; one it can't take is dropped, and its card says so), and the tools that kind brings its loop, as served. A pick is the computer `onChange` gets. */
+ *  Recording switch for a kind that records (a switch keeps each setting the new pick can take; the card names any it
+ *  drops), and the tools that kind brings its loop, as served. A pick is the computer `onChange` gets. */
 export function ComputerSetting({ kinds, value, onChange, error, warning }: {
   kinds: ComputerKindView[]; value: Computer; onChange: (computer: Computer) => void; error?: string; warning?: string;
 }) {
@@ -21,11 +21,11 @@ export function ComputerSetting({ kinds, value, onChange, error, warning }: {
   const choose = (kind: ComputerKindView, made: Carried) => {
     const all: Dropped = { ...lost, ...made.dropped };
     const provider = kind.providers.find((p) => p.id === made.computer.provider);
-    setLost(Object.fromEntries(Object.entries(all).filter(([f, v]) => refusal(f as CarriedField, v, kind.kind, provider))));
+    setLost(Object.fromEntries(Object.entries(all).filter(([f, v]) => refusal(f as CarriedField, v, kind, provider))));
     onChange(made.computer);
   };
   const pick = (k: ComputerKindView) => choose(k, pickKind(k, value));
-  const words = Object.entries(lost).flatMap(([f, v]) => refusal(f as CarriedField, v, value.kind, picked?.providers.find((p) => p.id === value.provider)) ?? []);
+  const words = Object.entries(lost).flatMap(([f, v]) => refusal(f as CarriedField, v, picked, picked?.providers.find((p) => p.id === value.provider)) ?? []);
   return (
     <div>
       <div className="mb-2 caps text-small font-semibold">Kind</div>
@@ -75,7 +75,7 @@ export function ComputerSetting({ kinds, value, onChange, error, warning }: {
           </ul>
         </>
       )}
-      {picked && RECORDS.has(picked.kind) && (
+      {picked?.settings.includes("record") && (
         <>
           <div className="mb-2 mt-5 caps text-small font-semibold">Recording</div>
           <div className="border px-4 py-3" aria-label="Recording">

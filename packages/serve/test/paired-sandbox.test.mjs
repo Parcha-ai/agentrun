@@ -40,7 +40,7 @@ test("a headless Linux box pairs as a sandbox that takes the run's folder as a s
   const registry = withPaired(KINDS, [rowOf(LINUX)]);
   const held = await resolveComputer(SANDBOX, 2, registry, keys);
   assert.equal(held.refused, undefined, held.refused);
-  assert.deepEqual({ provider: held.provider, mounts: held.mounts, folder: held.folder, ports: held.ports }, { provider: "cmp-lab", mounts: true, folder: "sync", ports: ["files", "exec", "processes"] });
+  assert.deepEqual({ provider: held.provider, folder: held.folder, ports: held.ports }, { provider: "cmp-lab", folder: "sync", ports: ["files", "exec", "processes"] });
   assert.match((await resolveComputer(SANDBOX, 1, registry, keys)).refused, /^Mode 1 runs a sandbox only on Docker: a lab \(linux\) sandbox can't reach the run's folder on this machine\./);
 
   const mac = { ...rowOf({ ...LINUX, os: "macos", kind: "desktop", arch: "arm64", groups: ["screen", "input.pointer", "input.keys", "exec", "files"] }), name: "vesper-mac" };

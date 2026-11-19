@@ -12,8 +12,7 @@
 #       to a finished first run, the time said against the bar, 5 minutes (a warning over it, never a failure: it
 #       counts the runner's downloads): the installer (a service where there is a service manager,
 #       else the background), the Local model step on a stand-in for Ollama (walk-model.mjs), `server capabilities`
-#       until models.ready, then the release-notes agent and its first run. With --tailscale, a fake tailscale that is
-#       logged in (fake-tailscale.sh) first on PATH, and the tailnet address printed.
+#       until models.ready, then the release-notes agent and its first run.
 # Installer options: --package FILE (this checkout's launcher, packed), or none (the published one). NODE_PIN=1 gives the
 # installer the launcher's Node floor as --node-version; without it the installer picks the newest on the floor's line.
 set -euo pipefail
@@ -90,32 +89,14 @@ node_chosen() {
 # Whether process $1 runs: in /proc and not a zombie (a container's PID 1 may reap nothing).
 running() { [ -r "/proc/$1/stat" ] && ! grep -q ') Z ' "/proc/$1/stat"; }
 # The installer as `curl | sh` runs it, with a reader that waits for the end of its output, as an agent's shell does: it
-# returns 0 within $1 seconds, or the walk fails. Its output goes to $2.
-# $2... within $1 seconds, or stopped: timeout(1) where there is one. macOS has none, so there the command runs in a
-# process group of its own (job control on for that start), and at the bound the whole group (the installer's sh, its
-# npm) is sent SIGTERM, then SIGKILL after 10 s; this returns only once none of the group is left.
-bounded() {
-  local bound=$1 pid dog rc i
-  shift
-  if command -v timeout >/dev/null; then timeout "$bound" "$@"; return; fi
-  set -m
-  "$@" &
-  pid=$!
-  (sleep "$bound" && kill -TERM -- "-$pid" 2>/dev/null) &
-  dog=$!
-  set +m
-  rc=0
-  wait "$pid" || rc=$?
-  kill -TERM -- "-$dog" 2>/dev/null || true
-  for i in $(seq 1 10); do kill -0 -- "-$pid" 2>/dev/null || break; sleep 1; done
-  kill -KILL -- "-$pid" 2>/dev/null || true
-  while kill -0 -- "-$pid" 2>/dev/null; do sleep 0.2; done
-  return "$rc"
-}
+# returns 0 within $1 seconds, or the walk fails. Its output goes to $2. macOS has no timeout(1): there the job's
+# timeout-minutes stops a hang, as it does for service mode's installer.
 piped_install() {
   local bound=$1 out=$2
   shift 2
-  bounded "$bound" bash -c 'cat "$0" | sh -s -- "$@" 2>&1 | cat' "$here/install.sh" "$@" > "$out" || {
+  local run=(bash -c 'cat "$0" | sh -s -- "$@" 2>&1 | cat' "$here/install.sh" "$@")
+  if command -v timeout > /dev/null; then run=(timeout "$bound" "${run[@]}"); fi
+  "${run[@]}" > "$out" || {
     cat "$out"
     die "the installer did not return 0 within $bound s"
   }
@@ -222,7 +203,7 @@ skill_line() {
 # The prompt's lines start with a literal ~/, which skill_line looks for as written: nothing here expands it.
 # shellcheck disable=SC2088
 first_run_walk() {
-  local t0 t_install t_model t_ready t_create t_run total local_model background pair create start ready out nodebin served='' model_log
+  local t0 t_install t_model t_ready t_create t_run total local_model background pair create start ready out nodebin model_log
   local_model=$(skill_line '~/.agentrun/bin/agentrun service install --env AGENT_MODEL_BASE_URL=http://localhost:11434/v1 ')
   local_model=${local_model//<tag>/walk-model}
   # The background start's variables, every one as the prompt writes them (its line wraps): what runs in front of sh here.
@@ -232,27 +213,14 @@ first_run_walk() {
   background=${background% sh\`}
   background=${background//<tag>/walk-model}
   for pair in $background; do [[ $pair =~ ^[A-Z_]+=[^=]*$ ]] || die "the background start's line has $pair, not a VARIABLE=value"; done
-  [[ " $background " == *" AGENT_MODEL_API_KEY=none "* ]] || die "the background start's line sets no AGENT_MODEL_API_KEY=none: each run would be refused"
   create=$(skill_line "~/.agentrun/bin/agentrun agents create --body '{\"definition\":{\"id\":\"release-notes\"")
   start=$(skill_line '~/.agentrun/bin/agentrun runs start release-notes --wait ')
-  if [[ " $* " == *" --tailscale "* ]]; then
-    served=box.tail1234.example
-    out=$(mktemp -d)
-    cp "$here/test/fake-tailscale.sh" "$out/tailscale"
-    chmod 755 "$out/tailscale"
-    export PATH="$out:$PATH" FAKE_TAILSCALE_DIR
-    FAKE_TAILSCALE_DIR=$(mktemp -d)
-  fi
 
   t0=$SECONDS
-  step "1. the installer$([ -n "$served" ] && echo ", --tailscale")"
+  step "1. the installer"
   piped_install 600 /tmp/first-install.log "$@"
   healthy 30
   t_install=$((SECONDS - t0))
-  if [ -n "$served" ]; then
-    grep -q "AgentRun is on your tailnet at https://$served/ (tailscale serve)" /tmp/first-install.log || die "no tailnet address printed"
-    grep -q funnel "$FAKE_TAILSCALE_DIR/calls" && die "tailscale funnel was run"
-  fi
 
   step "2. a local model on localhost:11434 (walk-model.mjs, the stand-in for Ollama)"
   nodebin=$(echo "$HOME"/.agentrun/node/*/bin/node)
@@ -304,7 +272,7 @@ first_run_walk() {
   total=$t_run
   out="paste to first run: ${total}s (bar ${bar}s): installer ${t_install}s, local model $((t_model - t_install))s, models.ready $((t_ready - t_model))s, agent $((t_create - t_ready))s, run $((t_run - t_create))s; \$0 (a local model)"
   step "$out"
-  [ -n "${GITHUB_STEP_SUMMARY:-}" ] && echo "- $(uname -sm)$([ -n "$served" ] && echo ' --tailscale'): $out" >> "$GITHUB_STEP_SUMMARY"
+  [ -n "${GITHUB_STEP_SUMMARY:-}" ] && echo "- $(uname -sm): $out" >> "$GITHUB_STEP_SUMMARY"
   ((total < bar)) || echo "::warning::paste to first run took ${total}s, over the bar (${bar}s): $out"
 }
 

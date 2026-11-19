@@ -1,3 +1,4 @@
+import codexMark from "@/assets/coding-agents/codex-cli.svg";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it } from "vitest";
@@ -18,6 +19,7 @@ for (const state of ["online", "offline", "unknown"] as const) it(`uses ${state}
   const original = JSON.stringify(agent.definition);
   const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
   await act(async () => root.render(createElement(AgentsList, { agents: [agent] })));
+  expect(host.querySelector<HTMLImageElement>('li button img')?.getAttribute("src")).toBe(codexMark);
   expect(host.querySelector<HTMLButtonElement>('[aria-label="Run Reviewer"]')!.disabled).toBe(state !== "online");
   expect(host.textContent?.includes("Ready to run")).toBe(state === "online");
   await act(async () => root.render(createElement(Playground, { agents: [agent], efforts: [], origin: "https://console.example.test", onSend: async () => ({ status: 201, ms: 1, body: {} }) })));

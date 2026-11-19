@@ -191,10 +191,10 @@ describe("NeedsYouStrip, a run paused at its spend cap", () => {
 
 
 describe("NeedsYouStrip, backend SDK execution ownership", () => {
-  const sdk = (id: string, runtime: "claude-agent-sdk" | "codex-sdk", over: Partial<Run> = {}) => run(id, "backend", {
+  const sdk = (id: string, runtime: "claude-agent-sdk" | "codex-sdk" | "eve", over: Partial<Run> = {}) => run(id, "backend", {
     sdk: { runtime, model: "reported-model", session_id: "native-session", learning_revision: null, usage: null }, ...over,
   });
-  it.each(["claude-agent-sdk", "codex-sdk"] as const)("keeps live and failed %s calls read-only with backend guidance and encoded run links", async (runtime) => {
+  it.each(["claude-agent-sdk", "codex-sdk", "eve"] as const)("keeps live and failed %s calls read-only with backend guidance and encoded run links", async (runtime) => {
     const writes: string[] = [];
     const host = mount({ asking: [], live: [sdk("sdk/live", runtime, { status: "working", state: "working" })],
       failed: [sdk("sdk/failed", runtime, { status: "failed", error: overloaded })],

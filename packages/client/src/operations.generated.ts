@@ -123,7 +123,7 @@ export type DefinitionInput = {
   workflow?: JsonObject;
   max_cost_usd?: number;
   sdk?: {
-    runtime: "claude-agent-sdk" | "codex-sdk";
+    runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
   };
   native?: {
     runtime: "claude-code" | "codex";
@@ -349,7 +349,7 @@ export type RunSummary = {
   ended_at: Timestamp | null;
   cost: Cost;
   sdk?: {
-    runtime: "claude-agent-sdk" | "codex-sdk";
+    runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
     model: string | null;
     session_id: string | null;
     learning_revision: string | null;
@@ -616,7 +616,7 @@ export type Run = {
   cost: Cost;
   poll_after_ms: number;
   sdk?: {
-    runtime: "claude-agent-sdk" | "codex-sdk";
+    runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
     model: string | null;
     session_id: string | null;
     learning_revision: string | null;
@@ -2513,6 +2513,7 @@ export type ListComputersResponse = {
     offered: boolean;
     groups: Array<string>;
     tools: Array<string>;
+    settings: Array<string>;
     providers: Array<{
       id: string;
       name: string;
@@ -3701,7 +3702,7 @@ export type GetSdkRunResponse = {
 
 /** Register a task executed by an existing backend SDK (POST /agents/{agent_id}/sdk-runs). */
 export type StartSdkRunBody = {
-  runtime: "claude-agent-sdk" | "codex-sdk";
+  runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
   input: string;
   instructions: string;
   model?: string;

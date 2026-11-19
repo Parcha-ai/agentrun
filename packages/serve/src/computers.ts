@@ -10,7 +10,7 @@
 import { type ComputerProvider, connectOf, type GpuCapability, imagesOf } from "@parcha/agentrun-computer";
 import { BOX_ALLOW_ENV, boxAllowOf } from "./box-settings.js";
 import { KEY_TABLE, type KeyChoice, keyChoices, type KeyTable, type OptionsAnswer, type ProviderFactories, type ProviderSettings, providerOptions, settingOptions, testConnection } from "./computer-keys.js";
-import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting, gpuOf } from "./computer-setting.js";
+import { COMPUTER_KINDS, type ComputerKind, type ComputerSetting, gpuOf, kindSettings } from "./computer-setting.js";
 import { inArchilMode } from "./archil-settings.js";
 import { daemonUp, type DockerDaemon, noDockerWords } from "./docker-daemon.js";
 import { ApiError, invalid } from "./errors.js";
@@ -71,6 +71,9 @@ export interface ProviderEntry {
   readonly network?: readonly string[];
   readonly metered: boolean;
   readonly capabilities: readonly KindCapabilities[];
+  /** Kinds it doesn't serve, each with why in its own words (Daytona's desktop), as its descriptor says: the claim's
+   *  refusal says them in place of servingRefusals'. */
+  readonly unserved?: Readonly<Partial<Record<ComputerKind, string>>>;
   /** The image a computer of each kind starts from when its setting names none. */
   readonly defaultImage?: Partial<Record<ComputerKind, string>>;
   /** Its provider makes its image ready before the first create (its descriptor's prepareImage). */
@@ -197,8 +200,9 @@ export function networkWords(network: readonly string[] | undefined, kind?: Comp
   if (network?.length === 2 && network.includes("open") && network.includes("allow")) return OPERATOR_LIST_WORDS;
   return undefined;
 }
-/** A kind; kind none, the one "no computer" choice, carries its ShellChoice itself (it has no providers). */
-export type KindView = { kind: ComputerKind; offered: boolean; why?: string; groups: string[]; tools: string[]; providers: ProviderView[] } & Partial<ShellChoice>;
+/** A kind; kind none, the one "no computer" choice, carries its ShellChoice itself (it has no providers). `settings`: the
+ *  fields its computer may set beside kind and provider (computer-setting.ts kindSettings). */
+export type KindView = { kind: ComputerKind; offered: boolean; why?: string; groups: string[]; tools: string[]; settings: string[]; providers: ProviderView[] } & Partial<ShellChoice>;
 export type TestView = { ok: true; detail: string } | { ok: false; why: string };
 /** A picked key's choices (GET /v2/computers/{provider}/choices): its KEY, as PUT …/keys takes it, then the values the
  *  vendor's list offers, each saved as it is and shown by its label, and `saved`, the one whose value is saved now, where
@@ -346,7 +350,7 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
         const why = offered ? undefined
           : serving.length && serving.every(refusedOpen) ? `every provider of a ${kind} computer needs a network, and this server's ${BOX_ALLOW_ENV} is none (no network)`
           : serving.length ? `no provider of a ${kind} computer can reach this server's run folders` : `no provider serves a ${kind} computer`;
-        return { kind, offered, ...(why ? { why } : {}), groups: [...spec.required, ...spec.optional], tools: [...tools(kind)], providers, ...(kind === "none" ? choice({ kind: "none" }) : {}) };
+        return { kind, offered, ...(why ? { why } : {}), groups: [...spec.required, ...spec.optional], tools: [...tools(kind)], settings: kindSettings(kind), providers, ...(kind === "none" ? choice({ kind: "none" }) : {}) };
       }),
       paired,
     };
@@ -430,7 +434,8 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
   }
 
   /** Why a run of an agent whose computer is `computer` cannot have it here, in words naming the setting to fill;
-   *  undefined when it can. Checked at the claim: the provider must serve the kind (servingRefusals' words), fit this
+   *  undefined when it can. Checked at the claim: the provider must serve the kind (its descriptor's unserved words,
+   *  else servingRefusals'), fit this
    *  server's folder mode, give a sandbox the GPUs it asks for (checkGpu's words), have its daemon answer where it binds
    *  a folder of this machine (Docker), find what it runs on this machine (hostWhy's words), and have every required key
    *  saved; a key refusal names the route that saves them. */
@@ -442,7 +447,8 @@ export function createComputerRoutes(options: ComputerRoutesOptions) {
     const set = new Set([...(await sealedKeyNames(store)), ...listed.keys.filter((key) => envValue(env, key.name) !== undefined).map((key) => key.name)]);
     const provider = entryHere(listed, (name) => set.has(name) || envValue(env, name) !== undefined, settingOptions(listed.id, settings, keyTable));
     if (!provider.kinds.includes(computer.kind)) {
-      const words = [...new Set(provider.capabilities.flatMap((capabilities) => kinds.servingRefusals(capabilities, computer.kind)))];
+      const unserved = provider.unserved?.[computer.kind];
+      const words = unserved !== undefined ? [unserved] : [...new Set(provider.capabilities.flatMap((capabilities) => kinds.servingRefusals(capabilities, computer.kind)))];
       return `${provider.label} does not serve a ${computer.kind} computer${words.length ? ` (${words.join("; ")})` : ""}: set this agent's computer to one it serves (Settings → Computers)`;
     }
     const mode = await modeNow();

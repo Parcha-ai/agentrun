@@ -1,0 +1,7 @@
+node_modules/
+.eve/
+.output/
+.vercel/
+.env
+.env.*
+agent/extensions/agentrun.ts

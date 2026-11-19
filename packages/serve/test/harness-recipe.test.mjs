@@ -135,6 +135,21 @@ for (const [name, code, make] of BROKEN) {
   });
 }
 
+test("one list names the variables the adapter and the proxy set, by part, and its parts are the adapter's own", async () => {
+  const { AGENT_VARS, PROXY_HOST_ENVS } = await import("../dist/harness-recipe.js");
+  const [{ RESERVED_ENV }, { INHERITED_ENV }] = await Promise.all([import("@parcha/agentrun-harness-acp"), import(new URL("../../run-adapters-acp/dist/host/child.js", import.meta.url).href)]);
+  assert.deepEqual(Object.keys(AGENT_VARS).sort(), ["inherited", "proxy", "reserved"]);
+  assert.deepEqual([...AGENT_VARS.reserved].sort(), [...RESERVED_ENV].sort(), "the adapter's RESERVED_ENV");
+  assert.deepEqual([...AGENT_VARS.inherited].sort(), [...INHERITED_ENV].sort(), "the adapter's INHERITED_ENV");
+  assert.deepEqual([...AGENT_VARS.proxy].sort(), ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "ANTHROPIC_HOST"]);
+  assert.ok(PROXY_HOST_ENVS.every((name) => AGENT_VARS.proxy.includes(name)), "the proxy's address is one of its variables");
+  // A recipe names none of them, in env or as its model's variable (the proxy's key is refused as a key first).
+  for (const name of Object.values(AGENT_VARS).flat()) {
+    assert.ok([RECIPE_CODES.env, RECIPE_CODES.keys].includes(refusalOf(recipeOf(undefined, { env: { [name]: "x" } })).code), name);
+    assert.equal(refusalOf(recipeOf(undefined, { model: { billing: "proxy", wire: "anthropic-messages", env: name } })).code, RECIPE_CODES.env, name);
+  }
+});
+
 test("harness-check refuses a recipe that breaks each of the five rules, by the rule's code, and starts nothing", async (t) => {
   const data = join(await scratch(t), "agents");
   const rules = [BROKEN[0], BROKEN[2], BROKEN[5], BROKEN[7], BROKEN[8]];
@@ -274,13 +289,15 @@ test("harness-check fails an agent whose own tools are on: its model request is 
   assert.match(run.stdout, /harness-check: FAILED/);
 });
 
-test("harness-check gates an agent that titles our tool its own way (Goose's `agentrun: check echo`) by the tool its title names", { skip: linux, timeout: 120_000 }, async (t) => {
+test("harness-check: a call titled as Goose 1.59.2 titles it (`agentrun: check echo`) is ours, its gate asked by the bridge, never as the agent's own", { skip: linux, timeout: 120_000 }, async (t) => {
   const { data, file, env } = await installed(t, recipeOf(undefined, { env: { MODEL_AGENT_MODE: "goose-title" } }));
   const run = await check(t, file, data, env);
   assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}\n${JSON.stringify(run.report?.gate)}`);
   const asked = run.report.gate.asked;
-  assert.ok(asked.some((g) => g.tool === "acp_other" && g.about === "check_echo" && g.answer === "allow"), JSON.stringify(asked));
-  assert.ok(asked.some((g) => g.tool === "acp_other" && g.about === "check_denied" && g.answer === "deny"), JSON.stringify(asked));
+  assert.ok(asked.every((g) => !g.tool.startsWith("acp_")), JSON.stringify(asked));
+  assert.ok(asked.some((g) => g.tool === "check_echo" && g.answer === "allow"), JSON.stringify(asked));
+  assert.ok(asked.some((g) => g.tool === "check_denied" && g.answer === "deny"), JSON.stringify(asked));
+  assert.deepEqual(run.report.stage3.denied_call.askedAs, ["check_denied"]);
   assert.equal(run.report.stage3.mcp_tool.calls, 1);
   assert.equal(run.report.stage3.denied_call.ran, 0);
   assert.equal(run.report.facts.tool_gate, "permission");

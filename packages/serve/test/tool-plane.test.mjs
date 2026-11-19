@@ -18,15 +18,15 @@ import { blockersOf } from "../dist/runnable.js";
 
 const base = { gateway: false, parallelKey: false };
 
-test("a vendor picked without its key: capabilities' why names Settings → Tool keys first, then the variable, as the reason does; the stored value is unchanged", () => {
+test("a vendor picked without its key: capabilities' why names Settings → API Keys first, then the variable, as the reason does; the stored value is unchanged", () => {
   const parallel = explainCapability("web_search", { ...base, harness: "pi", pick: "parallel" });
   assert.equal(parallel.resolves, "unavailable: parallel picked, no PARALLEL_API_KEY", "the plane keeps its own value");
-  assert.equal(parallel.why, "Parallel is picked, and it needs a Parallel key: save one in Settings → Tool keys (or set PARALLEL_API_KEY where the server starts)");
+  assert.equal(parallel.why, "Parallel is picked, and it needs a Parallel key: save one in Settings → API Keys (or set PARALLEL_API_KEY where the server starts)");
   const kernel = explainCapability("browser", { ...base, harness: "pi", pick: "kernel", browserKeys: { browserbase: false, kernel: false } });
   assert.equal(kernel.resolves, "unavailable: kernel picked, no KERNEL_API_KEY");
-  assert.equal(kernel.why, "Kernel is picked, and it needs a Kernel key: save one in Settings → Tool keys (or set KERNEL_API_KEY where the server starts)");
+  assert.equal(kernel.why, "Kernel is picked, and it needs a Kernel key: save one in Settings → API Keys (or set KERNEL_API_KEY where the server starts)");
   const browserbase = explainCapability("browser", { ...base, harness: "pi", pick: "browserbase", browserKeys: { browserbase: false, kernel: true } });
-  assert.equal(browserbase.why, "Browserbase is picked, and it needs a Browserbase key: save one in Settings → Tool keys (or set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID where the server starts)");
+  assert.equal(browserbase.why, "Browserbase is picked, and it needs a Browserbase key: save one in Settings → API Keys (or set BROWSERBASE_API_KEY and BROWSERBASE_PROJECT_ID where the server starts)");
 });
 
 test("the capabilities a grant may name are tools the table binds, the call-only tools not among them; web_search and web_fetch each offer their providers, the default first", () => {
@@ -123,7 +123,7 @@ test("capabilities say why each web tool resolves as it does on each harness, on
   assert.deepEqual(why(gateway, { web_search: { provider: "native" } }).web_search, { pi: "no native search for pi behind a gateway", "claude-agent": "Claude's own search", codex: "no native search for codex behind a gateway", opencode: "no native search for opencode, whose model requests carry no provider-hosted tool" }, "native picked with none: the unavailable text's reason");
   assert.deepEqual(why(direct, { web_search: { provider: "off" } }).web_search, each("turned off in settings"));
   assert.deepEqual(why(direct, { web_search: { provider: "exa-keyless" } }).web_search, each("keyless Exa, picked in settings: Exa's free search, no key"));
-  assert.deepEqual(why(direct, { web_search: { provider: "parallel" }, web_fetch: { provider: "parallel" } }), { web_fetch: each("Parallel is picked, and it needs a Parallel key: save one in Settings → Tool keys (or set PARALLEL_API_KEY where the server starts)"), web_search: each("Parallel is picked, and it needs a Parallel key: save one in Settings → Tool keys (or set PARALLEL_API_KEY where the server starts)") });
+  assert.deepEqual(why(direct, { web_search: { provider: "parallel" }, web_fetch: { provider: "parallel" } }), { web_fetch: each("Parallel is picked, and it needs a Parallel key: save one in Settings → API Keys (or set PARALLEL_API_KEY where the server starts)"), web_search: each("Parallel is picked, and it needs a Parallel key: save one in Settings → API Keys (or set PARALLEL_API_KEY where the server starts)") });
   assert.deepEqual(why({ ...direct, PARALLEL_API_KEY: "not-a-secret" }, { web_fetch: { provider: "parallel" } }).web_fetch, each("Parallel, picked in settings: your Parallel key (server)"));
   // Through the API, a key saved on Tool keys is said as saved, and the document holds the field its schema names.
   withEnv(t, { ...gateway, AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") }, ["PARALLEL_API_KEY"]);

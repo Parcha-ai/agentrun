@@ -97,6 +97,12 @@ export interface ProviderDescriptor<Module extends ProviderModule = ProviderModu
 	 */
 	readonly capabilities: readonly KindCapabilities[];
 	/**
+	 * Setting kinds its capabilities don't serve though a caller would ask it for one, each with why, in words: serve
+	 * refuses a setting of that kind on it with these words in place of servingRefusals' (Daytona's desktop: the window
+	 * manager can't start in its sandboxes).
+	 */
+	readonly unserved?: Readonly<Partial<Record<ComputerSettingKind, string>>>;
+	/**
 	 * The image a computer of each setting kind starts from when its setting names none. A kind with no entry has no
 	 * default, and the caller refuses the setting in words (Docker's sandbox: the server builds its image, prepareImage).
 	 */
@@ -159,6 +165,12 @@ export function defineProvider<const Descriptor extends ProviderDescriptor>(desc
 	return descriptor;
 }
 
+/**
+ * The setting kinds a descriptor's unserved may name: every one but none, kept whole by its type. Not kinds.ts's
+ * SETTING_KIND_NAMES: kinds.ts loads the descriptors, which call defineProvider before it has run.
+ */
+const UNSERVABLE: Readonly<Record<Exclude<ComputerSettingKind, "none">, true>> = { sandbox: true, desktop: true, phone: true, browser: true };
+
 /** What is wrong with a value offered as a descriptor, in words; none when it is one. */
 export function descriptorProblems(value: unknown): string[] {
 	if (typeof value !== "object" || value === null) return ["it is not an object"];
@@ -180,6 +192,7 @@ export function descriptorProblems(value: unknown): string[] {
 		if (entries === undefined || entries.some(([kind, key]) => (kind !== "bind" && kind !== "archil") || typeof key !== "string" || !optional(key))) problems.push("mountsWith maps mount kinds (bind, archil) to the name of one of its keys that is not required");
 		else if (entries.some(([kind]) => typeof d.unmounted?.[kind as MountKind] !== "string")) problems.push("each kind of mountsWith is in unmounted too, with why while its key is unset");
 	}
+	if (d.unserved !== undefined && (typeof d.unserved !== "object" || d.unserved === null || Array.isArray(d.unserved) || Object.entries(d.unserved).some(([kind, why]) => !Object.hasOwn(UNSERVABLE, kind) || typeof why !== "string" || why.trim() === ""))) problems.push("unserved maps setting kinds (sandbox, desktop, phone, browser) to why, in words");
 	if (!Array.isArray(d.network) || d.network.length === 0 || d.network.some((form) => form !== "none" && form !== "open" && form !== "allow")) problems.push("network is not a list of the network forms its computers make (none, open, allow)");
 	if (!Array.isArray(d.capabilities) || d.capabilities.length === 0) problems.push("capabilities is not a list of one configuration or more");
 	else if (d.capabilities.some((one) => typeof one?.kind !== "string" || !Array.isArray(one.groups))) problems.push("each configuration is a machine kind and its groups");
@@ -259,11 +272,16 @@ export function derivedMounts(descriptor: Pick<ProviderDescriptor, "mounts" | "u
  * The mount kinds a provider's computers take, and why not the others, with the keys `set` says the operator has set: its
  * derived mounts, and each kind of its mountsWith whose key is set, which leaves its unmounted. What a provider made with
  * those keys declares (capabilities().mount), and what a server reads to know whether that provider can mount a run's
- * folder.
+ * folder. Made with create() `options` whose machines dial the server (connectOf), it takes no Archil mount: the
+ * helper's steps run as root through exec, which a machine that dials has none of.
  */
-export function mountsOf(descriptor: Pick<ProviderDescriptor, "mounts" | "unmounted" | "mountsWith" | "capabilities">, set: (name: string) => boolean): { mounts: MountKind[]; unmounted: Unmounted } {
+export function mountsOf(descriptor: Pick<ProviderDescriptor, "label" | "connect" | "mounts" | "unmounted" | "mountsWith" | "capabilities">, set: (name: string) => boolean, options: { readonly connect?: unknown } = {}): { mounts: MountKind[]; unmounted: Unmounted } {
 	const taken = Object.entries(descriptor.mountsWith ?? {}).flatMap(([kind, key]) => (typeof key === "string" && set(key) ? [kind as MountKind] : []));
-	const unmounted = Object.fromEntries(Object.entries(descriptor.unmounted ?? {}).filter(([kind]) => !taken.includes(kind as MountKind)));
+	const unmounted: Unmounted = Object.fromEntries(Object.entries(descriptor.unmounted ?? {}).filter(([kind]) => !taken.includes(kind as MountKind)));
 	const mounts = [...descriptor.mounts, ...taken.filter((kind) => !descriptor.mounts.includes(kind))];
+	if (connectOf(descriptor, options) === "dial") {
+		const archil = `${descriptor.label}'s machines dial this server, and a machine that dials takes no Archil mount`;
+		return { mounts: derivedMounts({ ...descriptor, mounts: mounts.filter((kind) => kind !== "archil") }), unmounted: { ...unmounted, archil } };
+	}
 	return { mounts: derivedMounts({ ...descriptor, mounts }), unmounted };
 }
