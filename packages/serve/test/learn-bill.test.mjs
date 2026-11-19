@@ -31,7 +31,7 @@ const SERIES = [
   row(6, "workflow", 7, 0.1, 0.4), row(7, "handed_back", 8, 0.95), row(8, "workflow", 9, 0.1), row(9, "workflow", 10, 0.1, 0.4),
   { ...row(10, "replay", 11, 0.5), run_id: "replay-3" },
   row(11, "workflow", 12, 0.1), row(12, "workflow", 13, 0.1),
-];
+].map((one, at, all) => ({ ...one, n: one.path === "replay" ? null : all.slice(0, at + 1).filter((r) => r.path !== "replay").length }));
 const PROMOTED = at(6);
 // The bill over a series, with the takeover and before level its summary gives.
 const billFor = (runs) => billOf(runs, costSummary(runs));
