@@ -1,22 +1,9 @@
 // Cursor as an AgentRun harness: its recipe (recipes/cursor.json), loaded and typed, and the adapter a host builds from
 // it on a pinned install. Written for AgentRun.
 //
-// What the recipe holds was measured on Cursor 2026.11.13-eacade1 over ACP (harness S0):
-//  - `cursor-agent --disable-auto-update acp` in a private HOME, on CURSOR_API_KEY (handed by name at each start, never
-//    written anywhere of ours): Cursor's API-key login, the one its docs give for automation;
-//  - its config directory is $CURSOR_CONFIG_DIR, else $XDG_CONFIG_HOME/cursor, else $HOME/.cursor (its
-//    cursor-config/dist/paths.js): the adapter sets XDG_CONFIG_HOME to $HOME/.config, so the config and the sessions
-//    are under `$HOME/.config/cursor`, beside auth.json, and a file under ~/.cursor is never read;
-//  - `$HOME/.config/cursor/cli-config.json` denies Write(**) and allows nothing: Cursor asks permission (session/request_permission)
-//    before a shell command or an MCP call, and the host's gate answers, but it never asks before a file edit, so every
-//    edit is denied outright until it does;
-//  - our tools as one MCP server over HTTP, given at session/new (no mcp.json of Cursor's own);
-//  - its sessions in `$HOME/.config/cursor/acp-sessions`, mirrored so another runner's Cursor loads them (session/load);
-//  - the credential it derives from the key, `$HOME/.config/cursor/auth.json`, never mirrored, and its whole HOME removed
-//    when its process ends;
-//  - its model chosen among those session/new lists for the key (session/set_model), billed to the owner's Cursor plan:
-//    no request reaches a proxy of ours, so the run stops at the plan's limits of turns and tool calls;
-//  - its team administrator's switch against headless use, said as CURSOR_HEADLESS_DISABLED where Cursor says it.
+// Cursor's config directory is $CURSOR_CONFIG_DIR, else $XDG_CONFIG_HOME/cursor, else $HOME/.cursor (its
+// cursor-config/dist/paths.js, Cursor 2026.11.13-eacade1): the adapter sets XDG_CONFIG_HOME to $HOME/.config, so the
+// recipe's config and sessions are under `$HOME/.config/cursor`, and a file under ~/.cursor is never read.
 import { normalize, sep } from "node:path";
 import type { AgentAdapter } from "@parcha/agentrun-kernel";
 import { acpAdapter, type AcpAdapterOptions } from "./adapter.js";
