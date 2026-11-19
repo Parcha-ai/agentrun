@@ -69,9 +69,10 @@ function syncedComputer() {
  * picks; `record.attachOf(ref)`, when set, answers the provider's read of a machine in place of its own; `record.refuse`
  * refuses that many creates first. `kept`: the run parked at epoch 2 keeping sandbox c0, which this claim takes back.
  * `synced`: a fake disk; the sandbox is then Daytona's with no DAYTONA_ARCHIL_EGRESS, each one holding the run's folder
- * synced from that disk (syncedComputer).
+ * synced from that disk (syncedComputer). `archil`: a fake disk whose sync.json the Archil mount's park and release
+ * record the folder's modes and links in (syncStore), the sandbox Modal's as without it.
  */
-async function claim({ recreates, kept = false, synced } = {}) {
+async function claim({ recreates, kept = false, synced, archil } = {}) {
   const dir = realpathSync(mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-lost-computer-")));
   dirs.push(dir);
   const root = join(dir, "work");
@@ -145,6 +146,10 @@ async function claim({ recreates, kept = false, synced } = {}) {
     return local.mountSpec();
   };
   workspace.attach = (computer, check) => local.attach(computer, check);
+  if (archil) {
+    const disk = archilWorkspace(archil, SYNCED);
+    workspace.syncStore = () => disk.syncStore();
+  }
   /** The run's claim at `epoch`, on this store and provider: a resume is a later one. */
   const at = (epoch) => computerForClaim({ runId: "run-1", epoch, computer: { kind: "sandbox", provider: vendor } }, store, {
     mode: 2,
@@ -189,6 +194,19 @@ test("a lost Mode 2 sandbox: the next tool call's computer call starts a new one
   await answer.release();
   assert.deepEqual(record.released, [["c1", "delete"], ["c2", "delete"]], "the run's end lets the new one go");
   assert.equal(record.revoked, 2);
+});
+
+test("an Archil-mounted sandbox lost and replaced, then released: the release records the folder's modes and links through the new one, never the lost one, so it neither fails nor leaves sync.json unwritten", async () => {
+  const disk = new FakeArchilDisk();
+  const { record, answer, inCall } = await claim({ archil: disk });
+  record.lose = (id, method) => id === "c1" && method === "files.stat";
+  assert.deepEqual(await inCall(...STAT), LOST("c1"));
+  assert.equal((await inCall(...STAT)).ok, true, "c2 serves the next call");
+  const before = disk.calls.length;
+  await answer.release();
+  const meta = disk.calls.slice(before).filter((call) => call.op === "putObject" && call.key.endsWith("sync.json"));
+  assert.equal(meta.length, 1, "sync.json written once at the release, read through c2");
+  assert.deepEqual(record.released, [["c1", "delete"], ["c2", "delete"]], "the new one let go at the run's end");
 });
 
 test("a lost synced sandbox: the new one is pushed the disk's folder and the claim's sync goes on from its listing, so the next exec puts the one file it wrote, never the whole folder", async () => {

@@ -552,9 +552,9 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
       }
       if (folder === "archil" && fenced && own) {
         // An Archil mount's park and release: its modes and links recorded in sync.json first (recordMeta), read through
-        // the machine's own client, for a later claim that syncs the folder; the computer goes whatever that answered,
-        // and a failed one is said.
-        const record = () => recordMeta(fenced, own);
+        // the machine's own client as it is then (a lost one's replacement, never the lost one; asking it starts none),
+        // for a later claim that syncs the folder; the computer goes whatever that answered, and a failed one is said.
+        const record = () => recordMeta(fenced, launched.own ?? own);
         return {
           computer,
           sync: record,
