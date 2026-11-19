@@ -1463,7 +1463,6 @@ test("an imported agent runs as imported: a project with no instructions file ge
   const current = async (cwd) => (await agentOf(store, agentIdOf(cwd))).revisions.find((r) => r.current).body;
   const built = await current(build);
   assert.equal(built.model, undefined);
-  assert.equal(built.instructions, importedInstructions("nightly-build", "codex"));
   assert.equal(built.instructions, "You work on the project nightly-build. Your past runs are its Codex sessions, imported. Read the project's files before you change them, and say what you changed.");
   assert.equal((await current(docs)).model, "openai/gpt-6.1-sol");
   // What a run's start checks (runnable.ts), on a server with OpenRouter's key alone: nothing keeps either from running.

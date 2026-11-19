@@ -14,7 +14,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { AssistantEntry, ROOT_CONVERSATION_ID, type StorageWrite, ToolResultEntry, UserEntry } from "@earendil-works/pi-durable";
 import { type EntryLike, REQUEST_COST, type RunMetrics, runMetricsOf } from "./timeline/index.js";
 import { defaultData } from "./files.js";
-import { childFiles, HARNESS_OF, mostEffortOf, readSession, type Session, SOURCES, type Source, sessionFiles, type Turn } from "./import-sources.js";
+import { childFiles, HARNESS_OF, mostEffortOf, readSession, type Session, SOURCE_NAMES, SOURCES, type Source, sessionFiles, type Turn } from "./import-sources.js";
 import { type Found, hoursOf, type OpenAt, summaryLines } from "./import-summary.js";
 import { stopOnce } from "./stop-signals.js";
 import { catalogPrices, type Listed, providerModels } from "./model.js";
@@ -1049,7 +1049,6 @@ async function estimateOf(entries: readonly EntryLike[], catalog: () => Promise<
  *  revision with no instructions is refused every run (runnable.ts), so an import never writes one. */
 export const importedInstructions = (project: string, source: Source): string =>
   `You work on the project ${project}. Your past runs are its ${SOURCE_NAMES[source]} sessions, imported. Read the project's files before you change them, and say what you changed.`;
-const SOURCE_NAMES: Record<Source, string> = { "claude-code": "Claude Code", codex: "Codex", pi: "pi" };
 
 /** The revision of `source`'s harness this agent keeps already (one per source, by its note), or a new one to write: its
  *  id, and the `NewRevision` the caller stores (through agents.create for the agent's first, agents.addRevision for the
@@ -1128,7 +1127,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
   const catalog = () => (prices ??= catalogPrices());
   const held = await importedIn(store);
   // Whether a model catalog here lists a session's model ("provider/model id"), keys aside: one none lists is no model to pin.
-  let models: Promise<Awaited<ReturnType<typeof providerModels>>> | undefined;
+  let models: ReturnType<typeof providerModels> | undefined;
   const inCatalog = async (ref: string): Promise<boolean> => {
     const at = ref.indexOf("/");
     return at > 0 && (await (models ??= providerModels(options.env))).getModel(ref.slice(0, at), ref.slice(at + 1)) !== undefined;
@@ -1150,6 +1149,7 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
     if (hash(textNow) !== known.texts.get(project.agentId)) add(await secretsIn(textNow));
     const byStart = [...project.sessions].sort((a, b) => (a.startedAt ?? "").localeCompare(b.startedAt ?? ""));
     const latest = byStart.at(-1)!;
+    const name = keptName(project, text);
     // The latest session's harness names the agent's current revision; its model, each harness's latest a catalog lists. The
     // latest source is last in the order, so it is the last revision written — created with the agent, or added current.
     const order = [...new Set(project.sessions.map((s) => s.source))].sort((a, b) => (a === latest.source ? 1 : 0) - (b === latest.source ? 1 : 0));
@@ -1158,14 +1158,14 @@ export async function runImport(store: ImportStore, plan: Plan, options: ImportO
     for (const source of order) {
       const model = byStart.findLast((s) => s.source === source && s.model)?.model;
       const pinned = model && (await inCatalog(model)) ? model : undefined;
-      const resolved = await revisionFor(store, project.agentId, source, files, pinned, keptName(project, text), text);
+      const resolved = await revisionFor(store, project.agentId, source, files, pinned, name, text);
       if (resolved.create && model && !pinned) (report.modelsLeftOut ??= []).push({ cwd: project.cwd, source, model });
       revisions.set(source, resolved.id);
       if (resolved.create) toWrite.push(resolved.create);
     }
     if (created) {
       // The agent and its first revision in one commit, the rest added; the latest is last, so the current one.
-      await store.agents.create({ id: project.agentId, name: keptName(project, text), description: text(project.cwd) }, toWrite[0]!);
+      await store.agents.create({ id: project.agentId, name, description: text(project.cwd) }, toWrite[0]!);
       for (const revision of toWrite.slice(1)) await store.agents.addRevision({ agentId: project.agentId, ...revision });
     } else if (toWrite.length) {
       // A held agent gains a revision only for a source it had none of; its current revision is left as it was.

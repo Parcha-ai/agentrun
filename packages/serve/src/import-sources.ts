@@ -17,6 +17,8 @@ export const HARNESS_OF: Record<Source, string> = {
   codex: "codex",
   pi: "pi",
 };
+/** Each source's name as a person reads it. */
+export const SOURCE_NAMES: Record<Source, string> = { "claude-code": "Claude Code", codex: "Codex", pi: "pi" };
 
 export type ToolCall = {
   type: "toolCall";
