@@ -1,27 +1,70 @@
 #!/usr/bin/env node
 // Exercise built release archives in an ordinary eve project. No workspace links or model calls.
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { isMain } from './is-main.mjs';
 
-const exec = promisify(execFile);
 const repository = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const json = async path => JSON.parse(await readFile(path, 'utf8'));
 const cleanEnvironment = () => Object.fromEntries(Object.entries(process.env)
   .filter(([key]) => !/(?:API_KEY|TOKEN|SECRET|PASSWORD|PRIVATE_KEY|NODE_OPTIONS|NODE_PATH)/i.test(key)));
 
-/** One step of the check. */
-export async function runStep(command, args, { cwd, env, timeout = 180_000, maxBuffer = 8 * 1024 * 1024 } = {}) {
-  try {
-    return (await exec(command, args, { cwd, env, timeout, maxBuffer })).stdout;
-  } catch (error) {
-    throw new Error(`eve package consumer ${command} ${args[0] ?? ''} failed: ${String(error.stderr || error.stdout || error.message).slice(-5000)}`);
-  }
+const TAIL = 5000;
+const groupAlive = pid => { try { process.kill(-pid, 0); return true; } catch (error) { return error.code === 'EPERM'; } };
+const signalGroup = (pid, signal) => { try { process.kill(-pid, signal); } catch {} };
+async function groupGone(pid, ms) {
+  for (const end = Date.now() + ms; groupAlive(pid);) { if (Date.now() > end) return false; await sleep(25); }
+  return true;
+}
+
+/** One step of the check, in its own process group. On timeout, too much output or a step that ends with processes of
+ *  its own still running, the whole group gets SIGTERM, then SIGKILL after `grace` ms, and the step settles only once
+ *  the group is gone: the consumer directory's cleanup never runs beside a live step. A failure names the command, its
+ *  exit code or signal, whether it timed out, and the tails of stdout and stderr, each labelled. */
+export function runStep(command, args, { cwd, env, timeout = 180_000, maxBuffer = 8 * 1024 * 1024, grace = 5_000 } = {}) {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const output = { stdout: [], stderr: [] };
+    const bytes = { stdout: 0, stderr: 0 };
+    let timedOut = false; let overflow = ''; let killer;
+    const child = spawn(command, args, { cwd, env, detached: true, stdio: 'pipe' });
+    const stop = () => {
+      if (killer) return;
+      signalGroup(child.pid, 'SIGTERM');
+      killer = setTimeout(() => signalGroup(child.pid, 'SIGKILL'), grace);
+    };
+    const timer = setTimeout(() => { timedOut = true; stop(); }, timeout);
+    for (const name of ['stdout', 'stderr']) child[name].on('data', chunk => {
+      bytes[name] += chunk.length; output[name].push(chunk);
+      if (bytes[name] > maxBuffer && !overflow) { overflow = `${name} over ${maxBuffer} bytes`; stop(); }
+    });
+    let spawnError;
+    child.on('error', error => { spawnError = error; });
+    child.on('close', async (code, signal) => {
+      clearTimeout(timer);
+      let left = '';
+      if (child.pid !== undefined && groupAlive(child.pid)) {
+        stop();
+        if (!await groupGone(child.pid, grace + 5_000)) left = 'its process group outlived SIGKILL';
+      }
+      clearTimeout(killer);
+      const text = name => Buffer.concat(output[name]).toString('utf8');
+      const stdout = text('stdout');
+      if (code === 0 && !timedOut && !overflow && !spawnError && !left) return resolve(stdout);
+      const how = [
+        timedOut ? `timed out after ${Date.now() - started} ms (limit ${timeout} ms)` : '',
+        overflow, spawnError ? String(spawnError.message) : '', left,
+        code !== null ? `exit code ${code}` : `signal ${signal}`,
+      ].filter(Boolean).join('; ');
+      const tail = name => `--- ${name} (last ${TAIL} chars) ---\n${text(name).slice(-TAIL)}`;
+      reject(new Error(`eve package consumer step failed: ${[command, ...args].join(' ')}\n${how}\n${tail('stdout')}\n${tail('stderr')}`));
+    });
+  });
 }
 
 /** `tarballs` are the exact archives already packed and scanned by verify-packages. */
