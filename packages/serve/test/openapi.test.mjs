@@ -10,7 +10,7 @@ import { agentFolderOf } from "../dist/files.js";
 import { agentHomeFolder } from "../dist/workspace/index.js";
 import { ROUTES } from "../dist/server.js";
 import { DEFINITION_FIELDS } from "../dist/validate.js";
-import { CAPABILITIES_SENT, DEFINITION_INPUT_OPTIONAL, DEFINITION_OPTIONAL, MCP_PREVIEW_SCOPE, REQUEST_EXAMPLES, RUN_FIELDS_SENT, SIGN_IN_FIELDS_SENT } from "../dist/openapi.js";
+import { AGENT_FIELDS_SENT, CAPABILITIES_SENT, DEFINITION_INPUT_OPTIONAL, DEFINITION_OPTIONAL, MCP_PREVIEW_SCOPE, REQUEST_EXAMPLES, RUN_FIELDS_SENT, SIGN_IN_FIELDS_SENT } from "../dist/openapi.js";
 import { schemaProblems } from "./schema-support.mjs";
 import { capabilities } from "../dist/index.js";
 import { ended, fedBack, LEARN, learner, made, started } from "./learn-support.mjs";
@@ -252,7 +252,7 @@ test("the contract's operations are as vendored; this server's own are added and
   }
   const marked = [];
   // Names taken out of a schema's `required` with the property they name: only the fields this server always sends
-  // (RUN_FIELDS_SENT, SIGN_IN_FIELDS_SENT, CAPABILITIES_SENT, Run.place) may be, so a required addition anywhere else still fails this comparison.
+  // (RUN_FIELDS_SENT, AGENT_FIELDS_SENT, SIGN_IN_FIELDS_SENT, CAPABILITIES_SENT, Run.place) may be, so a required addition anywhere else still fails this comparison.
   const unrequired = [];
   const notes = [];
   const strip = (schema, at) => {
@@ -341,7 +341,7 @@ test("the contract's operations are as vendored; this server's own are added and
     unrequired.push(`Capabilities.${field}`);
   }
   assert.ok(isDeepStrictEqual(components, VENDORED.components), "the contract's components are unchanged but for the marked properties");
-  assert.deepEqual(unrequired.sort(), [...["Run", "RunSummary"].flatMap((schema) => RUN_FIELDS_SENT.map((field) => `${schema}.${field}`)), "Run.place", ...CAPABILITIES_SENT.map((field) => `Capabilities.${field}`), ...SIGN_IN_FIELDS_SENT.map((field) => `SignIn.${field}`)].sort(), "only the fields this server always sends are required beyond the contract");
+  assert.deepEqual(unrequired.sort(), [...["Run", "RunSummary"].flatMap((schema) => RUN_FIELDS_SENT.map((field) => `${schema}.${field}`)), "Run.place", ...AGENT_FIELDS_SENT.map((field) => `Agent.${field}`), ...CAPABILITIES_SENT.map((field) => `Capabilities.${field}`), ...SIGN_IN_FIELDS_SENT.map((field) => `SignIn.${field}`)].sort(), "only the fields this server always sends are required beyond the contract");
   assert.deepEqual(marked.sort(), [...doc.info["x-agentrun-serve"].fields].sort(), "info lists the marked properties");
   assert.deepEqual(notes.sort(), [...doc.info["x-agentrun-serve"].unsupported_fields, ...doc.info["x-agentrun-serve"].details, ...doc.info["x-agentrun-serve"].notes].sort(), "info lists the contract properties it notes");
 });
@@ -759,7 +759,7 @@ test("GET /agents documents archived, as GET /runs already does, and lists an ar
   assert.deepEqual(schemaProblems(doc, { $ref: "#/components/schemas/AgentList" }, archived.body), []);
 });
 
-test("what this server always sends is required in the document: a run's revision, kind and archived_at, on a run and in a list, an agent's tools on its own route, and a trigger's zone and interval start, which a write may leave out", { timeout: 60_000 }, async (t) => {
+test("what this server always sends is required in the document: a run's revision, kind and archived_at, on a run and in a list, an agent's kind, revision, revisions and archived_at on every agent answer, its tools on its own route, and a trigger's zone and interval start, which a write may leave out", { timeout: 60_000 }, async (t) => {
   const { api, baseUrl } = await serve(t, { triggerClock: fakeClock("2026-10-31T12:00:00Z") });
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   for (const name of ["Run", "RunSummary"]) for (const field of RUN_FIELDS_SENT) assert.ok(doc.components.schemas[name].required.includes(field), `${name}.${field} is required`);
@@ -776,6 +776,11 @@ test("what this server always sends is required in the document: a run's revisio
   assert.deepEqual(schemaProblems(doc, agentAnswer, agentRead), [], JSON.stringify(agentRead));
   const { tools: _tools, ...toolless } = agentRead;
   assert.notDeepEqual(schemaProblems(doc, agentAnswer, toolless), [], "an agent without tools is not the document's");
+  // An agent's own kind, revision, revisions and archived_at are on every agent answer: its read, a list's, and a write's.
+  for (const field of AGENT_FIELDS_SENT) assert.ok(doc.components.schemas.Agent.required.includes(field), `Agent.${field} is required`);
+  const listedAgent = (await api("GET", "/agents")).body.agents.find((a) => a.agent_id === "nightly");
+  const written = await api("POST", "/agents", agent("weekly"));
+  for (const [what, value] of [["an agent", agentRead], ["a list's agent", listedAgent], ["a create's answer", written.body]]) for (const field of AGENT_FIELDS_SENT) assert.ok(value && field in value, `${what} holds ${field}`);
 
   const answer = doc.paths["/triggers/{trigger_id}"].get.responses["200"].content["application/json"].schema;
   const write = doc.paths["/triggers"].post.requestBody.content["application/json"].schema;

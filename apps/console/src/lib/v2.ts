@@ -3,6 +3,7 @@
 // sends. Edit the server's document, then run node scripts/generate-clients.mjs; never a wire type here.
 
 import type { components, operations } from "./api.generated";
+import type { Definition } from "./agentForm";
 
 type Answer<Id extends keyof operations> = operations[Id]["answer"];
 type Body<Id extends keyof operations> = operations[Id]["body"];
@@ -282,3 +283,18 @@ export type SignIn = components["SignIn"];
 export type SignInForgotten = Answer<"forgetSignIn">;
 /** GET /v2/agents/{id}'s answer as served. */
 export type ServedAgent = Answer<"getAgent">;
+/** An agent as the server sends it: GET /v2/agents/{id} (which alone carries `tools` and `run_blockers`), a list's, and
+ *  a create's or an edit's answer (which alone carry `warnings`). Narrowed where the console reads it narrower:
+ *  `kind` and `revision` are non-null, since every agent a route returns has its first revision (POST /agents and a first
+ *  run of POST /runs make it in one transaction; null is the document's for a row before that); `definition` is the
+ *  console's Definition, which an edit sends back whole, since the generated one (`unknown & DefinitionInput`) loses the
+ *  document's required version, skills and tools. */
+export type Agent = components["Agent"] & { kind: NonNullable<components["Agent"]["kind"]>; revision: string; definition: Definition };
+
+/** GET /v2/capabilities' answer: what this server runs (its harnesses, tools, places and models), what it offers
+ *  (features) and its limits. `models.ready`: whether an agent that names no model runs here; when not, `needs` says
+ *  what would make it: a model provider's key, or another default model. */
+export type Capabilities = components["Capabilities"];
+/** One harness as capabilities list it: its id (a built-in one, or one the server's harness modules add), its label and
+ *  what it promises, whether it runs here and why not. */
+export type HarnessOfferView = Capabilities["harnesses"][number];

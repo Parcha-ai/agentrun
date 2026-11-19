@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentPage } from "./AgentPage";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import type { AgentLearning } from "@/lib/learning";
 import type { Run, TimelinePage } from "@/lib/v2";
 
@@ -11,7 +12,7 @@ import type { Run, TimelinePage } from "@/lib/v2";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const agent = (kind: Agent["kind"] = "agentic"): Agent => ({
-  agent_id: "refunds", kind, revision: "r1", revisions: 1, archived_at: null,
+  ...SERVED_AGENT, agent_id: "refunds", kind, revision: "r1", revisions: 1, archived_at: null,
   definition: kind === "agentic" ? { version: 1, name: "Refunds", instructions: "Find it.", harness: "pi", skills: [], tools: ["read", "write"] } : { version: 1, name: "Flow", skills: [], tools: [], workflow: { version: 1, root: { kind: "agent", id: "a", task: "t" } } },
 });
 const run: Run = { sha: null, updated_at: "2026-11-04T00:00:00Z", poll_after_ms: 0, place: { mode: "runner" },

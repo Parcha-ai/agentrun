@@ -6,6 +6,7 @@ import { AgentEditor } from "./AgentEditor";
 import { ToolTable, toolRows } from "./ToolSettings";
 import { ToolsPage } from "./ToolsPage";
 import type { Agent, AgentFields } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { toolChoices, toolGates } from "@/lib/toolSettings";
 import type { ToolSettings } from "@/lib/v2";
 import { pick } from "@/test/picker";
@@ -89,7 +90,7 @@ describe("Settings → Tools saves the whole map, read then changed in one place
 
 describe("the agent editor saves the agent's whole tool_settings, changed in one place", () => {
   const agent: Agent = {
-    agent_id: "fetcher", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
+    ...SERVED_AGENT, agent_id: "fetcher", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
     definition: { version: 1, name: "Fetcher", instructions: "Fetch it.", harness: "pi", skills: [], tools: ["read", "web_fetch", "web_search"],
       tool_settings: { web_search: { provider: "parallel", budget: 3 } as never, "mcp:linear/*": { permission: "deny" }, "monid.run": { permission: "allow", note: "ok" } as never } },
   };

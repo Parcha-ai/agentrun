@@ -608,8 +608,8 @@ describe("AgentPage, the model on a ChatGPT plan", () => {
 describe("AgentPage current server settings", () => {
   it("keeps the server's save warnings beside the inspected configuration without starting work", async () => {
     const page = await open({ ...agentFixture("invoice-checker"), warnings: [
-      { field: "tools", reason: "unavailable", message: "Some grant endpoints were left out." },
-      { field: "model", reason: "unavailable", message: "This model is not available on this host." },
+      { field: "tools", reason: "not_set_up_here", message: "Some grant endpoints were left out." },
+      { field: "model", reason: "not_set_up_here", message: "This model is not available on this host." },
     ] });
     const warnings = page.host.querySelector('[role="status"][aria-label="Save warnings"]');
     expect(warnings).not.toBeNull();
@@ -639,7 +639,7 @@ describe("AgentPage current server settings", () => {
     expect((await open(plain, { places })).fact("Runs")?.textContent).toBe("On the server (server default)");
     const browser = { ...base, definition: { ...base.definition, tools: ["browser"] } };
     expect((await open(browser, { places })).fact("Runs")?.textContent).toBe("On the server (server default)");
-    const explicit = { ...base, definition: { ...base.definition, place: { mode: "runner" } } };
+    const explicit = { ...base, definition: { ...base.definition, place: { mode: "runner" as const } } };
     expect((await open(explicit, { places })).fact("Runs")?.textContent).toBe("On the server");
   });
 

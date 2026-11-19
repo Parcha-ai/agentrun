@@ -4,12 +4,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AgentDojo } from "./AgentDojo";
 import { createClient } from "@/lib/client";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import type { AgentLearning, LearnedItem } from "@/lib/learning";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root | undefined;
 let host: HTMLDivElement;
-const agent = (id: string, learning: Agent["definition"]["learning"] = true): Agent => ({ agent_id: id, kind: "agentic", revision: "v1", revisions: 1, archived_at: null, definition: { version: 1, name: id, learning, harness: "pi", instructions: "Research a topic.", tools: [], skills: [] } });
+const agent = (id: string, learning: Agent["definition"]["learning"] = true): Agent => ({ ...SERVED_AGENT, agent_id: id, kind: "agentic", revision: "v1", revisions: 1, archived_at: null, definition: { version: 1, name: id, learning, harness: "pi", instructions: "Research a topic.", tools: [], skills: [] } });
 /** corrections.md with n lines under # Learned. */
 const lines = (n: number) => ["# Learned", ...Array.from({ length: n }, (_, i) => `- Correction ${i + 1}.`)].join("\n");
 const draft = (name: string, status: LearnedItem["status"] = "serving", run = "run-one"): LearnedItem => ({ name, file: `workflows/${name}/workflow.json`, readme: `workflows/${name}/README.md`, description: name, status, run, bytes: 1, etag: "one" });

@@ -4,12 +4,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { DECISION } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 
 // The agent's default spend cap per run (`definition.max_cost_usd`): a run started without a cap of its own, and a
 // trigger with none, is capped at it. Empty means none, and clearing one sends an explicit 0 (the server's "no default"):
 // leaving the field out never removes a spend limit. The server judges the number and its 422 shows under the field.
 const caps = { harnesses: [{ id: "pi", available: true }], tools: [{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }], thinking: ["low"] };
-const capped = { agent_id: "inv", kind: "agentic" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Invoices", instructions: "Check.", harness: "pi", skills: [], tools: ["read"], max_cost_usd: 2.5 } };
+const capped = { ...SERVED_AGENT, agent_id: "inv", kind: "agentic" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Invoices", instructions: "Check.", harness: "pi", skills: [], tools: ["read"], max_cost_usd: 2.5 } };
 const LABEL = "Default spend cap per run, $";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -51,7 +52,7 @@ describe("AgentEditor, the agent's default spend cap per run", () => {
   });
 
   it("is offered on a workflow agent as on an agentic one, and not on a new Decision agent, which starts with none", () => {
-    const flow = { agent_id: "wf", kind: "workflow" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Flow", workflow: { nodes: [] }, skills: [], tools: [], max_cost_usd: 3 } };
+    const flow = { ...SERVED_AGENT, agent_id: "wf", kind: "workflow" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Flow", workflow: { nodes: [] }, skills: [], tools: [], max_cost_usd: 3 } };
     expect(renderToStaticMarkup(createElement(AgentEditor, { agent: flow, caps, step: "settings" })).match(/<input[^>]*id="agent-max-cost"[^>]*>/)?.[0]).toContain('value="3"');
     const { host } = mount({ agent: null, caps: { ...caps, decisionProvider: "jev" } });
     expect(host.textContent).toContain(LABEL);
@@ -61,7 +62,7 @@ describe("AgentEditor, the agent's default spend cap per run", () => {
 
   it("a workflow agent's save sends its cap with its workflow, as an agentic agent's does", async () => {
     const sent: Record<string, unknown>[] = [];
-    const flow = { agent_id: "wf", kind: "workflow" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Flow", workflow: { nodes: [] }, skills: [], tools: [] } };
+    const flow = { ...SERVED_AGENT, agent_id: "wf", kind: "workflow" as const, revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Flow", workflow: { nodes: [] }, skills: [], tools: [] } };
     const { type, save } = mount({ agent: flow, onSave: async (fields: Record<string, unknown>) => { sent.push(fields); return null; } });
     type("4");
     await save();

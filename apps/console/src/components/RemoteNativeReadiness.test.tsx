@@ -2,6 +2,7 @@ import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it } from "vitest";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import type { NativeBinding } from "@/lib/native";
 import { AgentsList } from "./AgentsList";
 import { Playground } from "./Playground";
@@ -10,7 +11,7 @@ import { Playground } from "./Playground";
 let root: Root;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; localStorage.clear(); });
 const native: NativeBinding = { runtime: "codex", project: "/workspace/app", selector: { kind: "project" }, machine_id: "source", version: "0.167.2", model: "native-model", fingerprint: "abc", configuration: [], skills: [], mcp_servers: [], state: "ready", issues: [], connected: true, remote: { connector_id: "remote-1", target_id: "target-1" }, capabilities: { launch: true, learning: true, workflows: false, approval: "native", usage: true } };
-const base: Agent = { agent_id: "reviewer", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Reviewer", tools: [], skills: [], native } };
+const base: Agent = { ...SERVED_AGENT, agent_id: "reviewer", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Reviewer", tools: [], skills: [], native } };
 
 for (const state of ["online", "offline", "unknown"] as const) it(`uses ${state} runtime status for remote list/playground run actions while preserving the saved binding`, async () => {
   const agent: Agent = { ...base, ...(state === "unknown" ? {} : { native_status: state === "online" ? native : { ...native, state: "needs_attention" as const, capabilities: { ...native.capabilities, launch: false }, issues: ["Source worker is offline"] } }) };

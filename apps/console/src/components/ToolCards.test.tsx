@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { McpToolPicker } from "./McpToolPicker";
 import { type Agent, toolOffers } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import type { McpServer } from "@/lib/mcp";
 
 // The agent editor's Tools & skills grid: every collapsed card is one fixed height, the same component for every source
@@ -31,7 +32,7 @@ const RAW = [
   // An MCP server's tool: a long id with no spaces and no blurb, which tools from the same server share a prefix of.
   { name: MCP_NAME, available: true, summary: "List a repository's collaborators and their permissions.", harnesses: ["pi"] },
 ];
-const agent: Agent = { agent_id: "a1", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "A", instructions: "x", harness: "pi", skills: [], tools: [] } };
+const agent: Agent = { ...SERVED_AGENT, agent_id: "a1", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "A", instructions: "x", harness: "pi", skills: [], tools: [] } };
 
 async function open() {
   const host = document.body.appendChild(document.createElement("div"));

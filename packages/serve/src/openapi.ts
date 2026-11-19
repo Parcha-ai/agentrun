@@ -3007,7 +3007,9 @@ const CONSOLE_URL = (what: string): Json => ({ type: "string", format: "uri", de
 /** The RUN_FIELDS every run's view and summary hold (runs.ts): required, beside the contract's. */
 export const RUN_FIELDS_SENT = ["revision", "kind", "archived_at"];
 /** The capabilities every answer carries beside the contract's required ones (server.ts capabilitiesWith). */
-export const CAPABILITIES_SENT = ["models", "places", "tools", "learning", "switches"];
+export const CAPABILITIES_SENT = ["models", "places", "tools", "learning", "switches", "harnesses"];
+/** This server's own agent fields every agent answer carries (agents-store.ts agentView): required, beside the contract's. */
+export const AGENT_FIELDS_SENT = ["kind", "revision", "revisions", "archived_at"];
 /** The field every saved sign-in is sent with beside the contract's, required: `secret`, its one secret's metadata
  *  (secrets/1, sign-ins-secrets.ts). */
 export const SIGN_IN_FIELDS_SENT = ["secret"];
@@ -3907,7 +3909,10 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // A run's place, which its view always sends (store-view.ts viewOverStore: the launch's, else the runner).
   const runSchema = schemas.Run as Json & { required: string[] };
   runSchema.required = [...runSchema.required, "place"];
-  // The capabilities this server always sends (server.ts capabilitiesWith: models, places, tools, learning and switches; place.ts placesOf:
+  // An agent's own fields this server always sends (agents-store.ts agentView), on a read, a list and a write's answer.
+  const agentSchema = schemas.Agent as Json & { required: string[] };
+  agentSchema.required = [...agentSchema.required, ...AGENT_FIELDS_SENT];
+  // The capabilities this server always sends (server.ts capabilitiesWith: models, places, tools, learning, switches and harnesses; place.ts placesOf:
   // places.default_place), required with the contract's, so a client may read them as there.
   const capabilities = schemas.Capabilities as Json & { required: string[]; properties: Record<string, Json & { required: string[] }> };
   capabilities.required = [...capabilities.required, ...CAPABILITIES_SENT];

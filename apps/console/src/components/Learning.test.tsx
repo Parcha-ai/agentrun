@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LearningTab, type LearningProps } from "./Learning";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { ClientError } from "@/lib/client";
 import type { AgentLearning, Corrections, LearnedItem, LearningFile } from "@/lib/learning";
 import { BILL, EMPTY_BILL, hour } from "@/lib/learningBill.fixture";
@@ -14,7 +15,7 @@ import type { AuditRow, LearningCost, LearningLoop, Promotions, Run } from "@/li
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const agent = (learning?: boolean, extra: Partial<Agent["definition"]> = {}): Agent => ({
-  agent_id: "refunds", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
+  ...SERVED_AGENT, agent_id: "refunds", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Refund policy finder", instructions: "Find it.", harness: "pi", skills: [], tools: ["read", "write"], ...(learning === undefined ? {} : { learning }), ...extra },
 });
 const TEXT = "# Learned\n\n- Open /policies/refund-policy before anything else.\n- Keep the answer to three lines.\n";

@@ -1078,6 +1078,10 @@ class _AgentRequired(TypedDict):
     home_etag: str
     created_at: Timestamp
     updated_at: Timestamp
+    kind: Literal["agentic", "workflow"] | None
+    revision: str | None
+    revisions: int
+    archived_at: str | None
 
 
 class Agent(_AgentRequired, total=False):
@@ -1085,10 +1089,6 @@ class Agent(_AgentRequired, total=False):
     external: AgentExternal
     console_url: str
     tools: list[AgentToolsItem]
-    kind: Literal["agentic", "workflow"] | None
-    revision: str | None
-    revisions: int
-    archived_at: str | None
     learning: AgentLearning
     mcp_pin: dict[str, AgentMcpPinValue] | None
     own_computer: AgentOwnComputer | None
@@ -1978,16 +1978,16 @@ class _GetAgentResponseRequired(TypedDict):
     created_at: Timestamp
     updated_at: Timestamp
     tools: list[GetAgentResponseToolsItem]
+    kind: Literal["agentic", "workflow"] | None
+    revision: str | None
+    revisions: int
+    archived_at: str | None
 
 
 class GetAgentResponse(_GetAgentResponseRequired, total=False):
     native_status: GetAgentResponseNativeStatus
     external: GetAgentResponseExternal
     console_url: str
-    kind: Literal["agentic", "workflow"] | None
-    revision: str | None
-    revisions: int
-    archived_at: str | None
     learning: GetAgentResponseLearning
     mcp_pin: dict[str, GetAgentResponseMcpPinValue] | None
     own_computer: GetAgentResponseOwnComputer | None
@@ -5912,12 +5912,12 @@ class _CapabilitiesRequired(TypedDict):
     limits: Limits
     learning: CapabilitiesLearning
     places: CapabilitiesPlaces
+    harnesses: list[CapabilitiesHarnessesItem]
     tools: list[CapabilitiesToolsItem]
     switches: dict[str, CapabilitiesSwitchesValue]
 
 
 class Capabilities(_CapabilitiesRequired, total=False):
-    harnesses: list[CapabilitiesHarnessesItem]
     workflows: CapabilitiesWorkflows
     links: CapabilitiesLinks
     home: CapabilitiesHome

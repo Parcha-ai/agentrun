@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor, type EditorProps } from "./AgentEditor";
 import type { SaveProblem } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 
 // The Save revision button says whether there is anything to save: with nothing changed it is off and says which revision
 // is saved ("Saved · rev N", the served current revision's); an edit turns it on; it says "Saving…" while a save is under
@@ -12,7 +13,7 @@ let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
 
 const definition = { version: 1, name: "Calc", instructions: "Answer.", harness: "pi", skills: [], tools: [] };
-const agentAt = (revision: string, revisions: number) => ({ agent_id: "calc", kind: "agentic" as const, revision, revisions, archived_at: null, definition });
+const agentAt = (revision: string, revisions: number) => ({ ...SERVED_AGENT, agent_id: "calc", kind: "agentic" as const, revision, revisions, archived_at: null, definition });
 const rev = (revision: string, version: number, current: boolean) => ({ revision, version, current, note: null, created_at: "2026-11-05T10:00:00Z" });
 const caps = { harnesses: [{ id: "pi", available: true }], tools: [], thinking: ["low"] };
 
