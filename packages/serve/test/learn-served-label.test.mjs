@@ -69,7 +69,8 @@ test("a served run carries its path and workflow on its read and on every list r
 // A quote miss re-picks a compiled answer once before it hands back (learn/check.ts): the loop's exit is a row of the
 // run's metrics (`loops`, workflow-first.ts pathMetrics). The run views say whether the served workflow's answer re-picked
 // (`workflow.repick`): `found` when its second pass found its quotes, `missed` when it still missed, null with no second
-// pass; another workflow's loop, or a loop of this one that ran once, is no re-pick of this run's answer.
+// pass. Only a row its run marked a re-pick (`repick`: the loop quoteCheckProblems requires, check.ts repickLabels) counts:
+// an ordinary loop that ran twice, another workflow's loop, or a re-pick that ran once is no re-pick of this run's answer.
 test("a served run's workflow says whether its answer re-picked and whether the re-pick found its quotes, on its read and its list row", async (t) => {
   const { api, store, baseUrl } = await serve(t, { learning: "on", runner: false });
   assert.equal((await api("POST", "/agents", agent("source", { learning: {} }))).status, 201);
@@ -79,11 +80,13 @@ test("a served run's workflow says whether its answer re-picked and whether the 
     const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
     await store.runs.update(claim, { state: "ended", costUsd: 0.04, metrics });
   };
-  const loop = (iterations, met, workflow = "mcc-guess") => ({ node: "repick", iterations, met, workflow });
-  await end("repick-found", { path: "workflow", workflow: "mcc-guess", workflow_digest: DIGEST, loops: [loop(2, true)] });
+  const loop = (iterations, met, workflow = "mcc-guess") => ({ node: "repick", iterations, met, repick: true, workflow });
+  const refine = { node: "refine", iterations: 2, met: true, workflow: "mcc-guess" };
+  await end("repick-found", { path: "workflow", workflow: "mcc-guess", workflow_digest: DIGEST, loops: [refine, loop(2, true)] });
   await end("repick-missed", { path: "handed_back", workflow: "mcc-guess", workflow_digest: DIGEST, loops: [loop(2, false)] });
   await end("first-pass", { path: "workflow", workflow: "mcc-guess", workflow_digest: DIGEST, loops: [loop(1, true)] });
   await end("other-flow", { path: "workflow", workflow: "mcc-guess", workflow_digest: DIGEST, loops: [loop(2, true, "inner-flow"), loop(1, true)] });
+  await end("ordinary-loop", { path: "workflow", workflow: "mcc-guess", workflow_digest: DIGEST, loops: [refine] });
 
   const doc = await (await fetch(`${baseUrl}/openapi.json`)).json();
   const meets = (path, value) => assert.deepEqual(schemaProblems(doc, doc.paths[path].get.responses["200"].content["application/json"].schema, value), [], `${path}: ${JSON.stringify(value)}`);
@@ -92,6 +95,7 @@ test("a served run's workflow says whether its answer re-picked and whether the 
     "repick-missed": { path: "handed_back", workflow: { name: "mcc-guess", digest: DIGEST, repick: "missed" } },
     "first-pass": { path: "workflow", workflow: { name: "mcc-guess", digest: DIGEST, repick: null } },
     "other-flow": { path: "workflow", workflow: { name: "mcc-guess", digest: DIGEST, repick: null } },
+    "ordinary-loop": { path: "workflow", workflow: { name: "mcc-guess", digest: DIGEST, repick: null } },
   };
   const shown = ({ path, workflow }) => ({ path, workflow });
   for (const [id, fields] of Object.entries(expected)) {
