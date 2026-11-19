@@ -1,7 +1,7 @@
 // The ACP harnesses' package (@parcha/agentrun-harness-acp: Goose's adapter, its pin and its facts), loaded here alone, by
-// name, when serve first asks for it. The package is held from npm for now (its manifest is private), so a serve
-// installed from npm runs without it, and its harness table has no goose row; in this repository it is always beside
-// serve. A leaf: the harness table's own imports (adapter-facts.ts) read it in any import order.
+// name, when serve first asks for it. Serve depends on it, so it is beside serve wherever serve is installed; a serve
+// installed without it (an older release, from before it was published) runs, and its harness table has no goose row.
+// A leaf: the harness table's own imports (adapter-facts.ts) read it in any import order.
 import { createRequire } from "node:module";
 import type { AdapterFacts, AgentAdapter } from "@parcha/agentrun-kernel";
 

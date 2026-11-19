@@ -1,7 +1,4 @@
-# AgentRun Server on Dokploy, in the shape of Dokploy's own templates (Dokploy/templates, blueprints/<name>): this file and
-# template.toml. The release's image as one service, the server with one runner beside it, its data on a volume at
-# /data. template.toml has Dokploy generate the token and the seal key once and gives the service its domain. No Docker
-# socket: agents get file tools and web_fetch but no shell. Needs no model key.
+# AgentRun Server on Dokploy. Steps and variables: deploy/README.md#dokploy.
 services:
   agentrun:
     image: ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.46

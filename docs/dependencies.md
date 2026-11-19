@@ -33,7 +33,7 @@ Optional peer/dependency names absent from this lockfile: `encoding`, `react`, `
 
 | Package | Version | Declared license | Used by | Optional | Lock locations |
 | --- | --- | --- | --- | --- | --- |
-| @agentclientprotocol/sdk | 2.7.0 | Apache-2.0 | run-adapters-acp | no | 1 |
+| @agentclientprotocol/sdk | 2.7.0 | Apache-2.0 | agentrun, run-adapters-acp, serve | no | 1 |
 | @ai-sdk/gateway | 4.0.149 | Apache-2.0 | eve | no | 1 |
 | @ai-sdk/provider-utils | 5.0.82 | Apache-2.0 | eve | no | 1 |
 | @ai-sdk/provider | 4.0.39 | Apache-2.0 | eve | no | 1 |

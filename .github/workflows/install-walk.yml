@@ -19,6 +19,7 @@ on:
       - 'packages/agentrun/lib/tailscale.mjs'
       - 'packages/agentrun/bin/agentrun.mjs'
       - 'packages/agentrun/test/install-walk.sh'
+      - 'packages/agentrun/test/first-run.sh'
       - 'packages/agentrun/test/fake-tailscale.sh'
       - 'packages/agentrun/test/vps-walk.sh'
       - 'packages/agentrun/test/vps-faux-shell.mjs'
@@ -34,6 +35,7 @@ on:
       - 'packages/agentrun/lib/tailscale.mjs'
       - 'packages/agentrun/bin/agentrun.mjs'
       - 'packages/agentrun/test/install-walk.sh'
+      - 'packages/agentrun/test/first-run.sh'
       - 'packages/agentrun/test/fake-tailscale.sh'
       - 'packages/agentrun/test/vps-walk.sh'
       - 'packages/agentrun/test/vps-faux-shell.mjs'
@@ -69,7 +71,7 @@ jobs:
         with:
           node-version: '24.22.3'
       - name: shellcheck
-        run: shellcheck --severity=warning -s sh packages/agentrun/install.sh packages/agentrun/test/fake-tailscale.sh && shellcheck --severity=warning packages/agentrun/test/install-walk.sh packages/agentrun/test/vps-walk.sh
+        run: shellcheck --severity=warning -s sh packages/agentrun/install.sh packages/agentrun/test/fake-tailscale.sh packages/agentrun/test/first-run.sh && shellcheck -x --severity=warning packages/agentrun/test/install-walk.sh packages/agentrun/test/vps-walk.sh
       # After a release the walk installs what npm serves; otherwise this checkout's launcher.
       - name: Pack
         id: pack

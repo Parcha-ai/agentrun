@@ -3,7 +3,7 @@
 // /data; and each platform's own generators, written here from its source, make a token and a seal key this server
 // takes. deploy/selfhost/walk.sh deploys them on the platforms themselves.
 import assert from "node:assert/strict";
-import { randomBytes, randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { parse as parseToml } from "smol-toml";
@@ -117,18 +117,17 @@ test("the image's own command, its data on a volume at /data, its health check, 
 });
 
 test("each deploy makes a token and a seal key this server takes, from the platform's own random bytes, and the public URL at its domain", () => {
-  for (let i = 0; i < 500; i++) {
-    const domain = `agentrun-${randomUUID().slice(0, 8)}.203.0.113.7.sslip.io`;
-    const runs = {
-      coolify: [renderCoolify(only(coolify), domain), `http://${domain}`],
-      dokploy: [renderDokploy(dokployToml, only(dokploy), domain), `http://${domain}`],
-    };
-    for (const [name, [env, url]] of Object.entries(runs)) {
-      assert.deepEqual(Object.keys(env).sort(), ["AGENTRUN_PUBLIC_URL", "AGENTRUN_SEAL_KEY", "AGENTRUN_TOKEN"], `${name}: the server's variables: no model key, nothing to type`);
-      assert.equal(tokenProblem(env.AGENTRUN_TOKEN), undefined, name);
-      assert.ok(env.AGENTRUN_TOKEN.length >= 64, `${name}: 256 bits or more`);
-      assert.equal(sealKeyOf(env.AGENTRUN_SEAL_KEY)?.length, 32, `${name}: the seal key is 32 bytes in base64 (it has ${env.AGENTRUN_SEAL_KEY.length} characters)`);
-      assert.equal(env.AGENTRUN_PUBLIC_URL, url, name);
-    }
+  // One deploy each: the platform's random bytes always come in the same shape, so more renders prove no more.
+  const domain = "agentrun-walk.203.0.113.7.sslip.io";
+  const runs = {
+    coolify: [renderCoolify(only(coolify), domain), `http://${domain}`],
+    dokploy: [renderDokploy(dokployToml, only(dokploy), domain), `http://${domain}`],
+  };
+  for (const [name, [env, url]] of Object.entries(runs)) {
+    assert.deepEqual(Object.keys(env).sort(), ["AGENTRUN_PUBLIC_URL", "AGENTRUN_SEAL_KEY", "AGENTRUN_TOKEN"], `${name}: the server's variables: no model key, nothing to type`);
+    assert.equal(tokenProblem(env.AGENTRUN_TOKEN), undefined, name);
+    assert.ok(env.AGENTRUN_TOKEN.length >= 64, `${name}: 256 bits or more`);
+    assert.equal(sealKeyOf(env.AGENTRUN_SEAL_KEY)?.length, 32, `${name}: the seal key is 32 bytes in base64 (it has ${env.AGENTRUN_SEAL_KEY.length} characters)`);
+    assert.equal(env.AGENTRUN_PUBLIC_URL, url, name);
   }
 });

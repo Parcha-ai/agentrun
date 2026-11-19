@@ -61,8 +61,9 @@ function jsonSecrets(text: string): string[] {
 }
 
 /** A launch's sealed JSON: its own listed values (jsonSecrets), each handed MCP credential's headers (store/seal.ts
- *  sealRunLaunch: `{"mcp": {"<server>": {"headers": {...}}}}`), as a saved server's are listed, and the run's own model
- *  key (`{"model": {"key": "..."}}`). */
+ *  sealRunLaunch: `{"mcp": {"<server>": {"headers": {...}}}}`), as a saved server's are listed, each per-run Composio
+ *  binding's user and account (`{"mcp": {"<server>": {"composio": {"user_id", "connected_account_id"}}}}`), and the run's
+ *  own model key (`{"model": {"key": "..."}}`). */
 function launchSecrets(text: string): string[] {
   const out = jsonSecrets(text);
   let opened: { mcp?: unknown; model?: { key?: unknown } } | null;
@@ -72,7 +73,13 @@ function launchSecrets(text: string): string[] {
     return out;
   }
   const mcp = opened?.mcp;
-  if (mcp && typeof mcp === "object") for (const entry of Object.values(mcp)) out.push(...jsonSecrets(JSON.stringify(entry)));
+  if (mcp && typeof mcp === "object") {
+    for (const entry of Object.values(mcp)) {
+      out.push(...jsonSecrets(JSON.stringify(entry)));
+      const binding = (entry as { composio?: { user_id?: unknown; connected_account_id?: unknown } } | null)?.composio;
+      for (const value of [binding?.user_id, binding?.connected_account_id]) if (typeof value === "string") out.push(value);
+    }
+  }
   if (typeof opened?.model?.key === "string") out.push(opened.model.key);
   return out;
 }
