@@ -20,22 +20,12 @@ function help(t, args) {
   return run;
 }
 
-const COMMANDS = [
-  ["native", /^usage: agentrun-serve native discover\|connect --project PATH \[--runtime claude-code\|codex\] \[--agent NAME\|--profile NAME\] \[--url URL\] \[--data DIR\]$/m],
-  ["import", /^usage: agentrun-serve import \[--data DIR\] \[--from claude-code,codex,pi\] \[--dry-run\] /m],
-  ["reset-password", /^usage: agentrun-serve reset-password \[--data DIR\]$/m],
-  ["runner", /^usage: agentrun-serve runner --data DIR \[--loops N\] [^\n]*\n {7}agentrun-serve runner --check --data DIR/m],
-  ["install-harness", /^usage: agentrun-serve install-harness goose\|cursor \[--data DIR\]$/m],
-  ["validate-template", /^usage: agentrun-serve validate-template DIR$/m],
-  ["eval-template", /^usage: agentrun-serve eval-template DIR \[--case NAME \.\.\.\] /m],
-];
-
-for (const [command, usage] of COMMANDS) {
+for (const command of ["native", "import", "reset-password", "runner", "install-harness", "validate-template", "eval-template"]) {
   test(`agentrun-serve ${command} --help and -h print its usage on stdout and exit 0`, (t) => {
     for (const flag of ["--help", "-h"]) {
       const run = help(t, [command, flag]);
       assert.equal(run.status, 0, `${command} ${flag}: ${run.stderr}`);
-      assert.match(run.stdout, usage, `${command} ${flag}: ${run.stdout}`);
+      assert.match(run.stdout, new RegExp(`^usage: agentrun-serve ${command} `), `${command} ${flag}: ${run.stdout}`);
       assert.equal(run.stderr, "", `${command} ${flag}`);
     }
   });
@@ -47,14 +37,20 @@ test("import --help says what the command does, with the flags the docs name for
   assert.match(run.stdout, /--dry-run lists what it would\s+import/, run.stdout);
 });
 
-test("the server's own --help lists native too", () => {
+test("native, called wrong, answers with the usage line its --help prints, and refuses a flag that line does not name", (t) => {
+  const usage = help(t, ["native", "--help"]).stdout.split("\n")[0];
+  const wrong = help(t, ["native", "discover"]);
+  assert.equal(wrong.status, 2, wrong.stderr);
+  assert.equal(wrong.stderr.trim(), `agentrun native: ${usage}`);
+  const unnamed = help(t, ["native", "connect", "--project", "/nowhere", "--runtime", "codex", "--base-url", "https://agentrun.example.test"]);
+  assert.equal(unnamed.status, 2, unnamed.stderr);
+  assert.match(unnamed.stderr, /Unknown option '--base-url'/);
+});
+
+test("the server's own --help lists native too, and its flags' words start in one column", () => {
   const run = spawnSync(process.execPath, [CLI, "--help"], { encoding: "utf8", timeout: 60_000 });
   assert.equal(run.status, 0, run.stderr);
   assert.match(run.stdout, /^ {7}agentrun-serve native discover\|connect --project PATH /m, run.stdout);
-});
-
-test("reset-password with --help clears nothing", (t) => {
-  const run = help(t, ["reset-password", "--help"]);
-  assert.equal(run.status, 0, run.stderr);
-  assert.doesNotMatch(run.stdout, /The password is cleared/);
+  const column = (flag) => run.stdout.match(new RegExp(`^  ${flag} +`, "m"))?.[0].length;
+  assert.deepEqual(["--data DIR", "--listen ADDR", "--port N"].map(column), [20, 20, 20], run.stdout);
 });

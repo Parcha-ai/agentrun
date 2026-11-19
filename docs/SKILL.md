@@ -301,11 +301,12 @@ it shows, and save; it works without a restart. Every model then goes to the gat
 On **Local model**, only on this computer, give the service the model; it restarts with it and keeps it:
 
 ```sh
-~/.agentrun/bin/agentrun service install --env AGENT_MODEL_BASE_URL=http://localhost:11434/v1 --env AGENT_MODEL_GATEWAY_IDS=bare --env AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0
+~/.agentrun/bin/agentrun service install --env AGENT_MODEL_BASE_URL=http://localhost:11434/v1 --env AGENT_MODEL_GATEWAY_IDS=bare --env AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0 --env AGENT_MODEL_API_KEY=none
 ```
 
-Where AgentRun runs in the background, run `~/.agentrun/bin/agentrun stop`, then the installer with the same four in
-front of `sh`: `curl -fsSL https://agentrun.ai/install | AGENT_MODEL_BASE_URL=http://localhost:11434/v1
+`AGENT_MODEL_API_KEY=none` is the key Ollama ignores: without one the server refuses each run (`model_key_required`).
+Where AgentRun runs in the background, run `~/.agentrun/bin/agentrun stop`, then the installer with the same five in
+front of `sh`: `curl -fsSL https://agentrun.ai/install | AGENT_MODEL_API_KEY=none AGENT_MODEL_BASE_URL=http://localhost:11434/v1
 AGENT_MODEL_GATEWAY_IDS=bare AGENT_MODEL=<tag> AGENT_MODEL_PRICE=0,0,0 sh`. A background start keeps only what that
 line sets, so on **Yes, only me** (step 3) put `AGENTRUN_MCP_ALLOW_LOOPBACK=1 AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` in
 front of `sh` too. Then confirm `models.ready` in the capabilities, and on **Yes, only me** both switches `on: true`
