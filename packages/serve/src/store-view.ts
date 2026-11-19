@@ -49,11 +49,13 @@ import {
   withApprovalRows,
 } from "./run-view.js";
 import { reflects, type Reflect } from "./reflect-range.js";
+import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { freeCeilingMessage, overCapMessage, SPEND_CAP_REACHED } from "@parcha/agentrun-kernel/kernel/cap";
 import { type BookedSpend, bookedSpend, cliModelWorked, type CostBasis, costBasisOf, costWordsOf, planSpend, type RunCost, runCostOf, storedBasisOf } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
-import { laidOf, runLearningEnd, servedViewOf, usedOnly } from "./store-reads/learning.js";
+import { laidOf, roundsOf, runLearningEnd, servedViewOf, usedOnly } from "./store-reads/learning.js";
+import { inReflect, reflectRanges } from "./runner/end-of-run.js";
 import { correctionCount } from "./learn/corrections.js";
 import { isCliRecord, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
 import { costOfRun, type RunReadState, readRun } from "./store-reads/runs.js";
@@ -248,9 +250,9 @@ interface StoreRun {
   /** What its model requests booked (metrics.ts bookedSpend "model": every session but its paid tools' and its
    *  decisions'): their tokens and how they were priced, for its cost's `tokens` and `basis`. */
   readonly model: BookedSpend;
-  /** What its paid tool calls booked (metrics.ts bookedSpend "paid": the paid-tools session alone, the part of its cost
-   *  runCostOf and its usage row count for them), for the run read's `cost.tools_usd`. */
-  readonly paid: BookedSpend;
+  /** What the paid tool calls its `usd` counts booked (jobPaidOf), read for the run's own read alone
+   *  (ViewDeps.toolsCost), for its `cost.tools_usd`; null when the job's calls can't be told from learning's. */
+  readonly paid?: BookedSpend | null;
   /** An ended run's cost from its booking (metrics.ts runCostOf, the rule its end stored it by), read in the same snapshot
    *  as its state; undefined for a run still going, imported, native, or that booked no request. */
   readonly endCost?: RunCost;
@@ -455,7 +457,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const onPlan = planSpend(records.entries as never);
   const plan = onPlan.requests ? onPlan : undefined;
   const model = bookedSpend(records.entries as never, "model");
-  const paid = bookedSpend(records.entries as never, "paid");
+  const paid = deps.toolsCost ? await jobPaidOf(store, runId, records, FINAL_STATES.includes(runRow.state)) : undefined;
   // An ended run's booking by the one rule its end stored its cost by (metrics.ts runCostOf), read in the same snapshot as
   // its state: its so-far figures beside a stored unknown (costOfView reads the figure itself from the stored column). A
   // workflow's end stores it by the same rule (workflow-spec.ts); a native run's end reads its own, so it keeps the
@@ -463,7 +465,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const bookedCost = terminal && (row.kind === "workflow" || (row.kind === "agentic" && !native)) && !row.importedFrom ? runCostOf(records.entries as never, { unbooked: isCliRecord(records.entries as never) && cliModelWorked(records.entries as never) }) : undefined;
   const endCost = bookedCost?.requests ? bookedCost : undefined;
   const endSaidCost = endCost ? ((records.entries.findLast((entry) => entry.kind === KINDS.end)?.data as EndData | undefined)?.costUsd !== undefined) : false;
-  return { ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan, model, paid, ...(endCost ? { endCost, endSaidCost } : {}) };
+  return { ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan, model, ...(paid !== undefined ? { paid } : {}), ...(endCost ? { endCost, endSaidCost } : {}) };
 }
 
 /** A run's learning as the view shows it: its end from the store (what it held for the owner's OK as it reads now), in a
@@ -526,16 +528,47 @@ function costOfView(run: StoreRun, tools = false): Record<string, unknown> {
   return { usd, basis: basisOfView(run, words), charge_state: null, cap_usd: cap ?? null, ...(soFar ?? {}), ...(upper ?? {}), ...(plan ? { plan: { requests: plan.requests, tokens: plan.tokens, on } } : {}), ...(tokens ? { tokens } : {}), ...(tools ? { tools_usd: toolsUsdOf(run) } : {}) };
 }
 
-/** What a run's paid tool calls cost (the run read's `cost.tools_usd`): the charges its paid-tools session booked (a monid
- *  endpoint's, a priced MCP tool's, Parallel's behind the web tools, the browser's time), the same charges its `usd` counts,
- *  joined and rounded by the one rule it is (costWordsOf), so the two agree to the micro-dollar. A part of `usd`, never
- *  added to it. 0 with none. Null when one's charge is unknown (charged an unknown amount, cut, or still out), as `usd` is
- *  then, or counted at its hold, which is no spend; and for an imported run, whose cost is its import's figure, with no
- *  booking of its own to read a part of. */
+/** What a run's paid tool calls cost (the run read's `cost.tools_usd`): the charges its paid-tools session booked (a
+ *  monid endpoint's, a priced MCP tool's, Parallel's behind the web tools, the browser's time) that its job's `usd`
+ *  counts (jobPaidOf), joined and rounded by the one rule it is (costWordsOf), so the two agree to the micro-dollar. A
+ *  part of `usd`, never added to it. 0 with none. Null when one's charge is unknown (charged an unknown amount, cut, or
+ *  still out), as `usd` is then, or counted at its hold, which is no spend; when its job's calls can't be told from its
+ *  learning's; and for an imported run, whose cost is its import's figure, with no booking of its own to read a part of. */
 function toolsUsdOf(run: StoreRun): number | null {
-  if (run.row.importedFrom) return null;
+  if (run.row.importedFrom || !run.paid) return null;
   const words = costWordsOf([run.paid]);
   return words.upper_bound ? null : words.usd;
+}
+
+/** The paid tool calls a run's read counts in its `usd` (metrics.ts bookedSpend "paid", over the calls it keeps), split
+ *  between its job and its learning as the read splits `usd` (store-reads/learning.ts runAllInOverStore, learningSpendOf,
+ *  runCostOf), by its rounds: while it is at work, or when no round of its learning answered, every one; a run a
+ *  follow-up opened again (a round past its first), its first answered round's alone, those asked before that round's
+ *  end, since its job is what it had cost when that round answered and every later turn is learning's; a run with one
+ *  round, all but its end-of-run turn's. A call in an end-of-run turn or a follow-up is learning's, as that round's model
+ *  turns are, so `tools_usd` is always a part of the `usd` the read shows. Null when the first answered round's end is
+ *  not in the record. A call is placed by its request's entry (`records`' entries are numbered across the record). */
+async function jobPaidOf(store: Store, runId: string, records: Awaited<ReturnType<typeof journalRecords>>, ended: boolean): Promise<BookedSpend | null> {
+  const entries = records.entries;
+  const all = () => bookedSpend(entries as never, "paid");
+  if (!ended) return all();
+  const rounds = await roundsOf(store, runId);
+  const first = rounds.find((kept) => typeof (kept.proposal as { answered_at?: unknown } | undefined)?.answered_at === "string");
+  if (!first) return all();
+  const ranges = reflectRanges(records.submissions ?? [], entries);
+  const ends = entries.filter((entry) => entry.kind === KINDS.end).map((entry) => Number(entry.id)).sort((a, b) => a - b);
+  const cut = rounds.length > 1 ? ends[first.round - 1] : Number.POSITIVE_INFINITY;
+  if (cut === undefined) return null;
+  // Each booking by its request's entry: a turn booked after the round's end for a request asked in it is the job's.
+  const turnOf = (entry: (typeof entries)[number]) => `${String(entry.conversationId)}:${String((entry.data as { turn?: unknown } | undefined)?.turn)}`;
+  const asked = new Map<string, number>();
+  for (const entry of entries) if (entry.kind === RUNNER_RECORDS.request && !asked.has(turnOf(entry))) asked.set(turnOf(entry), Number(entry.id));
+  const job = (entry: (typeof entries)[number]) => {
+    if (entry.kind !== RUNNER_RECORDS.request && entry.kind !== RUNNER_RECORDS.turn) return true;
+    const at = asked.get(turnOf(entry)) ?? Number(entry.id);
+    return at < cut && !inReflect(ranges, at);
+  };
+  return bookedSpend(entries.filter(job) as never, "paid");
 }
 
 /** How a run's cost was reached (metrics.ts CostBasis): by how its model requests were priced, as its booking says, while
