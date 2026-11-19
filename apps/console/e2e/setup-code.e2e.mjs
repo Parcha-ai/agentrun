@@ -111,9 +111,12 @@ async function open(url) {
   await page.waitForSelector('input[aria-label="New password"]', { timeout: 30_000 });
   return { page, errors, headers: response?.headers() ?? {} };
 }
-const codeField = (page) => page.locator("label", { has: page.locator("span", { hasText: /^Setup code$/ }) });
+// The Setup code input, by its label, and its note, by the input's aria-describedby: what a screen reader reads, the same
+// in every console the walk meets (a release's, main's), whatever wraps them.
+const codeInput = (page) => page.getByLabel("Setup code", { exact: true });
+const codeNote = (page) => codeInput(page).evaluate((el) => (el.getAttribute("aria-describedby") ?? "").split(/\s+/).filter(Boolean).map((id) => document.getElementById(id)?.textContent ?? "").join(" "));
 const fill = async (page, code, password = PASSWORD) => {
-  if (code !== undefined) await codeField(page).locator("input").fill(code);
+  if (code !== undefined) await codeInput(page).fill(code);
   await page.fill('input[aria-label="New password"]', password);
   await page.fill('input[aria-label="Password again"]', password);
 };
@@ -133,9 +136,9 @@ if (hosted) {
     const { page, errors, headers } = await open(`${url}/`);
     if (url.startsWith("https://")) check("the page carries HSTS over https", headers["strict-transport-security"] === HSTS, headers["strict-transport-security"] ?? "none");
     else console.log("--   HSTS not checked: the --url is not https");
-    const field = codeField(page);
+    const field = codeInput(page);
     check("the plain address shows the Setup code field", (await field.count()) === 1);
-    check("with its note", ((await field.textContent()) ?? "").includes(noteAt(url)));
+    check("with its note", (await codeNote(page)).includes(noteAt(url)));
     await fill(page, code, password);
     await page.click('button[type="submit"]');
     check("the setup code (or token) sets the password and signs in", await signedIn(page).then(() => true, () => false));
@@ -172,9 +175,9 @@ try {
     check("server 1 printed one setup code", a.codes().length === 1, `${a.codes().length} printed`);
     const { page, errors, headers } = await open(`${a.base}/`);
     check("server 1 page has no HSTS (http public address)", headers["strict-transport-security"] === undefined, headers["strict-transport-security"] ?? "");
-    const field = codeField(page);
+    const field = codeInput(page);
     check("the plain address shows the Setup code field", (await field.count()) === 1);
-    check("with its note", ((await field.textContent()) ?? "").includes(NOTE));
+    check("with its note", (await codeNote(page)).includes(NOTE));
     await fill(page);
     check("Set password waits for a code", await page.locator('button[type="submit"]').isDisabled());
     // Setups with no code, as a page that hid the field sent them: refused, and the printed code stands.
@@ -204,7 +207,7 @@ try {
     const code = await b.firstCode();
     const { page, errors, headers } = await open(`${b.base}/setup#code=${code}`);
     check("server 2 page carries HSTS (https public address)", headers["strict-transport-security"] === HSTS, headers["strict-transport-security"] ?? "none");
-    check("the setup link fills the Setup code field", (await codeField(page).locator("input").inputValue()) === code);
+    check("the setup link fills the Setup code field", (await codeInput(page).inputValue()) === code);
     check("and leaves the address without the code", !page.url().includes(code));
     await fill(page);
     await page.click('button[type="submit"]');
@@ -217,7 +220,7 @@ try {
   try {
     const { page, headers } = await open(`${c.base}/`);
     check("server 3 page has no HSTS (loopback, no public address)", headers["strict-transport-security"] === undefined, headers["strict-transport-security"] ?? "");
-    check("open setup shows no Setup code field", (await codeField(page).count()) === 0);
+    check("open setup shows no Setup code field", (await codeInput(page).count()) === 0);
   } finally { await c.stop(); }
 
   // 4. The server's API token in the Setup code field.
