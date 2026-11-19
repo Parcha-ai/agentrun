@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { CostChart, CostPerRun, HOW } from "./CostPerRun";
 import SAMPLE from "./CostPerRun.sample.json";
 import { ClientError, type Client } from "@/lib/client";
-import { blocksOf, blockSizeOf, level, nearest, niceAxis, niceTop, pct, placed, plotted, rollingMean, runTicks, timesOf, usd, windowOf, yTicksOf, yTopOf } from "@/lib/costPerRun";
+import { blocksOf, blockSizeOf, level, nearest, niceAxis, pct, placed, plotted, rollingMean, runTicks, timesOf, usd, windowOf, yTopOf } from "@/lib/costPerRun";
 import { EMPTY_BILL } from "@/lib/learningBill.fixture";
 import type { CostRun, LearningCost, Promotion } from "@/lib/v2";
 
@@ -54,9 +54,6 @@ describe("the chart's arithmetic", () => {
     const { top, above } = yTopOf(points, rollingMean(points, 5), sample.summary.before!.mean_usd);
     expect(top).toBeLessThan(2.4);
     expect(above).toBe(1);
-    expect(niceTop(0.97)).toBe(1);
-    expect(niceTop(1.2)).toBe(2);
-    expect(niceTop(0.21)).toBe(0.25);
   });
   it("ticks whole runs and finds the run nearest a point", () => {
     expect(runTicks(1, 80, 7)).toEqual([1, 20, 40, 60, 80]);
@@ -102,10 +99,10 @@ describe("the execution mix's arithmetic", () => {
     expect([nearest(points, 1.3), nearest(points, 1.7)].map((i) => points[i]!.run_id)).toEqual(["p1", "p2"]);
   });
   it("steps the cost axis cleanly from 0 to its top: never a quarter of 5", () => {
-    expect(yTicksOf(0.005)).toEqual([0, 0.001, 0.002, 0.003, 0.004, 0.005]);
-    expect(yTicksOf(1)).toEqual([0, 0.25, 0.5, 0.75, 1]);
-    expect(yTicksOf(0.25)).toEqual([0, 0.05, 0.1, 0.15, 0.2, 0.25]);
-    expect(yTicksOf(2)).toEqual([0, 0.5, 1, 1.5, 2]);
+    expect(niceAxis(0.005).ticks).toEqual([0, 0.001, 0.002, 0.003, 0.004, 0.005]);
+    expect(niceAxis(1).ticks).toEqual([0, 0.25, 0.5, 0.75, 1]);
+    expect(niceAxis(0.25).ticks).toEqual([0, 0.05, 0.1, 0.15, 0.2, 0.25]);
+    expect(niceAxis(2).ticks).toEqual([0, 0.5, 1, 1.5, 2]);
   });
   it("puts a nice top just above the max, five steps or fewer: $1.18 reads to $1.25, never $2", () => {
     expect(niceAxis(1.18)).toEqual({ top: 1.25, ticks: [0, 0.25, 0.5, 0.75, 1, 1.25] });

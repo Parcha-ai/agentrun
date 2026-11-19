@@ -1033,18 +1033,21 @@ const RUN_TRIGGER: Json = {
   description: "The trigger that started the run, and its firing; null for a run a caller started.",
   ...TRIGGER_MARK,
 };
-/** served/1: the learned workflow a run's views name (store-reads/learning.ts servedViewOf), on Run and RunSummary alike. */
-const SERVED_BY = (what: string): Json => ({
-  ...closed({
-    workflow: { type: ["string", "null"], description: "The learned workflow, by name (GET /agents/{agent_id}/learning/promotions names it); null when its launch offered none by that name." },
-    digest: { type: ["string", "null"], description: "The revision that ran: the first 16 hex of its workflow.json's sha256, as GET /agents/{agent_id}/learning/cost `runs[].digest` names it; null when its record names none." },
-  }),
-  description: what,
-  "x-agentrun-serve": "served/1",
-});
-const RUN_SERVED: Record<string, Json> = {
-  served: SERVED_BY("Present only on a run a learned workflow answered alone, as its end recorded it (`path` `workflow`, the path GET /agents/{agent_id}/learning/cost gives the same run): the workflow and its revision. The run's answer is the workflow's. Absent on every other run: one the agent did (`agent`), one the workflow handed back (`handed_back`), a check's replay run, an audit's shadow run, a run not ended, and a workflow revision's run. Read off the run's record, so every row of a runs list carries it."),
-  handed_back: SERVED_BY("Present only on a run a learned workflow ran first and handed back to the agent, as its end recorded it (`path` `handed_back`): the workflow and its revision. The run's answer is the agent's. Absent on every other run, as `served` is."),
+/** path/1: the path a run took and the learned workflow that served it (store-reads/learning.ts pathViewOf), on Run and RunSummary alike. */
+const RUN_PATH: Record<string, Json> = {
+  path: {
+    oneOf: [{ enum: [...RUN_PATHS] }, { type: "null" }],
+    description: "The path the run took, as its end recorded it. `agent`: no learned workflow ran (every run of an agent that does not learn); `workflow`: a learned workflow served it first and its answer stands, `result.final_answer` that answer as the workflow gave it; `handed_back`: a learned workflow served it first and handed back (an escalate node said it could not, a step failed) or the agent answered after it, `result.final_answer` the agent's; `replay`: a check's run of a new revision on one of the agent's graded inputs; `audit`: an audit's shadow run (`audit_of`), the agent on a served run's input with learning off. A host's run list holds no `audit` run, and its webhooks never name one. Null while the run has not ended, for a workflow revision's run, and for a run that learns whose end recorded no path.",
+    "x-agentrun-serve": "path/1",
+  },
+  workflow: {
+    oneOf: [closed({
+      name: { type: ["string", "null"], description: "The learned workflow, by name (GET /agents/{agent_id}/learning/promotions names it); null when its launch offered none by that name." },
+      digest: { type: ["string", "null"], description: "The revision that ran: the first 16 hex of its workflow.json's sha256, as GET /agents/{agent_id}/learning/cost `runs[].digest` names it; null when its record names none." },
+    }), { type: "null" }],
+    description: "The learned workflow that served the run, as its end recorded it: present on a run with `path` `workflow` (its answer is the workflow's) or `handed_back` (its answer is the agent's), null on every other run. Read off the run's record, so every row of a runs list carries it.",
+    "x-agentrun-serve": "path/1",
+  },
 };
 const DATE_TIME = { type: "string", format: "date-time" };
 /** A trigger's source, as `adapters` give it. */
@@ -1345,7 +1348,7 @@ const COST_RUN = closed({
   path: { enum: [...RUN_PATHS], description: "The path the run took: `workflow`, a learned workflow finished it alone (its job's only tool calls were learned_workflow calls, each answering, and nothing was said after its first message, so it was not asked to look back); `handed_back`, a learned workflow ran and the agent went on (it failed or escalated, or the agent worked on after it); `agent`, no learned workflow ran; `replay`, a replay run: a learned workflow's new revision run alone on one of the agent's graded inputs, at workflow cost, to decide whether it serves first (its cost is learning's, shown as its own run); `audit`, never a row here: a shadow run auditing a served run is no run of the series, its cost that run's `learning_usd`." },
   workflow: { ...NULL_STRING, description: "The learned workflow the job called last, by name; null when it called none." },
   digest: { ...NULL_STRING, description: "The learned workflow revision that ran it, as its run record names it (the bill's `revisions[].digest`): the first 16 hex characters of its workflow.json's sha256, one value for as long as one revision serves. Null when no learned workflow ran." },
-  took_over: { type: "boolean", description: "The first run its revision (`workflow` at `digest`) served (`path` `workflow` or `handed_back`), over every run of the series, `limit` aside: where that revision took over, the run its promotion record (GET .../learning/promotions) first bore on. The first such run is `summary.takeover` and `bill.promoted` (a learned workflow that ran first always names its revision). False for a `replay` and for a run no revision ran (`digest` null)." },
+  took_over: { type: "boolean", description: "The first run its revision (`workflow` at `digest`) served (`path` `workflow` or `handed_back`), over every run of the series, `limit` aside: where that revision took over, the run its promotion record (GET .../learning/promotions) first bore on. The first such run is `summary.takeover` (a learned workflow that ran first always names its revision). False for a `replay` and for a run no revision ran (`digest` null)." },
   audited: { type: "boolean", description: "An audit's shadow run was started for it (the agent definition's `learning.audit_every`): the shadow's cost is in `learning_usd`, and its verdict is a row of GET /agents/{agent_id}/learning/audits once scored, at a later run's start." },
   cost_usd: COST_USD("The job's own cost: what the run had cost when its answer was final, before its compile turn; for a run that was asked none, its whole cost."),
   cost_upper_bound: { type: "boolean", description: "The run's stored cost is only a bound (its row's `costAtMostUsd`: a model request cut at its cap hold): `cost_usd` and `total_usd` are null, never a known cost. `summary` counts such a run as `at_most`, not `unknown`." },
@@ -1367,7 +1370,7 @@ const LEARNING_COST = closed({
     unknown_cost_runs: { ...COUNT, description: "How many runs `served` and `by_hand` would have read have no known all-in cost: left out of their means, never read as 0." },
   }), description: "Each learned workflow that has run first on one of these runs, at its newest version, and where it stands against the money rule: it runs first while its cost a run stays under the agent's by hand. It does not catch a workflow that answers wrong with confidence." },
   summary: closed({
-    takeover: { oneOf: [closed({ n: { type: "integer", minimum: 1 }, run_id: { type: "string" } }), { type: "null" }], description: "The first run a learned workflow served (`path` `workflow` or `handed_back`), numbered as `runs` number it: the bill's `promoted`. Null before one." },
+    takeover: { oneOf: [closed({ n: { type: "integer", minimum: 1 }, run_id: { type: "string" } }), { type: "null" }], description: "The first run a learned workflow served (`path` `workflow` or `handed_back`), numbered as `runs` number it. Null before one." },
     before: COST_MEAN("The mean of the job's own cost (`cost_usd`, learning left out) over the `agent` runs before the takeover (all of them when there is none yet) whose cost is known exactly (never `cost_upper_bound`); null when there is none."),
     after: COST_MEAN("The mean all-in cost (`total_usd`, learning included) of the runs a learned workflow served from the takeover on (`path` `workflow` or `handed_back`; never a `replay`, which checks a revision and serves no one, nor an `agent` run) whose total is known exactly (never `cost_upper_bound`); null when there is none, and `after_state` says why."),
     after_state: { enum: [...AFTER_STATES], description: "Why `after` is what it is: `priced`, it is the mean of the served runs whose cost is known; `no_served_runs`, no learned workflow has taken over yet (replays are not served runs), so there is no after side; `cost_unknown`, runs were served but no served run's all-in cost is known exactly. A reader says these in words, never as a figure." },
@@ -1385,17 +1388,15 @@ const LEARNING_COST = closed({
     }), { type: "null" }], description: "The check the serving promotion was decided on: the current champion of the learned workflow the newest served run ran. Null when none serves." },
   }, "What the series shows, over every run it counts, `limit` aside."),
   bill: closed({
-    baseline: COST_MEAN("The agent for one run: the mean own cost (`cost_usd`, learning left out) of the `agent` runs started before the first run a learned workflow served (every one with none yet), each known exactly; null when there is none."),
-    promoted: { oneOf: [closed({ n: { type: "integer", minimum: 1, description: "Its place on the bill's index." }, run_id: { type: "string" }, at: DATE_TIME }), { type: "null" }], description: "The first run a learned workflow served (`path` `workflow` or `handed_back`: `summary.takeover`; `at`, when it started); null before one." },
     learning_usd: { type: "number", minimum: 0, description: "What learning cost in all: `booked_usd` less every priced job's own cost (`cost_usd`): compile turns, audit shadow runs and replay runs. As booked (float noise rounded off at 1e-12)." },
     points: { type: "array", items: closed({
       n: { type: "integer", minimum: 1, description: "The run's place among the agent's runs that do a job (`agent`, `workflow` and `handed_back`), oldest first: a `replay` checks a revision and a shadow audits a run, so neither is on the index." },
       run_id: { type: "string" },
       actual_usd: { type: "number", minimum: 0, description: "Booked to this run, every run before it included: each run all in (`total_usd`: its own cost, its compile turn and its audit shadow), and each replay run's cost at the run that does a job it followed. As booked (float noise rounded off at 1e-12)." },
-      agent_usd: { type: ["number", "null"], minimum: 0, description: "The agent for all of it: `baseline` times the runs shown to here. Null with no baseline." },
+      agent_usd: { type: ["number", "null"], minimum: 0, description: "The agent for all of it: `summary.before`'s mean times the runs shown to here. Null with no `before`." },
     }), description: "One a run that does a job whose all-in cost is known exactly, every one: a run whose cost is unknown or only a bound is on neither line and counted in `withheld` (its number skipped)." },
-    break_even: { oneOf: [closed({ n: { type: "integer", minimum: 1 }, run_id: { type: "string" } }), { type: "null" }], description: "The first run from `promoted` on after which `actual_usd` is never again over `agent_usd`, `booked_usd` against the line at the last point included: learning has paid for itself there. Null while it has not (`gap_usd` says by how much), and before a run on a served path." },
-    gap_usd: { type: ["number", "null"], description: "While `break_even` is null: `booked_usd` less `agent_usd` at the last point (over 0: the bill is that much over the agent for all of it), spend booked after that point included. Null with a break-even, with no baseline or no run." },
+    break_even: { oneOf: [closed({ n: { type: "integer", minimum: 1 }, run_id: { type: "string" } }), { type: "null" }], description: "The first run from `summary.takeover` on after which `actual_usd` is never again over `agent_usd`, `booked_usd` against the line at the last point included: learning has paid for itself there. Null while it has not (`gap_usd` says by how much), and before a run on a served path." },
+    gap_usd: { type: ["number", "null"], description: "While `break_even` is null: `booked_usd` less `agent_usd` at the last point (over 0: the bill is that much over the agent for all of it), spend booked after that point included. Null with a break-even, with no `summary.before` or no run." },
     withheld: { ...COUNT, description: "Runs (replays included) whose cost is unknown or only a bound: on neither line." },
     booked_usd: { type: "number", minimum: 0, description: "The booked total: every priced run's cost (0 with none). Spend with no point to join (a replay after a run of unknown cost) is carried to the next point's `actual_usd`, and is in this when no point follows (or when there is no point at all: replays whose job runs were archived). With every run's GET /runs/{id} `cost.all_in_usd`, the sum of those and `unattributed_usd` is this." },
     revisions: { type: "array", items: closed({
@@ -3275,12 +3276,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     trigger: RUN_TRIGGER,
     audit_of: { ...NULL_STRING, description: "On the run read: a shadow run's served run. A run a promoted learned workflow answered alone (path `workflow`; a run it handed back is never drawn) may be audited (the agent definition's `learning.audit_every`): its shadow, the same agent on the same input with learning off, started at the served run's end and capped at what the served run's cap left, is no row of any run list and sends no webhook, and its cost is in the served run's `cost.learning_usd` and `cost.all_in_usd` (null while the shadow is queued or running: never $0), never in its `cost.usd`, and in the agent's learning cost (GET /agents/{agent_id}/learning/audits). Null for any other run.", "x-agentrun-serve": "promotion/1" },
-    path: {
-      oneOf: [{ enum: [...RUN_PATHS] }, { type: "null" }],
-      description: "On the run read (GET /v2/runs/{run_id}): the path the run took, as its end recorded it. `agent`: no learned workflow ran (every run of an agent that does not learn); `workflow`: a learned workflow served it first and its answer stands, `result.final_answer` that answer as the workflow gave it; `handed_back`: a learned workflow served it first and handed back (an escalate node said it could not, a step failed) or the agent answered after it, `result.final_answer` the agent's; `replay`: a check's run of a new revision on one of the agent's graded inputs; `audit`: an audit's shadow run (`audit_of`), the agent on a served run's input with learning off. A host's run list holds no `audit` run, and its webhooks never name one. Null while the run has not ended, for a workflow revision's run, and for a run that learns whose end recorded no path.",
-      "x-agentrun-serve": "allin/1",
-    },
-    ...RUN_SERVED,
+    ...RUN_PATH,
   },
   InputIssue: {
     code: { type: "string", description: "A workflow definition's issue: the DSL's validation code (`STATE_PATH_UNPRODUCED`, say), with `field` the path to it under `definition.workflow`.", "x-agentrun-serve": "validate/1" },
@@ -3304,7 +3300,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       "x-agentrun-serve": "imported/1",
     },
     trigger: RUN_TRIGGER,
-    ...RUN_SERVED,
+    ...RUN_PATH,
   },
   RunResult: {
     output_error: {

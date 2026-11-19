@@ -110,8 +110,9 @@ test("a run row whose stored cost is a bound reads as a bound: its cost_upper_bo
   const store = { runs: { launch: async () => undefined, get: async () => undefined }, learning: { proposal: async () => undefined } };
   // The store's row for a bounded run: costUsd null, costAtMostUsd the bound (RunRow).
   const row = (id, extra = {}) => ({ id, startedAt: Date.UTC(2026, 10, 12), metrics: { path: "workflow", workflow: "classify" }, costUsd: 0.1, costAtMostUsd: null, ...extra });
-  const exact = await costRunOf(store, row("r1"), 1);
-  const bound = await costRunOf(store, row("r2", { costUsd: null, costAtMostUsd: 0.5 }), 2);
+  const placed = { path: "workflow", workflow: "classify" };
+  const exact = await costRunOf(store, row("r1"), 1, placed);
+  const bound = await costRunOf(store, row("r2", { costUsd: null, costAtMostUsd: 0.5 }), 2, placed);
   assert.deepEqual([exact.cost_upper_bound, bound.cost_upper_bound, bound.cost_usd], [false, true, null], "the stored bound is read, and never shown as a cost");
   const after = Array.from({ length: CHEAPER_AFTER_RUNS }, (_, i) => i === 0 ? { ...bound, n: 3, run_id: "r3" } : { ...exact, n: i + 3, run_id: `r${i + 3}` });
   const head = series([["agent", 0.9], ["agent", 0.9]]);
