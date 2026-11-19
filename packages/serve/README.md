@@ -2644,14 +2644,14 @@ A string that is an address carrying a credential, in any scheme (`https`, `post
 (`token`, `api_key`, `access_token`, `sig`) that has a value. An address with none stays as it is; one whose user part
 holds no secret (`ssh://git@host`) is sealed all the same. A field the event's schema marks with `format: "password"` or
 `writeOnly: true` is sealed whatever its name; the create reads the event's schema from Composio for this. A create with
-such a value below the config's top level is refused `422`, naming it.
-Composio's trigger schemas rarely mark a field secret, so the name mostly decides. A
-number is sealed as its decimal text and stays a number in what Composio gets; a run's output is cut of that text when
-it is 8 characters or more, as a string's is. The value is kept in the composio source's sealed settings, next to the subscription's
-secret. Composio gets it once, in the instance's upsert. Every answer has `"[sealed]"` in its place, and
-`source.sealed_config` names the field. The events list names these fields per event under `sealed`, and the console
-takes them as passwords. A PATCH that leaves a sealed field out or sends `"[sealed]"` keeps it. Any other value is a
-change to the config and is refused, as every config change is: to change a key, delete the trigger and make a new one.
+such a value below the config's top level is refused `422`, naming it. Composio's trigger schemas rarely mark a field
+secret, so the name mostly decides. A number is sealed as its decimal text and stays a number in what Composio gets; a
+run's output is cut of that text when it is 8 characters or more, as a string's is. The value is kept in the composio
+source's sealed settings, next to the subscription's secret. Composio gets it once, in the instance's upsert. Every
+answer has `"[sealed]"` in its place, and `source.sealed_config` names the field. The events list names these fields per
+event under `sealed`, and the console takes them as passwords. A PATCH that leaves a sealed field out or sends
+`"[sealed]"` keeps it. Any other value is a change to the config and is refused, as every config change is: to change a
+key, delete the trigger and make a new one.
 The trigger's delete retires the value into a sealed row until the runs that saw it end. A trigger saved by an earlier server with such a value in plain text is answered
 masked by the same rule at once, at any depth (one below the top level named in `sealed_config` by its JSON Pointer),
 and sealed at the next start by the same rule. After that start, without holding it up, the server reads the schema of
