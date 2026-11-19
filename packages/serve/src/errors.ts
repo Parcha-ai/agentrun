@@ -41,6 +41,7 @@ export const ERROR_STATUS = {
   key_set_by_server: 409,
   budget_reached: 409,
   webhook_off: 409,
+  slack_off: 409,
   precondition_required: 428,
   auth_required: 422,
   not_mcp: 422,

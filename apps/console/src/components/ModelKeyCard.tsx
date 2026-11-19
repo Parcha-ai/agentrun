@@ -120,7 +120,7 @@ export function ModelKeyCard({ v2, needs, model, onSaved, writable, whyNot = "si
             : <p className="text-body text-muted-foreground">The server sets the {picked.label} key when it starts: change it there.</p>)}
           {problem && <div className="border"><RunError error={problem} title="The key was not saved" /></div>}
           {whatRuns}
-          <p className="text-small text-muted-foreground">Every key is in <a className="underline underline-offset-2 hover:text-foreground" href="#/settings/keys">Settings</a>.</p>
+          <p className="text-small text-muted-foreground">Every key is in <a className="underline underline-offset-2 hover:text-foreground" href="#/settings/keys">Settings</a>, and so is a model gateway you already run (LiteLLM or another): Use a model gateway.</p>
         </div>
       </div>
     </section>

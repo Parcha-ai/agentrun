@@ -1483,6 +1483,26 @@ export const COMMANDS = [
   {
     "command": [
       "local",
+      "get-model-gateway"
+    ],
+    "operationId": "getModelGateway",
+    "method": "GET",
+    "path": "/settings/model-gateway",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The model gateway in force: the environment's, the one saved here, or none"
+  },
+  {
+    "command": [
+      "local",
       "get-workspace-archil"
     ],
     "operationId": "getWorkspaceArchil",
@@ -3134,6 +3154,88 @@ export const COMMANDS = [
   },
   {
     "command": [
+      "slack",
+      "deliveries"
+    ],
+    "operationId": "listSlackDeliveries",
+    "method": "GET",
+    "path": "/settings/slack/deliveries",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Slack's last 50 attempts, newest first"
+  },
+  {
+    "command": [
+      "slack",
+      "get"
+    ],
+    "operationId": "getSlack",
+    "method": "GET",
+    "path": "/settings/slack",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Where this server posts run notices in Slack, if it is set; never the URL"
+  },
+  {
+    "command": [
+      "slack",
+      "redeliver"
+    ],
+    "operationId": "redeliverSlack",
+    "method": "POST",
+    "path": "/settings/slack/deliveries/{webhook_id}/redeliver",
+    "pathParams": [
+      "webhook_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Post a message of Slack's log again, once now, under the same id and body"
+  },
+  {
+    "command": [
+      "slack",
+      "test"
+    ],
+    "operationId": "testSlack",
+    "method": "POST",
+    "path": "/settings/slack/test",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Post a test message to Slack now, once, and say how it went"
+  },
+  {
+    "command": [
       "stats"
     ],
     "operationId": "getStats",
@@ -3839,6 +3941,24 @@ export const SECRET_ROUTES = [
     ]
   },
   {
+    "operationId": "saveModelGateway",
+    "method": "PUT",
+    "path": "/settings/model-gateway",
+    "publicFields": [
+      "base_url",
+      "ids",
+      "models.default",
+      "models.fast",
+      "models.strong"
+    ]
+  },
+  {
+    "operationId": "saveSlack",
+    "method": "PUT",
+    "path": "/settings/slack",
+    "publicFields": []
+  },
+  {
     "operationId": "saveToolKey",
     "method": "PUT",
     "path": "/settings/tool-keys/{key_id}",
@@ -3852,6 +3972,14 @@ export const SECRET_ROUTES = [
       "url",
       "scopes.[]",
       "client_id"
+    ]
+  },
+  {
+    "operationId": "testModelGateway",
+    "method": "POST",
+    "path": "/settings/model-gateway/test",
+    "publicFields": [
+      "base_url"
     ]
   }
 ];

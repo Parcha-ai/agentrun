@@ -16,8 +16,8 @@ import { createHash, randomBytes } from "node:crypto";
 import dns from "node:dns/promises";
 import net from "node:net";
 import { Agent, fetch as undiciFetch } from "undici";
-import { ApiError, invalid } from "./errors.js";
-import { SERVER_SCOPE, sealedSettingsOverStore, type SealedSettingsOverStore } from "./sealed-settings-store.js";
+import { ApiError, type ErrorCode, invalid } from "./errors.js";
+import { SERVER_SCOPE, sealedSettingsOverStore, type SealedSettingsOverStore, type SettingsSpec } from "./sealed-settings-store.js";
 import { signatureOf } from "./standard-webhooks.js";
 import type { ChannelAttemptRow, ChannelPostRow, Store } from "./store/index.js";
 import { webhookSecretMeta } from "./trigger-secrets-shown.js";
@@ -53,6 +53,26 @@ const MAX_URL = 2048;
 const SECRET_FIELD = "secret";
 /** Where its secret is kept in trigger_settings (adapter WEBHOOK_CHANNEL): the server's one scope, one minted field. */
 export const WEBHOOK_SECRET_SPEC = { scope: "server" as const, fields: { [SECRET_FIELD]: { mint: true as const } } };
+/** Where an outbox keeps what it sends and what it says, beside the webhook's own: its channel in the store, its setting,
+ *  the sealed field that holds its credential (the webhook's minted secret; Slack's URL, slack.ts), its test message's
+ *  type, and its words. */
+export type Outbound = {
+  channel: string; setting: string; spec: SettingsSpec; field: string; testType: string;
+  words: { removed: string; off: string; unset: string; offWith: (reason: string) => string; unreadable: string };
+  offCode: ErrorCode;
+};
+/** The webhook's own: every message type and word as they always were. */
+export const WEBHOOK_OUTBOUND: Outbound = {
+  channel: WEBHOOK_CHANNEL, setting: WEBHOOK_SETTING, spec: WEBHOOK_SECRET_SPEC, field: SECRET_FIELD, testType: "webhook.test",
+  words: {
+    removed: "the webhook was removed", off: "the webhook is off", unset: "no webhook is set: PUT /v2/settings/webhook sets one",
+    offWith: (reason) => `the webhook is off (${reason}): set it again with PUT /v2/settings/webhook`,
+    unreadable: "the secret does not open here (unreadable): set the webhook again",
+  },
+  offCode: "webhook_off",
+};
+/** What a receiver's answer turns off: the reason the outbox keeps, and the words its queued messages are dropped with. */
+export type Gone = { reason: string; drop: string };
 /** How long a try's claim on its message holds (Store.channels.claim): past the try's own bound (TIMEOUT_MS, or the
  *  option's, which the constructor holds under this). */
 const CLAIM_MS = 60_000;
@@ -102,6 +122,7 @@ export type RunNotice = { run_id: string; agent_id: string; agent_name: string; 
 /** The webhook as the store keeps it, but its secret: `secret_at`, when the secret was made (the same URL keeps it);
  *  `secret_scope`, the scope its secret is sealed under in trigger_settings, one of its own for each secret made, so the
  *  setting names the one secret that signs for its URL, and the two go live in the setting's one write. */
+export type OutboundConfig = Config;
 type Config = { url: string; secret_at: string; secret_scope: string; updated_at: string; disabled?: { at: string; reason: string } };
 /** What the ledger holds of one run: its end (its time), and the waits it was told of (each its ask's mark, waitMarkerOf;
  *  the one it stands at last), kept until the run moves past them: they go with the end that came after them, once that
@@ -158,15 +179,15 @@ const attemptView = (row: ChannelAttemptRow): Attempt => ({
 });
 
 export class Webhooks {
-  private readonly secrets: SealedSettingsOverStore;
-  private config?: Config;
+  protected readonly secrets: SealedSettingsOverStore;
+  protected config?: Config;
   /** The ledger, by run, as channel_told holds it (this server is its one writer), and the waits seen while nothing is
    *  sent, held here only. */
   private readonly notices = new Map<string, Noticed>();
   /** The runs told of since this server started: their ledger entries are this server's news, which a start's catch-up
    *  never drops. */
   private readonly told = new Set<string>();
-  private base = "";
+  protected base = "";
   private readonly timers = new Map<string, NodeJS.Timeout>();
   /** The tries in flight, which close() stops and waits for: nothing is written once it is closed. */
   private readonly trying = new Set<Promise<Attempt>>();
@@ -199,13 +220,15 @@ export class Webhooks {
   constructor(
     private readonly store: WebhooksStore,
     key: Buffer,
-    private readonly say: (fields: Record<string, string | number>) => void,
+    protected readonly say: (fields: Record<string, string | number>) => void,
     options: WebhooksOptions = {},
+    /** Which outbox this is: the webhook's (WEBHOOK_OUTBOUND), or another destination's over the same machinery. */
+    protected readonly outbound: Outbound = WEBHOOK_OUTBOUND,
   ) {
     this.timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
     // Whole milliseconds: AbortSignal.timeout takes no other, and would throw at every send, after its claim.
     if (!(Number.isInteger(this.timeoutMs) && this.timeoutMs > 0 && this.timeoutMs < CLAIM_MS)) throw new RangeError(`a webhook try's bound is whole milliseconds between 0 and ${CLAIM_MS} (its claim), not ${this.timeoutMs}`);
-    this.secrets = sealedSettingsOverStore(store, WEBHOOK_CHANNEL, WEBHOOK_SECRET_SPEC, key, say);
+    this.secrets = sealedSettingsOverStore(store, outbound.channel, outbound.spec, key, say);
     this.retryMs = options.retryMs ?? RETRY_MS;
     this.storeRetryMs = options.storeRetryMs ?? STORE_RETRY_MS;
     this.privateTargets = options.privateTargets ?? false;
@@ -216,23 +239,23 @@ export class Webhooks {
    *  at its next try's time; a test send is tried once, so one left queued failed. Awaited once at start. */
   async load(): Promise<void> {
     await this.secrets.load();
-    const kept = await this.store.settings.get(WEBHOOK_SETTING);
+    const kept = await this.store.settings.get(this.outbound.setting);
     this.config = isObject(kept) && typeof kept.url === "string" && typeof kept.secret_scope === "string" && typeof kept.updated_at === "string" ? (kept as unknown as Config) : undefined;
     // A secret no setting names (one made by a PUT whose setting never landed, or the one a later PUT replaced and could not
     // remove) signs nothing: it goes, retired, still cut from what runs say.
     for (const scope of this.secrets.scopes()) {
       if (scope !== this.config?.secret_scope) await this.secrets.remove(scope).catch((error: Error) => this.say({ condition: "secret_unremoved", error: error.message }));
     }
-    for (const row of await this.store.channels.told(WEBHOOK_CHANNEL)) {
+    for (const row of await this.store.channels.told(this.outbound.channel)) {
       const noticed = this.notices.get(row.runId) ?? {};
       if (row.marker.startsWith(ENDED)) noticed.ended = row.marker.slice(ENDED.length);
       else if (row.marker.startsWith(WAIT)) noticed.waits = [...(noticed.waits ?? []), row.marker.slice(WAIT.length)];
       this.notices.set(row.runId, noticed);
     }
     // The store's one server (its lock): a claim an earlier server held is that server's try, cut by its stop.
-    await this.store.channels.release(WEBHOOK_CHANNEL);
-    for (const post of await this.store.channels.queued(WEBHOOK_CHANNEL)) {
-      if (post.moment === "webhook.test") await this.store.channels.settle(post.id, { state: "dropped", reason: "a test send is tried once" });
+    await this.store.channels.release(this.outbound.channel);
+    for (const post of await this.store.channels.queued(this.outbound.channel)) {
+      if (post.moment === this.outbound.testType) await this.store.channels.settle(post.id, { state: "dropped", reason: "a test send is tried once" });
       else this.schedule(post.id, Math.max(0, post.nextAt - Date.now()));
     }
   }
@@ -335,8 +358,8 @@ export class Webhooks {
           // Every message whose write passed the check before the DELETE began lands first (on Postgres another pooled
           // connection may commit it later): then the drop takes it too, and none outlives the DELETE.
           await Promise.all([...this.posting]);
-          await this.drop("the webhook was removed", true);
-          await this.store.settings.remove(WEBHOOK_SETTING);
+          await this.drop(this.outbound.words.removed, true);
+          await this.store.settings.remove(this.outbound.setting);
           await this.store.flush();
           this.config = undefined;
         } finally {
@@ -348,7 +371,7 @@ export class Webhooks {
   }
 
   /** `work`, once every change of the webhook asked for before it has settled, failed or not. */
-  private change<T>(work: () => Promise<T>): Promise<T> {
+  protected change<T>(work: () => Promise<T>): Promise<T> {
     const done = this.changing.then(work, work);
     this.changing = done.then(() => undefined, () => undefined);
     return done;
@@ -356,7 +379,7 @@ export class Webhooks {
 
   /** GET .../deliveries: the last attempts, newest first. */
   async attemptsView(): Promise<{ attempts: Attempt[] }> {
-    return { attempts: (await this.store.channels.attempts(WEBHOOK_CHANNEL, ATTEMPTS_KEPT)).map(attemptView) };
+    return { attempts: (await this.store.channels.attempts(this.outbound.channel, ATTEMPTS_KEPT)).map(attemptView) };
   }
 
   /** A run's moment, told by the server each time it sees it (a wait reached, an end the store has): queued once, when a
@@ -381,21 +404,21 @@ export class Webhooks {
       return "off";
     }
     if (ends && !this.due(marker, config)) return "queued";
-    const id = `msg_${createHash("sha256").update(`${run.run_id}\n${type}\n${marker}`).digest("hex").slice(0, 32)}`;
+    const id = this.messageId(`${run.run_id}\n${type}\n${marker}`);
     const data = { run_id: run.run_id, agent_id: run.agent_id, agent_name: run.agent_name, status: run.status, title: run.title, url: `${this.base}/#/runs/${encodeURIComponent(run.run_id)}`, ...(run.pending ? { pending: run.pending } : {}) };
     // A new wait goes beside the run's earlier waits and replaces its end (one after an end is a continued run's, past that
     // end); an end replaces the run's last end and keeps its waits.
     const told = ends ? { runId: run.run_id, marker: `${ENDED}${marker}`, replacing: ENDED } : { runId: run.run_id, marker: `${WAIT}${marker}`, replacing: ENDED };
     let added: boolean;
     try {
-      added = await this.posted({ id, channel: WEBHOOK_CHANNEL, runId: run.run_id, moment: type, body: this.body(type, data), nextAt: Date.now() }, told);
+      added = await this.posted({ id, channel: this.outbound.channel, runId: run.run_id, moment: type, body: this.body(type, data), nextAt: Date.now() }, told);
     } catch (error) {
       this.say({ condition: "outbox_unwritable", webhook_id: id, error: (error as Error).message });
       return "unsaved";
     }
     this.notices.set(run.run_id, ends ? { ...seen, ended: marker } : { waits: kept });
     // The waits past WAITS_KEPT leave the store's ledger too; one not forgotten now is forgotten with the next.
-    if (!ends && waits.length > kept.length) await this.store.channels.forget(WEBHOOK_CHANNEL, waits.slice(0, waits.length - kept.length).map((gone) => ({ runId: run.run_id, marker: `${WAIT}${gone}` }))).catch(() => undefined);
+    if (!ends && waits.length > kept.length) await this.store.channels.forget(this.outbound.channel, waits.slice(0, waits.length - kept.length).map((gone) => ({ runId: run.run_id, marker: `${WAIT}${gone}` }))).catch(() => undefined);
     await this.prune(config);
     // A message already there (an earlier telling whose durable commit failed after its write) is armed too, unless it is.
     if (added || !this.timers.has(id)) this.schedule(id, 0);
@@ -407,9 +430,9 @@ export class Webhooks {
   async emitTrigger(failed: TriggerFailed, firingKey: string): Promise<Emitted> {
     if (this.closed) return "closed";
     if (!this.config || this.config.disabled || this.removing) return "off";
-    const id = `msg_${createHash("sha256").update(`trigger.failed\n${firingKey}`).digest("hex").slice(0, 32)}`;
+    const id = this.messageId(`trigger.failed\n${firingKey}`);
     try {
-      if ((await this.posted({ id, channel: WEBHOOK_CHANNEL, moment: "trigger.failed", body: this.body("trigger.failed", failed), nextAt: Date.now() })) || !this.timers.has(id)) this.schedule(id, 0);
+      if ((await this.posted({ id, channel: this.outbound.channel, moment: "trigger.failed", body: this.body("trigger.failed", failed), nextAt: Date.now() })) || !this.timers.has(id)) this.schedule(id, 0);
     } catch (error) {
       this.say({ condition: "outbox_unwritable", webhook_id: id, error: (error as Error).message });
       return "unsaved";
@@ -438,7 +461,7 @@ export class Webhooks {
       if (!row && noticed.ended !== undefined) forget.push({ runId: id, marker: `${ENDED}${noticed.ended}` });
     }
     if (forget.length) {
-      await this.store.channels.forget(WEBHOOK_CHANNEL, forget);
+      await this.store.channels.forget(this.outbound.channel, forget);
       for (const { runId } of forget) {
         const noticed = this.notices.get(runId);
         if (store.has(runId) && noticed?.ended !== undefined) this.notices.set(runId, { ended: noticed.ended });
@@ -460,11 +483,19 @@ export class Webhooks {
     return unsaved;
   }
 
+  /** A moment's message id, made from `key` (the same moment, told again by a later server too, has the same id). The
+   *  store keeps one message per id across every channel, so another outbox's ids are made under its channel too: Slack's
+   *  message for a run's end is never the webhook's, whichever is written first. The webhook's ids are as they always were. */
+  private messageId(key: string): string {
+    const made = this.outbound.channel === WEBHOOK_CHANNEL ? key : `${this.outbound.channel}\n${key}`;
+    return `msg_${createHash("sha256").update(made).digest("hex").slice(0, 32)}`;
+  }
+
   /** POST .../test: a `webhook.test` message tried once now, never again; its attempt. */
   async test(): Promise<Attempt> {
     this.need();
     const id = `msg_${randomBytes(16).toString("hex")}`;
-    await this.posted({ id, channel: WEBHOOK_CHANNEL, moment: "webhook.test", body: this.body("webhook.test", {}), nextAt: Date.now() });
+    await this.posted({ id, channel: this.outbound.channel, moment: this.outbound.testType, body: this.body(this.outbound.testType, {}), nextAt: Date.now() });
     return this.attempt(id, { retry: false, redelivery: false });
   }
 
@@ -487,7 +518,7 @@ export class Webhooks {
   async redeliver(id: string): Promise<Attempt> {
     this.need();
     const post = await this.store.channels.get(id);
-    if (!post || post.channel !== WEBHOOK_CHANNEL) throw new ApiError("not_found", `no message ${id} among the last ${ATTEMPTS_KEPT} attempts`);
+    if (!post || post.channel !== this.outbound.channel) throw new ApiError("not_found", `no message ${id} among the last ${ATTEMPTS_KEPT} attempts`);
     return this.attempt(id, { retry: false, redelivery: true });
   }
 
@@ -547,19 +578,26 @@ export class Webhooks {
 
   /** The secret the webhook's setting names, opened here; undefined when none is set, or it does not open here. */
   private signingSecret(config: Config | undefined = this.config): string | undefined {
-    return config ? this.secrets.get(config.secret_scope, SECRET_FIELD) : undefined;
+    return config ? this.secrets.get(config.secret_scope, this.outbound.field) : undefined;
   }
 
-  private body(type: MessageType, data: unknown): string {
+  protected body(type: string, data: unknown): string {
     return JSON.stringify({ type, timestamp: new Date().toISOString(), data });
   }
 
   /** The setting written, then held here: a write the store refuses throws, and what was held stays held. */
-  private async write(config: Config): Promise<void> {
-    await this.store.settings.put(WEBHOOK_SETTING, config);
+  protected async write(config: Config): Promise<void> {
+    await this.store.settings.put(this.outbound.setting, config);
     // Durable before the PUT (or the 410 that turns it off) answers, as the store's other confirmed writes are.
     await this.store.flush();
     this.config = config;
+  }
+
+  /** The setting removed, durably, and none held here: a removal the store refuses throws, and what was held stays held. */
+  protected async unwrite(): Promise<void> {
+    await this.store.settings.remove(this.outbound.setting);
+    await this.store.flush();
+    this.config = undefined;
   }
 
   /** Whether an end's run.ended is still to be queued: at or after the webhook was set and the day began (a marker that
@@ -576,7 +614,7 @@ export class Webhooks {
     const stale = [...this.notices].filter(([, noticed]) => noticed.ended !== undefined && !this.due(noticed.ended, config));
     if (!stale.length) return;
     try {
-      await this.store.channels.forget(WEBHOOK_CHANNEL, stale.map(([runId, noticed]) => ({ runId, marker: `${ENDED}${noticed.ended}` })));
+      await this.store.channels.forget(this.outbound.channel, stale.map(([runId, noticed]) => ({ runId, marker: `${ENDED}${noticed.ended}` })));
     } catch {
       return;
     }
@@ -623,7 +661,7 @@ export class Webhooks {
   private async tryOnce(id: string, how: { retry: boolean; redelivery: boolean }): Promise<Attempt> {
     const now = Date.now();
     const post = await this.store.channels.get(id);
-    const attempt: Attempt = { webhook_id: id, type: (post?.moment ?? "webhook.test") as MessageType, at: iso(now), status_code: null, latency_ms: 0, error: null, retry_at: null, redelivery: how.redelivery };
+    const attempt: Attempt = { webhook_id: id, type: (post?.moment ?? this.outbound.testType) as MessageType, at: iso(now), status_code: null, latency_ms: 0, error: null, retry_at: null, redelivery: how.redelivery };
     if (this.closed || !post) return attempt;
     // The try's own id: its claim's token, which fences its outcome's write (settleTry), and its row in the log, once.
     const tryId = randomBytes(12).toString("hex");
@@ -645,13 +683,14 @@ export class Webhooks {
     // Signed with the secret this setting names: the URL and its secret, as the store holds them together.
     const secret = this.signingSecret(config);
     let failure: string | undefined;
-    if (!config) failure = "the webhook was removed";
-    else if (config.disabled) failure = "the webhook is off";
-    else if (secret === undefined) failure = "the secret does not open here (unreadable): set the webhook again";
+    let gone: Gone | undefined;
+    if (!config) failure = this.outbound.words.removed;
+    else if (config.disabled) failure = this.outbound.words.off;
+    else if (secret === undefined) failure = this.outbound.words.unreadable;
     else {
       const timestamp = String(Math.floor(now / 1000));
       const started = performance.now();
-      const target = new URL(config.url);
+      const { url: target, headers } = this.request(config, secret, id, timestamp, post.body);
       // One bound for the whole try, its name's lookup included, and the server's stop cuts it all (close()).
       const signal = AbortSignal.any([AbortSignal.timeout(this.timeoutMs), this.stop.signal]);
       const dial = await this.dialled(target, signal);
@@ -660,13 +699,12 @@ export class Webhooks {
         try {
           const res = await undiciFetch(target, {
             method: "POST", redirect: "manual", signal,
-            headers: { "content-type": "application/json", "user-agent": "agentrun-serve-webhook/1", "webhook-id": id, "webhook-timestamp": timestamp, "webhook-signature": signatureOf(secret, id, timestamp, post.body) },
+            headers,
             body: post.body,
             ...(dial.dispatcher ? { dispatcher: dial.dispatcher } : {}),
           });
-          await res.body?.cancel().catch(() => undefined);
           attempt.status_code = res.status;
-          if (res.status < 200 || res.status > 299) failure = res.status >= 300 && res.status < 400 ? `answered ${res.status}: a redirect is not followed` : `answered ${res.status}`;
+          ({ failure, gone } = await this.judged(res));
         } catch (error) {
           failure = (error as Error).name === "TimeoutError" ? `no answer in ${this.timeoutMs / 1000} s` : `not reached: ${(error as { cause?: { code?: string } }).cause?.code ?? (error as Error).message}`;
         } finally {
@@ -675,12 +713,29 @@ export class Webhooks {
       }
       attempt.latency_ms = Math.round(performance.now() - started);
     }
+    // A failure's words never hold the credential (an outbox whose URL is its credential: Slack's).
+    if (failure !== undefined && secret) failure = failure.split(secret).join("…");
     // In its words, written or not: a try the server's stop cut short still says why it ended.
     attempt.error = failure ?? null;
     if (this.closed) return attempt;
     // What the try found is settled against the webhook as it stands once every change asked for before it (a PUT, a
     // DELETE, another try's 410) has landed: a 410 never turns off a webhook a PUT is setting again meanwhile.
-    return this.change(() => this.settleTry(id, how, now, tryId, claimed, config, failure, attempt));
+    return this.change(() => this.settleTry(id, how, now, tryId, claimed, config, failure, attempt, gone));
+  }
+
+  /** What a try sends to (`url`) and with which headers, for the outbox's credential: the webhook's URL, signed with its
+   *  secret. Slack's outbox sends to its sealed URL (slack.ts). */
+  protected request(config: Config, credential: string, id: string, timestamp: string, body: string): { url: URL; headers: Record<string, string> } {
+    return { url: new URL(config.url), headers: { "content-type": "application/json", "user-agent": "agentrun-serve-webhook/1", "webhook-id": id, "webhook-timestamp": timestamp, "webhook-signature": signatureOf(credential, id, timestamp, body) } };
+  }
+
+  /** What a receiver's answer says: why the try failed (none when it landed), and whether the receiver is gone, which
+   *  turns the outbox off. The webhook's: 2xx lands; a redirect is not followed; a 410 is gone. */
+  protected async judged(res: Awaited<ReturnType<typeof undiciFetch>>): Promise<{ failure?: string; gone?: Gone }> {
+    await res.body?.cancel().catch(() => undefined);
+    if (res.status >= 200 && res.status <= 299) return {};
+    const failure = res.status >= 300 && res.status < 400 ? `answered ${res.status}: a redirect is not followed` : `answered ${res.status}`;
+    return res.status === 410 ? { failure, gone: { reason: "the receiver answered 410 Gone", drop: "the webhook is off: its receiver answered 410" } } : { failure };
   }
 
   /** A try's outcome written: the message's new state and the try, in one transaction; its next try armed; a 410 that
@@ -691,14 +746,14 @@ export class Webhooks {
    *  holds that claim (Channels.settle), so a write that lands late, after a redelivery sent the message, a newer try
    *  claimed it or a DELETE dropped it, changes nothing and arms nothing. A redelivery claims nothing: a landed one writes
    *  sent, which no try's write undoes (sent is final), and a failed one writes no state at all, only its try. */
-  private async settleTry(id: string, how: { retry: boolean; redelivery: boolean }, now: number, tryId: string, claimed: ChannelPostRow | undefined, config: Config | undefined, failure: string | undefined, attempt: Attempt): Promise<Attempt> {
+  private async settleTry(id: string, how: { retry: boolean; redelivery: boolean }, now: number, tryId: string, claimed: ChannelPostRow | undefined, config: Config | undefined, failure: string | undefined, attempt: Attempt, goneBy?: Gone): Promise<Attempt> {
     if (this.closed) return attempt;
     // The schedule counts the message's own tries, from the count its claim took it at; a redelivery counts none.
     const attempts = claimed ? claimed.attempts + 1 : undefined;
     // A 410 turns off the webhook as this try found it: one set again or removed while the try waited is not its to turn
     // off, and the 410 is then a failure like any other.
     const standing = this.config;
-    const gone = attempt.status_code === 410 && config !== undefined && standing !== undefined && standing.url === config.url && standing.updated_at === config.updated_at && !standing.disabled;
+    const gone = goneBy !== undefined && config !== undefined && standing !== undefined && standing.url === config.url && standing.updated_at === config.updated_at && !standing.disabled;
     let to: { state: ChannelPostRow["state"]; attempts?: number; nextAt?: number; reason?: string | null } | undefined;
     let delay: number | undefined;
     if (attempts === undefined) {
@@ -720,7 +775,7 @@ export class Webhooks {
     // The same write each time it is tried: its fence and its values fixed here, so one whose outcome is unknown (the store
     // threw) is written again as it was, and lands once.
     const write = () => this.store.channels.settle(id, to, row, { kept: ATTEMPTS_KEPT, sending: [...this.sending.keys()], ...(claimed ? { claim: tryId } : {}) });
-    const after = (written: boolean) => this.afterSettle(id, written, to, delay, attempt, attempts, failure, gone, standing);
+    const after = (written: boolean) => this.afterSettle(id, written, to, delay, attempt, attempts, failure, gone ? goneBy : undefined, standing);
     let written: boolean;
     try {
       written = await write();
@@ -741,7 +796,7 @@ export class Webhooks {
    *  stands, whatever the message's state, since it is the receiver's answer. The 410 is checked again against the webhook
    *  as it stands now: one whose write landed late (resettle), after a PUT set another URL or a DELETE removed it, was the
    *  old URL's, and turns nothing off. */
-  private async afterSettle(id: string, written: boolean, to: { state: ChannelPostRow["state"]; nextAt?: number } | undefined, delay: number | undefined, attempt: Attempt, attempts: number | undefined, failure: string | undefined, gone: boolean, standing: Config | undefined): Promise<void> {
+  private async afterSettle(id: string, written: boolean, to: { state: ChannelPostRow["state"]; nextAt?: number } | undefined, delay: number | undefined, attempt: Attempt, attempts: number | undefined, failure: string | undefined, gone: Gone | undefined, standing: Config | undefined): Promise<void> {
     if (!written) {
       attempt.retry_at = null;
       if (to) this.say({ condition: "attempt_superseded", webhook_id: id, state: to.state });
@@ -750,10 +805,12 @@ export class Webhooks {
       if (to?.state === "dropped") this.say({ condition: "delivery_failed", type: attempt.type, webhook_id: id, attempts: attempts ?? 0, ...(attempt.status_code !== null ? { status_code: attempt.status_code } : {}), error: failure! });
     }
     const current = this.config;
-    const stillGone = gone && standing !== undefined && current !== undefined && !current.disabled && current.url === standing.url && current.secret_scope === standing.secret_scope && current.updated_at === standing.updated_at;
+    const stillGone = gone !== undefined && standing !== undefined && current !== undefined && !current.disabled && current.url === standing.url && current.secret_scope === standing.secret_scope && current.updated_at === standing.updated_at;
     if (stillGone) {
-      // Gone: the receiver says this endpoint is no more. Off, its queued messages dropped, until a PUT sets it again.
-      const off = { ...standing!, disabled: { at: attempt.at, reason: "the receiver answered 410 Gone" } };
+      // Gone: the receiver says this endpoint is no more. Off, its queued messages dropped, until a PUT sets it again. It is
+      // the setting as it stands now that goes off (the same URL, secret and cutoff as the try's): a change since that
+      // kept those (Slack's events, slack.ts) is kept, never written over by the try's older copy.
+      const off = { ...current!, disabled: { at: attempt.at, reason: gone.reason } };
       try {
         await this.write(off);
       } catch (error) {
@@ -765,7 +822,7 @@ export class Webhooks {
       // Every message whose write passed the check before the webhook went off lands first (as a DELETE waits, remove):
       // then the drop takes it too, and none reaches a receiver a later PUT sets.
       await Promise.all([...this.posting]);
-      await this.drop("the webhook is off: its receiver answered 410");
+      await this.drop(gone.drop);
     }
   }
 
@@ -805,7 +862,7 @@ export class Webhooks {
   private async drop(why: string, strict = false): Promise<void> {
     let count = 0;
     try {
-      count = await this.store.channels.dropAll(WEBHOOK_CHANNEL, why);
+      count = await this.store.channels.dropAll(this.outbound.channel, why);
     } catch (error) {
       // Refused: a DELETE fails with the webhook still set, its messages still queued and their timers kept, so each is
       // tried on its schedule as before.
@@ -819,8 +876,8 @@ export class Webhooks {
   /** The webhook, set and on: a test or a redelivery sends nothing to one a 410 turned off, as no try does. */
   private need(): Config {
     const config = this.config;
-    if (!config) throw new ApiError("not_found", "no webhook is set: PUT /v2/settings/webhook sets one");
-    if (config.disabled) throw new ApiError("webhook_off", `the webhook is off (${config.disabled.reason}): set it again with PUT /v2/settings/webhook`);
+    if (!config) throw new ApiError("not_found", this.outbound.words.unset);
+    if (config.disabled) throw new ApiError(this.outbound.offCode, this.outbound.words.offWith(config.disabled.reason));
     return config;
   }
 }

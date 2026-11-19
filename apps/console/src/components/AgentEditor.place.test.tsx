@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { type Agent, toolOffers } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { placesOf } from "@/lib/place";
 
 // Where an agent runs, in the editor's Computer step: the server's places, bash following the place in the form (a box
@@ -15,8 +16,8 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const places = placesOf({ places: { modes: ["runner", "sandbox"], default_place: { mode: "runner" }, boxes: [{ id: "modal", available: false, reason: "fixture: no modal" }, { id: "docker", available: true }] } });
 const tools = toolOffers([{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] }]);
 const caps = { harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools, places };
-const agent = (place?: unknown, tools: string[] = ["read"]): Agent => ({
-  agent_id: "boxed", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
+const agent = (place?: Agent["definition"]["place"], tools: string[] = ["read"]): Agent => ({
+  ...SERVED_AGENT, agent_id: "boxed", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Boxed", instructions: "Probe.", harness: "pi", skills: [], tools, ...(place ? { place } : {}) },
 });
 

@@ -7,6 +7,7 @@ import { RunDetail } from './RunDetail';
 import { Playground } from './Playground';
 import { AgentEditPage } from './AgentsPage';
 import type { Agent } from '@/lib/agentForm';
+import { SERVED_AGENT } from '@/test/agent';
 import type { Run } from '@/lib/v2';
 
 vi.mock('./CodingAgentAction', () => ({ CodingAgentAction: ({ label, prompt, playgroundHref }: { label: string; prompt: string; playgroundHref?: string }) =>
@@ -14,7 +15,7 @@ vi.mock('./CodingAgentAction', () => ({ CodingAgentAction: ({ label, prompt, pla
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ''; });
-const agent = (runtime: 'claude-agent-sdk' | 'codex-sdk'): Agent => ({ agent_id: 'backend', kind: 'agentic', revision: 'r1', revisions: 1, archived_at: null,
+const agent = (runtime: 'claude-agent-sdk' | 'codex-sdk'): Agent => ({ ...SERVED_AGENT, agent_id: 'backend', kind: 'agentic', revision: 'r1', revisions: 1, archived_at: null,
   definition: { version: 1, name: 'Release backend', instructions: 'Report accurately.', sdk: { runtime }, tools: [], skills: [], learning: true }, runs: { count: 0, live: 0 } });
 const settle = async () => { for (let n = 0; n < 5; n++) await act(async () => { await new Promise(resolve => setTimeout(resolve, 0)); }); };
 const show = (element: React.ReactElement) => {

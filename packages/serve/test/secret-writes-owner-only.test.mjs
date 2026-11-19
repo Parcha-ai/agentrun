@@ -131,7 +131,7 @@ test("a sign-in's start is the owner's alone: the token is refused, and gets no 
 
 test("every operation on a secret's route is in the one gate's registry, or said on purpose to write none, with why: an unregistered one is named", () => {
   const doc = openapiDocument(() => undefined);
-  const secretRoutes = [/^\/settings\/mcp-servers(\/|$)/, /^\/integrations\/github(\/|$)/, /^\/agents\/\{[^}]+\}\/sign-ins(\/|$)/, /^\/settings\/tool-keys(\/|$)/, /^\/computers(\/|$)/, /^\/workspace(\/|$)/, /^\/triggers\/\{[^}]+\}\/secret$/];
+  const secretRoutes = [/^\/settings\/mcp-servers(\/|$)/, /^\/integrations\/github(\/|$)/, /^\/agents\/\{[^}]+\}\/sign-ins(\/|$)/, /^\/settings\/tool-keys(\/|$)/, /^\/computers(\/|$)/, /^\/workspace(\/|$)/, /^\/triggers\/\{[^}]+\}\/secret$/, /^\/settings\/slack(\/|$)/, /^\/settings\/model-gateway(\/|$)/];
   const unregistered = [];
   const noReason = [];
   for (const [path, item] of Object.entries(doc.paths)) {

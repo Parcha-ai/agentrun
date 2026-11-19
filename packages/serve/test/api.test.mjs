@@ -172,6 +172,37 @@ test("an agent is created from a definition and skills, read back with its ETag,
   assert.equal((await api("GET", "/agents/nobody")).status, 404);
 });
 
+test("PUT .../definition changes the description: the answer, GET, the list and the revisions carry it; one that leaves it out keeps it; a stale If-Match changes nothing; the name stays fixed", async (t) => {
+  const { api } = await serve(t);
+  const made = await api("POST", "/agents", agent("larkspur", { description: "/opt/code/larkspur-web" }));
+  assert.equal(made.status, 201);
+  const edited = await api("PUT", "/agents/larkspur/definition", agent("larkspur", { version: 2, description: "Builds the Larkspur site." }), { "if-match": made.headers.get("etag") });
+  assert.equal(edited.status, 200);
+  assert.equal(edited.body.definition.description, "Builds the Larkspur site.");
+  assert.equal(edited.body.revisions, 2, "a description-only edit makes a revision");
+  assert.notEqual(edited.headers.get("etag"), made.headers.get("etag"));
+  const read = await api("GET", "/agents/larkspur");
+  assert.deepEqual([read.body.definition.description, read.body.revisions], ["Builds the Larkspur site.", 2]);
+  assert.equal((await api("GET", "/agents")).body.agents.find((a) => a.agent_id === "larkspur").definition.description, "Builds the Larkspur site.");
+  // A stale If-Match with a new description: 412, and the description is the one before.
+  const stale = await api("PUT", "/agents/larkspur/definition", agent("larkspur", { version: 3, description: "On a stale read." }), { "if-match": made.headers.get("etag") });
+  assert.equal(stale.status, 412);
+  assert.equal((await api("GET", "/agents/larkspur")).body.definition.description, "Builds the Larkspur site.");
+  // An edit that leaves the description out keeps it.
+  const left = await api("PUT", "/agents/larkspur/definition", agent("larkspur", { version: 3, instructions: "Answer briefly." }));
+  assert.deepEqual([left.status, left.body.definition.description, left.body.revisions], [200, "Builds the Larkspur site.", 3]);
+  // The contract's body (the definition itself) changes it too.
+  const contract = await api("PUT", "/agents/larkspur/definition", { ...agent("larkspur", { version: 4, instructions: "Answer briefly.", description: "Builds and ships the Larkspur site." }).definition }, { "if-match": left.headers.get("etag") });
+  assert.deepEqual([contract.status, contract.body.definition.description, contract.body.revisions], [200, "Builds and ships the Larkspur site.", 4]);
+  // A changed name is still input_invalid on definition.name alone, and changes nothing.
+  const renamed = await api("PUT", "/agents/larkspur/definition", agent("larkspur", { version: 5, instructions: "Answer briefly.", name: "Renamed", description: "With a new name." }));
+  assert.equal(renamed.status, 422);
+  assert.equal(renamed.body.error.code, "input_invalid");
+  assert.deepEqual(renamed.body.error.fields.map((f) => [f.field, f.reason]), [["definition.name", "not_allowed"]]);
+  const after = await api("GET", "/agents/larkspur");
+  assert.deepEqual([after.body.definition.name, after.body.definition.description, after.body.revisions], ["larkspur", "Builds and ships the Larkspur site.", 4]);
+});
+
 test("a definition field the store does not keep is refused by name, and an id already here is agent_exists", async (t) => {
   const { api } = await serve(t);
   const kept = await api("POST", "/agents", agent("m", { input_shape: {} }));

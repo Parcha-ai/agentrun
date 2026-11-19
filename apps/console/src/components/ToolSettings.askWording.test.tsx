@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { AgentToolSettings } from "./ToolSettings";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { toolGates } from "@/lib/toolSettings";
 
 // What "ask" means differs by kind of agent, and the editor's line under Tool settings says which: an agentic run waits
@@ -15,7 +16,7 @@ const WORKFLOW = "Each of these tools takes this server's setting (its default h
 // The markup's text: tags dropped, the apostrophe React writes as &#x27; read back.
 const text = (html: string) => html.replace(/<[^>]+>/g, " ").replace(/&#x27;/g, "'").replace(/\s+/g, " ");
 const agent = (kind: Agent["kind"]): Agent => ({
-  agent_id: "a1", kind, revision: "r1", revisions: 1, archived_at: null,
+  ...SERVED_AGENT, agent_id: "a1", kind, revision: "r1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "A", ...(kind === "workflow" ? { workflow: {} } : { instructions: "Do it." }), skills: [], tools: ["web_fetch"] },
 });
 const render = (kind: Agent["kind"]) => text(renderToStaticMarkup(createElement(AgentToolSettings, {

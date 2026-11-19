@@ -2,7 +2,7 @@ import type { NativeBinding } from "./native";
 import { type Place, type Places, computerOfPlace, placeOf } from "./place";
 import type { ClientError } from "./client";
 import type { LearningProblem } from "./learning";
-import type { AgentTool, Approvals, Computer, ServedAgent, ToolSettings } from "./v2";
+import type { Agent, Approvals, Computer, ToolSettings } from "./v2";
 import { decisionStarter, STARTER_PROVIDERS } from "./decisionStarter";
 import { workflowStarter } from "./workflowStarter";
 
@@ -18,22 +18,20 @@ export const learningOn = (learning: unknown): boolean => learning === true || (
 export type Definition = { native?: NativeBinding; version: number; approvals?: Approvals; name: string; description?: string; instructions?: string; workflow?: unknown; harness?: string; thinking?: string; model?: string; learning?: LearningSetting; max_cost_usd?: number; skills: string[]; tools: string[]; tool_settings?: ToolSettings; [field: string]: unknown };
 /** What a save's answer says this host lacks to run the revision (`reason` not_set_up_here, say): it saved, and a run of it
  *  is refused until the host has it. `field` names the definition's field (`definition.model`, `definition.tools[2]`). */
-export type SaveWarning = { field: string; reason: string; message: string };
-/** `warnings`: on a create's or an edit's answer only (never on a read of the agent); the console keeps a create's for
- *  the agent's page that opens after it (client.ts). */
-/** The console's agent, and of the served agent (GET /v2/agents/{id}, generated) its `sign_ins`, which only that read
- *  carries (a list's agents and a write's answer have none), as its `run_blockers`. */
-export type Agent = { agent_id: string; kind: "agentic" | "workflow"; revision: string; revisions: number; definition: Definition; native_status?: NativeBinding; archived_at: string | null; runs?: { count: number; live: number }; warnings?: SaveWarning[]; tools?: AgentTool[]; learning?: { pending: number } } & Partial<Pick<ServedAgent, "sign_ins" | "template" | "run_blockers">>;
+export type SaveWarning = NonNullable<Agent["warnings"]>[number];
+export type { Agent };
 export type AgentFields = Partial<Pick<Definition, "name" | "description" | "instructions" | "harness" | "thinking" | "model" | "tools" | "workflow" | "learning" | "tool_settings" | "max_cost_usd" | "approvals">> & { workflowText?: string; maxCostText?: string; place?: Place; computer?: Computer };
 
-/** The body of a definition edit: the current definition with the edited fields; name and
- *  description stay as the agent was created. Every field the
+/** The body of a definition edit: the current definition with the edited fields; the name stays as the agent was created,
+ *  and a changed description is sent (serve writes it with the new revision). Every field the
  *  form does not show (schemas, tools, a workflow, connection references) is kept as it is, never dropped. A workflow
  *  revision keeps no thinking level (the server refuses one). Skill files are not sent, so they stay as they are. */
 export function editBody(agent: Agent, fields: AgentFields, note: string): { definition: Definition; note?: string; unchanged: boolean } {
-  // The agent store keeps an agent's id, name and description from its creation: an edit never sends a changed one.
-  const { name: _name, description: _description, ...editable } = fields as AgentFields & { id?: string };
+  // The agent store keeps an agent's id and name from its creation: an edit never sends a changed one.
+  const { name: _name, ...editable } = fields as AgentFields & { id?: string };
   const edited: Definition = { ...agent.definition, ...editable };
+  // An agent with no description, left blank in the form, still has none: not a change.
+  if (edited.description === "" && agent.definition.description === undefined) delete edited.description;
   // The computer is the setting; place is the server's view of it. A definition with a computer goes without its place,
   // which would still say the old computer after a change (the server writes place from computer).
   const current: Definition = { ...agent.definition };

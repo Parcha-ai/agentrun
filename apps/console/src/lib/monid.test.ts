@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { SaveWarning } from "./agentForm";
 import { monidGrantOf, monidGrantText, monidNameProblem, splitMonidWarnings } from "./monid";
 
 describe("monid grant names", () => {
@@ -17,9 +18,9 @@ describe("monid grant names", () => {
   });
 
   it("split a save's warnings: those at a monid grant, and the rest", () => {
-    const left = { field: "definition.tools[1]", reason: "priced_by_usage", message: "monid:exa/search is priced by usage: ..." };
-    const model = { field: "definition.model", reason: "not_set_up_here", message: "No key for openai." };
-    const read = { field: "definition.tools[0]", reason: "not_set_up_here", message: "read needs a box." };
+    const left: SaveWarning = { field: "definition.tools[1]", reason: "priced_by_usage", message: "monid:exa/search is priced by usage: ..." };
+    const model: SaveWarning = { field: "definition.model", reason: "not_set_up_here", message: "No key for openai." };
+    const read: SaveWarning = { field: "definition.tools[0]", reason: "not_set_up_here", message: "read needs a box." };
     expect(splitMonidWarnings([left, model, read], ["read", "monid:exa/*"])).toEqual({ monid: [{ grant: "monid:exa/*", warning: left }], rest: [model, read] });
   });
 });

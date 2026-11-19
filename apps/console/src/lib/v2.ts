@@ -3,6 +3,7 @@
 // sends. Edit the server's document, then run node scripts/generate-clients.mjs; never a wire type here.
 
 import type { components, operations } from "./api.generated";
+import type { Definition } from "./agentForm";
 
 type Answer<Id extends keyof operations> = operations[Id]["answer"];
 type Body<Id extends keyof operations> = operations[Id]["body"];
@@ -179,6 +180,13 @@ export type ToolKeysFeature = NonNullable<components["Features"]["tool_keys"]>;
 /** Claude Code's login on this machine (GET /v2/settings/claude-login, a serve extension): on or off, and what the CLI
  *  says of its login, never a token. */
 export type ClaudeLoginView = Answer<"getClaudeLogin">;
+/** The model gateway in force (GET /v2/settings/model-gateway, a serve extension): the environment's, the one saved in the
+ *  console, or none; its address, id style and models, and its key as a SecretMeta, never a value. */
+export type ModelGateway = Answer<"getModelGateway">;
+/** PUT /v2/settings/model-gateway's body: the address, the key (null removes it; left out, kept), the id style, the models. */
+export type ModelGatewayBody = Body<"saveModelGateway">;
+/** POST /v2/settings/model-gateway/test's answer: the model ids the gateway lists, or why not. */
+export type ModelGatewayTest = Answer<"testModelGateway">;
 /** This server's ChatGPT sign-in (GET /v2/settings/chatgpt, a serve extension): its state, who and which plan, never a
  *  token. */
 export type ChatGPTView = Answer<"getChatGPTSignIn">;
@@ -197,6 +205,15 @@ export type WebhookRotated = Answer<"rotateWebhookSecret">;
 export type WebhookAttempt = Answer<"listWebhookDeliveries">["attempts"][number];
 /** `capabilities.features.webhooks`. */
 export type WebhooksFeature = NonNullable<components["Features"]["webhooks"]>;
+
+/** Slack (GET /v2/settings/slack, a serve extension): its URL's last four characters, never the URL, and its events. */
+export type Slack = Answer<"getSlack">;
+/** A PUT's body: the URL (a secret write, the owner's session alone), the events, or both. */
+export type SlackBody = Body<"saveSlack">;
+/** One try of a Slack message (GET .../deliveries, newest first). */
+export type SlackAttempt = Answer<"listSlackDeliveries">["attempts"][number];
+/** `capabilities.features.slack`. */
+export type SlackFeature = NonNullable<components["Features"]["slack"]>;
 
 /** The server's email account (GET /v2/settings/email): its address, servers and who signs in, never its password. */
 export type EmailAccount = Answer<"getEmailAccount">;
@@ -266,3 +283,18 @@ export type SignIn = components["SignIn"];
 export type SignInForgotten = Answer<"forgetSignIn">;
 /** GET /v2/agents/{id}'s answer as served. */
 export type ServedAgent = Answer<"getAgent">;
+/** An agent as the server sends it: GET /v2/agents/{id} (which alone carries `tools` and `run_blockers`), a list's, and
+ *  a create's or an edit's answer (which alone carry `warnings`). Narrowed where the console reads it narrower:
+ *  `kind` and `revision` are non-null, since every agent a route returns has its first revision (POST /agents and a first
+ *  run of POST /runs make it in one transaction; null is the document's for a row before that); `definition` is the
+ *  console's Definition, which an edit sends back whole, since the generated one (`unknown & DefinitionInput`) loses the
+ *  document's required version, skills and tools. */
+export type Agent = components["Agent"] & { kind: NonNullable<components["Agent"]["kind"]>; revision: string; definition: Definition };
+
+/** GET /v2/capabilities' answer: what this server runs (its harnesses, tools, places and models), what it offers
+ *  (features) and its limits. `models.ready`: whether an agent that names no model runs here; when not, `needs` says
+ *  what would make it: a model provider's key, or another default model. */
+export type Capabilities = components["Capabilities"];
+/** One harness as capabilities list it: its id (a built-in one, or one the server's harness modules add), its label and
+ *  what it promises, whether it runs here and why not. */
+export type HarnessOfferView = Capabilities["harnesses"][number];

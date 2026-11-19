@@ -241,6 +241,9 @@ __all__ = [
     "DeleteComposioSubscriptionResponse",
     "DeleteMcpServerResponse",
     "DeleteMcpServerResponseComposio",
+    "DeleteModelGatewayResponse",
+    "DeleteModelGatewayResponseModels",
+    "DeleteModelGatewayResponseSecret",
     "DeleteTriggerResponse",
     "DeleteTriggerResponseComposio",
     "DeleteWorkspaceArchilResponse",
@@ -273,6 +276,7 @@ __all__ = [
     "FeaturesMcpClient",
     "FeaturesMessages",
     "FeaturesRuns",
+    "FeaturesSlack",
     "FeaturesTimeline",
     "FeaturesToolKeys",
     "FeaturesTriggers",
@@ -366,6 +370,9 @@ __all__ = [
     "GetMcpServerResponseAuth",
     "GetMcpServerResponseOauth",
     "GetMcpServerResponseToolsItem",
+    "GetModelGatewayResponse",
+    "GetModelGatewayResponseModels",
+    "GetModelGatewayResponseSecret",
     "GetNativeResponse",
     "GetNativeResponseNative",
     "GetNativeResponseNativeCapabilities",
@@ -405,6 +412,12 @@ __all__ = [
     "GetRunTraceResponseSpansItem",
     "GetRunTraceResponseSpansItemTokens",
     "GetSdkRunResponse",
+    "GetSlackResponse",
+    "GetSlackResponseObject1",
+    "GetSlackResponseObject1Events",
+    "GetSlackResponseObject2",
+    "GetSlackResponseObject2Disabled",
+    "GetSlackResponseObject2Events",
     "GetStatsResponse",
     "GetStatsResponseAnalytics",
     "GetStatsResponseAnalyticsByDayItem",
@@ -582,6 +595,8 @@ __all__ = [
     "ListRevisionsResponseRevisionsItemMcpPinValueToolsItem",
     "ListRunFilesResponse",
     "ListRunsResponse",
+    "ListSlackDeliveriesResponse",
+    "ListSlackDeliveriesResponseAttemptsItem",
     "ListTemplatesResponse",
     "ListTemplatesResponseTemplatesItem",
     "ListTemplatesResponseTemplatesItemAuthor",
@@ -715,6 +730,7 @@ __all__ = [
     "ReceiveHookComposioResponseObject2FiringsItem1",
     "ReceiveHookComposioResponseObject2FiringsItem1Error",
     "ReceiveHookComposioResponseObject2FiringsItem2",
+    "RedeliverSlackResponse",
     "RedeliverWebhookResponse",
     "RefreshMcpServerResponse",
     "RefreshMcpServerResponseServer",
@@ -835,6 +851,16 @@ __all__ = [
     "SaveMcpServerResponseComposio",
     "SaveMcpServerResponseOauth",
     "SaveMcpServerResponseToolsItem",
+    "SaveModelGatewayBody",
+    "SaveModelGatewayBodyModels",
+    "SaveModelGatewayResponse",
+    "SaveModelGatewayResponseModels",
+    "SaveModelGatewayResponseSecret",
+    "SaveSlackBody",
+    "SaveSlackBodyEvents",
+    "SaveSlackResponse",
+    "SaveSlackResponseDisabled",
+    "SaveSlackResponseEvents",
     "SaveToolKeyBody",
     "SaveWebhookBody",
     "SaveWebhookResponse",
@@ -860,6 +886,7 @@ __all__ = [
     "SignOutChatGPTResponse",
     "SkillFileInfo",
     "SkillFiles",
+    "SlackResource",
     "Source",
     "StartChatGPTSignInResponse",
     "StartClaudeLoginResponse",
@@ -890,6 +917,11 @@ __all__ = [
     "TestEmailAccountResponse",
     "TestEmailAccountResponseImap",
     "TestEmailAccountResponseSmtp",
+    "TestModelGatewayBody",
+    "TestModelGatewayResponse",
+    "TestModelGatewayResponseObject1",
+    "TestModelGatewayResponseObject2",
+    "TestSlackResponse",
     "TestWebhookResponse",
     "TestWorkspaceArchilResponse",
     "TestWorkspaceArchilResponseObject1",
@@ -1046,6 +1078,10 @@ class _AgentRequired(TypedDict):
     home_etag: str
     created_at: Timestamp
     updated_at: Timestamp
+    kind: Literal["agentic", "workflow"] | None
+    revision: str | None
+    revisions: int
+    archived_at: str | None
 
 
 class Agent(_AgentRequired, total=False):
@@ -1053,10 +1089,6 @@ class Agent(_AgentRequired, total=False):
     external: AgentExternal
     console_url: str
     tools: list[AgentToolsItem]
-    kind: Literal["agentic", "workflow"] | None
-    revision: str | None
-    revisions: int
-    archived_at: str | None
     learning: AgentLearning
     mcp_pin: dict[str, AgentMcpPinValue] | None
     own_computer: AgentOwnComputer | None
@@ -1946,16 +1978,16 @@ class _GetAgentResponseRequired(TypedDict):
     created_at: Timestamp
     updated_at: Timestamp
     tools: list[GetAgentResponseToolsItem]
+    kind: Literal["agentic", "workflow"] | None
+    revision: str | None
+    revisions: int
+    archived_at: str | None
 
 
 class GetAgentResponse(_GetAgentResponseRequired, total=False):
     native_status: GetAgentResponseNativeStatus
     external: GetAgentResponseExternal
     console_url: str
-    kind: Literal["agentic", "workflow"] | None
-    revision: str | None
-    revisions: int
-    archived_at: str | None
     learning: GetAgentResponseLearning
     mcp_pin: dict[str, GetAgentResponseMcpPinValue] | None
     own_computer: GetAgentResponseOwnComputer | None
@@ -3460,6 +3492,29 @@ class DeleteComposioSubscriptionResponse(TypedDict):
     deleted: Literal[True]
 
 
+class DeleteModelGatewayResponse(TypedDict):
+    source: Literal["env", "console"] | None
+    base_url: str | None
+    ids: Literal["as_named", "bare"]
+    models: DeleteModelGatewayResponseModels
+    set_at_start: list[str]
+    secret: DeleteModelGatewayResponseSecret
+    problem: str | None
+
+
+class DeleteModelGatewayResponseModels(TypedDict):
+    default: str | None
+    fast: str | None
+    strong: str | None
+
+
+class DeleteModelGatewayResponseSecret(TypedDict):
+    name: str
+    set: bool
+    source: Literal["env", "console", "sign-in"] | None
+    changed_at: str | None
+
+
 class _DeleteWorkspaceArchilResponseRequired(TypedDict):
     on: bool
     secret: DeleteWorkspaceArchilResponseSecret
@@ -3576,6 +3631,29 @@ class GetGitHubConnectionResponseObject2(TypedDict):
 class GetGitHubConnectionResponseObject2InstallationsItem(TypedDict):
     id: int
     account: str
+
+
+class GetModelGatewayResponse(TypedDict):
+    source: Literal["env", "console"] | None
+    base_url: str | None
+    ids: Literal["as_named", "bare"]
+    models: GetModelGatewayResponseModels
+    set_at_start: list[str]
+    secret: GetModelGatewayResponseSecret
+    problem: str | None
+
+
+class GetModelGatewayResponseModels(TypedDict):
+    default: str | None
+    fast: str | None
+    strong: str | None
+
+
+class GetModelGatewayResponseSecret(TypedDict):
+    name: str
+    set: bool
+    source: Literal["env", "console", "sign-in"] | None
+    changed_at: str | None
 
 
 class _GetWorkspaceArchilResponseRequired(TypedDict):
@@ -4095,6 +4173,45 @@ class SaveEmailAccountResponseSmtp(TypedDict):
     port: int
 
 
+class _SaveModelGatewayBodyRequired(TypedDict):
+    base_url: str
+
+
+class SaveModelGatewayBody(_SaveModelGatewayBodyRequired, total=False):
+    api_key: str | None
+    ids: Literal["as_named", "bare"]
+    models: SaveModelGatewayBodyModels
+
+
+class SaveModelGatewayBodyModels(TypedDict, total=False):
+    default: str
+    fast: str | None
+    strong: str | None
+
+
+class SaveModelGatewayResponse(TypedDict):
+    source: Literal["env", "console"] | None
+    base_url: str | None
+    ids: Literal["as_named", "bare"]
+    models: SaveModelGatewayResponseModels
+    set_at_start: list[str]
+    secret: SaveModelGatewayResponseSecret
+    problem: str | None
+
+
+class SaveModelGatewayResponseModels(TypedDict):
+    default: str | None
+    fast: str | None
+    strong: str | None
+
+
+class SaveModelGatewayResponseSecret(TypedDict):
+    name: str
+    set: bool
+    source: Literal["env", "console", "sign-in"] | None
+    changed_at: str | None
+
+
 class _SignOutChatGPTResponseRequired(TypedDict):
     revoked: bool
 
@@ -4197,6 +4314,24 @@ class TestEmailAccountResponseImap(TypedDict):
 class TestEmailAccountResponseSmtp(TypedDict):
     ok: bool
     message: str
+
+
+class TestModelGatewayBody(TypedDict, total=False):
+    base_url: str
+    api_key: str | None
+
+
+TestModelGatewayResponse: TypeAlias = "TestModelGatewayResponseObject1 | TestModelGatewayResponseObject2"
+
+
+class TestModelGatewayResponseObject1(TypedDict):
+    ok: Literal[True]
+    models: list[str]
+
+
+class TestModelGatewayResponseObject2(TypedDict):
+    ok: Literal[False]
+    why: str
 
 
 TestWorkspaceArchilResponse: TypeAlias = "TestWorkspaceArchilResponseObject1 | TestWorkspaceArchilResponseObject2"
@@ -5777,12 +5912,12 @@ class _CapabilitiesRequired(TypedDict):
     limits: Limits
     learning: CapabilitiesLearning
     places: CapabilitiesPlaces
+    harnesses: list[CapabilitiesHarnessesItem]
     tools: list[CapabilitiesToolsItem]
     switches: dict[str, CapabilitiesSwitchesValue]
 
 
 class Capabilities(_CapabilitiesRequired, total=False):
-    harnesses: list[CapabilitiesHarnessesItem]
     workflows: CapabilitiesWorkflows
     links: CapabilitiesLinks
     home: CapabilitiesHome
@@ -5839,6 +5974,7 @@ class Features(_FeaturesRequired, total=False):
     mcp_client: FeaturesMcpClient
     tool_permissions: bool
     webhooks: FeaturesWebhooks
+    slack: FeaturesSlack
     triggers: FeaturesTriggers
 
 
@@ -5926,6 +6062,12 @@ class FeaturesWebhooks(TypedDict):
     routes: bool
     events: list[Literal["run.needs_input", "run.ended", "trigger.failed"]]
     signing: Literal["standard-webhooks/v1"]
+    at_rest: Literal["sealed"]
+
+
+class FeaturesSlack(TypedDict):
+    routes: bool
+    events: list[Literal["run.needs_input", "run.ended", "trigger.failed"]]
     at_rest: Literal["sealed"]
 
 
@@ -6172,6 +6314,99 @@ class CallMcpResponseError(TypedDict):
 
 
 GetOpenapiResponse: TypeAlias = "dict[str, Any]"
+
+
+class ListSlackDeliveriesResponse(TypedDict):
+    attempts: list[ListSlackDeliveriesResponseAttemptsItem]
+
+
+class ListSlackDeliveriesResponseAttemptsItem(TypedDict):
+    webhook_id: str
+    type: Literal["run.needs_input", "run.ended", "trigger.failed", "slack.test"]
+    at: str
+    status_code: int | None
+    latency_ms: int
+    error: str | None
+    retry_at: str | None
+    redelivery: bool
+
+
+GetSlackResponse: TypeAlias = "GetSlackResponseObject1 | GetSlackResponseObject2"
+
+
+class GetSlackResponseObject1(TypedDict):
+    configured: Literal[False]
+    secret: SecretMeta
+    events: GetSlackResponseObject1Events
+
+
+GetSlackResponseObject1Events = TypedDict("GetSlackResponseObject1Events", {"run.needs_input": "bool", "run.ended": "bool", "trigger.failed": "bool"})
+
+
+class GetSlackResponseObject2(TypedDict):
+    configured: Literal[True]
+    url: str
+    url_state: Literal["sealed", "unreadable"]
+    secret: SecretMeta
+    events: GetSlackResponseObject2Events
+    disabled: GetSlackResponseObject2Disabled | None
+    updated_at: str
+
+
+GetSlackResponseObject2Events = TypedDict("GetSlackResponseObject2Events", {"run.needs_input": "bool", "run.ended": "bool", "trigger.failed": "bool"})
+
+
+class GetSlackResponseObject2Disabled(TypedDict):
+    at: str
+    reason: str
+
+
+class RedeliverSlackResponse(TypedDict):
+    webhook_id: str
+    type: Literal["run.needs_input", "run.ended", "trigger.failed", "slack.test"]
+    at: str
+    status_code: int | None
+    latency_ms: int
+    error: str | None
+    retry_at: str | None
+    redelivery: bool
+
+
+class SaveSlackBody(TypedDict, total=False):
+    url: str
+    events: SaveSlackBodyEvents
+
+
+SaveSlackBodyEvents = TypedDict("SaveSlackBodyEvents", {"run.needs_input": "bool", "run.ended": "bool", "trigger.failed": "bool"}, total=False)
+
+
+class SaveSlackResponse(TypedDict):
+    configured: Literal[True]
+    url: str
+    url_state: Literal["sealed", "unreadable"]
+    secret: SecretMeta
+    events: SaveSlackResponseEvents
+    disabled: SaveSlackResponseDisabled | None
+    updated_at: str
+
+
+SaveSlackResponseEvents = TypedDict("SaveSlackResponseEvents", {"run.needs_input": "bool", "run.ended": "bool", "trigger.failed": "bool"})
+
+
+class SaveSlackResponseDisabled(TypedDict):
+    at: str
+    reason: str
+
+
+class TestSlackResponse(TypedDict):
+    webhook_id: str
+    type: Literal["run.needs_input", "run.ended", "trigger.failed", "slack.test"]
+    at: str
+    status_code: int | None
+    latency_ms: int
+    error: str | None
+    retry_at: str | None
+    redelivery: bool
 
 
 class GetStatsResponse(TypedDict):
@@ -8707,6 +8942,7 @@ OPERATIONS: dict[str, Operation] = {
     "deleteComposioSubscription": Operation(method="DELETE", path="/settings/mcp-servers/{name}/composio/subscription", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteComputer": Operation(method="DELETE", path="/computers/{computer_id}", path_params=("computer_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "deleteEmailAccount": Operation(method="DELETE", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
+    "deleteModelGateway": Operation(method="DELETE", path="/settings/model-gateway", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteWorkspaceArchil": Operation(method="DELETE", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "disconnectGitHub": Operation(method="DELETE", path="/integrations/github", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "finishChatGPTSignIn": Operation(method="POST", path="/settings/chatgpt/sign-in/finish", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -8715,6 +8951,7 @@ OPERATIONS: dict[str, Operation] = {
     "getClaudeLogin": Operation(method="GET", path="/settings/claude-login", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getEmailAccount": Operation(method="GET", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getGitHubConnection": Operation(method="GET", path="/integrations/github", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getModelGateway": Operation(method="GET", path="/settings/model-gateway", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getWorkspaceArchil": Operation(method="GET", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "gitHubCallback": Operation(method="GET", path="/integrations/github/callback", path_params=(), multi_segment=(), query=("code", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "gitHubInstalled": Operation(method="GET", path="/integrations/github/installed", path_params=(), multi_segment=(), query=("installation_id", "setup_action", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
@@ -8730,6 +8967,7 @@ OPERATIONS: dict[str, Operation] = {
     "saveComposioServer": Operation(method="PUT", path="/settings/mcp-servers/{name}/composio", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("toolkit", "tools.[]", "user_id"), tagged=False),
     "saveComputerKeys": Operation(method="PUT", path="/computers/{provider}/keys", path_params=("provider",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "saveEmailAccount": Operation(method="PUT", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "saveModelGateway": Operation(method="PUT", path="/settings/model-gateway", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("base_url", "ids", "models.default", "models.fast", "models.strong"), tagged=False),
     "signOutChatGPT": Operation(method="DELETE", path="/settings/chatgpt", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startChatGPTSignIn": Operation(method="POST", path="/settings/chatgpt/sign-in", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startClaudeLogin": Operation(method="POST", path="/settings/claude-login/login", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -8737,6 +8975,7 @@ OPERATIONS: dict[str, Operation] = {
     "testCalendar": Operation(method="POST", path="/settings/calendar/test", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "testComputer": Operation(method="POST", path="/computers/{provider}/test", path_params=("provider",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "testEmailAccount": Operation(method="POST", path="/settings/email/test", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "testModelGateway": Operation(method="POST", path="/settings/model-gateway/test", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=True, public_fields=("base_url",), tagged=False),
     "testWorkspaceArchil": Operation(method="POST", path="/workspace/archil/test", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "turnOffClaudeLogin": Operation(method="DELETE", path="/settings/claude-login", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "turnOnClaudeLogin": Operation(method="PUT", path="/settings/claude-login", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -8784,6 +9023,12 @@ OPERATIONS: dict[str, Operation] = {
     "getHealth": Operation(method="GET", path="/health", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "callMcp": Operation(method="POST", path="/mcp", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getOpenapi": Operation(method="GET", path="/openapi.json", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "deleteSlack": Operation(method="DELETE", path="/settings/slack", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
+    "listSlackDeliveries": Operation(method="GET", path="/settings/slack/deliveries", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getSlack": Operation(method="GET", path="/settings/slack", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "redeliverSlack": Operation(method="POST", path="/settings/slack/deliveries/{webhook_id}/redeliver", path_params=("webhook_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "saveSlack": Operation(method="PUT", path="/settings/slack", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=(), tagged=False),
+    "testSlack": Operation(method="POST", path="/settings/slack/test", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getStats": Operation(method="GET", path="/stats", path_params=(), multi_segment=(), query=("from", "to", "agent"), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "applyTemplate": Operation(method="POST", path="/templates/{template}/apply", path_params=("template",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "deleteTemplate": Operation(method="DELETE", path="/templates/{template}", path_params=("template",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
@@ -9045,6 +9290,10 @@ class LocalResource(Group):
         """Forget this server's email account (DELETE /settings/email)."""
         return self._call("deleteEmailAccount", (), None, None, timeout=timeout)
 
+    def delete_model_gateway(self, *, timeout: float | None = None) -> DeleteModelGatewayResponse:
+        """Stop using the saved model gateway: the provider keys are back in force (DELETE /settings/model-gateway)."""
+        return self._call("deleteModelGateway", (), None, None, timeout=timeout)
+
     def delete_workspace_archil(self, *, timeout: float | None = None) -> DeleteWorkspaceArchilResponse:
         """Turn Mode 2 off: run folders on this server's own disk (DELETE /workspace/archil)."""
         return self._call("deleteWorkspaceArchil", (), None, None, timeout=timeout)
@@ -9076,6 +9325,10 @@ class LocalResource(Group):
     def get_git_hub_connection(self, *, timeout: float | None = None) -> GetGitHubConnectionResponse:
         """Whether a GitHub App is connected, and if so its id, slug and installations, never a secret (GET /integrations/github)."""
         return self._call("getGitHubConnection", (), None, None, timeout=timeout)
+
+    def get_model_gateway(self, *, timeout: float | None = None) -> GetModelGatewayResponse:
+        """The model gateway in force: the environment's, the one saved here, or none (GET /settings/model-gateway)."""
+        return self._call("getModelGateway", (), None, None, timeout=timeout)
 
     def get_workspace_archil(self, *, timeout: float | None = None) -> GetWorkspaceArchilResponse:
         """Whether run folders are on Archil disks (Mode 2), the settings, and whether its keys are saved (GET /workspace/archil)."""
@@ -9129,6 +9382,10 @@ class LocalResource(Group):
         """Save this server's email account, its password sealed (PUT /settings/email)."""
         return self._call("saveEmailAccount", (), body, None, timeout=timeout)
 
+    def save_model_gateway(self, body: SaveModelGatewayBody, *, timeout: float | None = None) -> SaveModelGatewayResponse:
+        """Use a model gateway for every model, saved here (PUT /settings/model-gateway). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
+        return self._call("saveModelGateway", (), body, None, timeout=timeout)
+
     def sign_out_chat_gpt(self, *, timeout: float | None = None) -> SignOutChatGPTResponse:
         """Sign out of ChatGPT: the session revoked at OpenAI, then forgotten here (DELETE /settings/chatgpt)."""
         return self._call("signOutChatGPT", (), None, None, timeout=timeout)
@@ -9152,6 +9409,10 @@ class LocalResource(Group):
     def test_email_account(self, body: TestEmailAccountBody | None = None, *, timeout: float | None = None) -> TestEmailAccountResponse:
         """Sign in to the email account's IMAP and SMTP servers, sending nothing (POST /settings/email/test)."""
         return self._call("testEmailAccount", (), body, None, timeout=timeout)
+
+    def test_model_gateway(self, body: TestModelGatewayBody | None = None, *, timeout: float | None = None) -> TestModelGatewayResponse:
+        """Ask a model gateway which models it serves (POST /settings/model-gateway/test). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
+        return self._call("testModelGateway", (), body, None, timeout=timeout)
 
     def test_workspace_archil(self, *, timeout: float | None = None) -> TestWorkspaceArchilResponse:
         """Test the Archil account key at its region's control plane (POST /workspace/archil/test)."""
@@ -9370,6 +9631,34 @@ class ServerResource(Group):
         return self._call("getOpenapi", (), None, None, timeout=timeout)
 
 
+class SlackResource(Group):
+    """client.slack: one method per operation."""
+
+    def delete(self, *, timeout: float | None = None) -> None:
+        """Remove Slack; its pending messages are dropped, the log of attempts is kept (DELETE /settings/slack)."""
+        return self._call("deleteSlack", (), None, None, timeout=timeout)
+
+    def deliveries(self, *, timeout: float | None = None) -> ListSlackDeliveriesResponse:
+        """Slack's last 50 attempts, newest first (GET /settings/slack/deliveries)."""
+        return self._call("listSlackDeliveries", (), None, None, timeout=timeout)
+
+    def get(self, *, timeout: float | None = None) -> GetSlackResponse:
+        """Where this server posts run notices in Slack, if it is set; never the URL (GET /settings/slack)."""
+        return self._call("getSlack", (), None, None, timeout=timeout)
+
+    def redeliver(self, webhook_id: str, *, timeout: float | None = None) -> RedeliverSlackResponse:
+        """Post a message of Slack's log again, once now, under the same id and body (POST /settings/slack/deliveries/{webhook_id}/redeliver)."""
+        return self._call("redeliverSlack", (webhook_id,), None, None, timeout=timeout)
+
+    def save(self, body: SaveSlackBody, *, timeout: float | None = None) -> SaveSlackResponse:
+        """Set Slack's incoming-webhook URL, or which events it is sent (PUT /settings/slack). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
+        return self._call("saveSlack", (), body, None, timeout=timeout)
+
+    def test(self, *, timeout: float | None = None) -> TestSlackResponse:
+        """Post a test message to Slack now, once, and say how it went (POST /settings/slack/test)."""
+        return self._call("testSlack", (), None, None, timeout=timeout)
+
+
 class TemplateResource(Group):
     """client.template: one method per operation."""
 
@@ -9508,6 +9797,7 @@ class Resources:
     revisions: RevisionsResource
     sdk_runs: SdkRunsResource
     server: ServerResource
+    slack: SlackResource
     template: TemplateResource
     tool_keys: ToolKeysResource
     tool_settings: ToolSettingsResource
@@ -9528,6 +9818,7 @@ class Resources:
         self.revisions = RevisionsResource(call)
         self.sdk_runs = SdkRunsResource(call)
         self.server = ServerResource(call)
+        self.slack = SlackResource(call)
         self.template = TemplateResource(call)
         self.tool_keys = ToolKeysResource(call)
         self.tool_settings = ToolSettingsResource(call)

@@ -4,10 +4,10 @@ import type { ConnectorEnrollment, ConnectorEnrollmentCapabilities, RemoteConnec
 import type { Stats } from "./mission";
 import type { Agent, Definition, SaveWarning } from "./agentForm";
 import type { AgentLearning, Corrections, LearningChange, LearningDiff, LearningFile, LearningProblem, RunLearningResultData, Page } from "./learning";
-import type { ComposioTools, McpAuth, McpClientFeature, McpPreview, McpRefresh, McpServer } from "./mcp";
+import type { ComposioTools, McpAuth, McpPreview, McpRefresh, McpServer } from "./mcp";
 import type { RunGraph } from "./runGraph";
 import { applyPage } from "./timeline";
-import type { ApiError, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginView, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolKeysFeature, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Webhook, WebhookAttempt, WebhookRotated, WebhookSaved, WebhooksFeature, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
+import type { ApiError, Capabilities, HarnessOfferView, ChatGPTSignOut, ChatGPTStart, ChatGPTView, ClaudeLoginView, ModelGateway, ModelGatewayBody, ModelGatewayTest, EmailAccount, EmailAccountBody, EmailTest, EmailTestBody, Firing, GitHubConnectStart, GitHubDisconnected, GitHubStatus, InputIssue, McpPrivateHosts, TemplateApplied, TemplateApply, TemplateImported, TemplateView, RaiseAnswer, GradeAnswer, GradeBody, Run, RunComputer, RunLearningRead, LearningAudits, LearningCost, LearningLoop, Promotions, WorkflowRevisions, ReplayStarted, ReplayRead, ComputerHoldAnswer, HandBackOutcome, RunFiles, RunStatus, RunTrace, TimelinePage, TimelineRow, SessionSecrets, SignInForgotten, ToolKeys, ToolSettings, Trigger, TriggerCreate, TriggerDeleted, TriggerInput, TriggerMade, TriggerSecret, TriggerUpdated, ComposioEvents, ComposioTriggers, Slack, SlackAttempt, SlackBody, Webhook, WebhookAttempt, WebhookRotated, WebhookSaved, Archil, ArchilBody, ArchilTest, Computers, ComputerChoices, ComputerKeysBody, ComputerProvider, ComputerTest, Pairing } from "./v2";
 
 /** A request AgentRun Server refused: its HTTP status and its typed error (`code`, `message`, `retryable`). */
 /** A refusal's issue at one field, as the server names it (with its `fix`, when it says one). Its `reason` is any string, as
@@ -61,14 +61,7 @@ const runsQuery = (limit: number, cursor: string | null | undefined, { status, a
   return `?${q}`;
 };
 
-/** `limits`: this server's own (the largest upload, null for none, and the most files a run names). */
-/** One harness as capabilities list it: its id (a built-in one, or one the server's harness modules add), its label and what
- *  it promises (absent from a server older than the harness table's), whether it runs here and why not. */
-export type HarnessOfferView = { id: string; label?: string; promises?: { resume: "exact" | "load" | "restart"; tool_gate: "every_call" | "permission" | "config"; billing: "proxy" | "plan" }; available: boolean; reason?: string; steer?: boolean };
-
-/** `models.ready`: whether an agent that names no model runs here; when not, `needs` says what would make it: a model
- *  provider's key, or another default model. */
-export type Capabilities = { harnesses: HarnessOfferView[]; features: { messages: { steer: boolean; answer: boolean; follow_up: boolean; steer_workflow_runs: boolean }; tool_keys?: ToolKeysFeature; webhooks?: WebhooksFeature; mcp_client?: McpClientFeature; triggers?: { routes: boolean; min_every_s?: number; history_kept?: number; failures_to_pause?: number; public_url?: boolean } }; limits: { max_upload_bytes: number | null; max_files_per_run: number; free_model_requests?: number }; models: { default?: string | null; ready?: boolean; needs?: "key" | "model" | null; source?: "faux" | "gateway" | "providers" | "chatgpt" } };
+export type { Capabilities, HarnessOfferView };
 export type Client = ReturnType<typeof createClient>;
 
 /** The paths whose 401 is the answer to signing in (a wrong password, a wrong setup code), not a session that ended. */
@@ -311,6 +304,14 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     turnOffClaudeLogin: () => call<ClaudeLoginView>("DELETE", "/settings/claude-login"),
     /** Starts the CLI's own sign-in on the server's machine, which opens a browser there. */
     startClaudeLogin: () => call<ClaudeLoginView>("POST", "/settings/claude-login/login"),
+    /** The model gateway in force: the environment's, the one saved here, or none. Never its key. */
+    modelGateway: () => call<ModelGateway>("GET", "/settings/model-gateway"),
+    /** Saves the gateway and puts it in force, with no restart. */
+    saveModelGateway: (body: ModelGatewayBody) => call<ModelGateway>("PUT", "/settings/model-gateway", { body }),
+    /** Removes the saved gateway and its key: the provider keys are back in force. */
+    removeModelGateway: () => call<ModelGateway>("DELETE", "/settings/model-gateway"),
+    /** Asks a gateway which models it lists: the form's address and key when given, else the one in force. */
+    testModelGateway: (body: { base_url?: string; api_key?: string | null }) => call<ModelGatewayTest>("POST", "/settings/model-gateway/test", { body }),
     /** Each kind of computer, whether this server offers it and why not, and its providers with their keys by name, never a
      *  value. */
     computers: () => call<Computers>("GET", "/computers"),
@@ -344,6 +345,17 @@ export function createClient({ fetch: f = globalThis.fetch.bind(globalThis), bas
     rotateWebhookSecret: () => call<WebhookRotated>("POST", "/settings/webhook/secret"),
     /** A `webhook.test` message, tried once now: its attempt. */
     testWebhook: () => call<WebhookAttempt>("POST", "/settings/webhook/test", { body: {} }),
+    /** Slack, never its URL (a serve extension). */
+    slack: () => call<Slack>("GET", "/settings/slack"),
+    /** Saves Slack's URL (the owner's session alone), its events, or both: the answer is Slack as saved, never the URL. */
+    saveSlack: (body: SlackBody) => call<Slack>("PUT", "/settings/slack", { body }),
+    removeSlack: () => call<unknown>("DELETE", "/settings/slack"),
+    /** A test message, posted once now: its attempt. */
+    testSlack: () => call<SlackAttempt>("POST", "/settings/slack/test", { body: {} }),
+    /** Slack's last attempts, newest first. */
+    slackDeliveries: () => call<{ attempts: SlackAttempt[] }>("GET", "/settings/slack/deliveries"),
+    /** A message of Slack's log posted again, once now: its attempt. */
+    redeliverSlack: (id: string) => call<SlackAttempt>("POST", `/settings/slack/deliveries/${encodeURIComponent(id)}/redeliver`, { body: {} }),
     /** The server's email account, never its password (a serve extension). */
     emailAccount: () => call<EmailAccount>("GET", "/settings/email"),
     /** Saves the account: the server seals its password and answers the account without it. */
