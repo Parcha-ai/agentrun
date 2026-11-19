@@ -4,8 +4,8 @@
 // (BROWSER_SESSION_ENDED, below, written once pi-browser lets it go). The end carries the provider's session id, when
 // this server saw the session start and end, why it ended, and the provider's own record of it where the provider keeps
 // one (BrowserComputerProvider.sessionUsage: its start, its end, its proxy bytes), read once at that release. The
-// seconds this server charged for it are its BROWSER_CHARGED records'. Nothing is priced here and nothing is rounded
-// to a provider's minimum.
+// seconds this server charged for it are its BROWSER_CHARGED records', the provider's minimum included where the
+// release topped the session up to it; nothing is priced here. How long it ran is its end less its start.
 //
 // Unknown is never 0. A session with no end record yet (its run's process lost before the release was told) says
 // `ended_at` null; a provider that keeps no record, or one whose read failed, says so (`provider_record_status`) with

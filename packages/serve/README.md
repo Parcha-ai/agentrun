@@ -3850,8 +3850,9 @@ were reached. Nothing is priced here, and nothing is rounded to a billing increm
   for it (`charged_seconds`, what the line sums), and the provider's own record of it, read once when it was let go
   (`provider_record`: its `started_at`, `ended_at` and `proxy_bytes`). Browserbase keeps such a record; a provider that
   keeps none says `provider_record_status: "not_offered"`, and a read that failed says `failed`, with `provider_record`
-  null, never zeros. A session whose end was never recorded (its run's process lost first) has `ended_at` null. Nothing
-  here is rounded to a provider's minimum, so a session's seconds are what it ran, not what its provider bills for.
+  null, never zeros. A session whose end was never recorded (its run's process lost first) has `ended_at` null.
+  `charged_seconds` are the seconds charged for the session, its provider's minimum included where the browser charged
+  one at the release, as on the `browser_time` line; how long it ran is `ended_at` less `started_at`.
 
 ## Spend cap
 

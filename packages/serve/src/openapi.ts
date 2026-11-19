@@ -275,7 +275,7 @@ const BROWSER_SESSION = {
     started_at: { type: ["string", "null"], format: "date-time", description: "When this server began opening the session. Null while its end is not recorded." },
     ended_at: { type: ["string", "null"], format: "date-time", description: "When this server let the session go. Null when its end is not recorded (a run whose process was lost before the release was told): unknown, never zero." },
     release_reason: { type: ["string", "null"], description: "Why the session ended, in the browser's words: `tool` (the agent closed it), `idle`, `relaunch`, `close` (its run let it go), `ended` (the provider ended it), `lost`, `create_failed`." },
-    charged_seconds: { type: ["number", "null"], minimum: 0, description: "The seconds of the session's time this server charged, on its own clock and unrounded: what the `browser_time` line sums. Null when none was charged (a free provider's, or no charge recorded)." },
+    charged_seconds: { type: ["number", "null"], minimum: 0, description: "The seconds of the session's time this server charged, on its own clock: what the `browser_time` line sums, the provider's minimum per session included where the browser charged one at the release. How long the session ran is `ended_at` less `started_at`. Null when none was charged (a free provider's, or no charge recorded)." },
     provider_record: {
       type: ["object", "null"], additionalProperties: false, required: ["started_at", "ended_at", "proxy_bytes"],
       description: "The provider's own record of the session, read once when it was let go, for matching it to the provider's invoice. Null unless `provider_record_status` is `read`. A field is null where the provider's record does not hold it.",
