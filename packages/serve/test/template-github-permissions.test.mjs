@@ -20,7 +20,9 @@ const RELEASE_NOTES = { name: "release-notes", mcp: [{ server: "github", tools: 
 const CODE_REVIEW = { name: "code-review", mcp: [{ server: "github", tools: ["pull_request_read", "pull_request_review_write", "add_comment_to_pending_review"], required: false, allow: [], pin: {} }] };
 const READ_ISSUES = { installations: [{ account: "acme", permissions: { issues: "read", pull_requests: "write", metadata: "read" } }] };
 const WRITE_ISSUES = { installations: [{ account: "acme", permissions: { issues: "write", pull_requests: "write", metadata: "read" } }] };
-const WORDS = "mcp:github/issue_write needs Issues: write, and this server's GitHub App has Issues: read on acme, so GitHub refuses it: release-notes keeps its draft in its answer. The App's owner can add Issues: write to it on GitHub.";
+// GitHub's permission table is for private resources: on a public repository anyone who can read it may open an issue, App
+// tokens included (an App with Issues: read opened one there), so the warning is about private repositories.
+const WORDS = "mcp:github/issue_write needs Issues: write on a private repository, and this server's GitHub App has Issues: read on acme, so GitHub refuses it there: release-notes keeps its draft in its answer. On a public repository GitHub takes it without: anyone who can read one may open an issue there. The App's owner can add Issues: write to it on GitHub.";
 const onApp = () => true;
 const reads = (held) => async () => held;
 
@@ -30,7 +32,7 @@ test("a permissions map lacking issues: write warns for issue_write, by the temp
   assert.deepEqual(await appPermissionWarnings(RELEASE_NOTES, onApp, reads(WRITE_ISSUES)), [], "the installation holds Issues: write");
   // A permission the map has none of is said as none, and each short installation is named.
   const two = { installations: [{ account: "acme", permissions: { metadata: "read" } }, { account: "beta", permissions: { issues: "write" } }, { account: "gamma", permissions: { issues: "read" } }] };
-  assert.match((await appPermissionWarnings(RELEASE_NOTES, onApp, reads(two)))[0].message, /has no Issues permission on acme, Issues: read on gamma, so GitHub refuses it/);
+  assert.match((await appPermissionWarnings(RELEASE_NOTES, onApp, reads(two)))[0].message, /has no Issues permission on acme, Issues: read on gamma, so GitHub refuses it there/);
   // A template with no tool that needs more is never warned of, and GitHub is not asked.
   let asked = 0;
   assert.deepEqual(await appPermissionWarnings(CODE_REVIEW, onApp, async () => (asked++, READ_ISSUES)), []);
@@ -120,13 +122,13 @@ test("installation readers: a refusal, a missing map or an unknown level leaves 
   const mixed = await githubWith(t, { 1: ok({ issues: "read" }), 2: { status: 404, body: {} } });
   const both = await mixed.warned();
   assert.deepEqual(both.map((w) => w.reason), ["not_allowed", "not_set_up_here"]);
-  assert.match(both[0].message, /has Issues: read on a1, so GitHub refuses it/);
+  assert.match(both[0].message, /has Issues: read on a1, so GitHub refuses it there/);
   // GitHub's `admin` is write: it holds Issues: write, and is not named as short.
   const admin = await githubWith(t, { 1: ok({ issues: "admin" }), 2: good });
   assert.deepEqual(await admin.warned(), []);
   // A map with the permission missing says it has none.
   const bare = await githubWith(t, { 1: ok({ metadata: "read" }) });
-  assert.match((await bare.warned())[0].message, /has no Issues permission on a1, so GitHub refuses it/);
+  assert.match((await bare.warned())[0].message, /has no Issues permission on a1, so GitHub refuses it there/);
 });
 
 /** GitHub's hosted MCP as a test has it: a fake on loopback that lists the github tools the templates tick (each taking
