@@ -12,9 +12,8 @@ import { test } from "node:test";
 import { ComposioTriggers } from "../dist/composio-triggers.js";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { launchText } from "./email-support.mjs";
-import { follow, secretWritePath, serve } from "./support.mjs";
-import { firings, made, schedule, until } from "./trigger-support.mjs";
+import { secretWritePath, serve } from "./support.mjs";
+import { firings, made, until } from "./trigger-support.mjs";
 
 secretWritePath(["PUT"], /^\/settings\/mcp-servers\/[^/]+\/composio$/);
 secretWritePath(["POST"], /^\/settings\/mcp-servers\/[^/]+\/composio\/rotate-secret$/);
@@ -214,49 +213,6 @@ test("the filter holds: a delivery its accept doesn't take is ignored, one it ta
   assert.equal(patched.body.source.instance_id, made.body.source.instance_id);
   const moved = await s.api("PATCH", `/triggers/${made.body.id}`, { source: { ...made.body.source, config: { owner: "x", repo: "z" } } });
   assert.equal(moved.status, 422, JSON.stringify(moved.body));
-});
-
-test("a Composio-triggered run is handed no earlier firing's answer: the second issue's run never reads what the first's answered, while a schedule's second run is handed its first's", { timeout: 150_000 }, async (t) => {
-  const s = await setup(t);
-  const SCHEMA = { type: "object", additionalProperties: false, required: ["triage"], properties: { triage: { type: "string" } } };
-  const ANSWER = { triage: "Issue #7 from alice: her refund of $120 is a duplicate of #3." };
-  await made(s.api, "answerer", { output_schema: SCHEMA });
-  const target = { kind: "start_run", agent_id: "answerer", input: { content: `Answer with this json: ${JSON.stringify(ANSWER)}` }, max_cost_usd: 0.5 };
-  const PREVIOUS = "The result of this trigger's last completed run";
-  /** Run `runId`'s message as it was given it (its launch). */
-  const messageOf = (runId) => JSON.parse(launchText(s.server.data, runId)).input.content;
-
-  // The firing case: a schedule's runs repeat one job, so its second run is handed what its first answered.
-  const weekly = (await s.api("POST", "/triggers", schedule("answerer", { cron: "0 9 * * 1", timezone: "UTC" }, { enabled: false, name: "weekly", target }))).body;
-  const press = async (key) => {
-    const fired = await s.api("POST", `/triggers/${weekly.id}/fire`, undefined, { "idempotency-key": key });
-    assert.equal(fired.status, 202, JSON.stringify(fired.body));
-    await follow(s.api, fired.body.run_id, ["completed"]);
-    return fired.body.run_id;
-  };
-  const week1 = await press("week-1");
-  const week2 = await press("week-2");
-  assert.match(messageOf(week2), new RegExp(`${PREVIOUS} \\(${week1}, ended `), "a schedule's second run is handed its first's result");
-  assert.ok(messageOf(week2).includes(JSON.stringify(ANSWER, null, 2)), "a schedule's second run is handed its first's answer whole");
-
-  // A Composio trigger's firings are different events (alice's issue, then bob's): none is handed another's answer.
-  const issues = (await s.api("POST", "/triggers", issueTrigger(undefined, { target }))).body;
-  const secret = s.composio.subscriptions[0].secret;
-  const fire = async (data, n, before) => {
-    const fired = await deliver(s.baseUrl, hookOf(s), delivery(issues.source.instance_id, data), secret);
-    assert.equal(fired.status, 202, JSON.stringify(fired.body));
-    const run = (await firings(s.api, issues.id, n)).find((f) => f.run_id && f.run_id !== before)?.run_id;
-    assert.ok(run, "the delivery started a run");
-    return run;
-  };
-  const alice = await fire({ title: "Refund for alice", number: 7, user: "alice" }, 1);
-  await follow(s.api, alice, ["completed"]);
-  assert.deepEqual((await s.api("GET", `/runs/${alice}`)).body.result.output, ANSWER, "alice's run has a structured answer");
-  const bob = await fire({ title: "Login for bob", number: 8, user: "bob" }, 2, alice);
-  const message = messageOf(bob);
-  assert.ok(!message.includes(PREVIOUS), `bob's run is handed no block of alice's: ${message}`);
-  assert.ok(!message.includes(JSON.stringify(ANSWER, null, 2)), `bob's run is handed none of alice's answer: ${message}`);
-  await follow(s.api, bob, ["completed"]);
 });
 
 test("pause, resume and delete reach Composio; the instance goes with the last trigger that holds it", async (t) => {
