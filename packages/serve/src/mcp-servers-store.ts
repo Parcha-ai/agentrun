@@ -340,7 +340,7 @@ export class McpServersOverStore {
       credential = { type: "headers", headers: headers! };
     }
     // A per-run Composio server, made so now (`stands`) or saved so and kept at its address by an ordinary save.
-    const perRun = stands?.user === COMPOSIO_PER_RUN || (!made && was !== undefined && auth.type === "headers" && was.url === url.href && (await this.perRunComposio(name, was)));
+    const perRun = Boolean(stands?.per_run) || (!made && was !== undefined && auth.type === "headers" && was.url === url.href && (await this.perRunComposio(name, was)));
     const listed = await this.listServer(url, await this.withAppToken(auth.type, url, headers ?? {}, stop), send, stop, perRun);
     // The Composio preset prices each action it granted (its price_usd): one its server doesn't list goes unpriced, as the
     // preset's answer names it (not_served), never a refusal. An owner's prices name only tools the server lists.
@@ -362,7 +362,7 @@ export class McpServersOverStore {
     const write = async () => {
       if (guard && wasPreset) {
         const stood = recordedMade(await this.store.settings.get(composioMadeKey(name)), was!.createdAt);
-        if (moved || (made && stands && (!stood || stood.user !== stands.user || (stood.auth_config?.id ?? null) !== (stands.auth_config?.id ?? null)))) await guard.inUse();
+        if (moved || (made && stands && (!stood || stood.user !== stands.user || Boolean(stood.per_run) !== Boolean(stands.per_run) || (stood.auth_config?.id ?? null) !== (stands.auth_config?.id ?? null)))) await guard.inUse();
       }
       const saved = keeping
         // Re-applied only onto a row that still holds a credential of this auth type, at the address this save read: never
