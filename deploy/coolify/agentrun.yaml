@@ -5,11 +5,7 @@
 # logo: svgs/agentrun.svg
 # port: 7340
 
-# AgentRun Server on Coolify, in the shape of Coolify's own templates (templates/compose/*.yaml): the release's image as
-# one service, the server with one runner beside it, its data on a volume at /data. Coolify generates the token and the
-# seal key once (its magic variables) and gives the service its domain. No Docker socket: agents get file tools and
-# web_fetch but no shell. Needs no model key: once it's live, set your password with the token (the service's
-# Environment Variables), then Continue with ChatGPT or add a key in the console.
+# AgentRun Server on Coolify. Steps and variables: deploy/README.md#coolify.
 services:
   agentrun:
     image: ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.46

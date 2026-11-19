@@ -6,15 +6,15 @@
 # keys and the run were kept. It uninstalls and checks only the Secret, the claim and its volume are left, then installs
 # again under the same name and checks the first run is still listed with the same token. Its cleanup removes the
 # release, the kept Secret and claim, and its namespace. Needs helm, kubectl, node and a cluster with a default
-# StorageClass. REPORT=<file> puts the report in that file too. WALK_IMAGE=<repository>:<tag> walks that image in place of
-# the chart's own (the daily walk's, main's, loaded into the cluster first).
+# StorageClass. REPORT=<file> puts the report in that file too. AGENTRUN_IMAGE=<repository>:<tag> walks that image in
+# place of the chart's own (the daily walk's, main's, loaded into the cluster first).
 set -eu
 here=$(cd "$(dirname "$0")" && pwd)
 walk=$(dirname "$here")/walk
 ns=agentrun-walk
 release=agentrun
 image_args=''
-[ -z "${WALK_IMAGE:-}" ] || image_args="--set-string image.repository=${WALK_IMAGE%:*},image.tag=${WALK_IMAGE##*:}"
+[ -z "${AGENTRUN_IMAGE:-}" ] || image_args="--set-string image.repository=${AGENTRUN_IMAGE%:*},image.tag=${AGENTRUN_IMAGE##*:}"
 # The walk's own namespace: it refuses one that is there already, so its cleanup never deletes what it didn't make.
 kubectl create namespace "$ns" >/dev/null || {
   echo "walk.sh: namespace $ns is there already (another walk, or what one left): delete it, then walk again" >&2
