@@ -338,12 +338,15 @@ export class McpServersOverStore {
       credential = { type: "headers", headers: headers! };
     }
     const listed = await this.listServer(url, await this.withAppToken(auth.type, url, headers ?? {}, stop), send, stop);
-    const unlisted = Object.keys(prices ?? {}).filter((tool) => !listed.tools.some((listedTool) => listedTool.name === tool));
+    // The Composio preset prices each action it granted (its price_usd): one its server doesn't list goes unpriced, as the
+    // preset's answer names it (not_served), never a refusal. An owner's prices name only tools the server lists.
+    const asked = made && prices ? pricesListed(prices, listed.tools) : prices;
+    const unlisted = Object.keys(asked ?? {}).filter((tool) => !listed.tools.some((listedTool) => listedTool.name === tool));
     if (unlisted.length) throw invalid(unlisted.map((tool) => ({ field: `prices.${tool}`, reason: "not_an_option", message: `The server ${name} lists no tool ${tool}; its tools are ${listed.tools.map((t) => t.name).join(", ") || "none"}.` })));
     // The row as saved over `row` (the one read, or read again): a body with no `prices` keeps the saved ones, for the tools
     // still listed at the same address.
     const fields = (row: McpServerRow | undefined) => {
-      const priced = prices ?? (row?.url === url.href ? pricesListed((row.prices ?? undefined) as McpPrices | undefined, listed.tools) : undefined);
+      const priced = asked ?? (row?.url === url.href ? pricesListed((row.prices ?? undefined) as McpPrices | undefined, listed.tools) : undefined);
       return {
         name, url: url.href, auth: auth.type, protocol: listed.protocol, tools: listed.tools, serverInfo: listed.server_info, instructions: listed.instructions ?? null,
         ...(priced && Object.keys(priced).length ? { prices: priced } : {}),

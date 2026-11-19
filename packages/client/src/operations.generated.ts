@@ -2666,6 +2666,8 @@ export type SaveComposioServerBody = {
   toolkit: string;
   tools: Array<string>;
   user_id?: string;
+  auth_config_id?: string;
+  price_usd?: number;
 };
 export type SaveComposioServerResponse = {
   server: {

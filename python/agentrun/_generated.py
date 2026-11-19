@@ -3995,6 +3995,8 @@ class _SaveComposioServerBodyRequired(TypedDict):
 
 class SaveComposioServerBody(_SaveComposioServerBodyRequired, total=False):
     user_id: str
+    auth_config_id: str
+    price_usd: float
 
 
 class _SaveComposioServerResponseRequired(TypedDict):
