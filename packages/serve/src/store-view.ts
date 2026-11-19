@@ -91,6 +91,9 @@ export interface ViewDeps {
    *  the reads that answer a run as a whole pass it (a run's own read, its archive): absent, the view has no `recordings`,
    *  so a list, a poll or a status read opens no file. */
   readonly recordings?: (agentId: string, runId: string, endedAt: number | null) => Promise<RecordingView[]>;
+  /** Set by the run's own read (GET /runs/{id}) alone: its cost says what its paid tool calls cost (`tools_usd`, toolsUsdOf).
+   *  Absent, the view's cost has no `tools_usd`, so a list, a start's answer and a run's kept listing read as before. */
+  readonly toolsCost?: true;
 }
 
 /** A run that has ended reads one of these (the old RunRow state → the v2 status: an escalation is a completion with a
@@ -245,6 +248,9 @@ interface StoreRun {
   /** What its model requests booked (metrics.ts bookedSpend "model": every session but its paid tools' and its
    *  decisions'): their tokens and how they were priced, for its cost's `tokens` and `basis`. */
   readonly model: BookedSpend;
+  /** What its paid tool calls booked (metrics.ts bookedSpend "paid": the paid-tools session alone, the part of its cost
+   *  runCostOf and its usage row count for them), for the run read's `cost.tools_usd`. */
+  readonly paid: BookedSpend;
   /** An ended run's cost from its booking (metrics.ts runCostOf, the rule its end stored it by), read in the same snapshot
    *  as its state; undefined for a run still going, imported, native, or that booked no request. */
   readonly endCost?: RunCost;
@@ -449,6 +455,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const onPlan = planSpend(records.entries as never);
   const plan = onPlan.requests ? onPlan : undefined;
   const model = bookedSpend(records.entries as never, "model");
+  const paid = bookedSpend(records.entries as never, "paid");
   // An ended run's booking by the one rule its end stored its cost by (metrics.ts runCostOf), read in the same snapshot as
   // its state: its so-far figures beside a stored unknown (costOfView reads the figure itself from the stored column). A
   // workflow's end stores it by the same rule (workflow-spec.ts); a native run's end reads its own, so it keeps the
@@ -456,7 +463,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const bookedCost = terminal && (row.kind === "workflow" || (row.kind === "agentic" && !native)) && !row.importedFrom ? runCostOf(records.entries as never, { unbooked: isCliRecord(records.entries as never) && cliModelWorked(records.entries as never) }) : undefined;
   const endCost = bookedCost?.requests ? bookedCost : undefined;
   const endSaidCost = endCost ? ((records.entries.findLast((entry) => entry.kind === KINDS.end)?.data as EndData | undefined)?.costUsd !== undefined) : false;
-  return { ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan, model, ...(endCost ? { endCost, endSaidCost } : {}) };
+  return { ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan, model, paid, ...(endCost ? { endCost, endSaidCost } : {}) };
 }
 
 /** A run's learning as the view shows it: its end from the store (what it held for the owner's OK as it reads now), in a
@@ -472,8 +479,9 @@ function underWay(started: NonNullable<RunLaunch["learning"]>, laid: ReturnType<
   return reflect ? { state: "reflecting", reason: null, detail: said.reflecting, at } : { state: "seeded", reason: null, detail: said.seeded(correctionCount(started.section), laid.workflows.length), at };
 }
 
-/** The cost a run's view shows (runs.ts cost): its rows' cost, else what the store kept, and its cap. */
-function costOfView(run: StoreRun): Record<string, unknown> {
+/** The cost a run's view shows (runs.ts cost): its rows' cost, else what the store kept, and its cap; on the run's own
+ *  read (`tools`, ViewDeps.toolsCost), what its paid tool calls cost too (toolsUsdOf). */
+function costOfView(run: StoreRun, tools = false): Record<string, unknown> {
   const imported = Boolean(run.row.importedFrom);
   // The stored cost the view folds with the rows' usage: an ended run's is its row's column (number or null, so a run the
   // store kept no cost for reads null, not 0, as the file path's run.costUsd = row.costUsd ?? null did). A run still going has
@@ -515,7 +523,19 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   // The run's cap as it stands (its view's meta: the newest raise's, else the launch's).
   const cap = run.view.meta.max_cost_usd;
   const tokens = tokensOfView(run);
-  return { usd, basis: basisOfView(run, words), charge_state: null, cap_usd: cap ?? null, ...(soFar ?? {}), ...(upper ?? {}), ...(plan ? { plan: { requests: plan.requests, tokens: plan.tokens, on } } : {}), ...(tokens ? { tokens } : {}) };
+  return { usd, basis: basisOfView(run, words), charge_state: null, cap_usd: cap ?? null, ...(soFar ?? {}), ...(upper ?? {}), ...(plan ? { plan: { requests: plan.requests, tokens: plan.tokens, on } } : {}), ...(tokens ? { tokens } : {}), ...(tools ? { tools_usd: toolsUsdOf(run) } : {}) };
+}
+
+/** What a run's paid tool calls cost (the run read's `cost.tools_usd`): the charges its paid-tools session booked (a monid
+ *  endpoint's, a priced MCP tool's, Parallel's behind the web tools, the browser's time), the same charges its `usd` counts,
+ *  joined and rounded by the one rule it is (costWordsOf), so the two agree to the micro-dollar. A part of `usd`, never
+ *  added to it. 0 with none. Null when one's charge is unknown (charged an unknown amount, cut, or still out), as `usd` is
+ *  then, or counted at its hold, which is no spend; and for an imported run, whose cost is its import's figure, with no
+ *  booking of its own to read a part of. */
+function toolsUsdOf(run: StoreRun): number | null {
+  if (run.row.importedFrom) return null;
+  const words = costWordsOf([run.paid]);
+  return words.upper_bound ? null : words.usd;
 }
 
 /** How a run's cost was reached (metrics.ts CostBasis): by how its model requests were priced, as its booking says, while
@@ -644,7 +664,7 @@ async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: Store
     review,
     pending,
     // Its own spend: an audit's shadow run of it is learning (GET /runs/{id}'s cost.learning_usd), never its cost.usd.
-    cost: costOfView(run),
+    cost: costOfView(run, deps.toolsCost === true),
     // The run an audit's shadow run audits (launch.audit, runner/audit.ts); null for any other run.
     audit_of: launch?.audit?.of ?? null,
     // The learned workflow that answered it alone (`served`) or ran first and handed it back (`handed_back`), as its record

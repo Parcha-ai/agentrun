@@ -1520,7 +1520,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const runComputerOf = (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => runComputerRead(store, runId, view, { context: ctx });
   /** The run read's path and costs (A8, store-reads/learning.ts runAllInOverStore): `path`; `cost.usd` its own spend, the
    *  job's (its compile turn is learning's), null while unknown; what learning spent for it
-   *  (`learning_usd`) and the two (`all_in_usd`). A cost known only as a bound keeps its bound, and all-in is unknown. */
+   *  (`learning_usd`) and the two (`all_in_usd`). A cost known only as a bound keeps its bound, and all-in is unknown. The
+   *  view's `tools_usd` (its paid tool calls, a part of `usd`) is kept as the view said it. */
   const allInViewOf = async (runId: string, view: Record<string, unknown>): Promise<Record<string, unknown>> => {
     const cost = (view.cost ?? {}) as { usd?: unknown; upper_bound?: unknown };
     const own = typeof cost.usd === "number" && cost.upper_bound !== true ? cost.usd : null;
@@ -4223,7 +4224,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, await runsPage(url, { ...(agent ? { agent } : {}), ...(revision ? { revision } : {}) }, linkOrigin(req)));
       }
       case "getRun": {
-        const view = await viewOverStore(store, id, runReadDepsFor(linkOrigin(req)));
+        // The run's own read alone says what its paid tool calls cost (`cost.tools_usd`, store-view.ts toolsUsdOf).
+        const view = await viewOverStore(store, id, { ...runReadDepsFor(linkOrigin(req)), toolsCost: true });
         if (!view) throw new ApiError("not_found", `no run ${id}`);
         return send(res, 200, { ...view, ...(await runComputerOf(id, view)), ...(await allInViewOf(id, view)) });
       }
