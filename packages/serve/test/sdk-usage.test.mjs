@@ -105,6 +105,8 @@ async function assertPublicTotals(server, { cost, input = 20, output = 5, cacheR
   // The SDK's one booking for its whole task (aggregate) is its harness's own figure, an estimate; its tokens are the
   // stored aggregate's, with its request count unknown (left out), and none while any count is unknown, never a 0.
   assert.equal(run.cost.basis, cost === null ? "unpriced" : "estimate", JSON.stringify(run.cost));
+  // Its paid tool calls are the SDK's own, never booked here: what they cost is unknown (null), never $0.
+  assert.equal(run.cost.tools_usd, null, `an SDK run's tools_usd is unknown: ${JSON.stringify(run.cost)}`);
   assert.deepEqual(run.cost.tokens, [input, output, cacheRead, cacheWrite].includes(null) ? undefined : { input, output, cache_read: cacheRead, cache_write: cacheWrite }, JSON.stringify(run.cost));
   assert.equal(run.result.final_answer, "Ready.");
   const totals = (await server.api("GET", "/stats?agent=sdk-usage")).body.analytics.totals;
