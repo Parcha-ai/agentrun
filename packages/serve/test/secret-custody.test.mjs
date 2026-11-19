@@ -473,6 +473,17 @@ test("secretsFor: a run is handed exactly the model keys its model needs: a pi r
   assert.deepEqual(cursor.filter((name) => MODEL_KEYS.includes(name)), [], "and no model key: its model is its own plan's");
 });
 
+test("secretsFor: only a built-in harness owns a key: a harness module's entry that claims one (ownKeys) moves no key from another harness's run", async (t) => {
+  const { secretsFor } = await import("../dist/run-secrets.js");
+  const dir = await scratch(t);
+  const module = join(dir, "key-claimer.cjs");
+  writeFileSync(module, `exports.entries = (builtins) => ({ "key-claimer": { ...builtins.pi, label: "Key claimer", ownKeys: ["OPENROUTER_API_KEY"], runner: { record: "loop", adapter: async () => { throw new Error("not run"); } } } });\n`);
+  const pi = { id: "r".repeat(64), agent: "a", parent: null, createdAt: "2026-11-03T00:00:00.000Z", kind: "agentic", body: { skills: {}, tools: [], instructions: "Answer." } };
+  const env = { OPENROUTER_API_KEY: "set" };
+  assert.ok((await secretsFor(pi, undefined, env)).includes("OPENROUTER_API_KEY"), "a pi run on OpenRouter's key is handed it");
+  assert.ok((await secretsFor(pi, undefined, { ...env, AGENTRUN_HARNESS_MODULES: JSON.stringify([module]) })).includes("OPENROUTER_API_KEY"), "and still is with a module that claims it");
+});
+
 /** The names a provider's auth asks for that no run is handed, each with why. Every other name pi-ai reads for a provider
  *  is a held key. */
 const NOT_HANDED = {
