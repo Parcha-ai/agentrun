@@ -172,7 +172,7 @@ export function entryHere<Entry extends HereFields>(entry: Entry, set: (name: st
   const named = entry.imageEnv !== undefined && set(entry.imageEnv);
   const dial = dials(entry, options);
   if (entry.mountsWith === undefined && !named && !dial) return entry;
-  return { ...entry, ...mountsOf(entry as unknown as Parameters<typeof mountsOf>[0], set, dial ? { connect: "dial" } : {}), ...(named ? { imageNamed: true as const } : {}) };
+  return { ...entry, ...mountsOf(entry as unknown as Parameters<typeof mountsOf>[0], set, dial), ...(named ? { imageNamed: true as const } : {}) };
 }
 
 /** Whether a computer of `entry` made with `options` dials this server (the computer package's connectOf). A connect it
@@ -327,7 +327,7 @@ function folderOf(kind: ComputerSettingKind, entry: ProviderEntry, serving: read
   // Configurations made on dial by their own options take no Archil mount either (mountsOf), as entryHere's settings'
   // dial. `entry` holds its keyed mounts already: no key is read again.
   const dialed = serving.every((one) => dials(entry, one.options ?? {}));
-  return folderKindOf(dialed ? { ...entry, ...mountsOf(entry, () => false, { connect: "dial" }) } : entry, mode, gpuMounts);
+  return folderKindOf(dialed ? { ...entry, ...mountsOf(entry, () => false, true) } : entry, mode, gpuMounts);
 }
 
 /** The configurations of `entry` that serve `kind`. */
@@ -483,15 +483,14 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
       // The run's disk as the claim keeps the folder on it. A synced folder's store: for a new computer, listed and held
       // to the caps before it is rented. Under an Archil mount, its sync.json emptied here and written again at the park
       // and release.
-      const fenced = folder === "sync" || folder === "archil" ? disk : undefined;
-      const store = folder === "sync" ? fenced : undefined;
+      const store = folder === "sync" ? disk : undefined;
       if (folder === "sync" && store === undefined) {
         await again?.release().catch(() => undefined);
         throw unavailable(`${entry.label} could not start a ${kind} computer: this run's folder can't be synced into a computer here`);
       }
-      if (folder === "archil" && fenced) {
+      if (folder === "archil" && disk) {
         try {
-          await emptyMeta(fenced);
+          await emptyMeta(disk);
         } catch (error) {
           await again?.release().catch(() => undefined);
           throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
@@ -534,11 +533,11 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
         await launched.release();
         throw unavailable(`${entry.label} could not start a ${kind} computer: ${computer}`);
       }
-      if (folder === "archil" && fenced && own) {
+      if (folder === "archil" && disk && own) {
         // An Archil mount's park and release: its modes and links recorded in sync.json first (recordMeta), read through
         // the machine's own client as it is then (a lost one's replacement, never the lost one; asking it starts none),
         // for a later claim that syncs the folder; the computer goes whatever that answered, and a failed one is said.
-        const record = () => recordMeta(fenced, launched.own ?? own);
+        const record = () => recordMeta(disk, launched.own ?? own);
         return {
           computer,
           sync: record,
