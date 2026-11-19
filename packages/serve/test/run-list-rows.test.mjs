@@ -42,7 +42,7 @@ async function everyItem(api, path) {
 /** Each listed item against the item main's list built from the run's view (summaryOfView of the run's own read, read
  *  just after), field by field, its keys too. The run's read alone adds what learning spent for it to its cost
  *  (learning_usd, all_in_usd: server.ts allInViewOf) and what its paid tool calls cost (tools_usd: store-view.ts
- *  toolsUsdOf), which no list item carries. */
+ *  toolsUsdOverStore), which no list item carries. */
 async function sameAsViews(api, items, why) {
   for (const item of items) {
     const { status, body: view } = await api("GET", `/runs/${item.run_id}`);
