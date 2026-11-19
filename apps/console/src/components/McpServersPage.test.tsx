@@ -508,6 +508,19 @@ describe("Settings → MCP servers, GitHub App", () => {
     expect(s.writes()).toEqual([{ method: "PUT", path: "/v2/settings/mcp-servers/github", body: { url: GITHUB, auth: { type: "github_app" } } }]);
   });
 
+  it("a github_app server with no headers is signed by its App: no \"no credential\" chip and no missing Headers row", async () => {
+    const secret = { name: "mcp:github", set: false, source: "console", changed_at: null } as McpServer["secret"];
+    const p = await open(server([[app({ secret })]]).v2);
+    const row = p.row("github");
+    expect(row.textContent).not.toContain("no credential");
+    expect(row.querySelector('[data-secret="mcp:github"]')).toBeNull();
+    expect(row.textContent).not.toMatch(/Missing/);
+    // Headers saved with it are its one secret, shown as any other.
+    const withHeaders = await open(server([[app({ auth: { type: "github_app", headers: ["X-GitHub-Toolsets"] }, credential: "sealed", secret: { ...secret!, set: true } })]]).v2);
+    expect(withHeaders.row("github").querySelector('[data-secret="mcp:github"]')).not.toBeNull();
+    expect(withHeaders.row("github").textContent).toContain("sealed");
+  });
+
   it("routes #/settings/mcp?add=github&auth=github_app to the add form, and ignores a name no server can have", () => {
     expect(route("#/settings/mcp?add=github&auth=github_app")).toMatchObject({ settings: "mcp", add: { name: "github", auth: "github_app" } });
     expect(route("#/settings/mcp?add=Not_A_Name")).not.toHaveProperty("add");
