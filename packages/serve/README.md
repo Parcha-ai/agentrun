@@ -998,15 +998,16 @@ mount to a synced folder at its next claim. The synced claim reads the folder th
 link an exec made (a venv, `node_modules/.bin`) as a file and won't read it. So it takes the folder's links from the
 `sync.json` beside it (`agents/<agent>/runs/<run>/sync.json`), which an Archil computer writes at its park and release
 from 0.1.0-beta.45 on. A run whose last Archil claim ran an earlier release, or never reached its park or release, has
-no record. If its folder holds a link, its next synced claim is refused. New runs and ended runs need nothing.
-Before the switch, run 0.1.0-beta.45 or later with the variable still set and count the runs at risk. The count is
-read-only:
+no record. If its folder holds a link, its next synced claim is refused. New runs need nothing, and neither do runs
+that take no more messages (cancelled, failed, a workflow's, an imported or a learning run). Before the switch, run
+0.1.0-beta.45 or later with the variable still set and count the runs at risk. The count is read-only:
 
 1. List the disk under `agents/*/runs/*/` through the file API. Keep each run with files under `work/` and no
    `sync.json`.
-2. Keep only the runs whose status isn't ended (`GET /runs`).
-3. Probe each for a link with a one-byte ranged GET of its likely link paths (`node_modules/.bin/*`,
-   `.venv/bin/python*`). A 501 answer means a link.
+2. Keep only the runs that can take a message (`GET /runs`): one not ended, or an agentic run that completed or that a
+   person stopped, since a follow-up opens it again on the same folder.
+3. Probe every file the listing has under each kept run's `work/` with a one-byte ranged GET. A 501 answer means a
+   link: that run is at risk. A run with a file not yet probed stays in the count.
 
 Claim each run left once on the mount (a message, or a resume), so its park or release records it, or accept that it
 won't continue where it syncs. Unset the variable once the count is 0.
