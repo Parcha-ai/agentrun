@@ -39,7 +39,7 @@ test("capabilities list browser with the variables it is missing (names only), a
   assert.equal((await api("POST", "/agents", { definition: { id: "browse", name: "browse", instructions: "Browse.", tools: ["browser"] } })).status, 201);
   const refused = await api("POST", "/agents/browse/runs", { input: { content: "Browse the example page." } });
   assert.deepEqual([refused.status, refused.body.error.code], [409, "agent_not_runnable"]);
-  assert.match(refused.body.error.message, /The\ tool\ browser\ does\ not\ run\ here\ on\ pi:\ it\ needs\ a\ Browserbase\ key:\ save\ one\ in\ Settings\ →\ Tool\ keys\ \(or\ set\ BROWSERBASE_API_KEY\ and\ BROWSERBASE_PROJECT_ID\ where\ the\ server\ starts\),\ or\ a\ Kernel\ key:\ save\ one\ in\ Settings\ →\ Tool\ keys\ \(or\ set\ KERNEL_API_KEY\ where\ the\ server\ starts\)\./);
+  assert.match(refused.body.error.message, /The\ tool\ browser\ does\ not\ run\ here\ on\ pi:\ it\ needs\ a\ Browserbase\ key:\ save\ one\ in\ Settings\ →\ API\ Keys\ \(or\ set\ BROWSERBASE_API_KEY\ and\ BROWSERBASE_PROJECT_ID\ where\ the\ server\ starts\),\ or\ a\ Kernel\ key:\ save\ one\ in\ Settings\ →\ API\ Keys\ \(or\ set\ KERNEL_API_KEY\ where\ the\ server\ starts\)\./);
   assert.deepEqual((await api("GET", "/runs")).body.runs, []);
 });
 
