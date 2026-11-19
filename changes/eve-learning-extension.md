@@ -10,7 +10,7 @@ learning to a new turn. The extension is held from publication while its integra
 
 Optionally reuse checked workflows over the existing application's explicitly approved read-only
 callbacks through a private local MCP bridge. Admission remains bound to the current turn and
-accepted revision, with one workflow invocation per turn and Learning Off checked before dispatch.
+pinned revision, with one workflow invocation per turn and Learning Off checked before dispatch.
 Mutating tools and model/judgment callbacks are not supported in this initial eve workflow mode.
 The cookbook includes a fresh-session workflow reuse and Learning Off comparison.
 
