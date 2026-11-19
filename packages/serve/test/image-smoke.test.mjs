@@ -91,7 +91,8 @@ test("an image that serves passes: health 200 ok, pi available, claude-agent ins
   // With a key, available, still installing on first use.
   assert.equal((await smoke(t, serving([pi, { id: "claude-agent", available: true, installs: "on_first_use" }, { id: "codex", available: true, installs: "on_first_use" }]))).code, 0);
   assert.match(r.stdout, /codex: unavailable \(No model key is set: set AGENT_MODEL_API_KEY\), installs on first use/);
-  assert.ok(r.calls[0].startsWith("run -d --name agentrun-image-smoke-") && r.calls[0].endsWith(` -p ${LOOPBACK}::7340 -e AGENT_MODEL=m agentrun-server:test`), r.calls[0]);
+  // The smoke's server sends no usage counts (docs/telemetry.md), and the caller's own -e flags come after that one.
+  assert.ok(r.calls[0].startsWith("run -d --name agentrun-image-smoke-") && r.calls[0].endsWith(` -p ${LOOPBACK}::7340 -e AGENTRUN_TELEMETRY=0 -e AGENT_MODEL=m agentrun-server:test`), r.calls[0]);
   assert.match(r.calls.at(-1), /^rm -f -v agentrun-image-smoke-\d+$/, "the container it started is removed");
 });
 

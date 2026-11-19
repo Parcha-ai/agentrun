@@ -31,6 +31,9 @@ test("the operator's setting, DO_NOT_TRACK, CI and --faux each turn it off; a bu
   assert.equal(telemetryMode({ AGENTRUN_TELEMETRY: "debug" }, { key: "" }), "debug");
   assert.equal(telemetryMode({ AGENTRUN_TELEMETRY: "debug", DO_NOT_TRACK: "1" }, on), "off_do_not_track");
   assert.equal(telemetryMode({ AGENTRUN_TELEMETRY: "debug", CI: "1" }, on), "off_ci");
+  // A server a test starts (node --test sets NODE_TEST_CONTEXT, and the server inherits it) sends nothing; debug still prints.
+  assert.equal(telemetryMode({ NODE_TEST_CONTEXT: "child-v8" }, on), "off_test");
+  assert.equal(telemetryMode({ NODE_TEST_CONTEXT: "child-v8", AGENTRUN_TELEMETRY: "debug" }, on), "debug");
 });
 
 test("this build's key is a PostHog project key or empty, never anything else", () => {
@@ -108,6 +111,47 @@ test("the first completed run is said once; runs are kept as a count and sent as
   assert.deepEqual([0, 1, 10, 11, 100, 101, 5000].map(runsRange), ["0", "1-10", "1-10", "11-100", "11-100", "101+", "101+"]);
 });
 
+test("a first run that completes during the notice's start is held: said at the next start, or after that start's first heartbeat, never before", async () => {
+  // The next start says it, after server_started, once.
+  const data = await scratch();
+  const r = receiver();
+  const first = start(data, r);
+  assert.equal(first.notice, TELEMETRY_NOTICE);
+  first.runEnded("ended");
+  first.runEnded("ended");
+  await first.close();
+  assert.deepEqual(r.got, []);
+  assert.equal(JSON.parse(await readFile(join(data, TELEMETRY_FILE), "utf8")).first_run_held, true);
+  await start(data, r).close();
+  assert.deepEqual(r.got.map(({ body }) => [body.event, body.properties.runs]), [["server_started", "1-10"], ["first_run_completed", "1-10"]]);
+  const kept = JSON.parse(await readFile(join(data, TELEMETRY_FILE), "utf8"));
+  assert.equal(kept.first_run_sent, true);
+  assert.equal(kept.first_run_held, undefined);
+  const later = start(data, r);
+  later.runEnded("ended");
+  await later.close();
+  assert.deepEqual(r.got.slice(2).map(({ body }) => body.event), ["server_started"]);
+
+  // A notice's start left running says it after its first heartbeat; a run completing after that is said at once.
+  const up = await scratch();
+  const u = receiver();
+  const running = start(up, u, { heartbeatMs: 40 });
+  running.runEnded("ended");
+  await wait(10);
+  assert.deepEqual(u.got, []);
+  await wait(80);
+  await running.close();
+  assert.deepEqual(u.got.slice(0, 2).map(({ body }) => body.event), ["heartbeat", "first_run_completed"]);
+  assert.equal(u.got.filter(({ body }) => body.event === "first_run_completed").length, 1);
+  const fresh = await scratch();
+  const f = receiver();
+  const past = start(fresh, f, { heartbeatMs: 20 });
+  await wait(50);
+  past.runEnded("ended");
+  await past.close();
+  assert.equal(f.got.at(-1).body.event, "first_run_completed");
+});
+
 test("debug prints each event at every start and sends none", async () => {
   const data = await scratch();
   const r = receiver();
@@ -120,6 +164,44 @@ test("debug prints each event at every start and sends none", async () => {
   assert.deepEqual(r.got, []);
   assert.equal(lines.length, 2);
   for (const line of lines) assert.match(line, /^agentrun-serve telemetry \(debug, not sent\): \{"event":"server_started"/);
+});
+
+test("debug only prints first_run_completed: a held one, or a run completed under debug, is still sent by a start that can send", async () => {
+  const debug = (data, r, lines) => start(data, r, { env: { AGENTRUN_TELEMETRY: "debug" }, say: (line) => lines.push(line) });
+  const printed = (lines) => lines.map((line) => JSON.parse(line.slice(line.indexOf("{"))).event);
+  // Held at the notice's start, then a start under debug: printed once, and still held in the file.
+  const data = await scratch();
+  const r = receiver();
+  const first = start(data, r);
+  first.runEnded("ended");
+  await first.close();
+  const lines = [];
+  const shown = debug(data, r, lines);
+  shown.runEnded("ended");
+  await shown.close();
+  assert.deepEqual(printed(lines), ["server_started", "first_run_completed"]);
+  assert.deepEqual(r.got, []);
+  const kept = JSON.parse(await readFile(join(data, TELEMETRY_FILE), "utf8"));
+  assert.equal(kept.first_run_held, true);
+  assert.equal(kept.first_run_sent, undefined);
+  await start(data, r).close();
+  assert.deepEqual(r.got.map(({ body }) => body.event), ["server_started", "first_run_completed"]);
+
+  // A first run completed under debug, on a data directory that never sent: printed once, never marked as sent.
+  const fresh = await scratch();
+  const r2 = receiver();
+  const lines2 = [];
+  const only = debug(fresh, r2, lines2);
+  only.runEnded("ended");
+  only.runEnded("ended");
+  await only.close();
+  assert.deepEqual(printed(lines2), ["server_started", "first_run_completed"]);
+  assert.equal(JSON.parse(await readFile(join(fresh, TELEMETRY_FILE), "utf8")).first_run_sent, undefined);
+  await start(fresh, r2).close(); // the notice's start
+  const after = start(fresh, r2);
+  after.runEnded("ended");
+  await after.close();
+  assert.deepEqual(r2.got.map(({ body }) => body.event), ["server_started", "first_run_completed"]);
 });
 
 test("debug never stands in for the notice: the first start that can send after it prints the notice and sends nothing", async () => {
