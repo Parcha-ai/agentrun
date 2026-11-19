@@ -1,23 +1,18 @@
 # Harness scorecard
 
-A harness is the loop that runs an AgentRun agent. AgentRun ships five: pi, Claude Code, Codex, OpenCode and Goose. This
-page reads 25 other coding agents against door 1, the recipe ([docs/harness-recipe.md](docs/harness-recipe.md)): a JSON
-file that names an [Agent Client Protocol](https://agentclientprotocol.com) agent's release, which its owner installs
-with `agentrun harness install --recipe` and `agentrun harness-check` runs for real. For each it says whether a recipe
-alone would run it, what is in the way, and what is still open. It is for an agent vendor's engineer, or a contributor,
-deciding whether to write one.
+Whether 25 ACP agents fit door 1 ([HARNESS.md](HARNESS.md#a-recipe)), and what's in the way.
 
 As of main `98c17062ca`, 2026-11-19, from the [ACP registry](https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json)
 of that day and the vendors' public documentation; nothing here was run on a vendor's account except Goose, whose recipe
 passed `harness-check` on a model through AgentRun's proxy.
 
-**The bar for a clean fit.** Every rule ([the five rules](docs/harness-recipe.md#the-five-rules)) holds with what's on
+**The bar for a clean fit.** Every rule ([the five rules](HARNESS.md#the-five-rules)) holds with what's on
 main, and the agent passes every stage of `agentrun harness-check` with nothing of AgentRun's run beside it but the
 recipe's own files.
 
 **Fits if** means no workaround code is left, but a fact about the agent hasn't been checked on a real run. Those facts
 are marked **unverified** everywhere on this page. Most of them are lines
-[`agentrun harness-check`](docs/harness-recipe.md#check-it) prints from one run: whether the agent's own tools turn off,
+[`agentrun harness-check`](HARNESS.md#check-it) prints from one run: whether the agent's own tools turn off,
 whether it resumes with `session/load`, whether it asks before a tool call, and what it reaches for beyond loopback.
 
 **Needs a workaround** names the code a recipe would need that the loader, the installer or the model proxy has no
@@ -27,14 +22,15 @@ are the registry's for `linux-x86_64`.
 ## The table
 
 Of 25 rows: 1 clean, 8 fit if unverified facts hold, 3 need a workaround, 13 are blocked. Two are built: Goose (on main
-as a harness module, and as a recipe in this page's proof) and Cursor (a harness module on `harness/s4-cursor`, not on
-main yet). The installer unpacks `.tar.gz` as well as `.tar.bz2` since that branch, and a recipe's loader takes the
-same two formats; the rows below are rated with it.
+as a harness module, and as a recipe in this page's proof) and Cursor (on main as a harness module:
+[harness-cursor.ts](packages/serve/src/harness-cursor.ts)). The installer unpacks `.tar.gz` as well as `.tar.bz2`
+([harness-archive.ts](packages/serve/src/harness-archive.ts) ARCHIVE_FORMATS), and a recipe's loader takes the same two
+formats; the rows below are rated with it.
 
 | Agent | Registry release | Fit | Billing a recipe would use | What's open |
 | --- | --- | --- | --- | --- |
 | Goose | `goose` 1.60.1 (main pins 1.59.2), binary `.tar.bz2` with sha256 | clean fit (built: a recipe for 1.59.2 passes `harness-check` on OpenRouter's Claude Haiku 4.5; resume `load`, tool_gate `permission`) | proxy, `GOOSE_MODEL` | the proxy's policy is Goose's own: a new Goose that sends a new `anthropic-beta` value is refused until the policy learns it. Goose titles a call of ours `agentrun: check echo` (the tool's underscores as spaces), which the ACP adapter ties to our tool, so the host's gate is asked once, at the MCP call; it asks for `models.dev:443` at every start, refused, and makes no other request beyond loopback |
-| Cursor | `cursor` 2026.11.13, binary `.tar.gz`, no sha256 | built as a harness module on `harness/s4-cursor`; as a recipe, needs a workaround: a recipe names no credential file, and Cursor writes one derived from its key (`auth.json`, which the module makes unwritable) | plan, on the owner's own Cursor key | the registry lists no digest: the module pins the archive, the launcher and every file it unpacks to, and refuses any drift |
+| Cursor | `cursor` 2026.11.13, binary `.tar.gz`, no sha256 | built as a harness module ([harness-cursor.ts](packages/serve/src/harness-cursor.ts)); as a recipe, needs a workaround: a recipe names no credential file, and Cursor writes one derived from its key (`auth.json`, which the module makes unwritable) | plan, on the owner's own Cursor key | the registry lists no digest: the module pins the archive, the launcher and every file it unpacks to, and refuses any drift |
 | Google Antigravity | `antigravity-acp` 1.5.0, binary `.zip` with sha256 | needs a workaround (`.zip`) | plan; **unverified**: whether it takes a key or only a Google sign-in, which no recipe key carries | its args end in `--uid=`, a per-user id; **unverified** what a recipe sets there |
 | Kimi CLI (legacy) | `kimi` 1.52.0, binary `.tar.gz` with sha256 | fits if its key name holds | plan; **unverified**: whether it reads a key name other than `KIMI_API_KEY` or `MOONSHOT_API_KEY`, which are the server's (rule 1) | tools off, resume and permission asks, **unverified** |
 | Devin | `devin` 3000.14.30821, binary `.tar.gz`, no sha256 | fits if a key can carry its account | plan, on the owner's Devin account; **unverified**: a key a recipe can name | no digest in the registry: the writer pins the archive, the first binary digest is recorded |

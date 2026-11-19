@@ -1,15 +1,4 @@
-// Bring your own harness, door 1: a recipe file (harness-recipe.ts), its owner's install (`install-harness --recipe`) and
-// `harness-check` (harness-check.ts).
-//   - The loader holds five rules, each refused by its own code before anything is downloaded or started: own keys only
-//     (RECIPE_KEY_NOT_OWN), a binary from a registry archive pinned by sha256 (RECIPE_BINARY_UNPINNED), files and state in
-//     the private HOME (RECIPE_PATH_OUTSIDE), only the owner's command installs it (RECIPE_INSTALLS_ITSELF, and a check
-//     of one not installed says that command: HARNESS_NOT_INSTALLED), an allowlist environment (RECIPE_ENV_NOT_ALLOWLIST).
-//   - The owner's install takes the recipe's archive, its sha256 checked, and records the binary's first sha256 where the
-//     recipe pins none (the installer's one first-seen path, harness-archive.ts binaryRecord): a binary that differs
-//     later is refused, by the check and by a reinstall alike (HARNESS_BINARY_MISMATCH). It unpacks the formats the
-//     installer does (tar.bz2, tar.gz) and the loader takes those alone.
-//   - harness-check runs the installed agent for real (here a stand-in ACP agent whose model is a scripted Anthropic
-//     origin on loopback: test/fixtures/model-acp-agent.mjs) and passes it through stages 2 and 3, printing the three facts.
+// The five rules (HARNESS.md#the-five-rules), the owner's install and harness-check.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
