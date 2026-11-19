@@ -37,7 +37,7 @@ export interface BackendWorkflowBridge {
   readonly adapters: readonly ('runNode' | 'runJudge')[];
   bind(session: BackendWorkflowSession): BackendWorkflowBinding;
   /** Shadow execution uses only this native turn's recorded results, never new side effects. */
-  check?(check: BackendWorkflowCheck, turn: { runId: string; input: string; events: readonly SdkLearningEvent[]; outcome: SdkLearningOutcome; signal?: AbortSignal }): Promise<Extract<SdkLearningEvent, { type: 'workflow_check' }>>;
+  check?(check: BackendWorkflowCheck, turn: { runId: string; input: string; events: readonly BackendNativeEvent[]; outcome: SdkLearningOutcome; signal?: AbortSignal }): Promise<Extract<SdkLearningEvent, { type: 'workflow_check' }>>;
 }
 
 /** The learning loop's numbers an agent definition may set (`learning: {...}`); each one left out is the server's default. */
@@ -87,7 +87,7 @@ export interface BackendLearningBeginOptions { idempotencyKey?: string }
 export interface BackendLearningSubmitOptions {
   evidenceComplete?: boolean;
   /** Native arguments and results stay local; only the separate events argument is uploaded. */
-  nativeEvents?: readonly SdkLearningEvent[];
+  nativeEvents?: readonly BackendNativeEvent[];
   /** Durable hooks can return after persistence; the server continues checking independently. */
   waitForLearning?: boolean;
   /** Persist the private updated receipt before the first shadow-result upload. */
@@ -106,6 +106,9 @@ export type SdkLearningEvent =
   | { type: 'session'; session_id: string }
   | { type: 'workflow_check'; id: string; digest: string; outcome: 'answered' | 'handed_back' | 'failed' | 'skipped_write'; answer?: string; reason?: string; skipped?: { tool: string; unmarked?: true } }
   | { type: 'tool'; id: string; name: string; status: 'started' | 'completed' | 'failed'; input?: unknown; output?: unknown; parent_tool_use_id?: string };
+
+/** Local shadow evidence only. A buffered result can pair a timeline but cannot prove effect order or concurrency. */
+export type BackendNativeEvent = SdkLearningEvent & { orderUnknown?: true };
 
 export interface SdkLearningUsage {
   /** Uncached input only. Cache reads and writes have their own counters; unknown splits remain null. */
@@ -345,7 +348,7 @@ export class BackendLearningSession implements BackendLearningSnapshot {
   readonly #check?: BackendWorkflowCheck;
   readonly #workflowBridge?: BackendWorkflowBridge;
   readonly #input: string;
-  readonly #nativeEvents: SdkLearningEvent[] = [];
+  readonly #nativeEvents: BackendNativeEvent[] = [];
   #nativeBytes = 0;
   #nativeComplete = true;
   #comparisonRedacted = false;
@@ -388,11 +391,11 @@ export class BackendLearningSession implements BackendLearningSnapshot {
     return clone(this.#checkpoint);
   }
 
-  #captureNative(event: SdkLearningEvent, detail: { input?: unknown; output?: unknown } = {}): void {
+  #captureNative(event: BackendNativeEvent, detail: { input?: unknown; output?: unknown; orderUnknown?: true } = {}): void {
     if (!this.#check || event.type !== 'tool' || !this.#nativeComplete) return;
     try {
       const captured = clone({ ...event, ...(detail.input !== undefined ? { input: detail.input } : {}),
-        ...(detail.output !== undefined ? { output: detail.output } : {}) });
+        ...(detail.output !== undefined ? { output: detail.output } : {}), ...(detail.orderUnknown ? { orderUnknown: true as const } : {}) });
       const bytes = size(JSON.stringify(captured));
       if (bytes > 250_000 || this.#nativeBytes + bytes > 3_000_000 || this.#nativeEvents.length >= 10_000) throw new Error('native_evidence_limit');
       this.#safe(captured, true);
@@ -480,7 +483,7 @@ export class BackendLearningSession implements BackendLearningSnapshot {
   /** Observe native SDK tools without counting a positively correlated bridge envelope twice. Candidate starts wait
    *  for their result; every unmatched or unfinished candidate is still ordinary top-level evidence. Raw arguments
    *  and results stay local, and at most sixteen bounded candidates (the bridge's invocation bound) are retained. */
-  nativeEvent(event: SdkLearningEvent, detail: { input?: unknown; output?: unknown } = {}): Promise<void> {
+  nativeEvent(event: SdkLearningEvent, detail: { input?: unknown; output?: unknown; orderUnknown?: true } = {}): Promise<void> {
     if (this.#completion) return reject(new AgentRunUsage('Cannot add SDK evidence after completion.'));
     this.#captureNative(event, detail);
     if (event.type !== 'tool') return this.event(event);

@@ -63,8 +63,15 @@ test('native sign-in and managed Claude or ChatGPT sign-in are not misreported a
   const login = withClaudeLogin({}, { dir: '/fixture/login', profiles: '/fixture/login/anthropic' });
   assert.equal((await learningModelOf(login, { kind: 'agentic', body: { harness: 'claude-agent' } })).ready, true);
   assert.equal((await learningModelOf(login, { kind: 'agentic', body: { sdk: { runtime: 'claude-agent-sdk' }, harness: 'claude-agent' } })).ready, false, 'SDK compile cannot copy the original runtime login');
-  const plan = withPlan({}, { state: 'signed_in', models: ['gpt-6.1-sol'], token: async () => 'fake-test-key', refused: async () => {}, watch() {} });
+  let tokenReads = 0;
+  const plan = withPlan({}, { state: 'signed_in', models: ['gpt-6.1-sol'], token: async () => { tokenReads++; return 'fake-test-key'; }, refused: async () => {}, watch() {} });
   assert.equal((await learningModelOf(plan)).ready, true);
+  assert.equal((await learningModelOf(plan, { kind: 'agentic', body: { harness: 'codex' } })).ready, true);
+  const sdk = { kind: 'agentic', body: { sdk: { runtime: 'codex-sdk' } } };
+  assert.equal((await learningModelOf(plan, sdk)).ready, true);
+  assert.equal(tokenReads, 0, 'readiness metadata must not read or renew the managed plan token');
+  assert.equal((await learningModelOf(plan, sdk, { checkCredential: true })).ready, true);
+  assert.equal(tokenReads, 1, 'SDK admission checks the credential only after its durable receipt lookup');
 });
 
 test('agent learning and default readiness refresh when the matching model key is saved or removed', async t => {

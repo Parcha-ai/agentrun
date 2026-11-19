@@ -155,6 +155,83 @@ test('one recorded write cannot validate a draft that repeats the same side effe
   assert.equal(writes(),0);
 });
 
+test('shadow writes preserve the complete native effect order even when answers are identical',async t=>{
+  const {bridge,writes}=setup(t);
+  const step=service=>({...document.root,args:{service},label:service});
+  const candidate=steps=>({...check,workflow:{...check.workflow,workflow:JSON.stringify({...document,
+    root:{node:'chain',steps:steps.map(step)}})}});
+  const native=['api','worker'].flatMap((service,i)=>[
+    {...events[0],id:`write-${i}`,input:{service}},
+    {...events[1],id:`write-${i}`,output:{brief:'done'}},
+  ]);
+  const turn={runId:'native-1',input:'{"service":"api"}',events:native,outcome:{status:'completed',answer:'done'}};
+  assert.equal((await bridge.check(candidate(['api','worker']),turn)).outcome,'answered');
+  for(const steps of [['worker','api'],['api'],['worker']])
+    assert.notEqual((await bridge.check(candidate(steps),turn)).outcome,'answered',JSON.stringify(steps));
+  const parallel={...document,root:{node:'parallel',label:'both',branches:[{...step('api'),as:'first'},step('worker')]}};
+  engine.inspectWorkflow(parallel);
+  assert.notEqual((await bridge.check({...check,workflow:{...check.workflow,workflow:JSON.stringify(parallel)}},turn)).outcome,'answered');
+  assert.equal(writes(),0);
+});
+
+test('a candidate cannot omit another native write tool, guess overlapping writes, or use an unknown effect',async t=>{
+  const tool={description:'Publish a release.',input_schema:input,output_schema:output,permission:'allow',execute(){assert.fail('Shadow must never write.');}};
+  const {run}=setup(t,{tools:[{...tool,name:'mcp:release/publish'},{...tool,name:'mcp:release/notify'}]});
+  for(const native of [
+    [...events,...events.map(event=>({...event,id:'other',name:'mcp:release/notify'}))],
+    [events[0],{...events[0],id:'second'},events[1],{...events[1],id:'second'}],
+    [...events,...events.map(event=>({...event,id:'unknown',name:'mcp:other/write'}))],
+    [...events,{...events[0],id:'unfinished',name:'mcp:release/notify'}],
+  ]) assert.notEqual((await run({events:native})).outcome,'answered');
+});
+
+test('reads may reorder and reuse observations, but synthetic lifecycle pairs cannot prove write order',async t=>{
+  const unknown=events.map(event=>({...event,orderUnknown:true}));
+  const write=setup(t);
+  assert.notEqual((await write.run({events:unknown})).outcome,'answered');
+  const read=setup(t,{tools:[{name:'mcp:release/publish',description:'Read status.',input_schema:input,output_schema:output,
+    permission:'allow',readOnly:true,execute(){assert.fail('Read should use the recording.');}}]});
+  const twice={...document,root:{node:'chain',steps:[document.root,{...document.root,label:'again'}]}};
+  const candidate={...check,workflow:{...check.workflow,workflow:JSON.stringify(twice)}};
+  assert.equal((await read.bridge.check(candidate,{runId:'native-1',input:'{"service":"api"}',events:unknown,
+    outcome:{status:'completed',answer:'api released'}})).outcome,'answered');
+});
+
+test('shadow checks hold reads moved across writes and concurrent candidate effects',async t=>{
+  const tool={description:'Release state.',input_schema:input,output_schema:output,permission:'allow',execute(){assert.fail('Use native receipts only.');}};
+  const {bridge}=setup(t,{tools:[{...tool,name:'mcp:release/publish'},{...tool,name:'mcp:release/status',readOnly:true}]});
+  const read={...document.root,tool:'mcp:release/status',label:'read'},write={...document.root,label:'write'};
+  const candidate=root=>({...check,workflow:{...check.workflow,workflow:JSON.stringify({...document,root})}});
+  const native=[...events.map(event=>({...event,id:'read',name:'mcp:release/status'})),...events];
+  const turn={runId:'native-1',input:'{"service":"api"}',events:native,outcome:{status:'completed',answer:'api released'}};
+  assert.equal((await bridge.check(candidate({node:'chain',steps:[read,write]}),turn)).outcome,'answered');
+  for(const root of [
+    {node:'chain',steps:[write,read]},
+    {node:'chain',steps:[read,write,read]},
+    {node:'parallel',label:'both',branches:[{...read,as:'prior'},write]},
+  ]) {
+    const draft=candidate(root);
+    engine.inspectWorkflow(JSON.parse(draft.workflow.workflow));
+    assert.notEqual((await bridge.check(draft,turn)).outcome,'answered');
+  }
+});
+
+test('an asynchronous draft schema is refused without an unhandled rejection in the host process',()=>{
+  const moduleUrl=new URL('../dist/workflows.js',import.meta.url).href;
+  const asyncDocument={...document,schemas:{...document.schemas,Input:{...input,$async:true}}};
+  const script=`import assert from 'node:assert/strict';
+    const {createWorkflowBridge}=await import(${JSON.stringify(moduleUrl)});
+    const engine=await import('@parcha/agentrun-dsl');
+    const bridge=createWorkflowBridge({engine,policy:()=> 'allow',tools:[{name:'mcp:release/publish',description:'Publish.',
+      input_schema:{type:'object'},permission:'allow',execute(){throw Error('No effects expected');}}]});
+    const result=await bridge.check(${JSON.stringify({...check,workflow:{...check.workflow,workflow:JSON.stringify(asyncDocument)}})},
+      {runId:'native-1',input:'{}',events:[],outcome:{status:'completed',answer:'done'}});
+    assert.equal(result.outcome,'failed'); await bridge.close(); await new Promise(resolve=>setTimeout(resolve,20));`;
+  const child=spawnSync(process.execPath,['--unhandled-rejections=strict','--input-type=module','-e',script],
+    {cwd:new URL('../../../',import.meta.url),encoding:'utf8',timeout:10000});
+  assert.equal(child.status,0,child.stderr);
+});
+
 test('shadow reads use recorded evidence by default and never retry a recorded failure',async t=>{
   let calls=0;
   const config={tools:[{name:'mcp:release/publish',description:'Read release status.',input_schema:input,output_schema:output,permission:'allow',readOnly:true,

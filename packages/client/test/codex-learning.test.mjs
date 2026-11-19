@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { withCodexAgentLearning } from '../dist/codex.js';
 
-function service({ enabled = true, eventsError = false } = {}) {
+function service({ enabled = true, eventsError = false, check } = {}) {
   const requests = [];
   return { requests, config: {
     agentId: 'backend-codex', instructions: 'Read release status accurately. Never change project files.',
@@ -14,7 +14,7 @@ function service({ enabled = true, eventsError = false } = {}) {
       if (path === '/v2/agents/backend-codex') return Response.json({ definition: { sdk: { runtime: 'codex-sdk' } } });
       if (path === '/v2/agents/backend-codex/sdk-runs') return Response.json({ run_id: 'sdk-run', agent_id: 'backend-codex',
         token: 'fixture-scoped-key', console_url: 'https://server.example/#/runs/sdk-run', learning: { enabled,
-          revision: enabled ? 'approved-revision' : null, context: '- Start release reports with Ready or Blocked.\n- Keep the report to two sentences.' } });
+          revision: enabled ? 'approved-revision' : null, context: '- Start release reports with Ready or Blocked.\n- Keep the report to two sentences.', ...(check ? { check } : {}) } });
       if (path === '/v2/sdk-runs/sdk-run/events') return eventsError
         ? Response.json({ error: { code: 'unavailable' } }, { status: 503 }) : Response.json({ accepted: true });
       if (path === '/v2/sdk-runs/sdk-run/complete') return Response.json({ accepted: true });
@@ -118,6 +118,29 @@ test('missing Codex cache counters leave exclusive input unknown rather than inv
   assert.equal(usage.input_tokens, null);
   assert.equal(usage.cache_read_tokens, null);
   assert.equal(usage.cache_write_tokens, null);
+});
+
+test('buffered and synthesized Codex tool starts cannot claim known effect order in local shadow evidence',async()=>{
+  const candidate={id:'check-one',revision:'rev',digest:'digest',workflow:{name:'draft',description:'Draft.',workflow:'{}'}};
+  const item={id:'tool-one',type:'mcp_tool_call',server:'release',tool:'publish',arguments:{service:'api'},status:'completed',result:{content:[{type:'text',text:'{"brief":"done"}'}]}};
+  for(const mode of ['buffered','missing-start','streamed']) {
+    const checked=[], {config,requests}=service({check:candidate});
+    config.workflows={catalog:[],adapters:[],bind(){return {context:'',close(){}};},async check(check,turn){
+      checked.push(turn);return {type:'workflow_check',id:check.id,digest:check.digest,outcome:'failed',reason:'fixture'};
+    }};
+    const result={items:[item],finalResponse:'done'};
+    const stream=[...(mode==='streamed'?[{type:'item.started',item:{...item,status:'in_progress'}}]:[]),
+      {type:'item.completed',item},{type:'turn.completed'}];
+    const {codex}=native({result,events:stream}),wrapped=withCodexAgentLearning(codex,config),thread=wrapped.startThread();
+    if(mode==='buffered') assert.equal(await thread.run('Publish.'),result);
+    else for await(const event of (await thread.runStreamed('Publish.')).events) assert.ok(stream.includes(event));
+    await wrapped.flushLearning();
+    assert.equal(checked.length,1);
+    const facts=checked[0].events.filter(event=>event.type==='tool');
+    assert.equal(facts.length,2);
+    assert.equal(facts.some(event=>event.orderUnknown===true),mode!=='streamed',mode);
+    assert.doesNotMatch(JSON.stringify(requests),/orderUnknown/, 'Ordering provenance stays local, outside telemetry.');
+  }
 });
 
 test('learning Off preserves input by identity, including multimodal native inputs', async () => {

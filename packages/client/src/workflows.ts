@@ -3,7 +3,7 @@ import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import { Ajv } from 'ajv';
 import formatsModule from 'ajv-formats';
-import type { BackendWorkflowSession, BackendWorkflowBinding, BackendWorkflowBridge, BackendWorkflowToolManifest, SdkLearningEvent, BackendWorkflowCheck } from './learning.js';
+import type { BackendWorkflowSession, BackendWorkflowBinding, BackendWorkflowBridge, BackendWorkflowToolManifest, SdkLearningEvent, BackendWorkflowCheck, BackendNativeEvent } from './learning.js';
 
 export interface WorkflowToolContext {
   signal: AbortSignal;
@@ -96,7 +96,7 @@ export interface WorkflowMcpBridgeOptions<
   shadowReadFallback?: boolean;
   /** Optional host mapping for a draft's typed input. The default accepts the task's JSON object or one
    * unambiguous recorded tool input matching the schema. It never guesses semantic fields. */
-  resolveCheckInput?(check: BackendWorkflowCheck, turn: { input: string; events: readonly SdkLearningEvent[]; signal: AbortSignal }): Promise<Record<string, unknown> | null> | Record<string, unknown> | null;
+  resolveCheckInput?(check: BackendWorkflowCheck, turn: { input: string; events: readonly BackendNativeEvent[]; signal: AbortSignal }): Promise<Record<string, unknown> | null> | Record<string, unknown> | null;
 }
 /** Private host handle. Never expose its arguments or capability in model-visible results or logs. */
 export interface WorkflowMcpBinding extends BackendWorkflowBinding {
@@ -136,6 +136,8 @@ class SchemaValidator {
     const key = canonical(schema), cached = this.#validators.get(key);
     if (cached) return cached;
     const validate = this.#ajv.compile(schema);
+    // A draft cannot turn this synchronous gate into an unobserved rejecting promise in the host process.
+    if ('$async' in validate && validate.$async) throw new TypeError('Asynchronous workflow schemas are not supported.');
     const validator = (value: unknown) => ({ valid: validate(value) === true });
     this.#validators.set(key, validator);
     return validator;
@@ -272,30 +274,53 @@ function makeWorkflowBridge<
       if (closed || turn.outcome.status !== 'completed') refuse('A shadow needs a completed native turn and an open host bridge.');
       if (Buffer.byteLength(JSON.stringify(events)) > 3_000_000) refuse('The native recording exceeds the shadow limit.');
       const workflow = checked(check.workflow.workflow);
-      const tools = new Set(inspectWorkflow(workflow).requires.tools);
+      const inspection = inspectWorkflow(workflow), tools = new Set(inspection.requires.tools);
       type Call = { name: string; input: Record<string, unknown>; output?: unknown; status: 'started' | 'completed' | 'failed' };
       const byId = new Map<string, Call>();
+      // Once a trace writes, reads cannot move across those effects either. Hold any ambiguous
+      // lifecycle and replay the entire serial observation/effect sequence, not a bag of receipts.
+      const ordered = events.some(event => event.type === 'tool' && registered.has(event.name) && !registered.get(event.name)!.readOnly);
+      if (ordered) for (const entry of inspection.nodes) {
+        const node = pointer(workflow, entry.path) as Record<string, unknown>;
+        if (node.node === 'parallel' || node.node === 'map' && node.maxConcurrency !== 1)
+          refuse('A trace with writes requires a structurally serial candidate; parallel branches and concurrent maps cannot prove effect order.');
+      }
+      const nativeSequence: string[] = [];
+      let openCall: string | undefined;
       for (const event of events) {
         if (event.type !== 'tool') continue;
         if (event.name === 'learned_workflow' || event.parent_tool_use_id) refuse('A shadow needs independent native tool evidence.');
-        if (!tools.has(event.name)) continue;
+        const tool = registered.get(event.name);
+        if (!tool) refuse('The native recording includes a tool whose side effects are unknown to this host bridge.');
+        // Every native write matters, including a tool the candidate omits. Only wholly read-only
+        // traces may ignore/reorder observations. Buffered results cannot establish effect order.
+        if (ordered && event.orderUnknown) refuse('The native recording does not establish effect order. Use a complete streamed lifecycle.');
+        if (!ordered && tool!.readOnly && !tools.has(event.name)) continue;
         if (event.status === 'started') {
           if (byId.has(event.id) || !object(event.input)) return refuse('The native recording has ambiguous tool inputs.');
+          if (ordered) {
+            if (openCall !== undefined) refuse('Overlapping native calls do not establish a safe effect replay order.');
+            openCall = event.id;
+            nativeSequence.push(`${event.name}\n${canonical(event.input)}`);
+          }
           byId.set(event.id, { name: event.name, input: event.input, status: 'started' });
         } else {
           const call = byId.get(event.id);
           if (!call || call.status !== 'started' || call.name !== event.name || !Object.hasOwn(event, 'output')) return refuse('The native recording has an unmatched tool result.');
+          if (ordered) {
+            if (openCall !== event.id || event.status !== 'completed') refuse('The native recording has an uncertain effect outcome.');
+            openCall = undefined;
+          }
           call.status = event.status; call.output = recordedOutput(event.output);
         }
       }
       if ([...byId.values()].some(call => call.status === 'started')) refuse('The native recording has an unfinished tool call.');
       const recorded = new Map<string, Call>();
-      const writesRemaining = new Map<string, number>();
+      let nextEffect = 0, activeEffect = false;
       for (const call of byId.values()) {
         const key = `${call.name}\n${canonical(call.input)}`, prior = recorded.get(key);
         if (prior && (prior.status !== call.status || canonical(prior.output) !== canonical(call.output))) refuse('Repeated native calls returned different results.');
         recorded.set(key, call);
-        writesRemaining.set(key, (writesRemaining.get(key) ?? 0) + 1);
       }
       const schema = workflow.input ? resolveSchemaForWorkflow(workflow, workflow.schemas[workflow.input.schemaId]!) : { type: 'object' };
       const accepts = validator.getValidator(schema);
@@ -333,34 +358,40 @@ function makeWorkflowBridge<
           if (++calls > maxCalls) return refuse('The shadow tool call limit was reached.');
           const args = copy(request.input);
           if (!tool.input(args).valid) return refuse('Shadow arguments do not match the original tool schema.');
-          const ctx = { runId: turn.runId, workflow: check.workflow.name, signal: AbortSignal.any([signal, request.signal]), idempotencyKey: `${check.id}:${request.idempotencyKey}` };
-          if (await cancellable(Promise.resolve(policy(name, copy(args), ctx)), ctx.signal) !== 'allow') return refuse('The backend policy did not allow this shadow call.');
-          ctx.signal.throwIfAborted();
-          const key = `${name}\n${canonical(args)}`, known = recorded.get(key);
-          let output: unknown;
-          if (known?.status === 'failed') return refuse('The recorded native tool failed.');
-          if (known && known.status === 'completed' && (tool.readOnly || (writesRemaining.get(key) ?? 0) > 0)) {
-            output = copy(known.output);
-            if (!tool.readOnly) writesRemaining.set(key, writesRemaining.get(key)! - 1);
-          }
-          else if (!tool.readOnly) {
-            skipped = { tool: name };
-            return refuse('The shadow needs a write the native recording does not have.');
-          } else {
-            if (!readFallback) return refuse('The native recording has no matching read result; fresh shadow reads are not enabled.');
-            // Only explicit read-only callbacks may run, and once per arguments. Failed calls are not retried.
-            let read = cache.get(key);
-            if (!read) { read = Promise.resolve().then(() => { ctx.signal.throwIfAborted(); return tool.execute(args, ctx); }); cache.set(key, read); }
-            output = await cancellable(read, ctx.signal);
-          }
-          ctx.signal.throwIfAborted();
-          if (tool.output && !tool.output(output).valid) return refuse('A recorded result does not match the original tool schema.');
-          return copy(output);
+          if (ordered && activeEffect) return refuse('Concurrent shadow calls cannot prove the native effect order.');
+          if (ordered) activeEffect = true;
+          try {
+            const ctx = { runId: turn.runId, workflow: check.workflow.name, signal: AbortSignal.any([signal, request.signal]), idempotencyKey: `${check.id}:${request.idempotencyKey}` };
+            if (await cancellable(Promise.resolve(policy(name, copy(args), ctx)), ctx.signal) !== 'allow') return refuse('The backend policy did not allow this shadow call.');
+            ctx.signal.throwIfAborted();
+            const key = `${name}\n${canonical(args)}`, known = recorded.get(key);
+            let output: unknown;
+            if (known?.status === 'failed') return refuse('The recorded native tool failed.');
+            if (known && known.status === 'completed' && (!ordered || nativeSequence[nextEffect] === key)) {
+              output = copy(known.output);
+              if (ordered) nextEffect++;
+            }
+            else if (!tool.readOnly) {
+              skipped = { tool: name };
+              return refuse('The shadow write does not match the next recorded native write.');
+            } else {
+              if (ordered) return refuse('The shadow read does not match the next recorded native call.');
+              if (!readFallback) return refuse('The native recording has no matching read result; fresh shadow reads are not enabled.');
+              // Only explicit read-only callbacks may run, and once per arguments. Failed calls are not retried.
+              let read = cache.get(key);
+              if (!read) { read = Promise.resolve().then(() => { ctx.signal.throwIfAborted(); return tool.execute(args, ctx); }); cache.set(key, read); }
+              output = await cancellable(read, ctx.signal);
+            }
+            ctx.signal.throwIfAborted();
+            if (tool.output && !tool.output(output).valid) return refuse('A recorded result does not match the original tool schema.');
+            return copy(output);
+          } finally { if (ordered) activeEffect = false; }
         },
       }), signal);
       signal.throwIfAborted();
       if (skipped) return { ...receipt, outcome: 'skipped_write', skipped };
       if (result.status !== 'complete') return { ...receipt, outcome: 'handed_back', reason: 'The draft did not answer alone.' };
+      if (ordered && nextEffect !== nativeSequence.length) refuse('The shadow omitted a recorded native call from a trace with writes.');
       const answer = answerOf(result.output);
       if (Buffer.byteLength(answer) > 65_536) refuse('The shadow answer exceeds the result limit.');
       return { ...receipt, outcome: 'answered', answer };

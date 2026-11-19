@@ -4077,7 +4077,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const compile={...(compileModel?{model:compileModel}:{}),check:async()=>{
           // SdkRuns checks this only after its durable origin lookup, so a successful admission remains recoverable
           // when the owner has since changed its model or removed its key.
-          const configured = await learningModelOf(env, entry.revision);
+          const configured = await learningModelOf(env, entry.revision, { checkCredential: true });
           if (!configured.ready) throw new ApiError("agent_not_runnable", configured.reason ?? "Configure a server learning model in Settings → API Keys.");
         }};
         const answer=await idempotent(req,path,body,async origin=>({status:201,body:await sdk.start(entry,body,startDeps,origin,compile,linkOrigin(req))}));

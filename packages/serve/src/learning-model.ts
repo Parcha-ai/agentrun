@@ -1,5 +1,6 @@
-// Learning's model requirement, shared by its settings view and SDK admission. This checks configured routes and
-// credentials, never sends a model request, and never treats a tool/decision key as a generative model credential.
+// Learning's model requirement, shared by its settings view and SDK admission. Metadata checks configured routes and
+// sign-in state without reading or renewing a managed token. Only admission checks the actual credential; neither
+// sends a model request or treats a tool/decision key as a generative model credential.
 import { chooseModel, FAUX_ENV, hostModel, type ModelNeeds } from "./model.js";
 import { harnessOf } from "./harness-table.js";
 import { HarnessUnavailable, providerFor } from "./provider.js";
@@ -20,8 +21,9 @@ export type LearningModel = {
 
 /** An omitted revision describes the default SDK compile route for a server with no agents yet. Native bindings keep
  *  their original sign-in. For managed harnesses the existing model selection checks their own wire/login; SDKs need
- *  the separate server compile route, even when the original application's harness already has its own credential. */
-export async function learningModelOf(env: NodeJS.ProcessEnv, revision?: { kind: string; body: unknown } | null): Promise<LearningModel> {
+ *  the separate server compile route, even when the original application's harness already has its own credential.
+ *  checkCredential is for SDK admission after its durable receipt lookup, never a metadata read. */
+export async function learningModelOf(env: NodeJS.ProcessEnv, revision?: { kind: string; body: unknown } | null, options: { checkCredential?: boolean } = {}): Promise<LearningModel> {
   const body = (revision?.body ?? {}) as AgenticBody;
   const native = nativeOf(body);
   if (native) return { location: "native", ready: true, model: native.model ?? null, needs: null,
@@ -45,10 +47,11 @@ export async function learningModelOf(env: NodeJS.ProcessEnv, revision?: { kind:
     try {
       if (!revision || body.sdk) {
         const route = await askRouteOf(model, env, one => routeOf(one, env, "default", PI_WIRES));
-        await route.provider.credential();
+        if (options.checkCredential) await route.provider.credential();
       } else if (entry?.onWire(env) && entry.facts) {
         // Wire model selection names a model even with no key. Its provider checks the actual harness login or key.
-        await providerFor(entry.facts.wire, env, choice.model, entry.id).credential();
+        const provider = providerFor(entry.facts.wire, env, choice.model, entry.id);
+        if (options.checkCredential) await provider.credential();
       }
     } catch (error) {
       if (error instanceof HarnessUnavailable && !error.keys?.length)

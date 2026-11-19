@@ -10,6 +10,35 @@ uses `fetch`, on Node.js 24.22.3 or newer. Optional workflow helpers use the pee
 npm install @parcha/agentrun-client
 ```
 
+## Check the installation without credentials
+
+Save this as `check-agentrun.mjs`, then run `node check-agentrun.mjs`. It exercises the installed client's
+request and response handling using an injected local response and a fake key. It contacts no server and
+does not test a live connection or model.
+
+```js
+import assert from "node:assert/strict";
+import { AgentRun } from "@parcha/agentrun-client";
+
+const client = new AgentRun({
+  baseUrl: "https://agentrun.example.com/v2",
+  apiKey: "not-a-secret",
+  fetch: async (url, request) => {
+    assert.equal(String(url), "https://agentrun.example.com/v2/agents");
+    assert.equal(request.method, "GET");
+    return Response.json({ agents: [], next_cursor: null });
+  },
+});
+assert.deepEqual(await client.agents.list(), { agents: [], next_cursor: null });
+console.log("AgentRun client loaded; offline request passed. No server was contacted.");
+```
+
+Expected output:
+
+```text
+AgentRun client loaded; offline request passed. No server was contacted.
+```
+
 ## Construct
 
 ```ts
@@ -84,6 +113,8 @@ tool names/status and usage. With an explicit workflow bridge, bounded arguments
 owner's corrections (`corrections.md`, whole) to the next fresh task, and compiles a workflow once the agent has
 enough completed runs. A compiled draft is checked on a separate native task before the server promotes it: the client checks it against that task's recorded tool evidence (missing reads are refused unless the host enables `shadowReadFallback` for explicitly read-only callbacks), and the server compares its result with the native answer. Drafts are not offered as executable workflows to the native model.
 `learning: true` opts in on first registration only; existing agents keep their console setting.
+
+Checks involving writes require complete serial native tool recordings and a serial workflow that preserves every original call in order. Buffered Codex results cannot prove write order, so those drafts remain unpromoted. Read-only turns may reuse and reorder recorded reads. See the workflow cookbook for the full evidence requirements.
 
 Both wrappers expose `flushLearning()`. Await it before shutdown or before testing a fresh run's use of newly
 accepted learning. Errors in persistence or learning surface there without replacing the original SDK result/error.
