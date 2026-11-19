@@ -13,8 +13,8 @@ const base: Run = {
   run_id: "r1", agent_id: "mcc", agent_version: 2, revision: "rv2", kind: "agentic", status: "completed", state: "idle", title: "Coffee shop",
   created_at: "2026-11-18T06:00:00Z", ended_at: "2026-11-18T06:00:03Z", result: null, error: null, cost: { usd: 0.002, basis: "estimate", charge_state: null, cap_usd: null }, archived_at: null,
 };
-const SERVED: Run = { ...base, run_id: "r-served", path: "workflow", workflow: { name: "mcc-guess", digest: "d".repeat(16) } };
-const HANDED: Run = { ...base, run_id: "r-handed", path: "handed_back", workflow: { name: "mcc-guess", digest: "d".repeat(16) } };
+const SERVED: Run = { ...base, run_id: "r-served", path: "workflow", workflow: { name: "mcc-guess", digest: "d".repeat(16), repick: null } };
+const HANDED: Run = { ...base, run_id: "r-handed", path: "handed_back", workflow: { name: "mcc-guess", digest: "d".repeat(16), repick: null } };
 const AGENT: Run = { ...base, run_id: "r-agent" };
 
 const host = (html: string) => {

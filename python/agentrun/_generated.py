@@ -2698,6 +2698,7 @@ class RunSummaryTrigger(TypedDict):
 class RunSummaryWorkflow(TypedDict):
     name: str | None
     digest: str | None
+    repick: Literal["found", "missed"] | None
 
 
 UnarchiveAgentResponse: TypeAlias = "dict[str, Any]"
@@ -5207,6 +5208,7 @@ class RunTrigger(TypedDict):
 class RunWorkflow(TypedDict):
     name: str | None
     digest: str | None
+    repick: Literal["found", "missed"] | None
 
 
 ListRunFilesResponse: TypeAlias = "RunFileList"
