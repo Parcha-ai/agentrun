@@ -1778,6 +1778,24 @@ class SqliteStore implements Store {
           },
         ]);
       },
+      putUnlessLive: async ({ runner, incarnation, refused, host = null, port = null }, staleMs) => {
+        const n = clock();
+        // The upsert's WHERE leaves a row another incarnation renewed within staleMs as it is, in the same statement: no
+        // read between, so a later process's put can never land between a look and this write.
+        const [, result] = await db.write([
+          { sql: `DELETE FROM runners WHERE seen_at < ${n.sql} - ${d.bigintParam}`, params: [...n.params, RUNNER_ROWS_KEPT_MS] },
+          {
+            sql: `INSERT INTO runners (runner, incarnation, refused, host, port, seen_at) VALUES (?, ?, ?, ?, ?, ${n.sql}) ON CONFLICT (runner) DO UPDATE SET incarnation = excluded.incarnation, refused = excluded.refused, host = excluded.host, port = excluded.port, seen_at = excluded.seen_at WHERE runners.incarnation = excluded.incarnation OR runners.seen_at < excluded.seen_at - ${d.bigintParam}`,
+            params: [runner, incarnation, refused, host, port, ...n.params, staleMs],
+          },
+        ]);
+        return (result?.changes ?? 0) === 1;
+      },
+      relayAt: async (runner, incarnation, at) => {
+        const n = clock();
+        const [result] = await db.write([{ sql: `UPDATE runners SET host = ?, port = ?, seen_at = ${n.sql} WHERE runner = ? AND incarnation = ?`, params: [at?.host ?? null, at?.port ?? null, ...n.params, runner, incarnation] }]);
+        return (result?.changes ?? 0) === 1;
+      },
       seen: async (runner, incarnation) => {
         const n = clock();
         const [result] = await db.write([{ sql: `UPDATE runners SET seen_at = ${n.sql} WHERE runner = ? AND incarnation = ?`, params: [...n.params, runner, incarnation] }]);

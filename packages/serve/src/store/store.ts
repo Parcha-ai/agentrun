@@ -1285,6 +1285,13 @@ export interface Runners {
   /** Keeps `row` for its runner, replacing any earlier incarnation's, seen now; rows no runner renewed for
    *  RUNNER_ROWS_KEPT_MS go in the same write. Its host and port go together: both absent (or null) for no relay. */
   put(row: Omit<RunnerRow, "seenAt" | "host" | "port"> & { readonly host?: string | null; readonly port?: number | null }): Promise<void>;
+  /** Keeps `row` for its runner unless another incarnation's row of the same name was seen within `staleMs`: a process's
+   *  put again of a row that went (pruned, a store restored) never takes back a later process's live one. False when
+   *  such a row is there and nothing was written. */
+  putUnlessLive(row: Omit<RunnerRow, "seenAt" | "host" | "port"> & { readonly host?: string | null; readonly port?: number | null }, staleMs: number): Promise<boolean>;
+  /** Says on the runner's row where its relay answers (`at`, or null for nowhere), seen now, while the row is still this
+   *  incarnation's. False when it is not (or there is none), and nothing was written. */
+  relayAt(runner: string, incarnation: string, at: { readonly host: string; readonly port: number } | null): Promise<boolean>;
   /** Marks the runner's row seen now, while it is still this incarnation's. False when it is not (or there is none). */
   seen(runner: string, incarnation: string): Promise<boolean>;
   /** Every runner's row, by name. */

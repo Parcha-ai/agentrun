@@ -119,6 +119,39 @@ test("keepPresence never takes back a row a later process of the same name put: 
   assert.deepEqual((await store.runners.list()).map((row) => [row.incarnation, row.port]), [["inc-later", 40_001]], "ten renewals of the earlier one later, the row is still the later one's");
 });
 
+test("an earlier process's relay close and its presence's close leave a later process's row of the same name as it is: its relay is still read", async (t) => {
+  const { store } = await storeOn(t, { clock: { now: Date.now() } });
+  const earlier = keepPresence(store.runners, "same", null, { renewMs: 60_000, incarnation: "inc-earlier" });
+  t.after(() => earlier.stop());
+  await earlier.relay({ host: "127.0.0.1", port: 40_000 });
+  const later = keepPresence(store.runners, "same", null, { renewMs: 60_000, incarnation: "inc-later" });
+  t.after(() => later.stop());
+  await later.relay({ host: "127.0.0.1", port: 40_001 });
+  // The earlier process stops as runner/main.ts stops one: its relay says it answers nowhere, then its presence closes.
+  await earlier.relay(null);
+  await earlier.close();
+  assert.deepEqual((await store.runners.list()).map((row) => [row.incarnation, row.host, row.port]), [["inc-later", "127.0.0.1", 40_001]], "the later one's row and relay stand");
+});
+
+test("putUnlessLive puts a row where none is, or over its own or a stale one, and leaves another incarnation's live row as it is", async (t) => {
+  const clock = { now: T0 };
+  const { store } = await storeOn(t, { clock });
+  assert.equal(await store.runners.putUnlessLive({ runner: "r", incarnation: "inc-a", refused: null }, 30_000), true, "no row: put");
+  // inc-a's row is older than now, and still within the 30 s.
+  clock.now += 29_999;
+  assert.equal(await store.runners.putUnlessLive({ runner: "r", incarnation: "inc-b", refused: null, host: "h", port: 1 }, 30_000), false, "inc-a's live row: left");
+  assert.deepEqual((await store.runners.list()).map((row) => [row.incarnation, row.host]), [["inc-a", null]]);
+  assert.equal(await store.runners.putUnlessLive({ runner: "r", incarnation: "inc-a", refused: WORDS }, 30_000), true, "its own: put");
+  assert.equal((await store.runners.list())[0].refused, WORDS);
+  clock.now += 30_001;
+  assert.equal(await store.runners.putUnlessLive({ runner: "r", incarnation: "inc-b", refused: null, host: "h", port: 1 }, 30_000), true, "inc-a's row went stale: taken");
+  assert.equal((await store.runners.list())[0].seenAt, clock.now, "seen at the store's now");
+  assert.deepEqual((await store.runners.list()).map((row) => [row.incarnation, row.host, row.port]), [["inc-b", "h", 1]]);
+  assert.equal(await store.runners.relayAt("r", "inc-a", { host: "x", port: 2 }), false, "relayAt on another incarnation's row writes nothing");
+  assert.equal(await store.runners.relayAt("r", "inc-b", null), true);
+  assert.deepEqual((await store.runners.list()).map((row) => [row.incarnation, row.host, row.port]), [["inc-b", null, null]]);
+});
+
 test("failUnclaimed fails every run still queued in the words given, refusing its untaken commands, and leaves a claimed run to its runner", async (t) => {
   const { store } = await storeOn(t);
   await queued(store, "run-queued");

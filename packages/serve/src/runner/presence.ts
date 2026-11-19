@@ -37,7 +37,8 @@ export interface Presence {
 }
 
 /** Keeps `runner`'s row in `runners` (refused: its words, or null for a runner that claims), renewed every `renewMs`; put
- *  again when it went (a row pruned, a store restored), never over a later process's of the same name. A write that
+ *  again when it went (a row pruned, a store restored), never over a later process's of the same name while that one is
+ *  live; its relay's place is written on its own row only. A write that
  *  fails is tried again at the next renewal: it never stops the runner, and `warn` hears it once. `incarnation` is the
  *  runner process's one (runner/main.ts hands its relay the same), a new one by default. */
 export function keepPresence(runners: Runners, runner: string, refused: string | null, { renewMs = PRESENCE_RENEW_MS, warn = (_line: string) => {}, incarnation = randomUUID() }: { renewMs?: number; warn?: (line: string) => void; incarnation?: string } = {}): Presence {
@@ -48,12 +49,15 @@ export function keepPresence(runners: Runners, runner: string, refused: string |
     warn(`could not say in the store that runner ${runner} is there: ${error instanceof Error ? error.message : String(error)}`);
   };
   let at: RelayAt | null = null;
-  const put = () => runners.put({ runner, incarnation, refused, host: at?.host ?? null, port: at?.port ?? null });
-  let writing: Promise<unknown> = put().catch(failed);
+  const row = () => ({ runner, incarnation, refused, host: at?.host ?? null, port: at?.port ?? null });
+  // Its first put takes the name over from an earlier process's row. Every write after it (a renewal's put again, the
+  // relay's place) touches its own row only, or puts one where no other process of the name is live (Runners
+  // putUnlessLive): an older process overlapping a restart never takes the later one's row back, nor clears its relay.
+  const again = () => runners.putUnlessLive(row(), PRESENCE_STALE_MS);
+  let writing: Promise<unknown> = runners.put(row()).catch(failed);
   const timer = setInterval(() => {
     writing = writing.then(async () => {
-      // Put again only when its row went: one a later process of the same name put is that process's, never taken back.
-      if (!(await runners.seen(runner, incarnation)) && !(await runners.list()).some((row) => row.runner === runner)) await put();
+      if (!(await runners.seen(runner, incarnation))) await again();
     }).catch(failed);
   }, renewMs);
   timer.unref();
@@ -65,7 +69,9 @@ export function keepPresence(runners: Runners, runner: string, refused: string |
       // Once closed or stopped it writes nothing more: a relay's close after its presence's never puts the row back.
       if (stopped) return Promise.resolve();
       // After any write in flight, so a renewal's put never lands over it with the place before.
-      const wrote = writing.then(put);
+      const wrote = writing.then(async () => {
+        if (!(await runners.relayAt(runner, incarnation, next))) await again();
+      });
       writing = wrote.catch(failed);
       return wrote;
     },
