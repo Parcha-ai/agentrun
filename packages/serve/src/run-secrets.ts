@@ -7,7 +7,7 @@ import { COMPUTER_KEY_NAMES } from "./computer-keys.js";
 import { BOX_KEYS } from "./place-offers.js";
 import { providersNamed } from "./decisions.js";
 import { harnessOfBody } from "./harness.js";
-import { harnessOf } from "./harness-table.js";
+import { BUILTIN_OWN_KEYS, harnessOf, harnessTable } from "./harness-table.js";
 import { GATEWAY_KEY_ENV, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, type Tier, workflowNodes } from "./model.js";
 import { DECISION_KEYS, SECRET_NAMES } from "./secrets.js";
 import { TOOL_FIELDS, TOOL_KEYS, unlocksTool } from "./tool-keys.js";
@@ -60,14 +60,16 @@ export async function needsOf(revision: Revision): Promise<RunNeeds> {
  *  `rows` (TOOL_KEYS) that unlocks none of the tools the run binds; and but each model key its model does not need, from
  *  the host's model settings and the keys in `env`: a pi run's, its models' providers' keys or the gateway's (model.ts'
  *  modelKeys: its own model, or the host's of each tier it runs); a run on an adapter's, the one key its wire's route
- *  sends for the revision's model (adapters.ts' harnessModelKeys). Read at each claim, so a key saved with no restart
- *  counts at the next. */
+ *  sends for the revision's model (adapters.ts' harnessModelKeys); and but each harness's own key (HarnessEntry.ownKeys:
+ *  Cursor's CURSOR_API_KEY) on a run of any other harness. Read at each claim, so a key saved with no restart counts at
+ *  the next. */
 export function keysFor(needs: RunNeeds, env: NodeJS.ProcessEnv, rows: readonly KeyRow[] = TOOL_KEYS): string[] {
   const unlocked = new Set<string>(rows.filter((row) => row.unlocks.some((unlock) => needs.tools.some((name) => unlocksTool(unlock, name)))).flatMap((row) => row.fields));
   const scoped = scopedOf(rows);
   const entry = harnessOf(env, needs.harness);
   const model = new Set(!entry || entry.facts ? harnessModelKeys(needs.harness, env, needs.model) : needs.tiers ? modelKeys(env, undefined, needs.tiers) : modelKeys(env, needs.model));
-  return RUN_SECRETS.filter((name) => (!scoped.includes(name) || unlocked.has(name)) && (!MODEL_KEYS.includes(name) || model.has(name)));
+  const owned = [...BUILTIN_OWN_KEYS, ...Object.values(harnessTable(env)).flatMap((each) => each.ownKeys ?? [])];
+  return RUN_SECRETS.filter((name) => (!scoped.includes(name) || unlocked.has(name)) && (!MODEL_KEYS.includes(name) || model.has(name)) && (!owned.includes(name) || entry?.ownKeys?.includes(name) === true));
 }
 
 /** The secrets a run of `revision` is handed with the keys `env` holds (needsOf, then keysFor). */

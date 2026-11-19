@@ -29,13 +29,14 @@ function home(t) {
   return dir;
 }
 
-test("agentrun harness install names the harness it installs: goose alone", (t) => {
+test("agentrun harness install names the harnesses it installs: goose and cursor alone", (t) => {
   const dir = home(t);
   const none = agentrun(["harness", "install"], dir);
   assert.equal(none.status, 2, none.stderr);
   const other = agentrun(["harness", "install", "codex"], dir);
   assert.equal(other.status, 2, other.stderr);
   assert.match(other.stderr, /goose/);
+  assert.match(other.stderr, /cursor/);
   assert.match(other.stderr, /codex/);
   const help = agentrun(["help", "harness"], dir);
   assert.equal(help.status, 0, help.stderr);

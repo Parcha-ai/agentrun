@@ -1009,6 +1009,7 @@ export type Capabilities = {
     reason?: string;
     needs?: Array<"key" | "chatgpt">;
     installs?: "on_first_use";
+    card?: string;
   }>;
   tools: Array<{
     name: string;

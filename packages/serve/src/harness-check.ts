@@ -26,7 +26,7 @@ import { modelPortFor, SessionFenced } from "@parcha/agentrun-kernel";
 import { beforeRequestOf } from "@parcha/agentrun-kernel/kernel/cap";
 import { ACP_PACKAGE } from "./acp-package.js";
 import { priceOf } from "./adapters.js";
-import { archivePlatform, digestOf } from "./harness-archive.js";
+import { ARCHIVE_CODES, archivePlatform, digestOf } from "./harness-archive.js";
 import { installDirOf } from "./harness-install.js";
 import { AGENT_VARS, loadRecipe, pinnedDigest, type Recipe, recipeBinaryOf, recipeInstallLine, RecipeRefused, releaseFor } from "./harness-recipe.js";
 import { providerModels } from "./model.js";
@@ -245,7 +245,7 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
   const pin = pinnedDigest(options.data, recipe, release, platform);
   if (!existsSync(binary) || !pin) return refuse("HARNESS_NOT_INSTALLED", `${recipe.label} ${recipe.release.version} is not installed in ${installDirOf(options.data, recipe.id)}; a check never downloads it. Install it with: ${line}`);
   const found = await digestOf(binary).catch(() => undefined);
-  if (found !== pin.sha256) return refuse(pin.by === "recipe" ? "ACP_BINARY_MISMATCH" : "ACP_BINARY_DRIFT", `${binary} has sha256 ${found ?? "(unreadable)"}, and ${pin.by === "recipe" ? "the recipe pins" : "its first install recorded"} ${pin.sha256}. Install it again with: ${line}`);
+  if (found !== pin.sha256) return refuse(ARCHIVE_CODES.binary, `${binary} has sha256 ${found ?? "(unreadable)"}, and ${pin.by === "recipe" ? "the recipe pins" : "its first install recorded"} ${pin.sha256}. Install it again with: ${line}`);
   say(`${recipe.label}: the binary is the pinned one (${pin.by === "recipe" ? "the recipe's sha256" : "the first sha256 its install recorded"})`);
 
   const acp = acpCheckPackage();
@@ -309,16 +309,18 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
   const egress = await egressProxy(recipe.model.billing === "plan" ? (recipe.model.hosts ?? []) : []);
   const work = await mkdtemp(join(tmpdir(), "agentrun-harness-check-"));
   const canary = `harness-check-canary-${nonce}`;
-  const hostEnv = { ...env, HARNESS_CHECK_CANARY: canary };
-  // The values of every key the host holds, the server's own included: withSecrets keeps those off its enumeration
-  // (so the spread above drops them), so each is read by name.
+  // The host's environment as the adapter reads it, by name, with the canary over it: built on `env` (its prototype), not
+  // spread from it, so the keys withSecrets keeps off its enumeration still read by name. The recipe's keys reach the
+  // agent from here alone (the adapter's recipe.keys, as a run's do): a host without one is refused before the start.
+  const hostEnv: NodeJS.ProcessEnv = Object.create(env, { HARNESS_CHECK_CANARY: { value: canary, enumerable: true } });
+  // The values of every key the host holds, the server's own included: withSecrets keeps those off its enumeration, so
+  // each is read by name.
   const hostSecrets = [...new Set([...SECRET_NAMES, ...Object.keys(env).filter((name) => keyShaped(name))])]
     .filter((name) => !recipe.keys.includes(name))
     .map((name) => env[name])
     .filter((value): value is string => typeof value === "string" && value.length >= 8);
   const childVars: Record<string, string> = { ...recipe.env };
   if (recipe.model.billing === "proxy") childVars[recipe.model.env] = provider!.modelId;
-  for (const name of recipe.keys) if (env[name]) childVars[name] = env[name]!;
   for (const name of EGRESS_VARS) childVars[name] = egress.url;
   for (const name of NO_PROXY_VARS) childVars[name] = `${LOOPBACK},localhost`; // key-gate: loopback-rule the hosts the agent reaches without the refusing proxy: the model proxy and MCP on this machine
   const acpRecipe = {
@@ -327,6 +329,7 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
     command: binary,
     args: [...recipe.args],
     env: childVars,
+    keys: [...recipe.keys],
     files: { ...recipe.files },
     state: [...recipe.state],
     declares: { ...recipe.declares },
@@ -356,7 +359,7 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
     beforeStart: async (command: string) => {
       const now = await digestOf(command);
       starts.push(now);
-      if (now !== pin.sha256) throw new Error(`ACP_BINARY_DRIFT: ${command} changed after the check began (sha256 ${now})`);
+      if (now !== pin.sha256) throw new Error(`${ARCHIVE_CODES.binary}: ${command} changed after the check began (sha256 ${now})`);
     },
     ...(proxy ? { proxy } : {}),
   });
@@ -414,7 +417,8 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
 
     // Stage 2: the environment is the allowlist.
     if (environ) {
-      const expected = new Set([...Object.values(AGENT_VARS).flat(), ...Object.keys(childVars), ...SHELL_OWN]);
+      // The recipe's keys too: the adapter hands each over by name (recipe.keys), never through childVars.
+      const expected = new Set([...Object.values(AGENT_VARS).flat(), ...Object.keys(childVars), ...recipe.keys, ...SHELL_OWN]);
       const extra = Object.keys(environ).filter((name) => !expected.has(name)).sort();
       const leaked = Object.entries(environ).filter(([, value]) => hostSecrets.includes(value) || value === canary).map(([name]) => name).sort();
       stage2.env_allowlist = { ok: extra.length === 0 && leaked.length === 0, names: Object.keys(environ).sort(), beyondAllowlist: extra, hostSecretsSeen: leaked };

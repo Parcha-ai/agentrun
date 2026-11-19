@@ -7,19 +7,34 @@ import type { AdapterFacts, AgentAdapter } from "@parcha/agentrun-kernel";
 
 export const ACP_PACKAGE = "@parcha/agentrun-harness-acp";
 
-/** One platform's Goose release, as the pin holds it (the package's AcpArchivePin). */
-export type AcpRelease = { readonly url: string; readonly format: string; readonly sha256: string; readonly cmd: string; readonly binarySha256?: string };
+/** One platform's release of an ACP agent, as the pin holds it (the package's AcpArchivePin). */
+export type AcpRelease = { readonly url: string; readonly format: string; readonly sha256: string; readonly cmd: string; readonly binarySha256?: string; readonly treeSha256?: string };
+/** A pinned release of an ACP agent (the package's AcpBinaryPin). */
+export type AcpPin = { readonly id: string; readonly version: string; readonly archives: Readonly<Partial<Record<string, AcpRelease>>> };
 
 /** What serve reads of the package. */
 export type AcpPackage = {
   readonly gooseFacts: AdapterFacts;
-  readonly GOOSE_PIN: { readonly id: string; readonly version: string; readonly archives: Readonly<Partial<Record<string, AcpRelease>>> };
+  readonly GOOSE_PIN: AcpPin;
   readonly GOOSE_INSTALL: string;
   readonly GOOSE_NOT_INSTALLED: string;
+  readonly cursorFacts: AdapterFacts;
+  readonly CURSOR_PIN: AcpPin;
+  readonly CURSOR_INSTALL: string;
+  readonly CURSOR_CODES: { readonly headlessDisabled: string; readonly notInstalled: string };
+  readonly CURSOR_LIMITS: { readonly maxTurns: number; readonly maxToolCalls: number };
+  cursorCard(limits: { readonly maxTurns: number; readonly maxToolCalls: number }): string;
+  cursorAdapter(options: Record<string, unknown>): AgentAdapter;
+  /** Cursor's release pinned for `platform` (default this host's), its launcher's and tree's digests; undefined where none is. */
+  cursorRelease(platform?: string): { readonly cmd: string; readonly binarySha256: string; readonly treeSha256: string } | undefined;
+  /** The form a model id an ACP agent lists takes (Cursor's `gpt-5.4-nano[reasoning=medium]` among them). */
+  readonly MODEL_ID: RegExp;
   acpPlatform(): string | undefined;
   gooseAdapter(options: Record<string, unknown>): AgentAdapter;
   verifyPinnedBinary(path: string, sha256: string): void;
   verifyPinnedBinaryAsync(path: string, sha256: string): Promise<void>;
+  treeDigest(root: string): Promise<string>;
+  verifyPinnedTree(root: string, sha256: string): Promise<void>;
 };
 
 const requireHere = createRequire(import.meta.url);

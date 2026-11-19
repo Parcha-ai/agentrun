@@ -15,14 +15,31 @@
 //   countFile: a file each event (new, load, prompt, cancel, mcp, permission) is appended to, one JSON line;
 //   systemPrompt: advertise sessionCapabilities.systemPrompt;
 //   ignoreCancel: log session/cancel and go on as if it never came (an agent that keeps spending);
-//   keepMcpOnCancel: on session/cancel, answer the prompt `cancelled` at once and leave an MCP call in flight open.
+//   keepMcpOnCancel: on session/cancel, answer the prompt `cancelled` at once and leave an MCP call in flight open;
+//   announce: "late" (with style "cursor"): an MCP call as Cursor 2026.11.13 announces it, a tool_call titled
+//             "MCP: tool" with no input, then a tool_call_update titled `agentrun: <tool>` whose rawInput is
+//             {providerIdentifier, toolName, args}; its permission request is titled `agentrun-<tool>: <tool>`;
+//   models: the models session/new and session/load list ({modelId, name}), the first current; session/set_model
+//           takes one of them and refuses any other;
+//   writeAuth: at session/new and session/load, write $HOME/.config/cursor/auth.json holding the sha256 of the
+//              CURSOR_API_KEY it was handed (a credential derived from the key, as Cursor writes one); authFile: that
+//              file's path in HOME instead. A write that fails (the path is a folder) is said on stderr and the session
+//              goes on, as Cursor's does;
+//   leak: {path, what}: at the same points, also write `path` (under HOME) holding what a release that saves its key
+//         elsewhere would: "key" the CURSOR_API_KEY as is, "base64" it in base64, "token" a JWT-shaped token (made
+//         here, no real one). For the key walk's red: a leak its guard must see;
+//   failNew: at session/new, print these words on stderr and exit 1 (Cursor's own refusals, the team admin's switch);
+//   cursorDirs: keep sessions and read the CLI config where Cursor 2026.11.13 does (cursor-config/dist/paths.js): its
+//               config directory is $CURSOR_CONFIG_DIR, else $XDG_CONFIG_HOME/cursor, else $HOME/.cursor; sessions in
+//               <dir>/acp-sessions, and an edit, write, delete or move refused unasked when <dir>/cli-config.json denies
+//               Write(**) (Cursor reports it completed all the same).
 // A script step {hang: true} is a model that never answers (until a cancel the agent heeds).
 // The step the model takes is the number it took before: its session's history (calls, native calls, answers), plus the
 // calls a recovery or context note names that its history does not hold, as a resumed model reads its conversation.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { Readable, Writable } from "node:stream";
 import { agent, ndJsonStream, RequestError } from "@agentclientprotocol/sdk";
@@ -34,7 +51,19 @@ const loads = config.load ?? true;
 const askMcp = config.askMcp ?? true;
 const askNative = new Set(config.askNative ?? (style === "cursor" ? ["execute"] : ["execute", "edit", "delete", "move", "fetch", "other"]));
 const home = process.env.HOME ?? "/nonexistent";
-const store = join(home, ".fake-acp", "sessions");
+/** Cursor's config directory, by its own rule (cursorDirs). */
+const cursorDir = process.env.CURSOR_CONFIG_DIR?.trim() || (process.env.XDG_CONFIG_HOME?.trim() ? join(process.env.XDG_CONFIG_HOME, "cursor") : join(home, ".cursor"));
+const store = config.cursorDirs ? join(cursorDir, "acp-sessions") : join(home, ".fake-acp", "sessions");
+/** Whether Cursor's CLI config, where Cursor reads it, denies every Write (read at start, as Cursor reads it). */
+const deniesWrite = (() => {
+  if (!config.cursorDirs) return false;
+  try {
+    return JSON.parse(readFileSync(join(cursorDir, "cli-config.json"), "utf8")).permissions?.deny?.includes("Write(**)") === true;
+  } catch {
+    return false;
+  }
+})();
+const EDITS = new Set(["edit", "delete", "move"]);
 
 const said = (event) => config.countFile && appendFileSync(config.countFile, `${JSON.stringify({ at: Date.now(), pid: process.pid, ...event })}\n`);
 const save = (session) => {
@@ -51,8 +80,35 @@ const pgid = (() => {
     return undefined;
   }
 })();
-said({ type: "start", env: Object.keys(process.env).sort(), home, cwd: process.cwd(), pgid });
+said({ type: "start", env: Object.keys(process.env).sort(), home, cwd: process.cwd(), pgid, ...(config.cursorDirs ? { cursorDir, deniesWrite } : {}) });
 const titleOf = (tool) => (style === "cursor" ? `agentrun-${tool}: ${tool}` : style === "goose-1.59" ? `agentrun: ${tool.replace(/_/g, " ")}` : `agentrun__${tool}`);
+const late = style === "cursor" && config.announce === "late";
+const models = config.models ? { currentModelId: config.models[0].modelId, availableModels: config.models } : undefined;
+/** The credential Cursor derives from its key, in its private HOME: here the key's sha256, never the key. */
+function writeAuth() {
+  if (config.leak) {
+    const key = process.env.CURSOR_API_KEY ?? "";
+    const part = (value) => Buffer.from(JSON.stringify(value)).toString("base64url");
+    const held = { key, base64: Buffer.from(key).toString("base64"), token: `${part({ alg: "HS256", typ: "JWT" })}.${part({ sub: "fake", exp: 4102444800 })}.${part({ fake: "signature" })}` }[config.leak.what];
+    const file = join(home, config.leak.path);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, JSON.stringify({ held }));
+  }
+  if (!config.writeAuth) return;
+  const file = join(home, config.authFile ?? ".config/cursor/auth.json");
+  mkdirSync(dirname(file), { recursive: true });
+  const keySha = createHash("sha256").update(process.env.CURSOR_API_KEY ?? "").digest("hex");
+  try {
+    writeFileSync(file, JSON.stringify({ keySha }));
+  } catch (error) {
+    // As Cursor 2026.11.13 does (src/utils/credential-persistence.ts): a credential it cannot save is said on stderr, and
+    // the session goes on with the one it holds in memory.
+    process.stderr.write(`\u001b[33m⚠ Cursor couldn't save your credentials. This session continues with the credentials it already has.\u001b[0m\nError: ${error.code}: illegal operation on a directory, open '${file}'\n`);
+    said({ type: "auth", file, keySha, saved: false, code: error.code });
+    return;
+  }
+  said({ type: "auth", file, keySha, saved: true });
+}
 const steps = (history) => history.filter((h) => h.kind === "call" || h.kind === "native" || h.kind === "say").length;
 const text = (blocks) => blocks.filter((b) => b.type === "text").map((b) => b.text);
 
@@ -180,8 +236,13 @@ async function takeTurn(client, session, prompt, signal) {
       const entry = { kind: "call", id, tool: s.call, args, status: "pending" };
       session.history.push(entry);
       save(session);
-      await notify({ sessionUpdate: "tool_call", ...update });
-      if (askMcp && !(await permitted(client, session, update))) {
+      if (late) {
+        // Cursor 2026.11.13: the call is announced with no name, then named by an update, then asked about by its own title.
+        await notify({ sessionUpdate: "tool_call", toolCallId: id, title: "MCP: tool", kind: "other", status: "pending", rawInput: {} });
+        await notify({ sessionUpdate: "tool_call_update", toolCallId: id, title: `agentrun: ${s.call}`, rawInput: { providerIdentifier: "agentrun", toolName: s.call, args } });
+        await notify({ sessionUpdate: "tool_call_update", toolCallId: id, status: "in_progress" });
+      } else await notify({ sessionUpdate: "tool_call", ...update });
+      if (askMcp && !(await permitted(client, session, late ? { toolCallId: id, title: titleOf(s.call), kind: "other", status: "pending" } : update))) {
         if (signal.aborted) return { stopReason: "cancelled" };
         entry.status = "failed";
         entry.result = "the client refused the call";
@@ -225,7 +286,7 @@ async function takeTurn(client, session, prompt, signal) {
       session.history.push(entry);
       save(session);
       await notify({ sessionUpdate: "tool_call", ...update });
-      const allowed = askNative.has(s.native) ? await permitted(client, session, update) : true;
+      const allowed = deniesWrite && EDITS.has(s.native) ? false : askNative.has(s.native) ? await permitted(client, session, update) : true;
       if (signal.aborted) return { stopReason: "cancelled" };
       if (allowed && config.nativeLog) appendFileSync(config.nativeLog, `${update.title}\n`);
       entry.status = allowed ? "completed" : "failed";
@@ -235,6 +296,11 @@ async function takeTurn(client, session, prompt, signal) {
       // Cursor reports a refused call completed: the client must never trust it.
       await notify({ sessionUpdate: "tool_call_update", toolCallId: id, status: style === "cursor" ? "completed" : entry.status });
       continue;
+    }
+    if ("die" in s) {
+      // Killed mid-turn (SIGKILL), as a host's kill takes it: no answer, no exit of its own.
+      said({ type: "die" });
+      process.kill(process.pid, "SIGKILL");
     }
     if ("hang" in s) {
       said({ type: "hang" });
@@ -264,11 +330,22 @@ const app = agent({ name: "fake-acp" })
     agentInfo: { name: "fake-acp", version: "1.0.0" },
   }))
   .onRequest("session/new", async ({ params }) => {
+    if (config.failNew) {
+      process.stderr.write(`${config.failNew}\n`);
+      process.exit(1);
+    }
     const id = `sess_${randomUUID()}`;
     const session = await openSession(id, params, []);
     save(session);
+    writeAuth();
     said({ type: "new", sessionId: id, mcp: params.mcpServers.map((s) => s.type ?? "stdio"), system: session.system });
-    return { sessionId: id };
+    return { sessionId: id, ...(models ? { models } : {}) };
+  })
+  // Not in the SDK's stable methods: Cursor's own (unstable ACP) method, so its params are taken as they come.
+  .onRequest("session/set_model", (params) => params ?? {}, async ({ params }) => {
+    if (!models?.availableModels.some((m) => m.modelId === params.modelId)) throw RequestError.invalidParams({ modelId: params.modelId });
+    said({ type: "set_model", sessionId: params.sessionId, modelId: params.modelId });
+    return {};
   })
   .onRequest("session/load", async ({ params, client }) => {
     const file = join(store, `${params.sessionId}.json`);
@@ -285,7 +362,8 @@ const app = agent({ name: "fake-acp" })
         await client.notify("session/update", { sessionId: session.id, update: { sessionUpdate: "tool_call_update", toolCallId: h.id, status: h.status === "pending" ? "failed" : h.status } });
       }
     }
-    return {};
+    writeAuth();
+    return models ? { models } : {};
   })
   .onRequest("session/prompt", async ({ params, client }) => {
     const session = sessions.get(params.sessionId);

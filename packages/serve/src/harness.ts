@@ -37,7 +37,8 @@ export const PLAN_HARNESSES: readonly string[] = Object.freeze(["pi", "codex"] s
  *  (or the first agent made on it) installs it (harness-install.ts). */
 /** `id`: one of the table's (harness-table.ts harnessIds): a built-in one (HARNESSES) or one an owner's harness module adds.
  *  `label`: its name in a sentence. `promises`: what it promises (HarnessPromises), as capabilities show it. */
-export type HarnessOffer = { id: string; label: string; promises: HarnessPromises; available: boolean; steer: boolean; reason?: string; default_model?: string | null; keys?: readonly string[]; installs?: "on_first_use" };
+/** `card`: what its owner reads before running it (HarnessEntry.card: Cursor's, billed to the owner's plan). */
+export type HarnessOffer = { id: string; label: string; promises: HarnessPromises; available: boolean; steer: boolean; reason?: string; default_model?: string | null; keys?: readonly string[]; installs?: "on_first_use"; card?: string };
 /** A harness as capabilities list it: an offer with its `default_model` resolved (harnessOffers), never left out, and
  *  the memory a run of it reserves (`run_memory_mib`). */
 export type HarnessCapability = HarnessOffer & { default_model: string | null; models: string[]; free_models: { id: string; context_window: number }[]; run_memory_mib: number; needs?: HarnessNeed[] };
@@ -73,7 +74,8 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
       const { harnessIds, harnessOf, NATIVE_PROMISES } = await import("./harness-table.js");
       const probed = await Promise.all(harnessIds(env).map(async (id): Promise<HarnessOffer> => {
         const entry = harnessOf(env, id)!;
-        const named = { label: entry.label, promises: entry.promises ?? NATIVE_PROMISES };
+        const card = entry.card?.(env);
+        const named = { label: entry.label, promises: entry.promises ?? NATIVE_PROMISES, ...(card ? { card } : {}) };
         // The start's probe: these offers hold until a restart (server.ts), so the reason says so where installing fixes it.
         // Claude Code not installed yet says so (its install probes the offers again).
         const firstUse = entry.installs && !(await harnessInstalled(entry, env)) ? { installs: "on_first_use" as const } : {};

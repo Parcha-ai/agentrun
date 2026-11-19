@@ -25,7 +25,7 @@ import { recipeProblems, type AcpRecipe } from "./recipe.js";
 export type AcpRecipeFile = Omit<AcpRecipe, "command">;
 
 /** The recipes this package ships, by name. */
-export type AcpRecipeName = "goose";
+export type AcpRecipeName = "goose" | "cursor";
 
 /** The variables the proxy (ANTHROPIC_HOST, ANTHROPIC_API_KEY) and the loader (GOOSE_MODEL) set: a recipe file never
  *  names them. */

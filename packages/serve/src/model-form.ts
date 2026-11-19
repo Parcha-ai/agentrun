@@ -5,9 +5,12 @@
 import { adapterFactsOf } from "./adapter-facts.js";
 import { FAUX_ENV, MODEL_KEYS } from "./model.js";
 import { openRouterName } from "./provider.js";
-import { WIRES } from "./wires.js";
+import { wireOf } from "./wires.js";
 import { PLAN_PROVIDER, planOf, signedIn } from "./chatgpt-plan.js";
 import { PLAN_HARNESSES } from "./harness.js";
+// The default a harness billed to its own plan is named by (Cursor's, the one such harness: `cursor/default`). Already in
+// any process that loads model.ts (whose harness table imports it), so no module is added to its graph.
+import { CURSOR_DEFAULT_MODEL } from "./harness-cursor.js";
 
 /** The current models a person may pick, by vendor, in the vendor's own ids (Anthropic's dashes; OpenRouter's dotted name
  *  for the same model is derived, provider.ts openRouterName). The everyday model first: it is the example a refusal gives.
@@ -19,10 +22,13 @@ export const PICKABLE: readonly { vendor: string; ids: readonly string[] }[] = O
   { vendor: "particle", ids: Object.freeze(["particle-1"]) },
 ]);
 
-/** The vendors whose models `harness` runs: pi any; an adapter harness, its wire's vendor. */
+/** The vendors whose models `harness` runs: pi any; an adapter harness, its wire's vendor; one billed to its own plan, none
+ *  of ours. */
 const vendorsOf = (harness: string): readonly string[] => {
   const facts = adapterFactsOf(harness);
-  return facts ? [WIRES[facts.wire].vendor] : PICKABLE.map((p) => p.vendor);
+  if (!facts) return PICKABLE.map((p) => p.vendor);
+  const settings = wireOf(facts.wire);
+  return settings ? [settings.vendor] : [];
 };
 
 /** `vendor`'s model `id` in the form this server runs it: `vendor/id` on the vendor's own key, or through OpenRouter
@@ -37,10 +43,12 @@ export function formOf(env: NodeJS.ProcessEnv, vendor: string, id: string): stri
  *  (harness.ts harnessOffers drops those it does not run). Behind serve's gateway every id is the gateway's own string, so
  *  the host's tier models stand for what it runs; with the faux model none is offered. */
 export function pickerCandidates(env: NodeJS.ProcessEnv, harness: string): string[] {
-  if (env[FAUX_ENV]) return [];
+  // A harness billed to its own plan (Cursor) runs its vendor's models, listed by its vendor for its owner's key alone: its
+  // entry's default is offered (harness.ts harnessOffers' default_model), and none of ours.
+  const facts = adapterFactsOf(harness);
+  if (env[FAUX_ENV] || (facts && !wireOf(facts.wire))) return [];
   // The gateway serves the harnesses whose wire goes through it (pi, and the OpenAI Responses wire: providerFor); the
   // Anthropic Messages wire never does, so Claude is offered Anthropic's models on its own key.
-  const facts = adapterFactsOf(harness);
   if (env.AGENT_MODEL_BASE_URL && facts?.wire !== "anthropic-messages") return [...new Set([env.AGENT_MODEL, env.AGENT_MODEL_FAST, env.AGENT_MODEL_STRONG].filter((id): id is string => Boolean(id)))];
   const vendors = vendorsOf(harness);
   // Signed in to a ChatGPT plan, its models first for a harness that runs on it (`chatgpt/<model-id>`).
@@ -92,11 +100,15 @@ export function modelFormWhy(env: NodeJS.ProcessEnv, harness: string, named: str
 
 /** "On pi, a model is <provider>/<model id>, like A or B": the forms this server can run, each of the harness's first
  *  vendor's everyday model, the vendor's own and OpenRouter's. Only the forms a key here runs; with neither key both, since
- *  either key makes one run. */
+ *  either key makes one run. A harness billed to its own plan (Cursor: its wire `plan`, so no vendor of ours) takes its
+ *  own form, `<harness>/<model id>`, a model its vendor lists for its owner's key, like its own default. */
 export function modelShape(env: NodeJS.ProcessEnv, harness: string): string {
-  const first = PICKABLE.find((p) => vendorsOf(harness).includes(p.vendor))!;
-  const id = first.ids[0]!;
-  const own = Boolean(env[MODEL_KEYS.find((r) => r.id === first.vendor)!.field]);
+  const facts = adapterFactsOf(harness);
+  const first = PICKABLE.find((p) => vendorsOf(harness).includes(p.vendor));
+  const id = first?.ids[0];
+  if (!first || !id) return `On ${harness}, a model is ${harness}/<model id> (one ${facts?.label ?? harness} lists for your key), like ${harness}/${CURSOR_DEFAULT_MODEL}`;
+  const key = MODEL_KEYS.find((r) => r.id === first.vendor)?.field;
+  const own = Boolean(key && env[key]);
   const router = Boolean(env.OPENROUTER_API_KEY);
   const shown = [...(own || !router ? [`${first.vendor}/${id}`] : []), ...(router || !own ? [`openrouter/${first.vendor}/${first.vendor === "anthropic" ? openRouterName(id) : id}`] : [])];
   return `On ${harness}, a model is <provider>/<model id>, like ${shown.join(" or ")}`;

@@ -189,6 +189,7 @@ export interface components {
       reason?: string;
       needs?: ("key" | "chatgpt")[];
       installs?: "on_first_use";
+      card?: string;
     }[];
     tools: {
       name: string;

@@ -301,7 +301,7 @@ Route: `PUT /files/{file_id}`.
 
 ### `agentrun harness install HARNESS`
 
-Install a harness AgentRun runs only once its owner installs it (goose, or a recipe file's), then restart AgentRun.
+Install a harness AgentRun runs only once its owner installs it (goose, cursor, or a recipe file's), then restart AgentRun.
 
 Route: none, it runs on this machine.
 
