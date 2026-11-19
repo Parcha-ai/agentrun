@@ -318,9 +318,7 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
   // A proxy-billed recipe starts as a module's ACP agent does on a server (harness-table.ts acpEntryOf): its model and key
   // chosen and a login refused there, its price, the adapter over its recipe and the session's model proxy (the one on
   // Anthropic's Messages there is, Goose's policy, its address under the variable the recipe names), on this check's log
-  // and host environment. A plan-billed one has no model of ours to choose: the adapter over its recipe alone. That is
-  // the one ACP start outside acpEntryOf, because the kit has no plan entry (adapterEntry refuses a wire that is not a
-  // model's, and an ACP entry's proxy is required). It goes when a module needs plan billing and the kit gains one.
+  // and host environment.
   const proxyAt: string = recipe.model.billing === "proxy" ? (recipe.model.hostEnv ?? "ANTHROPIC_HOST") : "ANTHROPIC_HOST";
   const entry = needs && acpEntryOf({
     facts: { ...acp.gooseFacts, id: recipe.id, label: recipe.label },
@@ -336,6 +334,7 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
     },
     beforeStart,
   }, { log, env: true });
+  // Plan billing starts the adapter directly because the kit has no plan entry (adapterEntry refuses a non-model wire, and acpEntry requires a proxy); this goes when a module needs plan billing.
   const adapterFor = async (): Promise<AgentAdapter> => entry ? entry.adapter!(hostEnv, needs!) : acp.acpAdapter({ recipe: acpRecipeOf(), env: hostEnv, log, beforeStart });
   // The first runner's adapter is made before any turn, so a model this server can't run is refused before the agent
   // starts; with it, the cap's model, priced here or refused.

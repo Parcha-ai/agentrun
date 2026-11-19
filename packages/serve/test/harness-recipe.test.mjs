@@ -361,6 +361,41 @@ test("harness-check passes a plan-billed agent that reaches its vendor through H
   assert.equal(keyless.origin.messages().length, 0);
 });
 
+/** What a report says, without what differs run to run (pids, paths, digests, times): its result, its refusal's code,
+ *  its facts, each stage row's name, result and fields, and its failures. */
+const shapeOf = (report) => ({
+  ok: report.ok,
+  refused: report.refused?.code ?? null,
+  facts: report.facts ?? null,
+  ...Object.fromEntries(["stage2", "stage3"].map((stage) => [stage, Object.fromEntries(Object.entries(report[stage] ?? {}).map(([name, row]) => [name, { ok: row.ok, fields: Object.keys(row).sort() }]))])),
+  failures: report.failures,
+});
+
+// A plan-billed recipe's check starts its agent on the adapter over its recipe alone (harness-check.ts): its rows, their
+// fields and its failures as they were before a proxy-billed one went through the kit's entry (fixtures/
+// plan-check-shapes.json, written by the check before that change).
+test("a plan-billed recipe's check keeps its rows and codes: passed, a host it does not name refused, a key it lacks refused", { skip: linux, timeout: 120_000 }, async (t) => {
+  const planned = (hosts) => (origin) => {
+    const vendor = new URL(origin.url).host;
+    return recipeOf(undefined, { keys: ["MODEL_AGENT_API_KEY"], env: { MODEL_AGENT_MODE: "plan", MODEL_AGENT_VENDOR: vendor, MODEL_AGENT_MODEL: "vendor-model" }, model: { billing: "plan", maxTurns: 8, maxToolCalls: 8, hosts: hosts ?? [vendor] } });
+  };
+  const keyed = cliEnv({ MODEL_AGENT_API_KEY: "fake-test-key" });
+  const passed = await installed(t, planned());
+  const unnamed = await installed(t, planned(["vendor.example.invalid"]));
+  const keyless = await installed(t, planned());
+  const runs = {
+    passed: await check(t, passed.file, passed.data, keyed),
+    unnamed: await check(t, unnamed.file, unnamed.data, keyed),
+    keyless: await check(t, keyless.file, keyless.data, cliEnv()),
+  };
+  assert.deepEqual(Object.fromEntries(Object.entries(runs).map(([name, run]) => [name, shapeOf(run.report)])), JSON.parse(readFileSync(new URL("./fixtures/plan-check-shapes.json", import.meta.url), "utf8")));
+  assert.deepEqual(Object.values(runs).map((run) => run.status), [0, 1, 1]);
+  // The key it lacks is refused by its code at the agent's start, before the vendor hears anything.
+  assert.match(runs.keyless.report.stage3.mcp_tool.error, /ACP_KEY_MISSING: [^\n]*MODEL_AGENT_API_KEY/);
+  assert.equal(keyless.origin.messages().length, 0);
+  assert.equal(unnamed.origin.messages().length, 0);
+});
+
 test("harness-check finds a host key the recipe copied under another name, though the server keeps its keys off the environment's enumeration", { skip: linux, timeout: 120_000 }, async (t) => {
   const { data, file, env } = await installed(t, recipeOf(undefined, { env: { MODEL_AGENT_MODE: "good", DEBUG_VALUE: "fake-test-key" } }));
   const run = await check(t, file, data, env);
