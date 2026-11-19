@@ -606,9 +606,9 @@ test("a create cancelled while its remove still runs on a paired Linux box answe
 	assert.equal((await hub.accept(paired, serve)).ok, true);
 	const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
 	/** A create of `labels` cancelled once its remove of /workspace/old is on the box: its answer. */
-	const cancelledCreate = async (labels) => {
+	const cancelledCreate = async (labels, lifetimeMs = SYNCED.lifetimeMs) => {
 		const cancel = new AbortController();
-		const creating = provider.create({ ...SYNCED, labels }, { ...req(), signal: cancel.signal });
+		const creating = provider.create({ ...SYNCED, labels, lifetimeMs }, { ...req(), signal: cancel.signal });
 		while (!box.calls.includes("files.remove /workspace/old recursive")) await settle();
 		cancel.abort();
 		return creating;
@@ -624,6 +624,24 @@ test("a create cancelled while its remove still runs on a paired Linux box answe
 	const second = await provider.create({ ...SYNCED, labels: b }, req());
 	assert.equal(second.ok, true, JSON.stringify(second));
 	assert.equal((await provider.release(second.value, "delete")).ok, true);
+
+	// A later claim's release of the kept hold (serve's releaseOlder lists it and releases it, from a provider of its
+	// own) answers only once the remove has answered, and the hold's deadline passing doesn't let it go either.
+	box.entries = ["old"];
+	box.calls.length = 0;
+	box.removing = new Promise((resolve) => (removed = resolve));
+	assert.equal((await cancelledCreate(a, 80)).error?.code, "aborted");
+	const later = attachedProvider(paired, hub);
+	const [kept] = (await later.list({ "agentrun.run": "a" })).value;
+	let released;
+	const releasing = later.release(kept.ref, "delete").then((answer) => (released = answer));
+	await new Promise((resolve) => setTimeout(resolve, 150));
+	assert.equal(released, undefined, "the release waits on the remove");
+	assert.deepEqual(hub.claimed(paired.id), a, "the hold outlasts its deadline while the remove runs");
+	assert.match((await later.create({ ...SYNCED, labels: b }, req())).error?.message ?? "", /^lab is held by another run/);
+	removed();
+	assert.equal((await releasing).ok, true);
+	assert.equal(hub.claimed(paired.id), undefined, "released once the remove answered");
 
 	// A remove whose connection closes before it answers lets the hold go: no hang on a box that is gone.
 	box.entries = ["old"];

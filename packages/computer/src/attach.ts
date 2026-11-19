@@ -288,7 +288,9 @@ interface Live {
 export class AttachHub {
 	readonly #live = new Map<string, Live>();
 	/** The run holding each computer: the hold's own token, its labels, and its deadline with the timer that ends it. */
-	readonly #claims = new Map<string, { hold: string; labels: Record<string, string>; deadline?: Date; timer?: ReturnType<typeof setTimeout> }>();
+	readonly #claims = new Map<string, { hold: string; labels: Record<string, string>; deadline?: Date; timer?: ReturnType<typeof setTimeout>; ending?: Promise<boolean> }>();
+	/** The calls still running on each computer that change it (changing): no hold on it ends before each has ended. */
+	readonly #changing = new Map<string, Set<Promise<unknown>>>();
 	/** The sockets still saying hello, by computer: a revoke closes them too, so none comes back after it. */
 	readonly #pending = new Map<string, Set<AttachSocket>>();
 	/** Each computer's connections given out, by the function that closes one. */
@@ -424,7 +426,7 @@ export class AttachHub {
 		this.#expire(id);
 		if (this.#claims.has(id)) return undefined;
 		const hold = randomUUID().replaceAll("-", "").slice(0, 16);
-		const timer = deadline === undefined ? undefined : setTimeout(() => this.unclaim(id, hold), Math.max(0, deadline.getTime() - Date.now()));
+		const timer = deadline === undefined ? undefined : setTimeout(() => void this.unclaim(id, hold), Math.max(0, deadline.getTime() - Date.now()));
 		timer?.unref?.();
 		this.#claims.set(id, { hold, labels: { ...labels }, ...(deadline === undefined ? {} : { deadline, timer }) });
 		return hold;
@@ -449,22 +451,51 @@ export class AttachHub {
 	}
 
 	/**
-	 * Ends the hold named by its token, and closes the connections it was given. A token of a hold already ended (a late
-	 * release, after the deadline gave the computer to another run) ends nothing: false.
+	 * `answer`, a call that changes the computer (a create's files.remove or KILL), kept until it ends: computerd ends
+	 * what a cancelled call started, so it has ended only when the computer answers it or its connection closes. No hold
+	 * on the computer ends before that (unclaim).
 	 */
-	unclaim(id: string, hold: string): boolean {
+	changing(id: string, answer: Promise<unknown>): void {
+		const running = this.#changing.get(id) ?? new Set<Promise<unknown>>();
+		this.#changing.set(id, running);
+		running.add(answer);
+		void answer.finally(() => {
+			running.delete(answer);
+			if (running.size === 0 && this.#changing.get(id) === running) this.#changing.delete(id);
+		});
+	}
+
+	/** Resolves once no call that changes the computer runs (changing): at once while none does. */
+	async unchanged(id: string): Promise<void> {
+		for (let running = this.#changing.get(id); running !== undefined; running = this.#changing.get(id)) await Promise.allSettled(running);
+	}
+
+	/**
+	 * Ends the hold named by its token, and closes the connections it was given: at once, or while a call that changes
+	 * the computer still runs (changing), once each has ended, so no next run is given a computer an earlier call still
+	 * changes. A token of a hold already ended (a late release, after the deadline gave the computer to another run)
+	 * ends nothing: false.
+	 */
+	unclaim(id: string, hold: string): Promise<boolean> {
 		const held = this.#claims.get(id);
-		if (held === undefined || held.hold !== hold) return false;
+		if (held === undefined || held.hold !== hold) return Promise.resolve(false);
+		if (this.#changing.has(id)) {
+			held.ending ??= this.unchanged(id).then(() => {
+				held.ending = undefined;
+				return this.unclaim(id, hold);
+			});
+			return held.ending;
+		}
 		clearTimeout(held.timer);
 		this.#claims.delete(id);
 		this.#closeGiven(id);
-		return true;
+		return Promise.resolve(true);
 	}
 
-	/** A hold past its deadline ends at once, whether or not its timer has run yet. */
+	/** A hold past its deadline ends at once, whether or not its timer has run yet (once its changing calls end). */
 	#expire(id: string): void {
 		const held = this.#claims.get(id);
-		if (held?.deadline !== undefined && held.deadline.getTime() <= Date.now()) this.unclaim(id, held.hold);
+		if (held?.deadline !== undefined && held.deadline.getTime() <= Date.now()) void this.unclaim(id, held.hold);
 	}
 
 	/** Ends a computer's attachment: its token was revoked, or the computer was removed. */
@@ -510,15 +541,14 @@ async function pairedWorkspaceWhy(client: ComputerClient, name: string, signal?:
 
 /**
  * A call that changes the box (files.remove, process.signal), sent with no abort of its own: computerd still ends what a
- * cancelled call started, so the call has ended only when the box answers it or its connection closes. It is kept in
- * `running` until then, for the hold that must outlast it. The caller's own wait still ends at `signal`, and none is
- * sent once that has aborted.
+ * cancelled call started, so the call has ended only when the box answers it or its connection closes. Its answer goes
+ * to `changing` (AttachHub.changing), which keeps the box's hold until then. The caller's own wait still ends at
+ * `signal`, and none is sent once that has aborted.
  */
-function changeBox<M extends DaemonMethod>(client: ComputerClient, running: Set<Promise<unknown>>, method: M, params: DaemonMethods[M]["params"], signal?: AbortSignal): Promise<Result<DaemonMethods[M]["result"]>> {
+function changeBox<M extends DaemonMethod>(client: ComputerClient, changing: (answer: Promise<unknown>) => void, method: M, params: DaemonMethods[M]["params"], signal?: AbortSignal): Promise<Result<DaemonMethods[M]["result"]>> {
 	if (signal?.aborted) return Promise.resolve(fail("aborted", `${method} was aborted before it was sent`));
 	const answer = client.call(method, params);
-	running.add(answer);
-	void answer.finally(() => running.delete(answer));
+	changing(answer);
 	if (signal === undefined) return answer;
 	const aborted = new Promise<Result<never>>((resolve) => {
 		const onAbort = () => resolve(fail("aborted", `${method} was aborted`));
@@ -528,24 +558,18 @@ function changeBox<M extends DaemonMethod>(client: ComputerClient, running: Set<
 	return Promise.race([answer, aborted]);
 }
 
-/** `then` run once every call in `running` (changeBox's) has ended: at once while none runs. */
-function whenEnded(running: ReadonlySet<Promise<unknown>>, then: () => unknown): void {
-	if (running.size === 0) then();
-	else void Promise.allSettled(running).then(then);
-}
-
 /** Every program computerd still runs on `name` ended, waited for up to 5 s each: the box outlives its runs, and one
  *  run holds it at a time, so a program running at a claim is an earlier run's (a background program left when its hold
  *  ended at its deadline, or its runner was lost), which could read or write the next run's folder. KILL goes to its
- *  process group; init kills what left that group once its guard is gone. Each KILL is kept in `running` (changeBox). */
-async function endPrograms(client: ComputerClient, name: string, running: Set<Promise<unknown>>, signal?: AbortSignal): Promise<Result<void>> {
+ *  process group; init kills what left that group once its guard is gone. Each KILL goes to `changing` (changeBox). */
+async function endPrograms(client: ComputerClient, name: string, changing: (answer: Promise<unknown>) => void, signal?: AbortSignal): Promise<Result<void>> {
 	const options = signal ? { signal } : {};
 	const words = (message: string) => `ending an earlier run's programs on ${name}: ${message}`;
 	for (let from = 0; ; ) {
 		const listed = await client.call("process.list", { from }, options);
 		if (!listed.ok) return fail(listed.error.code, words(listed.error.message));
 		for (const program of listed.value.processes.filter((one) => one.running)) {
-			const killed = await changeBox(client, running, "process.signal", { id: program.id, signal: "KILL" }, signal);
+			const killed = await changeBox(client, changing, "process.signal", { id: program.id, signal: "KILL" }, signal);
 			if (!killed.ok && killed.error.code !== "not_found") return fail(killed.error.code, words(killed.error.message));
 			const waited = await client.call("process.wait", { id: program.id, timeoutMs: 5_000 }, options);
 			if (waited.ok && waited.value.running) return fail("refused", words(`${program.argv.join(" ")} (pid ${program.pid}) is still running 5 s after KILL`));
@@ -558,9 +582,9 @@ async function endPrograms(client: ComputerClient, name: string, running: Set<Pr
 /** Everything in `name`'s /workspace removed, the folder itself kept (only root makes one): each entry of its first
  *  level, a directory with what it holds, a link removed and never followed (files.remove). An entry a remove can't
  *  find (a name that is not UTF-8 reaches the wire changed) is left: a whole listing with one left, or a truncated one
- *  that a pass removes nothing of, refuses the box in words naming what was left. Each remove is kept in `running`
+ *  that a pass removes nothing of, refuses the box in words naming what was left. Each remove goes to `changing`
  *  (changeBox): a cancelled one's RemoveAll still deletes on the box. */
-async function emptyWorkspace(client: ComputerClient, name: string, running: Set<Promise<unknown>>, signal?: AbortSignal): Promise<Result<void>> {
+async function emptyWorkspace(client: ComputerClient, name: string, changing: (answer: Promise<unknown>) => void, signal?: AbortSignal): Promise<Result<void>> {
 	const options = signal ? { signal } : {};
 	const words = (message: string) => `emptying ${WORKSPACE} on ${name} of an earlier run's folder: ${message}`;
 	for (;;) {
@@ -568,7 +592,7 @@ async function emptyWorkspace(client: ComputerClient, name: string, running: Set
 		if (!listed.ok) return fail(listed.error.code, words(listed.error.message));
 		const left: string[] = [];
 		for (const entry of listed.value.entries) {
-			const removed = await changeBox(client, running, "files.remove", { path: entry.path, recursive: true }, signal);
+			const removed = await changeBox(client, changing, "files.remove", { path: entry.path, recursive: true }, signal);
 			if (removed.ok) continue;
 			if (removed.error.code !== "not_found") return fail(removed.error.code, words(removed.error.message));
 			left.push(`${entry.path}: ${removed.error.message}`);
@@ -642,24 +666,25 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 	/** The synced folder read back from inside the box: its /workspace as pairedWorkspaceWhy holds it, else in words.
 	 *  `fresh`: what an earlier run left is ended and removed first, its programs (endPrograms) and then each entry of the
 	 *  folder (a link removed and never followed), so the run's push goes into an empty folder no other run's program
-	 *  reaches, as into a hosted computer's new one. Fresh is given `running`, where each call that changes the box stays
-	 *  until it has ended (changeBox); the connection is closed only then, as a close would drop their answers. */
-	const folder = async (signal?: AbortSignal, running?: Set<Promise<unknown>>): Promise<Result<MountReadBack>> => {
+	 *  reaches, as into a hosted computer's new one. Each of those calls that changes the box is the hub's (changing)
+	 *  until it has ended, and the connection is closed only then, as a close would drop their answers. */
+	const folder = async (signal?: AbortSignal, fresh = false): Promise<Result<MountReadBack>> => {
 		const connection = hub.connection(paired.id);
 		if (connection === undefined) return offline();
+		const changing = (answer: Promise<unknown>) => hub.changing(paired.id, answer);
 		try {
 			const why = await pairedWorkspaceWhy(connection.client, paired.name, signal);
 			if (!why.ok) return why;
 			if (why.value !== undefined) return ok({ other: why.value });
-			if (running !== undefined) {
-				const stopped = await endPrograms(connection.client, paired.name, running, signal);
+			if (fresh) {
+				const stopped = await endPrograms(connection.client, paired.name, changing, signal);
 				if (!stopped.ok) return stopped;
-				const emptied = await emptyWorkspace(connection.client, paired.name, running, signal);
+				const emptied = await emptyWorkspace(connection.client, paired.name, changing, signal);
 				if (!emptied.ok) return emptied;
 			}
 			return ok(recorded());
 		} finally {
-			whenEnded(running ?? new Set(), () => connection.close());
+			void hub.unchanged(paired.id).then(() => connection.close());
 		}
 	};
 	return {
@@ -710,12 +735,12 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 			// go, in words. A retry of this request meanwhile shares this answer.
 			const requestId = context.requestId;
 			const answer = (async () => {
-				const running = new Set<Promise<unknown>>();
-				const read = await folder(context.signal, running);
+				const read = await folder(context.signal, true);
 				if (!read.ok || "other" in read.value) {
-					// A cancelled create answers at once, but the box still runs the remove or KILL it stopped waiting for: the
-					// hold is let go once each has answered or its connection closed, so no next run's folder lands under it.
-					whenEnded(running, () => hub.unclaim(paired.id, hold));
+					// A cancelled create answers at once, but the box may still run a remove or KILL it stopped waiting for: the
+					// hold is let go once each has answered or its connection closed (unclaim), so no next run's folder lands
+					// under it.
+					void hub.unclaim(paired.id, hold);
 					return read.ok ? fail("refused", (read.value as { other: string }).other) : read;
 				}
 				syncedHold = hold;
@@ -762,8 +787,9 @@ export function attachedProvider(paired: PairedComputer, hub: AttachHub): Comput
 			if (which === undefined) return unknown(asked.id);
 			if (how === "stop") return fail("unsupported", `${paired.name} is a person's own machine: a run releases its hold, and never stops it`);
 			if (which.hold === undefined) return fail("invalid", `release names the run's hold on ${paired.name}, the ref create gave (${paired.id}.<hold>), never the computer itself`);
-			// A hold already ended is released already: the hold on the computer now, if any, is another run's and stays.
-			hub.unclaim(paired.id, which.hold);
+			// A hold already ended is released already: the hold on the computer now, if any, is another run's and stays. A
+			// release while a create's remove or KILL still runs on the box answers once the hold has ended, after it.
+			await hub.unclaim(paired.id, which.hold);
 			return ok(undefined);
 		},
 	};
