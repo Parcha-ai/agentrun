@@ -188,7 +188,7 @@ tool_gate: permission
 billing: proxy
 spend: $0.00412
 harness-check: passed
-report: /home/you/harness-check-acme.json
+report: /work/harness-check-acme.json
 ```
 
 A refused recipe prints one line, `harness-check: refused: <CODE>: <every problem>`, and runs nothing.

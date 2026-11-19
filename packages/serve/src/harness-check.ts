@@ -110,7 +110,7 @@ const fileDigest = (path: string): Promise<string> => new Promise((resolve, reje
   createReadStream(path).on("error", reject).on("data", (chunk) => hash.update(chunk)).on("end", () => resolve(hash.digest("hex")));
 });
 
-const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the one address the check's refusing egress proxy listens on, and what the agent may reach without it
+const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the one address the refusing egress proxy of a check listens on
 
 /** A loopback HTTP proxy that refuses every request and records its target: what the agent reaches for beyond loopback. */
 async function egressProxy(): Promise<{ url: string; asked: { method: string; target: string }[]; close(): Promise<void> }> {
@@ -281,7 +281,7 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
   if (recipe.model.billing === "proxy") childVars[recipe.model.env] = provider!.modelId;
   for (const name of recipe.keys) if (env[name]) childVars[name] = env[name]!;
   for (const name of EGRESS_VARS) childVars[name] = egress.url;
-  for (const name of NO_PROXY_VARS) childVars[name] = `${LOOPBACK},localhost`;
+  for (const name of NO_PROXY_VARS) childVars[name] = `${LOOPBACK},localhost`; // key-gate: loopback-rule the hosts the agent reaches without the refusing proxy: the model proxy and MCP on this machine
   const acpRecipe = {
     id: recipe.id,
     label: recipe.label,
