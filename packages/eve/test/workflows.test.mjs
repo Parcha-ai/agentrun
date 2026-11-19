@@ -3,7 +3,7 @@ import test from 'node:test';
 import { executeLearnedWorkflow, reserveWorkflowInvocation, workflowBinding, workflowInstructions, workflowInvocation, workflowScope } from '../dist/extension/lib/workflows.mjs';
 import { readWorkflowResult } from '../dist/extension/lib/workflow-evidence.mjs';
 import { collectTurn } from '../dist/extension/lib/evidence.mjs';
-import { resolveSchemaForWorkflow, validateWorkflow } from '@parcha/agentrun-dsl';
+import { inspectWorkflow, resolveSchemaForWorkflow, validateWorkflow } from '@parcha/agentrun-dsl';
 
 const inputSchema = { type: 'object', properties: { service: { type: 'string' } }, required: ['service'], additionalProperties: false };
 const native = () => ({ sessionId: 'session-one', turnId: 'turn-one', callId: 'call-one', signal: new AbortController().signal });
@@ -88,6 +88,31 @@ test('an explicit custom mount name and native aliases are pinned without export
   assert.match(workflowInstructions(f.record), /my_learning__learned_workflow/);
   assert.doesNotMatch(workflowInstructions(f.record), /secret|capability|Bearer/);
   assert.doesNotMatch(JSON.stringify(f.record.workflowBinding.manifest), /nativeName|execute|readOnly/);
+});
+
+test('workflow context identifies only the original native callbacks its checked document calls', () => {
+  const f = fixture();
+  const workflow = {
+    v: 2, name: 'read-release', schemas: { Input: inputSchema, Output: { type: 'object' } },
+    input: { schemaId: 'Input' }, output: { schemaId: 'Output', path: 'result' },
+    root: { node: 'call', label: 'read', via: 'tool', tool: 'mcp:release/status',
+      args: { service: '{service}' }, out: 'Output', as: 'result', deadline_s: 5 },
+  };
+  assert.equal(validateWorkflow(workflow).ok, true);
+  f.options.engine = { ...f.options.engine, inspectWorkflow, resolveSchemaForWorkflow };
+  f.record.workflowBinding.aliases.push({ name: 'mcp:release/unused', nativeName: 'unrelated_tool' });
+  f.record.receipt.learning.workflows = [{ name: 'read-release', description: 'Read a release.', workflow: JSON.stringify(workflow) }];
+  const advertised = () => {
+    const context = workflowInstructions(f.record, f.options);
+    assert.doesNotMatch(context, /receipt-secret-test|fake-test-key|unrelated_tool/);
+    return JSON.parse(context.split('\n')[1])[0];
+  };
+  assert.deepEqual(advertised().original_tools, [{ name: 'mcp:release/status', nativeName: 'release_status' }]);
+  assert.deepEqual(advertised().input_schema, inputSchema);
+  f.record.workflowBinding.aliases = [{ name: 'mcp:release/unused', nativeName: 'unrelated_tool' }];
+  assert.equal(advertised().original_tools, undefined, 'An unmapped tool must not be claimed as an original callback.');
+  f.record.receipt.learning.enabled = false;
+  assert.equal(workflowInstructions(f.record, f.options), '', 'Off must not advertise workflow callbacks.');
 });
 
 test('workflow instructions include sibling input definitions needed to supply fresh arguments', () => {

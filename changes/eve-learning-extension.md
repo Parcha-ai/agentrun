@@ -13,6 +13,8 @@ callbacks through a private local MCP bridge. Admission remains bound to the cur
 pinned revision, with one workflow invocation per turn and Learning Off checked before dispatch.
 Mutating tools and model/judgment callbacks are not supported in this initial eve workflow mode.
 The cookbook includes a fresh-session workflow reuse and Learning Off comparison.
+Workflow context names the original native callbacks found by inspecting each pinned workflow,
+so the agent can compare it with its existing task and standing tool policy.
 
 Show the actual harness mark beside connected agents and observed sessions, including eve,
 Claude Code and Codex. Workflow agents keep a distinct workflow icon.

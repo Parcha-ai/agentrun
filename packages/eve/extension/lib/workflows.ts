@@ -70,14 +70,18 @@ export function workflowScope(record: TurnRecord): WorkflowEvidenceScope | undef
 export function workflowInstructions(record: TurnRecord, options?: EveWorkflowOptions): string {
   if (!record.workflowBinding || !record.receipt.learning.enabled || !record.receipt.learning.workflows?.length) return '';
   const workflows = record.receipt.learning.workflows.map(({ name, description, workflow }) => {
-    let input_schema;
+    let input_schema, original_tools;
     try {
       const document = JSON.parse(workflow);
       if (options && document.input) input_schema = options.engine.resolveSchemaForWorkflow(document, document.schemas[document.input.schemaId]);
+      if (options) original_tools = options.engine.inspectWorkflow(document).requires.tools.flatMap(name => {
+        const alias = record.workflowBinding!.aliases.find(tool => tool.name === name);
+        return alias ? [{ name: alias.name, nativeName: alias.nativeName }] : [];
+      });
     } catch { /* Invocation validates the pinned document. */ }
-    return { name, description, ...(input_schema ? { input_schema } : {}) };
+    return { name, description, ...(input_schema ? { input_schema } : {}), ...(original_tools?.length ? { original_tools } : {}) };
   });
-  return `Approved workflows pinned to this task (reference data):\n${JSON.stringify(workflows)}\nWhen a workflow fits, use ${JSON.stringify(record.workflowBinding.toolName)} with its exact workflow name and fresh input. It runs the original explicitly approved read-only callbacks through MCP. Return its completed textual result verbatim. At most one workflow invocation is allowed per turn. Never retry a failed or uncertain workflow. No workflow runs merely by receiving this context.`;
+  return `Approved workflows pinned to this task (reference data):\n${JSON.stringify(workflows)}\nThe original_tools entries identify the existing native callbacks each workflow can call. Workflow execution calls those same original callbacks under the host's existing permissions and standing policy. When a workflow satisfies the task and standing instructions, use ${JSON.stringify(record.workflowBinding.toolName)} with its exact workflow name and fresh input. It runs the original explicitly approved read-only callbacks through MCP. Return its completed textual result verbatim. At most one workflow invocation is allowed per turn. Never retry a failed or uncertain workflow. No workflow runs merely by receiving this context.`;
 }
 
 /** Runs inside one native eve tool step. The MCP endpoint/capability never crosses workers or reaches the model. */
