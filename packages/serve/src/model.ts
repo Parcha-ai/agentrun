@@ -17,7 +17,7 @@ import { gatewayBase, modelGatewayBase } from "./provider.js";
 import { modelFormWhy } from "./model-form.js";
 // Leaves, which the key rows below read as this module loads, in any import order (wires.ts, adapter-facts.ts).
 import { ADAPTER_FACTS, adapterFactsOf } from "./adapter-facts.js";
-import { WIRES } from "./wires.js";
+import { modelWire, WIRES, wireOf } from "./wires.js";
 import { authContextOf } from "./secrets.js";
 import { EXPIRED, PLAN_DEFAULT_MODEL, PLAN_ORIGIN, PLAN_PROVIDER, planOf, signedIn, SIGNED_OUT } from "./chatgpt-plan.js";
 import { LOGIN_DEFAULT_MODEL, onClaudeLogin } from "./claude-login.js";
@@ -77,7 +77,7 @@ export const MODEL_KEYS: readonly { id: string; label: string; field: string; mo
 
 /** pi, and the built-in adapter harnesses whose wire (their facts') runs `vendor`'s models: those that talk to its own API. */
 function onVendor(vendor: string): readonly string[] {
-  return [DEFAULT_HARNESS, ...ADAPTER_FACTS.filter((facts) => WIRES[facts.wire].vendor === vendor).map((facts) => facts.id)];
+  return [DEFAULT_HARNESS, ...ADAPTER_FACTS.filter((facts) => wireOf(facts.wire)?.vendor === vendor).map((facts) => facts.id)];
 }
 
 /** The harnesses `row`'s key runs on `env`'s server: its own (`harnesses`), then each harness this server lists only once its
@@ -88,14 +88,15 @@ export function keyHarnesses(row: (typeof MODEL_KEYS)[number], env: NodeJS.Proce
   const installed = harnessIds(env).filter((id) => !row.harnesses.includes(id) && builtinHarness(id)?.hidden !== undefined);
   return [...row.harnesses, ...installed.filter((id) => {
     const facts = adapterFactsOf(id);
-    return facts !== undefined && facts.wire !== "plan" && (row.id === "openrouter" || WIRES[facts.wire].vendor === row.id);
+    return facts !== undefined && modelWire(facts.wire) && (row.id === "openrouter" || WIRES[facts.wire].vendor === row.id);
   })];
 }
 
 /** `row`'s default for `harness`: the one for its wire's vendor (`byVendor`, OpenRouter's), else the row's. */
 const rowModel = (row: (typeof MODEL_KEYS)[number], harness: string): string => {
   const facts = adapterFactsOf(harness);
-  return (facts && row.byVendor?.[WIRES[facts.wire].vendor]) ?? row.model;
+  const vendor = facts && wireOf(facts.wire)?.vendor;
+  return (vendor ? row.byVendor?.[vendor] : undefined) ?? row.model;
 };
 
 /** What a person does when no model runs here: add a model provider's key in the console, or set one where AgentRun
@@ -606,7 +607,7 @@ export async function unpricedModels(env: NodeJS.ProcessEnv, ref: string | undef
   }
   // OpenRouter's routers on any wire: their catalog zeros are no price (routersOf).
   const routers = [...routersOf(byTier.values())];
-  if (!env.AGENT_MODEL_BASE_URL || (facts && !WIRES[facts.wire].gateway)) return routers;
+  if (!env.AGENT_MODEL_BASE_URL || (facts && !wireOf(facts.wire)?.gateway)) return routers;
   const priced = await gatewayPrices(env, byTier, namedBy);
   return [...new Set([...routers, ...[...byTier.values()].map((model) => model.modelId).filter((id) => !priced.has(id))])];
 }

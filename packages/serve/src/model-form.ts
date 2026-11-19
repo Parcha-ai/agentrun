@@ -5,7 +5,7 @@
 import { adapterFactsOf } from "./adapter-facts.js";
 import { FAUX_ENV, MODEL_KEYS } from "./model.js";
 import { openRouterName } from "./provider.js";
-import { WIRES } from "./wires.js";
+import { wireOf } from "./wires.js";
 import { PLAN_PROVIDER, planOf, signedIn } from "./chatgpt-plan.js";
 import { PLAN_HARNESSES } from "./harness.js";
 
@@ -19,10 +19,13 @@ export const PICKABLE: readonly { vendor: string; ids: readonly string[] }[] = O
   { vendor: "particle", ids: Object.freeze(["particle-1"]) },
 ]);
 
-/** The vendors whose models `harness` runs: pi any; an adapter harness, its wire's vendor. */
+/** The vendors whose models `harness` runs: pi any; an adapter harness, its wire's vendor; one billed to its own plan, none
+ *  of ours. */
 const vendorsOf = (harness: string): readonly string[] => {
   const facts = adapterFactsOf(harness);
-  return facts ? [WIRES[facts.wire].vendor] : PICKABLE.map((p) => p.vendor);
+  if (!facts) return PICKABLE.map((p) => p.vendor);
+  const settings = wireOf(facts.wire);
+  return settings ? [settings.vendor] : [];
 };
 
 /** `vendor`'s model `id` in the form this server runs it: `vendor/id` on the vendor's own key, or through OpenRouter
@@ -39,10 +42,10 @@ export function formOf(env: NodeJS.ProcessEnv, vendor: string, id: string): stri
 export function pickerCandidates(env: NodeJS.ProcessEnv, harness: string): string[] {
   // A harness billed to its own plan (Cursor) runs its vendor's models, listed by its vendor for its owner's key alone: its
   // entry's default is offered (harness.ts harnessOffers' default_model), and none of ours.
-  if (env[FAUX_ENV] || adapterFactsOf(harness)?.wire === "plan") return [];
+  const facts = adapterFactsOf(harness);
+  if (env[FAUX_ENV] || (facts && !wireOf(facts.wire))) return [];
   // The gateway serves the harnesses whose wire goes through it (pi, and the OpenAI Responses wire: providerFor); the
   // Anthropic Messages wire never does, so Claude is offered Anthropic's models on its own key.
-  const facts = adapterFactsOf(harness);
   if (env.AGENT_MODEL_BASE_URL && facts?.wire !== "anthropic-messages") return [...new Set([env.AGENT_MODEL, env.AGENT_MODEL_FAST, env.AGENT_MODEL_STRONG].filter((id): id is string => Boolean(id)))];
   const vendors = vendorsOf(harness);
   // Signed in to a ChatGPT plan, its models first for a harness that runs on it (`chatgpt/<model-id>`).

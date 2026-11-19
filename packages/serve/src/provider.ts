@@ -15,12 +15,12 @@ import type { HarnessWire as Wire } from "@parcha/agentrun-kernel";
 import type { ClaudeAgentLogin } from "@parcha/agentrun-harness-claude";
 import { CLAUDE_LOGIN_PROVIDER, onClaudeLogin, claudeLoginOf } from "./claude-login.js";
 import { chooseModel, FAUX_ENV, hostModel, MODEL_PROVIDER, type ModelNeeds, type ModelRef } from "./model.js";
-import { WIRES } from "./wires.js";
+import { modelWire, WIRES, wireOf } from "./wires.js";
 import { modelFormWhy } from "./model-form.js";
 import { EXPIRED, PLAN_ORIGIN, PLAN_PROVIDER, planOf, SIGNED_OUT } from "./chatgpt-plan.js";
 
 // Each wire's own settings live in a leaf module (wires.ts), which the harness table reads as it loads.
-export { WIRES };
+export { modelWire, WIRES, wireOf };
 
 /** What fixes a harness that is not on this machine as its adapter needs it: `install`, its package or binary is missing;
  *  `pins`, what is installed is not the pinned build. */
@@ -104,7 +104,7 @@ function onServeGateway(env: NodeJS.ProcessEnv, base: string): boolean {
  */
 export function openRouterOnly(wire: Wire, env: NodeJS.ProcessEnv): boolean {
   // A harness on its own plan (Cursor's) reaches nothing through OpenRouter, nor through any route of ours.
-  if (wire === "plan") return false;
+  if (!modelWire(wire)) return false;
   return Boolean(env.OPENROUTER_API_KEY) && !env[WIRES[wire].base] && !env[WIRES[wire].key];
 }
 
@@ -112,7 +112,7 @@ export function openRouterOnly(wire: Wire, env: NodeJS.ProcessEnv): boolean {
  *  named on it (`openrouter/<vendor>/...`), or the wire's vendor reached only through it (openRouterOnly). Serve's gateway
  *  comes first on the wire it serves. */
 export function viaOpenRouter(wire: Wire, env: NodeJS.ProcessEnv, model?: string): boolean {
-  if (wire === "plan" || (WIRES[wire].gateway && env.AGENT_MODEL_BASE_URL)) return false;
+  if (!modelWire(wire) || (WIRES[wire].gateway && env.AGENT_MODEL_BASE_URL)) return false;
   return Boolean(model?.startsWith(`openrouter/${WIRES[wire].vendor}/`)) || openRouterOnly(wire, env);
 }
 
@@ -150,7 +150,7 @@ const gatewayProvider = (env: NodeJS.ProcessEnv, model: ModelRef): Provider => (
 export function providerFor(wire: Wire, env: NodeJS.ProcessEnv, model: ModelRef, who: string): Provider {
   const named = `${model.provider}/${model.modelId}`;
   // A harness on its own plan (Cursor's) calls its vendor itself, on its owner's key: no route of ours is its.
-  if (wire === "plan") throw new HarnessUnavailable(`${who} runs its model on its own plan, never through a model route of AgentRun's; ${named} is not one to proxy.`);
+  if (!modelWire(wire)) throw new HarnessUnavailable(`${who} runs its model on its own plan, never through a model route of AgentRun's; ${named} is not one to proxy.`);
   if (wire === "anthropic-messages") {
     // A model of serve's gateway that the gateway takes on Messages (a Claude model, model.ts gatewayWire): the gateway's
     // own route, as on Responses. No harness of this wire chooses one (claude-agent's model is never the gateway's).
@@ -213,7 +213,7 @@ export type ModelChoice = { model: ModelRef; namedProvider?: string } | { why: s
  */
 export async function modelOn(wire: Wire, env: NodeJS.ProcessEnv, ref: string | undefined, harness: string): Promise<ModelChoice> {
   // A harness on its own plan chooses its model itself (its table entry's model): none of the host's is its.
-  if (wire === "plan") return { why: `${harness} runs a model of its own plan, which its own entry chooses.`, host: false };
+  if (!modelWire(wire)) return { why: `${harness} runs a model of its own plan, which its own entry chooses.`, host: false };
   const { vendor, label } = WIRES[wire];
   const named = ref ?? hostModel(env, "default", harness);
   if (wire === "openai-responses") {

@@ -22,7 +22,7 @@ import { DEFAULT_HARNESS, HARNESS_ID_PATTERN, type HarnessId, PLAN_HARNESSES, RE
 import { HARNESS_INSTALLS, type HarnessInstallEntry, type HarnessPins } from "./harness-install.js";
 import { chooseModel } from "./model.js";
 import { HarnessUnavailable, type ModelChoice, modelOn, openRouterOnly, priceModelFor, providerFor } from "./provider.js";
-import { WIRES } from "./wires.js";
+import { modelWire, WIRES } from "./wires.js";
 import type { SkillCheck } from "./skills.js";
 import type { RunnerHarness } from "./runner/adapters/index.js";
 import { PLAN_PROVIDER, signedIn } from "./chatgpt-plan.js";
@@ -145,6 +145,8 @@ const onOpenRouter = (id: string, vendor: string): boolean => new RegExp(`^openr
 /** An adapter harness's entry, from its facts and the factory that builds its adapter. */
 function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs: AdapterNeeds) => Promise<AgentAdapter>, extra: Pick<HarnessEntry, "skillCheck" | "pins" | "promises" | "hidden"> = {}): HarnessEntry {
   const { wire, id } = facts;
+  // A harness billed to its own plan has an entry of its own (cursorEntry): this one is for a model wire of ours.
+  if (!modelWire(wire)) throw new Error(`${id} is billed to its own plan, so its table entry is its own, never adapterEntry's`);
   const { vendor, gateway } = WIRES[wire];
   const installs = HARNESS_INSTALLS[id];
   const onPlan = PLAN_HARNESSES.includes(id);

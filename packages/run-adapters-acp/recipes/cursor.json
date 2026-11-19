@@ -4,9 +4,9 @@
   "args": ["--disable-auto-update", "acp"],
   "keys": ["CURSOR_API_KEY"],
   "files": {
-    ".cursor/cli-config.json": "{\"version\":1,\"permissions\":{\"allow\":[],\"deny\":[\"Write(**)\"]},\"approvalMode\":\"allowlist\"}\n"
+    ".config/cursor/cli-config.json":"{\"version\":1,\"permissions\":{\"allow\":[],\"deny\":[\"Write(**)\"]},\"approvalMode\":\"allowlist\"}\n"
   },
-  "state": [".cursor/acp-sessions"],
+  "state": [".config/cursor/acp-sessions"],
   "credentials": [".config/cursor/auth.json"],
   "refusals": [
     {

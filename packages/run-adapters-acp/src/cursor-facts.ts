@@ -48,8 +48,9 @@ export const cursorFacts: AdapterFacts = Object.freeze<AdapterFacts>({
   rerunsStarted: false,
   // An answer cut at the output limit (stopReason max_tokens) ends the turn.
   recoversCutAnswers: 0,
-  // One run's memory, measured on the S0 runs: Cursor's own node process (about 300 MiB resident) beside the run's.
-  runMib: 384,
+  // One run's memory: Cursor's own processes (its launcher, its node and its worker) peaked at 454 MiB resident, summed,
+  // on the S4 live runs through serve (RSS sampled each second; its largest one process 288 MiB), beside the run's.
+  runMib: 512,
   // Cursor picks its own thinking per model (the model id's [reasoning=...]): no level is passed to it.
   thinking: Object.freeze(["medium"] as const),
   // Its model is one Cursor lists for the owner's key, never the host's default.
