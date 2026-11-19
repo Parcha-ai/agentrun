@@ -33,7 +33,8 @@ export function statsView(stats: StoreStats, statusOf: (id: string) => Status | 
     agents: stats.agents,
     runs: { total: stats.runs.total, active: running.active, needs_input: running.needs_input, failed: stats.runs.failed + ends.filter((end) => end === "failed").length, needs_review: stats.runs.escalated, status_unknown: running.status_unknown },
     per_agent: stats.byAgent.map((a) => ({ agent_id: a.id, name: a.name, runs: a.runs })),
-    cost: { usd, basis: usd === null ? null : "estimate", unknown_runs: stats.cost.unknown - ends.length },
+    // How the summed costs were reached (metrics.ts CostBasis), null while no cost is known.
+    cost: { usd, basis: usd === null ? null : stats.cost.basis, unknown_runs: stats.cost.unknown - ends.length },
     archived: { agents: stats.archivedAgents, runs: stats.archivedRuns },
   };
 }

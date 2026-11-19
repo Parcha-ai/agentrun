@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor, type EditorCaps } from "./AgentEditor";
 import type { Agent, AgentFields, SaveProblem } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { optionsOf, pick, picker } from "@/test/picker";
 
 // The editor's Model field is a picker of the models the server offers for the harness (capabilities'
@@ -19,7 +20,7 @@ const caps: EditorCaps = {
   ],
   tools: [], thinking: [],
 };
-const agentOn = (harness: string, model?: string): Agent => ({ agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness, skills: [], tools: [], ...(model ? { model } : {}) } });
+const agentOn = (harness: string, model?: string): Agent => ({ ...SERVED_AGENT, agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness, skills: [], tools: [], ...(model ? { model } : {}) } });
 
 async function open(agent: Agent | null, onSave?: (fields: AgentFields) => void) {
   const host = document.body.appendChild(document.createElement("div"));

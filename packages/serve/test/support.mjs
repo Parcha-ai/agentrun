@@ -68,6 +68,9 @@ export const SECRET_WRITE_PATHS = [
   // The server's calendar (calendar/routes.ts): its read, its save and removal, and its test.
   { methods: ["GET", "PUT", "DELETE"], path: /^\/settings\/calendar$/ },
   { methods: ["POST"], path: /^\/settings\/calendar\/test$/ },
+  // The model gateway saved in the console (model-gateway.ts): its save, removal and test.
+  { methods: ["PUT", "DELETE"], path: /^\/settings\/model-gateway$/ },
+  { methods: ["POST"], path: /^\/settings\/model-gateway\/test$/ },
 ];
 /** Adds a secret write the client sends from the owner's session (`methods` on `path`, a RegExp over the /v2 path). */
 export const secretWritePath = (methods, path) => void SECRET_WRITE_PATHS.push({ methods, path });
@@ -104,7 +107,10 @@ export const webhookLookup = async (host) => {
   return (await systemLookup(host, { all: true })).map((one) => one.address);
 };
 
-export const startServe = async (options) => launchFor(await startServeBuilt({ webhookLookup, ...options }));
+/** Where a test server posts Slack's messages unless its test runs a fake Slack (ServeOptions.slackTarget): a closed
+ *  port on this machine, so no test ever reaches Slack. */
+export const NO_SLACK = "http://127.0.0.1:9";
+export const startServe = async (options) => launchFor(await startServeBuilt({ webhookLookup, slackTarget: NO_SLACK, ...options }));
 
 export const FAUX = new URL("./fixtures/faux-model.mjs", import.meta.url).pathname;
 

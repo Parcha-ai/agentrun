@@ -133,11 +133,12 @@ Two clients call the same API from code, with the same server and token. `@parch
 
 - `agentrun agents`: archive, connect-native, create, delete-agent, delete-agent-archil, disconnect-native, discover-native, forget-sign-in, get, get-agent-archil, get-learning-loop, get-native, list, list-learning-audits, list-learning-promotions, runs, unarchive, update, verify-native
 - `agentrun connectors`: complete-remote-command, enroll-remote-connector, import-remote-history, import-remote-target, list-remote-connectors, poll-remote-connector, register-remote-connector, remote-command-events, revoke-remote-connector
+- `agentrun doctor`: Check how this AgentRun is set up (Node, the server, its service, address, password, models, switches, Docker) and print what to change; read-only (exit 0 ok or warnings, 1 a check failed, 3 no server answering)
 - `agentrun files`: create, delete, get, list, upload
 - `agentrun harness`: install
 - `agentrun home`: delete, list, read, write
 - `agentrun learning`: corrections, cost, get, log, read, replay, retire, workflow-revisions, write-corrections
-- `agentrun local`: create-pairing, delete-composio-subscription, delete-computer, delete-workspace-archil, disconnect-git-hub, get-git-hub-connection, get-workspace-archil, list-composio-events, list-composio-triggers, list-computer-choices, list-computers, receive-hook-composio, rotate-composio-secret, test-computer, test-workspace-archil
+- `agentrun local`: create-pairing, delete-composio-subscription, delete-computer, delete-workspace-archil, disconnect-git-hub, get-git-hub-connection, get-model-gateway, get-workspace-archil, list-composio-events, list-composio-triggers, list-computer-choices, list-computers, receive-hook-composio, rotate-composio-secret, test-computer, test-workspace-archil
 - `agentrun login`: Check a server's token, read from stdin, and keep it with the server's address in the config file
 - `agentrun logout`: Remove the config file login wrote, its address and token
 - `agentrun mcp-servers`: delete, get, list, oauth-client, private-hosts, refresh
@@ -149,6 +150,7 @@ Two clients call the same API from code, with the same server and token. `@parch
 - `agentrun server`: capabilities, health, mcp, openapi
 - `agentrun service`: install, logs, restart, start, status, stop, uninstall, upgrade
 - `agentrun skill`: install
+- `agentrun slack`: deliveries, get, redeliver, test
 - `agentrun stats`: Counts and cost over every agent and run
 - `agentrun stop`: Stop the AgentRun the installer started in the background, where there is no service manager (exit 0 stopped, 3 none running)
 - `agentrun template`: apply, delete, eval, import, install, list, validate

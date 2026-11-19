@@ -217,6 +217,10 @@ export interface ModelRequest {
    *  the proxy minted for this label: ModelProxy.sideKey): a learned workflow's model node, say. The harness's own
    *  requests carry none, and it cannot send one that does: it holds only the session's key. */
   host?: string;
+  /** The conversation its client says it is asked in (the model proxy's CONVERSATION_HEADER), when it names one: the
+   *  client's own label, opaque to the booking and not written on its record. A host whose harness runs several
+   *  conversations at once (pi's subagents) reads it to know whose request a booking is. */
+  conversation?: string;
   /** Which of the session's routes it came by, when the session has more than one (ModelProxyOptions.route: a proxy beside
    *  the session's, for a model of another tier): the host prices it by its model and this route, so one model id two
    *  routes price apart is held at the price its route books it at. Absent: the session's own route. */

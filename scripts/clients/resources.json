@@ -1,10 +1,12 @@
 {
-  "secretBody": ["saveToolKey", "saveMcpServer", "previewMcpServer", "startMcpOAuth", "listComposioTools", "saveComposioServer", "rotateTriggerSecret"],
+  "secretBody": ["saveToolKey", "saveMcpServer", "previewMcpServer", "startMcpOAuth", "listComposioTools", "saveComposioServer", "rotateTriggerSecret", "rotateWebhookSecret", "saveSlack", "saveModelGateway", "testModelGateway"],
   "publicFields": {
     "saveMcpServer": ["url", "auth.type"],
     "previewMcpServer": ["url", "auth.type", "name"],
     "startMcpOAuth": ["url", "scopes.[]", "client_id"],
     "listComposioTools": ["toolkit"],
+    "saveModelGateway": ["base_url", "ids", "models.default", "models.fast", "models.strong"],
+    "testModelGateway": ["base_url"],
     "saveComposioServer": ["toolkit", "tools.[]", "user_id"]
   },
   "bodyFill": {
@@ -118,10 +120,17 @@
     "putToolSettings": ["tool-settings", "save"],
     "getWebhook": ["webhook", "get"],
     "saveWebhook": ["webhook", "save"],
+    "rotateWebhookSecret": ["webhook", "rotate-secret"],
     "deleteWebhook": ["webhook", "delete"],
     "testWebhook": ["webhook", "test"],
     "listWebhookDeliveries": ["webhook", "deliveries"],
     "redeliverWebhook": ["webhook", "redeliver"],
+    "getSlack": ["slack", "get"],
+    "saveSlack": ["slack", "save"],
+    "deleteSlack": ["slack", "delete"],
+    "testSlack": ["slack", "test"],
+    "listSlackDeliveries": ["slack", "deliveries"],
+    "redeliverSlack": ["slack", "redeliver"],
     "createQuote": ["quotes", "create"],
     "getUsage": ["usage"],
     "getStats": ["stats"]

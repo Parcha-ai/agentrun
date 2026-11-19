@@ -68,7 +68,7 @@ import { DEFAULT_HARNESS } from "../harness.js";
 import { agentEntriesOf } from "./loop.js";
 import { SUBAGENT_TIERS, SUBAGENT_TOOL, type SubagentTier, subagentTool } from "./subagent.js";
 import { type Claim, ClaimRefused, type Journal } from "./loop-contract.js";
-import { bookedSpend, cliRunMetrics, endCostOf, runCostOf, runMetrics } from "./metrics.js";
+import { bookedSpend, cliRunMetrics, costBasisOf, endCostOf, runCostOf, runMetrics } from "./metrics.js";
 import { journalEntries } from "./journal-reader.js";
 import { hashedMcpOf, piShaped } from "../store-reads/journal.js";
 import { replayCallsOver } from "./promotion.js";
@@ -938,12 +938,15 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
       // metrics are its booking's, as a CLI harness's run reads them: the workflow's nodes and the agent's own after a handback.
       // An MCP tool called by a hashed wire name is counted under its catalog name, as its timeline names it.
       const catalog = await hashedMcpOf(deps.store, claim.runId);
+      // Its model requests as every session of its journal booked them: how they were priced (costBasis, which the sums
+      // over runs read), and, for a run its learned workflow served, its tokens.
+      const booked = bookedSpend((await journalEntries(deps.journal(claim), context)) as never, "model");
       const { metrics } = servedOf(entries as never)
-        ? { metrics: cliRunMetrics(piShaped(entries as never), bookedSpend((await journalEntries(deps.journal(claim), context)) as never, "model"), { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: launch.model ? `${launch.model.provider}/${launch.model.modelId}` : route.model, catalog }) }
+        ? { metrics: cliRunMetrics(piShaped(entries as never), booked, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), model: launch.model ? `${launch.model.provider}/${launch.model.modelId}` : route.model, catalog }) }
         : runMetrics(entries as never, { ...(launch.effort !== undefined ? { effort: launch.effort } : {}), catalog });
       // Its cost is endCost's, read apart (an unknown one written as null, never left out: a follow-up's end clears the
       // cost an earlier end stored).
-      return { metrics: { ...metrics, ...path } };
+      return { metrics: { ...metrics, ...path, costBasis: costBasisOf(booked) } };
     },
     // A run started with hold: true holds its computer for its owner (computer-held.ts): the loop waits for their start
     // and release, and runs their calls on it.

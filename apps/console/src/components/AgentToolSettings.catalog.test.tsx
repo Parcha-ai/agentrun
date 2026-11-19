@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditPage } from "./AgentsPage";
 import { type Agent, toolOffers } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { createClient } from "@/lib/client";
 import type { McpServer } from "@/lib/mcp";
 import { toolGates } from "@/lib/toolSettings";
@@ -28,7 +29,7 @@ const definition = (tools: string[], toolSettings?: Record<string, unknown>) => 
 // The agent as GET /agents/{id} reads it: its saved tools, each with the permission in force.
 // An MCP tool's entry is as serve's agentTools gives it: `inForce` with the agent's own layer, its default the server's.
 const read = (tools: string[], toolSettings?: Record<string, unknown>, mcp: { inForce: "allow" | "ask" | "deny"; server: "allow" | "ask" | "deny" } = { inForce: "ask", server: "ask" }): Agent => ({
-  agent_id: "triage", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: definition(tools, toolSettings),
+  ...SERVED_AGENT, agent_id: "triage", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: definition(tools, toolSettings),
   tools: tools.map((name) => (GATES.some((g) => g.name === name)
     ? { name, permission: "allow", permission_from: "default", default_permission: "allow", permissions: ALL }
     : { name, permission: mcp.inForce, permission_from: "agent", default_permission: mcp.server, permissions: ALL })),

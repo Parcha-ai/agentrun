@@ -37,3 +37,20 @@ export const hostRefusedPage = (port: number) => `<!doctype html>
 <p>To serve it at a name of its own (behind HTTPS, for example), start it with <code>AGENTRUN_PUBLIC_URL=https://&lt;name&gt;</code>, or add the name with <code>--allow-host &lt;name&gt;</code>.</p>
 </body></html>
 `;
+
+/** What a script that sends a request under the server's earlier public address is told (public-address.ts): where it is
+ *  now, `to`, the address its operator set. */
+export const movedFix = (to: string) => `this server's public address changed to ${to} (AGENTRUN_PUBLIC_URL); send requests there`;
+
+const escaped = (text: string) => text.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+/** The page a browser gets for a page other than the console's, under the server's earlier public address: fixed text and
+ *  the new address `to`, under the console's CSP. */
+export const movedPage = (to: string) => `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>AgentRun moved</title></head>
+<body>
+<h1>AgentRun moved</h1>
+<p>This AgentRun server's public address changed. Open it at <a href="${escaped(to)}/">${escaped(to)}</a>.</p>
+<p>Sign in again there: a sign-in at the earlier address does not carry over. Links in earlier webhook messages still name the earlier address.</p>
+</body></html>
+`;

@@ -17,7 +17,9 @@ export type ComposioControl = { readonly baseUrl?: string; readonly fetch?: type
 const BASE = "https://backend.composio.dev";
 /** The one Composio user a server's actions run as, unless the owner names another. */
 export const COMPOSIO_USER = "agentrun";
-const TOOLKIT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+/** A Composio toolkit's slug, as a save takes it once trimmed and lower-cased. */
+export const COMPOSIO_TOOLKIT = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+const TOOLKIT = COMPOSIO_TOOLKIT;
 const USER_ID = /^[A-Za-z0-9._@-]{1,128}$/;
 const PAGE = 200;
 const MAX_PAGES = 10;

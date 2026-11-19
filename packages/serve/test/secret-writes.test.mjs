@@ -85,7 +85,7 @@ test("accounts on: the owner's password session saves and removes a tool key and
     const value = planted();
     const byToken = await call(server.port, { method: "PUT", path: `/v2/settings/tool-keys/${id}`, headers: { ...json, ...bearer }, body: { values: { [field]: value } } });
     assert.equal(byToken.status, 403, `${id}: the token is refused: ${byToken.text}`);
-    assert.equal(byToken.json?.error?.message, mod.SECRET_WRITE_REFUSAL, `${id}: in the one refusal text`);
+    assert.ok(String(byToken.json?.error?.message).startsWith(mod.SECRET_WRITE_REFUSAL), `${id}: in the one refusal text`);
     assert.equal(byToken.text.includes(value), false, `${id}: the refusal never echoes the value`);
     const listed = await server.api("GET", "/settings/tool-keys");
     assert.equal(JSON.stringify(listed.body).includes(value), false, `${id}: nothing was kept`);
@@ -93,7 +93,7 @@ test("accounts on: the owner's password session saves and removes a tool key and
     assert.equal(bySession.status, 204, `${id}: the owner's session saves it: ${bySession.text}`);
     const removeByToken = await call(server.port, { method: "DELETE", path: `/v2/settings/tool-keys/${id}`, headers: bearer });
     assert.equal(removeByToken.status, 403, `${id}: the token can't remove it either: ${removeByToken.text}`);
-    assert.equal(removeByToken.json?.error?.message, mod.SECRET_WRITE_REFUSAL, `${id}: in the one refusal text`);
+    assert.ok(String(removeByToken.json?.error?.message).startsWith(mod.SECRET_WRITE_REFUSAL), `${id}: in the one refusal text`);
     const removeBySession = await call(server.port, { method: "DELETE", path: `/v2/settings/tool-keys/${id}`, headers: { ...json, cookie, origin } });
     assert.equal(removeBySession.status, 204, `${id}: the owner's session removes it: ${removeBySession.text}`);
   }
@@ -125,7 +125,7 @@ test("accounts off on loopback: the launch link's console saves a tool key, and 
   assert.equal(saved.status, 204, `the launch link's console saves it: ${saved.text}`);
   const byToken = await call(server.port, { method: "PUT", path: "/v2/settings/tool-keys/monid", headers: { ...json, authorization: `Bearer ${server.token}` }, body: { values: { MONID_API_KEY: planted() } } });
   assert.equal(byToken.status, 403, `the token never saves one, loopback included: ${byToken.text}`);
-  assert.equal(byToken.json?.error?.message, mod.SECRET_WRITE_REFUSAL);
+  assert.ok(String(byToken.json?.error?.message).startsWith(mod.SECRET_WRITE_REFUSAL));
   const tokenSession = await call(server.port, { path: "/v2/auth/session", headers: { authorization: `Bearer ${server.token}` } });
   assert.deepEqual(tokenSession.json, { accounts: false, secrets_writable: false, secrets_reason: "token" });
   const stranger = await call(server.port, { path: "/v2/auth/session" });
@@ -151,7 +151,7 @@ test("accounts off on loopback, the API token gets no console session: a cookie 
   assert.deepEqual([link.status, link.headers.location, link.headers["set-cookie"]], [303, "/", undefined], "the token's link sets nothing");
   // The token with the console's origin and a JSON body, as a script can forge them: still the token, refused.
   const scripted = await save({ authorization: `Bearer ${server.token}` });
-  assert.deepEqual([scripted.status, scripted.json?.error?.message], [403, mod.SECRET_WRITE_REFUSAL]);
+  assert.deepEqual([scripted.status, String(scripted.json?.error?.message).startsWith(mod.SECRET_WRITE_REFUSAL)], [403, true]);
   // The launch link's session writes.
   const { cookie } = await launchSession("127.0.0.1", server.port, server.launchCode); // key-gate: loopback, the server under test
   assert.equal((await save({ cookie })).status, 204, "the launch link's console saves it");
@@ -185,7 +185,7 @@ test("accounts off on a server bound off loopback: its console session is refuse
   assert.deepEqual(session.json, { accounts: false, secrets_writable: false, secrets_reason: "no_accounts" }, `off loopback: ${session.text}`);
   const refused = await at(host, server.port, { method: "PUT", path: "/v2/settings/tool-keys/monid", headers: { ...json, cookie, origin }, body: { values: { MONID_API_KEY: planted() } } });
   assert.equal(refused.status, 403, `the console session is refused off loopback: ${refused.text}`);
-  assert.equal(refused.json?.error?.message, mod.SECRET_WRITE_REFUSAL);
+  assert.ok(String(refused.json?.error?.message).startsWith(mod.SECRET_WRITE_REFUSAL));
 });
 
 test("the gate decides by the operation's body: a route no plane registered (a token's tool-settings edit) is not a secret write", async (t) => {

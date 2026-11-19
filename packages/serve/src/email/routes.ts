@@ -8,7 +8,7 @@
 //                                   nothing, for the saved account or the one in the body; nothing is saved
 // The mail libraries load at the test only (mail.ts), never with the server.
 import { invalid } from "../errors.js";
-import { registerSecretWrite } from "../secret-writes.js";
+import { registerSecretPage, registerSecretWrite } from "../secret-writes.js";
 import { isObject } from "../validate.js";
 import { type AccountStore, accountOf, accountView, NO_ACCOUNT, openAccount, removeAccount, saveAccount } from "./account.js";
 import { messages } from "./names.js";
@@ -16,6 +16,7 @@ import { messages } from "./names.js";
 /** The routes, by their operation names. */
 export const EMAIL_ROUTES: ReadonlySet<string> = new Set(["getEmailAccount", "saveEmailAccount", "deleteEmailAccount", "testEmailAccount"]);
 for (const operation of EMAIL_ROUTES) registerSecretWrite(operation, () => true);
+registerSecretPage([...EMAIL_ROUTES], "/#/settings/email");
 
 export type EmailRouteDeps = { store: AccountStore; sealKey: Buffer };
 type Check = { ok: boolean; message: string };

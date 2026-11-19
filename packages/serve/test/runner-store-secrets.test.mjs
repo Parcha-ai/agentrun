@@ -19,6 +19,7 @@ const { putSealedKey } = await import("../dist/server-keys.js");
 const { sealedSettingsOverStore } = await import("../dist/sealed-settings-store.js");
 const { webhook } = await import("../dist/trigger-webhook.js");
 const { Webhooks } = await import("../dist/webhooks.js");
+const { SlackPosts } = await import("../dist/slack.js");
 const { startRunner } = await import("../dist/runner/runner.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
@@ -188,6 +189,35 @@ const PLANES = [
     return [secret, secret.slice("whsec_".length), key.toString("hex")];
   }],
 ];
+
+/** Slack's incoming-webhook URL as the server saves it (slack.ts saveSlack), then replaced, so the first is kept retired: the
+ *  live URL whole, and each URL's token alone, the credential. Built from parts: no Slack has these. */
+const plantSlack = async (server) => {
+  const slackUrl = (token) => ["https://hooks.slack.com", "services", "TPLANTED0", "BPLANTED0", token].join("/");
+  const [retired, live] = [planted("slackretired"), planted("slacklive")];
+  const posts = new SlackPosts(server, SEAL_KEY, () => {});
+  await posts.load();
+  await posts.saveSlack({ url: slackUrl(retired) });
+  await posts.saveSlack({ url: slackUrl(live) });
+  await posts.close();
+  return [slackUrl(live), live, retired];
+};
+PLANES.push(["Slack's incoming-webhook URL and its token alone, live and retired (trigger_settings, adapter slack-out)", plantSlack]);
+
+test("the store's list holds Slack's URL token alone, for the live URL and a retired one, as the server's list does", async (t) => {
+  const { storeSecrets } = await import("../dist/runner/store-secrets.js");
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-store-secrets-"));
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(async () => {
+    await server.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const [url, live, retired] = await plantSlack(server);
+  const listed = await storeSecrets(server, SEAL_KEY);
+  assert.ok(listed.includes(url), "the live URL whole");
+  assert.ok(listed.includes(live), "the live URL's token alone");
+  assert.ok(listed.includes(retired), "a retired URL's token alone");
+});
 
 /** A ChatGPT sign-in as another process renewed and sealed it (chatgpt-plan.ts' row): its tokens, read by no one here. */
 const plantPlan = async (server) => {

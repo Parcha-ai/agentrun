@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { RunBar } from "./RunBar";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { ClientError } from "@/lib/client";
 
 // An agentic agent with an input_schema: the run bar shows its message box (optional when the schema requires another
@@ -24,7 +25,7 @@ const SCHEMA = {
   required: ["company"],
 };
 const agent = (input_schema: Record<string, unknown>): Agent => ({
-  agent_id: "researcher", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
+  ...SERVED_AGENT, agent_id: "researcher", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Researcher", instructions: "Research.", harness: "pi", skills: [], tools: ["read"], input_schema },
 });
 

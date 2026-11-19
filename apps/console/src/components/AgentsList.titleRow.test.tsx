@@ -3,11 +3,12 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentsList } from "./AgentsList";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
-const agent: Agent = { agent_id: "hello", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
+const agent: Agent = { ...SERVED_AGENT, agent_id: "hello", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Hello, AgentRun", instructions: "Write hello.md.", harness: "pi", tools: [], skills: [] }, runs: { count: 0, live: 0 } };
 
 // jsdom lays nothing out, so this holds what the alignment comes from: the icon centred in a box as tall as the name's

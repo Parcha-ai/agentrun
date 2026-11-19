@@ -8,13 +8,15 @@
 //
 // onComputerHold is the change signal for whoever else in the runner's process shows the hold (tl-browser's run-side
 // viewer and its bar): it fires after each computer.hold change entry is committed, with that change's Timeline words.
+// A run in a process of its own commits there and its viewer is its runner's: the change crosses to the runner first.
 import type { Context } from "@earendil-works/chord/context";
 import { HOST_PHASE } from "../timeline/index.js";
 import {
-  COMPUTER_HAND_BACK, COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND, COMPUTER_TAKE_OVER, holdIn, holdWords, takeEndedWords,
+  COMPUTER_HAND_BACK, COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND, COMPUTER_TAKE_OVER, ENDS, holdIn, holdWords, STATES, takeEndedWords,
 } from "../computer-commands.js";
 import type { JournalReads } from "../store/store.js";
 import type { HeldComputer, HoldEnd, HoldEvent, HoldState } from "../workspace/computer-hold.js";
+import { held } from "./held.js";
 import { KINDS } from "./journal-kinds.js";
 import { journalEntries } from "./journal-reader.js";
 import type { Command, CommandOutcome } from "./loop-contract.js";
@@ -55,6 +57,23 @@ const signal = (runId: string, change: ComputerHoldChange): void => {
     try { listener(change); } catch { /* a listener's error is not the hold's */ }
   }
 };
+
+/** A committed change, signalled where the run's viewer listens: in this process, or, in a run's own process
+ *  (run-child.ts), in its runner's, which holds the run's computer and its view (Held.computerHold). */
+const committed = (runId: string, change: ComputerHoldChange): void => {
+  const runner = held();
+  if (runner) void runner.computerHold(change).catch(() => undefined);
+  else signal(runId, change);
+};
+
+/** A change run `runId`'s own process committed (Held.computerHold), signalled in its runner's process: its state, end and
+ *  words as data, the words cut by the runner's redactor (`cut`); anything else is no change and is dropped. */
+export function heardComputerHold(runId: string, change: unknown, cut: (text: string) => string): void {
+  if (!change || typeof change !== "object") return;
+  const { state, ended, message } = change as Record<string, unknown>;
+  if (!STATES.includes(state as string) || (ended !== undefined && !ENDS.includes(ended as string)) || (message !== undefined && typeof message !== "string")) return;
+  signal(runId, { state: state as HoldState, ...(ended !== undefined ? { ended: ended as HoldEnd } : {}), ...(typeof message === "string" ? { message: cut(message) } : {}) });
+}
 
 /** Whether a command row is the person's turn with the run's computer. */
 export const isComputerCommand = (command: Pick<Command, "kind">): boolean => command.kind === COMPUTER_TAKE_OVER || command.kind === COMPUTER_HAND_BACK;
@@ -106,7 +125,7 @@ export function journalHold(runId: string, computer: RunComputerHold, commit: (e
   const off = hold.on((event) => {
     const entries = entriesOf(event);
     const change = changeOf(event, entries);
-    void write(entries).then(() => change && signal(runId, change), () => undefined);
+    void write(entries).then(() => change && committed(runId, change), () => undefined);
   });
   return {
     /** The run's computer is up for this pass: the server shows it live, the agent driving. `prior`, the run's root

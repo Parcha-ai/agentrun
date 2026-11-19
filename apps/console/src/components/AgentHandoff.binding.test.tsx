@@ -5,6 +5,7 @@ import { AgentEditor } from "./AgentEditor";
 import { AgentRequest } from "./AgentRequest";
 import { AgentPage } from "./AgentPage";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import type { Client } from "@/lib/client";
 import type { NativeBinding } from "@/lib/native";
 import { CODING_AGENT_PREFERENCE } from "@/lib/codingAgentLinks";
@@ -12,7 +13,7 @@ import { CODING_AGENT_PREFERENCE } from "@/lib/codingAgentLinks";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const origin = "https://console.example.test";
 const caps = { harnesses: [{ id: "pi", available: true }], tools: [], thinking: [] };
-const managed: Agent = { agent_id: "support/a", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
+const managed: Agent = { ...SERVED_AGENT, agent_id: "support/a", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Support", instructions: "Answer carefully.", harness: "pi", tools: [], skills: [] } };
 const nativeBinding: NativeBinding = {
   runtime: "claude-code", machine_id: "source-machine", project: "/workspace/project", selector: { kind: "project" }, state: "ready",
@@ -121,7 +122,7 @@ describe("rendered handoffs follow the loaded agent's execution binding", () => 
     });
   }
   it("does not offer the new Run handoff for an archived SDK agent", async () => {
-    const agent = { ...managed, archived_at: "2026-01-01T00:00:00Z", definition: { ...managed.definition, sdk: { runtime: "codex-sdk" } } };
+    const agent = { ...managed, archived_at: "2026-01-01T00:00:00Z", definition: { ...managed.definition, sdk: { runtime: "codex-sdk" as const } } };
     await mount(createElement(AgentPage, { v2: client(agent), agentId: agent.agent_id, go: write }));
     expect(host.querySelector('[aria-label="Run agent options"]')).toBeNull(); expect(copied).not.toHaveBeenCalled(); expect(write).not.toHaveBeenCalled();
   });

@@ -15,7 +15,7 @@ import { WorkflowEditor } from "@/components/WorkflowEditor";
 import { CodingAgentAction } from "@/components/CodingAgentAction";
 import { backendSdkOf } from "@/lib/backendSdk";
 import { buildAgentPrompt, editAgentPrompt } from "@/lib/codingAgentPrompts";
-import { type Agent, type AgentFields, capOf, editBody, toolsOnSwitch, runsOn, notOn, DECISION, DEFAULT_INSTRUCTIONS, defaultTools, harnessOptions, defaultPlaceOf, isStarter, reachesWeb, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
+import { type Agent, type AgentFields, type Definition, capOf, editBody, toolsOnSwitch, runsOn, notOn, DECISION, DEFAULT_INSTRUCTIONS, defaultTools, harnessOptions, defaultPlaceOf, isStarter, reachesWeb, same, sandboxReason, type SaveProblem, type ToolOffer, toolsFor, warningsFor } from "@/lib/agentForm";
 import type { WorkflowCheck } from "@/lib/client";
 import { markdown, when } from "@/lib/format";
 import { type FreeModel, freeRequestsNote, harnessDefault } from "@/lib/models";
@@ -36,7 +36,7 @@ import { pageToolbarClass } from "@/components/ui/toolbar";
 import { type Approvals, NEVER_ASK_LINE } from "@/lib/v2";
 
 /** A revision as GET /v2/agents/{id}/revisions lists it; `definition` is what it holds (a workflow revision's workflow). */
-export type Revision = { revision: string; version: number; current: boolean; note: string | null; created_at: string; definition?: Agent["definition"] };
+export type Revision = { revision: string; version: number; current: boolean; note: string | null; created_at: string; definition?: Definition };
 /** `decisionProvider`: the decision provider a new decision agent's judge names (agentForm's decisionProvider); none when
  *  the server runs no decision workflows a starter can use, and then Decision is offered disabled. `routePrefix`:
  *  capabilities' `models.route_prefix`, the routing prefix taken off model ids. A harness's `default_model` is the model
@@ -348,8 +348,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
               <Field label="Name" id="agent-name" required={creating} note={creating ? undefined : "Set when the agent was created; an edit keeps it."} error={fieldError("name")} warning={fieldWarning("name")}>
                 <Input id="agent-name" value={f.name} readOnly={!creating} onChange={(e) => set({ name: e.target.value })} placeholder="e.g., Invoice checker" />
               </Field>
-              <Field label="Description" id="agent-description" optional note={creating ? undefined : "Set when the agent was created; an edit keeps it."} error={fieldError("description")} warning={fieldWarning("description")}>
-                <Input id="agent-description" value={f.description} readOnly={!creating} onChange={(e) => set({ description: e.target.value })} placeholder={creating ? "Short summary for the agent list" : "No description"} />
+              <Field label="Description" id="agent-description" optional error={fieldError("description")} warning={fieldWarning("description")}>
+                <Input id="agent-description" value={f.description} onChange={(e) => set({ description: e.target.value })} placeholder="Short summary for the agent list" />
               </Field>
               </div>
               {starting ? (

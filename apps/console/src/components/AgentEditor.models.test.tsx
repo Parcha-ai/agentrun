@@ -3,12 +3,13 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 
 // The editor's Model field on a server whose models come through a gateway: the default without the gateway's routing
 // prefix (the full id in a title), and no default offered to a harness that does not run it.
 // Each harness's default as the server names it (capabilities' harnesses[].default_model).
 const caps = { harnesses: [{ id: "pi", available: true, default_model: "agent-model/gpt-6-luna" }, { id: "claude-agent", available: true, default_model: null }, { id: "codex", available: true, default_model: null }], tools: [], thinking: [], routePrefix: "agent-model" };
-const agentOn = (harness: string, model?: string): Agent => ({ agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness, skills: [], tools: [], ...(model ? { model } : {}) } });
+const agentOn = (harness: string, model?: string): Agent => ({ ...SERVED_AGENT, agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness, skills: [], tools: [], ...(model ? { model } : {}) } });
 const settings = (agent: Agent) => renderToStaticMarkup(createElement(AgentEditor, { agent, caps, step: "settings" }));
 
 describe("demo: each harness's default model, as the server names it", () => {

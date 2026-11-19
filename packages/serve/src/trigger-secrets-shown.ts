@@ -1,24 +1,30 @@
 // Who sees a signing secret this server mints: a webhook trigger's (POST /triggers, POST /triggers/{id}/secret) and the
-// outbound webhook's (the first PUT /settings/webhook). Each is shown once, as `signing_secret`, and only to a caller that
-// may write secrets (secret-writes.ts, the owner's signed-in session): the console's Triggers and Settings → Webhook
-// screens. The API token, which a run's process, an agent's MCP client or a script may hold, gets what it made with the
-// secret's metadata (`secret`, the one SecretMeta shape) and the words that send the person to the console for it.
-// Rotating a trigger's secret is a secret write: the token is refused it in the secret-write words, at the one check in
-// the server's dispatch.
-import { registerSecretWrite, type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
+// outbound webhook's (the first PUT /settings/webhook, POST /settings/webhook/secret). Each is shown once, as
+// `signing_secret`, and only to a caller that may write secrets (secret-writes.ts, the owner's signed-in session): the
+// console's Triggers and Settings → Webhook screens. The API token, which a run's process, an agent's MCP client or a
+// script may hold, gets what it made with the secret's metadata (`secret`, the one SecretMeta shape) and the words that
+// send the person to the console for it.
+// Rotating a trigger's secret, or the outbound webhook's, is a secret write: the token is refused it in the secret-write
+// words, at the one check in the server's dispatch.
+import { registerSecretPage, registerSecretWrite, type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 import type { TriggerAdapter } from "./trigger-adapter.js";
 
-// Replacing a trigger's secret, and removing the outbound webhook (its secret goes with it), are secret writes. A trigger's
-// create and the outbound webhook's first save mint one and write none the caller gave: the token may make them, and is
-// shown no value.
+// Replacing a trigger's secret or the outbound webhook's, and removing the outbound webhook (its secret goes with it), are
+// secret writes. A trigger's create and the outbound webhook's first save mint one and write none the caller gave: the
+// token may make them, and is shown no value.
 registerSecretWrite("rotateTriggerSecret", () => true);
+registerSecretWrite("rotateWebhookSecret", () => true);
 registerSecretWrite("deleteWebhook", () => true);
+// Where the owner finishes each in the console: the trigger's own page (Rotate), and Settings → Webhook (Rotate secret,
+// Remove). The webhook's URL is never in a link: it can be a credential itself (webhooks.ts shownUrl).
+registerSecretPage("rotateTriggerSecret", (_body, { params: [id] }) => (id && /^[A-Za-z0-9_-]{1,128}$/.test(id) ? `/#/triggers/${id}` : "/#/triggers"));
+registerSecretPage(["rotateWebhookSecret", "deleteWebhook"], "/#/settings/webhook");
 
 /** What the token's answer says of a webhook trigger's secret, made and kept but not shown to it. */
 export const TRIGGER_SECRET_WORDS = "Open the console to see this trigger's signing secret once: rotate it there.";
-/** What the token's answer says of the outbound webhook's secret: the console shows a new one when the webhook is removed
- *  and set again (it has no rotation of its own). */
-export const WEBHOOK_SECRET_WORDS = "Open the console to see this webhook's signing secret once: remove it and save it again there.";
+/** What the token's answer says of the outbound webhook's secret: the console's Rotate secret makes a new one and shows it
+ *  once. */
+export const WEBHOOK_SECRET_WORDS = "Open Settings → Webhook in the console to rotate this webhook's signing secret and see the new one once.";
 
 /** A webhook trigger's minted secret's metadata, named trigger:<id>: made by this server at a console's or a script's
  *  request (source console). `changedAt`: when it was made, where known (its create's or rotation's answer); its row
@@ -51,6 +57,10 @@ export function webhookSaved(view: Record<string, unknown>, minted: string | und
   if (minted === undefined) return view;
   return mayHold ? { ...view, signing_secret: minted } : { ...view, note: WEBHOOK_SECRET_WORDS };
 }
+
+/** POST /settings/webhook/secret's answer (the owner's session alone reaches it): the webhook as a read answers it, its
+ *  `secret` metadata the new secret's, and the new value as `signing_secret`, this once. */
+export const webhookRotated = (view: Record<string, unknown>, minted: string): Record<string, unknown> => ({ ...view, signing_secret: minted });
 
 /** The field an adapter mints for each of its triggers (a webhook's `secret`), if it mints one. */
 const mintedField = (adapter: TriggerAdapter | undefined): string | undefined =>

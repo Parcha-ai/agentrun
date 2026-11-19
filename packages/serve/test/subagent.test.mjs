@@ -6,7 +6,7 @@
 // booked on the run's one cap, whose refusal ends the child's call in the cap's words and parks the run, and a raise
 // resumes the run, not the child; a child mid-turn when its runner goes is the same child on the next claim, answering
 // once, with no finished request sent again; a cancel stops every child; several calls in a turn run at once, at most
-// four at a time; the run's timeline nests the child's rows under the call; a call that names no tier runs its child on the agent's own model; a child given bash runs it in
+// four at a time, each request priced at its own cost in the run's trace; the run's timeline nests the child's rows under the call; a call that names no tier runs its child on the agent's own model; a child given bash runs it in
 // the run's computer, held to the agent's read-only bash policy by the same gate. No key, no network, no Docker (a fake
 // sandbox whose bash runs on this machine in the run's folder: fixtures/streaming-sandbox.mjs).
 import assert from "node:assert/strict";
@@ -181,6 +181,27 @@ test("several calls in one turn run at once, at most four at a time, each answer
   const row = await store.runs.get(parallel.view.run_id);
   assert.ok(Math.abs(row.costUsd - asked * PER_REQUEST) < 1e-9, `the run's stored cost ${row.costUsd} is its ${asked} requests'`);
   assert.ok(Math.abs(parallel.view.cost.usd - asked * PER_REQUEST) < 1e-9, `the run's cost ${parallel.view.cost.usd}`);
+});
+
+test("children that answer at once are each priced at their own request: no request's cost in the trace is another's or nothing, and together they are the run's cost", { timeout: 240_000 }, async (t) => {
+  const { run, api } = await setup(t);
+  // Four children whose one request each answers at about the same moment, twice over: on the strong tier's route, and
+  // on the agent's own.
+  for (const [id, tier] of [["priced-strong", { model: "strong" }], ["priced-own", {}]]) {
+    const calls = Array.from({ length: 4 }, (_, i) => ({ prompt: `Wait 300 then say c${i}`, ...tier }));
+    const parallel = await run(id, { tools: ["subagent"] }, delegate(calls));
+    assert.equal(parallel.last.status, "completed", JSON.stringify(parallel.view));
+    const read = await api("GET", `/runs/${parallel.view.run_id}/trace`);
+    assert.equal(read.status, 200, JSON.stringify(read.body));
+    const asked = read.body.spans.filter((span) => span.kind === "model");
+    // A child's request sits under the call that started the child; the run's own sit at the top.
+    const costs = asked.map((span) => [span.parent_id === null ? "run" : "child", span.usd]);
+    assert.equal(asked.length, 2 + 4, `the run's two requests and one of each child: ${JSON.stringify(costs)}`);
+    assert.equal(asked.filter((span) => span.parent_id !== null).length, 4, `four of them a child's: ${JSON.stringify(costs)}`);
+    for (const span of asked) assert.ok(Math.abs(span.usd - PER_REQUEST) < 1e-9, `each request costs its own $${PER_REQUEST}: ${JSON.stringify(costs)}`);
+    const sum = asked.reduce((total, span) => total + span.usd, 0);
+    assert.ok(Math.abs(parallel.view.cost.usd - sum) < 1e-9, `the run's cost ${parallel.view.cost.usd} is its requests' ${sum}`);
+  }
 });
 
 test("the cap's refusal of a child's request fails its call in the cap's words and parks the run; nothing more is sent; a raise resumes the run, not the child", { timeout: 240_000 }, async (t) => {

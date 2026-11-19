@@ -320,6 +320,42 @@ test("agentrun open with no server answering says so, exit 1", async () => {
   assert.match(err.join(""), /No AgentRun answers for /);
 });
 
+test("service install --public-url puts the address on the service's command line, so every start has it; a bad one, or one with --tailscale, is refused before anything is written", async () => {
+  const { home, exec, get, calls } = linuxHome();
+  const { io } = ioOf();
+  const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: { PATH: "/usr/bin" }, exec, io, fail, get, waitMs: 5_000 });
+  const file = join(home, ".config", "systemd", "user", UNIT);
+  await assert.rejects(service.install({ "public-url": "http://box.tailnet.example/" }), (error) => error.code === 2 && /--public-url takes an https address/.test(error.message));
+  await assert.rejects(service.install({ "public-url": "https://box.tailnet.example/agentrun" }), (error) => error.code === 2 && /with no path/.test(error.message));
+  await assert.rejects(service.install({ "public-url": "https://box.tailnet.example/", tailscale: true }), (error) => error.code === 2 && /--public-url and --tailscale each set the address people open/.test(error.message));
+  assert.equal(existsSync(file), false, "nothing written");
+  assert.equal(calls.some((call) => call.startsWith("tailscale")), false, "Tailscale is not asked");
+  assert.equal(await service.install({ port: "7345", "public-url": "https://box.tailnet.example" }), 0);
+  const unit = readFileSync(file, "utf8");
+  assert.deepEqual(unitArgs(unit), [join(home, ".agentrun", "bin", "agentrun"), "--no-open", "--port", "7345", "--public-url", "https://box.tailnet.example/"]);
+  assert.doesNotMatch(unit, /AGENTRUN_PUBLIC_URL/, "the launcher's flag, not a variable: the launcher checks it at each start");
+  // The plist on macOS carries it the same way.
+  const plist = plistText({ program: "/u/mac/.agentrun/bin/agentrun", args: ["--no-open", "--public-url", "https://box.tailnet.example/"], path: "/usr/bin", log: "/u/mac/log" });
+  assert.deepEqual(plistArgs(plist).slice(1), ["--no-open", "--public-url", "https://box.tailnet.example/"]);
+});
+
+// With a public address the server asks for a setup code and prints its link at that address: the page the install
+// opens is that link, never the loopback one its record names. A later --env keeps the address on the command line.
+test("service install --public-url opens the setup page at the public address, and a later --env keeps --public-url", async () => {
+  const { home, calls, exec, get, launch } = setupHome();
+  const { out, io } = ioOf();
+  const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: { DISPLAY: ":0", PATH: "/usr/bin" }, exec, io, fail, get, waitMs: 5_000, launch });
+  assert.equal(await service.install({ port: "7345", "public-url": "https://box.example.test/" }), 0);
+  assert.deepEqual(calls.filter((call) => call.startsWith("xdg-open")), ["xdg-open https://box.example.test/setup#code=OLDCODE1"]);
+  assert.doesNotMatch(out.join(""), /http:\/\/127\.0\.0\.1:7345\/setup/);
+  const file = join(home, ".config", "systemd", "user", UNIT);
+  assert.equal(await service.install({ env: ["AGENT_MODEL=llama3.2"] }), 0);
+  assert.deepEqual(unitArgs(readFileSync(file, "utf8")), [join(home, ".agentrun", "bin", "agentrun"), "--no-open", "--port", "7345", "--public-url", "https://box.example.test/"]);
+  // A new --public-url replaces it, and changes that only: the data folder and port stay.
+  assert.equal(await service.install({ "public-url": "https://other.example.test/" }), 0);
+  assert.deepEqual(unitArgs(readFileSync(file, "utf8")), [join(home, ".agentrun", "bin", "agentrun"), "--no-open", "--port", "7345", "--public-url", "https://other.example.test/"]);
+});
+
 test("service install with --data waits on that directory's server, and a restart waits for a record newer than itself", async () => {
   const { home, exec, get } = linuxHome();
   const data = join(home, "elsewhere");
@@ -418,12 +454,28 @@ test("service install --env on macOS: the LaunchAgent's EnvironmentVariables, ke
   assert.deepEqual(plistEnv(plist), { PATH: "/opt/homebrew/bin:/usr/bin", ...MODEL_VARS, AGENT_MODEL: "a&b<c>" });
 });
 
+test("service install --env: the start-time switches go into the unit at 1, stay through a re-install beside the model's, and KEY= removes one", async () => {
+  const { home, exec, get } = linuxHome();
+  const { io } = ioOf();
+  const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: { PATH: "/usr/bin" }, exec, io, fail, get, waitMs: 5_000 });
+  const file = join(home, ".config", "systemd", "user", UNIT);
+  assert.equal(await service.install({ env: ["AGENTRUN_MCP_ALLOW_LOOPBACK=1", "AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1"] }), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", AGENTRUN_MCP_ALLOW_LOOPBACK: "1", AGENTRUN_WEBHOOK_PRIVATE_TARGETS: "1" });
+  assert.equal(await service.install({ env: ["AGENT_MODEL=qwen3:8b"] }), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", AGENTRUN_MCP_ALLOW_LOOPBACK: "1", AGENTRUN_WEBHOOK_PRIVATE_TARGETS: "1", AGENT_MODEL: "qwen3:8b" });
+  assert.equal(await service.install({ env: ["AGENTRUN_WEBHOOK_PRIVATE_TARGETS="] }), 0);
+  assert.deepEqual(unitEnv(readFileSync(file, "utf8")), { PATH: "/usr/bin", AGENTRUN_MCP_ALLOW_LOOPBACK: "1", AGENT_MODEL: "qwen3:8b" });
+  // The server reads a switch as on at 1 alone: any other value would leave it off, so it is refused.
+  await assert.rejects(service.install({ env: ["AGENTRUN_MCP_ALLOW_LOOPBACK=true"] }), (error) => error.code === 2 && /AGENTRUN_MCP_ALLOW_LOOPBACK takes 1 \(on\) or nothing \(off\), not true/.test(error.message));
+  assert.equal(unitEnv(readFileSync(file, "utf8")).AGENTRUN_MCP_ALLOW_LOOPBACK, "1");
+});
+
 test("service install --env refuses any other variable by name, and a pair with no =, before it writes anything", async () => {
   const { home, exec, get } = linuxHome();
   const { io } = ioOf();
   const service = serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, exec, io, fail, get, waitMs: 5_000 });
   for (const [pair, said] of [
-    ["OPENROUTER_API_KEY=sk-or-x", /--env takes AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_PRICE, AGENTRUN_TELEMETRY or DO_NOT_TRACK, not OPENROUTER_API_KEY: a key goes in the console/],
+    ["OPENROUTER_API_KEY=sk-or-x", /--env takes AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_PRICE, AGENTRUN_MCP_ALLOW_LOOPBACK, AGENTRUN_WEBHOOK_PRIVATE_TARGETS, AGENTRUN_TELEMETRY or DO_NOT_TRACK, not OPENROUTER_API_KEY: a key goes in the console/],
     ["PATH=/x", /not PATH/],
     ["AGENT_MODEL", /--env takes KEY=VALUE, not AGENT_MODEL/],
     ["AGENT_MODEL=a\nb", /AGENT_MODEL's value has a line break/],

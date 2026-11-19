@@ -239,6 +239,17 @@ Revoke a source connector and stop its outstanding commands.
 
 Route: `DELETE /connectors/{connector_id}`.
 
+## doctor
+
+### `agentrun doctor`
+
+Check how this AgentRun is set up (Node, the server, its service, address, password, models, switches, Docker) and print what to change; read-only (exit 0 ok or warnings, 1 a check failed, 3 no server answering).
+
+Route: none, it runs on this machine.
+
+- `--data DIR` (string, this CLI's own): the data directory whose server it checks (default ~/.agentrun)
+- `--json` (boolean, this CLI's own): print the checks as JSON: {exit, server, checks: [{id, status, summary, fix, docs}]}
+
 ## files
 
 ### `agentrun files create`
@@ -436,6 +447,12 @@ Route: `DELETE /integrations/github`.
 Whether a GitHub App is connected, and if so its id, slug and installations, never a secret.
 
 Route: `GET /integrations/github`.
+
+### `agentrun local get-model-gateway`
+
+The model gateway in force: the environment's, the one saved here, or none.
+
+Route: `GET /settings/model-gateway`.
 
 ### `agentrun local get-workspace-archil`
 
@@ -927,7 +944,8 @@ Route: none, it runs on this machine.
 - `--port N` (string, this CLI's own): the port to listen on (default: the first free from 7340; 7340 with --tailscale)
 - `--data DIR` (string, this CLI's own): the data directory (default ~/.agentrun)
 - `--tailscale` (boolean, this CLI's own): also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off
-- `--env KEY=VALUE` (string, this CLI's own): a local model's variable for the server (AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_PRICE), or the usage counts' switch (AGENTRUN_TELEMETRY, DO_NOT_TRACK), kept until KEY= removes it; repeatable
+- `--env KEY=VALUE` (string, this CLI's own): a local model's variable for the server (AGENT_MODEL_BASE_URL, AGENT_MODEL_GATEWAY_IDS, AGENT_MODEL, AGENT_MODEL_PRICE), a start-time switch at 1 (AGENTRUN_MCP_ALLOW_LOOPBACK, AGENTRUN_WEBHOOK_PRIVATE_TARGETS), or the usage counts' switch (AGENTRUN_TELEMETRY, DO_NOT_TRACK), kept until KEY= removes it; repeatable
+- `--public-url URL` (string, this CLI's own): the https address people open it at, through a proxy you run in front of it (your own tailscale serve, a reverse proxy); kept for every restart
 
 ### `agentrun service logs`
 
@@ -987,6 +1005,32 @@ Route: none, it runs on this machine.
 - `--claude` (boolean, this CLI's own): into Claude Code's skills: ~/.claude/skills/agentrun-cli
 - `--codex` (boolean, this CLI's own): into ~/.agents/skills/agentrun-cli, the shared skills folder Codex reads (Cursor too)
 - `--dir DIR` (string, this CLI's own): into DIR/agentrun-cli (a project's .claude/skills or .agents/skills, say)
+
+## slack
+
+### `agentrun slack deliveries`
+
+Slack's last 50 attempts, newest first.
+
+Route: `GET /settings/slack/deliveries`.
+
+### `agentrun slack get`
+
+Where this server posts run notices in Slack, if it is set; never the URL.
+
+Route: `GET /settings/slack`.
+
+### `agentrun slack redeliver WEBHOOK_ID`
+
+Post a message of Slack's log again, once now, under the same id and body.
+
+Route: `POST /settings/slack/deliveries/{webhook_id}/redeliver`.
+
+### `agentrun slack test`
+
+Post a test message to Slack now, once, and say how it went.
+
+Route: `POST /settings/slack/test`.
 
 ## stats
 

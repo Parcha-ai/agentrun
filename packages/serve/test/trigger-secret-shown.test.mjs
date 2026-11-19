@@ -18,7 +18,7 @@ const SEAL = { AGENTRUN_SEAL_KEY: randomBytes(32).toString("base64") };
 const PASSWORD = "not-a-secret";
 
 const TRIGGER_WORDS = "Open the console to see this trigger's signing secret once: rotate it there.";
-const WEBHOOK_WORDS = "Open the console to see this webhook's signing secret once: remove it and save it again there.";
+const WEBHOOK_WORDS = "Open Settings → Webhook in the console to rotate this webhook's signing secret and see the new one once.";
 const REFUSAL = "Saving, replacing or removing a secret takes the owner's signed-in session in the console; the API token can't write secrets.";
 
 const hooked = (agentId) => ({ name: "on push", source: { kind: "webhook" }, target: { kind: "start_run", agent_id: agentId, input: { content: "Triage this event." }, max_cost_usd: 0.5 } });

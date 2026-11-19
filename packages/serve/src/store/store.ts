@@ -693,8 +693,9 @@ export interface Agents {
   /** Adds a revision and makes it the agent's current one, in one commit. With `ifCurrent` (a revision id, or null for
    *  none), only while that is still the agent's current revision, compared in the same transaction under the agent row's
    *  lock: RevisionMoved, and nothing written, when another writer (this server's, or another server's on the same store)
-   *  moved it first. */
-  addRevision(revision: NewRevision & { agentId: string; ifCurrent?: string | null }): Promise<void>;
+   *  moved it first. `description` (a string, or null for none), when given, is the agent's new description, written in the
+   *  same commit: a revision refused by `ifCurrent` leaves it as it was. Absent, the description stays. */
+  addRevision(revision: NewRevision & { agentId: string; ifCurrent?: string | null; description?: string | null }): Promise<void>;
   /** Makes `revisionId`, one of the agent's own, its current one. StoreConstraint when it is not a revision of `agentId`. */
   setCurrent(agentId: string, revisionId: string): Promise<void>;
   revision(id: string): Promise<RevisionRow | undefined>;
@@ -1680,16 +1681,22 @@ export class StoreFromEarlierVersion extends Error {
   }
 }
 
-/** A store whose schema version this build does not know (or one the server has not set up yet). */
+/** A store whose schema version this build does not know (or one the server has not set up yet). `upgradesInPlace`: this
+ *  release's server brings a store at `found` up to `known` in place at its start (Postgres, whose migrations take any
+ *  earlier schema), so a runner that finds it is told to start that server first, never to start on a new data folder. */
 export class SchemaVersionUnknown extends Error {
   readonly found: number | null;
   readonly known: number;
-  constructor(file: string, found: number | null, known: number) {
+  readonly upgradesInPlace: boolean;
+  constructor(file: string, found: number | null, known: number, options: { upgradesInPlace?: boolean } = {}) {
     // `file` is a path (SQLite) or already a phrase (Postgres: "the Postgres schema x").
     const store = file.startsWith("the ") ? file : `the store at ${file}`;
+    const upgradesInPlace = options.upgradesInPlace === true && found !== null && found < known;
     super(
       found === null
         ? `${store} has no schema yet: the server sets it up at its start`
+        : upgradesInPlace
+          ? `${store} is schema version ${found}, and this release knows version ${known}: start the server first, which upgrades the store in place, then open it again.`
         : found < known
           ? `${store} is schema version ${found}, and this release (version ${known}) can't open a store an earlier release set up.\n` +
             "Start the server on a new, empty data folder with --data <new folder> (docker run or compose arguments: --data /data/<new folder> --listen 0.0.0.0 --port 7340 --drain-timeout 6s), then add your agents, MCP servers, keys and sign-ins again.\n" +
@@ -1700,6 +1707,7 @@ export class SchemaVersionUnknown extends Error {
     this.name = "SchemaVersionUnknown";
     this.found = found;
     this.known = known;
+    this.upgradesInPlace = upgradesInPlace;
   }
 }
 

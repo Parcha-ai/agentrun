@@ -589,7 +589,8 @@ Every saved secret (model and tool keys, MCP credentials, sign-ins, webhook sign
 `AGENTRUN_SEAL_KEY`; keep it, because losing it loses what it sealed. Secrets are write-only: the console shows each
 one as set or missing, and only the console can paste, replace or remove one (your signed-in session, or the
 launcher's console on loopback when accounts are off). A key set where the server starts wins over a pasted one. The
-API token can't write a secret or approve a tool call. A run gets only the keys its own model and tools need, and
+API token can't write a secret or approve a tool call: its secret write is refused with a console link
+(`error.details.console_url`) to the form, filled in except for the secret. A run gets only the keys its own model and tools need, and
 nothing a run learns can keep a secret it was handed. [SECURITY.md](SECURITY.md) says how to report a vulnerability.
 
 The server counts itself anonymously (a random id, its version, its platform): never prompts, files or keys.
@@ -605,6 +606,7 @@ The server counts itself anonymously (a random id, its version, its platform): n
 - [The CLI's skill](packages/agentrun/skills/agentrun-cli/SKILL.md) and [every command](packages/agentrun/skills/agentrun-cli/references/commands.md)
 - [Connect existing agents and import history](docs/native-agents.md), locally or from another machine
 - [Deploying](deploy/README.md), [computers](packages/computer/README.md), [templates](packages/serve/templates/README.md)
+- [Give an agent tools](docs/connect-tools.md): Sentry, GitHub, Slack and other services as MCP servers, with no token in the box
 - [Connect Composio tools and triggers](docs/tutorials/composio.md)
 - [The workflow language](packages/dsl/README.md), [authoring](docs/authoring.md), [the guide](docs/guide.md)
 - [Changelog](CHANGELOG.md) and [contributing](CONTRIBUTING.md)

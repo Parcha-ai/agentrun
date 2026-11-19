@@ -340,7 +340,7 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       await connection.write([...DDL.map((sql) => ({ sql })), { sql: "INSERT INTO store_meta (singleton, schema_version) VALUES (1, ?) ON CONFLICT (singleton) DO NOTHING", params: [SCHEMA_VERSION] }], { full: true });
       found = await versionOf(connection);
     }
-    // Version 11 (0.1.0-beta.43 and before) keeps no listing on a run's row: the server adds it (schema.ts listingUpgrade)
+    // Version 11 (0.1.0-beta.44 and before) keeps no listing on a run's row: the server adds it (schema.ts listingUpgrade)
     // in one durable write once the columns an earlier build of 11 lacked are in, every run behind until its lister builds
     // it. Version 12 names no minting runner on a machine's token and keeps no runner's relay: the server adds them
     // (schema.ts relayUpgrade). A runner refuses 11 and 12 until that server has.
@@ -679,8 +679,12 @@ class SqliteStore implements Store {
           for (const t of off) await writeScopes(tx, t.id, []);
           return off.map(({ id: triggerId, name }) => ({ id: triggerId, name })).sort((a, b) => a.name.localeCompare(b.name));
         }),
-      addRevision: async ({ agentId, ifCurrent, ...revision }) => {
-        await db.transaction((tx) => insertRevision(tx, agentId, revision, now(), ifCurrent));
+      addRevision: async ({ agentId, ifCurrent, description, ...revision }) => {
+        await db.transaction(async (tx) => {
+          await insertRevision(tx, agentId, revision, now(), ifCurrent);
+          // Under the row lock insertRevision took, after its ifCurrent passed: the revision and the description, or neither.
+          if (description !== undefined) await tx.run("UPDATE agents SET description = ? WHERE id = ?", description, agentId);
+        });
       },
       setCurrent: async (agentId, revisionId) => {
         const changed = await db.transaction((tx) => tx.runCounted(
