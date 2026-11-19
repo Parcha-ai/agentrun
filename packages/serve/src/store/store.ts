@@ -869,6 +869,12 @@ export interface Runs {
    *  other state (or none) is left as it is, false. Its claim, if one holds it while it parks, is let go as before: the
    *  release sets wake_at as the loop's end says. */
   wake(runId: string): Promise<boolean>;
+  /** Ends `failed`, its summary `summary`, every run still queued that no runner ever claimed (epoch 0), each in a
+   *  transaction of its own, as an end does: its untaken commands refused and its launch's secrets erased in the same
+   *  write. A run a runner claimed (at any epoch since) is left as it is, and so is one a claim takes meanwhile: the
+   *  write is fenced on epoch 0. Answers the runs it ended. What the server does with runs no runner here can claim
+   *  (runner/presence.ts). */
+  failUnclaimed(summary: string): Promise<string[]>;
   /** The runs a runner may claim, oldest first: queued; parked with an untaken command or its wake_at passed; running with
    *  no runner (released at a runner's shutdown: it stays running, a run that started keeps that fact) or its claim run
    *  out. */
@@ -1266,28 +1272,43 @@ export interface MintedTokens {
   refuse(tokenSha256: string, words: string): Promise<void>;
 }
 
-/** Where a runner in a process of its own takes the dials relayed to it (store schema `runner_relays`, dial-relay.ts): its
- *  attach listener's host and port, under the runner's name and its incarnation (its process since its start), and when
- *  it last said it was there. */
-export interface RunnerRelayRow {
+/** A runner's word that it is there (store schema `runners`, runner/presence.ts): its name, its incarnation (its process
+ *  since its start: the one its relay's minted tokens and proofs name), why it refused to claim any run (its words; null
+ *  for one that claims), where its relay's attach listener takes the dials the server relays to it (dial-relay.ts; null
+ *  for a runner with no relay) and when it last said it was there. */
+export interface RunnerRow {
   readonly runner: string;
   readonly incarnation: string;
-  /** The host the server reaches it at: loopback, or the runner's live host (live-reach.ts). */
-  readonly host: string;
-  readonly port: number;
+  readonly refused: string | null;
+  /** The host the server reaches its relay at: loopback, or the runner's live host (live-reach.ts). Null with no relay. */
+  readonly host: string | null;
+  readonly port: number | null;
   readonly seenAt: number;
 }
 
-/** The runners' attach listeners (dial-relay.ts). */
-export interface RunnerRelays {
-  /** Keeps `row` for its runner, replacing any earlier incarnation's, seen now. */
-  put(row: Omit<RunnerRelayRow, "seenAt">): Promise<void>;
-  /** Marks the runner's row seen now, while it is still this incarnation's. False when it is not. */
+/** How long a runner's row is kept once it stopped saying it is there (a runner that died without its close): its next
+ *  put removes every row older than this. */
+export const RUNNER_ROWS_KEPT_MS = 24 * 60 * 60_000;
+
+/** Every runner's word that it is there (runner/presence.ts). */
+export interface Runners {
+  /** Keeps `row` for its runner, replacing any earlier incarnation's, seen now; rows no runner renewed for
+   *  RUNNER_ROWS_KEPT_MS go in the same write. Its host and port go together: both absent (or null) for no relay. */
+  put(row: Omit<RunnerRow, "seenAt" | "host" | "port"> & { readonly host?: string | null; readonly port?: number | null }): Promise<void>;
+  /** Keeps `row` for its runner unless another incarnation's row of the same name was seen within `staleMs`: a process's
+   *  put again of a row that went (pruned, a store restored) never takes back a later process's live one. False when
+   *  such a row is there and nothing was written. */
+  putUnlessLive(row: Omit<RunnerRow, "seenAt" | "host" | "port"> & { readonly host?: string | null; readonly port?: number | null }, staleMs: number): Promise<boolean>;
+  /** Says on the runner's row where its relay answers (`at`, or null for nowhere), seen now, while the row is still this
+   *  incarnation's. False when it is not (or there is none), and nothing was written. */
+  relayAt(runner: string, incarnation: string, at: { readonly host: string; readonly port: number } | null): Promise<boolean>;
+  /** Marks the runner's row seen now, while it is still this incarnation's. False when it is not (or there is none). */
   seen(runner: string, incarnation: string): Promise<boolean>;
-  /** The runner's row, whichever incarnation's, or undefined. */
-  get(runner: string): Promise<RunnerRelayRow | undefined>;
-  /** Every runner's row. */
-  list(): Promise<RunnerRelayRow[]>;
+  /** Every runner's row, by name. */
+  list(): Promise<RunnerRow[]>;
+  /** The rows seen within `staleMs`, by name. Every row's time (a put's, a seen's) and this "now" are the deadlines'
+   *  clock (fence.ts storeNow: the database's on Postgres), never one process's: runners on other hosts are judged alike. */
+  live(staleMs: number): Promise<RunnerRow[]>;
   /** The runner's row gone, while it is still this incarnation's. */
   remove(runner: string, incarnation: string): Promise<void>;
 }
@@ -1511,8 +1532,8 @@ export interface Store {
   readonly pairedComputers: PairedComputers;
   /** The tokens minted for hosted machines that dial this server, each kept as its SHA-256. */
   readonly mintedTokens: MintedTokens;
-  /** Where each runner in a process of its own takes the dials relayed to it. */
-  readonly runnerRelays: RunnerRelays;
+  /** Every runner's word that it is there, whether it refused to claim, and where its relay takes the dials relayed to it. */
+  readonly runners: Runners;
   /** The template packages imported from GitHub, their files kept as read. */
   readonly importedTemplates: ImportedTemplates;
   /** Each trigger source's sealed settings (design 2.1): a value per adapter, scope and field. */

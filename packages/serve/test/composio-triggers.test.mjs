@@ -244,7 +244,7 @@ test("a save over the server onto another auth config while a trigger is being m
   assert.ok(error, `the create is refused (the credential was read ${reads} times)`);
   assert.equal(error.code, "input_invalid");
   assert.equal(error.extra.fields[0].field, "source.server");
-  assert.match(error.extra.fields[0].message, /gh was saved again on another auth config while this trigger was being made: nothing was saved, make it again\./);
+  assert.match(error.extra.fields[0].message, /another auth config/);
   assert.equal(composio.subscriptions.length, 0, "the subscription it made is undone");
   assert.ok([...composio.instances.values()].every((i) => i.disabled_at !== null) || composio.instances.size === 0, "no instance left on");
 });

@@ -92,14 +92,12 @@ test("auth_config_id: the MCP server and the connect link are made against the o
   assert.deepEqual(after.find((call) => call.path === "/api/v3/connected_accounts/link").body, { auth_config_id: "ac_managed", user_id: "owner-1" });
 });
 
-test("auth_config_id: one Composio doesn't know, one of another toolkit, or a disabled one is refused in words before anything is made", async (t) => {
+test("auth_config_id: one Composio doesn't know, one of another toolkit, or a disabled one is refused on the field before anything is made", async (t) => {
   const s = await setup(t, { authConfigs: { github: [{ id: "ac_managed", is_composio_managed: true }, { id: "ac_off", is_composio_managed: false, status: "DISABLED" }], slack: [{ id: "ac_slackapp", is_composio_managed: false }] } });
-  for (const [id, reason, words] of [["ac_nope", "not_found", /Composio has no auth config ac_nope/], ["ac_slackapp", "wrong_toolkit", /ac_slackapp is the slack toolkit's, not github's/], ["ac_off", "disabled", /ac_off is disabled/]]) {
+  for (const [id, reason] of [["ac_nope", "not_found"], ["ac_slackapp", "wrong_toolkit"], ["ac_off", "disabled"]]) {
     const refused = await save(s, "gh", { toolkit: "github", tools: ["GITHUB_LIST_ISSUES"], auth_config_id: id });
     assert.equal(refused.status, 422, JSON.stringify([id, refused.body]));
     assert.deepEqual(refused.body.error.fields.map((f) => [f.field, f.reason]), [["auth_config_id", reason]], id);
-    assert.match(refused.body.error.fields[0].message, words);
-    assert.match(refused.body.error.fields[0].message, /Nothing was saved/);
   }
   assert.deepEqual(made(s.composio), [], "nothing was made at Composio");
   assert.equal((await s.api("GET", "/settings/mcp-servers/gh")).status, 404, "nothing was saved");

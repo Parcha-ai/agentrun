@@ -19,7 +19,7 @@
 
 <p align="center">
   <a href="https://console.agentrun.ai/"><b>AgentRun Cloud</b></a> ·
-  <a href="#run-locally-in-three-steps">Run locally</a> ·
+  <a href="#set-it-up-with-one-prompt">Run locally</a> ·
   <a href="#deploy-it">Self-host</a>
 </p>
 
@@ -81,12 +81,28 @@ laptop, in one container, or as a server with runners. Apache-2.0.
 create an account or sign in. For help setting up your team's workflows,
 [talk to us](https://calendly.com/d/dtwn-dsp-nx5/agentrun).
 
-Prefer your own machine or infrastructure? Start locally below, or [self-host on Railway, Render, a VPS, Kubernetes, Coolify, Dokploy or Docker](#deploy-it).
-The [getting-started guide](docs/getting-started.md) explains the three options.
+Prefer your own machine or infrastructure? Have your coding agent set it up below, or
+[self-host on Railway, Render, a VPS, Kubernetes, Coolify, Dokploy or Docker](#deploy-it) yourself. The
+[getting-started guide](docs/getting-started.md) explains the three options.
 
 <a id="start-in-three-steps"></a>
+<a id="run-locally-in-three-steps"></a>
 
-### Run locally in three steps
+### Set it up with one prompt
+
+Paste this into Claude Code, Codex or another coding agent:
+
+```text
+Read https://agentrun.ai/SKILL.md and follow it to set up AgentRun for me. Ask me where AgentRun should run before you install or deploy anything.
+```
+
+Your agent first asks where AgentRun should run: this computer (macOS or Linux), your own always-on machine, Railway,
+Render or AgentRun Cloud. It installs nothing before you answer. It can bring in a Claude Code or Codex job you
+already schedule as the first run, or create and run a first agent with you. You save keys and passwords in the
+AgentRun console, never in the chat. The link is [the setup skill](docs/SKILL.md) in this repository.
+
+<details>
+<summary>Or run it locally yourself, in three steps</summary>
 
 You need Node 24.22.3 or newer, on macOS or Linux.
 
@@ -113,10 +129,7 @@ start a new agent from a template.
    a due diligence report with a verdict and every claim cited. Then open the agent's **Learning** tab to see what it
    kept for next time.
 
-Rather have your coding agent do it? Tell it `Read https://agentrun.ai/SKILL.md and set up AgentRun for me`.
-That page is [the setup skill](docs/SKILL.md) in this repository: it asks where AgentRun should run (this computer,
-your own always-on machine, Railway, Render or AgentRun Cloud) before it installs anything. It brings in a Claude Code
-or Codex job you already schedule as the first run, or creates and runs a first agent with you.
+</details>
 
 <details>
 <summary>Docker, sandboxes and running it on a server</summary>

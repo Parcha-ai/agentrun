@@ -77,14 +77,13 @@ test("a server with its runner in its own process and the runner's isolation ref
   const api = client(`http://127.0.0.1:${port}/v2`, TOKEN);
   const caps = await api("GET", "/capabilities");
   assert.equal(caps.body.run_isolation, "process", JSON.stringify(caps.body.run_isolation));
-  // A run is taken and waits: no runner claims it.
+  // A run is refused in the runner's words, never taken to wait for good (runner-refused.test.mjs has the rest).
   const made = await api("POST", "/agents", agent("waits"));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const run = await api("POST", "/agents/waits/runs", { input: { content: "Answer." } });
-  assert.equal(run.status, 202, JSON.stringify(run.body));
-  await sleep(1_500);
-  const read = await api("GET", `/runs/${run.body.run_id}`);
-  assert.equal(read.body.status, "queued", JSON.stringify(read.body));
+  assert.equal(run.status, 503, JSON.stringify(run.body));
+  assert.equal(run.body.error.code, "runner_refused", JSON.stringify(run.body));
+  assert.match(run.body.error.message, REFUSED, JSON.stringify(run.body));
   assert.equal(times(server.said.err, REFUSED), 1, `the refusal is said once on stderr: ${server.said.err}`);
   assert.equal(server.child.exitCode, null, `the server is still up: ${JSON.stringify(server.said)}`);
   server.child.kill("SIGTERM");

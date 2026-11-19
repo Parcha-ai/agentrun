@@ -229,6 +229,10 @@ export class SdkRuns {
         "agent_not_runnable",
         "AgentRun cannot enforce a spend cap on an external SDK. Configure the budget in the backend SDK and remove this managed run cap.",
       );
+    // A runner keeps an SDK run's evidence and ends it: while every runner here refused to claim, the start is refused in
+    // their words, as any start is (prepareLaunch), before the caller holds a receipt it would run on.
+    const refused = await deps.runnersRefused?.();
+    if (refused !== undefined) throw new ApiError("runner_refused", refused);
     const learning = await learningStartFor(deps, entry, pinned.revision, revisionBody as never, {
       noWorkflows: !workflow,
       ...(compile.model ? { model: compile.model } : {}),

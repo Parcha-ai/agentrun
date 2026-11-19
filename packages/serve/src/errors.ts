@@ -83,6 +83,10 @@ export const ERROR_STATUS = {
   // A run start, or a message that would start a turn, with no model_key where the server holds no key for the run's
   // model (run-model-key.ts): nothing to spend, so refused before any model call.
   model_key_required: 422,
+  // A run start while every runner here refused to claim any run (runner/presence.ts): its run isolation refused
+  // (run-child-host.ts runIsolationOf), in the runner's words and their fix. Not retryable: it stays so until the runner
+  // is started again as the words say.
+  runner_refused: 503,
 } as const;
 
 export type ErrorCode = keyof typeof ERROR_STATUS;
