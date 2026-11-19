@@ -261,6 +261,10 @@ export interface components {
     }>;
   };
   CommitSha: string;
+  ComposioRunBinding: {
+    composio_user_id: string;
+    connected_account_id?: string;
+  };
   Cost: {
     usd: number | null;
     basis: "charge" | "estimate" | "reported" | "unpriced";
@@ -719,10 +723,7 @@ export interface components {
     model_key?: string;
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
-    } | {
-      composio_user_id: string;
-      connected_account_id?: string;
-    }>;
+    } | components["ComposioRunBinding"]>;
   };
   MessageResult: {
     run_id: components["Id"];
@@ -970,10 +971,7 @@ export interface components {
     model_key?: string;
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
-    } | {
-      composio_user_id: string;
-      connected_account_id?: string;
-    }>;
+    } | components["ComposioRunBinding"]>;
     labels?: Record<string, string>;
     workflow_first?: boolean;
     learning?: "use";
@@ -997,10 +995,7 @@ export interface components {
     model_key?: string;
     mcp_auth?: Record<string, {
       headers: Record<string, string>;
-    } | {
-      composio_user_id: string;
-      connected_account_id?: string;
-    }>;
+    } | components["ComposioRunBinding"]>;
     labels?: Record<string, string>;
     workflow_first?: boolean;
     learning?: "use";

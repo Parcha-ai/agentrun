@@ -30,7 +30,10 @@
 // caller binds it ({composio_user_id, connected_account_id?} in mcp_auth), sealed in the run's launch as per_run
 // headers are, and its entry here carries that user and account as the query every request to it adds to the pinned
 // address (mcp-gateway.ts), held by the run's redactors as headers are, never written to its row, the journal, the
-// timeline or a log line. A run that bound none gets its calls refused unsent, in UNUSABLE.perRunMissing's words: never
+// timeline or a log line: the binding's ids are held by the run's redactors as any secret of 8 characters or more; a
+// shorter Composio user id is an identifier, not a credential, and a conversation can still quote it, but no row,
+// journal entry, timeline item or log line carries it as a field (an account id is 8 or more, COMPOSIO_ACCOUNT_ID).
+// A run that bound none gets its calls refused unsent, in UNUSABLE.perRunMissing's words: never
 // a call to an address that names no account.
 //
 // fresh(). After the pin check and before the loop, and again on a command-row resume: an OAuth access token past its

@@ -580,10 +580,7 @@ export type RunCreateInline = {
   model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
-  } | {
-    composio_user_id: string;
-    connected_account_id?: string;
-  }>;
+  } | ComposioRunBinding>;
   labels?: Record<string, string>;
   workflow_first?: boolean;
   learning?: "use";
@@ -600,6 +597,11 @@ export type ExternalRef = {
   kind: string;
   id: string;
   version: string | number;
+};
+
+export type ComposioRunBinding = {
+  composio_user_id: string;
+  connected_account_id?: string;
 };
 
 export type Run = {
@@ -800,10 +802,7 @@ export type MessageCreate = {
   model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
-  } | {
-    composio_user_id: string;
-    connected_account_id?: string;
-  }>;
+  } | ComposioRunBinding>;
 };
 
 export type MessageResult = {
@@ -824,10 +823,7 @@ export type RunCreate = {
   model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
-  } | {
-    composio_user_id: string;
-    connected_account_id?: string;
-  }>;
+  } | ComposioRunBinding>;
   labels?: Record<string, string>;
   workflow_first?: boolean;
   learning?: "use";

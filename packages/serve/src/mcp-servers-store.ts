@@ -236,7 +236,9 @@ export class McpServersOverStore {
     // A per_run server's are optional too: they only list its tools, for a server that lists them only to a caller it knows.
     if (auth.type !== "none" && auth.type !== "github_app" && auth.type !== "per_run" && !auth.headers) throw invalid([credentialMissing(auth.type, "A preview needs the credential it is to connect with.")]);
     const send = await this.reached(auth.type, url, stop);
-    return marked(url.href, await this.signInNoted(url, this.listServer(url, await this.withAppToken(auth.type, url, auth.headers ?? {}, stop), send, stop), stop));
+    // The edit form of a per-run Composio server at its saved address lists it as a preview by name does.
+    const perRun = !!saved && auth.type === "headers" && saved.url === url.href && (await this.perRunComposio(String(editing), saved));
+    return marked(url.href, await this.signInNoted(url, this.listServer(url, await this.withAppToken(auth.type, url, auth.headers ?? {}, stop), send, stop, perRun), stop));
   }
 
   /** What an agent's save pins of the saved server `name` (mcp-gateway.ts mcpPinOf): its URL, its tools as it lists them

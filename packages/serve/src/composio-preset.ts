@@ -26,8 +26,9 @@ const USER_ID = COMPOSIO_USER_ID;
 /** The `user_id` a save names for a per-run server, reserved for that and never a Composio user: the server keeps no user
  *  and no connected account, and each run names its own (mcp_auth.<server> = {composio_user_id, connected_account_id?}). */
 export const COMPOSIO_PER_RUN = "per_run";
-/** A Composio connected account's id, as a run's binding names one: Composio's are `ca_` and a short random id. */
-export const COMPOSIO_ACCOUNT_ID = /^ca_[A-Za-z0-9_-]{1,64}$/;
+/** A Composio connected account's id, as a run's binding names one: Composio's are `ca_` and a short random id. At least
+ *  8 characters in all, so the run's redactors (which hold a value of 8 or more) hold every one. */
+export const COMPOSIO_ACCOUNT_ID = /^ca_[A-Za-z0-9_-]{5,64}$/;
 /** Where Composio's MCP address names the user and the connected account its calls run as. */
 const ADDRESS_USER = "user_id";
 const ADDRESS_ACCOUNT = "connected_account_id";

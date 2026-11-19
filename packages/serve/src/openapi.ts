@@ -3141,7 +3141,7 @@ const COMPOSIO_RUN_BINDING: Json = {
   ...closedWith({
     composio_user_id: { type: "string", pattern: "^[A-Za-z0-9._@-]{1,128}$", description: "The Composio user this run's calls of that server run as." },
   }, {
-    connected_account_id: { type: "string", pattern: "^ca_[A-Za-z0-9_-]{1,64}$", description: "The user's connected account they run on (Composio's `ca_...` id). Absent: Composio picks the user's account for the toolkit." },
+    connected_account_id: { type: "string", pattern: "^ca_[A-Za-z0-9_-]{5,64}$", description: "The user's connected account they run on (Composio's `ca_...` id). Absent: Composio picks the user's account for the toolkit." },
   }),
   description: "For a per-run Composio server (saved through the Composio preset with `user_id` \"per_run\"): the Composio account this run's calls of it run as. The server's Composio key stays its own; no headers.",
   "x-agentrun-serve": "composioperrun/1",
@@ -3150,7 +3150,7 @@ const COMPOSIO_RUN_BINDING: Json = {
 /** mcpperrun/1: the credentials a run's caller hands its per_run MCP servers, for that run alone. */
 const MCP_RUN_AUTH: Json = {
   type: "object", minProperties: 1, maxProperties: 8,
-  additionalProperties: { oneOf: [closed({ headers: { type: "object", minProperties: 1, maxProperties: 8, additionalProperties: { type: "string", minLength: 1, maxLength: 8192 } } }, "For a per_run MCP server: the headers this run's calls of it carry, e.g. {\"authorization\": \"Bearer <token>\"}."), COMPOSIO_RUN_BINDING] },
+  additionalProperties: { oneOf: [closed({ headers: { type: "object", minProperties: 1, maxProperties: 8, additionalProperties: { type: "string", minLength: 1, maxLength: 8192 } } }, "For a per_run MCP server: the headers this run's calls of it carry, e.g. {\"authorization\": \"Bearer <token>\"}."), { $ref: "#/components/schemas/ComposioRunBinding" }] },
   propertyNames: { pattern: "^[a-z][a-z0-9-]{0,31}$" },
   // Not x-agentrun-secret: that marks a write of a secret the server keeps for every run (an owner's alone). This one is
   // the run's own, handed by whoever may start it, and kept only for that run.
@@ -3877,6 +3877,9 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   const schemas = (doc.components as Json).schemas as Record<string, Json>;
   // The one shape every secret's view answers (secret-writes.ts secretMeta): a component each plane's view refers to.
   schemas.SecretMeta = structuredClone(SECRET_META_SCHEMA) as unknown as Json;
+  // composioperrun/1: mcp_auth's second choice, a component so the first (the per_run headers) keeps the name each client
+  // generated for it before (RunCreateMcpAuthValue and the rest).
+  schemas.ComposioRunBinding = structuredClone(COMPOSIO_RUN_BINDING);
   const fields: string[] = [];
   for (const [where, added] of Object.entries(FIELD_EXTENSIONS)) {
     const [name, ...down] = where.split("/");
