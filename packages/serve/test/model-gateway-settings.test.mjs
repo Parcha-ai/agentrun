@@ -309,3 +309,16 @@ test("the test reads no more of the gateway's answer than MAX_TEST_BYTES: a long
   assert.match(answer.why, /is over 4 MB/);
   assert.ok(pulled <= MAX_TEST_BYTES + 4 * chunk.byteLength, `read ${pulled} bytes`);
 });
+
+test("a run in the runner holds the saved gateway's key, as its claim read it, in its one redactor before its loop starts: a reply that echoes it is cut though the store holds another by then", async () => {
+  const { resolveRunnerLoop } = await import("../dist/runner/harness-loops.js");
+  const { SAVED_GATEWAY_ENV } = await import("../dist/model-gateway.js");
+  const { heldRedactor } = await import("../dist/runner/redact.js");
+  const env = { PATH: "/bin", AGENT_MODEL_BASE_URL: "https://gateway.example", AGENT_MODEL: "m-1", [SAVED_GATEWAY_ENV]: "1" };
+  Object.defineProperty(env, "AGENT_MODEL_API_KEY", { value: CANARY, enumerable: false });
+  const store = { runs: { get: async () => undefined }, agents: { revision: async () => undefined } };
+  const factory = await resolveRunnerLoop({ store, env })("pi", {}, "run-1");
+  const redact = heldRedactor((text) => text);
+  factory({ redact, signal: new AbortController().signal, journal: () => undefined });
+  assert.equal(redact(`the gateway said: ${CANARY}`).includes(CANARY), false);
+});

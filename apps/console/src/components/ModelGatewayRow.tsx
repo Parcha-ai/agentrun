@@ -132,13 +132,22 @@ function GatewayForm({ v2, view, onCancel, onSaved }: { v2: Client; view: ModelG
   const keyRef = useRef<HTMLInputElement>(null);
   const atStart = (variable: string) => view.set_at_start.includes(variable);
   const typedKey = () => keyRef.current?.value.trim() || undefined;
+  // Each Test is for the address and key as they stood when it was pressed: an edit of either (or of Use no key) clears
+  // its result and the models it listed, and a reply to an older Test is dropped, so what reads as tested is what Save sends.
+  const testRun = useRef(0);
+  const inputsChanged = () => {
+    testRun.current++;
+    setTested(null); setListed(null); setTesting(false);
+  };
 
   const test = async () => {
+    const mine = ++testRun.current;
     setTesting(true); setTested(null); setErrors({});
     try {
       // "Use no key" tests with none (api_key null), never the saved key, so a test that passes is what Save will use.
       const key = typedKey();
       const answer = await v2.testModelGateway({ ...(base.trim() ? { base_url: base.trim() } : {}), ...(noKey ? { api_key: null } : key ? { api_key: key } : {}) });
+      if (mine !== testRun.current) return;
       setTested(answer);
       if (answer.ok) {
         setListed(answer.models);
@@ -146,10 +155,11 @@ function GatewayForm({ v2, view, onCancel, onSaved }: { v2: Client; view: ModelG
         if (!models.default && !atStart("AGENT_MODEL") && answer.models[0]) setModels((m) => ({ ...m, default: answer.models[0]! }));
       }
     } catch (e) {
+      if (mine !== testRun.current) return;
       setErrors(fieldErrors(e));
       setTested({ ok: false, why: words(e) });
     } finally {
-      setTesting(false);
+      if (mine === testRun.current) setTesting(false);
     }
   };
 
@@ -197,12 +207,12 @@ function GatewayForm({ v2, view, onCancel, onSaved }: { v2: Client; view: ModelG
   return (
     <form className="space-y-4 border bg-background p-4" aria-label="Model gateway" onSubmit={(e) => void save(e)}>
       <Field label="Gateway address" required note="Its OpenAI-compatible API, such as https://gateway.example/v1: https, or http on this machine." error={errors.base_url}>
-        <Input name="base_url" type="url" value={base} onChange={(e) => setBase(e.target.value)} placeholder="https://gateway.example/v1" autoComplete="off" spellCheck={false} />
+        <Input name="base_url" type="url" value={base} onChange={(e) => { setBase(e.target.value); inputsChanged(); }} placeholder="https://gateway.example/v1" autoComplete="off" spellCheck={false} />
       </Field>
       <Field label="Key" optional note={view.secret.set && view.secret.source === "console" ? "A key is saved: leave this empty to keep it (for the same address)." : "Sent as a bearer token, kept sealed here, never shown again. None: each run brings its own (model_key)."} error={errors.api_key}>
-        <Input ref={keyRef} name="api_key" type="password" autoComplete="off" disabled={noKey} placeholder={view.secret.set && view.secret.source === "console" ? "Saved" : ""} />
+        <Input ref={keyRef} name="api_key" type="password" autoComplete="off" disabled={noKey} onInput={inputsChanged} placeholder={view.secret.set && view.secret.source === "console" ? "Saved" : ""} />
       </Field>
-      {view.secret.set && view.secret.source === "console" && <Checkbox name="no_key" checked={noKey} onChange={(e) => setNoKey(e.target.checked)} label="Use no key" note="The saved key is removed when you save." />}
+      {view.secret.set && view.secret.source === "console" && <Checkbox name="no_key" checked={noKey} onChange={(e) => { setNoKey(e.target.checked); inputsChanged(); }} label="Use no key" note="The saved key is removed when you save." />}
       <div className="flex flex-wrap items-center gap-3">
         <Button type="button" size="sm" disabled={testing || (!base.trim() && !view.base_url)} aria-busy={testing || undefined} onClick={() => void test()}>{testing ? "Testing" : "Test"}</Button>
         {tested?.ok && <p className="text-small text-success-text" role="status">The gateway lists {tested.models.length} {tested.models.length === 1 ? "model" : "models"}{tested.models.length ? ": pick the defaults below." : "."}</p>}

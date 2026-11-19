@@ -30,7 +30,7 @@ function server(read: () => ModelGateway, write: (call: Call) => unknown) {
     const call: Call = { method: init?.method ?? "GET", path: String(url), ...(init?.body ? { body: JSON.parse(String(init.body)) } : {}) };
     calls.push(call);
     if (call.path === "/v2/settings/tool-keys") return json(200, KEYS);
-    const answer = call.method === "GET" ? read() : write(call);
+    const answer = await (call.method === "GET" ? read() : write(call));
     return answer instanceof Response ? answer : json(200, answer);
   }) as typeof globalThis.fetch;
   return { v2: createClient({ fetch }), calls };
@@ -100,6 +100,29 @@ describe("Settings → Model keys, Use a model gateway", () => {
     expect(calls.find((c) => c.method === "POST")).toEqual({ method: "POST", path: "/v2/settings/model-gateway/test", body: { base_url: "https://gateway.example/v1", api_key: null } });
     await page.submit();
     expect((calls.find((c) => c.method === "PUT")?.body as { api_key?: unknown }).api_key).toBeNull();
+  });
+
+  it("a Test's result is for the address and key it asked with: an edit clears it, and a reply to an older Test is dropped", async () => {
+    const replies: ((answer: unknown) => void)[] = [];
+    const { v2 } = server(() => OFF, (call) => (call.path.endsWith("/test") ? new Promise((resolve) => replies.push((answer) => resolve(json(200, answer)))) : OFF));
+    const page = await open(v2);
+    await page.click(new RegExp(`^${GATEWAY_ROW}$`));
+    await page.type("base_url", "https://a.example/v1");
+    await page.click(/^Test$/);
+    await act(async () => { replies.shift()!({ ok: true, models: ["model-of-a"] }); });
+    await page.settle();
+    expect(page.row().textContent).toContain("The gateway lists 1 model");
+    // The address edited: the result and its list are gone.
+    await page.type("base_url", "https://b.example/v1");
+    expect(page.row().textContent).not.toContain("The gateway lists");
+    expect(picker(page.row(), "Default model")).toBeFalsy();
+    // A Test asked, then the address edited before it answers: its late reply shows nothing.
+    await page.click(/^Test$/);
+    await page.type("base_url", "https://c.example/v1");
+    await act(async () => { replies.shift()!({ ok: true, models: ["model-of-b"] }); });
+    await page.settle();
+    expect(page.row().textContent).not.toContain("The gateway lists");
+    expect(page.row().textContent).not.toContain("model-of-b");
   });
 
   it("a refused address is said at its field, in the server's words", async () => {
