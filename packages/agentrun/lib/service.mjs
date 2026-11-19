@@ -585,13 +585,14 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
         rmSync(file, { force: true });
         // A server in the foreground (`npx @parcha/agentrun` in a terminal) has no pid file, only the record every server
         // writes, and it runs from npm's folder, not this install's. One whose process runs and whose recorded address
-        // answers /health ok is named, with how to stop it, and left running: Ctrl-C there is its stop.
+        // answers /health ok is named, with how to stop it, and left running: Ctrl-C there is its stop. A service writes the
+        // same record and no pid file, so where one is installed its server is the service's, and the hint below says so.
         let record;
         try {
           record = JSON.parse(readFileSync(join(root, ".server.json"), "utf8"));
         } catch {}
         const live = Number.isInteger(record?.pid) && record.pid > 1 && ![undefined, "Z"].includes(processOf(record.pid)?.state);
-        if (live && (await healthOf(root, { fetch: get })).health === "ok") {
+        if (live && !installed() && (await healthOf(root, { fetch: get })).health === "ok") {
           say(`AgentRun is running in the foreground (pid ${record.pid}); press Ctrl-C in its terminal.`);
           return 1;
         }

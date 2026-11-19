@@ -654,6 +654,18 @@ test("stop: the AgentRun the installer started in the background, and its server
   out.splice(0);
   assert.equal(await service().background(), 3);
   assert.match(out.join(""), /AgentRun runs as a service here: agentrun service stop stops it\./);
+
+  // A service writes the same record and no pid file: its live, healthy server is the service's, not one in a terminal.
+  const serviced = await holder(home, { pidFile: false });
+  try {
+    writeFileSync(join(home, ".agentrun", ".server.json"), JSON.stringify({ base_url: "http://127.0.0.1:7340/v2", pid: serviced.child.pid }));
+    out.splice(0);
+    assert.equal(await serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, io, fail, get: answers(true) }).background(), 3);
+    assert.equal(out.join(""), "No AgentRun started in the background is running. AgentRun runs as a service here: agentrun service stop stops it.\n");
+  } finally {
+    serviced.child.kill("SIGKILL");
+    await serviced.exited;
+  }
 });
 
 /** The bin, with HOME a fresh folder and a fake systemctl first on PATH that answers as a machine with no user session. */
