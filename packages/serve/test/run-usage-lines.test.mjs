@@ -136,6 +136,30 @@ test("a request cut at its hold: its line and the total are a bound, and say so"
   assert.equal(micro(total.usd), micro(0.03));
 });
 
+test("a browser hold given back with no time charged used nothing: no line, and the total stays known (#3281 review)", () => {
+  const entries = [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1)), e(9, "runner.request", { turn: 1, model: "paid:browser", paid: true, charged_by: "browserbase", tool: "browser", hold: true }), e(9, "runner.turn", { turn: 1, usd: 0, givenBack: true })];
+  const { lines, total } = usageLinesOf(entries);
+  assert.deepEqual(lines.map((one) => one.meter), ["tokens"]);
+  assert.deepEqual(total, { usd: 0.01 });
+});
+
+/** A workflow decision booked as the cap books it: its request named by its id, its cost kept, no usage. */
+const decision = (turn, id, usd) => [e(8, "runner.request", { turn, model: `decision:${id}` }), e(8, "runner.turn", { turn, usd, bookedUsd: usd, rule: "answered" })];
+
+test("a decision's tokens are its receipt's, and it is not counted as reporting none (#3281 review)", () => {
+  const entries = [...keys(), ...decision(1, "d1", 0.00003), ...decision(2, "d2", 0.00002)];
+  const receipts = new Map([["d1", { model: "jev-1.14.0", provider: "jev", cost_basis: "reported", usage: { input_tokens: 400, output_tokens: 3 } }], ["d2", { model: "jev-1.14.0", provider: "jev", cost_basis: "reported" }]]);
+  const [jev] = usageLinesOf(entries, undefined, receipts).lines;
+  assert.deepEqual([jev.model, jev.provider, jev.requests, jev.tokens, jev.quantity, jev.unmetered_requests, jev.usd, jev.basis], ["jev-1.14.0", "jev", 2, { input: 400, output: 3, cache_read: 0, cache_write: 0 }, 403, 1, 0.00005, "reported"], "d2's receipt says no tokens: it alone reported none");
+});
+
+test("one model reached two ways is two lines, each with its own route's provider; a receipt with no model leaves model null (#3281 review)", () => {
+  const entries = [...keys(), ...reported(7, 1, "openai/gpt-6.1-mini", 0.001, usage(100, 10)), ...decision(1, "d1", 0.0002), ...decision(2, "d2", 0.0001)];
+  const receipts = new Map([["d1", { model: "openai/gpt-6.1-mini", provider: "openrouter", cost_basis: "reported" }], ["d2", { provider: "openrouter", cost_basis: "reported" }]]);
+  const { lines } = usageLinesOf(entries, { model: { provider: "agent-model", modelId: "openai/gpt-6.1-mini" } }, receipts);
+  assert.deepEqual(lines.map((one) => [one.model, one.provider, one.usd]), [[null, "openrouter", 0.0001], ["openai/gpt-6.1-mini", null, 0.001], ["openai/gpt-6.1-mini", "openrouter", 0.0002]]);
+});
+
 /** A store over `run` and its journal (`entries`, `submissions`), each read inside its snapshot only: a read of the store
  *  outside it throws, and `reads` says what was read inside. */
 function snapshotStore(run, { entries = [], submissions = [], launch, rounds = 0 } = {}) {

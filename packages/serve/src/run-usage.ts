@@ -80,7 +80,7 @@ type Group = { meter: UsageMeter; name: string | null; provider?: string | null 
 
 /** A workflow decision's receipt as the lines read it (store-reads/decisions.ts): by its `decision_id`, which its
  *  request's booking names (`decision:<id>`), the model and provider that answered it, and how its cost was reached. */
-export type DecisionReceiptLike = { model?: unknown; provider?: unknown; cost_basis?: unknown };
+export type DecisionReceiptLike = { model?: unknown; provider?: unknown; cost_basis?: unknown; usage?: unknown };
 
 /** `entries` with the run's booked requests (runner.request and runner.turn) left in only where `keep` says so of its
  *  turn; every other entry (each session's key among them) kept, so bookedSpend reads that part alone. */
@@ -126,7 +126,9 @@ export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLau
   const paidConv = Number(conversation(TOOL_SESSION)?.conversation ?? Number.NaN);
   const conv = (e: EntryLike) => Number(e.conversationId);
   const turnOf = (e: EntryLike) => `${String(e.conversationId)}:${String((e.data as { turn?: unknown } | undefined)?.turn)}`;
-  const keyOf = (group: Group) => `${group.meter}\u0000${group.name ?? ""}`;
+  // A line is one meter, one name and, on `tokens`, one route: a model reached two ways (the run's own requests behind a
+  // gateway, a decision on its provider) is two lines, never one labelled with either's provider.
+  const keyOf = (group: Group) => `${group.meter}\u0000${group.name ?? ""}\u0000${group.provider ?? ""}`;
   // Each booked request's group, by its turn: a model request's or a decision's, the model its runner.request was sent on;
   // a paid charge's, who charged for it (`charged_by`), on browser_time when it is the browser's session time. A paid
   // charge settled at its provider's own figure says so on its request (`reported`). A decision's request names the
@@ -134,16 +136,23 @@ export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLau
   const groups = new Map<string, Group>();
   const reported = new Set<string>();
   const estimated = new Set<string>();
+  // A decision's tokens are its receipt's: its booking keeps its cost, with no usage (the cap books it at none).
+  const decisionTokens = new Map<string, { input: number; output: number }>();
   for (const e of entries) {
     if (e.kind !== RUNNER_RECORDS.request) continue;
     const d = (e.data ?? {}) as { model?: unknown; tool?: unknown; charged_by?: unknown; reported?: unknown };
     if (conv(e) === paidConv) groups.set(turnOf(e), { meter: d.tool === "browser" ? "browser_time" : "tools", name: named(d.charged_by) });
     else if (named(d.model)?.startsWith("decision:")) {
       const receipt = receipts.get(String(d.model).slice("decision:".length));
-      groups.set(turnOf(e), receipt ? { meter: "tokens", name: named(receipt.model) ?? named(receipt.provider), provider: named(receipt.provider) } : { meter: "tokens", name: named(d.model) });
+      // A receipt that names no model leaves `model` null: its provider is said as the provider, never as a model.
+      groups.set(turnOf(e), receipt ? { meter: "tokens", name: named(receipt.model), provider: named(receipt.provider) } : { meter: "tokens", name: null, provider: null });
       if (receipt?.cost_basis === "reported") reported.add(turnOf(e));
       else if (receipt?.cost_basis === "estimate") estimated.add(turnOf(e));
-    } else groups.set(turnOf(e), { meter: "tokens", name: named(d.model) });
+      const usage = (receipt?.usage ?? undefined) as { input_tokens?: unknown; output_tokens?: unknown } | undefined;
+      const tokenCount = (value: unknown) => (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined);
+      const [input, output] = [tokenCount(usage?.input_tokens), tokenCount(usage?.output_tokens)];
+      if (input !== undefined && output !== undefined) decisionTokens.set(turnOf(e), { input, output });
+    } else groups.set(turnOf(e), { meter: "tokens", name: named(d.model), provider: upstreamOf(named(d.model), launch) });
     if (d.reported === true) reported.add(turnOf(e));
   }
   // A turn booked with no request of its own (an older record) is its session's: a model's with no name, a paid charge
@@ -151,13 +160,16 @@ export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLau
   const found = new Map<string, Group>();
   const turnKeys = new Map<string, string>();
   const unused = new Set<string>();
+  // Answered turns whose booking kept no usage: bookedSpend counts each among `unmetered`.
+  const noUsage = new Set<string>();
   for (const e of entries) {
     if (e.kind !== RUNNER_RECORDS.request && e.kind !== RUNNER_RECORDS.turn) continue;
-    const group = groups.get(turnOf(e)) ?? { meter: conv(e) === paidConv ? "tools" : "tokens", name: null };
+    const group = groups.get(turnOf(e)) ?? (conv(e) === paidConv ? { meter: "tools" as const, name: null } : { meter: "tokens" as const, name: null, provider: null });
     if (!found.has(keyOf(group))) found.set(keyOf(group), group);
     turnKeys.set(turnOf(e), keyOf(group));
-    const d = (e.data ?? {}) as { givenBack?: unknown; unsent?: unknown };
+    const d = (e.data ?? {}) as { givenBack?: unknown; unsent?: unknown; usage?: unknown };
     if (e.kind === RUNNER_RECORDS.turn && (d.givenBack === true || d.unsent === true)) unused.add(turnOf(e));
+    else if (e.kind === RUNNER_RECORDS.turn && d.usage === undefined) noUsage.add(turnOf(e));
   }
   // Browser seconds by provider, from the charges' own records on the root (BROWSER_CHARGED): the seconds each charge was
   // for, as the browser_time meter of GET /usage counts them.
@@ -189,10 +201,15 @@ export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLau
     const priced = booked.requests - booked.parts.reduce((sum, p) => sum + p.unpriced, 0);
     const turns = [...turnKeys].filter(([turn, k]) => k === key && !unused.has(turn)).map(([turn]) => turn);
     if (group.meter === "tokens") {
-      const { input, output, cacheRead, cacheWrite } = booked.tokens;
+      // A decision's tokens from its receipt, where it says them; the request then reported usage, so it is not unmetered.
+      const told = turns.filter((turn) => decisionTokens.has(turn));
+      const input = booked.tokens.input + told.reduce((sum, turn) => sum + decisionTokens.get(turn)!.input, 0);
+      const output = booked.tokens.output + told.reduce((sum, turn) => sum + decisionTokens.get(turn)!.output, 0);
+      const { cacheRead, cacheWrite } = booked.tokens;
+      const unmetered = Math.max(0, booked.unmetered - told.filter((turn) => noUsage.has(turn)).length);
       // A decision's booking keeps no price table's mark: its receipt says how its cost was reached.
       const priced = { reported: booked.priced.reported + turns.filter((turn) => reported.has(turn)).length, estimated: booked.priced.estimated + turns.filter((turn) => estimated.has(turn)).length };
-      lines.push({ meter: "tokens", model: group.name, provider: group.provider !== undefined ? group.provider : upstreamOf(group.name, launch), charged_by: null, quantity: input + output + cacheRead + cacheWrite, unit: "token", basis: costBasisOf({ priced }), ...costWordsOf(booked.parts), requests: booked.requests, tokens: { input, output, cache_read: cacheRead, cache_write: cacheWrite }, unmetered_requests: booked.unmetered });
+      lines.push({ meter: "tokens", model: group.name, provider: group.provider ?? null, charged_by: null, quantity: input + output + cacheRead + cacheWrite, unit: "token", basis: costBasisOf({ priced }), ...costWordsOf(booked.parts), requests: booked.requests, tokens: { input, output, cache_read: cacheRead, cache_write: cacheWrite }, unmetered_requests: unmetered });
     } else if (group.meter === "tools") {
       // `reported` when every charge with a figure was settled at its provider's own (monid's answer says what it
       // charged); `estimate` when any was settled at a price this server holds (an MCP tool's owner's, Parallel's).
@@ -201,14 +218,18 @@ export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLau
       const words: CostWords = booked.requests === 0 ? { usd: 0 } : costWordsOf(booked.parts);
       lines.push({ meter: "tools", model: null, provider: null, charged_by: group.name, quantity: booked.requests, unit: "call", basis, ...words, ...(notMetered ? { not_metered_calls: notMetered } : {}) });
     } else {
+      const s = seconds.get(key);
+      // A browser's holds given back with no time charged (a call that held and used nothing, a provider priced at $0 with
+      // no charge record) used nothing: no line.
+      if (booked.requests === 0 && s === undefined) continue;
       // A browser provider whose time no charge booked (none, or each given back) still ran: its seconds with no figure.
       const words: CostWords = booked.requests === 0 ? { usd: null } : costWordsOf(booked.parts);
-      const s = seconds.get(key);
       lines.push({ meter: "browser_time", model: null, provider: group.name, charged_by: null, quantity: s === undefined ? null : Math.round(s * 1e6) / 1e6, unit: "second", basis: priced > 0 ? "estimate" : "unpriced", ...words });
     }
   }
-  const nameOf = (line: RunUsageLine) => line.model ?? line.charged_by ?? line.provider ?? "";
-  lines.sort((a, b) => ORDER[a.meter] - ORDER[b.meter] || (nameOf(a) < nameOf(b) ? -1 : nameOf(a) > nameOf(b) ? 1 : 0));
+  // Each meter by its name (a model, a charger, a browser provider; none first), `tokens` then by its route's provider.
+  const sortKey = (line: RunUsageLine) => (line.meter === "tokens" ? `${line.model ?? ""}\u0000${line.provider ?? ""}` : line.meter === "tools" ? line.charged_by ?? "" : line.provider ?? "");
+  lines.sort((a, b) => ORDER[a.meter] - ORDER[b.meter] || (sortKey(a) < sortKey(b) ? -1 : sortKey(a) > sortKey(b) ? 1 : 0));
   // The join over the whole booking, never the lines' rounded figures: the same figure cost.usd is. A browser line whose
   // time no charge booked is unknown beside it: the total is too, with the booking's figure as what is known.
   const total = costWordsOf([bookedSpend(entries, "model"), bookedSpend(entries, "paid"), bookedSpend(entries, "decisions")]);

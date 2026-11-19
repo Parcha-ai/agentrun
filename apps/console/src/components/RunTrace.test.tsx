@@ -391,6 +391,14 @@ describe("the Dev tools tab", () => {
     expect([...host.querySelectorAll("h2, h3")].map((h) => h.textContent)).not.toContain("Cost by line");
   });
 
+  it("shows lines only for the end they cover: an earlier end's lines, left by a reread that failed after a follow-up, are not shown as this one's", async () => {
+    const earlier: RunUsage = { ...USAGE_CLI, ended_at: new Date(TRACE_END - 60_000).toISOString() };
+    const host = await open(TRACE, { readUsage: async () => earlier, view: "breakdown" });
+    const cost = host.querySelector("section[aria-label='Where the cost went']")!;
+    expect(cost.textContent).toMatch(/claude-sonnet-5-5\$0\.6132 · 97%/);
+    expect(cost.textContent).not.toContain("Cost by line");
+  });
+
   it("gives a CLI run that called no tool its cost by line, though its trace has no span", async () => {
     const host = await open({ ...TRACE_CLI, spans: [] }, { readUsage: async () => USAGE_CLI });
     const cost = host.querySelector("section[aria-label='Where the cost went']")!;

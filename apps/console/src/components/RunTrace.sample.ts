@@ -95,7 +95,7 @@ export const TRACE_CLI: RunTrace = {
  *  and its browser time, whose charge is not known yet beyond what is. */
 export const USAGE_CLI: RunUsage = {
   run_id: "run_51c0d7aa",
-  ended_at: "2026-11-17T21:14:20.000Z",
+  ended_at: new Date(TRACE_END).toISOString(),
   currency: "USD",
   total: { usd: null, so_far_usd: 0.4379, unpriced: 1 },
   lines: [

@@ -3820,8 +3820,8 @@ were reached. Nothing is priced here, and nothing is rounded to a billing increm
 - `tokens`: one line per model the requests were sent on (`model`; a workflow decision on the model its provider
   answered with). `provider` is where the requests went, named only when this server sent them there itself: the run's
   own model on a provider's key, or a decision's provider. Behind a model gateway it is null, since the gateway picks the
-  upstream. `quantity` is the input, cache read, cache write and output tokens as each request reported them, with the
-  split beside it; `basis` is the run's `cost.basis` rule over that model's requests alone.
+  upstream. A model reached two ways is two lines, one per provider. `quantity` is the input, cache read, cache write and
+  output tokens as each request reported them (a decision's as its receipt does), with the split beside it; `basis` is the run's `cost.basis` rule over that model's requests alone.
 - `tools`: one line per charger (`charged_by`: `monid`, an MCP server's name, `parallel`), the vendor whose invoice the
   calls land on. `quantity` is the charges booked, one per paid call. `basis` is `reported` when every charge is the
   vendor's own figure (monid's answer says what it charged), `estimate` when any is a price this server holds (an MCP

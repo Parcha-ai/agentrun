@@ -660,7 +660,10 @@ const TH = "relative bg-card px-3 py-2 after:absolute after:inset-x-0 after:bott
 export function RunTrace({ run, read, readUsage, version, live, panel, now: fixed, open = null, view: first = "calls" }: { run: Run; read?: () => Promise<Trace>; readUsage?: () => Promise<RunUsage>; version: string; live: boolean; panel?: ReturnType<typeof tabPanelProps>; now?: number; open?: string | null; view?: "calls" | "breakdown" }) {
   const { trace, error, retry } = useRunTrace(read, version);
   // The run's cost line by line, read beside the trace and again as it moves. A read that fails leaves the trace's own split.
-  const { got: usage } = useReread(readUsage, version);
+  // Lines are shown only for the end they cover: a follow-up reopens a run, and a reread that failed after it must not leave
+  // an earlier end's lines on screen as this one's.
+  const { got: usageRead } = useReread(readUsage, version);
+  const usage = usageRead && (usageRead.lines === null || usageRead.ended_at === run.ended_at) ? usageRead : null;
   // A span that still runs or waits is drawn to now, while the run has not ended; once it has, to its end (a span the
   // trace still reads as going on an ended run grows no further).
   const going = !runEnded(run.status) && !!trace?.spans.some((s) => s.status === "running" || s.status === "waiting");
