@@ -137,5 +137,15 @@ test("the walk tries a request again only while Render's edge answers (502, 503 
 
   // A request that never answers is cut at the time left, not waited on.
   const hung = (url, init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason)));
-  await assert.rejects(throughEdge("https://x.onrender.com/", {}, { fetch: hung, waitMs: 5, forMs: 100 }));
+  // Each send's timeout is the time left, never more: read from what it asks of AbortSignal.timeout, not from a clock.
+  const timeout = AbortSignal.timeout;
+  const asked = [];
+  AbortSignal.timeout = (ms) => (asked.push(ms), timeout.call(AbortSignal, ms));
+  try {
+    await assert.rejects(throughEdge("https://x.onrender.com/", {}, { fetch: hung, waitMs: 5, forMs: 100 }));
+  } finally {
+    AbortSignal.timeout = timeout;
+  }
+  assert.equal(asked.length, 1, "one send, cut at the deadline");
+  assert.ok(asked[0] >= 1 && asked[0] <= 100, `the send's timeout is ${asked[0]} ms, not the 100 ms left or less`);
 });
