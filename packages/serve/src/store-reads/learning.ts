@@ -23,6 +23,7 @@ import { runEntries, runReflect, runTimeline, withoutFeedbackRounds } from "./jo
 import { FINAL_STATES, StoreLaunchMissing } from "../store/store.js";
 import type { AnalyticsFilter } from "./analytics.js";
 import { KINDS } from "../runner/journal-kinds.js";
+import type { LoopRow } from "../learned-nodes.js";
 import { promotedOf } from "../learn/compile.js";
 import { isShadowRun, shadowRunId } from "../learn/audit.js";
 import { championOf, checkShares, gradesOf, gradeView, type PromotionRecord, promotionsOf } from "../learn/promote.js";
@@ -581,12 +582,26 @@ function pathOfRow(metrics: unknown, started: RunLaunch["learning"]): { path: Ru
  *  as the cost per run reads it (pathOfRow, revisionOfRow: costRunOf's own read, so the run views and GET
  *  .../learning/cost never disagree). `path` is null for a run not ended, a workflow revision's run, and a run that learns
  *  whose record names none; `workflow` names the learned workflow and its revision only on a run it served (path
- *  `workflow` or `handed_back`; the name only when its launch offered one, the digest null when its record names none),
- *  else null. */
-export function pathViewOf(run: Pick<RunRecord, "metrics" | "state">, kind: string, started: RunLaunch["learning"]): { path: RunPath | null; workflow: { name: string | null; digest: string | null } | null } {
+ *  `workflow` or `handed_back`; the name only when its launch offered one, the digest null when its record names none,
+ *  and whether its answer re-picked, repickOfRow), else null. */
+export function pathViewOf(run: Pick<RunRecord, "metrics" | "state">, kind: string, started: RunLaunch["learning"]): { path: RunPath | null; workflow: { name: string | null; digest: string | null; repick: Repick | null } | null } {
   const placed = kind === "workflow" || !FINAL_STATES.includes(run.state) ? undefined : pathOfRow(run.metrics, started);
   const served = placed && SERVED_PATHS.includes(placed.path);
-  return { path: placed?.path ?? null, workflow: served ? { name: placed.workflow, digest: revisionOfRow(run)?.digest ?? null } : null };
+  return { path: placed?.path ?? null, workflow: served ? { name: placed.workflow, digest: revisionOfRow(run)?.digest ?? null, repick: repickOfRow(run) } : null };
+}
+
+/** How a served run's answer re-picked (learn/check.ts: a quote miss re-picks it once before it hands back): `found` when
+ *  its second pass found its quotes, `missed` when it still missed them. */
+export type Repick = "found" | "missed";
+/** Whether the workflow a run's record names re-picked its answer, from its metrics' loop rows (workflow-first.ts
+ *  pathMetrics `loops`, LoopRow): its last re-pick loop (marked `repick`, learn/check.ts repickLabels) of that workflow
+ *  that ran a second pass, found when its `until` held. Null when none did: an ordinary loop that ran twice is no
+ *  re-pick, nor is a loop of another workflow the run called. */
+function repickOfRow(row: Pick<RunRecord, "metrics">): Repick | null {
+  const { workflow, loops } = (row.metrics ?? {}) as { workflow?: unknown; loops?: unknown };
+  if (typeof workflow !== "string" || !Array.isArray(loops)) return null;
+  const last = (loops as Partial<LoopRow>[]).findLast((loop) => loop?.repick === true && loop.workflow === workflow && typeof loop.iterations === "number" && loop.iterations >= 2);
+  return last ? (last.met === true ? "found" : "missed") : null;
 }
 
 /** What a run's claims laid of the workflows it was offered (laidOf over its journal): read once for a settled run and kept

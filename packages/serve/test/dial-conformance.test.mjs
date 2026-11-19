@@ -13,14 +13,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { driftedVersion, fixtureFor, patchVersion, reachesThisRun } from "../scripts/dial-conformance.mjs";
+import { MACHINE_TOKEN_SOURCE, newMachineToken } from "@parcha/agentrun-computer";
+import { driftedVersion, fixtureFor, patchVersion, reachesThisRun, scrubMachineTokens } from "../scripts/dial-conformance.mjs";
 
 const SCRIPT = fileURLToPath(new URL("../scripts/dial-conformance.mjs", import.meta.url));
 const FIXTURE = fileURLToPath(new URL("./fixtures/dial-fake-provider.mjs", import.meta.url));
 const DAEMON = fileURLToPath(new URL("../../computer/dist/computerd-linux-amd64", import.meta.url));
 /** The computer package's version: what its computerd says, as the build stamps it. */
 const VERSION = JSON.parse(readFileSync(new URL("../../computer/package.json", import.meta.url), "utf8")).version;
-const MINTED = /art_[0-9a-f]{64}/;
+const MINTED = new RegExp(MACHINE_TOKEN_SOURCE);
 /** Why the runs that serve the daemon skip, or false: the fixture's machines run the served build's `computerd version`. */
 const BUILT = !existsSync(DAEMON) ? "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)" : process.arch !== "x64" && "the fixture's machines run the amd64 computerd, and this machine is not x86-64";
 /** What the fake's daemon answers: Core's provider and drift groups whole, and health but for the declaration and the
@@ -107,20 +108,16 @@ test("a run whose Core does not pass still prints its report between the markers
   assert.equal(ran.code, 1, ran.stderr);
 });
 
-test("a desktop run is given computerd-fixture (without it the screen and input cases skip and Core cannot pass); another kind gets none; a missing binary is refused in words", () => {
-	const dir = mkdtempSync(join(tmpdir(), "dial-conformance-fixture-"));
-	try {
-		const path = join(dir, "computerd-fixture-linux-amd64");
-		writeFileSync(path, "a stand-in", { mode: 0o755 });
-		assert.equal(fixtureFor("desktop", undefined, path), path);
-		assert.equal(fixtureFor("linux", undefined, path), undefined);
-		assert.throws(() => fixtureFor("desktop", undefined, join(dir, "absent")), /a desktop run needs computerd-fixture at .*absent: the server's image builds it/);
-		assert.equal(fixtureFor("desktop", ["health.hello"], join(dir, "absent")), undefined, "a narrowed run goes on without the binary");
-		assert.equal(fixtureFor("desktop", ["health.hello"], path), path, "and takes it when it is there");
-		assert.equal(fixtureFor("linux", undefined, join(dir, "absent")), undefined, "a linux run asks for no file");
-	} finally {
-		rmSync(dir, { recursive: true, force: true });
-	}
+test("every machine token in what the script writes is redacted by its shape, one this run never minted too (a token a second mint replaced)", () => {
+  const minted = newMachineToken();
+  const replaced = newMachineToken();
+  const said = scrubMachineTokens(`fail provider.dial-token: dialed with ${minted}, then "${replaced}"\n`);
+  assert.equal(said, `fail provider.dial-token: dialed with art_[redacted], then "art_[redacted]"\n`);
+});
+
+test("a desktop run is given computerd-fixture (without it the screen and input cases skip and Core cannot pass); another kind gets none", () => {
+	assert.equal(fixtureFor("desktop", "/fixture"), "/fixture");
+	assert.equal(fixtureFor("linux", "/fixture"), undefined);
 });
 
 test("the drift case's patch writes the version string over where it occurs exactly once, the same length and printable, and refuses anything else", () => {

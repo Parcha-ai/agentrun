@@ -26,9 +26,16 @@ test("the template runs the image the release tags beta, from the repository ren
   assert.match(await read(".github/workflows/release.yml"), /imagetools create --tag "\$IMAGE:\$RELEASE_TAG" --tag "\$IMAGE:beta"/);
 });
 
-test("render.yaml pins this release's image (the tag a release bumps)", async () => {
+test("render.yaml and the Helm chart pin this release's image (the tag a release bumps)", async () => {
   const { version } = JSON.parse(await read("packages/serve/package.json"));
   assert.match(await read("render.yaml"), new RegExp(`^ {6}url: ghcr\\.io/parcha-ai/agentrun-server:v${version.replace(/\./g, "\\.")}$`, "m"));
+  // The chart's image is v<appVersion> (deploy/helm/agentrun/templates/_helpers.tpl), and its version moves with it.
+  const chart = await read("deploy/helm/agentrun/Chart.yaml");
+  assert.equal(/^version: (\S+)$/m.exec(chart)?.[1], version);
+  assert.equal(/^appVersion: "(\S+)"$/m.exec(chart)?.[1], version);
+  const values = await read("deploy/helm/agentrun/values.yaml");
+  assert.match(values, /^  repository: ghcr\.io\/parcha-ai\/agentrun-server$/m);
+  assert.match(values, /^  tag: ""$/m);
 });
 
 test("the start command is the image's own entrypoint and command, as the image's user, once the volume is that user's", async () => {

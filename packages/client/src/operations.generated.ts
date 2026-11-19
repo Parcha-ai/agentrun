@@ -467,6 +467,7 @@ export type RunSummary = {
   workflow?: {
     name: string | null;
     digest: string | null;
+    repick: "found" | "missed" | null;
   } | null;
 };
 
@@ -493,6 +494,7 @@ export type Cost = {
     unmetered?: number;
   };
   learning_usd?: number | null;
+  tools_usd?: number | null;
   all_in_usd?: number | null;
   plan?: {
     requests: number;
@@ -581,7 +583,7 @@ export type RunCreateInline = {
   model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
-  }>;
+  } | ComposioRunBinding>;
   labels?: Record<string, string>;
   workflow_first?: boolean;
   learning?: "use";
@@ -598,6 +600,11 @@ export type ExternalRef = {
   kind: string;
   id: string;
   version: string | number;
+};
+
+export type ComposioRunBinding = {
+  composio_user_id: string;
+  connected_account_id?: string;
 };
 
 export type Run = {
@@ -769,6 +776,7 @@ export type Run = {
   workflow?: {
     name: string | null;
     digest: string | null;
+    repick: "found" | "missed" | null;
   } | null;
 };
 
@@ -798,7 +806,7 @@ export type MessageCreate = {
   model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
-  }>;
+  } | ComposioRunBinding>;
 };
 
 export type MessageResult = {
@@ -819,7 +827,7 @@ export type RunCreate = {
   model_key?: string;
   mcp_auth?: Record<string, {
     headers: Record<string, string>;
-  }>;
+  } | ComposioRunBinding>;
   labels?: Record<string, string>;
   workflow_first?: boolean;
   learning?: "use";
@@ -2514,6 +2522,7 @@ export type ListComputersResponse = {
     offered: boolean;
     groups: Array<string>;
     tools: Array<string>;
+    settings: Array<string>;
     providers: Array<{
       id: string;
       name: string;

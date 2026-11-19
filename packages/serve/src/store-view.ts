@@ -53,7 +53,8 @@ import { freeCeilingMessage, overCapMessage, SPEND_CAP_REACHED } from "@parcha/a
 import { type BookedSpend, bookedSpend, cliModelWorked, type CostBasis, costBasisOf, costWordsOf, planSpend, type RunCost, runCostOf, storedBasisOf } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
-import { laidOf, pathViewOf, runLearningEnd, usedOnly } from "./store-reads/learning.js";
+import { laidOf, pathViewOf, roundsOf, runLearningEnd, usedOnly } from "./store-reads/learning.js";
+import { inReflect, reflectRanges } from "./runner/end-of-run.js";
 import { correctionCount } from "./learn/corrections.js";
 import { isCliRecord, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
 import { costOfRun, type RunReadState, readRun } from "./store-reads/runs.js";
@@ -561,6 +562,27 @@ function costOfView(run: StoreRun): Record<string, unknown> {
   return { usd, basis: basisOfView(run, words), charge_state: null, cap_usd: cap ?? null, ...(soFar ?? {}), ...(upper ?? {}), ...(unread ?? {}),...(plan ? { plan: { requests: plan.requests, tokens: plan.tokens, on } } : {}), ...(tokens ? { tokens } : {}) };
 }
 
+/** What run `runId`'s paid tool calls cost, the run read's `cost.tools_usd` (server.ts allInViewOf): the charges its
+ *  paid-tools session booked (a monid endpoint's, a priced MCP tool's, Parallel's behind the web tools, the browser's
+ *  time), joined and rounded by the one rule its `usd` is (costWordsOf), less those in its end-of-run turn, which are
+ *  learning's as that turn's model requests are (runCostOf). A part of `usd`, never added to it; 0 with none. Null when
+ *  one's charge is unknown (charged an unknown amount, cut, or still out) or counted at its hold; while the run is at work
+ *  (not ended, stopped or failed), as its `usd` is the view's snapshot and a paid call booked after it would be read here
+ *  and not there (an ended run's record no longer moves); for a run a follow-up
+ *  opened again (a round past its first), whose job is what it had cost when its first round answered and whose paid
+ *  calls the booking can't split by that; and for an imported, native or SDK run, whose `usd` is its import's or its
+ *  harness's own figure, with no booking of its paid tool calls (a native or SDK run never opens the paid-tools session),
+ *  and for an unknown run. */
+export async function toolsUsdOverStore(store: Store, runId: string): Promise<number | null> {
+  const runRow = await store.runs.get(runId);
+  const launch = await launchOf(store, runId);
+  if (!runRow || !FINAL_STATES.includes(runRow.state) || runRow.importedFrom || launch?.native || launch?.sdk || (await roundsOf(store, runId)).length > 1) return null;
+  const records = await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT);
+  const turns = reflectRanges(records.submissions ?? [], records.entries);
+  const words = costWordsOf([bookedSpend(records.entries.filter((entry) => !inReflect(turns, Number(entry.id))) as never, "paid")]);
+  return words.upper_bound ? null : words.usd;
+}
+
 /** How a run's cost was reached (metrics.ts CostBasis): by how its model requests were priced, as its booking says, while
  *  it booked one; else as its end stored it, or, where nothing says, an `estimate` when it cost anything (a native, SDK or
  *  imported run's figure is its harness's or the catalog's), `unpriced` when nothing was priced. */
@@ -792,13 +814,11 @@ export async function listingOverStore(store: Store, runId: string, deps: ViewDe
   };
 }
 
-/** Whether `listing` has the current run-path fields and is cut of the server's secrets as they are now.
- *  Older persisted rows used served/handed_back instead; null path/workflow values are current, absent fields are not.
- *  A list builds any other again before it shows it
+/** Whether `listing` is cut of the server's secrets as they are now. A list builds any other again before it shows it
  *  (server.ts runsPage): the run's view cuts a value whole where it holds a secret (a note's name reads [redacted]), which
  *  cutting the built item again could not do. */
 export function builtOfNow(listing: KeptListing, serverSecrets: readonly string[]): boolean {
-  return Object.hasOwn(listing.item, "path") && Object.hasOwn(listing.item, "workflow") && listing.cut === secretsDigest(serverSecrets);
+  return listing.cut === secretsDigest(serverSecrets);
 }
 
 /** A listing's list item as a list serves it (listingOverStore): its console link at `origin`, its archive time now

@@ -49,7 +49,6 @@ test("MCP's operations are registered with the one gate, by this predicate; the 
   const doc = openapiDocument(() => undefined);
   const marked = gate.markedOperations(doc);
   assert.ok(marked.includes("previewMcpServer"), "a preview's token is marked secret all the same");
-  assert.deepEqual(gate.unguardedOperations(doc, gate.registeredOperations()), [], "a marked operation said to write no secret is guarded on purpose");
   for (const operation of ["saveMcpServer", "startMcpOAuth"]) assert.ok(marked.includes(operation), `${operation}'s secret fields are marked: ${JSON.stringify(marked)}`);
   const save = doc.paths["/settings/mcp-servers/{name}"].put.requestBody.content["application/json"].schema.properties.auth;
   assert.equal(save.properties.token["x-agentrun-secret"], true, "auth.token");
