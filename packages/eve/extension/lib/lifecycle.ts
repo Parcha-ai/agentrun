@@ -75,10 +75,12 @@ export async function beginTurn(config: LearningConfig, source: TurnSource): Pro
 
 export function learningInstructions(record: TurnRecord, workflows?: EveWorkflowOptions): string {
   const learning = record.receipt.learning;
-  return renderLearningContext({
+  const corrections = renderLearningContext({
     learningEnabled: learning.enabled, revision: learning.revision, context: learning.context,
-    workflowContext: workflowInstructions(record, workflows),
   });
+  // Host-authored delegation guidance is not learned reference text. Keep it before
+  // compiler metadata and owner corrections; neither can rewrite the host's tool policy.
+  return [workflowInstructions(record, workflows), corrections].filter(Boolean).join('\n\n');
 }
 
 function batches(events: SdkLearningEvent[]): { batches: SdkLearningEvent[][]; complete: boolean } {

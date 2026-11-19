@@ -15,6 +15,8 @@ Mutating tools and model/judgment callbacks are not supported in this initial ev
 The cookbook includes a fresh-session workflow reuse and Learning Off comparison.
 Workflow context names the original native callbacks found by inspecting each pinned workflow,
 so the agent can compare it with its existing task and standing tool policy.
+Keep host-configured delegation guidance separate from learned reference data. Matching workflows
+are preferred only within the original policy; explicit direct-tool requirements take precedence.
 
 Show the actual harness mark beside connected agents and observed sessions, including eve,
 Claude Code and Codex. Workflow agents keep a distinct workflow icon.
