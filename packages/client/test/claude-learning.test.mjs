@@ -25,7 +25,12 @@ const result = { type: 'result', subtype: 'success', is_error: false, result: 'R
 test('Claude captures explicit MCP envelopes and raw built-in outputs without uploading either', async () => {
   const candidate = { id: 'check-one', revision: 'rev', digest: 'digest', workflow: { name: 'draft', description: 'Draft.', workflow: '{}' } };
   const payload = { content: [{ type: 'text', text: 'model-facing' }], structuredContent: { name: 'private-result', content: 'ordinary data' } };
-  for (const [name, full, format] of [['mcp__release__status', true, 'mcp'], ['mcp__release__status', false, 'mcp-content'], ['Read', true, undefined]]) {
+  for (const [name, full, format] of [
+    ['mcp__release__status', true, 'mcp'], ['mcp__release__status', false, 'mcp-content'],
+    ['mcp__agentrun_workflows__learned_workflow', true, 'mcp'], ['mcp__agentrun_workflows__learned_workflow', false, 'mcp-content'],
+    [`mcp__${'Release_Tools_'.repeat(4)}__status`, true, 'mcp'], ['mcp__backend__-status', true, 'mcp'],
+    ['Read', true, undefined], ['mcp__not_a_transport', true, undefined],
+  ]) {
     const { config, requests } = fixture('Context.', candidate), checked = [];
     config.workflows = { catalog: [], adapters: [], bind() { return { context: '', close() {} }; }, async check(check, turn) {
       checked.push(turn); return { type: 'workflow_check', id: check.id, digest: check.digest, outcome: 'failed', reason: 'fixture' };
@@ -40,6 +45,7 @@ test('Claude captures explicit MCP envelopes and raw built-in outputs without up
     assert.equal(checked.length, 1);
     const terminal = checked[0].events.find(event => event.type === 'tool' && event.status === 'completed');
     assert.equal(terminal.outputFormat, format);
+    if (name.includes('agentrun_workflows') || name.includes('Release_Tools_') || name.endsWith('__-status')) assert.equal(terminal.name, name, 'Native MCP identity must keep its existing correlation contract.');
     assert.deepEqual(terminal.output, full ? payload : payload.content);
     assert.doesNotMatch(JSON.stringify(requests), /outputFormat|private-result|ordinary data|model-facing/);
   }

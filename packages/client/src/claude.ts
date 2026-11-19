@@ -9,6 +9,9 @@ const toolName = (name: string): string => {
   const mcp = /^mcp__([a-z][a-z0-9-]{0,31})__([A-Za-z0-9_][A-Za-z0-9._-]{0,127})$/.exec(name);
   return mcp ? `mcp:${mcp[1]}/${mcp[2]}` : name;
 };
+// Native MCP server names can contain underscores or uppercase characters even when they do not
+// normalize into our canonical catalog names. Preserve that identity while recognizing its transport.
+const mcpOutput = (name: string): boolean => name.startsWith('mcp:') || /^mcp__[A-Za-z0-9_-]{1,64}__[A-Za-z0-9._-]{1,128}$/.test(name);
 const count = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 
 export interface ClaudeAgentLearningConfig extends BackendLearningConfig {
@@ -129,7 +132,7 @@ export function withClaudeAgentLearning<Q extends QueryFunction>(query: Q, confi
             const fullResult = message.tool_use_result !== undefined;
             event({ type: 'tool', id: block.tool_use_id, name, status: block.is_error === true ? 'failed' : 'completed' },
               { output: fullResult ? message.tool_use_result : block.content,
-                ...(name.startsWith('mcp:') ? { outputFormat: fullResult ? 'mcp' as const : 'mcp-content' as const } : {}) });
+                ...(mcpOutput(name) ? { outputFormat: fullResult ? 'mcp' as const : 'mcp-content' as const } : {}) });
           }
         }
       }
