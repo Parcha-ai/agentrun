@@ -115,8 +115,8 @@ test('the notes of a section the fold gave a breaking change show the Breaking h
   assert.equal((await readFile(join(dir, 'CHANGELOG.md'), 'utf8')).match(/^- Late fix\. <!-- changes\/late-fix\.md -->$/gm)?.length, 2, 'beta.41\'s and beta.45\'s');
 });
 
-test('the install lines name the npm version, the launcher\'s, the Python client\'s, and the image tag with its platforms', () => {
-  const lines = installLines({ version: '0.1.0-beta.44', launcher: '0.4.12', python: '0.3.12', image: 'ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.44', platforms: ['linux/amd64', 'linux/arm64'] });
+test('the install lines name the npm version, the launcher\'s, the Python client\'s, the image tag with its platforms, and the Helm chart', () => {
+  const lines = installLines({ version: '0.1.0-beta.44', launcher: '0.4.12', python: '0.3.12', image: 'ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.44', platforms: ['linux/amd64', 'linux/arm64'], chart: 'oci://ghcr.io/parcha-ai/charts/agentrun' });
   assert.equal(lines, [
     '## Install',
     '',
@@ -124,9 +124,11 @@ test('the install lines name the npm version, the launcher\'s, the Python client
     '- Launcher and CLI: `npx @parcha/agentrun@0.4.12`',
     '- Python client: `pip install parcha-agentrun==0.3.12`',
     '- Server image: `docker pull ghcr.io/parcha-ai/agentrun-server:v0.1.0-beta.44` (linux/amd64, linux/arm64)',
+    '- Helm chart: `helm install agentrun oci://ghcr.io/parcha-ai/charts/agentrun --version 0.1.0-beta.44`',
   ].join('\n'));
+  assert.throws(() => installLines({ version: '0.1.0-beta.44', launcher: '0.4.12', python: '0.3.12', image: 'i:t', platforms: ['linux/amd64'] }), /chart/);
   assert.throws(() => installLines({ version: '0.1.0-beta.44', launcher: '0.4.12', python: undefined, image: 'i:t', platforms: ['linux/amd64'] }), /python/);
-  assert.throws(() => installLines({ version: '0.1.0-beta.44', launcher: '0.4.12', python: '0.3.12', image: 'i:t', platforms: [] }), /platforms/);
+  assert.throws(() => installLines({ version: '0.1.0-beta.44', launcher: '0.4.12', python: '0.3.12', image: 'i:t', platforms: [], chart: 'oci://c' }), /platforms/);
 });
 
 test('this checkout\'s versions: the workspace\'s, the launcher\'s own line and the Python client\'s', () => {
@@ -154,11 +156,12 @@ test('the command writes the notes from a folded changelog and this checkout\'s 
   const { version } = releaseVersions();
   await writeFile(join(dir, 'CHANGELOG.md'), changelog.replace('0.1.0-beta.43 (', `${version} (`));
   const script = fileURLToPath(new URL('./release-notes.mjs', import.meta.url));
-  await exec(process.execPath, [script, '--tag', `v${version}`, '--changelog', join(dir, 'CHANGELOG.md'), '--image', `ghcr.io/parcha-ai/agentrun-server:v${version}`, '--platforms', 'linux/amd64,linux/arm64', '--out', join(dir, 'notes.md')]);
+  await exec(process.execPath, [script, '--tag', `v${version}`, '--changelog', join(dir, 'CHANGELOG.md'), '--image', `ghcr.io/parcha-ai/agentrun-server:v${version}`, '--platforms', 'linux/amd64,linux/arm64', '--chart', 'oci://ghcr.io/parcha-ai/charts/agentrun', '--out', join(dir, 'notes.md')]);
   const notes = await readFile(join(dir, 'notes.md'), 'utf8');
   assert.match(notes, /^- The old learning promotion loop is gone/);
-  assert.match(notes, new RegExp(`- Server image: \`docker pull ghcr\\.io/parcha-ai/agentrun-server:v${version.replace(/\./g, '\\.')}\` \\(linux/amd64, linux/arm64\\)\\n$`));
-  const refused = await exec(process.execPath, [script, '--tag', 'v0.0.1', '--changelog', join(dir, 'CHANGELOG.md'), '--image', 'i:t', '--platforms', 'linux/amd64', '--out', join(dir, 'other.md')]).then(() => null, error => error);
+  assert.match(notes, new RegExp(`- Server image: \`docker pull ghcr\\.io/parcha-ai/agentrun-server:v${version.replace(/\./g, '\\.')}\` \\(linux/amd64, linux/arm64\\)\\n`));
+  assert.match(notes, new RegExp(`- Helm chart: \`helm install agentrun oci://ghcr\\.io/parcha-ai/charts/agentrun --version ${version.replace(/\./g, '\\.')}\`\\n$`));
+  const refused = await exec(process.execPath, [script, '--tag', 'v0.0.1', '--changelog', join(dir, 'CHANGELOG.md'), '--image', 'i:t', '--platforms', 'linux/amd64', '--chart', 'oci://c', '--out', join(dir, 'other.md')]).then(() => null, error => error);
   assert.ok(refused, 'a tag that is not this checkout\'s version stops');
   assert.match(refused.stderr, /v0\.0\.1 is not this checkout's version/);
 });
