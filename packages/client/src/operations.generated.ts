@@ -463,14 +463,11 @@ export type RunSummary = {
     id: string;
     firing_key: string;
   } | null;
-  served?: {
-    workflow: string | null;
+  path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
+  workflow?: {
+    name: string | null;
     digest: string | null;
-  };
-  handed_back?: {
-    workflow: string | null;
-    digest: string | null;
-  };
+  } | null;
 };
 
 export type RunStatus = "queued" | "working" | "paused" | "input_required" | "completed" | "failed" | "cancelled";
@@ -771,14 +768,10 @@ export type Run = {
   } | null;
   audit_of?: string | null;
   path?: "agent" | "handed_back" | "workflow" | "replay" | "audit" | null;
-  served?: {
-    workflow: string | null;
+  workflow?: {
+    name: string | null;
     digest: string | null;
-  };
-  handed_back?: {
-    workflow: string | null;
-    digest: string | null;
-  };
+  } | null;
 };
 
 export type RunResult = {
@@ -2046,15 +2039,6 @@ export type GetLearningCostResponse = {
     } | null;
   };
   bill: {
-    baseline: {
-      runs: number;
-      mean_usd: number;
-    } | null;
-    promoted: {
-      n: number;
-      run_id: string;
-      at: string;
-    } | null;
     learning_usd: number;
     points: Array<{
       n: number;

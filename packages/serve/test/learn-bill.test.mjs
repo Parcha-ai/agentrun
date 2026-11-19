@@ -31,13 +31,15 @@ const SERIES = [
   row(6, "workflow", 7, 0.1, 0.4), row(7, "handed_back", 8, 0.95), row(8, "workflow", 9, 0.1), row(9, "workflow", 10, 0.1, 0.4),
   { ...row(10, "replay", 11, 0.5), run_id: "replay-3" },
   row(11, "workflow", 12, 0.1), row(12, "workflow", 13, 0.1),
-];
+].map((one, at, all) => ({ ...one, n: one.path === "replay" ? null : all.slice(0, at + 1).filter((r) => r.path !== "replay").length }));
 const PROMOTED = at(6);
+// The bill over a series, with the takeover and before level its summary gives.
+const billFor = (runs) => billOf(runs, costSummary(runs));
 
 test("billOf: the cumulative booked $ against the agent for all of it, shadows and checks included; break-even once the bill stays at or under it", () => {
-  const bill = billOf(SERIES);
-  assert.deepEqual(bill.baseline, { runs: 3, mean_usd: 1 }, "the agent runs before the promotion, own $");
-  assert.deepEqual(bill.promoted, { n: 4, run_id: "run-06", at: at(7) }, "the first run a learned workflow served, by its index among the runs, and when it started");
+  const bill = billFor(SERIES);
+  assert.deepEqual(costSummary(SERIES).before, { runs: 3, mean_usd: 1 }, "the agent runs before the promotion, own $");
+  assert.deepEqual(costSummary(SERIES).takeover, { n: 4, run_id: "run-06" }, "the first run a learned workflow served, by its index among the runs");
   // The index counts the runs that do a job: a replay is no run of it; its cost joins the run it followed.
   assert.deepEqual(bill.points.map((p) => [p.n, p.run_id, p.actual_usd, p.agent_usd]), [
     [1, "run-01", 1, 1], [2, "run-02", 2.2, 2], [3, "run-03", 3.6, 3],
@@ -51,27 +53,26 @@ test("billOf: the cumulative booked $ against the agent for all of it, shadows a
 });
 
 test("billOf: not yet while the bill is over the line at its last run, with the gap; a run over it again moves break-even later", () => {
-  const short = billOf(SERIES.slice(0, 7));
+  const short = billFor(SERIES.slice(0, 7));
   assert.equal(short.break_even, null);
   assert.equal(short.gap_usd, 0.05, "the bill less the line at the last run");
   // A dear shadow at run 7 puts the bill over the line again: break-even is where it stays under.
   const dear = SERIES.map((one) => (one.run_id === "run-09" ? { ...one, learning_usd: 1.5, total_usd: 1.6 } : one));
-  const again = billOf(dear);
+  const again = billFor(dear);
   assert.deepEqual(again.points.slice(5).map((p) => [p.n, p.actual_usd, p.agent_usd]), [[6, 5.15, 6], [7, 7.25, 7], [8, 7.35, 8], [9, 7.45, 9]]);
   assert.deepEqual(again.break_even, { n: 8, run_id: "run-11" });
 });
 
 test("billOf: before any promotion the line is every agent run's mean and there is no break-even, only the gap; a run of unknown cost is on neither line and counted", () => {
-  const before = billOf(SERIES.slice(0, 3));
-  assert.deepEqual(before.baseline, { runs: 3, mean_usd: 1 });
-  assert.equal(before.promoted, null);
+  const before = billFor(SERIES.slice(0, 3));
+  assert.deepEqual(costSummary(SERIES.slice(0, 3)).before, { runs: 3, mean_usd: 1 });
+  assert.equal(costSummary(SERIES.slice(0, 3)).takeover, null);
   assert.equal(before.break_even, null);
   assert.equal(before.gap_usd, 0);
-  const unknown = billOf(SERIES.map((one) => (one.run_id === "run-02" ? { ...one, cost_usd: null, total_usd: null } : one)));
+  const unknown = billFor(SERIES.map((one) => (one.run_id === "run-02" ? { ...one, cost_usd: null, total_usd: null } : one)));
   assert.equal(unknown.withheld, 1);
-  assert.deepEqual(unknown.baseline, { runs: 2, mean_usd: 0.9 });
   assert.deepEqual(unknown.points.slice(0, 3).map((p) => [p.n, p.actual_usd, p.agent_usd]), [[1, 1, 0.9], [3, 2.4, 1.8], [4, 2.9, 2.7]], "its index kept, the line counting the runs it shows");
-  assert.equal(billOf([]).points.length, 0);
+  assert.equal(billFor([]).points.length, 0);
 });
 
 test("amortize: a revision's spend over its first K served runs to the micro-dollar; what a stopped or short revision has not passed on is unattributed", () => {
@@ -94,10 +95,10 @@ test("amortize: a revision's spend over its first K served runs to the micro-dol
 test("A8 (5): spend under a micro-dollar is booked as the usage row books it: the bill's points, total and gap, and a revision's split, never rounded to the micro-dollar", () => {
   // Two TypeSafe decisions at 120 tokens x $0.042/M each: $0.00001008 a run.
   const runs = [1, 2].map((n) => ({ ...row(n, "agent", n, 0.00001008), total_usd: 0.00001008 }));
-  const bill = billOf(runs);
+  const bill = billFor(runs);
   assert.deepEqual(bill.points.map((point) => point.actual_usd), [0.00001008, 0.00002016]);
   assert.equal(bill.booked_usd, 0.00002016);
-  assert.equal(bill.baseline.mean_usd, 0.00001, "a mean is a quotient, rounded to the micro-dollar");
+  assert.equal(costSummary(runs).before.mean_usd, 0.00001, "a mean is a quotient, rounded to the micro-dollar");
   assert.equal(bill.gap_usd, 0.00000016, "the booked total less the line, to the sub-micro-dollar");
   // $0.0000105 over K = 2: whole micro-dollars split ($0.000005 each), the half micro-dollar left on the K-th run.
   const revision = { workflow: "answer", digest: A, spend_usd: 0.0000105, k: 2, state: "serving" };
@@ -168,14 +169,14 @@ test("over the store: the series' bill, each run's all-in over v2 (a shadow's co
 test("billOf: booked spend after a withheld last job joins no point but is in the gap: a priced replay after it leaves no false break-even", () => {
   // The r1 series breaks even at run 6; a last job of unknown cost, then a $3.00 replay after it.
   const tail = [...SERIES, row(13, "workflow", 14, null), { ...row(14, "replay", 15, 3), run_id: "replay-4" }];
-  const bill = billOf(tail);
+  const bill = billFor(tail);
   assert.equal(bill.withheld, 1, "the job of unknown cost is on neither line");
   assert.equal(bill.points.at(-1).run_id, "run-12", "no point for it, nor for the replay after it");
   assert.equal(bill.booked_usd, 9.35, "the replay is booked");
   assert.equal(bill.break_even, null, "$9.35 booked is over the agent for all of it at the last point ($9.00)");
   assert.equal(bill.gap_usd, 0.35);
   // Booked spend with no point before it is carried to the next point that has one.
-  const carried = billOf([...tail, row(15, "workflow", 16, 0.1)]);
+  const carried = billFor([...tail, row(15, "workflow", 16, 0.1)]);
   assert.deepEqual(carried.points.at(-1), { n: 11, run_id: "run-15", actual_usd: 9.45, agent_usd: 10 });
   assert.deepEqual(carried.break_even, { n: 6, run_id: "run-08" }, "carried, it never put a point over the line");
   assert.equal(carried.gap_usd, null);
@@ -184,7 +185,7 @@ test("billOf: booked spend after a withheld last job joins no point but is in th
 
 test("billOf: replay spend with no job to join is still booked: an owner who archived every job run keeps the replays' dollars", () => {
   const replays = [{ ...row(1, "replay", 1, 0.3), run_id: "replay-1" }, { ...row(2, "replay", 2, 0.3), run_id: "replay-2" }];
-  const bill = billOf(replays);
+  const bill = billFor(replays);
   assert.deepEqual(bill.points, [], "no job, no point");
   assert.equal(bill.booked_usd, 0.6, "both replays booked");
   assert.deepEqual([bill.break_even, bill.gap_usd, bill.withheld], [null, null, 0]);
@@ -296,14 +297,16 @@ test("A8: a served run whose revision's check cost is unknown reports learning_u
 
 test("A8: with the promotion feed trimmed below the first promotion, the invariant and the baseline hold: an aged-out revision's spend is unattributed, the cutoff is the first served run", async (t) => {
   const kept = await splitStore(t);
-  const whole = (await agentCostOverStore(kept, "agent-1")).bill;
+  const wholeCost = await agentCostOverStore(kept, "agent-1");
+  const whole = wholeCost.bill;
+  const wholeSummary = wholeCost.summary;
   // A later revision's hold, its record the only one the feed still keeps (recordPromotion trims it to 200).
   const hold = { workflow: "answer", digest: "e".repeat(16), at: at(30), decided: "hold", reason: "its draft failed its checks" };
   const store = await splitStore(t, { records: [hold] });
   const cost = await agentCostOverStore(store, "agent-1");
-  assert.deepEqual(cost.bill.baseline, whole.baseline, "the agent runs before the first served run, as with the feed whole");
-  assert.deepEqual(cost.bill.baseline, { runs: 3, mean_usd: 1 }, "run-08, by hand after the served runs, is no part of it");
-  assert.deepEqual([whole.promoted, cost.bill.promoted], [{ n: 4, run_id: "run-04", at: at(7) }, { n: 4, run_id: "run-04", at: at(7) }], "from the first served run's start");
+  assert.deepEqual(cost.summary.before, wholeSummary.before, "the agent runs before the first served run, as with the feed whole");
+  assert.deepEqual(cost.summary.before, { runs: 3, mean_usd: 1 }, "run-08, by hand after the served runs, is no part of it");
+  assert.deepEqual([wholeSummary.takeover, cost.summary.takeover], [{ n: 4, run_id: "run-04" }, { n: 4, run_id: "run-04" }], "from the first served run");
   assert.deepEqual(cost.bill.revisions.map((one) => one.digest), ["e".repeat(16)]);
   assert.equal(cost.bill.unattributed_usd, 1.1, "C's compile and check, and run-03's failed compile, carried by no run");
   const all = await v2Of(store, cost.bill);
@@ -377,11 +380,11 @@ test("one numbering: the series numbers the runs that do a job as the bill does 
   assert.deepEqual(cost.runs.map((run) => [run.run_id, run.n]), [
     ["run-01", 1], ["run-02", 2], ["run-03", 3], ["replay-1", null], ["replay-2", null], ["run-06", 4], ["run-07", 5], ["run-08", 6], ["run-09", 7], ["replay-3", null], ["run-11", 8], ["run-12", 9],
   ], "a replay checks a revision: drawn, never numbered as a job");
-  assert.deepEqual(cost.summary.takeover, { n: cost.bill.promoted.n, run_id: cost.bill.promoted.run_id }, "one takeover: the bill's first served run");
+  assert.equal(cost.summary.takeover.n, cost.runs.find((run) => run.run_id === cost.summary.takeover.run_id).n, "one takeover: the first served run, numbered as the bill's points are");
   assert.deepEqual(cost.bill.points.map((point) => point.n), cost.runs.filter((run) => run.n !== null).map((run) => run.n), "the bill's points and the series share their numbers");
   // A first served run that handed back is the takeover too: the bill's baseline ends there, and so does the before side.
   const handed = SERIES.map((one) => (one.run_id === "run-06" ? { ...one, path: "handed_back" } : one));
-  assert.deepEqual(costSummary(handed).takeover, { n: 6, run_id: "run-06" }, "the first run a learned workflow served, alone or handed back");
+  assert.deepEqual(costSummary(handed).takeover, { n: 4, run_id: "run-06" }, "the first run a learned workflow served, alone or handed back");
 });
 
 test("a revision's served count is every run it served (its first K carry its spend), each run names the revision that ran it and whether it was audited, and the bill says what learning booked", async (t) => {

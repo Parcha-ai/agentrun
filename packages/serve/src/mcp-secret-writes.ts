@@ -66,9 +66,6 @@ export async function mcpDeleteDropsSecret(_body: unknown, request: SecretReques
 export const MCP_SECRET_OPERATIONS = ["saveMcpServer", "startMcpOAuth", "putMcpPrivateHosts", "deleteMcpServer"] as const;
 const STORED: Partial<Record<(typeof MCP_SECRET_OPERATIONS)[number], (body: unknown, request: SecretRequest) => Promise<boolean>>> = { saveMcpServer: mcpSaveDropsSecret, deleteMcpServer: mcpDeleteDropsSecret };
 for (const operation of MCP_SECRET_OPERATIONS) registerSecretWrite(operation, (body) => mcpWritesSecret(operation, body), STORED[operation]);
-// A preview keeps nothing, so it is never a secret write; its body's fields are marked secret in the document, so it is
-// registered all the same.
-registerSecretWrite("previewMcpServer", () => false);
 // The Composio preset takes the owner's API key and seals it as an MCP header: both routes are the owner's session alone,
 // whatever the body (the listing sends the key too, and only the session may type one).
 registerSecretWrite("listComposioTools", () => true);
@@ -77,6 +74,7 @@ registerSecretWrite("saveComposioServer", () => true);
 registerSecretWrite("rotateComposioSecret", () => true);
 registerSecretWrite("deleteComposioSubscription", () => true);
 registerNotSecretWrite("refreshMcpServer", "A refresh lists the saved server's tools again with its sealed credential, and writes no credential.");
+registerNotSecretWrite("previewMcpServer", "A preview lists a server's tools and keeps nothing.");
 
 // ---- where a refused MCP secret write is finished ---------------------------------------------------------------------
 //
@@ -167,4 +165,4 @@ export const mcpSecretPage = (operation: string) => async (body: unknown, reques
 };
 
 for (const operation of ["saveMcpServer", "startMcpOAuth", "listComposioTools", "saveComposioServer"]) registerSecretPage(operation, mcpSecretPage(operation));
-registerSecretPage(["previewMcpServer", "putMcpPrivateHosts", "deleteMcpServer", "rotateComposioSecret", "deleteComposioSubscription"], MCP_PAGE);
+registerSecretPage(["putMcpPrivateHosts", "deleteMcpServer", "rotateComposioSecret", "deleteComposioSubscription"], MCP_PAGE);

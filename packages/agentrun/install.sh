@@ -729,7 +729,7 @@ vps_files() {
   gid=$(stat -c %g /var/run/docker.sock) || fail "this Docker has no /var/run/docker.sock to give AgentRun"
   {
     if [ -f "$env_file" ]; then
-      grep -v -E '^(AGENTRUN_TOKEN|AGENTRUN_SEAL_KEY|AGENTRUN_IMAGE|AGENTRUN_BIND|AGENTRUN_PUBLIC_URL|AGENTRUN_TRUSTED_PROXIES|DOCKER_GID)=' "$env_file" || true
+      grep -v -E '^(AGENTRUN_TOKEN|AGENTRUN_SEAL_KEY|AGENTRUN_IMAGE|AGENTRUN_BIND|AGENTRUN_PUBLIC_URL|AGENTRUN_TRUSTED_PROXIES|DOCKER_GID|AGENTRUN_TELEMETRY|DO_NOT_TRACK)=' "$env_file" || true
     else
       echo "# AgentRun's settings for Docker Compose. The installer (--vps) keeps AGENTRUN_TOKEN and AGENTRUN_SEAL_KEY, and"
       echo "# writes the lines after them on every run. Lines of your own (a model key, AGENTRUN_BOX_ALLOW) stay; keep this"
@@ -742,15 +742,20 @@ vps_files() {
     printf 'AGENTRUN_PUBLIC_URL=%s\n' "$url"
     printf 'AGENTRUN_TRUSTED_PROXIES=%s\n' "$trusted"
     printf 'DOCKER_GID=%s\n' "$gid"
-    # The usage counts' switches (docs/telemetry.md) set where this runs reach the server, which reads .env alone, and
-    # under CI it is off. A line .env already has for one stays as it is. The server trims a value, so this does too.
+    # The usage counts' switches (docs/telemetry.md) set where this runs reach the server, which reads .env alone. One
+    # rule, as `service install --env` keeps them: a value set here wins (running again with AGENTRUN_TELEMETRY=0 turns
+    # the counts off), and with none the line .env has stays; with neither, under CI it is off. The server trims a value,
+    # so this does too.
     for name in AGENTRUN_TELEMETRY DO_NOT_TRACK; do
-      [ -f "$env_file" ] && grep -q -E "^$name=" "$env_file" && continue
       eval "value=\${$name:-}"
       value=$(printf '%s' "$value" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-      [ "$name" = AGENTRUN_TELEMETRY ] && [ -z "$value" ] && [ -n "${CI:-}" ] && value=0
-      case $value in '' | *[!A-Za-z0-9]*) continue ;; esac
-      printf '%s=%s\n' "$name" "$value"
+      case $value in *[!A-Za-z0-9]*) value= ;; esac
+      if [ -z "$value" ] && [ -f "$env_file" ] && grep -q -E "^$name=" "$env_file"; then
+        printf '%s=%s\n' "$name" "$(sed -n "s/^$name=//p" "$env_file" | tail -n 1)"
+        continue
+      fi
+      if [ "$name" = AGENTRUN_TELEMETRY ] && [ -z "$value" ] && [ -n "${CI:-}" ]; then value=0; fi
+      if [ -n "$value" ]; then printf '%s=%s\n' "$name" "$value"; fi
     done
   } > "$work/env"
   chmod 600 "$work/env"

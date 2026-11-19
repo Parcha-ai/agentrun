@@ -6,7 +6,7 @@ import type { Agent } from "@/lib/agentForm";
 import { SERVED_AGENT } from "@/test/agent";
 import { ClientError } from "@/lib/client";
 import type { AgentLearning, Corrections, LearnedItem, LearningFile } from "@/lib/learning";
-import { BILL, EMPTY_BILL, hour } from "@/lib/learningBill.fixture";
+import { BILL, EMPTY_BILL, hour, TAKEOVER } from "@/lib/learningBill.fixture";
 import type { AuditRow, LearningCost, LearningLoop, Promotions, Run } from "@/lib/v2";
 
 // The agent's Learning tab: its owner's corrections (corrections.md, edited whole on its version), the workflow drafts
@@ -955,7 +955,7 @@ describe("the bill", () => {
   it("shows the booked bill against the agent for all of it, the break-even marker and the audit line, and no equal-cache figure", async () => {
     const digest = "d".repeat(16);
     const runs = BILL.points.map((p) => ({ n: p.n, run_id: p.run_id, started_at: hour(p.n), path: p.n < 4 ? "agent" as const : "workflow" as const, workflow: p.n < 4 ? null : "answer", digest: p.n < 4 ? null : digest, took_over: p.n === 4, audited: p.n >= 5, cost_usd: 1, cost_upper_bound: false, learning_usd: 0, total_usd: 1 }));
-    const cost: LearningCost = { agent: "refunds", runs, total_runs: runs.length, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [], bill: BILL };
+    const cost: LearningCost = { agent: "refunds", runs, total_runs: runs.length, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: TAKEOVER, before: null, after: null, after_state: "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [], bill: BILL };
     const promotions: Promotions = {
       agent: "refunds",
       promotions: [{ workflow: "answer", digest, at: hour(4), decided: "promote", reason: "checked", check: { compile_after: 20, agree_min: 0.9, alone_min: 0.8, attempt: 1, n: 10, agreed: 9, alone: 9 } }],

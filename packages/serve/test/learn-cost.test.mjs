@@ -110,8 +110,9 @@ test("a run row whose stored cost is a bound reads as a bound: its cost_upper_bo
   const store = { runs: { launch: async () => undefined, get: async () => undefined }, learning: { proposal: async () => undefined } };
   // The store's row for a bounded run: costUsd null, costAtMostUsd the bound (RunRow).
   const row = (id, extra = {}) => ({ id, startedAt: Date.UTC(2026, 10, 12), metrics: { path: "workflow", workflow: "classify" }, costUsd: 0.1, costAtMostUsd: null, ...extra });
-  const exact = await costRunOf(store, row("r1"), 1);
-  const bound = await costRunOf(store, row("r2", { costUsd: null, costAtMostUsd: 0.5 }), 2);
+  const placed = { path: "workflow", workflow: "classify" };
+  const exact = await costRunOf(store, row("r1"), 1, placed);
+  const bound = await costRunOf(store, row("r2", { costUsd: null, costAtMostUsd: 0.5 }), 2, placed);
   assert.deepEqual([exact.cost_upper_bound, bound.cost_upper_bound, bound.cost_usd], [false, true, null], "the stored bound is read, and never shown as a cost");
   const after = Array.from({ length: CHEAPER_AFTER_RUNS }, (_, i) => i === 0 ? { ...bound, n: 3, run_id: "r3" } : { ...exact, n: i + 3, run_id: `r${i + 3}` });
   const head = series([["agent", 0.9], ["agent", 0.9]]);
@@ -191,7 +192,7 @@ test("GET /agents/{id}/learning/cost: the agent's runs in order, by hand until a
     return startedRun.body.run_id;
   };
   const cost = async (query = "") => (await api("GET", `/agents/${id}/learning/cost${query}`)).body;
-  const bill = { baseline: null, promoted: null, learning_usd: 0, points: [], break_even: null, gap_usd: null, withheld: 0, booked_usd: 0, revisions: [], unattributed_usd: 0, holds: [] };
+  const bill = { learning_usd: 0, points: [], break_even: null, gap_usd: null, withheld: 0, booked_usd: 0, revisions: [], unattributed_usd: 0, holds: [] };
   assert.deepEqual(await cost(), { agent: id, runs: [], total_runs: 0, unknown_cost_runs: 0, unknown_path_runs: 0, summary: EMPTY, workflows: [], bill });
 
   const byHand = [await runOf("What is six times seven."), await runOf("What is two times three.")];

@@ -437,6 +437,16 @@ test("a server launcher that can't be run: the start and a server command each s
   ].join("\n"));
 });
 
+test("a server command's --help or -h goes to the server, which prints that command's usage; the bin's own usage is for the bin alone", { timeout: 60_000 }, async (t) => {
+  const imported = await throughStub(t, ["import", "--help"]);
+  assert.deepEqual(imported.args, ["import", "--data", STORE(imported.home), "--help"], imported.out + imported.err);
+  assert.doesNotMatch(imported.out, /^Usage: npx @parcha\/agentrun /m, "not the bin's own usage");
+  const native = await throughStub(t, ["native", "discover", "-h"]);
+  assert.deepEqual(native.args, ["native", "--data", STORE(native.home), "discover", "-h"], native.out + native.err);
+  const bin = spawnSync(process.execPath, [BIN, "--help"], { encoding: "utf8" });
+  assert.match(bin.stdout, /^Usage: npx @parcha\/agentrun /, "the bin's own --help, with no command, is still its usage");
+});
+
 test("the command passes its arguments through to the server, with its store (~/.agentrun unless --data names one) and --open unless --no-open; it picks no port or model of its own", { timeout: 60_000 }, async (t) => {
   const plain = await throughStub(t, [], { ANTHROPIC_API_KEY: "sk-test" });
   assert.deepEqual([plain.args, plain.model, plain.npx], [["--open", "--data", STORE(plain.home)], null, `@parcha/agentrun@${VERSION}`], plain.err);
@@ -880,7 +890,11 @@ test("the setup skill's model step offers ChatGPT, a capped key, then a local Ol
   assert.match(model, /Never start a model download\./);
   assert.match(model, /offer it only when a model with tool calling is already pulled/);
   const [install] = shellBlocks(model);
-  assert.equal(install, "~/.agentrun/bin/agentrun service install --env AGENT_MODEL_BASE_URL=http://localhost:11434/v1 --env AGENT_MODEL_GATEWAY_IDS=bare --env AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0\n");
+  assert.equal(install, "~/.agentrun/bin/agentrun service install --env AGENT_MODEL_BASE_URL=http://localhost:11434/v1 --env AGENT_MODEL_GATEWAY_IDS=bare --env AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0 --env AGENT_MODEL_API_KEY=none\n");
+  // A server that holds no key for its gateway refuses a run that brings none (model_key_required): Ollama takes no key,
+  // so the service sends `none`, in the service and in front of `sh` alike.
+  assert.match(model, /`AGENT_MODEL_API_KEY=none` is the key Ollama ignores/);
+  assert.match(model, /\| AGENT_MODEL_API_KEY=none AGENT_MODEL_BASE_URL=http:\/\/localhost:11434\/v1\s+AGENT_MODEL_GATEWAY_IDS=bare AGENT_MODEL=<tag> AGENT_MODEL_PRICE=0,0,0 sh/);
   assert.doesNotMatch(skill, /LM Studio|localhost:1234/);
   // Yes, only me (step 3) survives the model's restart: the service keeps what service install --env saved, and a
   // background start keeps only what its line sets, so the line carries both switches.
