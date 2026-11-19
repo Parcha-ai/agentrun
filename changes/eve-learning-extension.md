@@ -17,6 +17,10 @@ Workflow context names the original native callbacks found by inspecting each pi
 so the agent can compare it with its existing task and standing tool policy.
 Keep host-configured delegation guidance separate from learned reference data. Matching workflows
 are preferred only within the original policy; explicit direct-tool requirements take precedence.
+SDK compilation describes when a workflow matches the task and what its input fields mean, without
+adding a manual-invocation requirement. The existing agent can select it for an ordinary request;
+execution still requires its explicit MCP tool call and the original permissions. This applies to
+new drafts, revisions and compiler retries, not a rewrite of already-committed learning.
 
 Show the actual harness mark beside connected agents and observed sessions, including eve,
 Claude Code and Codex. Workflow agents keep a distinct workflow icon.

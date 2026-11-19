@@ -18,7 +18,8 @@ test("SDK compilation delegates explicitly while managed compilation retains wor
   for (const adapters of [[], ["runNode"]]) {
     const prompt = compile(adapters);
     assert.doesNotMatch(prompt, /on later runs it runs first|runs on the agent's model/);
-    assert.match(prompt, /explicitly invokes/);
+    assert.match(prompt, /Execution still requires an explicit MCP tool call/);
+    assert.match(prompt, /existing agent may select a matching workflow during an ordinary task/);
   }
   const managed = compile();
   assert.match(managed, /on later runs it runs first/);
