@@ -33,7 +33,8 @@ import { providerModels } from "./model.js";
 import { providerFor } from "./provider.js";
 import { capModelOf } from "./runner/cli-run-spec.js";
 import { keyShaped } from "./secret-name.js";
-import { SECRET_NAMES } from "./secrets.js";
+import { secretRedactor } from "./runner/redact.js";
+import { hostSecrets, SECRET_NAMES } from "./secrets.js";
 import { createRequire } from "node:module";
 
 /** What the check reads of the ACP package. */
@@ -218,9 +219,35 @@ function modelRef(ref: string): { provider: string; modelId: string } | undefine
   return at > 0 && at < ref.length - 1 ? { provider: ref.slice(0, at), modelId: ref.slice(at + 1) } : undefined;
 }
 
+/** The values of the keys `env` holds but those named in `except`, each read by name (withSecrets keeps the server's off
+ *  its enumeration): SECRET_NAMES and every key-shaped name. */
+const keyValues = (env: NodeJS.ProcessEnv, except: readonly string[] = []): string[] =>
+  [...new Set([...SECRET_NAMES, ...Object.keys(env).filter((name) => keyShaped(name))])]
+    .filter((name) => !except.includes(name))
+    .map((name) => env[name])
+    .filter((value): value is string => typeof value === "string" && value.length >= 8);
+
+/** `value` with every string in it put through `cut`, its arrays and objects walked (their names are the check's own). */
+const cutEvery = <T>(value: T, cut: (text: string) => string): T =>
+  (typeof value === "string" ? cut(value)
+    : Array.isArray(value) ? value.map((each) => cutEvery(each, cut))
+    : value && typeof value === "object" ? Object.fromEntries(Object.entries(value).map(([name, each]) => [name, cutEvery(each, cut)]))
+    : value) as T;
+
 /** Runs the check. Never throws for what it judges: a refused recipe, a missing install or a failed stage is in the
- *  report (`ok: false`, `failures`). */
+ *  report (`ok: false`, `failures`). Every string of the report and every line it says has the server's secrets and the
+ *  recipe's keys cut (runner/redact.ts secretRedactor), so an agent's words in it (a failed turn's stderr, a refusal, a
+ *  log line) never carry a key out to the report's file or the terminal. */
 export async function harnessCheck(options: HarnessCheckOptions): Promise<HarnessCheckReport> {
+  // The values cut: the server's secrets, then the recipe's keys' values once it is loaded (checkRun adds them).
+  const held = [...hostSecrets(options.env), ...keyValues(options.env)];
+  const cut = () => secretRedactor(held);
+  const report = await checkRun({ ...options, say: (line) => options.say?.(cut()(line)) }, held);
+  return cutEvery(report, cut());
+}
+
+/** The check itself (harnessCheck), adding the values of the recipe's keys to `held` once it is loaded. */
+async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<HarnessCheckReport> {
   const say = options.say ?? (() => {});
   const checkedAt = new Date().toISOString();
   const failures: string[] = [];
@@ -232,6 +259,8 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
     return { ok: false, recipe: { file: options.recipe }, refused: { code: error.code, message: error.message }, checkedAt, failures: [error.message] };
   }
   const { recipe } = loaded;
+  // The recipe's keys, read by name from the check's environment: the agent holds them, so its words may too.
+  held.push(...recipe.keys.map((name) => options.env[name]).filter((value): value is string => typeof value === "string"));
   const head = { recipe: { id: recipe.id, label: recipe.label, file: loaded.file, sha256: loaded.sha256 }, checkedAt } as const;
   const refuse = (code: string, message: string): HarnessCheckReport => ({ ok: false, ...head, refused: { code, message: `${code}: ${message}` }, failures: [`${code}: ${message}`] });
   say(`${recipe.label}: the recipe holds the five rules (${loaded.file})`);
@@ -315,10 +344,7 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
   const hostEnv: NodeJS.ProcessEnv = Object.create(env, { HARNESS_CHECK_CANARY: { value: canary, enumerable: true } });
   // The values of every key the host holds, the server's own included: withSecrets keeps those off its enumeration, so
   // each is read by name.
-  const hostSecrets = [...new Set([...SECRET_NAMES, ...Object.keys(env).filter((name) => keyShaped(name))])]
-    .filter((name) => !recipe.keys.includes(name))
-    .map((name) => env[name])
-    .filter((value): value is string => typeof value === "string" && value.length >= 8);
+  const hostKeys = keyValues(env, recipe.keys);
   const childVars: Record<string, string> = { ...recipe.env };
   if (recipe.model.billing === "proxy") childVars[recipe.model.env] = provider!.modelId;
   for (const name of EGRESS_VARS) childVars[name] = egress.url;
@@ -420,7 +446,7 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
       // The recipe's keys too: the adapter hands each over by name (recipe.keys), never through childVars.
       const expected = new Set([...Object.values(AGENT_VARS).flat(), ...Object.keys(childVars), ...recipe.keys, ...SHELL_OWN]);
       const extra = Object.keys(environ).filter((name) => !expected.has(name)).sort();
-      const leaked = Object.entries(environ).filter(([, value]) => hostSecrets.includes(value) || value === canary).map(([name]) => name).sort();
+      const leaked = Object.entries(environ).filter(([, value]) => hostKeys.includes(value) || value === canary).map(([name]) => name).sort();
       stage2.env_allowlist = { ok: extra.length === 0 && leaked.length === 0, names: Object.keys(environ).sort(), beyondAllowlist: extra, hostSecretsSeen: leaked };
     } else stage2.env_allowlist = { ok: null, why: process.platform === "linux" ? "the agent's process was gone before its environment was read" : "the environment is read from /proc, on Linux alone" };
 
