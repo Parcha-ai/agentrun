@@ -7,7 +7,7 @@ import { COMPUTER_KEY_NAMES } from "./computer-keys.js";
 import { BOX_KEYS } from "./place-offers.js";
 import { providersNamed } from "./decisions.js";
 import { harnessOfBody } from "./harness.js";
-import { BUILTIN_OWN_KEYS, harnessOf, harnessTable } from "./harness-table.js";
+import { BUILTIN_OWN_KEYS, harnessOf } from "./harness-table.js";
 import { GATEWAY_KEY_ENV, llmTiers, modelKeys, nodeTiers, PROVIDER_KEYS, type Tier, workflowNodes } from "./model.js";
 import { DECISION_KEYS, SECRET_NAMES } from "./secrets.js";
 import { TOOL_FIELDS, TOOL_KEYS, unlocksTool } from "./tool-keys.js";
@@ -68,8 +68,8 @@ export function keysFor(needs: RunNeeds, env: NodeJS.ProcessEnv, rows: readonly 
   const scoped = scopedOf(rows);
   const entry = harnessOf(env, needs.harness);
   const model = new Set(!entry || entry.facts ? harnessModelKeys(needs.harness, env, needs.model) : needs.tiers ? modelKeys(env, undefined, needs.tiers) : modelKeys(env, needs.model));
-  const owned = [...BUILTIN_OWN_KEYS, ...Object.values(harnessTable(env)).flatMap((each) => each.ownKeys ?? [])];
-  return RUN_SECRETS.filter((name) => (!scoped.includes(name) || unlocked.has(name)) && (!MODEL_KEYS.includes(name) || model.has(name)) && (!owned.includes(name) || entry?.ownKeys?.includes(name) === true));
+  // Only a built-in harness owns a key (BUILTIN_OWN_KEYS): a module's entry that names one in ownKeys moves no key.
+  return RUN_SECRETS.filter((name) => (!scoped.includes(name) || unlocked.has(name)) && (!MODEL_KEYS.includes(name) || model.has(name)) && (!BUILTIN_OWN_KEYS.includes(name) || entry?.ownKeys?.includes(name) === true));
 }
 
 /** The secrets a run of `revision` is handed with the keys `env` holds (needsOf, then keysFor). */
