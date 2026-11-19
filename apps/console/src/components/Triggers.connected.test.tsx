@@ -31,7 +31,8 @@ const COMPOSIO = { name: "gh", url: "https://backend.composio.test/v3/mcp/srv_1/
 type Call = { method: string; path: string; body: unknown };
 const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-function server() {
+// `down`: the agents whose own read (GET /v2/agents/{id}) fails.
+function server({ down = [] as string[] } = {}) {
   const calls: Call[] = [];
   const triggers = [NIGHTLY, ON_LOCAL].map((t) => structuredClone(t));
   const fetch = (async (url: string, init?: RequestInit) => {
@@ -39,6 +40,7 @@ function server() {
     calls.push(call);
     if (call.path === "/v2/agents") return json(200, { agents: AGENTS, next_cursor: null });
     const agent = /^\/v2\/agents\/([^/]+)$/.exec(call.path);
+    if (agent && down.includes(agent[1]!)) return json(503, { error: { code: "unavailable", message: "try again", retryable: true } });
     if (agent) return json(200, AGENTS.find((a) => a.agent_id === agent[1]));
     if (call.path === "/v2/integrations/github") return json(200, { app_id: "1", slug: "agentrun-test", installations: [{ id: 7, account: "acme" }] });
     if (call.path === "/v2/settings/mcp-servers") return json(200, { servers: [COMPOSIO] });
@@ -52,17 +54,17 @@ function server() {
     return json(404, { error: { code: "not_found", message: call.path, retryable: false } });
   }) as typeof globalThis.fetch;
   const sent = (method: string) => calls.filter((c) => c.method === method && c.path.startsWith("/v2/triggers")).map((c) => c.body as { target?: Record<string, unknown> });
-  return { v2: createClient({ fetch }), sent };
+  return { v2: createClient({ fetch }), sent, triggers };
 }
 
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 
-async function open(v2: ReturnType<typeof createClient>, view: ScheduleView) {
+async function open(v2: ReturnType<typeof createClient>, view: ScheduleView, refreshMs?: number) {
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
   const went: string[] = [];
-  act(() => root!.render(createElement(SchedulesPage, { v2, view, go: (h: string) => void went.push(h), agentName: (id: string) => id })));
+  act(() => root!.render(createElement(SchedulesPage, { v2, view, go: (h: string) => void went.push(h), agentName: (id: string) => id, ...(refreshMs ? { refreshMs } : {}) })));
   const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
   await settle();
   const click = async (label: RegExp) => {
@@ -79,7 +81,7 @@ async function open(v2: ReturnType<typeof createClient>, view: ScheduleView) {
   };
   const choose = async (label: string, value: string) => { await pick(picker(host, label)!, value); await settle(); };
   const issue = (field: string) => host.querySelector(`[data-issue="${field}"]`)?.textContent ?? null;
-  return { host, went, click, set, choose, issue, cap: () => host.querySelector('[name="maxCost"]'), noCap: () => host.querySelector("[data-no-cap]")?.textContent ?? null };
+  return { host, went, click, set, choose, issue, settle, cap: () => host.querySelector('[name="maxCost"]'), noCap: () => host.querySelector("[data-no-cap]")?.textContent ?? null };
 }
 type Page = Awaited<ReturnType<typeof open>>;
 
@@ -152,5 +154,17 @@ describe("Triggers: a connected agent takes no cost cap", () => {
     const t = await open(server().v2, { trigger: "trg_l" });
     expect(t.noCap()).toBe(CONNECTED_NO_CAP);
     expect(t.host.textContent).not.toContain("Agent's default");
+  });
+
+  it("a trigger's page stops saying so once the trigger starts another agent, even while that agent cannot be read", async () => {
+    const s = server({ down: ["triage"] });
+    const t = await open(s.v2, { trigger: "trg_l" }, 5);
+    expect(t.noCap()).toBe(CONNECTED_NO_CAP);
+    // Changed elsewhere: the page's next read finds the trigger on an agent that is not connected.
+    s.triggers.find((x) => x.id === "trg_l")!.target = { kind: "start_run", agent_id: "triage", input: { content: "Sweep." } };
+    await new Promise((r) => setTimeout(r, 30));
+    await t.settle();
+    expect(t.noCap()).toBeNull();
+    expect(t.host.textContent).toContain("Agent's default");
   });
 });

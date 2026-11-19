@@ -257,16 +257,17 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
   // read or a Run now is out. A read that fails here leaves the page as it was.
   useRereads(() => { if (!reading.current && !firing.current && gone === null) read().catch(() => {}); }, every, [v2, id]);
   // A schedule with no cap of its own runs under its agent's default (definition.max_cost_usd): read it to say so.
-  // A connected agent has neither: its runs are not capped, and the row says so.
-  const [agentCap, setAgentCap] = useState<number | undefined>(undefined);
-  const [connected, setConnected] = useState(false);
+  // A connected agent has neither: its runs are not capped, and the row says so. What was read is kept with the agent it
+  // was read of, so it never describes the agent the trigger starts next.
+  const [capRead, setCapRead] = useState<{ agentId: string; agentCap: number | undefined; connected: boolean } | null>(null);
   const capAgent = trigger && trigger.target.kind === "start_run" && typeof trigger.target.max_cost_usd !== "number" ? trigger.target.agent_id : null;
   useEffect(() => {
     if (!capAgent) return;
     let live = true;
-    v2.getAgent(capAgent).then((r) => { if (live) { setAgentCap(typeof r.agent.definition.max_cost_usd === "number" ? r.agent.definition.max_cost_usd : undefined); setConnected(agentCapOf(r.agent).connected); } }, () => {});
+    v2.getAgent(capAgent).then((r) => { if (live) setCapRead({ agentId: capAgent, agentCap: typeof r.agent.definition.max_cost_usd === "number" ? r.agent.definition.max_cost_usd : undefined, connected: agentCapOf(r.agent).connected }); }, () => {});
     return () => { live = false; };
   }, [v2, capAgent]);
+  const { agentCap, connected } = capRead && capRead.agentId === capAgent ? capRead : { agentCap: undefined, connected: false };
   const appServer = trigger?.source.kind === "composio" ? trigger.source.server : null;
   useEffect(() => {
     if (!appServer) return;
@@ -384,7 +385,7 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
       <dl className="mt-5 grid grid-cols-1 gap-x-6 gap-y-3 border p-4 text-body sm:grid-cols-[max-content_minmax(0,1fr)]">
         <dt className="caps text-label text-muted-foreground">Agent</dt><dd className="min-w-0 break-words"><a href={agentHash(runs.target.agent_id)} className="hover:underline">{agentName(runs.target.agent_id) || runs.target.agent_id}</a></dd>
         <dt className="caps text-label text-muted-foreground">Each run is asked</dt><dd className="min-w-0 whitespace-pre-wrap break-words">{content ?? JSON.stringify(runs.target.input)}</dd>
-        <dt className="caps text-label text-muted-foreground">Cost cap</dt>{capAgent && connected ? <dd data-no-cap className="min-w-0 break-words">{CONNECTED_NO_CAP}</dd> : <dd className="font-mono">{capOf(runs.target.max_cost_usd, agentCap)}</dd>}
+        <dt className="caps text-label text-muted-foreground">Cost cap</dt>{connected ? <dd data-no-cap className="min-w-0 break-words">{CONNECTED_NO_CAP}</dd> : <dd className="font-mono">{capOf(runs.target.max_cost_usd, agentCap)}</dd>}
         {hook ? <>
           <dt className="caps text-label text-muted-foreground">URL</dt><dd className="flex min-w-0 flex-wrap items-center gap-2"><code className="min-w-0 break-all font-mono text-small">{hookUrlOf(hook)}</code><CopyButton text={hookUrlOf(hook)} label="Copy URL" /><span className="basis-full text-small text-muted-foreground">{HOOK_URL_HINT}</span></dd>
           <dt className="caps text-label text-muted-foreground">Signature</dt><dd>{SIGNATURE_WORDS[hook.source.signature ?? "standard"]}</dd>
