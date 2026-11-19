@@ -32,9 +32,9 @@ resources:
 # deploy/compose.yaml. Raise it with a longer drain, or runs wait for their claims to expire before they resume.
 terminationGracePeriodSeconds: 35
 
-# Plain variables, by name. AGENTRUN_PUBLIC_URL is the address people open the console at, which the links the server
-# prints and sends use, and the one NOTES prints; unset, the ingress's (http(s)://<host>/) when it is on, which also
-# overrides one in existingSecret. Set it here when TLS ends before the ingress (https:// with no tlsSecret).
+# Plain variables, by name.
+# AGENTRUN_PUBLIC_URL: the console's address, for the server's links. Unset: the ingress's (http(s)://<host>/).
+# Set it when TLS ends before the ingress.
 # AGENTRUN_TELEMETRY: "0" turns the usage counts off (docs/telemetry.md). Model keys go in the console (Settings, Model
 # keys), never here.
 env: {}
@@ -49,7 +49,6 @@ service:
   type: ClusterIP
   port: 7340
 
-# An Ingress for host, whose address is AGENTRUN_PUBLIC_URL unless env sets one.
 ingress:
   enabled: false
   className: ""
