@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as dsl from "@parcha/agentrun-dsl";
-import { compileReference, compilePrompt, compileTurn, askedForCompile } from "../dist/learn/compile.js";
+import { compileReference, compilePrompt, compileTurn, askedForCompile, learnedHost } from "../dist/learn/compile.js";
 import { draftProblems } from "../dist/learn/workflow-draft.js";
 const tool = "mcp:backend/status";
 const ask = (adapters = []) => ({ mode: "new", workflowAdapters: adapters, reference: compileReference(dsl, { tools: [tool], judges: false, workflowAdapters: adapters }), tools: [tool], described: [{ name: tool, does: "Takes a release name and gives its ready boolean." }], judges: false, traces: [], input: { release: "current" } });
@@ -64,6 +64,19 @@ test("SDK new, revised and retried compiler requests describe ordinary-task sele
   reference: compileReference(dsl, { tools: [tool], judges: false }) });
  assert.match(managed, /on later runs it runs first/);
  assert.doesNotMatch(managed, /existing agent may select a matching workflow/);
+});
+test("SDK compile words call the workflow compiled and unchecked, and never tell the agent to prefer it", () => {
+ // Nothing promotes an SDK agent's workflow (no shadow check runs where its tools run), so the words may not claim one.
+ for (const adapters of [[], ["runNode"], ["runJudge"], ["runNode", "runJudge"]]) {
+  const rules = learnedHost({ tools: [tool], judges: false, workflowAdapters: adapters }).rules.join("\n");
+  const head = compilePrompt(ask(adapters)).split("## The workflow language")[0];
+  for (const text of [rules, head]) {
+   assert.match(text, /compiled workflow/i);
+   assert.match(text, /no check has compared it with the agent's own answers/i);
+   assert.match(text, /agent decides whether one fits/i);
+   assert.doesNotMatch(text, /approved|verified|pinned|prefer|ordinary task|whenever/i);
+  }
+ }
 });
 test("SDK revision preserves original manual-use restrictions and old input descriptions as fenced data", () => {
  const correction = "- Use a workflow for release-readiness requests only when I explicitly ask for one.";
