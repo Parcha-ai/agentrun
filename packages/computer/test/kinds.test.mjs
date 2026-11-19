@@ -378,3 +378,11 @@ test("mountsOf: a descriptor's mounts with the operator's keys, the kinds of mou
 	assert.deepEqual(PROVIDERS.find((one) => one.id === "daytona").mountsWith, { archil: "DAYTONA_ARCHIL_EGRESS" });
 	assert.deepEqual(mountsOf({ mounts: ["bind"], unmounted: { archil: "why" }, mountsWith: { archil: "K" }, capabilities: [] }, () => true), { mounts: ["bind", "archil"], unmounted: {} });
 });
+
+test("mountsOf with dial: machines that dial the server take no Archil mount, even with the key that turns it on, and say why in one sentence", () => {
+	const daytona = DESCRIPTORS.find((one) => one.id === "daytona");
+	const archil = "Daytona's machines dial this server, and a machine that dials takes no Archil mount";
+	assert.deepEqual(mountsOf(daytona, (name) => name === "DAYTONA_ARCHIL_EGRESS", true), { mounts: ["sync"], unmounted: { archil } });
+	assert.deepEqual(mountsOf(daytona, () => false, true), { mounts: ["sync"], unmounted: { archil } });
+	assert.deepEqual(mountsOf({ label: "X", mounts: ["archil"], capabilities: [] }, () => false, true), { mounts: [], unmounted: { archil: "X's machines dial this server, and a machine that dials takes no Archil mount" } });
+});

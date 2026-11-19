@@ -15,7 +15,7 @@ import WebSocket from "ws";
 import { serve, storeBytes } from "./support.mjs";
 import { attachDriver, DRIVER_HELLO } from "./fixtures/attach-driver.mjs";
 
-const { ATTACH_PATH, ATTACH_SUBPROTOCOL } = await import("@parcha/agentrun-computer");
+const { ATTACH_PATH, ATTACH_SUBPROTOCOL, MACHINE_TOKEN_SOURCE } = await import("@parcha/agentrun-computer");
 const { DAEMON_FETCHES_PER_MINUTE } = await import("../dist/computer-attach.js");
 
 const sha256 = (value) => createHash("sha256").update(value).digest("hex");
@@ -54,7 +54,7 @@ test("a minted token: kept as its SHA-256, it dials the attach socket as its mac
   assert.equal(server.dial.hub, server.attachHub, "a dial provider's machines land in the server's hub");
   assert.equal(server.dial.url, undefined, "with no public URL, no address to dial: a dial provider's create refuses");
   const token = await server.dial.tokens.mint("computer-00000000000a", { ...MINT, expiresAt: inMs(60_000) });
-  assert.match(token, /^art_[A-Za-z0-9_-]{43}$/, "art_ and 32 random bytes in base64url");
+  assert.match(token, new RegExp(`^${MACHINE_TOKEN_SOURCE}$`), "art_ and 32 random bytes in base64url");
   const row = await server.store.mintedTokens.get("computer-00000000000a");
   assert.deepEqual({ ...row, createdAt: typeof row.createdAt }, { machine: "computer-00000000000a", ...MINT, expiresAt: row.expiresAt, revokedAt: null, createdAt: "number", runner: null, incarnation: null, run: null, refused: null }, "the server's own process minted it: no runner on its row, this mint named no run, and no dial of it was refused");
   const db = new DatabaseSync(join(server.data, "store.sqlite"), { readOnly: true });

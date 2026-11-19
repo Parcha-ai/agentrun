@@ -13,7 +13,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { AttachHub, checkLifetime, kindRefusals, MemoryMachineTokens, recordedMount, sweep } from "../dist/index.js";
+import { AttachHub, checkLifetime, kindRefusals, MemoryMachineTokens, mountsOf, recordedMount, sweep } from "../dist/index.js";
 import { fakeObjects } from "./fake-archil.mjs";
 import { bootDial, desktopOverDial, dialServer } from "./fake-dial-host.mjs";
 
@@ -845,7 +845,7 @@ test("connect dial: init is agentrun-dial's child, no Archil mount (refused in w
 	assert.equal(caps.gpu?.isolation, "gvisor");
 	const refusals = provider.check({ ...SPEC, mount: { kind: "archil", disk: "dsk-00000000000baf76", region: "aws-us-east-1", folder: "agents/a1/runs/r1/work", token: "not-a-secret" } });
 	assert.deepEqual(refusals.map(({ field }) => field), ["mount"]);
-	assert.match(refusals[0].message, /Modal's machines dial this server, and a machine that dials takes no Archil mount$/);
+	assert.ok(refusals[0].message.includes(mountsOf(MODAL, () => false, true).unmounted.archil), refusals[0].message);
 	assert.throws(() => setup({ connect: "ssh" }), /connect is how Modal reaches its machines, "exec" \(the default\) or "dial", not "ssh"/);
 	assert.deepEqual(MODAL.settings, [
 		{ name: "modalApp", option: "app", default: "agentrun" },

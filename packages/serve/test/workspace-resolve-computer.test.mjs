@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
-import { DAYTONA, readBackOf } from "@parcha/agentrun-computer";
+import { DAYTONA, mountsOf, readBackOf } from "@parcha/agentrun-computer";
 import { computerToolsFor } from "@parcha/agentrun-kernel/kernel";
 import { localWorkspace, resolveComputer, runShellOf, runTools } from "../dist/workspace/index.js";
 import { runHands } from "../dist/workspace/run-tools.js";
@@ -328,7 +328,7 @@ test("registryHere: Daytona mounts Archil only where DAYTONA_ARCHIL_EGRESS has a
   // Every other provider as it is, but that one whose machines dial says why it takes no Archil mount, as it does itself.
   for (const entry of REAL.filter((one) => one.id !== "daytona")) {
     const kept = relayed.PROVIDERS.find((one) => one.id === entry.id);
-    if (kept !== entry) assert.deepEqual(kept, { ...entry, unmounted: { ...entry.unmounted, archil: `${entry.label}'s machines dial this server, and a machine that dials takes no Archil mount` } }, entry.id);
+    if (kept !== entry) assert.deepEqual(kept, { ...entry, unmounted: mountsOf(entry, () => false, true).unmounted }, entry.id);
   }
   assert.deepEqual(relayed.PROVIDERS.filter((one, at) => one !== REAL[at]).map((one) => one.id).sort(), ["cloudflare", "daytona", "fly"]);
   // A Mode 2 Daytona sandbox has its computer's shell either way: with the egress and its image named, its folder an
