@@ -2038,10 +2038,10 @@ trigger in the console, with each step's API call.
 
 A preset server is saved for one Composio user. To let each run act as its own person's account instead, save it with
 `user_id: "per_run"` (a word reserved for this, never a Composio user id): the server keeps no user and no connected
-account in its address, looks up no account and makes no connect link. Composio refuses an address that names no user, even to list its tools, so
-the save, a refresh, a preview and an agent's save list them as `agentrun~tool-listing`, a user no save or run can name,
-never stored and never used for a call. Each run then names the account its calls of that server run as, in `mcp_auth`
-on its start or on a message:
+account in its address, looks up no account and makes no connect link. Composio refuses an address that names no user,
+even to list its tools, so the save, a refresh, a preview and an agent's save list them as `agentrun~tool-listing`, a
+user no save or run can name, never stored and never used for a call. Each run then names the account its calls of that
+server run as, in `mcp_auth` on its start or on a message:
 
 ```sh
 curl -X POST "$BASE/v2/agents/$AGENT/runs" -H "authorization: Bearer $TOKEN" -H 'content-type: application/json' \
@@ -2052,16 +2052,13 @@ curl -X POST "$BASE/v2/agents/$AGENT/runs" -H "authorization: Bearer $TOKEN" -H 
 (`ca_...`), and without it Composio picks the user's account for the toolkit. Each request to the server carries that
 user and account, the Composio key staying the server's own. The binding is kept as a `per_run` server's headers are:
 sealed into the run's launch, erased by the write that ends the run, never on the server's row, the run's view, its
-timeline, its trace or a log line, and its values are cut from whatever the run shows. The binding's ids are held by
-the run's redactors as any secret of 8 characters or more; a shorter Composio user id is an identifier, not a
-credential, and a conversation can still quote it, but no row, journal entry, timeline item or log line carries it as a
-field (an account id is always 8 or more: `ca_` and 5 to 64 characters). A message's binding replaces
-the run's for the turn it starts. A run that names no account has its calls of the server answered, unsent, that it
-was handed none, so a per-run server never calls as a default account. A malformed user or account is `422
-input_invalid` at `mcp_auth.<server>.composio_user_id` or `.connected_account_id`, and so is a binding to the preset's
-default user `agentrun` (`not_allowed`: the user single-user preset servers call as); headers for such a server, or a
-binding for any other server, are `422` at `mcp_auth.<server>`, and no run starts. A per-run server makes no Composio
-trigger: a trigger runs as one account. A server saved for one user before this mode keeps calling as that user.
+timeline, its trace or a log line, and its values are cut from whatever the run shows. A message's binding replaces the
+run's for the turn it starts. A run that names no account has its calls of the server answered, unsent, that it was
+handed none, so a per-run server never calls as a default account. A malformed user or account is `422 input_invalid` at
+`mcp_auth.<server>.composio_user_id` or `.connected_account_id`, and so is a binding to the preset's default user
+`agentrun` (`not_allowed`: the user single-user preset servers call as); headers for such a server, or a binding for any
+other server, are `422` at `mcp_auth.<server>`, and no run starts. A per-run server makes no Composio trigger: a trigger
+runs as one account. A server saved for one user before this mode keeps calling as that user.
 
 With `user_id: "per_run"`, whoever can start a run chooses its Composio user, so the host (Grep, say) owns which user
 each run binds: it binds each run to its own person and never takes the ids from that person.
