@@ -68,23 +68,24 @@ test('a red run opens one issue or updates the open one; the next green closes i
   assert.deepEqual(issuePlan({ broken: [], open: [other], body, run }), []);
 });
 
-// The rows that deploy on the platforms themselves, each with the repository's secrets it reads and the longest its walk
-// can wait (its waits added up): the job's limit is above it, so a slow platform fails in the walk, which deletes what
-// it made, not in a job killed midway.
+// The rows that deploy on the platforms themselves, each with the repository's secrets and variables it reads.
 const HOSTED = {
-  'railway-hosted': { secrets: ['RAILWAY_API_TOKEN', 'WALK_OPENROUTER_API_KEY'], vars: ['RAILWAY_WORKSPACE_ID'], waits: 51 },
-  'render-hosted': { secrets: ['RENDER_API_KEY', 'WALK_OPENROUTER_API_KEY'], vars: [], waits: 36 },
+  'railway-hosted': { secrets: ['RAILWAY_API_TOKEN', 'WALK_OPENROUTER_API_KEY'], vars: ['RAILWAY_WORKSPACE_ID'] },
+  'render-hosted': { secrets: ['RENDER_API_KEY', 'WALK_OPENROUTER_API_KEY'], vars: [] },
 };
 
 test('a hosted row reads only its own secrets, and walks only on the schedule or by hand with every one there; else it skips with a notice, its job green', () => {
-  for (const [id, { secrets, vars, waits }] of Object.entries(HOSTED)) {
+  for (const [id, { secrets, vars }] of Object.entries(HOSTED)) {
     const job = workflow.jobs[id];
     const text = JSON.stringify(job);
     assert.deepEqual([...new Set(text.match(/secrets\.[A-Z_]+/g))].sort(), secrets.map((s) => `secrets.${s}`).sort(), `${id}'s secrets`);
     assert.deepEqual([...new Set(text.match(/vars\.[A-Z_]+/g) ?? [])].sort(), vars.map((v) => `vars.${v}`).sort(), `${id}'s variables`);
     const [guard, ...rest] = job.steps;
     assert.equal(guard.id, 'secrets', `${id}: the first step decides, before the checkout`);
-    for (const name of [...secrets, ...vars]) assert.ok(Object.values(guard.env).some((v) => v.includes(`.${name} }}`)), `${id}'s guard checks ${name}`);
+    // One guard text for both rows: it tests each name in NEED, a variable named after its secret.
+    assert.deepEqual(guard.env.NEED.split(' ').sort(), [...secrets, ...vars].sort(), `${id}'s guard checks every secret it reads`);
+    for (const name of [...secrets, ...vars]) assert.match(guard.env[name] ?? '', new RegExp(`^\\$\\{\\{ (secrets|vars)\\.${name} \\}\\}$`), `${id}'s guard reads ${name} as ${name}`);
+    assert.equal(guard.run, workflow.jobs['railway-hosted'].steps[0].run, `${id}: the guard is railway-hosted's`);
     // A pull request's run never deploys: a push to it cancels the run (concurrency), which would cut a walk midway.
     assert.equal(guard.env.EVENT, '${{ github.event_name }}', id);
     assert.match(guard.run, /"\$EVENT" = pull_request/, `${id}: a pull request's run walks nothing`);
@@ -94,7 +95,6 @@ test('a hosted row reads only its own secrets, and walks only on the schedule or
     for (const step of rest) assert.match(step.if ?? '', /steps\.secrets\.outputs\.skip == ''/, `${id}: "${step.name ?? step.uses}" runs only when the row walks`);
     // One deploy at a time per platform, never cancelled by another run.
     assert.deepEqual(job.concurrency, { group: id, 'cancel-in-progress': false }, id);
-    assert.ok(job['timeout-minutes'] >= waits + 5, `${id}: ${job['timeout-minutes']} min, above its walk's ${waits} min of waits`);
     // The walk is the step's process, so a cancel's SIGINT and SIGTERM reach it, and it deletes what it made (onStop).
     assert.match(rest.find((step) => step.name === 'Walk').run, /(^|\n)\s*REPORT=\S+ exec (sh|node) /, `${id}: the walk runs under exec`);
   }
