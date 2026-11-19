@@ -6,7 +6,7 @@ import { DEFAULT_HARNESS } from "./harness.js";
 import { harnessOf } from "./harness-table.js";
 import { redactSecrets, valueMatcher } from "./learn/secrets.js";
 import { hostModel, MODEL_KEYS } from "./model.js";
-import { openRouterOnly, WIRES } from "./provider.js";
+import { modelWire, openRouterOnly, WIRES } from "./provider.js";
 import { savedGatewayIn } from "./model-gateway.js";
 
 /** The key a run's model requests carry, and who reads it: a provider's (saved in Settings → Model keys, or set where
@@ -26,6 +26,8 @@ export function runKeyOf(env: NodeJS.ProcessEnv, harness: string = DEFAULT_HARNE
   // A gateway saved in the console (model-gateway.ts) is fixed there, never where AgentRun starts.
   const gateway: RunKey = savedGatewayIn(env) ? { who: "The model gateway saved in Settings → Model keys", field: "its key", saved: true, where: "enter its key again in Settings → Model keys → Use a model gateway, and test it there." } : { who: "The gateway at AGENT_MODEL_BASE_URL", field: "AGENT_MODEL_API_KEY", saved: false };
   const wire = harnessOf(env, harness)?.facts?.wire;
+  // A harness billed to its own plan (Cursor's) runs on no model key of this server's.
+  if (wire && !modelWire(wire)) return undefined;
   // Serve's gateway takes every request of the wire it serves, pi's too; a wire it does not serve never goes there.
   if (env.AGENT_MODEL_BASE_URL && (!wire || WIRES[wire].gateway)) return gateway;
   if (wire) return row(provider === "openrouter" || openRouterOnly(wire, env) ? "openrouter" : WIRES[wire].vendor);

@@ -20,12 +20,14 @@ export const ACP_CODES = Object.freeze({
   refusal: "ACP_REFUSAL",
   /** The agent's binary is not the pinned one: its sha256 differs from the pin's. */
   binaryMismatch: "ACP_BINARY_MISMATCH",
-  /** The binary of an agent with no registry digest differs from the first one recorded for it. */
-  binaryDrift: "ACP_BINARY_DRIFT",
   /** The agent's binary cannot be read to be checked. */
   binaryUnreadable: "ACP_BINARY_UNREADABLE",
   /** No digest is pinned for the agent's binary on this platform, and none was given. */
   binaryUnpinned: "ACP_BINARY_UNPINNED",
+  /** A key the recipe runs on (recipe.keys) is not in the host's environment: the agent was not started. */
+  keyMissing: "ACP_KEY_MISSING",
+  /** The run's model (recipe.model) is not one the agent lists for its key: no prompt was sent. */
+  modelUnlisted: "ACP_MODEL_UNLISTED",
 } as const);
 
 export interface AcpFacts {

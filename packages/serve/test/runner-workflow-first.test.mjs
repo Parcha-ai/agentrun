@@ -44,6 +44,7 @@ const { LEARNED_WORKFLOW_TOOL } = await import("../dist/learned-workflow.js");
 const { runTimeline, runEntries, runReflect } = await import("../dist/store-reads/journal.js");
 const { said } = await import("../dist/learning-words.js");
 const { agentCostOverStore } = await import("../dist/store-reads/learning.js");
+const { viewOverStore } = await import("../dist/store-view.js");
 const { LEARNED_CLIP } = await import("../dist/learned-workflow.js");
 const { COST_WINDOW, costLineOf, workflowCostsOf, fits, workflowDigest, workflowFirstOf, pathMetrics, servedOf, WORKFLOW_FIRST } = await import("../dist/runner/workflow-first.js");
 const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
@@ -391,6 +392,20 @@ test("a quote miss re-picks once: the re-pick's found quote answers alone, one m
   assert.deepEqual(first.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["answered"]);
   assert.equal(submits(first.gateway).length, 1, "found first: no re-pick");
   assert.deepEqual(first.row.metrics?.loops, [{ node: "repick", iterations: 1, met: true, repick: true, workflow: "answer" }]);
+});
+
+// A composed workflow writing the answer re-picks in its child: the DSL labels the child's loop exit `cite/repick`
+// (scopeDepsToChild), and that exit is the run's re-pick, read on the run (store-reads/learning.ts pathViewOf).
+const composedRepickFlow = { ...citedFlow, root: { node: "chain", steps: [
+  { node: "workflow", label: "cite", input: { question: "{question}", page: "{page}" }, out: "Answer", as: "answer", workflow: repickFlow },
+] } };
+
+test("a composed workflow's re-pick is the run's: its child's loop exit, labelled as the DSL labels it, reads found on the run", async (t) => {
+  const run = await piRun(t, { ...repicking(MISSED, FOUND), flows: [{ name: "answer", description: "Answers from a page, quoting it", workflow: composedRepickFlow }] });
+  assert.deepEqual(run.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["answered"], JSON.stringify(run.row.metrics));
+  assert.equal(submits(run.gateway).length, 2, "the draft and its re-pick");
+  assert.deepEqual(run.row.metrics?.loops, [{ node: "cite/repick", iterations: 2, met: true, repick: true, workflow: "answer" }]);
+  assert.equal((await viewOverStore(run.server, RUN, { origin: "", serverSecrets: () => [] }))?.workflow?.repick, "found");
 });
 
 // The compact re-pick (learn/compile.ts's worked example, compactStateProblems): a fast extract copies the facts from

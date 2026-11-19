@@ -91,13 +91,19 @@ const close = (open: Figure[], figure?: number) => {
  *  never left (REQUEST_REFUSED's error entry) and a harness answer's continuation close nothing. */
 function openFigures(entries: readonly EntryLike[]): { generation: Figure[]; compaction: Figure[] } {
   const open = { generation: [] as Figure[], compaction: [] as Figure[] };
-  let [refused, continued] = [0, 0];
+  let [refused, continued, sideSummaries] = [0, 0, 0];
   for (const entry of entries) {
     const message = entry.model?.[0] as { stopReason?: unknown } | undefined;
     const data = (entry.data ?? {}) as Record<string, unknown>;
     // A side request (a compaction's summary, a tool's own request): marked with a label, as the timeline reads it.
     const kind = typeof data.request === "string" ? "compaction" : "generation";
-    if (entry.kind === REQUEST_REFUSED) refused += 1;
+    if (entry.kind === REQUEST_STARTED && data.request === "compaction") sideSummaries += 1;
+    // pi's compaction entry answers its summary request when that left marked as a generation (the timeline's meter):
+    // pi stores no answer for it. One marked as a side request is closed by its cost.
+    if (entry.kind === "pi.compaction") {
+      if (sideSummaries > 0) sideSummaries = 0;
+      else close(open.generation);
+    } else if (entry.kind === REQUEST_REFUSED) refused += 1;
     else if (entry.kind === "pi.assistant" && refused > 0 && message?.stopReason === "error") refused -= 1;
     else if (entry.kind === REQUEST_CONTINUED) continued += 1;
     else if (entry.kind === "pi.assistant" && continued > 0 && message) continued -= 1;

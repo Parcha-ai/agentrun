@@ -38,13 +38,13 @@ async function fakeRelease(t, body = "#!/bin/sh\necho fake goose\n") {
   return { bytes, archiveSha: sha256(bytes), binarySha: sha256(Buffer.from(body)) };
 }
 
-/** The archive on loopback at /goose.tar.bz2 (any other path 404), each request counted. Its close destroys every socket. */
-async function origin(t, bytes) {
+/** The archive on loopback at `path` (any other path 404), each request counted. Its close destroys every socket. */
+async function origin(t, bytes, path = "/goose.tar.bz2") {
   const sockets = new Set();
   const asked = [];
   const server = createServer((req, res) => {
     asked.push(req.url);
-    if (req.url !== "/goose.tar.bz2") return void res.writeHead(404).end("no such file");
+    if (req.url !== path) return void res.writeHead(404).end("no such file");
     res.writeHead(200, { "content-type": "application/octet-stream", "content-length": String(bytes.length) }).end(bytes);
   });
   server.on("connection", (socket) => (sockets.add(socket), socket.on("close", () => sockets.delete(socket))));
@@ -219,4 +219,67 @@ await installArchive(${JSON.stringify(harness)}, ${JSON.stringify(dir)}, { platf
   assert.equal(done.installed, "now");
   assert.equal(sha256(readFileSync(done.binary)), release.binarySha);
   assert.deepEqual(leftovers(harnesses), [], "the crashed install's folder went");
+});
+
+/** A fake Cursor release: a launcher at ./dist-package/cursor-agent and a file of code beside it, packed as a .tar.gz,
+ *  with the archive's and the launcher's sha256 and the tree digest of every file (acp's treeDigest). */
+async function fakeCursor(t, code = "console.log('cursor');\n") {
+  const { treeDigest } = await import("@parcha/agentrun-harness-acp");
+  const dir = await scratch(t);
+  const tree = join(dir, "tree");
+  mkdirSync(join(tree, "dist-package"), { recursive: true });
+  const launcher = "#!/bin/sh\nexec node index.js \"$@\"\n";
+  writeFileSync(join(tree, "dist-package", "cursor-agent"), launcher);
+  chmodSync(join(tree, "dist-package", "cursor-agent"), 0o755);
+  writeFileSync(join(tree, "dist-package", "index.js"), code);
+  const archive = join(dir, "cursor.tar.gz");
+  const packed = spawnSync("tar", ["-czf", archive, "-C", tree, "./dist-package"], { encoding: "utf8" });
+  assert.equal(packed.status, 0, packed.stderr);
+  const bytes = readFileSync(archive);
+  return { bytes, archiveSha: sha256(bytes), binarySha: sha256(Buffer.from(launcher)), treeSha: await treeDigest(tree), treeDigest };
+}
+
+/** Cursor under a pin of the fake release's digests, with acp's treeDigest to take a tree's. */
+const cursorOf = (url, release, over = {}) => ({
+  id: "cursor",
+  label: "Cursor",
+  retry: "agentrun harness install cursor",
+  tree: release.treeDigest,
+  pin: { id: "cursor", version: "2026.11.13-eacade1", archives: { [PLATFORM]: { url: `${url}/cursor.tar.gz`, format: "tar.gz", sha256: release.archiveSha, cmd: "./dist-package/cursor-agent", binarySha256: release.binarySha, treeSha256: release.treeSha, ...over } } },
+});
+
+test("a tar.gz archive (Cursor's) unpacks by tar -xzf, its launcher and every file beside it checked against the pin, and a rerun downloads nothing", async (t) => {
+  const release = await fakeCursor(t);
+  const served = await origin(t, release.bytes, "/cursor.tar.gz");
+  const harnesses = join(await scratch(t), "harnesses");
+  const dir = join(harnesses, "cursor");
+  const done = await installArchive(cursorOf(served.url, release), dir, { platform: PLATFORM });
+  assert.deepEqual(done, { installed: "now", binary: join(dir, "dist-package", "cursor-agent") });
+  assert.equal(await release.treeDigest(dir), release.treeSha, "what is in place is the pinned tree");
+  const again = await installArchive(cursorOf(served.url, release), dir, { platform: PLATFORM });
+  assert.equal(again.installed, "already");
+  assert.deepEqual(served.asked, ["/cursor.tar.gz"], "the rerun downloaded nothing");
+});
+
+test("a file beside the launcher that is not the pin's is refused before anything is put in place: HARNESS_BINARY_MISMATCH", async (t) => {
+  const release = await fakeCursor(t);
+  const pinned = await fakeCursor(t, "console.log('the pinned code');\n");
+  const served = await origin(t, release.bytes, "/cursor.tar.gz");
+  const dir = join(await scratch(t), "harnesses", "cursor");
+  // The archive and the launcher are the pin's; one file of its code is not.
+  const harness = cursorOf(served.url, release, { treeSha256: pinned.treeSha });
+  await assert.rejects(installArchive(harness, dir, { platform: PLATFORM }), (error) => error.code === "HARNESS_BINARY_MISMATCH" && /tree sha256/.test(error.message) && error.message.includes("agentrun harness install cursor"));
+  assert.equal(existsSync(dir), false, "nothing in place");
+  // A pin that holds a tree digest with no way given to take one is refused before anything downloads.
+  const { tree: _tree, ...blind } = cursorOf(served.url, release);
+  await assert.rejects(installArchive(blind, dir, { platform: PLATFORM }), (error) => error.code === "HARNESS_PLATFORM_UNSUPPORTED");
+  assert.deepEqual(served.asked, ["/cursor.tar.gz"], "the blind install downloaded nothing");
+});
+
+test("a format this installer does not unpack is refused before anything downloads", async (t) => {
+  const release = await fakeCursor(t);
+  const served = await origin(t, release.bytes, "/cursor.tar.gz");
+  const dir = join(await scratch(t), "harnesses", "cursor");
+  await assert.rejects(installArchive(cursorOf(served.url, release, { format: "zip" }), dir, { platform: PLATFORM }), (error) => error.code === "HARNESS_PLATFORM_UNSUPPORTED" && /tar\.bz2 and tar\.gz/.test(error.message));
+  assert.deepEqual(served.asked, []);
 });

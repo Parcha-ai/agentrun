@@ -74,6 +74,7 @@ import { durationMs, logLine } from "./print.js";
 import { type RunMoment, type State, type Status } from "./run-view.js";
 import { approve, archiveRun, cancel, message, pause as pauseRunOverStore, prepareLaunch, raiseCap, resume as resumeRunOverStore, type StartDeps, startInline, type StartOptions, startRun, stop as stopRunOverStore } from "./runs-over-store.js";
 import { builtOfNow, factsOverStore, listedItem, momentOverStore, summaryOverStore, timelineOverStore, toolsUsdOverStore, type ViewDeps, viewOverStore, withheldOverStore } from "./store-view.js";
+import { healEndedCosts } from "./cost-heal.js";
 import { createLister } from "./run-listing.js";
 import { HELD_WAITS } from "./runner/journal-kinds.js";
 import { type ServedTimelineDeps, servedTimelineRows } from "./run-timeline-served.js";
@@ -1222,6 +1223,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const stopping = new AbortController();
   /** The after-start seal by the events' schemas (composio-triggers.ts sealMarked), drained by stop. */
   let schemaSealed: Promise<unknown> = Promise.resolve();
+  // The start's sweep of ended runs whose stored cost is unknown (cost-heal.ts), once this server listens; stop drains it.
+  let costHealed: Promise<unknown> = Promise.resolve();
+  let costHealStopped = false;
   // This server's saved keys, read by name: handed to its own reading and its own runs, never shared with another server.
   const storedKeys: StoredKeys = (name) => toolKeys.value(name);
   // A stored key that does not open is said once at the start, never a refusal to start.
@@ -5336,6 +5340,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   }
   // The lister's own passes (above), once this server listens and knows its own address (ownOriginOf).
   lister.start();
+  // Then, not waited on: every ended run whose stored cost is unknown heals by its run read's rule, the store's figure
+  // from a priced booking (cost-heal.ts), a page at a time. One count line when it read any run, no ids; a store with
+  // none says nothing. Drained by stop.
+  const costHealSaid = (fields: Record<string, string | number>) => {
+    const line = logLine("cost_heal", fields);
+    if (log) log(line);
+    else process.stderr.write(`agentrun-serve: ${line}\n`);
+  };
+  costHealed = healEndedCosts(store, { stopped: () => costHealStopped })
+    .then(({ read, healed, failed }) => (read > 0 ? costHealSaid({ read, healed, failed }) : undefined))
+    .catch((error: Error) => costHealSaid({ condition: "cost_heal_failed", error: error.message }));
   // A run's end and its wait are the outbound webhook's run.ended and run.needs_input (webhooks.ts). The runners write them
   // to the store and this server runs no run, so it follows the store's run-change feed (Store.runs.changedSince): every
   // run reaching a final state, or let go by its runner (parked, or running with none), once, in order, under a cursor
@@ -5617,7 +5632,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     await githubStopped;
     // --faux-github's fake GitHub API, once nothing asks it anything.
     await fauxGitHub?.close();
-    // The listings' builder ends its pass before the store it reads and writes closes.
+    // The start's cost heal stops at its next run, and the listings' builder ends its pass, before the store they read
+    // and write closes.
+    costHealStopped = true;
+    await costHealed;
     await lister.stop();
     // The store's EXCLUSIVE lock is the one-server lock: closing it releases it for the next server.
     await store.close();

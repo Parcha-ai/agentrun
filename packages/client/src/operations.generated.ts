@@ -484,6 +484,7 @@ export type Cost = {
   so_far_usd?: number;
   unpriced?: number;
   upper_bound?: true;
+  unknown?: "booking_unread";
   tokens?: {
     input: number;
     output: number;
@@ -1009,6 +1010,7 @@ export type Capabilities = {
     reason?: string;
     needs?: Array<"key" | "chatgpt">;
     installs?: "on_first_use";
+    card?: string;
   }>;
   tools: Array<{
     name: string;

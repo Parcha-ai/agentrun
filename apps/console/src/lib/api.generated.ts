@@ -189,6 +189,7 @@ export interface components {
       reason?: string;
       needs?: ("key" | "chatgpt")[];
       installs?: "on_first_use";
+      card?: string;
     }[];
     tools: {
       name: string;
@@ -274,6 +275,7 @@ export interface components {
     so_far_usd?: number;
     unpriced?: number;
     upper_bound?: true;
+    unknown?: "booking_unread";
     tokens?: {
       input: number;
       output: number;

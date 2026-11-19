@@ -4,12 +4,13 @@
 //    registry.json): its version and, per platform, its archive's URL and sha256, and the sha256 of the binary the archive
 //    unpacks to where it was measured. An installer verifies the archive, then the binary; a host checks the binary
 //    again at each start (`verifyPinnedBinary`).
-//  - An agent the registry lists with no digest (Cursor) has no pin to meet: its first verified digest is recorded, and a
-//    later binary that differs from it is refused (`verifyFirstSeen`), so a binary that changed under the host is seen
-//    before it runs.
+//  - An agent the registry lists with no digest (Cursor) is pinned here by what its first download held; a binary no
+//    pin names has its first digest recorded by the server's installer alone (agentrun-serve, harness-archive.ts
+//    installArchive's binaryRecord), the one first-seen path.
 // Every check reads the file's bytes (the kernel's chunked sha256, kept once per file identity) and never executes it.
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
+import { createHash } from "node:crypto";
+import { lstat, readdir, readlink } from "node:fs/promises";
+import { join } from "node:path";
 import { checkedOnce, checkedOnceAsync, type BinaryCheck } from "@parcha/agentrun-kernel/host";
 import { ACP_CODES } from "./facts.js";
 
@@ -27,8 +28,12 @@ export interface AcpArchivePin {
   /** The binary's path inside the archive (the registry's `cmd`). */
   readonly cmd: string;
   /** The sha256 of the binary the archive unpacks to, where it was measured. Absent: unmeasured on this platform, so an
-   *  installer records the first one it unpacks from the verified archive (`verifyFirstSeen`). */
+   *  installer records the first one it unpacks from the verified archive (agentrun-serve's binaryRecord). */
   readonly binarySha256?: string;
+  /** The digest of every file the archive unpacks to (treeDigest), for an agent whose binary is a launcher of the code
+   *  beside it (Cursor's `cursor-agent` runs its own `node` on `index.js` and a hundred chunks): checked by the installer
+   *  and again before every start, so no file of it changes unseen. */
+  readonly treeSha256?: string;
 }
 
 /** A pinned release of an ACP agent. */
@@ -64,6 +69,28 @@ export const GOOSE_PIN: AcpBinaryPin = Object.freeze({
   }),
 });
 
+/** Cursor's CLI 2026.11.13 (build eacade1), the release its ACP registry entry pointed to when read (`source`). The
+ *  registry lists no digest for Cursor, so the archive is pinned by the first sha256 seen for it (2026-11-16, harness S0;
+ *  downloaded again 2026-11-19 and the same), its launcher and its whole tree by what that archive unpacked to. A drift
+ *  of any of them is refused. A new pin takes the key walk on it (test/cursor-key-walk.test.mjs, on the real binary and
+ *  the owner's key, AGENTRUN_RECORD_CURSOR_WALK=1): Cursor's credential design rests on Cursor tolerating a failed save,
+ *  and CI refuses a pin cursor-walk.json does not name. */
+export const CURSOR_PIN: AcpBinaryPin = Object.freeze({
+  id: "cursor",
+  version: "2026.11.13-eacade1",
+  source: Object.freeze({ url: "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json", readAt: "2026-11-16T21:22:32Z" }),
+  archives: Object.freeze({
+    "linux-x86_64": Object.freeze({
+      url: "https://downloads.cursor.com/lab/2026.11.13-eacade1/linux/x64/agent-cli-package.tar.gz",
+      format: "tar.gz" as const,
+      sha256: "c02e4321f20d691ee03af94d29948dc3a81c6c34e7328da7bb1afade4c75812f",
+      cmd: "./dist-package/cursor-agent",
+      binarySha256: "2ccc9a8e167797641448b5e5c936f006ba137a2555f117f38c5eb76a5238a233",
+      treeSha256: "b224cfc7d2aa702ae4c9335fba6a4fc4b04250584bf615a8dcefa946ac5e64f6",
+    }),
+  }),
+});
+
 /** This host's platform as the registry names it, or undefined for one it does not list. */
 export function acpPlatform(platform: string = process.platform, arch: string = process.arch): AcpPlatform | undefined {
   const os = platform === "darwin" ? "darwin" : platform === "linux" ? "linux" : platform === "win32" ? "windows" : undefined;
@@ -71,7 +98,7 @@ export function acpPlatform(platform: string = process.platform, arch: string = 
   return os && cpu ? (`${os}-${cpu}` as AcpPlatform) : undefined;
 }
 
-/** A binary the adapter will not start: its code says why (ACP_CODES.binaryMismatch, binaryDrift, binaryUnreadable). */
+/** A binary the adapter will not start: its code says why (ACP_CODES.binaryMismatch, binaryUnreadable). */
 export class AcpBinaryRefused extends Error {
   constructor(readonly code: string, message: string) {
     super(`${code}: ${message}`);
@@ -114,63 +141,40 @@ export async function verifyPinnedBinaryAsync(path: string, sha256: string): Pro
   if (found !== sha256) throw new AcpBinaryRefused(ACP_CODES.binaryMismatch, `the binary at ${path} has sha256 ${found}, and the pin is ${sha256}`);
 }
 
-/** Where an agent with no registry digest keeps the first digest verified for it. */
-export interface DigestRecord {
-  /** The digest recorded, or undefined before the first. */
-  read(): string | undefined;
-  /** Records the first digest. */
-  write(sha256: string): void;
-}
-
-/** A DigestRecord in a file of its own: one line, the sha256. */
-export function fileDigestRecord(file: string): DigestRecord {
-  return {
-    read() {
-      let text: string;
-      try {
-        text = readFileSync(file, "utf8");
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return undefined;
-        throw error;
-      }
-      const recorded = text.trim();
-      if (!SHA256.test(recorded)) throw new Error(`acp: the recorded digest in ${file} is not a sha256`);
-      return recorded;
-    },
-    write(sha256) {
-      mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
-      // `wx`: a record another process wrote first is never overwritten; its digest is the one that holds.
-      writeFileSync(file, `${sha256}\n`, { mode: 0o600, flag: "wx" });
-    },
-  };
-}
-
-/** The binary at `path`, against the first digest `record` holds: with none, its digest is recorded and it passes; with
- *  one, a binary that differs is refused (ACP_CODES.binaryDrift). Answers its digest. */
-export function verifyFirstSeen(path: string, record: DigestRecord): string {
-  const recorded = record.read();
-  if (recorded) {
-    try {
-      verifyPinnedBinary(path, recorded);
-    } catch (error) {
-      if (error instanceof AcpBinaryRefused && error.code === ACP_CODES.binaryMismatch) throw new AcpBinaryRefused(ACP_CODES.binaryDrift, `the binary at ${path} differs from the first one recorded for it (${recorded})`);
-      throw error;
+/** The digest of the tree at `root`: the sha256 of one line per entry under it, in byte order of its path from `root`
+ *  (`/`-separated): `<path>\0file\0<sha256>\n` for a file, `<path>\0link\0<target>\n` for a symbolic link, and
+ *  `<path>\0dir\n` for a directory. Modes and times are not in it. Each file's sha256 is the kernel's, kept once per
+ *  file identity in this process, so a tree checked before is read again only where a file changed. Off the event loop;
+ *  rejects on anything else under `root` (a socket, a device). */
+export async function treeDigest(root: string): Promise<string> {
+  const lines: string[] = [];
+  const walk = async (dir: string, prefix: string): Promise<void> => {
+    for (const name of (await readdir(dir)).sort()) {
+      const path = join(dir, name);
+      const rel = prefix ? `${prefix}/${name}` : name;
+      const entry = await lstat(path);
+      if (entry.isSymbolicLink()) lines.push(`${rel}\0link\0${await readlink(path)}\n`);
+      else if (entry.isDirectory()) {
+        lines.push(`${rel}\0dir\n`);
+        await walk(path, rel);
+      } else if (entry.isFile()) lines.push(`${rel}\0file\0${await checkedOnceAsync(path, "tree", digestOf(path), () => true)}\n`);
+      else throw new Error(`${path} is neither a file, a directory nor a link`);
     }
-    return recorded;
-  }
+  };
+  await walk(root, "");
+  lines.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  return createHash("sha256").update(lines.join("")).digest("hex");
+}
+
+/** Refuses the tree at `root` unless its digest (treeDigest) is `sha256`: ACP_CODES.binaryMismatch, or binaryUnreadable
+ *  when it cannot be read. Never runs anything in it. */
+export async function verifyPinnedTree(root: string, sha256: string): Promise<void> {
+  if (!SHA256.test(sha256)) throw new Error(`acp: the pinned tree sha256 ${JSON.stringify(sha256)} is not 64 lowercase hex digits`);
   let found: string;
   try {
-    found = checkedOnce(path, "first-seen", digestOf(path), () => false);
+    found = await treeDigest(root);
   } catch (error) {
-    throw unreadable(path, error);
+    throw new AcpBinaryRefused(ACP_CODES.binaryUnreadable, `the files at ${root} cannot be read (${String((error as NodeJS.ErrnoException)?.code ?? (error as Error)?.message ?? error)})`);
   }
-  try {
-    record.write(found);
-  } catch (error) {
-    // Another process recorded one first: that one holds.
-    if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error;
-    const first = record.read();
-    if (first !== found) throw new AcpBinaryRefused(ACP_CODES.binaryDrift, `the binary at ${path} has sha256 ${found}, and the first one recorded is ${first}`);
-  }
-  return found;
+  if (found !== sha256) throw new AcpBinaryRefused(ACP_CODES.binaryMismatch, `the files at ${root} have the tree sha256 ${found}, and the pin is ${sha256}: one of them changed since it was installed`);
 }
