@@ -145,6 +145,17 @@ written, a Hetzner Cloud CPX02 (1 vCPU, 1 GB, 20 GB) is from €5.49 a month bef
 ([pricing](https://www.hetzner.com/cloud/regular-performance)), and a DigitalOcean Basic Droplet (1 vCPU, 1 GiB, 25
 GiB) is $6 a month ([pricing](https://www.digitalocean.com/pricing/droplets)). The $4 Droplet's 512 MiB is too little.
 
+## On Kubernetes, with Helm
+
+```sh
+helm install agentrun oci://ghcr.io/parcha-ai/charts/agentrun --devel --namespace agentrun --create-namespace
+```
+
+One pod, the server and its runner, on a 10 GiB volume, from the release's image; the token and seal key are made as a
+Secret at install and kept on upgrade. Its agents get file tools and `web_fetch` but no shell, as on Render. The
+chart's [README](helm/agentrun/README.md) covers Argo CD and Flux, and what `helm uninstall` keeps (the Secret and the
+volume).
+
 ## The first visit's setup code
 
 A server at a public address (`AGENTRUN_PUBLIC_URL`, or Render's own) asks for a setup code before it takes the first
@@ -361,6 +372,8 @@ this checkout's image, or walks `AGENTRUN_IMAGE` when set.
 - `walk/reclaim.sh`: a run of about 60 s whose runner is stopped in the middle, by SIGTERM and then by SIGKILL. Each time
   the other runner takes it over (read from `GET /v2/runs/{id}`'s `claim`), after a SIGKILL within the 30 s lease, and
   the run completes with each step done once.
+
+`helm/walk.sh` (CI: `helm-walk.yml`, on kind) walks the chart: install, a first run, upgrade, uninstall and reinstall.
 
 Two walk the Railway template:
 

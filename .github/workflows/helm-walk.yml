@@ -1,0 +1,54 @@
+name: Helm walk
+
+# Runs deploy/helm/walk.sh on a kind cluster, after deploy/helm/render.sh. Not a required check.
+
+on:
+  pull_request:
+    paths:
+      - 'deploy/helm/**'
+      - 'deploy/walk/api.mjs'
+      - 'deploy/walk/faux-steps.mjs'
+      - 'deploy/walk/rows.sh'
+      - '.github/workflows/helm-walk.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'deploy/helm/**'
+      - 'deploy/walk/api.mjs'
+      - 'deploy/walk/faux-steps.mjs'
+      - 'deploy/walk/rows.sh'
+      - '.github/workflows/helm-walk.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: helm-walk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  walk:
+    name: helm install, first run, upgrade, uninstall (kind)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v4.3.1
+      - uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          cluster_name: helm-walk
+      - name: helm lint
+        run: helm lint deploy/helm/agentrun
+      - name: The public address the server gets is the one NOTES prints
+        run: sh deploy/helm/render.sh
+      - name: Walk
+        run: REPORT="$RUNNER_TEMP/helm-walk.md" sh deploy/helm/walk.sh
+      - name: Report
+        if: always()
+        run: '[ ! -f "$RUNNER_TEMP/helm-walk.md" ] || cat "$RUNNER_TEMP/helm-walk.md" >> "$GITHUB_STEP_SUMMARY"'

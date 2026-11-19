@@ -2,8 +2,9 @@
 // a drop fails what was in flight with gone and a redial is a fresh connection; a second socket replaces the first; a
 // hello that is not what the computer paired as is closed with its code; one run holds the computer at a time.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import test from "node:test";
-import { ATTACH_CLOSE, AttachHub, attachedProvider, conformanceCases, formatReport, kindServed, PROTOCOL_VERSION, redialDelay, redials, runConformance, socketStreams } from "../dist/index.js";
+import { ATTACH_CLOSE, AttachHub, attachedProvider, conformanceCases, formatReport, kindServed, MACHINE_TOKEN_SOURCE, newMachineToken, PROTOCOL_VERSION, redialDelay, redials, runConformance, socketStreams } from "../dist/index.js";
 import { FakeUiDriver, serveUiSocket, UI_FIXTURE } from "../dist/fake-ui-driver.js";
 
 const APP = UI_FIXTURE.id;
@@ -721,4 +722,10 @@ test("socketStreams reads a frame with raw newlines as one message, and writes e
 	assert.equal(line.trimEnd().includes("\n"), false);
 	await new Promise((resolve) => setImmediate(resolve));
 	assert.deepEqual(frames, ['{"a":1}', '{"b":2}', '{"c":3}']);
+});
+
+test("a machine token's shape is one source: computerd's tokenPattern is MACHINE_TOKEN_SOURCE anchored, and newMachineToken mints it", () => {
+	const go = readFileSync(new URL("../daemon/internal/attach/attach.go", import.meta.url), "utf8");
+	assert.equal(go.match(/^var tokenPattern = regexp\.MustCompile\(`([^`]*)`\)$/m)?.[1], `^${MACHINE_TOKEN_SOURCE}$`);
+	assert.match(newMachineToken(), new RegExp(`^${MACHINE_TOKEN_SOURCE}$`));
 });

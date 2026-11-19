@@ -1,7 +1,8 @@
 // Conformance by kind: the cases a setting kind runs, and whether a provider passes it. One table with the registry
 // (src/kinds.ts): a kind's cases are those whose protocol groups it requires or allows, and a provider passes the kind
 // only when it serves it and every case of each required group passes, at least one of them.
-import { type ComputerSettingKind, type KindCapabilities, SETTING_KIND_NAMES, SETTING_KINDS, servingRefusals } from "../kinds.js";
+import { type KindCapabilities, servingRefusals } from "../kinds.js";
+import { type ComputerSettingKind, SETTING_KIND_NAMES, SETTING_KINDS } from "../setting-kinds.js";
 import { GROUPS, type Group } from "../protocol.js";
 import { casesFor } from "./cases/index.js";
 import type { Case, ConformanceReport } from "./types.js";

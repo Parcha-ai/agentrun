@@ -379,7 +379,7 @@ export class HostedProvider implements ComputerProvider {
 		this.#probeTargets = [...probeTargets];
 		this.#dial = host.facts.connect === "dial" ? options.dial : undefined;
 		// The descriptor's keyed mounts are the host's already (Daytona's): no key is read here.
-		this.#mounts = mountsOf({ ...host.descriptor, connect: host.facts.connect }, () => false);
+		this.#mounts = mountsOf(host.descriptor, () => false, host.facts.connect === "dial");
 		// Extend only where the end can follow it: the host moves its timer or its deadline label.
 		if (host.extend) this.extend = (ref, ttlMs, context) => this.#extendSerial(ref, ttlMs, context?.signal);
 	}

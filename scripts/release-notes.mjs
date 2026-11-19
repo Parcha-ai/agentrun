@@ -31,8 +31,8 @@ export function releaseVersions(root = resolve(dirname(fileURLToPath(import.meta
 }
 
 /** The notes' install block. Every field is required. */
-export function installLines({ version, launcher, python, image, platforms }) {
-  for (const [name, value] of Object.entries({ version, launcher, python, image })) if (typeof value !== 'string' || !value) throw new Error(`the install lines need the ${name}`);
+export function installLines({ version, launcher, python, image, platforms, chart }) {
+  for (const [name, value] of Object.entries({ version, launcher, python, image, chart })) if (typeof value !== 'string' || !value) throw new Error(`the install lines need the ${name}`);
   if (!Array.isArray(platforms) || !platforms.length) throw new Error('the install lines need the image\'s platforms');
   return [
     '## Install',
@@ -41,6 +41,7 @@ export function installLines({ version, launcher, python, image, platforms }) {
     `- Launcher and CLI: \`npx @parcha/agentrun@${launcher}\``,
     `- Python client: \`pip install parcha-agentrun==${python}\``,
     `- Server image: \`docker pull ${image}\` (${platforms.join(', ')})`,
+    `- Helm chart: \`helm install agentrun ${chart} --version ${version}\``,
   ].join('\n');
 }
 
@@ -65,7 +66,7 @@ if (isMain(import.meta)) {
     const versions = releaseVersions();
     if (tag !== `v${versions.version}`) throw new Error(`${tag} is not this checkout's version, v${versions.version}`);
     const section = changelogSection(readFileSync(option('--changelog'), 'utf8'), versions.version);
-    const install = installLines({ ...versions, image: option('--image'), platforms: (option('--platforms') ?? '').split(',').filter(Boolean) });
+    const install = installLines({ ...versions, image: option('--image'), platforms: (option('--platforms') ?? '').split(',').filter(Boolean), chart: option('--chart') });
     writeFileSync(option('--out'), releaseNotes({ section, install, tag, repository: process.env.GITHUB_REPOSITORY ?? 'Parcha-ai/agentrun' }));
     console.log(`Wrote the notes of ${tag}: its CHANGELOG.md section (${section.split('\n').length} lines) and the install lines.`);
   } catch (error) {
