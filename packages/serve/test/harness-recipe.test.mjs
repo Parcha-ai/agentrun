@@ -107,7 +107,7 @@ function refusalOf(recipe) {
 // One recipe per rule, each breaking it alone, with the code it is refused by.
 const BROKEN = [
   ["rule 1, own keys only: a key the server holds for a model provider", RECIPE_CODES.keys, () => recipeOf(undefined, { keys: ["OPENROUTER_API_KEY"] })],
-  ["rule 1, own keys only: a key written into env", RECIPE_CODES.keys, () => recipeOf(undefined, { env: { MODEL_AGENT_API_KEY: "sk-written-in-the-file" } })],
+  ["rule 1, own keys only: a key written into env", RECIPE_CODES.keys, () => recipeOf(undefined, { env: { MODEL_AGENT_API_KEY: "fake-test-key" } })],
   ["rule 2, a pinned binary: a command of its own", RECIPE_CODES.binary, () => recipeOf(undefined, { command: "/usr/local/bin/agent" })],
   ["rule 2, a pinned binary: an archive with no sha256", RECIPE_CODES.binary, () => {
     const r = recipeOf();

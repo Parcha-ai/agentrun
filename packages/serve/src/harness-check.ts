@@ -20,10 +20,9 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { AgentAdapter, HostTool } from "@parcha/agentrun-kernel";
-import { modelPortFor } from "@parcha/agentrun-kernel";
+import type { AgentAdapter, HostTool, SessionRecord, SessionStore } from "@parcha/agentrun-kernel";
+import { modelPortFor, SessionFenced } from "@parcha/agentrun-kernel";
 import { beforeRequestOf } from "@parcha/agentrun-kernel/kernel/cap";
-import { memorySessionStore } from "@parcha/agentrun-kernel/testing";
 import { ACP_PACKAGE } from "./acp-package.js";
 import { priceOf } from "./adapters.js";
 import { archivePlatform } from "./harness-archive.js";
@@ -110,6 +109,30 @@ const fileDigest = (path: string): Promise<string> => new Promise((resolve, reje
   const hash = createHash("sha256");
   createReadStream(path).on("error", reject).on("data", (chunk) => hash.update(chunk)).on("end", () => resolve(hash.digest("hex")));
 });
+
+/** The check's session records, in memory for the check's life: one session, opened by each runner in turn. The newest
+ *  open holds it; an older writer's append is fenced, as the server's store fences a runner whose claim was taken. */
+function checkStore(): SessionStore {
+  const records = new Map<string, SessionRecord[]>();
+  const holders = new Map<string, number>();
+  const read = async (key: string) => structuredClone(records.get(key) ?? []);
+  return {
+    read,
+    async open(key) {
+      const holder = (holders.get(key) ?? 0) + 1;
+      holders.set(key, holder);
+      return {
+        key,
+        read: () => read(key),
+        async append(added) {
+          if (holders.get(key) !== holder) throw new SessionFenced(key);
+          records.set(key, [...(records.get(key) ?? []), ...structuredClone(added as SessionRecord[])]);
+        },
+        sync: async () => {},
+      };
+    },
+  };
+}
 
 const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule the one address the refusing egress proxy of a check listens on
 
@@ -311,11 +334,13 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
   const messagesProxy = recipe.model.billing === "proxy" ? (acp.gooseProxy({ model: provider!.modelId, provider: { origin: provider!.origin, credential: provider!.credential, ...(provider!.auth ? { auth: provider!.auth } : {}) }, ...(price ? { price } : {}), log, fetch: recording }) as Proxy) : undefined;
   const proxyAt: string = recipe.model.billing === "proxy" ? (recipe.model.hostEnv ?? "ANTHROPIC_HOST") : "ANTHROPIC_HOST";
   const proxy: Proxy | undefined = messagesProxy && (async (session) => {
+    // The proxy's own address, under proxyAt, beside the key that opens it alone (never a provider's).
     const started = await messagesProxy(session);
-    return { env: { [proxyAt]: started.env.ANTHROPIC_HOST!, ANTHROPIC_API_KEY: started.env.ANTHROPIC_API_KEY! }, close: started.close };
+    const { ANTHROPIC_HOST: address, ...opens } = started.env;
+    return { env: { ...opens, [proxyAt]: address! }, close: started.close };
   });
   let capUsd: number | undefined = options.capUsd ?? CHECK_DEFAULT_CAP_USD;
-  const store = memorySessionStore();
+  const store = checkStore();
   const starts: string[] = [];
   const adapterFor = (sessionsDir: string) => acp.acpAdapter({
     recipe: acpRecipe,
