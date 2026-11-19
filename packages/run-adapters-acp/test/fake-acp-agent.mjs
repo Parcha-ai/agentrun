@@ -22,7 +22,11 @@
 //           takes one of them and refuses any other;
 //   writeAuth: at session/new and session/load, write $HOME/.config/cursor/auth.json holding the sha256 of the
 //              CURSOR_API_KEY it was handed (a credential derived from the key, as Cursor writes one);
-//   failNew: at session/new, print these words on stderr and exit 1 (Cursor's own refusals, the team admin's switch).
+//   failNew: at session/new, print these words on stderr and exit 1 (Cursor's own refusals, the team admin's switch);
+//   cursorDirs: keep sessions and read the CLI config where Cursor 2026.11.13 does (cursor-config/dist/paths.js): its
+//               config directory is $CURSOR_CONFIG_DIR, else $XDG_CONFIG_HOME/cursor, else $HOME/.cursor; sessions in
+//               <dir>/acp-sessions, and an edit, write, delete or move refused unasked when <dir>/cli-config.json denies
+//               Write(**) (Cursor reports it completed all the same).
 // A script step {hang: true} is a model that never answers (until a cancel the agent heeds).
 // The step the model takes is the number it took before: its session's history (calls, native calls, answers), plus the
 // calls a recovery or context note names that its history does not hold, as a resumed model reads its conversation.
@@ -41,7 +45,19 @@ const loads = config.load ?? true;
 const askMcp = config.askMcp ?? true;
 const askNative = new Set(config.askNative ?? (style === "cursor" ? ["execute"] : ["execute", "edit", "delete", "move", "fetch", "other"]));
 const home = process.env.HOME ?? "/nonexistent";
-const store = join(home, ".fake-acp", "sessions");
+/** Cursor's config directory, by its own rule (cursorDirs). */
+const cursorDir = process.env.CURSOR_CONFIG_DIR?.trim() || (process.env.XDG_CONFIG_HOME?.trim() ? join(process.env.XDG_CONFIG_HOME, "cursor") : join(home, ".cursor"));
+const store = config.cursorDirs ? join(cursorDir, "acp-sessions") : join(home, ".fake-acp", "sessions");
+/** Whether Cursor's CLI config, where Cursor reads it, denies every Write (read at start, as Cursor reads it). */
+const deniesWrite = (() => {
+  if (!config.cursorDirs) return false;
+  try {
+    return JSON.parse(readFileSync(join(cursorDir, "cli-config.json"), "utf8")).permissions?.deny?.includes("Write(**)") === true;
+  } catch {
+    return false;
+  }
+})();
+const EDITS = new Set(["edit", "delete", "move"]);
 
 const said = (event) => config.countFile && appendFileSync(config.countFile, `${JSON.stringify({ at: Date.now(), pid: process.pid, ...event })}\n`);
 const save = (session) => {
@@ -58,7 +74,7 @@ const pgid = (() => {
     return undefined;
   }
 })();
-said({ type: "start", env: Object.keys(process.env).sort(), home, cwd: process.cwd(), pgid });
+said({ type: "start", env: Object.keys(process.env).sort(), home, cwd: process.cwd(), pgid, ...(config.cursorDirs ? { cursorDir, deniesWrite } : {}) });
 const titleOf = (tool) => (style === "cursor" ? `agentrun-${tool}: ${tool}` : `agentrun__${tool}`);
 const late = style === "cursor" && config.announce === "late";
 const models = config.models ? { currentModelId: config.models[0].modelId, availableModels: config.models } : undefined;
@@ -248,7 +264,7 @@ async function takeTurn(client, session, prompt, signal) {
       session.history.push(entry);
       save(session);
       await notify({ sessionUpdate: "tool_call", ...update });
-      const allowed = askNative.has(s.native) ? await permitted(client, session, update) : true;
+      const allowed = deniesWrite && EDITS.has(s.native) ? false : askNative.has(s.native) ? await permitted(client, session, update) : true;
       if (signal.aborted) return { stopReason: "cancelled" };
       if (allowed && config.nativeLog) appendFileSync(config.nativeLog, `${update.title}\n`);
       entry.status = allowed ? "completed" : "failed";

@@ -3,11 +3,11 @@
 // model chosen among those its key lists, an MCP call named only after it is announced, and its own refusals by name.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test as nodeTest } from 'node:test';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
-import { ACP_CODES, STATE_STREAM, TOOLS_STREAM } from '@parcha/agentrun-harness-acp';
+import { ACP_CODES, recipeFile, STATE_STREAM, TOOLS_STREAM } from '@parcha/agentrun-harness-acp';
 import { fakeEvents, fakeRecipe, openSession, scratch, streamRecords, tool, toolEffects } from './helpers.mjs';
 
 const test = (name, fn) => nodeTest(name, { timeout: 60_000 }, fn);
@@ -71,6 +71,28 @@ test('another runner loads the session after the wipe: its store came back from 
   await second.session.send('b');
   assert.equal((await second.session.turnEnd()).status, 'completed');
   assert.ok(fakeEvents(recipe).some((e) => e.type === 'load'), 'session/load, not a new session');
+});
+
+test("the shipped recipe's config and session store are where Cursor reads them under the adapter's XDG_CONFIG_HOME: its Write deny holds, and another runner loads the session", async (t) => {
+  // Cursor 2026.11.13 keeps both in $XDG_CONFIG_HOME/cursor when that is set (the adapter sets it), never ~/.cursor:
+  // a config written to ~/.cursor is never read, so its deny is not either, and a store mirrored from there is empty.
+  const shipped = recipeFile('cursor');
+  const store = memorySessionStore();
+  const dir = scratch();
+  const nativeLog = join(dir, 'native.log');
+  const recipe = cursorLike(dir, { cursorDirs: true, nativeLog, script: [{ native: 'edit', title: 'Edit proof.txt' }, { say: 'one' }, { say: 'two' }] }, { files: shipped.files, state: shipped.state });
+  const env = { PATH: process.env.PATH, CURSOR_API_KEY: KEY };
+  const first = await openSession(t, recipe, { store, sessionsDir: join(dir, 'a'), options: { env } });
+  await first.session.send('a');
+  assert.equal((await first.session.turnEnd()).status, 'completed');
+  const start = fakeEvents(recipe).find((e) => e.type === 'start');
+  assert.equal(start.deniesWrite, true, `Cursor reads its config in ${start.cursorDir}, and the deny is there`);
+  assert.equal(existsSync(nativeLog) ? readFileSync(nativeLog, 'utf8') : '', '', 'the edit never ran');
+  await first.session.close();
+  const second = await openSession(t, recipe, { store, sessionsDir: join(dir, 'b'), options: { env } });
+  await second.session.send('b');
+  assert.equal((await second.session.turnEnd()).status, 'completed');
+  assert.ok(fakeEvents(recipe).some((e) => e.type === 'load'), 'session/load found the store the records gave back');
 });
 
 const MODELS = [

@@ -20,7 +20,8 @@ test('the recipe file runs `<binary> --disable-auto-update acp`, declares sessio
   assert.deepEqual(file.billing, { kind: 'plan', ...CURSOR_LIMITS });
   assert.ok(Number.isInteger(CURSOR_LIMITS.maxTurns) && CURSOR_LIMITS.maxTurns >= 1);
   assert.ok(Number.isInteger(CURSOR_LIMITS.maxToolCalls) && CURSOR_LIMITS.maxToolCalls >= 1);
-  assert.deepEqual(file.state, ['.cursor/acp-sessions']);
+  // Where Cursor keeps them with XDG_CONFIG_HOME set, as the adapter sets it ($HOME/.config): its config directory.
+  assert.deepEqual(file.state, ['.config/cursor/acp-sessions']);
 });
 
 test('its key is CURSOR_API_KEY alone, on its own row: no other key and no variable of the env names it', () => {
@@ -31,8 +32,8 @@ test('its key is CURSOR_API_KEY alone, on its own row: no other key and no varia
 
 test('its CLI config denies every Write and allows nothing: Cursor makes no file edit, since it never asks for one', () => {
   const file = recipeFile('cursor');
-  assert.deepEqual(Object.keys(file.files), ['.cursor/cli-config.json']);
-  const config = JSON.parse(file.files['.cursor/cli-config.json']);
+  assert.deepEqual(Object.keys(file.files), ['.config/cursor/cli-config.json'], "in Cursor's config directory under the adapter's XDG_CONFIG_HOME, never ~/.cursor, which it does not read then");
+  const config = JSON.parse(file.files['.config/cursor/cli-config.json']);
   assert.deepEqual(config.permissions, { allow: [], deny: ['Write(**)'] });
   assert.equal(config.approvalMode, 'allowlist');
 });

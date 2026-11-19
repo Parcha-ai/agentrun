@@ -163,3 +163,16 @@ test("installed and keyed, capabilities list Cursor with its label, its promises
   assert.match(cursor.card, /makes no file edits/);
   for (const offer of caps.harnesses.filter((each) => each.id !== "cursor")) assert.equal(offer.card, undefined, `${offer.id} has no card`);
 });
+
+test("Cursor's own calls (its shell: acp_execute) are asked first and refused where no one can approve, on a computer or not; never held to bash's allow", async (t) => {
+  const { runGate } = await import("../dist/tool-gate.js");
+  const dir = await scratch(t);
+  const revision = { kind: "agentic", body: { harness: "cursor", tools: ["read", "bash"] } };
+  const settings = () => ({ settings: { bash: { permission: "allow" } }, problems: [] });
+  for (const computer of [false, true]) {
+    // Cursor's shell runs where Cursor runs (the runner's host), never on the run's computer: bash's allow is not its.
+    assert.equal(await runGate({ root: dir, work: dir, computer }, "run-1", revision, settings, true).decide("acp_execute", { title: "echo hi", kind: "execute" }), "ask", `computer ${computer}: asked`);
+    const refused = await runGate({ root: dir, work: dir, computer }, "run-2", revision, settings, false).decide("acp_execute", { title: "echo hi", kind: "execute" });
+    assert.ok(typeof refused === "object" && "deny" in refused, `computer ${computer}: refused where no one can approve`);
+  }
+});
