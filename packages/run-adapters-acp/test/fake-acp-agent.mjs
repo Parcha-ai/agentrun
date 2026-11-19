@@ -21,7 +21,8 @@
 //   models: the models session/new and session/load list ({modelId, name}), the first current; session/set_model
 //           takes one of them and refuses any other;
 //   writeAuth: at session/new and session/load, write $HOME/.config/cursor/auth.json holding the sha256 of the
-//              CURSOR_API_KEY it was handed (a credential derived from the key, as Cursor writes one);
+//              CURSOR_API_KEY it was handed (a credential derived from the key, as Cursor writes one); authFile: that
+//              file's path in HOME instead;
 //   failNew: at session/new, print these words on stderr and exit 1 (Cursor's own refusals, the team admin's switch);
 //   cursorDirs: keep sessions and read the CLI config where Cursor 2026.11.13 does (cursor-config/dist/paths.js): its
 //               config directory is $CURSOR_CONFIG_DIR, else $XDG_CONFIG_HOME/cursor, else $HOME/.cursor; sessions in
@@ -81,7 +82,7 @@ const models = config.models ? { currentModelId: config.models[0].modelId, avail
 /** The credential Cursor derives from its key, in its private HOME: here the key's sha256, never the key. */
 function writeAuth() {
   if (!config.writeAuth) return;
-  const file = join(home, ".config", "cursor", "auth.json");
+  const file = join(home, config.authFile ?? ".config/cursor/auth.json");
   mkdirSync(dirname(file), { recursive: true });
   const keySha = createHash("sha256").update(process.env.CURSOR_API_KEY ?? "").digest("hex");
   writeFileSync(file, JSON.stringify({ keySha }));

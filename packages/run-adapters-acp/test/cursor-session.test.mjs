@@ -58,6 +58,22 @@ test('the credential the agent derives from its key is gone once its process end
   assert.equal(mirrored.some((path) => path.includes('auth')), false, mirrored.join(', '));
 });
 
+test('a credential the recipe names is never mirrored, even inside a state path and under a name no filter knows', async (t) => {
+  const dir = scratch();
+  const sessionsDir = join(dir, 'sessions');
+  // A custom recipe whose state path holds its credential: `.agent/login.json` says nothing of a credential by its name.
+  const recipe = cursorLike(dir, { script: [{ say: 'one' }], authFile: '.agent/login.json' }, { credentials: ['.agent/login.json'], state: ['.fake-acp', '.agent'] });
+  const { session, store } = await openSession(t, recipe, { sessionsDir, options: { env: { PATH: process.env.PATH, CURSOR_API_KEY: KEY } } });
+  await session.send('a');
+  assert.equal((await session.turnEnd()).status, 'completed');
+  assert.equal(existsSync(join(homeOf(sessionsDir), '.agent/login.json')), true, 'the agent wrote it while it ran');
+  await session.close();
+  const mirrored = (await streamRecords(store, STATE_STREAM)).map((r) => r.path);
+  assert.ok(mirrored.length > 0, 'the session store was mirrored');
+  assert.equal(mirrored.includes('.agent/login.json'), false, mirrored.join(', '));
+  assert.equal(existsSync(homeOf(sessionsDir)), false, 'the private HOME that held it is gone whole');
+});
+
 test('another runner loads the session after the wipe: its store came back from the records', async (t) => {
   const store = memorySessionStore();
   const dir = scratch();
