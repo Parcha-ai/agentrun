@@ -36,6 +36,8 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
        agentrun-serve reset-password [--data DIR]
        agentrun-serve validate-template DIR
        agentrun-serve install-harness goose [--data DIR]
+       agentrun-serve install-harness --recipe FILE [--data DIR]
+       agentrun-serve harness-check --recipe FILE [--model PROVIDER/MODEL] [--data DIR] [--report FILE] [--cap USD]
        agentrun-serve eval-template DIR [--case NAME ...] [--runs N] [--server URL | --on-data DIR] [--grader-model PROVIDER/MODEL] [--report FILE] [--faux MODULE]
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
        agentrun-serve runner --data DIR [--loops N] [--drain-timeout D] [--name NAME]
@@ -169,12 +171,33 @@ if (process.argv[2] === "install-harness") {
   const usage = (message: string): never => (console.error(`agentrun-serve install-harness: ${message}\n\n${USAGE}`), process.exit(2));
   const read = () => {
     try {
-      return parseArgs({ args: process.argv.slice(3), options: { data: { type: "string" } }, allowPositionals: true });
+      return parseArgs({ args: process.argv.slice(3), options: { data: { type: "string" }, recipe: { type: "string" } }, allowPositionals: true });
     } catch (error) {
       return usage((error as Error).message);
     }
   };
   const { values, positionals } = read();
+  // A recipe's harness (harness-recipe.ts): the recipe loaded under its five rules first, so a refused one downloads
+  // nothing; then its release for this platform, as the Goose install does it.
+  if (values.recipe !== undefined) {
+    if (positionals.length) usage("it takes a harness's name or --recipe FILE, not both.");
+    const [{ ArchiveInstallFailed }, { installRecipe, loadRecipe, RecipeRefused }] = await Promise.all([import("./harness-archive.js"), import("./harness-recipe.js")]);
+    const data = resolve(values.data ?? defaultData());
+    try {
+      const { recipe, file } = loadRecipe(values.recipe);
+      const pinned = Object.values(recipe.release.archives).some((archive) => archive.binarySha256);
+      const said = { downloaded: "the archive is downloaded and its sha256 matches the recipe", unpacked: "unpacked", verified: pinned ? "the binary's sha256 matches the recipe" : "the binary's sha256 matches the first one recorded (or is recorded now)" } as const;
+      const { version, installed, binary } = await installRecipe(recipe, file, data, { onStep: (step) => console.error(`${recipe.label}: ${said[step]}`) });
+      console.log(installed === "already"
+        ? `${recipe.label} ${version} is installed in ${dirname(binary)} (already: the pinned binary is there, so nothing was downloaded).`
+        : `${recipe.label} ${version} is installed in ${dirname(binary)} (now). Check it with: agentrun harness-check --recipe ${file}`);
+      process.exit(0);
+    } catch (error) {
+      if (!(error instanceof ArchiveInstallFailed) && !(error instanceof RecipeRefused)) throw error;
+      console.error(error.message);
+      process.exit(1);
+    }
+  }
   const { GOOSE_ID, installGoose } = await import("./harness-goose.js");
   if (positionals.length !== 1) usage(`it takes one harness: ${GOOSE_ID}.`);
   if (positionals[0] !== GOOSE_ID) usage(`it installs ${GOOSE_ID}, not ${positionals[0]}: claude-agent and codex install on first use, and pi and opencode come with AgentRun.`);
@@ -196,6 +219,32 @@ if (process.argv[2] === "install-harness") {
     console.error(error.message);
     process.exit(1);
   }
+}
+
+// A recipe's agent run for real and judged (harness-check.ts): its report written as JSON, its stages and the three facts
+// (resume, tool_gate, billing) printed. 0 when every stage passed, 1 when the recipe was refused, its binary is not the
+// installed and pinned one, or a stage failed, 2 for usage. It spends: four short turns on --model, under --cap.
+if (process.argv[2] === "harness-check") {
+  const usage = (message: string): never => (console.error(`agentrun-serve harness-check: ${message}\n\n${USAGE}`), process.exit(2));
+  const read = () => {
+    try {
+      return parseArgs({ args: process.argv.slice(3), options: { recipe: { type: "string" }, data: { type: "string" }, model: { type: "string" }, report: { type: "string" }, cap: { type: "string" } } });
+    } catch (error) {
+      return usage((error as Error).message);
+    }
+  };
+  const { values } = read();
+  if (!values.recipe) usage("--recipe FILE names the recipe to check.");
+  const cap = values.cap === undefined ? undefined : Number(values.cap);
+  if (cap !== undefined && !(Number.isFinite(cap) && cap > 0 && cap <= 5)) usage("--cap is the most the check may spend, in USD, above 0 and at most 5.");
+  const [{ harnessCheck, printedFacts, writeReport }, { withSecrets }] = await Promise.all([import("./harness-check.js"), import("./secrets.js")]);
+  const data = resolve(values.data ?? defaultData());
+  const report = await harnessCheck({ recipe: values.recipe!, data, env: withSecrets(process.env), ...(values.model ? { model: values.model } : {}), ...(cap !== undefined ? { capUsd: cap } : {}), say: (line) => console.error(line) });
+  const file = resolve(values.report ?? `harness-check-${"id" in report.recipe ? report.recipe.id : "recipe"}.json`);
+  await writeReport(file, report);
+  for (const line of printedFacts(report)) console.log(line);
+  console.log(`report: ${file}`);
+  process.exit(report.ok ? 0 : 1);
 }
 
 // A template package folder checked by the one validator the server runs on the packages it ships (templates.ts): what

@@ -212,7 +212,8 @@ function checkStep(body) {
   const results = Array.isArray(last?.content) ? last.content.filter((b) => b.type === "tool_result") : [];
   if (results.length) return { text: `RESULT ${JSON.stringify(results[0].content).slice(0, 80)}` };
   const prompt = typeof last?.content === "string" ? last.content : JSON.stringify(last?.content ?? "");
-  const use = /Use the (check_\w+) tool once, with the text argument set to (\w+)/.exec(prompt);
+  // The last ask in the prompt: a restarted agent's prompt holds the conversation's note before it.
+  const use = [...prompt.matchAll(/Use the (check_\w+) tool once, with the text argument set to (\w+)/g)].at(-1);
   if (use) {
     const tool = tools.find((name) => name.endsWith(use[1]));
     return tool ? { tool, input: { text: use[2] } } : { text: `NO ${use[1]} among ${tools}` };
@@ -224,7 +225,7 @@ test("harness-check passes an agent that keeps the rules: stages 2 and 3, and th
   const { data, file, origin, env } = await installed(t, recipeOf());
   const run = await check(t, file, data, env);
   t.diagnostic(run.stdout);
-  assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
+  assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}\n${JSON.stringify(run.report?.stage2)}`);
   for (const line of ["resume: load", "tool_gate: permission", "billing: proxy", "harness-check: passed"]) assert.ok(run.stdout.split("\n").includes(line), `${line} in:\n${run.stdout}`);
   const { report } = run;
   assert.deepEqual(report.facts, { resume: "load", tool_gate: "permission", billing: "proxy" });
@@ -246,12 +247,17 @@ test("harness-check passes an agent that keeps the rules: stages 2 and 3, and th
   assert.ok(origin.requests.every((r) => r.method === "POST" && r.path === "/v1/messages"));
 });
 
-test("harness-check says resume: restart for an agent with no session/load, and still carries the conversation", { skip: linux, timeout: 120_000 }, async (t) => {
-  const { data, file, env } = await installed(t, recipeOf(undefined, { env: { MODEL_AGENT_MODE: "no-load" }, declares: { load: false, mcp: "http" } }));
+test("harness-check says resume: restart for an agent with no session/load, and still carries the conversation; the proxy's address under the recipe's hostEnv", { skip: linux, timeout: 120_000 }, async (t) => {
+  const model = { billing: "proxy", wire: "anthropic-messages", env: "MODEL_AGENT_MODEL", hostEnv: "ANTHROPIC_BASE_URL" };
+  const { data, file, env } = await installed(t, recipeOf(undefined, { env: { MODEL_AGENT_MODE: "no-load" }, declares: { load: false, mcp: "http" }, model }));
   const run = await check(t, file, data, env);
   assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
   assert.equal(run.report.facts.resume, "restart");
   assert.equal(run.report.stage3.resume.conversationCarried, true);
+  assert.ok(run.report.stage2.env_allowlist.names.includes("ANTHROPIC_BASE_URL"));
+  assert.ok(!run.report.stage2.env_allowlist.names.includes("ANTHROPIC_HOST"));
+  // A recipe may not name another variable for it.
+  assert.equal(refusalOf(recipeOf(undefined, { model: { ...model, hostEnv: "MY_PROXY" } })).code, RECIPE_CODES.env);
 });
 
 test("harness-check fails an agent whose own tools are on: its model request is refused and stage 2's tools_off fails", { skip: linux, timeout: 120_000 }, async (t) => {

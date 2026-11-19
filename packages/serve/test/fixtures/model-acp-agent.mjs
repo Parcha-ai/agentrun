@@ -8,7 +8,7 @@
 //   own-tools  offers its own `shell` tool beside ours on every request, as an agent whose tools are not off;
 //   side       asks its HTTPS proxy for telemetry.invalid:443 once at start, as an agent that phones home;
 //   no-load    advertises no session/load, so a restart is a new session told the conversation.
-// Its model is MODEL_AGENT_MODEL.
+// Its model is MODEL_AGENT_MODEL; the proxy's address is ANTHROPIC_HOST, else ANTHROPIC_BASE_URL (the recipe's hostEnv).
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { randomUUID } from "node:crypto";
@@ -71,7 +71,7 @@ async function openSession(id, params, messages) {
 async function ask(session) {
   const offered = session.tools.map((t) => ({ name: `agentrun__${t.name}`, description: t.description ?? "", input_schema: t.inputSchema ?? { type: "object" } }));
   if (mode === "own-tools") offered.push({ name: "shell", description: "Run a shell command.", input_schema: { type: "object", properties: { command: { type: "string" } } } });
-  const response = await fetch(`${process.env.ANTHROPIC_HOST}/v1/messages`, {
+  const response = await fetch(`${process.env.ANTHROPIC_HOST ?? process.env.ANTHROPIC_BASE_URL}/v1/messages`, {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": process.env.ANTHROPIC_API_KEY ?? "", "anthropic-version": "2023-06-01" },
     body: JSON.stringify({ model: process.env.MODEL_AGENT_MODEL, max_tokens: 1024, stream: true, messages: session.messages, tools: offered }),
