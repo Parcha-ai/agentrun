@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import * as dsl from "@parcha/agentrun-dsl";
-import { compileReference, compilePrompt, compileTurn, askedForCompile } from "../dist/learn/compile.js";
+import { compileReference, compilePrompt, compileTurn, askedForCompile, learnedHost } from "../dist/learn/compile.js";
 import { draftProblems } from "../dist/learn/workflow-draft.js";
 const tool = "mcp:backend/status";
 const ask = (adapters = []) => ({ mode: "new", workflowAdapters: adapters, reference: compileReference(dsl, { tools: [tool], judges: false, workflowAdapters: adapters }), tools: [tool], described: [{ name: tool, does: "Takes a release name and gives its ready boolean." }], judges: false, traces: [], input: { release: "current" } });
@@ -29,9 +29,9 @@ test("SDK compiler prompt keeps callback catalog and explicit execution", () => 
  assert.match(prompt, /mcp:backend\/status/);assert.match(prompt, /ready boolean/);
  assert.doesNotMatch(prompt.split("## A worked example")[1].split("## This job")[0], /\"node\":\"extract\"|\"node\":\"decide\"|\"guard\":/);
 });
-test("SDK new, revised and retried compiler requests describe ordinary-task selection, not a manual invocation prerequisite", async () => {
+test("SDK new, revised and retried compiler requests leave the choice to the agent, without a manual invocation prerequisite", async () => {
  // These assertions cover the compiler's instruction interface. A real native run,
- // not this scripted compiler, must establish that a model actually selects it.
+ // not this scripted compiler, must establish what a model actually selects.
  const doc = flow({ node: "call", label: "status", via: "tool", tool, args: {}, out: "Answer", as: "answer", deadline_s: 5 });
  for (const adapters of [[], ["runNode"], ["runJudge"]]) for (const mode of ["new", "revise"]) for (const structured of [false, true]) {
   const job = { ...ask(adapters), ...(structured ? {} : { input: undefined }),
@@ -43,11 +43,11 @@ test("SDK new, revised and retried compiler requests describe ordinary-task sele
   }, check: async () => checked(doc) });
   assert.ok(result.kept); assert.equal(requests.length, 2, "The malformed draft must exercise the stateless retry.");
   for (const prompt of requests) {
-   assert.match(prompt, /existing agent may select a matching workflow during an ordinary task/i);
-   assert.match(prompt, /user need not request a workflow by name/i);
+   assert.match(prompt, /What you write is a compiled workflow: no check has compared it/);
+   assert.match(prompt, /agent decides whether one fits a task/i);
    assert.match(prompt, /execution still requires an explicit MCP tool call/i);
    assert.match(prompt, /derive argument values from the current request/i);
-   assert.match(prompt, /describe the task it solves and when it matches/i);
+   assert.match(prompt, /says what task it solves and exactly when it matches/i);
    assert.match(prompt, /input descriptions explain the data/i);
    assert.match(prompt, /original instructions and permissions/i);
    assert.doesNotMatch(prompt, /backend explicitly invokes|backend must explicitly supply|automatically mapped from later tasks/i);
@@ -63,7 +63,20 @@ test("SDK new, revised and retried compiler requests describe ordinary-task sele
  const managed = compilePrompt({ ...ask(), workflowAdapters: undefined,
   reference: compileReference(dsl, { tools: [tool], judges: false }) });
  assert.match(managed, /on later runs it runs first/);
- assert.doesNotMatch(managed, /existing agent may select a matching workflow/);
+ assert.doesNotMatch(managed, /agent decides whether one fits/);
+});
+test("SDK compile words call the workflow compiled and unchecked, and never tell the agent to prefer it", () => {
+ // Nothing promotes an SDK agent's workflow (no shadow check runs where its tools run), so the words may not claim one.
+ for (const adapters of [[], ["runNode"], ["runJudge"], ["runNode", "runJudge"]]) {
+  const rules = learnedHost({ tools: [tool], judges: false, workflowAdapters: adapters }).rules.join("\n");
+  const head = compilePrompt(ask(adapters)).split("## The workflow language")[0];
+  for (const text of [rules, head]) {
+   assert.match(text, /compiled workflow/i);
+   assert.match(text, /no check has compared it with the agent's own answers/i);
+   assert.match(text, /agent decides whether one fits/i);
+   assert.doesNotMatch(text, /approved|verified|pinned|prefer|ordinary task|whenever/i);
+  }
+ }
 });
 test("SDK revision preserves original manual-use restrictions and old input descriptions as fenced data", () => {
  const correction = "- Use a workflow for release-readiness requests only when I explicitly ask for one.";
