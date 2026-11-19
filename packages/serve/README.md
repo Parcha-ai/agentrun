@@ -3205,7 +3205,7 @@ harness is admitted by the `runMib` its entry declares. A module adds harnesses 
 harnesses' facts, offers, key rows, default models and tool names are the same with any module loaded. The start of the
 server, or of a separate runner, is refused, naming the module and the id, when a module:
 - gives an id that does not match `^[a-z][a-z0-9-]{0,39}$`;
-- names an id serve's own runs carry: `learning`, `sdk`, `workflow`, `claude-agent-sdk` or `codex-sdk`;
+- takes a name serve reserves (listed in [HARNESS.md's `id` row](../../HARNESS.md#field-by-field));
 - names a built-in harness;
 - names an id another module adds;
 - gives an entry that is missing a member;

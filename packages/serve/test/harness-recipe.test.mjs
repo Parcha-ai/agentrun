@@ -131,6 +131,20 @@ test("a recipe is refused under every id the server's harness table already has,
   }
 });
 
+test("HARNESS.md's `id` row names exactly the ids the server's harness table has and the names it reserves", async () => {
+  const { BUILTIN_HARNESS_IDS } = await import("../dist/harness-table.js");
+  const { HARNESS_ID_PATTERN, RESERVED_HARNESS_IDS } = await import("../dist/harness.js");
+  const doc = readFileSync(new URL("../../../HARNESS.md", import.meta.url), "utf8");
+  const rows = doc.split("\n").filter((line) => line.startsWith("| `id` |"));
+  assert.equal(rows.length, 1, "one `id` row, the one list of these ids");
+  // The row's two lists: the table's ids in the parentheses before " nor ", the reserved names in those after it.
+  const [table, reserved] = rows[0].split(" nor ");
+  assert.ok(reserved, `the row says which ids it refuses, then "nor" the names reserved: ${rows[0]}`);
+  const named = (text) => [...text.matchAll(/\(([^)]*)\)/g)].flatMap((group) => [...group[1].matchAll(/`([^`]+)`/g)].map((id) => id[1])).sort();
+  assert.deepEqual(named(table), [...BUILTIN_HARNESS_IDS].sort(), "the built-in ids");
+  assert.deepEqual(named(reserved), RESERVED_HARNESS_IDS.filter((id) => new RegExp(HARNESS_ID_PATTERN).test(id)).sort(), "the reserved names an id could take");
+});
+
 for (const [name, code, make] of BROKEN) {
   test(`the loader refuses ${name}: ${code}`, () => {
     const refused = refusalOf(make());

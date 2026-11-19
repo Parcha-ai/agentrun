@@ -51,9 +51,9 @@ export const entries = (_builtins, kit) => ({
 
 ### The id
 
-A new id that matches `^[a-z][a-z0-9-]{0,39}$`. A module can't take a built-in harness's id (`pi`, `claude-agent`,
-`codex`, `opencode`, `goose`, `cursor`) or one of the ids serve's own runs carry (`learning`, `sdk`, `workflow`,
-`claude-agent-sdk`, `codex-sdk`). If it does, the server refuses to start and names the module and the id.
+A new id that matches `^[a-z][a-z0-9-]{0,39}$`. A module can't take an id a recipe can't: a built-in harness's, or
+a name serve reserves (both listed in the recipe's [`id` row](#field-by-field)). If it does, the server refuses to
+start and names the module and the id.
 
 ### The facts
 
@@ -208,7 +208,7 @@ refused (`RECIPE_INVALID`, or the code of the rule it would break).
 
 | Field | Required | What it holds |
 | --- | --- | --- |
-| `id` | yes | The harness's id: lowercase letters, digits and `-`, starting with a letter, at most 40 characters. Not an id the server's harness table already has (`pi`, `claude-agent`, `codex`, `opencode`, `goose`, `cursor`) nor a name its runs carry (`learning`, `sdk`, `workflow`, `claude-agent-sdk`, `codex-sdk`). |
+| `id` | yes | The harness's id: lowercase letters, digits and `-`, starting with a letter, at most 40 characters. Not an id the server's harness table already has (`pi`, `claude-agent`, `codex`, `opencode`, `goose`, `cursor`) nor a name serve reserves: one its own runs carry (`learning`, `sdk`, `workflow`, `claude-agent-sdk`, `codex-sdk`, `eve`) or every object has (`constructor`). |
 | `label` | yes | The harness's name in a sentence, 1 to 80 characters. |
 | `release` | yes | Where the binary comes from: `{ "registry": ID, "version": VERSION, "archives": { PLATFORM: ARCHIVE } }`. `registry` is the agent's id in the ACP registry, `version` its version there. |
 | `release.archives.PLATFORM` | at least one | `PLATFORM` as the registry names it: `linux-x86_64`, `linux-aarch64`, `darwin-aarch64`, `darwin-x86_64`. `ARCHIVE` is `{ "url", "format", "sha256", "cmd", "binarySha256"? }`: `url` the registry's `archive` (https), `format` `"tar.bz2"` or `"tar.gz"` (the formats the installer unpacks), `sha256` the registry's `sha256` of the archive (64 lowercase hex digits; when the registry lists none, the sha256 of the archive you downloaded and checked yourself), `cmd` the registry's `cmd` (the binary's path inside the archive, `./agent`). `binarySha256`, when you know it, is the sha256 of the unpacked binary; leave it out and the first install records it (rule 2). |
