@@ -38,7 +38,7 @@
 // id and the agent's), found again by its owner at each later claim and attached under the new claim, and detached, not
 // deleted, at the run's end. A run that finds it held by another run still going is refused, naming that run.
 import { randomUUID } from "node:crypto";
-import type { BrowserSpec, ComputerClient, ComputerConnection, ComputerError, ComputerOwner, ComputerProvider, ComputerSpec, DaemonMethod, DaemonMethods, HelloResult, MountKind, MountReadBack, Result, ScreenWatch, ScreenWatchHandlers, WatchOptions } from "@parcha/agentrun-computer";
+import type { BrowserComputerProvider, BrowserSpec, ComputerClient, ComputerConnection, ComputerError, ComputerOwner, ComputerProvider, ComputerSpec, DaemonMethod, DaemonMethods, HelloResult, MountKind, MountReadBack, Result, ScreenWatch, ScreenWatchHandlers, WatchOptions } from "@parcha/agentrun-computer";
 import { isBrowserProvider, ownerFilter, releaseOlder, RUN_LABEL, runLabels } from "@parcha/agentrun-computer";
 import { type RecordInput, type Recording, type RecordWatch, startRecording } from "../computer-record.js";
 import { computerOfPlace, type ComputerSetting as RevisionComputer, type PlaceView } from "../computer-setting.js";
@@ -394,6 +394,9 @@ export function claimBrowser(provider: ComputerProvider, spec: ComputerSpec): { 
       },
       url: (id) => cdpUrlOf(provider, { id, name: id }),
       close: release,
+      ...(isBrowserProvider(provider) && typeof provider.sessionUsage === "function"
+        ? { usage: (id: string, signal?: AbortSignal) => valueOf((provider as Required<Pick<BrowserComputerProvider, "sessionUsage">>).sessionUsage({ id, name: id }, signal ? { signal } : {})) }
+        : {}),
       ...(kept && features.downloads
         ? {
             downloads: {

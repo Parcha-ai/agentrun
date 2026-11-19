@@ -2468,6 +2468,12 @@ kind browser that declares them.
 | `profile` | a context: `browserSettings.context { id, persist }` | a profile by name: `profile { name, save_changes }`, made first if Kernel does not know it | not declared |
 | `profiles { create, remove }` | `POST /v1/contexts`, `DELETE /v1/contexts/{id}` | `POST /profiles` under a random name (the pointer), `DELETE /profiles/{name}` | none |
 | `downloads { list, read }` | `GET /v1/downloads?sessionId=` (paged), `GET /v1/downloads/{id}`, cut at `maxBytes` | none | none |
+| `sessionUsage(ref)` | `GET /v1/sessions/{id}`: its `startedAt`, `endedAt` and `proxyBytes` | none | none |
+
+`sessionUsage(ref)` is the vendor's own record of a session, for a host that reconciles its own measure of a session's
+time with the vendor's bill: `{ startedAt, endedAt, proxyBytes }`, each null where the vendor's answer does not hold a
+well-formed one (a session still running has no end), never a zero in its place; undefined for a session the vendor
+does not know. A host reads it once, when it lets the session go.
 
 A pointer is a capability: whoever holds it opens the profile, so no error's words carry one.
 

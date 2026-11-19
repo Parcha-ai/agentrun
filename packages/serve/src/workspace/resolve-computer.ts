@@ -20,7 +20,7 @@
 // command there would run on the server itself. runShellOf reads it off a setting before anything starts (the tool
 // plane shows bash unavailable by it), and the claim's runTools takes the same rule over the computer it started.
 import { hostToolDefs, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
-import { type BrowserFeatures, type BrowserFile, type BrowserSpec, type ComputerClient, type ComputerSettingKind, configurationOf, connectOf, type GpuSpec, type Group, type HelloResult, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, mountsOf, type ProviderEntry, type Result, type SettingKindSpec, syncingClient } from "@parcha/agentrun-computer";
+import { type BrowserFeatures, type BrowserFile, type BrowserSessionUsage, type BrowserSpec, type ComputerClient, type ComputerSettingKind, configurationOf, connectOf, type GpuSpec, type Group, type HelloResult, imagesOf, type KindCapabilities, type MountKind, type MountReadBack, type MountSpec, mountsOf, type ProviderEntry, type Result, type SettingKindSpec, syncingClient } from "@parcha/agentrun-computer";
 import { type DockerDaemon, noDockerWords } from "../docker-daemon.js";
 import { gpuRefused } from "../gpu-words.js";
 import { recordedClient } from "../computer-calls.js";
@@ -100,6 +100,10 @@ export type ClaimBrowser = {
    *  view's, computer-record.ts browserWatch) until the caller stops it at the session's release, or the claim's release
    *  stops it. Absent: nothing is recorded. */
   readonly record?: (id: string, watch: RecordWatch) => Recording;
+  /** The provider's own record of session `id` (BrowserComputerProvider.sessionUsage), read once as it is let go: when it
+   *  says the session started and ended, and its proxy bytes, each null where it does not say; undefined for a session it
+   *  does not know. Absent where the provider keeps no such record. A failed read throws. */
+  readonly usage?: (id: string, signal?: AbortSignal) => Promise<BrowserSessionUsage | undefined>;
   /** The files a session downloaded, kept by the provider: where its features declare downloads. */
   readonly downloads?: {
     list(id: string): Promise<BrowserFile[]>;

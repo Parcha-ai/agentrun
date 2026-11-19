@@ -758,6 +758,16 @@ test("through the API: an uncapped run's browser minutes are its cost, folded in
   const own = (await api("GET", `/runs/${started.body.run_id}/usage`)).body;
   assert.deepEqual(own.lines.filter((line) => line.meter === "browser_time"), [{ meter: "browser_time", model: null, provider: "browserbase", charged_by: null, quantity: 60, unit: "second", basis: "estimate", usd: 0.002 }]);
   assert.deepEqual(own.total, { usd: 0.002 });
+  // And its one session: the provider's id for it, when this server opened and let it go, the seconds charged for it (the
+  // line's), and no provider record, since this provider keeps none (not_offered), never one of zeros.
+  assert.equal(own.browser_sessions.length, 1, JSON.stringify(own.browser_sessions));
+  const [session] = own.browser_sessions;
+  assert.equal(session.provider, "browserbase");
+  assert.equal(typeof session.provider_session_id, "string");
+  assert.ok(Date.parse(session.ended_at) >= Date.parse(session.started_at), JSON.stringify(session));
+  assert.equal(session.release_reason, "close");
+  assert.equal(session.charged_seconds, 60);
+  assert.deepEqual([session.provider_record, session.provider_record_status], [null, "not_offered"]);
 });
 
 test("through the API, live: each browser call's row carries its charge as it runs, /usage reads it as browser time, and the release's charge after the answer is an update of the last call's row, never a row of its own", { timeout: 120_000 }, async (t) => {

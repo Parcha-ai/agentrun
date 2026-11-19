@@ -264,8 +264,32 @@ const RUN_USAGE_LINE = {
     not_metered_calls: { type: "integer", minimum: 1, description: "On `tools`: calls with no price set (an MCP tool its owner set none for), as GET /usage counts them. They ran outside the run's cost and its cap, so they are in neither `quantity` nor `usd`: a line of such calls alone has `quantity` 0 and `usd` 0." },
   },
 };
+/** One browser session on GET /runs/{run_id}/usage (browser-sessions.ts). */
+const BROWSER_SESSION = {
+  type: "object", additionalProperties: false,
+  required: ["provider", "tag", "provider_session_id", "started_at", "ended_at", "release_reason", "charged_seconds", "provider_record", "provider_record_status"],
+  properties: {
+    provider: { type: "string", description: "The browser provider, as the `browser_time` line's `provider` names it." },
+    tag: { type: "string", description: "The run's own name for the session, the same on every read." },
+    provider_session_id: { type: ["string", "null"], description: "The provider's id for the session, by which its own records and bill find it. Null when no session was made (its create failed) or its end is not recorded." },
+    started_at: { type: ["string", "null"], format: "date-time", description: "When this server began opening the session. Null while its end is not recorded." },
+    ended_at: { type: ["string", "null"], format: "date-time", description: "When this server let the session go. Null when its end is not recorded (a run whose process was lost before the release was told): unknown, never zero." },
+    release_reason: { type: ["string", "null"], description: "Why the session ended, in the browser's words: `tool` (the agent closed it), `idle`, `relaunch`, `close` (its run let it go), `ended` (the provider ended it), `lost`, `create_failed`." },
+    charged_seconds: { type: ["number", "null"], minimum: 0, description: "The seconds of the session's time this server charged, on its own clock and unrounded: what the `browser_time` line sums. Null when none was charged (a free provider's, or no charge recorded)." },
+    provider_record: {
+      type: ["object", "null"], additionalProperties: false, required: ["started_at", "ended_at", "proxy_bytes"],
+      description: "The provider's own record of the session, read once when it was let go, for matching it to the provider's invoice. Null unless `provider_record_status` is `read`. A field is null where the provider's record does not hold it.",
+      properties: {
+        started_at: { type: ["string", "null"], format: "date-time" },
+        ended_at: { type: ["string", "null"], format: "date-time", description: "Null where the provider had not ended it when read." },
+        proxy_bytes: { type: ["integer", "null"], minimum: 0, description: "The bytes the session moved through the provider's proxy, as the provider counts them." },
+      },
+    },
+    provider_record_status: { enum: ["read", "not_offered", "not_found", "failed", "no_session", null], description: "What came of reading the provider's record: `read`; `not_offered`, the provider keeps none this server reads; `not_found`, the provider did not know the session; `failed`, the read failed or timed out; `no_session`, none was made. Null while the session's end is not recorded." },
+  },
+};
 const RUN_USAGE = {
-  type: "object", additionalProperties: false, required: ["run_id", "ended_at", "currency", "total", "lines", "reason"],
+  type: "object", additionalProperties: false, required: ["run_id", "ended_at", "currency", "total", "lines", "browser_sessions", "reason"],
   properties: {
     run_id: ref("schemas/Id"),
     ended_at: { type: ["string", "null"], format: "date-time", description: "When the run ended: the moment the lines cover. Null while it is at work. The lines change only while the run works, and a follow-up can open an ended run again (a trigger's often does); its next end is a later one. Keep `ended_at` beside the lines: a later read with another `ended_at`, or null, means the run moved since. `run.ended` fires at each end." },
@@ -275,6 +299,7 @@ const RUN_USAGE = {
       properties: { usd: { type: ["number", "null"], minimum: 0, description: "The lines joined by the rule `cost.usd` is: the run's `cost.usd` on GET /runs/{run_id}. Null when a line's charge is unknown." }, ...COST_WORDS },
     },
     lines: { type: ["array", "null"], items: RUN_USAGE_LINE, description: "`tokens` lines first, then `tools`, then `browser_time`, each by its model, charger or provider. A meter the run used nothing of has no line. Null when the server can't split the run (`reason`)." },
+    browser_sessions: { type: ["array", "null"], items: BROWSER_SESSION, description: "One record per browser session the run opened, in the order it opened them, for matching `browser_time` to the provider's own records and invoice by its session id. Empty for a run that opened none. Null exactly when `lines` is.", "x-agentrun-serve": "runusage/2" },
     reason: { enum: ["running", "not_booked", "reopened", null], description: "Why `lines` is null: `running`, the run is at work and its booking still moves; `not_booked`, its figure is not its booking's (an imported run's, a native or SDK run's harness figure, a CLI run whose model requests went past its model proxy); `reopened`, a learning run a follow-up opened again, whose `cost.usd` is its first round's and whose booking can't be split by round. Null with lines." },
   },
 };

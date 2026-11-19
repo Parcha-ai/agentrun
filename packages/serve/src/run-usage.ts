@@ -16,6 +16,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { type BrowserSessionLine, browserSessionsOf } from "./browser-sessions.js";
 import { BROWSER_CHARGED } from "./cap.js";
 import { launchOf } from "./handed-values.js";
 import { inReflect, reflectRanges } from "./runner/end-of-run.js";
@@ -73,6 +74,9 @@ export type RunUsage = {
    *  (`so_far_usd`, `unpriced`) and `upper_bound` when it is a bound. Null with no lines. */
   total: CostWords | null;
   lines: RunUsageLine[] | null;
+  /** One record per browser session the run opened (browser-sessions.ts), for matching `browser_time` to the provider's
+   *  own records by its session id; null exactly when `lines` is. */
+  browser_sessions: BrowserSessionLine[] | null;
   reason: UsageReason | null;
 };
 
@@ -248,7 +252,7 @@ export async function runUsageOverStore(store: Store, runId: string): Promise<Ru
     const run = await snapshot.runs.get(runId);
     if (!run) return undefined;
     const ended = FINAL_STATES.includes(run.state) && run.endedAt !== null ? new Date(run.endedAt).toISOString() : null;
-    const none = (reason: UsageReason): RunUsage => ({ run_id: runId, ended_at: reason === "running" ? null : ended, currency: "USD", total: null, lines: null, reason });
+    const none = (reason: UsageReason): RunUsage => ({ run_id: runId, ended_at: reason === "running" ? null : ended, currency: "USD", total: null, lines: null, browser_sessions: null, reason });
     if (!FINAL_STATES.includes(run.state)) return none("running");
     const launch = await launchOf(snapshot, runId);
     if (run.importedFrom || launch?.native || launch?.sdk) return none("not_booked");
@@ -261,6 +265,6 @@ export async function runUsageOverStore(store: Store, runId: string): Promise<Ru
     const decided = entries.some((e) => e.kind === RUNNER_RECORDS.request && String((e.data as { model?: unknown } | undefined)?.model ?? "").startsWith("decision:"));
     const receipts = decided ? new Map((await decisionsOverStore(snapshot, runId, BACKGROUND_CONTEXT)).map((receipt) => [String(receipt.decision_id ?? receipt.id), receipt])) : undefined;
     const { lines, total } = usageLinesOf(entries, launch, receipts);
-    return { run_id: runId, ended_at: ended, currency: "USD", total, lines, reason: null };
+    return { run_id: runId, ended_at: ended, currency: "USD", total, lines, browser_sessions: browserSessionsOf(entries), reason: null };
   });
 }

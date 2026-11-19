@@ -199,7 +199,7 @@ test("an ended run's usage is read in one snapshot of the store, every read of i
 test("a run at work says so with no lines and no end; an unknown run is undefined", async () => {
   const { runUsageOverStore } = await import("../dist/run-usage.js");
   const { store } = snapshotStore({ id: "run_1", state: "running", endedAt: null });
-  assert.deepEqual(await runUsageOverStore(store, "run_1"), { run_id: "run_1", ended_at: null, currency: "USD", total: null, lines: null, reason: "running" });
+  assert.deepEqual(await runUsageOverStore(store, "run_1"), { run_id: "run_1", ended_at: null, currency: "USD", total: null, lines: null, browser_sessions: null, reason: "running" });
   assert.equal(await runUsageOverStore(snapshotStore(undefined).store, "run_nope"), undefined);
 });
 
