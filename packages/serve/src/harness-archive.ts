@@ -89,6 +89,10 @@ export interface ArchiveInstallOptions {
   maxBytes?: number;
   /** Hears each step once it holds: `downloaded` (and its digest checked), `unpacked`, `verified` (the binary's digest). */
   onStep?: (step: "downloaded" | "unpacked" | "verified") => void | Promise<void>;
+  /** For a release whose binary has no sha256 pinned (a recipe's, where the registry lists only the archive's): the record
+   *  of the first one unpacked from its verified archive. With none recorded, this install records its binary's; with one,
+   *  a binary that differs is refused (HARNESS_BINARY_MISMATCH). Without it, such a release is refused. */
+  binaryRecord?: { read(): string | undefined; write(sha256: string): void };
 }
 
 /** Installs `harness` into `dir` (`<data>/harnesses/<id>`) from its pin's archive for this platform: downloaded, checked,
@@ -101,13 +105,14 @@ export async function installArchive(harness: ArchiveHarness, dir: string, optio
   const platform = options.platform ?? archivePlatform();
   const release = platform ? harness.pin.archives[platform] : undefined;
   if (!platform || !release) throw fail(ARCHIVE_CODES.platform, `${named} has no release pinned for ${platform ?? `${process.platform}-${process.arch}`}`);
-  if (!release.binarySha256) throw fail(ARCHIVE_CODES.platform, `${named}'s binary on ${platform} has no sha256 pinned, so what its archive unpacks to cannot be checked`);
+  if (!release.binarySha256 && !options.binaryRecord) throw fail(ARCHIVE_CODES.platform, `${named}'s binary on ${platform} has no sha256 pinned, so what its archive unpacks to cannot be checked`);
   if (release.format !== "tar.bz2") throw fail(ARCHIVE_CODES.platform, `${named}'s archive on ${platform} is ${release.format}, and this installer unpacks tar.bz2 alone`);
   const binary = binaryUnder(dir, release.cmd);
   if (!binary) throw fail(ARCHIVE_CODES.platform, `${named}'s pinned path ${release.cmd} is not inside its folder`);
-  const pinned = release.binarySha256;
+  // The pin's digest, else the first one recorded (none before the first install).
+  const pinned = release.binarySha256 ?? options.binaryRecord?.read();
   /** Whether the pinned binary is in place: a file whose sha256 is the pin's. */
-  const inPlace = async (): Promise<boolean> => (await lstat(binary).catch(() => undefined)) !== undefined && (await digestOf(binary).catch(() => undefined)) === pinned;
+  const inPlace = async (): Promise<boolean> => pinned !== undefined && (await lstat(binary).catch(() => undefined)) !== undefined && (await digestOf(binary).catch(() => undefined)) === pinned;
   if (await inPlace()) return { installed: "already", binary };
 
   const parent = dirname(dir);
@@ -170,7 +175,17 @@ export async function installArchive(harness: ArchiveHarness, dir: string, optio
     const found = await lstat(unpacked).catch(() => undefined);
     if (!found?.isFile()) throw fail(ARCHIVE_CODES.unpack, `${named}'s archive holds no file at ${release.cmd}`);
     const binarySha = await digestOf(unpacked);
-    if (binarySha !== pinned) throw fail(ARCHIVE_CODES.binary, `${named}'s binary from its archive has sha256 ${binarySha}, and the pin is ${pinned}; it was not put in place`);
+    if (pinned === undefined) {
+      // The first binary unpacked from the verified archive: recorded, so a later one that differs is refused. A record
+      // another install wrote first holds.
+      try {
+        options.binaryRecord!.write(binarySha);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException)?.code !== "EEXIST") throw error;
+        const first = options.binaryRecord!.read();
+        if (first !== binarySha) throw fail(ARCHIVE_CODES.binary, `${named}'s binary from its archive has sha256 ${binarySha}, and the first one recorded is ${first}; it was not put in place`);
+      }
+    } else if (binarySha !== pinned) throw fail(ARCHIVE_CODES.binary, `${named}'s binary from its archive has sha256 ${binarySha}, and the ${release.binarySha256 ? "pin" : "first one recorded"} is ${pinned}; it was not put in place`);
     await options.onStep?.("verified");
 
     // Into place whole: what was there (a binary that is not the pin's, a folder by hand) goes aside first, then away.

@@ -38,16 +38,21 @@ async function freePort() {
 
 /**
  * The script run with `args` and `env` (beside PATH alone), with --exit unless `exit` is false: its exit code and what it
- * wrote; `onLine` sees each stderr line and the child.
+ * wrote; `onLine` sees each stderr line whole, once its newline came (a pipe may split a line across chunks), and the
+ * child.
  */
 function run(args, env, onLine = () => {}, { exit = true } = {}) {
   const child = spawn(process.execPath, [SCRIPT, ...args, ...(exit ? ["--exit"] : [])], { env: { PATH: process.env.PATH, ...env }, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
+  let partial = "";
   child.stdout.on("data", (chunk) => (stdout += chunk));
+  child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk) => {
     stderr += chunk;
-    for (const line of String(chunk).split("\n")) if (line) onLine(line, child);
+    const lines = (partial + chunk).split("\n");
+    partial = lines.pop();
+    for (const line of lines) if (line) onLine(line, child);
   });
   return new Promise((done) => child.once("exit", (code, signal) => done({ code, signal, stdout, stderr })));
 }

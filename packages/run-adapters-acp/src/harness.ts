@@ -300,6 +300,9 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       return option ? { outcome: { outcome: "selected", optionId: option.optionId } } : { outcome: { outcome: "cancelled" } };
     };
     const cancelled: RequestPermissionResponse = { outcome: { outcome: "cancelled" } };
+    // Said for every request, ours or the agent's own: ACP makes them optional, so a host (harness-check) reports whether
+    // this agent asks at all.
+    log("acp: the agent asked permission", { toolCallId: request.toolCall.toolCallId, kind: request.toolCall.kind ?? null });
     const cur = rt.current;
     const turn = cur?.turn;
     if (!cur || !turn || turn.stop.signal.aborted) return turn?.limitHit ? choose("reject_once") : cancelled;

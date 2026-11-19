@@ -150,8 +150,7 @@ export function relayUpgrade(mintedColumns: ReadonlySet<string>): readonly strin
  *  that lands meanwhile keeps the row as it left it (its list_status too), behind (listing_mark < list_mark), and it is
  *  built again: a crash between a write and its listing leaves a row that says
  *  it is behind, never one that says it is current. `listing` is the list item without the parts read when it is listed
- *  (console_url, archived_at), with the secrets it was cut of and the listing format it was built under (a list builds one
- *  of another format again: store-view.ts LISTING_FORMAT); `list_status` its status, which a status filter reads in SQL; `listing_live` whether a runner
+ *  (console_url, archived_at), with the secrets it was cut of (a list builds one cut of other secrets again: store-view.ts builtOfNow); `list_status` its status, which a status filter reads in SQL; `listing_live` whether a runner
  *  held the run when it was built (its status reads otherwise once that claim runs out); `listing_until` when it goes stale
  *  by the clock alone (an ask that expires, or the retry of a build that withheld the run for a sign-in it could not read
  *  back); `listing_flags` what outside the run it read (LISTING_HELD: learning held for

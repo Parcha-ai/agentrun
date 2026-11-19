@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it } from "vitest";
 import { AuditLine, BillChart, LearningBill, ServingWorkflow } from "./LearningBill";
-import { BILL, hour } from "@/lib/learningBill.fixture";
+import { BILL, hour, TAKEOVER } from "@/lib/learningBill.fixture";
 import type { AuditRow, Bill, CostRun, LearningCost, Serving } from "@/lib/v2";
 
 // The Learning tab's bill (GET /v2/agents/{id}/learning/cost `bill`): two lines on one dollar axis, the cumulative
@@ -39,11 +39,11 @@ const CHECKING: Serving[] = [{ ...SERVING[0]!, replaying: "e".repeat(16), state:
 const AUDITS: AuditRow[] = Array.from({ length: 15 }, (_, i) => ({ run: `run-${i}`, shadow_run: `audit.run-${i}`, workflow: "answer", digest: DIGEST, promoted_at: hour(4), source: "shadow", agreed: i !== 3 && i !== 9, served_cost: 0.1, shadow_cost: 0.4, at: hour(5) }));
 /** The bill with its holds as the server placed them, from the whole series. */
 const HELD: Bill = { ...BILL, holds: [{ n: 7, at: hour(6.5), workflow: "answer", by: "audit", reason: "audits" }, { n: null, at: hour(12), workflow: "answer", by: "check", reason: "its draft failed its checks" }] };
-const cost = (bill: Bill): LearningCost => ({ agent: "a", runs: RUNS, total_runs: 9, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: null, before: null, after: null, after_state: "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [], bill });const NO_EQUAL_CACHE = /equal|cache/i;
+const cost = (bill: Bill): LearningCost => ({ agent: "a", runs: RUNS, total_runs: 9, unknown_cost_runs: 0, unknown_path_runs: 0, summary: { takeover: TAKEOVER, before: null, after: null, after_state: "no_served_runs", times_cheaper: null, hand_backs: null, withheld: null, replay: null }, workflows: [], bill });const NO_EQUAL_CACHE = /equal|cache/i;
 
 describe("the bill chart", () => {
   it("draws the booked bill and the agent for all of it on one dollar axis, a legend, the break-even marker and a table", () => {
-    const host = draw(createElement(BillChart, { bill: BILL, width: 900 }));
+    const host = draw(createElement(BillChart, { takeover: TAKEOVER, bill: BILL, width: 900 }));
     expect(host.querySelector("[data-testid=bill-actual]")?.getAttribute("d")).toMatch(/^M[\d.]+,[\d.]+(L[\d.]+,[\d.]+){8}$/);
     expect(host.querySelector("[data-testid=bill-agent]")?.getAttribute("d")).toMatch(/^M[\d.]+,[\d.]+(L[\d.]+,[\d.]+){8}$/);
     expect(host.querySelectorAll("[data-testid=bill-y-axis]")).toHaveLength(1);
@@ -58,12 +58,12 @@ describe("the bill chart", () => {
     expect(host.textContent).not.toMatch(NO_EQUAL_CACHE);
   });
   it("says not yet, with the gap, and draws no marker while the bill is over the line", () => {
-    const host = draw(createElement(BillChart, { bill: { ...BILL, points: BILL.points.slice(0, 4), break_even: null, gap_usd: 0.5, booked_usd: 4.5 }, width: 400 }));
+    const host = draw(createElement(BillChart, { takeover: TAKEOVER, bill: { ...BILL, points: BILL.points.slice(0, 4), break_even: null, gap_usd: 0.5, booked_usd: 4.5 }, width: 400 }));
     expect(host.querySelector("[data-testid=bill-break-even]")).toBeNull();
     expect(host.textContent).toContain("Not yet: $0.50 over the agent for all of it at run 4");
   });
   it("draws one line when nothing priced was run by the agent alone", () => {
-    const host = draw(createElement(BillChart, { bill: { ...BILL, baseline: null, promoted: null, break_even: null, gap_usd: null, points: BILL.points.map((p) => ({ ...p, agent_usd: null })) }, width: 600 }));
+    const host = draw(createElement(BillChart, { takeover: null, bill: { ...BILL, break_even: null, gap_usd: null, points: BILL.points.map((p) => ({ ...p, agent_usd: null })) }, width: 600 }));
     expect(host.querySelector("[data-testid=bill-actual]")).not.toBeNull();
     expect(host.querySelector("[data-testid=bill-agent]")).toBeNull();
     expect(host.querySelector("[data-testid=bill-legend]")).toBeNull();
@@ -71,19 +71,19 @@ describe("the bill chart", () => {
   it("draws a bill of 200k points: its axis top read without spreading every point into one call", () => {
     // Markup only: 200k table rows as DOM would take minutes; the axis top is read the same way either way.
     const points = Array.from({ length: 200_000 }, (_, i) => ({ n: i + 1, run_id: `run-${i + 1}`, actual_usd: (i + 1) * 0.5, agent_usd: i + 1 }));
-    const html = renderToStaticMarkup(createElement(BillChart, { bill: { ...BILL, points, break_even: { n: 2, run_id: "run-2" }, booked_usd: 100_000 }, width: 900 }));
+    const html = renderToStaticMarkup(createElement(BillChart, { takeover: TAKEOVER, bill: { ...BILL, points, break_even: { n: 2, run_id: "run-2" }, booked_usd: 100_000 }, width: 900 }));
     expect(html).toContain('data-testid="bill-actual"');
     expect(html).toContain("run-200000");
   }, 60_000);
   it("tops the dollar axis just above the bill: $1.18 reads to $1.25, never $2", () => {
     const small: Bill = { ...BILL, points: BILL.points.map((p) => ({ ...p, actual_usd: p.actual_usd / 10, agent_usd: Math.min(1.18, p.agent_usd! / 10 + 0.28) })), booked_usd: 0.7 };
-    const host = draw(createElement(BillChart, { bill: small, width: 900 }));
+    const host = draw(createElement(BillChart, { takeover: TAKEOVER, bill: small, width: 900 }));
     const ticks = [...host.querySelectorAll("[data-testid=bill-y-axis] text")].map((t) => t.textContent);
     expect(ticks.at(-1)).toBe("$1.25");
     expect(ticks).not.toContain("$2.00");
   });
   it("labels the two lines' ends off the data: in a gutter right of the last point, short, pushed apart", () => {
-    const host = draw(createElement(BillChart, { bill: BILL, width: 900 }));
+    const host = draw(createElement(BillChart, { takeover: TAKEOVER, bill: BILL, width: 900 }));
     const labels = [...host.querySelectorAll<SVGTextElement>("[data-testid=bill-end-label]")];
     expect(labels.map((l) => l.textContent)).toEqual(["Bill $7.00", "Agent $9.00"]);
     const end = Number(/([\d.]+),[\d.]+$/.exec(host.querySelector("[data-testid=bill-actual]")!.getAttribute("d")!)![1]);
@@ -92,13 +92,13 @@ describe("the bill chart", () => {
     for (const l of labels) expect(Number(l.getAttribute("x")) + l.textContent!.length * 6.6).toBeLessThanOrEqual(900);
     const wide: Bill = { ...BILL, points: BILL.points.map((p) => ({ ...p, agent_usd: p.agent_usd! * 7.91 })) };
     act(() => root?.unmount()); document.body.innerHTML = "";
-    for (const l of draw(createElement(BillChart, { bill: wide, width: 900 })).querySelectorAll<SVGTextElement>("[data-testid=bill-end-label]")) expect(Number(l.getAttribute("x")) + l.textContent!.length * 6.6, l.textContent!).toBeLessThanOrEqual(900);
+    for (const l of draw(createElement(BillChart, { takeover: TAKEOVER, bill: wide, width: 900 })).querySelectorAll<SVGTextElement>("[data-testid=bill-end-label]")) expect(Number(l.getAttribute("x")) + l.textContent!.length * 6.6, l.textContent!).toBeLessThanOrEqual(900);
     const [a, b] = labels.map((l) => Number(l.getAttribute("y")));
     expect(Math.abs(a! - b!)).toBeGreaterThanOrEqual(12);
     // Lines that end together still read apart.
     const close: Bill = { ...BILL, points: BILL.points.map((p) => ({ ...p, agent_usd: p.actual_usd + 0.01 })) };
     act(() => root?.unmount()); document.body.innerHTML = "";
-    const ys = [...draw(createElement(BillChart, { bill: close, width: 900 })).querySelectorAll<SVGTextElement>("[data-testid=bill-end-label]")].map((l) => Number(l.getAttribute("y")));
+    const ys = [...draw(createElement(BillChart, { takeover: TAKEOVER, bill: close, width: 900 })).querySelectorAll<SVGTextElement>("[data-testid=bill-end-label]")].map((l) => Number(l.getAttribute("y")));
     expect(Math.abs(ys[0]! - ys[1]!)).toBeGreaterThanOrEqual(12);
   });
 });

@@ -626,9 +626,10 @@ interface CliRecord {
   nestedIn(callId: string, parent: string): void;
   /** The calls parked at their gate and never sent, still with no end: what a stop withdraws on the record. */
   unsentParked(): string[];
-  /** The calls whose start is marked `nests` (a tool that only nests calls; a harness's own call that calls nest in, Codex's
-   *  `exec`) still with no end: what a run's end closes, interrupted, after the rows of the calls they made. */
-  openNests(): string[];
+  /** The calls started with no end, an unsent park aside (the stop refuses those): what a run's end closes, interrupted,
+   *  a call that only nests calls (its start marked `nests`: Codex's `exec`) after the rows of the calls it made. None on
+   *  a record whose harness says each call's end itself (`endsItsCalls`). */
+  openCalls(): string[];
   /** An end written elsewhere in a commit of the loop's own (the stop's withdrawal, in its end's commit): kept as this
    *  record's. */
   noteEnd(callId: string, status: CallStatus, output?: string): void;
@@ -859,7 +860,10 @@ async function openCliRecord(harness: Harness, journal: Gate["journal"], context
     },
     nestedIn: (callId, parent) => void parents.set(callId, parent),
     unsentParked: () => [...parked].filter((callId) => !sent.has(callId) && started.get(callId) === false),
-    openNests: () => [...nesting].filter((callId) => started.get(callId) === false),
+    openCalls: () =>
+      endsItsCalls
+        ? []
+        : [...started.keys()].filter((callId) => started.get(callId) === false && !(parked.has(callId) && !sent.has(callId))).sort((a, b) => Number(nesting.has(a)) - Number(nesting.has(b))),
     noteEnd(callId, status, output) {
       started.set(callId, true);
       ends.set(callId, { status, ...(output === undefined ? {} : { output }) });
@@ -2514,7 +2518,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // each call it makes named under it, so its rows read as a codemode script's do on every other harness. Its start is
         // marked `nests`, so a crash leaves it open: its harness ends it (ownCalls.ended) from its CLI's own answer to it after
         // the resume, which comes after the rows of the calls it made, never as an interrupted end ahead of them. One no answer
-        // of its CLI ends (a stop while it waits, a crash no resume follows) the run's end closes, interrupted (openNests).
+        // of its CLI ends (a stop while it waits, a crash no resume follows) the run's end closes, interrupted (openCalls).
         const ownCalls: OwnCalls | undefined = record
           ? {
               opened: (callId, name, input) => ownWrite(record.start(callId, name, input, false, true).catch(unlessSealed)),
@@ -2614,14 +2618,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           const rootId = root.id;
           // Read before this claim's own writes (foundEntries), and past the bookkeeping any claim writes on the root before
           // its turn (its session's key, a phase row, a takeover's note, the computer's hold, the learning seed it laid):
-          // none of them is a turn of the follow-up's. Nor is the end of a call that started before the run's end: a call a
-          // stop cut while it ran (Codex's write inside its `exec`) has no end of its own before the run's, and a claim's
-          // record ends it interrupted as it opens, after the run's end. Read from the journal alone, so a claim that takes
-          // over from one lost between that end and its turn reads the same; a follow-up's own calls start after the end.
-          const endAt = foundEntries.findLastIndex((entry) => entry.kind === KINDS.end);
-          const callOf = (entry: (typeof foundEntries)[number]) => (entry.data as { callId?: unknown } | null)?.callId;
-          const cutBefore = new Set(foundEntries.slice(0, Math.max(endAt, 0)).filter((entry) => entry.kind === KINDS.callStart).map(callOf));
-          const endsRoot = endAt >= 0 && foundEntries.slice(endAt + 1).every((entry) => CLAIM_BOOKKEEPING.has(entry.kind) || (entry.kind === KINDS.callEnd && cutBefore.has(callOf(entry))));
+          // none of them is a turn of the follow-up's.
+          const endsRoot = foundEntries.findLast((entry) => !CLAIM_BOOKKEEPING.has(entry.kind))?.kind === KINDS.end;
           const inFlight = (await harness.inspect(context)).submissions.some((one) => one.conversationId === rootId && one.type === "input");
           if (endsRoot && !inFlight && session!.state === "open_turn") await session!.settleOpenTurn();
           // A session still new (a person stopped the run before its first input was sent): the follow-up is its first
@@ -4052,12 +4050,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     const ends = cliRecord ?? (await openCliRecord(on, theGate.journal, context, now, undefined, true));
     const recordEnds = ends.unsentParked();
     const notRun = data.state === "stopped" ? STOPPED_WHILE_WAITING : ENDED_WHILE_WAITING;
-    // A call that only nests calls (a harness's own: Codex's `exec`) still open when the run ends: nothing will end it now
-    // (a stop while its call waited, a crash whose next drive never resumed its CLI's thread), so it ends with the run,
-    // interrupted, after the rows of its calls (their withdrawals above it in this commit). Its own end on its way is
+    // A CLI's call still open when the run ends: nothing will end it now (a stop that cut it while it ran, a stop while its
+    // call waited, a crash whose next drive never resumed its CLI's thread), so it ends with the run, interrupted, in the
+    // end's commit: nothing of the stopped turn lands after the end. One that only nests calls (a harness's own: Codex's
+    // `exec`) ends after the rows of its calls (their withdrawals above it in this commit); its own end on its way is
     // written first. Marked `withRun`: a park or a stop failed nothing, so its row reads interrupted, never failed.
     while (ownWrites.size > 0) await Promise.allSettled([...ownWrites]);
-    const cutOpen = ends.openNests();
+    const cutOpen = ends.openCalls();
     const ended = theGate.expect(writesEntry(KINDS.end), { run, ...(also.length ? { also } : {}), ...(take.length ? { take } : {}) });
     // A seal while the end is committed fails it before it is awaited: handled here, read by the await below.
     ended.catch(() => undefined);
