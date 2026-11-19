@@ -172,7 +172,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
         <CodingAgentAction variant="primary" label="Run agent" prompt={runAgentPrompt(origin, agentId, sdk.runtime)} />
       </section> : <div className={cn("relative grid min-h-0 flex-1 grid-cols-1", showCode ? "lg:[@media(min-height:501px)]:grid-cols-2" : "grid-rows-[minmax(0,1fr)_auto]")}>
         <section aria-label="Request" className={cn("flex min-h-0 flex-col border-b", showCode ? "lg:border-b-0 lg:border-r short:hidden" : "lg:[@media(min-height:501px)]:border-b-0 short:border-b-0")}>
-          <header className={cn("flex items-center justify-between border-b px-5 py-3 md:px-6", !showCode && "lg:[@media(min-height:501px)]:min-h-[57px] lg:[@media(min-height:501px)]:pr-80 short:min-h-[57px] short:pr-72")}>
+          <header className={cn(BAR, "justify-between border-b", !showCode && "lg:[@media(min-height:501px)]:pr-80 short:pr-72")}>
             <span className="text-lead font-semibold">Request</span>
             <span role="group" aria-label="Request as" className="flex gap-4 text-small">{(["form", "json"] as const).map((v) => <button key={v} type="button" aria-pressed={view === v} onClick={() => setView(v)} className={cn("min-h-6 border-b pb-1 capitalize", view === v ? "border-primary" : "border-transparent text-muted-foreground")}>{v === "json" ? "JSON" : "Form"}</button>)}</span>
           </header>
@@ -228,8 +228,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
               </>
             )}
           </div>
-          <footer className="flex shrink-0 flex-wrap items-center justify-between gap-3 border-t px-5 py-3 md:px-6">
-            <span className="text-small text-muted-foreground">Sends a real request to this server.</span>
+          <footer className={cn(FOOT, "shrink-0 flex-wrap justify-between gap-3")}>
+            <span title="Sends a real request to this server." className="line-clamp-2 min-w-0 flex-1 basis-24 text-small text-muted-foreground">Sends a real request to this server.</span>
             <div className="ml-auto flex flex-wrap items-center gap-2">
               <CodingAgentAction size="lg" label="Use your agent" prompt={playgroundPrompt(origin, agentId, body)} disabled={nativeBlocked || !built.ok || !agentId || attachments.busy} />
               <Button variant="primary" size="lg" onClick={send} disabled={nativeBlocked || !built.ok || !onSend || sending || !agentId || attachments.busy} title={attachments.busy ? "Waiting for the files to be sent" : undefined}><Play aria-hidden /> {sending ? "Sending" : "Send request"}</Button>
@@ -237,7 +237,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
           </footer>
         </section>
         <section aria-label="Code and response" className={cn("flex min-h-0 flex-col", !showCode && "lg:[@media(min-height:501px)]:absolute lg:[@media(min-height:501px)]:right-6 lg:[@media(min-height:501px)]:top-3 short:absolute short:right-5 short:top-3")}>
-          <header className={cn("flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-5 md:px-6", showCode ? "border-b py-3" : "py-2 lg:[@media(min-height:501px)]:p-0 short:p-0")}>
+          <header className={cn("flex flex-wrap items-center justify-between gap-x-3 gap-y-2 px-5 md:px-6", showCode ? cn(BAR, "border-b") : "py-2 lg:[@media(min-height:501px)]:p-0 short:p-0")}>
             <span role="group" aria-label="Show" className={cn("flex gap-4 text-body", !showCode && "hidden")}>
               <button type="button" aria-pressed={pane === "code"} onClick={() => setPane("code")} className={cn("border-b pb-1", pane === "code" ? "border-primary" : "border-transparent text-muted-foreground")}>Code</button>
               <button type="button" aria-pressed={pane === "response"} onClick={() => setPane("response")} disabled={!result} className={cn("border-b pb-1 disabled:opacity-45", pane === "response" ? "border-primary" : "border-transparent text-muted-foreground")}>Response{result && <span className={cn("ml-2 font-mono max-sm:hidden", result.status < 300 ? "text-success-text" : "text-destructive-text")}>{result.status}</span>}</button>
@@ -257,7 +257,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                 <Button size="icon" variant="outline" aria-label="Copy code" onClick={() => void navigator.clipboard?.writeText(code)}><Copy aria-hidden /></Button>
               </div>
               <pre tabIndex={0} aria-label="The request as code" className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-5 font-mono text-small leading-[1.8] md:px-6">{code}</pre>
-              <footer className="border-t px-5 py-3 text-small text-muted-foreground md:px-6">The same request from your code: set AGENTRUN_API_KEY in your environment.</footer>
+              <footer className={cn(FOOT, "text-small text-muted-foreground")}>The same request from your code: set AGENTRUN_API_KEY in your environment.</footer>
             </>
           ) : result && (
             <>
@@ -273,11 +273,11 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                 // The server answered 202: the run itself, followed until it ends, with the raw answer one click away.
                 <>
                   <div className="min-h-0 flex-1 overflow-hidden border-b short:overflow-auto">{live(result.runId)}</div>
-                  <details className="border-b px-5 py-2.5 md:px-6"><summary className="caps cursor-pointer text-label text-muted-foreground">Response body</summary>
+                  <details className="px-5 py-2.5 md:px-6"><summary className="caps cursor-pointer text-label text-muted-foreground">Response body</summary>
                     <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words py-3 font-mono text-small leading-[1.8]">{JSON.stringify(result.body, null, 2)}</pre></details>
                 </>
               ) : <pre tabIndex={0} aria-label="Response body" className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap break-words px-5 py-5 font-mono text-small leading-[1.8] md:px-6">{JSON.stringify(result.body, null, 2)}</pre>}
-              {result.runId && <button type="button" onClick={() => onOpenRun?.(result.runId!)} className="caps flex items-center justify-between border-t px-5 py-4 text-small text-primary-text hover:bg-accent md:px-6">Open this run <ArrowRight className="size-4" aria-hidden /></button>}
+              {result.runId && <button type="button" onClick={() => onOpenRun?.(result.runId!)} className={cn(FOOT, "caps justify-between text-small text-primary-text hover:bg-accent")}>Open this run <ArrowRight className="size-4" aria-hidden /></button>}
             </>
           )}
           </div>
@@ -286,6 +286,11 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
     </div>
   );
 }
+
+/* Side by side, the request and the code/response panes rule their header and footer lines at the same heights: each bar
+ *  is its tallest control (a small button in the header, a large one in the footer) plus the same padding and border. */
+const BAR = "box-content flex min-h-control-sm items-center px-5 py-3 md:px-6";
+const FOOT = "box-content flex min-h-control-lg items-center border-t px-5 py-3 md:px-6";
 
 const field = "w-full border bg-card px-3 py-2.5 font-mono text-body outline-none placeholder:text-muted-foreground focus:border-border-strong";
 
