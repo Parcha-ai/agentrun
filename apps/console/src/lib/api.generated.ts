@@ -3585,6 +3585,7 @@ export interface operations {
         offered: boolean;
         groups: string[];
         tools: string[];
+        settings: string[];
         providers: {
           id: string;
           name: string;

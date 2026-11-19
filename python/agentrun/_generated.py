@@ -3783,6 +3783,7 @@ class _ListComputersResponseKindsItemRequired(TypedDict):
     offered: bool
     groups: list[str]
     tools: list[str]
+    settings: list[str]
     providers: list[ListComputersResponseKindsItemProvidersItem]
 
 

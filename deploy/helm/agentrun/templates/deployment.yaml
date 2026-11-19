@@ -1,0 +1,110 @@
+{{- /*
+One replica, Recreate: the store is SQLite on /data, and a new server must start only after the old one stops
+(deploy/README.md). The image's command runs the server and a runner, each a process of its own.
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}
+  labels:
+    {{- include "agentrun.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "agentrun.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "agentrun.labels" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      # A new volume's root belongs to root, often 0777. The image's /data is the server's user's, 0711: a run's process
+      # crosses it to its own folders without listing it. This sets the volume's root to that, as root with two capabilities.
+      initContainers:
+        - name: data-owner
+          image: {{ include "agentrun.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/bin/sh", "-c", "chown 1000:1000 /data && chmod 0711 /data"]
+          securityContext:
+            runAsUser: 0
+            runAsNonRoot: false
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+              add: ["CHOWN", "FOWNER"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      containers:
+        - name: agentrun
+          image: {{ include "agentrun.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          {{- with .Values.args }}
+          args:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          # The run helper (agentrun-runas) switches each run's process to a user of its own with these three file
+          # capabilities, so they stay in the bounding set and privilege escalation stays allowed. Nothing else is kept.
+          securityContext:
+            capabilities:
+              drop: ["ALL"]
+              add: ["SETUID", "SETGID", "SETPCAP"]
+          ports:
+            - name: http
+              containerPort: 7340
+          envFrom:
+            - secretRef:
+                name: {{ .Values.existingSecret | default .Release.Name }}
+          {{- if or .Values.publicUrl .Values.env }}
+          env:
+            {{- with .Values.publicUrl }}
+            - name: AGENTRUN_PUBLIC_URL
+              value: {{ . | quote }}
+            {{- end }}
+            {{- range $name, $value := .Values.env }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+          {{- end }}
+          # /v2/health reads the store and the disk, and needs no token.
+          startupProbe:
+            httpGet:
+              path: /v2/health
+              port: http
+            periodSeconds: 2
+            failureThreshold: 90
+          readinessProbe:
+            httpGet:
+              path: /v2/health
+              port: http
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /v2/health
+              port: http
+            periodSeconds: 20
+            timeoutSeconds: 5
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Values.persistence.existingClaim | default .Release.Name }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}

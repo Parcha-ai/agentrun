@@ -52,6 +52,29 @@ export function releaseLayers(directories, root = join(here, '..')) {
   for (const directory of directories) (layers[visit(directory, [])] ??= []).push(directory);
   return layers;
 }
+/**
+ * The packages whose NOTICE may carry third-party notices after the repository's, each with what it ships that they cover. A notice
+ * belongs to the package that ships what it covers; every other package's NOTICE is the root NOTICE exactly. A new appendix is a
+ * reviewed line here, never a copy into every package.
+ */
+export const noticeAppendices = {
+  'pi-browser': "Stagehand's Chrome flags and facade (MIT, its text in full)",
+  computer: 'code from E2B envd, Kubernetes sandboxd and scrcpy (Apache-2.0)',
+  'run-adapters': 'code from vercel-labs/durable-harness (Apache-2.0) and the o200k vocabulary (MIT)',
+  'run-adapters-claude-agent': 'code from vercel-labs/durable-harness (Apache-2.0)',
+  'run-adapters-codex': 'code from vercel-labs/durable-harness (Apache-2.0)',
+  serve: "the console in dist/console (the packages it bundles, the eve icon) and pi-durable's storage port (MIT, its text in full)",
+};
+/**
+ * Throws unless `text`, the NOTICE of the package in `directory`, is the root NOTICE (`root`) exactly or, for a package in
+ * noticeAppendices, the root NOTICE, a blank line, and more. A truncated or edited root header is not a prefix that passes.
+ */
+export function checkNotice(directory, text, root) {
+  const [packed, header] = [text.trim(), root.trim()];
+  if (packed === header) return;
+  assert.ok(packed.startsWith(`${header}\n\n`), `Missing or mismatched NOTICE in ${releasePackageNames[directory]}`);
+  assert.ok(Object.hasOwn(noticeAppendices, directory), `${releasePackageNames[directory]}'s NOTICE appends notices after the root NOTICE, but it is not a package that ships what they cover (noticeAppendices in scripts/release-preflight.mjs): move them to the NOTICE of the package that ships it, or name this package there with what it ships`);
+}
 const repository = 'git+https://github.com/Parcha-ai/agentrun.git';
 const digest = (bytes, algorithm = 'sha256') => createHash(algorithm).update(bytes).digest(algorithm === 'sha512' ? 'base64' : 'hex');
 const json = async path => JSON.parse(await readFile(path, 'utf8'));
@@ -202,13 +225,9 @@ export async function releasePreflight(root, tag, { checkGit = true } = {}) {
       const packedManifest = JSON.parse(await command('tar', ['-xOf', archive, 'package/package.json'], root));
       assert.deepEqual(packedManifest, manifest, 'Packed metadata differs from the release source');
       assert.equal((await command('tar', ['-xOf', archive, 'package/LICENSE'], root)).trim(), license.trim(), `Missing or mismatched LICENSE in ${manifest.name}`);
-      // A package may carry third-party notices after the repository's NOTICE (pi-browser keeps Stagehand's MIT licence), never instead of
-      // it: the packed NOTICE is the root NOTICE exactly, or the root NOTICE, a blank line, and more. A truncated or edited root header
-      // is not a prefix that passes.
-      if (notice !== undefined) {
-        const packedNotice = (await command('tar', ['-xOf', archive, 'package/NOTICE'], root)).trim();
-        assert.ok(packedNotice === notice.trim() || packedNotice.startsWith(`${notice.trim()}\n\n`), `Missing or mismatched NOTICE in ${manifest.name}`);
-      }
+      // A package in noticeAppendices may carry third-party notices after the repository's NOTICE, never instead of it; every other
+      // package's packed NOTICE is the root NOTICE exactly.
+      if (notice !== undefined) checkNotice(directory, await command('tar', ['-xOf', archive, 'package/NOTICE'], root), notice);
       // Bind the checked source/build to the already verified bytes. Publish these exact archives, never a fresh pack.
       const [repacked] = JSON.parse(await command('npm', ['pack', '--ignore-scripts', '--json', '--pack-destination', temporary], join(root, 'packages', directory)));
       assert.equal(digest(await readFile(join(temporary, repacked.filename))), verified.sha256, 'Current package contents differ from the verified archive');

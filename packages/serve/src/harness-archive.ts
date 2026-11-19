@@ -74,7 +74,7 @@ export function archivePlatform(platform: string = process.platform, arch: strin
 }
 
 /** The sha256 of the file at `path`, read a chunk at a time. */
-async function digestOf(path: string): Promise<string> {
+export async function digestOf(path: string): Promise<string> {
   const hash = createHash("sha256");
   await pipeline(createReadStream(path), hash);
   return hash.digest("hex");

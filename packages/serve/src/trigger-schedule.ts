@@ -43,6 +43,9 @@ export const schedule: TriggerAdapter = {
   label: "schedule",
   delivery: "clock",
   owner: true,
+  // Its runs repeat one job (a weekly digest): each is handed its trigger's last completed result, to leave out what
+  // that one reported. The one source that does.
+  previousResult: true,
   describe: '{kind: "schedule", cron, timezone}, {kind: "schedule", at}, {kind: "schedule", every_s, start_at?}',
   fires: `a cron line in a zone, one time, every N seconds (${MIN_EVERY_S} or more)`,
   schemas: SCHEMAS,

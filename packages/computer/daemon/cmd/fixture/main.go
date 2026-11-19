@@ -1,5 +1,5 @@
-// computerd-fixture is the desktop fixture of the conformance suite (src/conformance/fixture.ts), test-only and never
-// shipped: a 200x200 window at (0, 0) in four colors that takes the focus and logs each input event as a JSON line.
+// computerd-fixture is the desktop fixture of the conformance suite (src/conformance/fixture.ts), which the server's
+// image carries for dial conformance: a 200x200 window at (0, 0) in four colors that takes the focus and logs each input event as a JSON line.
 //
 //	computerd-fixture --log <path>
 //

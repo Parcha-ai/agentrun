@@ -19,7 +19,7 @@ export const CLOUDFLARE = defineProvider({
 	metered: true,
 	// Its containers dial the server: Cloudflare has no REST call that reaches into one.
 	connect: "dial",
-	// None: a machine that dials takes no Archil mount yet (its helper's root steps run through exec, which it has none of).
+	// None: a machine that dials takes no Archil mount (mountsOf).
 	mounts: [],
 	// None: its programs run in init's network of their own, their loopback alone (isolation.ts). Open and a list: their
 	// one way out is init's egress proxy (hosted/network.ts). The container itself always reaches out (enableInternet): it

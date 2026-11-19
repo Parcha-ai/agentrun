@@ -37,8 +37,8 @@
 //	                    server's words, and nothing is written. Exits 0 paired, 2 for other arguments or no code, 1 failed
 //	computerd unpair    delete the token file, and say how the owner removes the computer on the server
 //	computerd attach    for a machine the server cannot reach: dial the server's attach socket (AGENTRUN_ATTACH_URL,
-//	                    wss:// or ws://) with the machine's token (AGENTRUN_ATTACH_TOKEN, art_ and 64 hex or 43
-//	                    base64url; when it is empty, pair's token file, refused when it is a link, another user's, or
+//	                    wss:// or ws://) with the machine's token (AGENTRUN_ATTACH_TOKEN, art_ and 43 base64url; when it
+//	                    is empty, pair's token file, refused when it is a link, another user's, or
 //	                    readable by group or others) as a bearer
 //	                    and the subprotocol agentrun.computer.<protocol>, and bridge each socket to a connection of
 //	                    init's as stdio does, a text message a line (spec/computer/attach.md). It pings every 20 s,
