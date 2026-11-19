@@ -202,8 +202,14 @@ test("a viewer credential is its run's and its expiry's: another run, a later ti
   assert.equal(viewerCredentialFor(key, "run_b", credential, now), false, "another run");
   assert.equal(viewerCredentialFor(key, "run_a", credential, expiresAt), false, "at its expiry");
   assert.equal(viewerCredentialFor(viewerCredentialKey(randomBytes(32)), "run_a", credential, now), false, "another server's key");
-  const flipped = credential.slice(0, -1) + (credential.endsWith("A") ? "B" : "A");
+  const [expiry, mac] = credential.split(".");
+  const flipped = `${expiry}.${mac[0] === "A" ? "B" : "A"}${mac.slice(1)}`;
   assert.equal(viewerCredentialFor(key, "run_a", flipped, now), false, "a changed byte");
+  // The MAC's last character carries two bits no byte uses: another spelling of the same bytes is refused all the same.
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
+  const respelled = `${credential.slice(0, -1)}${alphabet[alphabet.indexOf(credential.at(-1)) + 1]}`;
+  assert.deepEqual(Buffer.from(respelled.split(".")[1], "base64url"), Buffer.from(mac, "base64url"), "the same bytes");
+  assert.equal(viewerCredentialFor(key, "run_a", respelled, now), false, "another spelling");
   for (const bad of ["", "x", `${expiresAt}`, `${expiresAt}.`, `${expiresAt}.${"a".repeat(42)}`, `-1.${"a".repeat(43)}`]) assert.equal(viewerCredentialFor(key, "run_a", bad, now), false, JSON.stringify(bad));
 });
 
@@ -218,9 +224,19 @@ test("an open viewer whose check reads the store closes once the check no longer
   viewers.watch(ended, async () => !over);
   viewers.watch(failing, async () => { throw new Error("the store is busy"); });
   viewers.watch(open, async () => true);
+  // A slow store: its read is not asked again while one is in flight.
+  const slow = new PassThrough();
+  let reads = 0;
+  let answer;
+  viewers.watch(slow, () => (reads++, new Promise((resolve) => (answer = resolve))));
   over = true;
   viewers.recheck();
+  viewers.recheck();
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual([ended.destroyed, failing.destroyed, open.destroyed], [true, true, false]);
+  assert.deepEqual([ended.destroyed, failing.destroyed, open.destroyed, slow.destroyed, reads], [true, true, false, false, 1]);
+  answer(true);
+  await new Promise((resolve) => setImmediate(resolve));
+  viewers.recheck();
+  assert.equal(reads, 2, "asked again once its read answered");
   viewers.close();
 });

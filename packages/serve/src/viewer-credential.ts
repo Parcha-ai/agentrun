@@ -35,15 +35,14 @@ export function mintViewerCredential(key: Buffer, runId: string, now: number): {
   return { credential: `${expiresAt}.${macOf(key, runId, expiresAt).toString("base64url")}`, expiresAt };
 }
 
-/** Whether `credential` was minted for run `runId` and has not expired at `now`, its MAC compared in constant time. Its
- *  run's end is the caller's to read. */
+/** Whether `credential` was minted for run `runId` and has not expired at `now`, its MAC compared in constant time as
+ *  minted (one spelling: the last character's unused bits count). Its run's end is the caller's to read. */
 export function viewerCredentialFor(key: Buffer, runId: string, credential: string, now: number): boolean {
   const [, expiry, mac] = FORM.exec(credential) ?? [];
   if (expiry === undefined || mac === undefined) return false;
   const expiresAt = Number(expiry);
-  const given = Buffer.from(mac, "base64url");
-  const expected = macOf(key, runId, expiresAt);
-  return given.length === expected.length && timingSafeEqual(given, expected) && now < expiresAt;
+  const expected = Buffer.from(macOf(key, runId, expiresAt).toString("base64url"));
+  return timingSafeEqual(Buffer.from(mac), expected) && now < expiresAt;
 }
 
 /** The credential a request to a run's live view carries: the link's query parameter (the page), else its cookie (the

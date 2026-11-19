@@ -214,10 +214,13 @@ export const LIVE_RECHECK_MS = 2_000;
 /** The viewers' sockets open now, each with the check of what let it in: the owner's sessions, or on an API-only server
  *  the viewer credential's run not ended (viewer-credential.ts), read from the store. A socket whose check no longer holds,
  *  or fails, is destroyed, which takes its way to the run with it (proxyLiveUpgrade): at once on `recheck()` (a sign-out or
- *  a password set in this process; a store read as soon as it answers), else within LIVE_RECHECK_MS. The timer runs only
+ *  a password set in this process; a store read as soon as it answers), else within LIVE_RECHECK_MS. A socket has one
+ *  store read in flight at most: a slow store is not asked again for it until that read answers. The timer runs only
  *  while a viewer is open. */
 export class OpenViewers {
   private readonly open = new Map<Duplex, () => boolean | Promise<boolean>>();
+  /** The sockets whose store read is in flight. */
+  private readonly reading = new Set<Duplex>();
   private timer: NodeJS.Timeout | undefined;
 
   watch(socket: Duplex, admitted: () => boolean | Promise<boolean>): void {
@@ -228,9 +231,13 @@ export class OpenViewers {
 
   recheck(): void {
     for (const [socket, admitted] of this.open) {
+      if (this.reading.has(socket)) continue;
       const holds = admitted();
       if (holds === false) this.end(socket);
-      else if (holds !== true) holds.then((still) => still || this.end(socket), () => this.end(socket));
+      else if (holds !== true) {
+        this.reading.add(socket);
+        holds.then((still) => still || this.end(socket), () => this.end(socket)).finally(() => this.reading.delete(socket));
+      }
     }
   }
 
