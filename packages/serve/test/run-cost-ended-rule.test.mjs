@@ -216,11 +216,19 @@ test("a stored figure is never written over: an end that stored $0.30 keeps it o
   assert.ok(readers.stats === 0.3 && readers.usage === 0.3 && readers.bill === 0.3, readers.said);
 });
 
-test("a run whose booking cannot be read keeps its null in the store: the sweep reads it, heals nothing, says so even quiet, and every reader counts it unknown", { timeout: 60_000 }, async (t) => {
-  withEnv(t, { AGENTRUN_LOG: "quiet" });
-  const { api, lines } = await endedRun(t, [], { endRead: "failed", read: false });
-  assert.match(await swept(lines), /^at=\S+ event=cost_heal read=1 healed=0 failed=0$/);
+test("a run whose booking has no request to read keeps its null in the store, and every reader counts it unknown", { timeout: 60_000 }, async (t) => {
+  // The sweep never lists it (store-heal-cost.test.mjs: costUnknown leaves out a run with no booked request), so it is
+  // not read again at each start.
+  const { api } = await endedRun(t, [], { endRead: "failed", read: false });
   assert.equal((await api("GET", "/runs/run-1")).body.cost.unknown, "booking_unread");
   const readers = await readersOf(api);
   assert.ok(readers.stats === null && readers.usage === 0 && readers.usageUnpriced === 1 && readers.bill === null && readers.billUnknown === 1 && readers.unattributed === null, readers.said);
+});
+
+test("a run whose booking holds a charge of no known cost keeps its null: the sweep reads it, heals nothing, and says so even quiet", { timeout: 60_000 }, async (t) => {
+  withEnv(t, { AGENTRUN_LOG: "quiet" });
+  const { api, lines } = await endedRun(t, [["answered", 0.05], ["cut"]], { endRead: "failed", read: false });
+  assert.match(await swept(lines), /^at=\S+ event=cost_heal read=1 healed=0 failed=0$/);
+  const cost = (await api("GET", "/runs/run-1")).body.cost;
+  assert.ok(cost.usd === null && cost.unpriced === 1, JSON.stringify(cost));
 });

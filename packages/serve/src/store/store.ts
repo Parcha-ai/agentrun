@@ -840,7 +840,9 @@ export interface Runs {
    *  writes nothing. True when it was written. */
   healCost(runId: string, at: { readonly epoch: number; readonly endedAt: number }, usd: number): Promise<boolean>;
   /** Ended runs, not imported, whose stored cost is unknown (null, no bound), by id after `after`, at most `limit`: what
-   *  the server's start sweep reads to heal (cost-heal.ts). */
+   *  the server's start sweep reads to heal (cost-heal.ts). Left out are those the heal's rule refuses by what the store
+   *  holds alone: a person's stop of an agentic run, a native run, a run with no booked answer (sqlite/store.ts says
+   *  which are kept, and why). */
   costUnknown(options: { limit: number; after?: string }): Promise<string[]>;
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;

@@ -11,7 +11,8 @@ import { backfillNativeCommandOwners, nativeCommandOwner, validConnectorId } fro
 import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
-import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
+import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
+import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES,REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
   AgentArchived, AgentDeleting, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -113,6 +114,9 @@ const REVISION_COLUMNS = "id, agent_id, parent_id, kind, body, skills, note, pac
 const COMMAND_COLUMNS = "id, run_id, kind, body, created_at, taken_at, refused, tries";
 const TRIGGER_COLUMNS = "id, agent_id, name, enabled, source, target, next_at, last_run_id, catchup_window_s, failures_in_a_row, disabled, max_active_runs, created_at, updated_at, template_id";
 const FINAL = FINAL_STATES.map((state) => `'${state}'`).join(", ");
+/** An ended run, not imported, whose stored cost is unknown: null with no bound beside it (cost_upper_bound 0, never NULL).
+ *  What Runs.healCost writes over and Runs.costUnknown lists. */
+const COST_UNKNOWN = `cost_usd IS NULL AND cost_upper_bound = 0 AND state IN (${FINAL}) AND imported_from IS NULL AND ended_at IS NOT NULL`;
 /** Taken (Dialect.lockKey) by every insert of a run's command row, before it: the run's rows commit in id order, as
  *  SQLite's one writer commits them. On Postgres an id is taken at the insert and the row is seen at its commit, so two
  *  inserts at once could commit out of order, and a reader of the rows past the last id it handed on (the runner) would
@@ -1149,20 +1153,34 @@ class SqliteStore implements Store {
         const row = await db.get<{ list_mark: number }>("SELECT list_mark FROM runs WHERE id = ?", runId);
         return row === undefined ? undefined : Number(row.list_mark);
       },
-      // A heal of an ended run's unknown cost from its priced booking: one conditional UPDATE, only null to a figure, only
-      // at the end it was read at (a reopen or a later end moves ended_at or the epoch), so it never overwrites a figure.
+      // A heal of an ended run's unknown cost from its priced booking: one conditional UPDATE, only null to a figure with no
+      // bound beside it (cost_upper_bound 0, the column's no-bound value: it is never NULL), only at the end it was read at
+      // (a reopen or a later end moves ended_at or the epoch), so it never overwrites a figure, whatever its caller read.
       healCost: async (runId, { epoch, endedAt }, usd) => {
         if (!Number.isFinite(usd) || usd < 0) throw new TypeError(`a healed cost is a figure of $0 or more (got ${usd})`);
         const [result] = await db.write([{
-          sql: `UPDATE runs SET cost_usd = ?, cost_upper_bound = 0 WHERE id = ? AND cost_usd IS NULL AND state IN (${FINAL}) AND imported_from IS NULL AND epoch = ? AND ended_at = ? RETURNING id`,
+          sql: `UPDATE runs SET cost_usd = ?, cost_upper_bound = 0 WHERE id = ? AND ${COST_UNKNOWN} AND epoch = ? AND ended_at = ? RETURNING id`,
           params: [usd, runId, epoch, endedAt],
         }]);
         return (result?.rows.length ?? 0) > 0;
       },
+      // The runs healCost may write that the heal's rule (store-view.ts bookedCostOf, healOf) does not refuse by its
+      // columns alone, so the start sweep never reads one that cannot heal again at each start: left out are a person's
+      // stop of an agentic run (it reads running, stoppedByPerson), an agentic run whose launch names a native connection
+      // (its end reads its own cost; a launch whose `native` is no connection is one no runner could read, so it booked
+      // nothing either), and a run whose journal holds no runner.turn (no request booked with an answer: no figure to heal
+      // to). Kept, and read at each start while their cost stays null: runs with a booked request whose booking still
+      // gives no exact figure (a charge of no known cost, a hold, every request given back). Telling them apart is the
+      // booking rule itself (turnCostOf over each turn's data), which no column holds.
       costUnknown: async ({ limit, after }) => {
+        const agentic = "COALESCE((SELECT kind FROM revisions WHERE revisions.id = runs.revision_id), 'agentic') = 'agentic'";
         const rows = await db.all<{ id: string }>(
-          `SELECT id FROM runs WHERE cost_usd IS NULL AND state IN (${FINAL}) AND imported_from IS NULL${after === undefined ? "" : " AND id > ?"} ORDER BY id LIMIT ?`,
-          ...(after === undefined ? [] : [after]), limit,
+          `SELECT id FROM runs WHERE ${COST_UNKNOWN}
+            AND NOT (state = 'stopped' AND COALESCE(outcome, '') = 'stopped' AND ${agentic})
+            AND NOT (${agentic} AND EXISTS (SELECT 1 FROM run_launch WHERE run_launch.run_id = runs.id AND ${db.dialect.jsonText("run_launch.body", ["native"])} IS NOT NULL))
+            AND EXISTS (SELECT 1 FROM ${PI_TABLE.entries} AS entry WHERE entry.run_id = runs.id AND ${db.dialect.jsonText("entry.record", ["kind"])} = ?)
+            ${after === undefined ? "" : "AND id > ? "}ORDER BY id LIMIT ?`,
+          RUNNER_RECORDS.turn, ...(after === undefined ? [] : [after]), limit,
         );
         return rows.map((row) => row.id);
       },
