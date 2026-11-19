@@ -279,4 +279,32 @@ describe("a synced folder against computerd in a user namespace", { skip }, () =
     assert.deepEqual(JSON.parse(text(disk.files.get(META))), { modes: { "bin/run": 0o755 }, links: { go: "bin/run" } });
     await three.release();
   });
+
+  it("a link a synced claim recorded, then a plain file an Archil claim wrote at its path: the Archil claim empties sync.json at its start, so the next synced claim pushes the file's new contents, not the old link", async () => {
+    const disk = new FakeArchilDisk();
+    const workspace = archilWorkspace(disk, ROOT);
+    const first = computerd();
+    const one = await (await resolveComputer(DAYTONA, 2, KINDS, claim(() => first))).start({ workspace, check: CHECK });
+    await sh(one.computer.computer.client, "printf old > target && ln -s target go");
+    await one.release();
+    assert.deepEqual(JSON.parse(text(disk.files.get(META))).links, { go: "target" });
+
+    // Claimed next where its provider takes the Archil mount (Modal): an exec writes a plain file at the link's path,
+    // which the mount lands on the disk as that file.
+    const mounted = { ...computerd(), readBack: async () => ({ ok: true, value: { kind: "archil", epoch: EPOCH } }) };
+    const modal = { ...claim(() => mounted), keysOf: async () => ({ MODAL_TOKEN_ID: "fake-test-key", MODAL_TOKEN_SECRET: "not-a-secret" }) };
+    const resolved = await resolveComputer({ kind: "sandbox", provider: "modal" }, 2, KINDS, modal);
+    assert.equal(resolved.folder, "archil", "Modal takes the Archil mount here");
+    const archilMount = { kind: "archil", disk: "d1", region: "aws-us-east-1", folder: ROOT, token: "not-a-secret" };
+    const two = await resolved.start({ workspace: { syncStore: () => workspace.syncStore(), mountSpec: async () => archilMount }, check: CHECK });
+    await sh(two.computer.computer.client, "printf new > go");
+    disk.files.set(`${ROOT}/go`, Buffer.from("new"));
+    await two.release();
+
+    const third = computerd();
+    const three = await (await resolveComputer(DAYTONA, 2, KINDS, claim(() => third))).start({ workspace, check: CHECK });
+    assert.equal((await stat(third, "go")).type, "file", "the file the Archil claim wrote, not the link sync.json had");
+    assert.equal(await sh(third.client, "cat go"), "new");
+    await three.release();
+  });
 });

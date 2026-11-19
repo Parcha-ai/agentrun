@@ -27,7 +27,7 @@ import { recordedClient } from "../computer-calls.js";
 import type { Recording, RecordWatch } from "../computer-record.js";
 import type { MountCheck } from "./attach.js";
 import type { AgentComputer, RunComputer } from "./run-tools.js";
-import { fencedStore, finalSyncWords, type HeldFolder, holdSynced, pullFolder, type StoredFolder, storedFolder, syncOf } from "./synced-folder.js";
+import { emptyMeta, fencedStore, finalSyncWords, type HeldFolder, holdSynced, pullFolder, type StoredFolder, storedFolder, syncOf } from "./synced-folder.js";
 import type { Workspace } from "./workspace.js";
 import { restartWith } from "../start-switches.js";
 
@@ -487,13 +487,22 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
     async start({ workspace, check, holds, held, signal }) {
       // A computer kept at the run's park, attached again: it mounts what it mounted, read back under its own epoch.
       const again = await side.reattach?.(entry, { kind, keys, configuration, ...(folder ? { folder } : {}), ...(gpu ? { gpu: { type: gpu.type, count: gpu.count } } : {}), ...(persistent ? { persistent: true as const } : {}), ...(signal ? { signal } : {}) });
-      // A synced folder's store: the run's disk as the runner keeps the folder on it, each write fenced by the claim; for
-      // a new computer, listed and held to the caps before it is rented.
-      const disk = folder === "sync" ? workspace.syncStore?.() : undefined;
-      const store = disk && holds ? fencedStore(disk, holds) : disk;
+      // The run's disk as the runner keeps the folder on it, each write fenced by the claim. A synced folder's store: for
+      // a new computer, listed and held to the caps before it is rented. Under an Archil mount, its sync.json emptied.
+      const disk = folder === "sync" || folder === "archil" ? workspace.syncStore?.() : undefined;
+      const fenced = disk && holds ? fencedStore(disk, holds) : disk;
+      const store = folder === "sync" ? fenced : undefined;
       if (folder === "sync" && store === undefined) {
         await again?.release().catch(() => undefined);
         throw unavailable(`${entry.label} could not start a ${kind} computer: this run's folder can't be synced into a computer here`);
+      }
+      if (folder === "archil" && fenced) {
+        try {
+          await emptyMeta(fenced);
+        } catch (error) {
+          await again?.release().catch(() => undefined);
+          throw unavailable(`${entry.label} could not start a ${kind} computer: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
       let stored: StoredFolder | undefined;
       if (store && !again) {

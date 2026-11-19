@@ -14,7 +14,8 @@
 //   holds put and what the disk holds beyond them removed.
 // - At release, a final delta (finalWords says a failed one).
 // - A run whose folder moves between an Archil mount and a synced folder keeps its files, not their modes or links:
-//   the mount never reads sync.json, and nothing writes the mount's to it.
+//   the mount never reads sync.json, and nothing writes the mount's to it. A claim on the mount empties it first
+//   (emptyMeta), so no link a synced claim recorded there hides a file the mount writes at its path.
 // - Every write of a claim's goes through fencedStore: once a later claim has taken the run (the run's epoch and runner
 //   say so, held or not), it is refused, never sent.
 import { type ComputerClient, fail, type FolderMeta, folderPathProblem, FolderSync, ok, pushTar, type Result, SYNC_MAX_BYTES, SYNC_MAX_ENTRIES, type SyncSink, type TarEntry, tarStream, WORKSPACE } from "@parcha/agentrun-computer";
@@ -135,6 +136,18 @@ export async function pullFolder(store: FolderStore, client: ComputerClient, sig
   const pulled = await folder.sync(signal ? { signal } : {});
   if (!pulled.ok) throw new Error(`the run's folder in the kept computer could not be made durable: ${pulled.error.message}`);
   return folder;
+}
+
+/**
+ * The store's sync.json emptied where it records anything, at a claim on an Archil mount, which never reads it: else a
+ * link a synced claim recorded there would be pushed by a later synced claim over the file the mount wrote at its path
+ * (storedFolder). Throws in words where it fails.
+ */
+export async function emptyMeta(store: FolderStore): Promise<void> {
+  const meta = await store.readMeta();
+  if (meta === undefined || (Object.keys(meta.modes).length === 0 && Object.keys(meta.links).length === 0)) return;
+  const emptied = await store.meta({ modes: {}, links: {} });
+  if (!emptied.ok) throw new Error(`the run's folder's sync.json could not be emptied: ${emptied.error.message}`);
 }
 
 /** Why a write of a runner that lost its claim of the run is refused. */
