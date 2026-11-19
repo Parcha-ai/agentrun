@@ -179,6 +179,13 @@ export type ToolKeysFeature = NonNullable<components["Features"]["tool_keys"]>;
 /** Claude Code's login on this machine (GET /v2/settings/claude-login, a serve extension): on or off, and what the CLI
  *  says of its login, never a token. */
 export type ClaudeLoginView = Answer<"getClaudeLogin">;
+/** The model gateway in force (GET /v2/settings/model-gateway, a serve extension): the environment's, the one saved in the
+ *  console, or none; its address, id style and models, and its key as a SecretMeta, never a value. */
+export type ModelGateway = Answer<"getModelGateway">;
+/** PUT /v2/settings/model-gateway's body: the address, the key (null removes it; left out, kept), the id style, the models. */
+export type ModelGatewayBody = Body<"saveModelGateway">;
+/** POST /v2/settings/model-gateway/test's answer: the model ids the gateway lists, or why not. */
+export type ModelGatewayTest = Answer<"testModelGateway">;
 /** This server's ChatGPT sign-in (GET /v2/settings/chatgpt, a serve extension): its state, who and which plan, never a
  *  token. */
 export type ChatGPTView = Answer<"getChatGPTSignIn">;

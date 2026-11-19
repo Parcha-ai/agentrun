@@ -241,6 +241,9 @@ __all__ = [
     "DeleteComposioSubscriptionResponse",
     "DeleteMcpServerResponse",
     "DeleteMcpServerResponseComposio",
+    "DeleteModelGatewayResponse",
+    "DeleteModelGatewayResponseModels",
+    "DeleteModelGatewayResponseSecret",
     "DeleteTriggerResponse",
     "DeleteTriggerResponseComposio",
     "DeleteWorkspaceArchilResponse",
@@ -367,6 +370,9 @@ __all__ = [
     "GetMcpServerResponseAuth",
     "GetMcpServerResponseOauth",
     "GetMcpServerResponseToolsItem",
+    "GetModelGatewayResponse",
+    "GetModelGatewayResponseModels",
+    "GetModelGatewayResponseSecret",
     "GetNativeResponse",
     "GetNativeResponseNative",
     "GetNativeResponseNativeCapabilities",
@@ -845,6 +851,11 @@ __all__ = [
     "SaveMcpServerResponseComposio",
     "SaveMcpServerResponseOauth",
     "SaveMcpServerResponseToolsItem",
+    "SaveModelGatewayBody",
+    "SaveModelGatewayBodyModels",
+    "SaveModelGatewayResponse",
+    "SaveModelGatewayResponseModels",
+    "SaveModelGatewayResponseSecret",
     "SaveSlackBody",
     "SaveSlackBodyEvents",
     "SaveSlackResponse",
@@ -906,6 +917,10 @@ __all__ = [
     "TestEmailAccountResponse",
     "TestEmailAccountResponseImap",
     "TestEmailAccountResponseSmtp",
+    "TestModelGatewayBody",
+    "TestModelGatewayResponse",
+    "TestModelGatewayResponseObject1",
+    "TestModelGatewayResponseObject2",
     "TestSlackResponse",
     "TestWebhookResponse",
     "TestWorkspaceArchilResponse",
@@ -3477,6 +3492,29 @@ class DeleteComposioSubscriptionResponse(TypedDict):
     deleted: Literal[True]
 
 
+class DeleteModelGatewayResponse(TypedDict):
+    source: Literal["env", "console"] | None
+    base_url: str | None
+    ids: Literal["as_named", "bare"]
+    models: DeleteModelGatewayResponseModels
+    set_at_start: list[str]
+    secret: DeleteModelGatewayResponseSecret
+    problem: str | None
+
+
+class DeleteModelGatewayResponseModels(TypedDict):
+    default: str | None
+    fast: str | None
+    strong: str | None
+
+
+class DeleteModelGatewayResponseSecret(TypedDict):
+    name: str
+    set: bool
+    source: Literal["env", "console", "sign-in"] | None
+    changed_at: str | None
+
+
 class _DeleteWorkspaceArchilResponseRequired(TypedDict):
     on: bool
     secret: DeleteWorkspaceArchilResponseSecret
@@ -3593,6 +3631,29 @@ class GetGitHubConnectionResponseObject2(TypedDict):
 class GetGitHubConnectionResponseObject2InstallationsItem(TypedDict):
     id: int
     account: str
+
+
+class GetModelGatewayResponse(TypedDict):
+    source: Literal["env", "console"] | None
+    base_url: str | None
+    ids: Literal["as_named", "bare"]
+    models: GetModelGatewayResponseModels
+    set_at_start: list[str]
+    secret: GetModelGatewayResponseSecret
+    problem: str | None
+
+
+class GetModelGatewayResponseModels(TypedDict):
+    default: str | None
+    fast: str | None
+    strong: str | None
+
+
+class GetModelGatewayResponseSecret(TypedDict):
+    name: str
+    set: bool
+    source: Literal["env", "console", "sign-in"] | None
+    changed_at: str | None
 
 
 class _GetWorkspaceArchilResponseRequired(TypedDict):
@@ -4112,6 +4173,45 @@ class SaveEmailAccountResponseSmtp(TypedDict):
     port: int
 
 
+class _SaveModelGatewayBodyRequired(TypedDict):
+    base_url: str
+
+
+class SaveModelGatewayBody(_SaveModelGatewayBodyRequired, total=False):
+    api_key: str | None
+    ids: Literal["as_named", "bare"]
+    models: SaveModelGatewayBodyModels
+
+
+class SaveModelGatewayBodyModels(TypedDict, total=False):
+    default: str
+    fast: str | None
+    strong: str | None
+
+
+class SaveModelGatewayResponse(TypedDict):
+    source: Literal["env", "console"] | None
+    base_url: str | None
+    ids: Literal["as_named", "bare"]
+    models: SaveModelGatewayResponseModels
+    set_at_start: list[str]
+    secret: SaveModelGatewayResponseSecret
+    problem: str | None
+
+
+class SaveModelGatewayResponseModels(TypedDict):
+    default: str | None
+    fast: str | None
+    strong: str | None
+
+
+class SaveModelGatewayResponseSecret(TypedDict):
+    name: str
+    set: bool
+    source: Literal["env", "console", "sign-in"] | None
+    changed_at: str | None
+
+
 class _SignOutChatGPTResponseRequired(TypedDict):
     revoked: bool
 
@@ -4214,6 +4314,24 @@ class TestEmailAccountResponseImap(TypedDict):
 class TestEmailAccountResponseSmtp(TypedDict):
     ok: bool
     message: str
+
+
+class TestModelGatewayBody(TypedDict, total=False):
+    base_url: str
+    api_key: str | None
+
+
+TestModelGatewayResponse: TypeAlias = "TestModelGatewayResponseObject1 | TestModelGatewayResponseObject2"
+
+
+class TestModelGatewayResponseObject1(TypedDict):
+    ok: Literal[True]
+    models: list[str]
+
+
+class TestModelGatewayResponseObject2(TypedDict):
+    ok: Literal[False]
+    why: str
 
 
 TestWorkspaceArchilResponse: TypeAlias = "TestWorkspaceArchilResponseObject1 | TestWorkspaceArchilResponseObject2"
@@ -8824,6 +8942,7 @@ OPERATIONS: dict[str, Operation] = {
     "deleteComposioSubscription": Operation(method="DELETE", path="/settings/mcp-servers/{name}/composio/subscription", path_params=("name",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteComputer": Operation(method="DELETE", path="/computers/{computer_id}", path_params=("computer_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "deleteEmailAccount": Operation(method="DELETE", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
+    "deleteModelGateway": Operation(method="DELETE", path="/settings/model-gateway", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "deleteWorkspaceArchil": Operation(method="DELETE", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "disconnectGitHub": Operation(method="DELETE", path="/integrations/github", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "finishChatGPTSignIn": Operation(method="POST", path="/settings/chatgpt/sign-in/finish", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -8832,6 +8951,7 @@ OPERATIONS: dict[str, Operation] = {
     "getClaudeLogin": Operation(method="GET", path="/settings/claude-login", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getEmailAccount": Operation(method="GET", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getGitHubConnection": Operation(method="GET", path="/integrations/github", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getModelGateway": Operation(method="GET", path="/settings/model-gateway", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getWorkspaceArchil": Operation(method="GET", path="/workspace/archil", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "gitHubCallback": Operation(method="GET", path="/integrations/github/callback", path_params=(), multi_segment=(), query=("code", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "gitHubInstalled": Operation(method="GET", path="/integrations/github/installed", path_params=(), multi_segment=(), query=("installation_id", "setup_action", "state"), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
@@ -8847,6 +8967,7 @@ OPERATIONS: dict[str, Operation] = {
     "saveComposioServer": Operation(method="PUT", path="/settings/mcp-servers/{name}/composio", path_params=("name",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("toolkit", "tools.[]", "user_id"), tagged=False),
     "saveComputerKeys": Operation(method="PUT", path="/computers/{provider}/keys", path_params=("provider",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "saveEmailAccount": Operation(method="PUT", path="/settings/email", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "saveModelGateway": Operation(method="PUT", path="/settings/model-gateway", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=True, public_fields=("base_url", "ids", "models.default", "models.fast", "models.strong"), tagged=False),
     "signOutChatGPT": Operation(method="DELETE", path="/settings/chatgpt", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startChatGPTSignIn": Operation(method="POST", path="/settings/chatgpt/sign-in", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "startClaudeLogin": Operation(method="POST", path="/settings/claude-login/login", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -8854,6 +8975,7 @@ OPERATIONS: dict[str, Operation] = {
     "testCalendar": Operation(method="POST", path="/settings/calendar/test", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "testComputer": Operation(method="POST", path="/computers/{provider}/test", path_params=("provider",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "testEmailAccount": Operation(method="POST", path="/settings/email/test", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "testModelGateway": Operation(method="POST", path="/settings/model-gateway/test", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=True, public_fields=("base_url",), tagged=False),
     "testWorkspaceArchil": Operation(method="POST", path="/workspace/archil/test", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "turnOffClaudeLogin": Operation(method="DELETE", path="/settings/claude-login", path_params=(), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "turnOnClaudeLogin": Operation(method="PUT", path="/settings/claude-login", path_params=(), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -9168,6 +9290,10 @@ class LocalResource(Group):
         """Forget this server's email account (DELETE /settings/email)."""
         return self._call("deleteEmailAccount", (), None, None, timeout=timeout)
 
+    def delete_model_gateway(self, *, timeout: float | None = None) -> DeleteModelGatewayResponse:
+        """Stop using the saved model gateway: the provider keys are back in force (DELETE /settings/model-gateway)."""
+        return self._call("deleteModelGateway", (), None, None, timeout=timeout)
+
     def delete_workspace_archil(self, *, timeout: float | None = None) -> DeleteWorkspaceArchilResponse:
         """Turn Mode 2 off: run folders on this server's own disk (DELETE /workspace/archil)."""
         return self._call("deleteWorkspaceArchil", (), None, None, timeout=timeout)
@@ -9199,6 +9325,10 @@ class LocalResource(Group):
     def get_git_hub_connection(self, *, timeout: float | None = None) -> GetGitHubConnectionResponse:
         """Whether a GitHub App is connected, and if so its id, slug and installations, never a secret (GET /integrations/github)."""
         return self._call("getGitHubConnection", (), None, None, timeout=timeout)
+
+    def get_model_gateway(self, *, timeout: float | None = None) -> GetModelGatewayResponse:
+        """The model gateway in force: the environment's, the one saved here, or none (GET /settings/model-gateway)."""
+        return self._call("getModelGateway", (), None, None, timeout=timeout)
 
     def get_workspace_archil(self, *, timeout: float | None = None) -> GetWorkspaceArchilResponse:
         """Whether run folders are on Archil disks (Mode 2), the settings, and whether its keys are saved (GET /workspace/archil)."""
@@ -9252,6 +9382,10 @@ class LocalResource(Group):
         """Save this server's email account, its password sealed (PUT /settings/email)."""
         return self._call("saveEmailAccount", (), body, None, timeout=timeout)
 
+    def save_model_gateway(self, body: SaveModelGatewayBody, *, timeout: float | None = None) -> SaveModelGatewayResponse:
+        """Use a model gateway for every model, saved here (PUT /settings/model-gateway). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
+        return self._call("saveModelGateway", (), body, None, timeout=timeout)
+
     def sign_out_chat_gpt(self, *, timeout: float | None = None) -> SignOutChatGPTResponse:
         """Sign out of ChatGPT: the session revoked at OpenAI, then forgotten here (DELETE /settings/chatgpt)."""
         return self._call("signOutChatGPT", (), None, None, timeout=timeout)
@@ -9275,6 +9409,10 @@ class LocalResource(Group):
     def test_email_account(self, body: TestEmailAccountBody | None = None, *, timeout: float | None = None) -> TestEmailAccountResponse:
         """Sign in to the email account's IMAP and SMTP servers, sending nothing (POST /settings/email/test)."""
         return self._call("testEmailAccount", (), body, None, timeout=timeout)
+
+    def test_model_gateway(self, body: TestModelGatewayBody | None = None, *, timeout: float | None = None) -> TestModelGatewayResponse:
+        """Ask a model gateway which models it serves (POST /settings/model-gateway/test). Its body's string values are secrets: each copy is cut from the answer, and a refusal keeps only its code."""
+        return self._call("testModelGateway", (), body, None, timeout=timeout)
 
     def test_workspace_archil(self, *, timeout: float | None = None) -> TestWorkspaceArchilResponse:
         """Test the Archil account key at its region's control plane (POST /workspace/archil/test)."""

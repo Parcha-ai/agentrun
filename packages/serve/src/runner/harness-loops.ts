@@ -1,3 +1,7 @@
+import { envGatewayInForce, readSavedGateway, savedGatewayIn, savedGatewayMarked, SAVED_GATEWAY_ENV, withSavedGateway } from "../model-gateway.js";
+import { GATEWAY_KEY_ENV } from "../model.js";
+import { heldRedactor } from "./redact.js";
+import { envValue } from "../key-meta.js";
 import { createSdkLoop } from "./sdk-loop.js";
 import { createNativeLoop } from "./native-loop.js";
 // The runner's dispatch switch (design 2.1: "the runner takes every run"): which loop a claimed run runs, by its revision
@@ -32,60 +36,83 @@ export class NeverFits extends ClaimRefused {
 
 /** The dispatch's `resolve`, built from the runner's deps: it reads the run's revision (for a workflow revision) and
  *  returns the loop the run runs on, or undefined when this runner does not run it (the dispatch fails it in words). */
-export function resolveRunnerLoop(deps: AdapterSpecDeps): (harness: string, launch: RunLaunch, runId: string) => Promise<LoopFactory | undefined> {
+export function resolveRunnerLoop(given: AdapterSpecDeps): (harness: string, launch: RunLaunch, runId: string) => Promise<LoopFactory | undefined> {
   return async (harness, launch, runId) => {
-    // A workflow revision runs on the workflow loop whatever the harness its body names (its default is pi): read the
-    // revision to tell it apart from an agentic pi run.
-    const run = await deps.store.runs.get(runId);
-    const revision = run ? await deps.store.agents.revision(run.revisionId) : undefined;
-    if (revision && isWorkflowRevision(revision)) {
-      // A workflow run on the workflow loop: its claim-time spec (workflow-spec.ts) resolves each tier's model the one way
-      // the runner resolves any (routeProviderOf over the route, the default when no providerOf is given).
-      // The runner's seal key and data directory go with it: a claim's sealed secrets are read with them (claim-secrets.ts,
-      // store-secrets.ts), and every one the server keeps is held by the run's one redactor.
-      return createWorkflowLoop(workflowSpecOf({ store: deps.store, sealKey: deps.sealKey, data: deps.data, ...(deps.env ? { env: deps.env } : {}) }));
-    }
-    // A backend SDK run's compile turn is asked on the runner's one model route, on the agent's own model (its learning
-    // start's), its key from the runner's environment, else the one saved in Settings → Model keys, read at each ask.
-    if (launch.sdk) return createSdkLoop(launch, deps, async () => {
-      const base = deps.env ?? process.env;
-      const env = withModelKeys(base, await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: base }));
-      // It runs after its backend reported the run complete, on no run's key: on a server that holds no gateway key it is
-      // skipped in words (run-model-key.ts noServerKeyFor), nothing sent.
-      const off = noServerKeyFor(env, "An SDK run's compile turn");
-      if (off) {
-        deps.log?.(off);
-        throw new Error(off);
-      }
-      return askRouteOf(launch.learning!.model, env, (model) => deps.routeOf(model, env, "default", PI_WIRES));
-    });
-    if (launch.native) return createNativeLoop(launch, deps);
-    // The harness's own entry decides which spec builds the run, by what the entry gives and never the harness's name: an
-    // entry with an adapter's facts and serve's own adapter for it (the CLI harnesses) runs the CLI spec (cli-run-spec.ts);
-    // any other (pi, or a harness module's entry that gives only the required members) runs the run spec
-    // (adapterRunSpecFromLaunch), whose adapter is its runner's (resolveHarness), with the record mode that runner names.
-    // A harness with no entry is unknown here: the dispatch fails it in words.
-    const env = deps.env ?? process.env;
-    const runner = resolveHarness(harness, env);
-    if (runner) {
-      // A run this host's memory never holds (host.ts neverFits: one run of its harness is more than the host has for runs)
-      // fails at its claim, in the words a start of it is refused in here (harness.ts harnessOffers): a run another host
-      // started, or one left before this host's memory shrank. Claimed alone (runner.ts claimByMemory), it would run past
-      // the host's memory and its OOM kill would take every run on it.
-      const tooBig = neverFits(harness, hostMemory(), env);
-      if (tooBig) throw new NeverFits(tooBig);
-      const entry = harnessOf(env, harness);
-      // A run that learns supplies its own end-of-run step (reflect + proposal over its store) from its spec builder now,
-      // where the run's Archil claim is: a Mode 2 run's learning folder is on its claim's disk, not this machine's local
-      // path (adapter-run-spec.ts / cli-run-spec.ts endOfRun). The loop prefers the spec's step over its deps' (stepOf); a
-      // run that does not learn supplies none. The same for the pi and the CLI spec.
-      return createAdapterLoop((claim, adapterRun) =>
-        entry?.facts && entry.adapter
-          ? cliRunSpecFromLaunch(launch, adapterRun, deps, claim)
-          : adapterRunSpecFromLaunch(launch, adapterRun, deps, claim, runner), deps.modelRetry ?? {});
-    }
-    return undefined;
+    // The model gateway saved in the console (model-gateway.ts), read from the store at each claim and laid over the run
+    // environment as its variables would be, so a gateway saved or removed since reaches the next run with no restart. A
+    // gateway the runner's environment names wins, and nothing saved is read over it.
+    const deps = await withSavedGatewayDeps(given);
+    const made = await loopOn(deps, harness, launch, runId);
+    return made && holdingGatewayKey(made, deps.env);
   };
+}
+
+/** `made` with the saved gateway's key, as this claim read it, held by the run's one redactor before the loop starts: the
+ *  key stays off the claim's tool keys (claimSecrets), and a later scan of the store (holdStored) would find only a key
+ *  saved since, so a gateway reply that echoes this one is cut in the run's records and logs all the same. `made` itself
+ *  where the gateway is not the saved one. */
+function holdingGatewayKey(made: LoopFactory, env: NodeJS.ProcessEnv | undefined): LoopFactory {
+  const key = env && savedGatewayIn(env) ? env[GATEWAY_KEY_ENV] : undefined;
+  if (!key) return made;
+  return (loopDeps) => {
+    if (loopDeps.redact) heldRedactor(loopDeps.redact).hold([key]);
+    return made(loopDeps);
+  };
+}
+
+/** The loop a claimed run runs on, over `deps` (the saved gateway laid over its environment). */
+async function loopOn(deps: AdapterSpecDeps, harness: string, launch: RunLaunch, runId: string): Promise<LoopFactory | undefined> {
+  // A workflow revision runs on the workflow loop whatever the harness its body names (its default is pi): read the
+  // revision to tell it apart from an agentic pi run.
+  const run = await deps.store.runs.get(runId);
+  const revision = run ? await deps.store.agents.revision(run.revisionId) : undefined;
+  if (revision && isWorkflowRevision(revision)) {
+    // A workflow run on the workflow loop: its claim-time spec (workflow-spec.ts) resolves each tier's model the one way
+    // the runner resolves any (routeProviderOf over the route, the default when no providerOf is given).
+    // The runner's seal key and data directory go with it: a claim's sealed secrets are read with them (claim-secrets.ts,
+    // store-secrets.ts), and every one the server keeps is held by the run's one redactor.
+    return createWorkflowLoop(workflowSpecOf({ store: deps.store, sealKey: deps.sealKey, data: deps.data, ...(deps.env ? { env: deps.env } : {}) }));
+  }
+  // A backend SDK run's compile turn is asked on the runner's one model route, on the agent's own model (its learning
+  // start's), its key from the runner's environment, else the one saved in Settings → Model keys, read at each ask.
+  if (launch.sdk) return createSdkLoop(launch, deps, async () => {
+    const base = deps.env ?? process.env;
+    const env = withModelKeys(base, await savedModelKeys({ store: deps.store, sealKey: deps.sealKey, env: base }));
+    // It runs after its backend reported the run complete, on no run's key: on a server that holds no gateway key it is
+    // skipped in words (run-model-key.ts noServerKeyFor), nothing sent.
+    const off = noServerKeyFor(env, "An SDK run's compile turn");
+    if (off) {
+      deps.log?.(off);
+      throw new Error(off);
+    }
+    return askRouteOf(launch.learning!.model, env, (model) => deps.routeOf(model, env, "default", PI_WIRES));
+  });
+  if (launch.native) return createNativeLoop(launch, deps);
+  // The harness's own entry decides which spec builds the run, by what the entry gives and never the harness's name: an
+  // entry with an adapter's facts and serve's own adapter for it (the CLI harnesses) runs the CLI spec (cli-run-spec.ts);
+  // any other (pi, or a harness module's entry that gives only the required members) runs the run spec
+  // (adapterRunSpecFromLaunch), whose adapter is its runner's (resolveHarness), with the record mode that runner names.
+  // A harness with no entry is unknown here: the dispatch fails it in words.
+  const env = deps.env ?? process.env;
+  const runner = resolveHarness(harness, env);
+  if (runner) {
+    // A run this host's memory never holds (host.ts neverFits: one run of its harness is more than the host has for runs)
+    // fails at its claim, in the words a start of it is refused in here (harness.ts harnessOffers): a run another host
+    // started, or one left before this host's memory shrank. Claimed alone (runner.ts claimByMemory), it would run past
+    // the host's memory and its OOM kill would take every run on it.
+    const tooBig = neverFits(harness, hostMemory(), env);
+    if (tooBig) throw new NeverFits(tooBig);
+    const entry = harnessOf(env, harness);
+    // A run that learns supplies its own end-of-run step (reflect + proposal over its store) from its spec builder now,
+    // where the run's Archil claim is: a Mode 2 run's learning folder is on its claim's disk, not this machine's local
+    // path (adapter-run-spec.ts / cli-run-spec.ts endOfRun). The loop prefers the spec's step over its deps' (stepOf); a
+    // run that does not learn supplies none. The same for the pi and the CLI spec.
+    return createAdapterLoop((claim, adapterRun) =>
+      entry?.facts && entry.adapter
+        ? cliRunSpecFromLaunch(launch, adapterRun, deps, claim)
+        : adapterRunSpecFromLaunch(launch, adapterRun, deps, claim, runner), deps.modelRetry ?? {});
+  }
+  return undefined;
 }
 
 /** The loop factory the runner holds for every run (its createLoop), built from the runner's deps over the one store: the
@@ -96,4 +123,16 @@ export function dispatchRunner(deps: AdapterSpecDeps): LoopFactory {
     launchOf: (runId) => deps.store.runs.launch(runId),
     resolve: resolveRunnerLoop(deps),
   });
+}
+
+/** `deps` with the model gateway saved in the console laid over its run environment (model-gateway.ts withSavedGateway),
+ *  read from the store now; `deps` itself where none is saved or the runner's environment names its own. A run's own
+ *  process (no seal key) reads nothing of it: its runner laid it over the claim (run-child-host.ts) and marked it
+ *  (SAVED_GATEWAY_ENV), and only that mark is read here. */
+export async function withSavedGatewayDeps(deps: AdapterSpecDeps): Promise<AdapterSpecDeps> {
+  const base = deps.env ?? process.env;
+  if (envValue(base, SAVED_GATEWAY_ENV) === "1") return { ...deps, env: savedGatewayMarked(base) };
+  if (envGatewayInForce(base) || !deps.sealKey) return deps;
+  const saved = await readSavedGateway(deps.store, deps.sealKey);
+  return saved ? { ...deps, env: withSavedGateway(base, saved) } : deps;
 }

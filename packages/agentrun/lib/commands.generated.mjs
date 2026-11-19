@@ -1483,6 +1483,26 @@ export const COMMANDS = [
   {
     "command": [
       "local",
+      "get-model-gateway"
+    ],
+    "operationId": "getModelGateway",
+    "method": "GET",
+    "path": "/settings/model-gateway",
+    "pathParams": [],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "The model gateway in force: the environment's, the one saved here, or none"
+  },
+  {
+    "command": [
+      "local",
       "get-workspace-archil"
     ],
     "operationId": "getWorkspaceArchil",
@@ -3921,6 +3941,18 @@ export const SECRET_ROUTES = [
     ]
   },
   {
+    "operationId": "saveModelGateway",
+    "method": "PUT",
+    "path": "/settings/model-gateway",
+    "publicFields": [
+      "base_url",
+      "ids",
+      "models.default",
+      "models.fast",
+      "models.strong"
+    ]
+  },
+  {
     "operationId": "saveSlack",
     "method": "PUT",
     "path": "/settings/slack",
@@ -3940,6 +3972,14 @@ export const SECRET_ROUTES = [
       "url",
       "scopes.[]",
       "client_id"
+    ]
+  },
+  {
+    "operationId": "testModelGateway",
+    "method": "POST",
+    "path": "/settings/model-gateway/test",
+    "publicFields": [
+      "base_url"
     ]
   }
 ];

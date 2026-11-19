@@ -7,10 +7,11 @@ import { harnessOf } from "./harness-table.js";
 import { redactSecrets, valueMatcher } from "./learn/secrets.js";
 import { hostModel, MODEL_KEYS } from "./model.js";
 import { openRouterOnly, WIRES } from "./provider.js";
+import { savedGatewayIn } from "./model-gateway.js";
 
 /** The key a run's model requests carry, and who reads it: a provider's (saved in Settings → Model keys, or set where
  *  AgentRun starts), or serve's gateway's (set where AgentRun starts only). */
-export type RunKey = { who: string; field: string; saved: boolean };
+export type RunKey = { who: string; field: string; saved: boolean; where?: string };
 
 const row = (id: string): RunKey | undefined => {
   const found = MODEL_KEYS.find((r) => r.id === id);
@@ -22,7 +23,8 @@ const row = (id: string): RunKey | undefined => {
 export function runKeyOf(env: NodeJS.ProcessEnv, harness: string = DEFAULT_HARNESS, ref?: string): RunKey | undefined {
   const named = ref ?? hostModel(env, "default", harness);
   const provider = named?.includes("/") ? named.slice(0, named.indexOf("/")) : undefined;
-  const gateway: RunKey = { who: "The gateway at AGENT_MODEL_BASE_URL", field: "AGENT_MODEL_API_KEY", saved: false };
+  // A gateway saved in the console (model-gateway.ts) is fixed there, never where AgentRun starts.
+  const gateway: RunKey = savedGatewayIn(env) ? { who: "The model gateway saved in Settings → Model keys", field: "its key", saved: true, where: "enter its key again in Settings → Model keys → Use a model gateway, and test it there." } : { who: "The gateway at AGENT_MODEL_BASE_URL", field: "AGENT_MODEL_API_KEY", saved: false };
   const wire = harnessOf(env, harness)?.facts?.wire;
   // Serve's gateway takes every request of the wire it serves, pi's too; a wire it does not serve never goes there.
   if (env.AGENT_MODEL_BASE_URL && (!wire || WIRES[wire].gateway)) return gateway;
@@ -174,7 +176,7 @@ export function keyRefusal(text: string | undefined, key: RunKey | undefined, se
   const at = REFUSED.exec(said);
   if (!at) return undefined;
   const detail = detailOf(said.slice(at[0].length));
-  const where = key.saved ? "set it where AgentRun starts, or save it in Settings → Model keys." : "set it where AgentRun starts.";
+  const where = key.where ?? (key.saved ? "set it where AgentRun starts, or save it in Settings → Model keys." : "set it where AgentRun starts.");
   return `${key.who} refused ${key.field} (401${detail ? `: ${detail}` : ""}): ${where}`;
 }
 

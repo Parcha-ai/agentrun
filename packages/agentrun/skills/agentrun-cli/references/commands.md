@@ -448,6 +448,12 @@ Whether a GitHub App is connected, and if so its id, slug and installations, nev
 
 Route: `GET /integrations/github`.
 
+### `agentrun local get-model-gateway`
+
+The model gateway in force: the environment's, the one saved here, or none.
+
+Route: `GET /settings/model-gateway`.
+
 ### `agentrun local get-workspace-archil`
 
 Whether run folders are on Archil disks (Mode 2), the settings, and whether its keys are saved.

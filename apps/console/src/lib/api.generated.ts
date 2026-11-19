@@ -1897,6 +1897,27 @@ export interface operations {
       };
     };
   };
+  deleteModelGateway: {
+    body: never;
+    answer: {
+      source: "env" | "console" | null;
+      base_url: string | null;
+      ids: "as_named" | "bare";
+      models: {
+        default: string | null;
+        fast: string | null;
+        strong: string | null;
+      };
+      set_at_start: string[];
+      secret: {
+        name: string;
+        set: boolean;
+        source: "env" | "console" | "sign-in" | null;
+        changed_at: string | null;
+      };
+      problem: string | null;
+    };
+  };
   deleteSlack: {
     body: never;
     answer: never;
@@ -2486,6 +2507,27 @@ export interface operations {
       listed_at: string;
       updated_at: string;
       secret?: components["SecretMeta"];
+    };
+  };
+  getModelGateway: {
+    body: never;
+    answer: {
+      source: "env" | "console" | null;
+      base_url: string | null;
+      ids: "as_named" | "bare";
+      models: {
+        default: string | null;
+        fast: string | null;
+        strong: string | null;
+      };
+      set_at_start: string[];
+      secret: {
+        name: string;
+        set: boolean;
+        source: "env" | "console" | "sign-in" | null;
+        changed_at: string | null;
+      };
+      problem: string | null;
     };
   };
   getNative: {
@@ -5080,6 +5122,36 @@ export interface operations {
       };
     };
   };
+  saveModelGateway: {
+    body: {
+      base_url: string;
+      api_key?: string | null;
+      ids?: "as_named" | "bare";
+      models?: {
+        default?: string;
+        fast?: string | null;
+        strong?: string | null;
+      };
+    };
+    answer: {
+      source: "env" | "console" | null;
+      base_url: string | null;
+      ids: "as_named" | "bare";
+      models: {
+        default: string | null;
+        fast: string | null;
+        strong: string | null;
+      };
+      set_at_start: string[];
+      secret: {
+        name: string;
+        set: boolean;
+        source: "env" | "console" | "sign-in" | null;
+        changed_at: string | null;
+      };
+      problem: string | null;
+    };
+  };
   saveSlack: {
     body: {
       url?: string;
@@ -5330,6 +5402,19 @@ export interface operations {
         ok: boolean;
         message: string;
       };
+    };
+  };
+  testModelGateway: {
+    body: {
+      base_url?: string;
+      api_key?: string | null;
+    };
+    answer: {
+      ok: true;
+      models: string[];
+    } | {
+      ok: false;
+      why: string;
     };
   };
   testSlack: {
