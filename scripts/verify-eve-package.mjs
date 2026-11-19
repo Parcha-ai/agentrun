@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { lstat, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { constants, tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -27,7 +27,9 @@ async function groupGone(pid, ms) {
  *  step's process exits, not when its pipes close (a child of the group could hold them open), and the step settles
  *  only once the group is gone: the consumer directory's cleanup never runs beside a live step. Each stream keeps at
  *  most its last `maxBuffer` bytes while the pipes go on draining. A failure names the command, its exit code or
- *  signal, whether it timed out, and the tails of stdout and stderr, each labelled. */
+ *  signal, whether it timed out, and the tails of stdout and stderr, each labelled. A SIGINT or SIGTERM to this process
+ *  while the step runs (its own group doesn't get the terminal's) kills the group and rejects, the error's `signal` set,
+ *  once the group is gone, so the caller's cleanup still runs. */
 export function runStep(command, args, { cwd, env, timeout = 180_000, maxBuffer = 8 * 1024 * 1024, grace = 5_000 } = {}) {
   return new Promise((resolve, reject) => {
     const started = Date.now();
@@ -42,9 +44,12 @@ export function runStep(command, args, { cwd, env, timeout = 180_000, maxBuffer 
       killer = setTimeout(() => signalGroup(child.pid, 'SIGKILL'), grace);
     };
     const timer = setTimeout(() => { timedOut = true; stop(); }, timeout);
+    // SIGKILL at once, not stop()'s grace: the caller removes the consumer folder next, so nothing a step tidies survives.
+    let stoppedBy;
+    const cancel = signal => { stoppedBy = signal; signalGroup(child.pid, 'SIGKILL'); };
+    process.once('SIGINT', cancel).once('SIGTERM', cancel);
     for (const name of ['stdout', 'stderr']) child[name].on('data', chunk => {
       written[name] += chunk.length; kept[name].push(chunk); keptBytes[name] += chunk.length;
-      // Only the last maxBuffer bytes are kept; the pipe goes on draining, so a step that ignores SIGTERM can't block.
       while (keptBytes[name] > maxBuffer) {
         const first = kept[name][0]; const extra = keptBytes[name] - maxBuffer;
         if (first.length <= extra) { kept[name].shift(); keptBytes[name] -= first.length; }
@@ -56,18 +61,19 @@ export function runStep(command, args, { cwd, env, timeout = 180_000, maxBuffer 
     const settle = (code, signal, left = '') => {
       if (settled) return;
       settled = true;
-      clearTimeout(timer); clearTimeout(killer);
+      clearTimeout(timer); clearTimeout(killer); process.off('SIGINT', cancel).off('SIGTERM', cancel);
       const text = name => Buffer.concat(kept[name]).toString('utf8');
       const stdout = text('stdout');
-      if (code === 0 && !timedOut && !over && !spawnError && !left) return resolve(stdout);
+      if (code === 0 && !timedOut && !over && !spawnError && !left && !stoppedBy) return resolve(stdout);
       const how = [
+        stoppedBy ? `stopped by ${stoppedBy}` : '',
         timedOut ? `timed out after ${Date.now() - started} ms (limit ${timeout} ms)` : '',
         over ? `${over} over ${maxBuffer} bytes (written ${written[over]}, kept the last ${keptBytes[over]})` : '',
         spawnError ? String(spawnError.message) : '', left,
         code !== null && code !== undefined ? `exit code ${code}` : signal ? `signal ${signal}` : '',
       ].filter(Boolean).join('; ');
       const tail = name => `--- ${name} (last ${TAIL} chars) ---\n${text(name).slice(-TAIL)}`;
-      reject(new Error(`eve package consumer step failed: ${[command, ...args].join(' ')}\n${how}\n${tail('stdout')}\n${tail('stderr')}`));
+      reject(Object.assign(new Error(`eve package consumer step failed: ${[command, ...args].join(' ')}\n${how}\n${tail('stdout')}\n${tail('stderr')}`), { signal: stoppedBy }));
     };
     child.on('error', error => {
       spawnError = error;
@@ -81,7 +87,6 @@ export function runStep(command, args, { cwd, env, timeout = 180_000, maxBuffer 
         stop();
         if (!await groupGone(child.pid, grace + 5_000)) left = 'its process group outlived SIGKILL';
       }
-      // The group is gone, so its pipes close; drain what is left, and drop them if something outside the group holds them.
       if (await Promise.race([closed.then(() => true), sleep(1_000).then(() => false)]) === false) {
         child.stdout.destroy(); child.stderr.destroy();
       }
@@ -201,7 +206,12 @@ if (isMain(import.meta)) {
   const version = (await json(join(repository, 'packages/eve/package.json'))).version;
   const tarballs = Object.fromEntries(['client', 'dsl', 'eve'].map(name => [name,
     join(resolve(directory), `parcha-agentrun-${name}-${version}.tgz`)]));
-  const result = await verifyEvePackage({ tarballs });
-  if (output) await writeFile(resolve(output), JSON.stringify(result, null, 2) + '\n');
-  console.log(JSON.stringify(result, null, 2));
+  try {
+    const result = await verifyEvePackage({ tarballs });
+    if (output) await writeFile(resolve(output), JSON.stringify(result, null, 2) + '\n');
+    console.log(JSON.stringify(result, null, 2));
+  } catch (error) {
+    console.error(error.message);
+    process.exitCode = error.signal ? 128 + constants.signals[error.signal] : 1;
+  }
 }

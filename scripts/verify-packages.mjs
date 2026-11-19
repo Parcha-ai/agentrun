@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
-import { tmpdir } from 'node:os';
+import { constants, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { auditBlockers } from './audit-exceptions.mjs';
 import { MACHINE_PATH } from './machine-path.mjs';
@@ -593,7 +593,8 @@ try { console.log(JSON.stringify({ cliPath: verifyClaudeAgent({}).cliPath })); }
   receipt.status = 'failed';
   receipt.error = error instanceof Error ? error.message : 'Unknown verification failure';
   console.error(receipt.error);
-  process.exitCode = 1;
+  // A step stopped by a signal (verify-eve-package's runStep) ends this process with that signal's status, once cleaned up.
+  process.exitCode = error?.signal ? 128 + constants.signals[error.signal] : 1;
 } finally {
   receipt.finishedAt = new Date().toISOString();
   await writeReceipt();
