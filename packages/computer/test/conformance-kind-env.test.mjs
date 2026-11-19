@@ -14,8 +14,8 @@ const daytona = await import("../dist/conformance/daytona.js");
 const dial = () => ({ url: "https://agentrun.example.com", tokens: new MemoryMachineTokens(), hub: new AttachHub() });
 const FLY = { COMPUTER_FLY_API_TOKEN: "fake-test-key-fly", COMPUTER_FLY_APP: "agentrun-conformance" };
 const CLOUDFLARE = { COMPUTER_CLOUDFLARE_RELAY_URL: "https://agentrun-relay.example.workers.dev", COMPUTER_CLOUDFLARE_RELAY_TOKEN: "fake-test-key-relay" };
-const MODAL = { AGENTRUN_COMPUTER_LIVE_MODAL: "1", COMPUTER_MODAL_TOKEN_ID: "fake-test-key-id", COMPUTER_MODAL_TOKEN_SECRET: "fake-test-key-secret", COMPUTER_MODAL_APP: "computers" };
-const DAYTONA = { COMPUTER_DAYTONA_API_KEY: "fake-test-key-daytona" };
+const MODAL = { AGENTRUN_COMPUTER_LIVE_MODAL: "1", COMPUTER_MODAL_TOKEN_ID: "fake-test-key", COMPUTER_MODAL_TOKEN_SECRET: "fake-test-key", COMPUTER_MODAL_APP: "computers" };
+const DAYTONA = { COMPUTER_DAYTONA_API_KEY: "fake-test-key" };
 const stub = () => async () => ({});
 /** A ModalClient whose sdk has the methods the provider checks for and calls none. */
 function ModalClient() {
