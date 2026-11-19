@@ -7,19 +7,10 @@ image:
   tag: ""
   pullPolicy: IfNotPresent
 
-# AGENTRUN_PUBLIC_URL: the address people open the console at (https://agentrun.example.com/), which the links the
-# server prints and sends use. Empty: the server's own address.
-publicUrl: ""
-
 # A Secret of your own with AGENTRUN_TOKEN (32 characters or more) and AGENTRUN_SEAL_KEY (openssl rand -base64 32); each
 # of its keys becomes a variable. Set it under Argo CD, Flux or `helm template`, which can't read the cluster and would
 # make new keys at every render. The chart then makes no Secret, and helm uninstall leaves yours.
 existingSecret: ""
-
-# helm uninstall leaves the Secret and the volume the chart made (helm.sh/resource-policy: keep), so every run and the
-# seal key survive it, and an install with the same release name in the same namespace takes them up again. false: an
-# uninstall removes them with the release.
-keepOnUninstall: true
 
 persistence:
   size: 10Gi
@@ -28,8 +19,7 @@ persistence:
   # A PersistentVolumeClaim of your own for /data. The chart then makes none, and helm uninstall leaves it.
   existingClaim: ""
 
-# 2Gi, as on Render. The runner budgets runs by its memory limit less 128 MiB: 1920 MiB holds six Claude Agent runs or
-# fifteen pi runs at once, and the rest wait queued.
+# 2Gi, as on Render: the runner budgets runs by this limit (deploy/README.md, runner memory).
 resources:
   requests:
     cpu: 500m
@@ -42,8 +32,11 @@ resources:
 # deploy/compose.yaml. Raise it with a longer drain, or runs wait for their claims to expire before they resume.
 terminationGracePeriodSeconds: 35
 
-# Plain variables, by name. AGENTRUN_TELEMETRY: "0" turns the usage counts off (docs/telemetry.md).
-# Model keys go in the console (Settings, Model keys), never here.
+# Plain variables, by name. AGENTRUN_PUBLIC_URL is the address people open the console at, which the links the server
+# prints and sends use, and the one NOTES prints; unset, the ingress's (http(s)://<host>/) when it is on, which also
+# overrides one in existingSecret. Set it here when TLS ends before the ingress (https:// with no tlsSecret).
+# AGENTRUN_TELEMETRY: "0" turns the usage counts off (docs/telemetry.md). Model keys go in the console (Settings, Model
+# keys), never here.
 env: {}
 
 # The container's arguments. Empty: the image's own, the server and a runner on /data, port 7340.
@@ -56,6 +49,7 @@ service:
   type: ClusterIP
   port: 7340
 
+# An Ingress for host, whose address is AGENTRUN_PUBLIC_URL unless env sets one.
 ingress:
   enabled: false
   className: ""

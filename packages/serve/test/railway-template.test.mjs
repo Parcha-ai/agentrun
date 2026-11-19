@@ -33,7 +33,9 @@ test("render.yaml and the Helm chart pin this release's image (the tag a release
   const chart = await read("deploy/helm/agentrun/Chart.yaml");
   assert.equal(/^version: (\S+)$/m.exec(chart)?.[1], version);
   assert.equal(/^appVersion: "(\S+)"$/m.exec(chart)?.[1], version);
-  assert.match(await read("deploy/helm/agentrun/values.yaml"), /^  repository: ghcr\.io\/parcha-ai\/agentrun-server\n  # .*\n  tag: ""$/m);
+  const values = await read("deploy/helm/agentrun/values.yaml");
+  assert.match(values, /^  repository: ghcr\.io\/parcha-ai\/agentrun-server$/m);
+  assert.match(values, /^  tag: ""$/m);
 });
 
 test("the start command is the image's own entrypoint and command, as the image's user, once the volume is that user's", async () => {

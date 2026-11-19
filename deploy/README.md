@@ -373,9 +373,7 @@ this checkout's image, or walks `AGENTRUN_IMAGE` when set.
   the other runner takes it over (read from `GET /v2/runs/{id}`'s `claim`), after a SIGKILL within the 30 s lease, and
   the run completes with each step done once.
 
-`helm/walk.sh`, which CI runs on a kind cluster (`helm-walk.yml`), walks the Helm chart the same way: install, a first
-run to completed, an upgrade that keeps the keys and the run, an uninstall and a reinstall that keep them too, and a
-last uninstall that, with the kept Secret and volume deleted, leaves nothing.
+`helm/walk.sh` (CI: `helm-walk.yml`, on kind) walks the chart: install, a first run, upgrade, uninstall and reinstall.
 
 Two walk the Railway template:
 

@@ -1,8 +1,6 @@
 name: Helm walk
 
-# The Helm chart (deploy/helm/agentrun) on a kind cluster (deploy/helm/walk.sh): helm install with the chart's own
-# image, ready, a first run to completed on the faux model (no key, no network, the usage counts off), helm upgrade onto
-# a new pod with the keys and the run kept, then helm uninstall with nothing left. Not a required check.
+# Runs deploy/helm/walk.sh on a kind cluster, after deploy/helm/render.sh. Not a required check.
 
 on:
   pull_request:
@@ -47,6 +45,8 @@ jobs:
           cluster_name: helm-walk
       - name: helm lint
         run: helm lint deploy/helm/agentrun
+      - name: The public address the server gets is the one NOTES prints
+        run: sh deploy/helm/render.sh
       - name: Walk
         run: REPORT="$RUNNER_TEMP/helm-walk.md" sh deploy/helm/walk.sh
       - name: Report
