@@ -1,0 +1,21 @@
+AgentRun Server {{ .Chart.AppVersion }} is starting in {{ .Release.Namespace }}, on a {{ .Values.persistence.size }} volume.
+
+Open the console:
+{{- if .Values.ingress.enabled }}
+  {{ .Values.publicUrl | default (printf "%s://%s/" (ternary "https" "http" (ne .Values.ingress.tlsSecret "")) .Values.ingress.host) }}
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ .Release.Name }} 7340
+  then http://127.0.0.1:7340/
+{{- end }}
+
+The token sets your password on the first screen. It's yours alone: don't share it.
+  kubectl -n {{ .Release.Namespace }} get secret {{ .Values.existingSecret | default .Release.Name }} -o jsonpath='{.data.AGENTRUN_TOKEN}' | base64 -d
+
+Then Continue with ChatGPT, or add a model key (Settings, Model keys), and run your first agent.
+Agents here get file tools and web_fetch, and no shell: a cluster gives the server no Docker. For a shell, add a sandbox
+provider's key in the console.
+{{- if not .Values.existingSecret }}
+
+helm uninstall removes the volume and the keys with the release. To keep your data, set persistence.existingClaim and
+existingSecret to ones of your own.
+{{- end }}
