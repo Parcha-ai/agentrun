@@ -834,6 +834,14 @@ export interface Runs {
   /** Moves the mark of every run whose listing read something outside the run (`flags`, RUN_LISTING_COLUMNS' listing_flags),
    *  of agent `agentId` when given: the server's keys changed, or an agent's learning folder did. The number of runs moved. */
   relist(options: { flags: number; agentId?: string }): Promise<number>;
+  /** Writes `usd`, an exact figure its booking gives, as ended run `runId`'s stored cost, only while that cost is still
+   *  unknown (null, no bound) and the run is the end it was read at (`epoch`, `endedAt`): one conditional write, so a
+   *  stored figure is never overwritten, a run reopened or ended again since keeps what its end wrote, and a second heal
+   *  writes nothing. True when it was written. */
+  healCost(runId: string, at: { readonly epoch: number; readonly endedAt: number }, usd: number): Promise<boolean>;
+  /** Ended runs, not imported, whose stored cost is unknown (null, no bound), by id after `after`, at most `limit`: what
+   *  the server's start sweep reads to heal (cost-heal.ts). */
+  costUnknown(options: { limit: number; after?: string }): Promise<string[]>;
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;
   /** Every run of agent `agentId` with its state, oldest first, its built-in learning runs included (which list leaves

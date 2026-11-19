@@ -405,6 +405,8 @@ function createMeter() {
   // cost, or with an end when aborted.
   let compactions = 0;
   let compacting = 0;
+  // Compaction summaries a host marked as side requests since pi's last pi.compaction entry: that entry is theirs.
+  let sideSummaries = 0;
   // How many are in flight: two side requests (a turn's parallel searches) may be.
   let sidesOpen = 0;
   const tokens: Tokens = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
@@ -434,9 +436,22 @@ function createMeter() {
       // The answer before it, continued: shown, never counted again.
       continued -= 1;
       return "continued";
+    } else if (entry.kind === "pi.compaction") {
+      // pi's summary of the older context. A summary request that left through the run's own model port was marked as a
+      // generation is (no `request` label) and booked at its price, and pi stores no answer for it: its cost rides on the
+      // answer pi stores beside it (what the session booked since the last one), so this entry is that request's answer,
+      // at no cost of its own here, its tokens unknown to pi's entries. One a host marked as a side request is closed by
+      // its own cost entry, never here. Shown as its phase row all the same.
+      if (sideSummaries > 0) sideSummaries = 0;
+      else if (marked - answered - freeUnanswered - atMostUnanswered - (freeEnded ? 1 : 0) - (atMostEnded !== undefined ? 1 : 0) > 0) {
+        (requests += 1), (answered += 1);
+        addTokens(undefined);
+      }
+      return undefined;
     } else if (entry.kind === REQUEST_STARTED && isSide(entry)) {
       compacting += 1;
       sidesOpen += 1;
+      if (obj(entry.data)?.request === COMPACTION) sideSummaries += 1;
     } else if (entry.kind === REQUEST_ENDED && isSide(entry)) {
       if (unsent(entry)) compacting -= 1;
       sidesOpen = Math.max(0, sidesOpen - 1);

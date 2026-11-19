@@ -103,6 +103,8 @@ export const runEnded = (status: string | undefined | null): boolean => typeof s
 /** A known $0 that is a free model's (the server's `free`, freemodel/1): every model request went to a model whose known
  *  price is $0 for every token. Said as the server's usage row says it. */
 export const FREE_COST = "$0 · free model";
+/** An ended run's cost the server could not read (its `unknown`, costunknown/1: `booking_unread`): unknown, and why. */
+export const UNREAD_COST = "Unknown · cost not read";
 const freeCost = (c: { usd: number | null; free?: boolean }) => c.usd === 0 && c.free === true;
 
 /** A known cost that counts a request cut with no answer at what its cap held for it (the server's `upper_bound`,
@@ -136,7 +138,7 @@ function dollarWords(c: Cost | null | undefined, ended: boolean): string {
   const known = soFar(c);
   const est = basisMark;
   if (known) return ended ? `${soFarDollars(known.so_far_usd)}${est(known)} known · ${known.unpriced} not priced` : `so far ${soFarDollars(known.so_far_usd)}${est(known)} · ${known.unpriced} not priced`;
-  if (!c || c.usd === null) return "Unknown";
+  if (!c || c.usd === null) return c?.unknown === "booking_unread" ? UNREAD_COST : "Unknown";
   if (freeCost(c)) return FREE_COST;
   return `${atMost(c)}${dollars(c.usd)}${est(c)}`;
 }

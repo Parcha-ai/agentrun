@@ -1149,6 +1149,23 @@ class SqliteStore implements Store {
         const row = await db.get<{ list_mark: number }>("SELECT list_mark FROM runs WHERE id = ?", runId);
         return row === undefined ? undefined : Number(row.list_mark);
       },
+      // A heal of an ended run's unknown cost from its priced booking: one conditional UPDATE, only null to a figure, only
+      // at the end it was read at (a reopen or a later end moves ended_at or the epoch), so it never overwrites a figure.
+      healCost: async (runId, { epoch, endedAt }, usd) => {
+        if (!Number.isFinite(usd) || usd < 0) throw new TypeError(`a healed cost is a figure of $0 or more (got ${usd})`);
+        const [result] = await db.write([{
+          sql: `UPDATE runs SET cost_usd = ?, cost_upper_bound = 0 WHERE id = ? AND cost_usd IS NULL AND state IN (${FINAL}) AND imported_from IS NULL AND epoch = ? AND ended_at = ? RETURNING id`,
+          params: [usd, runId, epoch, endedAt],
+        }]);
+        return (result?.rows.length ?? 0) > 0;
+      },
+      costUnknown: async ({ limit, after }) => {
+        const rows = await db.all<{ id: string }>(
+          `SELECT id FROM runs WHERE cost_usd IS NULL AND state IN (${FINAL}) AND imported_from IS NULL${after === undefined ? "" : " AND id > ?"} ORDER BY id LIMIT ?`,
+          ...(after === undefined ? [] : [after]), limit,
+        );
+        return rows.map((row) => row.id);
+      },
       relist: async ({ flags, agentId }) => {
         const [result] = await db.write([{
           sql: `UPDATE runs SET list_mark = list_mark + 1 WHERE listing_flags <> 0 AND (listing_flags & ?) <> 0${agentId === undefined ? "" : " AND agent_id = ?"} RETURNING id`,

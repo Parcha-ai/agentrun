@@ -3179,6 +3179,8 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   Cost: {
     ...SO_FAR,
+    // costunknown/1: why an ended run's cost is unknown when no charge it counts says so.
+    unknown: { type: "string", enum: ["booking_unread"], description: "Set only on a run that has ended, beside a null `usd` that neither `unpriced` nor `upper_bound` explains: why its cost is unknown. `booking_unread`: its end could not read the run's booking within its bound and stored the cost unknown, and this read found no booked request to read it from. A reader that bills holds the run, as on any null. Absent whenever the booking reads: an end that stored its cost unknown while the booking is priced reads the booking's figure (and `unpriced` with `so_far_usd` beside a null for a charge of no known cost).", "x-agentrun-serve": "costunknown/1" },
     // costbasis/1: a run's tokens beside its cost.
     tokens: {
       type: "object", additionalProperties: false, required: ["input", "output", "cache_read", "cache_write"],

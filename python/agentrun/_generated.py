@@ -2479,6 +2479,7 @@ class Cost(_CostRequired, total=False):
     so_far_usd: float
     unpriced: int
     upper_bound: Literal[True]
+    unknown: Literal["booking_unread"]
     tokens: CostTokens
     learning_usd: float | None
     tools_usd: float | None
