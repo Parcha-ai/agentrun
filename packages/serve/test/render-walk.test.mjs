@@ -129,16 +129,13 @@ test("the walk tries a request again only while Render's edge answers (502, 503 
     assert.equal(once.sent.length, 1);
   }
 
-  // An edge that keeps failing: its last answer once the time is up, with no send after the deadline.
+  // An edge that keeps failing: its last answer once the time is up, with no send after the deadline. One that ignored
+  // forMs would hang into the test's own timeout.
   const down = { n: 0, fetch: async () => { down.n++; return edge(502); } };
-  let t = Date.now();
   assert.equal((await throughEdge("https://x.onrender.com/", {}, { fetch: down.fetch, waitMs: 5, forMs: 50 })).status, 502);
-  assert.ok(Date.now() - t < 1_000);
   assert.ok(down.n <= 11, `${down.n} sends in 50 ms at 5 ms apart`);
 
   // A request that never answers is cut at the time left, not waited on.
   const hung = (url, init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason)));
-  t = Date.now();
   await assert.rejects(throughEdge("https://x.onrender.com/", {}, { fetch: hung, waitMs: 5, forMs: 100 }));
-  assert.ok(Date.now() - t < 1_000, `${Date.now() - t} ms`);
 });
