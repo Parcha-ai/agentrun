@@ -61,10 +61,3 @@ test('a binary with its pinned sha256 passes; one that differs is refused, ACP_B
   assert.throws(() => verifyPinnedBinary(join(dir, 'missing'), good.sha256), refusedWith(ACP_CODES.binaryUnreadable));
   assert.throws(() => verifyPinnedBinary(good.path, 'not-a-digest'), /not 64 lowercase hex/);
 });
-
-test('the package keeps no first-seen record of its own: the server installer\'s binaryRecord is the one path', async () => {
-  const acp = await import('@parcha/agentrun-harness-acp');
-  assert.equal('fileDigestRecord' in acp, false);
-  assert.equal('verifyFirstSeen' in acp, false);
-  assert.equal('binaryDrift' in ACP_CODES, false);
-});

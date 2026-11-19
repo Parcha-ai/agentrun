@@ -142,6 +142,23 @@ test("a server whose data has no Cursor lists none, saves an agent on it with a 
   assert.ok(refusedHere(data)(run.body.error.message), run.body.error.message);
 });
 
+test("on a host no release is pinned for (process.arch said arm64), Cursor is refused ACP_BINARY_UNPINNED before its install is looked at, listed or run", async (t) => {
+  const { cursorHidden, cursorMissing } = await import("../dist/harness-cursor.js");
+  const env = { [DATA_ENV]: await dataWith(t) };
+  const arch = process.arch;
+  const own = Object.getOwnPropertyDescriptor(process, "arch");
+  Object.defineProperty(process, "arch", { value: "arm64", configurable: true, enumerable: true });
+  try {
+    assert.match(cursorHidden(env) ?? "", /^ACP_BINARY_UNPINNED: Cursor \S+ has no release pinned for \S+-aarch64/);
+    const found = await cursorMissing(env);
+    assert.equal(found.missing?.code, "ACP_BINARY_UNPINNED", JSON.stringify(found));
+  } finally {
+    if (own) Object.defineProperty(process, "arch", own);
+    else delete process.arch;
+  }
+  assert.equal(process.arch, arch, "process.arch is put back");
+});
+
 test("installed and verified with no key, Cursor is listed and refused for want of CURSOR_API_KEY; with one, it runs here", { skip: needsCursor, timeout: 120_000 }, async (t) => {
   const data = await dataWith(t, CURSOR);
   const bare = { [DATA_ENV]: data };
