@@ -127,3 +127,52 @@ test("a negative, absurd or non-number price_usd, or a malformed auth_config_id,
   assert.deepEqual(s.composio.to("/api/v3.1/mcp/servers/custom")[0].body.auth_config_ids, ["ac_custom1"]);
   assert.deepEqual(taken.body.server.prices, { add: 0.25 });
 });
+
+/** The DELETEs Composio was sent from call `from` on, by path, in order. */
+const deletesFrom = (composio, from) => composio.calls.slice(from).filter((call) => call.method === "DELETE").map((call) => call.path);
+const mcpPath = (id) => `/api/v3.1/mcp/${id}`;
+
+test("an auth config named in auth_config_id is the owner's from that save on: the server's delete keeps it though an earlier save of the server made it; a plain save's delete still removes the one it made", async (t) => {
+  const s = await setup(t);
+  // A plain save makes github's managed auth config (ac_made_1) and starts an account (ca_link_1).
+  assert.equal((await save(s, "gh", { toolkit: "github", tools: ["add"] })).status, 200);
+  assert.deepEqual(s.composio.to("/api/v3/auth_configs", "POST").map((call) => call.body.toolkit.slug), ["github"]);
+  // The same server saved again naming that config: the owner's now.
+  const named = await save(s, "gh", { toolkit: "github", tools: ["add"], auth_config_id: "ac_made_1" });
+  assert.equal(named.status, 200, JSON.stringify(named.body));
+  const from = s.composio.calls.length;
+  const gone = await s.api("DELETE", "/settings/mcp-servers/gh");
+  assert.equal(gone.status, 200, JSON.stringify(gone.body));
+  const deleted = deletesFrom(s.composio, from);
+  assert.ok(!deleted.includes("/api/v3/auth_configs/ac_made_1"), `the auth config the owner named is never deleted: ${JSON.stringify(deleted)}`);
+  assert.deepEqual(deleted, [mcpPath(s.composio.mcpIds[1]), "/api/v3/connected_accounts/ca_link_2", "/api/v3/connected_accounts/ca_link_1"]);
+  assert.match(gone.body.composio.note, /the auth config ac_made_1, which AgentRun didn't make/);
+
+  // A plain save's delete, in the same run, removes the auth config it made (slack's, ac_made_2).
+  assert.equal((await save(s, "chat", { toolkit: "slack", tools: ["GITHUB_STAR_REPO"] })).status, 200);
+  const plainFrom = s.composio.calls.length;
+  assert.equal((await s.api("DELETE", "/settings/mcp-servers/chat")).status, 200);
+  assert.deepEqual(deletesFrom(s.composio, plainFrom), [mcpPath(s.composio.mcpIds[2]), "/api/v3/connected_accounts/ca_link_3", "/api/v3/auth_configs/ac_made_2"]);
+});
+
+test("an auth config another saved server made, once a server names it in auth_config_id, is the owner's: neither delete removes it", async (t) => {
+  const s = await setup(t);
+  // B's plain save makes github's managed auth config (ac_made_1) and starts an account (ca_link_1).
+  assert.equal((await save(s, "gh-b", { toolkit: "github", tools: ["add"] })).status, 200);
+  // A names that config: its own account under it (ca_link_2) is started by its connect link.
+  assert.equal((await save(s, "gh-a", { toolkit: "github", tools: ["add"], auth_config_id: "ac_made_1" })).status, 200);
+  assert.deepEqual(s.composio.to("/api/v3/connected_accounts/link").map((call) => call.body.auth_config_id), ["ac_made_1", "ac_made_1"]);
+  // A goes: its MCP server only. Its account is B's too (the same user under the same config), so B keeps it.
+  const aFrom = s.composio.calls.length;
+  const a = await s.api("DELETE", "/settings/mcp-servers/gh-a");
+  assert.equal(a.status, 200, JSON.stringify(a.body));
+  assert.deepEqual(deletesFrom(s.composio, aFrom), [mcpPath(s.composio.mcpIds[1])]);
+  // B goes: its MCP server and both accounts, never the auth config the owner named.
+  const bFrom = s.composio.calls.length;
+  const b = await s.api("DELETE", "/settings/mcp-servers/gh-b");
+  assert.equal(b.status, 200, JSON.stringify(b.body));
+  const deleted = deletesFrom(s.composio, bFrom);
+  assert.ok(!deleted.includes("/api/v3/auth_configs/ac_made_1"), `the auth config the owner named is never deleted: ${JSON.stringify(deleted)}`);
+  assert.deepEqual(deleted, [mcpPath(s.composio.mcpIds[0]), "/api/v3/connected_accounts/ca_link_1", "/api/v3/connected_accounts/ca_link_2"]);
+  assert.equal(s.composio.madeConfigs.github.length, 1, "the owner's auth config is still at Composio");
+});
