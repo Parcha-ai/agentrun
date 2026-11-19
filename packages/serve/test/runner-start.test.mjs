@@ -3,7 +3,7 @@
 // (no test runner context in its environment) and drives it by its own lines, never a sleep:
 //   - one ready line once it can claim: `Runner <name> ready: store sqlite schema v<N>, <N> loops`, then its memory
 //     budget on a line of its own: `Runner <name> memory: <N> MiB for runs, each weighed by its harness`;
-//   - exit 2 on bad arguments (runnerArgs' words), 3 on a store the server has not set up (SchemaVersionUnknown), 0 on
+//   - exit 2 on bad arguments (runnerArgs' words), 3 on a store the server has not set up or has yet to upgrade, 0 on
 //     SIGTERM after closing;
 //   - each option also as `--option=value` (the bin hands a data directory that starts with "-" as `--data=<dir>`), an
 //     empty value refused in words;
@@ -28,10 +28,12 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
+import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { dockerHost } from "./docker-host-fake.mjs";
-import { openPostgresStore, openSqliteStore } from "../dist/store/index.js";
+import { migrate, migrationsIn, openPostgresStore, openSqliteStore, PgConnection } from "../dist/store/index.js";
+import { STORE_FILE } from "../dist/store/sqlite/store.js";
 import { until } from "./runner-support.mjs";
 import { dropSchema, freshSchema, onPostgres, PG_URL, postgresOnly } from "./store-target.mjs";
 
@@ -196,6 +198,31 @@ test("a data directory the server has not set up: the runner exits 3, saying so"
   const child = runnerChild(t, ["--data", dir]);
   assert.deepEqual(await child.exited, { code: 3, signal: null });
   assert.match(child.err.join("\n"), /not set up yet: start the server on this data directory first/);
+});
+
+test("a store its server has yet to upgrade: the runner exits 3 on SQLite and on Postgres alike, saying to start the server first", async (t) => {
+  // SQLite: the server's store, set back one schema version (the server upgrades it at its next start).
+  const dir = await serverData(t);
+  const db = new DatabaseSync(join(dir, STORE_FILE));
+  db.prepare("UPDATE store_meta SET schema_version = ?").run(SCHEMA_VERSION - 1);
+  db.close();
+  const starts = [["sqlite", runnerChild(t, ["--data", dir])]];
+  if (onPostgres) {
+    // Postgres: every migration but this build's last, as the earlier release's server left the schema.
+    const schema = await freshSchema();
+    t.after(() => dropSchema(schema));
+    const connection = await PgConnection.open({ url: PG_URL, schema });
+    try {
+      await connection.withClient((c) => migrate(c, schema, 0, migrationsIn().slice(0, -1)));
+    } finally {
+      await connection.close();
+    }
+    starts.push(["postgres", runnerChild(t, ["--data", scratch(t, "agentrun-runner-pg-")], { AGENTRUN_STORE_URL: PG_URL, AGENTRUN_STORE_SCHEMA: schema })]);
+  }
+  for (const [kind, child] of starts) {
+    assert.deepEqual({ kind, exit: await child.exited }, { kind, exit: { code: 3, signal: null } }, child.err.join("\n"));
+    assert.match(child.err.join("\n"), /start the server first, which upgrades the store in place, then the runner/);
+  }
 });
 
 test("on the server's store the runner says it is ready in one line, then its memory budget in another, claims nothing with nothing queued, and SIGTERM closes it with exit 0", async (t) => {
