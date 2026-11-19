@@ -102,7 +102,8 @@ argument, and the run's skills that check accepts are taken out of the prompt an
 `kit.acpEntry` has no `skillCheck`, because the ACP adapter loads no skills, so an ACP agent's skills stay in its prompt.
 
 For either one, serve picks the model and the key the way it does for its own harnesses. A person's Claude Code login is
-never a module's credential.
+never a module's credential. An entry's `ownKeys` names no key a built-in harness owns (Cursor's `CURSOR_API_KEY`): if
+it does, the server refuses to start with `HARNESS_KEY_OWNED` and names the module, the id and the key.
 
 ### What no key fixes: `missing`
 

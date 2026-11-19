@@ -98,8 +98,9 @@ export interface HarnessEntry {
    *  It is still in the table, so a run or a save naming it is refused with these words. */
   hidden?(env: NodeJS.ProcessEnv): string | undefined;
   /** The secrets that are this harness's own (Cursor's CURSOR_API_KEY): a run of it is handed them, and a run of any
-   *  other harness never is (run-secrets.ts keysFor). Only a built-in's count (BUILTIN_OWN_KEYS): a module's entry that
-   *  names a key here moves no key from another harness's run. */
+   *  other harness never is (run-secrets.ts keysFor). Only a built-in's count, each for that built-in alone
+   *  (builtinOwns): a module's entry that names a key here moves no key from another harness's run, and one naming a
+   *  built-in's (BUILTIN_OWN_KEYS) is refused at load (HARNESS_KEY_OWNED). */
   readonly ownKeys?: readonly string[];
   /** What its owner reads before running it (capabilities' `card`): who bills it, what stops it, whose terms it runs
    *  under. None for a harness that runs on this server's keys and cap. */
@@ -497,6 +498,16 @@ const BUILTIN: Readonly<Record<HarnessId, HarnessEntry>> = Object.freeze({
  *  needs it too): a recipe or module never takes one (harness-recipe.ts). */
 export const BUILTIN_HARNESS_IDS: readonly string[] = Object.freeze(Object.keys(BUILTIN));
 
+/** Whether built-in harness `id` owns secret `key`: its own built-in entry names it in ownKeys. By the pair, so a key one
+ *  built-in owns never crosses to another built-in, a module's entry or a test's; and none is owned where its harness's
+ *  package is not beside serve (run-secrets.ts keysFor). */
+export function builtinOwns(id: string, key: string): boolean {
+  return Object.hasOwn(BUILTIN, id) && (BUILTIN as Record<string, HarnessEntry>)[id]!.ownKeys?.includes(key) === true;
+}
+
+/** The code a harness module's entry is refused by when its ownKeys names a key a built-in harness owns (BUILTIN_OWN_KEYS). */
+export const HARNESS_KEY_OWNED = "HARNESS_KEY_OWNED";
+
 const loaded = new Map<string, Readonly<Record<string, HarnessEntry>>>();
 const requireHere = createRequire(import.meta.url);
 
@@ -546,6 +557,8 @@ export function harnessTable(env: NodeJS.ProcessEnv): Readonly<Record<string, Ha
         if (Object.hasOwn(built, id)) throw new Error(`harness module ${module} names ${id}, which another module already adds`);
         const missing = WHOLE.filter((member) => entry[member] === undefined);
         if (missing.length) throw new Error(`harness module ${module}: its entry ${id} lacks ${missing.join(", ")}`);
+        const owned = (entry.ownKeys ?? []).filter((key) => BUILTIN_OWN_KEYS.includes(key));
+        if (owned.length) throw Object.assign(new Error(`${HARNESS_KEY_OWNED}: harness module ${module}: its entry ${id} names ${owned.join(", ")} in ownKeys, a key a built-in harness owns and is handed alone: a module's harness takes none of ${BUILTIN_OWN_KEYS.join(", ")}`), { code: HARNESS_KEY_OWNED });
         built[id] = Object.freeze({ ...entry, id }) as HarnessEntry;
       }
     }
