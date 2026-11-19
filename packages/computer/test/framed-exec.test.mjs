@@ -241,9 +241,17 @@ test("the pid wrapper's line is the pid and its start time, and the kill script 
 	};
 	const under = (pid) => readdirSync("/proc").filter((p) => /^\d+$/.test(p) && stat(p)?.[1] === pid);
 	let kids = [];
+	/** Each kid by its pid and start time, read once at the check: a pid with another start time is another process. */
+	let starts = new Map();
+	// One read of its stat per check. Gone, a zombie (Z) or being reaped (X: its reaper has taken it and not yet
+	// released it, so a Z can read X a moment later) is not running.
+	const running = (kid) => {
+		const s = stat(kid);
+		return s !== undefined && s[19] === starts.get(kid) && s[0] !== "Z" && s[0] !== "X";
+	};
 	t.after(() => {
 		child.kill("SIGKILL");
-		for (const kid of kids) spawnSync("kill", ["-KILL", kid]);
+		for (const kid of kids.filter(running)) spawnSync("kill", ["-KILL", kid]);
 	});
 	const [line] = await once(child.stderr, "data");
 	const [pid, start] = line.toString().trim().split(" ");
@@ -254,16 +262,20 @@ test("the pid wrapper's line is the pid and its start time, and the kill script 
 		kids = under(pid);
 	}
 	assert.equal(kids.length, 2, "sleep and cat");
+	starts = new Map(kids.map((kid) => [kid, stat(kid)?.[19]]));
 	const kill = (startTime) => spawnSync("sh", ["-c", PID_KILL, "sh", pid, startTime]).status;
 	assert.equal(kill(String(Number(start) + 1)), 0);
 	assert.equal(child.exitCode ?? child.signalCode, null, "another start time: another process, let be");
-	assert.ok(kids.every((kid) => stat(kid) !== undefined), "and its children too");
+	assert.ok(kids.every(running), "and its children too");
 	assert.equal(kill(start), 0);
 	assert.deepEqual(await once(child, "exit"), [null, "SIGKILL"]);
-	// One read of its stat per check: a process that ends between two reads is gone, not a TypeError.
-	const running = (kid) => (stat(kid)?.[0] ?? "Z") !== "Z";
-	for (let at = 0; at < 100 && kids.some(running); at++) await pause(20);
-	assert.deepEqual(kids.filter(running), [], "every process under it is killed");
+	// The assert reads what the wait's last check read, not a second read after it.
+	let left = kids.filter(running);
+	for (let at = 0; at < 100 && left.length > 0; at++) {
+		await pause(20);
+		left = kids.filter(running);
+	}
+	assert.deepEqual(left, [], "every process under it is killed");
 });
 
 test("the kill script also kills a process left in the group the pid leads, whose parent exited: an sshd session's background job", async (t) => {
