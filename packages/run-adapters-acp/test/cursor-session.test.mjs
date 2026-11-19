@@ -20,7 +20,7 @@ const cursorLike = (dir, fake, recipe = {}) => fakeRecipe(dir, { style: 'cursor'
 test("the recipe's key reaches the agent by name, and no other key of the host's does", async (t) => {
   const dir = scratch();
   const recipe = cursorLike(dir, { script: [{ say: 'hi' }] });
-  const env = { PATH: process.env.PATH, CURSOR_API_KEY: KEY, OPENAI_API_KEY: 'fake-openai-key', ANTHROPIC_API_KEY: 'fake-anthropic-key' };
+  const env = { PATH: process.env.PATH, CURSOR_API_KEY: KEY, OPENAI_API_KEY: 'fake-test-key', ANTHROPIC_API_KEY: 'fake-test-key' };
   const { session } = await openSession(t, recipe, { options: { env } });
   await session.send('go');
   assert.equal((await session.turnEnd()).status, 'completed');
