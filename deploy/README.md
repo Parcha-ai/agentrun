@@ -159,11 +159,10 @@ volume).
 ## On Coolify or Dokploy
 
 Each template runs the release's image as one service, the server with its runner beside it, with its data on a
-volume at `/data` and a 2 GB memory limit, which the runner budgets runs by (set `AGENTRUN_MEMORY` to change it). The platform generates the token and the seal key once, with its own secret generator, and gives
-the service its domain. Nothing gets the Docker socket, so agents get file tools and `web_fetch` but no shell, as on
-Render. Neither template needs a model key. To give agents a shell, add a sandbox provider's key in the console.
-Mounting the host's Docker socket into the service would also give them one, but it hands them the host itself, so
-neither template does it.
+volume at `/data` and a 2 GB memory limit, which the runner budgets runs by (set `AGENTRUN_MEMORY` to change it). The
+platform generates the token and the seal key once, with its own secret generator, and gives the service its domain.
+Neither template mounts the Docker socket, which would hand agents the host: they get file tools and `web_fetch`, no
+shell, as on Render. No model key is needed; for a shell, add a sandbox provider's key in the console.
 
 ### Coolify
 
@@ -406,7 +405,7 @@ Nothing converts an earlier volume.
 `walk/` holds two walks of this stack on a faux model (`walk/faux-steps.mjs`: no model key, no network). Each starts its
 own compose project with its own volume and seal key, prints a report (a `Verdict:` line, then a table of step, result and
 evidence), and removes everything when it ends. Each starts on a new volume, never an earlier server's, and builds
-this checkout's image, or walks `AGENTRUN_IMAGE` when set.
+this checkout's image.
 
 - `walk/smoke.sh`, which CI runs: the server is healthy, both runners say they are ready, and a run of an agent in the
   runner's place completes, each of its steps done once.
@@ -417,7 +416,7 @@ this checkout's image, or walks `AGENTRUN_IMAGE` when set.
 `helm/walk.sh` (CI: `helm-walk.yml`, on kind) walks the chart: install, a first run, upgrade, uninstall and reinstall.
 `selfhost/walk.sh coolify|dokploy` (CI: `selfhost-walk.yml`, each platform on a VM of its own) installs the platform, deploys
 the template through its API, makes a first run and removes it with its volume.
-Both walk the release's image, or `WALK_IMAGE` when set.
+Both walk the release's image. Every walk here walks `AGENTRUN_IMAGE=<image>` instead when it is set.
 
 Every day, `ways-in-daily.yml` walks every way in on main, whatever changed: the README's `npx @parcha/agentrun` as
 published (`packages/agentrun/test/npx-walk.sh`), main's launcher (`install-walk.yml`), and Docker Compose, Railway's

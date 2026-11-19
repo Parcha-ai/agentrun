@@ -9,6 +9,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { maxRunsOf } from "../dist/host.js";
 import { readFile } from "node:fs/promises";
+import { parse as parseYaml } from "yaml";
 import { besideRunnerOptions, besideStopping, DRAIN_TIMEOUT } from "../dist/runner/beside.js";
 import { durationMs } from "../dist/print.js";
 import { DEADLINE_MARGIN_MS } from "../dist/stop-signals.js";
@@ -128,7 +129,7 @@ test("a runner of its own stops inside the stop grace of compose, the Helm chart
   assert.ok(bound < Number(runner[1]) * 1_000, `the runner's close (${bound} ms) is inside compose's ${runner[1]} s`);
   assert.ok(bound < Number(pod[1]) * 1_000, `the runner's close (${bound} ms) is inside the chart's ${pod[1]} s`);
   for (const path of ["deploy/coolify/agentrun.yaml", "deploy/dokploy/agentrun/docker-compose.yml"]) {
-    const grace = /^    stop_grace_period: (\d+)s$/m.exec(await readFile(new URL(`../../../${path}`, import.meta.url), "utf8"));
+    const grace = /^(\d+)s$/.exec(parseYaml(await readFile(new URL(`../../../${path}`, import.meta.url), "utf8")).services.agentrun.stop_grace_period);
     assert.ok(grace && bound < Number(grace[1]) * 1_000, `the runner's close (${bound} ms) is inside ${path}'s stop_grace_period`);
   }
 });

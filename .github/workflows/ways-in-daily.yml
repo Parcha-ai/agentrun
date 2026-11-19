@@ -15,6 +15,8 @@ on:
       - '.github/workflows/ways-in-daily.yml'
       - 'scripts/ways-in-report.mjs'
       - 'packages/agentrun/test/npx-walk.sh'
+      - 'packages/agentrun/test/first-run.sh'
+      - '.github/actions/walk-image/**'
 
 permissions:
   contents: read
@@ -78,14 +80,11 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24.22.3'
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: ./.github/actions/walk-image
         with:
-          name: ways-in-image
-          path: ${{ runner.temp }}/image
+          artifact: ways-in-image
       - name: Walk
-        run: |
-          docker load -i "$RUNNER_TEMP/image/image.tar"
-          AGENTRUN_IMAGE=agentrun-walk:daily REPORT="$RUNNER_TEMP/docker-walk.md" sh deploy/walk/smoke.sh
+        run: REPORT="$RUNNER_TEMP/docker-walk.md" sh deploy/walk/smoke.sh
       - name: Keep the report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -106,14 +105,11 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '24.22.3'
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      - uses: ./.github/actions/walk-image
         with:
-          name: ways-in-image
-          path: ${{ runner.temp }}/image
+          artifact: ways-in-image
       - name: Walk
-        run: |
-          docker load -i "$RUNNER_TEMP/image/image.tar"
-          AGENTRUN_IMAGE=agentrun-walk:daily REPORT="$RUNNER_TEMP/railway-walk.md" node deploy/railway/local-walk.mjs
+        run: REPORT="$RUNNER_TEMP/railway-walk.md" node deploy/railway/local-walk.mjs
       - name: Keep the report
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

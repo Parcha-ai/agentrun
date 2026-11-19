@@ -62,15 +62,9 @@ jobs:
       - run: npm ci --ignore-scripts
       - name: The image to walk
         if: ${{ inputs.image }}
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        uses: ./.github/actions/walk-image
         with:
-          name: ${{ inputs.image }}
-          path: ${{ runner.temp }}/image
-      - name: Load it
-        if: ${{ inputs.image }}
-        run: |
-          image=$(docker load -i "$RUNNER_TEMP/image/image.tar" | sed -n 's/^Loaded image: //p' | head -n 1)
-          echo "WALK_IMAGE=$image" >> "$GITHUB_ENV"
+          artifact: ${{ inputs.image }}
       - name: Walk
         run: REPORT="$RUNNER_TEMP/selfhost-walk.md" sh deploy/selfhost/walk.sh "${{ matrix.platform }}"
       - name: Report

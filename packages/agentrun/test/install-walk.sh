@@ -22,6 +22,7 @@ set -euo pipefail
 mode=$1
 shift
 here=$(cd "$(dirname "$0")/.." && pwd)
+repo=$(cd "$here/../.." && pwd)
 agentrun=$HOME/.agentrun/bin/agentrun
 record=$HOME/.agentrun/.server.json
 log=$HOME/.agentrun/logs/agentrun.log
@@ -194,27 +195,12 @@ tailnet_walk() {
 # downloads, so it is said (the job summary, a warning over the bar) and never fails the job; the installer is bounded
 # at 600 s as the other modes' are, a hang and not a slow network.
 bar=300
-# docs/SKILL.md's line that starts with $1, or the walk fails: a prompt that no longer says it fails here first.
-skill_line() {
-  local line
-  line=$(grep -m 1 -F -- "$1" "$here/../../docs/SKILL.md") || die "docs/SKILL.md has no line starting $1"
-  printf '%s' "$line"
-}
-# The prompt's lines start with a literal ~/, which skill_line looks for as written: nothing here expands it.
-# shellcheck disable=SC2088
+# The prompt's steps after the installer: first-run.sh, which npx-walk.sh takes too.
+# shellcheck source=packages/agentrun/test/first-run.sh
+. "$here/test/first-run.sh"
 first_run_walk() {
-  local t0 t_install t_model t_ready t_create t_run total local_model background pair create start ready out nodebin model_log
-  local_model=$(skill_line '~/.agentrun/bin/agentrun service install --env AGENT_MODEL_BASE_URL=http://localhost:11434/v1 ')
-  local_model=${local_model//<tag>/walk-model}
-  # The background start's variables, every one as the prompt writes them (its line wraps): what runs in front of sh here.
-  background=$(tr '\n' ' ' < "$here/../../docs/SKILL.md" | grep -o -m 1 'curl -fsSL https://agentrun.ai/install | [A-Z_]*=[^`]* sh`') ||
-    die "docs/SKILL.md no longer puts the local model in front of sh for a background start"
-  background=${background#curl -fsSL https://agentrun.ai/install | }
-  background=${background% sh\`}
-  background=${background//<tag>/walk-model}
-  for pair in $background; do [[ $pair =~ ^[A-Z_]+=[^=]*$ ]] || die "the background start's line has $pair, not a VARIABLE=value"; done
-  create=$(skill_line "~/.agentrun/bin/agentrun agents create --body '{\"definition\":{\"id\":\"release-notes\"")
-  start=$(skill_line '~/.agentrun/bin/agentrun runs start release-notes --wait ')
+  local t0 t_install t_model t_ready t_create t_run total nodebin work out
+  first_run_lines "$agentrun" 11434 || die "$fr_why"
 
   t0=$SECONDS
   step "1. the installer"
@@ -224,50 +210,33 @@ first_run_walk() {
 
   step "2. a local model on localhost:11434 (walk-model.mjs, the stand-in for Ollama)"
   nodebin=$(echo "$HOME"/.agentrun/node/*/bin/node)
-  model_log=$(mktemp)
-  "$nodebin" "$here/test/walk-model.mjs" "$model_log" 11434 > /tmp/walk-model.out 2>&1 &
-  for _ in $(seq 1 50); do grep -q 'walk model on' /tmp/walk-model.out && break; sleep 0.1; done
-  grep -q 'walk model on' /tmp/walk-model.out || die "the walk model did not start: $(cat /tmp/walk-model.out)"
+  work=$(mktemp -d)
+  first_run_model "$nodebin" "$work" 11434 || die "$fr_why"
   if grep -q "so it runs in the background" /tmp/first-install.log; then
-    step "   Local model, in the background: agentrun stop, then the installer with $background in front of sh"
+    step "   Local model, in the background: agentrun stop, then the installer with $fr_vars in front of sh"
     "$agentrun" stop
     down 30
-    # shellcheck disable=SC2086 # the prompt's words, one VARIABLE=value each (checked above)
-    (for pair in $background; do export "${pair?}"; done; piped_install 600 /tmp/first-model.log "$@") || exit 1
+    # shellcheck disable=SC2086 # the prompt's words, one VARIABLE=value each (first_run_lines checked them)
+    (for pair in $fr_vars; do export "${pair?}"; done; piped_install 600 /tmp/first-model.log "$@") || exit 1
   else
-    step "   Local model, on the service: $local_model"
-    bash -c "$local_model"
+    step "   Local model, on the service: $fr_service"
+    bash -c "$fr_service"
   fi
   healthy 30
   t_model=$((SECONDS - t0))
 
   step "3. server capabilities until models.ready"
-  ready=
-  for _ in $(seq 1 60); do
-    out=$("$agentrun" server capabilities 2> /dev/null) || out=
-    if [ -n "$out" ] && "$nodebin" -e 'process.exit(JSON.parse(process.argv[1]).models?.ready === true ? 0 : 1)' "$out"; then ready=1; break; fi
-    sleep 1
-  done
-  [ -n "$ready" ] || die "models.ready is not true: $out"
+  first_run_ready "$nodebin" "$agentrun" || die "$fr_why"
   t_ready=$((SECONDS - t0))
 
-  step "4. $create"
-  bash -c "$create"
+  step "4. $fr_create"
+  first_run_agent || die "$fr_why"
   t_create=$((SECONDS - t0))
 
-  step "5. $start"
-  out=$(bash -c "$start") || die "runs start failed: $out"
-  echo "$out"
+  step "5. $fr_start"
+  first_run_run "$nodebin" || die "$fr_why"
+  echo "$fr_receipt"
   t_run=$((SECONDS - t0))
-  "$nodebin" -e '
-    const run = JSON.parse(process.argv[1]);
-    const fail = (why) => { console.error(`FAIL: ${why}`); process.exit(1); };
-    if (run.status !== "completed") fail(`the first run is ${run.status}: ${JSON.stringify(run.error ?? null)}`);
-    if (!/Added/.test(run.result?.final_answer ?? "")) fail(`the answer did not come from the local model: ${run.result?.final_answer}`);
-    if (typeof run.cost?.usd !== "number") fail("no cost.usd");
-    if (!/^https?:\/\//.test(run.console_url ?? "")) fail(`no console_url: ${run.console_url}`);
-  ' "$out" || die "the first run's receipt is not what the prompt hands over"
-  grep -qE '^POST .*/(responses|chat/completions)$' "$model_log" || die "the run never reached the local model: $(cat "$model_log")"
 
   total=$t_run
   out="paste to first run: ${total}s (bar ${bar}s): installer ${t_install}s, local model $((t_model - t_install))s, models.ready $((t_ready - t_model))s, agent $((t_create - t_ready))s, run $((t_run - t_create))s; \$0 (a local model)"
