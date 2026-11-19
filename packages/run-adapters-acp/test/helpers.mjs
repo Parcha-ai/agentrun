@@ -36,7 +36,7 @@ export function onArch(arch, run) {
   }
 }
 
-export const FAKE = fileURLToPath(new URL('./fake-acp-agent.mjs', import.meta.url));
+export const FAKE = fileURLToPath(new URL('../testing/fake-acp-agent.mjs', import.meta.url));
 const ROOT = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'agentrun-acp-test-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));
 let n = 0;

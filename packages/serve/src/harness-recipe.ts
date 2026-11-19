@@ -1,26 +1,4 @@
-// A harness recipe (door 1 of bring your own harness): a JSON file that says how to run an ACP agent AgentRun does not
-// ship, read by the one loader here. Goose's recipe (run-adapters-acp's recipes/goose.json) and its owner's install
-// (harness-goose.ts) are the path this generalizes: a recipe file its owner points at goes through the same five rules,
-// each refused by a code of its own (RECIPE_CODES) before anything is downloaded or started:
-//  1. Own keys only. `keys` names the keys saved for this harness alone (a vendor's API key). A key the server holds for
-//     anything else (the launcher's secrets: every model provider's, the gateway's, the tools', the computers', serve's
-//     own) is refused, and `env` names no key at all: a value in a recipe file is plain text.
-//  2. A pinned binary. The binary is the release's archive for this platform, as the ACP registry lists it: an https URL
-//     and its sha256. A recipe names no command, path or binary of its own. The binary's own sha256 is pinned when the
-//     recipe gives it; where it does not (the registry lists only the archive's), the install records the first one it
-//     unpacks from the verified archive (harness-archive.ts binaryRecord, the one first-seen path), and a binary that
-//     differs from it later is refused by the installer's code (HARNESS_BINARY_MISMATCH). The archive is in a format the
-//     installer unpacks (ARCHIVE_FORMATS: tar.bz2, tar.gz).
-//  3. Private paths. The files it writes and the state it keeps are paths inside the session's private HOME; the binary
-//     is a path inside its own folder.
-//  4. The owner installs it. Only `agentrun harness install --recipe FILE` downloads and unpacks it (installRecipe), into
-//     `<data>/harnesses/<id>`. A check or a run that finds it missing says that command and downloads nothing; a recipe
-//     names no install step, script or hook of its own.
-//  5. An allowlist environment. The agent's process gets the adapter's allowlist (PATH, LANG, TZ), its private HOME and
-//     tmp, the recipe's literal `env`, its own keys, and the proxy's address: nothing else of the host's. A recipe cannot
-//     ask for more (no inherit or pass-through field), names none of the variables the adapter or the proxy sets, and
-//     writes its values out (no `$NAME` for the host to fill in).
-// Nothing here reads the network or starts a process.
+// A harness recipe (HARNESS.md#a-recipe): the one loader, refusing by RECIPE_CODES before anything is downloaded.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { isAbsolute, join, normalize, resolve, sep } from "node:path";

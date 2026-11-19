@@ -22,38 +22,20 @@ import { connect as netConnect, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentAdapter, HostTool, SessionRecord, SessionStore } from "@parcha/agentrun-kernel";
+import type { AcpRecipe } from "@parcha/agentrun-harness-acp";
 import { modelPortFor, SessionFenced } from "@parcha/agentrun-kernel";
 import { beforeRequestOf } from "@parcha/agentrun-kernel/kernel/cap";
-import { ACP_PACKAGE } from "./acp-package.js";
-import { priceOf } from "./adapters.js";
+import { ACP_PACKAGE, acpPackage } from "./acp-package.js";
+import type { AdapterNeeds } from "./adapters.js";
 import { ARCHIVE_CODES, archivePlatform, digestOf } from "./harness-archive.js";
 import { installDirOf } from "./harness-install.js";
 import { AGENT_VARS, loadRecipe, pinnedDigest, type Recipe, recipeBinaryOf, recipeInstallLine, RecipeRefused, releaseFor } from "./harness-recipe.js";
+import { acpEntryOf } from "./harness-table.js";
 import { providerModels } from "./model.js";
-import { providerFor } from "./provider.js";
 import { capModelOf } from "./runner/cli-run-spec.js";
 import { keyShaped } from "./secret-name.js";
 import { secretRedactor } from "./runner/redact.js";
 import { hostSecrets, SECRET_NAMES } from "./secrets.js";
-import { createRequire } from "node:module";
-
-/** What the check reads of the ACP package. */
-type AcpCheckPackage = {
-  acpAdapter(options: Record<string, unknown>): AgentAdapter;
-  gooseProxy(options: Record<string, unknown>): unknown;
-};
-
-const requireHere = createRequire(import.meta.url);
-
-/** The ACP package beside this server, or undefined. */
-function acpCheckPackage(): AcpCheckPackage | undefined {
-  try {
-    requireHere.resolve(ACP_PACKAGE);
-  } catch {
-    return undefined;
-  }
-  return requireHere(ACP_PACKAGE) as AcpCheckPackage;
-}
 
 /** The proxy variables the check points at its own egress proxy, in both cases, whatever the recipe sets. */
 const EGRESS_VARS = ["HTTPS_PROXY", "HTTP_PROXY", "https_proxy", "http_proxy"];
@@ -277,28 +259,17 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
   if (found !== pin.sha256) return refuse(ARCHIVE_CODES.binary, `${binary} has sha256 ${found ?? "(unreadable)"}, and ${pin.by === "recipe" ? "the recipe pins" : "its first install recorded"} ${pin.sha256}. Install it again with: ${line}`);
   say(`${recipe.label}: the binary is the pinned one (${pin.by === "recipe" ? "the recipe's sha256" : "the first sha256 its install recorded"})`);
 
-  const acp = acpCheckPackage();
+  const acp = acpPackage();
   if (!acp) return refuse("HARNESS_NOT_INSTALLED", `the ACP adapter (${ACP_PACKAGE}) is not installed beside this server`);
 
-  // The model, and who bills it.
+  // The run's model, for a recipe billed through the proxy: named here; its key, the login refusal and its price are its
+  // entry's (below), as a server's are.
   const env = options.env;
-  let provider: ReturnType<typeof providerFor> | undefined;
-  let price: ((model: string, usage: { input: number; output: number; cacheRead?: number; cacheWrite?: number }) => number | null) | undefined;
-  let capModel: ReturnType<typeof capModelOf> | undefined;
+  let needs: AdapterNeeds | undefined;
   if (recipe.model.billing === "proxy") {
     const ref = options.model ? modelRef(options.model) : undefined;
     if (!ref) return refuse("HARNESS_CHECK_USAGE", `${recipe.label} is billed through the proxy: name the run's model with --model provider/model-id (openrouter/anthropic/claude-haiku-4.5, anthropic/claude-haiku-4-5)`);
-    try {
-      provider = providerFor("anthropic-messages", env, ref, recipe.label);
-    } catch (error) {
-      return refuse("HARNESS_CHECK_MODEL", (error as Error).message);
-    }
-    if (provider.login) return refuse("HARNESS_CHECK_MODEL", `${recipe.label} runs on a model key: Claude Code's login on this machine is its CLI's alone`);
-    const models = await providerModels(env);
-    const listed = models.getModel(provider.priceModel.provider, provider.priceModel.modelId) as { cost?: Record<string, number>; maxTokens?: number } | undefined;
-    price = priceOf({ model: provider.priceModel, models });
-    capModel = capModelOf(provider.priceModel.modelId, "anthropic-messages", listed as never, listed === undefined);
-    if (!capModel.price) return refuse("HARNESS_CHECK_MODEL", `${provider.priceModel.provider}/${provider.priceModel.modelId} has no price here, so the check's cap could not hold; name a priced model`);
+    needs = { model: ref, models: await providerModels(env) };
   }
 
   // The session: the check's tools, its gate, its egress proxy, the recording fetch.
@@ -346,52 +317,79 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
   // each is read by name.
   const hostKeys = keyValues(env, recipe.keys);
   const childVars: Record<string, string> = { ...recipe.env };
-  if (recipe.model.billing === "proxy") childVars[recipe.model.env] = provider!.modelId;
   for (const name of EGRESS_VARS) childVars[name] = egress.url;
   for (const name of NO_PROXY_VARS) childVars[name] = `${LOOPBACK},localhost`; // key-gate: loopback-rule the hosts the agent reaches without the refusing proxy: the model proxy and MCP on this machine
-  const acpRecipe = {
+  // The run's model id reaches a proxy-billed agent under the variable its recipe names.
+  const modelVar = recipe.model.billing === "proxy" ? recipe.model.env : undefined;
+  const acpRecipeOf = (model?: string): AcpRecipe => ({
     id: recipe.id,
     label: recipe.label,
     command: binary,
     args: [...recipe.args],
-    env: childVars,
+    env: { ...childVars, ...(modelVar && model !== undefined ? { [modelVar]: model } : {}) },
     keys: [...recipe.keys],
     files: { ...recipe.files },
     state: [...recipe.state],
     declares: { ...recipe.declares },
     billing: recipe.model.billing === "proxy" ? { kind: "proxy" } : { kind: "plan", maxTurns: recipe.model.maxTurns, maxToolCalls: recipe.model.maxToolCalls },
     ...(recipe.quirks.mcpCall ? { quirks: { mcpCall: recipe.quirks.mcpCall } } : {}),
-  };
-  // The session's model proxy (the one on Anthropic's Messages there is, Goose's policy), its address under the variable
-  // the recipe names.
-  type Proxy = (session: unknown) => Promise<{ env: Record<string, string>; close(): Promise<void> }>;
-  const messagesProxy = recipe.model.billing === "proxy" ? (acp.gooseProxy({ model: provider!.modelId, provider: { origin: provider!.origin, credential: provider!.credential, ...(provider!.auth ? { auth: provider!.auth } : {}) }, ...(price ? { price } : {}), log, fetch: recording }) as Proxy) : undefined;
-  const proxyAt: string = recipe.model.billing === "proxy" ? (recipe.model.hostEnv ?? "ANTHROPIC_HOST") : "ANTHROPIC_HOST";
-  const proxy: Proxy | undefined = messagesProxy && (async (session) => {
-    // The proxy's own address, under proxyAt, beside the key that opens it alone (never a provider's).
-    const started = await messagesProxy(session);
-    const { ANTHROPIC_HOST: address, ...opens } = started.env;
-    return { env: { ...opens, [proxyAt]: address! }, close: started.close };
   });
+  const starts: string[] = [];
+  // Each start of the agent's process checks the pin again: a binary swapped after the check began never runs.
+  const beforeStart = async (command: string) => {
+    const now = await digestOf(command);
+    starts.push(now);
+    if (now !== pin.sha256) throw new Error(`${ARCHIVE_CODES.binary}: ${command} changed after the check began (sha256 ${now})`);
+  };
+  // A proxy-billed recipe starts as a module's ACP agent does on a server (harness-table.ts acpEntryOf): its model and key
+  // chosen and a login refused there, its price, the adapter over its recipe and the session's model proxy (the one on
+  // Anthropic's Messages there is, Goose's policy, its address under the variable the recipe names), on this check's log
+  // and host environment.
+  const proxyAt: string = recipe.model.billing === "proxy" ? (recipe.model.hostEnv ?? "ANTHROPIC_HOST") : "ANTHROPIC_HOST";
+  const entry = needs && acpEntryOf({
+    facts: { ...acp.gooseFacts, id: recipe.id, label: recipe.label },
+    recipe: (launch) => acpRecipeOf(launch.model),
+    proxy: (launch) => {
+      const messagesProxy = acp.gooseProxy({ model: launch.model, provider: launch.provider, price: launch.price, log: launch.log, fetch: recording });
+      return async (session) => {
+        // The proxy's own address, under proxyAt, beside the key that opens it alone (never a provider's).
+        const started = await messagesProxy(session);
+        const { ANTHROPIC_HOST: address, ...opens } = started.env;
+        return { env: { ...opens, [proxyAt]: address! }, close: started.close };
+      };
+    },
+    beforeStart,
+  }, { log, env: true });
+  // Plan billing starts the adapter directly because the kit has no plan entry (adapterEntry refuses a non-model wire, and acpEntry requires a proxy); this goes when a module needs plan billing.
+  const adapterFor = async (): Promise<AgentAdapter> => entry ? entry.adapter!(hostEnv, needs!) : acp.acpAdapter({ recipe: acpRecipeOf(), env: hostEnv, log, beforeStart });
+  // The first runner's adapter is made before any turn, so a model this server can't run is refused before the agent
+  // starts; with it, the cap's model, priced here or refused.
+  let firstAdapter: AgentAdapter | undefined;
+  let capModel: ReturnType<typeof capModelOf> | undefined;
+  if (entry && needs) {
+    const refuseHere = async (message: string) => {
+      await egress.close();
+      await rm(work, { recursive: true, force: true }).catch(() => {});
+      return refuse("HARNESS_CHECK_MODEL", message);
+    };
+    try {
+      firstAdapter = await adapterFor();
+    } catch (error) {
+      return refuseHere((error as Error).message);
+    }
+    const priceModel = entry.priceModel(hostEnv, needs.model);
+    const listed = needs.models.getModel(priceModel.provider, priceModel.modelId) as { cost?: Record<string, number>; maxTokens?: number } | undefined;
+    capModel = capModelOf(priceModel.modelId, "anthropic-messages", listed as never, listed === undefined);
+    if (!capModel.price) return refuseHere(`${priceModel.provider}/${priceModel.modelId} has no price here, so the check's cap could not hold; name a priced model`);
+  }
   let capUsd: number | undefined = options.capUsd ?? CHECK_DEFAULT_CAP_USD;
   const store = checkStore();
-  const starts: string[] = [];
-  const adapterFor = (sessionsDir: string) => acp.acpAdapter({
-    recipe: acpRecipe,
-    sessionsDir,
-    env: hostEnv,
-    log,
-    // Each start of the agent's process checks the pin again: a binary swapped after the check began never runs.
-    beforeStart: async (command: string) => {
-      const now = await digestOf(command);
-      starts.push(now);
-      if (now !== pin.sha256) throw new Error(`${ARCHIVE_CODES.binary}: ${command} changed after the check began (sha256 ${now})`);
-    },
-    ...(proxy ? { proxy } : {}),
-  });
   const refusedRequests: { reason: string; code?: string; message?: string }[] = [];
   let lastBooking: Awaited<ReturnType<typeof modelPortFor>> | undefined;
-  const sessionOn = async (sessionsDir: string) => {
+  // A runner's session, in its own directory (the one a server lends, io.dir), on its own adapter.
+  const sessionOn = async (dir: string) => {
+    const adapter = firstAdapter ?? (await adapterFor());
+    firstAdapter = undefined;
     const writer = await store.open("check");
     const booking = await modelPortFor(writer, {
       key: "check",
@@ -400,7 +398,7 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
     });
     lastBooking = booking;
     const controller = new AbortController();
-    const session = await adapterFor(sessionsDir).open({ key: "check", label: "root", system: [], tools, context: "fresh" }, { writer, models: booking.models, signal: controller.signal, onEvent: () => {}, gate } as never);
+    const session = await adapter.open({ key: "check", label: "root", system: [], tools, context: "fresh" }, { writer, models: booking.models, signal: controller.signal, onEvent: () => {}, gate, dir } as never);
     const turn = async (text: string) => {
       const timer = setTimeout(() => controller.abort(new Error("the turn took too long")), options.turnMs ?? TURN_MS);
       try {
@@ -444,7 +442,7 @@ async function checkRun(options: HarnessCheckOptions, held: string[]): Promise<H
     // Stage 2: the environment is the allowlist.
     if (environ) {
       // The recipe's keys too: the adapter hands each over by name (recipe.keys), never through childVars.
-      const expected = new Set([...Object.values(AGENT_VARS).flat(), ...Object.keys(childVars), ...recipe.keys, ...SHELL_OWN]);
+      const expected = new Set([...Object.values(AGENT_VARS).flat(), ...Object.keys(childVars), ...(modelVar ? [modelVar] : []), ...recipe.keys, ...SHELL_OWN]);
       const extra = Object.keys(environ).filter((name) => !expected.has(name)).sort();
       const leaked = Object.entries(environ).filter(([, value]) => hostKeys.includes(value) || value === canary).map(([name]) => name).sort();
       stage2.env_allowlist = { ok: extra.length === 0 && leaked.length === 0, names: Object.keys(environ).sort(), beyondAllowlist: extra, hostSecretsSeen: leaked };

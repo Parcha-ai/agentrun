@@ -18,10 +18,11 @@ import { agentInputOf, type FieldSpec, fieldIssueWords, fieldLabel, fieldOfIssue
 import { curlFor, exampleHint, exampleInput, keeper, type StartBody, startBody, submitStart } from "@/lib/runStart";
 import { type ParameterText, paramHelp } from "@/lib/templatePackages";
 import { SpendCapMinimum } from "@/lib/spendCap";
+import { capWords } from "@/components/NeedsYou";
 import { sendUpload, type Upload } from "@/lib/uploads";
 import { cn } from "@/lib/utils";
 
-const NOTES = { "input.content": "Required. The run's first message.", file_ids: "Empty names none.", revision: "Empty runs the current revision.", effort: "How hard the model thinks. Empty uses the agent's own.", max_cost_usd: "A spend cap in dollars; empty means none.", repo: "The GitHub repository the run reaches, owner/name. It must be one the agent is bound to; empty takes the agent’s one repository." } as const;
+const NOTES = { "input.content": "Required. The run's first message.", file_ids: "Empty names none.", revision: "Empty runs the current revision.", effort: "How hard the model thinks. Empty uses the agent's own.", max_cost_usd: "This run's spend cap in dollars. Empty uses the agent's default cap, or none if it has none.", repo: "The GitHub repository the run reaches, owner/name. It must be one the agent is bound to; empty takes the agent’s one repository." } as const;
 
 export type StartResult = { status: number; ms: number; body: unknown; runId?: string };
 
@@ -69,6 +70,15 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   // against the revision it runs), else the current one's. The fields start again for another agent, or a changed
   // schema.
   const picked = revision ? revisions.find((r) => r.revision === revision)?.definition : undefined;
+  // The default cap an empty max_cost_usd box leaves in force (as the run bar says it): the picked revision's, since the
+  // server runs with the cap of the revision it runs, else the current one's. A number is that cap and null is none;
+  // undefined is a picked revision whose definition the page does not hold, so the box names no amount.
+  const capFrom = revision ? picked : agent?.definition;
+  const defaultCap = !capFrom ? undefined : typeof capFrom.max_cost_usd === "number" && capFrom.max_cost_usd > 0 ? capFrom.max_cost_usd : null;
+  const whoseCap = revision ? "that revision's" : "the agent's";
+  const capNote = defaultCap === undefined ? `This run's spend cap in dollars. Empty uses ${whoseCap} default cap, or none if it has none.`
+    : defaultCap === null ? "This run's spend cap in dollars. Empty runs it with no cap."
+    : `This run's spend cap in dollars. Empty uses ${whoseCap} default cap, ${capWords(defaultCap)}.`;
   const schemaKey = kind === "agentic" ? JSON.stringify((picked ?? agent?.definition)?.input_schema ?? null) : "null";
   const shape = useMemo(() => (kind === "agentic" ? agentInputOf(JSON.parse(schemaKey)) : null), [kind, schemaKey]);
   const form = shape?.kind === "fields" ? shape.form : null;
@@ -210,8 +220,8 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
                   <Input id="playground-repo" value={repo} onChange={(e) => setRepo(e.target.value)} placeholder="owner/name" />
                 </Label>}
                 {kind === "agentic" && !native && (
-                  <Label htmlFor="playground-cap" name="max_cost_usd" note="A spend cap in dollars; empty means none." error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
-                    <Input id="playground-cap" value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder="e.g. 0.50" className={field} />
+                  <Label htmlFor="playground-cap" name="max_cost_usd" note={capNote} error={!built.ok && built.field === "max_cost_usd" ? built.message : undefined}>
+                    <Input id="playground-cap" value={cap} onChange={(e) => setCap(e.target.value)} inputMode="decimal" placeholder={typeof defaultCap === "number" ? capWords(defaultCap) : "e.g. 0.50"} className={field} />
                     <p className="mt-1.5 text-small text-muted-foreground"><SpendCapMinimum /></p>
                   </Label>
                 )}

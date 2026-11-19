@@ -40,7 +40,9 @@ const TOKENS_TITLE = "The run's model requests' tokens, as the provider or gatew
 /** The run's title bar: back to its agent, the title, its status, what it cost so far, stop versus cancel, and archive.
  *  Stop ends the turn and keeps the run open (it waits for a message); cancel ends the run for good, after a confirm.
  *  Archive hides the run from the runs list and keeps it; the server takes it in any state, as serve's own page offers it. */
-export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run; agentName: string; actions?: RunActions; costText?: string }) {
+/** `raiseBelow`: the page already shows a raise form for this run (a run paused at its cap, under its banner). The header's
+ *  Raise the cap button then takes the person to that form instead of opening a second one above it. */
+export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow }: { run: Run; agentName: string; actions?: RunActions; costText?: string; raiseBelow?: () => void }) {
   // Where it ran, as its start resolved it.
   const sdk = backendSdkOf(run);
   const ranIn = sdk ? "your backend" : runPlaceWords(run.place);
@@ -103,7 +105,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
         {(view.canStop || view.canCancel || actions.onArchive || raisable) && (
           <div className="flex shrink-0 flex-wrap items-center gap-2">
             {raisable && (
-              <Button size="sm" onClick={() => setRaising((r) => !r)} aria-expanded={raising} title={`Raise its ${capWords(cap!)} spend cap.`}>
+              <Button size="sm" onClick={raiseBelow ?? (() => setRaising((r) => !r))} aria-expanded={raiseBelow ? undefined : raising} title={`Raise its ${capWords(cap!)} spend cap.`}>
                 <CircleDollarSign aria-hidden /> Raise the cap
               </Button>
             )}
@@ -132,7 +134,7 @@ export function RunHeader({ run, agentName, actions = {}, costText }: { run: Run
           </div>
         )}
       </div>
-      {raisable && raising && (
+      {raisable && raising && !raiseBelow && (
         <div className="mt-3 max-w-xl">
           {/* Keyed on the pause, as the banner's form is: a new pause (or the first, on a working run) brings its suggestion. */}
           <RaiseCap key={budget ? `${run.run_id}:${budget.at}` : `${run.run_id}:working`} cap={cap!} suggested={suggestedCap(budget)} least={leastCap(budget)} paused={!!budget} onRaise={actions.onRaiseCap!} />
