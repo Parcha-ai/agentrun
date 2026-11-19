@@ -3,8 +3,10 @@
 // on POST /runs, POST /agents/{id}/runs and POST /runs/{id}/messages). The runner's claim calls Composio's MCP endpoint as
 // that user and account for that run alone; a run bound to none is refused before anything is sent, in the per_run
 // missing-credential words; the binding is in no row, answer, span or log line, and the run's end erases it. A server saved
-// for one user behaves as before. Fake Composio on loopback (fixtures/fake-composio.mjs), the faux MCP model
-// (fixtures/faux-mcp.mjs). No key, no network.
+// for one user behaves as before. Composio's MCP endpoint refuses an address that names no user, its listing too (probed
+// live 2026-11-19), so the server's save, refresh, preview and an agent's save list its tools as a listing-only user no
+// binding can name. Fake Composio on loopback (fixtures/fake-composio.mjs, which refuses as Composio does), the faux MCP
+// model (fixtures/faux-mcp.mjs). No key, no network.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startFakeComposio } from "./fixtures/fake-composio.mjs";
@@ -24,12 +26,16 @@ const USER_A = "grep-user-alice-0001";
 const ACCOUNT_A = "ca_alice_gmail_0001";
 const USER_B = "grep-user-bob-0002";
 const ACCOUNT_B = "ca_bob_gmail_0002";
+const OWNER = "owner-0001";
+// Each Composio user's connected accounts, as the fake's MCP endpoint checks a call against them.
+const MCP_ACCOUNTS = { [USER_A]: [ACCOUNT_A], [USER_B]: [ACCOUNT_B], [OWNER]: ["ca_owner_gmail_0001"] };
+const COMPOSIO_USER_ID = /^[A-Za-z0-9._@-]{1,128}$/;
 const CALL = 'Call mcp__mail__add with {"a":2,"b":3}';
 const bind = (user, account) => ({ mail: { composio_user_id: user, ...(account ? { connected_account_id: account } : {}) } });
 
 /** A server with the per-run Gmail server `mail` saved through the preset and an agent `reader` allowed its `add`. */
 async function setup(t) {
-  const composio = await startFakeComposio({ toolkits: TOOLKITS });
+  const composio = await startFakeComposio({ toolkits: TOOLKITS, mcpAccounts: MCP_ACCOUNTS });
   t.after(() => composio.close());
   const log = serverLog(t);
   const server = await serve(t, { faux: FAUX_MCP, composioControl: { baseUrl: composio.baseUrl }, publicUrl: "https://agentrun.example.com" });
@@ -166,16 +172,46 @@ test("the save keeps no account: no user and no connected account in the stored 
 
 test("a preset server saved for one user is unchanged: its address names that user, its runs call as it with no mcp_auth, and a binding for it is refused", async (t) => {
   const s = await setup(t);
-  const saved = await s.api("PUT", "/settings/mcp-servers/inbox/composio", { api_key: s.composio.apiKey, toolkit: "gmail", tools: ["add"], user_id: "owner-0001" });
+  const saved = await s.api("PUT", "/settings/mcp-servers/inbox/composio", { api_key: s.composio.apiKey, toolkit: "gmail", tools: ["add"], user_id: OWNER });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   const url = new URL((await s.server.store.mcp.server("inbox")).url);
-  assert.deepEqual([url.searchParams.get("user_id"), url.searchParams.has("connected_account_id")], ["owner-0001", false], "its address names its user, as before");
+  assert.deepEqual([url.searchParams.get("user_id"), url.searchParams.has("connected_account_id")], [OWNER, false], "its address names its user, as before");
   const made = await whenFree(() => s.api("POST", "/agents", agent("own-reader", { tools: ["mcp:inbox/add"], tool_settings: { "mcp:inbox/add": { permission: "allow" } } })));
   assert.equal(made.status, 201, JSON.stringify(made.body));
   const run = await runOnce(s, undefined, { agentId: "own-reader", content: 'Call mcp__inbox__add with {"a":2,"b":3}' });
   assert.equal(toolCalls(run.sent).length, 1, run.answer);
-  assert.deepEqual(run.sent.map(asWho), run.sent.map(() => ["owner-0001", null]), "every request as its saved user");
+  assert.deepEqual(run.sent.map(asWho), run.sent.map(() => [OWNER, null]), "every request as its saved user");
   const refused = await s.api("POST", "/agents/own-reader/runs", { input: { content: "Hi" }, mcp_auth: { inbox: { composio_user_id: USER_A } } });
   assert.equal(refused.status, 422, JSON.stringify(refused.body));
   assert.ok(String(refused.body.error?.fields?.[0]?.field).startsWith("mcp_auth.inbox"), JSON.stringify(refused.body));
+});
+
+test("Composio refuses an address that names no user, so a per-run server's save, refresh, preview and an agent's save list its tools as a listing-only user no binding can name, and call nothing", async (t) => {
+  const s = await setup(t);
+  assert.ok(s.saved.tools?.some((tool) => tool.name === "add"), `the save listed its tools: ${JSON.stringify(s.saved)}`);
+  const refreshed = await s.api("POST", "/settings/mcp-servers/mail/refresh");
+  assert.equal(refreshed.status, 200, `the refresh listed its tools: ${JSON.stringify(refreshed.body)}`);
+  const previewed = await s.api("POST", "/settings/mcp-servers/preview", { name: "mail" });
+  assert.equal(previewed.status, 200, `the preview by name listed its tools: ${JSON.stringify(previewed.body)}`);
+  const listings = s.composio.mcpLog.map((entry) => ({ ...entry, query: new URL(entry.path, "http://composio.test").searchParams }));
+  assert.ok(listings.some((entry) => entry.method === "tools/list"), "its tools were listed at Composio");
+  assert.deepEqual(toolCalls(listings), [], "a listing calls no tool");
+  const users = [...new Set(listings.map((entry) => entry.query.get("user_id")))];
+  assert.equal(users.length, 1, `every listing names one user: ${users}`);
+  assert.ok(users[0] && !COMPOSIO_USER_ID.test(users[0]), `a user no binding (nor a save) can name: ${users[0]}`);
+  assert.deepEqual(listings.filter((entry) => entry.query.has("connected_account_id")), [], "and no account");
+  assert.equal(new URL((await s.server.store.mcp.server("mail")).url).searchParams.has("user_id"), false, "the stored address still names no user");
+});
+
+test("a binding naming another user's account, or a user with no account, gets Composio's refusal and none of the account's data", async (t) => {
+  const s = await setup(t);
+  const crossed = await runOnce(s, bind(USER_B, ACCOUNT_A));
+  assert.equal(toolCalls(crossed.sent).length, 1, crossed.answer);
+  assert.deepEqual(crossed.sent.map(asWho), crossed.sent.map(() => [USER_B, ACCOUNT_A]), "sent as bound");
+  assert.doesNotMatch(crossed.answer, /The tool said: 5\b/, "the call ran nothing");
+  assert.match(crossed.answer, /does not match the provided user ID/, crossed.answer);
+  const stranger = await runOnce(s, bind("grep-user-carol-0003"));
+  assert.equal(toolCalls(stranger.sent).length, 1, stranger.answer);
+  assert.doesNotMatch(stranger.answer, /The tool said: 5\b/, "the call ran nothing");
+  assert.match(stranger.answer, /No connected account found for user ID grep-user-carol-0003/, stranger.answer);
 });
