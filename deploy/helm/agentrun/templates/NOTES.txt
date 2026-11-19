@@ -3,6 +3,10 @@ AgentRun Server {{ .Chart.AppVersion }} is starting in {{ .Release.Namespace }},
 Open the console:
 {{- with include "agentrun.publicUrl" . }}
   {{ . }}
+{{- if and $.Values.existingSecret $.Values.ingress.enabled (not $.Values.env.AGENTRUN_PUBLIC_URL) }}
+  This ingress address overrides any AGENTRUN_PUBLIC_URL in Secret {{ $.Values.existingSecret }}. To keep that one, set
+  env.AGENTRUN_PUBLIC_URL to it.
+{{- end }}
 {{- else }}
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ .Release.Name }} 7340:{{ .Values.service.port }}
   then http://127.0.0.1:7340/
