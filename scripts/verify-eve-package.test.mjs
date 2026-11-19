@@ -73,3 +73,30 @@ test('a step that exits 0 with a background child still running: the child is ki
   assert.equal(error, undefined, String(error?.message));
   assert.equal(stdout, 'ok-text-from-step\n');
 });
+
+test('a step that exits 0 while its background child holds its pipes: it resolves at once, not at its timeout', async (t) => {
+  const { dir, pidOf } = scratch(t);
+  // No redirection: the background child inherits stdout and stderr, so the pipes stay open after the step exits.
+  const started = Date.now();
+  const step = runStep('sh', ['-c', 'sleep 37 & echo $! > pidfile; echo ok-text-from-step'],
+    { cwd: dir, env: process.env, timeout: 4_000, grace: 200 });
+  const { stdout, error, alive: left } = await settle(pidOf, step);
+  assert.equal(error, undefined, String(error?.message));
+  assert.equal(stdout, 'ok-text-from-step\n');
+  assert.equal(left, false, 'the background child is gone when the step settles');
+  assert.ok(Date.now() - started < 2_000, `settled in ${Date.now() - started} ms, well before the 4000 ms limit`);
+});
+
+test('a step that floods its output and ignores SIGTERM: what it keeps stays within the cap', async (t) => {
+  const { dir } = scratch(t);
+  // It ignores SIGTERM, so it keeps writing through the grace until SIGKILL.
+  const flood = 'trap "" TERM; echo $$ > pidfile; while :; do printf "%01000d\\n" 0; done';
+  const step = runStep('sh', ['-c', flood], { cwd: dir, env: process.env, timeout: 10_000, maxBuffer: 1024, grace: 500 });
+  const error = await step.then(() => null, error => error);
+  assert.ok(error, 'the step rejects');
+  const said = /stdout over 1024 bytes \(written (\d+), kept the last (\d+)\)/.exec(error.message);
+  assert.ok(said, `the error says how much was written and kept: ${error.message.slice(0, 400)}`);
+  const [written, kept] = [Number(said[1]), Number(said[2])];
+  assert.ok(written > 4 * 1024, `it kept writing through the grace (${written} bytes)`);
+  assert.ok(kept <= 1024, `kept ${kept} bytes, no more than the 1024-byte cap`);
+});
