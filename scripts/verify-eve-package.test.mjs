@@ -1,0 +1,75 @@
+// verify-eve-package.mjs runs each consumer step through runStep. A check that fails once with no visible cause is a
+// flake, so a step must settle deterministically: a timed-out step's whole process group is gone before the step
+// rejects (the consumer directory's cleanup never races a live child), and a failure shows both stdout and stderr.
+// Each case drives a tiny `sh` command with a short timeout: no npm, no network.
+import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { test } from 'node:test';
+import { runStep } from './verify-eve-package.mjs';
+
+const alive = pid => { try { process.kill(pid, 0); return true; } catch (error) { return error.code !== 'ESRCH'; } };
+
+/** A scratch directory, and the pid a command writes to `pidfile` there; the test kills that pid if it is left. */
+function scratch(t) {
+  const dir = mkdtempSync(join(tmpdir(), 'verify-eve-step-'));
+  const pidOf = () => Number(readFileSync(join(dir, 'pidfile'), 'utf8').trim());
+  t.after(() => {
+    try { process.kill(pidOf(), 'SIGKILL'); } catch {}
+    rmSync(dir, { recursive: true, force: true });
+  });
+  return { dir, pidOf };
+}
+
+/** Run a step and record, in the same tick it settles, whether the pid in `pidfile` is still alive. */
+const settle = (pidOf, promise) => promise.then(
+  stdout => ({ stdout, alive: alive(pidOf()) }),
+  error => ({ error, alive: alive(pidOf()) }),
+);
+
+test('a step that outlives its timeout: its grandchild is killed before the step rejects, and the error says it timed out', async (t) => {
+  const { dir, pidOf } = scratch(t);
+  // The grandchild leaves the step's pipes, as eve's build workers do, so only a group kill reaches it.
+  const step = runStep('sh', ['-c', 'sleep 37 >/dev/null 2>&1 & echo $! > pidfile; echo started; exec sleep 37'],
+    { cwd: dir, env: process.env, timeout: 300, grace: 200 });
+  const { error, alive: grandchild } = await settle(pidOf, step);
+  assert.equal(grandchild, false, 'the grandchild is gone when the step settles');
+  assert.ok(error, 'the step rejects');
+  assert.match(error.message, /timed out after \d+ ms \(limit 300 ms\)/);
+  assert.match(error.message, /--- stdout \(last 5000 chars\) ---\nstarted\n/);
+});
+
+test('a step that fails: the error holds its stdout and its stderr, each labelled, and the exit code', async (t) => {
+  const { dir } = scratch(t);
+  const step = runStep('sh', ['-c', 'echo $$ > pidfile; echo out-text-from-step; echo err-text-from-step >&2; exit 1'],
+    { cwd: dir, env: process.env, timeout: 10_000, grace: 200 });
+  const error = await step.then(() => null, error => error);
+  assert.ok(error, 'the step rejects');
+  assert.ok(error.message.includes('out-text-from-step'), `stdout in the error: ${error.message}`);
+  assert.ok(error.message.includes('err-text-from-step'), `stderr in the error: ${error.message}`);
+  assert.match(error.message, /--- stdout \(last 5000 chars\) ---\nout-text-from-step\n/);
+  assert.match(error.message, /--- stderr \(last 5000 chars\) ---\nerr-text-from-step\n/);
+  assert.match(error.message, /exit code 1/);
+  assert.doesNotMatch(error.message, /timed out/);
+});
+
+test('a step that exits 0: it resolves with its stdout and leaves no process behind', async (t) => {
+  const { dir, pidOf } = scratch(t);
+  const step = runStep('sh', ['-c', 'echo $$ > pidfile; echo ok-text-from-step'],
+    { cwd: dir, env: process.env, timeout: 10_000, grace: 200 });
+  const { stdout, error, alive: left } = await settle(pidOf, step);
+  assert.equal(error, undefined, String(error?.message));
+  assert.equal(stdout, 'ok-text-from-step\n');
+  assert.equal(left, false);
+});
+
+test('a step that exits 0 with a background child still running: the child is killed before the step resolves', async (t) => {
+  const { dir, pidOf } = scratch(t);
+  const step = runStep('sh', ['-c', 'sleep 37 >/dev/null 2>&1 & echo $! > pidfile; echo ok-text-from-step'],
+    { cwd: dir, env: process.env, timeout: 10_000, grace: 200 });
+  const { stdout, error, alive: left } = await settle(pidOf, step);
+  assert.equal(left, false, 'the background child is gone when the step settles');
+  assert.equal(error, undefined, String(error?.message));
+  assert.equal(stdout, 'ok-text-from-step\n');
+});

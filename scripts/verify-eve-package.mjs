@@ -15,6 +15,15 @@ const json = async path => JSON.parse(await readFile(path, 'utf8'));
 const cleanEnvironment = () => Object.fromEntries(Object.entries(process.env)
   .filter(([key]) => !/(?:API_KEY|TOKEN|SECRET|PASSWORD|PRIVATE_KEY|NODE_OPTIONS|NODE_PATH)/i.test(key)));
 
+/** One step of the check. */
+export async function runStep(command, args, { cwd, env, timeout = 180_000, maxBuffer = 8 * 1024 * 1024 } = {}) {
+  try {
+    return (await exec(command, args, { cwd, env, timeout, maxBuffer })).stdout;
+  } catch (error) {
+    throw new Error(`eve package consumer ${command} ${args[0] ?? ''} failed: ${String(error.stderr || error.stdout || error.message).slice(-5000)}`);
+  }
+}
+
 /** `tarballs` are the exact archives already packed and scanned by verify-packages. */
 export async function verifyEvePackage({ root = repository, tarballs, parentDirectory = tmpdir() }) {
   for (const name of ['client', 'dsl', 'eve']) assert.ok(tarballs[name], `Missing ${name} package archive`);
@@ -23,15 +32,11 @@ export async function verifyEvePackage({ root = repository, tarballs, parentDire
   const env = { ...cleanEnvironment(), DO_NOT_TRACK: '1', NO_COLOR: '1' };
   const commands = [];
   async function run(command, args, offline = true) {
-    try {
-      const result = await exec(command, args, { cwd: consumer, env: offline ? {
-        ...env, NODE_OPTIONS: `--import=${join(temporary, 'deny-network.mjs')}`,
-      } : env, timeout: 180_000, maxBuffer: 8 * 1024 * 1024 });
-      commands.push({ command: [command === process.execPath ? 'node' : command, ...args], status: 'passed' });
-      return result.stdout;
-    } catch (error) {
-      throw new Error(`eve package consumer ${command} ${args[0] ?? ''} failed: ${String(error.stderr || error.stdout || error.message).slice(-5000)}`);
-    }
+    const stdout = await runStep(command, args, { cwd: consumer, env: offline ? {
+      ...env, NODE_OPTIONS: `--import=${join(temporary, 'deny-network.mjs')}`,
+    } : env });
+    commands.push({ command: [command === process.execPath ? 'node' : command, ...args], status: 'passed' });
+    return stdout;
   }
   try {
     await mkdir(join(consumer, 'agent/extensions'), { recursive: true });
