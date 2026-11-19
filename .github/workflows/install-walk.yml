@@ -6,8 +6,8 @@ name: Install walk
 # checkout's launcher, packed; after a release, the published one. The container also walks --tailscale with a fake
 # tailscale (packages/agentrun/test/fake-tailscale.sh): no tailnet, no secret. No model is called. Not a required check.
 # The first-run jobs walk the setup prompt's own lines (docs/SKILL.md) from the installer to a finished first run on a
-# local model (walk-model.mjs, a stand-in for Ollama), timed against the bar, 5 minutes: a container on x64 and arm64,
-# with --tailscale on a fake tailscale, the systemd user service and the macOS LaunchAgent.
+# local model (walk-model.mjs, a stand-in for Ollama), the time against the bar (5 minutes) in the job summary: a
+# container on x64 and arm64, with --tailscale on a fake tailscale, the systemd user service and the macOS LaunchAgent.
 # The vps job walks --vps as root on a runner whose Docker it purges first (packages/agentrun/test/vps-walk.sh): the
 # release's published image, then, on a pull request or push, this checkout's, with a faux model (no key).
 
@@ -113,7 +113,7 @@ jobs:
         run: packages/agentrun/test/install-walk.sh container ${PACKAGE:+--package /tmp/launcher/$PACKAGE}
 
   first-run-container:
-    name: first run in 5 min, container (${{ matrix.runner }}${{ matrix.tailscale && ', --tailscale' || '' }})
+    name: first run, container (${{ matrix.runner }}${{ matrix.tailscale && ', --tailscale' || '' }})
     needs: pack
     strategy:
       fail-fast: false
@@ -146,7 +146,7 @@ jobs:
         run: cat ~/.agentrun/logs/agentrun.log || true
 
   first-run-service:
-    name: first run in 5 min, ${{ matrix.name }}
+    name: first run, ${{ matrix.name }}
     needs: pack
     strategy:
       fail-fast: false

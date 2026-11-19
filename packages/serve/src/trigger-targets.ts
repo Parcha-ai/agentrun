@@ -9,6 +9,7 @@ import { message, type RunMoment, type RunsStore, startRun, type StartDeps, WAIT
 import { runOfOrigin } from "./store-reads/runs.js";
 import type { Store } from "./store/index.js";
 import type { AgentEntry } from "./agents-store.js";
+import { NATIVE_CAP_UNSUPPORTED, NATIVE_RUN_OVERRIDES_UNSUPPORTED, nativeOf, nativeRunOverrides } from "./native/binding.js";
 import type { MessageOrigin } from "./timeline/index.js";
 import type { Json } from "./validate.js";
 import type { RunTrigger, Target } from "./triggers.js";
@@ -93,11 +94,19 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
       const pinned = await deps.start.pinnedOf(entry, { input: target.input });
       const revision = pinned?.revision;
       const defaultCap = (revision?.body as { maxCostUsd?: number } | undefined)?.maxCostUsd;
-      const uncapped = target.max_cost_usd === undefined && defaultCap === undefined
-        ? [{ field: "target.max_cost_usd", reason: "missing", message: `Every run a trigger starts is capped: give the target a max_cost_usd or set the agent's (the agent ${target.agent_id} has none).` }]
-        : [];
+      // A native run takes no cap and none of nativeRunOverrides, which its start refuses: so does a trigger on one.
+      const native = revision !== undefined && nativeOf(revision.body) !== undefined;
+      const start = native
+        ? [
+            ...(target.max_cost_usd !== undefined ? [{ field: "target.max_cost_usd", reason: "not_allowed", message: NATIVE_CAP_UNSUPPORTED }] : []),
+            ...(defaultCap !== undefined ? [{ field: "target.agent_id", reason: "not_allowed", message: NATIVE_CAP_UNSUPPORTED }] : []),
+            ...nativeRunOverrides(target).map((field) => ({ field: `target.${field}`, reason: "not_allowed", message: NATIVE_RUN_OVERRIDES_UNSUPPORTED })),
+          ]
+        : target.max_cost_usd === undefined && defaultCap === undefined
+          ? [{ field: "target.max_cost_usd", reason: "missing", message: `Every run a trigger starts is capped: give the target a max_cost_usd or set the agent's (the agent ${target.agent_id} has none).` }]
+          : [];
       const wrong = revision ? await deps.start.explainRun(await deps.start.inputIssuesOf(revision, target.input), { input: target.input }, revision) : [];
-      return [...uncapped, ...wrong.map((issue) => ({ ...issue, field: `target.${issue.field}` }))];
+      return [...start, ...wrong.map((issue) => ({ ...issue, field: `target.${issue.field}` }))];
     },
     async start(target, given, trigger, from, title, previous = true) {
       const entry = await deps.needAgent(target.agent_id);
@@ -107,14 +116,16 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
       const content = (given as { content?: unknown }).content;
       const handed = previous && entry.revision?.kind === "agentic" && typeof content === "string" ? await previousResultOf(store, deps, trigger) : "";
       const input = handed ? { ...given, content: `${content}${handed}` } : given;
-      // The target's cap, else the agent's default as it stands now: a run a trigger starts is never uncapped (capped).
+      // The target's cap, else the agent's default as it stands now: a run a trigger starts is never uncapped (capped),
+      // but a connected agent's, which its own CLI's limits keep and AgentRun can't cap (NATIVE_CAP_UNSUPPORTED).
+      const native = Boolean(nativeOf(entry.revision?.body));
       const run = await startRun(
         store,
         deps.start,
         entry,
         { input, ...(target.max_cost_usd !== undefined ? { max_cost_usd: target.max_cost_usd } : {}), ...(target.effort ? { effort: target.effort } : {}) },
         // Titled from the trigger (the engine's titleOf: "<Source> <name>"), never from its input, a sender's markup.
-        { trigger, origin: { key: trigger.firing_key }, capped: true, from, ...(title ? { title } : {}) },
+        { trigger, origin: { key: trigger.firing_key }, capped: !native, from, ...(title ? { title } : {}) },
       );
       return { run_id: run.id };
     },

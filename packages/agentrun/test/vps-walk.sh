@@ -16,6 +16,9 @@ set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
 repo=$(cd "$here/../.." && pwd)
 dir=/opt/agentrun
+# The walk's server is ours, so it sends no usage counts (docs/telemetry.md). sudo drops CI, so the installer is told
+# outright, and it writes the setting into .env, where the server reads it.
+export AGENTRUN_TELEMETRY=0
 api=http://127.0.0.1:7340/v2
 again='curl -fsSL https://agentrun.ai/install | sh -s -- --vps'
 fake=/var/run/tailscale/fake
@@ -83,6 +86,7 @@ serve=$(curl -fsS https://registry.npmjs.org/@parcha%2fagentrun/latest | jq -r '
 [ "$(setting AGENTRUN_IMAGE)" = "ghcr.io/parcha-ai/agentrun-server:v$serve" ] || die "the image is $(setting AGENTRUN_IMAGE), not the release's v$serve"
 said "$logs/1.log" "AgentRun v$serve is running at"
 [ "$(stat -c '%a %U' "$dir/.env")" = "600 root" ] || die ".env is $(stat -c '%a %U' "$dir/.env")"
+[ "$(setting AGENTRUN_TELEMETRY)" = 0 ] || die "the installer did not carry AGENTRUN_TELEMETRY=0 into .env"
 [ "$(stat -c '%a' "$dir")" = 700 ] || die "$dir is mode $(stat -c '%a' "$dir")"
 setting AGENTRUN_TOKEN | grep -qE '^[0-9a-f]{64}$' || die "the token is not 32 random bytes in hex"
 [ "$(setting AGENTRUN_SEAL_KEY | base64 -d | wc -c)" = 32 ] || die "the seal key is not 32 bytes in base64"

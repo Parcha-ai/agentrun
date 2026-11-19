@@ -117,12 +117,15 @@ export const MODEL_ENV = ["AGENT_MODEL_BASE_URL", "AGENT_MODEL_GATEWAY_IDS", "AG
 /** The start-time switches `service install --env` also sets (the server's start-switches.ts): yes-or-no, on at `1`
  *  alone, and only on a machine its owner alone uses. A server reads them at its start, so the service restarts. */
 export const SWITCH_ENV = ["AGENTRUN_MCP_ALLOW_LOOPBACK", "AGENTRUN_WEBHOOK_PRIVATE_TARGETS"];
+/** The usage counts' switches (docs/telemetry.md). A service never sees the shell that installed it, so `service install`
+ *  writes these into it as that shell set them, and AGENTRUN_TELEMETRY=0 when it runs under CI. `--env` sets them too. */
+export const TELEMETRY_ENV = ["AGENTRUN_TELEMETRY", "DO_NOT_TRACK"];
 /** The gateway's key variable, which `service install --env` takes at `none` alone: a local model such as Ollama's takes
  *  no key, and a server that holds none for its gateway refuses each run that brings none (run-model-key.ts,
  *  model_key_required), so `none` is the key it sends. A real key goes in the console, never in a service file. */
 export const NO_KEY_ENV = ["AGENT_MODEL_API_KEY"];
-/** Every variable `service install --env` sets, and an installed service keeps. */
-const SERVICE_ENV = [...MODEL_ENV, ...NO_KEY_ENV, ...SWITCH_ENV];
+/** Every variable `service install --env` sets, and an installed service keeps through a re-install. */
+const SERVICE_ENV = [...MODEL_ENV, ...NO_KEY_ENV, ...SWITCH_ENV, ...TELEMETRY_ENV];
 
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 
@@ -433,8 +436,11 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
       if (!existsSync(program)) throw fail(1, `AgentRun's service runs the installed command, ${program}, and it is not there. Install it first: ${INSTALL_COMMAND}`);
       const why = manager.available();
       if (why !== undefined) throw fail(1, `AgentRun can't run as a service here: ${why}. Start it in a terminal with ${program}.`);
-      // An installed service keeps its local model's variables and its switches; --env KEY=VALUE sets one, KEY= removes it.
+      // An installed service keeps its local model's variables, its start-time switches and its usage counts' switches; the switches set in this
+      // shell reach it (and under CI, AGENTRUN_TELEMETRY=0), then --env KEY=VALUE sets one and KEY= removes it.
       const model = installed() ? Object.fromEntries(Object.entries(manager.env(readFileSync(manager.file, "utf8"))).filter(([key]) => SERVICE_ENV.includes(key))) : {};
+      for (const key of TELEMETRY_ENV) if ((env[key] ?? "") !== "" && !/[\0-\x1f]/.test(env[key])) model[key] = env[key];
+      if (env.CI && model.AGENTRUN_TELEMETRY === undefined) model.AGENTRUN_TELEMETRY = "0";
       for (const [key, value] of changes) {
         if (value === "") delete model[key];
         else model[key] = value;
@@ -607,7 +613,7 @@ export function serviceOf({ platform = process.platform, home = homedir(), uid =
 }
 
 const VERBS = [
-  ["install", "Install AgentRun as a service of this user and start it: it keeps running after the terminal closes and starts again at login", [["--port N", "the port to listen on (default: the first free from 7340; 7340 with --tailscale)"], ["--data DIR", "the data directory (default ~/.agentrun)"], ["--tailscale", "also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off"], ["--env KEY=VALUE", `a local model's variable for the server (${MODEL_ENV.join(", ")}, and ${NO_KEY_ENV.join(", ")} at none for one that takes no key), or a start-time switch at 1 (${SWITCH_ENV.join(", ")}), kept until KEY= removes it; repeatable`], ["--public-url URL", "the https address people open it at, through a proxy you run in front of it (your own tailscale serve, a reverse proxy); kept for every restart"]], { port: { type: "string" }, tailscale: { type: "boolean" }, env: { type: "string", multiple: true }, "public-url": { type: "string" } }],
+  ["install", "Install AgentRun as a service of this user and start it: it keeps running after the terminal closes and starts again at login", [["--port N", "the port to listen on (default: the first free from 7340; 7340 with --tailscale)"], ["--data DIR", "the data directory (default ~/.agentrun)"], ["--tailscale", "also serve it over HTTPS on your own tailnet only (tailscale serve, never Funnel); --no-tailscale takes it off"], ["--env KEY=VALUE", `a local model's variable for the server (${MODEL_ENV.join(", ")}, and ${NO_KEY_ENV.join(", ")} at none for one that takes no key), a start-time switch at 1 (${SWITCH_ENV.join(", ")}), or the usage counts' switch (${TELEMETRY_ENV.join(", ")}), kept until KEY= removes it; repeatable`], ["--public-url URL", "the https address people open it at, through a proxy you run in front of it (your own tailscale serve, a reverse proxy); kept for every restart"]], { port: { type: "string" }, tailscale: { type: "boolean" }, env: { type: "string", multiple: true }, "public-url": { type: "string" } }],
   ["status", "Say whether the service is installed and running, the console's address and its health (exit 0 healthy, 1 not, 3 not installed)", [], {}],
   ["start", "Start the service and wait until it answers", [], {}],
   ["stop", "Stop the service (it starts again at the next login)", [], {}],

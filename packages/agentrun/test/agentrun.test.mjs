@@ -437,6 +437,16 @@ test("a server launcher that can't be run: the start and a server command each s
   ].join("\n"));
 });
 
+test("a server command's --help or -h goes to the server, which prints that command's usage; the bin's own usage is for the bin alone", { timeout: 60_000 }, async (t) => {
+  const imported = await throughStub(t, ["import", "--help"]);
+  assert.deepEqual(imported.args, ["import", "--data", STORE(imported.home), "--help"], imported.out + imported.err);
+  assert.doesNotMatch(imported.out, /^Usage: npx @parcha\/agentrun /m, "not the bin's own usage");
+  const native = await throughStub(t, ["native", "discover", "-h"]);
+  assert.deepEqual(native.args, ["native", "--data", STORE(native.home), "discover", "-h"], native.out + native.err);
+  const bin = spawnSync(process.execPath, [BIN, "--help"], { encoding: "utf8" });
+  assert.match(bin.stdout, /^Usage: npx @parcha\/agentrun /, "the bin's own --help, with no command, is still its usage");
+});
+
 test("the command passes its arguments through to the server, with its store (~/.agentrun unless --data names one) and --open unless --no-open; it picks no port or model of its own", { timeout: 60_000 }, async (t) => {
   const plain = await throughStub(t, [], { ANTHROPIC_API_KEY: "sk-test" });
   assert.deepEqual([plain.args, plain.model, plain.npx], [["--open", "--data", STORE(plain.home)], null, `@parcha/agentrun@${VERSION}`], plain.err);

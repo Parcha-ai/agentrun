@@ -9,13 +9,17 @@
 #       tailscale, and with a fake one first on PATH (fake-tailscale.sh): logged in, where the served name opens the
 #       setup that takes the code, not an open server; operator rights refused; Funnel on; and --no-tailscale.
 #   install-walk.sh first-run [installer options]  the setup prompt's own lines (docs/SKILL.md), timed from the installer
-#       to a finished first run against the bar, 5 minutes: the installer (a service where there is a service manager,
+#       to a finished first run, the time said against the bar, 5 minutes (a warning over it, never a failure: it
+#       counts the runner's downloads): the installer (a service where there is a service manager,
 #       else the background), the Local model step on a stand-in for Ollama (walk-model.mjs), `server capabilities`
 #       until models.ready, then the release-notes agent and its first run. With --tailscale, a fake tailscale that is
 #       logged in (fake-tailscale.sh) first on PATH, and the tailnet address printed.
 # Installer options: --package FILE (this checkout's launcher, packed), or none (the published one). NODE_PIN=1 gives the
 # installer the launcher's Node floor as --node-version; without it the installer picks the newest on the floor's line.
 set -euo pipefail
+# This walk's servers send no usage counts (docs/telemetry.md). Under CI they are off already, and the service's own
+# AGENTRUN_TELEMETRY=0 is the CI default checked below, so the walk sets it only outside CI.
+[ -n "${CI:-}" ] || export AGENTRUN_TELEMETRY=0
 mode=$1
 shift
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -198,7 +202,9 @@ tailnet_walk() {
 }
 
 # The bar (BRIEF-1117): from pasting the setup prompt to a finished first run in under 5 minutes. A person's agent also
-# reads and asks between these lines; the walk times what AgentRun does.
+# reads and asks between these lines; the walk times what AgentRun does. The time includes the runner's Node and npm
+# downloads, so it is said (the job summary, a warning over the bar) and never fails the job; the installer is bounded
+# at 600 s as the other modes' are, a hang and not a slow network.
 bar=300
 # docs/SKILL.md's line that starts with $1, or the walk fails: a prompt that no longer says it fails here first.
 skill_line() {
@@ -233,7 +239,7 @@ first_run_walk() {
 
   t0=$SECONDS
   step "1. the installer$([ -n "$served" ] && echo ", --tailscale")"
-  piped_install "$bar" /tmp/first-install.log "$@"
+  piped_install 600 /tmp/first-install.log "$@"
   healthy 30
   t_install=$((SECONDS - t0))
   if [ -n "$served" ]; then
@@ -252,7 +258,7 @@ first_run_walk() {
     "$agentrun" stop
     down 30
     # shellcheck disable=SC2086 # the prompt's words, one VARIABLE=value each (checked above)
-    (for pair in $background; do export "${pair?}"; done; piped_install "$bar" /tmp/first-model.log "$@") || exit 1
+    (for pair in $background; do export "${pair?}"; done; piped_install 600 /tmp/first-model.log "$@") || exit 1
   else
     step "   Local model, on the service: $local_model"
     bash -c "$local_model"
@@ -292,7 +298,7 @@ first_run_walk() {
   out="paste to first run: ${total}s (bar ${bar}s): installer ${t_install}s, local model $((t_model - t_install))s, models.ready $((t_ready - t_model))s, agent $((t_create - t_ready))s, run $((t_run - t_create))s; \$0 (a local model)"
   step "$out"
   [ -n "${GITHUB_STEP_SUMMARY:-}" ] && echo "- $(uname -sm)$([ -n "$served" ] && echo ' --tailscale'): $out" >> "$GITHUB_STEP_SUMMARY"
-  ((total < bar)) || die "$total s is over the bar, $bar s"
+  ((total < bar)) || echo "::warning::paste to first run took ${total}s, over the bar (${bar}s): $out"
 }
 
 step "no Node.js on PATH ($PATH)"
@@ -393,6 +399,18 @@ else
   [ "$(systemctl --user is-enabled "$target")" = enabled ] || die "the unit is not enabled, so it would not start at login or boot"
   systemctl --user status "$target" --no-pager | head -n 5
 fi
+# The service this checkout's launcher installs sends no usage counts (docs/telemetry.md): under CI the install writes
+# AGENTRUN_TELEMETRY=0 into it (the service never sees CI), and outside CI it carries this walk's own opt-out (set at the
+# top). A published launcher before that change writes neither.
+case " $* " in
+  *" --package "*)
+    if [ "$(uname -s)" = Darwin ]; then
+      [ "$(plutil -extract EnvironmentVariables.AGENTRUN_TELEMETRY raw "$HOME/Library/LaunchAgents/ai.agentrun.server.plist")" = 0 ] || die "the LaunchAgent has no AGENTRUN_TELEMETRY=0 under CI"
+    else
+      grep -qx 'Environment=AGENTRUN_TELEMETRY=0' "${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/agentrun.service" || die "the unit has no AGENTRUN_TELEMETRY=0 under CI"
+    fi
+    ;;
+esac
 
 step "a new shell, as after closing the terminal: still running"
 bash -c "curl -fsS '$(base)/health'"

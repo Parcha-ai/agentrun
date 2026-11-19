@@ -40,16 +40,28 @@ test("the picker lists a tool only the toolkit's latest version has", async (t) 
 
 test("a save naming a slug Composio doesn't list is 422 under tools, naming it, and nothing is made at Composio", async (t) => {
   const s = await setup(t);
-  const res = await save(s, "hn", ["add", "ad", "HACKERNEWS_GONE"]);
+  const res = await save(s, "hn", ["add", "ADD", "HACKERNEWS_GONE"]);
   assert.equal(res.status, 422, JSON.stringify(res.body));
   assert.equal(res.body.error.code, "input_invalid");
   assert.deepEqual(res.body.error.fields.map((f) => [f.field, f.reason]), [["tools", "not_found"]]);
   const message = res.body.error.fields[0].message;
-  assert.match(message, /\bad \(did you mean add\?\)/, "a near match is named");
-  assert.match(message, /HACKERNEWS_GONE/);
+  assert.match(message, /\bADD \(did you mean add\?\)/, "the listed slug in another case is named");
+  assert.match(message, /\bHACKERNEWS_GONE:/, "a slug no listed one matches but for case is named without a guess");
   assert.doesNotMatch(message, /\badd\b(?! ?\?)/, "a slug it lists is not named as missing");
   assert.deepEqual(writes(s), [], "no auth config, MCP server or connect link was made");
   assert.equal((await s.api("GET", "/settings/mcp-servers/hn")).status, 404, "nothing is saved");
+});
+
+test("a slug that differs from a listed one by more than case gets no guess", async (t) => {
+  const s = await setup(t);
+  // ad is a letter short of add, delete a _WORD short of delete_thing: neither is the listed slug in another case.
+  const res = await save(s, "hn", ["ad", "delete"]);
+  assert.equal(res.status, 422, JSON.stringify(res.body));
+  assert.deepEqual(res.body.error.fields.map((f) => [f.field, f.reason]), [["tools", "not_found"]]);
+  const message = res.body.error.fields[0].message;
+  assert.doesNotMatch(message, /did you mean/, "only a slug that differs by case alone gets a guess");
+  assert.match(message, /has no action ad or delete: /, "the slugs are named, joined by or");
+  assert.deepEqual(writes(s), []);
 });
 
 test("a save whose slugs all exist, one of them only at the latest version, goes on as before", async (t) => {
@@ -88,19 +100,16 @@ test("a list longer than its page limit refuses nothing past what it read: the s
   assert.deepEqual(s.composio.to("/api/v3.1/mcp/servers/custom", "POST")[0].body.allowed_tools, ["add", "ACTION_11"]);
 });
 
-test("a huge unknown slug against a big toolkit is refused at once, its name cut in the answer", async (t) => {
-  const many = Array.from({ length: 500 }, (_, i) => tool(`STRIPE_ACTION_NUMBER_${i}`));
-  const s = await setup(t, { toolkits: { hackernews: { no_auth: true, tools: [tool("add"), ...many] } } });
-  const huge = "A".repeat(200_000);
-  const started = performance.now();
-  const res = await save(s, "hn", ["add", huge]);
-  const took = performance.now() - started;
-  assert.equal(res.status, 422, JSON.stringify(res.body).slice(0, 300));
-  assert.deepEqual(res.body.error.fields.map((f) => [f.field, f.reason]), [["tools", "not_found"]]);
-  assert.ok(took < 3000, `the refusal took ${Math.round(took)} ms`);
-  const message = res.body.error.fields[0].message;
-  assert.ok(message.includes(`${"A".repeat(64)}… (200000 characters)`), "the slug is cut to its first 64 characters and its length");
-  assert.ok(message.length < 1000, `the message is ${message.length} characters`);
-  assert.ok(JSON.stringify(res.body).length < 4000, "the answer doesn't carry the slug back");
-  assert.deepEqual(writes(s), []);
+test("a slug is at most 128 characters: one past it is 422 invalid under tools before Composio is asked anything", async (t) => {
+  const s = await setup(t);
+  const at = await save(s, "hn", ["add", "A".repeat(128)]);
+  assert.equal(at.status, 422, JSON.stringify(at.body));
+  assert.deepEqual(at.body.error.fields.map((f) => [f.field, f.reason]), [["tools", "not_found"]], "128 characters is not refused for its length, only as not listed");
+  assert.ok(at.body.error.fields[0].message.includes("A".repeat(128)), "it is named whole");
+
+  const past = await setup(t);
+  const res = await save(past, "hn", ["add", "A".repeat(129)]);
+  assert.equal(res.status, 422, JSON.stringify(res.body));
+  assert.deepEqual(res.body.error.fields.map((f) => [f.field, f.reason]), [["tools", "invalid"]], "129 characters is refused at the input check");
+  assert.deepEqual(past.composio.calls, [], "Composio was asked nothing");
 });

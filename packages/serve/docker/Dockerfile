@@ -64,6 +64,8 @@ RUN npm ci --ignore-scripts && (cd apps/console && npm ci --ignore-scripts && np
  && npm run build && test -f packages/serve/dist/console/index.html && rm -rf apps \
  && PATH="/usr/local/go/bin:$PATH" GOTOOLCHAIN=local GOCACHE=/tmp/go-build GOPATH=/tmp/go npm run build:daemon -w @parcha/agentrun-computer \
  && test -x packages/computer/dist/computerd-linux-amd64 && test -x packages/computer/dist/computerd-linux-arm64 \
+ && (cd packages/computer/daemon && PATH="/usr/local/go/bin:$PATH" GOTOOLCHAIN=local GOCACHE=/tmp/go-build GOPATH=/tmp/go CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+      go build -trimpath -ldflags="-s -w" -o ../dist/computerd-fixture-linux-amd64 ./cmd/fixture) \
  && (cd packages/serve/runas && PATH="/usr/local/go/bin:$PATH" GOTOOLCHAIN=local GOCACHE=/tmp/go-build GOPATH=/tmp/go CGO_ENABLED=0 \
       go build -trimpath -ldflags=-s -o /opt/runas/agentrun-runas .) \
  && rm -rf /tmp/go-build /tmp/go \
