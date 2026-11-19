@@ -45,7 +45,7 @@ test("a headless Linux box pairs as a sandbox that takes the run's folder as a s
 
   const mac = { ...rowOf({ ...LINUX, os: "macos", kind: "desktop", arch: "arm64", groups: ["screen", "input.pointer", "input.keys", "exec", "files"] }), name: "vesper-mac" };
   assert.deepEqual(pairedEntry(mac, KINDS).mounts, [], "a desktop takes no folder, granted exec and files or not");
-  assert.match((await resolveComputer(SANDBOX, 2, withPaired(KINDS, [mac]), keys)).refused, /^vesper-mac is a computer of your own, and only a Linux box paired with computerd and no display can be a sandbox computer: give this agent vesper-mac as a desktop computer, or pick one of /);
+  assert.match((await resolveComputer(SANDBOX, 2, withPaired(KINDS, [mac]), keys)).refused, /^vesper-mac \(macos\) gives no sandbox computer: it is a computer of your own, and only a Linux box paired with computerd and no display can be a sandbox computer; give this agent vesper-mac as a desktop computer\. Pick one of /);
 });
 
 test("a person's own box is on its own network: a run's start under AGENTRUN_BOX_ALLOW none is refused in the words every computer that needs a network gets, and a create asking another network than open is refused", async () => {

@@ -81,7 +81,7 @@ laptop, in one container, or as a server with runners. Apache-2.0.
 create an account or sign in. For help setting up your team's workflows,
 [talk to us](https://calendly.com/d/dtwn-dsp-nx5/agentrun).
 
-Prefer your own machine or infrastructure? Start locally below, or [self-host on Railway, Render, a VPS or Docker](#deploy-it).
+Prefer your own machine or infrastructure? Start locally below, or [self-host on Railway, Render, a VPS, Kubernetes or Docker](#deploy-it).
 The [getting-started guide](docs/getting-started.md) explains the three options.
 
 <a id="start-in-three-steps"></a>
@@ -548,6 +548,17 @@ upgrade.
 A Hetzner Cloud CPX02 (1 GB) is from €5.49 a month before VAT and a DigitalOcean Basic Droplet (1 GiB) is $6, at their
 prices when this was written. The server gets the VPS's Docker socket, which is root on it, so keep the VPS for
 AgentRun alone. Details: [deploy/README.md](deploy/README.md#one-command-on-a-server-you-rent).
+
+**Self-host on Kubernetes.**
+
+```sh
+helm install agentrun oci://ghcr.io/parcha-ai/charts/agentrun --devel --namespace agentrun --create-namespace
+```
+
+One pod on a 10 GiB volume, from the release's image, with the token and seal key made as a Secret and kept through
+upgrades and `helm uninstall`. The install's notes print how to open the console and read the token. Agents get file
+tools and `web_fetch` but no shell. Walked on kind in CI from install to a finished first run, an upgrade and a
+reinstall. Details: [the chart's README](deploy/helm/agentrun/README.md).
 
 <details>
 <summary>Docker Compose: a server and two runners</summary>

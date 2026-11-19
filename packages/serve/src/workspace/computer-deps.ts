@@ -308,11 +308,9 @@ export const claimComputer = async (
  *  provider a test loads still gets it). The one choice: computerDepsFrom makes it, and the server's start check
  *  (server.ts computerReady) asks it with what the runner composes with, so a run's start and its claim answer alike. */
 export function claimKinds(options: Pick<ComputerDepsOptions, "faux" | "kinds">): KindRegistry {
-  const base = options.kinds ?? ({ SETTING_KINDS, PROVIDERS, servingRefusals } as unknown as KindRegistry);
+  const base = options.kinds ?? { SETTING_KINDS, PROVIDERS, servingRefusals };
   if (!options.faux) return base;
-  // The faux registry is Settings' shape (computers.ts); the claim reads the same data as resolve-computer.ts's.
-  const faux = options.faux.kinds as unknown as KindRegistry;
-  return { ...base, PROVIDERS: [...base.PROVIDERS, ...faux.PROVIDERS] } as KindRegistry;
+  return { ...base, PROVIDERS: [...base.PROVIDERS, ...options.faux.kinds.PROVIDERS] };
 }
 
 /** This machine's Docker daemon as the claim asks it once a Docker launch fails: one check per process (its answer
