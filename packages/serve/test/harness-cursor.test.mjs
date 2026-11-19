@@ -19,7 +19,7 @@ const [{ harnessIds, harnessOf }, { harnessOffers }, { DATA_ENV }, { HarnessUnav
 ]);
 
 const { CURSOR_PIN, cursorRelease } = await import("@parcha/agentrun-harness-acp");
-/** Whether Cursor has a release pinned for this host (cursorRelease, the one test serve's lookup makes). CURSOR_PIN pins
+/** Whether Cursor has a release pinned for this host (cursorRelease: pinnedRelease's tree test on CURSOR_PIN, the one serve's lookup makes). CURSOR_PIN pins
  *  linux-x86_64 alone: on any other host (a Mac) Cursor is refused ACP_BINARY_UNPINNED before its install is looked at,
  *  and the tests here that look at one assert that refusal instead (refusedHere). */
 const PINNED = cursorRelease() !== undefined;

@@ -16,9 +16,8 @@
 import { readFileSync } from "node:fs";
 import type { AgentAdapter } from "@parcha/agentrun-kernel";
 import { acpAdapter, type AcpAdapterOptions } from "./adapter.js";
-import { ACP_CODES } from "./facts.js";
 import { gooseProxy, type GooseProxyOptions } from "./host/goose-proxy.js";
-import { acpPlatform, AcpBinaryRefused, GOOSE_PIN, verifyPinnedBinary, verifyPinnedBinaryAsync } from "./pinned-binary.js";
+import { GOOSE_PIN, pinnedRelease, unpinned, verifyPinnedBinary, verifyPinnedBinaryAsync } from "./pinned-binary.js";
 import { MODEL_ID, recipeProblems, type AcpRecipe } from "./recipe.js";
 
 /** A recipe as its file holds it: everything but the binary, which the host's install puts where it does. */
@@ -71,9 +70,8 @@ export interface GooseAdapterOptions extends Omit<AcpAdapterOptions, "recipe" | 
  *  of its own for each Goose process, on the session's booking. */
 export function gooseAdapter(options: GooseAdapterOptions): AgentAdapter {
   const { binary, sha256, model, provider, price, maxOutputTokens, fetch, ...rest } = options;
-  const platform = acpPlatform();
-  const pinned = sha256 ?? (platform ? GOOSE_PIN.archives[platform]?.binarySha256 : undefined);
-  if (!pinned) throw new AcpBinaryRefused(ACP_CODES.binaryUnpinned, `no sha256 is pinned for Goose ${GOOSE_PIN.version}'s binary on ${platform ?? `${process.platform}-${process.arch}`}`);
+  const pinned = sha256 ?? pinnedRelease(GOOSE_PIN)?.binarySha256;
+  if (!pinned) throw unpinned("Goose", GOOSE_PIN.version);
   verifyPinnedBinary(binary, pinned);
   return acpAdapter({
     ...rest,

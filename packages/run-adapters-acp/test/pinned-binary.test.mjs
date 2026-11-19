@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { ACP_CODES, acpPlatform, AcpBinaryRefused, GOOSE_PIN, verifyPinnedBinary, verifyPinnedBinaryAsync } from '@parcha/agentrun-harness-acp';
+import { ACP_CODES, acpPlatform, AcpBinaryRefused, CURSOR_PIN, GOOSE_PIN, pinnedRelease, verifyPinnedBinary, verifyPinnedBinaryAsync } from '@parcha/agentrun-harness-acp';
 import { scratch } from './helpers.mjs';
 
 const sha = (text) => createHash('sha256').update(text).digest('hex');
@@ -44,6 +44,16 @@ test('the platform is named as the registry names it', () => {
   assert.equal(acpPlatform('win32', 'x64'), 'windows-x86_64');
   assert.equal(acpPlatform('freebsd', 'x64'), undefined);
   assert.equal(acpPlatform('linux', 'ia32'), undefined);
+});
+
+test('a pin has a release for a platform only where its binary is measured, and its tree too when asked', () => {
+  assert.equal(pinnedRelease(GOOSE_PIN, 'linux-x86_64'), GOOSE_PIN.archives['linux-x86_64']);
+  // Goose's darwin-aarch64 archive is pinned by the registry's digest alone: no binary is measured there.
+  assert.equal(pinnedRelease(GOOSE_PIN, 'darwin-aarch64'), undefined);
+  assert.equal(pinnedRelease(GOOSE_PIN, 'linux-x86_64', true), undefined, 'Goose is pinned by its binary, not its tree');
+  assert.equal(pinnedRelease(CURSOR_PIN, 'linux-x86_64', true), CURSOR_PIN.archives['linux-x86_64']);
+  for (const platform of ['plan9', '__proto__']) assert.equal(pinnedRelease(GOOSE_PIN, platform), undefined, platform);
+  assert.equal(pinnedRelease(GOOSE_PIN), pinnedRelease(GOOSE_PIN, acpPlatform()), 'no platform given: this host\'s');
 });
 
 test('a binary with its pinned sha256 passes; one that differs is refused, ACP_BINARY_MISMATCH; neither is run', async () => {

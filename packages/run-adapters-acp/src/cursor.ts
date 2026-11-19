@@ -10,7 +10,7 @@ import { acpAdapter, type AcpAdapterOptions } from "./adapter.js";
 import { ACP_CODES } from "./facts.js";
 import { CURSOR_LIMITS, type CursorLimits } from "./cursor-facts.js";
 import { recipeFile } from "./goose.js";
-import { type AcpArchivePin, acpPlatform, AcpBinaryRefused, type AcpPlatform, CURSOR_PIN, verifyPinnedBinary, verifyPinnedBinaryAsync, verifyPinnedTree } from "./pinned-binary.js";
+import { acpPlatform, AcpBinaryRefused, CURSOR_PIN, pinnedRelease, type PinnedRelease, unpinned, verifyPinnedBinary, verifyPinnedTree } from "./pinned-binary.js";
 import { recipeProblems, type AcpRecipe } from "./recipe.js";
 
 export interface CursorRecipeOptions {
@@ -50,34 +50,26 @@ export interface CursorAdapterOptions extends Omit<AcpAdapterOptions, "recipe" |
 
 /** Cursor's release pinned for `platform` (default this host's), with its launcher's and its tree's digests; undefined
  *  where none is pinned (CURSOR_PIN pins linux-x86_64 alone), where Cursor is refused ACP_BINARY_UNPINNED before any file
- *  of it is read. The one test of whether Cursor runs on a platform: the adapter's, serve's and their tests'. */
-export function cursorRelease(platform: string | undefined = acpPlatform()): CursorRelease | undefined {
-  const release = platform ? CURSOR_PIN.archives[platform as AcpPlatform] : undefined;
-  return release?.binarySha256 && release.treeSha256 ? (release as CursorRelease) : undefined;
-}
+ *  of it is read: pinnedRelease's tree test on CURSOR_PIN, the one the adapter, serve and their tests make. */
+export const cursorRelease = (platform: string | undefined = acpPlatform()): CursorRelease | undefined => pinnedRelease(CURSOR_PIN, platform, true) as CursorRelease | undefined;
 
 /** A pinned Cursor release: its archive, with its launcher's sha256 and its tree's digest. */
-export type CursorRelease = AcpArchivePin & { readonly binarySha256: string; readonly treeSha256: string };
+export type CursorRelease = PinnedRelease & { readonly treeSha256: string };
 
 /** Cursor as a harness adapter (id `cursor`): its pinned install checked, its recipe for the run's model and limits. */
 export function cursorAdapter(options: CursorAdapterOptions): AgentAdapter {
   const { binary, model, limits, ...rest } = options;
-  const platform = acpPlatform();
-  const release = cursorRelease(platform);
-  if (!release) throw new AcpBinaryRefused(ACP_CODES.binaryUnpinned, `no digest is pinned for Cursor ${CURSOR_PIN.version} on ${platform ?? `${process.platform}-${process.arch}`}`);
+  const release = cursorRelease();
+  if (!release) throw unpinned("Cursor", CURSOR_PIN.version);
   const root = cursorRootOf(binary, release.cmd);
   if (!root) throw new AcpBinaryRefused(ACP_CODES.binaryMismatch, `the Cursor launcher at ${binary} is not at its pinned path ${release.cmd} inside its folder`);
-  const launcher = release.binarySha256;
-  const tree = release.treeSha256;
-  verifyPinnedBinary(binary, launcher);
+  verifyPinnedBinary(binary, release.binarySha256);
   return acpAdapter({
     ...rest,
     recipe: cursorRecipe({ command: binary, ...(model !== undefined ? { model } : {}), ...(limits ? { limits } : {}) }),
-    // Checked again before each process starts, the launcher and every file it runs: a file replaced since the adapter
-    // was made never runs unchecked. An unchanged file is not hashed again (the check remembers it by its identity).
-    beforeStart: async (command) => {
-      await verifyPinnedBinaryAsync(command, launcher);
-      await verifyPinnedTree(root, tree);
-    },
+    // Checked again before each process starts, every file it runs, the launcher among them (the tree's digest covers
+    // it): a file replaced since the adapter was made never runs unchecked. An unchanged file is not hashed again (the
+    // check remembers it by its identity).
+    beforeStart: () => verifyPinnedTree(root, release.treeSha256),
   });
 }

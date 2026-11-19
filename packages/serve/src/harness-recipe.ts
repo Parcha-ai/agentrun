@@ -27,7 +27,7 @@ import { isAbsolute, join, normalize, resolve, sep } from "node:path";
 import { HARNESS_ID_PATTERN, RESERVED_HARNESS_IDS } from "./harness.js";
 import { ARCHIVE_FORMATS, type ArchiveFormat, type ArchiveInstallOptions, archivePlatform, type ArchiveRelease, installArchive } from "./harness-archive.js";
 import { BUILTIN_HARNESS_IDS } from "./harness-table.js";
-import { commandData } from "./harness-goose.js";
+import { commandData } from "./harness-owned.js";
 import { harnessesOf, installDirOf, shellWord } from "./harness-install.js";
 import { keyShaped } from "./secret-name.js";
 import { SECRET_NAMES } from "./secrets.js";
