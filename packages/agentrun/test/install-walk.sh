@@ -87,10 +87,24 @@ node_chosen() {
 running() { [ -r "/proc/$1/stat" ] && ! grep -q ') Z ' "/proc/$1/stat"; }
 # The installer as `curl | sh` runs it, with a reader that waits for the end of its output, as an agent's shell does: it
 # returns 0 within $1 seconds, or the walk fails. Its output goes to $2.
+# $2... within $1 seconds, or killed: timeout(1) where there is one; macOS has none, so a watchdog there.
+bounded() {
+  local bound=$1 pid dog rc
+  shift
+  if command -v timeout >/dev/null; then timeout "$bound" "$@"; return; fi
+  "$@" &
+  pid=$!
+  (sleep "$bound" && kill -TERM "$pid" 2>/dev/null) &
+  dog=$!
+  wait "$pid"
+  rc=$?
+  kill "$dog" 2>/dev/null
+  return "$rc"
+}
 piped_install() {
   local bound=$1 out=$2
   shift 2
-  timeout "$bound" bash -c 'cat "$0" | sh -s -- "$@" 2>&1 | cat' "$here/install.sh" "$@" > "$out" || {
+  bounded "$bound" bash -c 'cat "$0" | sh -s -- "$@" 2>&1 | cat' "$here/install.sh" "$@" > "$out" || {
     cat "$out"
     die "the installer did not return 0 within $bound s"
   }
@@ -198,7 +212,7 @@ first_run_walk() {
   local t0 t_install t_model t_ready t_create t_run total local_model create start ready out nodebin served='' model_log
   local_model=$(skill_line '~/.agentrun/bin/agentrun service install --env AGENT_MODEL_BASE_URL=http://localhost:11434/v1 ')
   local_model=${local_model//<tag>/walk-model}
-  grep -qF 'curl -fsSL https://agentrun.ai/install | AGENT_MODEL_BASE_URL=http://localhost:11434/v1' "$here/../../docs/SKILL.md" ||
+  grep -qF 'curl -fsSL https://agentrun.ai/install | AGENT_MODEL_API_KEY=none AGENT_MODEL_BASE_URL=http://localhost:11434/v1' "$here/../../docs/SKILL.md" ||
     die "docs/SKILL.md no longer puts the local model in front of sh for a background start"
   create=$(skill_line "~/.agentrun/bin/agentrun agents create --body '{\"definition\":{\"id\":\"release-notes\"")
   start=$(skill_line '~/.agentrun/bin/agentrun runs start release-notes --wait ')
@@ -228,10 +242,10 @@ first_run_walk() {
   for _ in $(seq 1 50); do grep -q 'walk model on' /tmp/walk-model.out && break; sleep 0.1; done
   grep -q 'walk model on' /tmp/walk-model.out || die "the walk model did not start: $(cat /tmp/walk-model.out)"
   if grep -q "so it runs in the background" /tmp/first-install.log; then
-    step "   Local model, in the background: agentrun stop, then the installer with the four in front of sh"
+    step "   Local model, in the background: agentrun stop, then the installer with the five in front of sh"
     "$agentrun" stop
     down 30
-    AGENT_MODEL_BASE_URL=http://localhost:11434/v1 AGENT_MODEL_GATEWAY_IDS=bare AGENT_MODEL=walk-model AGENT_MODEL_PRICE=0,0,0 \
+    AGENT_MODEL_API_KEY=none AGENT_MODEL_BASE_URL=http://localhost:11434/v1 AGENT_MODEL_GATEWAY_IDS=bare AGENT_MODEL=walk-model AGENT_MODEL_PRICE=0,0,0 \
       piped_install "$bar" /tmp/first-model.log "$@"
   else
     step "   Local model, on the service: $local_model"

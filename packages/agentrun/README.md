@@ -46,10 +46,11 @@ one when the last has run out) until the password is set, the console after. It 
 `upgrade [--version V]` (the installer again, then a restart) and `uninstall` (the data stays) do what they say, and
 `agentrun service install [--port N] [--data DIR] [--public-url URL]` installs the service after a `--no-start`. For a local model, such
 as Ollama's, `agentrun service install --env AGENT_MODEL_BASE_URL=<its /v1 address> --env AGENT_MODEL_GATEWAY_IDS=bare --env
-AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0` writes those variables into the
-service and restarts it. They stay through restarts, upgrades and later installs, and `--env KEY=` removes one. On a machine
+AGENT_MODEL=<tag> --env AGENT_MODEL_PRICE=0,0,0 --env AGENT_MODEL_API_KEY=none` writes those variables into the
+service and restarts it (`AGENT_MODEL_API_KEY` takes `none` alone: a model that takes no key, as Ollama's, still needs a
+key the server sends, or each run is refused with `model_key_required`). They stay through restarts, upgrades and later installs, and `--env KEY=` removes one. On a machine
 you alone use, `--env AGENTRUN_MCP_ALLOW_LOOPBACK=1 --env AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` turns on the two start-time
-switches the same way (a switch takes `1` alone). `--env` takes those six names alone: model keys go in the console,
+switches the same way (a switch takes `1` alone). `--env` takes those seven names alone: model keys go in the console,
 never in a service file. On Linux, a user's
 services stop at logout unless lingering is on: `install` and `status` print the one `sudo loginctl enable-linger` line
 when it is off. To remove AgentRun, run `agentrun service uninstall`, then delete `~/.agentrun/bin`, `~/.agentrun/lib`,
