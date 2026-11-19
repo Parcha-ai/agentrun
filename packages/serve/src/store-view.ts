@@ -533,9 +533,10 @@ function costOfView(run: StoreRun, tools = false): Record<string, unknown> {
  *  counts (jobPaidOf), joined and rounded by the one rule it is (costWordsOf), so the two agree to the micro-dollar. A
  *  part of `usd`, never added to it. 0 with none. Null when one's charge is unknown (charged an unknown amount, cut, or
  *  still out), as `usd` is then, or counted at its hold, which is no spend; when its job's calls can't be told from its
- *  learning's; and for an imported run, whose cost is its import's figure, with no booking of its own to read a part of. */
+ *  learning's; and for an imported, native or SDK run, whose cost is its import's or its harness's own figure, with no
+ *  booking of its paid tool calls to read a part of (a native or SDK run never opens the paid-tools session). */
 function toolsUsdOf(run: StoreRun): number | null {
-  if (run.row.importedFrom || !run.paid) return null;
+  if (run.row.importedFrom || run.native || run.sdk || !run.paid) return null;
   const words = costWordsOf([run.paid]);
   return words.upper_bound ? null : words.usd;
 }
