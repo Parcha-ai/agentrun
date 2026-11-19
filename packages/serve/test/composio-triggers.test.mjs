@@ -25,7 +25,7 @@ const OURS = new RegExp(`^${PUBLIC.replace(/\./g, "\\.")}/v2/hooks/composio/(cph
 
 /** A server with a saved GitHub Composio server `gh`, connected as agentrun-qa, and an agent `triage`. Every answer and
  *  log line is kept, for the secret's check. */
-async function setup(t, { composio: given = {}, server: options = {}, connected = true } = {}) {
+async function setup(t, { composio: given = {}, server: options = {}, connected = true, saveWith = {} } = {}) {
   const composio = await startFakeComposio({ toolkits: { github: { no_auth: false, tools: TOOLS } }, authConfigs: { github: [{ id: "ac_managed", is_composio_managed: true }] }, active: connected ? ["github"] : [], ...given });
   t.after(() => composio.close());
   const lines = [];
@@ -36,7 +36,7 @@ async function setup(t, { composio: given = {}, server: options = {}, connected 
     answers.push(JSON.stringify(res.body));
     return res;
   };
-  const saved = await api("PUT", "/settings/mcp-servers/gh/composio", { api_key: composio.apiKey, toolkit: "github", tools: ["GITHUB_LIST_ISSUES"], user_id: "agentrun-qa" });
+  const saved = await api("PUT", "/settings/mcp-servers/gh/composio", { api_key: composio.apiKey, toolkit: "github", tools: ["GITHUB_LIST_ISSUES"], user_id: "agentrun-qa", ...saveWith });
   assert.equal(saved.status, 200, JSON.stringify(saved.body));
   await made(api, "triage");
   return { composio, server, api, lines, answers, baseUrl: server.baseUrl };
@@ -156,6 +156,105 @@ test("several connected accounts: refused, naming each with when it was made, an
   assert.equal(s.composio.subscriptions.length, 0);
   assert.equal(s.composio.instances.size, 0);
   assert.equal((await s.api("GET", "/triggers")).body.triggers.length, 0);
+});
+
+// A server saved with auth_config_id stands on that config: its MCP server serves only the accounts under it, so its
+// triggers run as one of those, and its connect link is made under it. The user here has a GitHub account under the
+// managed config too, which that server never serves.
+const BOTH_CONFIGS = { github: [{ id: "ac_managed", is_composio_managed: true }, { id: "ac_custom", is_composio_managed: false }] };
+const upsertedAs = (composio) => composio.calls.filter((call) => call.method === "POST" && call.path.endsWith("/upsert")).map((call) => call.body.connected_account_id);
+
+test("a server saved with auth_config_id: its trigger runs as the account under that config, though the user has one under the managed config too", async (t) => {
+  const accounts = { github: [{ id: "ca_managed_github", status: "ACTIVE", auth_config: "ac_managed", created_at: "2026-11-10T08:00:00.000Z" }, { id: "ca_custom_github", status: "ACTIVE", auth_config: "ac_custom", created_at: "2026-11-11T08:00:00.000Z" }] };
+  const s = await setup(t, { connected: false, composio: { authConfigs: BOTH_CONFIGS, accounts }, saveWith: { auth_config_id: "ac_custom" } });
+  const res = await s.api("POST", "/triggers", issueTrigger());
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+  assert.deepEqual(upsertedAs(s.composio), ["ca_custom_github"], "made as the account under the saved config");
+  assert.equal(s.composio.instances.size, 1);
+});
+
+test("a server saved with auth_config_id and no account under it: the connect link is made under that config, and nothing is made on Composio", async (t) => {
+  const s = await setup(t, { connected: false, composio: { authConfigs: BOTH_CONFIGS }, saveWith: { auth_config_id: "ac_custom" } });
+  const res = await s.api("POST", "/triggers", issueTrigger());
+  assert.equal(res.status, 409, JSON.stringify(res.body));
+  assert.equal(res.body.error.code, "composio_not_connected");
+  assert.equal(res.body.error.details.connect_url, "https://connect.composio.test/link/ac_custom", "the link is under the saved config");
+  assert.match(res.body.error.message, /under auth config ac_custom/);
+  assert.equal(s.composio.subscriptions.length, 0);
+  assert.equal(s.composio.instances.size, 0);
+  assert.equal((await s.api("GET", "/triggers")).body.triggers.length, 0);
+});
+
+test("a server saved on the managed config, the user with an account under a custom config too: its trigger runs as the managed config's account", async (t) => {
+  const accounts = { github: [{ id: "ca_managed_github", status: "ACTIVE", auth_config: "ac_managed", created_at: "2026-11-10T08:00:00.000Z" }, { id: "ca_custom_github", status: "ACTIVE", auth_config: "ac_custom", created_at: "2026-11-11T08:00:00.000Z" }] };
+  const s = await setup(t, { connected: false, composio: { authConfigs: BOTH_CONFIGS, accounts } });
+  const res = await s.api("POST", "/triggers", issueTrigger());
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+  assert.deepEqual(upsertedAs(s.composio), ["ca_managed_github"], "made as the account under the managed config the server stands on");
+});
+
+test("a server saved on the managed config, as before: its trigger runs as its account, and with none the link is under the managed config", async (t) => {
+  const s = await setup(t, { composio: { authConfigs: BOTH_CONFIGS } });
+  const res = await s.api("POST", "/triggers", issueTrigger());
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+  assert.deepEqual(upsertedAs(s.composio), ["ca_fake_github"]);
+  const s2 = await setup(t, { connected: false, composio: { authConfigs: BOTH_CONFIGS } });
+  const none = await s2.api("POST", "/triggers", issueTrigger());
+  assert.equal(none.status, 409, JSON.stringify(none.body));
+  assert.equal(none.body.error.details.connect_url, "https://connect.composio.test/link/ac_managed");
+});
+
+test("a server with no recorded auth config (saved before one was): its trigger looks across every config and links under the managed one, as before", async (t) => {
+  const accounts = { github: [{ id: "ca_custom_github", status: "ACTIVE", auth_config: "ac_custom", created_at: "2026-11-11T08:00:00.000Z" }] };
+  const composio = await startFakeComposio({ toolkits: { github: { no_auth: false, tools: TOOLS } }, authConfigs: BOTH_CONFIGS, accounts });
+  t.after(() => composio.close());
+  const kept = new Map();
+  const sealed = { get: (scope, field) => kept.get(`${scope}/${field}`), set: async (scope, field, value) => void kept.set(`${scope}/${field}`, value), remove: async (scope) => void [...kept.keys()].filter((k) => k.startsWith(`${scope}/`)).forEach((k) => kept.delete(k)) };
+  const triggers = new ComposioTriggers({ control: { baseUrl: composio.baseUrl }, publicUrl: PUBLIC, sealed, credential: async () => ({ key: composio.apiKey, user: "agentrun-qa", toolkit: "github" }), holders: async () => [], say: () => {} });
+  const source = { kind: "composio", server: "gh", event: "GITHUB_ISSUE_ADDED_EVENT", config: { owner: "many-drop", repo: "agentrun-scratch" } };
+  await triggers.make(source, "trg_a", true, async (s) => s);
+  assert.deepEqual(upsertedAs(composio), ["ca_custom_github"], "the one ACTIVE account, under any config");
+  const listing = composio.calls.find((call) => call.method === "GET" && call.path === "/api/v3/connected_accounts");
+  assert.equal(listing.query.auth_config_ids, undefined, "not narrowed to a config");
+  // No ACTIVE account at all: the link is under the managed config.
+  const none = await startFakeComposio({ toolkits: { github: { no_auth: false, tools: TOOLS } }, authConfigs: BOTH_CONFIGS });
+  t.after(() => none.close());
+  const bare = new ComposioTriggers({ control: { baseUrl: none.baseUrl }, publicUrl: PUBLIC, sealed, credential: async () => ({ key: none.apiKey, user: "agentrun-qa", toolkit: "github" }), holders: async () => [], say: () => {} });
+  await assert.rejects(bare.make(source, "trg_b", true, async (s) => s), (error) => error.code === "composio_not_connected" && error.extra.details?.connect_url === "https://connect.composio.test/link/ac_managed");
+});
+
+// The create reads the server's credential first and again just before it saves. A save over the server in between, with
+// another key or now on another auth config, would leave the trigger on an account the server no longer serves: refused,
+// and what the create made is undone. Driven here by a credential that answers otherwise on its second read.
+async function racedCreate(t, second) {
+  const composio = await startFakeComposio({ toolkits: { github: { no_auth: false, tools: TOOLS } }, authConfigs: BOTH_CONFIGS, active: ["github"] });
+  t.after(() => composio.close());
+  const kept = new Map();
+  const sealed = { get: (scope, field) => kept.get(`${scope}/${field}`), set: async (scope, field, value) => void kept.set(`${scope}/${field}`, value), remove: async (scope) => void [...kept.keys()].filter((k) => k.startsWith(`${scope}/`)).forEach((k) => kept.delete(k)) };
+  const first = { key: composio.apiKey, user: "agentrun-qa", toolkit: "github", auth_config: "ac_managed" };
+  let reads = 0;
+  const triggers = new ComposioTriggers({ control: { baseUrl: composio.baseUrl }, publicUrl: PUBLIC, sealed, credential: async () => (++reads === 1 ? first : { ...first, ...second(composio) }), holders: async () => [], say: () => {} });
+  const source = { kind: "composio", server: "gh", event: "GITHUB_ISSUE_ADDED_EVENT", config: { owner: "many-drop", repo: "agentrun-scratch" } };
+  const error = await triggers.make(source, "trg_raced", true, async (s) => s).then(() => undefined, (refused) => refused);
+  return { composio, error, reads };
+}
+
+test("a save over the server onto another auth config while a trigger is being made: refused as a key change is, and what the create made is undone", async (t) => {
+  const { composio, error, reads } = await racedCreate(t, () => ({ auth_config: "ac_custom" }));
+  assert.ok(error, `the create is refused (the credential was read ${reads} times)`);
+  assert.equal(error.code, "input_invalid");
+  assert.equal(error.extra.fields[0].field, "source.server");
+  assert.match(error.extra.fields[0].message, /gh was saved again on another auth config while this trigger was being made: nothing was saved, make it again\./);
+  assert.equal(composio.subscriptions.length, 0, "the subscription it made is undone");
+  assert.ok([...composio.instances.values()].every((i) => i.disabled_at !== null) || composio.instances.size === 0, "no instance left on");
+});
+
+test("a save over the server with another key while a trigger is being made: refused, as before, and what the create made is undone", async (t) => {
+  const { composio, error } = await racedCreate(t, () => ({ key: "another-fake-key" }));
+  assert.ok(error, "the create is refused");
+  assert.equal(error.extra.fields[0].field, "source.server");
+  assert.match(error.extra.fields[0].message, /gh was saved again with another Composio key while this trigger was being made/);
+  assert.equal(composio.subscriptions.length, 0);
 });
 
 test("a failure after the subscription undoes it: nothing is left on Composio or here", async (t) => {

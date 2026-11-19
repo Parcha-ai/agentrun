@@ -6,7 +6,7 @@
 // that scope. Every event of the project comes to that one route, checked once with the secret (trigger-signatures.ts's
 // composio scheme); each trigger whose instance is the delivery's metadata.trigger_id and whose `accept` takes it fires,
 // each its own run. This is the one way Composio's events start runs: a webhook trigger takes no composio signature.
-// A config can hold a credential (HubSpot's deal-stage event takes {app_id, developer_api_key}). Composio's trigger
+// A config can hold a credential. Composio's trigger
 // schemas mark no field secret (their `config` is a plain JSON schema: type, title, description, required), so a field is
 // sealed by its name (sealedConfigFields), or as an address carrying a credential (credentialUrl): kept in this source's sealed settings, the trigger keeping SEALED_MASK in its
 // place and the field named in `sealed_config`, so no answer, row or log holds it (composio-triggers.ts).
