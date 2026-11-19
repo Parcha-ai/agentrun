@@ -35,9 +35,6 @@ export const github: TriggerAdapter = {
   label: "GitHub trigger",
   delivery: "push",
   owner: false,
-  // Each event is its own (one pull request, one issue, often a different person's): one run's answer (about alice's) is
-  // never handed to the next (bob's).
-  previousResult: false,
   // The connection's App, the server's one: its secrets, and what is no secret beside them (github-connection.ts).
   settings: { scope: "server", fields: { [FIELDS.appId]: { public: true }, [FIELDS.slug]: { public: true }, [FIELDS.clientId]: { public: true }, [FIELDS.settingsUrl]: { public: true }, [FIELDS.installations]: { public: true }, [FIELDS.privateKey]: { format: "pem" }, [FIELDS.webhookSecret]: {} } },
   describe: '{kind: "github", accept: [{event, actions?, where?}]}',

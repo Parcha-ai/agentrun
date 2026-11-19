@@ -44,9 +44,6 @@ export const webhook: TriggerAdapter = {
   label: "webhook trigger",
   delivery: "push",
   owner: false,
-  // Each delivery is its own event (one form submission, one sender's): one run's answer is never handed to the next. A
-  // caller that wants "since last time" runs it on a schedule.
-  previousResult: false,
   settings: { scope: "trigger", fields: { secret: { mint: true, minBytes: MIN_KEY_BYTES } } },
   describe: `{kind: "webhook", signature?: ${SCHEME_NAMES.map((name) => `"${name}"`).join(" | ")}, accept?: [{event, actions?, where?}]}`,
   fires: "a signed request to /hooks/{trigger_id} (`webhook`) that its `accept` takes",
