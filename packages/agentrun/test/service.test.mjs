@@ -655,13 +655,18 @@ test("stop: the AgentRun the installer started in the background, and its server
   assert.equal(await service().background(), 3);
   assert.match(out.join(""), /AgentRun runs as a service here: agentrun service stop stops it\./);
 
-  // A service writes the same record and no pid file: its live, healthy server is the service's, not one in a terminal.
+  // A service writes the same record and no pid file: while the service runs, its live, healthy server is the service's,
+  // not one in a terminal. With the service stopped, a server that answers is one in a terminal (npx after service stop).
   const serviced = await holder(home, { pidFile: false });
+  const managed = (active) => execOf((command, args) => (args[1] === "show" ? { stdout: `ActiveState=${active}\nSubState=x\nMainPID=7\n` } : {})).exec;
   try {
     writeFileSync(join(home, ".agentrun", ".server.json"), JSON.stringify({ base_url: "http://127.0.0.1:7340/v2", pid: serviced.child.pid }));
     out.splice(0);
-    assert.equal(await serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, io, fail, get: answers(true) }).background(), 3);
+    assert.equal(await serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, exec: managed("active"), io, fail, get: answers(true) }).background(), 3);
     assert.equal(out.join(""), "No AgentRun started in the background is running. AgentRun runs as a service here: agentrun service stop stops it.\n");
+    out.splice(0);
+    assert.equal(await serviceOf({ platform: "linux", home, uid: 1000, user: "a", env: {}, exec: managed("inactive"), io, fail, get: answers(true) }).background(), 1);
+    assert.equal(out.join(""), `AgentRun is running in the foreground (pid ${serviced.child.pid}); press Ctrl-C in its terminal.\n`);
   } finally {
     serviced.child.kill("SIGKILL");
     await serviced.exited;
