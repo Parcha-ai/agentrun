@@ -1279,8 +1279,10 @@ Offline regressions cover streamed native tools, continuation, reasoning, cache 
 errors, credential scoping and actual Pi conversation retries. A live pass against Particle's API (2026-11-18, twelve
 checks) saved a key, then completed a plain run, tool calls continued after the model's reasoning, a follow-up, a
 cancel, a capped run and a workflow's model nodes. Replies reported cached input tokens and no cache writes, and each
-priced run's cost equaled its tokens at list price. Not yet seen live: a rate limit or server error from Particle,
-and the estimate against Particle's own bill. The protocol fixtures alone are not evidence of live compatibility.
+priced run's cost equaled its tokens at list price. A later workflow run (2026-11-19, three requests) matched
+Particle's usage page: the same cached, uncached and output token counts, and the same cost to the six decimals the
+page shows. Not yet seen live: a rate limit or server error from Particle. The protocol fixtures alone are not
+evidence of live compatibility.
 
 ### On a ChatGPT plan
 
