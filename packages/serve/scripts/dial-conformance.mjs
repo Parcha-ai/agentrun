@@ -28,14 +28,14 @@
 // and the versions the twin's refused hellos reported (driftedDaemon), which must be the copy's.
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createServer, get as httpGet } from "node:http";
 import { get as httpsGet } from "node:https";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { ATTACH_HELLO_MS, ATTACH_PATH, ATTACH_SUBPROTOCOL, AttachHub, DAEMON_PATH, descriptorOf, hostedDaemonPath, isProviderId, providerModule } from "@parcha/agentrun-computer";
 import WebSocket from "ws";
 import { isMain } from "../../../scripts/is-main.mjs";
@@ -133,6 +133,16 @@ const NO_PAIRING = new Proxy(
 					},
 	},
 );
+
+/** computerd-fixture for linux/amd64, which the server's image builds next to computerd (packages/serve/docker/Dockerfile). */
+export const FIXTURE_PATH = fileURLToPath(new URL("../../computer/dist/computerd-fixture-linux-amd64", import.meta.url));
+
+/** What a run of `kind` checks effects with: a desktop's computerd-fixture (its screen and input cases skip without it, and Core cannot pass), none otherwise. */
+export function fixtureFor(kind, path = FIXTURE_PATH) {
+	if (kind !== "desktop") return undefined;
+	if (!existsSync(path)) throw new Error(`a desktop run needs computerd-fixture at ${path}: the server's image builds it; elsewhere, go build -o ${path} ./cmd/fixture in packages/computer/daemon with GOOS=linux GOARCH=amd64`);
+	return path;
+}
 
 /** The version a drifted daemon reports: the provider's, its last character changed, so the bytes keep their length. */
 export const driftedVersion = (version) => `${version.slice(0, -1)}${version.endsWith("x") ? "y" : "x"}`;
@@ -358,6 +368,7 @@ async function main({ provider: name, only, exit }, env, state) {
 		const image = typeof module.conformanceImage === "function" ? await module.conformanceImage(options, { signal: controller.signal }) : undefined;
 		if (typeof image !== "string" || image === "") throw new Error(`${name}: its conformance module names no image (conformanceImage())`);
 		const cases = casesFor(provider.capabilities().kind);
+		const fixture = fixtureFor(provider.capabilities().kind);
 		if (only !== undefined) {
 			// A name that is no group or case id would narrow the run to nothing, which must not read as a pass.
 			const known = new Set(cases.flatMap((one) => [one.id, one.group]));
@@ -370,6 +381,7 @@ async function main({ provider: name, only, exit }, env, state) {
 		const report = await runConformance(provider, {
 			image,
 			cases,
+			...(fixture === undefined ? {} : { fixture }),
 			...(only === undefined ? {} : { only }),
 			long: true,
 			signal: controller.signal,
