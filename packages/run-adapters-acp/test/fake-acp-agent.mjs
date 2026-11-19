@@ -22,7 +22,8 @@
 //           takes one of them and refuses any other;
 //   writeAuth: at session/new and session/load, write $HOME/.config/cursor/auth.json holding the sha256 of the
 //              CURSOR_API_KEY it was handed (a credential derived from the key, as Cursor writes one); authFile: that
-//              file's path in HOME instead;
+//              file's path in HOME instead. A write that fails (the path is a folder) is said on stderr and the session
+//              goes on, as Cursor's does;
 //   failNew: at session/new, print these words on stderr and exit 1 (Cursor's own refusals, the team admin's switch);
 //   cursorDirs: keep sessions and read the CLI config where Cursor 2026.11.13 does (cursor-config/dist/paths.js): its
 //               config directory is $CURSOR_CONFIG_DIR, else $XDG_CONFIG_HOME/cursor, else $HOME/.cursor; sessions in
@@ -85,8 +86,16 @@ function writeAuth() {
   const file = join(home, config.authFile ?? ".config/cursor/auth.json");
   mkdirSync(dirname(file), { recursive: true });
   const keySha = createHash("sha256").update(process.env.CURSOR_API_KEY ?? "").digest("hex");
-  writeFileSync(file, JSON.stringify({ keySha }));
-  said({ type: "auth", file, keySha });
+  try {
+    writeFileSync(file, JSON.stringify({ keySha }));
+  } catch (error) {
+    // As Cursor 2026.11.13 does (src/utils/credential-persistence.ts): a credential it cannot save is said on stderr, and
+    // the session goes on with the one it holds in memory.
+    process.stderr.write(`Cursor couldn't save your credentials. This session continues with the credentials it already has.\nError: ${error.code}\n`);
+    said({ type: "auth", file, keySha, saved: false, code: error.code });
+    return;
+  }
+  said({ type: "auth", file, keySha, saved: true });
 }
 const steps = (history) => history.filter((h) => h.kind === "call" || h.kind === "native" || h.kind === "say").length;
 const text = (blocks) => blocks.filter((b) => b.type === "text").map((b) => b.text);

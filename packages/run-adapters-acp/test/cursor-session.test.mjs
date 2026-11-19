@@ -1,5 +1,6 @@
 // What Cursor's recipe asks of the adapter, on the fake agent in Cursor's measured shapes (harness S0, Cursor
-// 2026.11.13): its key handed by name and no other, the credential it derives from it gone with its process, the run's
+// 2026.11.13): its key handed by name and no other, the credential it derives from it never written (it runs on the key
+// in its env, as the real binary does when it cannot save one), the run's
 // model chosen among those its key lists, an MCP call named only after it is announced, and its own refusals by name.
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
@@ -41,24 +42,45 @@ test('a recipe whose key the host does not hold refuses the start, naming the ke
   assert.equal(fakeEvents(recipe).some((e) => e.type === 'start'), false, 'the agent never started');
 });
 
-test('the credential the agent derives from its key is gone once its process ends, and was never mirrored', async (t) => {
+/** Every file under `dir` (its path), walked whole. */
+const filesIn = (dir) => (existsSync(dir) ? readdirSync(dir, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => join(e.parentPath, e.name)) : []);
+/** The files under `dir` that hold the credential the fake derives from KEY. */
+const holdingCredential = (dir) => filesIn(dir).filter((file) => readFileSync(file, 'utf8').includes(sha(KEY)));
+
+test('the credential the agent derives from its key is never written: it runs on the key in its env alone', async (t) => {
   const dir = scratch();
   const sessionsDir = join(dir, 'sessions');
   const recipe = cursorLike(dir, { script: [{ say: 'one' }, { say: 'two' }] });
   const { session, store } = await openSession(t, recipe, { sessionsDir, options: { env: { PATH: process.env.PATH, CURSOR_API_KEY: KEY } } });
   await session.send('a');
-  assert.equal((await session.turnEnd()).status, 'completed');
-  const auth = join(homeOf(sessionsDir), '.config/cursor/auth.json');
-  assert.equal(existsSync(auth), true, 'the agent wrote it while it ran');
+  assert.equal((await session.turnEnd()).status, 'completed', 'the agent goes on with the credential it holds in memory');
+  const auths = fakeEvents(recipe).filter((e) => e.type === 'auth');
+  assert.ok(auths.length > 0, 'the agent tried to save it');
+  assert.deepEqual(auths.map((e) => e.saved), auths.map(() => false), 'and could not, at any session/new or session/load');
+  assert.deepEqual(holdingCredential(homeOf(sessionsDir)), [], 'no file in its HOME holds it while it runs');
   await session.close();
-  assert.equal(existsSync(auth), false, 'auth.json is gone after the session');
-  assert.equal(existsSync(homeOf(sessionsDir)), false, 'the private HOME that held it is gone whole');
+  assert.equal(existsSync(homeOf(sessionsDir)), false, 'the private HOME is gone whole after the session');
   const mirrored = (await streamRecords(store, STATE_STREAM)).map((r) => r.path);
   assert.ok(mirrored.length > 0, 'the session store was mirrored');
   assert.equal(mirrored.some((path) => path.includes('auth')), false, mirrored.join(', '));
 });
 
-test('a credential the recipe names is never mirrored, even inside a state path and under a name no filter knows', async (t) => {
+test('a hard kill leaves no credential on disk: the agent never wrote one, so there is nothing for a sweep to find', async (t) => {
+  const dir = scratch();
+  const sessionsDir = join(dir, 'sessions');
+  const recipe = cursorLike(dir, { script: [{ say: 'one' }, { say: 'two' }] });
+  const { session } = await openSession(t, recipe, { sessionsDir, options: { env: { PATH: process.env.PATH, CURSOR_API_KEY: KEY } } });
+  await session.send('a');
+  assert.equal((await session.turnEnd()).status, 'completed');
+  const { pid } = fakeEvents(recipe).find((e) => e.type === 'start');
+  // SIGKILL, as a run's host dying takes its agent: no dispose runs, no HOME is removed.
+  process.kill(pid, 'SIGKILL');
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.deepEqual(holdingCredential(sessionsDir), [], 'no file anywhere under the session folder holds it');
+  assert.equal(filesIn(join(homeOf(sessionsDir), '.config/cursor/auth.json')).length, 0, 'auth.json is no file, and holds none');
+});
+
+test('a credential the recipe names is never written nor mirrored, even inside a state path and under a name no filter knows', async (t) => {
   const dir = scratch();
   const sessionsDir = join(dir, 'sessions');
   // A custom recipe whose state path holds its credential: `.agent/login.json` says nothing of a credential by its name.
@@ -66,12 +88,12 @@ test('a credential the recipe names is never mirrored, even inside a state path 
   const { session, store } = await openSession(t, recipe, { sessionsDir, options: { env: { PATH: process.env.PATH, CURSOR_API_KEY: KEY } } });
   await session.send('a');
   assert.equal((await session.turnEnd()).status, 'completed');
-  assert.equal(existsSync(join(homeOf(sessionsDir), '.agent/login.json')), true, 'the agent wrote it while it ran');
+  assert.deepEqual(holdingCredential(homeOf(sessionsDir)), [], 'the agent could not write it');
   await session.close();
   const mirrored = (await streamRecords(store, STATE_STREAM)).map((r) => r.path);
   assert.ok(mirrored.length > 0, 'the session store was mirrored');
-  assert.equal(mirrored.includes('.agent/login.json'), false, mirrored.join(', '));
-  assert.equal(existsSync(homeOf(sessionsDir)), false, 'the private HOME that held it is gone whole');
+  assert.equal(mirrored.some((path) => path.startsWith('.agent/login.json')), false, mirrored.join(', '));
+  assert.equal(existsSync(homeOf(sessionsDir)), false, 'the private HOME is gone whole');
 });
 
 test('another runner loads the session after the wipe: its store came back from the records', async (t) => {
