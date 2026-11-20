@@ -15,8 +15,14 @@ import { after, test } from "node:test";
 import { keepRunDisk, saveArchilSettings, storeAgentDisk } from "../dist/archil-settings.js";
 import { agentFolderOf } from "../dist/files.js";
 import { deleteLearning } from "../dist/learn/delete.js";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { lastOwnRuns } from "../dist/learn/compile.js";
 import { gradesKey, promotionsKey, promotionsOf, resetLedgerKey } from "../dist/learn/promote.js";
-import { learningFolderOf, seedOf, withAgentRepo } from "../dist/learning.js";
+import { learningFolderOf, secretsShown, seedOf, withAgentRepo } from "../dist/learning.js";
+import { notAuditableOf } from "../dist/runner/audit.js";
+import { askReplay } from "../dist/runner/promotion.js";
+import { pastRunsOverStore } from "../dist/store-reads/learning.js";
+import { agentLoopOverStore } from "../dist/store-reads/loop.js";
 import { resetLearning } from "../dist/learning-reset.js";
 import { readLaunchBody } from "../dist/run-launch.js";
 import { createAdapterLoop } from "../dist/runner/adapter-loop.js";
@@ -111,6 +117,9 @@ async function endAsRunner(store, runId, state) {
   assert.ok(claim, `${runId} claimed`);
   await store.runs.update(claim, { state });
 }
+
+/** The setting that holds agent `id`'s reset watermark (learn/promote.ts resetAtKey), beside its reset ledger. */
+const resetAtKey = (id) => `learning.reset-at.${id}`;
 
 /** A read without the time it was read at. */
 const untimed = ({ to: _to, ...rest }) => rest;
@@ -211,8 +220,10 @@ test("a served run's cost keeps its share of its revision's paid check after the
   assert.equal((await api("DELETE", "/agents/paid/learning")).status, 204);
   assert.deepEqual({ shares: await four(), bill: (await costs()).bill }, relearned, "the second reset keeps the K the records had");
   assert.deepEqual((await store.settings.get(resetLedgerKey("paid")))?.items, [{ workflow: "answer", digest: DIGEST, k: 4 }]);
+  assert.equal(typeof (await store.settings.get(resetAtKey("paid")))?.at, "number", "the reset's watermark is kept beside the ledger");
   await deleteLearning(store, "paid", learningFolderOf(data, "paid"));
   assert.equal(await store.settings.get(resetLedgerKey("paid")), undefined, "the agent's delete removes it");
+  assert.equal(await store.settings.get(resetAtKey("paid")), undefined, "and the watermark with it: none is left with no agent");
 });
 
 /** Run `runId`'s launch record naming disk `diskId` as the caller's, as POST /runs with `archil_disk` records it
@@ -455,6 +466,8 @@ async function runnerFor(w, runId, launch, { script, feedback, wrap = (step) => 
   const createLoop = (deps) => createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1" }))({ ...deps, endOfRun: wrap(step) });
   const runner = startRunner({ store, createLoop, name: `runner-${runId}`, ...TIMING });
   w.closing.push(() => store.close(), () => runner.close());
+  /** This runner stopped, so a later run is claimed by a runner of its own launch. */
+  return { close: async () => (await runner.close(), await store.close()) };
 }
 
 test("(a) a run whose job turn ended and whose end-of-run step is still at work (its compile held open): 409 learning_busy naming it, nothing deleted; released, its compile commits and it ends; then 204, and nothing that compile wrote is left", { timeout: 120_000 }, async (t) => {
@@ -541,4 +554,142 @@ test("(b) a run whose claim started a check's replays, then ended: the reset can
   assert.equal((await w.ended("run-2")).metrics?.path, "agent");
   assert.deepEqual(await promotionsOf(w.server.settings, "agent-1"), [], "still none");
   assert.deepEqual((await w.server.runs.every("agent-1")).filter((run) => !FINAL.includes(run.state)), [], "nothing at work");
+});
+
+/** A run's learning start as the server pins it (runs-over-store.ts learningStartFor): its seed's commit and when the
+ *  seed was read. */
+const startOf = (seed, section = "") => ({ seed: seed.sha, section, seededAt: seed.at });
+
+test("(c) a run whose start read its seed before the reset, its row made after it: its learning is dropped whole at its end's entry (reason reset: no correction, no workflow, no promotion record); the next run's compile is a first compile on the new history", { timeout: 120_000 }, async (t) => {
+  const w = await storeWorld(t);
+  await corrected(w);
+  // Its start read the seed (as the server's seedFor does, in the agent's learning queue) before the reset's step 2.
+  const launch = { input: { content: "What is six times seven?" }, title: "t", place: { mode: "runner" }, learning: startOf(await seedOf(w.dir, "agent-1"), CORRECTION) };
+  assert.equal(await w.reset(), 204, "no run of the agent's yet");
+  await w.server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
+  const first = await runnerFor(w, "run-1", launch, { feedback: FEEDBACK, script: [{ say: "The job's answer." }, { say: "Noted." }, { say: compiledBlock() }] });
+  assert.equal((await w.ended("run-1")).state, "ended");
+  await first.close();
+  const proposal = (await w.server.learning.proposal("run-1"))?.proposal;
+  assert.deepEqual([proposal?.state, proposal?.reason, proposal?.detail], ["dropped", "reset", "Dropped: its learning seed predates a reset of the agent's learning."], JSON.stringify(proposal));
+  assert.ok(!w.onMain().includes(WORKFLOW_JSON), `no workflow landed: ${w.onMain().join(", ")}`);
+  assert.deepEqual(await promotionsOf(w.server.settings, "agent-1"), [], "no promotion record (no hold a recompile would answer)");
+  const corrections = w.onMain().includes("corrections.md") ? git(w.repo, ["show", "main:corrections.md"]) : "";
+  assert.ok(!corrections.includes(FEEDBACK) && !corrections.includes(CORRECTION.trim()), `no correction landed: ${JSON.stringify(corrections)}`);
+
+  // The next run, seeded after the reset: its compile is the agent's first on the new history, its draft landed.
+  const next = { input: { content: "What is six times seven?" }, title: "t", place: { mode: "runner" }, learning: startOf(await seedOf(w.dir, "agent-1")) };
+  await w.server.runs.create({ id: "run-2", agentId: "agent-1", revisionId: "rev-1" }, { body: next });
+  await runnerFor(w, "run-2", next, { feedback: FEEDBACK, script: [{ say: "The job's answer." }, { say: "Noted." }, { say: compiledBlock() }] });
+  assert.equal((await w.ended("run-2")).state, "ended");
+  const second = (await w.server.learning.proposal("run-2"))?.proposal;
+  assert.equal(second?.state, "merged", JSON.stringify(second));
+  assert.deepEqual(second.compiled?.attempts?.length, 1, `one attempt, a first compile: ${JSON.stringify(second.compiled)}`);
+  assert.ok(w.onMain().includes(WORKFLOW_JSON), `its draft is on main: ${w.onMain().join(", ")}`);
+  assert.ok(!(await promotionsOf(w.server.settings, "agent-1")).some((one) => one.decided === "hold"), "no hold");
+});
+
+const PRE = "PRE-RESET-MARKER";
+const COMPILE_ASKED = "enough times to write it down";
+const askedToCompile = (request) => JSON.stringify(request.body ?? {}).includes(COMPILE_ASKED);
+
+test("the watermark: runs before the reset never reach a later compile, even past compile_after (N = 3 before it, fewer than N after: no compile; then the compile reads only the runs after it, no text of one before)", { timeout: 180_000 }, async (t) => {
+  const w = await storeWorld(t, { instructions: "Answer.", tools: ["read"], learning: { compile_after: 3 } });
+  const gw = await startFauxGateway({ text: (request) => (askedToCompile(request) ? compiledBlock() : "42") });
+  w.closing.push(() => gw.close());
+  const store = await openSqliteStore({ dataDir: w.dir, role: "runner" });
+  const MODEL = "claude-sonnet-5-5";
+  const route = { model: MODEL, provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price: () => 0.001, fetch: globalThis.fetch };
+  const deps = { env: {}, data: w.dir, journal: (claim) => store.journal(claim), store, sealKey: Buffer.alloc(32, 7), routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: () => {} };
+  const specOf = async (claim, run) => adapterRunSpecFromLaunch(readLaunchBody((await store.runs.launch(claim.runId)).body), run, deps, claim);
+  const runner = startRunner({ store, name: "runner-w", ...TIMING, createLoop: createAdapterLoop(specOf) });
+  w.closing.push(() => store.close(), () => runner.close());
+  const launchOf = async (content) => ({ input: { content }, title: content, place: { mode: "runner" }, model: { provider: "anthropic", modelId: MODEL }, learning: startOf(await seedOf(w.dir, "agent-1")) });
+  const run = async (id, content) => {
+    await w.server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: await launchOf(content) });
+    assert.equal((await w.ended(id)).state, "ended", id);
+  };
+  const compiles = () => gw.requests.filter(askedToCompile);
+
+  // N = compile_after runs before the reset, each completed: the first compile of the agent is due at the third.
+  for (let i = 0; i < 3; i++) await run(`pre-${i}`, `${PRE} question ${i}?`);
+  assert.equal(await w.reset(), 204);
+  const before = compiles().length;
+  // Fewer than N after it: no compile, whatever ran before.
+  for (let i = 0; i < 2; i++) await run(`post-${i}`, `Question after ${i}?`);
+  assert.equal(compiles().length, before, "no compile turn: compile_after counts from the reset");
+  assert.ok(!w.onMain().includes(WORKFLOW_JSON), `no workflow: ${w.onMain().join(", ")}`);
+  // The Nth after it compiles, reading only the runs after the reset.
+  await run("post-2", "Question after 2?");
+  const asked = compiles().slice(before);
+  assert.equal(asked.length, 1, "the third run after the reset compiles");
+  const text = JSON.stringify(asked[0].body);
+  assert.ok(!text.includes(PRE), "no text of a run before the reset reaches the compile");
+  assert.ok(text.includes("Question after 0?") && text.includes("Question after 1?"), "its traces are the runs after the reset");
+  assert.ok(w.onMain().includes(WORKFLOW_JSON), `the draft landed: ${w.onMain().join(", ")}`);
+  assert.ok(!git(w.repo, ["show", `main:${WORKFLOW_JSON}`]).includes(PRE), "and the workflow holds nothing of a run before it");
+});
+
+const FLOW_DIGEST = createHash("sha256").update(JSON.stringify(answerFlow)).digest("hex").slice(0, 16);
+
+test("the watermark's readers: a run before the reset, or one whose seed was read before it (its row made after), is in no learning read: compile_after's count and a check's inputs (lastOwnRuns), an owner's replay inputs, the audit's served-run count, the money rule's past runs, the loop view", async (t) => {
+  const w = await storeWorld(t, { instructions: "Answer.", tools: ["read"], learning: { compile_after: 10 } });
+  const ended = async (id, launch, metrics = { path: "agent" }) => {
+    await w.server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
+    const claim = await w.server.claim(id, "runner-test", { leaseMs: 60_000 });
+    await w.server.runs.update(claim, { state: "ended", costUsd: 0.01, metrics });
+  };
+  const SERVED = { path: "workflow", workflow: "answer", workflow_digest: FLOW_DIGEST, not_auditable: true };
+  const ask = (question, seed) => ({ input: { content: `${question}?`, question }, title: question, place: { mode: "runner" }, learning: startOf(seed) });
+  const before = await seedOf(w.dir, "agent-1");
+  for (let i = 0; i < 3; i++) await ended(`pre-${i}`, ask(`Question ${i}`, before));
+  for (let i = 0; i < 2; i++) await ended(`pre-served-${i}`, ask(`Served ${i}`, before), SERVED);
+  // A start that read the seed before the reset, its row made after it.
+  const late = await seedOf(w.dir, "agent-1");
+  assert.equal(await w.reset(), 204);
+  await ended("late-seed", ask("Late", late));
+  const after = await seedOf(w.dir, "agent-1");
+  await ended("post-0", { input: { content: "After?" }, title: "after", place: { mode: "runner" }, learning: startOf(after) });
+  await ended("post-served-0", ask("Served after", after), SERVED);
+
+  assert.deepEqual((await lastOwnRuns(w.server, "agent-1", 10)).map((row) => row.id), ["post-0"], "compile_after's count and a check's inputs");
+  assert.equal(await notAuditableOf(w.server, "agent-1", "answer", FLOW_DIGEST, { stop_window: 10 }), 1, "the audit's served runs");
+  assert.deepEqual((await pastRunsOverStore(w.server, "agent-1")).length, 2, "the money rule's past runs: post-0 and post-served-0");
+  assert.equal((await agentLoopOverStore(w.server, "agent-1")).completed_runs, 1, "the loop view's count");
+  // An owner's replay of a workflow learned after the reset: the runs before it would fit its input, and none is picked.
+  await landWorkflows(w.dir, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: answerFlow }]);
+  const launched = [];
+  const replayAsk = { store: w.server, agentId: "agent-1", context: BACKGROUND_CONTEXT, log: () => {}, folder: () => learningFolderOf(w.dir, "agent-1"), shown: async () => secretsShown([]), launchOf: async (input) => (launched.push(input), Promise.reject(new Error("a replay was launched"))) };
+  await assert.rejects(askReplay(replayAsk, "answer", FLOW_DIGEST, 10), /has no input to replay on/);
+  assert.deepEqual(launched, [], "no replay of a run before the reset");
+});
+
+test("a run's kept learning cut to its state alone (as a run purge keeps that row): no learning read fails on it or reads any text from it", async (t) => {
+  const { api, data, store } = await serve(t, { learning: "on", runner: false });
+  assert.equal((await api("POST", "/agents", agent("cut", { learning: true }))).status, 201);
+  const revisionId = (await store.agents.get("cut")).currentRevision;
+  const LEARNS = { input: ASK, title: "t", place: { mode: "runner" }, learning: { seed: "a".repeat(40), section: "" } };
+  for (const [id, proposal] of [["cut-1", { state: "merged" }], ["cut-2", {}]]) {
+    await store.runs.create({ id, agentId: "cut", revisionId }, { body: LEARNS });
+    const claim = await store.claim(id, "runner-cut", { leaseMs: 60_000 });
+    await store.runs.update(claim, { state: "ended", costUsd: 0.1, metrics: { path: "agent" } });
+    const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 10_000 });
+    try {
+      db.prepare("INSERT INTO learning_proposals (run_id, round, agent_id, turn, proposal, created_at) VALUES (?, 1, ?, '{}', ?, ?)").run(id, "cut", JSON.stringify(proposal), Date.now());
+    } finally {
+      db.close();
+    }
+  }
+  const reads = ["/agents/cut", "/agents/cut/learning", "/agents/cut/learning/cost", "/agents/cut/learning/loop", "/agents/cut/learning/promotions", "/agents/cut/learning/log", "/runs/cut-1", "/runs/cut-2", "/stats", "/usage"];
+  for (const path of reads) {
+    const read = await api("GET", path);
+    assert.equal(read.status, 200, `${path}: ${JSON.stringify(read.body)}`);
+  }
+  for (const id of ["cut-1", "cut-2"]) {
+    const learning = (await api("GET", `/runs/${id}`)).body.learning;
+    assert.equal(learning?.detail ?? null, null, `${id} says nothing of what it learned: ${JSON.stringify(learning)}`);
+    assert.equal(learning?.workflows ?? null, null);
+    assert.equal(learning?.corrections ?? null, null);
+  }
+  assert.deepEqual((await api("GET", "/agents/cut/learning/loop")).body.compiles, [], "no compile read from a row with none");
 });

@@ -428,7 +428,7 @@ export function folderSuite(backend, make) {
     assert.deepEqual(await readSnapshot(ws), before);
   });
 
-  test(`${backend}: a draft seeded from a commit the folder no longer holds (its learning reset since) is a conflict, and nothing lands on the new history`, async () => {
+  test(`${backend}: a draft or a correction alone seeded from a commit the folder no longer holds (its learning reset since) is a conflict that says so, and nothing lands on the new history`, async () => {
     const { ws } = await make();
     const seeded = await learningCommit(ws, { runId: "run-r1", reason: "A draft.", files: draft("weekly-report") });
     assert.equal(seeded.ok, true, JSON.stringify(seeded));
@@ -439,9 +439,16 @@ export function folderSuite(backend, make) {
     assert.equal(fresh.ok, true, JSON.stringify(fresh));
     const before = await readSnapshot(ws);
     const stale = await learningCommit(ws, { runId: "run-r3", reason: "Drafted on the old history.", files: draft("monthly-report"), seed });
-    assert.deepEqual([stale.ok, stale.reason, stale.problems?.map((p) => p.path).sort()], [false, "conflict", ["workflows/monthly-report/README.md", "workflows/monthly-report/workflow.json"]], JSON.stringify(stale));
+    assert.deepEqual([stale.ok, stale.reason, stale.problems?.length], [false, "conflict", 1], JSON.stringify(stale));
+    assert.match(stale.problems[0].detail, /learning was reset after the run started/);
     assert.deepEqual(await readSnapshot(ws), before, "nothing written");
     assert.deepEqual((await gitMain(ws)).tree.map((entry) => entry.path).filter((path) => path.startsWith("workflows/monthly-report")), [], "the stale draft is not on main");
+    // A correction alone has no file a `same` covers: the seed itself is the wall.
+    const line = await learningCommit(ws, { runId: "run-r4", reason: "Its owner's correction.", files: [], correction: "Retry more slowly next time.", seed });
+    assert.deepEqual([line.ok, line.reason], [false, "conflict"], JSON.stringify(line));
+    assert.match(line.problems[0].detail, /learning was reset after the run started/);
+    assert.deepEqual(await readSnapshot(ws), before, "nothing written");
+    assert.equal((await gitMain(ws)).tree.some((entry) => entry.path === CORRECTIONS), false, "no corrections line on the new history");
   });
 
   test(`${backend}: a tracked link in a draft's folder is named in its links, never one of its files; the same from the snapshot the script writes and from a rebuild of main`, async () => {
