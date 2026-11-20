@@ -1107,14 +1107,18 @@ export function recoveryUserTurn(state: SessionState, store: Pick<JournalSession
  * only the harness's own words. Each tool call of the cut-off turn by its name, its id and its status, and never its
  * input, output or error text: those can hold what a file or a web page said, and the system prompt would give that the
  * harness's authority. Nor do they go in the user's turn, which would give it the user's.
- * `shown`: the tool uses whose result the transcript holds. A completed or failed call among them (or made inside one,
- * `<tool_use id>/<key>`: codemode, tools_call) is told as in the conversation, never as not shown: told so, the model
- * runs it again (a call parked for approval, then run once on the resume, was).
+ * `shown`: the tool uses whose result the transcript holds. A completed or failed call among them is told as in the
+ * conversation, never as not shown: told so, the model runs it again (a call parked for approval, then run once on the
+ * resume, was). A call made inside one (`<tool_use id>/<key>`: codemode, tools_call) is told as done inside a call whose
+ * output is there, never that its own result is: a script returns what it chooses, not each call's result.
  */
 export function recoverySystemNote(state: SessionState, shown: ReadonlySet<string> = new Set()): string | undefined {
   const note = recoveryNote(state, { pending: [] });
   if (!note) return undefined;
-  const carried = (c: (typeof note.calls)[number]) => (shown.has(c.callId) || shown.has(c.callId.split('/')[0]!)) && (c.status === 'completed' || c.status === 'failed');
+  const done = (c: (typeof note.calls)[number]) => c.status === 'completed' || c.status === 'failed';
+  const own = (c: (typeof note.calls)[number]) => done(c) && shown.has(c.callId);
+  const inside = (c: (typeof note.calls)[number]) => done(c) && !own(c) && c.callId.includes('/') && shown.has(c.callId.split('/')[0]!);
+  const carried = (c: (typeof note.calls)[number]) => own(c) || inside(c);
   const lines = [
     'The harness, not the user, adds this about the turn before this one:',
     '[Recovery] Your previous turn was interrupted: the process running it stopped, and this session was resumed from its durable log.',
@@ -1123,7 +1127,7 @@ export function recoverySystemNote(state: SessionState, shown: ReadonlySet<strin
   if (note.calls.length === 0) lines.push('No tool call had started in that turn.');
   else {
     lines.push('What the log records about the tool calls since that turn began (none was run again):');
-    for (const c of note.calls) lines.push(`- ${c.name}, call ${c.callId}: ${carried(c) ? RECOVERY_SHOWN[c.status as 'completed' | 'failed'] : RECOVERY_STATUS[c.status]}`);
+    for (const c of note.calls) lines.push(`- ${c.name}, call ${c.callId}: ${own(c) ? RECOVERY_SHOWN[c.status as 'completed' | 'failed'] : inside(c) ? RECOVERY_INSIDE[c.status as 'completed' | 'failed'](c.callId.split('/')[0]!) : RECOVERY_STATUS[c.status]}`);
     const unshown = note.calls.filter((c) => !carried(c)).length;
     if (unshown === note.calls.length) lines.push('', 'The output of those calls is not shown here. Check the actual state before relying on it.');
     else if (unshown > 0) lines.push('', 'The output of the other calls is not shown here. Check the actual state before relying on it.');
@@ -1136,6 +1140,13 @@ export function recoverySystemNote(state: SessionState, shown: ReadonlySet<strin
 const RECOVERY_SHOWN = {
   completed: 'completed. Its result is in the conversation above: use it, do not run the call again.',
   failed: 'failed. Its error is in the conversation above.',
+} as const;
+
+/** What the note says of a call made inside a call whose output the conversation holds: the outer call's output is there,
+ *  which shows what its script chose to return, not necessarily this call's result. */
+const RECOVERY_INSIDE = {
+  completed: (outer: string) => `completed inside call ${outer}, whose output is in the conversation above (it may not include this call's result). Its effect is done: do not run it again.`,
+  failed: (outer: string) => `failed inside call ${outer}, whose output is in the conversation above.`,
 } as const;
 
 /** What the note says of a call in each status the log can give it (the shared note's words, harness-process 010). */
