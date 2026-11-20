@@ -126,14 +126,13 @@ export interface ModuleLaunch {
 
 /** What an ACP agent's module gives acpEntry: its facts, its recipe for a run (the binary, the run's model), and the model
  *  proxy each of its processes reaches the session's booking through (its wire's policy: what may leave on this server's
- *  key). `promises`: default ACP_PROMISES (a resume by session/load, tool calls through its permission asks, billing
- *  through the proxy); an agent that cannot load a session gives `resume: "restart"`. */
+ *  key). It promises ACP_PROMISES: a resume by session/load, tool calls through its permission asks, billing through
+ *  the proxy. */
 export interface AcpEntryOptions extends ModuleChecks {
   readonly facts: AdapterFacts;
   recipe(launch: ModuleLaunch): AcpRecipe;
   proxy(launch: ModuleLaunch): AcpProxy;
   beforeStart?(command: string): Promise<void>;
-  readonly promises?: HarnessPromises;
 }
 
 /** What a module's harness lacks that no model key gives it, asked before its model key, as the built-in harnesses ask
@@ -152,7 +151,7 @@ export interface ModuleChecks {
 export interface HarnessModuleKit {
   /** An adapter harness's whole entry: its models are its wire's vendor's (WIRES), its key rows those that run them, its
    *  refusal the adapter's own check. `adapter` builds its adapter for one run. */
-  adapterEntry(facts: AdapterFacts, adapter: (launch: ModuleLaunch) => AgentAdapter | Promise<AgentAdapter>, extra?: Pick<HarnessEntry, "skillCheck" | "promises" | "hidden"> & ModuleChecks): HarnessEntry;
+  adapterEntry(facts: AdapterFacts, adapter: (launch: ModuleLaunch) => AgentAdapter | Promise<AgentAdapter>, extra?: Pick<HarnessEntry, "skillCheck" | "promises"> & ModuleChecks): HarnessEntry;
   /** An ACP agent's whole entry, on serve's own ACP adapter (@parcha/agentrun-harness-acp): adapterEntry over acpAdapter. */
   acpEntry(options: AcpEntryOptions): HarnessEntry;
 }
@@ -325,9 +324,8 @@ const launchedEntryOf = (facts: AdapterFacts, adapter: (launch: ModuleLaunch) =>
  *  (ON_TABLE). The built-in Goose's runner is the runner's own (RUNNER_HARNESSES), so it has none here. */
 const moduleEntryOf = (facts: AdapterFacts, adapter: (launch: ModuleLaunch) => AgentAdapter | Promise<AgentAdapter>, extra: Pick<HarnessEntry, "skillCheck" | "promises"> & ModuleChecks = {}, host: AcpEntryHost = {}): HarnessEntry =>
   Object.freeze({ ...launchedEntryOf(facts, adapter, extra, host), runner: ON_TABLE });
-const moduleEntry: HarnessModuleKit["adapterEntry"] = (facts, adapter, extra) => moduleEntryOf(facts, adapter, extra);
 
-/** A proxy-billed ACP agent's whole entry, moduleEntry over serve's own ACP adapter: a module's (HarnessModuleKit.acpEntry,
+/** A proxy-billed ACP agent's whole entry, moduleEntryOf over serve's own ACP adapter: a module's (HarnessModuleKit.acpEntry,
  *  `host` none) and a proxy-billed recipe's under harness-check (AcpEntryHost). Its agent's allowlist and keys are read
  *  from the launch's environment, never this process's, and its recipe names no server key (ownKeysOnly). */
 function acpProxyEntryOf(options: AcpEntryOptions, host: AcpEntryHost = {}): HarnessEntry {
@@ -342,7 +340,7 @@ function acpProxyEntryOf(options: AcpEntryOptions, host: AcpEntryHost = {}): Har
       env: launch.env,
       log: launch.log,
     });
-  }, { promises: options.promises ?? ACP_PROMISES, ...(options.missing ? { missing: options.missing } : {}) }, host);
+  }, { promises: ACP_PROMISES, ...(options.missing ? { missing: options.missing } : {}) }, host);
 }
 
 /** What a run of a plan-billed ACP agent is given (acpEntryOf's plan branch): its model as its vendor names it (`default`
@@ -357,10 +355,9 @@ export interface AcpPlanEntryOptions extends ModuleChecks, Pick<HarnessEntry, "o
   readonly facts: AdapterFacts;
   recipe(launch: PlanLaunch): AcpRecipe | Promise<AcpRecipe>;
   beforeStart?(command: string): Promise<void>;
-  readonly promises?: HarnessPromises;
 }
 
-/** What a plan-billed ACP harness promises by default: as ACP_PROMISES, billed to its owner's plan. */
+/** What a plan-billed ACP harness promises: as ACP_PROMISES, billed to its owner's plan. */
 const ACP_PLAN_PROMISES: HarnessPromises = Object.freeze({ resume: "load", tool_gate: "permission", billing: "plan" });
 /** The model id of a plan-billed agent's own default (`<id>/default`). */
 const PLAN_DEFAULT_MODEL = "default";
@@ -398,7 +395,7 @@ function acpPlanEntryOf(options: AcpPlanEntryOptions, host: AcpEntryHost = {}): 
     runMib: facts.runMib,
     oneAlwaysFits: false,
     facts,
-    promises: options.promises ?? ACP_PLAN_PROMISES,
+    promises: ACP_PLAN_PROMISES,
     ...(options.ownKeys ? { ownKeys: Object.freeze([...options.ownKeys]) } : {}),
     ...(options.hidden ? { hidden: options.hidden } : {}),
     ...(options.card ? { card: options.card } : {}),
@@ -435,12 +432,12 @@ export function acpEntryOf(options: AcpPlanEntryOptions, host?: AcpEntryHost): H
 export function acpEntryOf(options: AcpEntryOptions | AcpPlanEntryOptions, host: AcpEntryHost = {}): HarnessEntry {
   return modelWire(options.facts.wire) ? acpProxyEntryOf(options as AcpEntryOptions, host) : acpPlanEntryOf(options as AcpPlanEntryOptions, host);
 }
-const acpModuleEntry: HarnessModuleKit["acpEntry"] = (options) => acpProxyEntryOf(options);
 
-/** The kit a harness module is handed (HarnessModuleKit). */
-const MODULE_KIT: HarnessModuleKit = Object.freeze({
-  adapterEntry: moduleEntry,
-  acpEntry: acpModuleEntry,
+/** The kit a harness module is handed (HarnessModuleKit): never a host's log (AcpEntryHost), so its launches log as
+ *  their harness. */
+const MODULE_KIT: HarnessModuleKit = Object.freeze<HarnessModuleKit>({
+  adapterEntry: (facts, adapter, extra) => moduleEntryOf(facts, adapter, extra),
+  acpEntry: (options) => acpProxyEntryOf(options),
 });
 
 /** Why Goose cannot run here (harness-goose.ts gooseMissing: not installed, or not the pinned binary) as an error of its

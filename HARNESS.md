@@ -89,9 +89,9 @@ Give `kit.acpEntry`:
   wire needs an `AcpProxy` of its own.
 - `beforeStart(command)`, optional: a check before each process starts, a restart included. The example checks the
   binary against its pin there.
-- `promises`, optional: what the harness promises an owner, shown on its offer. The default is a resume by
-  `session/load`, each tool call through the agent's permission ask, and billing through the proxy. An agent that
-  can't load a session says `resume: "restart"`.
+
+Its offer promises a resume by `session/load`, each tool call through the agent's permission ask, and billing through
+the proxy.
 
 Any other agent runs on an adapter you write (the kernel's `AgentAdapter`). Give `kit.adapterEntry(facts, adapter)`,
 where `adapter(launch)` builds it for one run. `launch` holds the model, where to forward its requests
