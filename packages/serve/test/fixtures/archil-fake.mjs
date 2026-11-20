@@ -24,7 +24,10 @@
 //   while it holds, a put, an append or a delete under that folder is refused with 409 OperationAborted, as the live
 //   service refused a run's skills laid after its computer mounted the run's folder. `banner` (a test's) is printed
 //   before the command's own stdout, as a platform's message would be, and `answerLimit` cuts the answer's stdout, as a
-//   platform's limit on an answer would.
+//   platform's limit on an answer would;
+// - a disk Archil no longer has (`gone`, a test's: { region, words }) fails every SDK call as the seam fails it when
+//   Archil's lookup of the disk answers 404 (archil-disk.ts ArchilDiskMissing), naming the disk, the region and Archil's
+//   words; the ranged read, the seam's own fetch with no lookup, is left as it is.
 // Every call is recorded in `calls`: { op, key | prefix | directory | mounts, ... }; every exec's materialized file keys
 // (per mount, relative to its folder) in `materialized`.
 import { spawn } from "node:child_process";
@@ -32,6 +35,7 @@ import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkS
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { Worker } from "node:worker_threads";
+import * as seam from "../../dist/workspace/archil-disk.js";
 
 export const APPEND_MAX = 1024 * 1024;
 
@@ -106,6 +110,8 @@ export class FakeArchilDisk {
   pageSize = 2;
   /** While set, a put or an append waits on it before it is committed. */
   hold = undefined;
+  /** When set ({ region, words }), the disk is gone at Archil: every call fails with ArchilDiskMissing. */
+  gone = undefined;
   /** Printed before every exec's own stdout, when set. */
   banner = undefined;
   /** The most characters of stdout an exec's answer carries, when set (as a platform's answer limit would cut it). */
@@ -125,7 +131,11 @@ export class FakeArchilDisk {
   /** Each exec's materialized file keys, per mount name, relative to that mount's subdirectory. */
   materialized = [];
 
-  #record(call) { this.calls.push(call); }
+  /** Records `call`, then fails it as a disk gone at Archil fails every call, when `gone` is set. */
+  #record(call) {
+    this.calls.push(call);
+    if (this.gone !== undefined) throw new seam.ArchilDiskMissing(this.id, this.gone.region, this.gone.words);
+  }
 
   #isHeld(key) {
     for (const path of this.#held) if (key === path || key.startsWith(`${path}/`)) return true;
@@ -173,7 +183,8 @@ export class FakeArchilDisk {
   }
 
   async getRange(key, range) {
-    this.#record({ op: "getRange", key, range });
+    // The seam's own fetch, not the SDK's: no lookup of the disk before it, so `gone` does not fail it.
+    this.calls.push({ op: "getRange", key, range });
     if (this.links.has(key)) throw new FakeDiskError(501, "NotImplemented", "Not Implemented");
     const bytes = this.files.get(key);
     if (bytes === undefined) throw new FakeDiskError(404, "NoSuchKey", `${key} is not there`);
@@ -240,6 +251,7 @@ export class FakeArchilDisk {
   }
 
   async deleteObjects(keys) {
+    if (this.gone !== undefined) this.#record({ op: "deleteObjects", keys: [...keys] });
     const errors = [];
     for (const key of keys) {
       try {

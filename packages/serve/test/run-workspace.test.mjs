@@ -77,6 +77,35 @@ test("run workspace (Mode 2): a sweep that fails is logged, never thrown, at the
   for (const line of logged) assert.match(line, /exec spill folder.*listing down/);
 });
 
+test("run workspace (Mode 2): a run's folder that can't be made fails the claim with the reason, never a log line", async () => {
+  const disk = new FakeArchilDisk();
+  const putObject = disk.putObject.bind(disk);
+  disk.putObject = async (key, body) => {
+    if (key === `${WORK}/`) throw Object.assign(new Error("503 SlowDown: try later"), { status: 503 });
+    return putObject(key, body);
+  };
+  const logged = [];
+  await assert.rejects(
+    openRunWorkspace({ mode: 2, agentId: AGENT, runId: RUN, archil: claimOf(disk), log: (message) => logged.push(message) }),
+    (error) => /^the run's folder on its Archil disk could not be made: .*try later/.test(error.message),
+  );
+  assert.deepEqual(logged, []);
+});
+
+test("run workspace (Mode 2): a run's folder already there is not put again, so a later claim whose kept computer holds the folder opens at once", { timeout: 30_000 }, async () => {
+  const disk = new FakeArchilDisk();
+  disk.dirs.add(WORK);
+  disk.files.set(`${WORK}/notes.md`, Buffer.from("kept"));
+  // A computer a park kept still mounts the run's folder: its write delegation refuses any put there (409).
+  const release = disk.delegate(WORK);
+  const logged = [];
+  const run = await openRunWorkspace({ mode: 2, agentId: AGENT, runId: RUN, archil: claimOf(disk), log: (message) => logged.push(message) });
+  release();
+  assert.equal(disk.calls.filter((call) => call.op === "putObject" && call.key === `${WORK}/`).length, 0, "no put of the folder");
+  assert.equal(text(await run.workspace.read("notes.md")), "kept");
+  assert.deepEqual(logged, []);
+});
+
 test("run workspace (Mode 2): the image and the mount's region come from the claim", async () => {
   const disk = new FakeArchilDisk();
   const image = { baseImage: `docker.io/library/debian@sha256:${"9e".repeat(32)}` };

@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { archilDisk, archilWorkspace, learningKey, localWorkspace, READ_MAX, runFolder, runKey } from "../dist/workspace/index.js";
+import { archilDisk, archilWorkspace, layOwnSkills, learningKey, localWorkspace, READ_MAX, runFolder, runKey } from "../dist/workspace/index.js";
 import { runHands } from "../dist/workspace/run-tools.js";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 import { PATH, suite } from "./workspace-conformance.mjs";
@@ -799,4 +799,51 @@ test("archil-disk: the SDK seam takes its key and S3 endpoint as options (no env
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
   }
+});
+
+test("archil-disk: a disk Archil does not have fails every SDK call naming the disk, its region and Archil's words, with no HTTP status a caller could read as a missing file", async () => {
+  const server = createServer((request, response) => {
+    request.resume();
+    request.on("end", () => {
+      response.writeHead(404, { "content-type": "application/json" });
+      response.end(JSON.stringify({ success: false, error: "Disk not found", code: "not_found" }));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  try {
+    const disk = archilDisk({ disk: "dsk-00000000000000aa", region: "aws-us-east-1", key: () => "loopback-dummy", baseUrl: base, s3BaseUrl: `${base}/` });
+    const missing = (error) => error.name === "ArchilDiskMissing" && error.status === undefined && /^the Archil disk dsk-00000000000000aa is not there in region aws-us-east-1: .*Disk not found/.test(error.message);
+    await assert.rejects(disk.listPage("agents/a/", { recursive: false }), missing);
+    await assert.rejects(disk.putObject("agents/a/x", new Uint8Array(1)), missing);
+    await assert.rejects(disk.appendObject("agents/a/x", new Uint8Array(1)), missing);
+    await assert.rejects(disk.deleteObject("agents/a/x"), missing);
+  } finally {
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test("ArchilWorkspace: a disk gone at Archil is UNAVAILABLE in its words on every call, never a folder that is not there, so laying a run's skills fails naming the disk", async () => {
+  const disk = new FakeArchilDisk();
+  disk.gone = { region: "aws-us-east-1", words: "Disk not found" };
+  const workspace = archilWorkspace(disk, ROOT);
+  const gone = (error) => error.code === "UNAVAILABLE" && error.message.includes(`the Archil disk ${disk.id} is not there in region aws-us-east-1: Disk not found`);
+  await assert.rejects(layOwnSkills(workspace, { "triage/SKILL.md": "# triage\n" }), gone);
+  await assert.rejects(workspace.list(".agents/skills"), gone);
+  await assert.rejects(workspace.mkdir("notes"), gone);
+  await assert.rejects(workspace.write("notes/a.md", "a"), gone);
+  // Nothing landed: a refusal, never "may also have landed".
+  await assert.rejects(workspace.append("log.txt", "a"), (error) => gone(error) && !/may also have landed/.test(error.message));
+  await assert.rejects(workspace.stat("notes"), gone);
+  await assert.rejects(workspace.remove("notes", { force: true }), gone);
+});
+
+test("ArchilWorkspace: a file or folder that is not there stays NOT_FOUND with Archil's words kept, and a fresh folder's skills are laid", async () => {
+  const disk = new FakeArchilDisk();
+  const workspace = archilWorkspace(disk, ROOT);
+  await assert.rejects(workspace.read("missing.md"), (error) => error.code === "NOT_FOUND" && error.message.startsWith('"missing.md" is not there') && /NoSuchKey/.test(error.message));
+  await assert.rejects(workspace.list(".agents/skills"), (error) => error.code === "NOT_FOUND");
+  await layOwnSkills(workspace, { "triage/SKILL.md": "# triage\n" });
+  assert.equal(text(await workspace.read(".agents/skills/triage/SKILL.md")), "# triage\n");
 });

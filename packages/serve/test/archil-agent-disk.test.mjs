@@ -384,10 +384,30 @@ test("a disk just made is stored on the agent as pending before the wait for it,
   assert.ok(reads() - before >= 2, "it waited: the creating read, then an available one");
   assert.deepEqual(await agentDiskOf(env.store, "agent-a"), { diskId: left.diskId }, "pending cleared");
   assert.equal(posts(env.control, "/api/disks").length, 1, "no second disk");
-  // A ready disk is not read again.
+  // A ready disk costs one read per claim: is it still there.
   const settled = reads();
   await diskFor(env, { agentId: "agent-a", runId: "run-3" });
-  assert.equal(reads(), settled, "a disk not pending costs no read");
+  assert.equal(reads(), settled + 1, "a disk not pending costs one read");
+  assert.deepEqual(await agentDiskOf(env.store, "agent-a"), { diskId: left.diskId }, "and no write");
+});
+
+test("a stored agent disk Archil no longer has refuses the claim before any file call, naming the disk, its region and the way out; no disk is made in its place", async (t) => {
+  const env = await setup(t);
+  await storeAgentDisk(env.store, "agent-a", { diskId: MISSING });
+  const gone = (error) => error instanceof ArchilClaimRefused && error.message.includes(`Archil has no disk ${MISSING} in region ${REGION}`) && error.message.includes("DELETE /v2/agents/agent-a/archil");
+  await assert.rejects(diskFor(env, { agentId: "agent-a", runId: "run-1" }), gone);
+  // A run whose launch recorded that disk as its agent's is refused the same way.
+  await assert.rejects(diskFor(env, { agentId: "agent-a", runId: "run-2", launch: { diskId: MISSING, kind: "agent" } }), gone);
+  // The whole claim: refused before its disk's client is made, so no file call is ever sent to the disk.
+  await assert.rejects(claimOf(env, { agentId: "agent-a" }), gone);
+  assert.equal(posts(env.control, "/api/disks").length, 0, "no disk made in its place: what was on it is not silently lost");
+  assert.deepEqual(await agentDiskOf(env.store, "agent-a"), { diskId: MISSING }, "the agent keeps its disk row until its owner drops it");
+});
+
+test("a stored agent disk in another region than the server's key refuses the claim naming both regions", async (t) => {
+  const env = await setup(t);
+  await storeAgentDisk(env.store, "agent-a", { diskId: ELSEWHERE });
+  await assert.rejects(diskFor(env, { agentId: "agent-a", runId: "run-1" }), (error) => error instanceof ArchilClaimRefused && error.message.includes(`${ELSEWHERE} is in region aws-eu-west-1`) && error.message.includes(`region ${REGION}`));
 });
 
 test("a run with no launch disk keeps its agent's disk on its first claim: a reopened run mounts that disk, or is refused once it was removed, never another", async (t) => {
