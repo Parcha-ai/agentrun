@@ -1472,28 +1472,13 @@ can branch on it. An agent gets the Page as JSON text; a workflow's `call` node 
 it as its output (`args: {url, offset?, max_chars?}`, 50,000 characters of text by default, `out` a schema of that
 shape). A call node naming a tool the table cannot run that way is refused before the run starts (`409`).
 
-`web_save` downloads through the same guard (pi-browser's `publicDownload`, the same hop loop as `publicFetch`): every
-hop resolved, checked and dialled at the address checked, ports 80 and 443 only, a URL at most 4,096 characters. A
-file is at most 200 MiB and a download at most 10 minutes. It writes through the run's Workspace (the run's local
-`work/`, or its folder on the run's disk in Mode 2), so a path with `..`, an absolute path, and a link on the way or as
-the file are refused, and a path that already holds a file or folder is refused rather than overwritten (checked before
-the download and again before the write). The whole file is held in memory and written once (a temporary name renamed over the path
-on a local folder, one put on the run's disk), so a download that fails or passes the cap leaves nothing at the path.
-At most 4 downloads run at once per runner, across its runs (`SAVE_CONCURRENCY`); the rest wait for a free slot under
-their own 10-minute deadline, and one whose deadline passes while it waits answers that. A download whose host states its
-length (an unencoded `Content-Length`) is read into one buffer of that length, so it holds its file's size; one that does
-not is joined from its chunks at the end, about twice its size at the peak. So a runner's downloads hold at most 800 MiB at
-once when their hosts state their lengths, and about 1.6 GiB when none does. In Mode 2 a run in its own process writes
-through its runner's Workspace of the run's disk: a write over 8 MiB crosses to the runner in pieces, and the runner
-assembles it and writes it once, at most 4 such writes at once per runner (a gate of their own, at most 200 MiB each), so
-up to another 800 MiB in the runner while they are written. Its type is checked
-against its bytes: an image (png, jpeg, gif, webp), audio (mp3, wav, ogg, m4a) or video (mp4, webm) is saved only when
-its bytes carry that type's signature, the type the host declares agrees (or it declares none, or
-`application/octet-stream`), and the path's extension names a type that agrees (`media/card.png`; `media/card` and
-`media/card.bin` are refused with the extension to use, as the Files tab types a file by its extension); `content_type`
-answers that type. Any other type (a page, a PDF, text) is saved only to a path whose extension names the type the host
-declares. A call a crash cut off is answered interrupted, never run again. `web_save` makes no paid request. Only an agent that names `web_save` has it (`web_fetch` does not carry it),
-and no workflow node or call node may name it: a workflow's call has the run's local folder, not its Workspace.
+`web_save {url, path}` downloads one public file through the same guard (pi-browser's `publicDownload`, the same hop
+loop), at most 200 MiB in at most 10 minutes, into the run's Workspace (a bare name goes under `media/`), so `..`, an
+absolute path and a link are refused, and a path already in use is refused, never overwritten. The file is written once,
+after the whole download, so a failed one leaves nothing. An image, audio or video is saved only when its bytes, the
+declared type and the path's extension agree (`media/card.png`, never `media/card`); any other type only to a path whose
+extension names the declared type. It makes no paid request and is never run again after a crash. Only an agent that
+names `web_save` has it; no workflow node or call node may name it.
 
 On another harness, every host tool's result reaches the model within the host's bound of 120,000 characters
 (`HOST_RESULT_MAX_CHARS`, `@parcha/agentrun-kernel`): the kernel's tool bridge cuts a longer one, its start with a line
@@ -1701,9 +1686,11 @@ Parallel's fees are the run's spend, booked as monid's are: each search and each
 run's records before it is sent (`agentrun.tool_started`, held at its price) and settled once Parallel answers
 (`agentrun.tool_cost`: `tool` `web_search` or `web_fetch`, `charged_by` `"parallel"`, `usd`), shown on its timeline
 (`Tool cost: parallel charged $0.0010 for web_search`), summed into its cost and under `/usage`'s `tools` meter. Parallel
-answers what it used as counts, never an amount, so each is booked at Parallel's published price (docs.parallel.ai,
-read 2026-11-03), an estimate: a `fast` search $0.001 for up to 10 results and $0.001 for each one past them, an extract
-$0.001 a URL; on a 4xx other than a 408 nothing (Parallel refused it), and on a 408, a 5xx, a timeout or a lost
+answers what it used as counts, never an amount, so each is booked at Parallel's published price
+([docs.parallel.ai/resources/pricing](https://docs.parallel.ai/resources/pricing), read 2026-11-20), an estimate: a
+search by its mode, `turbo` or `fast` $0.001 and `basic` or `advanced` $0.005, each for up to 10 results, and $0.001 for
+each result past them (`web_search` always searches `fast`); an extract $0.001 a URL. A search in a mode with no price
+here, or naming none, is never sent, as an endpoint with no price is not; on a 4xx other than a 408 nothing (Parallel refused it), and on a 408, a 5xx, a timeout or a lost
 connection its price (Parallel may have billed it). Under a [spend cap](#spend-cap) each is a paid call: sent only when
 what the run has spent and holds, plus its price, fits the cap. Otherwise nothing reaches Parallel: a search answers the
 cap's refusal (`spend_cap_reached: Not sent: this run has spent $0 of its $0.0009 cap, and the next step, Parallel's search, could cost up to $0.001 …`) and a page is the
@@ -2943,7 +2930,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings`, `POST /triggers/{id}/secret`, `POST /hooks/{id}` (no token: [signed](#webhook-triggers)) | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
 | `GET /templates`, `POST /templates/{name}/apply` | [Templates](#templates), this server's own routes (`x-agentrun-serve: "templates/1"`): the template packages it ships, and an apply that makes one's agent and triggers, all or nothing. |
 | `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
-| `GET /usage` | The runs' costs, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds what it is known to have spent so far (its `so_far_usd`: each priced charge, browser time and paid tools included) and is counted in `unpriced_runs` (in the total and in each line it is unknown on), so no sum is ever null, it never passes as $0, and a total is never below a line of its own: with `unpriced_runs` above 0 the total is a lower bound. `basis` says how the costs were reached ([A run's cost](#a-runs-cost-its-tokens-and-its-basis)). |
+| `GET /usage` | The runs' costs, by meter, agent, key, day or region (`key` and `region` are one line, `local`). By meter, `tools` holds the runs' paid tool calls and the workflow decisions Parallel charged on its own API, as `cost.tools_usd` does. A run of unknown cost adds what it is known to have spent so far (its `so_far_usd`: each priced charge, browser time and paid tools included) and is counted in `unpriced_runs` (in the total and in each line it is unknown on), so no sum is ever null, it never passes as $0, and a total is never below a line of its own: with `unpriced_runs` above 0 the total is a lower bound. `basis` says how the costs were reached ([A run's cost](#a-runs-cost-its-tokens-and-its-basis)). |
 
 Quotes answer `501 unsupported_here` naming the feature. Home export and import (`GET` and `PUT /agents/{id}/home`) and
 `POST /runs/{id}/kill` are not served here: they answer `404`, and the served document leaves them out (its
@@ -3000,7 +2987,10 @@ item (`["/number", "/title", "/html_url", "/user/login"]`): `item` then keeps on
 serves these routes alone:
 
 - a run's launch (`POST /agents/{id}/runs`, `POST /runs`), read (`GET /runs/{id}`), lists (`GET /agents/{id}/runs`,
-  `GET /runs`), timeline, messages, stop, cancel, kill (`501` here, as above) and cap raise (`PATCH /runs/{id}`);
+  `GET /runs`), timeline, messages, stop, cancel, kill (`501` here, as above), cap raise (`PATCH /runs/{id}`) and grade
+  (`PUT /runs/{id}/grade`);
+- a run's usage lines (`GET /runs/{id}/usage`): what its `cost.usd` joins, by meter, cut of the host's secrets as the
+  run's read is;
 - its files (`GET /runs/{id}/files`, `GET /runs/{id}/files/{path}`) and [uploads](#uploads) (`/files`);
 - an agent's Archil disk (`GET` and `DELETE /agents/{id}/archil`);
 - the [delete of an agent another system owns](#deleting-an-agent-another-system-owns) (`DELETE /agents/{id}`), for
@@ -3009,6 +2999,12 @@ serves these routes alone:
   key names and whether each is saved, and whether it is ready) and `GET /workspace/archil` (whether runs' folders are
   on Archil, and whether its account key is saved). Neither answers a key's value. Their writes, tests and key choices
   are the console's, refused here;
+- what an agent learned, for the backend whose runs it learned from: the loop's compile turns
+  (`GET /agents/{id}/learning/loop`), each learned workflow's promotion and what serves
+  (`GET /agents/{id}/learning/promotions`), the cost per run (`GET /agents/{id}/learning/cost`) and a run's learning
+  (`GET /runs/{id}/learning`), each cut of the host's secrets as the console's reads are;
+- a run's hosted machine fetching this server's computerd build (`GET /computers/daemon`), with the token its create
+  minted;
 - `GET /capabilities`, `GET /health` and `GET /usage`;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
@@ -3945,10 +3941,11 @@ and says how its figure was reached.
   and do not change it. A native, SDK or imported run's figure is its harness's own, an `estimate`; so is an imported
   session's catalog estimate where its source priced none ([importing your sessions](#importing-your-sessions)). LiteLLM writes no
   cost into a streamed answer's headers, so a run whose answers stream through LiteLLM reads `estimate`.
-- `tools_usd` (on `GET /runs/{id}` alone, `toolsusd/1`): the part of `usd` its paid tool calls cost (monid's endpoints,
-  MCP tools with a saved price, Parallel behind `web_search` and `web_fetch`, browser time), as the run's ledger booked
-  them, rounded as `usd` is. It is inside `usd`, never added to it: `usd` less `tools_usd` is what its model requests and
-  decisions cost. A paid call in a learning run's end-of-run turn is learning's (in `learning_usd`), never in
+- `tools_usd` (on `GET /runs/{id}` alone, `toolsusd/1`; Parallel's decisions in it since `toolsusd/2`): the part of `usd` its paid tool calls cost (monid's endpoints,
+  MCP tools with a saved price, Parallel behind `web_search` and `web_fetch`, browser time, and a workflow decision
+  Parallel answered on its own API, on `PARALLEL_API_KEY`, at Parallel's list price), as the run's ledger booked them,
+  rounded as `usd` is. It is inside `usd`, never added to it: `usd` less `tools_usd` is what its model requests and its
+  other decisions cost (Jev's, an OpenRouter model's, Parallel's model reached through OpenRouter). A paid call in a learning run's end-of-run turn is learning's (in `learning_usd`), never in
   `tools_usd`. 0 when it made no paid call. Null while a paid call's charge is unknown (as `usd` is then); while the run
   is at work (until it ended, stopped or failed); for a learning run a follow-up opened again, whose `usd` is what its
   first round had cost; and for an imported, native or SDK run, whose `usd` is its import's or its harness's own figure
@@ -3984,14 +3981,17 @@ were reached. Nothing is priced here, and nothing is rounded to a billing increm
 ```
 
 - `tokens`: one line per model the requests were sent on (`model`; a workflow decision on the model its provider
-  answered with). `provider` is where the requests went, named only when this server sent them there itself: the run's
+  answered with, except a decision Parallel charged for, which is on Parallel's `tools` line). `provider` is where the requests went, named only when this server sent them there itself: the run's
   own model on a provider's key, or a decision's provider. Behind a model gateway it is null, since the gateway picks the
   upstream. A model reached two ways is two lines, one per provider. `quantity` is the input, cache read, cache write and
   output tokens as each request reported them (a decision's as its receipt does), with the split beside it; `basis` is the run's `cost.basis` rule over that model's requests alone.
 - `tools`: one line per charger (`charged_by`: `monid`, an MCP server's name, `parallel`), the vendor whose invoice the
   calls land on. `provider` names the same vendor: the one that charges for a call is its provider. `quantity` is the charges booked, one per paid call. `basis` is `reported` when every charge is the
   vendor's own figure (monid's answer says what it charged), `estimate` when any is a price this server holds (an MCP
-  tool's saved price, Parallel's). Calls of a tool with no price set ran outside the run's cost, as `GET /usage` counts
+  tool's saved price, Parallel's). A workflow decision Parallel answered on its own API (`PARALLEL_API_KEY`) is a paid
+  call on the `parallel` line, beside `web_search` and `web_fetch`, at Parallel's list price for one decision request
+  (`estimate`), and on no `tokens` line. A `parallel` decision sent through OpenRouter (no `PARALLEL_API_KEY`, the
+  OpenRouter key) is OpenRouter's to charge, at the cost OpenRouter reported: a `tokens` line, as any decision model's. Calls of a tool with no price set ran outside the run's cost, as `GET /usage` counts
   them: `not_metered_calls`, in neither `quantity` nor `usd`.
 - `browser_time`: one line per browser provider (`provider`). `quantity` is the seconds this server's clock charged the
   provider's sessions for, the provider's minimum per session included as the browser charged it; `basis` is
@@ -4098,7 +4098,11 @@ before each model request, the agent's and a compaction's alike, on every harnes
 what each request still in flight is held at, plus the most this request can cost must stay within it, or the
 request is not sent and the run pauses ([below](#a-run-paused-at-its-cap)). The cap is a hard stop for everything but
 the charge of a monid call priced by usage, which can pass the estimate it was held at: when it does, the run stops at
-once ([monid](#monid)). A request costs its input, plus the output it
+once ([monid](#monid)). An MCP tool counts only at the price saved for it (its server's `prices`); one with none is
+not metered and bills its own account outside the cap. fal's generations are such calls: they bill your fal account at
+fal's price for the model and the output, the fal presets save no price, and the cap does not count them. A template
+that uses fal caps its fal spend itself, with an input such as `max_fal_usd` that it prices its plan against before the
+first paid call. A request costs its input, plus the output it
 is sent with at the output price, plus any fee its tokens do not show (below). Its input is priced at its worst case:
 every input token at the higher of the input and cache-write prices, since the provider may bill any of it as a cache
 write and a cache can miss at any request. So no request passes the cap, a cache miss included: a request costs at most

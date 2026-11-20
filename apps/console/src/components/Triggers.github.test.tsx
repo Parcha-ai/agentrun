@@ -104,6 +104,12 @@ describe("Triggers: GitHub", () => {
     expect(t.went).toEqual(["#/triggers/trg_new"]);
   });
 
+  it("marks Agent, Each run is asked and the cap (no agent default) with *, as the save refuses them empty", async () => {
+    const t = await open(server().v2, { trigger: null, kind: "github" });
+    const labels = [...t.host.querySelectorAll("label, span.caps")].map((l) => (l.textContent ?? "").trim());
+    for (const label of ["Agent *", "Each run is asked *", "Cost cap, US dollars a run *"]) expect(labels, label).toContain(label);
+  });
+
   it("with no event picked, says so at the events and sends nothing", async () => {
     const s = server();
     const t = await open(s.v2, { trigger: null, kind: "github" });
