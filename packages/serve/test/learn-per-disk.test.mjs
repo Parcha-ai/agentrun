@@ -21,7 +21,8 @@ const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { learningEndOfRun } = await import("../dist/runner/learning-end.js");
 const { seedOf, secretsShown } = await import("../dist/learning.js");
 const { learningWorkspace } = await import("../dist/workspace/index.js");
-const { launchBody, readLaunchBody } = await import("../dist/run-launch.js");
+const { launchBody, launchOnItsDisk, readLaunchBody } = await import("../dist/run-launch.js");
+const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { agentCostOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
 const { promotionGate } = await import("../dist/runner/promotion.js");
 const { promotionsOf, recordPromotion } = await import("../dist/learn/promote.js");
@@ -97,17 +98,27 @@ test("a store an earlier build made (no runs.disk) opens: a runner refuses it un
   await runner.close();
 });
 
-test("a launch on a named disk is read back with no seed, no # Learned section and no learned workflow, whatever its body holds; on the agent's own disk or none, as written", () => {
+test("a runner runs a named-disk launch with no seed, no # Learned section and no learned workflow, whatever its body holds; the body read back keeps what it ran; the agent's own disk or none runs as written", async () => {
   // A start made before its run's disk was read (a run queued before this build, or reopened): the default disk's
   // corrections and workflows in a named-disk run's body.
   const learning = { seed: "a".repeat(40), section: `# Learned\n- ${MARK.default}`, workflows: ["answer"], model: "m-1", use: true };
   const base = { input: { content: "Q" }, title: "t", place: { mode: "runner" }, learning };
-  const named = readLaunchBody(launchBody({ ...base, ...launchDisk("disk-b") }));
+  const stored = launchBody({ ...base, ...launchDisk("disk-b") });
+  // What the runner's dispatch hands the harness it picks: the launch as the run runs it.
+  const ran = async (body) => {
+    const seen = [];
+    const loop = createDispatchLoop({ launchOf: async () => ({ body }), resolve: (_harness, launch) => void seen.push(launch) })({});
+    await assert.rejects(loop.start({ runId: "run-1" }));
+    return seen[0];
+  };
+  const named = await ran(stored);
   assert.deepEqual(named.learning, { seed: null, section: "", seedFailed: "other_disk", model: "m-1", use: true }, "the run starts with nothing learned, its flags kept");
   assert.equal(JSON.stringify(named).includes(MARK.default), false, "nothing of the default disk's learning reaches the run");
-  const own = readLaunchBody(launchBody({ ...base, archilDisk: { diskId: "agent-disk", kind: "agent" } }));
-  assert.deepEqual(own.learning, learning, "the agent's own disk is the default: its start as written");
-  assert.deepEqual(readLaunchBody(launchBody(base)).learning, learning);
+  assert.deepEqual(launchOnItsDisk(readLaunchBody(stored)).learning, named.learning, "the child process's read is the same");
+  assert.deepEqual(readLaunchBody(stored).learning, learning, "a finished run's views read what its body says");
+  const own = launchBody({ ...base, archilDisk: { diskId: "agent-disk", kind: "agent" } });
+  assert.deepEqual((await ran(own)).learning, learning, "the agent's own disk is the default: its start as written");
+  assert.deepEqual((await ran(launchBody(base))).learning, learning);
 });
 
 // -------------------------------------------------------------------------------------------- compile (the look-back)
