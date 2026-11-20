@@ -2,11 +2,14 @@
 // backend, and refuses every other address with a 404 before the request is read further: the console, the store page's
 // data, sign-in, setup, settings writes, MCP, triggers and their webhook hooks, agents, and a live view's WebSocket. It
 // has no owner. The computer settings' two reads (GET /computers, GET /workspace/archil) are served by the token, their
-// writes, tests and key choices refused. Off by default: the same server without it serves those routes as before.
+// writes, tests and key choices refused. So are an agent's learning reads (the loop, promotions, cost per run and a
+// run's learning), its learning's writes and its own texts refused. Off by default: the same server without it serves
+// those routes as before.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { request } from "node:http";
 import { test } from "node:test";
+import { ended } from "./learn-support.mjs";
 import { serve, withEnv } from "./support.mjs";
 
 const { API_ONLY_ENV, API_ONLY_ROUTES, apiOnlyFrom, servedApiOnly } = await import("../dist/api-only.js");
@@ -16,6 +19,21 @@ const { putSealedKey } = await import("../dist/server-keys.js");
 const { ARCHIL_API_KEY_ROW } = await import("../dist/workspace/index.js");
 /** A password or key for a request the profile refuses before reading it, plainly no secret (as mcp.test.mjs makes them). */
 const notSecret = (name) => `not-a-secret-${name}`;
+/** The learning reads the profile serves, for the backend whose inline runs made the agent: the loop, the promotions,
+ *  the cost per run and a run's learning ({agent}, {run} filled in by each test). */
+const LEARNING_READS = ["/v2/agents/{agent}/learning/loop", "/v2/agents/{agent}/learning/promotions", "/v2/agents/{agent}/learning/cost", "/v2/runs/{run}/learning"];
+/** The learning routes it still refuses: every write, and every read that serves the learning's own text (corrections,
+ *  files, the log, a workflow's revisions, the audits, a run's diff). */
+const LEARNING_REFUSED = [
+  ["GET", "/v2/agents/{agent}/learning"], ["GET", "/v2/agents/{agent}/learning/corrections"], ["PUT", "/v2/agents/{agent}/learning/corrections"],
+  ["GET", "/v2/agents/{agent}/learning/log"], ["GET", "/v2/agents/{agent}/learning/audits"],
+  ["GET", "/v2/agents/{agent}/learning/files/answer"], ["POST", "/v2/agents/{agent}/learning/files/answer/approve"],
+  ["POST", "/v2/agents/{agent}/learning/files/answer/retire"], ["POST", "/v2/agents/{agent}/learning/files/answer/restore"],
+  ["GET", "/v2/agents/{agent}/learning/workflows/answer/revisions"], ["POST", "/v2/agents/{agent}/learning/workflows/answer/revisions/d1/replays"],
+  ["GET", "/v2/agents/{agent}/learning/workflows/answer/revisions/d1/replays/rp1"], ["GET", "/v2/runs/{run}/learning/diff"],
+];
+/** `path` with its agent and run filled in. */
+const at = (path, agent, run) => path.replace("{agent}", agent).replace("{run}", run);
 
 test("AGENTRUN_API_ONLY is on for 1 or true, off when unset, empty, 0 or false, and refused in words otherwise", () => {
   assert.equal(API_ONLY_ENV, "AGENTRUN_API_ONLY");
@@ -43,6 +61,7 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["GET", "/v2/computers"], ["HEAD", "/v2/computers"], ["GET", "/v2/workspace/archil"], ["HEAD", "/v2/workspace/archil"],
     ["GET", "/v2/runs/run_1/computer"], ["POST", "/v2/runs/run_1/computer/take-over"], ["POST", "/v2/runs/run_1/computer/hand-back"],
     ["POST", "/v2/runs/run_1/computer/viewer"], ["GET", "/v2/runs/run_1/computer/live/v/x"], ["HEAD", "/v2/runs/run_1/computer/live/computer-viewer.js"],
+    ...LEARNING_READS.flatMap((path) => [["GET", at(path, "a1", "run_1")], ["HEAD", at(path, "a1", "run_1")]]),
   ]) assert.equal(served(method, raw), true, `${method} ${raw}`);
   for (const [method, raw] of [
     ["GET", "/"], ["GET", "/assets/index.js"], ["GET", "/llms.txt"],
@@ -55,6 +74,7 @@ test("the profile serves a run's routes by method and path, and nothing else", (
     ["POST", "/v2/computers/pairings"], ["POST", "/v2/computers/pair"], ["GET", "/v2/computers/attach"],
     ["PUT", "/v2/computers/e2b/keys"], ["POST", "/v2/computers/e2b/test"], ["GET", "/v2/computers/e2b/choices"], ["DELETE", "/v2/computers/pc_1"],
     ["PUT", "/v2/workspace/archil"], ["DELETE", "/v2/workspace/archil"], ["POST", "/v2/workspace/archil/test"],
+    ...LEARNING_REFUSED.map(([method, path]) => [method, at(path, "a1", "run_1")]),
   ]) assert.equal(served(method, raw), false, `${method} ${raw}`);
 });
 
@@ -97,6 +117,43 @@ test("an API-only server serves an agent's Archil disk, read and removed, with t
   assert.deepEqual([removed.status, removed.body], [200, { on: false, archil_disk: null, removed: null }], "nothing to remove");
   assert.equal((await send(server, "GET", "/v2/agents/agent_missing/archil")).status, 404, "an agent it does not have is the route's own 404");
   assert.equal((await send(server, "GET", `/v2/agents/${agent}/archil`, { token: false })).status, 401, "and takes the token");
+});
+
+test("an API-only server serves an inline-run agent's learning reads with the token (loop, promotions, cost, a run's learning), and refuses its learning's writes and texts", { timeout: 120_000 }, async (t) => {
+  const server = await serve(t, { apiOnly: true, learning: "on" });
+  const inline = await send(server, "POST", "/v2/runs", { body: { external: { source: "backend", kind: "expert", id: "learner-1", version: 1 }, definition: { name: "Learner", instructions: "Answer the question.", skills: [], tools: [], harness: "pi", learning: true }, input: { content: "What is six times seven." } } });
+  assert.equal(inline.status, 202, JSON.stringify(inline.body));
+  const { agent_id: agent, run_id: run } = inline.body;
+  // The run ends, then its learning (the look-back the runner beside the server runs): both read by the token.
+  await ended(server.api, run);
+
+  const [loop, promotions, cost, learning] = await Promise.all(LEARNING_READS.map((path) => send(server, "GET", at(path, agent, run))));
+  assert.equal(loop.status, 200, JSON.stringify(loop.body));
+  assert.deepEqual([loop.body.agent, loop.body.completed_runs, Array.isArray(loop.body.compiles)], [agent, 1, true], "the loop: its one completed run");
+  assert.deepEqual([promotions.status, promotions.body], [200, { agent, promotions: [], serving: [] }], "the promotions: none yet");
+  assert.equal(cost.status, 200, JSON.stringify(cost.body));
+  assert.deepEqual([cost.body.agent, cost.body.runs.map((one) => one.run_id)], [agent, [run]], "the cost per run: the run");
+  assert.equal(learning.status, 200, JSON.stringify(learning.body));
+  assert.equal(learning.body.run, run, "the run's learning");
+  assert.ok(["merged", "dropped"].includes(learning.body.state), JSON.stringify(learning.body));
+  const csv = await fetch(`${server.url}${at(LEARNING_READS[2], agent, run)}?format=csv`, { headers: { authorization: `Bearer ${server.token}` } });
+  assert.deepEqual([csv.status, csv.headers.get("content-type"), (await csv.text()).includes(run)], [200, "text/csv; charset=utf-8", true], "the cost per run as CSV");
+
+  for (const path of LEARNING_READS) {
+    const refused = await send(server, "GET", at(path, agent, run), { token: false });
+    assert.deepEqual([refused.status, refused.body.error?.code], [401, "unauthenticated"], `${path} without the token`);
+    const wrong = await fetch(`${server.url}${at(path, agent, run)}`, { headers: { authorization: `Bearer ${notSecret("token")}` } });
+    assert.equal(wrong.status, 401, `${path} with a token the server does not take`);
+  }
+  assert.equal((await send(server, "GET", at(LEARNING_READS[0], "agent_missing", run))).status, 404, "an agent it does not have is the route's own 404");
+  assert.equal((await send(server, "GET", at(LEARNING_READS[3], agent, "run_missing"))).status, 404, "a run it does not have is the route's own 404");
+
+  for (const [method, path] of LEARNING_REFUSED) {
+    const raw = at(path, agent, run);
+    const answer = await send(server, method, raw, method === "GET" ? {} : { body: method === "PUT" ? undefined : {}, headers: method === "PUT" ? { "content-type": "text/markdown" } : {} });
+    assert.equal(answer.status, 404, `${method} ${raw}: ${JSON.stringify(answer.body)}`);
+    assert.equal(answer.body.error?.message, `this server serves the run API only (AGENTRUN_API_ONLY=1): ${raw} is not served here`, `${method} ${raw} is the profile's refusal`);
+  }
 });
 
 test("an API-only server serves the computers list and the Archil settings with the token: key names and saved or not, never a value", async (t) => {
