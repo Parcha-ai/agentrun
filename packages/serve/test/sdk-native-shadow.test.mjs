@@ -180,9 +180,10 @@ test('client-side redaction cannot turn different protected native and shadow an
   const body = (await server.api('GET', `/agents/${id}/learning/promotions`)).body;
   assert.equal(body.promotions.some(record => record.decided === 'promote'), false,
     'Distinct protected answers must not promote after both are redacted to the same placeholder.');
-  const held = body.promotions.findLast(record => record.decided === 'hold');
-  assert.ok(held, 'The unchecked comparison remains held.');
-  assert.equal(held.check.agreed, 0);
+  const waiting = body.promotions.at(-1);
+  assert.equal(waiting.decided, 'replaying', 'A redacted turn is no baseline: it is given back, and the draft waits for another.');
+  assert.equal(waiting.runs, undefined);
+  assert.equal(waiting.check.released, 1);
   const written = JSON.stringify(uploads);
   assert.ok(!written.includes(nativeAnswer) && !written.includes(shadowAnswer), 'Neither protected value leaves the client.');
 });
