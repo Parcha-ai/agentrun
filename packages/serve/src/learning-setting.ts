@@ -16,8 +16,8 @@
 // schema: its enum can be an echo of the owner's setting, not the decision, and a wrong field that promotes is worse than
 // none.
 // A compile reads two more (runner/learning-end.ts checkDraftOf, learn/repick.ts), off by default:
-//   repick: the answer's quote re-pick (learn/check.ts quoteRule) reads the run's fetched pages on its second pass, as
-//     H6c's re-pick tier did, where the compiled one reads its compact facts and its draft alone;
+//   repick: the answer's quote re-pick (learn/check.ts quoteRule) reads the run's fetched pages on its second pass,
+//     where the compiled one reads its compact facts and its draft alone;
 //   repick_max_chars: the most characters of state that second pass sends, its longest strings cut first.
 // Each is read when a draft is committed, so a change reaches the workflows compiled after it, never one already kept.
 

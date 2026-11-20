@@ -85,9 +85,20 @@ export type ArchilExecRequest = {
 };
 export type ArchilExecAnswer = { readonly exitCode: number; readonly stdout: string; readonly stderr: string };
 
+/** The disk itself is not there: Archil's lookup of it, made before the SDK's first call, answered 404 (removed, or the
+ *  key's account or region holds none of that id). Every SDK call fails with it. It carries no HTTP `status`, so no
+ *  caller reads it as a missing file or folder. */
+export class ArchilDiskMissing extends Error {
+  constructor(readonly disk: string, readonly region: string, words: string, options?: ErrorOptions) {
+    super(`the Archil disk ${disk} is not there in region ${region}: ${words}`, options);
+    this.name = "ArchilDiskMissing";
+  }
+}
+
 /**
  * An Archil disk, keys relative to its root. A failed call rejects with an error carrying the HTTP `status` when there
- * was an answer (the SDK's ArchilS3Error and ArchilApiError do, and so does the ranged read here).
+ * was an answer (the SDK's ArchilS3Error and ArchilApiError do, and so does the ranged read here), or, from every call
+ * but the ranged read, ArchilDiskMissing when Archil has no such disk.
  */
 export interface ArchilDisk {
   readonly id: string;
@@ -240,7 +251,11 @@ class SdkArchilDisk implements ArchilDisk {
       const { region, baseUrl } = this.#options;
       const { Archil } = await import("disk");
       const client = new Archil({ apiKey, region, s3BaseUrl: this.#s3, ...(baseUrl === undefined ? {} : { baseUrl }) });
-      return { client, disk: await client.disks.get(this.id) };
+      const disk = await client.disks.get(this.id).catch((error: unknown) => {
+        if ((error as { status?: unknown } | null)?.status !== 404) throw error;
+        throw new ArchilDiskMissing(this.id, region, String((error as Error)?.message ?? error), { cause: error });
+      });
+      return { client, disk };
     })();
     // A failed start (the key refused, the disk not found) is tried again by the next call.
     ready.catch(() => { if (this.#ready === ready) { this.#ready = undefined; this.#readyKey = undefined; } });

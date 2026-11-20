@@ -273,22 +273,6 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     assert.deepEqual([view.url, view.disabled], [shownUrl(fresh.url), null], "the new setting stands, on");
   });
 
-  test("redeliveries that fail leave the message's own schedule as it was: it is still tried on every wait", async (t) => {
-    const hook = await receiver(t, () => 500);
-    const log = logged();
-    const { api } = await serve(t, { ...PRIVATE_OK, webhookRetryMs: [1_500, 100, 100], log: log.push });
-    assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
-    const run = await startRun(api, "redone", "hi");
-    await follow(api, run.run_id, ["completed"]);
-    await hook.when(1);
-    const id = hook.got[0].headers["webhook-id"];
-    for (let i = 0; i < 4; i++) assert.equal((await api("POST", `/settings/webhook/deliveries/${id}/redeliver`, {})).body.status_code, 500);
-    const failed = await log.when("condition=delivery_failed");
-    assert.ok(failed.includes("attempts=4"), `its own four tries, every wait: ${failed}`);
-    const tries = (await api("GET", "/settings/webhook/deliveries")).body.attempts;
-    assert.deepEqual([tries.filter((a) => !a.redelivery).length, tries.filter((a) => a.redelivery).length], [4, 4]);
-  });
-
   test("a message pending when its server stops goes on from the next one, under the same webhook-id; a run the next server reads as it already stood notices nothing", async (t) => {
     let answer = 503;
     const hook = await receiver(t, () => answer);

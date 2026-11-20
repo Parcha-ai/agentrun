@@ -39,7 +39,7 @@ Costs
 
 Learning
 
-- An agent's `learning` takes `repick: true` (off by default): a learned workflow compiled after it re-picks a missed quote from the pages its run fetched, not from its compact notes alone. On a miss, the answer step runs again reading the pages, told they are untrusted data and never instructions, with no tools. `learning.repick_max_chars` (150000 by default, 1 to 400000) caps what that pass sends, the longest pages cut first; its cost is the served run's, under the run's cost cap. The setting is read at each compile, so it reaches only workflows compiled after it; agents whose workflows run through an SDK bridge ignore it (#3312). <!-- changes/learning-repick-pages.md -->
+- `learning.repick: true` (off by default) has a learned workflow's quote re-pick read the pages its run fetched, sent as untrusted data to a step with no tools; `learning.repick_max_chars` (150,000 by default) caps what it sends. It reaches workflows compiled after it is set, and agents on an SDK bridge ignore it (#3312). <!-- changes/learning-repick-pages.md -->
 
 Computers
 

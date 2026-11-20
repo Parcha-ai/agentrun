@@ -739,12 +739,10 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     bind: async (host) => installTool(host, "web-search", booking(webSearchTool(host.env, host.search, host.web && ((args, provider) => fakeSearch(host.web!, args, provider)))) as unknown as ToolRegistration),
     effect: async (args, run) => bookedIn(run.ledger, () => searchFor(run.env, args, run.signal, run.search)),
   },
-  // web_save (web-save.ts): a public file into the run's own Workspace (host.workspace, else the local folder at where.work),
-  // through the guarded download; a template eval's web fake (host.web) answers its files from the case. It makes no paid
-  // request, so nothing books it. No node or call node names it: a workflow's effect has only a local work path, not the
-  // run's Workspace, which in Mode 2 is elsewhere.
+  // web_save (web-save.ts). It makes no paid request, so nothing books it. No node or call node names it: a workflow's
+  // effect has only a local work path, not the run's Workspace.
   [WEB_SAVE_TOOL]: {
-    summary: `Download one file from a public URL into the run's work/ (a bare name under media/), never overwriting: { url, path } -> { ok: true, path, bytes, content_type, url } or { ok: false, url, refused | error }; at most ${SAVE_MAX_BYTES / (1024 * 1024)} MiB, its type checked against its bytes (an image, audio or video the console plays, at a path with an extension of its type; any other type only to a path whose extension names it); a private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused at every redirect.`,
+    summary: `Download one public file into the run's work/ (a bare name under media/), never overwriting: { url, path } -> { ok: true, path, bytes, content_type, url } or { ok: false, url, refused | error }; at most ${SAVE_MAX_BYTES / (1024 * 1024)} MiB, a media type only when its bytes agree.`,
     needs: [],
     nodes: false,
     bind: async (host) => {
