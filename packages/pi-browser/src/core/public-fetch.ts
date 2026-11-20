@@ -131,18 +131,52 @@ async function publicHops<T>(url: string, options: PublicFetchOptions, accept: s
   }
 }
 
+/** `reader`'s next chunk; with `signal`, ended at the signal's abort with its reason (the body cancelled), whatever the
+ *  fetch does with the signal. */
+const nextChunk = (reader: ReadableStreamDefaultReader<Uint8Array>, signal?: AbortSignal) =>
+  signal ? untilAborted(() => reader.read(), signal).catch(async (error: unknown) => { await reader.cancel(error).catch(() => undefined); throw error; }) : reader.read();
+
 /** `body` read whole, refused (`over`'s words) once it passes `maxBytes`: cut off while it is read, not after. With
- *  `signal`, each read also ends at the signal's abort, with its reason, whatever the fetch does with the signal. */
+ *  `signal`, each read also ends at the signal's abort, with its reason. The chunks are kept and joined at the end, so a
+ *  body peaks at about twice its size in memory: readStated is the path for a body whose length is stated. */
 async function readCapped(body: ReadableStream<Uint8Array>, maxBytes: number, over: string, signal?: AbortSignal): Promise<Buffer> {
   const chunks: Uint8Array[] = [];
   let size = 0;
   for (const reader = body.getReader(); ; ) {
-    const { done, value } = signal ? await untilAborted(() => reader.read(), signal).catch(async (error: unknown) => { await reader.cancel(error).catch(() => undefined); throw error; }) : await reader.read();
+    const { done, value } = await nextChunk(reader, signal);
     if (done) break;
     if ((size += value.length) > maxBytes) { await reader.cancel(); throw refusedError(over); }
     chunks.push(value);
   }
   return Buffer.concat(chunks);
+}
+
+/** `body`, whose host stated it is `length` bytes, read into one buffer of that length, allocated before the first chunk:
+ *  the file is held once, never joined into a second copy. A chunk that runs past `length` is refused as it comes, the
+ *  body cancelled; a body that ends short of it is refused at its end. `signal` as readCapped's. */
+async function readStated(body: ReadableStream<Uint8Array>, length: number, signal?: AbortSignal): Promise<Uint8Array> {
+  const bytes = new Uint8Array(length);
+  let at = 0;
+  for (const reader = body.getReader(); ; ) {
+    const { done, value } = await nextChunk(reader, signal);
+    if (done) break;
+    if (value.length > length - at) { await reader.cancel(); throw refusedError(`refused: the file is longer than the ${length} bytes its host stated`); }
+    bytes.set(value, at);
+    at += value.length;
+  }
+  if (at !== length) throw refusedError(`refused: the file ended at ${at} of the ${length} bytes its host stated`);
+  return bytes;
+}
+
+/** The length a 2xx reply states for the body a fetch hands over: its content-length when that is a plain count and the
+ *  body is not encoded (a gzip reply's length counts the bytes on the wire, not the decoded ones); else undefined. */
+function statedLength(headers: Headers): number | undefined {
+  const said = headers.get("content-length")?.trim();
+  if (said === undefined || !/^\d{1,16}$/.test(said)) return undefined;
+  const encoding = headers.get("content-encoding")?.trim().toLowerCase();
+  if (encoding && encoding !== "identity") return undefined;
+  const length = Number(said);
+  return Number.isSafeInteger(length) ? length : undefined;
 }
 
 /**
@@ -170,8 +204,10 @@ export async function publicFetch(url: string, options: PublicFetchOptions = {})
  * Downloads `url` from a public host: publicFetch's hops and refusals (scheme, local or private host, port, redirects,
  * the signal), with any content type accepted and the body kept as bytes, up to `maxBytes` (default 5 MiB). A 2xx answer
  * is read whole; another status comes back with `bytes` null. A body over the cap is refused (`refused: the file is over
- * <cap>`): before a byte is read when its content-length says so, else as soon as it passes it. `signal` ends the body's
- * read too, with its reason.
+ * <cap>`): before a byte is read when its content-length says so, else as soon as it passes it. A body whose length its
+ * host states (an unencoded reply's content-length) is read into one buffer of that length, so it is held once; one longer
+ * than stated is refused as it runs past it, one shorter at its end. With no stated length the chunks are joined at the
+ * end, about twice the file's size at the peak. `signal` ends the body's read too, with its reason.
  */
 export async function publicDownload(url: string, options: PublicFetchOptions = {}): Promise<PublicFile> {
   const maxBytes = capOf(options);
@@ -182,6 +218,10 @@ export async function publicDownload(url: string, options: PublicFetchOptions = 
     if (!res.body) return { url: target.href, status: res.status, contentType, bytes: new Uint8Array(0) };
     const declared = Number(res.headers.get("content-length") ?? Number.NaN);
     if (Number.isFinite(declared) && declared > maxBytes) throw refusedError(over);
+    // A stated length (at most the cap, checked above): the bytes read into one buffer of it. None: the chunks joined at
+    // the end, about twice the file's size at its peak.
+    const length = statedLength(res.headers);
+    if (length !== undefined) return { url: target.href, status: res.status, contentType, bytes: await readStated(res.body, length, options.signal) };
     const body = await readCapped(res.body, maxBytes, over, options.signal);
     return { url: target.href, status: res.status, contentType, bytes: new Uint8Array(body.buffer, body.byteOffset, body.byteLength) };
   });

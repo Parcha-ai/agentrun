@@ -168,3 +168,45 @@ test("a redirect to a private host is refused at its hop, by name or by the addr
     assert.deepEqual(net_.dialled, ["https://cdn.example/f"], location);
   }
 });
+
+// A reply that states its length is read into one buffer of that length, allocated before the first chunk, so a file is
+// held once and never copied whole again: a body that runs past its stated length is refused at the chunk that does,
+// and one that ends short of it is refused at its end.
+/** A body of `chunks`, each sent as its own read; `hang`: no end after them (a body that would keep coming). */
+const chunked = (chunks, { hang = false } = {}) => new ReadableStream({
+  start(controller) {
+    for (const chunk of chunks) controller.enqueue(Uint8Array.from(chunk));
+    if (!hang) controller.close();
+  },
+  cancel() {},
+});
+const stated = (body, length, extra = {}) => network({ answers: { "https://cdn.example/f": () => new Response(body, { status: 200, headers: { "content-type": "video/mp4", "content-length": String(length), ...extra } }) } });
+
+test("a stated length: the bytes come back exactly, in one buffer of that length allocated whole (no pooled copy of the chunks)", async () => {
+  const answer = await publicDownload("https://cdn.example/f", { ...stated(chunked([[1, 2, 3], [4, 5], [6, 7, 8, 9, 10]]), 10), maxBytes: MAX });
+  assert.deepEqual([...answer.bytes], [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+  // The joined copy of the chunks (Buffer.concat) of a small file is a slice of Node's shared pool; the buffer read into
+  // whole is its own, of exactly the stated length.
+  assert.deepEqual([answer.bytes.buffer.byteLength, answer.bytes.byteOffset], [10, 0], "the bytes are the one buffer allocated for the stated length");
+});
+
+test("a stated length: a body longer is refused at the chunk that runs past it, while the body is still coming", async () => {
+  const net = stated(chunked([[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]], { hang: true }), 10);
+  const read = publicDownload("https://cdn.example/f", { ...net, maxBytes: MAX });
+  const late = new Promise((resolve) => setTimeout(() => resolve("still reading"), 2_000).unref());
+  const settled = await Promise.race([read.then(() => "read whole", (error) => error), late]);
+  assert.ok(refused(/^refused: the file is longer than the 10 bytes its host stated$/)(settled), `refused as the extra bytes came: ${settled?.message ?? settled}`);
+});
+
+test("a stated length: a body that ends short of it is refused", async () => {
+  const net = stated(chunked([[1, 2, 3], [4, 5, 6]]), 10);
+  await assert.rejects(publicDownload("https://cdn.example/f", { ...net, maxBytes: MAX }), refused(/^refused: the file ended at 6 of the 10 bytes its host stated$/));
+});
+
+test("no stated length, or a length of an encoded body: the chunks are joined as they come, as before", async () => {
+  const none = network({ answers: { "https://cdn.example/f": () => new Response(chunked([[1, 2], [3]]), { status: 200, headers: { "content-type": "video/mp4" } }) } });
+  assert.deepEqual([...(await publicDownload("https://cdn.example/f", { ...none, maxBytes: MAX })).bytes], [1, 2, 3]);
+  // A gzip reply's content-length counts the bytes on the wire, not the decoded ones a fetch hands over: not the length.
+  const encoded = stated(chunked([[1, 2], [3, 4, 5, 6]]), 3, { "content-encoding": "gzip" });
+  assert.deepEqual([...(await publicDownload("https://cdn.example/f", { ...encoded, maxBytes: MAX })).bytes], [1, 2, 3, 4, 5, 6]);
+});
