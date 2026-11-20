@@ -340,7 +340,7 @@ serves no run.
 included, on this server and on every Archil disk the agent's runs used (a Mode 2 run's end writes the folder on the
 disk its claim mounted: the agent's own, or one its launch named; `archil-routes.ts` removeLearningFolder, 503 while a
 disk can't be reached), then the agent's promotions and grades (`delete.ts` deleteLearning); the agent and its runs
-stay. The agent's delete takes the same step. It cancels
+stay. The agent's delete takes the same step on the launch-named disks; its own disk goes whole there. It cancels
 the runs that exist only for learning (replays, audit shadows) and waits for them; a run of the agent's own still going
 refuses it (409 `learning_busy`), since its learning lives in it, and nothing is deleted. Before the records go, each
 revision they name is kept in the agent's reset ledger (`learning.reset-ledger.<agent>`: workflow, digest and K alone),

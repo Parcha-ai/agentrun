@@ -86,7 +86,7 @@ export async function resetLearning(host: LearningResetHost, agentId: string): P
     // What the agent's kept runs carry of their revisions' compile and check, kept before the records it is read from go.
     await keepResetLedger(host.store.settings, agentId, await promotionsOf(host.store.settings, agentId));
     try {
-      await host.deleteLearning(host.store, agentId, { keepResetLedger: true });
+      await host.deleteLearning(host.store, agentId, { keepResetLedger: true, agentDisk: true });
     } catch (error) {
       if (!(error instanceof LearningInFlight)) throw error;
       throw busy(agentId, error.runs, "its learning work is in flight");
