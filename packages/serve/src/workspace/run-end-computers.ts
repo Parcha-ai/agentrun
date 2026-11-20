@@ -23,6 +23,7 @@ import { settingOf } from "./computer-for-claim.js";
 import type { ComputerDeps } from "./computer-deps.js";
 import { storeLedger } from "./computer-ledger.js";
 import { type ComputerSetting, providerKeys } from "./resolve-computer.js";
+import { endingDeletes, intervalWrites } from "./computer-intervals.js";
 
 /** The longest a run's end may spend on its computers, every try with its pauses: past it the provider's calls are cut
  *  (one that takes no signal, a release, left to finish on its own) and the run's end goes on, said in the log. */
@@ -54,7 +55,7 @@ const pause = (ms: number, signal: AbortSignal): Promise<boolean> =>
 export interface RunEndComputersDeps {
   /** The run's row and launch (its revision and place) and the agent's revision, where its computer setting is; the
    *  computer ledger, for a provider that keeps one. */
-  readonly store: Pick<Store, "agents" | "computerLedger"> & { readonly runs: Pick<Store["runs"], "get" | "launch"> };
+  readonly store: Pick<Store, "agents" | "computerLedger"> & { readonly runs: Pick<Store["runs"], "get" | "launch">; readonly computerIntervals?: Store["computerIntervals"] };
   /** The run's computers as the runner composed them (computer-deps.ts computerDepsFrom): the registry, the provider
    *  makers, the key reader, and --faux's launch with the providers it takes. */
   readonly computers: Pick<ComputerDeps, "kinds" | "providers" | "keyOf" | "keyTable" | "settings" | "launch" | "launches">;
@@ -71,6 +72,8 @@ export interface RunEndComputersDeps {
  *  is said in the log. */
 export function runEndComputers(deps: RunEndComputersDeps): (claim: { readonly runId: string; readonly epoch: number }) => Promise<void> {
   const { store, computers, log } = deps;
+  /** Each computer let go here ends its interval (computer-intervals.ts), on its provider's ok alone. */
+  const writes = intervalWrites(store, log);
   /** The provider the run's computers are on, by the agent's setting; undefined where none of them is this end's to let
    *  go (none, the agent's own, a paired computer, --faux's). */
   const providerOf = async (runId: string, epoch: number) => {
@@ -89,7 +92,7 @@ export function runEndComputers(deps: RunEndComputersDeps): (claim: { readonly r
     const options = providerOptions(entry.id, keys, computers.settings ?? {}, computers.keyTable ?? KEY_TABLE);
     if (!options.ok) throw new NoProviderHere(options.error.message);
     // A throw from here on is the vendor's or the daemon's (Docker's architecture asked): asked again.
-    return make(options.options, { ledger: storeLedger(store.computerLedger, entry.id) });
+    return endingDeletes(await make(options.options, { ledger: storeLedger(store.computerLedger, entry.id) }), entry.id, writes);
   };
   return async ({ runId, epoch }) => {
     if (epoch <= 1) return;

@@ -32,6 +32,7 @@ import { bookedIn, booking, type Ledger, type PaidBooking } from "./paid-calls.j
 import type { Refusal } from "@parcha/agentrun-kernel";
 import { hostToolDefs, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
 import { browserPrice, browserSpend } from "./browser-cost.js";
+import { sessionEnds } from "./browser-sessions.js";
 import { sessionRecordings } from "./computer-record.js";
 import { forModel } from "./result.js";
 import { fetchFor, pagesOf, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
@@ -587,10 +588,17 @@ const browserTool: ToolEntry = {
     const saved = verify
       ? async (row: Parameters<typeof savedOnRelease>[0], change: string): Promise<void> => void (await verify(row, change))
       : undefined;
+    // Each session's end on the run's root, with its provider's own record of it where the provider keeps one, read once
+    // here (browser-sessions.ts): the run's usage read gives one record per session.
+    const sessionEnded = sessionEnds({
+      usage: "browser" in made ? made.browser.usage : undefined,
+      commit: (change) => (opened ? opened.commit(change, context) : Promise.reject(new Error("the run's journal is not open"))),
+    });
     // Both hosts of a session's changes: the live view's hand-over, and the sign-in's save (its verified_at, in the store).
     const onSessions = async (row: Parameters<typeof savedOnRelease>[0] & Parameters<typeof onSession>[0], change: string) => {
       // A session let go ends a wait on the person's answer that kept it open (personWait, below): the run parks.
       if (change === "released") hands.sessionEnded(row.session.tag);
+      if (change === "released") await sessionEnded((row as unknown as { session: Parameters<typeof sessionEnded>[0] }).session, (row as unknown as { conversationId: number }).conversationId);
       await recordSession(row.session.tag, change === "released" ? null : row.session.resourceId);
       // A session that opens, whatever let the last one go: the Screen tab's ended state goes (browser-wait-ended.ts).
       if (change === "launched" && host.store && host.claim) await clearWaitEnded(host.store.settings, host.claim.runId, host.claim.epoch).catch(() => undefined);

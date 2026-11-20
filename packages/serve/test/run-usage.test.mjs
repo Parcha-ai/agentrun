@@ -61,7 +61,7 @@ test("a run with a priced MCP call and a monid call: a tokens line for its model
 
   const tools = usage.lines.filter((line) => line.meter === "tools");
   // monid's answer says what it charged: its own figure. The MCP tool's is the price its owner saved here.
-  assert.deepEqual(tools.map((line) => [line.charged_by, line.quantity, line.unit, line.usd, line.basis]), [["fake", 1, "call", 0.05, "estimate"], ["monid", 1, "call", 0.003, "reported"]]);
+  assert.deepEqual(tools.map((line) => [line.charged_by, line.provider, line.quantity, line.unit, line.usd, line.basis]), [["fake", "fake", 1, "call", 0.05, "estimate"], ["monid", "monid", 1, "call", 0.003, "reported"]]);
   // The run's own model, sent by this server on its provider's route (the faux one here): named, with its provider.
   assert.deepEqual([model.model, model.provider, model.charged_by], ["faux-1", "faux", null]);
 
@@ -104,6 +104,6 @@ test("a run still at work has no lines yet, and says so; an unknown run is a 404
   await follow(api, run.body.run_id, ["input_required"], { deadlineMs: 60_000 });
   const usage = await api("GET", `/runs/${run.body.run_id}/usage`);
   assert.equal(usage.status, 200);
-  assert.deepEqual(usage.body, { run_id: run.body.run_id, ended_at: null, currency: "USD", total: null, lines: null, reason: "running" });
+  assert.deepEqual(usage.body, { run_id: run.body.run_id, ended_at: null, currency: "USD", total: null, lines: null, browser_sessions: null, computer_intervals: null, reason: "running" });
   assert.equal((await api("GET", "/runs/run_nope/usage")).status, 404);
 });

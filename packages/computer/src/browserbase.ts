@@ -27,6 +27,7 @@ import {
 	type BrowserDownloads,
 	type BrowserFile,
 	type BrowserProfiles,
+	type BrowserSessionUsage,
 	type BrowserStream,
 	browserClient,
 	browserHello,
@@ -130,6 +131,11 @@ export interface BrowserbaseSession {
 	connectUrl?: string;
 	userMetadata?: Record<string, unknown>;
 	expiresAt?: string;
+	/** When the session started and ended, as Browserbase records them (no end while it runs). */
+	startedAt?: string;
+	endedAt?: string;
+	/** The bytes the session moved through Browserbase's proxy. */
+	proxyBytes?: number;
 }
 
 /** A session's live view as GET /v1/sessions/{id}/debug answers it: every URL in it is a secret. */
@@ -432,6 +438,25 @@ export class BrowserbaseProvider implements ComputerProvider, BrowserComputerPro
 			if (got.downloads.length === 0 || rows.length >= got.total) return ok(rows);
 		}
 		return vendorFail("browserbase", `Browserbase kept answering more pages of downloads past ${MAX_PAGES}`);
+	}
+
+	/**
+	 * The session as Browserbase records it (GET /v1/sessions/{id}): its start, its end and its proxy bytes, each null where
+	 * the answer does not hold a well-formed one. undefined for a session Browserbase does not know (404).
+	 */
+	async sessionUsage(ref: ComputerRef, { signal }: CallContext = {}): Promise<Result<BrowserSessionUsage | undefined>> {
+		const problem = idProblem(ref?.id, NAME);
+		if (problem) return fail("invalid", problem);
+		let found: BrowserbaseSession | undefined;
+		try {
+			found = await this.#api.retrieve(ref.id, signal);
+		} catch (error) {
+			return vendorFailure("browserbase", NAME, "GET /v1/sessions/{id}", error);
+		}
+		if (!found) return ok(undefined);
+		const at = (value: unknown) => (typeof value === "string" && Number.isFinite(Date.parse(value)) ? new Date(Date.parse(value)).toISOString() : null);
+		const bytes = found.proxyBytes;
+		return ok({ startedAt: at(found.startedAt), endedAt: at(found.endedAt), proxyBytes: typeof bytes === "number" && Number.isSafeInteger(bytes) && bytes >= 0 ? bytes : null });
 	}
 
 	async #listDownloads(ref: ComputerRef, { signal }: CallContext = {}): Promise<Result<BrowserFile[]>> {

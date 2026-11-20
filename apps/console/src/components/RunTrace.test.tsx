@@ -425,7 +425,7 @@ describe("the Dev tools tab", () => {
   });
 
   it("with no lines yet keeps the trace's own split and says why: the run is at work, or its cost can't be split", async () => {
-    const running: RunUsage = { ...USAGE_CLI, ended_at: null, total: null, lines: null, reason: "running" };
+    const running: RunUsage = { ...USAGE_CLI, ended_at: null, total: null, lines: null, browser_sessions: null, computer_intervals: null, reason: "running" };
     const host = await open(TRACE, { readUsage: async () => running, view: "breakdown" });
     const cost = () => host.querySelector("section[aria-label='Where the cost went']")!;
     expect(cost().textContent).toMatch(/claude-sonnet-5-5\$0\.6132 · 97%.*Tool charges\$0\.0204 · 3%/);
