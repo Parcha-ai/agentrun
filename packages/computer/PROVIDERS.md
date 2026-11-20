@@ -421,10 +421,8 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
 - **No Archil mount.** A spec with one is refused in words (`mountsOf` drops it on dial).
 - **A desktop over dial** works as on exec: create adds `DISPLAY` (`:0`) to the boot env, `agentrun-dial` gives it
   to init, and once the machine dials, its X server starts through computerd's `process.start` over that socket, as
-  the tool user. Where the host's facts say `windowManager`, create also gives init `--window-manager`, and computerd
-  starts the window manager itself once the display answers: as root it makes the manager's network namespace, then
-  drops to the tool user, so no user namespace is needed. Hello's `windowManager` says how it went, and create waits
-  on it (an older computerd says nothing, and create starts the manager through `process.start`, as before). A machine
+  the tool user. Where the host's facts say `windowManager`, computerd starts xfwm4 itself (init `--window-manager`;
+  see `daemon/internal/windowmanager`); hello's `windowManager` says how it went, and create waits on it. A machine
   minted a desktop may say `linux` (same os and arch) until its display answers; a `connect` while it says `linux`
   fails as drift, as on exec. Every dial provider takes one, from the box image, whose
   `desktop` step (`box/install.sh`) installs Xvfb, xfwm4, xfce4-terminal, mousepad and firefox-esr. A desktop gets the
@@ -446,12 +444,14 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
     user (uid 2510) can't write a user namespace's `uid_map` and can't make a network namespace (measured 11-19), so
     the window manager the client used to start under `unshare --user --net` failed there
     (`unshare: write failed /proc/self/uid_map: Operation not permitted`). computerd starts it now, as root makes its
-    network namespace. On `connect: "exec"` the constructor refuses a desktop in words that say why: a desktop's sandbox
-    boots from the snapshot and dials, and none has run through the toolbox's session commands. The descriptor's
-    desktop configuration selects dial itself.
+    network namespace. On `connect: "exec"` the constructor refuses a desktop in kindRefusal's words, because a
+    desktop's sandbox boots from the snapshot and dials, and none has run through the toolbox's session commands. The
+    descriptor's desktop configuration selects dial itself.
 
   Xvfb and the window manager over the dial were verified live (dial desktop runs 11-18/19: E2B, Fly, Cloudflare,
-  Modal), with the client starting the manager; computerd's start of it is **unverified** live on every host.
+  Modal), with the client starting the manager. computerd's own start of it ran live on Daytona over dial (11-20):
+  Core passed, the five desktop cases passed, every hello's `windowManager` said `running`, and a frame showed Mousepad
+  framed by xfwm4. The other hosts have not yet run computerd's start live.
 - **Prove it** as below. Your conformance module also exports `dialKit()`, the server your machines dial, for the
   Core case `provider.dial-token` (`test/fixtures/dial-provider.mjs` is one).
 - **No REST call that starts a machine?** Ship a relay the operator deploys once, as Cloudflare's

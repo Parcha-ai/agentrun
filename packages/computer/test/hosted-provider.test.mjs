@@ -15,7 +15,6 @@ import { DAEMON, DESKTOP_GROUPS, deferred, FAKE_DESCRIPTOR, fakeHost, gpuDescrip
 
 const { HostedProvider } = await import("../dist/hosted/provider.js");
 const { hostedCommands, initFlags } = await import("../dist/hosted/scripts.js");
-const { WINDOW_MANAGER } = await import("../dist/desktop.js");
 const VALUES = await import("../dist/hosted/values.js");
 
 const COMPUTER = "agentrun.computer";
@@ -1644,45 +1643,6 @@ test("a desktop whose host's facts say windowManager has computerd start it (ini
 		assert.match(failed.error.message, /the window manager computerd started \(dbus-run-session -- xfwm4 [^)]*\) ended with exit code \d+ within 1 s of starting on :0: \S/);
 		await nothingLeft(broken.fake, `a window manager computerd started that ended (${display})`);
 	}
-});
-
-test("a desktop's window manager, where computerd says nothing of one (hello has no windowManager), starts from create once the display answers, with DISPLAY; one that cannot start or ends at once fails create, and nothing is left", async () => {
-	const starts = processStarts;
-	const managed = setup({ kind: "desktop" }, { facts: { windowManager: true }, box: { olderDaemon: true } });
-	made(await create(managed.provider));
-	const m = only(managed.fake);
-	const [server, manager, ...more] = starts(managed.fake, m.id);
-	assert.equal(server.argv[0], "Xvfb", "the X server first");
-	assert.deepEqual(manager, { argv: [...WINDOW_MANAGER], env: { DISPLAY: ":0", NO_AT_BRIDGE: "1" } }, "then the window manager, on the display, with no accessibility bus");
-	assert.deepEqual(more, []);
-	const order = managed.fake.requests.filter(({ machine }) => machine === m.id).map(({ method, params }) => (method === "process.start" ? params.argv[0] : method));
-	const between = order.slice(order.indexOf("Xvfb") + 1, order.indexOf(WINDOW_MANAGER[0]));
-	assert.ok(between.filter((method) => method === "hello").length >= 2, `the window manager starts after a hello saw the display, not before: ${order.join(", ")}`);
-
-	const missing = setup({ kind: "desktop" }, { facts: { windowManager: true }, box: { olderDaemon: true }, display: "manager missing", lingers: { reads: 1, lists: 1 } });
-	const failed = await create(missing.provider);
-	assert.equal(failed.error?.code, "not_found");
-	assert.match(failed.error.message, /the window manager \(unshare .*dbus-run-session .*xfwm4 [^<]*\) did not start on :0: unshare: executable file not found/);
-	await nothingLeft(missing.fake, "a window manager that cannot start");
-
-	const ends = setup({ kind: "desktop" }, { facts: { windowManager: true }, box: { olderDaemon: true }, display: "manager dies", lingers: { reads: 1, lists: 1 } });
-	const ended = await create(ends.provider);
-	assert.equal(ended.error?.code, "vendor");
-	assert.match(ended.error.message, /the window manager \(unshare .*dbus-run-session .*xfwm4 [^<]*\) ended with exit code 1 within 1 s of starting on :0: Xfconf could not be initialized/);
-	await nothingLeft(ends.fake, "a window manager that ends at once");
-	assert.ok(
-		managed.fake.requests.some(({ machine, method, params }) => machine === m.id && method === "process.wait" && params.timeoutMs === 1000),
-		"create watches the window manager for a second",
-	);
-
-	// The watch has its own bound: a display with a short timeoutMs that came up with less than a second of it left still
-	// gets a healthy manager, whose process.wait computerd holds the whole second.
-	let held;
-	held = setup(
-		{ kind: "desktop", desktop: { timeoutMs: 700 } },
-		{ facts: { windowManager: true }, box: { olderDaemon: true }, onStep: async (name) => (name === "process.wait" && held.fake.requests.at(-1).params.timeoutMs === 1000 ? new Promise((done) => setTimeout(done, 1000)) : undefined) },
-	);
-	made(await create(held.provider));
 });
 
 test("pid1 desktop: the entrypoint carries the display, and init starts with it", async () => {

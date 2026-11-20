@@ -184,7 +184,7 @@ import { recordingsFolder } from "./workspace/paths.js";
 import { heldRoute, holdIssues, runComputerRead } from "./computer-held-routes.js";
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runComputerKind } from "./computer-routes.js";
 import { runOver } from "./computer-commands.js";
-import { mintViewerCredential, VIEWER_PARAM, viewerCookie, viewerCredentialFor, viewerCredentialKey, viewerCredentialOf, viewerExpiry } from "./viewer-credential.js";
+import { mintViewerCredential, VIEWER_PARAM, viewerCookie, viewerCredentialFor, viewerCredentialKey, viewerCredentialOf } from "./viewer-credential.js";
 import { ATTACH_PATH, AttachHub, type HostedDial, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { type AttachTiming, createAttachRoutes, liveRelays, pairedView } from "./computer-attach.js";
 import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
@@ -1432,13 +1432,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const sealKey = seal.key;
   // SDK runs' credentials are signed with a key from the seal key, never an API token: a rotation leaves them working.
   const sdkSecret = sdkRunSecret(sealKey);
-  // An API-only server's viewer credentials (viewer-credential.ts) are signed with another key from it: every server on
-  // this store checks them alike, across restarts.
+  // An API-only server's viewer credentials: viewer-credential.ts.
   const viewerKey = viewerCredentialKey(sealKey);
-  /** Whether `credential` opens run `runId`'s live view now: minted for that run, not expired, and its run not ended,
-   *  read from the store each time (its revocation). */
-  const viewerHolds = async (credential: string | undefined, runId: string): Promise<boolean> =>
-    credential !== undefined && viewerCredentialFor(viewerKey, runId, credential, Date.now()) && !(await runOver(store, runId));
   // Each run's viewers are asked under that run's key (live-reach.ts reachForRun).
   const answers = (runId: string) => (handover: LiveHandover): Promise<boolean> => viewerAnswers(handover, reachForRun(reach, runId));
   // Settings → Computers and the owner's Archil settings, over the one store (computers.ts, archil-routes.ts), built once
@@ -4060,16 +4055,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       authFailed(`/v2${path}`, "replay_without_session");
       throw new ApiError("forbidden", owner ? "Replaying a learned workflow's revision takes the owner's password sign-in in the console, never a token." : "Replaying a learned workflow's revision takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
-    // A run's live computer view is a full-control credential for its computer: the owner's signed-in page alone, as
-    // approving a note is (never a token a run, an MCP client or a script may hold). An API-only server has no owner: there
-    // the server's token, its backend's own, takes a run's computer, checked below as every route's token is.
-    if ((found.name === "getRunBrowser" || found.name === "handBackRunBrowser" || (found.name === "getRunComputer" && !options.apiOnly)) && !byOwnerSession(req) && req.headers.authorization !== undefined) {
+    // A run's live computer view, and its take-over and hand-back (COMPUTER_ROUTES), are a full-control credential for its
+    // computer: the owner's signed-in page alone, as approving a note is (never a token a run, an MCP client or a script
+    // may hold). An API-only server has no owner: there the server's token, its backend's own, takes a run's computer,
+    // checked below as every route's token is.
+    const runComputer = found.name === "getRunComputer" || COMPUTER_ROUTES.has(found.name);
+    if ((found.name === "getRunBrowser" || found.name === "handBackRunBrowser" || (runComputer && !options.apiOnly)) && !byOwnerSession(req) && req.headers.authorization !== undefined) {
       const what = found.name.endsWith("Browser") ? "browser" : "computer";
       authFailed(`/v2${path}`, `${what}_without_session`);
       throw new ApiError("forbidden", owner ? `A run's live ${what} takes the owner's password sign-in in the console, never a token.` : `A run's live ${what} takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).`);
     }
-    // A run's desktop or phone view drives it once taken over: the owner's signed-in page alone (computer-routes.ts decides).
-    if (COMPUTER_ROUTES.has(found.name) && !options.apiOnly && !byOwnerSession(req) && req.headers.authorization !== undefined) authFailed(`/v2${path}`, "computer_without_session");
     // Answering a tool call that waits for approval (tool-gate.ts) is the same: the owner's signed-in page alone, never a
     // token, which the run's own process, an agent's MCP client or a script may hold.
     if (found.name === "answerApproval" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
@@ -4572,9 +4567,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // store: the hold is the run's journal, a take-over and a hand-back are command rows its runner applies; a browser's
         // hand-back is the browser's own answer row, as POST .../browser/hand-back writes it.
         const run = await needRun(id);
-        const answer = await computerRoute(found.name, run.id, {
-          ownerSession: byOwnerSession(req), token: req.headers.authorization !== undefined, apiOnly: options.apiOnly === true, accounts: owner !== undefined, body: await bodyOf(req),
-        }, store, { context: ctx });
+        const answer = await computerRoute(found.name, run.id, await bodyOf(req), store, { context: ctx });
         return send(res, 200, answer, { "cache-control": "no-store" });
       }
       case "createRunComputerViewer": {
@@ -5326,32 +5319,40 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     res.end(text);
   }
 
+  /**
+   * Whether an API-only server lets this request into run `runId`'s live view, its page and files or (socket) its
+   * WebSocket: from the public address alone (a page navigation may send no Origin; a socket always sends one), with the
+   * viewer credential its backend minted for this run (viewer-credential.ts), not expired, its run not ended (read from
+   * the store each time: its revocation). The credential, or the refusal and its authFailed reason.
+   */
+  async function liveAdmits(req: IncomingMessage, runId: string, { socket }: { socket: boolean }): Promise<{ credential: string } | { reason: string; error: ApiError }> {
+    const sent = req.headers.origin?.toLowerCase();
+    if (sent === undefined ? socket : sent !== publicOrigin) {
+      return { reason: "live_view_origin", error: new ApiError("forbidden", "a run's live view here is opened on this server's public address (AGENTRUN_PUBLIC_URL) alone") };
+    }
+    const credential = viewerCredentialOf(req);
+    if (credential === undefined) return { reason: "no_credential", error: new ApiError("unauthenticated", "a run's live view here takes the viewer link its backend minted (POST /v2/runs/{run_id}/computer/viewer)") };
+    if (!viewerCredentialFor(viewerKey, runId, credential, Date.now()) || (await runOver(store, runId))) {
+      return { reason: "viewer_credential", error: new ApiError("forbidden", "this viewer link is expired, for another run, or its run has ended: ask for a new one") };
+    }
+    return { credential };
+  }
+
   /** A run's live viewer's page and files (browser-live.ts, /v2/runs/{id}/computer/live/*): the owner's signed-in page
    *  alone, GET or HEAD, for a viewer the run's live process has handed over. The bytes are this server's own copy of pi-browser's viewer, never the run's port's:
    *  only the viewer's WebSocket reaches the run. */
   async function liveRoute(req: IncomingMessage, res: ServerResponse, runId: string, family: LiveFamily, rest: string): Promise<void> {
     if (req.method !== "GET" && req.method !== "HEAD") throw new ApiError("method_not_allowed", `${req.method} is not a method of a run's live view`, {}, { allow: "GET, HEAD" });
     if (options.apiOnly) {
-      // API-only: no owner here. The viewer credential its backend minted for this run (viewer-credential.ts), on the
-      // public address alone: a navigation sends no Origin, any other request this page's own. The page's answer sets it as
-      // the cookie its files and socket carry.
-      const sent = req.headers.origin;
-      if (sent !== undefined && sent.toLowerCase() !== publicOrigin) {
-        authFailed(`/v2/runs/${runId}/${family}/live`, "live_view_origin");
-        throw new ApiError("forbidden", "a run's live view here is opened on this server's public address (AGENTRUN_PUBLIC_URL) alone");
-      }
-      const credential = viewerCredentialOf(req);
-      if (credential === undefined) {
-        authFailed(`/v2/runs/${runId}/${family}/live`, "no_credential");
-        throw new ApiError("unauthenticated", "a run's live view here takes the viewer link its backend minted (POST /v2/runs/{run_id}/computer/viewer)");
-      }
-      if (!(await viewerHolds(credential, runId))) {
-        authFailed(`/v2/runs/${runId}/${family}/live`, "viewer_credential");
-        throw new ApiError("forbidden", "this viewer link is expired, for another run, or its run has ended: ask for a new one");
+      // API-only: no owner here (liveAdmits). The page's answer sets the credential as the cookie its files and socket carry.
+      const admitted = await liveAdmits(req, runId, { socket: false });
+      if ("error" in admitted) {
+        authFailed(`/v2/runs/${runId}/${family}/live`, admitted.reason);
+        throw admitted.error;
       }
       const handover = await liveViewerFor(store, sealKey, runId, rest);
       if (handover === undefined) throw new ApiError("not_found", `this run's ${family} has no live view at that address`);
-      res.setHeader("set-cookie", viewerCookie(req, runId, credential, viewerExpiry(credential), Date.now()));
+      res.setHeader("set-cookie", viewerCookie(req, runId, admitted.credential));
       return serveViewerFile(req, res, rest, (handover.kind ?? "browser") === "browser" ? "browser" : "computer");
     }
     if (!byOwnerSession(req)) {
@@ -5483,21 +5484,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (!viewing || !ID.test(viewing[1]!) || !/^\/v\/[A-Za-z0-9_-]{22}\/ws$/.test(viewing[3]!)) return deny("404 Not Found");
     // A browser always sends its page's origin on a WebSocket, which no other page's script can forge: this server's own
     // (as this request reaches it, or its public address, which a TLS proxy that rewrites Host or drops
-    // X-Forwarded-Proto leaves as the only one the owner's page has), and the owner signed in, or nothing. API-only: the
-    // public address alone, where the minted link opens the page, and the viewer credential for this run (its cookie).
-    const sent = String(req.headers.origin ?? "").toLowerCase();
-    const credential = options.apiOnly ? viewerCredentialOf(req) : undefined;
-    if (options.apiOnly) {
-      if (sent === "" || sent !== publicOrigin) return (authFailed(raw, "live_view_origin"), deny("403 Forbidden"));
-      if (credential === undefined) return (authFailed(raw, "no_credential"), deny("401 Unauthorized"));
-    } else {
+    // X-Forwarded-Proto leaves as the only one the owner's page has), and the owner signed in, or nothing. API-only:
+    // liveAdmits, below.
+    if (!options.apiOnly) {
+      const sent = String(req.headers.origin ?? "").toLowerCase();
       if (sent === "" || (sent !== ownOrigin(req) && sent !== publicOrigin)) return (authFailed(raw, "live_view_origin"), deny("403 Forbidden"));
       if (!owner || !signedIn(req, owner)) return (authFailed(raw, "live_view_without_session"), deny("401 Unauthorized"));
     }
     // Once the run's WebSocket is piped to this socket, a failure here only ends it: an HTTP line would land mid-stream.
     let piping = false;
     void (async () => {
-      if (options.apiOnly && !(await viewerHolds(credential, viewing[1]!))) return (authFailed(raw, "viewer_credential"), deny("403 Forbidden"));
+      if (options.apiOnly) {
+        const admitted = await liveAdmits(req, viewing[1]!, { socket: true });
+        if ("error" in admitted) return (authFailed(raw, admitted.reason), deny(admitted.error.code === "unauthenticated" ? "401 Unauthorized" : "403 Forbidden"));
+      }
       const run = ID.test(viewing[1]!) ? await momentOverStore(store, viewing[1]!, viewDepsFor(ownOriginOf())) : undefined;
       // The run's live viewer from the store (the runner's browser/computer tool wrote it under its claim): none for a run no
       // runner holds. A /computer/live socket reaches a viewer of every kind, a
