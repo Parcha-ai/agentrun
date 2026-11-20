@@ -167,14 +167,21 @@ func (m *Manager) Start() {
 		_ = outRead.Close()
 		close(drained)
 	}()
-	go func() {
-		err := cmd.Wait()
-		select {
-		case <-drained:
-		case <-time.After(drainFor):
-		}
-		m.finished(err)
-	}()
+	go m.wait(cmd, drained)
+}
+
+// wait reaps the start, waits a moment for its output to drain, and keeps its end as the fact. Once reaped, the start's
+// pid is free for the kernel to give another process, which init's sweep must not spare: Pid says 0 from then on.
+func (m *Manager) wait(cmd *exec.Cmd, drained <-chan struct{}) {
+	err := cmd.Wait()
+	m.mu.Lock()
+	m.pid = 0
+	m.mu.Unlock()
+	select {
+	case <-drained:
+	case <-time.After(drainFor):
+	}
+	m.finished(err)
 }
 
 // Pid is the manager's start, init's child, which init's sweep leaves to it; 0 when none was started.
