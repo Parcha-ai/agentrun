@@ -357,4 +357,6 @@ Report the console address, the run's link and cost, the data folder, `server.ve
 On this computer, say how it runs: as a service that starts again at login (`~/.agentrun/bin/agentrun service
 uninstall` removes it and keeps the data), or in the background until the machine stops. Offer **Learning** (off by
 default; turned on in the agent's **Learning** tab; reflection and grading add model usage). Don't turn on learning or
-import more history unasked.
+import more history unasked. Tell them AgentRun counts itself anonymously (a random id, version and platform; never
+prompts, files or keys), and that https://github.com/Parcha-ai/agentrun/blob/main/docs/telemetry.md says how to turn
+it off.

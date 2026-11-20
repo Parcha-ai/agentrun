@@ -4,7 +4,8 @@
 import type { Context } from "@earendil-works/chord/context";
 import { type Meters, meterFiguresFrom, spentFrom } from "../cap.js";
 import type { PurgeKept, Store } from "../store/store.js";
-import { bookedListSpend, bookedSpend, cliModelWorked, type CostBasis, costBasisOf, costIsBooked } from "../runner/metrics.js";
+import { bookedDecisionsOf, bookedListSpend, bookedSpend, cliModelWorked, type CostBasis, costBasisOf, costIsBooked } from "../runner/metrics.js";
+import { booksDecisions, decisionsOverStore, parallelChargedDecisions } from "./decisions.js";
 import { isCliRecord, runEntries, withPaidCosts } from "./journal.js";
 
 /** A CLI run whose model answered or called a tool with no model request booked (metrics.ts cliModelWorked): what it
@@ -60,15 +61,41 @@ function spentOf(entries: Awaited<ReturnType<typeof runEntries>>): number | null
   return spent === null || decisions.usd === null ? null : spent + decisions.usd;
 }
 
+/** A run's /usage meters, with each meter's known dollars. */
+type KnownMeters = Meters & { known: { tokens: number; browser: number; others: number } };
+
 /** /usage's meters for a run that ended, over the one store's journal (design 2.1): cap.ts meterFiguresFrom over A's
  *  entries, with the run's paid tool charges folded back from its paid-tools session (journal.ts withPaidCosts) as the
- *  file-backed run held each on its root. A run with no journal reads as a store that was never there: every figure 0, tokens unknown. */
-export async function metersOverStore(store: Store, runId: string, context: Context): Promise<Meters & { known: { tokens: number; browser: number; others: number } }> {
+ *  file-backed run held each on its root, and the decisions Parallel charged on its own API (parallelDecisionsOn) on its
+ *  tools meter beside them. A run with no journal reads as a store that was never there: every figure 0, tokens unknown. */
+export async function metersOverStore(store: Store, runId: string, context: Context): Promise<KnownMeters> {
   const raw = await runEntries(store, runId, context);
+  if (!raw.length) return metersOfEntries(store, runId, raw);
+  return parallelDecisionsOn(store, runId, raw, context, await metersOfEntries(store, runId, raw));
+}
+
+/** A run's decisions Parallel charged on its own API (store-reads/decisions.ts chargedByParallel) on its tools meter, as
+ *  GET /runs/{run_id}/usage puts them on Parallel's tools line: each a paid call, at its list price. They leave the rest
+ *  of the run's cost (its tokens meter, which /usage reads as its cost less its tools) as they join its tools, so no
+ *  total moves. As for a paid call, /usage says no "at most": one booked at its hold, or of no known cost, makes the
+ *  meter unknown, its exact charges known beside it. */
+async function parallelDecisionsOn(store: Store, runId: string, raw: Awaited<ReturnType<typeof runEntries>>, context: Context, meters: KnownMeters): Promise<KnownMeters> {
+  if (!booksDecisions(raw)) return meters;
+  const ids = parallelChargedDecisions(await decisionsOverStore(store, runId, context));
+  if (!ids.size) return meters;
+  const charged = bookedDecisionsOf(raw, ids);
+  if (!charged.requests) return meters;
+  const usd = charged.unpriced > 0 || charged.bounded > 0 ? null : charged.known;
+  const plus = (figure: number | null) => (figure === null || usd === null ? null : figure + usd);
+  return { ...meters, tools: plus(meters.tools), others: plus(meters.others), known: { ...meters.known, others: meters.known.others + charged.known } };
+}
+
+/** metersOverStore's figures over `raw`, the run's entries, before its Parallel decisions join its tools meter. */
+async function metersOfEntries(store: Store, runId: string, raw: Awaited<ReturnType<typeof runEntries>>): Promise<KnownMeters> {
   if (!raw.length) {
     // A purged run's journal is gone: its figures are the ones its purge read from it (Runs.purge, PurgeKept).
     const kept = await purgeKept(store, runId);
-    if (kept) return kept.meters as Meters & { known: { tokens: number; browser: number; others: number } };
+    if (kept) return kept.meters as KnownMeters;
     return { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0, known: { tokens: 0, browser: 0, others: 0 } };
   }
   const figures = meterFiguresFrom(withPaidCosts(raw).map((entry) => ({ conversation: Number(entry.conversationId ?? 0), entry })));

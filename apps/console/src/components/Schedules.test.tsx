@@ -206,7 +206,8 @@ describe("a new schedule", () => {
     const named = Object.fromEntries([...t.host.querySelectorAll("label")].filter((l) => l.control).map((l) => [l.textContent, (l.control as HTMLInputElement).name || l.control!.getAttribute("aria-label")]));
     // The agent's control is the picker's field (a button; its value goes in a hidden input named "agent").
     // So are the schedule's shape and its zone (ScheduleWhen's and ZonePicker's fields).
-    expect(named).toMatchObject({ Name: "name", Runs: "Runs", "Time zone": "Time zone", Agent: "Agent", "Each run is asked": "content" });
+    // A label's text carries the * its field's save needs (Field's required).
+    expect(named).toMatchObject({ Name: "name", Runs: "Runs", "Time zone": "Time zone", "Agent *": "Agent", "Each run is asked *": "content" });
   });
   it("says the schedule and its zone in plain words, with no cron or zone-database terms", async () => {
     const t = await open(server().v2, { trigger: null });
