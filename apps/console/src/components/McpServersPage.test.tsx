@@ -945,9 +945,9 @@ describe("Settings → MCP servers, the Composio preset", () => {
     expect(status()).toBe("1 of 2 shown, 0 ticked");
     await act(async () => { (p.host.querySelector('input[type="checkbox"][value="GITHUB_LIST_ISSUES"]') as HTMLInputElement).click(); });
     await typeFilter("a repository");
-    expect(shown()).toEqual(["GITHUB_STAR_REPO", "GITHUB_LIST_ISSUES"], "by description");
+    expect(shown(), "by description").toEqual(["GITHUB_STAR_REPO", "GITHUB_LIST_ISSUES"]);
     await typeFilter("star_repo");
-    expect(shown()).toEqual(["GITHUB_STAR_REPO"], "by slug");
+    expect(shown(), "by slug").toEqual(["GITHUB_STAR_REPO"]);
     expect(status()).toBe("1 of 2 shown, 1 ticked");
     await typeFilter("nothing-like-it");
     expect(shown()).toEqual([]);
