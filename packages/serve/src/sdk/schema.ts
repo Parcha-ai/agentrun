@@ -36,6 +36,7 @@ const event = {
       outcome: { enum: ["answered", "handed_back", "failed", "skipped_write"] },
       answer: { ...text, maxLength: 128000 }, reason: { ...text, maxLength: 8000 },
       skipped: object({ tool: { ...text, maxLength: 256 }, unmarked: { const: true } }, ["tool"]),
+      fresh_reads: { type: "integer", minimum: 1, maximum: 256 },
     }, ["type", "id", "digest", "outcome"]),
     object(
       {

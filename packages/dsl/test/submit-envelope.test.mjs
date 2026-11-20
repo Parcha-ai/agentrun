@@ -96,10 +96,29 @@ test('a property or definition NAMED criteria keeps its name and its own schema'
   assert.equal(Compile(submitParameters(schema)).Check({ value: { criteria: 'x', named: 3 } }), true);
 });
 
-test('only criteria is left out: annotations and other keywords the envelope does not know stay as written', () => {
-  const schema = { type: 'string', title: 'Label', description: 'The label.', examples: ['bug'], default: 'bug', 'x-note': 'kept', $comment: 'kept', criteria };
-  const { criteria: _dropped, ...rest } = schema;
+test('only criteria and x-carried are left out: annotations and other keywords the envelope does not know stay as written', () => {
+  const schema = { type: 'string', title: 'Label', description: 'The label.', examples: ['bug'], default: 'bug', 'x-note': 'kept', $comment: 'kept', criteria, 'x-carried': ['label'] };
+  const { criteria: _dropped, 'x-carried': _carried, ...rest } = schema;
   assert.deepEqual(submitParameters(schema).properties.value, rest);
+});
+
+// `x-carried` is AgentRun's output-schema annotation (the fields an agent's next run reads back): a learned workflow's
+// output node can copy an agent's output schema whole, and a provider that knows only its own schema fields (Google's
+// OpenAPI-subset `parameters`) refuses an unknown one. The host reads it; the model never needs it.
+test('x-carried is left out of the submit envelope wherever a schema sits, a property NAMED x-carried stays, and the input is not changed', () => {
+  const schema = {
+    type: 'object', 'x-carried': ['seen', 'x-carried'], required: ['seen'],
+    properties: { seen: { type: 'array', 'x-carried': ['inner'], items: { type: 'string' } }, 'x-carried': { type: 'string' } },
+    $defs: { Kept: { type: 'object', 'x-carried': [] } },
+  };
+  const before = structuredClone(schema);
+  const value = submitParameters(schema).properties.value;
+  assert.deepEqual(value, {
+    type: 'object', required: ['seen'],
+    properties: { seen: { type: 'array', items: { type: 'string' } }, 'x-carried': { type: 'string' } },
+    $defs: { Kept: { type: 'object' } },
+  });
+  assert.deepEqual(schema, before);
 });
 
 test('a submission valid against the original schema is valid in the envelope, and one that is not is refused by both', () => {

@@ -151,7 +151,7 @@ test('client-side redaction cannot turn different protected native and shadow an
   const tool = { name: 'mcp:backend/status', description: 'Return a status string.',
     input_schema: { type: 'object' }, output_schema: { type: 'string' }, permission: 'allow', price_usd: 0 };
   await landWorkflows(server.data, id, [{ name: 'status', description: 'Read a status string.', workflow: {
-    v: 2, name: 'status', schemas: { Input: { type: 'object' }, Answer: { type: 'string' } },
+    v: 2, name: 'status', schemas: { Input: { type: 'object', properties: { release: { type: 'string' } }, required: ['release'] }, Answer: { type: 'string' } },
     input: { schemaId: 'Input' }, output: { schemaId: 'Answer', path: 'answer' },
     root: { node: 'call', label: 'read', via: 'tool', tool: tool.name, args: {}, out: 'Answer', as: 'answer', deadline_s: 5 },
   } }]);
@@ -166,7 +166,7 @@ test('client-side redaction cannot turn different protected native and shadow an
       return fetch(url, options);
     },
   });
-  const session = await client.begin({ runtime: 'eve', input: '{}', instructions: 'Use original permissions.' });
+  const session = await client.begin({ runtime: 'eve', input: '{"release":"r1"}', instructions: 'Use original permissions.' });
   const checkpoint = session.checkpoint(), nativeAnswer = server.token, shadowAnswer = checkpoint.receipt.token;
   assert.notEqual(nativeAnswer, shadowAnswer, 'The actual native and shadow answers differ.');
   assert.ok(checkpoint.receipt.learning.check, 'The real server must reserve the draft.');
@@ -180,9 +180,10 @@ test('client-side redaction cannot turn different protected native and shadow an
   const body = (await server.api('GET', `/agents/${id}/learning/promotions`)).body;
   assert.equal(body.promotions.some(record => record.decided === 'promote'), false,
     'Distinct protected answers must not promote after both are redacted to the same placeholder.');
-  const held = body.promotions.findLast(record => record.decided === 'hold');
-  assert.ok(held, 'The unchecked comparison remains held.');
-  assert.equal(held.check.agreed, 0);
+  const waiting = body.promotions.at(-1);
+  assert.equal(waiting.decided, 'replaying', 'A redacted turn is no baseline: it is given back, and the draft waits for another.');
+  assert.equal(waiting.runs, undefined);
+  assert.equal(waiting.check.released, 1);
   const written = JSON.stringify(uploads);
   assert.ok(!written.includes(nativeAnswer) && !written.includes(shadowAnswer), 'Neither protected value leaves the client.');
 });

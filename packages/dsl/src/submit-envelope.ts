@@ -1,5 +1,8 @@
-// DSL vocabulary that may sit on a schema but is not JSON Schema: System One's question keyword. The model never sees it.
-const DSL_ONLY_SCHEMA_KEYWORDS = new Set(["criteria"]);
+// Keywords that may sit on a schema but are not JSON Schema, read by the host alone: the DSL's `criteria` (System One's
+// question keyword) and AgentRun's `x-carried` (the fields of an agent's answer its next run reads back, an annotation an
+// agent's output schema carries and a learned workflow's output node can copy; Google's OpenAPI-subset `parameters`
+// refuses a field it does not know). The model never sees them.
+const DSL_ONLY_SCHEMA_KEYWORDS = new Set(["criteria", "x-carried"]);
 
 /** The input schema of a node runner's `submit` tool: the node's output schema under `value`, as
  *  `{ value: <schema> }`. A node schema is not a valid tool input as it stands (a root `$ref` or `$defs`
@@ -7,7 +10,7 @@ const DSL_ONLY_SCHEMA_KEYWORDS = new Set(["criteria"]);
  *  against, so each local `$ref` (`#`, `#/...`) is relocated under `#/properties/value`. A subschema
  *  that sets its own `$id` is a separate resource: its local references do not move. Every runner that
  *  delivers a node's record through a tool call uses this one envelope, so a schema behaves the same on
- *  every harness. A keyword of the DSL's own (`criteria`) is left out of every schema in it, never a property or
+ *  every harness. A keyword the host alone reads (`criteria`, `x-carried`) is left out of every schema in it, never a property or
  *  definition of that name; the submission is still checked against the node's schema as written. */
 export function submitParameters(schema: unknown): Record<string, unknown> {
   const maps = new Set(["properties", "patternProperties", "$defs", "definitions", "dependentSchemas"]);

@@ -2263,6 +2263,7 @@ class ListLearningPromotionsResponsePromotionsItem(_ListLearningPromotionsRespon
     inputs: list[str]
     replay_id: str
     commit: str
+    via: Literal["sdk"]
     audit: ListLearningPromotionsResponsePromotionsItemAudit
 
 
@@ -2286,6 +2287,8 @@ class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsR
     skipped_tools: list[ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem]
     disagreements: list[ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem]
     stopped: Literal[True]
+    released: int
+    fresh_reads: int
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckOutcomes(TypedDict):
@@ -2403,6 +2406,8 @@ class ListLearningPromotionsResponseServingItemChampionCheck(_ListLearningPromot
     skipped_tools: list[ListLearningPromotionsResponseServingItemChampionCheckSkippedToolsItem]
     disagreements: list[ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem]
     stopped: Literal[True]
+    released: int
+    fresh_reads: int
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckOutcomes(TypedDict):
@@ -5844,6 +5849,7 @@ class SdkRunEventsBodyEventsItem3(_SdkRunEventsBodyEventsItem3Required, total=Fa
     answer: str
     reason: str
     skipped: SdkRunEventsBodyEventsItem3Skipped
+    fresh_reads: int
 
 
 class _SdkRunEventsBodyEventsItem3SkippedRequired(TypedDict):
