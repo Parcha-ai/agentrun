@@ -80,19 +80,28 @@ export type PublicAnswer = { url: string; status: number; contentType: string; b
  *  a zip, octet-stream, an image/svg+xml) is refused. */
 const TEXT_TYPE = /^(text\/|application\/(json|xml|[\w.!#$&^-]+\+(xml|json)\b))/i;
 
-/**
- * Fetches `url` from a public host, following at most 5 redirects, each hop resolved, checked and dialled at the
- * address checked. A 2xx answer of a text type is read whole, up to `maxBytes`; another status comes back without its
- * body. Refused (`BrowserFailureError` `refused`), on the first hop or a redirect: a scheme other than http(s); a host
- * that is local by name or resolves to any private address; a port other than 80 or 443; too many redirects; a 2xx body
- * that is not text or is over the cap. `signal` ends the fetch at any point, a hop's name lookup included (it rejects
- * with the signal's reason), and an aborted hop is never dialled.
- */
-export async function publicFetch(url: string, options: PublicFetchOptions = {}): Promise<PublicAnswer> {
-  const lookup = options.lookup ?? (async (host: string) => (await dns.lookup(host, { all: true })).map((a) => a.address));
-  const request = options.fetchImpl ?? ((target, init) => undiciFetch(target, init as never) as unknown as Promise<Response>);
+/** The answer that ended the redirects, as `publicDownload` gives it: its URL, status and type, and its bytes when it is a
+ *  2xx answer (an empty array for a 2xx with no body). */
+export type PublicFile = { url: string; status: number; contentType: string; bytes: Uint8Array | null };
+
+const MIB = 1024 * 1024;
+
+/** The options checked before any lookup: `maxBytes` (default 5 MiB) a whole number of bytes above 0. */
+function capOf(options: PublicFetchOptions): number {
   const maxBytes = options.maxBytes ?? PUBLIC_MAX_BYTES;
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) throw new RangeError(`maxBytes must be a whole number of bytes above 0, not ${maxBytes}`);
+  return maxBytes;
+}
+
+/**
+ * The hop loop both answers share: `url` fetched from a public host, following at most 5 redirects, each hop resolved,
+ * checked and dialled at the address checked, asking for `accept`. The answer that ends the redirects goes to `answer`,
+ * which reads what it needs of it; whatever it leaves unread is cancelled, and the hop's connection closed, once it
+ * returns or throws.
+ */
+async function publicHops<T>(url: string, options: PublicFetchOptions, accept: string, answer: (res: Response, target: URL) => Promise<T>): Promise<T> {
+  const lookup = options.lookup ?? (async (host: string) => (await dns.lookup(host, { all: true })).map((a) => a.address));
+  const request = options.fetchImpl ?? ((target, init) => undiciFetch(target, init as never) as unknown as Promise<Response>);
   let target = new URL(url);
   if (!/^https?:$/.test(target.protocol)) throw refusedError(`refused: ${target.protocol} is not http(s)`);
   for (let hop = 0; ; hop += 1) {
@@ -105,27 +114,14 @@ export async function publicFetch(url: string, options: PublicFetchOptions = {})
     const dispatcher = new Agent({ connect: { lookup: pinnedLookup(addresses[0]!) } });
     let res: Response | undefined;
     try {
-      res = await request(target, { redirect: "manual", signal: options.signal, dispatcher, headers: { accept: "text/html,text/plain;q=0.9,*/*;q=0.1", "user-agent": "pi-browser" } });
+      res = await request(target, { redirect: "manual", signal: options.signal, dispatcher, headers: { accept, "user-agent": "pi-browser" } });
       if (res.status >= 300 && res.status < 400 && res.headers.get("location")) {
         if (hop >= MAX_REDIRECTS) throw refusedError("refused: too many redirects");
         target = new URL(res.headers.get("location")!, target);
         if (!/^https?:$/.test(target.protocol)) throw refusedError("refused: a redirect left http(s)");
         continue;
       }
-      const contentType = res.headers.get("content-type") ?? "";
-      if (!res.ok) return { url: target.href, status: res.status, contentType, body: null };
-      // A 2xx with no body at all (204, 205) is an empty page, whatever type it names.
-      if (!res.body) return { url: target.href, status: res.status, contentType, body: "" };
-      if (!TEXT_TYPE.test(contentType)) throw refusedError(`refused: ${contentType || "an unknown content type"} is not text`);
-      const chunks: Uint8Array[] = [];
-      let size = 0;
-      for (const reader = res.body!.getReader(); ; ) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        if ((size += value.length) > maxBytes) { await reader.cancel(); throw refusedError(`refused: the page is over ${maxBytes === PUBLIC_MAX_BYTES ? "5 MiB" : `${maxBytes} bytes`}`); }
-        chunks.push(value);
-      }
-      return { url: target.href, status: res.status, contentType, body: Buffer.concat(chunks).toString("utf8") };
+      return await answer(res, target);
     } finally {
       // A reply refused unread (not text, an error status, a redirect) still holds its connection: close() waits
       // for it.
@@ -133,4 +129,60 @@ export async function publicFetch(url: string, options: PublicFetchOptions = {})
       await dispatcher.close().catch(() => undefined);
     }
   }
+}
+
+/** `body` read whole, refused (`over`'s words) once it passes `maxBytes`: cut off while it is read, not after. With
+ *  `signal`, each read also ends at the signal's abort, with its reason, whatever the fetch does with the signal. */
+async function readCapped(body: ReadableStream<Uint8Array>, maxBytes: number, over: string, signal?: AbortSignal): Promise<Buffer> {
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (const reader = body.getReader(); ; ) {
+    const { done, value } = signal ? await untilAborted(() => reader.read(), signal).catch(async (error: unknown) => { await reader.cancel(error).catch(() => undefined); throw error; }) : await reader.read();
+    if (done) break;
+    if ((size += value.length) > maxBytes) { await reader.cancel(); throw refusedError(over); }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks);
+}
+
+/**
+ * Fetches `url` from a public host, following at most 5 redirects, each hop resolved, checked and dialled at the
+ * address checked. A 2xx answer of a text type is read whole, up to `maxBytes`; another status comes back without its
+ * body. Refused (`BrowserFailureError` `refused`), on the first hop or a redirect: a scheme other than http(s); a host
+ * that is local by name or resolves to any private address; a port other than 80 or 443; too many redirects; a 2xx body
+ * that is not text or is over the cap. `signal` ends the fetch at any point, a hop's name lookup included (it rejects
+ * with the signal's reason), and an aborted hop is never dialled.
+ */
+export async function publicFetch(url: string, options: PublicFetchOptions = {}): Promise<PublicAnswer> {
+  const maxBytes = capOf(options);
+  return publicHops(url, options, "text/html,text/plain;q=0.9,*/*;q=0.1", async (res, target) => {
+    const contentType = res.headers.get("content-type") ?? "";
+    if (!res.ok) return { url: target.href, status: res.status, contentType, body: null };
+    // A 2xx with no body at all (204, 205) is an empty page, whatever type it names.
+    if (!res.body) return { url: target.href, status: res.status, contentType, body: "" };
+    if (!TEXT_TYPE.test(contentType)) throw refusedError(`refused: ${contentType || "an unknown content type"} is not text`);
+    const body = await readCapped(res.body, maxBytes, `refused: the page is over ${maxBytes === PUBLIC_MAX_BYTES ? "5 MiB" : `${maxBytes} bytes`}`);
+    return { url: target.href, status: res.status, contentType, body: body.toString("utf8") };
+  });
+}
+
+/**
+ * Downloads `url` from a public host: publicFetch's hops and refusals (scheme, local or private host, port, redirects,
+ * the signal), with any content type accepted and the body kept as bytes, up to `maxBytes` (default 5 MiB). A 2xx answer
+ * is read whole; another status comes back with `bytes` null. A body over the cap is refused (`refused: the file is over
+ * <cap>`): before a byte is read when its content-length says so, else as soon as it passes it. `signal` ends the body's
+ * read too, with its reason.
+ */
+export async function publicDownload(url: string, options: PublicFetchOptions = {}): Promise<PublicFile> {
+  const maxBytes = capOf(options);
+  const over = `refused: the file is over ${maxBytes % MIB === 0 ? `${maxBytes / MIB} MiB` : `${maxBytes} bytes`}`;
+  return publicHops(url, options, "*/*", async (res, target) => {
+    const contentType = res.headers.get("content-type") ?? "";
+    if (!res.ok) return { url: target.href, status: res.status, contentType, bytes: null };
+    if (!res.body) return { url: target.href, status: res.status, contentType, bytes: new Uint8Array(0) };
+    const declared = Number(res.headers.get("content-length") ?? Number.NaN);
+    if (Number.isFinite(declared) && declared > maxBytes) throw refusedError(over);
+    const body = await readCapped(res.body, maxBytes, over, options.signal);
+    return { url: target.href, status: res.status, contentType, bytes: new Uint8Array(body.buffer, body.byteOffset, body.byteLength) };
+  });
 }
