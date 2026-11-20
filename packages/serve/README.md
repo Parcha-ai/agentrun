@@ -3716,11 +3716,20 @@ workflow passes. The server compares the answer with the immutable native comple
 `agree_min` and `alone_min` promotion policy. This initial SDK check uses **one independent native turn** (`n: 1`),
 not the server-run agent's historical replay set. Agreement is whole-answer equality (JSON values or trimmed text), or equality of the owner's
 configured `agree_on` fields; there is no semantic model grader on this path. A paraphrase can therefore be held even
-when a person would consider it equivalent. Incomplete, redacted, failed, cancelled or workflow-assisted native evidence
-cannot promote a draft. A skipped write records no agreement.
+when a person would consider it equivalent.
+
+A start reserves a check only on a turn that can be its baseline: a JSON object task must pass the draft's input
+schema (a prose task's input is resolved by the bridge), and a start whose task or instructions held a protected value
+reserves nothing. A reserved turn that still cannot be the baseline (cancelled or failed, incomplete, redacted or
+workflow-assisted evidence, no `workflow_check` report, or a shadow that `failed` or `skipped_write`) gives the
+reservation back: the record stays `replaying` with no `runs`, counts it in `check.released`, and the next turn the
+draft takes is checked. The fifth given-back turn stops the check with nothing checked (no recompile). A turn the
+backend never completes within an hour is decided as one failed input through the same check, so its hold asks the
+one recompile and a recompile's check that ends the same way stops. Connected checks' records say `via: "sdk"`;
+`check.fresh_reads` counts the shadow's `shadowReadFallback` reads.
 
 Concurrent starts reserve at most one check per workflow; retries keep the same reservation, and a late report cannot
-replace a recorded decision. An abandoned reservation is held when a later start sees it past the one-hour deadline.
+replace a recorded decision.
 An older checked champion can still serve while a newer revision is checking or held, except on the independent
 check turn itself. Learning Off returns neither workflows nor a check. Without a workflow bridge the application gets
 no workflow to execute. The application's tools, model callbacks and credentials stay in its process; the server receives
