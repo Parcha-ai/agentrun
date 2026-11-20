@@ -3787,7 +3787,8 @@ with the token, an archived agent's too:
   `GET .../learning/promotions` its promotion records; `GET .../learning/loop` each compile turn; and
   `GET .../learning/cost` the agent's cost per run, run after run.
 - `DELETE /agents/{agent_id}/learning` resets the agent's learning: its learning folder whole (`corrections.md`, its
-  workflows, their history and the audit ledger), then its promotion records and grades. The agent and its runs stay,
+  workflows, their history and the audit ledger), here and on every Archil disk its runs used (`503` while one can't be
+  reached), then its promotion records and grades. The agent and its runs stay,
   with their files, costs and each run's own learning, so the run list, `GET /stats` and `GET /usage` read the same (a
   served run keeps its share of its revision's compile and check); a run's learning diff goes with the folder (404);
   the next run takes the agent path, given nothing learned. It cancels the runs that exist only for learning (replays,

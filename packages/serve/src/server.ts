@@ -192,7 +192,7 @@ import { noAccount, openAccount } from "./email/account.js";
 import { emailRoute } from "./email/routes.js";
 import { addressForms, openCalendar } from "./calendar/address.js";
 import { calendarRoute } from "./calendar/routes.js";
-import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, runDiskKey } from "./archil-settings.js";
+import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, runDiskKept, runDiskKey } from "./archil-settings.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, settingsComputerRoute } from "./computers.js";
 import { type FauxComputers, fauxComputers } from "./faux-computers.js";
@@ -2420,10 +2420,37 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     }
   };
   /** What DELETE /agents/{id} does outside the store's rows, on this server (agent-delete.ts AgentDeleteHost). */
-  /** Step 2 of DELETE /agents/{id}: the learning module's delete over the agent's learning folder on this server's disk,
-   *  as the learning routes open it (learningFolderOf), which deleteLearning ends in its finally. A learning folder on
-   *  the agent's Archil disk goes with that disk in step 3. */
-  const learningDelete: DeleteLearning = options.deleteLearning ?? ((given, agentId, kept) => deleteLearning(given, agentId, learningFolderOf(data, agentId), kept));
+  /** Every Archil disk agent `agentId`'s learning folder may be on: a Mode 2 run's end writes it on the disk its claim
+   *  mounted (workspace/learning-workspace.ts, at learningKey), so the disk stored on the agent and each disk one of its
+   *  runs used (the one its launch named, the agent's disk kept for it). */
+  const learningDisksOf = async (agentId: string): Promise<string[]> => {
+    const disks = new Set<string>();
+    const stored = await agentDiskOf(store, agentId);
+    if (stored) disks.add(stored.diskId);
+    for (const run of await store.runs.every(agentId)) {
+      const named = await store.runs.launch(run.id).then((row) => readLaunchBody(row.body)?.archilDisk?.diskId, (error: unknown) => (error instanceof StoreLaunchMissing ? undefined : Promise.reject(error)));
+      const kept = await runDiskKept(store, run.id);
+      for (const diskId of [named, kept]) if (diskId !== undefined) disks.add(diskId);
+    }
+    return [...disks];
+  };
+  /** Step 2 of DELETE /agents/{id}, and DELETE /agents/{id}/learning: the learning module's delete over the agent's
+   *  learning folder on this server's disk, as the learning routes open it (learningFolderOf), which deleteLearning ends
+   *  in its finally, and over its folder on each Archil disk its runs used (archil-routes.ts removeLearningFolder; Archil
+   *  off or refusing is 503 unavailable, nothing here deleted, for the next call). */
+  const learningDelete: DeleteLearning = options.deleteLearning ?? ((given, agentId, kept) => deleteLearning(given, agentId, learningFolderOf(data, agentId), {
+    ...kept,
+    elsewhere: async () => {
+      for (const diskId of await learningDisksOf(agentId)) {
+        try {
+          await archil.removeLearningFolder(agentId, diskId);
+        } catch (error) {
+          if (!(error instanceof ApiError && ["unavailable", "upstream_failed"].includes(error.code))) throw error;
+          throw new ApiError("unavailable", `${error.message.replace(/[.\s]*$/, "")}. The agent's learning folder on this server and its learning records are kept: send the DELETE again once it can be reached.`, { retry_after_ms: 5_000 });
+        }
+      }
+    },
+  }));
   const agentDeleteHost: AgentDeleteHost = {
     store,
     deleteLearning: learningDelete,

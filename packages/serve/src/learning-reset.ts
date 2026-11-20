@@ -1,6 +1,6 @@
 // DELETE /v2/agents/{agent_id}/learning: an agent's learning reset, the agent kept. What it learned goes (the learning
-// module's deleteLearning: its learning folder's files, its git history and audit ledger among them, then its promotions
-// and grades); the agent, its definition, its runs and everything kept of them (their files, journals, costs, the
+// module's deleteLearning: its learning folder's files, its git history and audit ledger among them, on this server and
+// on every Archil disk its runs used, then its promotions and grades); the agent, its definition, its runs and everything kept of them (their files, journals, costs, the
 // learning each one kept) stay, so the run list, the stats and the usage read the same before and after. A served run's
 // cost carries its share of its revision's compile and check, read from the promotion records the reset deletes: each
 // revision they name is kept first in the agent's reset ledger (learn/promote.ts keepResetLedger: workflow, digest and
