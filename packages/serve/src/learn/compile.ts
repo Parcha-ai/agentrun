@@ -14,7 +14,6 @@ import type { AuthorHostAddendum } from "@parcha/agentrun-dsl";
 import { createHash } from "node:crypto";
 import { LEARNED_MAX_TURNS, WORKFLOW_NAME } from "./workflow-draft.js";
 import { type AuditDisagreement, type AuditHold, championOf, type CheckDisagreement, type CheckRecord, checkShares, type PromotionRecord, promotionOf, resetAtOf } from "./promote.js";
-import { learningStartOfStored } from "../run-launch.js";
 import { listed } from "../learning-words.js";
 import { excerptShown, redactSecrets } from "./secrets.js";
 import { isShadowRun } from "./audit.js";
@@ -201,17 +200,14 @@ export async function lastRunsOf(store: Pick<Store, "runs">, agentId: string, n:
 
 /** Which of agent `agentId`'s runs its learning may read, by its reset watermark (learn/promote.ts resetAtOf): every run
  *  when its learning was never reset; else only a run that started after it and did not read its learning seed at or
- *  before it (its launch's `seededAt`: a run whose start read the seed before the reset, its row made after it). One
- *  read of the agent's runs' learning starts (Store.runs.learningStarts) when it was reset, none when not. Every
- *  learning read of "the agent's runs" takes it: compile_after's count and a check's inputs (lastOwnRuns), a compile's
- *  traces, an audit's draws, the money rule's past runs. */
+ *  before it (its launch's `seededAt`: a run whose start read the seed before the reset, its row made after it). When
+ *  it was reset, one read of that one number of the runs started after it (Store.runs.seededBefore); none when not.
+ *  Every learning read of "the agent's runs" takes it: compile_after's count and a check's inputs (lastOwnRuns), a
+ *  compile's traces, an audit's draws, the money rule's past runs. */
 export async function sinceReset(store: Pick<Store, "runs" | "settings">, agentId: string): Promise<(row: Pick<RunRow, "id" | "startedAt">) => boolean> {
   const at = await resetAtOf(store.settings, agentId);
   if (at === undefined) return () => true;
-  const before = new Set((await store.runs.learningStarts(agentId)).flatMap(({ runId, learning }) => {
-    const seededAt = learningStartOfStored(learning)?.seededAt;
-    return seededAt !== undefined && seededAt <= at ? [runId] : [];
-  }));
+  const before = new Set(await store.runs.seededBefore(agentId, at));
   return (row) => row.startedAt > at && !before.has(row.id);
 }
 

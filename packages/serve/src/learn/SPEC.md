@@ -354,6 +354,8 @@ runs after it (`compile.ts` sinceReset): a run that started at or before it, or 
 (its launch's `seededAt`, read in the same queue as the reset), counts toward no compile_after and is no compile's
 trace, no check's or owner's replay input, no audit's draw and no past run of the money rule, and the loop view lists
 none of its compiles. A run seeded before the reset whose row was made after it learns nothing: its learning end drops it at its entry
-(reason `reset`), before any look-back, merge, compile or record, as it does a run whose seed's commit the folder no
-longer holds. The learning script is a second wall: a run's merge names its seed (`seed <commit>`), which it refuses
-when the folder lacks it, a correction alone included. The runs themselves, their costs and what each kept stay.
+(reason `reset`), before any look-back, merge, compile or record. That check reads time alone: a Mode 2 run's end
+writes the folder on its disk, which never held the seed the server read from its own, so a commit missing there says
+nothing of a reset. The learning script is a second wall: once the agent was reset, a run whose folder holds its seed
+at its end's entry names it on its merge (`seed <commit>`), which the script refuses when the folder no longer holds
+it, a correction alone included. The runs themselves, their costs and what each kept stay.

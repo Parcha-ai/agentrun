@@ -301,8 +301,9 @@ export type FolderChange = {
   deletes?: readonly string[];
   absent?: readonly string[];
   same?: readonly { commit: string; path: string }[];
-  /** A run's merge: the commit the run was seeded from, which the folder must hold, whatever the merge writes (a
-   *  correction alone included): one a reset of the agent's learning removed refuses the merge. */
+  /** A run's merge: the commit the run was seeded from, which the folder must still hold, whatever the merge writes (a
+   *  correction alone included), named only when this folder held it as the run's end began (commit.ts mustHold): one a
+   *  reset of the agent's learning removed refuses the merge. */
   seed?: string;
 };
 

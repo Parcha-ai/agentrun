@@ -804,6 +804,10 @@ export interface Runs {
    *  run, its learning view) needs of its runs at once, never a read a run. Only that member is read: no run's input, no
    *  sealed bytes. A run with no launch row has no entry. */
   learningStarts(agentId: string): Promise<{ runId: string; learning: unknown }[]>;
+  /** The ids of agent `agentId`'s runs started after `at` whose learning seed was read at or before it (the launch body's
+   *  `learning.seededAt`): a reset's watermark (learn/compile.ts sinceReset). Reads that one number of the runs started
+   *  after `at` alone. */
+  seededBefore(agentId: string, at: number): Promise<string[]>;
   /** Newest first, at most `limit` (no limit: all). `archived` filters on the run's own archive time (true: archived,
    *  false: not); its agent's archive is read apart. A built-in learning run (one a kept learning names) is never listed. `labels`: only runs holding every one of these labels, key and value. */
   list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; limit?: number }): Promise<RunRow[]>;

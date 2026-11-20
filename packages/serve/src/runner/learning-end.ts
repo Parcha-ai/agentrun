@@ -17,9 +17,9 @@
 //     keeps sealed (store-secrets.ts storeSecrets), the runner's secrets, the keys its claim handed it, and the sign-in
 //     pointers its row says it was handed, read back from the store (handed-values.ts handedValuesOf). A run whose
 //     pointers can't be read back learns nothing (the hook drops it, saying why), never over a shorter list.
-// A run whose seed could not be read keeps that drop. A run whose seed predates a reset of its agent's learning
-// (predatesReset) learns nothing at all, dropped at its entry with reason `reset`. Every read of the agent's runs here
-// reads only those after the reset (learn/compile.ts sinceReset).
+// A run whose seed could not be read keeps that drop. A run whose seed was read at or before a reset of its agent's
+// learning learns nothing at all, dropped at its entry with reason `reset`. Every read of the agent's runs here reads
+// only those after the reset (learn/compile.ts sinceReset).
 import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type EntryLike, isMessageRow, type TimelineEvent } from "../timeline/index.js";
@@ -94,7 +94,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
   // holds, and a run's process is given none but its own keys.
   if (held()) return heldEndOfRun();
   const env = deps.env ?? process.env;
-  const hookFor = (seed: string, round: number) => createReflectHook({
+  const hookFor = (seed: string, round: number, mustHold: string | undefined) => createReflectHook({
     round,
     // A run its cap stopped has no room left, and one whose spend is unknown under a cap cannot be kept within it. The cap
     // is the run's now (capNowOf: its newest raise's, else its launch's), the one its requests were admitted under. Its
@@ -153,7 +153,7 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
     commit: async ({ runId, agentId, round: at, draft, correction, refuse }) => {
       const reason = draft ? `Compiled the job as workflow ${draft.name}${correction !== undefined ? ", with its owner's correction" : ""}.` : "Its owner's correction.";
       const done = await commitDirect({ folder: () => deps.learningFolder(agentId), log: deps.log ?? (() => undefined) }, {
-        runId, round: at, reason, seed, files: draft ? draft.files.map((file) => ({ ...file })) : [],
+        runId, round: at, reason, seed, ...(mustHold ? { mustHold } : {}), files: draft ? draft.files.map((file) => ({ ...file })) : [],
         ...(draft?.held?.length ? { held: [...draft.held] } : {}), ...(draft?.bases ? { bases: draft.bases } : {}),
         ...(correction !== undefined ? { correction, refuseValues: refuse } : {}),
       });
@@ -171,15 +171,21 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
       return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "seed_failed", detail: said.stopped(why) } } }] };
     }
     // The one check at the entry of a run's learning end, before any merge, look-back, compile, draft check or record: a
-    // run whose seed predates a reset of its agent's learning (read at or before the reset's watermark, or a commit the
-    // folder no longer holds) learns nothing, whole. Its corrections and compile would land on what the reset left.
-    if (await predatesReset(deps, input.agentId, start.seed!, start.seededAt)) {
+    // run whose seed was read at or before a reset of its agent's learning (its watermark, learn/promote.ts resetAtOf; a
+    // start that records no time is read as before it) learns nothing, whole. Its corrections and compile would land on
+    // what the reset left. Read by time alone: a Mode 2 run's end writes the folder on its disk, which never held the
+    // seed the server read from its own folder, so a commit missing here says nothing of a reset.
+    const reset = await resetAtOf(deps.store.settings, input.agentId);
+    if (reset !== undefined && !(start.seededAt !== undefined && start.seededAt > reset)) {
       return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "reset", detail: said.reset } } }] };
     }
+    // The second wall, once the agent's learning was reset: a seed this folder holds now is one its merge must still
+    // find (commit.ts mustHold), so a reset after this check refuses the merge whole in the script.
+    const mustHold = reset !== undefined && (await withFolder(deps, input.agentId, (folder) => holdsCommit(folder.workspace, start.seed!))) ? start.seed! : undefined;
     // Which end of the run this is: the round after the newest it kept (a follow-up opened the run again after it), else
     // its first. A replayed end reads the same round: its rows are written only with the end that closes it.
     const prior = await deps.store.learning.proposal(input.runId);
-    return hookFor(start.seed!, prior ? prior.round + 1 : 1)(input);
+    return hookFor(start.seed!, prior ? prior.round + 1 : 1, mustHold)(input);
   };
 }
 
@@ -232,16 +238,6 @@ export async function capSpendOf(store: Pick<Store, "runs">, runId: string, entr
 }
 
 /** `read` over agent `agentId`'s learning folder, opened for it and always ended after. */
-/** Whether a run of agent `agentId` seeded from `seed` at `seededAt` predates a reset of the agent's learning: never when
- *  it was not reset (learn/promote.ts resetAtOf); else when its seed was read at or before the watermark (a start that
- *  records no time is read as before it), or the agent's learning folder no longer holds the seed's commit. */
-async function predatesReset(deps: Pick<LearningEndDeps, "store" | "learningFolder">, agentId: string, seed: string, seededAt: number | undefined): Promise<boolean> {
-  const at = await resetAtOf(deps.store.settings, agentId);
-  if (at === undefined) return false;
-  if (seededAt === undefined || seededAt <= at) return true;
-  return !(await withFolder(deps, agentId, (folder) => holdsCommit(folder.workspace, seed)));
-}
-
 async function withFolder<T>(deps: Pick<LearningEndDeps, "learningFolder">, agentId: string, read: (folder: LearningFolder) => Promise<T>): Promise<T> {
   const folder = deps.learningFolder(agentId);
   try {
