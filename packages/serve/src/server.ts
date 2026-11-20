@@ -2537,7 +2537,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The replay runs of its input, its audit's shadow run and a learning run it names (the store's), and its audit's shadow
     // run by its id (one whose launch is gone too).
     madeFrom: async (runId) => [...new Set([...(await store.runs.madeFrom(runId)), shadowRunId(runId)])],
-    forgetCopies: (agentId, runId) => forgetRunCopies(store.settings, learningIdOf(defaultLearningOf(agentId)), runId),
+    forgetCopies: (learning, runId) => forgetRunCopies(store.settings, learningIdOf(learning), runId),
     // /usage's meters and a live read's spend, from its journal, as they read now (store-reads/cap.ts), and how its
     // learning ended as /stats counts it (its state and reason alone).
     kept: async (runId) => {

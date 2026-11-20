@@ -12,7 +12,7 @@ import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
-import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNNERS, RUNS_COST_UPPER_BOUND, RUNS_DISK, RUNS_DISK_FROM_LAUNCH, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, DDL, diskUpgrade, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNNERS, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
   AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, RunPurged, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -358,8 +358,9 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     // in one durable write once the columns an earlier build of 11 lacked are in, every run behind until its lister builds
     // it. Version 12 names no minting runner on a machine's token and keeps no runner's relay: the server adds them
     // (schema.ts relayUpgrade). Version 13 keeps no purge time on a run or an agent: the server adds them (schema.ts
-    // purgeUpgrade). A runner refuses 11, 12 and 13 until that server has.
-    const upgrading = found === 11 || found === 12 || found === 13;
+    // purgeUpgrade). Version 14 keeps no disk on a run: the server adds it and writes each run's from its launch (schema.ts
+    // diskUpgrade). A runner refuses 11 to 14 until that server has.
+    const upgrading = found === 11 || found === 12 || found === 13 || found === 14;
     if (upgrading && role === "runner") throw new StoreAwaitsServer(`bring this store from version ${found} to ${SCHEMA_VERSION}`);
     if (found !== SCHEMA_VERSION && !upgrading) throw new SchemaVersionUnknown(file, found, SCHEMA_VERSION);
     const columns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('revisions')")).map((column) => column.name));
@@ -375,13 +376,6 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     if (!runColumns.has("cost_upper_bound")) {
       if (role === "runner") throw new StoreAwaitsServer("add the bound beside each run's cost");
       await connection.write([{ sql: RUNS_COST_UPPER_BOUND }], { full: true });
-    }
-    // An earlier build of this version kept no disk on a run (schema.ts RUNS_DISK): the server adds the column and writes each
-    // run's from its launch in the same write, a run whose launch named none reading as the default disk's. A runner reads
-    // each run through it (learning reads an agent's runs on one disk alone), so it waits for that server.
-    if (!runColumns.has("disk")) {
-      if (role === "runner") throw new StoreAwaitsServer("add each run's disk");
-      await connection.write([{ sql: RUNS_DISK }, { sql: RUNS_DISK_FROM_LAUNCH }], { full: true });
     }
     // An earlier build of this version kept no labels on a run (schema.ts RUNS_LABELS): the server adds the column, nullable,
     // every run it started reading as given none. A runner reads each run through it, so it waits for that server.
@@ -442,7 +436,8 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
       }
       if (upgrading) {
         const named = async (table: string) => new Set((await connection.all<{ name: string }>(`SELECT name FROM pragma_table_info('${table}')`)).map((column) => column.name));
-        await connection.write(purgeUpgrade(await named("runs"), await named("agents")).map((sql) => ({ sql })), { full: true });
+        if (found !== 14) await connection.write(purgeUpgrade(await named("runs"), await named("agents")).map((sql) => ({ sql })), { full: true });
+        await connection.write(diskUpgrade(await named("runs")).map((sql) => ({ sql })), { full: true });
       }
     }
   } catch (error) {

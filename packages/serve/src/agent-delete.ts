@@ -51,6 +51,7 @@
 // same 503, and the next DELETE removes that trigger as it removes the others.
 import { ApiError } from "./errors.js";
 import { LearningInFlight } from "./learn/delete.js";
+import type { LearningOf } from "./learn/learning-of.js";
 import { FINAL_STATES, type PurgeKept, type RunState, RunsMadeFromLeft, type Store, StoreConstraint, TriggersLeft } from "./store/index.js";
 
 /** The delete of an agent's learning: the server's is the learning module's deleteLearning over the agent's learning
@@ -97,10 +98,10 @@ export interface AgentDeleteHost {
   forgetAgent(agentId: string): Promise<void>;
   /** The runs made from run `runId` (store runs.madeFrom, and its audit's shadow run), by id, whether there or not. */
   madeFrom(runId: string): Promise<string[]>;
-  /** What agent `agentId`'s learning copied from run `runId`, gone: the grades it keeps of the run dropped, its promotion
-   *  records' disagreements naming the run blanked, their decisions, numbers and run ids kept (learn/promote.ts
-   *  forgetRunCopies). */
-  forgetCopies(agentId: string, runId: string): Promise<void>;
+  /** What `learning` (the run's agent on the run's disk, learn/learning-of.ts) copied from run `runId`, gone: the grades it
+   *  keeps of the run dropped, its promotion records' disagreements naming the run blanked, their decisions, numbers and
+   *  run ids kept (learn/promote.ts forgetRunCopies). */
+  forgetCopies(learning: LearningOf, runId: string): Promise<void>;
   /** What run `runId`'s spend reads from its journal, read before its purge removes it (store-reads/cap.ts). */
   kept(runId: string): Promise<PurgeKept>;
   /** Whether run `runId`'s turn is over (it reads idle, a paused workflow aside): its runner writes it final next. */
@@ -195,7 +196,7 @@ export async function purgeRun(host: AgentDeleteHost, runId: string): Promise<vo
   if (live.length) throw notFinal(runId, live);
   for (const one of made) await purgeOneOrRefuse(host, one.agentId, one.id, runId, true);
   await host.at?.("run_made_from_gone", runId);
-  await host.forgetCopies(run.agentId, runId);
+  await host.forgetCopies({ agentId: run.agentId, disk: run.disk }, runId);
   await purgeOneOrRefuse(host, run.agentId, runId, runId, true);
 }
 

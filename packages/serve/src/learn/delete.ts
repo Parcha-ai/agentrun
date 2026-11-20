@@ -25,7 +25,8 @@ export class LearningInFlight extends Error {
  *  removed; `records`: the store's records. `folder` is ended here. */
 export async function deleteLearning(store: Store, agentId: string, folder: LearningFolder): Promise<{ files: number; records: number }> {
   try {
-    const runs = (await store.runs.list({ agentId })).filter((run) => run.agentId === agentId);
+    // Its purged runs too: a run's tombstone keeps the disk it was on.
+    const runs = (await store.runs.list({ agentId, purged: true })).filter((run) => run.agentId === agentId);
     const open = runs.filter((run) => !FINAL_STATES.includes(run.state)).map((run) => run.id);
     if (open.length) throw new LearningInFlight(agentId, open);
     const entries = await folder.workspace.list("").catch((error: unknown) => (isWorkspaceError(error, "NOT_FOUND") ? [] : Promise.reject(error)));
