@@ -323,8 +323,8 @@ Over a cap is refused, never cut.
   (`runner/learning-end.ts` `checkDraftOf`; the mechanism is `repick.ts`'s). Its second pass runs a clone of that
   step, `<label>_pages`, that also reads the check's pages, told they are untrusted data. Any other re-pick, or one
   whose marker names are taken, is committed as compiled and the runner's log says so. Which shape passes: the compact
-  state rule reads only the exact marker `repick.ts` derives, at that loop, at a cap the setting allows; with the
-  setting off, a marker is refused as any page read. What is cut: the clone's request state past `repick_max_chars`
+  state rule reads only the exact marker `repick.ts` derives, at that loop, at a cap the setting allows, never in a
+  child whose node's `input` hands it `repick_next`; with the setting off, a marker is refused as any page read. What is cut: the clone's request state past `repick_max_chars`
   (150000 by default, 1 to 400000), its longest strings first, each marked where it was cut; a state that cannot fit
   is never sent and the run hands back; the workflow's own state stays whole for the quote check. Its request is the
   served run's, under the run's one cost cap. A change reaches only the workflows compiled after it, and an agent on
