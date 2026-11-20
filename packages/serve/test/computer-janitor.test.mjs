@@ -16,6 +16,7 @@ import { openSqliteStore } from "../dist/store/index.js";
 import { startJanitor, sweepServerComputers } from "../dist/workspace/computer-janitor.js";
 import { fauxLoops, until } from "./runner-support.mjs";
 import { withEnv } from "./support.mjs";
+import { memoryIntervals } from "./memory-intervals.mjs";
 
 const NOW = 1_800_000_000_000;
 const PAST = new Date(NOW - 60_000);
@@ -257,4 +258,21 @@ test("the runner's own composition sweeps Docker past a labelled container made 
   await until(async () => said.some((line) => line.includes("docker")), "the start's sweep of docker");
   assert.deepEqual(said.filter((line) => line.includes("docker")), ["the computer janitor ended docker's computers past their deadline: computer-0000000000aa"]);
   assert.deepEqual(fake.names(), ["computer-0000000000dd"]);
+});
+
+test("a computer the sweep deleted ends its run's interval at the sweep's time; one whose delete failed stays open (computer-intervals.ts)", async () => {
+  const docker = provider("docker", [
+    { name: "mine-late", labels: labels("run-mine", 1), deadline: PAST },
+    { name: "parked-run-out", labels: labels("run-parked", 2), deadline: PAST },
+  ]);
+  // The vendor refuses the second delete: nothing proves it ended.
+  const release = docker.made.release;
+  docker.made.release = async (ref, how) => (ref.name === "parked-run-out" ? { ok: false, error: { code: "unavailable", message: "the vendor did not answer" } } : release(ref, how));
+  const intervals = memoryIntervals();
+  const opened = (providerId, runId) => intervals.opened({ runId, provider: "docker", providerId, kind: "sandbox", gpuType: null, gpuCount: null, cpus: null, memoryMb: null, startedAt: NOW - 3_600_000 });
+  await opened("mine-late", "run-mine");
+  await opened("parked-run-out", "run-parked");
+  await sweepServerComputers({ store: { ...store(), computerIntervals: intervals }, computers: computers([docker], { DOCKER_KEY: "k" }), now: () => NOW });
+  assert.deepEqual((await intervals.forRun("run-mine")).map((row) => [row.providerId, row.endedAt]), [["mine-late", NOW]]);
+  assert.deepEqual((await intervals.forRun("run-parked")).map((row) => [row.providerId, row.endedAt]), [["parked-run-out", null]]);
 });

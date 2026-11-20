@@ -2905,7 +2905,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /agents/{id}/home/files`, and `GET`, `PUT`, `DELETE` on a file's path below it | The files in the agent's home, listed, read, written and deleted ([agent home](#agent-home)). This server's own routes (`x-agentrun-serve: "home/1"`). |
 | `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `needs_review`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates alone, no run's files opened. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`, but for an escalated one (completed, waiting for a person's review), which `needs_review` (`stats/3`) counts; `failed` never does. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` (`reported`, `estimate` or `unpriced`: [A run's cost](#a-runs-cost-its-tokens-and-its-basis)), or null beside a null `usd`; `unknown_runs` counts the rest. `analytics` (`stats/2`) sums the runs' metrics over the runs not archived that the `from` and `to` query parameters (RFC 3339 date-times to the millisecond, an impossible one or a finer fraction refused; runs started in [`from`, `to`)) and `agent` pick, each optional, 400 when malformed: `filter` echoes them; `totals` (runs, completed, an escalated run included, `needs_review` (`stats/3`), failed, never an escalated run, `runs_with_metrics`, tokens and each token kind, requests, unmetered, `cost_usd` and `unknown_cost_runs`), `time` (`wall_ms` over the ended runs, `active_ms` where metrics have it), `by_harness_effort`, `by_day` (UTC), `by_source` (`live` or the import source) and the top 20 `tools`. A run with no metrics counts in `runs` and in no token sum. `learning` (`learning/1`) counts the runs that tried to learn over the same filters, from the store ([Learning](#learning)). The query bounds `analytics` and `learning` alone. |
 | `GET /runs/{id}/graph` | A workflow run drawn, live: its workflow, the DSL's `workflowGraph`, each node's state (a map's items with their labels and the branch each route took for them, a route's branch), every decision with its receipt (answers, evidence, the state the judge saw, image links), every call with its input and output, and the totals (cost, null when any part is unknown). While the run goes it reads the run process's `live.json`, rewritten every 300 ms, never the run's store, which the process holds; once it ended, its store is read lock-free, so a poll never waits on it and never answers `home_busy`. An agentic run has none (`404`). |
-| `GET /runs/{id}/usage` | This server's own (`runusage/1`): what one run cost, line by line: its model requests by model and provider, its paid tool calls by who charged for them, its browser time by provider, joining to its `cost.usd` ([A run's cost, line by line](#a-runs-cost-line-by-line)). Lines once the run ended; `reason` says why there are none. |
+| `GET /runs/{id}/usage` | This server's own (`runusage/1`): what one run cost, line by line: its model requests by model and provider, its paid tool calls by who charged for them, its browser time by provider, joining to its `cost.usd` ([A run's cost, line by line](#a-runs-cost-line-by-line)); beside them its browser sessions (`runusage/2`) and the computers it made, each from its create to its proven delete (`runusage/3`). Lines once the run ended; `reason` says why there are none. |
 | `GET /runs/{id}/trace` | A run's trace, for a person who debugs it: each model request that answered and each tool call as one span, in the order they started. A span has its `kind` (`model` or `tool`), its `name` (the model, or the tool), when it started and ended, how it ended (`status`), and the span it ran under (`parent_id`: the request that made a call, the call a subagent's request was started by). A model request also has its `tokens` (`input` not read from cache, `cache_read`, `cache_write`, `output`, and `reasoning` where reported), and its `usd`. A tool call also has the head of its arguments and of its output, as its Timeline rows show them, and what was charged under it (`usd`, `charged`, `not_metered`). A call that asked for approval ends as its approval did: `waiting` until it is answered, `refused` on a deny, `interrupted` when it was withdrawn with its run. Nothing is measured again or estimated: `model_requests` says what the run's record keeps. `priced`: each request is a span with its cost. `tokens_only`: a workflow run. Its model nodes' requests carry tokens and no cost, since the run's cost is its booking's; each of its decisions (a judge's, a route's, a verify's request) is a span too (`decision: true`), named by the model its provider answered with and labelled by its node, with its own cost. `not_recorded`: a CLI harness's record keeps no request, so its trace is its tool calls. A computer's own time is its provider's to bill and is in no span. Readable while the run goes; one read serves the run's first 2,000 spans and counts the rest in `dropped`. Its words are cut as the Timeline's are, and a run whose handed sign-in can't be read back is refused (`403`), as its graph is. The console's Dev tools tab reads it. |
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
@@ -3327,7 +3327,7 @@ stays in every total.
 
 | Purged | Kept |
 | --- | --- |
-| Its launch record (input, prompt), journal and timeline, messages and commands, outputs and files, the answers kept under its idempotency keys, its folders (here, and its own folder on an Archil disk; the disk is kept), its settings, its labels and summary, its agent's grades of it, and its kept learning's content | Its row, as its tombstone: id, agent, state, how it ended (a code), started and ended, `cost_usd` (an upper bound when that is all it has), its paid tools' cost, its purge time, how its learning ended (for `/stats`), and the spend figures `/usage` and a cap read from its journal. Its metrics keep their figures alone: counts by tool name, the effort and the cost basis, no grader's words, call arguments or results |
+| Its launch record (input, prompt), journal and timeline, messages and commands, outputs and files, the answers kept under its idempotency keys, its folders (here, and its own folder on an Archil disk; the disk is kept), its settings, its labels and summary, its agent's grades of it, and its kept learning's content | Its row, as its tombstone: id, agent, state, how it ended (a code), started and ended, `cost_usd` (an upper bound when that is all it has), its paid tools' cost, its purge time, how its learning ended (for `/stats`), and the spend figures `/usage` and a cap read from its journal, and the intervals of the computers it made (each a provider's id and its times). Its metrics keep their figures alone: counts by tool name, the effort and the cost basis, no grader's words, call arguments or results |
 | Its kept learning's turn and proposal | Each kept learning row as a link alone (the run's and its learning run's ids, its state): `/usage`'s learning line reads it, and it keeps its learning run out of every run list |
 | What a promotion record copied from it: a check's or an audit's disagreement's input, answers and the grader's words, and the words a hold's reason quoted from them | The record's decision, numbers and run ids, the run's among them |
 
@@ -3942,9 +3942,13 @@ were reached. Nothing is priced here, and nothing is rounded to a billing increm
     { "meter": "tokens", "model": "claude-sonnet-5-5", "provider": "anthropic", "charged_by": null, "quantity": 3300, "unit": "token",
       "basis": "reported", "usd": 0.0036, "requests": 3, "tokens": { "input": 3000, "output": 300, "cache_read": 0, "cache_write": 0 },
       "unmetered_requests": 0 },
-    { "meter": "tools", "model": null, "provider": null, "charged_by": "monid", "quantity": 1, "unit": "call", "basis": "reported", "usd": 0.003 },
-    { "meter": "tools", "model": null, "provider": null, "charged_by": "docs", "quantity": 1, "unit": "call", "basis": "estimate", "usd": 0.05,
-      "not_metered_calls": 2 } ] }
+    { "meter": "tools", "model": null, "provider": "monid", "charged_by": "monid", "quantity": 1, "unit": "call", "basis": "reported", "usd": 0.003 },
+    { "meter": "tools", "model": null, "provider": "docs", "charged_by": "docs", "quantity": 1, "unit": "call", "basis": "estimate", "usd": 0.05,
+      "not_metered_calls": 2 } ],
+  "browser_sessions": [],
+  "computer_intervals": [
+    { "provider": "daytona", "provider_id": "5f0c…", "kind": "sandbox", "gpu": null, "cpus": null, "memory_mb": null,
+      "started_at": "2026-11-19T10:00:04.000Z", "ended_at": "2026-11-19T10:01:31.000Z", "kept": false } ] }
 ```
 
 - `tokens`: one line per model the requests were sent on (`model`; a workflow decision on the model its provider
@@ -3953,7 +3957,7 @@ were reached. Nothing is priced here, and nothing is rounded to a billing increm
   upstream. A model reached two ways is two lines, one per provider. `quantity` is the input, cache read, cache write and
   output tokens as each request reported them (a decision's as its receipt does), with the split beside it; `basis` is the run's `cost.basis` rule over that model's requests alone.
 - `tools`: one line per charger (`charged_by`: `monid`, an MCP server's name, `parallel`), the vendor whose invoice the
-  calls land on. `quantity` is the charges booked, one per paid call. `basis` is `reported` when every charge is the
+  calls land on. `provider` names the same vendor: the one that charges for a call is its provider. `quantity` is the charges booked, one per paid call. `basis` is `reported` when every charge is the
   vendor's own figure (monid's answer says what it charged), `estimate` when any is a price this server holds (an MCP
   tool's saved price, Parallel's). Calls of a tool with no price set ran outside the run's cost, as `GET /usage` counts
   them: `not_metered_calls`, in neither `quantity` nor `usd`.
@@ -3972,7 +3976,8 @@ were reached. Nothing is priced here, and nothing is rounded to a billing increm
 - `lines` and `total` are null, with `reason`, while the run is at work (`running`), for a run whose figure is not its
   booking's (`not_booked`: an imported, native or SDK run, or a CLI run whose model requests went past its proxy), and
   for a learning run a follow-up opened again (`reopened`, whose booking can't be split by round).
-- Computer time is not a line yet: this server meters no computer time.
+- Computer time is not priced yet: no line carries it, and its cost is not in `total`. What the run's computers did is
+  in `computer_intervals` (below), so it can be measured and matched to the provider's invoice.
 - `browser_sessions` (`runusage/2`) holds one record per browser session the run opened, in the order it opened them.
   With it you can see how long each session ran, spot one that ended late or was lost, and find each on the provider's
   own dashboard and invoice by its id: the provider's id for the session (`provider_session_id`), when
@@ -3983,6 +3988,20 @@ were reached. Nothing is priced here, and nothing is rounded to a billing increm
   null, never zeros. A session whose end was never recorded (its run's process lost first) has `ended_at` null.
   `charged_seconds` are the seconds charged for the session, its provider's minimum included where the browser charged
   one at the release, as on the `browser_time` line; how long it ran is `ended_at` less `started_at`.
+- `computer_intervals` (`runusage/3`) holds one record per computer the run made through its provider (a sandbox, a
+  desktop or a phone), by when each was made. With it you can see how long each of the run's computers lived, find one
+  left running after its run, and match the provider's invoice by its own id: the provider (`provider`, this server's
+  name for it, as the agent's computer setting names it), the provider's id for the computer (`provider_id`), its
+  `kind`, what its create asked for (`gpu` with its `type` and `count`, `cpus`, `memory_mb`; null where it asked none, as
+  a hosted provider that sizes its own machines is never given numbers, and none is guessed), when the create answered
+  (`started_at`), and when the provider's delete of it answered ok (`ended_at`). `ended_at` is written only on that ok:
+  null means no delete was proven (the computer may still be running, or its delete failed or never answered), never a
+  guessed end. `kept` is true once the run's park kept the computer past its claim, for the person's answer. A computer
+  is ended wherever this server deletes it: the claim's release, a later claim letting an earlier one's go, the run's
+  end, a kept computer's end at its time, and the janitor's sweeps. The agent's own persistent computer (it outlives
+  every run), a paired computer and `--faux`'s are not the run's and have no record; a browser's sessions are in
+  `browser_sessions`. A run's computers made before this server kept them have none either. The records are kept in the
+  store's `computer_intervals` table (keyed by provider and the provider's id), and a purge of the run keeps them.
 
 ## Spend cap
 
