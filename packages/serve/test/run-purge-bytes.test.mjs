@@ -4,8 +4,9 @@
 // checkpoints the WAL once it commits (sqlite/store.ts #purged). One sentinel, a word no other test holds, is in the raw
 // bytes of store.sqlite and its -wal before the purge; after it, it is in none of store.sqlite, -wal, -journal or -shm:
 // at once, after another checkpoint, and after the server closes. A checkpoint another connection's reader holds back
-// never fails the purge: it warns, and the next purge's checkpoint finishes. SQLite only: on Postgres a purged row's
-// bytes are the database's until its VACUUM (a gap named in the purge docs, not closed).
+// never fails the purge: it warns, and the next purge's checkpoint finishes; it waits only its own short busy wait, so
+// the store's other requests never queue behind the store's 10 s one. SQLite only: on Postgres a purged row's bytes stay
+// in its dead tuples until a write reuses the space VACUUM freed (a gap named in the purge docs, not closed).
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -82,8 +83,7 @@ test("a purge whose checkpoint a reader in another connection holds back still c
   const dir = mkdtempSync(join(tmpdir(), "purge-bytes-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const warned = [];
-  // A short busy wait: the held checkpoint gives up in a moment, as one held past the store's own 10 s would.
-  const store = await openSqliteStore({ file: join(dir, "store.sqlite"), busyTimeoutMs: 50, warn: (message) => warned.push(message) });
+  const store = await openSqliteStore({ file: join(dir, "store.sqlite"), warn: (message) => warned.push(message) });
   t.after(() => store.close());
   await store.agents.create({ id: "agent-1", name: "agent-1" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
   for (const id of ["run-1", "run-2"]) {
@@ -109,4 +109,50 @@ test("a purge whose checkpoint a reader in another connection holds back still c
   await store.runs.purge("run-2", kept);
   assert.equal(warned.length, 1, `the next purge's checkpoint finishes: ${JSON.stringify(warned)}`);
   assert.deepEqual(holding(dir, word), [], "after the next purge's checkpoint, no store file holds the sentinel of either run");
+});
+
+test("a purge's checkpoint that a reader in another connection holds back never stalls the store's other requests: on the store's own 10 s busy wait, an unrelated write and read while it runs each answer in well under a second, and the purge itself returns in a moment", { ...sqliteOnly("the SQLite store's WAL checkpoint"), timeout: 120_000 }, async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "purge-bytes-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const warned = [];
+  // The store's own busy wait (10 s): the checkpoint must wait on a short one of its own, not on this one.
+  const store = await openSqliteStore({ file: join(dir, "store.sqlite"), warn: (message) => warned.push(message) });
+  t.after(() => store.close());
+  await store.agents.create({ id: "agent-1", name: "agent-1" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Purge me." } } });
+  const claim = await store.claim("run-1", "runner-test", { leaseMs: 30_000 });
+  assert.ok(claim, "run-1 is claimed");
+  await store.runs.update(claim, { state: "ended", costUsd: 0.01, summary: "Done." });
+
+  // A reader's snapshot from before the purge: it holds the log through the whole purge, both checkpoint tries included.
+  const reader = new DatabaseSync(join(dir, "store.sqlite"), { readOnly: true });
+  t.after(() => reader.isOpen && reader.close());
+  reader.exec("BEGIN");
+  reader.prepare("SELECT count(*) AS n FROM runs").get();
+
+  const started = performance.now();
+  let settled = false;
+  const purging = store.runs.purge("run-1", { meters: null, spend: { usd: null }, learning: null }).finally(() => (settled = true));
+  // Unrelated requests, one after another, for as long as the purge runs (its checkpoint's tries and the pause between
+  // them): each is queued behind whichever checkpoint try is in flight when it is sent.
+  const waits = [];
+  for (let i = 0; i < 400 && (!settled || i < 3); i++) {
+    const at = performance.now();
+    await store.agents.create({ id: `other-${i}`, name: `other-${i}` }, { id: `rev-other-${i}`, kind: "agentic", body: { instructions: "Answer." } });
+    const wrote = performance.now();
+    assert.ok(await store.agents.get(`other-${i}`), `agent other-${i} reads back`);
+    waits.push({ write: Math.round(wrote - at), read: Math.round(performance.now() - wrote) });
+    if (!settled) await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  await purging;
+  const purgeMs = Math.round(performance.now() - started);
+  reader.exec("COMMIT");
+  reader.close();
+
+  assert.equal((await store.runs.get("run-1")).purgedAt !== null, true, "the purge committed");
+  const slowest = Math.max(...waits.map(({ write, read }) => Math.max(write, read)));
+  assert.ok(slowest < 1_000, `no unrelated request waits on the checkpoint's busy wait: the slowest took ${slowest} ms of ${JSON.stringify(waits)}`);
+  assert.ok(purgeMs < 2_000, `the purge returns without the store's busy wait: it took ${purgeMs} ms`);
+  assert.equal(warned.length, 1, `the held checkpoint warns once: ${JSON.stringify(warned)}`);
+  assert.match(warned[0], /purge of run run-1 committed, but its WAL checkpoint did not finish \(another connection held the log\)/);
 });

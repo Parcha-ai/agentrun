@@ -526,6 +526,9 @@ const stderrWarn = (message: string): void => void process.stderr.write(`agentru
 /** How long a purge's checkpoint waits, once SQLite's busy wait ran out on another connection's reader or writer, before
  *  its one retry. */
 const PURGE_CHECKPOINT_RETRY_MS = 200;
+/** How long a purge's checkpoint waits for another connection's reader or writer before it gives up (and is retried):
+ *  short, since every other request of the store's connection queues behind it. */
+const PURGE_CHECKPOINT_BUSY_MS = 20;
 
 /** The suffix, after the database file's name, of the marker secureRewrite writes before a rewrite and removes once no
  *  file of the store keeps the bytes it replaced: a start that finds it finishes the scrub. */
@@ -2192,16 +2195,18 @@ class SqliteStore implements Store {
    *  (TRUNCATE). secure_delete (worker.ts open) zeroed the purged bytes in the pages the purge wrote, but those pages are
    *  new frames in the WAL: the file keeps its earlier images of them, and the WAL its earlier frames, until a checkpoint
    *  copies the zeroed pages into the file and truncates the log. A reader in another connection (a runner's read, a
-   *  backup) may hold the log back past SQLite's busy wait: one retry after a short pause, then a warning, and the old
-   *  frames stay until the next purge's checkpoint (or the last connection's close, which checkpoints and removes the
-   *  log). An automatic checkpoint (PASSIVE) copies the zeroed pages into the file but leaves the log's old frames in
-   *  place. Never fails the purge, which committed. */
+   *  backup) may hold the log back: the checkpoint waits PURGE_CHECKPOINT_BUSY_MS for it, not the connection's own busy
+   *  wait, since every request of the store's one connection queues behind it (the purge already committed). One retry
+   *  after a short pause, then a warning, and the old frames stay until the next purge's checkpoint (or the last
+   *  connection's close, which checkpoints and removes the log). An automatic checkpoint (PASSIVE) copies the zeroed
+   *  pages into the file but leaves the log's old frames in place. Never fails the purge, which committed. */
   async #purged(what: string): Promise<void> {
-    if (this.#scrubMarker === undefined) return;
+    const db = this.#db;
+    if (this.#scrubMarker === undefined || !(db instanceof Connection)) return;
     let why = "";
     for (let tries = 1; tries <= 2; tries++) {
       try {
-        const [checkpoint] = await this.#db.all<{ busy: number; log: number; checkpointed: number }>("PRAGMA wal_checkpoint(TRUNCATE)");
+        const checkpoint = await db.checkpoint(PURGE_CHECKPOINT_BUSY_MS);
         if (checkpoint?.busy === 0) return;
         why = "another connection held the log";
       } catch (error) {

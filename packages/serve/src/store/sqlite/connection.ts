@@ -10,7 +10,7 @@ import { cleanText, type Dialect, SQLITE } from "../dialect.js";
 import { inMemory } from "./memory.js";
 import { ONE_ANSWER_INDEX } from "../schema.js";
 import { AnswerTaken, type ConstraintRule, Fenced, RunFinal, StoreBusy, StoreClosed, StoreConstraint, StoreDeadline, StoreOwned, StoreWorkerLost } from "../store.js";
-import type { Mode, Params, Reply, Request, Statement, StatementResult, WorkerError } from "./worker.js";
+import type { CheckpointResult, Mode, Params, Reply, Request, Statement, StatementResult, WorkerError } from "./worker.js";
 
 export type { Params, Statement, StatementResult } from "./worker.js";
 
@@ -344,6 +344,11 @@ export class Connection implements SqliteDatabase, StoreConnection {
   }
   all<T extends object>(sql: string, ...params: SqliteValue[]): Promise<T[]> {
     return this.#queued(async () => (await this.#stmt(sql, params, "all")) as T[]);
+  }
+  /** A WAL checkpoint (TRUNCATE) that waits `busyMs` at most for another connection's reader or writer, never the
+   *  connection's own busy wait: every call queued behind it waits that long at most for it. Busy (1) when one held it. */
+  checkpoint(busyMs: number): Promise<CheckpointResult | undefined> {
+    return this.#queued(async () => ((await this.#send({ op: "checkpoint", busyMs })) ?? undefined) as CheckpointResult | undefined);
   }
 
   /** One write transaction of fixed statements: in order; an expectation miss or an error rolls all of them back. `full`: a
