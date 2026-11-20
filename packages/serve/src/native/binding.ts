@@ -6,6 +6,16 @@ export const NATIVE_TOOL_BUDGET_UNSUPPORTED = 'Native connections cannot enforce
 export const NATIVE_MODEL_SETTINGS_UNSUPPORTED = 'Native connections use the model and thinking settings of the source project or profile configuration. Remove the AgentRun model and thinking overrides, configure them in the source CLI, and start a new run.';
 export const NATIVE_EXECUTION_SETTINGS_UNSUPPORTED = 'Native connections use the source CLI configuration for tool permissions, grants, approval policy, model tiers and execution settings. AgentRun cannot apply these overrides or provide a different computer, sandbox, checkout or spending limit. Clear the unsupported settings, configure the source project or profile, and start a new run.';
 
+export const NATIVE_CAP_UNSUPPORTED = 'Native runs retain their own limits; AgentRun cannot enforce a dollar cap on this connection. Remove max_cost_usd and use native limits.';
+export const NATIVE_RUN_OVERRIDES_UNSUPPORTED = 'Native jobs use their original effort and project files. Run effort overrides, uploaded file_ids and Archil disks are unavailable; edit the native configuration or source project instead.';
+
+/** The fields of a run's start that a native run cannot carry, as a run create's body or a trigger's target names them. */
+export function nativeRunOverrides(start: unknown): ('effort' | 'file_ids' | 'archil_disk')[] {
+ if (!start || typeof start !== 'object') return [];
+ const given = start as Record<string, unknown>;
+ return (['effort', 'file_ids', 'archil_disk'] as const).filter(field => field === 'file_ids' ? Array.isArray(given.file_ids) && given.file_ids.length > 0 : given[field] !== undefined);
+}
+
 /** Top-level AgentRun overrides are distinct from native.model, which describes source configuration. */
 export function nativeModelOverrides(value: unknown): ('model' | 'thinking')[] {
  if (!value || typeof value !== 'object') return [];

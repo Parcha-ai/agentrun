@@ -8,8 +8,9 @@ import { fileURLToPath } from 'node:url';
 
 const bridge = new URL('../dist/native/remote-worker-bridge.js', import.meta.url);
 const request = JSON.stringify({ id: 'entry-check', type: 'unsupported' }) + '\n';
+// A fresh node imports the whole bridge, which takes about 5 s on a loaded CI runner; the cap only stops a hang.
 const run = (args) => {
-  const result = spawnSync(process.execPath, args, { input: request, encoding: 'utf8', timeout: 5_000 });
+  const result = spawnSync(process.execPath, args, { input: request, encoding: 'utf8', timeout: 60_000 });
   assert.ifError(result.error);
   assert.equal(result.signal, null, result.stderr);
   assert.equal(result.status, 0, result.stderr);

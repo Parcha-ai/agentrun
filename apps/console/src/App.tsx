@@ -10,6 +10,7 @@ import { AgentDojo } from "@/components/AgentDojo";
 import { AgentEditPage, AgentsPage } from "@/components/AgentsPage";
 import { ChatGPTRow } from "@/components/ChatGPTSignIn";
 import { ClaudeLoginRow } from "@/components/ClaudeLoginRow";
+import { ModelGatewayRow } from "@/components/ModelGatewayRow";
 import { BuildAgent } from "@/components/BuildAgent";
 import { RunsRequest } from "@/components/RunsRequest";
 import { queryPlaygroundHref } from "@/lib/playgroundRoutes";
@@ -25,6 +26,7 @@ import { ModelKeyCard } from "@/components/ModelKeyCard";
 import { NoModelBanner } from "@/components/NoModelBanner";
 import { EmailPage } from "@/components/EmailPage";
 import { WebhookPage } from "@/components/WebhookPage";
+import { SlackPage } from "@/components/SlackPage";
 import { ComputersPage } from "@/components/ComputersPage";
 import { WorkspacePage } from "@/components/WorkspacePage";
 import { ScheduleNames, type TriggerKnown } from "@/components/ScheduleChip";
@@ -120,14 +122,14 @@ export function route(h: string = location.hash): Where {
   if (m) return { section: "triggers", trigger: decodeURIComponent(m[1]), ...(m[2] ? { edit: true } : {}) };
   if (h.startsWith("#/triggers")) return { section: "triggers" };
   // Settings, a page per address: #/settings/keys (and #/settings), #/settings/tools, #/settings/email,
-  // #/settings/computers, #/settings/workspace and #/settings/webhook; a later one is one more name here.
+  // #/settings/computers, #/settings/workspace, #/settings/webhook and #/settings/slack; a later one is one more name here.
   // #/settings/mcp, with an OAuth sign-in's outcome when the server sends the browser back there.
   m = h.match(/^#\/settings\/mcp(?:\?(.*))?$/);
   if (m) { const add = addOf(m[1]); return { section: "settings", settings: "mcp", signIn: signInOf(m[1]), ...(add ? { add } : {}) }; }
   // #/settings/github, with what the way back from GitHub said (github=connected, or error&reason=<code>).
   m = h.match(/^#\/settings\/github(?:\?(.*))?$/);
   if (m) { const github = githubReturnOf(m[1]); return { section: "settings", settings: "github", ...(github ? { github } : {}) }; }
-  m = h.match(/^#\/settings(?:\/(keys|tools|email|computers|workspace|webhook))?$/);
+  m = h.match(/^#\/settings(?:\/(keys|tools|email|computers|workspace|webhook|slack))?$/);
   if (m) return { section: "settings", settings: (m[1] ?? "keys") as SettingsPage };
   // Mission Control is the first page: the bare address, and the old start page's, land there.
   if (h === "" || h === "#" || h === "#/" || h.startsWith("#/start") || h.startsWith("#/mission")) return { section: "mission" };
@@ -475,7 +477,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   const gates = toolGates(c?.tools);
   // The settings pages this server has: tool keys (their routes), tools (a capability with a choice of provider, or a
   // permission to set), MCP servers, GitHub, computers and the workspace (every server has them), and the webhook (its routes).
-  const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(choices.length || gates.length ? ["tools" as const] : []), "mcp" as const, "github" as const, "email" as const, "computers" as const, "workspace" as const, ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : [])];
+  const settingsOffered: SettingsPage[] = [...(caps?.features?.tool_keys?.routes ? ["keys" as const] : []), ...(choices.length || gates.length ? ["tools" as const] : []), "mcp" as const, "github" as const, "email" as const, "computers" as const, "workspace" as const, ...(caps?.features?.webhooks?.routes ? ["webhook" as const] : []), ...(caps?.features?.slack?.routes ? ["slack" as const] : [])];
   const nav = (s: Section) => go({ runs: "#/runs", agents: "#/agents", playground: "#/playground", dojo: "#/dojo", mission: "#/", triggers: "#/triggers", templates: "#/templates", settings: `#/settings/${settingsOffered[0] ?? "keys"}` }[s]);
   // One click on a template makes its agent (once) on the first harness with a model, runs it, and opens the run.
   // Try it keeps its start's key until a start lands: a click after a lost answer is the same start, not a second run.
@@ -656,10 +658,10 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   const learningCap = caps ? ((caps as unknown as { features?: { learning?: "on" | "off" } }).features?.learning ?? null) : undefined;
   editorCaps.learning = learningCap ?? undefined;
   // While no managed model is ready, read capabilities again every MODEL_CHECK_MS and when the page returns to view,
-  // so execution setup clears once a model is configured. Native connections use their own authentication.
+  // so execution and learning setup clear once their models are configured. Native connections use their own authentication.
   const modelsReady = caps?.models?.ready;
   useEffect(() => {
-    if (modelsReady !== false) return;
+    if (modelsReady !== false && caps?.learning_model?.ready !== false) return;
     // Through the one guarded reader, so an older answer never undoes a newer one. The timer starts no read while its last
     // one is still answering: a read slower than MODEL_CHECK_MS would otherwise be overtaken by the next tick's, and its
     // answer dropped. Coming back into view always reads now, and that newer answer is the one that lands.
@@ -672,7 +674,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
     const timer = setInterval(tick, MODEL_CHECK_MS);
     window.addEventListener("focus", again);
     return () => { clearInterval(timer); window.removeEventListener("focus", again); };
-  }, [v2, modelsReady]);
+  }, [v2, modelsReady, caps?.learning_model?.ready]);
   // The server's ChatGPT sign-in (chatgpt/1), read each time no model is ready: the first screen's card and the bar offer it
   // first. Null before it is read and on a server without it.
   const [plan, setPlan] = useState<ChatGPTView | null>(null);
@@ -721,11 +723,12 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
               : where.settings === "computers" ? <ComputersPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
               : where.settings === "workspace" ? <WorkspacePage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
               : where.settings === "webhook" ? <WebhookPage v2={v2} />
+              : where.settings === "slack" ? <SlackPage v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} />
               : <KeysPage v2={v2} onChange={readCaps} writable={secretsWritable} whyNot={secretsWhyNot} harnesses={editorCaps.harnesses}
-                  plan={<><ChatGPTRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /><ClaudeLoginRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /></>} />}
+                  plan={<><ChatGPTRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /><ClaudeLoginRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /><ModelGatewayRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /></>} />}
           </Settings>
         : where.section === "dojo"
-        ? <AgentDojo key={refreshed} v2={v2} server={learningCap} />
+        ? <AgentDojo key={refreshed} v2={v2} server={learningCap} modelAccess={caps?.learning_model} />
         : where.section === "mission"
         // Source connection and history browsing need no managed model; setup follows an explicit choice to run here.
         ? <div className="flex h-full flex-col">

@@ -21,12 +21,17 @@ import (
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/daemon"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/nocgo"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/windowmanager"
 )
 
 // argsEnv makes the test binary run computerd's main with these arguments (JSON), as a process of its own.
 const argsEnv = "COMPUTERD_TEST_ARGS"
 
 func TestMain(m *testing.M) {
+	// The window manager's start, which init starts again as itself with a clean environment.
+	if len(os.Args) == 2 && os.Args[1] == windowmanager.ChildArg {
+		os.Exit(windowmanager.Child())
+	}
 	if args := os.Getenv(argsEnv); args != "" {
 		os.Args = []string{"computerd"}
 		if err := json.Unmarshal([]byte(args), &os.Args); err != nil {
@@ -644,7 +649,7 @@ func TestProbeDiagnoseTakesNoOtherArgument(t *testing.T) {
 // attach takes its URL and token from the environment alone, refuses a missing or malformed one with 2, and stops with 3
 // when the server refuses the token at the upgrade; no line it writes holds the token. (internal/attach tests the rest.)
 func TestAttachReadsItsEnvironmentAndExitsAsItsWordsSay(t *testing.T) {
-	token := "art_" + strings.Repeat("ab", 32)
+	token := "art_" + strings.Repeat("Ab", 21) + "c"
 	t.Setenv("AGENTRUN_ATTACH_URL", "")
 	t.Setenv("AGENTRUN_ATTACH_TOKEN", token)
 	if code, stderr := computerd(t, 30*time.Second, "attach"); code != 2 || !strings.Contains(stderr, "AGENTRUN_ATTACH_URL") {

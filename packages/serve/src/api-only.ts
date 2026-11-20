@@ -6,18 +6,19 @@ import type { Route } from "./server.js";
 /** The variable that turns the profile on. */
 export const API_ONLY_ENV = "AGENTRUN_API_ONLY";
 
-/** The routes (server.ts ROUTES, by name) an API-only server serves: a run's launch, read, list, timeline, messages,
- *  stop, cancel, cap raise and grade; its files and the uploads a launch names; an agent's Archil disk, read and removed (the
- *  agent layer of a run's disk, archil-routes.ts); the delete of an agent its inline runs made (agent-delete.ts), which
- *  the backend that made it is the one to send; capabilities, health and usage; the two reads of the computer settings a
- *  backend checks before it launches, each by the token and naming keys and whether each is saved, never a value: the
- *  computer providers and whether each is ready (GET /computers, computers.ts) and the Archil settings, whether runs'
- *  folders are on Archil (GET /workspace/archil, archil-routes.ts), while their writes, tests and key choices stay the
- *  console's; and a run's hosted machine that dials fetching this server's computerd with its own token
- *  (computer-attach.ts), as it dials the attach socket, which the upgrade takes for such a machine alone (a paired
- *  computer is the console's). */
+/** The routes (server.ts ROUTES, by name) an API-only server serves. Those past a run's own:
+ *  - getComputerDaemon: a run's hosted machine that dials fetches computerd with its own token, as the attach upgrade
+ *    takes such a machine alone (a paired computer is the console's).
+ *  - listComputers, getWorkspaceArchil: the two reads a backend checks before it launches, naming keys and never a
+ *    value; their writes and tests stay the console's.
+ *  - getAgentArchil, deleteAgentArchil, deleteAgent: an agent's disk and the delete of an agent its inline runs made,
+ *    which the backend that made it sends.
+ *  - getRunComputer, takeOverRunComputer, handBackRunComputer, createRunComputerViewer: a run's computer, its take-over
+ *    and hand-back, and its viewer credential's mint (viewer-credential.ts), by the server's token, the backend's own;
+ *    the live page and socket take that credential. */
 export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createRun", "createInlineRun", "getComputerDaemon",
+  "getRunComputer", "takeOverRunComputer", "handBackRunComputer", "createRunComputerViewer",
   "listComputers", "getWorkspaceArchil",
   "getAgentArchil", "deleteAgentArchil", "deleteAgent",
   "getRun", "listRuns", "listAllRuns", "getTimeline",
@@ -36,12 +37,16 @@ export function apiOnlyFrom(env: NodeJS.ProcessEnv = process.env): boolean {
   throw new TypeError(`${API_ONLY_ENV} is 1 (serve the run API only) or 0 (the whole server), not ${JSON.stringify(env[API_ONLY_ENV])}`);
 }
 
+/** A run's computer live view: its page, files and socket, which take the viewer credential alone here (server.ts). */
+const COMPUTER_LIVE = /^\/v2\/runs\/[^/]+\/computer\/live\//;
+
 /** Whether an API-only server serves `method` on `raw` (the path as sent, its query cut): a /v2 path one of
- *  API_ONLY_ROUTES matches for that method (HEAD as GET). */
+ *  API_ONLY_ROUTES matches for that method (HEAD as GET), or a GET of a run's computer live view. */
 export function servedApiOnly(routes: readonly Route[], method: string | undefined, raw: string): boolean {
   if (!raw.startsWith("/v2/")) return false;
   const path = raw.slice(3);
   const asked = method === "HEAD" ? "GET" : method;
+  if (asked === "GET" && COMPUTER_LIVE.test(raw)) return true;
   return routes.some((route) => API_ONLY_ROUTES.has(route.name) && route.method === asked && route.pattern.test(path));
 }
 

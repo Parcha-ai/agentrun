@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { ToolsPage } from "./ToolsPage";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { toolChoices, toolGates } from "@/lib/toolSettings";
 import type { ToolSettings } from "@/lib/v2";
 import { pick } from "@/test/picker";
@@ -24,7 +25,7 @@ const SEARCH = { name: "web_search", available: true, providers: ["auto", "nativ
 describe("a permission change and what the tool resolves to", () => {
   it("the agent editor: the server's word for the old permission isn't shown for a new one; it resolves once saved", async () => {
     const agent: Agent = {
-      agent_id: "searcher", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
+      ...SERVED_AGENT, agent_id: "searcher", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
       definition: { version: 1, name: "Searcher", instructions: "Look it up.", harness: "pi", skills: [], tools: ["web_search"] },
       tools: [{ name: "web_search", provider: "auto", provider_from: "default", default_provider: "auto", resolved: "exa-keyless", permission: "allow", permission_from: "default", default_permission: "allow", permissions: ["allow", "ask", "deny"] }],
     };

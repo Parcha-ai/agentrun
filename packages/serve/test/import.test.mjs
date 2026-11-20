@@ -1370,7 +1370,7 @@ test("an imported session its source did not price reads the catalog's estimate 
   };
   assert.deepEqual(await costOf(estimated.id), { usd: costUsdEst, basis: "estimate" }, "the catalog's estimate, read as an estimate");
   assert.deepEqual(await costOf(recorded.id), { usd: 0.0421, basis: "estimate" });
-  assert.deepEqual(await costOf(unpriced.id), { usd: null, basis: "estimate" }, "no estimate: unknown, never 0");
+  assert.deepEqual(await costOf(unpriced.id), { usd: null, basis: "unpriced" }, "no estimate: unknown, never 0, and nothing priced it (costbasis/1)");
   const listed = (await api("GET", `/agents/${estimated.agentId}/runs`)).body.runs;
   assert.deepEqual(Object.fromEntries(listed.map((r) => [r.run_id, r.cost.usd])), { [estimated.id]: costUsdEst, [unpriced.id]: null, [recorded.id]: 0.0421 }, "the list reads each run's cost as its read does");
 
@@ -1420,7 +1420,7 @@ test("import ends with the summary of every session found, read again from the s
   // Every request at 09:01 or 09:03 UTC: 05:00 in Puerto Rico (UTC-4). Bash is two of the four tool calls.
   const expected = [
     "Found 4 sessions  Claude Code 2 · Codex 1 · pi 1",
-    "Imported into 3 agents (one per project)",
+    "Imported 4 sessions into 3 agents (one per project)",
     "+ 8.4K tokens (84% cached) · 0.2 h of agent time",
     "+ Busiest hour: 05:00 · top tool: Bash (50%)",
     "Open http://127.0.0.1:7555/",
@@ -1429,19 +1429,20 @@ test("import ends with the summary of every session found, read again from the s
   assert.deepEqual(dry, [expected[0], "Would import into 3 agents (one per project)", ...expected.slice(2)]);
   assert.equal(existsSync(data), false, "the dry run wrote nothing");
   assert.deepEqual(block(), expected);
-  assert.deepEqual(block(), expected, "run again, every session is held, and counted from the store");
+  assert.deepEqual(block(), [expected[0], "Nothing new to import: all 4 sessions are in 3 agents already", ...expected.slice(2)], "run again, every session is held, counted from the store, and none said imported");
 });
 
 test("the summary says unknown where it has no data", () => {
-  const lines = summaryLines([{ source: "codex", agent: "a" }, { source: "pi", agent: "b", metrics: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, tools: {} } }], "http://127.0.0.1:7340");
+  const open = { url: "http://127.0.0.1:7340", known: true };
+  const lines = summaryLines([{ source: "codex", agent: "a" }, { source: "pi", agent: "b", metrics: { input: 0, cacheRead: 0, cacheWrite: 0, output: 0, tools: {} } }], open);
   assert.deepEqual(lines, [
     "Found 2 sessions  Codex 1 · pi 1",
-    "Imported into 2 agents (one per project)",
+    "Would import into 2 agents (one per project)",
     "+ tokens unknown · agent time unknown · 1 session unknown",
     "+ Busiest hour: unknown · top tool: none",
     "Open http://127.0.0.1:7340/",
   ]);
-  assert.deepEqual(summaryLines([], "http://127.0.0.1:7340").slice(0, 4), ["Found 0 sessions", "Imported into 0 agents (one per project)", "+ tokens unknown · agent time unknown", "+ Busiest hour: unknown · top tool: unknown"]);
+  assert.deepEqual(summaryLines([], open).slice(0, 4), ["Found 0 sessions", "Would import into 0 agents (one per project)", "+ tokens unknown · agent time unknown", "+ Busiest hour: unknown · top tool: unknown"]);
 });
 
 test("an imported agent runs as imported: a project with no instructions file gets the import's own, and a coding app's own model (one no catalog lists) is not pinned, while a listed one is", { timeout: 60_000 }, async (t) => {
@@ -1462,7 +1463,6 @@ test("an imported agent runs as imported: a project with no instructions file ge
   const current = async (cwd) => (await agentOf(store, agentIdOf(cwd))).revisions.find((r) => r.current).body;
   const built = await current(build);
   assert.equal(built.model, undefined);
-  assert.equal(built.instructions, importedInstructions("nightly-build", "codex"));
   assert.equal(built.instructions, "You work on the project nightly-build. Your past runs are its Codex sessions, imported. Read the project's files before you change them, and say what you changed.");
   assert.equal((await current(docs)).model, "openai/gpt-6.1-sol");
   // What a run's start checks (runnable.ts), on a server with OpenRouter's key alone: nothing keeps either from running.
@@ -1475,6 +1475,237 @@ test("an imported agent runs as imported: a project with no instructions file ge
   const lines = [];
   assert.equal(await importCommand(["--data", join(root, "again"), "--all"], "usage", { home: at, env, out: (line) => lines.push(line) }), 0);
   assert.deepEqual(lines.filter((line) => line.startsWith("model not kept: ")), [`model not kept: ${build} (codex) ran on openai/gpt-6.1-codex, which no model catalog here lists; its agent runs on the server's default model until you pick one`]);
+});
+
+test("a model the import did not pin is reported by the import that wrote the agent's revision, and not again by one that finds the revision held", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const build = join(at, "code", "nightly-build");
+  mkdirSync(build, { recursive: true });
+  codexSession(at, build, 233, { model: "gpt-6.1-codex" });
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  const opts = { home: at, env: { PATH: "/usr/bin" }, all: true };
+  const first = await runImport(store, await planImport(opts), opts);
+  assert.deepEqual(first.modelsLeftOut, [{ cwd: build, source: "codex", model: "openai/gpt-6.1-codex" }]);
+  // A later session of the same project, on the same model: the second import takes it into the agent it holds.
+  codexSession(at, build, 234, { model: "gpt-6.1-codex" });
+  const again = await runImport(store, await planImport(opts), opts);
+  assert.deepEqual(again.agents.map((a) => [a.runs, a.already, a.created]), [[1, 1, false]]);
+  assert.equal((await store.agents.revisions(agentIdOf(build))).length, 1, "the held revision is kept; none is written");
+  assert.deepEqual(again.modelsLeftOut ?? [], [], "nothing was written this time, so no model was left out of anything");
+});
+
+test("a project whose instructions file holds only whitespace gets the import's own instructions, as one with no file does", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const docs = join(at, "code", "docs-site");
+  mkdirSync(docs, { recursive: true });
+  writeFileSync(join(docs, "AGENTS.md"), " \n\t\n");
+  codexSession(at, docs, 235, { model: "gpt-6.1-sol" });
+  const store = await openData(join(root, "agents"));
+  t.after(async () => await store.close());
+  const opts = { home: at, env: { PATH: "/usr/bin" }, all: true };
+  await runImport(store, await planImport(opts), opts);
+  const [revision] = await store.agents.revisions(agentIdOf(docs));
+  assert.equal(revision.body.instructions, importedInstructions("docs-site", "codex"));
+});
+
+test("the summary says what this import took: new sessions out of every agent, nothing new as nothing new, a stop as a stop", () => {
+  const found = [{ source: "codex", agent: "a" }, { source: "codex", agent: "b" }, { source: "pi", agent: "c" }];
+  const open = { url: "http://127.0.0.1:7340", known: true };
+  const second = (imported) => summaryLines(found, open, imported)[1];
+  assert.equal(second({ sessions: 3, agents: 3 }), "Imported 3 sessions into 3 agents (one per project)");
+  assert.equal(second({ sessions: 1, agents: 1 }), "Imported 1 session into 1 of 3 agents (one per project)");
+  assert.equal(second({ sessions: 0, agents: 0 }), "Nothing new to import: all 3 sessions are in 3 agents already");
+  assert.equal(second({ sessions: 2, agents: 2, stopped: true }), "Stopped: imported 2 sessions into 2 of 3 agents before Ctrl+C; run the import again for the rest");
+  assert.equal(second({ sessions: 0, agents: 0, stopped: true }), "Stopped: imported 0 sessions into 0 agents before Ctrl+C; run the import again for the rest");
+  assert.equal(summaryLines([], open, { sessions: 0, agents: 0 })[1], "Nothing to import");
+  assert.equal(second(undefined), "Would import into 3 agents (one per project)", "a dry run says what it would take");
+});
+
+test("import with no --port does not promise the default port; --port 0 names none", async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const project = join(at, "code", "port-hint");
+  mkdirSync(project, { recursive: true });
+  codexSession(at, project, 201);
+  const data = join(root, "agents");
+  const last = async (...args) => {
+    const lines = [];
+    assert.equal(await importCommand(["--data", data, "--all", ...args], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
+    return lines.at(-1);
+  };
+  assert.equal(await last(), "Start the server, then open the address it prints (http://127.0.0.1:7340/ unless that port is taken)");
+  assert.equal(await last("--port", "0"), "Start the server, then open the address it prints");
+  assert.equal(await last("--port", "7400"), "Open http://127.0.0.1:7400/");
+});
+
+test("import says how far it is, and a Ctrl+C stops it between two sessions: what is saved stays, it says so, exits 130, and the next import takes the rest", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const project = join(at, "code", "stoppable");
+  mkdirSync(project, { recursive: true });
+  for (const n of [211, 212, 213, 214]) codexSession(at, project, n);
+  const data = join(root, "agents");
+  const shown = [];
+  let interrupted = false;
+  const progress = {
+    show: (text) => {
+      shown.push(text);
+      // Ctrl+C once two sessions are written: the signal's own listeners, as a terminal's Ctrl+C reaches them.
+      if (!interrupted && text === "Importing sessions: 2 of 4") {
+        interrupted = true;
+        process.emit("SIGINT");
+      }
+    },
+    done: () => shown.push("(cleared)"),
+  };
+  const lines = [];
+  const code = await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line), progress });
+  assert.equal(code, 130, lines.join("\n"));
+  assert.equal(process.listenerCount("SIGINT"), 0, "its Ctrl+C listener is gone once it ends");
+  assert.equal(shown[0], "Looking for sessions…");
+  assert.ok(shown.includes("Checking sessions for keys: 0 of 4"), shown.join("\n"));
+  assert.ok(shown.includes("Importing sessions: 0 of 4"), shown.join("\n"));
+  assert.ok(!shown.includes("Importing sessions: 3 of 4"), "nothing after the stop");
+  assert.equal(shown.at(-1), "(cleared)", "the progress line is cleared before the summary");
+  assert.ok(shown.every((text) => !text.includes(root)), "progress holds counts, never a path");
+  assert.equal(lines.at(-4), "Stopped: imported 2 sessions into 1 agent before Ctrl+C; run the import again for the rest");
+  const resumed = [];
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => resumed.push(line), progress: { show: () => undefined, done: () => undefined } }), 0);
+  assert.ok(resumed.includes("already imported, unchanged: 2 session files (not read again)"), resumed.join("\n"));
+  assert.equal(resumed.at(-4), "Imported 2 sessions into 1 agent (one per project)");
+});
+
+test("a Ctrl+C while the last session is saved leaves nothing for a next import, so the summary says what was imported, not a stop; the exit code is still 130", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const project = join(at, "code", "last-session");
+  mkdirSync(project, { recursive: true });
+  for (const n of [221, 222]) codexSession(at, project, n);
+  const data = join(root, "agents");
+  let interrupted = false;
+  const progress = {
+    show: (text) => {
+      // Ctrl+C once the import has gone on to its last session: the check between two sessions follows this line at once,
+      // so a signal on the next microtask comes after it, while that session is read and before it is written.
+      if (!interrupted && text === "Importing sessions: 1 of 2") {
+        interrupted = true;
+        queueMicrotask(() => process.emit("SIGINT"));
+      }
+    },
+    done: () => undefined,
+  };
+  const said = t.mock.method(console, "error", () => undefined);
+  const lines = [];
+  const code = await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line), progress });
+  assert.equal(said.mock.calls.filter((call) => String(call.arguments[0]).startsWith("agentrun-serve import: stopping;")).length, 1, "the import took the Ctrl+C");
+  assert.equal(code, 130, "a Ctrl+C the import took is in its exit code");
+  assert.equal(lines.at(-4), "Imported 2 sessions into 1 agent (one per project)", lines.join("\n"));
+  assert.deepEqual(lines.filter((line) => line.startsWith("Stopped:")), [], "nothing is left, so nothing says to run the import again");
+  const again = [];
+  assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => again.push(line), progress: { show: () => undefined, done: () => undefined } }), 0);
+  assert.equal(again.at(-4), "Nothing new to import: all 2 sessions are in 1 agent already", "the stopped import had taken every session");
+});
+
+test("a Ctrl+C before anything is written, while the sessions are listed or checked for keys, reads as a stop: nothing imported, exit 130, and the next import takes them all", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const project = join(at, "code", "early-stop");
+  mkdirSync(project, { recursive: true });
+  for (const n of [223, 224]) codexSession(at, project, n);
+  t.mock.method(console, "error", () => undefined);
+  const quiet = { show: () => undefined, done: () => undefined };
+  for (const [when, data] of [["Looking for sessions…", join(root, "listing")], ["Checking sessions for keys: 1 of 2", join(root, "keys")]]) {
+    const progress = { show: (text) => void (text === when && process.emit("SIGINT")), done: () => undefined };
+    const lines = [];
+    const code = await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line), progress });
+    assert.equal(code, 130, when);
+    assert.equal(lines.at(-4), "Stopped: imported 0 sessions into 0 agents before Ctrl+C; run the import again for the rest", `${when}\n${lines.join("\n")}`);
+    const resumed = [];
+    assert.equal(await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out: (line) => resumed.push(line), progress: quiet }), 0);
+    assert.equal(resumed.at(-4), "Imported 2 sessions into 1 agent (one per project)", when);
+  }
+});
+
+test("a plan and an import say they were stopped only when the stop left sessions untaken", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const project = join(at, "code", "stop-report");
+  mkdirSync(project, { recursive: true });
+  for (const n of [225, 226]) codexSession(at, project, n);
+  const env = { PATH: "/usr/bin" };
+  // The store, with a stop asked as its `nth` session is written: after the check between two sessions, before the next.
+  const stoppingAt = async (name, nth, stop) => {
+    const store = await openData(join(root, name));
+    t.after(async () => await store.close());
+    let writes = 0;
+    const importRun = async (run) => (++writes === nth && stop.abort(), await store.importRun(run));
+    return new Proxy(store, { get: (target, key) => (key === "importRun" ? importRun : typeof target[key] === "function" ? target[key].bind(target) : target[key]) });
+  };
+  const taken = (report) => report.agents.reduce((n, a) => n + a.runs, 0);
+  const last = new AbortController();
+  const whole = { home: at, env, all: true, signal: last.signal };
+  const done = await runImport(await stoppingAt("last", 2, last), await planImport(whole), whole);
+  assert.deepEqual([taken(done), done.stopped], [2, undefined], "a stop during the last session leaves nothing: not stopped");
+  const first = new AbortController();
+  const part = { home: at, env, all: true, signal: first.signal };
+  const cut = await runImport(await stoppingAt("first", 1, first), await planImport(part), part);
+  assert.deepEqual([taken(cut), cut.stopped], [1, true], "a stop during the first of two leaves one: stopped");
+  // A stop before the listing: the plan lists nothing and says it was stopped, and an import of it says so too.
+  const before = new AbortController();
+  before.abort();
+  const early = { home: at, env, all: true, signal: before.signal };
+  const unlisted = await planImport(early);
+  assert.deepEqual([unlisted.projects.length, unlisted.stopped], [0, true]);
+  assert.equal((await runImport(await stoppingAt("early", 0, before), unlisted, early)).stopped, true);
+  // The same stop over a home with no session: nothing was left unlisted.
+  const empty = join(root, "empty-home");
+  mkdirSync(empty, { recursive: true });
+  assert.equal((await planImport({ ...early, home: empty })).stopped, undefined);
+});
+
+test("a Ctrl+C once the sessions are saved still gets the whole summary: the import holds it until everything is printed, and exits 130", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const project = join(at, "code", "late-stop");
+  mkdirSync(project, { recursive: true });
+  for (const n of [215, 216]) codexSession(at, project, n);
+  const data = join(root, "agents");
+  const lines = [];
+  let held;
+  const out = (line) => {
+    // Ctrl+C as the first held line is printed: every session is saved, and the summary is still to come. A signal with
+    // no listener ends the process there, the rest unprinted; `emit` says whether a listener took it.
+    if (held === undefined) held = process.emit("SIGINT");
+    lines.push(line);
+  };
+  const said = t.mock.method(console, "error", () => undefined);
+  const code = await importCommand(["--data", data, "--all"], "usage", { home: at, env: { PATH: "/usr/bin" }, out, progress: { show: () => undefined, done: () => undefined } });
+  assert.equal(held, true, "the import's own listener takes a Ctrl+C until its last line is printed");
+  assert.deepEqual(said.mock.calls.map((call) => call.arguments[0]).filter((line) => line.startsWith("agentrun-serve import: ")), ["agentrun-serve import: stopping; a session being saved is finished first, what is saved stays, and the summary follows (Ctrl+C again to quit now)"]);
+  assert.equal(code, 130, "a Ctrl+C the import took is in its exit code");
+  assert.equal(process.listenerCount("SIGINT"), 0, "its Ctrl+C listener is gone once it ends");
+  assert.equal(process.listenerCount("SIGTERM"), 0);
+  assert.equal(lines.at(-4), "Imported 2 sessions into 1 agent (one per project)", "every session was saved, so none is said stopped");
+  assert.equal(lines.at(-1), "Start the server, then open the address it prints (http://127.0.0.1:7340/ unless that port is taken)", "the summary is printed to its last line");
+});
+
+test("an import refused because a server holds the store says to stop the server first", { timeout: 60_000 }, async (t) => {
+  const root = await scratch(t);
+  const at = join(root, "home");
+  const project = join(at, "code", "held");
+  mkdirSync(project, { recursive: true });
+  codexSession(at, project, 221);
+  const data = join(root, "agents");
+  // The server's role: the owner lock a running server holds.
+  const server = await openData(data, "server");
+  t.after(async () => await server.close());
+  const ran = spawnSync(process.execPath, [CLI, "import", "--data", data, "--all"], { env: { ...process.env, HOME: at }, encoding: "utf8" });
+  assert.equal(ran.status, 1, ran.stderr);
+  assert.match(ran.stderr, /another server holds/);
+  assert.ok(ran.stderr.includes("Stop the server first (Ctrl+C where it runs, or `npx @parcha/agentrun service stop` when it runs as a service), run the import, then start the server again."), ran.stderr);
 });
 
 test("the CLI's own note is never the person's turn: a session holding only notes is passed over without --all, and a note before the first prompt is not the run's title", async (t) => {
@@ -1626,7 +1857,7 @@ test("a subagent whose file names no parent is no session and no run: its tokens
   // The Claude Code session's 2,688 tokens and the subagent's 1,965 (cache reads 2,300 + 1,500 of 2,608 + 1,900 input);
   // Bash and the subagent's shell call, one each.
   const block = lines.slice(-5);
-  assert.deepEqual(block.slice(0, 2), ["Found 1 session  Claude Code 1", "Imported into 1 agent (one per project)"]);
+  assert.deepEqual(block.slice(0, 2), ["Found 1 session  Claude Code 1", "Imported 1 session into 1 agent (one per project)"]);
   assert.match(block[2], /^\+ 4\.7K tokens \(84% cached\) · /);
   assert.match(block[3], / · top tool: Bash \(50%\)$/);
   const store = await openData(data, "runner");
@@ -1685,7 +1916,7 @@ test("an untied subagent's own subagents count in the summary's totals with it, 
   assert.equal(await importCommand(["--data", data, "--all"], "usage", { home, env: { PATH: "/usr/bin" }, out: (line) => lines.push(line) }), 0);
   // 2,688 + 1,965 + 1,965 tokens; cache reads 2,300 + 1,500 + 1,500 of 2,608 + 1,900 + 1,900 input; one Bash call, two shell.
   const block = lines.slice(-5);
-  assert.deepEqual(block.slice(0, 2), ["Found 1 session  Claude Code 1", "Imported into 1 agent (one per project)"]);
+  assert.deepEqual(block.slice(0, 2), ["Found 1 session  Claude Code 1", "Imported 1 session into 1 agent (one per project)"]);
   assert.match(block[2], /^\+ 6\.6K tokens \(83% cached\) · /);
   assert.match(block[3], / · top tool: shell \(67%\)$/);
   const store = await openData(data, "runner");
@@ -1849,7 +2080,9 @@ test("a later file of a session imported already is held as the session's growth
   // The thread resumed later, in a new file of the same id.
   shifted(codexSession(home, project, 192), `rollout-2026-10-20T10-00-00-${sessionId(192)}.jsonl`, 60, (r) => (r.type === "session_meta" ? { ...r, payload: { ...r.payload, id: sessionId(191) } } : r));
   const second = await run();
-  assert.deepEqual(second, first, "the run as it was imported");
+  assert.equal(first[1], "Imported 1 session into 1 agent (one per project)");
+  assert.equal(second[1], "Nothing new to import: this session is in 1 agent already", "nothing new written, and said so");
+  assert.deepEqual([second[0], ...second.slice(2)], [first[0], ...first.slice(2)], "the run as it was imported");
   const store = await openData(data, "runner");
   t.after(async () => await store.close());
   assert.equal((await rowsOf(store)).length, 1);

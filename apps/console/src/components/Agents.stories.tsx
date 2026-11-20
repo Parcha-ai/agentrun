@@ -8,6 +8,7 @@ import { agentFixture, agentsList, archivedAgents, editorCaps, recorded, revisio
 import { saveError } from "@/lib/agentForm";
 import { ANALYTICS, statsWith } from "@/components/AgentAnalytics.sample";
 import { ClientError } from "@/lib/client";
+import type { McpServer } from "@/lib/mcp";
 
 // The agents surface on agents and refusals AgentRun Server returned (src/fixtures), in the shell.
 const meta: Meta = { title: "Agents" };
@@ -63,4 +64,10 @@ export const SavedWithWarnings: Story = { render: () => page(<AgentEditor agent=
 // (an endpoint monid prices by usage, left out), in the server's words.
 const MONID_LEFT_OUT = "monid:exa/search is left out of monid:exa/*: monid:exa/search cannot be granted: monid prices it partly by usage (TIERED), so what one call costs is known only after it has run, and monid does not bound it (a run's maxCost checks only monid's estimate, which a call priced by usage can pass). A run's cap could not be kept: grant endpoints monid prices per call.";
 export const MonidGrants: Story = { render: () => { const a = agentFixture("invoice-checker"); const tools = [...a.definition.tools, "monid:keenable/v1/search", "monid:exa/*"]; return page(<AgentEditor agent={{ ...a, definition: { ...a.definition, tools }, warnings: [{ field: `definition.tools[${tools.length - 1}]`, reason: "not_an_option", message: MONID_LEFT_OUT }] }} revisions={revisionsOf("invoice-checker")} caps={editorCaps} step="tools" onSave={async () => null} onBack={noop} />); } };
+// The Tools step with a saved MCP server: its tools and the monid row each span the whole row, in the built-in tools'
+// columns, at any width (never two columns between empty ones).
+const GITHUB_MCP: McpServer = { name: "github", url: "https://api.githubcopilot.com/mcp/", auth: { type: "bearer" }, source: "github", toolkit: null, credential: "sealed",
+  tools: ["add_issue_comment", "create_branch", "create_pull_request", "get_file_contents", "issue_read", "list_branches", "list_commits", "search_repositories", "search_users", "update_pull_request"].map((name) => ({ name, description: `GitHub's ${name.replaceAll("_", " ")}.` })),
+  not_metered: ["add_issue_comment", "create_branch", "create_pull_request", "get_file_contents", "issue_read", "list_branches", "list_commits", "search_repositories", "search_users", "update_pull_request"] };
+export const ToolsWithMcpServer: Story = { render: () => editor("invoice-checker", { step: "tools", caps: { ...editorCaps, mcp: true }, mcpServers: [GITHUB_MCP] }) };
 export const Phone: Story = { render: () => editor("invoice-checker", { step: "settings" }), globals: { viewport: { value: "mobile1" } } };

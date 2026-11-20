@@ -21,7 +21,7 @@ const FAUX_BROWSERBASE = new URL("./fixtures/faux-browserbase-check.mjs", import
 const KEYS = ["BROWSERBASE_API_KEY", "BROWSERBASE_PROJECT_ID", "KERNEL_API_KEY", "AGENTRUN_SEAL_KEY", "FAUX_BROWSER_LOG"];
 const BB = { BROWSERBASE_API_KEY: "fake-test-key", BROWSERBASE_PROJECT_ID: "fake-project" };
 const KERNEL = { KERNEL_API_KEY: "fake-test-key" };
-const base = { harness: "pi", gateway: false, parallelKey: false };
+const base = { harness: "pi", facts: undefined, gateway: false, parallelKey: false };
 /** A key Kernel's fake refuses, built so it reads as no credential. */
 const WRONG = ["sk", "kernel", "wrong", "12345"].join("_");
 const browserIn = (env, picks = {}) => resolveCapability("browser", { ...base, browserKeys: { browserbase: Boolean(env.BROWSERBASE_API_KEY && env.BROWSERBASE_PROJECT_ID), kernel: Boolean(env.KERNEL_API_KEY) }, ...picks });

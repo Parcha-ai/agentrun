@@ -278,7 +278,10 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
     assert.equal(hook.got.length, 1, "no webhook, no message");
   });
 
-  test("a webhook URL on a private network or this machine is refused, by address or by name; one whose name resolves public at its PUT and private at its try is refused at the try, and nothing is sent", async (t) => {
+  // The words that lift it: the switch is the operator's, at the server's start, never the API's, so the refusal says which
+  // variable, its value, the restart it takes, and the machine it is for.
+  const RESTART_TO_SEND = "restart the server with AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1 to allow it, only on a machine you alone use";
+  test("a webhook URL on a private network or this machine is refused, by address or by name, in words naming the start-time switch that allows it and the restart it takes; one whose name resolves public at its PUT and private at its try is refused at the try, in the same words, and nothing is sent", async (t) => {
     // The server as an operator runs it: no switch to send inside its own network.
     const { api } = await serve(t);
     for (const url of [
@@ -292,7 +295,8 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
       const refused = await api("PUT", "/settings/webhook", { url });
       assert.equal(refused.status, 422, `${url}: ${JSON.stringify(refused.body)}`);
       assert.deepEqual(refused.body.error.fields.map((f) => f.field), ["url"], url);
-      assert.match(refused.body.error.fields[0].message, /private network or this machine/);
+      assert.equal(refused.body.error.code, "input_invalid", url);
+      assert.equal(refused.body.error.fields[0].message, `url is on a private network or this machine, which this server does not send to; ${RESTART_TO_SEND}`, url);
     }
     assert.deepEqual((await api("GET", "/settings/webhook")).body.configured, false, "nothing set");
     // A name that resolves to a public address when it is set, then to this machine when a message is tried (a DNS
@@ -304,7 +308,7 @@ describe("the outbound webhook: signature, idempotency and custody", { concurren
     const webhooks = await on.open();
     await webhooks.save({ url: `http://rebinds.example:${new URL(hook.url).port}/hook` });
     const tried = await webhooks.test();
-    assert.deepEqual([tried.status_code, tried.error], [null, "refused: rebinds.example is not a public host"]);
+    assert.deepEqual([tried.status_code, tried.error], [null, `refused: rebinds.example is not a public host; ${RESTART_TO_SEND}`]);
     assert.equal(hook.got.length, 0, "nothing reached this machine");
   });
 

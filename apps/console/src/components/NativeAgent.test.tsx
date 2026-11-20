@@ -3,13 +3,14 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it } from "vitest";
 import { createClient } from "@/lib/client";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import type { NativeBinding } from "@/lib/native";
 import { NativeAgent, NativeMutationProvider, useNativeReadiness } from "./NativeAgent";
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: Root;
 afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 const native: NativeBinding = { runtime: "codex", project: "/workspace/app", selector: { kind: "profile", name: "review" }, machine_id: "workstation", version: "0.167.2", model: "gpt-5", fingerprint: "abc", configuration: [], skills: [], mcp_servers: [], state: "ready", issues: [], connected: true, verified_at: "2026-11-12T00:00:00Z", capabilities: { launch: true, learning: true, workflows: false, approval: "native", usage: true } };
-const agent: Agent = { agent_id: "reviewer", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Reviewer", tools: [], skills: [], learning: false, native } };
+const agent: Agent = { ...SERVED_AGENT, agent_id: "reviewer", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Reviewer", tools: [], skills: [], learning: false, native } };
 it("explains native learning costs before enabling learning, turns learning fully off, and disconnects without deleting history", async () => {
   let current = agent;
   const calls: { path: string; method: string; body: any }[] = [];

@@ -23,7 +23,7 @@
 import { agentDiskOf, ARCHIL_API_KEY_ROW, ARCHIL_SETTINGS_ENV, type ArchilSettings, archilSettingsFromEnv, archilSettingsIssues, archilSettingsOf, clearArchilSettings, forgetAgentDisk, loadArchilSettings, saveArchilSettings, storeAgentDisk } from "./archil-settings.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { envValue, type KeyEnv, type KeyMeta, keyMetaOf } from "./key-meta.js";
-import { registerNotSecretWrite, registerSecretWrite, secretName } from "./secret-writes.js";
+import { registerNotSecretWrite, registerSecretPage, registerSecretWrite, secretName } from "./secret-writes.js";
 import { readLaunchBody } from "./run-launch.js";
 import { putSealedKey, removeSealedKey } from "./server-keys.js";
 import type { RunState, Store } from "./store/index.js";
@@ -49,6 +49,7 @@ export const ARCHIL_KEY_NAMES: readonly string[] = KEYS.map((key) => key.name);
 // region and S3 URL too, which say where every run's files go, so a token never re-points them. The server's one dispatch
 // check keeps it to the owner's session. Turning Archil off keeps the key, so it is not registered.
 registerSecretWrite("putWorkspaceArchil", () => true);
+registerSecretPage("putWorkspaceArchil", "/#/settings/workspace");
 registerNotSecretWrite("deleteWorkspaceArchil", "Turning Archil off keeps its key: no secret is dropped or replaced.");
 registerNotSecretWrite("testWorkspaceArchil", "A connection test reads the saved key and writes none.");
 
@@ -273,9 +274,10 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
    *  so is the folder of a disk Archil says is gone, which has nothing left to delete (one the caller deleted, or the
    *  agent's own disk named in the launch, which the agent's delete removed whole before its runs' folders).
    *  Archil off, or no account key, is 503 unavailable; a delete Archil refuses (a computer that still holds the folder,
-   *  Archil not reached) is 424 upstream_failed, what was not deleted left for the next call. */
-  async function removeRunFolder(agentId: string, runId: string, diskId: string): Promise<void> {
-    const what = `The run ${runId}'s folder on the Archil disk ${diskId}, which its launch named,`;
+   *  Archil not reached) is 424 upstream_failed, what was not deleted left for the next call. `whose` "agent": the run is
+   *  deleted alone (DELETE /runs/{id}), its folder on its agent's own disk, which stays. */
+  async function removeRunFolder(agentId: string, runId: string, diskId: string, whose: "launch" | "agent" = "launch"): Promise<void> {
+    const what = `The run ${runId}'s folder on the Archil disk ${diskId}, ${whose === "launch" ? "which its launch named" : "its agent's own"},`;
     const settings = await loadArchilSettings(store, env);
     if (settings === undefined) throw new ApiError("unavailable", `${what} is not deleted yet: Archil is off on this server, so it can't be reached. Turn Archil on again (PUT /v2/workspace/archil)`);
     const key = await keyOr("unavailable", `${what} can't be deleted`);

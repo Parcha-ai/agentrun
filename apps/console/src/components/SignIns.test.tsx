@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HELD_POLL_MS, SignIns } from "./SignIns";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import type { SignIn, SignInForgotten } from "@/lib/v2";
 import { ClientError } from "@/lib/client";
 
@@ -19,7 +20,7 @@ afterEach(() => { act(() => root?.unmount()); document.body.innerHTML = ""; });
 type Removed = SignInForgotten;
 const RUN = "01a1aa49-10ff-785c-9d1d-6f2fc8489901";
 const agentWith = (signIns: SignIn[] | undefined, browser = "browserbase"): Agent => ({
-  agent_id: "shopper", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
+  ...SERVED_AGENT, agent_id: "shopper", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Shopper", instructions: "Shop.", harness: "pi", skills: [], tools: ["browser"] },
   tools: [{ name: "browser", provider: "auto", provider_from: "default", default_provider: "auto", resolved: browser, permission: "allow", permission_from: "default", default_permission: "allow", permissions: ["allow", "ask", "deny"] }],
   ...(signIns ? { sign_ins: signIns } : {}),

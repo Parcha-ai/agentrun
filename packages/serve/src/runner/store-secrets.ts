@@ -5,8 +5,8 @@
 // echoes it back. One read of the store across all its planes (store.sealedSecrets): tool, model, computer and Archil keys,
 // the email account's password alone (its row holds the account whole), and the ChatGPT sign-in's access and refresh tokens each alone, renewed by whichever process holds the store (sealed_keys); MCP credentials, their headers' values and OAuth tokens and client secret (mcp_servers), and a sign-in in
 // flight (mcp_oauth_pending); each trigger source's settings, a webhook trigger's signing secret and the GitHub App's key
-// and webhook secret among them, and the outbound webhook's signing secret, each it held before too (trigger_settings),
-// but a field its source marks public; browser sign-in pointers, live and forgotten; live viewer tokens; a launch's sealed
+// and webhook secret among them, the outbound webhook's signing secret and Slack's incoming-webhook URL (whole and its
+// token alone, slack-url.ts), each it held before too (trigger_settings), but a field its source marks public; browser sign-in pointers, live and forgotten; live viewer tokens; a launch's sealed
 // part (a run's handed MCP credentials and its own model key). Beside the store, what the data directory keeps where the runner shares it (server-secrets.ts besideTheStore: the
 // owner's API token and the sign-in session secret). Each value in every spelling the server's list has
 // (standard-webhooks.ts secretForms), a PEM key whole and line by line. A value that does not open under the runner's key
@@ -15,8 +15,10 @@ import { CHATGPT_PLAN_ROW } from "../chatgpt-plan.js";
 import { calendarRowSecrets } from "../calendar/address.js";
 import { CALENDAR_ROW } from "../calendar/names.js";
 import { accountRowSecrets, EMAIL_ACCOUNT_ROW } from "../email/account.js";
+import { GATEWAY_KEY_ROW, gatewayKeyRowSecrets } from "../model-gateway.js";
 import { unseal } from "../sealing.js";
 import { besideTheStore, ServerSecrets } from "../server-secrets.js";
+import { SLACK_CHANNEL, slackUrlForms } from "../slack-url.js";
 import type { SealedSecretRow, Store } from "../store/index.js";
 import type { TriggerAdapter } from "../trigger-adapter.js";
 import { TRIGGER_ADAPTERS } from "../trigger-adapters.js";
@@ -59,8 +61,9 @@ function jsonSecrets(text: string): string[] {
 }
 
 /** A launch's sealed JSON: its own listed values (jsonSecrets), each handed MCP credential's headers (store/seal.ts
- *  sealRunLaunch: `{"mcp": {"<server>": {"headers": {...}}}}`), as a saved server's are listed, and the run's own model
- *  key (`{"model": {"key": "..."}}`). */
+ *  sealRunLaunch: `{"mcp": {"<server>": {"headers": {...}}}}`), as a saved server's are listed, each per-run Composio
+ *  binding's user and account (`{"mcp": {"<server>": {"composio": {"user_id", "connected_account_id"}}}}`), and the run's
+ *  own model key (`{"model": {"key": "..."}}`). */
 function launchSecrets(text: string): string[] {
   const out = jsonSecrets(text);
   let opened: { mcp?: unknown; model?: { key?: unknown } } | null;
@@ -70,7 +73,13 @@ function launchSecrets(text: string): string[] {
     return out;
   }
   const mcp = opened?.mcp;
-  if (mcp && typeof mcp === "object") for (const entry of Object.values(mcp)) out.push(...jsonSecrets(JSON.stringify(entry)));
+  if (mcp && typeof mcp === "object") {
+    for (const entry of Object.values(mcp)) {
+      out.push(...jsonSecrets(JSON.stringify(entry)));
+      const binding = (entry as { composio?: { user_id?: unknown; connected_account_id?: unknown } } | null)?.composio;
+      for (const value of [binding?.user_id, binding?.connected_account_id]) if (typeof value === "string") out.push(value);
+    }
+  }
   if (typeof opened?.model?.key === "string") out.push(opened.model.key);
   return out;
 }
@@ -94,6 +103,8 @@ const pemForms = (value: string): string[] => [value, ...value.split(/\r?\n/).ma
 function secretsOf(row: SealedSecretRow, plain: string, adapters: readonly TriggerAdapter[]): { listed: string[]; whole: string[] } {
   switch (row.plane) {
     case "trigger_settings": {
+      // Slack's URL (live or retired): the URL whole and its token alone, as the server lists it.
+      if (row.where.adapter === SLACK_CHANNEL) return { listed: slackUrlForms(plain), whole: [] };
       const spec = adapters.find((adapter) => adapter.id === row.where.adapter)?.settings?.fields[row.where.field ?? ""];
       if (spec?.public) return { listed: [], whole: [] };
       return spec?.format === "pem" ? { listed: [], whole: pemForms(plain) } : { listed: [plain], whole: [] };
@@ -104,7 +115,7 @@ function secretsOf(row: SealedSecretRow, plain: string, adapters: readonly Trigg
     case "run_launch":
       return { listed: plain.trimStart().startsWith("{") ? launchSecrets(plain) : [plain], whole: [] };
     case "sealed_keys":
-      return { listed: row.where.name === CHATGPT_PLAN_ROW ? planSecrets(plain) : row.where.name === EMAIL_ACCOUNT_ROW ? accountRowSecrets(plain) : row.where.name === CALENDAR_ROW ? calendarRowSecrets(plain) : [plain], whole: [] };
+      return { listed: row.where.name === CHATGPT_PLAN_ROW ? planSecrets(plain) : row.where.name === EMAIL_ACCOUNT_ROW ? accountRowSecrets(plain) : row.where.name === CALENDAR_ROW ? calendarRowSecrets(plain) : row.where.name === GATEWAY_KEY_ROW ? gatewayKeyRowSecrets(plain) : [plain], whole: [] };
     default:
       return { listed: [plain], whole: [] };
   }

@@ -37,7 +37,7 @@ export const CONNECT_MS = 30_000;
 /** Each pinned server: its URL then, the granted tools as it listed them, and the prices its owner declared for them. */
 export type McpPin = Record<string, { url: string; tools: McpTool[]; prices?: Record<string, number> }>;
 /** Each granted server's URL now, and its credential's headers when that URL is the pinned one (the claim step's). */
-export type McpCredentials = Record<string, { url: string; headers?: Record<string, string>; /** Why its saved credential did not open: its calls are refused unsent. */ unopened?: string; /** When its credential ends (ms): a token minted for the run's launch (a github_app server's), whose calls past it are refused unsent, in words. */ expires_at?: number }>;
+export type McpCredentials = Record<string, { url: string; headers?: Record<string, string>; /** What every request to it adds to its address's query for this run alone: a per-run Composio server's Composio user and connected account (the run's mcp_auth binding), never stored, held for the scrub as headers are. */ query?: Record<string, string>; /** Why its saved credential did not open: its calls are refused unsent. */ unopened?: string; /** When its credential ends (ms): a token minted for the run's launch (a github_app server's), whose calls past it are refused unsent, in words. */ expires_at?: number }>;
 
 /** The servers a save pins from: each one's URL, its tools as it lists them now, and its owner's prices. */
 export interface McpServerSource {
@@ -214,7 +214,9 @@ export type McpGateway = {
 
 export function mcpGateway(options: McpGatewayOptions): McpGateway {
   type Upstream = { callTool(params: unknown, options: unknown): Promise<unknown> };
-  const clients = new Map<string, Promise<Upstream>>();
+  /** Each server's client, with the account query it was connected with (`query`, JSON): a message that binds the run to
+   *  another account connects again, so no session made as one account carries another's calls. */
+  const clients = new Map<string, { query: string; upstream: Promise<Upstream> }>();
   const pins = new Map(Object.entries(options.pin));
   const credentials: Pick<Map<string, McpCredentials[string]>, "get"> = { get: (server) => (Object.hasOwn(options.credentials, server) ? options.credentials[server] : undefined) };
   /** Each server's last HTTP status, which tells a refused credential from another failure. (An address refusal is never
@@ -230,6 +232,8 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     for (const values of inFlight.get(server) ?? []) for (const value of Object.values(headers)) values.add(value);
     return headers;
   };
+  /** The run's account query of `server` now (none for a server that takes none). */
+  const queryOf = (server: string): Record<string, string> => credentials.get(server)?.query ?? {};
   /** A call's own set, held while it is out (released by the call's end). */
   const callSet = (server: string): { values: Set<string>; release(): void } => {
     const values = new Set<string>();
@@ -247,10 +251,17 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   /** A call's scrub: the headers it took, every value its server's requests took or sent while it was out, and its
    *  credential now. */
   const scrubberOf = (server: string, headers: Record<string, string>, values: Set<string>) => (text: string) =>
-    scrub(text, [...Object.values(headers), ...values, ...Object.values(credentials.get(server)?.headers ?? {})]);
+    scrub(text, [...Object.values(headers), ...values, ...Object.values(credentials.get(server)?.headers ?? {}), ...Object.values(queryOf(server))]);
 
   /** The fetch one server's client sends with: its credential added, no redirect followed, at most MAX_RESPONSE read. */
-  const guarded = (server: string, headers: Record<string, string> | (() => Record<string, string>), status: { last?: number }) => async (input: string | URL | Request, init: RequestInit = {}) => {
+  const guarded = (server: string, headers: Record<string, string> | (() => Record<string, string>), status: { last?: number }, query: Record<string, string> = {}) => async (input: string | URL | Request, init: RequestInit = {}) => {
+    // The account its client was connected as, set over whatever the request's address says, and held for the scrub.
+    if (Object.keys(query).length) {
+      hold(server, query);
+      const at = new URL(input instanceof Request ? input.url : String(input));
+      for (const [name, value] of Object.entries(query)) at.searchParams.set(name, value);
+      input = input instanceof Request ? new Request(at, input) : at.href;
+    }
     // Its address checked first, every request: a name that resolves somewhere private now is refused before anything
     // (its credential among it) leaves, and the request is dialled at the address checked.
     let through = send;
@@ -271,19 +282,21 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
   };
 
   const connect = (server: string, url: string, headers: Record<string, string>): Promise<Upstream> => {
-    let upstream = clients.get(server);
-    if (!upstream) {
-      const status: { last?: number } = {};
-      statuses.set(server, status);
-      upstream = (async () => {
-        const { client, transport } = mcpClient(await import("@modelcontextprotocol/client"), { name: "agentrun", version: "1.0.0", url: new URL(url), fetch: guarded(server, () => credentials.get(server)?.headers ?? {}, status) as never });
-        await client.connect(transport, { timeout: options.bounds?.connectMs ?? CONNECT_MS });
-        return client as unknown as Upstream;
-      })();
-      clients.set(server, upstream);
-      // A server that did not connect is tried again at the next call.
-      upstream.catch(() => clients.delete(server));
-    }
+    const query = queryOf(server);
+    const key = JSON.stringify(query);
+    const held = clients.get(server);
+    if (held && held.query === key) return held.upstream;
+    const status: { last?: number } = {};
+    statuses.set(server, status);
+    const upstream = (async () => {
+      const { client, transport } = mcpClient(await import("@modelcontextprotocol/client"), { name: "agentrun", version: "1.0.0", url: new URL(url), fetch: guarded(server, () => credentials.get(server)?.headers ?? {}, status, query) as never });
+      await client.connect(transport, { timeout: options.bounds?.connectMs ?? CONNECT_MS });
+      return client as unknown as Upstream;
+    })();
+    const made = { query: key, upstream };
+    clients.set(server, made);
+    // A server that did not connect is tried again at the next call.
+    upstream.catch(() => clients.get(server) === made && clients.delete(server));
     return upstream;
   };
 
@@ -327,6 +340,7 @@ export function mcpGateway(options: McpGatewayOptions): McpGateway {
     // Read at each use: a token refreshed while the call is out, and sent, is scrubbed with the one it took.
     const held = callSet(server);
     const clean = scrubberOf(server, hold(server, headers), held.values);
+    hold(server, queryOf(server));
     try {
       const upstream = await until(connect(server, url, headers), signal);
       connected = true;

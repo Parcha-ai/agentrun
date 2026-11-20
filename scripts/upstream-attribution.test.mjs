@@ -137,3 +137,35 @@ test('every package in this tree keeps the boundary rules as it ships, and only 
   }
   assert.deepEqual(carriers, ['run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex']);
 });
+
+test('the eve integration allowance admits only the exact console label and two handoffs, never fork branding', async () => {
+  const allow = ALLOWED_MARKS.serve;
+  const bundle = 'const labels={eve:"Vercel eve"};\nconst edit="using Vercel eve. Read the current agent";\nconst run="using Vercel eve. Read the current agent";\n';
+  const fixture = async (text = bundle, file = 'dist/console/assets/index-hash_123.js', name = '@parcha/agentrun-serve') => {
+    const dir = join(scratch, `eve${made += 1}`);
+    await mkdir(dirname(join(dir, file)), { recursive: true });
+    await writeFile(join(dir, 'package.json'), JSON.stringify({ name }));
+    await writeFile(join(dir, file), text);
+    return dir;
+  };
+  const problems = async (text, file) => boundaryProblems(await fixture(text, file), { allow });
+  assert.deepEqual(await problems(), []);
+  assert.deepEqual(await problems(bundle, 'dist/console/assets/index-another-HASH.js'), [], 'a content hash is not an attribution rule');
+  assert.deepEqual(await problems(bundle.replaceAll('\n', '')), [], 'every character outside the approved literals is still scanned on minified lines');
+  assert.ok((await problems(bundle + 'const extra="Vercel eve";\n')).some(p => /2 found, 1 allowed/.test(p)), 'extra uses need review');
+  assert.ok((await problems(bundle.replace('const run="using Vercel eve. Read the current agent";\n', ''))).some(p => /1 found, 2 allowed/.test(p)), 'stale allowances fail');
+  for (const text of [
+    bundle.replace('eve:"Vercel eve"', 'eve:"Vercel eve Cloud"'),
+    bundle.replace('eve:"Vercel eve"', 'eve:"Vercel eve",brand:"Vercel"'),
+    bundle + 'const brand="Workflow SDK";\n',
+    bundle + 'const brand="AI Gateway";\n',
+    bundle + '// From github.com/vercel-labs/durable-harness\n',
+    bundle + 'import "@workflow/world";\n',
+    bundle + 'const logo=`<svg><polygon points="37.59,0 75.18,65 0,65"/></svg>`;\n',
+  ]) assert.ok((await problems(text)).length > 0, 'unlisted branding, imports and logos remain prohibited');
+  for (const file of ['README.md', 'dist/index.js', 'dist/console/other.js', 'dist/console/assets/other-hash.js']) {
+    assert.ok((await problems(bundle, file)).some(p => /names Vercel/.test(p)), `no allowance for ${file}`);
+  }
+  const other = await fixture(bundle, undefined, '@parcha/agentrun-dsl');
+  assert.ok((await boundaryProblems(other, { allow: ALLOWED_MARKS.dsl })).some(p => /names Vercel/.test(p)), 'other packages do not receive the console allowance');
+});

@@ -50,13 +50,13 @@ export function MonidGrants({ tools, listed = [], notes = [], refused = [], onCh
           })}
         </ul>
       )}
-      <form className="flex flex-wrap items-start gap-2" onSubmit={(e) => { e.preventDefault(); grant(); }}>
+      <form className="flex max-w-3xl flex-wrap items-start gap-2" onSubmit={(e) => { e.preventDefault(); grant(); }}>
         <Input aria-label="monid grant" value={text} onChange={(e) => { setText(e.target.value); setProblem(undefined); }} aria-invalid={problem ? true : undefined}
           placeholder="monid:<provider>/<endpoint> or monid:<provider>/*" className="min-w-0 flex-[1_1_18rem]" spellCheck={false} autoCapitalize="off" autoComplete="off" />
         <Button type="submit" size="sm" className="h-control-md" disabled={!text.trim()}><Plus aria-hidden /> Grant</Button>
       </form>
       {problem && <p className="font-mono text-small text-destructive-text" role="alert">{problem}</p>}
-      <p className="text-small text-muted-foreground">A grant is priced and pinned when the agent is saved, from what monid lists then. monid's key is set in Settings → Tool keys.</p>
+      <p className="text-small text-muted-foreground">A grant is priced and pinned when the agent is saved, from what monid lists then. monid's key is set in Settings → API Keys.</p>
       {refused.length > 0 && (
         <ul className="space-y-1 font-mono text-small text-destructive-text" role="alert" aria-label="monid grants refused">
           {refused.map((r, i) => <li key={`${r.grant}:${i}`}>{r.message}</li>)}

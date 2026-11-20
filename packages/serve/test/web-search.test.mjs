@@ -33,7 +33,7 @@ const capRefusal = (what, price, basis, spent, cap, raise) => `spend_cap_reached
  *  charge with its tool, call and figure. */
 const paidRecords = paidCallsOf;
 /** What the model and the timeline read when Exa's free limit holds after the one retry: our words, never Exa's. */
-const RATE_LIMITED = "Free web search is rate-limited right now. Try again in a minute; add the free Parallel Search server in Settings → MCP servers and grant the agent its web_search; or add a Parallel key in Settings → Tool keys to search with a key.";
+const RATE_LIMITED = "Free web search is rate-limited right now. Try again in a minute; add the free Parallel Search server in Settings → MCP servers and grant the agent its web_search; or add a Parallel key in Settings → API Keys to search with a key.";
 /** Exa's own fix, in any of its words: an API key put in its MCP URL, which means nothing to a person here. */
 const EXA_FIX = /exa\.ai|Fix:|MCP URL|exaApiKey|free MCP rate limit/;
 const MODE = "AGENTRUN_TEST_FAUX_PARALLEL_SEARCH";
@@ -307,7 +307,7 @@ test("Parallel picked with no Parallel key: web_search is missing in capabilitie
   const saved = await api("POST", "/agents", { definition: { id: "searcher", name: "searcher", instructions: "Search.", tools: ["web_search"] } });
   assert.equal(saved.status, 201, JSON.stringify(saved.body));
   assert.deepEqual(saved.body.warnings.map((w) => [w.field, w.reason]), [["definition.tools[0]", "not_set_up_here"]]);
-  assert.match(saved.body.warnings[0].message, /The\ tool\ web_search\ does\ not\ run\ here\ on\ pi:\ parallel\ is\ picked,\ and\ it\ needs\ a\ Parallel\ key:\ save\ one\ in\ Settings\ →\ Tool\ keys\ \(or\ set\ PARALLEL_API_KEY\ where\ the\ server\ starts\)\./);
+  assert.match(saved.body.warnings[0].message, /The\ tool\ web_search\ does\ not\ run\ here\ on\ pi:\ parallel\ is\ picked,\ and\ it\ needs\ a\ Parallel\ key:\ save\ one\ in\ Settings\ →\ API\ Keys\ \(or\ set\ PARALLEL_API_KEY\ where\ the\ server\ starts\)\./);
   const refused = await api("POST", "/agents/searcher/runs", { input: { content: "Search the web for widgets" } });
   assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.missing], [409, "agent_not_runnable", { web_search: ["PARALLEL_API_KEY"] }]);
   assert.deepEqual(await seen(), [], "no request reached Parallel");
@@ -359,7 +359,7 @@ test("keyless Exa: one MCP exchange with no key, its text read into results; a 4
   assert.deepEqual(asked, [{ query: "widgets", numResults: 8 }], "at most 8 results asked of Exa");
   // The 429 names Retry-After 30: the limit does not lift within a search, so it is not tried again. Each refusal says
   // which limit it met (limit), for the caller's fallback; the model never reads that field (searchFor drops it).
-  for (const [mode, error, limit] of [["429", /^Free web search is rate-limited right now\. Try again in a minute; add the free Parallel Search server in Settings → MCP servers and grant the agent its web_search; or add a Parallel key in Settings → Tool keys to search with a key\.$/, { limit: "rate_limited", retryAfterS: 30 }], ["403", /refused keyless use from this connection \(403\).*only over IPv4.*not over IPv6 or through a proxy/, { limit: "connection_refused" }], ["500", /^Exa's MCP endpoint answered 500 to the search$/, {}]]) {
+  for (const [mode, error, limit] of [["429", /^Free web search is rate-limited right now\. Try again in a minute; add the free Parallel Search server in Settings → MCP servers and grant the agent its web_search; or add a Parallel key in Settings → API Keys to search with a key\.$/, { limit: "rate_limited", retryAfterS: 30 }], ["403", /refused keyless use from this connection \(403\).*only over IPv4.*not over IPv6 or through a proxy/, { limit: "connection_refused" }], ["500", /^Exa's MCP endpoint answered 500 to the search$/, {}]]) {
     sent.length = 0;
     process.env.AGENTRUN_TEST_FAUX_EXA = mode;
     resetFauxExa();

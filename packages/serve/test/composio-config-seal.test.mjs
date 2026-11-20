@@ -825,18 +825,29 @@ test("an Idempotency-Key replay of a run create gives back its input as sent, a 
  *  old bytes may still be in the store's files. */
 const markerIn = (data) => join(data, "store.sqlite.scrub");
 
-/** A server whose store holds trigger `id`'s key only in free pages: kept in the clear, rewritten by pauses, then masked
- *  with no scrub after, as a server that died after its rewrite committed leaves it. Its marker is left. */
+/** A server whose store holds trigger `id`'s key only in free pages: kept in the clear, rewritten by renames, then masked
+ *  with no scrub after, as a server that died after its rewrite committed leaves it. Its marker is left. This server's
+ *  connections zero what they free (secure_delete, store/sqlite/worker.ts), so the rewrites are an earlier server's: a
+ *  connection of the test's own with secure_delete off, on the stopped server's file. */
 async function diedAfterRewrite(t) {
   const s = await setup(t);
   const key = fakeKey();
   const made = await s.api("POST", "/triggers", dealTrigger(key));
   assert.equal(made.status, 201, made.status === 201 ? "" : JSON.stringify(made.body));
-  await keptInTheClear(s.server.store, made.body, key);
   await livedWith(s.api, made.body.id);
-  const masked = (await s.api("GET", `/triggers/${made.body.id}`)).body.source;
-  await s.server.store.triggers.update(made.body.id, { source: masked });
   await s.server.stop();
+  const db = new DatabaseSync(join(s.server.data, "store.sqlite"), { timeout: 5_000 });
+  try {
+    db.exec("PRAGMA secure_delete = OFF");
+    const { source: masked } = db.prepare("SELECT source FROM triggers WHERE id = ?").get(made.body.id);
+    const { sealed_config: _, ...source } = JSON.parse(masked);
+    const rewrite = db.prepare("UPDATE triggers SET source = ? WHERE id = ?");
+    rewrite.run(JSON.stringify({ ...source, config: { ...source.config, developer_api_key: key } }), made.body.id);
+    for (const n of [1, 2, 3, 4, 5]) db.prepare("UPDATE triggers SET name = ? WHERE id = ?").run(`deals ${"y".repeat(n * 9)}`, made.body.id);
+    rewrite.run(masked, made.body.id);
+  } finally {
+    db.close();
+  }
   writeFileSync(markerIn(s.server.data), "");
   assert.ok(filesUnder(s.server.data).some((path) => readFileSync(path).includes(key)), "the key's old bytes are in the store's free space before the start");
   return { s, key, made };

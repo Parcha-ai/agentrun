@@ -629,7 +629,7 @@ describe("applying a template", () => {
   it("a key only the picked choice needs, refused at apply: its words and fix under that choice, once", async () => {
     const INBOX: TemplateView = { ...NOTES, name: "inbox", secrets: [], model: { tier: "balanced", choices: [{ id: "searched", label: "With search", model: "openrouter/particle-ai/particle-1", harness: "pi", warning: null, note: null, secrets: ["PARALLEL_API_KEY"] }] } };
     const message = "PARALLEL_API_KEY is not set on this server.";
-    const fix = "Add it in Settings → Tool keys, then apply the template again.";
+    const fix = "Add it in Settings → API Keys, then apply the template again.";
     const t = await open("inbox", { templates: [INBOX], apply: async () => { throw Object.assign(new ClientError(409, "agent_not_runnable", "The inbox template needs PARALLEL_API_KEY. Nothing was created."), { fields: [{ field: "secrets.PARALLEL_API_KEY", reason: "not_set_up_here", message, fix }] }); } });
     await t.click(t.host.querySelector<HTMLInputElement>('[data-choice="searched"] input[type="radio"]'));
     await t.click(t.button(/^Apply/));

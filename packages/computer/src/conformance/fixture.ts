@@ -1,6 +1,6 @@
 // The model-free fixtures the screen, input, touch and apps cases check effects with. A fixture is an app that logs
 // every input event it gets as one JSON line in a file the case reads over files. On a desktop it is computerd-fixture,
-// a test-only static binary: a 200x200 override-redirect window at (0, 0) in four known colors, which grabs focus. On
+// a static binary the server's image carries for dial conformance: a 200x200 override-redirect window at (0, 0) in four known colors, which grabs focus. On
 // Android it is a small APK that logs touches and its own launch to its files directory and shows a button with a fixed
 // id. This file is their contract: the binary and the APK come with the PRs that first run them. On a Windows desktop it
 // is a PowerShell script this package carries (windows-fixture.ts), the same window, started detached with Start-Process.

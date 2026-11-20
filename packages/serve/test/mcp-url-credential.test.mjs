@@ -46,7 +46,7 @@ test("a server listening on loopback is no local install unless its operator say
   const fake = await startFakeMcp();
   t.after(() => fake.close());
   const hosted = await serve(t, { runner: false, mcpLoopback: false });
-  const words = "127.0.0.1 is this machine; set AGENTRUN_MCP_ALLOW_LOOPBACK=1 when starting the server, only on a machine you alone use."; // key-gate: loopback-rule the refusal's own words
+  const words = "127.0.0.1 is this machine; restart the server with AGENTRUN_MCP_ALLOW_LOOPBACK=1 to allow it, only on a machine you alone use."; // key-gate: loopback-rule the refusal's own words
   for (const [door, answer] of [
     ["save", await hosted.api("PUT", "/settings/mcp-servers/local", { url: fake.url, auth: { type: "none" } })],
     ["preview", await hosted.api("POST", "/settings/mcp-servers/preview", { url: fake.url, auth: { type: "none" } })],

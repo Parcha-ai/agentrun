@@ -1,0 +1,29 @@
+name: The image to walk
+description: >
+  Downloads an image a job of this run saved as an artifact (docker save, image.tar in it), loads it into this runner's
+  Docker and sets AGENTRUN_IMAGE to it for the job's later steps, the name every walk takes for the image to walk
+  (ways-in-daily.yml's image job saves main's).
+inputs:
+  artifact:
+    description: the artifact's name
+    required: true
+outputs:
+  image:
+    description: the image loaded, as <repository>:<tag>
+    value: ${{ steps.load.outputs.image }}
+runs:
+  using: composite
+  steps:
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+      with:
+        name: ${{ inputs.artifact }}
+        path: ${{ runner.temp }}/walk-image
+    - id: load
+      shell: bash
+      env:
+        ARTIFACT: ${{ inputs.artifact }}
+      run: |
+        image=$(docker load -i "$RUNNER_TEMP/walk-image/image.tar" | sed -n 's/^Loaded image: //p' | head -n 1)
+        [ -n "$image" ] || { echo "::error::image.tar in $ARTIFACT named no image"; exit 1; }
+        echo "image=$image" >> "$GITHUB_OUTPUT"
+        echo "AGENTRUN_IMAGE=$image" >> "$GITHUB_ENV"

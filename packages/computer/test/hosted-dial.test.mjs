@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { ATTACH_CLOSE, AttachHub, helloMismatch, hostedDaemonPath, MemoryMachineTokens, mintedComputer } from "../dist/index.js";
+import { ATTACH_CLOSE, AttachHub, helloMismatch, hostedDaemonPath, MACHINE_TOKEN_SOURCE, MemoryMachineTokens, mintedComputer, mountsOf } from "../dist/index.js";
 import { HostedProvider } from "../dist/hosted/provider.js";
 import { fakeDialHost, PUBLIC_URL } from "./fake-dial-host.mjs";
 import { fakeHost } from "./fake-host.mjs";
@@ -42,7 +42,7 @@ test("a dial create boots the machine with its env, runs nothing in it, and read
 	assert.deepEqual(Object.keys(env).sort(), ["AGENTRUN_ATTACH_TOKEN", "AGENTRUN_ATTACH_URL", "AGENTRUN_DAEMON_SHA256", "AGENTRUN_DAEMON_URL", "AGENTRUN_INIT_ARGS"]);
 	assert.equal(env.AGENTRUN_ATTACH_URL, "ws://127.0.0.1:8080/v2/computers/attach");
 	assert.equal(env.AGENTRUN_DAEMON_URL, "http://127.0.0.1:8080/v2/computers/daemon?arch=amd64");
-	assert.match(env.AGENTRUN_ATTACH_TOKEN, /^art_[0-9a-f]{64}$/);
+	assert.match(env.AGENTRUN_ATTACH_TOKEN, new RegExp(`^${MACHINE_TOKEN_SOURCE}$`));
 	assert.match(env.AGENTRUN_DAEMON_SHA256, /^[0-9a-f]{64}$/);
 	assert.equal(env.AGENTRUN_INIT_ARGS, `--deadline ${request.labels["agentrun.computer.deadline"]} --user 2510:2510 --own-network --max-deadline ${request.labels["agentrun.computer.max-deadline"]}`);
 	assert.equal(request.command, undefined, "no entrypoint: agentrun-dial starts init");
@@ -353,7 +353,7 @@ test("a dial host takes no Archil mount, in words, and declares a synced folder 
 	assert.deepEqual(provider.capabilities().mount, ["sync"]);
 	const refused = await create(provider, { ...SPEC, mount: { kind: "archil", disk: "dsk-0123456789abcdef", region: "aws-us-east-1", folder: "agents/a/runs/r/work" } });
 	assert.equal(refused.ok, false);
-	assert.match(refused.error.message, /mount: Fakehost's machines dial this server, and a machine that dials takes no Archil mount yet/);
+	assert.ok(refused.error.message.includes(`mount: ${mountsOf(provider.host.descriptor, () => false, true).unmounted.archil}`), refused.error.message);
 	assert.equal(fake.creates(), 0);
 });
 
@@ -364,7 +364,7 @@ test("the constructor refuses a dial host with exec or upload", () => {
 	assert.throws(() => new HostedProvider({ ...host, upload: async () => {} }, { daemonPath: DAEMON_PATH }), /has no exec and no upload/);
 });
 
-test("a dial desktop boots init with DISPLAY, starts the X server and the window manager over the socket it dialed, and declares the screen", async () => {
+test("a dial desktop boots init with DISPLAY and --window-manager, starts the X server over the socket it dialed, waits until computerd's window manager runs, and declares the screen", async () => {
 	const { fake, provider, hub } = setup({ facts: { windowManager: true } }, { kind: "desktop" });
 	const ref = made(await create(provider));
 	const [, request] = fake.calls.find(([what]) => what === "create");
@@ -372,15 +372,18 @@ test("a dial desktop boots init with DISPLAY, starts the X server and the window
 	assert.equal(fake.machines.get(ref.id).init.display, ":0", "init started with the display");
 	assert.deepEqual(fake.events.filter(({ what }) => what.startsWith("run ")), [], "nothing was run in the machine through the host");
 	assert.deepEqual(fake.uploads, [], "and nothing uploaded");
-	// The X server, then the window manager, started by computerd as any program, over the socket the machine dialed.
+	assert.match(request.boot.env.AGENTRUN_INIT_ARGS, / --window-manager$/, "init is asked to start the window manager");
+	assert.equal(fake.machines.get(ref.id).init.windowManager, true);
+	// The X server alone, started by computerd as any program, over the socket the machine dialed: computerd starts the
+	// window manager itself.
 	assert.deepEqual(
 		fake.machines.get(ref.id).processes.map(({ argv }) => argv[0]),
-		["Xvfb", "unshare"],
+		["Xvfb"],
 	);
-	assert.ok(fake.machines.get(ref.id).processes[1].argv.some((arg) => arg.includes("xfwm4")));
 	const connection = made(await provider.connect(ref));
 	assert.equal(connection.hello.kind, "desktop");
 	assert.ok(connection.hello.groups.includes("screen"));
+	assert.deepEqual(connection.hello.windowManager, { state: "running" });
 	await connection.close();
 	assert.equal(hub.online(ref.name), true);
 	made(await provider.release(ref, "delete"));
@@ -425,40 +428,21 @@ test("the linux exception is a minted desktop's alone, on its own os and arch: a
 	assert.equal(again.message, "Test Box paired as a linux desktop on amd64 and now says linux linux on amd64: pair it again");
 });
 
-test("a dial desktop whose display isn't up is a linux computer: its screen, input, apps, ui and watch calls are refused in words, never sent", async () => {
-	const { fake, provider, hub, tokens } = setup({ facts: { windowManager: true } }, { kind: "desktop" });
+test("a dial desktop whose display is down fails connect and watch as drift, as on exec; once it answers again, connect is a desktop's", async () => {
+	const { fake, provider } = setup({ facts: { windowManager: true } }, { kind: "desktop" });
 	const ref = made(await create(provider));
-	const token = fake.calls.find(([what]) => what === "create")[1].boot.env.AGENTRUN_ATTACH_TOKEN;
-	// The hub holds the hello the machine dialed with, before its display: the live one, linux, never the token's kind.
-	assert.equal(tokens.check(token)?.mint.kind, "desktop");
-	assert.equal(hub.hello(ref.name)?.kind, "linux");
-	// Its display goes (an X server that died): its hello says linux again.
+	// Its display goes (an X server that died): its hello says linux.
 	const m = fake.machines.get(ref.id);
 	m.xvfb = undefined;
 	m.displayUp = false;
-	const connection = made(await provider.connect(ref));
-	assert.equal(connection.hello.kind, "linux");
-	assert.deepEqual(connection.hello.groups, ["exec", "files", "processes"]);
-	const sent = fake.requests.length;
-	for (const [method, params] of [
-		["screen.shot", {}],
-		["input.actions", { actions: [{ type: "click", x: 1, y: 1 }] }],
-		["apps.list", {}],
-		["ui.observe", {}],
-	]) {
-		const refused = await connection.client.call(method, params);
-		assert.equal(refused.ok, false, method);
-		assert.equal(refused.error.code, "unsupported", method);
-		assert.equal(refused.error.message, `${ref.name}'s display isn't up yet: ${method} was not sent, and it is a linux computer until its daemon's hello says desktop`);
-	}
-	assert.deepEqual(made(await connection.client.call("ping", {})), {}, "its shell's calls go through");
-	assert.deepEqual(fake.requests.slice(sent).map(({ method }) => method), ["ping"], "no display call reached the daemon");
-	await connection.close();
+	const refused = await provider.connect(ref);
+	assert.equal(refused.ok, false);
+	assert.equal(refused.error.code, "refused");
+	assert.match(refused.error.message, /does not match this provider: hello: the daemon reports kind linux, expected desktop/);
 	const watched = await provider.watch(ref, { frame() {}, ended() {} });
 	assert.equal(watched.ok, false);
-	assert.equal(watched.error.code, "unsupported");
-	assert.match(watched.error.message, /display isn't up yet: screen\.watch was not sent/);
-	assert.ok(!fake.requests.some(({ method }) => method === "screen.watch"), "nor did the watch");
+	assert.match(watched.error.message, /does not match this provider: hello: the daemon reports kind linux, expected desktop/);
+	assert.ok(!fake.requests.some(({ method }) => method === "screen.watch"), "no watch was sent");
 	// Once its display answers again, the next connect is a desktop's.
 	m.displayUp = true;
 	const up = made(await provider.connect(ref));

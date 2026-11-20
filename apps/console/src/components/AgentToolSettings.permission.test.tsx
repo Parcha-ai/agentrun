@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import type { Agent, AgentFields } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { toolChoices, toolGates } from "@/lib/toolSettings";
 import { optionsOf, pick, valueOf } from "@/test/picker";
 
@@ -21,7 +22,7 @@ const RAW = [
 ];
 const caps = { harnesses: [{ id: "pi", available: true }], tools: RAW.map(({ name, available }) => ({ name, available, harnesses: ["pi"] })), thinking: [] };
 const agentWith = (toolSettings?: Agent["definition"]["tool_settings"], over: Partial<Agent> = {}): Agent => ({
-  agent_id: "fetcher", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
+  ...SERVED_AGENT, agent_id: "fetcher", kind: "agentic", revision: "r1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Fetcher", instructions: "Fetch it.", harness: "pi", skills: [], tools: ["read", "bash", "web_search"], ...(toolSettings ? { tool_settings: toolSettings } : {}) },
   ...over,
 });

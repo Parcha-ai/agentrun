@@ -18,7 +18,7 @@
 // The template packages imported from GitHub (imported_templates) are a table of their own that nothing
 // else reads, so it needs no version: the server adds it at its open to a store an earlier build of this version made
 // (IMPORTED_TEMPLATES), as it does the one-answer index. A hosted machine's minted token (minted_tokens, MINTED_TOKENS) is
-// added the same way.
+// added the same way, and so is each runner's word that it is there and whether it refused to claim (runners, RUNNERS).
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -33,8 +33,11 @@
 // Version 12 keeps each run's listing on its row (RUN_LISTING_COLUMNS): what a runs list shows of it, so a list reads rows
 // alone. Version 13 names the runner in a process of its own that minted a hosted machine's token (minted_tokens.runner,
 // .incarnation), the run the machine works for (.run), why the server refused to relay its dial (.refused), and where each
-// such runner takes the dials the server relays to it (runner_relays, dial-relay.ts). The server upgrades these two in place at its open (listingUpgrade from 11, then relayUpgrade from 12); a runner waits for it.
-export const SCHEMA_VERSION = 13;
+// such runner takes the dials the server relays to it (runners.host and .port, dial-relay.ts). Version 14 keeps when a run or
+// an agent was purged (runs.purged_at, agents.purged_at; DELETE /runs/{id} and /agents/{id}, agent-delete.ts): its row is
+// then a tombstone, its content gone and its cost kept. The server upgrades these in place at its open (listingUpgrade from
+// 11, relayUpgrade from 12, then purgeUpgrade from 13); a runner waits for it.
+export const SCHEMA_VERSION = 14;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
@@ -108,23 +111,42 @@ export const MINTED_TOKENS = `CREATE TABLE IF NOT EXISTS minted_tokens (
     refused TEXT
   ) STRICT`;
 
-/** Where each runner in a process of its own takes the dials the server relays to it (version 13, dial-relay.ts): its
- *  attach listener's host and port under its name, with its incarnation and when it last said it was there. */
-export const RUNNER_RELAYS = `CREATE TABLE IF NOT EXISTS runner_relays (
+/** Each runner's word that it is there (runner/presence.ts), every runner's, beside a server or in a process of its own:
+ *  its name, its incarnation (its process since its start, the one its relay's minted tokens and proofs name), why it
+ *  refused to claim any run (`refused`, its words; null for one that claims), where its relay's attach listener takes the
+ *  dials the server relays to it (`host` and `port`, dial-relay.ts; null for a runner with no relay) and when it last said
+ *  it was there. The server reads them for whether any runner here can take a run (a launch's 503 runner_refused,
+ *  capabilities' runner_refused, health's runner check) and where to relay a dial (computer-attach.ts liveRelays). In
+ *  STORE_DDL. A store an earlier build of version 13 made kept the relays in a table of their own (runner_relays): the
+ *  server's open drops it and makes this one (sqlite/store.ts), as it drops browser_viewers, with no version: the rows
+ *  are heartbeats renewed every 10 s, so none is copied, and a runner waits for that server (StoreAwaitsServer). */
+export const RUNNERS = `CREATE TABLE IF NOT EXISTS runners (
     runner TEXT PRIMARY KEY,
     incarnation TEXT NOT NULL,
-    host TEXT NOT NULL,
-    port INTEGER NOT NULL,
+    refused TEXT,
+    host TEXT,
+    port INTEGER,
     seen_at INTEGER NOT NULL
   ) STRICT`;
 
+/** Version 13 → 14 on SQLite (the server's open, sqlite/store.ts), given the runs' and the agents' columns now: when each
+ *  run and each agent was purged (null: none was), and the version, in one durable write. */
+export function purgeUpgrade(runColumns: ReadonlySet<string>, agentColumns: ReadonlySet<string>): readonly string[] {
+  return [
+    ...(runColumns.has("purged_at") ? [] : ["ALTER TABLE runs ADD COLUMN purged_at INTEGER"]),
+    ...(agentColumns.has("purged_at") ? [] : ["ALTER TABLE agents ADD COLUMN purged_at INTEGER"]),
+    "UPDATE store_meta SET schema_version = 14 WHERE singleton = 1",
+  ];
+}
+
 /** Version 12 → 13 on SQLite (the server's open, sqlite/store.ts), given minted_tokens' columns now: the minting runner,
  *  its incarnation, the machine's run and a refused relay's words on each token's row (none of the rows there has one: the
- *  server's own process minted them, naming no run), the runners' relays, and the version, in one durable write. */
+ *  server's own process minted them, naming no run), the runners (where their relays answer), and the version, in one
+ *  durable write. */
 export function relayUpgrade(mintedColumns: ReadonlySet<string>): readonly string[] {
   return [
     ...["runner", "incarnation", "run", "refused"].filter((column) => !mintedColumns.has(column)).map((column) => `ALTER TABLE minted_tokens ADD COLUMN ${column} TEXT`),
-    RUNNER_RELAYS,
+    RUNNERS,
     "UPDATE store_meta SET schema_version = 13 WHERE singleton = 1",
   ];
 }
@@ -138,8 +160,7 @@ export function relayUpgrade(mintedColumns: ReadonlySet<string>): readonly strin
  *  that lands meanwhile keeps the row as it left it (its list_status too), behind (listing_mark < list_mark), and it is
  *  built again: a crash between a write and its listing leaves a row that says
  *  it is behind, never one that says it is current. `listing` is the list item without the parts read when it is listed
- *  (console_url, archived_at), with the secrets it was cut of and the listing format it was built under (a list builds one
- *  of another format again: store-view.ts LISTING_FORMAT); `list_status` its status, which a status filter reads in SQL; `listing_live` whether a runner
+ *  (console_url, archived_at), with the secrets it was cut of (a list builds one cut of other secrets again: store-view.ts builtOfNow); `list_status` its status, which a status filter reads in SQL; `listing_live` whether a runner
  *  held the run when it was built (its status reads otherwise once that claim runs out); `listing_until` when it goes stale
  *  by the clock alone (an ask that expires, or the retry of a build that withheld the run for a sign-in it could not read
  *  back); `listing_flags` what outside the run it read (LISTING_HELD: learning held for
@@ -239,7 +260,10 @@ export const STORE_DDL: readonly string[] = [
     current_revision TEXT,
     created_at INTEGER NOT NULL,
     archived_at INTEGER,
-    external_ref TEXT
+    external_ref TEXT,
+    -- When the agent was purged (DELETE /agents/{id} of an archived agent made here): its row is then a tombstone, its
+    -- name, description and revisions' content blanked, kept for its runs' tombstones and their cost. Null: not purged.
+    purged_at INTEGER
   ) STRICT`,
   `CREATE UNIQUE INDEX IF NOT EXISTS agents_external ON agents (external_ref) WHERE external_ref IS NOT NULL`,
   // A revision's skills (the P4 fold of the old agent store's skill table): the revision's own skill files, a JSON object
@@ -313,7 +337,10 @@ export const STORE_DDL: readonly string[] = [
     started_at INTEGER NOT NULL,
     ended_at INTEGER,
     -- The run's listing (RUN_LISTING_COLUMNS): what a runs list shows of it, kept on its row so a list reads rows alone.
-    ${RUN_LISTING_COLUMNS.join(",\n    ")}
+    ${RUN_LISTING_COLUMNS.join(",\n    ")},
+    -- When the run was purged (DELETE /runs/{id}, Runs.purge): its row is then a tombstone, every record of what it was
+    -- given or did gone and its cost kept, which no list shows and every total still sums. Null: not purged.
+    purged_at INTEGER
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS runs_by_agent ON runs (agent_id, started_at)`,
   `CREATE INDEX IF NOT EXISTS runs_by_revision ON runs (revision_id, started_at)`,
@@ -562,7 +589,7 @@ export const STORE_DDL: readonly string[] = [
   ) STRICT`,
   IMPORTED_TEMPLATES,
   MINTED_TOKENS,
-  RUNNER_RELAYS,
+  RUNNERS,
 
   // An agent's saved browser sign-ins (design 2.1, the browser sign-in rules): one live row per agent and browser provider, its
   // pointer (the vendor's context or profile id) sealed with the store's one rule (store/seal.ts, AAD

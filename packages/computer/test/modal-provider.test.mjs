@@ -13,7 +13,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { AttachHub, checkLifetime, kindRefusals, MemoryMachineTokens, recordedMount, sweep } from "../dist/index.js";
+import { AttachHub, checkLifetime, kindRefusals, MemoryMachineTokens, mountsOf, recordedMount, sweep } from "../dist/index.js";
 import { fakeObjects } from "./fake-archil.mjs";
 import { bootDial, desktopOverDial, dialServer } from "./fake-dial-host.mjs";
 
@@ -509,6 +509,7 @@ test("no real Modal client: the provider and the conformance module import nothi
 		app: "COMPUTER_MODAL_APP",
 		serverUrl: "COMPUTER_MODAL_SERVER_URL",
 		connect: "COMPUTER_MODAL_CONNECT",
+		kind: "COMPUTER_MODAL_KIND",
 	});
 	assert.equal(module.CONFORMANCE_MAX_LIFETIME_MS, 30 * 60_000);
 	assert.equal(modal.modalCommands, undefined, "the scripts are the adapter's");
@@ -844,7 +845,7 @@ test("connect dial: init is agentrun-dial's child, no Archil mount (refused in w
 	assert.equal(caps.gpu?.isolation, "gvisor");
 	const refusals = provider.check({ ...SPEC, mount: { kind: "archil", disk: "dsk-00000000000baf76", region: "aws-us-east-1", folder: "agents/a1/runs/r1/work", token: "not-a-secret" } });
 	assert.deepEqual(refusals.map(({ field }) => field), ["mount"]);
-	assert.match(refusals[0].message, /Modal's machines dial this server, and a machine that dials takes no Archil mount yet/);
+	assert.ok(refusals[0].message.includes(mountsOf(MODAL, () => false, true).unmounted.archil), refusals[0].message);
 	assert.throws(() => setup({ connect: "ssh" }), /connect is how Modal reaches its machines, "exec" \(the default\) or "dial", not "ssh"/);
 	assert.deepEqual(MODAL.settings, [
 		{ name: "modalApp", option: "app", default: "agentrun" },
@@ -867,9 +868,10 @@ test("kind desktop on connect dial: the desktop's groups, no GPU, the window man
 	const { env } = rec.params();
 	assert.deepEqual(Object.keys(env).sort(), ["AGENTRUN_ATTACH_TOKEN", "AGENTRUN_ATTACH_URL", "AGENTRUN_DAEMON_SHA256", "AGENTRUN_DAEMON_URL", "AGENTRUN_INIT_ARGS", "DISPLAY"]);
 	assert.equal(env.DISPLAY, ":0");
-	// connect exec makes kind linux, as it always has: a desktop there is refused before any SDK call.
+	// connect exec makes kind linux, as it always has: a desktop there is refused before any SDK call, naming the connect
+	// its descriptor's desktop configuration takes.
 	for (const connect of [undefined, "exec"]) {
-		assert.throws(() => setup({ ...(connect ? { connect } : {}), kind: "desktop" }), /^Error: a Modal desktop is made on connect "dial" alone, from the box image, its X server started over the socket its machine dials: connect "exec" makes kind linux$/);
+		assert.throws(() => setup({ ...(connect ? { connect } : {}), kind: "desktop" }), /^Error: Modal gives a desktop computer on connect "dial" alone, not "exec"$/);
 	}
 	assert.equal(setup({ kind: "linux" }).provider.capabilities().kind, "linux");
 });

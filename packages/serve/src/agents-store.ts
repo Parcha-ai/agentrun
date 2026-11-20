@@ -6,6 +6,7 @@
 //
 // The run counts an agent view shows (runs.count, runs.live) are E3's run reads, not this module's; agentView takes them.
 import { randomBytes } from "node:crypto";
+import { purgedAgent } from "./agents.js";
 import { agentLink } from "./console-links.js";
 import { approvalsOf } from "./approvals.js";
 import { ApiError, invalid } from "./errors.js";
@@ -267,13 +268,18 @@ export function makeRevision(definition: Json, files: Record<string, string>, no
   return note !== undefined ? { ...revision, note } : revision;
 }
 
+/** Runs a write's last read and its commit in the agent's delete turn (server.ts agentWrite). */
+export type InTurn = <T>(work: () => Promise<T>) => Promise<T>;
+
 /** How many times an edit with no If-Match is built again on a current revision that moved while it was checked. */
 const EDIT_TRIES = 5;
 
 /** An edit: a new revision of the agent, made current. Without `skills` the current revision's skill files carry over. An
- *  edit that is the current revision writes nothing, so a PUT sent twice makes one revision. The agent keeps its id, name
- *  and description from its creation. `ifCurrent` (from If-Match) is the current revision the caller read, null for none;
- *  it is checked against the agent's current revision when the edit is read, and the write is conditional on the revision
+ *  edit that is the current revision writes nothing, so a PUT sent twice makes one revision. The agent keeps its id and name
+ *  from its creation (a changed one is input_invalid). Its description is a label: an edit that names a new one makes a
+ *  revision (even with the body unchanged) and writes the description with it in the store's one commit, so a stale or
+ *  refused edit changes neither; one that leaves it out keeps it. `ifCurrent` (from If-Match) is the current revision the
+ *  caller read, null for none; it is checked against the agent's current revision when the edit is read, and the write is conditional on the revision
  *  the edit was built on still being current, compared in the store's own transaction (addRevision's ifCurrent), so it
  *  holds across every server on the store. `check` may refuse the revision before a write; it runs outside the write, so
  *  another request may move the current revision meanwhile: an edit with If-Match is then precondition_failed, and one
@@ -281,12 +287,13 @@ const EDIT_TRIES = 5;
  *  revision it does not follow. `contract`: an edit that always makes a new revision, even one equal to the current.
  *  `template`: the package an apply with agent_id wrote it from, kept on the revision (getAgent's `template`).
  *  `fromPackage`: the definition is a whole package's (an apply with agent_id), so what it leaves out is not carried over
- *  (editOn). */
+ *  (editOn). `inTurn`: where the agent is read again and the revision written (the server's agentWrite, which refuses a
+ *  purged agent, or one whose purge stopped part way); the check runs outside it. */
 export async function commitAgent(
   store: AgentsStore,
   read: AgentEntry,
   { definition, skills, note }: DefinitionBody,
-  { ifCurrent, check, contract = false, template, fromPackage = false }: { ifCurrent?: string | null; check?: SaveCheck; contract?: boolean; template?: TemplatePackage; fromPackage?: boolean } = {},
+  { ifCurrent, check, contract = false, template, fromPackage = false, inTurn }: { ifCurrent?: string | null; check?: SaveCheck; contract?: boolean; template?: TemplatePackage; fromPackage?: boolean; inTurn?: InTurn } = {},
 ): Promise<AgentEntry> {
   const stale = () => new ApiError("precondition_failed", "the agent's current revision moved since the If-Match it was read at: read the agent again");
   const held = (entry: AgentEntry): AgentEntry => {
@@ -294,16 +301,19 @@ export async function commitAgent(
     return entry;
   };
   let entry = (await getAgent(store, read.agent.id)) ?? read;
+  // Purged since the request read it: 410 before anything is checked (the commit's turn and the store refuse it too).
+  if (entry.agent.purgedAt !== null) throw purgedAgent(entry.agent);
   refuseExternal(entry.agent);
   held(entry);
   const { agent } = entry;
   const kept = [
     ...(definition.id !== undefined && definition.id !== agent.id ? [{ field: "definition.id", reason: "not_an_option", message: `definition.id is ${agent.id}, the agent's id` }] : []),
-    ...(["name", "description"] as const)
-      .filter((key) => definition[key] !== undefined && definition[key] !== (agent as unknown as Record<string, unknown>)[key])
-      .map((key) => ({ field: `definition.${key}`, reason: "not_allowed", message: `The agent store keeps an agent's ${key} from its creation; an edit does not change it.`, fix: `Remove definition.${key}.` })),
+    ...(definition.name !== undefined && definition.name !== agent.name ? [{ field: "definition.name", reason: "not_allowed", message: "An agent keeps the name it was created with; an edit does not change it.", fix: "Remove definition.name." }] : []),
   ];
   if (kept.length) throw invalid(kept);
+  // The description is a label on the agent's row, not part of a revision: an edit that names one writes it with its
+  // revision, in addRevision's one commit. The validator has checked it is a string.
+  const description = typeof definition.description === "string" ? definition.description : undefined;
   for (let tries = 1; ; tries++) {
     if (tries > 1) entry = held((await getAgent(store, agent.id)) ?? entry);
     // A template applied onto the agent (apply with agent_id) keeps its package on the revision it writes, as a create does.
@@ -311,9 +321,15 @@ export async function commitAgent(
     const edit = template ? { ...made, package: template } : made;
     const revision = stamped(edit, await check?.(edit, entry.revision));
     const base = entry.revision?.id ?? null;
-    const now = held((await getAgent(store, agent.id)) ?? entry);
-    if ((now.revision?.id ?? null) === base) {
-      if (!contract && now.revision && sameRevision(now.revision, revision)) {
+    // The agent read again and the revision written in `inTurn` (the server's agent delete turn): the check above, which
+    // may wait on a server's listing, runs outside it, so edits of one agent are checked at once and a DELETE never waits
+    // on a check.
+    const landed = await (inTurn ?? ((work) => work()))(async (): Promise<AgentEntry | undefined> => {
+      const now = held((await getAgent(store, agent.id)) ?? entry);
+      if ((now.revision?.id ?? null) !== base) return undefined;
+      // A new description is a real edit: a revision, even with the body unchanged. The same one again writes nothing.
+      const described = description !== undefined && description !== now.agent.description;
+      if (!contract && !described && now.revision && sameRevision(now.revision, revision)) {
         checkVersion(definition, now.version);
         return now;
       }
@@ -322,12 +338,14 @@ export async function commitAgent(
       if (contract) checkPast(definition, now.version);
       else checkVersion(definition, now.revisions + 1);
       try {
-        await store.agents.addRevision({ agentId: agent.id, ifCurrent: base, ...revision });
+        await store.agents.addRevision({ agentId: agent.id, ifCurrent: base, ...revision, ...(described ? { description } : {}) });
         return (await getAgent(store, agent.id))!;
       } catch (error) {
         if (!(error instanceof RevisionMoved)) storeError(error);
+        return undefined;
       }
-    }
+    });
+    if (landed) return landed;
     // Moved while it was checked or written: with If-Match that is stale; without, built and checked again on it.
     if (ifCurrent !== undefined) throw stale();
     if (tries >= EDIT_TRIES) throw new ApiError("precondition_failed", "the agent's current revision kept moving while this edit was checked: read the agent again");

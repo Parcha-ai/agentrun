@@ -5,7 +5,9 @@
 // Nothing here opens a credential or touches a store: listServer connects to a URL with the official SDK client, agrees a
 // protocol revision and lists every tool (all pages, under caps); the validation turns a request body into a URL, auth and
 // prices, or a 422; no redirect is followed, so a credential goes only where the owner sends it.
+import { COMPOSIO_ACCOUNT_ID, COMPOSIO_USER, COMPOSIO_USER_ID } from "./composio-preset.js";
 import { ApiError, invalid, type InputIssue } from "./errors.js";
+import type { ComposioBinding } from "./store/seal.js";
 import { metaToolOf } from "./mcp-meta.js";
 import { SIGN_IN_AGAIN } from "./mcp-oauth.js";
 import { capped, MAX_RESPONSE, mcpClient, scrub } from "./mcp-wire.js";
@@ -105,12 +107,16 @@ export const canonical = (value: unknown): string =>
   : isObject(value) ? `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(",")}}`
   : JSON.stringify(value) ?? "null";
 
-/** The body's prices: each tool's USD a call, a finite number, 0 or more. Which tools the server lists is checked once
- *  it has listed them. */
+/** A tool's price in USD a call, as every save takes one (an owner's `prices`, the Composio preset's `price_usd`): a
+ *  finite number, 0 or more. */
+export const priceValid = (usd: unknown): usd is number => typeof usd === "number" && Number.isFinite(usd) && usd >= 0;
+
+/** The body's prices: each tool's USD a call (priceValid). Which tools the server lists is checked once it has listed
+ *  them. */
 export function pricesOf(value: unknown, issues: InputIssue[]): McpPrices | undefined {
   if (value === undefined) return undefined;
   if (!isObject(value)) return void issues.push({ field: "prices", reason: "wrong_type", message: "prices is an object of the server's tool names to their price in USD a call." });
-  const bad = Object.entries(value).filter(([, usd]) => typeof usd !== "number" || !Number.isFinite(usd) || usd < 0);
+  const bad = Object.entries(value).filter(([, usd]) => !priceValid(usd));
   for (const [tool] of bad) issues.push({ field: `prices.${tool}`, reason: "invalid", message: `prices.${tool} is a price in USD a call: a finite number, 0 or more.` });
   // Keyed by tool names, which may be an object's own properties (`__proto__`): no prototype to fall into.
   return bad.length ? undefined : (Object.assign(Object.create(null), value) as McpPrices);
@@ -223,15 +229,20 @@ function headersOf(field: string, value: unknown, issues: InputIssue[], noAuthor
 /** The most servers one mcp_auth names. */
 const MAX_MCP_AUTH_SERVERS = 8;
 
-/** A run's `mcp_auth` (POST /runs, POST /agents/{id}/runs, POST /runs/{id}/messages): the headers each named per_run
- *  server is called with for this run, `{"<server>": {"headers": {...}}}`. Checked for shape here; that each name is a
- *  saved per_run server is the caller's check. Undefined when absent or wrong (with its issues). */
-export function mcpAuthOf(value: unknown, issues: InputIssue[]): Record<string, HeaderMap> | undefined {
+/** What a run hands one MCP server in `mcp_auth`: a per_run server's headers, or a per-run Composio server's binding. */
+export type HandedMcp = { readonly headers: HeaderMap } | { readonly composio: ComposioBinding };
+
+/** A run's `mcp_auth` (POST /runs, POST /agents/{id}/runs, POST /runs/{id}/messages), by server: the headers each named
+ *  per_run server is called with for this run, `{"<server>": {"headers": {...}}}`, or the Composio user (and connected
+ *  account) a per-run Composio server's calls run as, `{"<server>": {"composio_user_id": "...", "connected_account_id":
+ *  "ca_..."}}`. Checked for shape here; that each name is a saved server that takes that shape is the caller's check.
+ *  Undefined when absent or wrong (with its issues). */
+export function mcpAuthOf(value: unknown, issues: InputIssue[]): Record<string, HandedMcp> | undefined {
   if (value === undefined) return undefined;
-  const shape = 'mcp_auth is {"<server>": {"headers": {"<name>": "<value>"}}}, one entry for each per_run MCP server the run calls.';
+  const shape = 'mcp_auth is {"<server>": {"headers": {"<name>": "<value>"}}} for a per_run MCP server, or {"<server>": {"composio_user_id": "<user>", "connected_account_id": "ca_..."}} for a per-run Composio server (the account optional), one entry for each such server the run calls.';
   if (!isObject(value) || !Object.keys(value).length || Object.keys(value).length > MAX_MCP_AUTH_SERVERS) return void issues.push({ field: "mcp_auth", reason: isObject(value) ? "invalid" : "wrong_type", message: `${shape} It names 1 to ${MAX_MCP_AUTH_SERVERS} servers.` });
   const before = issues.length;
-  const out: Record<string, HeaderMap> = Object.create(null);
+  const out: Record<string, HandedMcp> = Object.create(null);
   for (const [server, entry] of Object.entries(value)) {
     const field = `mcp_auth.${server}`;
     if (!MCP_SERVER_NAME.test(server)) issues.push({ field, reason: "invalid", message: `${server} is not an MCP server's name.` });
@@ -239,10 +250,32 @@ export function mcpAuthOf(value: unknown, issues: InputIssue[]): Record<string, 
       issues.push({ field, reason: "wrong_type", message: shape });
       continue;
     }
+    if (entry.composio_user_id !== undefined || entry.connected_account_id !== undefined) {
+      const binding = composioBindingOf(field, entry, issues);
+      if (binding) out[server] = { composio: binding };
+      continue;
+    }
     issues.push(...unknownFields(entry, ["headers"]).map((issue) => ({ ...issue, field: `${field}.${issue.field}` })));
-    out[server] = headersOf(`${field}.headers`, entry.headers, issues);
+    out[server] = { headers: headersOf(`${field}.headers`, entry.headers, issues) };
   }
   return issues.length > before ? undefined : out;
+}
+
+/** A per-run Composio server's binding at `field`: `composio_user_id`, a Composio user id; `connected_account_id`, when
+ *  given, a Composio connected account's id (ca_...). No headers: the server's key is its own. A refusal never quotes
+ *  what was sent. */
+function composioBindingOf(field: string, entry: Record<string, unknown>, issues: InputIssue[]): ComposioBinding | undefined {
+  const before = issues.length;
+  if (entry.headers !== undefined) issues.push({ field: `${field}.headers`, reason: "not_allowed", message: "A binding to a Composio account sends no headers: the server's Composio key is its own." });
+  issues.push(...unknownFields(entry, ["composio_user_id", "connected_account_id", "headers"]).map((issue) => ({ ...issue, field: `${field}.${issue.field}` })));
+  const user = entry.composio_user_id;
+  const account = entry.connected_account_id;
+  if (typeof user !== "string" || !COMPOSIO_USER_ID.test(user)) issues.push({ field: `${field}.composio_user_id`, reason: "invalid", message: "composio_user_id is the Composio user this run's calls run as: letters, digits and . _ @ - (1 to 128)." });
+  // The preset's default user is the one single-user preset servers call as: a run that forgot to name its own never lands there.
+  else if (user === COMPOSIO_USER) issues.push({ field: `${field}.composio_user_id`, reason: "not_allowed", message: "That composio_user_id is the Composio preset's shared default user, the one single-user preset servers call as: bind the run to its own person's Composio user." });
+  if (account !== undefined && (typeof account !== "string" || !COMPOSIO_ACCOUNT_ID.test(account))) issues.push({ field: `${field}.connected_account_id`, reason: "invalid", message: "connected_account_id is a Composio connected account's id: ca_ and 5 to 64 letters, digits, _ or -." });
+  if (issues.length > before) return undefined;
+  return { user_id: user as string, ...(account !== undefined ? { connected_account_id: account as string } : {}) };
 }
 
 /** The OAuth scope list a sign-in body may send: 1 to 32 OAuth scopes. */

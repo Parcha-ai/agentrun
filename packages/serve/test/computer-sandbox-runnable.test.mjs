@@ -163,7 +163,7 @@ test("Mode 2: a DAYTONA_ARCHIL_EGRESS of whitespace alone is refused at its save
 // server whose AGENTRUN_BOX_ALLOW is none, the operator's word for no network at all, its run is refused at the start in
 // words naming the setting, as the claim refuses it; under the default list (the setting unset) or the operator's own
 // list it is not, and runs open (the claim's networkOf).
-const noNetwork = (what) => `This agent's computer is a ${what}, which needs a network (the vendor's own, or public addresses from this machine), and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in Settings → Computers, or set AGENTRUN_BOX_ALLOW to a host list.`;
+const noNetwork = (what) => `This agent's computer is a ${what}, which needs a network (the vendor's own, or public addresses from this machine), and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in Settings → Computers, or restart the server with AGENTRUN_BOX_ALLOW set to a host list.`;
 const NO_NETWORK_PHONE = noNetwork("Phone harness phone");
 for (const boxAllow of ["none", undefined, "pypi.org"]) {
   const refused = boxAllow === "none";

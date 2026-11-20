@@ -7,6 +7,7 @@ import { BuildAgent } from "./BuildAgent";
 import { agentDraftHref, briefAgentDraft } from "@/lib/agentDraft";
 import { createClient } from "@/lib/client";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { optionsOf, pick, picker, valueOf } from "@/test/picker";
 
 // The API playground's agent requests (POST · Create an agent, PUT · Edit agent) name the agent's model with the
@@ -22,7 +23,7 @@ const harnesses: EditorCaps["harnesses"] = [
 ];
 // The server's refusal of a model named in a form pi doesn't take (serve's validate.ts, modelFormIssue).
 const REFUSAL = 'On pi, a model is <provider>/<model id>, like anthropic/claude-sonnet-5-5 or openrouter/anthropic/claude-sonnet-5.5: "Sonnet 5.5" is not one. Did you mean anthropic/claude-sonnet-5-5?';
-const agentOn = (harness: string, model?: string): Agent => ({ agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness, skills: [], tools: [], ...(model ? { model } : {}) } });
+const agentOn = (harness: string, model?: string): Agent => ({ ...SERVED_AGENT, agent_id: "calc", kind: "agentic", revision: "r1", revisions: 1, archived_at: null, definition: { version: 1, name: "Calc", instructions: "Answer.", harness, skills: [], tools: [], ...(model ? { model } : {}) } });
 const json = (body: unknown, status = 200, etag?: string) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...(etag ? { etag } : {}) } });
 
 type Call = { path: string; method: string; body: unknown };

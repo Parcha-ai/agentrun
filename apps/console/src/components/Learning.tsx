@@ -27,6 +27,7 @@ import {
 } from "@/lib/learning";
 import { learningPerRun } from "@/lib/learningBill";
 import { backendSdkOf } from "@/lib/backendSdk";
+import { LearningModelSetup } from "./LearningModelSetup";
 import { metaOf } from "@/lib/runGraph";
 import { cn } from "@/lib/utils";
 import type { LearningCost, LearningLoop, Promotion, Run, Serving } from "@/lib/v2";
@@ -156,6 +157,7 @@ function LearningView({ agent, v2, server, onAgent, onChanged }: LearningProps) 
   const frame = (content: ReactNode) => <div className="space-y-3">
     <div className="flex justify-end"><Button size="icon" variant="ghost" aria-label="Refresh learning" title="Refresh learning" disabled={held || isRefreshing}
       onClick={() => { if (!refreshHolds.items.size && !refreshing.current) void read(); }}><RefreshCw className={cn(isRefreshing && "animate-spin")} aria-hidden /></Button></div>
+    {view && <LearningModelSetup access={view.learning_model ?? (agent.definition.native ? { location: "native", ready: true, model: null, needs: null, reason: null } : undefined)} />}
     {content}
   </div>;
   if (error && !view) return frame(<ProblemCard problem={problem(error, "what this agent learned")} onRetry={read} className="" />);
@@ -332,7 +334,9 @@ function ManagedSavedSwitch({ agent, v2, onAgent, server, disabled, quiet }: { a
     setBusy(true); setTrouble(null); setShown(next);
     try {
       const { agent: now, etag } = await v2.getAgent(agent.agent_id);
-      const body = editBody(now, { learning: next }, next ? "Learning on" : "Learning off");
+      // Preserve learning already enabled by another writer.
+      const learning = !next ? false : learningOn(now.definition.learning) ? now.definition.learning : true;
+      const body = editBody(now, { learning }, next ? "Learning on" : "Learning off");
       if (body.unchanged) onAgent?.(now);
       else { const { unchanged: _u, ...send } = body; onAgent?.((await v2.updateDefinition(agent.agent_id, send, etag)).agent); }
     } catch (e) { setTrouble(e ?? new Error("unknown")); }

@@ -3,7 +3,7 @@ import { Bone } from "@/components/Skeleton";
 import { Chip } from "@/components/ui/chip";
 import { problem, ProblemCard } from "@/components/learningProblem";
 import type { Client } from "@/lib/client";
-import { type Block, blockSizeOf, blocksOf, gutterFor, jobsOf, level, nearest, PATHS, pathOf, pct, plotted, type Point, rollingMean, runTicks, spread, timesOf, usd, windowOf, yTicksOf, yTopOf } from "@/lib/costPerRun";
+import { type Block, blockSizeOf, blocksOf, gutterFor, jobsOf, level, nearest, PATHS, pathOf, pct, plotted, type Point, rollingMean, runTicks, spread, timesOf, usd, windowOf, yTopOf } from "@/lib/costPerRun";
 import { when } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { counted, handBacksOf, type Marker, MARKER_LETTER, MARKER_WORDS, markersOf, replayLine, WITHHELD_NEXT, withheldWords } from "@/lib/learningLoop";
@@ -141,7 +141,7 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
   const plotW = width - M.left - (levelWords.length ? gutterFor(levelWords.map((l) => l.words)) : M.right);
   const slot = plotW / (last - first + 1);
   const x = (at: number) => M.left + (at - first + 0.5) * slot;
-  const { top, above } = yTopOf(points, mean, before?.mean_usd ?? null);
+  const { top, ticks: yTicks, above } = yTopOf(points, mean, before?.mean_usd ?? null);
   // Each flag's row: the first whose last flag is far enough left of it, so flags never sit on each other at any width.
   const rowOf: number[] = [];
   const ends: number[] = [];
@@ -155,7 +155,6 @@ export function CostChart({ data, on, width: fixed, promotions = [], execution =
   // With markers, the plot starts under their lane.
   const T = M.top + lane;
   const y = (v: number) => T + H - (Math.min(v, top) / top) * H;
-  const yTicks = yTicksOf(top);
   const xTicks = runTicks(first, last, width < 520 ? 5 : 7);
   // The takeover's marker shows when its run is on the plot; the level after it shows either way, from the plot's left
   // edge when the takeover is older than the runs read.

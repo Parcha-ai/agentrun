@@ -16,7 +16,7 @@ import { checkMount, readBackOf, WORKSPACE, type MountSpec } from "@parcha/agent
 
 The package root holds the protocol, the registry and the descriptors, and loads no provider: a provider loads by its
 id (`providerFor(id, options)`, which imports that one provider's file), or from its subpath (`/docker`, `/daytona`,
-`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`). A provider's
+`/modal`, `/e2b`, `/orgo`, `/orgo-desktop`, `/phone-harness`, `/browserbase`, `/kernel`, `/local-chrome`, `/boxd`, `/smolcloud`). A provider's
 option types (`DockerProviderOptions`, `ModalProviderOptions` and the like) come from its subpath too, not the root.
 
 The package carries the daemon for Linux amd64 and arm64 in `dist/`, so a provider runs it with no Go on the host. A
@@ -444,6 +444,7 @@ in the kernel's tool registry, keyed by these groups.
   | daytona | sandbox: `DAYTONA_DEFAULT_SNAPSHOT` ("default") |
   | modal | none: `prepareImage()` answers the box image (`boxImageRef()`) |
   | e2b | none: `prepareImage()` answers the box template (`boxE2bTemplate()`), for a sandbox and a desktop alike |
+  | smolcloud | none: `prepareImage()` answers the box image (`boxImageRef()`) |
   | orgo | desktop: `ORGO_BASE_IMAGE` ("linux") |
   | phone-harness | phone: `PHONE_IMAGE` ("android") |
   | browserbase, kernel, local | browser: `BROWSER_IMAGE` ("chromium") |
@@ -669,6 +670,7 @@ live under:
   | `BROWSERBASE_API_KEY`, `BROWSERBASE_PROJECT_ID` | Browserbase's `apiKey`, `projectId`: the names pi-browser reads today |
   | `KERNEL_API_KEY` | Kernel's `apiKey`: the name pi-browser reads today |
   | `BOXD_API_KEY`, `BOXD_ORG`, `BOXD_REGION` | boxd's `apiKey`, `org` and `region` (unset: the key's own org, the API's home region) |
+  | `SMOLCLOUD_API_KEY` | smol cloud's `apiKey` |
 
 - **the conformance CLI and the live harness** (`src/conformance/`: the CLI, each provider's conformance module and the
   sweeps) read their own `COMPUTER_<ID>_*` names, the ones the live scripts set, through each module's
@@ -1374,7 +1376,7 @@ The conformance module, `dist/conformance/modal.js` (`--provider modal`), reads 
 (`settingsFromEnv`) and passes each to `create()` as its option: `COMPUTER_MODAL_TOKEN_ID` and
 `COMPUTER_MODAL_TOKEN_SECRET` (never `MODAL_TOKEN_ID` or `MODAL_TOKEN_SECRET`: a host may hold a production token under
 those names, and with only them set it refuses, naming the `COMPUTER_MODAL_` pair), `COMPUTER_MODAL_APP`, and, if set,
-`COMPUTER_MODAL_SERVER_URL` and `COMPUTER_MODAL_CONNECT` (`connect`). It builds its provider only with `AGENTRUN_COMPUTER_LIVE_MODAL=1` set, checked before
+`COMPUTER_MODAL_SERVER_URL` and `COMPUTER_MODAL_CONNECT` (`connect`); `createProvider()` alone also reads `COMPUTER_MODAL_KIND` (`kind`, `desktop` on dial only). It builds its provider only with `AGENTRUN_COMPUTER_LIVE_MODAL=1` set, checked before
 anything else. Its `createDriftedProvider()` uploads a daemon it builds with Go as version `<version>-drift`, so Go must
 be on PATH. Every computer of a run gets `maxLifetimeMs` 30 minutes. Core `provider.stop` expects Modal's refusal (it
 declares no stop), and the Full `provider.janitor` case is skipped (`lifetime:janitor`, `release:stop`).
@@ -1403,8 +1405,8 @@ conformance module's `dialKit()` refuses, as E2B's does: the Core run happens in
 run image with `COMPUTER_MODAL_CONNECT=dial` is the box image, the one that holds `agentrun-dial` (debian:bookworm-slim
 on exec, as before).
 
-A dial sandbox may be a desktop (`kind: "desktop"`): the box image's X server and xfwm4, started over the socket it
-dialed, at 2 CPUs and 4 GiB on the VM runtime, with no GPU. On exec a Modal computer is kind `linux` alone, and the
+A dial sandbox may be a desktop (`kind: "desktop"`): the box image's X server, started over the socket it dialed, and
+xfwm4, which computerd starts, at 2 CPUs and 4 GiB on the VM runtime, with no GPU. On exec a Modal computer is kind `linux` alone, and the
 constructor refuses `kind: "desktop"` in words. The descriptor's desktop configuration selects `connect: "dial"` itself,
 so a server whose `modalConnect` is exec still makes its desktop over dial (it needs the dial's public address). In
 serve's Mode 2 the run's folder is an Archil mount, which a dial machine takes none of yet, so a Modal desktop there is
@@ -1559,7 +1561,7 @@ the TTL.
 
 | Capability | Declared | Why |
 | --- | --- | --- |
-| `kind` | `linux` | a Linux shell with computerd: exec, files and processes |
+| `kind` | `linux`; `desktop` on dial | a Linux shell with computerd: exec, files and processes; on dial, `kind: "desktop"` adds the box snapshot's display ([Daytona on dial](#daytona-on-dial)) |
 | `lifetime` | `vendor` | `ttlMinutes` destroys the sandbox in any state once it elapses; set to the lifetime in whole minutes, rounded up. Init also ends every process at the deadline itself. |
 | `network` | `none`, `open`, `allow` | none: `networkBlockAll` at create, and the daemon's own network namespace; open and a list: not blocked (the account's tier may still limit where it goes), and the daemon's own namespace whose one way out is init's egress proxy (public internet only; a list's hosts alone) |
 | `vendorAgentPorts` | `[2280]` | the toolbox's port, on every interface; isolation.vendor-agent checks a program of the computer's user reaches it on neither loopback |
@@ -1642,7 +1644,7 @@ when it runs (`settingsFromEnv`) and passes each to `create()` as the option in 
 (`apiKey`, required), `COMPUTER_DAYTONA_API_URL` (`apiUrl`), `COMPUTER_DAYTONA_DAEMON` (`daemonPath`),
 `COMPUTER_DAYTONA_ARCH` (`arch`), `COMPUTER_DAYTONA_TARGET` (`target`), `COMPUTER_DAYTONA_CLASS` (`sandboxClass`),
 `COMPUTER_DAYTONA_USER` (`daemonUser`), `COMPUTER_DAYTONA_GPU_SNAPSHOT` (`gpuSnapshot`) and `COMPUTER_DAYTONA_CONNECT`
-(`connect`). It exports `createProvider()` and `createDriftedProvider()` (which builds a
+(`connect`); the providers it makes also read `COMPUTER_DAYTONA_KIND` (`kind`, `desktop` on dial only). It exports `createProvider()` and `createDriftedProvider()` (which builds a
 daemon of another version with Go), and reads `COMPUTER_DAYTONA_SNAPSHOT` (the run's image; unset, `"default"`,
 Daytona's default snapshot, or on dial the box image's snapshot, `agentrun-box-<recipe hash>`). It never reads `DAYTONA_API_KEY`, `DAYTONA_API_URL` or `DAYTONA_TARGET`, not even as a
 fallback: on a host that runs other Daytona work they may hold another organization's key. Those are serve's names,
@@ -1680,10 +1682,11 @@ no exec and no upload, and nothing goes through the toolbox: create sends the bo
 `networkBlockAll: false` (the machine's root reaches the server; network none is init's, inside), and the snapshot's
 entrypoint runs `agentrun-dial`. No Archil mount, no GPU, and not `image: "default"` (Daytona's default snapshot holds
 no `agentrun-dial`): `check()` refuses each in words. Labels as on exec. A dial sandbox may be a desktop
-(`kind: "desktop"`): the box snapshot's X server and xfwm4, started over the socket it dialed, with the snapshot's 2 CPUs
-and 4 GB. On exec a Daytona computer is kind `linux` alone, and the constructor refuses `kind: "desktop"` in words. The
-descriptor's desktop configuration selects `connect: "dial"` itself, so a server whose `daytonaConnect` is exec still
-makes its desktop over dial. **Unverified**: Xvfb and the window manager on Daytona (no live run yet). What each part rests on:
+(`kind: "desktop"`): the box snapshot's X server, started over the socket it dialed, and xfwm4, which computerd starts
+(init's `--window-manager`), at the snapshot's 2 CPUs and 4 GiB, with no GPU. On exec a Daytona computer is kind
+`linux` alone, and the constructor refuses `kind: "desktop"` in words; the descriptor's desktop configuration selects
+`connect: "dial"` itself. Why computerd, not the client, starts the manager here: [PROVIDERS.md](PROVIDERS.md#machines-that-dial-in).
+What each part of a dial sandbox rests on:
 
 - **A snapshot, never an image.** A create names a snapshot; a snapshot is made from "any publicly accessible image"
   whose tag is not `latest`, `lts` or `stable` ([docs: create snapshots](https://www.daytona.io/docs/en/snapshots.md#create-snapshots)).
@@ -1894,12 +1897,11 @@ E2B's envd is the sandbox's first process, a systemd service with `Restart=alway
    whose start answers after the call gave up on it (its bound passed, or the caller aborted) is killed as it lands.
 6. A desktop's X server, `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp`, starts through the daemon with
    `process.start`, as the computer's user, and create waits until hello declares the display (`src/desktop.ts`,
-   shared with Docker). Then xfwm4, which the template has, starts the same way on it (`xfwm4 --compositor=off
-   --sm-client-disable`, `WINDOW_MANAGER`), so the apps an agent opens are framed and focused. xfwm4 reads its
-   settings over a session bus and exits without one. So it runs under `dbus-run-session`, in a user namespace (the
-   same uid) and a network namespace of its own (`unshare --user --map-current-user --net`), and its bus listens on an
-   abstract name there, which a program of the computer's user cannot connect to. One that joins those namespaces
-   (nsenter) can, as the same uid can ptrace xfwm4. xfwm4 reaches the display by its path. It and every app `apps.launch` opens get `NO_AT_BRIDGE=1`: the template has at-spi2-core, so GTK's
+   shared with Docker). Then computerd starts xfwm4 itself (init `--window-manager`, where the host's facts say
+   `windowManager`; see `daemon/internal/windowmanager`) on a session bus of its own, in a network namespace root
+   made, so the apps an agent opens are framed and focused; hello's `windowManager` says it runs, which create waits
+   on. A program of the user can't join it: root made it, and the user holds no capability there; the same uid may
+   still ptrace xfwm4. It and every app `apps.launch` opens get `NO_AT_BRIDGE=1`: the template has at-spi2-core, so GTK's
    accessibility bridge would start an at-spi bus, a socket of the user's at `/work/.cache/at-spi/bus_0` that nothing
    of ours uses. An app also gets no session bus (`DBUS_SESSION_BUS_ADDRESS=disabled:`). Given none, it would start
    one with the template's dbus-launch, and that bus starts gnome-keyring-daemon, a socket of the user's at
@@ -2061,8 +2063,8 @@ provider does in `process.env`. `COMPUTER_E2B_PUBLIC_STREAM` is no longer read.
 With `connect: "dial"` (a server's `e2bConnect` setting; `exec` by default) an E2B sandbox dials the server instead
 ([PROVIDERS.md](PROVIDERS.md#machines-that-dial-in)): a desktop by default, as on exec, since the box template has
 the desktop (`box/install.sh`'s `desktop` step), or kind linux; no Archil mount, and the host has no
-exec and no upload. A desktop's launch adds `DISPLAY` to the boot env, and its X server and xfwm4 start over the
-socket the sandbox dialed, through `process.start`. A dial desktop whose X server has gone is not refused at `connect()`
+exec and no upload. A desktop's launch adds `DISPLAY` and init's `--window-manager` to the boot env; its X server
+starts over the socket the sandbox dialed, through `process.start`, and computerd starts xfwm4 once it answers. A dial desktop whose X server has gone is not refused at `connect()`
 as on exec: it reads back kind `linux`, and its screen, input, apps and ui calls are refused in words, never sent, until
 its hello says `desktop` again. E2B runs a template's start command once, at the template's build, and snapshots it running, so
 it never sees a create's env ([docs.e2b.dev/template/start-ready-command](https://docs.e2b.dev/template/start-ready-command)).
@@ -2219,8 +2221,8 @@ kernel `4.19.0-gvisor`): root has no `CAP_SYS_ADMIN`, and init made its namespac
 `create({ kind: "desktop", ... })` (serve builds the descriptor's desktop configuration so) makes a desktop: the
 adapter gives init `DISPLAY` and starts `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp` through the daemon as the tool
 user (`src/desktop.ts`), as on E2B, so the X server is one process in init's table, in its own network namespace, and
-ends with the computer; xfwm4 starts the same way once the display answers, its session bus out of the user's reach, as
-on E2B. It starts from the box image the release publishes, `ghcr.io/parcha-ai/agentrun-box:<recipe hash>`
+ends with the computer; computerd starts xfwm4 itself once the display answers (init's `--window-manager`), its
+session bus out of the user's reach, as on E2B. It starts from the box image the release publishes, `ghcr.io/parcha-ai/agentrun-box:<recipe hash>`
 (`box/Dockerfile`: the archil client, the helper, the tool user, FUSE, no sudo, plus Xvfb, xfwm4, and the apps E2B
 Desktop has that are cheap to carry, which the `apps` group lists and opens), as a template of the key's own workspace
 named `agentrun-box-<recipe hash>`. A sandbox that mounts an Archil disk starts from the same template.
@@ -2827,6 +2829,74 @@ On 2026-11-16, `kind linux` passed Core again and `kind desktop` did not: 0 case
 skipped, five because the run passed no `--fixture`, and `apps.launch-terminate` because boxd's own image lists none
 of the stock apps. The desktop snapshot above is the fix for the last; it has not run live yet.
 
+## smol cloud
+
+```ts
+import { providerFor } from "@parcha/agentrun-computer";
+
+// The key is the caller's to pass (serve's SMOLCLOUD_API_KEY).
+const smol = await providerFor("smolcloud", { apiKey });
+const made = await smol.create({ image: "alpine:3.20", lifetimeMs: 600_000, network: "none" }, { requestId: "r1#3" });
+```
+
+A smol cloud computer is kind `linux`, a [smol cloud](https://smolmachines.com) machine: a microVM booted from any OCI
+image, with its own kernel. With no image named, it starts from the box image, the public registry tag
+`prepareImage()` answers (`boxImageRef()`), which smol cloud pulls at create. smol cloud runs on the shared machine-host adapter ([PROVIDERS.md](PROVIDERS.md)):
+`src/smolcloud.ts` is its `MachineHost`, over smol cloud's REST API (`https://api.smolmachines.com`,
+`Authorization: Bearer <key>`) with `fetch` and the shared REST client.
+
+| MachineHost | smol cloud |
+| --- | --- |
+| `create` | `POST /v1/machines` named `agr-<computer name>`, the image on an amd64 node, the labels, the spec's size (2 CPUs and 4 GiB unless it names one), `autoStopSeconds: 0` (the idle stop off), `ttlSeconds` to the request's backstop, `start: true`; a 409 is `exists` |
+| `get` | `GET /v1/machines/{id}`: `started` is running, `creating` starting, `created`, `stopped`, `pausing` and `paused` stopped, `error` and `deleting` gone (with smol cloud's `error` as why), `deleted` none |
+| `list` | `GET /v1/machines?label=k=v`, one `label` per label |
+| `delete` | `DELETE /v1/machines/{id}`; a 404 is done |
+| `exec` | a resumable exec started interactive (`POST /v1/machines/{id}/execs`), through `framedExec`: output read by offset with a 25 s long poll (`GET .../execs/{execId}?after=&wait=25`), stdin as numbered base64 frames of 48 KiB (`POST .../stdin`, safe to resend), `eof` to end it, `DELETE` to kill it |
+| `upload` | `PUT /v1/machines/{id}/files/{path}`, the bytes as they are |
+| `extend` | `PATCH /v1/machines/{id}/labels` with the deadline label alone |
+
+What smol cloud refuses or this host works around:
+
+- An argv with an empty word is refused (400 `command arguments cannot be empty`), and the adapter's scripts pass one
+  for an unset option. Such an argv runs as one quoted line, `/bin/sh -c 'exec <argv>'`; any other runs as given. The
+  API's own shell form (`command` as a string) is not used: it runs `sh -lc`, a login shell.
+- An account without a card runs 4 machines at once, so a run takes `--concurrency 4`. The cap answers 422 with the
+  status's own code; its words (`concurrency limit reached: ...`) are read as `limit`.
+- Labels: at most 32, keys of `[a-z0-9._/-]`, values up to 255 characters (`facts.labels.count` is 32).
+- Machines are placed on amd64 nodes (`source.arch`), so the daemon uploaded is `computerd-linux-amd64`; smol cloud
+  has arm64 nodes too, unused here.
+- No mount of the run's folder yet, and no desktop. smol cloud binds each machine's own storage disk at `/workspace`
+  (an ext4 mount of `/dev/vda`), and a synced folder can be held only where nothing is mounted there, so the
+  descriptor says so in `unmounted.sync` and serve's Mode 2 refuses a smol cloud sandbox in those words. An Archil
+  mount is untried (`/dev/fuse` opens in the guest).
+
+### Conformance on smol cloud
+
+```sh
+AGENTRUN_COMPUTER_LIVE_SMOLCLOUD=1 COMPUTER_SMOLCLOUD_API_KEY=... \
+  npm run conformance -w @parcha/agentrun-computer -- --provider smolcloud --long --concurrency 4
+node packages/computer/dist/conformance/sweep.js --provider smolcloud --before /tmp/smolcloud-before.json   # then --after
+```
+
+The conformance module, `dist/conformance/smolcloud.js`, checks `AGENTRUN_COMPUTER_LIVE_SMOLCLOUD=1` first, then reads
+`COMPUTER_SMOLCLOUD_API_KEY` (`apiKey`, required), `COMPUTER_SMOLCLOUD_API_URL` (`apiUrl`) and
+`COMPUTER_SMOLCLOUD_IMAGE` (the run's image, default the box image), never `SMOLCLOUD_API_KEY`. Every computer of a run
+lives at most 30 minutes. The live sweep is the shared one; its scope is the key's account.
+
+### Live runs
+
+On 2026-11-17, against smol cloud with an account key: the exec pre-check passed every check (8 MiB through `cat` in
+40 s, the stdin frames one after another; the daemon goes in through `upload` instead). The `--long` run at
+`--concurrency 4` passed Core 67/67 and Full 9/37 (the rest not declared) in 40 minutes; Full's `lifetime.idle` timed
+out while the test host lost DNS, and passed when run again on its own. An account without a card runs at most 4
+machines at once, and a create past that answers `422`, read as `limit`.
+
+On 2026-11-18, from the box image: the exec pre-check passed every check (8 MiB through `cat` in 33 s), and the
+`--long` run at `--concurrency 4` passed Core 67/67 and Full 10/41 (the rest not declared, `mount:sync` among them) in
+18 minutes. An earlier run that day, before the descriptor said `unmounted.sync`, had every `mount.sync` case refused
+at create: the read back found an ext4 mount of `/dev/vda` at `/workspace`. The sweep after the last run read
+`{"swept":0,"gone":0,"stillThere":[],"leftAlone":0}`.
+
 ## Conformance
 
 A provider for another vendor passes the same suite as Docker's, with one command. The suite is data: each case in
@@ -2869,7 +2939,7 @@ pass, facts: [{ id, value, means }], factsProblem? }`.
 An id is resolved through the provider registry, and only there; the usage lists every id it holds. A module path is
 resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
 usage error, and 3 on a partial run; `--json` prints the report object (`{ provider, providerVersion, kind,
-daemonMode, image, daemons: [{ computer, role, version, os, arch, fence? }], only?, coreNotRun?, results: [{ id, level,
+daemonMode, image, daemons: [{ computer, role, version, os, arch, fence?, windowManager? }], only?, coreNotRun?, results: [{ id, level,
 group, status, reason?, undeclared? }], core, undeclared, cleanup, computers: { peak, cap? }, notes?, computerNotes? }`).
 `computers.peak` is the most computers the run had alive at once, each counted from its create's call until its release
 (the text report's `computers alive at once: <peak> at most` line). `--concurrency <n>` (`concurrency` in

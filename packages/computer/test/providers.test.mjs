@@ -99,8 +99,9 @@ test("the registry is derived from the descriptors: one per provider file, each 
 test("loading the registry, the kind registry or a descriptor loads no provider and no vendor SDK: only descriptors, which import none", () => {
 	const descriptorFiles = readdirSync(new URL("../dist/descriptors/", import.meta.url)).filter((name) => name.endsWith(".js"));
 	assert.deepEqual(staticImports("../dist/providers.js"), ["./descriptors/index.js"], "the registry imports the descriptors alone");
-	assert.deepEqual(staticImports("../dist/kinds.js"), ["./descriptor.js", "./descriptors/index.js"], "the kind registry imports the descriptors and their derived mounts alone");
-	assert.deepEqual(staticImports("../dist/descriptor.js"), [], "the descriptor's type and check import nothing");
+	assert.deepEqual(staticImports("../dist/kinds.js"), ["./descriptor.js", "./descriptors/index.js", "./setting-kinds.js"], "the kind registry imports the descriptors, their derived mounts and the setting kinds alone");
+	assert.deepEqual(staticImports("../dist/descriptor.js"), ["./setting-kinds.js"], "the descriptor's type and check import the setting kinds alone");
+	assert.deepEqual(staticImports("../dist/setting-kinds.js"), [], "the setting kinds are a leaf");
 	for (const name of descriptorFiles) {
 		const outside = staticImports(`../dist/descriptors/${name}`).filter((from) => from !== "../descriptor.js" && !/^\.\/[a-z0-9-]+\.js$/.test(from));
 		assert.deepEqual(outside, [], `descriptors/${name} imports the descriptor's check and other descriptors alone`);
@@ -198,8 +199,8 @@ test("every provider's descriptor declares network beside mounts: the network fo
 	}
 	// Which provider takes this server's allowlist, read from the descriptors alone: Docker and Local Chrome, each through
 	// its egress proxy, and the hosted computers whose init starts one (Daytona, Modal, E2B, Agent37, Morph, Cloudflare,
-	// Fly Machines); Orgo's adapter starts none, so Orgo declares none alone.
-	assert.deepEqual(lists, ["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "local-chrome"]);
+	// Fly Machines, smol cloud); Orgo's adapter starts none, so Orgo declares none alone.
+	assert.deepEqual(lists, ["docker", "daytona", "modal", "e2b", "agent37", "morph", "cloudflare", "fly", "local-chrome", "smolcloud"]);
 	assert.deepEqual(index.descriptorOf("orgo").network, ["none"]);
 });
 

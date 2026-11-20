@@ -10,7 +10,7 @@ import { sealKeyOf } from "../dist/tool-keys.js";
 
 const ROOT = new URL("../../../", import.meta.url);
 const { differences, loadTemplate, onlyService, renderValue, renderVariables, startArgv } = await import(new URL("deploy/railway/template.mjs", ROOT));
-const { BUTTON_MARK, BUTTON_PLACEHOLDER, FIRST_RUN, PRICE_PER_MINUTE, PUBLISH, WALK_MAX_MS, buttonLine, curlArgs, curlConfig, formValues, planClient, run, sourcePatch, usageOf } = await import(new URL("deploy/railway/publish-and-walk.mjs", ROOT));
+const { BUTTON_MARK, BUTTON_PLACEHOLDER, FIRST_RUN, buttonCode, PRICE_PER_MINUTE, PUBLISH, WALK_MAX_MS, buttonLine, curlArgs, curlConfig, formValues, planClient, run, sourcePatch, usageOf } = await import(new URL("deploy/railway/publish-and-walk.mjs", ROOT));
 const { dockerRunArgs } = await import(new URL("deploy/railway/local-walk.mjs", ROOT));
 const read = (path) => readFile(new URL(path, ROOT), "utf8");
 const { service } = onlyService(loadTemplate());
@@ -26,9 +26,16 @@ test("the template runs the image the release tags beta, from the repository ren
   assert.match(await read(".github/workflows/release.yml"), /imagetools create --tag "\$IMAGE:\$RELEASE_TAG" --tag "\$IMAGE:beta"/);
 });
 
-test("render.yaml pins this release's image (the tag a release bumps)", async () => {
+test("render.yaml and the Helm chart pin this release's image (the tag a release bumps)", async () => {
   const { version } = JSON.parse(await read("packages/serve/package.json"));
   assert.match(await read("render.yaml"), new RegExp(`^ {6}url: ghcr\\.io/parcha-ai/agentrun-server:v${version.replace(/\./g, "\\.")}$`, "m"));
+  // The chart's image is v<appVersion> (deploy/helm/agentrun/templates/_helpers.tpl), and its version moves with it.
+  const chart = await read("deploy/helm/agentrun/Chart.yaml");
+  assert.equal(/^version: (\S+)$/m.exec(chart)?.[1], version);
+  assert.equal(/^appVersion: "(\S+)"$/m.exec(chart)?.[1], version);
+  const values = await read("deploy/helm/agentrun/values.yaml");
+  assert.match(values, /^  repository: ghcr\.io\/parcha-ai\/agentrun-server$/m);
+  assert.match(values, /^  tag: ""$/m);
 });
 
 test("the start command is the image's own entrypoint and command, as the image's user, once the volume is that user's", async () => {
@@ -150,7 +157,13 @@ test("a first run: the source project made, the template generated and checked, 
   assert.ok(at("POST /v2/setup") > at("GET /v2/auth/session"));
   const generated = client.calls.find((c) => c.op === "TemplateDeploy").variables.input;
   assert.equal(generated.templateId, "<template>");
-  assert.deepEqual(differences(loadTemplate(), generated.serializedConfig), []);
+  // The walk deploys the template as its form fills it, plus AGENTRUN_TELEMETRY=0: the walk's server is ours.
+  const deployed = structuredClone(generated.serializedConfig);
+  const walkVars = Object.values(deployed.services)[0].variables;
+  assert.deepEqual(walkVars.AGENTRUN_TELEMETRY, { value: "0" });
+  delete walkVars.AGENTRUN_TELEMETRY;
+  assert.deepEqual(differences(loadTemplate(), deployed), []);
+  assert.equal(Object.values(loadTemplate().services)[0].variables.AGENTRUN_TELEMETRY, undefined, "the template leaves the counts on");
   const env = (await client.call("Variables", {})).variables;
   for (const secret of [env.AGENTRUN_TOKEN, env.AGENTRUN_SEAL_KEY]) assert.ok(!lines.some((l) => l.includes(secret)), "a generated secret was printed");
   assert.ok(lines.some((l) => l.includes(buttonLine("<code>"))), "the README's button line is printed");
@@ -336,4 +349,12 @@ test("deploy/README.md has the Railway button on its one marked line: the placeh
   const code = /new\/template\/([^?]+)\?/.exec(button ?? "")?.[1];
   assert.ok(button === BUTTON_PLACEHOLDER || (code && code !== "TEMPLATE_CODE" && button === buttonLine(code)), button);
   assert.equal(lines.filter((l) => l.includes("railway.com/new/template/")).length, 1, "the button is on the marked line alone");
+});
+
+test("--walk alone walks the template of deploy/README.md's button, and none while the button is the placeholder", async () => {
+  const readme = await read("deploy/README.md");
+  const button = readme.split("\n")[readme.split("\n").indexOf(BUTTON_MARK) + 1];
+  assert.equal(buttonCode(readme), button === BUTTON_PLACEHOLDER ? undefined : /new\/template\/([^?]+)\?/.exec(button)[1]);
+  assert.equal(buttonCode(`${BUTTON_MARK}\n${buttonLine("abc-12")}\n`), "abc-12");
+  assert.equal(buttonCode(`${BUTTON_MARK}\n${BUTTON_PLACEHOLDER}\n`), undefined);
 });

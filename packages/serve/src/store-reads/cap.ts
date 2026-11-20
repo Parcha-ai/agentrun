@@ -3,17 +3,46 @@
 // entries come from changes, so no money behaviour differs (the money-parity rule). A run with no journal spends 0.
 import type { Context } from "@earendil-works/chord/context";
 import { type Meters, meterFiguresFrom, spentFrom } from "../cap.js";
-import type { Store } from "../store/store.js";
-import { bookedListSpend, bookedSpend, cliModelWorked, costIsBooked } from "../runner/metrics.js";
+import type { PurgeKept, Store } from "../store/store.js";
+import { bookedListSpend, bookedSpend, cliModelWorked, type CostBasis, costBasisOf, costIsBooked } from "../runner/metrics.js";
 import { isCliRecord, runEntries, withPaidCosts } from "./journal.js";
 
 /** A CLI run whose model answered or called a tool with no model request booked (metrics.ts cliModelWorked): what it
  *  spent no booking read, so its spend is unknown. */
-const unbookedCli = (entries: Parameters<typeof cliModelWorked>[0]): boolean => isCliRecord(entries) && bookedSpend(entries, "model").requests === 0 && cliModelWorked(entries);
+export const unbookedCli = (entries: Parameters<typeof cliModelWorked>[0]): boolean => isCliRecord(entries) && bookedSpend(entries, "model").requests === 0 && cliModelWorked(entries);
+
+/** What a purged run's tombstone keeps of its journal's figures (Runs.purge folds them into its metrics), read only for a
+ *  run whose journal reads empty; undefined for any other run. */
+export async function purgeKept(store: Store, runId: string): Promise<PurgeKept | undefined> {
+  const row = await store.runs.get(runId);
+  if (!row || row.purgedAt === null) return undefined;
+  return (row.metrics as { purged?: PurgeKept } | null)?.purged;
+}
 
 /** What a run has spent, as the cap reads it, from the one store's journal: its model requests and its paid tool calls. */
 export async function spentOverStore(store: Store, runId: string, context: Context): Promise<number | null> {
   const entries = await runEntries(store, runId, context);
+  if (!entries.length) {
+    const kept = await purgeKept(store, runId);
+    if (kept) return kept.spend.usd;
+  }
+  return spentOf(entries);
+}
+
+/** What a run has spent (spentOverStore) and how its model requests were priced so far (metrics.ts costBasisOf), from one
+ *  read of its journal; `basis` undefined while it booked no model request. */
+export async function spendOverStore(store: Store, runId: string, context: Context): Promise<{ usd: number | null; basis: CostBasis | undefined }> {
+  const entries = await runEntries(store, runId, context);
+  if (!entries.length) {
+    const kept = await purgeKept(store, runId);
+    if (kept) return { usd: kept.spend.usd, basis: kept.spend.basis as CostBasis | undefined };
+  }
+  const model = bookedSpend(entries, "model");
+  return { usd: spentOf(entries), basis: model.requests > 0 ? costBasisOf(model) : undefined };
+}
+
+/** spentOverStore over a run's journal `entries`. */
+function spentOf(entries: Awaited<ReturnType<typeof runEntries>>): number | null {
   // A run whose record carries no cost of its own (a CLI harness's, a workflow's) reads what its sessions booked for the
   // requests that answered (metrics.ts bookedListSpend), its record's answers reading $0: 0 before any request, an
   // unknown booked spend unknown (null). A request still out is held, not spent: its hold never shows as spend.
@@ -36,7 +65,12 @@ export async function spentOverStore(store: Store, runId: string, context: Conte
  *  file-backed run held each on its root. A run with no journal reads as a store that was never there: every figure 0, tokens unknown. */
 export async function metersOverStore(store: Store, runId: string, context: Context): Promise<Meters & { known: { tokens: number; browser: number; others: number } }> {
   const raw = await runEntries(store, runId, context);
-  if (!raw.length) return { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0, known: { tokens: 0, browser: 0, others: 0 } };
+  if (!raw.length) {
+    // A purged run's journal is gone: its figures are the ones its purge read from it (Runs.purge, PurgeKept).
+    const kept = await purgeKept(store, runId);
+    if (kept) return kept.meters as Meters & { known: { tokens: number; browser: number; others: number } };
+    return { tools: 0, tokens: null, browser: { usd: 0, seconds: 0 }, others: 0, known: { tokens: 0, browser: 0, others: 0 } };
+  }
   const figures = meterFiguresFrom(withPaidCosts(raw).map((entry) => ({ conversation: Number(entry.conversationId ?? 0), entry })));
   // A run whose record carries no cost of its own (a CLI harness's, a workflow's): its tokens meter is its model requests
   // at what they were booked at (metrics.ts bookedSpend, the one reader), never the $0 its record reads.

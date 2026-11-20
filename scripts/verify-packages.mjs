@@ -6,7 +6,7 @@ import { promisify } from 'node:util';
 import { cp, lstat, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { readdirSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve, sep } from 'node:path';
-import { tmpdir } from 'node:os';
+import { constants, tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { auditBlockers } from './audit-exceptions.mjs';
 import { MACHINE_PATH } from './machine-path.mjs';
@@ -15,6 +15,8 @@ import { checkPiFamily, developedVersions, laggingWorkspaces, listCopies } from 
 import { importsOf } from './package-imports.mjs';
 import { RECORD as DAEMON_RECORD, sourceDigest as daemonSourceDigest } from '../packages/computer/scripts/daemon-source.mjs';
 import { runtimeSmokeChecks } from './release-preflight.mjs';
+import { verifyEvePackage } from './verify-eve-package.mjs';
+import { npmExecutableMode } from './npm-executable-mode.mjs';
 import { ALLOWED_MARKS, attributionProblems, boundaryProblems, carriesUpstream } from './upstream-attribution.mjs';
 
 const exec = promisify(execFile);
@@ -72,15 +74,20 @@ const allowedExtraFiles = {
   'run-adapters': ['package/vendor/durable-harness/UPSTREAM.json', 'package/vendor/o200k/o200k_base.tiktoken', 'package/vendor/o200k/LICENSE'],
   'run-adapters-claude-agent': ['package/vendor/durable-harness/UPSTREAM.json'],
   'run-adapters-codex': ['package/vendor/durable-harness/UPSTREAM.json'],
+  // The ACP adapter reads Goose's and Cursor's recipes from its own folder (src/goose.ts recipeFile) and starts its stdio MCP
+  // bridge by path (src/harness.ts STDIO_BRIDGE). Its ./testing export starts the fake ACP agent by path (src/testing.ts
+  // FAKE_ACP_AGENT).
+  'run-adapters-acp': ['package/recipes/goose.json', 'package/recipes/cursor.json', 'package/dist/host/mcp-stdio.js', 'package/dist/facts.js', 'package/testing/fake-acp-agent.mjs'],
   // The server's bin is its launcher, which hands the server its secrets over a pipe (launcher/agentrun-serve).
   // And the locks the CLI harnesses' first use installs by (src/harness-install.ts): each the package.json it locks and
   // npm's lock, metadata naming the package at its pin and every package of its tree by sha512, never the CLI itself.
   // And the template packages it ships, which it reads at its start (src/templates.ts), with their format (templates/README.md).
-  serve: ['package/launcher/agentrun-serve', 'package/harnesses/claude-agent/package.json', 'package/harnesses/claude-agent/package-lock.json', 'package/harnesses/codex/package.json', 'package/harnesses/codex/package-lock.json', ...templateFiles()],
+  // And the two subpaths a harness's author imports (HARNESS.md): the module's types and the conformance suite.
+  serve: ['package/launcher/agentrun-serve', 'package/dist/harness-module.js', 'package/dist/harness-module.d.ts', 'package/dist/conformance.js', 'package/dist/conformance.d.ts','package/harnesses/claude-agent/package.json', 'package/harnesses/claude-agent/package-lock.json', 'package/harnesses/codex/package.json', 'package/harnesses/codex/package-lock.json', ...templateFiles()],
   // `npx @parcha/agentrun` is a command, not a library: its bin and the module the bin loads, plain JavaScript with no build,
   // and the API's CLI with its command table generated from the server's OpenAPI document (scripts/generate-clients.mjs),
   // its wait-and-follow module (follow.mjs), the commands that read a secret from stdin (login.mjs), its skill's
-  // installer (skill.mjs), its template package check (template.mjs), its user service (service.mjs) and its tailnet
+  // installer (skill.mjs), its template package check (template.mjs), its user service (service.mjs), its --public-url check (public-url.mjs) and its tailnet
   // step (tailscale.mjs), and the installer that brings its own Node (install.sh), which `agentrun service upgrade` runs.
   // The computer package ships its image recipe for remote computers with an Archil mount: the root helper, whose sha256
   // the provider reads at run time to check an image (src/mount-archil.ts), its Dockerfile and install.sh (the build's
@@ -88,7 +95,7 @@ const allowedExtraFiles = {
   // as a Daytona snapshot, a Modal image or an E2B template, and the recipe's hash with its types (dist/box-image.js names
   // the published image by it, which Agent37 registers as a template).
   computer: ['package/box/agentrun-archil', 'package/box/Dockerfile', 'package/box/install.sh', 'package/box/build-daytona.py', 'package/box/build-modal.py', 'package/box/build-e2b.mjs', 'package/box/recipe.mjs', 'package/box/recipe.d.mts', 'package/box/README.md'],
-  agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/follow.mjs', 'package/lib/commands.generated.mjs', 'package/lib/login.mjs', 'package/lib/skill.mjs', 'package/lib/template.mjs', 'package/lib/service.mjs', 'package/lib/tailscale.mjs', 'package/lib/harness.mjs', 'package/install.sh'],
+  agentrun: ['package/bin/agentrun.mjs', 'package/lib/start.mjs', 'package/lib/cli.mjs', 'package/lib/follow.mjs', 'package/lib/commands.generated.mjs', 'package/lib/login.mjs', 'package/lib/skill.mjs', 'package/lib/template.mjs', 'package/lib/service.mjs', 'package/lib/tailscale.mjs', 'package/lib/harness.mjs', 'package/lib/public-url.mjs', 'package/lib/doctor.mjs', 'package/install.sh'],
 };
 const allowedEndpoints = {
   'run-adapters-claude-agent': [
@@ -126,12 +133,23 @@ const allowedEndpoints = {
     // A session's model proxy binds the loopback only, on a port it chose, and gives Codex that address as its provider.
     ['dist/host/proxy.js', 'http://127.0.0.1:${address.port}'],
   ],
+  'run-adapters-acp': [
+    // The adapter's MCP server listens on the loopback only, on a port the system chose, and the agent connects there.
+    ['dist/host/mcp.js',
+      'http://127.0.0.1/mcp'], // key-gate: loopback-rule the MCP server of the ACP adapter, on this machine only
+    // Goose's recipe points its proxy variables at a closed loopback port, so a request that skips the model proxy fails.
+    ['recipes/goose.json',
+      'http://127.0.0.1:9'], // key-gate: loopback-rule a closed port so a request that skips the model proxy goes nowhere
+  ],
   agentrun: [
     // The CLI's last resort for the server started on this machine: the address agentrun-serve binds by default.
     ['lib/cli.mjs',
       'http://127.0.0.1:7340/v2'], // key-gate: loopback-rule the default address of the server started on this machine
     // The native-connect skill documents a loopback port placeholder for the server on the source machine.
     ['skills/agentrun-cli/SKILL.md', 'http://127.0.0.1:PORT'],
+    // agentrun doctor's fix for a loopback server seen from a remote session: an SSH tunnel, then this address on the
+    // person's own computer, its port the server's.
+    ['lib/doctor.mjs', 'http://localhost:${port}/'],
     // The --vps installer reads the server it started where its port is published, the server loopback, and the compose
     // file it writes checks the health of that server inside its own container.
     ['install.sh',
@@ -173,6 +191,11 @@ const daemonMachines = { amd64: 0x3e, arm64: 0xb7 };
 const egressCode = ['egress-main.js', 'egress-proxy.js', 'egress-table.js'];
 const requiredFiles = {
   computer: ['package/LICENSE', 'package/NOTICE', 'package/README.md', 'package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/mount.js', 'package/dist/mount.d.ts', 'package/box/recipe.mjs', ...egressCode.map(file => `package/dist/docker/${file}`), ...Object.keys(daemonMachines).map(arch => `package/dist/computerd-linux-${arch}`), `package/dist/${DAEMON_RECORD}`],
+  // What serve loads of the ACP adapter at runtime: its entry, Goose's and Cursor's recipes (recipeFile), and the stdio MCP
+  // bridge an agent's MCP client starts by path (STDIO_BRIDGE), which no import reaches, so the import smoke alone misses it.
+  // And the fake ACP agent a harness module's author tests on, which ./testing starts by path.
+  'run-adapters-acp': ['package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/facts.js', 'package/dist/host/mcp-stdio.js', 'package/recipes/goose.json', 'package/recipes/cursor.json', 'package/dist/testing.js', 'package/testing/fake-acp-agent.mjs'],
+  eve: ['package/LICENSE', 'package/NOTICE', 'package/README.md', 'package/dist/index.mjs', 'package/dist/index.d.ts', 'package/dist/tools/index.mjs', 'package/dist/tools/index.d.ts', 'package/dist/extension/_manifest.json', 'package/dist/extension/extension.mjs', 'package/dist/extension/hooks/learning.mjs', 'package/dist/extension/instructions.mjs', 'package/dist/extension/tools/learned_workflow.mjs'],
 };
 
 try {
@@ -184,7 +207,7 @@ try {
     assert.equal(text, JSON.stringify(JSON.parse(text), null, 2) + '\n', `packages/${entry.name}/package.json is not canonical two-space JSON: a key appears twice, or the layout differs`);
   }
   receipt.checks.push('Every packages/*/package.json is canonical two-space JSON, so no key appears twice.');
-  const packageDirectories = ['dsl', 'jev', 'pi-browser', 'serve', 'decisions', 'computer', 'client', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'agentrun'];
+  const packageDirectories = ['dsl', 'jev', 'pi-browser', 'serve', 'decisions', 'computer', 'client', 'eve', 'run-adapters', 'run-adapters-claude-agent', 'run-adapters-codex', 'run-adapters-acp', 'agentrun'];
   const tarballs = [];
   const attributed = [];
   for (const directory of packageDirectories) {
@@ -271,6 +294,11 @@ try {
   const pinned = buildOverrides(rootLock, npmMajor);
   const { overrides, held } = pinned;
   await writeFile(join(consumer, 'package.json'), JSON.stringify({ name: 'agentrun-clean-consumer', version: '1.0.0', private: true, type: 'module', overrides }));
+  // npm normalizes executable archive entries to its file baseline before both masks apply.
+  // In a group-writable environment (system umask 002), a correct 0755 archive installs as 0775.
+  const npmUmask = Number((await run('npm', ['config', 'get', 'umask'], consumer)).stdout.trim());
+  const installedDaemonMode = npmExecutableMode(npmUmask, process.umask());
+  receipt.installedPermissions = { npmUmask, systemUmask: process.umask(), daemonMode: installedDaemonMode };
   await run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', '--save-exact', ...tarballs], consumer);
   const typescript = await json(join(root, 'node_modules', 'typescript', 'package.json'));
   const nodeTypes = await json(join(root, 'node_modules', '@types', 'node', 'package.json'));
@@ -339,6 +367,33 @@ syncBuiltinESMExports();
   receipt.starter.status = 'passed';
   receipt.checks.push('Standalone TypeScript starter installed only DSL/Jev tarballs and its own dependencies; strict build, component tests, success and missing-evidence exit 2 passed offline.');
   console.log('Standalone starter: installed packages, strict compilation, tests, evidence selection and missing-evidence exit 2 passed without runtime network.');
+  receipt.eve = await verifyEvePackage({ root, parentDirectory: temporary,
+    tarballs: Object.fromEntries(['client', 'dsl', 'eve'].map(directory => [directory, tarballs[packageDirectories.indexOf(directory)]])) });
+  receipt.checks.push('Standalone eve project installed client/DSL/eve archives; mount types, production build without agent overrides, deployed schema assets and original callback execution passed offline.');
+  console.log('Installed eve extension: mount, production build, package assets and workflow callback passed without network.');
+
+  // The harness module HARNESS.md walks through, outside this checkout on the packed tarballs: it typechecks against the
+  // installed @parcha/agentrun-serve/harness and /conformance types, and passes the conformance suite on the installed
+  // fake ACP agent. The suite's cases reach the fake over loopback (MCP over HTTP), so the deny-network preload is off.
+  const harnessModule = join(temporary, 'harness-module');
+  await cp(join(root, 'examples/harness-module'), harnessModule, {
+    recursive: true, filter: path => !['node_modules', 'dist'].includes(basename(path)),
+  });
+  receipt.harnessModule = { commands: [], network: 'Installation, and loopback alone during the tests: the suite reaches the fake ACP agent on this machine.' };
+  async function harnessModuleCommand(args) {
+    const result = await run('npm', args, harnessModule, true, env);
+    receipt.harnessModule.commands.push({ command: ['npm', ...args], ...result });
+    assert.equal(result.exitCode, 0, `Harness module example: npm ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
+    return result.stdout;
+  }
+  await harnessModuleCommand(['install', '--ignore-scripts', '--no-audit', '--no-fund', ...tarballs]);
+  assert.ok((await lstat(join(harnessModule, 'node_modules/@parcha/agentrun-harness-acp'))).isDirectory(), 'The harness module must install the ACP adapter package, not a workspace symlink');
+  const harnessModuleOutput = await harnessModuleCommand(['test']);
+  assert.match(harnessModuleOutput, /ℹ fail 0/);
+  assert.match(harnessModuleOutput, /ℹ pass 25/);
+  receipt.harnessModule.status = 'passed';
+  receipt.checks.push('The harness module example installed from the tarballs, typechecked against the installed harness and conformance types, and passed the conformance suite on the installed fake ACP agent.');
+  console.log('Harness module example: installed packages, typecheck and the conformance suite on the fake ACP agent passed.');
   const offlineNode = args => run(process.execPath, ['--import', './deny-network.mjs', ...args], consumer);
   for (const scenario of ['billing', 'technical', 'ambiguous']) {
     const result = JSON.parse((await offlineNode(['node_modules/@parcha/agentrun-dsl/dist/cli.js', 'demo', '--scenario', scenario, '--json'])).stdout);
@@ -367,6 +422,8 @@ import * as browserTesting from '@parcha/pi-browser/testing';
 import * as browserCdp from '@parcha/pi-browser/providers/cdp';
 import * as decisions from '@parcha/agentrun-decisions';
 import * as client from '@parcha/agentrun-client';
+import agentrunEve from '@parcha/agentrun-eve';
+import { learned_workflow as eveWorkflow } from '@parcha/agentrun-eve/tools';
 import { judgeFromProvider } from '@parcha/agentrun-dsl';
 import { registerDecisionProviderConformance } from '@parcha/agentrun-dsl/testing';
 import * as adapters from '@parcha/agentrun-kernel';
@@ -378,6 +435,11 @@ import { createModels } from '@earendil-works/pi-ai/models';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import { execFileSync } from 'node:child_process';
 import * as serve from '@parcha/agentrun-serve';
+import * as serveHarness from '@parcha/agentrun-serve/harness';
+import * as serveConformance from '@parcha/agentrun-serve/conformance';
+import * as acp from '@parcha/agentrun-harness-acp';
+import * as acpFacts from '@parcha/agentrun-harness-acp/facts';
+import * as acpTesting from '@parcha/agentrun-harness-acp/testing';
 import * as computer from '@parcha/agentrun-computer';
 import * as computerMount from '@parcha/agentrun-computer/mount';
 assert.equal(validateWorkflow(supportTriage).ok,true);
@@ -400,12 +462,16 @@ assert.equal(typeof authorWorkflow,'function');
 assert.ok(browser.BROWSER_TOOLS.length>0); assert.equal(typeof browserDurable.createBrowserExtension,'function'); assert.equal(typeof browserTesting.FakeBackend,'function'); assert.equal(typeof browserCdp.cdpProvider,'function');
 assert.ok(loadAuthorReference('language').includes(authorContract()));
 { assert.equal(typeof serve.startServe,'function'); const servePkg=join(process.cwd(),'node_modules','@parcha','agentrun-serve'); assert.ok(JSON.parse(await readFile(join(servePkg,'dist','openapi','agentrun-v2.openapi.json'),'utf8')).openapi,'the install has the contract its build copies, dist/openapi/agentrun-v2.openapi.json'); const caps=await serve.capabilities({}); assert.equal(caps.contract,'agentrun.v2/0'); assert.equal(caps.backend,'local'); assert.deepEqual(caps.models,{source:'providers',route_prefix:null,fast:null,default:null,strong:null,ready:false,needs:'key',priced:null}); assert.deepEqual(caps.harnesses.map((h)=>[h.id,h.default_model]),[['pi',null],['claude-agent',null],['codex',null],['opencode',null]]); assert.equal(serve.ERROR_STATUS.unsupported_here,501); }
+{ assert.deepEqual(Object.keys(serveHarness),[],'the harness subpath is types alone: a module that imports it loads nothing of serve'); assert.deepEqual(Object.keys(serveConformance).sort(),['MAX_RESTARTS','createAdapterLoop','registerHarnessConformance','suiteHostTools']); assert.equal(typeof serveConformance.registerHarnessConformance,'function'); assert.equal(typeof serveConformance.suiteHostTools,'function'); assert.equal(typeof serveConformance.createAdapterLoop,'function'); assert.equal(serveConformance.MAX_RESTARTS,5); }
+{ assert.equal(typeof acp.acpAdapter,'function'); assert.equal(acpFacts.acpFacts,acp.acpFacts); assert.equal(acp.gooseFacts.id,'goose'); assert.equal(acp.recipeFile('goose').id,'goose','the install reads Goose\\'s recipe from its own recipes/goose.json'); assert.ok(acp.GOOSE_PIN.version,'Goose\\'s pin'); }
+{ assert.deepEqual(Object.keys(acpTesting).sort(),['FAKE_ACP_AGENT','fakeAgentRecipe']); assert.ok(acpTesting.FAKE_ACP_AGENT.endsWith('/testing/fake-acp-agent.mjs')); await readFile(acpTesting.FAKE_ACP_AGENT,'utf8'); const recipe=acpTesting.fakeAgentRecipe('packed',await mkdtemp(join(tmpdir(),'fake-acp-')),[]); assert.equal(recipe.args[0],acpTesting.FAKE_ACP_AGENT,'the fake agent a module tests on is the one in its own install'); }
 { const faux=adaptersTesting.fauxAdapter({script:()=>[{submit:{answer:'ok'}}]}); const runNode=adapters.createHarnessRunner(faux,{store:adaptersTesting.memorySessionStore()}); assert.deepEqual(await runNode({kind:'agent',label:'smoke',system:[],user:'{}',schema:{type:'object',required:['answer'],properties:{answer:{type:'string'}}}}),{answer:'ok'}); assert.equal(faux.requests,1); assert.equal(typeof adapters.HarnessRunError,'function'); assert.equal(adapters.SUBMIT_TOOL,'submit'); }
 { const drive=await adaptersKernel.openDrive({writer:await adaptersTesting.memorySessionStore().open('packed'),signal:new AbortController().signal}); assert.equal(await drive.effect('k',{name:'k',replay:'never'},async()=>'ok'),'ok'); await drive.submit({id:'p',kind:'prompt',text:'hi'}); await adaptersProcess.placeSubmissions(drive,drive.pending()); assert.deepEqual(drive.pending(),[]); assert.equal(typeof adaptersKernel.Restart,'function'); assert.equal(typeof adaptersProcess.NativeJournal,'function'); }
 { const fetch=async()=>new Response(JSON.stringify({mode:'fast',answers:{holds:{type:'noul',noul:0.9},pick:{type:'choice',choice:'a',probabilities:{a:0.75,b:0.25}}},citations:[{url:'https://example.org/a',excerpts:[]}],usage:{input_tokens:1,output_tokens:0},decision_id:'decisions_0'}),{status:200,headers:{'content-type':'application/json'}}); const result=await judgeFromProvider(decisions.parallelProvider({apiKey:'fake-test-key',fetch}))({label:'smoke',kind:'judge',state:{},questions:{holds:{type:'noul',instructions:'Q?'},pick:{type:'choice',instructions:'Which?',criteria:{a:null,b:null}}}}); assert.equal(result.answers.holds.noul,0.9); assert.equal(result.answers.pick.confidence,0.5); assert.deepEqual([result.cost_basis,result.evidence.length,result.confidence_source.pick],['estimate',1,'derived']); assert.equal(typeof registerDecisionProviderConformance,'function'); }
-{ assert.deepEqual(Object.keys(computerMount).sort(),['MOUNT_KINDS','WORKSPACE','checkMount','epochProblem','readBackOf']); for (const name of Object.keys(computerMount)) assert.equal(computerMount[name],computer[name],name); assert.equal(computerMount.WORKSPACE,'/workspace'); assert.deepEqual(computerMount.checkMount({kind:'bind',path:'relative'},['bind']).map(r=>r.field),['mount']); assert.deepEqual(computerMount.readBackOf({kind:'archil',disk:'d',region:'r',folder:'f',token:'t'},7),{kind:'archil',disk:'d',region:'r',folder:'f',exclusive:true,epoch:7}); assert.ok('other' in computerMount.readBackOf({kind:'archil',disk:'d',region:'r',folder:'f',token:'t'}),'an Archil read-back with no epoch is refused'); assert.ok(computer.providerIds.length>0); for (const id of computer.providerIds) { const module=await computer.providerModule(id); const mounts=computer.descriptorOf(id)?.mounts; assert.ok(Array.isArray(mounts)&&mounts.every(kind=>computerMount.MOUNT_KINDS.includes(kind)),id+' mounts'); assert.equal(module.MOUNT,undefined,id+' exports no MOUNT: the descriptor holds its mounts'); assert.equal(typeof module.create,'function',id+' create'); assert.equal(module.fromEnv,undefined,id+' has no fromEnv'); } const pkg=join(process.cwd(),'node_modules','@parcha','agentrun-computer'); for (const arch of ['amd64','arm64']) assert.equal((await stat(join(pkg,'dist','computerd-linux-'+arch))).mode&0o777,0o755&~process.umask(),'the install has dist/computerd-linux-'+arch+', executable (0755 less the umask npm installed it under)'); }
+{ assert.deepEqual(Object.keys(computerMount).sort(),['MOUNT_KINDS','WORKSPACE','checkMount','epochProblem','readBackOf']); for (const name of Object.keys(computerMount)) assert.equal(computerMount[name],computer[name],name); assert.equal(computerMount.WORKSPACE,'/workspace'); assert.deepEqual(computerMount.checkMount({kind:'bind',path:'relative'},['bind']).map(r=>r.field),['mount']); assert.deepEqual(computerMount.readBackOf({kind:'archil',disk:'d',region:'r',folder:'f',token:'t'},7),{kind:'archil',disk:'d',region:'r',folder:'f',exclusive:true,epoch:7}); assert.ok('other' in computerMount.readBackOf({kind:'archil',disk:'d',region:'r',folder:'f',token:'t'}),'an Archil read-back with no epoch is refused'); assert.ok(computer.providerIds.length>0); for (const id of computer.providerIds) { const module=await computer.providerModule(id); const mounts=computer.descriptorOf(id)?.mounts; assert.ok(Array.isArray(mounts)&&mounts.every(kind=>computerMount.MOUNT_KINDS.includes(kind)),id+' mounts'); assert.equal(module.MOUNT,undefined,id+' exports no MOUNT: the descriptor holds its mounts'); assert.equal(typeof module.create,'function',id+' create'); assert.equal(module.fromEnv,undefined,id+' has no fromEnv'); } const pkg=join(process.cwd(),'node_modules','@parcha','agentrun-computer'); for (const arch of ['amd64','arm64']) assert.equal((await stat(join(pkg,'dist','computerd-linux-'+arch))).mode&0o7777,${installedDaemonMode},'the install has dist/computerd-linux-'+arch+', executable with npm and system umasks applied'); }
 { const key='fake-test-key-0123456789'; const seen=[]; const fetch=async(url,init)=>{ seen.push([url,init.headers.authorization]); return new Response(JSON.stringify({error:{code:'bad_request',message:'echo '+key}}),{status:400,headers:{'content-type':'application/json'}}); }; const c=new client.AgentRun({baseUrl:'https://agentrun.example.com/v2',apiKey:key,fetch}); await assert.rejects(c.runs.get('..'),client.AgentRunUsage); assert.throws(()=>new client.AgentRun({baseUrl:'https://agentrun.example.com/v2',apiKey:'a\\nb'}),client.AgentRunAuthError); const refused=await c.agents.get('a b').catch((error)=>error); assert.ok(refused instanceof client.AgentRunRefused); assert.deepEqual([refused.status,refused.code,refused.error.message],[400,'bad_request','echo [hidden]']); assert.ok(!refused.message.includes(key)); assert.deepEqual(seen,[['https://agentrun.example.com/v2/agents/a%20b','Bearer '+key]]); }
-console.log(JSON.stringify({core:true,jev:true,browser:true,serve:true,decisions:true,adapters:true,computer:true,client:true,network:'prohibited'}));
+assert.equal(typeof agentrunEve,'function'); assert.ok(eveWorkflow);
+console.log(JSON.stringify({core:true,jev:true,browser:true,serve:true,decisions:true,adapters:true,computer:true,client:true,eve:true,network:'prohibited'}));
 `);
   const smoke = JSON.parse((await offlineNode(['smoke.mjs'])).stdout);
   assert.deepEqual(smoke, runtimeSmokeChecks);
@@ -547,6 +613,28 @@ const leaked: MountReadBack = { kind: 'archil', disk: 'd', region: 'r', folder: 
 void [back, checkMount(spec, kinds), takes, leaked, undefined as ComputerProvider | undefined];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'computer-consumer.ts'], consumer);
+  // A harness module's author (HARNESS.md) types a module and a conformance subject from serve's two subpaths alone.
+  await writeFile(join(consumer, 'harness-consumer.ts'), `import type { HarnessEntry, HarnessLaunch, HarnessModuleKit, HarnessTableModule, ModuleLaunch, RunnerHarness } from '@parcha/agentrun-serve/harness';
+import { createAdapterLoop, MAX_RESTARTS, registerHarnessConformance, suiteHostTools, type ConformanceSubject, type TestFunction } from '@parcha/agentrun-serve/conformance';
+const runner: RunnerHarness = { record: 'loop', adapter: async (launch: HarnessLaunch) => { throw new Error('not in this check: ' + launch.model); } };
+export const entries: HarnessTableModule['entries'] = (builtins: Readonly<Record<string, HarnessEntry>>, kit: HarnessModuleKit) => ({
+  mine: { ...builtins.pi, label: 'Mine', runner },
+  theirs: kit.acpEntry({
+    facts: builtins['claude-agent']!.facts!,
+    recipe: (launch: ModuleLaunch) => ({ id: 'theirs', command: '/opt/theirs/bin/agent', args: ['acp', '--model', launch.model], declares: { load: true, mcp: 'http' }, billing: { kind: 'proxy' } }),
+    proxy: () => async () => ({ env: {}, close: async () => {} }),
+  }),
+  unfinished: kit.acpEntry({
+    facts: builtins['claude-agent']!.facts!,
+    // @ts-expect-error a recipe names its id, command, declares and billing
+    recipe: (launch: ModuleLaunch) => ({ model: launch.model }),
+    proxy: () => async () => ({ env: {}, close: async () => {} }),
+  }),
+});
+const subject: ConformanceSubject = { name: 'mine', createLoop: () => createAdapterLoop(async () => { throw new Error('not in this check'); }, { restartLimit: MAX_RESTARTS }) };
+void [subject, suiteHostTools({}), registerHarnessConformance as (subject: ConformanceSubject, options: { test: TestFunction }) => void];
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'harness-consumer.ts'], consumer);
   // The Claude Agent adapter installed without its SDK (an optional peer the host brings) says so in one line that ends with
   // the line installing the pinned SDK. That line, run exactly as printed in a consumer of its own, is all it takes for the
   // adapter's checks to pass: the SDK, its platform package (the CLI) and the MCP library it brings as a peer.
@@ -575,7 +663,8 @@ try { console.log(JSON.stringify({ cliPath: verifyClaudeAgent({}).cliPath })); }
   receipt.status = 'failed';
   receipt.error = error instanceof Error ? error.message : 'Unknown verification failure';
   console.error(receipt.error);
-  process.exitCode = 1;
+  // A step stopped by a signal (verify-eve-package's runStep) ends this process with that signal's status, once cleaned up.
+  process.exitCode = error?.stoppedBy ? 128 + constants.signals[error.stoppedBy] : 1;
 } finally {
   receipt.finishedAt = new Date().toISOString();
   await writeReceipt();

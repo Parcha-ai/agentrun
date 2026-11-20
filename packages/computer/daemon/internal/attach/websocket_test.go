@@ -28,7 +28,7 @@ const (
 )
 
 // testToken is a fake-looking machine token, made here, never a real one.
-var testToken = "art_" + strings.Repeat("0", 64)
+var testToken = "art_" + strings.Repeat("A", 43)
 
 func testOptions() Options {
 	return Options{Token: testToken, Subprotocol: subprotocol, MaxMessage: 64, Heartbeat: time.Hour, Idle: time.Hour}
@@ -441,7 +441,7 @@ func TestTheUpgradeCarriesTheTokenAndSubprotocolAndThenMessages(t *testing.T) {
 func TestARefusedUpgradeSaysItsStatus(t *testing.T) {
 	srv := upgrade(t, func(net.Conn, *bufio.Reader) {})
 	o := testOptions()
-	o.Token = "art_" + strings.Repeat("1", 64)
+	o.Token = "art_" + strings.Repeat("B", 43)
 	_, err := Dial(context.Background(), wsURL(srv), o)
 	var refused *Refused
 	if !errors.As(err, &refused) || refused.Status != 401 || refused.Words != "unknown token" {

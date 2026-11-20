@@ -10,6 +10,7 @@ import type { MachineHost } from "../host.js";
 import type { HostedDial } from "../hosted/provider.js";
 import type { ProviderNote } from "../mount-archil.js";
 import { dialOnlyFromServer } from "./dial-only.js";
+import { kindFrom } from "./kind.js";
 
 /** The environment this module reads, by name, each for the option its comment names. */
 export const ENV = {
@@ -17,6 +18,8 @@ export const ENV = {
 	url: "COMPUTER_CLOUDFLARE_RELAY_URL",
 	/** relayToken, required: the relay's RELAY_TOKEN. */
 	token: "COMPUTER_CLOUDFLARE_RELAY_TOKEN",
+	/** kind: linux (default) or desktop, which needs the public server's process (dialKit). */
+	kind: "COMPUTER_CLOUDFLARE_KIND",
 } as const;
 
 /** The longest lifetime a computer of a run may ask for: init's deadline and the janitor end each container by then. */
@@ -47,6 +50,7 @@ export interface CloudflareModuleOptions {
 export function createProvider({ env = process.env, dial, daemonPath, fetch, onNote }: CloudflareModuleOptions = {}): CloudflareProvider {
 	return create({
 		...settingsFromEnv(env),
+		...kindFrom(env, ENV.kind),
 		...(dial ? { dial } : {}),
 		...(daemonPath === undefined ? {} : { daemonPath }),
 		...(fetch ? { fetch } : {}),

@@ -6,14 +6,20 @@
 // made that no other saved server uses (cleanupOf), and passes what another one uses to that one's record, so the last
 // of them to go removes it. What this server didn't make (an auth config or an account the owner had already, or one no
 // record says it made, as for a server saved before this was recorded) is never removed. A save over the server does the
-// same with what the record it replaces made that the new one no longer stands on (droppedOf).
+// same with what the record it replaces made that the new one no longer stands on (droppedOf). An auth config the owner
+// names in a save (auth_config_id) is the owner's from that save on, whoever made it: the record written says it was not
+// made here, and every other record's claim to have made it is let go (releasedOf), so no delete or save removes it.
 import { isObject } from "./validate.js";
 
 /** A thing on Composio by its id, and whether this server made it. */
 export type Made = { id: string; made: boolean };
 /** What a preset server stands on at Composio: the user its address names, its auth config (none for a toolkit with no
- *  sign-in) and the connected accounts under it. */
-export type ComposioMade = { user: string; auth_config: Made | null; accounts: Made[] };
+ *  sign-in; `named`, from a save, when the owner named it: theirs, never recorded as made) and the connected accounts
+ *  under it. `per_run`: saved with `user_id: "per_run"` (COMPOSIO_PER_RUN), its address names no user and no account,
+ *  and each run names its own (mcp_auth, composioPerRun); `user` is then that word and `accounts` empty. Only a save made
+ *  since the mode exists writes it, so a server saved before for a Composio user literally named "per_run" keeps that
+ *  user until it is saved again. */
+export type ComposioMade = { user: string; auth_config: (Made & { named?: true }) | null; accounts: Made[]; per_run?: true };
 /** What a delete does at Composio beyond the MCP server: what it removes, in order (the accounts before the auth config
  *  they are under), and what it keeps, each with whose it stays (`by`: the saved server that uses it too; none: this
  *  server didn't make it). */
@@ -36,12 +42,17 @@ export function recordedMade(value: unknown, createdAt: number | undefined): Com
   const config = value.auth_config === null ? null : thingOf(value.auth_config);
   const accounts = value.accounts.map(thingOf);
   if (config === undefined || accounts.some((account) => !account)) return undefined;
-  return { user: value.user, auth_config: config, accounts: accounts as Made[] };
+  return { user: value.user, auth_config: config, accounts: accounts as Made[], ...(value.per_run === true ? { per_run: true as const } : {}) };
 }
+
+/** Whether the saved server `row` is a per-run Composio server: auth headers (the install's sealed key) and its own
+ *  record (`recorded`, read at composioMadeKey) saying per_run. Its runs call it as the Composio user and account each
+ *  names (mcp_auth.<server> = {composio_user_id, connected_account_id?}); one that names none is refused unsent. */
+export const composioPerRun = (row: { auth: string; createdAt: number }, recorded: unknown): boolean => row.auth === "headers" && recordedMade(recorded, row.createdAt)?.per_run === true;
 
 /** Whether `other` stands on `mine`'s account: under the same auth config, as the same user (Composio's MCP server picks
  *  the account by the two). */
-const sharesAccounts = (mine: ComposioMade, other: ComposioMade): boolean => mine.auth_config !== null && other.auth_config?.id === mine.auth_config.id && other.user === mine.user;
+const sharesAccounts = (mine: ComposioMade, other: ComposioMade): boolean => mine.auth_config !== null && other.auth_config?.id === mine.auth_config.id && other.user === mine.user && !mine.per_run && !other.per_run;
 
 /** A record a save writes, from what the preset found and made (`found`): a thing it found that a record of the server
  *  saved before over this row (`was`) or of another saved server (`others`) says was made here stays made here; and the
@@ -49,10 +60,17 @@ const sharesAccounts = (mine: ComposioMade, other: ComposioMade): boolean => min
 export function madeToWrite(found: ComposioMade, was: ComposioMade | undefined, others: readonly ComposioMade[]): ComposioMade {
   const all = [...(was ? [was] : []), ...others];
   const madeHere = (id: string) => all.some((r) => r.auth_config?.id === id ? r.auth_config.made : false) || all.some((r) => r.accounts.some((a) => a.id === id && a.made));
-  const config = found.auth_config && { id: found.auth_config.id, made: found.auth_config.made || madeHere(found.auth_config.id) };
+  // One the owner named is theirs, whatever a record says made it.
+  const config = found.auth_config && { id: found.auth_config.id, made: !found.auth_config.named && (found.auth_config.made || madeHere(found.auth_config.id)) };
   const accounts = found.accounts.map((a) => ({ id: a.id, made: a.made || madeHere(a.id) }));
   const kept = was && sharesAccounts(found, was) ? was.accounts.filter((a) => a.made && !accounts.some((b) => b.id === a.id)) : [];
-  return { user: found.user, auth_config: config, accounts: [...accounts, ...kept] };
+  return { user: found.user, auth_config: config, accounts: [...accounts, ...kept], ...(found.per_run ? { per_run: true as const } : {}) };
+}
+
+/** The records of the other saved servers (`others`, by name) that say they made the auth config `id`, each as it is to
+ *  be written once the owner named that config in a save: made by none of them, so none of their deletes removes it. */
+export function releasedOf(id: string, others: readonly (readonly [string, ComposioMade, ...unknown[]])[]): [string, ComposioMade][] {
+  return others.filter(([, record]) => record.auth_config?.id === id && record.auth_config.made).map(([name, record]) => [name, { ...record, auth_config: { id, made: false } }]);
 }
 
 /** What a removed server's record leaves to do, with the records of the servers still saved (`others`, by name): each

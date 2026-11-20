@@ -6,40 +6,13 @@
 // these groups.
 // The providers Settings offers (PROVIDERS) are derived from the providers' descriptors (descriptor.ts), each declared
 // once in its descriptor module: loading this loads descriptors (data) alone, never a provider module or a vendor SDK.
-import { type DescriptorKey, type DescriptorSetting, derivedMounts, type HostCommand, type ParkedConfiguration, type ProviderDescriptor } from "./descriptor.js";
+// The setting kinds themselves (SETTING_KINDS) are a leaf of their own, setting-kinds.ts, which descriptor.ts reads too.
+import { derivedMounts, type ProviderDescriptor } from "./descriptor.js";
 import { DESCRIPTORS } from "./descriptors/index.js";
-import type { MountKind, Unmounted } from "./mount.js";
-import type { ComputerKind, Group, HelloResult } from "./protocol.js";
-import type { ComputerCapabilities, NetworkForm } from "./provider.js";
+import type { Group, HelloResult } from "./protocol.js";
+import type { ComputerCapabilities } from "./provider.js";
 import type { Result } from "./result.js";
-
-/**
- * What an agent is given. none: the run's folder only, no computer. sandbox: a Linux shell with files and processes.
- * desktop: a screen, a pointer and keys (Linux, Windows or macOS), a shell when it has one. phone: a screen, touch and
- * apps. browser: a CDP target.
- */
-export type ComputerSettingKind = "none" | "sandbox" | "desktop" | "phone" | "browser";
-
-/** A setting kind's machine kinds and groups. */
-export interface SettingKindSpec {
-	/** The capabilities().kind values that can serve it. */
-	machineKinds: readonly ComputerKind[];
-	/** Every one declared, and passing its conformance cases, to serve it. */
-	required: readonly Group[];
-	/** Brought when declared. */
-	optional: readonly Group[];
-}
-
-export const SETTING_KINDS: Readonly<Record<ComputerSettingKind, SettingKindSpec>> = {
-	none: { machineKinds: [], required: [], optional: [] },
-	sandbox: { machineKinds: ["linux"], required: ["exec", "files", "processes"], optional: [] },
-	desktop: { machineKinds: ["desktop"], required: ["screen", "input.pointer", "input.keys"], optional: ["exec", "files", "processes", "apps", "ui", "stream"] },
-	phone: { machineKinds: ["android", "ios"], required: ["screen", "input.touch", "apps"], optional: ["input.keys", "apps.install", "ui", "stream"] },
-	browser: { machineKinds: ["browser"], required: ["cdp"], optional: ["stream", "downloads"] },
-};
-
-/** Every setting kind, in the table's order. */
-export const SETTING_KIND_NAMES = Object.keys(SETTING_KINDS) as ComputerSettingKind[];
+import { type ComputerSettingKind, SETTING_KIND_NAMES, SETTING_KINDS, type SettingKindSpec } from "./setting-kinds.js";
 
 /**
  * The capabilities serves() and kindOf() read: one configuration a provider offers, with the GPUs it offers (Settings'
@@ -109,54 +82,12 @@ export function configurationOf<Configuration extends Pick<KindCapabilities, "im
 	return serving.find((one) => defaultImage !== undefined && one.image === defaultImage) ?? serving.find((one) => one.image === undefined) ?? serving[0];
 }
 
-/** A provider as Settings shows it: its descriptor's data, and the setting kinds it serves. */
-export interface ProviderEntry {
-	/** Its id: a line of the provider registry (providers.ts). */
-	readonly id: string;
-	readonly label: string;
-	/** Derived: the setting kinds its capabilities serve (serves), never written by hand. */
-	readonly kinds: readonly ComputerSettingKind[];
-	/** The serve-side key names and the options they fill; never a value. */
-	readonly keys: readonly DescriptorKey[];
-	/** Settings that are no key but go to its options. */
-	readonly settings?: readonly DescriptorSetting[];
-	/** Whether its machines dial the server: always ("dial"), or as its connect option says ("either"); descriptor.ts connectOf. */
-	readonly connect?: "dial" | "either";
-	/** The mount kinds its computers take, sync derived (derivedMounts); [] cannot mount the run's folder. */
-	readonly mounts: readonly MountKind[];
-	/** Why its computers take none of these mount kinds, each in one sentence (descriptor.ts). */
-	readonly unmounted?: Unmounted;
-	/** Mount kinds its computers take only where the operator sets the key named, by kind (descriptor.ts, mountsOf). */
-	readonly mountsWith?: Readonly<Partial<Record<MountKind, string>>>;
-	/**
-	 * The network forms its computers make, its descriptor's: ["none"], a remote computer whose programs run in a network
-	 * of their own; ["open"], the vendor's own network, which no allowlist of this server reaches; Docker's all three.
-	 */
-	readonly network: readonly NetworkForm[];
-	/** The vendor bills by time; prices are the vendor's page, not ours. */
-	readonly metered: boolean;
-	/** Its static capabilities: the machine kind and groups of each configuration it offers. */
-	readonly capabilities: readonly KindCapabilities[];
-	/**
-	 * The image a computer of each setting kind starts from when its setting names none. A kind with no entry has no
-	 * default, and the caller refuses the setting in words. Docker's sandbox has none: its image is made (prepareImage).
-	 */
-	readonly defaultImage?: Partial<Record<ComputerSettingKind, string>>;
-	/** Its built providers make or pull their image before the first create (prepareImage()). */
-	readonly prepareImage?: boolean;
-	/** The server's environment variable whose value, when set, is the image of every computer of it (descriptor.ts). */
-	readonly imageEnv?: string;
-	/** Its computers run on this machine's container engine. */
-	readonly local?: boolean;
-	/** create() takes a ledger the server keeps for it, as this option. */
-	readonly ledger?: { readonly option: string };
-	/** The server's environment variables its provider reads on this machine, passed as options.env (descriptor.ts). */
-	readonly hostEnv?: readonly string[];
-	/** A program its computers need on this machine's PATH, and the machines it is built for (descriptor.ts). */
-	readonly hostCommand?: HostCommand;
-	/** Configurations it builds but does not offer yet, each with why: a setting naming one's image is refused as parked. */
-	readonly parked?: readonly ParkedConfiguration[];
-}
+/**
+ * A provider as Settings shows it: its descriptor's data (descriptor.ts documents each field), with `mounts` derived
+ * (derivedMounts: sync added where a configuration takes it; [] cannot mount the run's folder), and `kinds`, the setting
+ * kinds its capabilities serve (serves), never written by hand.
+ */
+export type ProviderEntry = Omit<ProviderDescriptor, "load"> & { readonly kinds: readonly ComputerSettingKind[] };
 
 /** A descriptor as Settings shows it: its data, and the setting kinds its capabilities serve, derived by serves(). */
 export function entryOf(descriptor: ProviderDescriptor): ProviderEntry {

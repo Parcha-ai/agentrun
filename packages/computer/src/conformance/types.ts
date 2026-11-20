@@ -1,9 +1,10 @@
 // The conformance suite's shapes: a case is data that names its level, its group and the capabilities it needs.
 import type { MountKind, MountSpec } from "../mount.js";
-import type { ComputerClient, ComputerKind, ComputerOs, DaemonMethod, DaemonMethods, ExecRunParams, Group, HelloResult, NetworkFence } from "../protocol.js";
+import type { ComputerClient, ComputerKind, ComputerOs, DaemonMethod, DaemonMethods, ExecRunParams, Group, HelloResult, NetworkFence, WindowManagerFact } from "../protocol.js";
 import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, DaemonMode, GpuSpec } from "../provider.js";
 import type { ComputerError, ComputerErrorCode, Result } from "../result.js";
-import type { ComputerSettingKind, KindCapabilities } from "../kinds.js";
+import type { KindCapabilities } from "../kinds.js";
+import type { ComputerSettingKind } from "../setting-kinds.js";
 import type { CdpDialer, CdpSocket } from "./cdp.js";
 import type { StartedFixture } from "./fixture.js";
 import type { KindVerdict } from "./kind.js";
@@ -170,6 +171,8 @@ export interface CaseContext {
 	skip(reason: string): never;
 	/** Records what the case saw without asserting it (its result's observed), for a fact not yet known either way. */
 	observe(words: string): void;
+	/** Hands a whole screenshot, its PNG's bytes, to the run's onScreenshot (ConformanceOptions), when it has one. */
+	onScreenshot(png: Uint8Array): void;
 }
 
 export interface Case {
@@ -292,7 +295,10 @@ export interface CreatedNote extends ComputerNote {
 	role: ComputerRole;
 }
 
-/** What one computer's first hello said: the computer, its role, and the fence when it names one. */
+/**
+ * What one computer's first hello said: the computer, its role, the fence when it names one, and the window manager
+ * computerd started when it says one (a live run's evidence that computerd, not create, started it).
+ */
 export interface ComputerDaemon {
 	computer: string;
 	role: ComputerRole;
@@ -300,6 +306,7 @@ export interface ComputerDaemon {
 	os: string;
 	arch: string;
 	fence?: NetworkFence;
+	windowManager?: WindowManagerFact;
 }
 
 /**
@@ -357,6 +364,9 @@ export interface ConformanceOptions {
 	mountFor?: (kind: MountKind) => Promise<RunFolder | undefined> | RunFolder | undefined;
 	/** Called as each case ends. */
 	onResult?: (result: CaseResult) => void;
+	/** Called once with the last whole screenshot screen.screenshot-size read, its PNG's bytes, whether the case passes or
+	 *  fails after it: a frame of what the screen showed. */
+	onScreenshot?: (png: Uint8Array) => void;
 	/** Notes the provider module gives for the report, printed before the verdict. */
 	notes?: string[];
 	/** The longest one case may run; default 180 s. */

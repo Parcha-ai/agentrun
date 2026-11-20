@@ -12,6 +12,7 @@ import type { FeedbackRound, OpenedRound } from "../runner/feedback-round.js";
 import type { Settings } from "../store/store.js";
 import { answerJson } from "../answer-json.js";
 import { pathSegments } from "../learning-setting.js";
+import { isObject } from "../validate.js";
 import type { Skipped } from "./replay-calls.js";
 import type { ReplayOutcome } from "../runner/workflow-first.js";
 
@@ -98,6 +99,10 @@ export interface PromotionRecord {
   /** The learning commit whose workflows/<workflow>/workflow.json is this digest's text: the seed of the claim that
    *  recorded it. What the digest serves from as the champion (championOf) once a newer revision is on the folder's main. */
   readonly commit?: string;
+  /** `sdk`: a connected (SDK) agent's check (runner/promotion.ts reserveSdkCheck), on its reservation and the record that
+   *  decides it. Its one run (`runs`) is the agent's own native turn, not a replay run; a replaying one with no `runs`
+   *  waits for the next native turn the draft takes. Absent: a server replay's. */
+  readonly via?: "sdk";
 }
 
 /** One audit row a hold was decided on that disagreed: the served run (`served`) and its input, the run whose answer is
@@ -165,6 +170,13 @@ export type CheckRecord = CheckBar & {
   readonly skipped_tools?: readonly SkippedTool[];
   readonly disagreements?: readonly CheckDisagreement[];
   readonly stopped?: true;
+  /** A connected agent's check: how many of its reserved native turns gave no answer to check the draft against (a
+   *  cancelled or refused turn, a subagent, redacted evidence, no shadow report) and were given back to wait for the
+   *  next one (runner/promotion.ts SDK_CHECK_RELEASES stops it). Absent: none. */
+  readonly released?: number;
+  /** A connected agent's check: how many fresh read-only calls its shadow made where the native turn's recording had
+   *  no result (the client's opt-in shadowReadFallback). Absent: none, every call was answered from the recording. */
+  readonly fresh_reads?: number;
   /** How it compared with no agree_on: the fast model that read the answers (its name), when it was asked on any input.
    *  With agree_on, the paths compared (CheckBar.agree_on); with neither, the whole answer. */
   readonly grader?: string;
@@ -245,6 +257,52 @@ export const putGrade = async (settings: Pick<Settings, "get" | "putIfAbsent" | 
     return [...items.filter((one) => one.run !== grade.run), kept].slice(-GRADES_KEPT);
   });
   return kept;
+};
+
+/** Every kept grade of run `runId` dropped (the run's delete, agent-delete.ts); no write when the agent keeps no grades. */
+export const dropGrades = async (settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, runId: string): Promise<void> => {
+  if (!(await gradesOf(settings, agentId)).some((one) => one.run === runId)) return;
+  await updateKept<Grade>(settings, gradesKey(agentId), (items) => items.filter((one) => one.run !== runId));
+};
+
+/** A check's disagreement with what it copied from its run blanked: its run id and which way the draft went (an answer,
+ *  a hand-back, a failed step) kept, its input, the agent's answer, the draft's and the grader's words gone. */
+const blankCheck = (one: CheckDisagreement): CheckDisagreement => ({
+  run: one.run, input: "", agent: null,
+  ...(one.draft !== undefined ? { draft: "" } : {}),
+  ...(one.escalated !== undefined ? { escalated: "" } : {}),
+  ...(one.failed ? { failed: true as const } : {}),
+});
+
+/** An audit's disagreement blanked the same way: its run ids and whether a grade wrote it kept. */
+const blankAudit = (one: AuditDisagreement): AuditDisagreement => ({ run: one.run, served: one.served, input: "", agent: null, draft: null, ...(one.graded ? { graded: true as const } : {}) });
+
+/** `record` with what it copied from run `runId` blanked: each disagreement naming it (a check's agent run; an audit's
+ *  served run or shadow run), and the grader's words its reason quotes from one (differentDecisionWords' example). Its
+ *  decision, numbers and run ids stay. The record itself when it names no such disagreement. */
+function forgetRunIn(record: PromotionRecord, runId: string): PromotionRecord {
+  if (!record || typeof record !== "object") return record;
+  const check = record.check?.disagreements?.some((one) => one.run === runId);
+  const audit = record.audit?.disagreements.some((one) => one.run === runId || one.served === runId);
+  if (!check && !audit) return record;
+  let reason = record.reason;
+  for (const one of record.check?.disagreements ?? []) if (one.run === runId && one.differs_on !== undefined) reason = reason.replace(` (for example: ${one.differs_on})`, "");
+  return {
+    ...record,
+    reason,
+    ...(check && record.check ? { check: { ...record.check, disagreements: record.check.disagreements!.map((one) => (one.run === runId ? blankCheck(one) : one)) } } : {}),
+    ...(audit && record.audit ? { audit: { ...record.audit, disagreements: record.audit.disagreements.map((one) => (one.run === runId || one.served === runId ? blankAudit(one) : one)) } } : {}),
+  };
+}
+
+/** What agent `agentId`'s learning copied from run `runId`, gone (the run's purge, agent-delete.ts): its kept grades
+ *  dropped (dropGrades), and its promotion records' disagreements naming it blanked (forgetRunIn), each record's decision,
+ *  numbers and run ids kept. No write when nothing names it. */
+export const forgetRunCopies = async (settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, runId: string): Promise<void> => {
+  await dropGrades(settings, agentId, runId);
+  const records = itemsOf<PromotionRecord>(await settings.get(promotionsKey(agentId)));
+  if (records.every((one) => forgetRunIn(one, runId) === one)) return;
+  await updateKept<PromotionRecord>(settings, promotionsKey(agentId), (items) => items.map((one) => forgetRunIn(one, runId)));
 };
 
 /** Marks the kept grade `grade` (its run, given at its `at`, kept at its `seq`) with the feedback round it opened and
@@ -437,8 +495,6 @@ function same(a: unknown, b: unknown): boolean {
   return ka.length === kb.length && ka.every((key) => same((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]));
 }
 
-const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
-
 /** Not there: a path of agree_on that does not resolve in an answer. */
 const MISSING = Symbol("missing");
 
@@ -465,9 +521,6 @@ export function sameAnswer(a: string | null, b: string | null, on?: readonly str
     return x !== MISSING && y !== MISSING && same(x, y);
   });
 }
-
-/** The fields a check or an audit compared on, in words: "mcc", "mcc and riskTier", "mcc, riskTier and siteStatus". */
-export const fieldsWords = (on: readonly string[]): string => (on.length < 2 ? on.join("") : `${on.slice(0, -1).join(", ")} and ${on.at(-1)}`);
 
 // The grader: with no agree_on, the agent's fast model reads two answers to one input and says whether they reach the same
 // decision. One request per pair, its reply {"same": boolean, "differs_on": string | null}. A replay run and an audit's
@@ -517,19 +570,13 @@ export type GraderReply = { readonly text: string } | { readonly refused: string
 /** The grader: its model's name, and one request to it. */
 export type Grader = { readonly model: string; ask(request: { readonly system: string; readonly user: string }): Promise<GraderReply> };
 
-/** A reply that is one fence and nothing else, its info string `json` or none: the JSON inside. */
-const VERDICT_FENCE = /^```(?:json)?[ \t]*\r?\n([\s\S]*?)\r?\n```$/i;
-
 /** The grader's verdict in `text`: one JSON object (bare, or the whole of one fence) whose `same` is a boolean and whose
  *  `differs_on` is a string or null (or absent); undefined for any other reply. */
 export function graderVerdictOf(text: string): { same: boolean; differs_on: string | null } | undefined {
-  const trimmed = text.trim();
-  let value: unknown;
-  try {
-    value = JSON.parse(VERDICT_FENCE.exec(trimmed)?.[1] ?? trimmed);
-  } catch {
-    return undefined;
-  }
+  // One verdict and nothing else: a reply with prose around a fence, or with two fences, is none (valueOf alone would take the last).
+  const fences = text.match(/```/g)?.length ?? 0;
+  if (fences > 0 && !(fences === 2 && text.trim().startsWith("```") && text.trim().endsWith("```"))) return undefined;
+  const value = valueOf(text);
   if (!isObject(value) || typeof value.same !== "boolean") return undefined;
   const differs = value.differs_on;
   if (differs !== undefined && differs !== null && typeof differs !== "string") return undefined;

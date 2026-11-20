@@ -37,7 +37,6 @@ const STAND_IN = fileURLToPath(new URL("./fixtures/fake-opencode-serve.mjs", imp
 const RUN = "run-1";
 const SEAL_KEY = Buffer.alloc(32, 7);
 const DESKTOP = { kind: "desktop", provider: "faux-desktop" };
-const OWNER = { ownerSession: true, token: false, accounts: true };
 const FAUX = fauxComputers();
 after(closeOpenSessions);
 
@@ -94,10 +93,10 @@ async function takeOverAndHandBack(t, opened, gate, runner) {
   await gate.asked;
   const view = await computerViewOf(opened.server, RUN);
   assert.equal(view.state, "live", `the run's desktop is up in the server's read while the run goes: ${JSON.stringify(view)}`);
-  const taken = await computerRoute("takeOverRunComputer", RUN, OWNER, opened.server);
+  const taken = await computerRoute("takeOverRunComputer", RUN, {}, opened.server);
   assert.ok(taken.hold === "pending" || taken.hold === "person", `the take-over is taken: ${JSON.stringify(taken)}`);
   await until(async () => (await computerHoldOf(opened.server, RUN)) === "person", "the person holds the desktop");
-  await computerRoute("handBackRunComputer", RUN, OWNER, opened.server);
+  await computerRoute("handBackRunComputer", RUN, {}, opened.server);
   await until(async () => (await computerHoldOf(opened.server, RUN)) === "agent", "the desktop is the agent's again");
   gate.letGo();
   const row = await until(async () => {

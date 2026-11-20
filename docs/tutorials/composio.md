@@ -69,7 +69,10 @@ curl -sS -b jar.txt -X PUT "$BASE/v2/settings/mcp-servers/github/composio" -H "o
 ```
 
 When the account isn't connected yet, the answer's `connect_url` is Composio's page to connect it. Composio keeps the
-account under the user `agentrun`; send `user_id` to use another one.
+account under the user `agentrun`; send `user_id` to use another one. Send `"user_id": "per_run"` for a server
+that acts as each run's own person: it keeps no account, and each run names one in `mcp_auth`
+(`{"github": {"composio_user_id": "...", "connected_account_id": "ca_..."}}`); see
+[the serve README](../../packages/serve/README.md#one-composio-server-an-account-per-run).
 
 </details>
 

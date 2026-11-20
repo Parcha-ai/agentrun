@@ -327,7 +327,7 @@ test("AGENTRUN_DAYTONA_SNAPSHOT is the image of a Daytona computer and of no oth
 // A vendor-hosted computer that runs only on the vendor's own network (the cloud phone's provider declares ["open"]):
 // under a list, the server's default or the operator's own, it runs open, never refused for the list (this server's
 // list can't reach it); under an explicit none, the operator's word for no network at all, it is refused in words.
-const NO_NETWORK_PHONE = "This agent's computer is a Phone harness phone, which needs a network (the vendor's own, or public addresses from this machine), and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in Settings → Computers, or set AGENTRUN_BOX_ALLOW to a host list.";
+const NO_NETWORK_PHONE = "This agent's computer is a Phone harness phone, which needs a network (the vendor's own, or public addresses from this machine), and this server's AGENTRUN_BOX_ALLOW is none (no network): pick a computer that runs with no network in Settings → Computers, or restart the server with AGENTRUN_BOX_ALLOW set to a host list.";
 
 test("a cloud phone under a list, the server's default or the operator's, or with no box_allow, runs on the vendor's own network, and its provider's check takes the spec", async () => {
   const spec = computerSpecOf({});

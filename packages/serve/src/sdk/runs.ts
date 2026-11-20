@@ -1,7 +1,7 @@
 // Backend SDK calls remain in their application. This inbox only records their evidence and immutable completion;
 // the ordinary fenced runner owns journals, reflection, checking and learning commits.
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
-import { inspectWorkflow } from "@parcha/agentrun-dsl";
+import { inspectWorkflow, resolveSchemaForWorkflow } from "@parcha/agentrun-dsl";
 import { ApiError } from "../errors.js";
 import { canonical, isObject, type AgenticBody } from "../store/agent-body.js";
 import type { Claim, RunOrigin, Store } from "../store/store.js";
@@ -11,13 +11,18 @@ import { launchBody, type RunLaunch } from "../run-launch.js";
 import { learningStartFor, type StartDeps } from "../runs-over-store.js";
 import { chooseWorkflows, type LearnedWorkflow, learningFolderOf, seedAt, secretsShown } from "../learning.js";
 import { INSTRUCTION_EVIDENCE_BYTES } from "../native/instructions.js";
+import { refuseWhileNoRunner } from "../runner/presence.js";
 import { secretRedactor } from "../runner/redact.js";
 import { redactedOutput } from "../key-refusal.js";
 import { decodedStrings, draftProblems } from "../learn/workflow-draft.js";
 
 import { sdkWorkflowManifest, sdkDraftTools } from "./workflows.js";
+import type { SdkWorkflowCheckEvent } from "./check.js";
+import { promotionOf, promotionsOf } from "../learn/promote.js";
+import { championTextOf, releaseSdkCheck, reserveSdkCheck, type SdkWorkflowCheck } from "../runner/promotion.js";
+import { fits, workflowDigest } from "../runner/workflow-first.js";
 
-export type SdkRuntime = "claude-agent-sdk" | "codex-sdk";
+export type SdkRuntime = "claude-agent-sdk" | "codex-sdk" | "eve";
 export type SdkUsage = {
   input_tokens: number | null;
   output_tokens: number | null;
@@ -26,6 +31,7 @@ export type SdkUsage = {
   cost_usd: number | null;
 };
 export type SdkEvent =
+  | SdkWorkflowCheckEvent
   | { type: "text"; text: string }
   | { type: "session"; session_id: string }
   | {
@@ -51,8 +57,12 @@ export type SdkInbox = {
   created_at: number;
   expires_at: number;
   batches: { sequence: number; events: SdkEvent[] }[];
-  /** Exact approved executable workflows delivered by the start receipt. */
+  /** Exact promoted executable workflows delivered by the start receipt. */
   learning_workflows?: LearnedWorkflow[];
+  /** A compiled draft reserved for a shadow check, never supplied to the native agent. */
+  learning_check?: SdkWorkflowCheck;
+  /** Server cleaning changed evidence: two different secret-bearing answers must never agree by their placeholder. */
+  check_redacted?: true;
   completion?: SdkCompletion;
   /** Internal terminal admission fence. No later evidence can be newly acknowledged after this CAS wins. */
   closed?: "expired" | "failed" | "cancelled";
@@ -94,7 +104,7 @@ const usageOf = (value: unknown): SdkUsage | undefined => {
   return result;
 };
 export const sdkOf = (body: unknown): { runtime: SdkRuntime } | undefined =>
-  isObject(body) && isObject(body.sdk) && (body.sdk.runtime === "claude-agent-sdk" || body.sdk.runtime === "codex-sdk")
+  isObject(body) && isObject(body.sdk) && (body.sdk.runtime === "claude-agent-sdk" || body.sdk.runtime === "codex-sdk" || body.sdk.runtime === "eve")
     ? { runtime: body.sdk.runtime }
     : undefined;
 export async function sdkInbox(store: Pick<Store, "settings">, runId: string): Promise<SdkInbox> {
@@ -229,6 +239,9 @@ export class SdkRuns {
         "agent_not_runnable",
         "AgentRun cannot enforce a spend cap on an external SDK. Configure the budget in the backend SDK and remove this managed run cap.",
       );
+    // A runner keeps an SDK run's evidence and ends it: while every runner here refused to claim, the start is refused in
+    // their words, as any start is (prepareLaunch), before the caller holds a receipt it would run on.
+    await refuseWhileNoRunner(this.store.runners);
     const learning = await learningStartFor(deps, entry, pinned.revision, revisionBody as never, {
       noWorkflows: !workflow,
       ...(compile.model ? { model: compile.model } : {}),
@@ -250,9 +263,21 @@ export class SdkRuns {
           "The learning seed could not be read. Retry after restoring the agent learning folder.",
         );
     }
-    const workflows = learning && !learning.noWorkflows && workflow ? await this.selectedWorkflows(entry.agent.id, learning.seed, workflow) : [];
+    const selected = learning && !learning.noWorkflows && workflow ? await this.selectedWorkflows(entry.agent.id, learning.seed, workflow) : { workflows: [], candidates: [] };
     const cleaned = this.clean({ instructions, ...(model ? { model } : {}) });
     const runId = uuidv7();
+    const redacted = cleanedInput !== input || cleaned.instructions !== instructions;
+    let task: unknown;
+    try { task = JSON.parse(input); } catch { /* A prose task: the client resolves the draft's input from the turn. */ }
+    // A turn is a check only when it can be one's baseline: no protected value in its task or policy, and an input the
+    // draft takes. A JSON object task is the input, so it must fit (the managed check's own rule); a prose task's input
+    // is resolved by the client from the turn's recorded tool inputs or the host's resolveCheckInput, and a turn it
+    // cannot resolve is given back (releaseSdkCheck), never counted.
+    const takes = (flow: LearnedWorkflow) => !redacted && (!isObject(task) || fits(flow, task, resolveSchemaForWorkflow as never));
+    const checkDeps = { store: this.store, agentId: entry.agent.id, log: () => {}, shown: async () => secretsShown(this.secrets(), { local: true }) };
+    const check = learning ? await reserveSdkCheck(checkDeps, { runId, revision: learning.seed, learning: revisionBody.learning, flows: selected.candidates, takes }) : undefined;
+    // A shadow check needs the original agent's own answer, not an answer produced by its existing champion.
+    const workflows = check ? [] : selected.workflows;
     const launch: RunLaunch = {
       input: { content: cleanedInput },
       title: cleanedInput.trim().replace(/\s+/g, " ").slice(0, 80),
@@ -267,20 +292,28 @@ export class SdkRuns {
       ...(learning ? { learning: { ...learning, workflows: workflows.map((flow) => flow.name) } } : {}),
     };
     const now = Date.now();
-    await this.store.settings.put(keyOf(runId), {
-      run_id: runId,
-      created_at: now,
-      expires_at: now + 3_600_000,
-      batches: [],
-      learning_workflows: workflows,
-    } satisfies SdkInbox);
     try {
+      await this.store.settings.put(keyOf(runId), {
+        run_id: runId,
+        created_at: now,
+        expires_at: now + 3_600_000,
+        batches: [],
+        learning_workflows: workflows,
+        ...(check ? { learning_check: check } : {}),
+        ...(redacted ? { check_redacted: true } : {}),
+      } satisfies SdkInbox);
       await this.store.runs.create(
         { id: runId, agentId: entry.agent.id, revisionId: entry.revision.id, ...(origin ? { origin } : {}) },
         { body: launchBody(launch) },
       );
     } catch (error) {
       await this.store.settings.remove(keyOf(runId));
+      // The reservation comes first because the launch it is created with withholds the champion from a check's turn.
+      // No turn ran, so the check waits for the next one, the release uncounted: never a hold of a draft never compared.
+      if (check) {
+        const record = promotionOf(await promotionsOf(this.store.settings, entry.agent.id).catch(() => []), check.workflow.name, check.digest);
+        if (record?.decided === "replaying" && record.replay_id === check.id) await releaseSdkCheck(checkDeps, record, "its start could not be admitted", false).catch(() => undefined);
+      }
       throw error;
     }
     return this.receipt(runId, consoleOrigin);
@@ -294,7 +327,7 @@ export class SdkRuns {
     const shown = secretsShown(this.secrets(), { local: true });
     if (
       shown.holds(launch.learning?.section ?? "") ||
-      workflows.some((flow) => {
+      [...workflows, ...(inbox.learning_check ? [inbox.learning_check.workflow] : [])].some((flow) => {
         const decoded = decodedStrings(flow.workflow);
         return shown.holds(flow.name) || shown.holds(flow.description) || shown.holds(flow.workflow) || decoded === "too_deep" || decoded.some(shown.holds);
       })
@@ -313,23 +346,34 @@ export class SdkRuns {
         revision: launch.learning?.seed ?? null,
         context: launch.learning?.section ?? "",
         workflows,
+        ...(inbox.learning_check ? { check: inbox.learning_check } : {}),
       },
     };
   }
-  private async selectedWorkflows(agentId: string, revision: string | null, binding: NonNullable<ReturnType<typeof sdkWorkflowManifest>>): Promise<LearnedWorkflow[]> {
+  private async selectedWorkflows(agentId: string, revision: string | null, binding: NonNullable<ReturnType<typeof sdkWorkflowManifest>>): Promise<{ workflows: LearnedWorkflow[]; candidates: LearnedWorkflow[] }> {
     const folder = learningFolderOf(this.data, agentId);
     try {
       const seed = await seedAt(folder.workspace, revision);
       const { flows } = chooseWorkflows(seed, secretsShown(this.secrets(), { local: true }));
       const dsl = await import("@parcha/agentrun-dsl");
       const { tools, gated, deniedBy } = sdkDraftTools(binding.workflow_tools);
+      const records = await promotionsOf(this.store.settings, agentId);
       let room = 256 * 1024;
-      return flows.filter((flow) => {
+      const compatible = (flow: LearnedWorkflow) => {
         const bytes = Buffer.byteLength(JSON.stringify(flow));
         if (bytes > room || draftProblems(dsl, flow.workflow, tools, gated, deniedBy, undefined, binding.workflow_adapters).length) return false;
         room -= bytes;
         return true;
-      });
+      };
+      const workflows: LearnedWorkflow[] = [], candidates: LearnedWorkflow[] = [];
+      const atCommit = async (name: string, commit: string) =>
+        chooseWorkflows(await seedAt(folder.workspace, commit), secretsShown(this.secrets(), { local: true })).flows.find((one) => one.name === name);
+      for (const flow of flows) {
+        const { text: serving } = await championTextOf(records, flow, atCommit);
+        if (serving && compatible(serving)) workflows.push(serving);
+        if ((!serving || workflowDigest(serving) !== workflowDigest(flow)) && compatible(flow)) candidates.push(flow);
+      }
+      return { workflows, candidates };
     } finally { await folder.end(); }
   }
   private async modify(runId: string, change: (row: SdkInbox) => SdkInbox, limit = TOTAL_LIMIT): Promise<void> {
@@ -371,6 +415,26 @@ export class SdkRuns {
         only(value, ["type", "session_id"]);
         return { type: "session", session_id: text(value.session_id, "session_id", 256) };
       }
+      if (value.type === "workflow_check") {
+        only(value, ["type", "id", "digest", "outcome", "answer", "reason", "skipped", "fresh_reads"]);
+        if (value.fresh_reads !== undefined && (!Number.isSafeInteger(value.fresh_reads) || (value.fresh_reads as number) < 1 || (value.fresh_reads as number) > 256))
+          refuse("fresh_reads must be an integer from 1 to 256 when supplied.");
+        if (!["answered", "handed_back", "failed", "skipped_write"].includes(String(value.outcome))) refuse("Invalid workflow check outcome.");
+        if (value.outcome === "answered" && typeof value.answer !== "string") refuse("An answered workflow check needs its answer.");
+        if (value.skipped !== undefined) {
+          if (!isObject(value.skipped)) refuse("A skipped workflow check names its tool.");
+          only(value.skipped as Record<string, unknown>, ["tool", "unmarked"]);
+          text((value.skipped as Record<string, unknown>).tool, "skipped.tool", 256);
+          if ((value.skipped as Record<string, unknown>).unmarked !== undefined && (value.skipped as Record<string, unknown>).unmarked !== true) refuse("skipped.unmarked must be true when supplied.");
+        }
+        if (value.outcome === "skipped_write" && value.skipped === undefined) refuse("A skipped write names its tool.");
+        return { type: "workflow_check", id: text(value.id, "id", 256), digest: text(value.digest, "digest", 256), outcome: value.outcome as SdkWorkflowCheckEvent["outcome"],
+          ...(value.answer !== undefined ? { answer: text(value.answer, "answer") } : {}),
+          ...(value.reason !== undefined ? { reason: text(value.reason, "reason", 8000) } : {}),
+          ...(value.skipped !== undefined ? { skipped: value.skipped as SdkWorkflowCheckEvent["skipped"] } : {}),
+          ...(value.fresh_reads !== undefined ? { fresh_reads: value.fresh_reads as number } : {}),
+        };
+      }
       if (value.type === "tool") {
         only(value, ["type", "id", "name", "status", "input", "output", "parent_tool_use_id"]);
         if (!["started", "completed", "failed"].includes(String(value.status)))
@@ -388,6 +452,7 @@ export class SdkRuns {
       return refuse("Unsupported SDK event type.");
     });
     const batch = this.clean({ sequence: body.sequence as number, events }, runId);
+    const checkRedacted = canonical(events) !== canonical(batch.events);
     const known = (await sdkInbox(this.store, runId)).batches.find((item) => item.sequence === batch.sequence);
     if (known) {
       if (canonical(known) !== canonical(batch))
@@ -409,7 +474,11 @@ export class SdkRuns {
         if (batch.sequence !== row.batches.length + 1)
           throw new ApiError("idempotency_mismatch", "SDK event sequences must be contiguous.");
         checkToolParents(row, batch.events);
-        return { ...row, batches: [...row.batches, batch] };
+        const checks = [...row.batches.flatMap(item => item.events), ...batch.events].filter((event): event is SdkWorkflowCheckEvent => event.type === "workflow_check");
+        if (checks.length > 1) refuse("Only one workflow check may be delivered per SDK run.");
+        for (const check of checks) if (!row.learning_check || check.id !== row.learning_check.id || check.digest !== row.learning_check.digest)
+          refuse("The workflow check must name this SDK run's reserved candidate.");
+        return { ...row, batches: [...row.batches, batch], ...(checkRedacted ? { check_redacted: true } : {}) };
       },
       EVIDENCE_LIMIT,
     );
@@ -447,7 +516,7 @@ export class SdkRuns {
         return row;
       }
       writableInbox(row);
-      return { ...row, completion };
+      return { ...row, completion, ...(completion.answer !== body.answer ? { check_redacted: true } : {}) };
     });
     return { accepted: true };
   }

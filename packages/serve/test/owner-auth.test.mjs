@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { mock, test } from "node:test";
+import { COMPUTER_ROUTES } from "../dist/computer-routes.js";
 import * as owner from "../dist/owner.js";
 import { ROUTES } from "../dist/server.js";
 import { writesSecret } from "../dist/secret-writes.js";
@@ -326,6 +327,16 @@ test("asking for a setup code while the password is being set prints none: the s
   assert.equal(lines.length, 1, "only the first code was ever printed");
 });
 
+test("a server reached from other machines prints its setup link at their addresses too, with the same code, each time a code is printed", async (t) => {
+  const lines = [];
+  const me = new Owner(await scratch(t), false, (line) => lines.push(line));
+  me.attach("http://127.0.0.1:7401", ["http://192.0.2.10:7401"]);
+  const code = new URL(me.setupLink()).hash.slice("#code=".length);
+  assert.deepEqual(lines, [`Set up this server: http://127.0.0.1:7401/setup#code=${code} (or paste AGENTRUN_TOKEN)`, `From another machine: http://192.0.2.10:7401/setup#code=${code}`]);
+  me.setupLink();
+  assert.equal(lines.length, 2, "a code still good is not printed again");
+});
+
 test("a revoked session is kept only until it would have ended: its record goes with its expiry, and the owner file stays small", async (t) => {
   mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
   t.after(() => mock.timers.reset());
@@ -431,9 +442,9 @@ test("every route, called with no credential, enforces its public, owner, API or
       // Approving or restoring a note, making a learned workflow an agent or replaying its revision, and answering a tool
       // call's approval take the owner's session alone: a token, whoever holds it, is 403 (learn-pending.test.mjs,
       // learn-restore.test.mjs, learn-promote.test.mjs, learn-replay-api.test.mjs, tool-gate.test.mjs). So does a run's live
-      // computer view, a full-control credential for its session, and its hand-back (browser-live.test.mjs,
-      // browser-take-over.test.mjs).
-      else if ((route.name === "approveLearningFile" || route.name === "restoreLearningFile" || route.name === "promoteLearnedWorkflow" || route.name === "startLearnedWorkflowReplay" || route.name === "answerApproval" || route.name === "getRunBrowser" || route.name === "handBackRunBrowser" || route.name === "getRunComputer") && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
+      // computer view, a full-control credential for its session, its take-over and its hand-back, refused before the run
+      // is looked up (browser-live.test.mjs, browser-take-over.test.mjs, api-only-computer.test.mjs).
+      else if ((route.name === "approveLearningFile" || route.name === "restoreLearningFile" || route.name === "promoteLearnedWorkflow" || route.name === "startLearnedWorkflowReplay" || route.name === "answerApproval" || route.name === "getRunBrowser" || route.name === "handBackRunBrowser" || route.name === "getRunComputer" || COMPUTER_ROUTES.has(route.name)) && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);
       // A secret write takes the owner's session alone (secret-writes.ts): the token is 403 on it. Which requests are secret
       // writes is the operation's predicate's to say of this body: an MCP server's PUT with no credential in it is not.
       else if (writesSecret(route.name, body) && !headers.cookie) assert.equal(res.status, 403, `${route.method} ${path} with the token: ${res.status} ${res.text}`);

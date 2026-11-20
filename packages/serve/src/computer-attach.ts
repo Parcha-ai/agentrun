@@ -26,13 +26,14 @@
 import { createHash, randomBytes, randomInt } from "node:crypto";
 import type { IncomingMessage } from "node:http";
 import type { Duplex } from "node:stream";
-import { ATTACH_CLOSE, ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_PATH, ATTACH_SUBPROTOCOL, type AttachHub, type AttachSocket, type ComputerKind, type ComputerOs, type HelloResult, hostedDaemonPath, MAX_LINE_BYTES, type MachineTokens, mintedComputer, type PairedComputer, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, PROTOCOL_VERSION, RUN_LABEL } from "@parcha/agentrun-computer";
+import { ATTACH_CLOSE, ATTACH_HEARTBEAT_MS, ATTACH_IDLE_MS, ATTACH_PATH, ATTACH_SUBPROTOCOL, type AttachHub, type AttachSocket, type ComputerKind, type ComputerOs, type HelloResult, hostedDaemonPath, MAX_LINE_BYTES, type MachineTokens, mintedComputer, newMachineToken, type PairedComputer, PAIRING_CODE_PATTERN, PAIRING_CODE_TTL_MS, PROTOCOL_VERSION, RUN_LABEL } from "@parcha/agentrun-computer";
 import { WebSocket, WebSocketServer } from "ws";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { dialHost, LIVE_PROOF_HEADER, type LiveReach, relayProof } from "./live-reach.js";
 import { peerKey } from "./owner.js";
 import { registerNotSecretWrite } from "./secret-writes.js";
-import type { MintedTokenRow, MintedTokens, PairedComputerRow, PairedComputers, RunnerRelays } from "./store/index.js";
+import { PRESENCE_STALE_MS } from "./runner/presence.js";
+import type { MintedTokenRow, MintedTokens, PairedComputerRow, PairedComputers, RunnerRow, Runners } from "./store/index.js";
 import { pairedOf, PAIRED_ID_PREFIX, RUNNER_APART_WORDS, servesNoKind } from "./workspace/attached-computers.js";
 
 // Routes under /computers, where a provider's keys are a secret write (computers.ts): these three write none of the
@@ -79,12 +80,6 @@ export function pairingCodeOf(typed: unknown): string | undefined {
 /** A new paired computer's id: PAIRED_ID_PREFIX and 16 lowercase letters and digits. */
 export const newPairedId = (pick: (below: number) => number = randomInt): string =>
   `${PAIRED_ID_PREFIX}${Array.from({ length: 16 }, () => "abcdefghijkmnpqrstuvwxyz23456789"[pick(32)]).join("")}`;
-
-/** A new computer token: ATTACH_TOKEN_PREFIX and 32 random bytes. */
-export const newAttachToken = (): string => `${ATTACH_TOKEN_PREFIX}${randomBytes(32).toString("base64url")}`;
-
-/** A new hosted machine's token: ATTACH_TOKEN_PREFIX and 32 random bytes in hex, which goes in the machine's env. */
-export const newMintedToken = (): string => `${ATTACH_TOKEN_PREFIX}${randomBytes(32).toString("hex")}`;
 
 /** The computerd builds a minted machine fetches (GET /v2/computers/daemon?arch=), each at hostedDaemonPath: the file a
  *  hosted provider uploads by default, so the route serves the bytes whose SHA-256 the provider puts in the machine's env. */
@@ -328,16 +323,22 @@ export interface AttachRoutesOptions {
   readonly owner?: { readonly runner: string; readonly incarnation: string };
   /** The server's relay of a dial whose token another runner minted: where each runner's attach listener answers, and
    *  the hosts it may dial with the proxy's proof (live-reach.ts). Without it such a dial is refused 503. */
-  readonly relay?: { readonly relays: Pick<RunnerRelays, "get">; readonly reach: LiveReach };
+  readonly relay?: { readonly runners: Pick<Runners, "live">; readonly reach: LiveReach };
 }
 
 /** A request's Bearer token, or undefined. */
 export const bearerOf = (authorization: string | undefined): string | undefined => /^Bearer (\S+)$/.exec(String(authorization ?? ""))?.[1];
 
-/** How often a runner's attach listener says it is there (its runner_relays row's seen_at), and how long after its last
- *  word the server takes it as gone. */
-export const RELAY_RENEW_MS = 10_000;
-export const RELAY_STALE_MS = 3 * RELAY_RENEW_MS;
+/** A runner's row that says where its relay answers. */
+export type RelayRow = RunnerRow & { readonly host: string; readonly port: number };
+
+/** The runners whose relay takes dials now: their rows seen within PRESENCE_STALE_MS on the store's clock (Runners.live,
+ *  the database's on Postgres), never one process's, that say where their relay answers. The server relays a dial only
+ *  to one of these, and says a dial provider is served while one answers at a host it dials (server.ts relayed). */
+export async function liveRelays(runners: Pick<Runners, "live">): Promise<RelayRow[]> {
+  return (await runners.live(PRESENCE_STALE_MS)).filter((row): row is RelayRow => row.host !== null && row.port !== null);
+}
+
 /** How long the server waits for a runner's attach listener to take a relayed dial. */
 export const RELAY_CONNECT_MS = 10_000;
 
@@ -402,7 +403,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     const unserved = servesNoKind(name, hello);
     if (unserved) throw invalid([{ field: "hello.groups", reason: "invalid", message: unserved }]);
     const id = newPairedId();
-    const token = newAttachToken();
+    const token = newMachineToken();
     const made = await paired.pair(sha256Hex(code), { id, name, hello: hello as unknown as Record<string, unknown>, labels: {}, tokenSha256: sha256Hex(token) });
     if (!made) throw new ApiError("not_found", "no such pairing code: make a new one on the console's Computers page");
     log("computer_paired", { computer: id, kind: hello.kind, os: hello.os, driver: hello.version });
@@ -424,7 +425,7 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
     async mint(machine, { kind, os, arch, expiresAt, run }) {
       const until = expiresAt.getTime();
       if (!Number.isFinite(until)) throw new TypeError(`a machine token's expiresAt is a time, not ${JSON.stringify(expiresAt)}`);
-      const token = newMintedToken();
+      const token = newMachineToken();
       await minted.mint({ machine, tokenSha256: sha256Hex(token), kind, os, arch, expiresAt: until, ...(options.owner ?? {}), ...(run !== undefined ? { run } : {}) });
       log("machine_token_minted", { ...(run !== undefined ? { run } : {}), machine, kind, os, arch, expires_at: new Date(until).toISOString() });
       return token;
@@ -488,8 +489,8 @@ export function createAttachRoutes(options: AttachRoutesOptions) {
       deny("503 Service Unavailable", words);
     };
     if (options.relay === undefined) return refuse(`runner ${runner} made it, and this server relays no dial to a runner`);
-    const at = await options.relay.relays.get(runner);
-    if (at === undefined || at.seenAt < now() - RELAY_STALE_MS) return refuse(`runner ${runner}, which made it, is not running now (no attach listener of its has said it is there for ${RELAY_STALE_MS / 1000} s): its run makes a new machine at its next claim`);
+    const at = (await liveRelays(options.relay.runners)).find((row) => row.runner === runner);
+    if (at === undefined) return refuse(`runner ${runner}, which made it, is not running now (no attach listener of its has said it is there for ${PRESENCE_STALE_MS / 1000} s): its run makes a new machine at its next claim`);
     if (at.incarnation !== row.incarnation) return refuse(`runner ${runner}, which made it, restarted since, and the machine was its earlier process's: its run makes a new machine at its next claim`);
     const host = dialHost(at.host, options.relay.reach);
     if (host === undefined) return refuse(`runner ${runner}, which made it, answers at ${at.host}, which is not one of this server's runners' hosts (AGENTRUN_RUNNER_HOSTS)`);

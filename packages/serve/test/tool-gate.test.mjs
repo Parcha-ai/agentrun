@@ -18,8 +18,8 @@ import { test } from "node:test";
 import { asksByDefault, hostToolNames } from "../dist/tool-list.js";
 import { BOX_WORK } from "../dist/place.js";
 import { deniedText } from "../dist/tool-gate.js";
-import { liveSettings, runnerGate } from "./gate-support.mjs";
-import { permissionsOf, resolveCapability, settingsIssues } from "../dist/tool-plane.js";
+import { liveSettings, resolveOnBuiltin, runnerGate } from "./gate-support.mjs";
+import { permissionsOf, settingsIssues } from "../dist/tool-plane.js";
 import { TOOLS } from "../dist/tools.js";
 import { openSqliteStore } from "../dist/store/index.js";
 import { schemaProblems } from "./schema-support.mjs";
@@ -164,11 +164,11 @@ test("the gate's settings: ask offered where the kernel runs the approved call i
     ["web_fetch.permission", "not_an_option"], ["browser.permission", "not_an_option"], ["read.provider", "not_allowed"], ["nothing", "not_allowed"], ["mcp:srv", "not_allowed"],
   ]);
   const base = { gateway: false, parallelKey: false };
-  for (const harness of HARNESSES) assert.equal(resolveCapability("web_search", { ...base, harness, model: "anthropic/claude-sonnet-5-5", permission: "deny" }), "unavailable: denied", harness);
-  assert.equal(resolveCapability("web_search", { ...base, harness: "codex", permission: "ask" }), "exa-keyless", "a CLI's own search cannot wait for a person");
-  assert.equal(resolveCapability("web_search", { ...base, harness: "codex", permission: "ask", pick: "native" }), "unavailable: native search cannot wait for an approval", "native only stays native only");
-  assert.equal(resolveCapability("web_search", { ...base, harness: "codex", permission: "ask", pick: "parallel", parallelKey: true }), "parallel");
-  assert.equal(resolveCapability("web_search", { ...base, harness: "pi", model: "anthropic/claude-sonnet-5-5", permission: "ask" }), "native", "pi's native search is a tool of the run's, which the gate holds");
+  for (const harness of HARNESSES) assert.equal(resolveOnBuiltin("web_search", { ...base, harness, model: "anthropic/claude-sonnet-5-5", permission: "deny" }), "unavailable: denied", harness);
+  assert.equal(resolveOnBuiltin("web_search", { ...base, harness: "codex", permission: "ask" }), "exa-keyless", "a CLI's own search cannot wait for a person");
+  assert.equal(resolveOnBuiltin("web_search", { ...base, harness: "codex", permission: "ask", pick: "native" }), "unavailable: native search cannot wait for an approval", "native only stays native only");
+  assert.equal(resolveOnBuiltin("web_search", { ...base, harness: "codex", permission: "ask", pick: "parallel", parallelKey: true }), "parallel");
+  assert.equal(resolveOnBuiltin("web_search", { ...base, harness: "pi", model: "anthropic/claude-sonnet-5-5", permission: "ask" }), "native", "pi's native search is a tool of the run's, which the gate holds");
 });
 
 test("a run's gate reads the server's settings at each call: a change reaches the next call, the revision's own stays over it, and an MCP server's wildcard is kept", async (t) => {

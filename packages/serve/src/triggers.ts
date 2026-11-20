@@ -23,7 +23,7 @@
 // now. A failed firing queues a trigger.failed webhook message.
 import { createHash, randomBytes } from "node:crypto";
 import { type MessageOrigin, TRIGGER_LABELS, type TriggerSource } from "./timeline/index.js";
-import { agentDeleting } from "./agents.js";
+import { agentDeleting, purgedAgent } from "./agents.js";
 import { ApiError, type InputIssue, invalid } from "./errors.js";
 import { EFFORTS } from "./model.js";
 import { AgentArchived, type FiringRow, type NewFiring, type Store, StoreConstraint, TriggerFull, type TriggerPatch, type TriggerRow } from "./store/index.js";
@@ -151,8 +151,8 @@ export type TriggerDeps = {
   /** Starts the target's run with `input`, as POST /agents/{id}/runs would, under `origin`, titled `title` (its
    *  trigger's, never its input's); its first message is the trigger's (`from`, never the person's); ApiError when
    *  refused. */
-  /** `previous` false: the run is handed no previous result (its adapter's previousResult). */
-  start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin, title: string, previous?: boolean): Promise<{ run_id: string }>;
+  /** `previous` true: the run is handed its trigger's previous result (its adapter's previousResult, carriesPrevious). */
+  start(target: Extract<Target, { kind: "start_run" }>, input: Json, origin: RunTrigger, from: MessageOrigin, title: string, previous: boolean): Promise<{ run_id: string }>;
   /** Queues `input` for the target's run as a command row (answers false) under `key`, as the trigger's (`from`), within
    *  `bound` (store.triggers.message: at most `max` of this trigger's rows untaken for the run, else skipped with
    *  `reason`); ApiError when refused. */
@@ -484,9 +484,11 @@ export class Triggers {
   }
 
   /** Refused (409 agent_not_runnable, agents.ts agentDeleting) when agent `agentId` is being deleted: another system's
-   *  agent with an archive time, which only its delete writes (agent-delete.ts). */
+   *  agent with an archive time, which only its delete writes (agent-delete.ts); and 410 purged once it is purged (a
+   *  purge that commits past this is the store's to refuse, AgentPurged). */
   private async needNotDeleting(agentId: string): Promise<void> {
     const agent = await this.store.agents.get(agentId);
+    if (agent?.purgedAt != null) throw purgedAgent(agent);
     if (agent?.archivedAt != null && agent.externalRef != null) throw agentDeleting(agentId);
   }
 

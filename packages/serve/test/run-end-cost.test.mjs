@@ -117,10 +117,39 @@ test("the final request's booking, written later than the end's settle bound, la
 test("a booking slower than the end's bound on its write: the end goes on and says so, and the view, the list and the stored cost read it unknown alike", { timeout: 120_000 }, async (t) => {
   const warned = [];
   t.mock.method(console, "warn", (...args) => warned.push(args.join(" ")));
-  // The answer's cost and then the end each wait CLOSE_MS (2 s) and the 0.3 s bound: the end is written before the
-  // booking's 8 s are up. Read again once they are, so a booking written after the end changes no reader.
-  const { server, row } = await endedRun(t, (spec) => ({ ...lateBooking(1, 8_000)(spec), bookingWriteMs: 300 }));
-  await sleep(4_000);
+  // Hold the booking until the end is durable, regardless of how long a busy scheduler takes. Then wait for the
+  // actual late booking attempt to settle before reading again: no elapsed-time guess stands in for either event.
+  const held = Promise.withResolvers();
+  const settled = Promise.withResolvers();
+  let bookings = 0;
+  let ended;
+  try {
+    ended = await endedRun(t, (spec) => ({
+      ...spec,
+      bookingWriteMs: 300,
+      hooks: { ...spec.hooks, beforeBooking: async () => { bookings += 1; await held.promise; } },
+      adapter: {
+        ...spec.adapter,
+        open: (session, io) => spec.adapter.open(session, {
+          ...io,
+          models: {
+            ...io.models,
+            afterRequest: async (...args) => {
+              try { return await io.models.afterRequest(...args); }
+              finally { settled.resolve(); }
+            },
+          },
+        }),
+      },
+    }));
+  } finally {
+    held.resolve();
+    if (bookings > 0) await settled.promise;
+  }
+  const { server, row } = ended;
+  assert.equal(bookings, 1, "the final request's booking was held until the end");
+  const entries = await inCommitOrder(server, row);
+  assert.equal(entries.filter((entry) => entry.kind === "runner.turn").length, 0, "the late booking is fenced, never committed after the end");
   const view = await viewOverStore(server, "run-1", { origin: "", serverSecrets: () => [] });
   const listed = (await listRuns(server, { agent: "agent-1" }, ctx)).find((one) => one.id === "run-1");
   assert.equal(row.state, "ended");
@@ -272,11 +301,16 @@ test("the end's cost read fails once: the end reads it again, and the stored cos
   assert.equal(reads, 2, "read twice");
 });
 
-test("the end's cost read fails every time: the end stores it unknown, and the view says the same as the list and the stored cost", { timeout: 120_000 }, async (t) => {
+test("the end's cost read fails every time: the end stores it unknown, and the run read reads the priced booking and heals the store, never a bare null", { timeout: 120_000 }, async (t) => {
   const warned = [];
   t.mock.method(console, "warn", (...args) => warned.push(args.join(" ")));
-  const { row, view, listed } = await endedRun(t, (spec) => ({ ...spec, endCost: async () => Promise.reject(new Error("the store is down")) }));
+  const { server, row, view, listed, entries } = await endedRun(t, (spec) => ({ ...spec, endCost: async () => Promise.reject(new Error("the store is down")) }));
   assert.equal(row.state, "ended");
-  assert.deepEqual([row.costUsd, listed.costUsd ?? null, view.cost.usd], [null, null, null], `one answer on every reader: ${JSON.stringify(view.cost)}`);
+  assert.equal(entries.findLast((entry) => entry.kind === "agentrun.end")?.data?.costUsd, null, "the end stored it unknown");
+  // The run read reads its booking, priced, and writes it back where the end could not (Runs.healCost): one figure on
+  // every reader again, the booked one.
+  const healed = (await server.runs.get("run-1")).costUsd;
+  assert.deepEqual([healed, listed.costUsd ?? null, view.cost.usd], [REQUEST_USD, REQUEST_USD, REQUEST_USD], `healed on every reader: ${JSON.stringify(view.cost)}`);
+  assert.equal(view.cost.unknown, undefined);
   assert.ok(warned.some((line) => /its end's cost failed .*the end is written with its cost unknown/.test(line)), `the end says why: ${JSON.stringify(warned)}`);
 });

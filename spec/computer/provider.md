@@ -136,6 +136,7 @@ that the server, Settings and the conformance suite all read the same declaratio
 | `unmounted?` | Why its computers take none of some mount kinds, each in one sentence, keyed by kind; never one `mounts` declares. `check()` refuses a mount of that kind in these words, code `refused` (Daytona's `archil`: Archil's client hangs on its hosted cloud; Orgo's `sync`). |
 | `mountsWith?` | Mount kinds its computers take only where the operator sets one of its keys, keyed by kind, each the name of an optional key; each kind is in `unmounted` too. A provider made with that key declares the kind in `capabilities().mount`; one made without it refuses it in the `unmounted` words. `mountsOf(descriptor, set)` gives the mounts for the keys set, which a server reads without loading the provider (Daytona's `archil`, with `DAYTONA_ARCHIL_EGRESS`: a self-hosted target's Archil egress relay). |
 | `capabilities` | One entry per configuration it offers: a machine kind and its groups, as each built provider's `capabilities()` declares. At least one. |
+| `unserved?` | Setting kinds its capabilities don't serve though a caller would ask for one, keyed by kind, each with why in words; never `none`. A server refuses a setting of that kind on it in these words, in place of the generic ones (serve's entry for a paired computer: each kind its driver's hello serves not, with why). |
 | `defaultImage?` | The image a computer of each setting kind starts from when its setting names none. A kind with no entry has no default, and the caller refuses the setting in words. |
 | `prepareImage?` | Its providers have `prepareImage()`, which makes the image ready before the first create ([below](#prepareimage)). |
 | `imageEnv?` | The server's environment variable that, when set, names the image every computer of the provider starts from in place of `defaultImage` (Daytona's `AGENTRUN_DAYTONA_SNAPSHOT`). The provider's `check()` still judges it. |
@@ -288,12 +289,12 @@ in words.
   and the caller's signal, and holds no look in the hub back: a token store that stalls costs no machine that dials
   meanwhile, and the hub is read once more before a timeout.
 - Nothing is installed, uploaded or started through the host: the machine's `agentrun-dial` does it. The drift check
-  holds by the daemon's SHA-256, which the machine checks before it runs it. A desktop's X server and window manager
-  start over the machine's socket, through `process.start`, as on a host with exec.
+  holds by the daemon's SHA-256, which the machine checks before it runs it. A desktop's X server starts over the
+  machine's socket, through `process.start`, and its window manager as on a host with exec: by computerd, asked by
+  init's `--window-manager` where the host's facts say `windowManager`.
 - `connect` goes over the machine's socket, by the attach binding's rules, with a fresh `hello` (a desktop's display
-  answers after it dialed): a drop fails `gone`. A desktop whose `hello` says `linux` is a linux computer until one
-  says `desktop`: its connection's `screen.*`, `input.*`, `apps.*` and `ui.*` calls, and `watch`, are refused
-  `unsupported` ("its display isn't up yet"), never sent. `release` with
+  answers after it dialed): a drop fails `gone`. A desktop whose `hello` says `linux` (its display is down) fails
+  `connect` and `watch` as drift, as on a host with exec. `release` with
   `delete` revokes the token and closes the socket before the vendor's delete.
 - The Core case `provider.dial-token` checks the token: a `hello` of another kind, os or arch is closed `4400` (a
   desktop's token takes `linux`, its hello before its display answers), and

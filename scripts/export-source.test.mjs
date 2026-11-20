@@ -24,6 +24,19 @@ test('connector source and notices ship without local worker state or Python bui
   for (const path of privateFiles) assert.ok(!listing.includes(`agentrun-dsl-source/${path}`), `${path} is excluded`);
 });
 
+test('the eve cookbook exports its source mount without local sessions or compiled credentials', async t => {
+  const f = await fixture(t);
+  const privateFiles = ['examples/eve-learning/.eve/.workflow-data/session.json',
+    'examples/eve-learning/.output/server/index.mjs', 'examples/eve-learning/.vercel/project.json',
+    'examples/eve-learning/agent/extensions/agentrun.ts'];
+  for (const path of privateFiles) await f.write(path, 'PRIVATE_EVE_FIXTURE\n');
+  await f.write('examples/eve-learning/connection/agentrun.ts', 'export const mount = true;\n');
+  await f.run();
+  const listing = await f.listing();
+  assert.ok(listing.includes('agentrun-dsl-source/examples/eve-learning/connection/agentrun.ts'));
+  for (const path of privateFiles) assert.ok(!listing.includes(`agentrun-dsl-source/${path}`), path);
+});
+
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), 'agentrun-source-export-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -89,6 +102,18 @@ test('a *.local.* file is excluded and a source file named local.ts is archived'
   for (const path of excluded) assert.ok(!listing.includes(`agentrun-dsl-source/${path}`), `${path} is excluded`);
   const receipt = JSON.parse(await readFile(join(f.root, '.release/source-export-receipt.json'), 'utf8'));
   assert.ok(receipt.exclusions.includes('*.local.*'));
+});
+
+test('a .parcha/ directory anywhere in the tree is left out, and its extensionless files do not stop the export', async t => {
+  const f = await fixture(t);
+  // A session hook on a developer machine writes .parcha/checkpoint-counter in whatever directory a command runs from.
+  const excluded = ['apps/console/.parcha/checkpoint-counter', 'packages/serve/.parcha/checkpoint-counter', 'docs/.parcha/state.json'];
+  for (const path of excluded) await f.write(path, '7\n');
+  await f.write('packages/dsl/src/parcha.mjs', 'export const name = 1;\n');
+  await f.run();
+  const listing = await f.listing();
+  for (const path of excluded) assert.ok(!listing.includes(`agentrun-dsl-source/${path}`), `${path} is excluded`);
+  assert.ok(listing.includes('agentrun-dsl-source/packages/dsl/src/parcha.mjs'), 'a source file named parcha is archived');
 });
 
 test('a review file (*.review.*) is excluded and source named review is archived', async t => {

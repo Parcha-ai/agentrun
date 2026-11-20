@@ -7,12 +7,13 @@ import { HARNESSES } from "./harness.js";
 import type { KeyCheck } from "./key-check.js";
 import { MODEL_KEYS } from "./model.js";
 import { TOOL_KEY_ROWS } from "./key-words.js";
-import { registerSecretWrite, type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
+import { registerSecretPage, registerSecretWrite, type SecretMeta, secretMeta, secretName } from "./secret-writes.js";
 
 // Every value a person saves here is a secret (a tool's key, a model provider's key; BROWSERBASE_PROJECT_ID is kept the
 // same way): saving one, replacing it or removing it takes the owner's session (secret-writes.ts), never the token.
 registerSecretWrite("saveToolKey", () => true);
 registerSecretWrite("deleteToolKey", () => true);
+registerSecretPage(["saveToolKey", "deleteToolKey"], "/#/settings/keys");
 
 export const SEAL_KEY_ENV = "AGENTRUN_SEAL_KEY";
 

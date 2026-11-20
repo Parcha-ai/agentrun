@@ -7,6 +7,7 @@ import { AgentEditor } from "./AgentEditor";
 import { ToolCard } from "./NodeDrawer";
 import { RunBar } from "./RunBar";
 import { type Agent, type AgentFields, editBody } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { ClientError } from "@/lib/client";
 import type { Effect } from "@/lib/runGraph";
 import { callNodeTools, toolBlockers, toolGates } from "@/lib/toolSettings";
@@ -55,7 +56,7 @@ describe("the start blockers a 409 names", () => {
 });
 
 const workflowAgent = (toolSettings?: Agent["definition"]["tool_settings"]): Agent => ({
-  agent_id: "fetch-flow", kind: "workflow", revision: "rv1", revisions: 1, archived_at: null,
+  ...SERVED_AGENT, agent_id: "fetch-flow", kind: "workflow", revision: "rv1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Fetch flow", workflow: { v: 2, name: "f", root: { node: "call", label: "get", tool: "web_fetch", input: {} } }, skills: [], tools: ["web_fetch", "bash"], ...(toolSettings ? { tool_settings: toolSettings } : {}) },
 });
 

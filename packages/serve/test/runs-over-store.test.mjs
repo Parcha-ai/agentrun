@@ -70,7 +70,7 @@ test("archiveRun sets the run's own archive time; unarchive clears it", async ()
 test("stop writes one stop command and returns true for a live run", async () => {
   const store = await freshStore();
   const id = await queuedRun(store);
-  assert.equal(await stop(store, id), true);
+  assert.equal(await stop(store, moment({ id })), true);
   const rows = await commandsOf(store, id);
   assert.equal(rows.length, 1);
   assert.equal(rows[0].kind, "stop");
@@ -82,16 +82,25 @@ test("stop returns false and writes nothing for an imported run", async () => {
     id: "imp-1", agentId: "a1", revisionId: "r1", importedFrom: { source: "codex", session: "s1" },
     launch: { body: { input: { content: "hi" }, title: "t", place: { mode: "runner" } } }, startedAt: Date.now(), transcript: [],
   });
-  assert.equal(await stop(store, "imp-1"), false);
+  assert.equal(await stop(store, await momentOverStore(store, "imp-1")), false);
   assert.equal((await commandsOf(store, "imp-1")).length, 0);
 });
 
-test("stop returns false and writes nothing for a run already ended (RunFinal)", async () => {
+test("stop returns false and writes nothing for a run that reads ended", async () => {
   const store = await freshStore();
   const id = await queuedRun(store);
   const claim = await store.claim(id, "runner-a");
   await store.runs.update(claim, { state: "ended" });
-  assert.equal(await stop(store, id), false);
+  assert.equal(await stop(store, await momentOverStore(store, id)), false);
+  assert.equal((await commandsOf(store, id)).length, 0);
+});
+
+test("stop returns false and writes nothing for a run its moment read going on that has ended since (RunFinal)", async () => {
+  const store = await freshStore();
+  const id = await queuedRun(store);
+  const claim = await store.claim(id, "runner-a");
+  await store.runs.update(claim, { state: "ended" });
+  assert.equal(await stop(store, moment({ id })), false);
   assert.equal((await commandsOf(store, id)).length, 0);
 });
 
@@ -188,6 +197,7 @@ test("two messages racing at a completed agentic run are both taken as steers: o
         return store.runs.reopen(runId, command);
       },
     },
+    runners: store.runners,
     command: (...args) => store.command(...args),
     commands: (...args) => store.commands(...args),
     runOfOrigin: (...args) => store.runOfOrigin(...args),
@@ -811,7 +821,7 @@ test("launchless run controls preserve message, stop and cancel commands", async
     const id = await queuedRun(store, `legacy-${action}`);
     await assert.rejects(store.runs.launch(id), StoreLaunchMissing);
     if (action === "message") assert.equal((await message(store, moment({ id }), "Keep going.")).mode, "steer");
-    else if (action === "stop") assert.equal(await stop(store, id), true);
+    else if (action === "stop") assert.equal(await stop(store, moment({ id })), true);
     else assert.equal(await cancel(store, moment({ id })), true);
     const rows = await commandsOf(store, id);
     assert.deepEqual(rows.map(({ kind, body }) => [kind, body]), [action === "message" ? ["steer", { text: "Keep going." }] : [action, {}]]);
@@ -827,7 +837,7 @@ test("control launch reads propagate storage errors and write no command", async
   for (const action of ["message", "stop", "cancel"]) {
     const id = await queuedRun(store, `failed-${action}`);
     await assert.rejects(
-      () => action === "message" ? message(failing, moment({ id }), "Keep going.") : action === "stop" ? stop(failing, id) : cancel(failing, moment({ id })),
+      () => action === "message" ? message(failing, moment({ id }), "Keep going.") : action === "stop" ? stop(failing, moment({ id })) : cancel(failing, moment({ id })),
       (error) => error === failure,
     );
     assert.deepEqual(await commandsOf(store, id), []);

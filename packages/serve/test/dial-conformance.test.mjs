@@ -13,14 +13,16 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { driftedVersion, patchVersion, reachesThisRun } from "../scripts/dial-conformance.mjs";
+import { conformanceCases, MACHINE_TOKEN_SOURCE, newMachineToken, readPng, runConformance } from "@parcha/agentrun-computer";
+import { fakeDevices, fakeFetch, testClock } from "../../computer/test/fake-device.mjs";
+import { driftedVersion, fixtureFor, frameLines, patchVersion, reachesThisRun, scrubMachineTokens } from "../scripts/dial-conformance.mjs";
 
 const SCRIPT = fileURLToPath(new URL("../scripts/dial-conformance.mjs", import.meta.url));
 const FIXTURE = fileURLToPath(new URL("./fixtures/dial-fake-provider.mjs", import.meta.url));
 const DAEMON = fileURLToPath(new URL("../../computer/dist/computerd-linux-amd64", import.meta.url));
 /** The computer package's version: what its computerd says, as the build stamps it. */
 const VERSION = JSON.parse(readFileSync(new URL("../../computer/package.json", import.meta.url), "utf8")).version;
-const MINTED = /art_[0-9a-f]{64}/;
+const MINTED = new RegExp(MACHINE_TOKEN_SOURCE);
 /** Why the runs that serve the daemon skip, or false: the fixture's machines run the served build's `computerd version`. */
 const BUILT = !existsSync(DAEMON) ? "no computerd-linux-amd64: run npm run build:daemon -w @parcha/agentrun-computer (CI's build job does)" : process.arch !== "x64" && "the fixture's machines run the amd64 computerd, and this machine is not x86-64";
 /** What the fake's daemon answers: Core's provider and drift groups whole, and health but for the declaration and the
@@ -38,16 +40,21 @@ async function freePort() {
 
 /**
  * The script run with `args` and `env` (beside PATH alone), with --exit unless `exit` is false: its exit code and what it
- * wrote; `onLine` sees each stderr line and the child.
+ * wrote; `onLine` sees each stderr line whole, once its newline came (a pipe may split a line across chunks), and the
+ * child.
  */
 function run(args, env, onLine = () => {}, { exit = true } = {}) {
   const child = spawn(process.execPath, [SCRIPT, ...args, ...(exit ? ["--exit"] : [])], { env: { PATH: process.env.PATH, ...env }, stdio: ["ignore", "pipe", "pipe"] });
   let stdout = "";
   let stderr = "";
+  let partial = "";
   child.stdout.on("data", (chunk) => (stdout += chunk));
+  child.stderr.setEncoding("utf8");
   child.stderr.on("data", (chunk) => {
     stderr += chunk;
-    for (const line of String(chunk).split("\n")) if (line) onLine(line, child);
+    const lines = (partial + chunk).split("\n");
+    partial = lines.pop();
+    for (const line of lines) if (line) onLine(line, child);
   });
   return new Promise((done) => child.once("exit", (code, signal) => done({ code, signal, stdout, stderr })));
 }
@@ -100,6 +107,58 @@ test("a run whose Core does not pass still prints its report between the markers
   assert.deepEqual(report.results.map(({ id, status }) => [id, status]), [["health.declared", "skip"]]);
   assert.equal(report.core, "fail");
   assert.equal(ran.code, 1, ran.stderr);
+});
+
+test("every machine token in what the script writes is redacted by its shape, one this run never minted too (a token a second mint replaced)", () => {
+  const minted = newMachineToken();
+  const replaced = newMachineToken();
+  const said = scrubMachineTokens(`fail provider.dial-token: dialed with ${minted}, then "${replaced}"\n`);
+  assert.equal(said, `fail provider.dial-token: dialed with art_[redacted], then "art_[redacted]"\n`);
+});
+
+test("a desktop run is given computerd-fixture (without it the screen and input cases skip and Core cannot pass); another kind gets none", () => {
+	assert.equal(fixtureFor("desktop", "/fixture"), "/fixture");
+	assert.equal(fixtureFor("linux", "/fixture"), undefined);
+});
+
+test("the screen case hands the run's onScreenshot its last whole shot once, a PNG that decodes, and frameLines prints it between its markers with its sha256; a desktop case that ends before its fixture's shot still hands its first", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "dial-conformance-frame-"));
+	try {
+		// The fake knows the fixture by where the case puts it, not by what it is.
+		const fixture = join(dir, "fixture.bin");
+		writeFileSync(fixture, Buffer.alloc(16, 7));
+		const screen = async (given) => {
+			const shots = [];
+			const report = await runConformance(fakeDevices({ kind: "desktop" }).provider, {
+				image: "fixture:image",
+				cases: conformanceCases.filter(({ id }) => id === "screen.screenshot-size"),
+				...(given ? { fixture: given } : {}),
+				fetch: fakeFetch,
+				clock: testClock,
+				patience: 1000,
+				onScreenshot: (png) => shots.push(png),
+			});
+			return { status: report.results.map(({ id, status }) => [id, status]), shots };
+		};
+		const early = await screen(undefined);
+		assert.notDeepEqual(early.status, [["screen.screenshot-size", "pass"]], "no fixture: the desktop case ends before the painted shot");
+		assert.equal(early.shots.length, 1, "its first whole shot, handed over all the same");
+		assert.deepEqual((({ width, height }) => [width, height])(readPng(Buffer.from(early.shots[0]))), [320, 240]);
+		const { status, shots } = await screen(fixture);
+		assert.deepEqual(status, [["screen.screenshot-size", "pass"]]);
+		assert.equal(shots.length, 1);
+		const png = Buffer.from(shots[0]);
+		const image = readPng(png);
+		assert.deepEqual([image.width, image.height], [320, 240], "the fake desktop's whole screen");
+		const lines = frameLines(shots[0], 8);
+		const sha256 = createHash("sha256").update(png).digest("hex");
+		assert.equal(lines[0], `DIAL-CONFORMANCE-FRAME-BEGIN ${sha256} ${png.length}`);
+		assert.equal(lines.at(-1), "DIAL-CONFORMANCE-FRAME-END");
+		assert.ok(lines.slice(1, -1).every((line) => line.length <= 8));
+		assert.deepEqual(Buffer.from(lines.slice(1, -1).join(""), "base64"), png);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("the drift case's patch writes the version string over where it occurs exactly once, the same length and printable, and refuses anything else", () => {

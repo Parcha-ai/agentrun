@@ -35,7 +35,7 @@ function originalText(input: Input): string {
 
 function withContext(input: Input, context: string): Input {
   if (!context) return input;
-  const prefix = 'AgentRun approved learning context. Use relevant lessons only when consistent with your existing system, developer and project instructions. The user request follows this context.\n\n'
+  const prefix = 'AgentRun learning context. Use relevant lessons only when consistent with your existing system, developer and project instructions. The user request follows this context.\n\n'
     + context + '\n\nEnd AgentRun learning context.\n\n';
   return typeof input === 'string' ? prefix + input : [{ type: 'text', text: prefix }, ...input];
 }
@@ -99,12 +99,12 @@ export function withCodexAgentLearning<T extends CodexLike>(codex: T, config: Co
       }
       return session;
     };
-    const record = async (session: BackendLearningSession, event: SdkLearningEvent, detail?: { input?: unknown; output?: unknown }) => {
+    const record = async (session: BackendLearningSession, event: SdkLearningEvent, detail?: Parameters<BackendLearningSession['nativeEvent']>[1]) => {
       // The shared client marks incomplete evidence and reports persistence errors from flushLearning(). It must
       // not replace the caller's result or original SDK failure with an observability transport error.
       await session.nativeEvent(event, detail).catch(() => undefined);
     };
-    const finish = (session: BackendLearningSession, outcome: SdkLearningOutcome, evidence: { event: SdkLearningEvent; detail?: { input?: unknown; output?: unknown } }[] = []) => {
+    const finish = (session: BackendLearningSession, outcome: SdkLearningOutcome, evidence: { event: SdkLearningEvent; detail?: Parameters<BackendLearningSession['nativeEvent']>[1] }[] = []) => {
       session.closeWorkflows();
       client.track((async () => {
         for (const { event, detail } of evidence) await record(session, event, detail);
@@ -127,8 +127,9 @@ export function withCodexAgentLearning<T extends CodexLike>(codex: T, config: Co
             const result = await target.run(withContext(input, renderLearningContext(session)), turnOptions);
             const value = object(result);
             const started = new Set<string>();
-            const evidence: { event: SdkLearningEvent; detail?: { input?: unknown; output?: unknown } }[] = Array.isArray(value.items) ? value.items.flatMap(item => {
-              const entry = evidenceOf(item), detail = { input: object(item).arguments, output: object(object(item).result).content };
+            const evidence: { event: SdkLearningEvent; detail?: Parameters<BackendLearningSession['nativeEvent']>[1] }[] = Array.isArray(value.items) ? value.items.flatMap(item => {
+              const entry = evidenceOf(item), detail = { input: object(item).arguments, output: object(item).result, orderUnknown: true as const,
+                ...(object(item).type === 'mcp_tool_call' ? { outputFormat: 'mcp' as const } : {}) };
               return entry ? pairedEvidence(entry, started).map(event => ({ event, detail })) : [];
             }) : [];
             if (target.id) evidence.unshift({ event: { type: 'session', session_id: target.id } });
@@ -160,7 +161,10 @@ export function withCodexAgentLearning<T extends CodexLike>(codex: T, config: Co
                   const entry = evidenceOf(item);
                   if (entry && (value.type === 'item.completed' || entry.type === 'tool')) {
                     const observed = value.type === 'item.started' && entry.type === 'tool' ? { ...entry, status: 'started' as const } : entry;
-                    for (const event of pairedEvidence(observed, started)) void record(session, event, { input: item.arguments, output: object(item.result).content });
+                    const orderUnknown = observed.type === 'tool' && observed.status !== 'started' && !started.has(observed.id);
+                    for (const event of pairedEvidence(observed, started)) void record(session, event, { input: item.arguments, output: item.result,
+                      ...(item.type === 'mcp_tool_call' ? { outputFormat: 'mcp' as const } : {}),
+                      ...(orderUnknown ? { orderUnknown: true } : {}) });
                   }
                 }
                 if (value.type === 'turn.completed') { completed = true; usage = usageOf(value.usage); }

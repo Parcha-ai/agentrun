@@ -1,7 +1,7 @@
 // A run's trace (GET /v2/runs/{id}/trace) as the Dev tools tab reads it: where each span sits on the time axis, what the
 // run's requests and calls add up to, and the same broken down by tool and by model. Every figure here is a sum, a share
 // or a rank of what the server sent; a figure the trace does not carry stays unknown (null), never 0.
-import type { RunTrace, TraceSpan } from "./v2";
+import type { RunTrace, RunUsage, TraceSpan, UsageLine } from "./v2";
 
 export type SpanKind = "all" | "model" | "tool" | "failed";
 export type SpanSort = "started" | "duration" | "cost" | "tokens";
@@ -261,12 +261,60 @@ export function costSplit(spans: readonly TraceSpan[]): { parts: { name: string;
   return known ? { parts, total } : null;
 }
 
+/** A usage line's name: its model; the vendor that charged for a tool; or the provider of browser time. */
+export function lineName(line: UsageLine): string {
+  if (line.meter === "tokens") return line.model ?? "A model with no name";
+  if (line.meter === "tools") return `${line.charged_by ?? "An unnamed vendor"} · tools`;
+  return `${line.provider ?? "An unnamed provider"} · browser time`;
+}
+
+/** A cost from the run's booking in words, never $0 for what is not known: "$0.0120", "at most $0.0120" (a bound),
+ *  "Unknown, $0.0040 known" (some of it known), "Unknown". */
+export function bookedWords(cost: Pick<NonNullable<RunUsage["total"]>, "usd" | "so_far_usd" | "upper_bound">): string {
+  if (cost.usd !== null) return cost.upper_bound ? `at most ${usd(cost.usd)}` : usd(cost.usd);
+  return cost.so_far_usd !== undefined ? `Unknown, ${usd(cost.so_far_usd)} known` : "Unknown";
+}
+
+const UNITS = { token: ["token", "tokens"], call: ["call", "calls"], second: ["second", "seconds"] } as const;
+/** A usage line's quantity with its unit ("12,400 tokens", "3 calls", "84.5 seconds"); null when it was not measured. */
+export function quantityWords(line: Pick<UsageLine, "quantity" | "unit">): string | null {
+  if (line.quantity === null) return null;
+  const [one, many] = UNITS[line.unit];
+  return `${line.quantity.toLocaleString("en-US", { maximumFractionDigits: 1 })} ${line.quantity === 1 ? one : many}`;
+}
+
+/** How a line's dollars were reached, in words. */
+export const BASIS_WORDS: Record<UsageLine["basis"], string> = { reported: "Reported", estimate: "Estimate", unpriced: "No price" };
+
+/** What a line's figures leave out, in words: calls of a tool with no price set, requests that reported no tokens. */
+export function lineNotes(line: UsageLine): string[] {
+  const notes: string[] = [];
+  if (line.not_metered_calls) notes.push(`${line.not_metered_calls} call${line.not_metered_calls === 1 ? "" : "s"} not metered: no price is set, so ${line.not_metered_calls === 1 ? "it is" : "they are"} outside the cost`);
+  if (line.unmetered_requests) notes.push(`${line.unmetered_requests} request${line.unmetered_requests === 1 ? "" : "s"} reported no tokens`);
+  return notes;
+}
+
+/** Reads a span's conversation off a trace: the call that started it ("" for the run's own), from the request the span
+ *  is or ran under. Null where the trace does not say. The trace says it only where each request is a span of a pi run
+ *  (`priced`): a subagent's requests name the call that started it, the run's own name none, and a call is of the
+ *  conversation of the request it ran under. A workflow's nodes are conversations the trace does not tell apart. */
+function conversationOf(trace: Pick<RunTrace, "spans" | "model_requests">): (s: TraceSpan) => string | null {
+  const byId = new Map(trace.spans.map((s) => [s.id, s]));
+  return (s) => {
+    if (trace.model_requests !== "priced") return null;
+    let top: TraceSpan | undefined = s;
+    for (let up = 0; top?.kind === "tool" && up < 8; up++) top = top.parent_id ? byId.get(top.parent_id) : undefined;
+    return top?.kind === "model" && !top.decision ? top.parent_id ?? "" : null;
+  };
+}
+
 /** One thing about the run worth a look, with the span it is about. */
 export type Finding = { id: string; title: string; detail: string; span?: string; bad?: boolean };
 /** What stands out in a trace, most pressing first: what failed, the call and the request that took the longest, the
- *  request that cost the most, how much input came from cache, a request that read none of it after the cache was
- *  written, the largest result (it becomes input to every request after it), and time spent between calls. (Calls
- *  repeated with the same arguments are not found: the trace keeps one field of a call's arguments, not all of them.)
+ *  request that cost the most, how much input came from cache, a request that read none of it after its own
+ *  conversation wrote the cache, the largest result (it becomes input to every request after it), and time spent
+ *  between calls. (Calls repeated with the same arguments are not found: the trace keeps one field of a call's
+ *  arguments, not all of them.)
  *  Each is a figure of the trace, never advice. */
 export function findings(trace: Pick<RunTrace, "spans" | "model_requests">, now: number): Finding[] {
   const { spans } = trace;
@@ -292,10 +340,13 @@ export function findings(trace: Pick<RunTrace, "spans" | "model_requests">, now:
     const cold = spans.filter((s) => s.kind === "model" && s.tokens && s.tokens.cache_read === 0).length;
     out.push({ id: "cache", title: `${percent(share)} of input was read from cache`, detail: `${totals.tokens!.cache_read.toLocaleString("en-US")} of ${inputTokens(totals.tokens!).toLocaleString("en-US")} input tokens. ${cold === 0 ? "Every request read from cache." : `${cold} of ${totals.requests} request${totals.requests === 1 ? "" : "s"} read nothing from cache.`}` });
   }
-  // A request that read nothing from cache after an earlier request of its model had written to it: its input was sent
-  // whole. The first such request; the run's first request of a model is never one (nothing was written before it).
-  const sized = [...spans].filter((s) => s.kind === "model" && s.tokens).sort((a, b) => at(a.started_at) - at(b.started_at));
-  const fresh = sized.find((s, i) => s.tokens!.cache_read === 0 && inputTokens(s.tokens!) > 0 && sized.slice(0, i).some((earlier) => earlier.name === s.name && earlier.tokens!.cache_write + earlier.tokens!.cache_read > 0));
+  // A request that read nothing from cache after an earlier request of its conversation had written to its model's: its
+  // input was sent whole. The first such request. A conversation's first request of a model is never one (nothing was
+  // written before it), so neither is a subagent's first, which starts fresh by design. Where the trace does not say
+  // which requests are of one conversation (a workflow's nodes), none is said: a guess would name a node's first.
+  const conversation = conversationOf(trace);
+  const sized = [...spans].filter((s) => s.kind === "model" && s.tokens && conversation(s) !== null).sort((a, b) => at(a.started_at) - at(b.started_at));
+  const fresh = sized.find((s, i) => s.tokens!.cache_read === 0 && inputTokens(s.tokens!) > 0 && sized.slice(0, i).some((earlier) => earlier.name === s.name && conversation(earlier) === conversation(s) && earlier.tokens!.cache_write + earlier.tokens!.cache_read > 0));
   if (fresh) out.push({ id: "cache-reset", span: fresh.id, title: `A request read nothing from cache at ${offset(at(fresh.started_at) - traceWindow(spans, now).from)}`, detail: `Earlier requests to ${fresh.name} wrote to the cache. This one sent its whole input fresh: ${inputTokens(fresh.tokens!).toLocaleString("en-US")} tokens.` });
   const largest = spans.filter((s) => s.kind === "tool" && (s.result_size_bytes ?? 0) >= 8 * 1024).sort((a, b) => b.result_size_bytes! - a.result_size_bytes!)[0];
   if (largest) out.push({ id: "largest", span: largest.id, title: `Largest result: ${largest.name}`, detail: `${Math.round(largest.result_size_bytes! / 1024).toLocaleString("en-US")} KB, which is input to every request after it.` });
@@ -313,22 +364,13 @@ export function findings(trace: Pick<RunTrace, "spans" | "model_requests">, now:
  *  - A model request waited from the end of the last thing of its conversation before it, and after it its first call
  *    started.
  *  Two of the parts name a span by `parent_id` and are exact. The other two (a call's next request, what a request
- *  waited on) need to know which spans are of one conversation. The trace says that only where each request is a
- *  span of a pi run (`priced`): a subagent's requests name the call that started it, the run's own name none, and a
- *  call is of the conversation of the request it ran under. A workflow's nodes are conversations the trace does not
- *  tell apart, so there those two parts are left out, never guessed. */
+ *  waited on) need to know which spans are of one conversation (conversationOf). Where the trace does not say, a
+ *  workflow's, those two parts are left out, never guessed. */
 export type Timing = { before: { ms: number; since: TraceSpan } | null; ran: number | null; then: { ms: number; until: TraceSpan } | null };
 export function timing(span: TraceSpan, trace: Pick<RunTrace, "spans" | "model_requests">, now: number): Timing {
   const { spans } = trace;
   const byId = new Map(spans.map((s) => [s.id, s]));
-  /** A span's conversation: the call that started it ("" for the run's own), read off the request it is or ran under.
-   *  Null where the trace does not say. */
-  const conversation = (s: TraceSpan): string | null => {
-    if (trace.model_requests !== "priced") return null;
-    let top: TraceSpan | undefined = s;
-    for (let up = 0; top?.kind === "tool" && up < 8; up++) top = top.parent_id ? byId.get(top.parent_id) : undefined;
-    return top?.kind === "model" && !top.decision ? top.parent_id ?? "" : null;
-  };
+  const conversation = conversationOf(trace);
   const own = conversation(span);
   const together = (s: TraceSpan) => own !== null && conversation(s) === own;
   const start = at(span.started_at);

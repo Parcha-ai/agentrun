@@ -6,6 +6,17 @@ const GITHUB_TOKEN = /gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}/;
 const JWT = /eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/;
 /** A Standard Webhooks signing secret: `whsec_` and base64, this server's or any other's. */
 const WEBHOOK_SECRET = /whsec_[A-Za-z0-9+/]{24,}={0,2}/;
+/** The token after a `Bearer` scheme (RFC 6750's characters), in any case: twenty characters or more with a digit among
+ *  them, so a word after "bearer" ("bearer authentication/authorization"), a placeholder (`<token>`, `$TOKEN`,
+ *  `YOUR_API_KEY`) and a challenge's parameter (`Bearer realm="x"`) are none. The token alone is the match: the scheme
+ *  before it stays, so a reader still sees a header was there. The scheme is at most three blanks before the token, and
+ *  the digit is looked for only through the token's own characters, so the reading stays linear. */
+const BEARER_TOKEN = /(?<=\bBearer\s{1,3})(?=[A-Za-z._~+/-]*\d)[A-Za-z0-9._~+/-]{20,}={0,2}/i;
+/** The value of a URL parameter named like a credential, after `?` or `&`: sixteen characters or more, to the next
+ *  separator. The name is the whole parameter's (`token`, never `page_token`), and the value alone is the match, so the
+ *  name stays. A signed URL's signature is one: whoever holds the URL holds what it grants. No bracket is a value's
+ *  character (a URL writes one percent-encoded), so a value already cut to "[redacted]" is never read as one. */
+const URL_CREDENTIAL = /(?<=[?&](?:api[_-]?key|access[_-]?token|auth[_-]?token|id[_-]?token|refresh[_-]?token|client[_-]?secret|x-amz-signature|x-amz-security-token|x-goog-signature|token|secret|password|passwd|signature|sig)=)[^\s&#"'`<>\\[\]]{16,}/i;
 
 /** A bank account number beside its word: "account", "acct", "a/c" or "bank account", maybe "number", "no.", "#", ":"
  *  or "is" after it, then six digits or more, single dashes or spaces between them. A count before the word ("4
@@ -31,7 +42,17 @@ const SHAPES: readonly (readonly [string, RegExp])[] = [
   ["JWT", JWT],
   ["webhook signing secret", WEBHOOK_SECRET],
   ["URL with a password", /:\/\/[^\s/?#@:]+:[^\s/?#@]*@/],
+  ["bearer token", BEARER_TOKEN],
+  ["URL parameter named like a credential", URL_CREDENTIAL],
 ];
+
+/** Whether `text` ends in a `Bearer` scheme and the blanks after it: the one place a shape is read across whitespace
+ *  (the scheme, then its token), so a reader that cuts a text at whitespace must not cut there (key-refusal.ts
+ *  redactedAnswer). */
+export const endsInScheme = (text: string): boolean => {
+  const head = text.trimEnd();
+  return head.length < text.length && text.length - head.length <= 3 && /\bBearer$/i.test(head.slice(-7));
+};
 
 /** The kinds of secret-shaped text in `text`. */
 export const secretShapes = (text: string): string[] => SHAPES.filter(([, pattern]) => pattern.test(text)).map(([kind]) => kind);
@@ -76,6 +97,8 @@ const toEnd = (m: RegExpExecArray) => m.index + m[0].length;
  *    and run past it, so it reads on from the next character.
  *  - JWT: a match that starts in the first part reads on through the same second and third parts, so it ends where this
  *    one does; one that starts in the second part can run past it, into a fourth. It reads on from the second part.
+ *  - A URL's credential: its value runs to the next separator and may hold "?" and "=", so a parameter of the same
+ *    name inside it ("?token=a?token=a…") starts a match that runs to the same end.
  *  - whsec_: not here. Its run's class has no "_", so a run takes the next secret's "whsec" and stops at its "_": that
  *    secret starts inside this match and runs past it, and is found only by reading on from the next character. */
 const RESUME = new Map<RegExp, (m: RegExpExecArray) => number>([
@@ -83,6 +106,7 @@ const RESUME = new Map<RegExp, (m: RegExpExecArray) => number>([
   [SLACK_TOKEN, toEnd],
   [GITHUB_TOKEN, (m) => (m[0].startsWith("github_pat_") ? toEnd(m) : m.index + 1)],
   [JWT, (m) => m.index + m[0].indexOf(".") + 1],
+  [URL_CREDENTIAL, toEnd],
 ]);
 
 function places(text: string, form: string): Span[] {

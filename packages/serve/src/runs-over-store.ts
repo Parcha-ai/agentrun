@@ -1,4 +1,4 @@
-import { nativeOf } from "./native/binding.js";
+import { NATIVE_RUN_OVERRIDES_UNSUPPORTED, nativeOf, nativeRunOverrides } from "./native/binding.js";
 import { launchNative } from "./native/connection.js";
 // The write half of the run's server cut (design 2.1, "the runner takes every run"): the functions the v2 routes call to
 // start a run and to act on one (message, stop, raise, approve, archive), over the one store (A). The old per-run-process
@@ -31,6 +31,7 @@ import { type LaunchDisk, launchBody, type RunLaunch } from "./run-launch.js";
 import { modelKeyRequired, serverKeyMissing } from "./run-model-key.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
+import { refuseWhileNoRunner } from "./runner/presence.js";
 import { AgentDeleting, AnswerTaken, ExternalBodyConflict, type LaunchSealed, type NewRevision, type RevisionRow, RunFinal, type RunOrigin, type RunRow, type Store, StoreConstraint, StoreLaunchMissing } from "./store/index.js";
 import { canonical } from "./store/agent-body.js";
 import { toolingOf } from "./tools.js";
@@ -96,13 +97,14 @@ export async function archiveRun(store: RunsStore, runId: string, archived: bool
 
 /** Stops the run: one stop command row, which the run's runner reads and applies (it aborts the turn in flight, withdraws a
  *  tool call waiting for approval, and ends the run stopped). A stop always lands — one command, no second path. An imported
- *  or already-ended run has none to stop: `false`, nothing written (store.command refuses a final run, RunFinal). */
-export async function stop(store: RunsStore, runId: string): Promise<boolean> {
-  const row = await store.runs.get(runId);
-  if (!row || row.importedFrom) return false;
-  await refuseSdkStop(store,runId);
+ *  run, or one that reads ended (`moment.terminal`: one looking back after its job's end among them, whose end its
+ *  look-back never undoes), has none to stop: `false`, nothing written (and store.command refuses a final run, RunFinal). */
+export async function stop(store: RunsStore, moment: RunMoment): Promise<boolean> {
+  if (moment.importedSource !== undefined) return false;
+  await refuseSdkStop(store, moment.id);
+  if (moment.terminal) return false;
   try {
-    await sendCommand(store, runId, { kind: "stop", body: {} });
+    await sendCommand(store, moment.id, { kind: "stop", body: {} });
     return true;
   } catch (error) {
     if (error instanceof RunFinal) return false;
@@ -173,13 +175,15 @@ export type MessageMode = "steer" | "answer" | "follow_up";
  *  run's state. `answers: false` is a trigger's message, which never answers a person: refused while the run waits on one,
  *  and never a deny of an approval. The mode is the label the v2 answer reports, from the run's moment. `queue`: the steer's
  *  write when it is not this run's own (a trigger's: its firing marked with it, within its bound, store.triggers.message),
- *  which may skip it, in words. */
+ *  which may skip it, in words. A runner applies every message, so while every runner here refused to claim, any message
+ *  (a person's or a trigger's) is refused in their words first, as a start is (prepareLaunch, runner/presence.ts). */
 export async function message(
-  store: RunsStore & Pick<Store, "agents">,
+  store: RunsStore & Pick<Store, "agents" | "runners">,
   moment: RunMoment,
   content: string,
   { requestId, answers = true, origin, queue, launchSealed, beforeSubmit }: { requestId?: string; answers?: boolean; origin?: unknown; queue?: (command: SteerCommand) => Promise<{ skipped: string } | void>; launchSealed?: LaunchSealed; beforeSubmit?: (runId: string, content: string) => Promise<void> | void } = {},
 ): Promise<{ mode: MessageMode; messageId: string; skipped?: string }> {
+  await refuseWhileNoRunner(store.runners);
   if (moment.importedSource !== undefined) throw importedRefusal(moment);
   const launchBody = await controlLaunchBody(store, moment.id);
   if (isObject(launchBody) && launchBody.sdk) throw new ApiError("not_continuable", "Backend SDK runs are single-task sessions. Start a new SDK call for another task.");
@@ -415,6 +419,10 @@ type StartBody = { readonly maxCostUsd?: number; readonly place?: unknown; reado
 export interface StartDeps {
   /** A new run id; defaults to a UUIDv7. */
   readonly newRunId?: () => string;
+  /** Why no runner here can take a run, in their words, while every runner there refused to claim (runner/presence.ts
+   *  runnersRefused); undefined while one can, or none is there yet. prepareLaunch, which holds no store, refuses a start
+   *  with it (runner_refused); a reader that holds the store calls refuseWhileNoRunner on its runners instead. */
+  runnersRefused?(): Promise<string | undefined>;
   /** The create body's field issues, before the agent is read (server.ts runBodyIssues). */
   runBodyIssues(body: Json): InputIssue[];
   /** The revision a run starts on (server.ts pinnedOf): the body's pin, else the agent's current; undefined when none. */
@@ -607,7 +615,7 @@ export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "a
   const entry: AgentEntry = stored
     ? firstOfVersion ? { ...stored, agent: { ...stored.agent, name: inline.name, description: inline.description } } : stored
     : {
-        agent: { id: uuidv7(), name: inline.name, description: inline.description, currentRevision: null, createdAt: Date.now(), archivedAt: null, externalRef: ref },
+        agent: { id: uuidv7(), name: inline.name, description: inline.description, currentRevision: null, createdAt: Date.now(), archivedAt: null, externalRef: ref, purgedAt: null },
         revision: null, version: 0, revisions: 0, sizes: new Map(),
       };
   // A store revision is the revision the run path reads as a pi Revision (its body is the revision body), as pinnedOf hands
@@ -658,7 +666,7 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   const { revision } = pinned;
   const native = nativeOf(revision.body);
   if (native && !nativeOf(entry.revision?.body)?.connected) throw new ApiError("agent_not_runnable", "This native connection is disconnected. Reconnect its source project before starting any revision.");
-  if(native && (body.effort!==undefined || fileIds.length || body.archil_disk!==undefined))throw new ApiError("input_invalid","Native jobs use their original effort and project files. Run effort overrides, uploaded file_ids and Archil disks are unavailable; edit the native configuration or source project instead.");
+  if (native && nativeRunOverrides(body).length) throw new ApiError("input_invalid", NATIVE_RUN_OVERRIDES_UNSUPPORTED);
   if (fileIds.length) await deps.readyFiles(fileIds);
   const rbody = revision.body as StartBody;
   const input = body.input as Json;
@@ -667,6 +675,10 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   // The run's own cap, else the agent's default: the caller chose its own.
   const cap = typeof body.max_cost_usd === "number" ? body.max_cost_usd : rbody.maxCostUsd;
   if (capped && cap === undefined) throw invalid([{ field: "max_cost_usd", reason: "missing", message: "Every run a trigger starts is capped: give the trigger's target a max_cost_usd or set the agent's." }]);
+  // A run no runner here can claim is never taken to wait for good: refused in the runners' words, once the request reads
+  // right and before anything is pinned or made for it (runner/presence.ts).
+  const refused = await deps.runnersRefused?.();
+  if (refused !== undefined) throw new ApiError("runner_refused", refused);
   const place = resolvePlace(rbody.place as Place | undefined, deps.fallbackPlace(revision.kind, revision.kind === "agentic" ? (rbody.tools ?? []) : []));
   // Checked as pinned: an earlier revision with no pin is pinned now, once (StartDeps.pinFirst); one that could not be, as
   // its server could not be listed, is refused with the rest (runnable).

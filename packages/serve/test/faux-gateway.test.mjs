@@ -91,3 +91,15 @@ test("the gateway's other mode of each API: Responses and Messages whole, Chat C
 
   assert.deepEqual(gw.requests.map((q) => [q.path, q.body?.stream ?? false]), [["/v1/responses", false], ["/v1/messages", false], ["/v1/chat/completions", true]]);
 });
+
+test("the gateway's own headers (`headers`, LiteLLM's cost header say) are on every answer, streamed and whole", async (t) => {
+  const gw = await startFauxGateway({ headers: { "x-litellm-response-cost": "0.0042" } });
+  t.after(() => gw.close());
+  const post = (path, body) => fetch(`${gw.url}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+  for (const [path, stream] of [["/v1/responses", true], ["/v1/messages", false], ["/v1/chat/completions", true]]) {
+    const answer = await post(path, { model: "m", stream, input: [], messages: [] });
+    assert.equal(answer.status, 200);
+    assert.equal(answer.headers.get("x-litellm-response-cost"), "0.0042", path);
+    await answer.text();
+  }
+});

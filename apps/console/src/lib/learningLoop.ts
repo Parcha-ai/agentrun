@@ -2,7 +2,7 @@
 // workflow took over (promoted by one check on the inputs of the agent's own runs), and runs got cheaper, with how often
 // it handed back. The arithmetic here reads the server's records only (GET .../learning/cost, .../promotions,
 // .../loop, .../workflows/{name}/revisions); nothing is simulated and nothing says more than they do.
-import { timesOf } from "./costPerRun";
+import { jobsOf, level, timesOf } from "./costPerRun";
 import { givenToRuns } from "./learning";
 import type { CostRun, LearningCost, LearningLoop, Promotion, Serving } from "./v2";
 
@@ -29,14 +29,14 @@ export const kindOf = (record: Promotion): MarkerKind => (record.decided === "re
 
 /** Each promotion record on the run axis, which numbers the runs that do a job (a replay is never a marker's run). A
  *  promotion stands on the run the server says its revision took over at (`took_over`: the first run it served, the cost
- *  summary's takeover and the bill's promoted for the first), never one found by time: it is written as a run is
+ *  summary's takeover), never one found by time: it is written as a run is
  *  claimed, after the runs queued before it started. One whose run is not in the read (older than its first run, or still
  *  at work) is left out. Any other record stands on the first job (of `runs`, in order) that started at or after it; one
  *  newer than the last job is left out (no run of the axis is its), and so is one older than the first run read. Every
  *  record keeps its own marker, even two of one kind on one run (two workflows held between two runs): the chart stacks
  *  their flags in rows. */
 export function markersOf(runs: readonly CostRun[], records: readonly Promotion[]): Marker[] {
-  const jobs = runs.filter((r): r is CostRun & { n: number } => r.path !== "replay" && r.n !== null);
+  const jobs = jobsOf(runs);
   if (!runs.length || !jobs.length) return [];
   const starts = jobs.map((r) => Date.parse(r.started_at));
   const first = Date.parse(runs[0]!.started_at);
@@ -186,7 +186,7 @@ export function storyOf(input: {
     stages.push({ key: "cheaper", title: "Cheaper", value: "No ratio yet", detail: `${withheldWords(s.withheld)}: ${WITHHELD_NEXT}`, state: "now" });
   } else if (s?.after && s.before) {
     // The after side is the runs the workflow served (alone or handed back), never its replays: said with its count.
-    const words = `${dollars(s.before.mean_usd)} a run by the agent, ${dollars(s.after.mean_usd)} all-in over the ${s.after.runs === 1 ? "1 run" : `${s.after.runs} runs`} it served since`;
+    const words = `${level(s.before.mean_usd)} a run by the agent, ${level(s.after.mean_usd)} all-in over the ${s.after.runs === 1 ? "1 run" : `${s.after.runs} runs`} it served since`;
     const ratio = s.times_cheaper;
     if (ratio !== null && ratio > 1) stages.push({ key: "cheaper", title: "Cheaper", ...cheaperClaim(s, ratio), state: "done" });
     // times_cheaper is rounded by the server (0.03 reads as 0), so the increase comes from the two means.
@@ -196,7 +196,7 @@ export function storyOf(input: {
     stages.push({ key: "cheaper", title: "Cheaper", value: "No cost yet", detail: "no served run's cost is known yet", state: "now" });
   } else if (s?.after) {
     // Served runs exist; what is missing is the agent's own priced runs before the takeover to set them against.
-    stages.push({ key: "cheaper", title: "Cheaper", value: `${s.after.runs} served ${s.after.runs === 1 ? "run" : "runs"} so far`, detail: `${dollars(s.after.mean_usd)} all-in over the ${s.after.runs === 1 ? "1 run" : `${s.after.runs} runs`} it served; no priced agent runs before takeover to compare with`, state: "now" });
+    stages.push({ key: "cheaper", title: "Cheaper", value: `${s.after.runs} served ${s.after.runs === 1 ? "run" : "runs"} so far`, detail: `${level(s.after.mean_usd)} all-in over the ${s.after.runs === 1 ? "1 run" : `${s.after.runs} runs`} it served; no priced agent runs before takeover to compare with`, state: "now" });
   } else {
     stages.push({ key: "cheaper", title: "Cheaper", value: "Not yet", detail: "no served runs yet: once a workflow takes over, the all-in cost of the runs it serves against before (replays are checks, not served runs)", state: "later" });
   }
@@ -230,5 +230,3 @@ function cheaperClaim(s: LearningCost["summary"], ratio: number): { value: strin
   return { value: `${n} cheaper`, detail: `accuracy not claimed: ${r ? `its check was below the bar (${scored})` : "no check yet"}` };
 }
 
-/** A dollar level as the chart says it (costPerRun.ts level): three figures under a dollar. */
-const dollars = (v: number) => (v === 0 ? "$0" : v < 0.0001 ? "<$0.0001" : v >= 1 ? `$${v.toFixed(2)}` : `$${v.toPrecision(3)}`);

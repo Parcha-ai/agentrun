@@ -22,7 +22,7 @@ const REVIEW = new URL("../templates/code-review/", import.meta.url).pathname;
 const FIXTURES = new URL("./fixtures/templates/", import.meta.url).pathname;
 const REVIEW_FAUX = new URL("./fixtures/faux-review.mjs", import.meta.url).pathname;
 const KEY = "PARALLEL_API_KEY";
-const GITHUB_READS = ["pull_request_read", "get_file_contents", "get_repository_tree"];
+const GITHUB_READS = ["pull_request_read", "get_file_contents"];
 const GITHUB_TOOLS = [...GITHUB_READS, "pull_request_review_write", "add_comment_to_pending_review"];
 /** code-review's scope: every GitHub tool held to the one repository it was applied to. */
 const SCOPE = { owner: "${parameters.owner}", repo: "${parameters.repo}" };
@@ -409,7 +409,7 @@ test("code-review's GitHub tools: never granted nor allowed by the package itsel
   const before = (await api("GET", "/agents")).body.agents.length;
   const stranger = await api("POST", "/templates/code-review/apply", { parameters: AGENTRUN, grants: [...reads, "mcp:github/create_repository", "mcp:github/*"] });
   assert.equal(stranger.status, 422, JSON.stringify(stranger.body));
-  assert.deepEqual(stranger.body.error.fields.map((f) => [f.field, f.reason]), [["grants.3", "not_allowed"], ["grants.4", "not_allowed"]]);
+  assert.deepEqual(stranger.body.error.fields.map((f) => [f.field, f.reason]), [["grants.2", "not_allowed"], ["grants.3", "not_allowed"]]);
   assert.equal((await api("GET", "/agents")).body.agents.length, before, "nothing was made");
 
   // A deny the owner set on this server is never lifted by a grant: the agent's runs stay refused the tool, and the apply says so.
@@ -421,8 +421,20 @@ test("code-review's GitHub tools: never granted nor allowed by the package itsel
   // The reads ticked are the agent's, run unasked under the template's approvals never (the denied one granted and refused); the two writes, unticked, are not the
   // agent's at all, so approvals never has nothing to lift for them.
   assert.deepEqual((await api("GET", `/agents/${consented.body.agent_id}`)).body.definition.tools, ["read", "subagent", ...reads]);
-  assert.deepEqual(await permissions(consented.body.agent_id), { pull_request_read: "allow", get_file_contents: "deny", get_repository_tree: "allow" });
+  assert.deepEqual(await permissions(consented.body.agent_id), { pull_request_read: "allow", get_file_contents: "deny" });
   assert.deepEqual(consented.body.warnings.filter((w) => w.field.startsWith("grants.")).map((w) => [w.field, w.reason]), [["grants.mcp:github/get_file_contents", "not_allowed"]]);
+});
+
+// GitHub's hosted MCP server (api.githubcopilot.com/mcp) with no toolsets header lists its default toolsets (context, repos,
+// issues, pull_requests, users), these 42 tools as a GitHub App server lists them. A tool outside them (get_repository_tree
+// is in the git toolset) is not on a server saved the usual way, so a package naming it is refused at apply.
+const GITHUB_DEFAULT_TOOLS = new Set(["add_comment_to_pending_review", "add_issue_comment", "add_reply_to_pull_request_comment", "create_branch", "create_or_update_file", "create_pull_request", "create_repository", "delete_file", "fork_repository", "get_commit", "get_file_contents", "get_label", "get_latest_release", "get_release_by_tag", "get_tag", "issue_read", "issue_write", "list_branches", "list_commits", "list_issue_fields", "list_issue_types", "list_issues", "list_pull_requests", "list_releases", "list_repository_collaborators", "list_tags", "merge_pull_request", "pull_request_read", "pull_request_review_write", "push_files", "request_copilot_review", "run_secret_scanning", "search_code", "search_commits", "search_issues", "search_pull_requests", "search_repositories", "search_users", "sub_issue_write", "update_issue_comment", "update_pull_request", "update_pull_request_branch"]);
+
+test("every GitHub tool a bundled package names is on GitHub's hosted MCP server as saved, with its default toolsets", () => {
+  assert.equal(GITHUB_DEFAULT_TOOLS.size, 42);
+  const named = readPackages().flatMap((p) => p.mcp.filter((need) => need.source === "github").flatMap((need) => need.tools.map((tool) => ({ p: p.name, tool }))));
+  assert.ok(named.length > 0);
+  assert.deepEqual(named.filter((x) => !GITHUB_DEFAULT_TOOLS.has(x.tool)).map((x) => `${x.p}: ${x.tool}`), [], "a GitHub tool outside the default toolsets");
 });
 
 test("an apply grants only the MCP tools the owner ticked: under never an unticked tool is not the agent's at all, so it is never offered nor run; none ticked grants none", async (t) => {
@@ -588,7 +600,7 @@ test("a package granting a monid endpoint where there is no monid key is refused
   const { api } = await serve(t, { templates: dir });
   const applied = await api("POST", "/templates/keyed/apply", {});
   assert.notEqual(applied.status, 201, JSON.stringify(applied.body));
-  assert.match(JSON.stringify(applied.body), /no monid key here to read it with: save the monid key in Settings → Tool keys first/);
+  assert.match(JSON.stringify(applied.body), /no monid key here to read it with: save the monid key in Settings → API Keys first/);
 });
 
 test("a package's writes are bounded: each MCP tool it lists is a known read or write, a write is never in its allow, and in a package that runs unattended every write is pinned or bounded by a stated rule", () => {
@@ -598,7 +610,7 @@ test("a package's writes are bounded: each MCP tool it lists is a known read or 
   // classified here before it ships.
   const WRITES = new Set(["github/pull_request_review_write", "github/add_comment_to_pending_review", "github/issue_write", "hubspot/HUBSPOT_CREATE_NOTE", "slack/SLACK_SEND_MESSAGE", "gmail/GMAIL_SEND_EMAIL"]);
   // No free-text search: one reaches everything its credential does, and no pin can hold it to one repository or record.
-  const READS = new Set(["pull_request_read", "get_file_contents", "get_repository_tree", "list_releases", "get_latest_release", "get_release_by_tag", "list_tags", "get_tag", "list_commits", "get_commit", "list_pull_requests", "list_issues", "get_label"].map((tool) => `github/${tool}`));
+  const READS = new Set(["pull_request_read", "get_file_contents", "list_releases", "get_latest_release", "get_release_by_tag", "list_tags", "get_tag", "list_commits", "get_commit", "list_pull_requests", "list_issues", "get_label"].map((tool) => `github/${tool}`));
   // A write no pin can bound, and why it is bounded anyway. Each needs a reason a reviewer can check.
   const BOUNDED = {
     "hubspot/HUBSPOT_CREATE_NOTE": "it only adds a note, never changes or reads a record; the skill writes it only onto the contact a HubSpot CRM event's own payload names, and the HubSpot connection's scopes bound what it can touch",

@@ -283,7 +283,7 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 	/** Records a computer's first hello, naming the computer and its role: the one it was made for, else the connecting case's. */
 	const sawHello = (computer: string, hello: HelloResult, role: ComputerRole) => {
 		if (report.daemons.some((daemon) => daemon.computer === computer)) return;
-		report.daemons.push({ computer, role: roles.get(computer) ?? role, version: hello.version, os: hello.os, arch: hello.arch, ...(hello.fence === undefined ? {} : { fence: hello.fence }) });
+		report.daemons.push({ computer, role: roles.get(computer) ?? role, version: hello.version, os: hello.os, arch: hello.arch, ...(hello.fence === undefined ? {} : { fence: hello.fence }), ...(hello.windowManager === undefined ? {} : { windowManager: hello.windowManager }) });
 	};
 
 	/**
@@ -617,6 +617,9 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				},
 				observe(words: string) {
 					observed.push(words);
+				},
+				onScreenshot(png: Uint8Array) {
+					options.onScreenshot?.(png);
 				},
 			};
 			await c.run(t);

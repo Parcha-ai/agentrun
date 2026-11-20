@@ -25,14 +25,15 @@ function acmeModule(dir, extra = "") {
 }
 
 test("the built-in table is the one list: HARNESSES and ADAPTER_FACTS are its ids and its entries' facts, in its order", async (t) => {
-  const [{ HARNESSES }, { ADAPTER_FACTS, adapterFactsOf }, { harnessIds, harnessTable }] = await Promise.all([import("../dist/harness.js"), import("../dist/adapter-facts.js"), import("../dist/harness-table.js")]);
-  // A data directory with no Goose installed: goose is in the table, and not listed (harness-goose.test.mjs).
+  const [{ HARNESSES }, { ADAPTER_FACTS }, { factsOf, harnessIds, harnessTable }] = await Promise.all([import("../dist/harness.js"), import("../dist/adapter-facts.js"), import("../dist/harness-table.js")]);
+  // A data directory with no Goose or Cursor installed: both are in the table, and not listed (harness-goose.test.mjs,
+  // harness-cursor.test.mjs).
   const env = { AGENTRUN_SERVE_DATA: await scratch(t) };
   assert.deepEqual([...harnessIds(env)], ["pi", "claude-agent", "codex", "opencode"]);
   assert.deepEqual([...HARNESSES], [...harnessIds(env)], "HARNESSES is the built-in table's ids, listed wherever the table is");
-  assert.deepEqual(Object.keys(harnessTable(env)), [...HARNESSES, "goose"], "and goose after them, listed once it is installed");
+  assert.deepEqual(Object.keys(harnessTable(env)), [...HARNESSES, "goose", "cursor"], "and goose and cursor after them, each listed once it is installed");
   assert.deepEqual([...ADAPTER_FACTS], HARNESSES.flatMap((id) => (harnessTable(env)[id].facts ? [harnessTable(env)[id].facts] : [])), "ADAPTER_FACTS is their entries' facts");
-  for (const entry of Object.values(harnessTable(env))) assert.equal(adapterFactsOf(entry.id), entry.facts, `${entry.id}'s facts, by its id, are its entry's`);
+  for (const entry of Object.values(harnessTable(env))) assert.equal(factsOf(env, entry.id), entry.facts, `${entry.id}'s facts, by its id, are its entry's`);
 });
 
 test("guard: claude-agent keeps its id, label and its package's facts, and a harness module that names it, or any built-in, is refused by name", async (t) => {

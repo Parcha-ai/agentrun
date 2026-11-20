@@ -85,9 +85,17 @@ export function openMcpCredential(key: Buffer, row: { readonly name: string; rea
   return { credential: credential as McpCredential & { origin: string } };
 }
 
-/** The MCP credentials a run's caller handed it (`mcp_auth` at its start or with a message), by server name: each one's
- *  headers and the origin of the server's url when it was handed, so a server moved since never receives them. */
-export type RunMcpAuth = Readonly<Record<string, { readonly headers: Readonly<Record<string, string>>; readonly origin: string }>>;
+/** A run's binding of a per-run Composio server: the Composio user its calls run as, and the connected account when the
+ *  caller names one. Never kept on the server's row: sealed in the run's launch alone. */
+export type ComposioBinding = { readonly user_id: string; readonly connected_account_id?: string };
+
+/** What a run's caller handed one MCP server (`mcp_auth.<server>`): a per_run server's headers, or a per-run Composio
+ *  server's binding (its key stays the server's own); each with the origin of the server's url when it was handed, so a
+ *  server moved since never receives them. */
+export type RunMcpEntry = ({ readonly headers: Readonly<Record<string, string>> } | { readonly composio: ComposioBinding }) & { readonly origin: string };
+
+/** The MCP credentials a run's caller handed it (`mcp_auth` at its start or with a message), by server name. */
+export type RunMcpAuth = Readonly<Record<string, RunMcpEntry>>;
 
 /** A run's own model key (`model_key` at its start or with a message): the key its model requests carry, and the origin
  *  of the gateway it was handed for (AGENT_MODEL_BASE_URL's then), so a gateway moved since never receives it. */

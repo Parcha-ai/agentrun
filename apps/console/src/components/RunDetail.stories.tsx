@@ -50,3 +50,21 @@ export const ArtifactOpen: Story = {
   },
 };
 export const Phone: Story = { ...story("run.input_required.waiting.1"), globals: { viewport: { value: "mobile1" } } };
+
+// A finished run that recorded its computer's screen: the Screen tab plays its recordings, a picker for the two. The file
+// is the story's own path beside it (none ships with Storybook, so the player shows its controls on an empty frame).
+const recordedRun = (kind: "desktop" | "phone"): Story => ({
+  render: () => {
+    const f = runFixture("run.with-files");
+    const recordings = [1, 2].map((n) => ({ path: `recordings/${kind}${n === 1 ? "" : `-${n}`}.mp4`, computer: kind, seconds: 42, bytes: 3_145_728, finished: true }));
+    const run = { ...f.run, computer: { kind, provider: "docker", state: "ready" }, recordings } as Run;
+    return (
+      <Shell active="runs">
+        <RunDetail run={run} agentName={f.agentName} messages={messageFeatures} harnessSteers rows={f.page.rows} files={f.files} tab="screen" fileUrl={(path) => path}
+          readComputer={async () => ({ state: "none", kind, hold: "agent", session: "closed" })} />
+      </Shell>
+    );
+  },
+});
+export const RecordingPlayed: Story = recordedRun("desktop");
+export const RecordingPlayedPhone: Story = recordedRun("phone");

@@ -40,7 +40,7 @@ test("GET /stats' counts leave a shadow out of every run count and keep its cost
   assert.equal(read.runs.total, 3, JSON.stringify(read.runs));
   assert.equal(read.runs.completed, 3);
   assert.deepEqual(read.byAgent, [{ id: "agent-1", name: "Learns", runs: 3 }]);
-  assert.deepEqual(read.cost, { usd: 2, known: 3, unknown: 0 }, "the shadows' $0.80 is spent, on no run of its own");
+  assert.deepEqual(read.cost, { usd: 2, known: 3, unknown: 0, basis: "estimate" }, "the shadows' $0.80 is spent, on no run of its own");
 });
 
 test("analytics leave a shadow out of the run counts, the time and the tokens, and keep its cost", async (t) => {
@@ -72,7 +72,7 @@ test("a shadow's $ is on the run it audits: a served run at 23:59 audited by a s
   assert.deepEqual([second.totals.runs, second.totals.costUsd, second.byDay], [0, null, []], JSON.stringify(second));
   const first = await analytics(store, { agent: "agent-1", from: "2026-11-17T00:00:00Z", to: "2026-11-18T00:00:00Z" });
   assert.equal(Math.round(first.totals.costUsd * 1e6), 500_000, "the first day's filter has it with its run");
-  assert.deepEqual((await stats(store)).cost, { usd: 0.5, known: 1, unknown: 0 });
+  assert.deepEqual((await stats(store)).cost, { usd: 0.5, known: 1, unknown: 0, basis: "estimate" });
 });
 
 test("a shadow's known $ stays in the dollars while the run it audits has no known cost: never a null for the group", async (t) => {
@@ -87,7 +87,7 @@ test("a shadow's known $ stays in the dollars while the run it audits has no kno
   const read = await analytics(store, { agent: "agent-2" });
   assert.deepEqual([read.totals.runs, read.totals.unknownCostRuns, Math.round(read.totals.costUsd * 1e6)], [1, 1, 400_000], JSON.stringify(read.totals));
   const all = await stats(store);
-  assert.deepEqual(all.cost, { usd: 2.4, known: 3, unknown: 1 }, JSON.stringify(all.cost));
+  assert.deepEqual(all.cost, { usd: 2.4, known: 3, unknown: 1, basis: "estimate" }, JSON.stringify(all.cost));
 });
 
 test("the money rule's read at a claim finds each run's shadow in the page it listed: no read of its own a run, its all-in the same", async (t) => {

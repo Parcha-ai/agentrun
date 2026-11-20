@@ -7,13 +7,14 @@ import { createClient } from "@/lib/client";
 import { templateAgentDraft } from "@/lib/agentDraft";
 import { TEMPLATES } from "@/lib/templates";
 import type { Agent } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { holdsMove } from "@/lib/useUnsavedChangesGuard";
 import { workflowStarter } from "@/lib/workflowStarter";
 import { pick, picker, valueOf } from "@/test/picker";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 const origin = "https://console.example.test";
-const existing: Agent = { agent_id: "support/a", kind: "agentic", revision: "rev-three", revisions: 5, archived_at: null, definition: {
+const existing: Agent = { ...SERVED_AGENT, agent_id: "support/a", kind: "agentic", revision: "rev-three", revisions: 5, archived_at: null, definition: {
   version: 3, name: "Support", description: "Answers support questions", instructions: "Answer carefully.", harness: "pi", model: "anthropic/example-model", tools: ["read", "web_fetch"], skills: ["support"], learning: true,
   tool_settings: { web_fetch: { provider: "kernel" } }, input_schema: { type: "object", properties: { ticket: { type: "string" } } },
 } };
@@ -156,7 +157,10 @@ describe("AgentRequest, local definition requests", () => {
     expect(button("Send request").disabled).toBe(true);
     await send();
     expect(writes()).toHaveLength(1);
-    expect(host.querySelector('a[href="#/agents/created"]')?.textContent).toContain("Open agent");
+    const open = host.querySelector('a[href="#/agents/created"]')!;
+    expect(open.textContent).toContain("Open agent");
+    // Beside the status, above the definition: a long one (dozens of tools) does not push it out of view.
+    expect(open.compareDocumentPosition(host.querySelector("pre")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("refuses invalid JSON and sends all supplied JSON fields unchanged once corrected", async () => {
@@ -613,7 +617,6 @@ function revisionServer(initial: Agent) {
     if (workflow && ["instructions", "model", "thinking", "model_tiers", "learning", "input_schema", "output_schema", "checkout"].some(key => definition[key] !== undefined)) return fail("Workflow definitions take no agentic-only fields.");
     if (definition.id !== undefined && definition.id !== stored.agent_id) return fail("The agent id is fixed.");
     if (definition.name !== undefined && definition.name !== stored.definition.name) return fail("The name is fixed.");
-    if (definition.description !== undefined && definition.description !== stored.definition.description) return fail("The description is fixed.");
     for (const key of ["harness", "max_cost_usd"] as const) if (definition[key] === undefined && stored.definition[key] !== undefined) definition[key] = stored.definition[key] as never;
     if (!workflow && stored.kind === "agentic") for (const key of ["learning", "input_schema", "output_schema", "checkout"] as const) {
       if (definition[key] === undefined && stored.definition[key] !== undefined) definition[key] = stored.definition[key] as never;
@@ -624,14 +627,15 @@ function revisionServer(initial: Agent) {
     }
     const computer = definition.computer as { kind: string; provider?: string } | undefined;
     const place = definition.place as { mode: string; box?: string } | undefined;
-    if (computer) definition.place = computer.kind === "sandbox" ? { mode: "sandbox", box: computer.provider } : { mode: "runner" };
+    if (computer) definition.place = computer.kind === "sandbox" ? { mode: "sandbox", box: computer.provider } as Agent["definition"]["place"] : { mode: "runner" };
     else if (place) definition.computer = place.mode === "sandbox" ? { kind: "sandbox", provider: place.box } : { kind: "none" };
     if (definition.checkout === "none") delete definition.checkout;
     if (definition.max_cost_usd === 0) delete definition.max_cost_usd;
     const nextFiles = body.skills ?? files;
     definition.id = stored.agent_id;
     definition.name = stored.definition.name;
-    definition.description = stored.definition.description;
+    // A description the edit leaves out is kept; one it names is the agent's from this revision on.
+    definition.description ??= stored.definition.description;
     definition.harness ??= "pi";
     definition.approvals ??= "ask";
     definition.tools ??= [];
@@ -728,7 +732,21 @@ describe("AgentRequest complete JSON API carry and reset contract", () => {
     if (field === "native" || field === "sdk") expect(button("Use your agent").disabled).toBe(false);
   });
 
-  it.each([["id", "delete"], ["name", "change"], ["description", "change"], ["description", "delete"]] as const)("explains creation-only metadata %s %s instead of claiming it saved", async (field, mode) => {
+  it.each(["form", "json"] as const)("sends a changed description from the %s as the next revision, and the agent reads it back", async (view) => {
+    const server = revisionServer(contractAgent());
+    await mount({ operation: "edit-agent", agentId: existing.agent_id }, server.answer);
+    if (view === "form") type(control("Description"), "Answers billing and support questions.");
+    else await editJSON(definition => { definition.description = "Answers billing and support questions."; });
+    expect(button("Send request").disabled).toBe(false);
+    await send();
+    expect(writes()).toHaveLength(1);
+    expect(writes()[0].body).toMatchObject({ definition: { name: existing.definition.name, description: "Answers billing and support questions.", version: existing.revisions + 1 } });
+    expect(server.outcomes).toEqual([200]);
+    expect(server.current().definition.description).toBe("Answers billing and support questions.");
+    expect(server.current().revisions).toBe(existing.revisions + 1);
+  });
+
+  it.each([["id", "delete"], ["name", "change"], ["description", "delete"]] as const)("explains creation-only metadata %s %s instead of claiming it saved", async (field, mode) => {
     const server = revisionServer(contractAgent());
     await mount({ operation: "edit-agent", agentId: existing.agent_id }, server.answer);
     await editJSON(definition => { if (mode === "delete") delete definition[field]; else definition[field] = "A different identity label"; definition.instructions = "A real edit beside the metadata change."; });
@@ -756,7 +774,7 @@ describe("AgentRequest complete JSON API carry and reset contract", () => {
   });
 
   it("allows deleting only a derived place while preserving the full computer", async () => {
-    const computer = { kind: "sandbox", provider: "docker", image: "large", gpu: { type: "T4", count: 1 } };
+    const computer = { kind: "sandbox" as const, provider: "docker", image: "large", gpu: { type: "T4", count: 1 } };
     const server = revisionServer(contractAgent({ computer, place: { mode: "sandbox", box: "docker" } }));
     await mount({ operation: "edit-agent", agentId: existing.agent_id }, server.answer);
     await editJSON(definition => { delete definition.place; definition.instructions = "Keep the rich computer."; });

@@ -38,6 +38,7 @@ import triggerRowLabel from "./trigger-row-label.mjs";
 import computerStep from "./computer-step.mjs";
 import agentCardFooter from "./agent-card-footer.mjs";
 import costPerRun from "./cost-per-run.mjs";
+import playgroundPaneLines from "./playground-pane-lines.mjs";
 import learningBill from "./learning-bill.mjs";
 import workflowReplay from "./workflow-replay.mjs";
 import replayButton from "./replay-button.mjs";
@@ -46,6 +47,7 @@ import gradeRun from "./grade-run.mjs";
 import toolCards from "./tool-cards.mjs";
 import narrowLayouts from "./narrow-layouts.mjs";
 import playgroundOperationWidth from "./playground-operation-width.mjs";
+import devToolsPanelWidth from "./dev-tools-panel-width.mjs";
 
 export const flows = [
   setupOpen,
@@ -83,4 +85,6 @@ export const flows = [
   toolCards,
   ...narrowLayouts,
   playgroundOperationWidth,
+  devToolsPanelWidth,
+  playgroundPaneLines,
 ];

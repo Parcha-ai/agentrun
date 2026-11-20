@@ -163,6 +163,23 @@ test("a workflow's decisions are requests too: each receipt is a span with its n
   assert.deepEqual(traceSpans(rowsOf(mixed), mixed).spans.map((s) => s.decision), [false, false]);
 });
 
+test("a span's cost carries no floating-point noise: a request's and a decision's are written as a tool call's charges are", () => {
+  // A request's cost is its answer's sum of parts, and a provider's own figure can be one too: 0.1 + 0.2 is
+  // 0.30000000000000004 as a double. A reader of the API or the CLI is shown the amount, not the sum's last bit.
+  const noisy = 0.1 + 0.2;
+  assert.notEqual(noisy, 0.3);
+  const entries = [
+    { id: 1, conversationId: 0, kind: "pi.user", model: [{ role: "user", content: "Go.", timestamp: T0 }] },
+    answer(2, 100, 400, [{ type: "text", text: "Done." }], usage(900, 20, 0, 0, noisy)),
+  ];
+  const decisions = [{ id: "dec_1", at: at(2000), node: "ask", kind: "judge", model: "parallel-fast", provider: "parallel", usage: { input_tokens: 400, output_tokens: 0 }, cost_usd: noisy, latency_ms: 300, status: "answered", request: { index: 0, count: 1 } }];
+  const trace = traceSpans(rowsOf(entries), entries, { decisions });
+  assert.deepEqual(trace.spans.map((s) => [s.decision, s.usd]), [[false, 0.3], [true, 0.3]]);
+  // A cost far below a cent is kept, not rounded away.
+  const small = [entries[0], answer(2, 100, 400, [{ type: "text", text: "Done." }], usage(1, 1, 0, 0, 0.000000018))];
+  assert.equal(traceSpans(rowsOf(small), small).spans[0].usd, 0.000000018);
+});
+
 test("a tool call's charges are its span's cost: a paid tool's fee by its call, two fees their sum, an unknown amount as unknown, a tool with no price as not metered", () => {
   const entries = [
     answer(2, 0, 100, [call("a", "web_search"), call("b", "web_search"), call("c", "mcp__crm__lookup")], usage(10, 1, 0, 0, 0.001)),

@@ -418,12 +418,13 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
   called. The daemon your machines fetch is `hostedDaemonPath(arch)`, the file whose SHA-256 they check.
 - **The token sits in the machine's env**, scoped to that machine (its kind, os and arch) until delete or its
   `backstopAt`, whichever comes first. A machine that never dials within `createMs` is deleted.
-- **No Archil mount yet.** A spec with one is refused in words.
+- **No Archil mount.** A spec with one is refused in words (`mountsOf` drops it on dial).
 - **A desktop over dial** works as on exec: create adds `DISPLAY` (`:0`) to the boot env, `agentrun-dial` gives it
-  to init, and once the machine dials, its X server and window manager start through computerd's `process.start` over
-  that socket, as the tool user. A machine minted a desktop may say `linux` (same os and arch) until its display
-  answers; until a hello says `desktop`, `connect` gives a linux computer whose screen, input, apps and ui calls are
-  refused in words ("its display isn't up yet"), never sent. Every dial provider takes one, from the box image, whose
+  to init, and once the machine dials, its X server starts through computerd's `process.start` over that socket, as
+  the tool user. Where the host's facts say `windowManager`, computerd starts xfwm4 itself (init `--window-manager`;
+  see `daemon/internal/windowmanager`); hello's `windowManager` says how it went, and create waits on it. A machine
+  minted a desktop may say `linux` (same os and arch) until its display answers; a `connect` while it says `linux`
+  fails as drift, as on exec. Every dial provider takes one, from the box image, whose
   `desktop` step (`box/install.sh`) installs Xvfb, xfwm4, xfce4-terminal, mousepad and firefox-esr. A desktop gets the
   sandbox's size, 2 CPUs and 4 GiB by default, which holds Xvfb at 1280x800, xfwm4 and a browser:
   - **E2B**: its default on either connect, from the box template (the template's own size).
@@ -437,15 +438,20 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
   - **Modal**: `kind: "desktop"` on `connect: "dial"` alone; 2 CPUs and 4 GiB on Modal's VM runtime, with no GPU (a GPU
     sandbox runs on gVisor). On `connect: "exec"` the constructor refuses a desktop in words; the descriptor's desktop
     configuration selects dial itself.
-  - **Daytona**: `kind: "desktop"` on `connect: "dial"` alone, from the operator's snapshot of `box/Dockerfile`
-    (`AGENTRUN_DAYTONA_SNAPSHOT`), with its 2 CPUs, 4 GB and 10 GB of disk (`box/build-daytona.py`); no resources may be
-    sent beside a snapshot, and no GPU on dial. On `connect: "exec"` the constructor refuses a desktop in words; the
+  - **Daytona**: `kind: "desktop"` on `connect: "dial"` alone, from the operator's snapshot of box/Dockerfile
+    (`AGENTRUN_DAYTONA_SNAPSHOT`) at its 2 CPUs and 4 GiB, with no GPU. Its container sandboxes run under Sysbox on a
+    kernel (Ubuntu 6.8) with `kernel.apparmor_restrict_unprivileged_userns=1`: root makes every namespace, but the tool
+    user (uid 2510) can't write a user namespace's `uid_map` and can't make a network namespace (measured 11-19), so
+    the window manager the client used to start under `unshare --user --net` failed there
+    (`unshare: write failed /proc/self/uid_map: Operation not permitted`). computerd starts it now, as root makes its
+    network namespace. On `connect: "exec"` the constructor refuses a desktop in kindRefusal's words, because a
+    desktop's sandbox boots from the snapshot and dials, and none has run through the toolbox's session commands. The
     descriptor's desktop configuration selects dial itself.
 
-  Xvfb and the window manager on Fly, Cloudflare, Modal and Daytona are **unverified**: no live run yet. The window
-  manager runs under `unshare --user --map-current-user --net` as the tool user; whether each vendor's runtime lets an
-  unprivileged user make those namespaces is **unverified** (Modal's gVisor, measured for root alone, takes
-  `unshare -Urn`).
+  Xvfb and the window manager over the dial were verified live (dial desktop runs 11-18/19: E2B, Fly, Cloudflare,
+  Modal), with the client starting the manager. computerd's own start of it ran live on Daytona over dial (11-20):
+  Core passed, the five desktop cases passed, every hello's `windowManager` said `running`, and a frame showed Mousepad
+  framed by xfwm4. The other hosts have not yet run computerd's start live.
 - **Prove it** as below. Your conformance module also exports `dialKit()`, the server your machines dial, for the
   Core case `provider.dial-token` (`test/fixtures/dial-provider.mjs` is one).
 - **No REST call that starts a machine?** Ship a relay the operator deploys once, as Cloudflare's
@@ -480,13 +486,18 @@ For an app that exists in an org your token can't see, Fly answers `403 unauthor
 
 Core for any dial provider runs inside the server its machines dial: `packages/serve/scripts/dial-conformance.mjs`,
 in the server's image at `/opt/agentrun/packages/serve/scripts/`. It runs serve's attach routes on `$PORT`, runs Core
-with `--long`, prints the report between `DIAL-CONFORMANCE-REPORT-BEGIN` and `-END`, then idles until it is stopped
+with `--long`, prints the report between `DIAL-CONFORMANCE-REPORT-BEGIN` and `-END`, then idles until it is stopped.
+Before the report, a desktop's run prints the last whole-screen shot its cases read, as base64 lines between
+`DIAL-CONFORMANCE-FRAME-BEGIN <sha256> <bytes>` and `DIAL-CONFORMANCE-FRAME-END`. The report's `daemons` carry each
+hello's `windowManager`, so a live run shows that computerd started the manager
 (`--exit` exits 0 on a pass, else 1):
 
 ```sh
 COMPUTER_FLY_API_TOKEN=… COMPUTER_FLY_APP=agentrun-computers-<org slug> AGENTRUN_PUBLIC_URL=https://… PORT=8080 \
   node packages/serve/scripts/dial-conformance.mjs --provider fly
 ```
+
+`COMPUTER_FLY_KIND=desktop` runs the desktop suite (unset, linux); Cloudflare, Modal and Daytona's modules read `COMPUTER_CLOUDFLARE_KIND`, `COMPUTER_MODAL_KIND` and `COMPUTER_DAYTONA_KIND` the same way.
 
 ### Wire it up
 

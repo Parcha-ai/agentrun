@@ -7,7 +7,9 @@
 // /v2/health is answered by this process (reachesThisRun), as a host swapping instances answers from the old one first.
 // Then it runs Core, provider.deadline and drift.arch
 // among it, and prints the report as JSON between two marker lines, DIAL-CONFORMANCE-REPORT-BEGIN and
-// DIAL-CONFORMANCE-REPORT-END, so a log that holds other lines still yields it. Then it idles, /v2/health still
+// DIAL-CONFORMANCE-REPORT-END, so a log that holds other lines still yields it. A run whose screen case read a whole
+// screenshot (the suite's onScreenshot) first prints it, as base64 lines between DIAL-CONFORMANCE-FRAME-BEGIN <sha256>
+// <bytes> and DIAL-CONFORMANCE-FRAME-END (frameLines). Then it idles, /v2/health still
 // answered, until SIGTERM or SIGINT ends it with the run's status: a host that restarts an exited process (Render's)
 // would start a second run. With --exit it exits instead: 0 when Core passes, else 1. A refusal before the server
 // listens (a usage error, no AGENTRUN_PUBLIC_URL or PORT) exits 1 either way.
@@ -35,21 +37,24 @@ import { get as httpsGet } from "node:https";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { ATTACH_HELLO_MS, ATTACH_PATH, ATTACH_SUBPROTOCOL, AttachHub, DAEMON_PATH, descriptorOf, hostedDaemonPath, isProviderId, providerModule } from "@parcha/agentrun-computer";
 import WebSocket from "ws";
 import { isMain } from "../../../scripts/is-main.mjs";
+import { MACHINE_TOKEN_SOURCE } from "../../computer/dist/attach.js";
 import { plantSecrets } from "../../computer/dist/conformance/cli.js";
 import { casesFor, runConformance } from "../../computer/dist/conformance/index.js";
 import { createAttachRoutes, sha256Hex } from "../dist/computer-attach.js";
 
 const BEGIN = "DIAL-CONFORMANCE-REPORT-BEGIN";
 const END = "DIAL-CONFORMANCE-REPORT-END";
+const FRAME_BEGIN = "DIAL-CONFORMANCE-FRAME-BEGIN";
+const FRAME_END = "DIAL-CONFORMANCE-FRAME-END";
 const USAGE = "usage: node dial-conformance.mjs --provider <registry id or module path> [--only <groups and case ids>] [--exit], with AGENTRUN_PUBLIC_URL and PORT set";
 /** A name of a module's ENV that holds a secret (the conformance CLI's rule). */
 const SECRET_NAME = /(^|_)(KEY|TOKEN|SECRET)(_|$)/;
-/** A token serve mints for a machine (computer-attach.ts newMintedToken). */
-const MINTED_TOKEN = /art_[0-9a-f]{64}/g;
+/** `text` with every machine token in it redacted by its shape, whether or not this run minted it. */
+export const scrubMachineTokens = (text) => text.replace(new RegExp(MACHINE_TOKEN_SOURCE, "g"), "art_[redacted]");
 
 const say = (line) => process.stderr.write(`dial-conformance: ${line}\n`);
 
@@ -133,6 +138,21 @@ const NO_PAIRING = new Proxy(
 					},
 	},
 );
+
+/** computerd-fixture for linux/amd64, which the server's image builds next to computerd (packages/serve/docker/Dockerfile). */
+export const FIXTURE_PATH = fileURLToPath(new URL("../../computer/dist/computerd-fixture-linux-amd64", import.meta.url));
+
+/** What a run of `kind` checks effects with: a desktop's computerd-fixture (its screen and input cases skip without it, and
+ *  Core cannot pass), none otherwise. */
+export const fixtureFor = (kind, path = FIXTURE_PATH) => (kind === "desktop" ? path : undefined);
+
+/** The lines a frame is printed as: its sha256 and size after the begin marker, its base64 in lines of `width`. */
+export function frameLines(png, width = 512) {
+	const data = Buffer.from(png).toString("base64");
+	const lines = [];
+	for (let at = 0; at < data.length; at += width) lines.push(data.slice(at, at + width));
+	return [`${FRAME_BEGIN} ${createHash("sha256").update(png).digest("hex")} ${png.length}`, ...lines, FRAME_END];
+}
 
 /** The version a drifted daemon reports: the provider's, its last character changed, so the bytes keep their length. */
 export const driftedVersion = (version) => `${version.slice(0, -1)}${version.endsWith("x") ? "y" : "x"}`;
@@ -321,6 +341,8 @@ async function main({ provider: name, only, exit }, env, state) {
 	const options = { env, dial: { url: publicUrl, tokens: minting(), hub }, onNote: (note) => notes.push({ computer: note.computer, note: note.note }) };
 	try {
 		const provider = await module.createProvider(options);
+		// The screen case's last whole screenshot, printed before the report: what the computer showed.
+		let frame;
 		// The same provider with no public address, its host's creates counted: provider.dial-token's unreachable().
 		const bare = await module.createProvider({ ...options, dial: { tokens: minting(), hub } });
 		let creates = 0;
@@ -354,10 +376,11 @@ async function main({ provider: name, only, exit }, env, state) {
 		};
 		const secretNames = Object.values(module.ENV ?? {}).filter((one) => typeof one === "string" && SECRET_NAME.test(one));
 		// No secret leaves this process: the module's secret values and every machine token are taken out of what it writes.
-		const scrub = (text) => [...secretNames.map((one) => env[one]), ...tokens.values()].reduce((kept, secret) => (secret ? kept.split(secret).join("[redacted]") : kept), text.replace(MINTED_TOKEN, "art_[redacted]"));
+		const scrub = (text) => [...secretNames.map((one) => env[one]), ...tokens.values()].reduce((kept, secret) => (secret ? kept.split(secret).join("[redacted]") : kept), scrubMachineTokens(text));
 		const image = typeof module.conformanceImage === "function" ? await module.conformanceImage(options, { signal: controller.signal }) : undefined;
 		if (typeof image !== "string" || image === "") throw new Error(`${name}: its conformance module names no image (conformanceImage())`);
 		const cases = casesFor(provider.capabilities().kind);
+		const fixture = fixtureFor(provider.capabilities().kind);
 		if (only !== undefined) {
 			// A name that is no group or case id would narrow the run to nothing, which must not read as a pass.
 			const known = new Set(cases.flatMap((one) => [one.id, one.group]));
@@ -370,6 +393,7 @@ async function main({ provider: name, only, exit }, env, state) {
 		const report = await runConformance(provider, {
 			image,
 			cases,
+			...(fixture === undefined ? {} : { fixture }),
 			...(only === undefined ? {} : { only }),
 			long: true,
 			signal: controller.signal,
@@ -403,6 +427,9 @@ async function main({ provider: name, only, exit }, env, state) {
 					}),
 			...(Array.isArray(module.conformanceNotes) ? { notes: module.conformanceNotes } : {}),
 			onResult: (result) => say(scrub(`${result.status} ${result.id}${result.reason ? `: ${result.reason}` : ""}`)),
+			onScreenshot: (png) => {
+				frame = png;
+			},
 		});
 		if (notes.length > 0) report.providerNotes = notes;
 		// The daemon copy the drifted twin's machines were served, by its sha256 and the version it reports, and the
@@ -411,6 +438,7 @@ async function main({ provider: name, only, exit }, env, state) {
 		const hellos = [...new Set(drift.hellos)];
 		const helloOk = hellos.every((said) => copies.some((copy) => copy.version === said));
 		if (copies.length > 0) report.driftedDaemon = { copies, hellos, matches: helloOk };
+		if (frame !== undefined) process.stdout.write(`${frameLines(frame).join("\n")}\n`);
 		process.stdout.write(`${BEGIN}\n${scrub(JSON.stringify(report, null, 2))}\n${END}\n`);
 		say(`Core ${report.core}`);
 		if (!helloOk) say(`the drifted twin's hellos reported ${hellos.join(", ")}, not the daemon copy's ${copies.map((copy) => copy.version).join(", ")}`);

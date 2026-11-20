@@ -230,6 +230,8 @@ const installHash = (source: string) => `#/templates/install?src=${encodeURIComp
  *  show first: a schedule with when it runs and its next run, as the Triggers page says them. */
 /** How long the Apply page waits on one of its new triggers' read-back before it leaves that trigger out. */
 export const TRIGGER_READ_MS = 3_000;
+/** What an Update says it did: the revision it wrote when that was read back ("Updated: rev 2"), else "Updated". */
+const updatedWords = (rev: number | null) => (rev === null ? "Updated" : `Updated: rev ${rev}`);
 /** `promise`'s answer, or undefined once `ms` have passed without one. */
 function bounded<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -259,6 +261,9 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
   // The refusal's own words beside Apply; `withIssues` when it came with issues, so it goes once the last of them does.
   const [said, setSaid] = useState<{ text: string; withIssues: boolean } | null>(null);
   const [made, setMade] = useState<TemplateApplied | null>(null);
+  // An Update's (agent_id sent): the agent was updated, not made. `rev` is its revision as read back (GET /agents/{id}),
+  // null until read, or when it can't be read within TRIGGER_READ_MS. Null for an Apply, which made a new agent.
+  const [updated, setUpdated] = useState<{ rev: number | null } | null>(null);
   // The schedules the apply made, each read back (GET /triggers/{id}) for its next run.
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   // The parameters an apply sent: what its "applied" title names, whatever was typed while it was under way.
@@ -350,9 +355,19 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
         const read = await Promise.all(done.trigger_ids.map((id) => bounded(v2.getTrigger(id), TRIGGER_READ_MS).catch(() => null)));
         return read.filter((x): x is Schedule => x !== null && x !== undefined && isScheduleTrigger(x));
       };
+      // An Update says the revision it wrote, read back; never "made". A slow or failed read says "Updated" alone.
+      const updating = () => {
+        if (!onto) { setUpdated(null); return; }
+        setUpdated({ rev: null });
+        void bounded(v2.getAgent(done.agent_id), TRIGGER_READ_MS).then((r) => {
+          const rev = r?.agent.definition?.version;
+          if (shown.current && typeof rev === "number") setUpdated({ rev });
+        }, () => {});
+      };
       // A warning or a webhook's once-shown secret is shown at once; its schedules are added as they are read.
       if (done.warnings.length || done.webhook_secrets?.length) {
         setSentValues(sending);
+        updating();
         setMade(done);
         void schedulesOf().then(setSchedules, () => {});
         return;
@@ -363,6 +378,7 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
       if (!scheduled.length) { go(agentHash(done.agent_id)); return; }
       setSentValues(sending);
       setSchedules(scheduled);
+      updating();
       setMade(done);
     } catch (e) {
       if (e instanceof ClientError && e.fields?.length) {
@@ -384,9 +400,10 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
   if (made) {
     return (
       <section aria-label="Applied" className="max-w-page">
-        <Heading className="mb-4 flex items-center gap-2 text-2xl font-semibold"><Check className="size-5 text-success-text" aria-hidden /> {titleOf(t, sentValues)} applied</Heading>
+        <Heading className="mb-4 flex items-center gap-2 text-2xl font-semibold"><Check className="size-5 text-success-text" aria-hidden /> {titleOf(t, sentValues)} {updated ? "updated" : "applied"}</Heading>
+        {updated && made.warnings.length === 0 && <p className="mb-3 text-lead">{updatedWords(updated.rev)}.</p>}
         {made.warnings.length > 0 && <>
-          <p className="mb-3 text-lead">The agent is made. The server says:</p>
+          <p className="mb-3 text-lead">{updated ? updatedWords(updated.rev) : "The agent is made"}. The server says:</p>
           <ul className="mb-5 space-y-2 border bg-card px-4 py-3 text-body" role="status" aria-label="Warnings">
             {made.warnings.map((w, i) => {
               // A webhook trigger's (triggers.<i>.secret): the trigger the apply made (trigger_ids, in the template's order)
@@ -479,7 +496,7 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
               {servers && matches.length === 0 && (
                 <p role="status" data-missing-mcp={m.toolkit} className="mt-2 border border-warning/50 px-3 py-2 text-small text-warning-text">
                   {m.required ? `${m.toolkit} is required and not set up here: Apply is refused until it is.` : `${m.toolkit} is not set up here: Apply makes the agent without its tools (${m.tools.map((x) => x.name).join(", ")}).`}{" "}
-                  <a href={setUpHref(m)} className="font-mono text-primary-text underline-offset-2 hover:underline">{m.source === "github" ? "Set up GitHub App access" : m.source === "composio" ? `Add ${m.toolkit} from Composio` : `Set up ${m.toolkit}`}</a>
+                  <a href={setUpHref(m)} className="font-mono text-primary-text underline underline-offset-2 hover:decoration-2">{m.source === "github" ? "Set up GitHub App access" : m.source === "composio" ? `Add ${m.toolkit} from Composio` : `Set up ${m.toolkit}`}</a>
                 </p>
               )}
               <Issues issues={[...at(`mcp.${m.toolkit}`), ...at(`servers.${m.toolkit}`)]} />

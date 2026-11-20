@@ -1,7 +1,7 @@
 // Proves the installed path: `npm pack`, install the tarball into an empty project with the optional peers, then on each Node given
 //   - import every entry of `exports` with type stripping switched off, so nothing can lean on it;
 //   - typecheck an `import` of every entry with tsc (nodenext, strict) in an empty TypeScript project;
-//   - check the tarball holds only dist, the licence files, the README, the changelog and the vendored facade's UPSTREAM.json.
+//   - check the tarball holds only dist, the licence files, the README, the changelog and the recorded vendors' UPSTREAM.json files.
 // Needs the npm registry (the peers and typescript are installed from it). Usage:
 //   node scripts/verify-tarball.mjs [--node DIR ...]     DIR holds the `node` to try (default: the Node running this)
 import { spawnSync } from "node:child_process";
@@ -29,7 +29,7 @@ try {
   const tarball = join(work, packed.filename);
   const pkg = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 
-  const allowed = ["package.json", "README.md", "CHANGELOG.md", "LICENSE", "NOTICE", "src/vendor/stagehand-facade/UPSTREAM.json"];
+  const allowed = ["package.json", "README.md", "CHANGELOG.md", "LICENSE", "NOTICE", "src/vendor/stagehand-facade/UPSTREAM.json", "src/vendor/browser-use-pi/UPSTREAM.json"];
   const stray = packed.files.map((f) => f.path).filter((p) => !p.startsWith("dist/") && !allowed.includes(p));
   check(`the tarball holds only dist and ${allowed.join(", ")} (${packed.files.length} files)`, stray.length === 0, stray.join("\n"));
   check("the tarball has no source map", !packed.files.some((f) => f.path.endsWith(".map")));

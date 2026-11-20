@@ -27,6 +27,7 @@ import { KEY_TABLE, type ProviderFactories } from "../computer-keys.js";
 import type { FauxComputers } from "../faux-computers.js";
 import { envValue, type KeyEnv, keyReader } from "../key-meta.js";
 import { boxAllowOf, boxAllowSetIn } from "../box-settings.js";
+import { BOX_CPUS_ENV, BOX_MEMORY_ENV, BOX_PIDS_ENV } from "../start-switches.js";
 import { readLaunchBody } from "../run-launch.js";
 import type { Store } from "../store/index.js";
 import { SERVER_NOTE_LABEL } from "@parcha/agentrun-kernel/kernel/cap";
@@ -48,9 +49,7 @@ const refused = (words: string): Error => Object.assign(new Error(words), { code
 /** The settings that size a Docker computer (a sandbox or a desktop): its CPUs, its memory (swap included) and how many
  *  processes and threads it may hold at once. Unset, the Docker provider's own defaults hold. A vendor's computer sizes
  *  itself and is never given them. */
-export const BOX_CPUS_ENV = "AGENTRUN_BOX_CPUS";
-export const BOX_MEMORY_ENV = "AGENTRUN_BOX_MEMORY";
-export const BOX_PIDS_ENV = "AGENTRUN_BOX_PIDS";
+export { BOX_CPUS_ENV, BOX_MEMORY_ENV, BOX_PIDS_ENV };
 
 /** A Docker computer's size, as the Docker provider takes it on its spec. */
 export type DockerLimits = Pick<ComputerSpec, "cpus" | "memoryMb" | "pids">;
@@ -309,11 +308,9 @@ export const claimComputer = async (
  *  provider a test loads still gets it). The one choice: computerDepsFrom makes it, and the server's start check
  *  (server.ts computerReady) asks it with what the runner composes with, so a run's start and its claim answer alike. */
 export function claimKinds(options: Pick<ComputerDepsOptions, "faux" | "kinds">): KindRegistry {
-  const base = options.kinds ?? ({ SETTING_KINDS, PROVIDERS, servingRefusals } as unknown as KindRegistry);
+  const base = options.kinds ?? { SETTING_KINDS, PROVIDERS, servingRefusals };
   if (!options.faux) return base;
-  // The faux registry is Settings' shape (computers.ts); the claim reads the same data as resolve-computer.ts's.
-  const faux = options.faux.kinds as unknown as KindRegistry;
-  return { ...base, PROVIDERS: [...base.PROVIDERS, ...faux.PROVIDERS] } as KindRegistry;
+  return { ...base, PROVIDERS: [...base.PROVIDERS, ...options.faux.kinds.PROVIDERS] };
 }
 
 /** This machine's Docker daemon as the claim asks it once a Docker launch fails: one check per process (its answer

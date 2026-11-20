@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentEditor } from "./AgentEditor";
 import { type Agent, toolOffers } from "@/lib/agentForm";
+import { SERVED_AGENT } from "@/test/agent";
 import { placesOf } from "@/lib/place";
 
 // The editor's Computer step: where the agent's runs execute and what they drive. It comes before Tools & skills (the
@@ -16,7 +17,7 @@ const places = placesOf({ places: { modes: ["runner", "sandbox"], default_place:
 const tools = toolOffers([{ name: "read", available: true, harnesses: ["pi", "claude-agent", "codex", "opencode"] }, { name: "bash", available: true, sandbox_only: true, harnesses: ["pi"] }]);
 const caps = { harnesses: [{ id: "pi", available: true }], thinking: ["low"], tools, places };
 const agent = (definition: Record<string, unknown> = {}): Agent => ({
-  agent_id: "computed", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
+  ...SERVED_AGENT, agent_id: "computed", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Computed", instructions: "Probe.", harness: "pi", skills: [], tools: ["read"], ...definition },
 });
 
@@ -70,19 +71,19 @@ describe("AgentEditor, the Computer step", () => {
   // The kind cards, each kind's providers and "The loop gets …" read the server's computers list (capabilities.computers,
   // the same list GET /v2/computers answers). The words below are this fixture's; the console shows the server's.
   const KINDS = [
-    { kind: "none", offered: true, groups: [], tools: ["read", "write", "edit", "bash"], providers: [] },
-    { kind: "sandbox", offered: true, groups: ["exec", "files", "processes"], tools: ["read", "write", "edit", "bash", "bash_background"], providers: [
+    { kind: "none", offered: true, groups: [], tools: ["read", "write", "edit", "bash"], settings: [], providers: [] },
+    { kind: "sandbox", offered: true, groups: ["exec", "files", "processes"], tools: ["read", "write", "edit", "bash", "bash_background"], settings: ["image", "persistent", "gpu"], providers: [
       { id: "docker", name: "Docker", secrets: [], required: [], ready: true, metered: false },
       { id: "daytona", name: "Daytona", secrets: [{ name: "computer:daytona:DAYTONA_API_KEY", set: true, source: "console", changed_at: null }], required: ["computer:daytona:DAYTONA_API_KEY"], ready: false, why: "fixture: Daytona can't mount this server's run folders" },
     ] },
-    { kind: "desktop", offered: true, groups: ["screen", "input.pointer", "input.keys"], tools: ["read", "write", "edit", "bash", "screen.shot", "input.actions"], providers: [
+    { kind: "desktop", offered: true, groups: ["screen", "input.pointer", "input.keys"], tools: ["read", "write", "edit", "bash", "screen.shot", "input.actions"], settings: ["image", "persistent", "surface", "exec", "record"], providers: [
       { id: "orgo", name: "Orgo", secrets: [{ name: "computer:orgo:ORGO_API_KEY", set: true, source: "console", changed_at: null }], required: ["computer:orgo:ORGO_API_KEY"], ready: true, metered: true },
       { id: "e2b", name: "E2B", secrets: [{ name: "computer:e2b:E2B_API_KEY", set: false, source: null, changed_at: null }], required: ["computer:e2b:E2B_API_KEY"], ready: false, why: "fixture: E2B needs E2B_API_KEY saved" },
     ] },
-    { kind: "phone", offered: true, groups: ["screen", "input.touch", "apps"], tools: ["read", "screen.shot", "input.actions"], providers: [
+    { kind: "phone", offered: true, groups: ["screen", "input.touch", "apps"], tools: ["read", "screen.shot", "input.actions"], settings: ["image", "persistent", "surface", "exec", "record"], providers: [
       { id: "phone-harness", name: "Phone harness", secrets: [{ name: "computer:phone-harness:PHONE_HARNESS_API_KEY", set: false, source: null, changed_at: null }], required: ["computer:phone-harness:PHONE_HARNESS_API_KEY"], ready: false, why: "fixture: Phone harness needs PHONE_HARNESS_API_KEY saved" },
     ] },
-    { kind: "browser", offered: false, why: "fixture: no provider of a browser computer can run here", groups: ["cdp"], tools: [], providers: [] },
+    { kind: "browser", offered: false, why: "fixture: no provider of a browser computer can run here", groups: ["cdp"], tools: [], settings: ["image", "persistent", "record"], providers: [] },
   ];
   const listed = { ...caps, computers: KINDS };
   const card = (host: HTMLElement, kind: string) => host.querySelector(`[data-kind="${kind}"]`) as HTMLElement | null;
@@ -146,7 +147,7 @@ describe("AgentEditor, the Computer step", () => {
 
   it("never says it under a metered browser provider: a browser's time is counted in a run's cap", () => {
     const LINE = "This provider bills by the minute through your own vendor account, and those minutes aren't counted in a run's spending cap.";
-    const browsing = KINDS.map((k) => (k.kind === "browser" ? { kind: "browser", offered: true, groups: ["cdp"], tools: ["browser"], providers: [{ id: "browserbase", name: "Browserbase", secrets: [], required: [], ready: true, metered: true }] } : k));
+    const browsing = KINDS.map((k) => (k.kind === "browser" ? { kind: "browser", offered: true, groups: ["cdp"], tools: ["browser"], settings: ["image", "persistent", "record"], providers: [{ id: "browserbase", name: "Browserbase", secrets: [], required: [], ready: true, metered: true }] } : k));
     const { host, click } = mount({ agent: agent(), caps: { ...caps, computers: browsing }, step: "computer" });
     click(kindRadio(host, "browser"));
     const browserbase = providerRadio(host, "browserbase")!.closest("label")!;

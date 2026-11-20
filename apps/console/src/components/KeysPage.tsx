@@ -41,7 +41,7 @@ export const KEY_GROUPS = [{ kind: "model", label: "Model keys" }, { kind: "tool
 /** The word on a model key, said wherever the console asks for one: an OpenRouter key runs every model, Jev included. */
 export const KEY_ADVICE = "We recommend an OpenRouter key with a dollar cap and an expiration date. Do not share this key with anyone.";
 
-/** Settings → Tool keys: each model provider's key (`kind: "model"`) and each key a tool needs, where each of its fields is
+/** Settings → API Keys: each model provider's key (`kind: "model"`) and each key a tool needs, where each of its fields is
  *  set, and a form to add, change or remove the one saved here. A value goes to the server and nowhere else: the
  *  inputs are never filled from it, never kept in the page's state, and cleared after a save or a cancel. `onChange`
  *  follows each save and removal (the server's tools and models may change with its keys). */
@@ -72,7 +72,7 @@ export function KeysPage({ v2, onChange, writable, whyNot = "sign_in", plan, har
 
   if (!view) return loadError
     ? <ReadError error={loadError} onRetry={load} />
-    : <div className="p-5 md:p-8"><ListSkeleton label="Loading the tool keys" rows={3} /></div>;
+    : <div className="p-5 md:p-8"><ListSkeleton label="Loading API keys" rows={3} /></div>;
   const reenter = view.reenter;
   // The model providers' keys first, then the tools': a group with no key listed is left out, and a lone group needs no
   // heading.
@@ -102,7 +102,7 @@ export function KeysPage({ v2, onChange, writable, whyNot = "sign_in", plan, har
       <div className={settingsPageClass}>
         <div className={settingsIntroClass}>
           <p className="caps text-label text-muted-foreground">Settings</p>
-          <h1 className="mt-1 text-2xl font-semibold">Keys</h1>
+          <h1 className="mt-1 text-2xl font-semibold">API Keys</h1>
           <p className="mt-2 text-lead text-muted-foreground">A model provider's key, which every agent runs on, and a tool's key, for every agent that uses the tool, kept on this server. A saved key is never shown again.</p>
         </div>
         <div className={settingsBodyClass}>
@@ -129,7 +129,7 @@ export function KeysPage({ v2, onChange, writable, whyNot = "sign_in", plan, har
 function ReadError({ error, onRetry, inline = false }: { error: ApiError; onRetry: () => void; inline?: boolean }) {
   return (
     <Banner tone="error" className={inline ? undefined : "m-8"} actions={<Button type="button" size="xs" onClick={onRetry}>Try again</Button>}>
-      <p className="font-mono">The tool keys could not be read: {error.code}: {error.message}</p>
+      <p className="font-mono">The API keys could not be read: {error.code}: {error.message}</p>
     </Banner>
   );
 }
