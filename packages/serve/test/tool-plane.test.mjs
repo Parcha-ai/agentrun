@@ -8,7 +8,8 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { BOUND_TOOLS, TOOLS, toolsView } from "../dist/tools.js";
-import { CAPABILITIES, explainCapability, explainsView, planeFor, PROVIDERS, recheckPlane, relaunchPlane, resolveCapability, settingsIssues, TOOL_SETTINGS_KEY } from "../dist/tool-plane.js";
+import { CAPABILITIES, explainCapability, explainsView, planeFor, PROVIDERS, recheckPlane, relaunchPlane, settingsIssues, TOOL_SETTINGS_KEY } from "../dist/tool-plane.js";
+import { resolveOnBuiltin } from "./gate-support.mjs";
 import { tableTools } from "../dist/tool-list.js";
 import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
 import { CANARY } from "./fixtures/faux-parallel.mjs";
@@ -37,7 +38,7 @@ test("the capabilities a grant may name are tools the table binds, the call-only
 });
 
 test("the resolver: the agent's pick over the server's; auto is native where codex or a direct Anthropic or OpenAI model on pi has it (never on claude-agent, where Claude's own search is an explicit pick), else keyless Exa; native is native only; the kernel's fetch; Parallel only with its key, never in its place", () => {
-  const search = (input) => resolveCapability("web_search", { ...base, ...input });
+  const search = (input) => resolveOnBuiltin("web_search", { ...base, ...input });
   assert.equal(search({ harness: "claude-agent" }), "exa-keyless", "on claude-agent auto skips Claude's own search: an explicit pick");
   assert.equal(search({ harness: "claude-agent", override: "native" }), "native", "Claude's own search, picked");
   assert.equal(search({ harness: "codex" }), "native", "Codex's own search");
@@ -76,13 +77,13 @@ test("the resolver: the agent's pick over the server's; auto is native where cod
   assert.equal(search({ harness: "claude-agent", gateway: true, pick: "native" }), "native");
   assert.equal(search({ harness: "pi", model: "google/gemini-2.5-pro", pick: "auto" }), "exa-keyless", "auto, said, is the default");
   for (const harness of ["pi", "claude-agent", "codex"]) {
-    assert.equal(resolveCapability("web_fetch", { ...base, harness }), "kernel", harness);
-    assert.equal(resolveCapability("web_fetch", { ...base, harness, override: "parallel", parallelKey: true }), "parallel", harness);
+    assert.equal(resolveOnBuiltin("web_fetch", { ...base, harness }), "kernel", harness);
+    assert.equal(resolveOnBuiltin("web_fetch", { ...base, harness, override: "parallel", parallelKey: true }), "parallel", harness);
   }
 });
 
 test("auto where the server holds Parallel's key: the pick, then native, then Parallel, then keyless Exa; native picked is native only and a pick of exa-keyless is Exa; web_fetch stays the kernel's", () => {
-  const search = (input) => resolveCapability("web_search", { ...base, parallelKey: true, ...input });
+  const search = (input) => resolveOnBuiltin("web_search", { ...base, parallelKey: true, ...input });
   assert.equal(search({ harness: "pi", model: "google/gemini-2.5-pro" }), "parallel", "a model with no hosted search");
   assert.equal(search({ harness: "pi" }), "parallel", "no model named");
   assert.equal(search({ harness: "pi", model: "anthropic/claude-sonnet-5-5", gateway: true }), "parallel", "pi behind a gateway");
@@ -104,7 +105,7 @@ test("auto where the server holds Parallel's key: the pick, then native, then Pa
   assert.equal(search({ harness: "pi", model: "google/gemini-2.5-pro", pick: "exa-keyless" }), "exa-keyless");
   assert.equal(search({ harness: "codex", gateway: true, override: "exa-keyless", pick: "parallel" }), "exa-keyless", "the agent's exa-keyless over the server's parallel");
   assert.equal(search({ harness: "pi", pick: "off" }), "unavailable: web_search is turned off in settings");
-  assert.equal(resolveCapability("web_fetch", { ...base, parallelKey: true, harness: "pi" }), "kernel", "web_fetch's default is the kernel's fetch, key or not");
+  assert.equal(resolveOnBuiltin("web_fetch", { ...base, parallelKey: true, harness: "pi" }), "kernel", "web_fetch's default is the kernel's fetch, key or not");
 });
 
 test("capabilities say why each web tool resolves as it does on each harness, one plain sentence beside resolves, from the resolver's own reasons: the native search, the gateway or cap that leaves none, claude-agent's own search as an explicit pick, the Parallel key and where it is from, keyless Exa, a pick, off", async (t) => {

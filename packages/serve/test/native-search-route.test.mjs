@@ -8,14 +8,15 @@ import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 
 import { MODEL_KEYS } from "../dist/model.js";
-import { explainsView, planeFor, resolveCapability } from "../dist/tool-plane.js";
+import { explainsView, planeFor } from "../dist/tool-plane.js";
+import { resolveOnBuiltin } from "./gate-support.mjs";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { agent, follow, serve, withEnv } from "./support.mjs";
 import { OPENROUTER_BASE, providerFor } from "../dist/provider.js";
 
 const fake = (name) => ["not-a-secret", name].join("-");
 const base = { gateway: false, parallelKey: false };
-const search = (input) => resolveCapability("web_search", { ...base, ...input });
+const search = (input) => resolveOnBuiltin("web_search", { ...base, ...input });
 
 test("the resolver: on OpenRouter, auto never picks a harness's own search, and native says why it can't", () => {
   assert.equal(search({ harness: "codex", openRouter: true }), "exa-keyless", "codex on OpenRouter, auto: keyless Exa");
