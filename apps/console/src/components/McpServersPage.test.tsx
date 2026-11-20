@@ -927,6 +927,56 @@ describe("Settings → MCP servers, the Composio preset", () => {
     await p.click(/^Save$/);
     expect(s.writes().at(-1)).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/gh/composio", body: { api_key: KEY, toolkit: "github", tools: ["GITHUB_LIST_ISSUES"] } });
   });
+  it("a filter over the actions keeps those whose name, slug or description has its words; a ticked action it hides stays ticked and is saved; Enter in it never saves", async () => {
+    const s = server([[], [saved({ name: "gh" })]], answer);
+    const p = await open(s.v2);
+    await p.click(/^Add from Composio$/);
+    await p.type("composio-key", KEY);
+    await p.type("composio-toolkit", "github");
+    await p.click(/^Load actions$/);
+    const filter = () => p.host.querySelector('input[aria-label="Filter actions"]') as HTMLInputElement;
+    const shown = () => [...p.host.querySelectorAll<HTMLInputElement>('form[aria-label="Add from Composio"] input[type="checkbox"]')].map((b) => b.value);
+    const status = () => filter().closest("div")!.querySelector('[role="status"]')!.textContent;
+    const typeFilter = async (value: string) => { await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(filter(), value); filter().dispatchEvent(new Event("input", { bubbles: true })); }); };
+    expect(shown()).toEqual(["GITHUB_STAR_REPO", "GITHUB_LIST_ISSUES"]);
+    expect(status()).toBe("");
+    await typeFilter("ISSUES list");
+    expect(shown()).toEqual(["GITHUB_LIST_ISSUES"]);
+    expect(status()).toBe("1 of 2 shown, 0 ticked");
+    await act(async () => { (p.host.querySelector('input[type="checkbox"][value="GITHUB_LIST_ISSUES"]') as HTMLInputElement).click(); });
+    await typeFilter("a repository");
+    expect(shown()).toEqual(["GITHUB_STAR_REPO", "GITHUB_LIST_ISSUES"], "by description");
+    await typeFilter("star_repo");
+    expect(shown()).toEqual(["GITHUB_STAR_REPO"], "by slug");
+    expect(status()).toBe("1 of 2 shown, 1 ticked");
+    await typeFilter("nothing-like-it");
+    expect(shown()).toEqual([]);
+    expect(p.text()).toContain("No action matches “nothing-like-it”.");
+    await typeFilter("star");
+    await act(async () => { (p.host.querySelector('input[type="checkbox"][value="GITHUB_STAR_REPO"]') as HTMLInputElement).click(); });
+    await p.type("composio-name", "gh");
+    const enter = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+    await act(async () => { filter().dispatchEvent(enter); });
+    expect(enter.defaultPrevented).toBe(true);
+    expect(s.writes()).toHaveLength(1);
+    await p.click(/^Save$/);
+    expect(s.writes()[1]).toEqual({ method: "PUT", path: "/v2/settings/mcp-servers/gh/composio", body: { api_key: KEY, toolkit: "github", tools: ["GITHUB_LIST_ISSUES", "GITHUB_STAR_REPO"] } });
+  });
+
+  it("loading the actions again clears the filter", async () => {
+    const s = server([[], [saved({ name: "gh" })]], answer);
+    const p = await open(s.v2);
+    await p.click(/^Add from Composio$/);
+    await p.type("composio-key", KEY);
+    await p.type("composio-toolkit", "github");
+    await p.click(/^Load actions$/);
+    const filter = () => p.host.querySelector('input[aria-label="Filter actions"]') as HTMLInputElement;
+    await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(filter(), "star"); filter().dispatchEvent(new Event("input", { bubbles: true })); });
+    expect(p.host.querySelectorAll('form[aria-label="Add from Composio"] input[type="checkbox"]')).toHaveLength(1);
+    await p.click(/^Load actions$/);
+    expect(filter().value).toBe("");
+    expect(p.host.querySelectorAll('form[aria-label="Add from Composio"] input[type="checkbox"]')).toHaveLength(2);
+  });
 });
 
 describe("Settings → MCP servers, deleting a Composio server", () => {
