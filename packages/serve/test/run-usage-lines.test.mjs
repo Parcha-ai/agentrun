@@ -302,3 +302,15 @@ test("served, a computer's words are cut of the server's secrets: a secret plant
   assert.match(read.computer_intervals[0].provider_id, /^sbx-\[redacted\]/);
   assert.equal(read.computer_intervals[0].gpu.count, 2, "its figures are as read");
 });
+
+test("a job's browser released at the run's end, inside the learning turn's range, keeps its end; a session the learning turn opened is not the job's (#3285 review)", async () => {
+  const { runUsageOverStore } = await import("../dist/run-usage.js");
+  const open = (tag) => e(0, "agentrun.browser_session_open", { tag, provider: "browserbase" });
+  const end = (tag, id) => e(0, "agentrun.browser_session_ended", { tag, provider: "browserbase", provider_session_id: id, started_at: "2026-11-19T09:58:00.000Z", ended_at: "2026-11-19T10:00:00.000Z", release_reason: "run_end", provider_record: null, provider_record_status: "not_offered" });
+  const job = [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1)), open("job-tab")];
+  // The learning turn runs to the run's end; the run's end lets the job's browser go inside it.
+  const learning = [e(7, "agentrun.end-of-run.turn", { role: "person", requestId: "learn-reflect-1" }), open("learn-tab"), end("learn-tab", "bb-learn"), end("job-tab", "bb-job"), e(1, "agentrun.end", { status: "completed" })];
+  const { store } = snapshotStore(ended(), { rounds: 1, entries: [...job, ...learning] });
+  const read = await runUsageOverStore(store, "run_1");
+  assert.deepEqual(read.browser_sessions.map((one) => [one.tag, one.provider_session_id, one.ended_at, one.release_reason]), [["job-tab", "bb-job", "2026-11-19T10:00:00.000Z", "run_end"]]);
+});

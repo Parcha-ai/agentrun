@@ -287,6 +287,20 @@ export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLau
   return { lines, total: { usd: null, so_far_usd: known, unpriced: (total.usd === null ? (total.unpriced ?? 0) : 0) + unbooked } };
 }
 
+/** The run's own browser sessions: those its job opened or charged (`job`, the journal less the end-of-run learning
+ *  turn), each with its end read from the whole journal (`all`). The run's end lets its browsers go inside the learning
+ *  turn's range (reflectRanges runs to the run's end), so an end read from `job` alone would be missing for a session
+ *  released there. A session the learning turn opened is not the job's, as its cost is not. */
+function jobSessions(job: readonly EntryLike[], all: readonly EntryLike[]): BrowserSessionLine[] {
+  const ends = new Map(browserSessionsOf(all).map((one) => [one.tag, one]));
+  return browserSessionsOf(job).map((one) => {
+    const whole = ends.get(one.tag);
+    if (one.ended_at !== null || !whole || whole.ended_at === null) return one;
+    const { provider_session_id, started_at, ended_at, release_reason, provider_record, provider_record_status } = whole;
+    return { ...one, provider: one.provider || whole.provider, provider_session_id, started_at, ended_at, release_reason, provider_record, provider_record_status };
+  });
+}
+
 /** Run `runId`'s usage lines (GET /runs/{run_id}/usage); undefined for an unknown run. No lines (`reason`) while it is at
  *  work, for a run whose figure is not its booking's, and for a learning run a follow-up opened again: the cases where
  *  `cost.tools_usd` is null for the same reasons. Its state, launch, learning rounds and journal are read in one snapshot
@@ -311,7 +325,7 @@ export async function runUsageOverStore(store: Store, runId: string): Promise<Ru
     const { lines, total } = usageLinesOf(entries, launch, receipts);
     // Its computers in the same snapshot; a store that keeps none (a test's) reads as none made.
     const computers = snapshot.computerIntervals ? computerIntervalsOf(await snapshot.computerIntervals.forRun(runId)) : [];
-    return { run_id: runId, ended_at: ended, currency: "USD", total, lines, browser_sessions: browserSessionsOf(entries), computer_intervals: computers, reason: null };
+    return { run_id: runId, ended_at: ended, currency: "USD", total, lines, browser_sessions: jobSessions(entries, records.entries as unknown as readonly EntryLike[]), computer_intervals: computers, reason: null };
   });
 }
 
