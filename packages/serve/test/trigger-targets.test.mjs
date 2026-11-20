@@ -157,6 +157,7 @@ const droppedOf = (handed) => /dropped to fit \(([^)]*)\)/.exec(handed)?.[1];
  *  schema naming `carried` in x-carried: the text after the run's message. */
 async function handedAfter(output, carried) {
   const store = await freshStore();
+  await store.runs.create({ id: PREVIOUS_RUN, agentId: "a1", revisionId: "r1" });
   await dueFirings(store, ["f0"]);
   await store.triggers.settle("t1", "f0", { status: "started", runId: PREVIOUS_RUN });
   const completedOutput = async (runId) => (runId === PREVIOUS_RUN ? { output, endedAt: "2026-11-19T09:00:00.000Z", ...(carried ? { carried } : {}) } : undefined);
