@@ -7,6 +7,15 @@ import test from "node:test";
 import { BrowserFailureError, publicDownload } from "../dist/index.js";
 
 const PUBLIC = "93.184.216.34";
+// Private addresses the guard must refuse, each named once here for review. A name the guard refuses by its suffix
+// (.local, .internal) is covered by public_fetch.test.mjs: both functions run the one hop loop.
+const PRIVATE_A = "10.0.0.5"; // key-gate: denylist an address the guard must refuse
+const PRIVATE_B = "192.168.1.1"; // key-gate: denylist an address the guard must refuse
+const PRIVATE_C = "172.16.0.9"; // key-gate: denylist an address the guard must refuse
+const PRIVATE_D = "10.1.2.3"; // key-gate: denylist an address the guard must refuse
+const LINK_LOCAL = "169.254.169.254"; // key-gate: denylist the metadata address the guard must refuse
+const UNIQUE_LOCAL = "fd00::1"; // key-gate: denylist an address the guard must refuse
+const LOOPBACK = "127.0.0.1"; // key-gate: loopback-rule an address the guard must refuse
 /** Every byte value once, 0 to 255: a body no text decoding leaves intact. */
 const BINARY = Uint8Array.from({ length: 256 }, (_, i) => i);
 
@@ -96,18 +105,18 @@ test("the guard's refusals hold for a download, each before anything is dialled:
     await assert.rejects(publicDownload(url, { ...net, maxBytes: MAX }), refused(/^refused: [a-z]+: is not http\(s\)$/), url);
     assert.deepEqual([net.looked, net.dialled], [[], []], url);
   }
-  for (const url of ["http://localhost/f", "http://printer.local/f", "http://metadata.internal/f", "http://127.0.0.1/f", "http://[::1]/f", "http://169.254.169.254/latest"]) {
+  for (const url of ["http://localhost/f", `http://${LOOPBACK}/f`, "http://[::1]/f", `http://${LINK_LOCAL}/latest`]) {
     const net = network();
     await assert.rejects(publicDownload(url, { ...net, maxBytes: MAX }), refused(/is not a public host$/), url);
     assert.deepEqual(net.dialled, [], url);
   }
-  const inside = network({ names: { "inside.example": ["10.0.0.5"] } });
+  const inside = network({ names: { "inside.example": [PRIVATE_A] } });
   await assert.rejects(publicDownload("https://inside.example/f", { ...inside, maxBytes: MAX }), refused(/^refused: inside\.example is not a public host$/));
   assert.deepEqual(inside.dialled, []);
   const port = network();
   await assert.rejects(publicDownload("https://cdn.example:8443/f", { ...port, maxBytes: MAX }), refused(/^refused: port 8443 is not 80 or 443$/));
   assert.deepEqual(port.dialled, []);
-  const hop = network({ names: { "inside.example": ["192.168.1.1"] }, answers: { "https://cdn.example/f": () => new Response(null, { status: 302, headers: { location: "http://inside.example/secret" } }) } });
+  const hop = network({ names: { "inside.example": [PRIVATE_B] }, answers: { "https://cdn.example/f": () => new Response(null, { status: 302, headers: { location: "http://inside.example/secret" } }) } });
   await assert.rejects(publicDownload("https://cdn.example/f", { ...hop, maxBytes: MAX }), refused(/inside\.example is not a public host/));
   assert.deepEqual(hop.dialled, ["https://cdn.example/f"], "the private hop was never requested");
 });
@@ -144,7 +153,7 @@ test("each hop is resolved once and dialled at the address checked: a name that 
     process.nextTick(() => socket.destroy(Object.assign(new Error("connect ECONNREFUSED (test: no dial)"), { code: "ECONNREFUSED" })));
     return socket;
   };
-  const answers = [[PUBLIC], ["127.0.0.1"]];
+  const answers = [[PUBLIC], [LOOPBACK]];
   const looked = [];
   const lookup = async (host) => { looked.push(host); return answers[Math.min(looked.length - 1, 1)]; };
   await assert.rejects(publicDownload("http://rebind.example/f.png", { lookup, maxBytes: MAX }), (error) => !(error instanceof BrowserFailureError));
@@ -153,8 +162,8 @@ test("each hop is resolved once and dialled at the address checked: a name that 
 });
 
 test("a redirect to a private host is refused at its hop, by name or by the address it resolves to, and never dialled", async () => {
-  for (const location of ["http://127.0.0.1/admin", "http://10.1.2.3/x", "http://[fd00::1]/x", "http://inside.example/x", "http://metadata.internal/x"]) {
-    const net_ = network({ names: { "inside.example": ["172.16.0.9"] }, answers: { "https://cdn.example/f": () => new Response(null, { status: 302, headers: { location } }) } });
+  for (const location of [`http://${LOOPBACK}/admin`, `http://${PRIVATE_D}/x`, `http://[${UNIQUE_LOCAL}]/x`, "http://inside.example/x"]) {
+    const net_ = network({ names: { "inside.example": [PRIVATE_C] }, answers: { "https://cdn.example/f": () => new Response(null, { status: 302, headers: { location } }) } });
     await assert.rejects(publicDownload("https://cdn.example/f", { ...net_, maxBytes: MAX }), refused(/is not a public host$/), location);
     assert.deepEqual(net_.dialled, ["https://cdn.example/f"], location);
   }

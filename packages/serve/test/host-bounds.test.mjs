@@ -41,6 +41,7 @@ import * as search from "../dist/web-search.js";
 import { emailError, emailText } from "../dist/email/answer.js";
 import { emailRegistrations } from "../dist/email/tools.js";
 import { calendarError, calendarRegistrations, calendarText } from "../dist/calendar/tools.js";
+const PRIVATE_HOST = "10.0.0.1"; // key-gate: denylist an address the guard must refuse
 
 const PUBLIC = "http://public.example/";
 /** The background tools: the computer's, run by the kernel's registry (workspace/run-tools.ts), not by a host tool here. */
@@ -139,7 +140,7 @@ test("every host tool's largest result is within the host's result bound, which 
     assert.equal(longPath.length, save.PATH_MAX_CHARS);
     const far = `https://cdn.example/${fill.repeat(10 * pages.URL_MAX)}`;
     const network = {
-      lookup: async (host) => (host === "cdn.example" ? ["93.184.216.34"] : ["10.0.0.1"]),
+      lookup: async (host) => (host === "cdn.example" ? ["93.184.216.34"] : [PRIVATE_HOST]),
       fetchImpl: async (url) => {
         if (url.pathname.startsWith("/r/private")) return new Response(null, { status: 302, headers: { location: `https://${"a".repeat(60)}.${"b".repeat(60)}.example/${fill.repeat(10 * pages.URL_MAX)}` } });
         if (url.pathname.startsWith("/r/")) return new Response(null, { status: 302, headers: { location: far } });

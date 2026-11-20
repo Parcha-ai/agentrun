@@ -15,6 +15,8 @@ import { scratch } from "./support.mjs";
 
 const FAUX_WEB_FILES = new URL("./fixtures/faux-web-files.mjs", import.meta.url).pathname;
 const MiB = 1024 * 1024;
+const PRIVATE = "10.0.0.5"; // key-gate: denylist an address web_save must refuse
+const LINK_LOCAL = "169.254.169.254"; // key-gate: denylist the metadata address web_save must refuse
 const bytes = (...parts) => Uint8Array.from(parts.flatMap((part) => (typeof part === "string" ? [...Buffer.from(part, "latin1")] : part)));
 /** A body of each media kind: its magic bytes, then a tail no text decoding keeps. */
 const TAIL = Array.from({ length: 64 }, (_, i) => (i * 37) & 0xff);
@@ -115,8 +117,8 @@ test("a private or local host, and a redirect to one, is refused and nothing is 
   const cases = [
     ["http://127.0.0.1/a.png", network()],
     ["http://localhost/a.png", network()],
-    ["http://inside.example/a.png", network({ names: { "inside.example": ["10.0.0.5"] } })],
-    ["https://cdn.example/r", network({ answers: { "https://cdn.example/r": () => new Response(null, { status: 302, headers: { location: "http://169.254.169.254/latest" } }) } })],
+    ["http://inside.example/a.png", network({ names: { "inside.example": [PRIVATE] } })],
+    ["https://cdn.example/r", network({ answers: { "https://cdn.example/r": () => new Response(null, { status: 302, headers: { location: `http://${LINK_LOCAL}/latest` } }) } })],
   ];
   for (const [url, net] of cases) {
     const saved = await webSave({ url, path: "media/a.png" }, ws, net);
