@@ -22,7 +22,7 @@ import { promotionOf, promotionsOf } from "../learn/promote.js";
 import { championTextOf, releaseSdkCheck, reserveSdkCheck, type SdkWorkflowCheck } from "../runner/promotion.js";
 import { fits, workflowDigest } from "../runner/workflow-first.js";
 
-import { SDK_WORKFLOW_RUNTIMES, isSdkRuntime, type SdkRuntime } from "./runtimes.js";
+import { SDK_WORKFLOW_RUNTIMES, sdkBindingOf, type SdkBinding } from "./runtimes.js";
 export { SDK_RUNTIMES, isSdkRuntime, type SdkRuntime } from "./runtimes.js";
 export type SdkUsage = {
   input_tokens: number | null;
@@ -104,10 +104,7 @@ const usageOf = (value: unknown): SdkUsage | undefined => {
   }
   return result;
 };
-export const sdkOf = (body: unknown): { runtime: SdkRuntime } | undefined =>
-  isObject(body) && isObject(body.sdk) && isSdkRuntime(body.sdk.runtime)
-    ? { runtime: body.sdk.runtime }
-    : undefined;
+export const sdkOf = (body: unknown): SdkBinding | undefined => isObject(body) ? sdkBindingOf(body.sdk) : undefined;
 export async function sdkInbox(store: Pick<Store, "settings">, runId: string): Promise<SdkInbox> {
   const row = await store.settings.get(keyOf(runId));
   if (!isObject(row)) throw new ApiError("not_found", "No backend SDK run with that id.");
@@ -211,7 +208,10 @@ export class SdkRuns {
     compile: { readonly model?: string; check(model: string): Promise<void> },
     consoleOrigin: string,
   ) {
-    only(body, ["runtime", "input", "instructions", "model", "workflow_tools", "workflow_adapters"]);
+    only(body, ["runtime", "platform", "input", "instructions", "model", "workflow_tools", "workflow_adapters"]);
+    const source = sdkBindingOf(body) ?? refuse("The SDK source needs a supported runtime; external requires a platform label of 1–80 characters without surrounding whitespace, controls or lone surrogates. Other runtimes do not take platform.");
+    if (!SDK_WORKFLOW_RUNTIMES.includes(source.runtime) && (body.workflow_tools !== undefined || body.workflow_adapters !== undefined))
+      refuse("External runs receive owner corrections; workflow_tools and workflow_adapters require a backend workflow bridge.");
     const workflow = sdkWorkflowManifest(body.workflow_tools, body.workflow_adapters);
     if (workflow && canonical(this.clean(workflow)) !== canonical(workflow))
       refuse("The workflow manifest contains a protected value; keep credentials in the backend.");
@@ -219,11 +219,7 @@ export class SdkRuns {
     if (!binding || !entry.revision)
       throw new ApiError("agent_not_runnable", "This agent is not registered as a backend SDK agent.");
     if (entry.agent.archivedAt !== null) throw new ApiError("agent_archived", "This SDK agent is archived.");
-    if (body.runtime !== binding.runtime) refuse("The SDK runtime must match the registered agent.");
-    // A learned workflow runs through a wrapper's local MCP bridge. A platform runtime has none, so accepting its
-    // catalog would pin workflows nothing on that platform can execute: it learns notes and skills instead.
-    if (workflow && !SDK_WORKFLOW_RUNTIMES.includes(binding.runtime))
-      refuse(`${binding.runtime} runs learn notes and skills; workflow_tools needs a backend workflow bridge (claude-agent-sdk or codex-sdk).`);
+    if (source.runtime !== binding.runtime || source.platform !== binding.platform) refuse("The SDK runtime and platform must match the registered agent.");
     const input = text(body.input, "input"),
       instructions = text(body.instructions, "instructions");
     const model = body.model === undefined ? undefined : text(body.model, "model", 256);
@@ -289,7 +285,7 @@ export class SdkRuns {
       place: { mode: "runner" },
       harness: "sdk",
       sdk: {
-        runtime: binding.runtime,
+        ...binding,
         ...workflow,
         instructions: cleaned.instructions,
         ...(cleaned.model ? { model: cleaned.model } : {}),

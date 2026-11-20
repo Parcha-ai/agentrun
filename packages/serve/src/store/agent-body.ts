@@ -5,7 +5,7 @@
 // revision's own row (store schema `revisions`). Everything the old validator accepted it accepts, plus the agent-level
 // argument `pin` form in tool settings (the lead's ruling): at most 8 arguments mapped to JSON scalars, keys sorted, so
 // two equal pins are one revision.
-import { SDK_RUNTIMES, isSdkRuntime, type SdkRuntime } from "../sdk/runtimes.js";
+import { sdkBindingOf, type SdkBinding } from "../sdk/runtimes.js";
 import { createHash } from "node:crypto";
 import type { NativeBinding } from "../native/types.js";
 import { nativeBindingOf } from "../native/binding.js";
@@ -65,7 +65,7 @@ export type ModelTiers = Partial<Record<"fast" | "strong", string>>;
  *  listed it at the save; its input as POST /v1/run takes it; `usd` its fixed price (monid.ts fixedUsd), null for one
  *  priced by usage (held at monid's estimate). Stamped by the save (server.ts saveable), never shown in a definition. */
 export type MonidPinBody = Readonly<Record<string, { readonly description: string; readonly input: Record<string, unknown>; readonly usd: number | null }>>;
-export type SdkBinding = { runtime: SdkRuntime };
+export type { SdkBinding } from "../sdk/runtimes.js";
 export type AgenticBody = { sdk?: SdkBinding; native?: NativeBinding; instructions: string; skills: Record<string, string>; tools: string[]; model?: string; modelTiers?: ModelTiers; thinking?: string; prompts?: Record<string, PromptVariant>; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; learning?: LearningSetting; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never"; inputSchema?: Record<string, unknown>; outputSchema?: Record<string, unknown>; checkout?: "pull_request" };
 export type WorkflowBody = { workflow: Record<string, unknown>; skills: Record<string, string>; tools: string[]; harness?: string; place?: RevisionPlace; computer?: RevisionComputer; toolSettings?: ToolSettings; maxCostUsd?: number; approvals?: "ask" | "never" };
 
@@ -157,7 +157,7 @@ export function bodyOf(input: RevisionBodyInput): { body: AgenticBody | Workflow
     if (input.outputSchema !== undefined && !isObject(input.outputSchema)) invalid("the outputSchema is not a JSON object");
     if (input.checkout !== undefined && input.checkout !== "pull_request") invalid("the checkout is not pull_request");
     if (input.modelTiers !== undefined && !(isObject(input.modelTiers) && Object.keys(input.modelTiers).length && Object.entries(input.modelTiers).every(([tier, ref]) => (tier === "fast" || tier === "strong") && typeof ref === "string" && ref !== ""))) invalid("the modelTiers are not fast and strong to a non-empty model");
-    if (input.sdk !== undefined && (!isObject(input.sdk) || Object.keys(input.sdk).some(key => key !== "runtime") || !isSdkRuntime(input.sdk.runtime))) invalid(`sdk is {runtime: ${SDK_RUNTIMES.join(", ")}}`);
+    if (input.sdk !== undefined && (!isObject(input.sdk) || Object.keys(input.sdk).some(key => key !== "runtime" && key !== "platform") || !sdkBindingOf(input.sdk))) invalid("sdk is {runtime: claude-agent-sdk, codex-sdk or eve}, or {runtime: external, platform: a label of 1–80 characters without surrounding whitespace, controls or lone surrogates}");
     if (input.sdk && input.native) invalid("sdk and native connections are mutually exclusive");
     const body: AgenticBody = {
       ...(input.sdk ? {sdk: {...input.sdk}} : {}),

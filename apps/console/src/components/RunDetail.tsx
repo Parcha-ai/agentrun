@@ -299,7 +299,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
         </div>
       </div>}
       {native && <p className="border-t px-5 py-4 text-small text-muted-foreground md:px-8">Native sessions cannot receive steering or follow-up messages. <a href={`#/playground?agent=${encodeURIComponent(run.agent_id)}`} className="underline underline-offset-2">Start a new native run</a> for another task.</p>}
-      {sdk && <p className="border-t px-5 py-4 text-small text-muted-foreground md:px-8">{backendSdkLabel(sdk.runtime)} runs in your backend. Start, stop and follow up through that application's controls. AgentRun records the result and checked learning.</p>}
+      {sdk && <p className="border-t px-5 py-4 text-small text-muted-foreground md:px-8">{backendSdkLabel(sdk)} runs in your backend. Start, stop and follow up through that application's controls. AgentRun records the result and checked learning.</p>}
       {/* While a call waits on an approval, a message declines it, as its reason: the box says so. */}
       {view.canMessage && (
         <div className="border-t px-5 py-4 md:px-8"><div className="mx-auto max-w-4xl"><Composer mode={view.messageMode!} onSend={onMessage} purpose={approval ? DECLINES : ask && askMode ? NOT_THE_ASK[askMode] : undefined} /></div></div>

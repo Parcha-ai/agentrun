@@ -909,10 +909,11 @@ Register a task executed by an existing backend SDK.
 Route: `POST /agents/{agent_id}/sdk-runs`.
 
 - `--idempotency-key STRING` (string, required)
-- `--runtime claude-agent-sdk|codex-sdk|eve` (string, one of these, required)
+- `--runtime claude-agent-sdk|codex-sdk|eve|external` (string, one of these, required)
 - `--input STRING` (string, required)
 - `--instructions STRING` (string, required)
 - `--model STRING` (string)
+- `--platform STRING` (string): External source's display label, such as openclaw or capy. Preserved exactly; no surrounding whitespace, controls or lone surrogates. Never selects a managed harness or workflow capability.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 

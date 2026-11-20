@@ -363,7 +363,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const records = await journalRecords(store.readJournal(runId), context);
   const sdkCompletion = records.entries.findLast(entry => entry.kind === "agentrun.sdk.completion")?.data as import("./sdk/runs.js").SdkCompletion | undefined;
   const sdkSession = records.entries.findLast(entry => entry.kind === "agentrun.sdk.session")?.data as {session_id:string} | undefined;
-  const sdk = launch?.sdk ? {runtime:launch.sdk.runtime,model:sdkCompletion?.model??launch.sdk.model??null,session_id:sdkCompletion?.session_id??sdkSession?.session_id??null,learning_revision:launch.learning?.seed??null,usage:sdkCompletion?.usage??null} : undefined;
+  const sdk = launch?.sdk ? {runtime:launch.sdk.runtime,...(launch.sdk.runtime === "external" ? {platform:launch.sdk.platform} : {}),model:sdkCompletion?.model??launch.sdk.model??null,session_id:sdkCompletion?.session_id??sdkSession?.session_id??null,learning_revision:launch.learning?.seed??null,usage:sdkCompletion?.usage??null} : undefined;
   const nativeConfiguration = records.entries.findLast(e=>e.kind === "agentrun.native.configuration")?.data as Record<string,unknown>|undefined;
   const nativeEvents = records.entries.filter(e=>e.kind === "agentrun.native.usage").map(e=>e.data as {phase:string;model?:string;usage:import("./native/types.js").NativeUsage;session_id:string});
   const reflectRange = (await runReflect(store, runId, context)) as Reflect | undefined;

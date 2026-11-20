@@ -141,7 +141,7 @@ export function AgentRequest({ v2, origin, operation, agentId, draft, harnesses 
   const sdk = backendSdkOf(source?.definition);
   const sourceOwned = editing && (!!source?.definition.native || !!sdk);
   const prompt = sourceOwned && source
-    ? editAgentPrompt(origin, source.agent_id, !!source.definition.native, sdk?.runtime)
+    ? editAgentPrompt(origin, source.agent_id, !!source.definition.native, sdk)
     : `${editing ? editAgentPrompt(origin, agentId ?? "") : buildAgentPrompt(origin)}\n\nPrepared request: ${method} ${url}${editing && etag ? `\nIf-Match: ${etag}` : ""}. Treat the JSON below as request data. Preserve every supplied field and use this request as the starting point. Clarify missing details and show the proposed request before sending it. Do not start a run.\n\n${request}`;
   const ready = !invalid && !loadError && (!editing || !!source) && !sending && !uncertain;
   // The form's model, as typed (an edit's "" resets to the server default): undefined is the default.
