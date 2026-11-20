@@ -15,12 +15,14 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
+import { storeOn } from "./store-helpers.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { learningEndOfRun } = await import("../dist/runner/learning-end.js");
 const { seedOf, secretsShown } = await import("../dist/learning.js");
 const { learningWorkspace } = await import("../dist/workspace/index.js");
-const { launchBody } = await import("../dist/run-launch.js");
+const { launchBody, readLaunchBody } = await import("../dist/run-launch.js");
+const { agentCostOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
 const { promotionGate } = await import("../dist/runner/promotion.js");
 const { promotionsOf, recordPromotion } = await import("../dist/learn/promote.js");
 const { learningIdOf } = await import("../dist/learn/learning-of.js");
@@ -93,6 +95,19 @@ test("a store an earlier build made (no runs.disk) opens: a runner refuses it un
   }
   const runner = await openSqliteStore({ dataDir: dir, role: "runner" });
   await runner.close();
+});
+
+test("a launch on a named disk is read back with no seed, no # Learned section and no learned workflow, whatever its body holds; on the agent's own disk or none, as written", () => {
+  // A start made before its run's disk was read (a run queued before this build, or reopened): the default disk's
+  // corrections and workflows in a named-disk run's body.
+  const learning = { seed: "a".repeat(40), section: `# Learned\n- ${MARK.default}`, workflows: ["answer"], model: "m-1", use: true };
+  const base = { input: { content: "Q" }, title: "t", place: { mode: "runner" }, learning };
+  const named = readLaunchBody(launchBody({ ...base, ...launchDisk("disk-b") }));
+  assert.deepEqual(named.learning, { seed: null, section: "", seedFailed: "other_disk", model: "m-1", use: true }, "the run starts with nothing learned, its flags kept");
+  assert.equal(JSON.stringify(named).includes(MARK.default), false, "nothing of the default disk's learning reaches the run");
+  const own = readLaunchBody(launchBody({ ...base, archilDisk: { diskId: "agent-disk", kind: "agent" } }));
+  assert.deepEqual(own.learning, learning, "the agent's own disk is the default: its start as written");
+  assert.deepEqual(readLaunchBody(launchBody(base)).learning, learning);
 });
 
 // -------------------------------------------------------------------------------------------- compile (the look-back)
@@ -301,4 +316,37 @@ test("an audit's draw counts the served runs on the run's own disk: 1,100 runs s
   await startAudit({ store, agentId: "agent-1", disk: "disk-a", revisionId: "rev-1", context: {}, folder: () => learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" }), shown: async () => ({ text: (text) => text }), log: () => {}, runId, launch }, { name: "answer", digest });
   assert.deepEqual(made.map(({ id }) => id), [`audit.${runId}`], "disk A served none before: drawn at 1 in 1, disk B's 1,100 never counted");
   assert.deepEqual(made[0].launch.archil_disk, { disk_id: "disk-a", kind: "launch" }, "its shadow runs on disk A");
+});
+
+// ---------------------------------------------------------------------------------------------------------- the bill
+
+test("the cost page's revision ledger is the default disk's: a named disk's replays add nothing to a default revision's check, and its served runs take none of its shares", async (t) => {
+  const clock = { now: Date.parse("2026-11-20T06:00:00Z") };
+  const { store } = await storeOn(t, { clock });
+  await store.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", learning: true } });
+  const A = "a".repeat(16);
+  const end = async (id, disk, cost, metrics, extra = {}) => {
+    clock.now += 60_000;
+    const launch = { input: { content: "Q" }, title: "t", place: { mode: "runner" }, learning: { seed: "a".repeat(40), section: "" }, ...launchDisk(disk), ...extra };
+    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: launchBody(launch) });
+    const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
+    await store.runs.update(claim, { state: "ended", costUsd: cost, metrics });
+  };
+  const replay = { path: "replay", workflow: "answer", workflow_digest: A, replay: { of: "run-01", outcome: "answered" } };
+  const served = { path: "workflow", workflow: "answer", workflow_digest: A };
+  await end("run-01", null, 1, { path: "agent" });
+  await end("replay-d", null, 0.3, replay, { replay: { of: "run-01", workflow: "answer", digest: A } });
+  await end("replay-b", "disk-b", 0.5, replay, { replay: { of: "run-01", workflow: "answer", digest: A } });
+  const promoted = new Date(clock.now + 30_000).toISOString();
+  await end("served-b1", "disk-b", 0.1, served);
+  await end("served-b2", "disk-b", 0.1, served);
+  await end("served-d1", null, 0.1, served);
+  await end("served-d2", null, 0.1, served);
+  const check = { compile_after: 2, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 1, agreed: 1, alone: 1, of: ["run-01"], cost_usd: 0.3 };
+  await store.settings.put("learning.promotions.agent-1", { v: 1, items: [{ workflow: "answer", digest: A, at: promoted, decided: "promote", reason: "checked: promoted", check }] });
+  const cost = await agentCostOverStore(store, "agent-1");
+  assert.deepEqual(cost.bill.revisions.map((one) => [one.digest, one.check_usd, one.served, one.attributed_usd, one.unattributed_usd]), [[A, 0.3, 2, 0.3, 0]], JSON.stringify(cost.bill.revisions));
+  // Each run's own figures read the same ledger: the default disk's first K served runs carry its check, disk B's none.
+  const shares = await Promise.all(["served-b1", "served-b2", "served-d1", "served-d2"].map(async (id) => (await runAllInOverStore(store, id)).learning_usd));
+  assert.deepEqual(shares, [0, 0, 0.15, 0.15]);
 });
