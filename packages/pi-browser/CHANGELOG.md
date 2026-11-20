@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.0-beta.49 (2026-11-20)
+
+- A session whose create answer was lost, and which the release task found later by its tag, is now told to the host's `onSession` at its release with the id that lookup found and the bill its release records. Before, the host heard it with `resourceId` null and nothing spent, because the release is told before the commit that records them. <!-- changes/pi-browser-release-found-id.md -->
+
 ## 0.1.0-beta.44 (2026-11-17)
 
 - An agent whose computer is a browser can record its runs: `computer: {"kind": "browser", ..., "record": true}` makes a video of each browser session's page, `recordings/<computer>.mp4` with one file per session, under the same caps, pause and stop rules as a desktop's or a phone's, listed in the run read's `recordings` and served by the files route. A browser with `record: true` was refused with 422 before.

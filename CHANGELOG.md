@@ -4,7 +4,7 @@
 
 ## 0.1.0-beta.49 (2026-11-20)
 
-This release lets an owner delete a run's content and keep its cost: `DELETE /v2/runs/{id}` purges what a run was given and did, its row stays as a tombstone that every total still sums, an archived agent made here is purged the same way, and on SQLite a purged run's bytes leave the store's file. A run's cost reads line by line (`GET /v2/runs/{id}/usage`, "Cost by line" in Dev tools), an agent's learning can re-pick a missed quote from the pages its run fetched (`learning.repick`), a scheduled run is told how many entries each carried array lost from its front, updating an agent from a template says it updated the agent, and a run keeps its end while its agent looks back on it, so a graded run is never left cancelled or stopped. The store moves: SQLite to version 14 and Postgres to migration 0021, both adding a purge time to runs and agents, and beta.48 does not open a store this release used, so back up before you upgrade.
+This release lets an owner delete a run's content and keep its cost: `DELETE /v2/runs/{id}` purges what a run was given and did, its row stays as a tombstone that every total still sums, an archived agent made here is purged the same way, and on SQLite a purged run's bytes leave the store's file. A run's cost reads line by line (`GET /v2/runs/{id}/usage`, "Cost by line" in Dev tools), with each browser session it opened beside the provider's own record of it, an agent's learning can re-pick a missed quote from the pages its run fetched (`learning.repick`), a scheduled run is told how many entries each carried array lost from its front, updating an agent from a template says it updated the agent, and a run keeps its end while its agent looks back on it, so a graded run is never left cancelled or stopped. The store moves: SQLite to version 14 and Postgres to migration 0021, both adding a purge time to runs and agents, and beta.48 does not open a store this release used, so back up before you upgrade.
 
 **Upgrading and going back:**
 
@@ -33,6 +33,7 @@ Runs and the server
 Costs
 
 - `GET /v2/runs/{run_id}/usage` (`agentrun runs usage`) says what one run cost, line by line, and whose invoice each part lands on: `tokens` per model, `tools` per charger (with unpriced tools' calls in `not_metered_calls`) and `browser_time` per browser provider. Each line has its quantity, its dollars as the run's booking holds them and its basis (`reported`, `estimate`, `unpriced`), and the lines join to `total`, the run's `cost.usd`; a charge of unknown cost is null with what is known beside it, never $0. It reads the same for a pi run, a CLI-harness run and a workflow run. The console's Dev tools tab shows the lines as "Cost by line" (#3281). <!-- changes/run-usage-lines.md -->
+- The same read lists the run's browser sessions, `browser_sessions` (`runusage/2`): one record per session the run opened, with the provider's session id, when the server opened it and let it go, why it ended (`release_reason`), the seconds charged for it (`charged_seconds`), and the provider's own record of it (`provider_record`: its start, end and proxy bytes), read once when the session is let go. Each session can be found on the provider's own dashboard and invoice by its id, and one that ended late or was lost shows. A provider that keeps no record, or a read that fails, says so in `provider_record_status`, with the record null, never zeros. In the computer package, a browser provider may offer `sessionUsage(ref)`, the vendor's record of a session; Browserbase's reads `GET /v1/sessions/{id}` (#3285). <!-- changes/run-usage-browser-sessions.md -->
 
 Learning
 
@@ -41,6 +42,7 @@ Learning
 Computers
 
 - `GET /v2/computers`' `folder` field is described by its rule alone, naming no vendor: `bind` a folder of this machine (Mode 1), `archil` the owner's Archil disk where the provider takes an Archil mount, has Archil's image and does not dial this server, `sync` a synced folder the runner keeps for any other computer that takes a folder in Mode 2, null none. A Daytona desktop on exec is refused in the shared refusal's words alone, the computer package's README no longer says a user's program can join the window manager's namespace, and `runConformance` takes `onScreenshot(png)` (#3329). <!-- changes/computer-untangle-16.md -->
+- `@parcha/pi-browser`: a browser session whose create answer was lost, and which the release task found later by its tag, is told to the host's `onSession` at its release with the id that lookup found and the bill its release records. The host heard it with `resourceId` null and nothing spent, because the release is told before the commit that records them (#3285). <!-- changes/pi-browser-release-found-id.md -->
 
 Console
 
