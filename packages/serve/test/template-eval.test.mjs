@@ -876,7 +876,7 @@ test("no case carries a schema grader: a package's output schema is held by the 
   const dir = join(await scratch(t), "evalpkg");
   cpSync(PKG, dir, { recursive: true });
   writeFileSync(join(dir, "evals/all-pass/graders/schema.md"), "---\ntype: schema\nschema: answer.schema.json\n---\n");
-  assert.throws(() => readCases(dir), (e) => e instanceof PackageError && /evals\/all-pass\/graders\/schema\.md: type is one of llm, regex, tool_used, file_exists, mailbox$/m.test(e.message));
+  assert.throws(() => readCases(dir), (e) => e instanceof PackageError && /evals\/all-pass\/graders\/schema\.md: type is one of llm, regex, tool_used, file_exists, mailbox, handed$/m.test(e.message));
 });
 
 test("code-review's cases hold the answer's head_sha to the head the prompt names: an answer naming another sha fails", () => {

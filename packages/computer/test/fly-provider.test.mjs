@@ -109,6 +109,10 @@ test("get reads each Fly state as the adapter's and the labels from metadata, an
 	// A machine whose host isn't ok answers only incomplete_config.
 	const partial = await provider(fakeFly(() => ({ json: { ...flyMachine("3d8d9e3a5e4d89", "started"), config: undefined, incomplete_config: { metadata: { a: "b" } } } }))).host.get("3d8d9e3a5e4d89", CTX);
 	assert.deepEqual(partial.labels, { a: "b" });
+	assert.equal(Object.hasOwn(partial, "resources"), false, "no guest said: no resources");
+	// What Fly gave the machine, as its guest says it: the CPUs and memory it bills by.
+	const guest = await provider(fakeFly(() => ({ json: { ...flyMachine("3d8d9e3a5e4d89", "started"), config: { metadata: LABELS, guest: { cpu_kind: "shared", cpus: 2, memory_mb: 2048 } } } }))).host.get("3d8d9e3a5e4d89", CTX);
+	assert.deepEqual(guest.resources, { cpus: 2, memoryMb: 2048 });
 	await assert.rejects(provider(fakeFly(() => undefined)).host.get("../apps", CTX), (error) => error.code === "not_found");
 });
 

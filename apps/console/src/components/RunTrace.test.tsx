@@ -391,6 +391,19 @@ describe("the Dev tools tab", () => {
     expect([...host.querySelectorAll("h2, h3")].map((h) => h.textContent)).not.toContain("Cost by line");
   });
 
+  it("shows a computer's time by provider and resource, its unit and the time no claim held, and an unpriced resource as no price, never $0", async () => {
+    const compute = (resource: "vcpu" | "gpu" | "disk", quantity: number, unit: "vcpu_second" | "gpu_second" | "gb_month", usd: number | null, extra = {}) =>
+      ({ meter: "compute_time" as const, model: null, provider: "daytona", charged_by: "daytona", quantity, unit, basis: usd === null ? ("unpriced" as const) : ("estimate" as const), usd, resource, gpu_type: resource === "gpu" ? "H100" : null, unheld_quantity: 0, open_computers: 0, ...extra });
+    const usage = { ...USAGE_CLI, total: { usd: 0.4125 }, lines: [USAGE_CLI.lines![0]!, compute("vcpu", 3600, "vcpu_second", 0.0504, { unheld_quantity: 1200 }), compute("gpu", 900, "gpu_second", null), compute("disk", 0.000064, "gb_month", null, { open_computers: 1 })] };
+    const host = await open(TRACE_CLI, { readUsage: vi.fn(async () => usage), view: "breakdown" });
+    const table = host.querySelector("section[aria-label='Where the cost went'] [role=region]")!;
+    expect([...table.querySelectorAll("tbody tr")].slice(1).map((tr) => [...tr.children].map((cell) => cell.textContent))).toEqual([
+      ["daytona · vCPUComputer time1,200 vCPU-seconds no claim held: outside the cost", "3,600 vCPU-seconds", "$0.0504", "Estimate"],
+      ["daytona · H100 GPUComputer time", "900 GPU-seconds", "Unknown", "No price"],
+      ["daytona · diskComputer time1 computer still running when read", "0.000064 GB-months", "Unknown", "No price"],
+    ]);
+  });
+
   it("shows lines only as read at the run's version now: lines left by a reread that failed after the run moved are not shown as its own", async () => {
     const host = await open(TRACE, { readUsage: async () => USAGE_CLI, view: "breakdown" });
     const cost = () => host.querySelector("section[aria-label='Where the cost went']")!;

@@ -53,6 +53,7 @@ import {
 	type ComputerInfo,
 	type ComputerProvider,
 	type ComputerRef,
+	type ComputerResources,
 	type ComputerSpec,
 	type CreateContext,
 	type CreatedComputer,
@@ -330,6 +331,9 @@ export class HostedProvider implements ComputerProvider {
 	readonly #requests = new CreateRequests();
 	/** Each computer's last extend, by machine id, while one runs: the next waits for it. */
 	readonly #extending = new Map<string, Promise<void>>();
+	/** What the vendor said a machine this create made was given (Machine.resources), by machine id, from its read once it
+	 *  ran (#prepare) until the create answers with it (#createOnce). */
+	readonly #given = new Map<string, ComputerResources>();
 	/** A dial host's server: what its machines reach, and what holds their tokens and sockets. */
 	readonly #dial: HostedDial | undefined;
 	/** The host's descriptor's mounts as its machines reach this server (mountsOf): a dial host's take no Archil mount. */
@@ -689,6 +693,8 @@ export class HostedProvider implements ComputerProvider {
 		const first = await this.#converge(name, ref.id, signal);
 		if (first.ok && first.value !== undefined && first.value.id !== ref.id) return this.#again(spec, name, first.value, signal);
 		const prepared = await this.#prepare(spec, ref, made, signal);
+		const given = this.#given.get(ref.id);
+		this.#given.delete(ref.id);
 		if (signal?.aborted) return this.#abandon(ref, { code: "aborted", message: "create was aborted" }, signal);
 		if (!prepared.ok) {
 			// A create of this request on another instance, whose machine is older, deletes this one under it: answer that one.
@@ -704,7 +710,7 @@ export class HostedProvider implements ComputerProvider {
 		const last = await this.#converge(name, ref.id, signal);
 		if (!last.ok) return this.#abandon(ref, last.error, signal, true);
 		if (last.value !== undefined && last.value.id !== ref.id) return this.#again(spec, name, last.value, signal);
-		return ok(prepared.value.length > 0 ? { ...ref, notes: prepared.value } : ref);
+		return ok({ ...ref, ...(prepared.value.length > 0 ? { notes: prepared.value } : {}), ...(given === undefined ? {} : { resources: given }) });
 	}
 
 	/**
@@ -755,7 +761,9 @@ export class HostedProvider implements ComputerProvider {
 				// shows a drift in a size.
 				const drift = attached.ok ? readBackDiffer({ ...spec, network: networkOfForm(formOf(spec.network)) as NetworkSpec, user: this.#userOf(spec) }, attached.value.spec, ["user", "network", "gpu"]) : [];
 				if (drift.length > 0) return this.#fail("exists", otherSpecWords(name, "was made", drift));
-				if (attached.ok) return ok({ id: attached.value.id, name: attached.value.name, ...(attached.value.notes ? { notes: attached.value.notes } : {}) });
+				// What the vendor gave it, from this read of it running, as a fresh create answers it (#prepare): a retry, or
+				// another instance's computer adopted, is priced by the same figures.
+				if (attached.ok) return ok({ id: attached.value.id, name: attached.value.name, ...(attached.value.notes ? { notes: attached.value.notes } : {}), ...(machine.resources ? { resources: machine.resources } : {}) });
 				if (attached.error.code === "aborted") return attached;
 				// Its daemon is not up yet, or not yet as declared (a desktop whose display the first create is still
 				// starting): the first create is still making it. A refusal that holds past createMs is exists.
@@ -1000,6 +1008,7 @@ export class HostedProvider implements ComputerProvider {
 		const { uploadMs, execMs } = this.#timeouts;
 		const running = await this.#running(ref, signal);
 		if (!running.ok) return running;
+		if (running.value.resources !== undefined) this.#given.set(ref.id, running.value.resources);
 		const drift = this.#machineDrift(running.value, labels);
 		if (drift.length > 0) return this.#fail("refused", `it did not match its spec: ${drift.join("; ")}`);
 		const gpu = spec.gpu !== undefined;

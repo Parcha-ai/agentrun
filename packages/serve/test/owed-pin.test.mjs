@@ -1,7 +1,7 @@
 // `owed` (kernel/cap port.ts) is a refusal bypass by design: a paid step marked owed is booked and held without the cap's
-// rule. So it is set in exactly four places, all in browser-cost.ts, all for money its provider is already owed outside
-// any call: the charge under no call (a release, its top-up), the reserve held from a reopen, a delayed release, and a
-// person's carried time. Everywhere else it is only passed on as given (`...(x.owed ? { owed: true as const } : {})`)
+// rule. So it is set in exactly four places in browser-cost.ts and two in compute-cost.ts, all for money its provider is
+// already owed outside any call: the charge under no call (a release, its top-up), the reserve held from a reopen, a
+// delayed release, a person's carried time; a computer's booked time, and a made computer's first stretch. Everywhere else it is only passed on as given (`...(x.owed ? { owed: true as const } : {})`)
 // or read. A new setter anywhere in the repo's sources fails here, until it is reviewed and named in this pin.
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync } from "node:fs";
@@ -38,8 +38,15 @@ const SITES = [
   ["a delayed release", /this browser session's delayed release/],
   ["a person's carried time", /a person's time in the browser/],
 ];
+/** And a computer's time (compute-cost.ts, #3338), money its provider is owed once the computer is made: the time it
+ *  ran, booked each stretch and at its settle, and the first stretch of a computer already made. A computer not yet made
+ *  is never held owed: the hold before its create is the cap's to refuse. */
+const COMPUTE_SITES = [
+  ["a computer's booked time", /name: `\$\{one\.provider\}'s computer time \(\$\{tag\}\)`/],
+  ["a made computer's first stretch", /holdOf\(provider, stretchUsd\(priced\), basisOf\(provider, priced\), \{ owed: true \}\)/],
+];
 
-test("owed is set in exactly four places, in browser-cost.ts, for money already owed outside a call; elsewhere only passed on", () => {
+test("owed is set in exactly four places in browser-cost.ts and two in compute-cost.ts, for money already owed outside a call; elsewhere only passed on", () => {
   const setters = [];
   const passes = [];
   for (const file of sources()) {
@@ -53,9 +60,13 @@ test("owed is set in exactly four places, in browser-cost.ts, for money already 
       }
     });
   }
-  assert.ok(setters.every(({ where }) => where.startsWith("serve/src/browser-cost.ts:")), `owed is set only in browser-cost.ts: ${JSON.stringify(setters.map(({ where }) => where))}`);
-  assert.equal(setters.length, SITES.length, `exactly four setters: ${JSON.stringify(setters.map(({ where }) => where))}`);
-  for (const [what, words] of SITES) assert.equal(setters.filter(({ line }) => words.test(line)).length, 1, `one setter for ${what}`);
+  const browser = setters.filter(({ where }) => where.startsWith("serve/src/browser-cost.ts:"));
+  const compute = setters.filter(({ where }) => where.startsWith("serve/src/compute-cost.ts:"));
+  assert.equal(browser.length + compute.length, setters.length, `owed is set only in browser-cost.ts and compute-cost.ts: ${JSON.stringify(setters.map(({ where }) => where))}`);
+  assert.equal(browser.length, SITES.length, `exactly four setters in browser-cost.ts: ${JSON.stringify(browser.map(({ where }) => where))}`);
+  for (const [what, words] of SITES) assert.equal(browser.filter(({ line }) => words.test(line)).length, 1, `one setter for ${what}`);
+  assert.equal(compute.length, COMPUTE_SITES.length, `exactly two setters in compute-cost.ts: ${JSON.stringify(compute.map(({ where }) => where))}`);
+  for (const [what, words] of COMPUTE_SITES) assert.equal(compute.filter(({ line }) => words.test(line)).length, 1, `one setter for ${what}`);
   assert.deepEqual(passes.filter(({ passedOn }) => !passedOn), [], "every other `owed: true as const` only passes on the owed it was given");
 });
 
@@ -66,7 +77,9 @@ test("owed is set in exactly four places, in browser-cost.ts, for money already 
 // body, asking for a held computer) are other words for other things. Words in a string (a held computer's "a run
 // started with hold: true", computer-held.ts) set nothing: strings are read as empty.
 const STRINGS = /"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'|`(?:[^`\\]|\\.)*`/g;
-test("hold is set in exactly two places, in browser-cost.ts, on the browser's hold-only steps; elsewhere only passed on", () => {
+// And a computer's stretch ahead (compute-cost.ts holdOf, #3338): money reserved for time it may run, given back at each
+// stretch's booking and at its settle, never booked.
+test("hold is set in exactly two places in browser-cost.ts and one in compute-cost.ts, on hold-only steps; elsewhere only passed on", () => {
   const setters = [];
   const passes = [];
   for (const file of sources()) {
@@ -80,9 +93,13 @@ test("hold is set in exactly two places, in browser-cost.ts, on the browser's ho
       }
     });
   }
-  assert.ok(setters.every(({ where }) => where.startsWith("serve/src/browser-cost.ts:")), `hold is set only in browser-cost.ts: ${JSON.stringify(setters.map(({ where }) => where))}`);
-  assert.equal(setters.length, 2, `exactly two setters: ${JSON.stringify(setters.map(({ where }) => where))}`);
-  assert.equal(setters.filter(({ line }) => /booking\.admit\(\{ id, name, holdUsd: usd/.test(line)).length, 1, "one in holdOf, the ledger's holds");
-  assert.equal(setters.filter(({ line }) => /name: "this browser call"/.test(line)).length, 1, "one on a browser call's hold");
+  const browser = setters.filter(({ where }) => where.startsWith("serve/src/browser-cost.ts:"));
+  const compute = setters.filter(({ where }) => where.startsWith("serve/src/compute-cost.ts:"));
+  assert.equal(browser.length + compute.length, setters.length, `hold is set only in browser-cost.ts and compute-cost.ts: ${JSON.stringify(setters.map(({ where }) => where))}`);
+  assert.equal(browser.length, 2, `exactly two setters in browser-cost.ts: ${JSON.stringify(browser.map(({ where }) => where))}`);
+  assert.equal(browser.filter(({ line }) => /booking\.admit\(\{ id, name, holdUsd: usd/.test(line)).length, 1, "one in holdOf, the ledger's holds");
+  assert.equal(browser.filter(({ line }) => /name: "this browser call"/.test(line)).length, 1, "one on a browser call's hold");
+  assert.equal(compute.length, 1, `exactly one setter in compute-cost.ts: ${JSON.stringify(compute.map(({ where }) => where))}`);
+  assert.equal(compute.filter(({ line }) => /tool: COMPUTE_TOOL, hold: true,/.test(line)).length, 1, "one in its holdOf, a computer's stretch ahead");
   assert.deepEqual(passes.filter(({ passedOn }) => !passedOn), [], "every other `hold: true as const` only passes on the hold it was given");
 });
