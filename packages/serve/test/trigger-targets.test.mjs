@@ -172,9 +172,10 @@ async function handedAfter(output, carried) {
   return content.slice("Go.".length);
 }
 
-test("over the limit with no x-carried: the too-large line; beside it, the same result carrying seen is handed seen", async () => {
-  const output = { seen: entries("seen", 2), noise: NOISE };
-  assert.equal(await handedAfter(output, ["seen"]), carriedText(output, { seen: output.seen }, []), "the control is handed its carried field");
+test("over the limit with no x-carried: the too-large line, never every field read as carried; beside it, the same result carrying seen", async () => {
+  // Over the limit by an array alone: read as carried, its first entries would go and the rest would fit.
+  const output = { seen: entries("seen", 300), tag: "newer" };
+  assert.equal(await handedAfter(output, ["seen"]), carriedText(output, { seen: output.seen.slice(68) }, [["seen", 68]]), "the control is handed its carried field, trimmed to fit");
   assert.equal(await handedAfter(output, undefined), OVER, "no x-carried, the too-large line and nothing of the result");
 });
 
