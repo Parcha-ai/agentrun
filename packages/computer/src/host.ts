@@ -240,7 +240,7 @@ export interface HostFacts {
 	arch: "amd64" | "arm64";
 	/** The TCP ports the vendor's own agent listens on inside the machine (E2B's envd 49983). */
 	vendorAgentPorts: number[];
-	/** Whether its desktops run WINDOW_MANAGER (xfwm4, which its image has) once the display answers. Default none. */
+	/** Whether its desktops run a window manager (xfwm4, which its image has), which computerd starts (init --window-manager). Default none. */
 	windowManager?: boolean;
 	/** What spec.user may ask for, beside the daemon user: with it, the spec's user goes in MachineRequest.user. */
 	user?: Array<"root" | "uid">;

@@ -337,11 +337,16 @@ function folderOf(kind: ComputerSettingKind, entry: ProviderEntry, serving: read
 /** The configurations of `entry` that serve `kind`. */
 const servingOf = (registry: Pick<KindRegistry, "servingRefusals">, entry: ProviderEntry, kind: ComputerSettingKind): KindCapabilities[] => entry.capabilities.filter((one) => registry.servingRefusals(one, kind).length === 0);
 
-/** The one configuration of `serving` the setting selects (configurationOf), as a list: [] when its image names none. */
-const selectedOf = (serving: readonly KindCapabilities[], setting: ComputerSetting, entry: ProviderEntry, kind: ComputerSettingKind): readonly KindCapabilities[] => {
-  const one = configurationOf(serving, setting.image, entry.defaultImage?.[kind]);
-  return one ? [one] : [];
-};
+/** What computer `setting` selects before anything starts, as the claim picks it (resolveComputer): its kind, its
+ *  provider's entry, and the configuration serving the kind that its image names (configurationOf). Undefined for kind
+ *  none, an unknown kind or provider, or no such configuration. `registry` is as this server has it (registryHere). */
+function selectedFor(setting: ComputerSetting, registry: Pick<KindRegistry, "SETTING_KINDS" | "servingRefusals" | "PROVIDERS">): { kind: ComputerSettingKind; entry: ProviderEntry; configuration: KindCapabilities } | undefined {
+  const kind = setting.kind as ComputerSettingKind;
+  if (kind === "none" || !Object.hasOwn(registry.SETTING_KINDS, kind)) return undefined;
+  const entry = registry.PROVIDERS.find((one) => one.id === setting.provider);
+  const configuration = entry && configurationOf(servingOf(registry, entry, kind), setting.image, entry.defaultImage?.[kind]);
+  return entry && configuration ? { kind, entry, configuration } : undefined;
+}
 
 /** The kind of the run's folder a computer of `setting` on `entry`'s `configuration` holds in `mode` (folderOf), or
  *  undefined for none: none where the agent runs no programs of its own; of the kinds its GPU computers take, where a
@@ -350,16 +355,11 @@ const settingFolderOf = (setting: ComputerSetting, kind: ComputerSettingKind, en
   noPrograms(setting) ? undefined : folderOf(kind, entry, [configuration], mode, kind === "sandbox" && setting.gpu ? configuration.gpu?.mounts : undefined);
 
 /** The kind of the run's folder a run of an agent with computer `setting` holds in `mode`, read off the setting and the
- *  kind registry before anything starts, as the claim picks it (resolveComputer: the configuration the setting selects,
- *  settingFolderOf): a bind, an Archil mount or a synced folder, or undefined for none (kind none, a computer that holds
- *  no folder, or a setting the claim refuses). `registry` is as this server has it (registryHere, entryHere). */
+ *  kind registry before anything starts (selectedFor, settingFolderOf): a bind, an Archil mount or a synced folder, or
+ *  undefined for none (kind none, a computer that holds no folder, or a setting the claim refuses). */
 export function runFolderOf(setting: ComputerSetting, mode: 1 | 2, registry: Pick<KindRegistry, "SETTING_KINDS" | "servingRefusals" | "PROVIDERS">): MountKind | undefined {
-  const kind = setting.kind as ComputerSettingKind;
-  if (kind === "none" || !Object.hasOwn(registry.SETTING_KINDS, kind)) return undefined;
-  const entry = registry.PROVIDERS.find((one) => one.id === setting.provider);
-  if (!entry) return undefined;
-  const [configuration] = selectedOf(servingOf(registry, entry, kind), setting, entry, kind);
-  return configuration ? settingFolderOf(setting, kind, entry, configuration, mode) : undefined;
+  const selected = selectedFor(setting, registry);
+  return selected && settingFolderOf(setting, selected.kind, selected.entry, selected.configuration, mode);
 }
 
 /**
@@ -371,18 +371,12 @@ export function runFolderOf(setting: ComputerSetting, mode: 1 | 2, registry: Pic
  * runs nothing: "none". The setting is the agent's as saved; where it has none, the caller gives the server's default.
  */
 export function runShellOf(setting: ComputerSetting, mode: 1 | 2, registry: Pick<KindRegistry, "SETTING_KINDS" | "servingRefusals" | "PROVIDERS">): ShellPlace {
-  const kind = setting.kind as ComputerSettingKind;
-  if (!Object.hasOwn(registry.SETTING_KINDS, kind)) return "none";
-  if (kind === "none") return shellPlaceOf(false, mode);
-  if (!registry.PROVIDERS.some((one) => one.kinds.includes(kind))) return "none";
-  const entry = registry.PROVIDERS.find((one) => one.id === setting.provider);
-  if (!entry) return "none";
-  const serving = selectedOf(servingOf(registry, entry, kind), setting, entry, kind);
-  if (serving.length === 0) return "none";
+  if (setting.kind === "none") return shellPlaceOf(false, mode);
+  const selected = selectedFor(setting, registry);
   // An agent whose computer runs no programs of its own has no shell anywhere: not its computer's, not Archil's exec.
-  if (noPrograms(setting)) return "none";
-  const mounts = folderOf(kind, entry, serving, mode) !== undefined;
-  if (kind === "sandbox" && !mounts) return "none";
+  if (!selected || noPrograms(setting)) return "none";
+  const mounts = folderOf(selected.kind, selected.entry, [selected.configuration], mode) !== undefined;
+  if (selected.kind === "sandbox" && !mounts) return "none";
   return shellPlaceOf(mounts, mode);
 }
 
@@ -444,7 +438,7 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
   }
   // The configuration the setting's image selects: one the provider does not offer for the kind is refused, naming those
   // it does.
-  const [configuration] = selectedOf(serving, setting, entry, kind);
+  const configuration = configurationOf(serving, setting.image, entry.defaultImage?.[kind]);
   if (!configuration) {
     const images = imagesOf(serving, entry.defaultImage?.[kind]);
     const offers = images.length === 0 ? `offers no ${kind} image to choose: remove the image` : `offers the ${kind} image${images.length === 1 ? "" : "s"} ${images.join(", ")}: pick one`;

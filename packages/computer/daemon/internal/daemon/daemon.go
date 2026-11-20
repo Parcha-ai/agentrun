@@ -20,6 +20,7 @@ import (
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/desktop"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/egress"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/execrun"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/isolate"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/lifetime"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/methods"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/process"
@@ -35,7 +36,6 @@ const SocketEnv = "AGENTRUN_COMPUTERD_SOCKET"
 const DefaultSocket = "/run/agentrun/computerd.sock"
 
 const (
-	prSetChildSubreaper = 36
 	// sweepEvery is how often init looks for orphans when no SIGCHLD has asked it to.
 	sweepEvery = time.Second
 	// stopSlack is how long past the guards' KillGrace init waits for them on SIGTERM before it kills what is left.
@@ -72,8 +72,8 @@ type Egress struct {
 // reports. manager, when Become or Unprivileged started one, is the desktop's window manager: init starts it once the
 // display answers (windowmanager.Manager.Run), hello says how it goes, and the sweep leaves it to its own waiter.
 func Init(version, socket string, deadline *lifetime.Deadline, relay Egress, fence string, manager *windowmanager.Manager, logger *log.Logger) int {
-	if _, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, prSetChildSubreaper, 1, 0); errno != 0 {
-		logger.Printf("init: cannot become a child subreaper: %v", errno)
+	if err := isolate.BecomeSubreaper(); err != nil {
+		logger.Printf("init: cannot become a child subreaper: %v", err)
 		return 1
 	}
 	signals := make(chan os.Signal, 1)

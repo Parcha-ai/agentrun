@@ -95,8 +95,9 @@ export function createReflectHook(deps: ReflectDeps): EndOfRunTurn {
     if (!facts.learns) return undefined;
     const now = deps.now ?? Date.now;
     // When the job answered and what it cost: as the step starts, the run's spend so far is the job's. A compile turn an
-    // earlier claim asked first (cut by a crash or a lost claim) reads that ask's, which it kept with its prompt.
-    let answeredAt = new Date(now()).toISOString();
+    // earlier claim asked first (cut by a crash or a lost claim) reads that ask's, which it kept with its prompt. A run's
+    // first round answered when its job's end was kept (the run's end time), never after it.
+    let answeredAt = new Date(round === 1 && input.endedAt !== undefined ? input.endedAt : now()).toISOString();
     let job = facts.costUsd;
     const firstAsk = (kept: EndOfRunKept | undefined): boolean => {
       if (typeof kept?.answered_at !== "string" || (typeof kept.job_cost_usd !== "number" && kept.job_cost_usd !== null)) return false;

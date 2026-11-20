@@ -36,6 +36,9 @@ function refusal(e: unknown): string {
   return e instanceof ClientError && e.status < 500 && p.said ? p.said : `${p.why} ${p.next}`;
 }
 
+/** Why a run that reads ended takes no grade yet: it is still learning from its answer (its look-back). */
+export const STILL_LEARNING = "The agent is still learning from this answer. Grade it once that ends.";
+
 /** What a round says when its run ended before it took the grade's words (`feedback_status` `not_run`). */
 export const NOT_RUN = "The review could not run.";
 
@@ -83,7 +86,10 @@ export function RunGrade({ run, graded, onGrade, onOpenTimeline }: RunGradeProps
   const reviewing = status === "running" || (status === "ended" && underWay(run.learning ?? undefined));
   if (!gradable(run) || (!ended && !graded)) return null;
   const form = open === "auto" ? (graded ? "closed" : "choose") : open;
-  const canGrade = ended && !reviewing;
+  // A run that reads ended while it still learns from that end (its look-back: `learning.state` reflecting) is graded once
+  // that ends: the server refuses a grade sent before (409 run_learning), so no form is shown, and the card says why.
+  const stillLearning = ended && !reviewing && run.learning?.state === "reflecting";
+  const canGrade = ended && !reviewing && !stillLearning;
   const exp = expectedOf(expected);
   const said = graded ? outcome(graded, reviewing) : null;
 
@@ -117,6 +123,7 @@ export function RunGrade({ run, graded, onGrade, onOpenTimeline }: RunGradeProps
             {onOpenTimeline && !!graded?.feedback && <Button type="button" size="xs" variant="ghost" onClick={onOpenTimeline}>Open the Timeline</Button>}
           </div>
         )}
+        {stillLearning && <p className="text-body text-muted-foreground">{STILL_LEARNING}</p>}
         {canGrade && form === "closed" && (
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
             <Button type="button" size="sm" disabled={!onGrade} onClick={() => { setOpen("choose"); setRefused(null); }}>Grade again</Button>

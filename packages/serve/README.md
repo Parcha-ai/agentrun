@@ -2988,15 +2988,8 @@ serves these routes alone:
 - `GET /capabilities`, `GET /health` and `GET /usage`;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
-A run's computer here takes the server's token, the backend's own, since there is no owner to sign in: `GET
-/runs/{id}/computer`, `POST /runs/{id}/computer/take-over` and `POST /runs/{id}/computer/hand-back`. For its user's
-browser, the backend asks `POST /runs/{id}/computer/viewer` for `{ url, expires_at }`: a link on `AGENTRUN_PUBLIC_URL`
-(refused in words when it is unset) to the run's live page, with a viewer credential in its query that opens that run's
-page and socket, from the public address alone, for 5 minutes. The credential is an HMAC of the run and its expiry under
-a key from the seal key, so every server on the store checks it, across restarts; the run's end (completed, failed or
-cancelled) revokes it and closes a socket open on it, and a stop does not, as the run goes on. The person watches, and
-takes over and hands back in the viewer's own bar; nothing else opens to the credential. A server that is not API-only
-answers the mint `404`, and its live page takes the owner's sign-in alone.
+Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on
+`AGENTRUN_PUBLIC_URL` that opens that run's live page and socket until the run ends (API doc).
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
 assets, sign-in and setup, every `/settings` route, `POST /mcp`, triggers and their
@@ -3733,6 +3726,14 @@ round on the agent's `main`, whatever its harness:
   promotion check (below) decides whether it serves. A compile whose drafts all failed is recorded as the compile's
   attempt (compile once), and its errors are on the run's learning (`draft_errors`), never silent.
   [`src/learn/SPEC.md`](src/learn/SPEC.md) has the rules.
+- Its answer's quote re-pick, with `learning.repick: true` (off by default): a workflow whose answer quotes the pages
+  its run fetched re-picks once when a quote is in none of them. Off, the re-pick reads its compact notes and its failed
+  draft. On, the server rewrites the passing draft before it commits it, so the re-pick reads the pages themselves,
+  sent as untrusted data (the model is told never to follow anything written in them, and the step has no tools), at
+  most `learning.repick_max_chars` characters of them (150000 by default, 1 to 400000; past it the longest pages are
+  cut first). Its request is the served run's, under the run's cost cap. The setting is read at each compile: turning
+  it on or off changes only the workflows compiled after that, never one already kept. An agent whose workflows run
+  through an SDK bridge ignores it.
 
 The turn runs under the run's own cap, with no reserve, and within 10 minutes; its rows are labelled `learning`, and the
 run's answer stays the job's. While it runs, the run reads `reflecting` on every harness. A run with no words from its

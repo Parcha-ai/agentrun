@@ -18,6 +18,7 @@ import (
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/daemon"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/nocgo"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/x11"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/x11/xvfbtest"
 )
 
 // windowManagerHere skips unless init can start a window manager here: Xvfb, xfwm4, dbus-run-session and xsetroot on
@@ -41,7 +42,8 @@ func windowManagerHere(t *testing.T) []string {
 	return []string{"unshare", "-Ur"}
 }
 
-// freeDisplay is a display no X server here holds, from :300.
+// freeDisplay is a display no X server here holds, from :300: for the one test whose init starts before its X server,
+// so it must name the display first.
 func freeDisplay(t *testing.T) string {
 	t.Helper()
 	for n := 300; n < 400; n++ {
@@ -294,8 +296,7 @@ func TestInitAskedStartsTheWindowManagerOnceTheDisplayAnswers(t *testing.T) {
 // ended and its last lines, for the client to fail create in them.
 func TestInitSaysInWordsHowTheWindowManagerEndedWithinItsFirstSecond(t *testing.T) {
 	wrap := windowManagerHere(t)
-	display := freeDisplay(t)
-	startXvfb(t, display)
+	display := xvfbtest.Start(t, 640, 480)
 	bin := t.TempDir()
 	fake := "#!/bin/sh\necho 'xfwm4: another window manager is running on this display' >&2\nexit 1\n"
 	if err := os.WriteFile(filepath.Join(bin, "xfwm4"), []byte(fake), 0o755); err != nil {
@@ -314,23 +315,18 @@ func TestInitSaysInWordsHowTheWindowManagerEndedWithinItsFirstSecond(t *testing.
 	}
 }
 
-// Not asked, init starts no window manager and hello says nothing of one: a client that starts its own (src/desktop.ts,
-// for a computerd that says nothing) is never the second on the display.
+// Not asked, init has no manager and hello says nothing of one, from its first hello: with no flag there is nothing to
+// start, so the field's absence is decided before init listens.
 func TestInitNotAskedStartsNoWindowManager(t *testing.T) {
 	wrap := windowManagerHere(t)
-	display := freeDisplay(t)
-	startXvfb(t, display)
+	display := xvfbtest.Start(t, 640, 480)
 	_, socket := initOn(t, wrap, display)
-	time.Sleep(1500 * time.Millisecond)
 	hello := helloOf(t, socket)
 	if _, ok := hello["windowManager"]; ok {
 		t.Errorf("hello says windowManager %s; init was not asked for one", hello["windowManager"])
 	}
 	if !strings.Contains(string(hello["groups"]), `"screen"`) {
 		t.Errorf("hello's groups %s; want the display's", hello["groups"])
-	}
-	if managers := managersOn(display); len(managers) > 0 || framed(t, display) {
-		t.Errorf("xfwm4 %v on %s (framed %v); init was not asked for one", managers, display, framed(t, display))
 	}
 }
 

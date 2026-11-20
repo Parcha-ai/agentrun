@@ -8,8 +8,7 @@
 // restrict_unprivileged_userns), and holds no capability to join one root made. The same uid may still ptrace xfwm4.
 // The start waits until init sees the display answer (Run), then paints the screen behind every window one slate
 // colour (xsetroot), so a desktop with no window open is not a black screen a person reads as broken (a paint that
-// fails starts xfwm4 all the same), and becomes the manager. hello says how it goes (Fact). src/desktop.ts runs the
-// same line through process.start for a computerd that says nothing of one.
+// fails starts xfwm4 all the same), and becomes the manager. hello says how it goes (Fact), and create waits on it.
 package windowmanager
 
 import (
@@ -24,7 +23,6 @@ import (
 	"sync"
 	"syscall"
 	"time"
-	"unsafe"
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/isolate"
 )
@@ -297,11 +295,11 @@ func (m *Manager) finished(err error) {
 // reaps them (waitpid(-1)); once it ends, what is left is init's, and swept.
 func Child() int {
 	syscall.CloseOnExec(startFD)
-	if _, _, errno := syscall.RawSyscall(syscall.SYS_PRCTL, prSetChildSubreaper, 1, 0); errno != 0 {
-		fmt.Fprintf(os.Stderr, "computerd window-manager: cannot reap its orphans (PR_SET_CHILD_SUBREAPER): %v\n", errno)
+	if err := isolate.BecomeSubreaper(); err != nil {
+		fmt.Fprintf(os.Stderr, "computerd window-manager: cannot reap its orphans (PR_SET_CHILD_SUBREAPER): %v\n", err)
 		return 125
 	}
-	if err := noCapabilities(); err != nil {
+	if err := isolate.ClearCapabilities(); err != nil {
 		fmt.Fprintf(os.Stderr, "computerd window-manager: %v\n", err)
 		return 125
 	}
@@ -321,40 +319,6 @@ func Child() int {
 	err = syscall.Exec(sh, []string{"sh", "-c", script, "sh", bus}, os.Environ())
 	fmt.Fprintf(os.Stderr, "computerd window-manager: %s: %v\n", sh, err)
 	return 125
-}
-
-// The capset call's header and sets, as linux/capability.h has them (version 3: two 32-bit words per set).
-type (
-	capHeader struct {
-		version uint32
-		pid     int32
-	}
-	capData struct{ effective, permitted, inheritable uint32 }
-)
-
-const (
-	capVersion3          = 0x20080522
-	prCapAmbient         = 47
-	prCapAmbientClearAll = 4
-	prSetChildSubreaper  = 36
-)
-
-// The capset call's arguments, kept where the call reads them while it runs on every thread.
-var (
-	noCapsHeader = capHeader{version: capVersion3}
-	noCapsData   [2]capData
-)
-
-// noCapabilities empties the ambient, effective, permitted and inheritable sets of every thread. A kernel with no
-// ambient set (EINVAL) has none to empty.
-func noCapabilities() error {
-	if _, _, errno := syscall.AllThreadsSyscall6(syscall.SYS_PRCTL, prCapAmbient, prCapAmbientClearAll, 0, 0, 0, 0); errno != 0 && errno != syscall.EINVAL {
-		return fmt.Errorf("cannot empty the ambient capability set: %w", errno)
-	}
-	if _, _, errno := syscall.AllThreadsSyscall(syscall.SYS_CAPSET, uintptr(unsafe.Pointer(&noCapsHeader)), uintptr(unsafe.Pointer(&noCapsData[0])), 0); errno != 0 {
-		return fmt.Errorf("cannot empty the capability sets: %w", errno)
-	}
-	return nil
 }
 
 // tail keeps the last keptBytes written to it.
