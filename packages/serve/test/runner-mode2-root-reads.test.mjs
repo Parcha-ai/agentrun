@@ -231,22 +231,22 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
     assert.deepEqual(outbound, [], "nothing left this machine");
   });
 
-  test(`${name} in Mode 2 with no computer: the run's mount credential is never minted, so Archil's control plane hears nothing, from its build to its end`, async (t) => {
+  test(`${name} in Mode 2 with no computer: the run's mount credential is never minted, so Archil's control plane hears only the claim's read of its disk, from its build to its end`, async (t) => {
     const { spec, control, outbound } = await mode2Spec(t, { harness, build, use: async (built) => void (await built.gate(reflectWrite)) });
     await spec.release();
-    assert.deepEqual(callsOf(control), [], "no list, no mint, no remove");
+    assert.deepEqual(callsOf(control), [`GET /api/disks/${ARCHIL_SETTINGS.diskId}`], "the disk read once at the claim (run-disk.ts); no list, no mint, no remove");
     assert.deepEqual(outbound, [], "and nothing left this machine");
   });
 
   test(`${name} in Mode 2 with a computer that mounts the folder: one mount credential minted at the claim, named for the run and its epoch, and removed at the run's end`, async (t) => {
     const { spec, control, outbound } = await mode2Spec(t, { harness, build, computer: mountingComputer });
     const disk = `/api/disks/${ARCHIL_SETTINGS.diskId}`;
-    assert.deepEqual(callsOf(control), [`GET ${disk}`, `POST ${disk}/users`], "an earlier claim's credentials looked for, then one minted");
-    assert.equal(control.requests[1].authorization, "Bearer fake-test-key-api-0001", "minted with the account key");
-    assert.match(control.requests[1].body?.nickname ?? "", new RegExp(RUN), "named for the run");
-    assert.equal(control.requests[1].body?.ttl, "86400s", "its safety-net lifetime, MOUNT_TTL_MS: no longer than its computer can live (COMPUTER_LIFETIME_MS, 24 h), in case the removal never comes");
+    assert.deepEqual(callsOf(control), [`GET ${disk}`, `GET ${disk}`, `POST ${disk}/users`], "the disk read at the claim, an earlier claim's credentials looked for, then one minted");
+    assert.equal(control.requests[2].authorization, "Bearer fake-test-key-api-0001", "minted with the account key");
+    assert.match(control.requests[2].body?.nickname ?? "", new RegExp(RUN), "named for the run");
+    assert.equal(control.requests[2].body?.ttl, "86400s", "its safety-net lifetime, MOUNT_TTL_MS: no longer than its computer can live (COMPUTER_LIFETIME_MS, 24 h), in case the removal never comes");
     await spec.release();
-    assert.deepEqual(callsOf(control).slice(2), [`DELETE ${disk}/users/token?identifier=tok-1`, `GET ${disk}`], "removed once at the end (the computer's release and the run's end revoke it, idempotently), then the run's earlier epochs looked for");
+    assert.deepEqual(callsOf(control).slice(3), [`DELETE ${disk}/users/token?identifier=tok-1`, `GET ${disk}`], "removed once at the end (the computer's release and the run's end revoke it, idempotently), then the run's earlier epochs looked for");
     assert.deepEqual(outbound, [], "nothing left this machine");
   });
 
@@ -254,14 +254,14 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
     const claimSignal = new AbortController();
     const { control } = await mode2Spec(t, { harness, build, computer: mountingComputer, signal: claimSignal.signal });
     const disk = `/api/disks/${ARCHIL_SETTINGS.diskId}`;
-    assert.deepEqual(callsOf(control), [`GET ${disk}`, `POST ${disk}/users`], "minted at the claim");
+    assert.deepEqual(callsOf(control), [`GET ${disk}`, `GET ${disk}`, `POST ${disk}/users`], "the disk read, then minted at the claim");
     claimSignal.abort(new Error("claim lost (fenced)"));
     // The lost claim's revoke settles with its list read for an earlier epoch's, after its remove: awaited, then read.
     const swept = control.seen((one, index, all) => one.method === "GET" && all.slice(0, index).some((before) => before.method === "DELETE"));
     let timer;
     const bound = new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`the lost claim's token was never removed: ${JSON.stringify(callsOf(control))}`)), 20_000); });
     await Promise.race([swept, bound]).finally(() => clearTimeout(timer));
-    assert.deepEqual(callsOf(control).slice(2), [`DELETE ${disk}/users/token?identifier=tok-1`, `GET ${disk}`], "removed when the claim was lost, with no release yet, then the run's earlier epochs looked for");
+    assert.deepEqual(callsOf(control).slice(3), [`DELETE ${disk}/users/token?identifier=tok-1`, `GET ${disk}`], "removed when the claim was lost, with no release yet, then the run's earlier epochs looked for");
   });
 
   test(`${name}: a claim that waits on its computer's image says one phase on the run's timeline, in main's words with the computer's noun`, async (t) => {
@@ -301,7 +301,7 @@ for (const [name, harness, build] of [["pi's spec", undefined, adapterRunSpecFro
     };
     const { error, control, outbound } = await mode2Spec(t, { harness, build, computer: failing, fails: true });
     assert.equal(error, refused, "the build throws the computer step's own error, unchanged");
-    assert.deepEqual(callsOf(control).slice(0, 2), [`GET ${DISK_PATH}`, `POST ${DISK_PATH}/users`], "minted at the claim");
+    assert.deepEqual(callsOf(control).slice(0, 3), [`GET ${DISK_PATH}`, `GET ${DISK_PATH}`, `POST ${DISK_PATH}/users`], "the disk read, then minted at the claim");
     assert.deepEqual(deletesOf(control), [`DELETE ${DISK_PATH}/users/token?identifier=tok-1`], "the credential removed, once, though no spec was handed to the loop");
     assert.deepEqual(outbound, []);
   });
@@ -443,10 +443,10 @@ test("pi's spec in Mode 2: a lost mint's user that appears only on the later rea
   let lists = 0;
   const controlOptions = {
     existing: [{ identifier: "tok-older", nickname: `agentrun:${RUN}:0`, token: "fake-test-key-older" }],
-    // The list read before the mint misses the older user (Archil's list lags); the revoke's first read, right after the
-    // mint, misses the minted one (lagging); the read 2 s later holds it.
+    // After the claim's read of its disk (run-disk.ts), the list read before the mint misses the older user (Archil's list
+    // lags); the revoke's first read, right after the mint, misses the minted one (lagging); the read 2 s later holds it.
     lagging: true,
-    answer: ({ method, path }) => (method === "GET" && /^\/api\/disks\/[^/]+$/.test(path) && lists++ === 0 ? { status: 200, body: { success: true, data: { authorizedUsers: [] } } } : undefined),
+    answer: ({ method, path }) => (method === "GET" && /^\/api\/disks\/[^/]+$/.test(path) && lists++ === 1 ? { status: 200, body: { success: true, data: { authorizedUsers: [] } } } : undefined),
   };
   const losing = (fetch) => async (input, init) => {
     const answer = await fetch(input, init);
