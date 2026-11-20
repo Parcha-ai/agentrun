@@ -226,6 +226,20 @@ describe("Triggers: from an app (Composio)", () => {
     expect(filter().value).toBe("");
   });
 
+  it("marks the run's fields its save refuses empty (Agent, Each run is asked, and the cap with no agent default) with *, on every new trigger form", async () => {
+    // GitHub's form, shown once GitHub is connected, is checked in Triggers.github.test.tsx.
+    for (const kind of ["composio", "schedule", "webhook", "feed"] as const) {
+      const t = await open(server().v2, { trigger: null, kind } as Parameters<typeof SchedulesPage>[0]["view"]);
+      const labels = [...t.host.querySelectorAll("label, span.caps")].map((l) => (l.textContent ?? "").trim());
+      for (const label of ["Agent *", "Each run is asked *", "Cost cap, US dollars a run *"]) expect(labels, `${kind}: ${label}`).toContain(label);
+      act(() => root?.unmount()); document.body.innerHTML = "";
+    }
+    // Composio's own case: Create with nothing said names the field the * marks.
+    const t = await open(server().v2, { trigger: null, kind: "composio" });
+    await t.click(/^Create app trigger$/);
+    expect(t.host.querySelector('[data-issue="target.input"]')?.textContent).toBe("Say what each run is asked.");
+  });
+
   it("makes one from the picked server, event and config, with a filter on the event's data, under an Idempotency-Key, and opens it", async () => {
     const s = server();
     const t = await open(s.v2, { trigger: null, kind: "composio" });
