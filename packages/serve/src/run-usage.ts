@@ -268,7 +268,7 @@ export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLau
     else if (named(d.model)?.startsWith("decision:")) {
       const receipt = receipts.get(String(d.model).slice("decision:".length));
       if (receipt && chargedByParallel(receipt)) {
-        groups.set(turnOf(e), { meter: "tools", name: PARALLEL_CHARGER });
+        groups.set(turnOf(e), { meter: "tools", name: PARALLEL_CHARGER, at: at(e) });
         continue;
       }
       // A receipt that names no model leaves `model` null: its provider is said as the provider, never as a model.

@@ -182,7 +182,7 @@ test("a decision Parallel answered on its own API is a paid call on Parallel's t
   const { lines, total } = usageLinesOf(entries, undefined, receipts);
   assert.deepEqual(lines.map((one) => `${one.meter}/${nameOf(one)}`), ["tokens/jev-1.14.0", "tokens/m", "tokens/parallel/decisions-fast", "tools/parallel"]);
   // The search's $0.001 and the two decisions' $0.001 each.
-  assert.deepEqual(line(lines, "tools", "parallel"), { meter: "tools", model: null, provider: "parallel", charged_by: "parallel", quantity: 3, unit: "call", basis: "estimate", usd: 0.003 });
+  assert.deepEqual(line(lines, "tools", "parallel"), { meter: "tools", model: null, provider: "parallel", charged_by: "parallel", quantity: 3, unit: "call", basis: "estimate", attempt: null, billable: true, usd: 0.003 });
   assert.equal(line(lines, "tokens", "parallel/decisions-fast").usd, 0.0012, "OpenRouter's route is a model's cost");
   // 0.01 + 0.001 + 0.001 + 0.001 + 0.00003 + 0.0012
   assert.deepEqual(total, { usd: 0.01423 }, "nothing counted twice");
