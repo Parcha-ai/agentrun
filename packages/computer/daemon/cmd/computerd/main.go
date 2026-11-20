@@ -1,10 +1,14 @@
 // computerd is the open platform's computer daemon: one static program in every computer.
 //
-//	computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network [--network open|allow:<list>]] [--egress <socket>]
+//	computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network [--network open|allow:<list>]] [--egress <socket>] [--window-manager]
 //	                    run as the computer's first process: hold every process and serve the protocol on a unix socket
 //	                    (AGENTRUN_COMPUTERD_SOCKET, default /run/agentrun/computerd.sock) until SIGTERM or the deadline;
 //	                    deadline.extend moves the deadline up to --max-deadline, and not at all without it. With DISPLAY
 //	                    set, the screen and input methods drive that X display.
+//	                    With --window-manager (and DISPLAY), for a desktop whose host runs one, init, still root, forks
+//	                    the window manager's start as the user its programs run as, in a network namespace it makes, and
+//	                    starts xfwm4 there once the display answers (internal/windowmanager); hello says how it goes
+//	                    (windowManager: starting, running, or ended with why)
 //	                    With --user, init starts as root, gives HOME and the socket's directory to uid:gid and becomes
 //	                    it: for a vendor that runs every computer as root (Modal), or whose images' privilege tools
 //	                    cannot be relied on (Daytona). As any user, root included, init first leaves every thread no
@@ -112,6 +116,7 @@ import (
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/methods"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/probe"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/rpc"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/windowmanager"
 )
 
 var version = "0.0.0-dev"
@@ -204,6 +209,8 @@ func main() {
 		}
 	case execrun.GuardCommand:
 		os.Exit(execrun.Guard())
+	case windowmanager.ChildArg:
+		os.Exit(windowmanager.Child())
 	default:
 		usage()
 	}
@@ -243,10 +250,18 @@ func runInit(opts initOptions, isolation daemon.Isolation, args []string, logger
 	} else if opts.egress != "" {
 		relay = daemon.Egress{Listen: egress.Address, Socket: opts.egress}
 	}
+	// The desktop's window manager, forked while init is still root (the drop below), as the user its programs run as.
+	if opts.windowManager {
+		uid, gid := 0, 0
+		if opts.user != nil {
+			uid, gid = opts.user.uid, opts.user.gid
+		}
+		isolation.WindowManager = windowmanager.New(os.Getenv("DISPLAY"), os.Getenv("HOME"), opts.user != nil, uid, gid)
+	}
 	if opts.user != nil {
 		dropped = daemon.Become(opts.user.uid, opts.user.gid, os.Getenv("HOME"), daemon.SocketPath(), isolation)
 	} else {
-		dropped = daemon.Unprivileged()
+		dropped = daemon.Unprivileged(isolation.WindowManager)
 	}
 	if dropped != nil && !errors.Is(dropped, isolate.ErrNoNetworkNamespace) && relay.Proxy != 0 {
 		_ = syscall.Kill(relay.Proxy, syscall.SIGKILL)
@@ -264,7 +279,7 @@ func runInit(opts initOptions, isolation daemon.Isolation, args []string, logger
 		logger.Printf("init refuses to start: %v", dropped)
 		return 1
 	}
-	return daemon.Init(version, daemon.SocketPath(), opts.deadline, relay, fenceOf(isolation), logger)
+	return daemon.Init(version, daemon.SocketPath(), opts.deadline, relay, fenceOf(isolation), isolation.WindowManager, logger)
 }
 
 // fenceOf is how init fences its programs off the computer's network, as hello says it: "netns", a network namespace of
@@ -520,7 +535,7 @@ func unpair(logger *log.Logger) int {
 }
 
 func usage() {
-	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network [--network open|allow:<list>]] [--egress <socket>] | stdio | pair <server URL> [--name <name>] | unpair | attach | probe [--sockets] [--connect <host:port>[/udp]]... | probe --diagnose | sync-serve --socket <path> --mountpoint <path> --mounts <path> --archil <path> --gid <gid> | archil-relay --gateway <IPv4 address> --mount-lane <port> --data-lane <port> | version")
+	fmt.Fprintln(os.Stderr, "usage: computerd init --deadline <RFC 3339 time> [--max-deadline <RFC 3339 time>] [--user <uid:gid>] [--own-network [--network open|allow:<list>]] [--egress <socket>] [--window-manager] | stdio | pair <server URL> [--name <name>] | unpair | attach | probe [--sockets] [--connect <host:port>[/udp]]... | probe --diagnose | sync-serve --socket <path> --mountpoint <path> --mounts <path> --archil <path> --gid <gid> | archil-relay --gateway <IPv4 address> --mount-lane <port> --data-lane <port> | version")
 	os.Exit(2)
 }
 
@@ -539,6 +554,8 @@ type initOptions struct {
 	ownNetwork bool
 	// network is the form the egress proxy init starts serves (with ownNetwork); nil is none: no proxy, no way out.
 	network *egress.Network
+	// windowManager: init starts the desktop's window manager on DISPLAY once it answers (internal/windowmanager).
+	windowManager bool
 }
 
 const deadlineWords = "--deadline <time> is required, in RFC 3339 such as 2026-01-02T15:04:05Z: the computer ends then; --max-deadline <time> (the most deadline.extend may move it to), --user <uid:gid>, --egress <socket> and --network <form> may follow, each once"
@@ -546,6 +563,7 @@ const userWords = "--user takes uid:gid in numbers, such as 1000:1000"
 const egressWords = "--egress takes the egress proxy's socket, one absolute path, given once"
 const ownNetworkWords = "--own-network takes no value, given once, with --user (init starts as root to give itself and its programs a network of their own, their loopback alone) and with no --egress (their way out, if any, is the proxy --network has init start)"
 const networkWords = "--network is given once, with --own-network: init, still root, starts the egress proxy that form names, and relays its programs' loopback port 3128 to it"
+const windowManagerWords = "--window-manager takes no value, given once, with DISPLAY set: init, as root, starts the desktop's window manager on that display once it answers"
 
 // initOptionsOf reads init's `--deadline <time>`, `--max-deadline <time>`, `--user <uid:gid>`, `--egress <socket>` and
 // `--network <form>`, in any order, each at most once. With no deadline, a time that is not RFC 3339, or a maximum
@@ -563,6 +581,15 @@ func initOptionsOf(logger *log.Logger, args []string) (initOptions, bool) {
 				return opts, false
 			}
 			opts.ownNetwork = true
+			i-- // a flag with no value
+			continue
+		}
+		if flag == "--window-manager" {
+			if opts.windowManager || os.Getenv("DISPLAY") == "" {
+				logger.Printf("init: %s", windowManagerWords)
+				return opts, false
+			}
+			opts.windowManager = true
 			i-- // a flag with no value
 			continue
 		}

@@ -12,6 +12,7 @@ import (
 	"unsafe"
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/isolate"
+	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/windowmanager"
 )
 
 const (
@@ -65,7 +66,8 @@ func Become(uid, gid int, home, socket string, isolation Isolation) error {
 			return err
 		}
 	}
-	if err := dropPrivileges(becomeUser(uid, gid)); err != nil {
+	become := becomeUser(uid, gid)
+	if err := dropPrivileges(func() error { isolation.WindowManager.Start(); return become() }); err != nil {
 		return err
 	}
 	if isolation.OwnNetwork {
@@ -81,10 +83,13 @@ func Become(uid, gid int, home, socket string, isolation Isolation) error {
 // (isolate.DenySockets): init and every program it starts reach their own loopback and nothing else, and a failure of
 // any step refuses to start. With StartedIn, init was started in a network namespace of its own already, inside a user
 // namespace of its own (InitInUserNamespace), and StartedIn names the network namespace the init that started it was
-// in: Become brings the loopback up and reads it back (isolate.KeepOwnNetwork) instead of making the namespace.
+// in: Become brings the loopback up and reads it back (isolate.KeepOwnNetwork) instead of making the namespace. With
+// WindowManager, Become forks the desktop's window manager's start as uid:gid in a network namespace it makes (Start),
+// while still root, once no_new_privs is set and the bounding set is empty, before the uid change.
 type Isolation struct {
-	OwnNetwork bool
-	StartedIn  string
+	OwnNetwork    bool
+	StartedIn     string
+	WindowManager *windowmanager.Manager
 }
 
 // procRoot is the /proc RefuseStrangers reads.
@@ -111,9 +116,11 @@ func becomeUser(uid, gid int) func() error {
 
 // Unprivileged is init's start as the user the provider gave it (Docker: --user). It leaves every thread of init, and so
 // every program it starts, with no capability and no way to gain one, whatever the uid, root included: see
-// dropPrivileges. It must run before Init.
-func Unprivileged() error {
-	return dropPrivileges(nil)
+// dropPrivileges. It must run before Init. With manager, it forks the window manager's start as its own uid in a network
+// namespace it makes (windowmanager.Manager.Start), once no_new_privs is set and the bounding set is empty: init must be
+// root with CAP_SYS_ADMIN for that, or the manager's fact says why it did not start.
+func Unprivileged(manager *windowmanager.Manager) error {
+	return dropPrivileges(func() error { manager.Start(); return nil })
 }
 
 // dropPrivileges sets no_new_privs and empties the capability bounding set on every thread, calls become (the uid
