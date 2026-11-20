@@ -190,6 +190,10 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // and each beside the field it names (one the form does not show, such as a place, only above).
   const { monid: monidWarnings, rest: warnings } = splitMonidWarnings(agent?.warnings ?? [], d?.tools ?? []);
   const fieldWarning = (field: string) => warningsFor(warnings, field).map((w) => w.message).join(" ") || undefined;
+  // Above the form, what refuses a run until this host has it (the server's not_set_up_here) apart from what a run goes on
+  // under (a computer every tool of which is set to deny, which no run starts; a cap below one more step).
+  const refusing = warnings.filter((w) => w.reason === "not_set_up_here");
+  const noted = warnings.filter((w) => w.reason !== "not_set_up_here");
   // While a new agent's Create is under way its form takes no change (its fields are disabled too), so it stays what was sent.
   const set = (patch: AgentFields) => { if (creating && saving) return; setF((x) => ({ ...x, ...patch })); };
   // The Save button, which keeps the focus after a save the server refused, where its reason shows.
@@ -302,7 +306,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
       {(warnings.length > 0 || monidWarnings.length > 0) && (
         <div className="space-y-3 border-b bg-card px-5 py-3 md:px-8" role="status" aria-label="Save warnings">
           {[
-            { lines: warnings, head: "Saved. A run of this revision is refused until the server has what each line names:" },
+            { lines: refusing, head: "Saved. A run of this revision is refused until the server has what each line names:" },
+            { lines: noted, head: "Saved. A run of this revision goes on, as each line says:" },
             { lines: monidWarnings.map((m) => m.warning), head: "Saved. What the server said of its monid grants:" },
           ].filter((g) => g.lines.length).map((g) => (
             <div key={g.head}>
