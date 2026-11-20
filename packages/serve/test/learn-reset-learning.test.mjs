@@ -456,12 +456,13 @@ async function corrected(w) {
 }
 
 /** A runner for the agent's runs, its end-of-run step learningEndOfRun of `launch` wrapped by `wrap`; `feedback` is
- *  queued on `runId` first (the owner's words its end keeps as a correction). */
-async function runnerFor(w, runId, launch, { script, feedback, wrap = (step) => step }) {
+ *  queued on `runId` first (the owner's words its end keeps as a correction). `folderData`: the data directory whose
+ *  learning folder the end writes (by default the server's, the one its seed was read from). */
+async function runnerFor(w, runId, launch, { script, feedback, wrap = (step) => step, folderData = w.dir }) {
   if (feedback !== undefined) await sendCommand(w.server, runId, { kind: "steer", body: { text: feedback } });
   const store = await openSqliteStore({ dataDir: w.dir, role: "runner" });
   const spec = piAdapterSpec({ script, tools: {}, hooks: HOOKS }, { requests: [] });
-  const step = learningEndOfRun(launch, { store, data: w.dir, env: {}, learningFolder: (agentId) => learningFolderOf(w.dir, agentId) });
+  const step = learningEndOfRun(launch, { store, data: w.dir, env: {}, learningFolder: (agentId) => learningFolderOf(folderData, agentId) });
   assert.ok(step, "the run learns at its end");
   const createLoop = (deps) => createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1" }))({ ...deps, endOfRun: wrap(step) });
   const runner = startRunner({ store, createLoop, name: `runner-${runId}`, ...TIMING });
@@ -589,6 +590,24 @@ test("(c) a run whose start read its seed before the reset, its row made after i
   assert.ok(!(await promotionsOf(w.server.settings, "agent-1")).some((one) => one.decided === "hold"), "no hold");
 });
 
+test("a run seeded after the reset whose end writes another learning folder than the one its seed was read from (a Mode 2 run's, on its disk, seeded from the server's): its learning is not dropped, and its owner's correction lands on that folder", { timeout: 120_000 }, async (t) => {
+  const w = await storeWorld(t, { instructions: "Answer.", tools: ["read"], learning: { compile_after: 100 } });
+  // The disk the run's end writes, standing in as a data directory of its own: its folder never held the server's seed.
+  const disk = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-reset-disk-"));
+  t.after(() => rmSync(disk, { recursive: true, force: true }));
+  await corrected(w);
+  assert.equal(await w.reset(), 204);
+  const launch = { input: { content: "What is six times seven?" }, title: "t", place: { mode: "runner" }, learning: startOf(await seedOf(w.dir, "agent-1")) };
+  await w.server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
+  await runnerFor(w, "run-1", launch, { feedback: FEEDBACK, folderData: disk, script: [{ say: "The job's answer." }, { say: "Noted." }] });
+  assert.equal((await w.ended("run-1")).state, "ended");
+  const proposal = (await w.server.learning.proposal("run-1"))?.proposal;
+  assert.equal(proposal?.state, "merged", JSON.stringify(proposal));
+  const repo = learningDir(disk, "agent-1");
+  assert.ok(git(repo, ["show", "main:corrections.md"]).includes(FEEDBACK), "its correction is on the disk's folder");
+  assert.equal(w.onMain().includes("corrections.md"), false, "and not on the server's");
+});
+
 const PRE = "PRE-RESET-MARKER";
 const COMPILE_ASKED = "enough times to write it down";
 const askedToCompile = (request) => JSON.stringify(request.body ?? {}).includes(COMPILE_ASKED);
@@ -652,6 +671,9 @@ test("the watermark's readers: a run before the reset, or one whose seed was rea
   await ended("post-0", { input: { content: "After?" }, title: "after", place: { mode: "runner" }, learning: startOf(after) });
   await ended("post-served-0", ask("Served after", after), SERVED);
 
+  // The one store read the watermark adds: only runs started after it whose seed was read at or before it, by id.
+  const { at } = await w.server.settings.get(resetAtKey("agent-1"));
+  assert.deepEqual(await w.server.runs.seededBefore("agent-1", at), ["late-seed"], "the runs started after it, seeded before it");
   assert.deepEqual((await lastOwnRuns(w.server, "agent-1", 10)).map((row) => row.id), ["post-0"], "compile_after's count and a check's inputs");
   assert.equal(await notAuditableOf(w.server, "agent-1", "answer", FLOW_DIGEST, { stop_window: 10 }), 1, "the audit's served runs");
   assert.deepEqual((await pastRunsOverStore(w.server, "agent-1")).length, 2, "the money rule's past runs: post-0 and post-served-0");
