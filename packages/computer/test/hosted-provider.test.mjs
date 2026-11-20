@@ -317,6 +317,28 @@ test("create answers with what the vendor's read of the running machine says it 
 	assert.equal(Object.hasOwn(made(await create(provider)), "resources"), false, "none said: none answered, never what was asked");
 });
 
+test("a retried create, and another instance's create of the same request, answer the computer's resources too, read from the vendor (#3338 review)", async () => {
+	const { provider, fake } = setup();
+	const given = { cpus: 4, memoryMb: 8192 };
+	const read = fake.host.get.bind(fake.host);
+	fake.host.get = async (id, ctx) => {
+		const machine = await read(id, ctx);
+		return machine && { ...machine, resources: given };
+	};
+	const first = made(await provider.create(SPEC, { requestId: "same-request" }));
+	assert.deepEqual(first.resources, given);
+	// The same request again on this provider: the computer it made is found by its name, not made again.
+	const again = made(await provider.create(SPEC, { requestId: "same-request" }));
+	assert.equal(again.id, first.id);
+	assert.deepEqual(again.resources, given, "a retry answers the vendor's figures");
+	// Another instance over the same vendor adopts it.
+	const other = new HostedProvider(fake.host, { daemonPath: DAEMON_PATH, timeouts: TIMEOUTS });
+	const adopted = made(await other.create(SPEC, { requestId: "same-request" }));
+	assert.equal(adopted.id, first.id);
+	assert.deepEqual(adopted.resources, given, "an adopted computer answers the vendor's figures");
+	assert.equal(fake.machines.size, 1, "one machine");
+});
+
 test("create waits while the machine starts, and until the listing shows it twice", async () => {
 	const { provider, fake } = setup({}, { starting: 3, unlisted: 2 });
 	made(await create(provider));

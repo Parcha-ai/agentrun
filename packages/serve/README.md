@@ -4026,16 +4026,20 @@ vCPUs and memory), else what its create asked for. Nothing is built in: a provid
 and with no setting a resource is unpriced.
 
 - **Priced:** the run's ledger holds the computer's time under the run's `max_cost_usd`, one stretch of 5 minutes ahead,
-  as a browser's time is held. One stretch at what the create asks for is held before the computer is made, and a cap
-  with no room for it makes nothing: the run fails in the cap's words. Each stretch the computer ran is then booked (its
-  provider is owed it, so it is never refused) and the next one held; a cap with no room for the next pauses the run, as
-  a paid tool call's refusal does, and a raise lets it go on. When the computer is deleted, or the run's park keeps it,
-  the rest is booked and the hold let go. The booked time is in the run's `cost.usd` and on its `compute_time` lines.
+  as a browser's time is held. A claim's computer is made while the run is set up, before its cap can judge anything:
+  its first stretch is held as soon as the cap can, so the run's first model request is judged beside it, and a cap
+  with no room parks the run there for a raise. A computer made later in the run (a new sandbox in place of a lost one)
+  has one stretch at what its create asks for held first, and a cap with no room for it makes nothing: the run fails in
+  the cap's words. Each stretch the computer ran is booked (its provider is owed it, so it is never refused) and the
+  next one held; a cap with no room for the next pauses the run, as a paid tool call's refusal does, and a raise lets it
+  go on. Before the run's end or park is written, the time since is booked and the hold let go, so the end's `cost.usd`
+  holds all of it. The booked time is in the run's `cost.usd` and on its `compute_time` lines.
 - **Unpriced** (no setting, or a figure no one said): nothing is held or booked, and nothing is refused. The computer
   runs outside the cap, as a tool call with no price does, and its `compute_time` lines say `unpriced`. An operator who
   sets no compute price keeps exactly the behavior before these settings.
-- **Not held by any claim:** a computer kept past its claim for a follow-up, one deleted after its run ended, and one
-  whose delete failed run on with no claim to hold them. Their time is on the usage read (`unheld_quantity`, and the
+- **Not held by any claim:** a computer kept past its claim for a follow-up, one deleted after its run ended (the
+  seconds between the end's booking and its delete included), and one whose delete failed run on with no claim to hold
+  them. Their time is on the usage read (`unheld_quantity`, and the
   interval's `booked_seconds` beside its life) but in no cap and no cost: check `computer_intervals` for such a computer.
   A computer a later claim takes back is held again from then on.
 - A run whose process keeps no ledger here (a runner of its own with no run ledger) holds and books nothing, as if

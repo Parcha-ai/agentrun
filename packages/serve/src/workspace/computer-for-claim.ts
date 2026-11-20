@@ -239,6 +239,10 @@ export interface ClaimComputer {
   /** The kind of computer a park of this claim keeps (`park`): a desktop, a phone or a sandbox the claim made through its
    *  provider, or took back from an earlier claim's park. Absent: a park lets the computer go as the run's end does. */
   readonly keeps?: KeptKind;
+  /** Books the time of every computer this claim holds up to now on the run's ledger, its holds let go, its meter
+   *  stopped (compute-cost.ts): run before the run's end or park is written (the spec's beforeRelease), so the end's
+   *  cost holds it. Absent where nothing is metered. */
+  settle?(): Promise<void>;
   release(why?: ViewEnd): Promise<void>;
   /** The claim's release at the run's park, for `cause`: a computer it `keeps` is kept for KEEP_MS (computer-kept.ts),
    *  its live view closed with the park's cause and the keep's time (ParkedEnd) and its hold ended, but the machine left
@@ -1189,6 +1193,7 @@ export async function computerForClaim(
     ...(replaced ? { replaced } : {}),
     ...(ownKind ? { made: ownKind } : {}),
     ...(keeps ? { keeps: keeps.kind } : {}),
+    ...(meter ? { settle: () => meter.stopAll() } : {}),
     release,
     async park(cause: ParkCause): Promise<boolean> {
       if (!keeps || !settings || released) {

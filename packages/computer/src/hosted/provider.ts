@@ -751,7 +751,9 @@ export class HostedProvider implements ComputerProvider {
 				// shows a drift in a size.
 				const drift = attached.ok ? readBackDiffer({ ...spec, network: networkOfForm(formOf(spec.network)) as NetworkSpec, user: this.#userOf(spec) }, attached.value.spec, ["user", "network", "gpu"]) : [];
 				if (drift.length > 0) return this.#fail("exists", otherSpecWords(name, "was made", drift));
-				if (attached.ok) return ok({ id: attached.value.id, name: attached.value.name, ...(attached.value.notes ? { notes: attached.value.notes } : {}) });
+				// What the vendor gave it, from this read of it running, as a fresh create answers it (#prepare): a retry, or
+				// another instance's computer adopted, is priced by the same figures.
+				if (attached.ok) return ok({ id: attached.value.id, name: attached.value.name, ...(attached.value.notes ? { notes: attached.value.notes } : {}), ...(machine.resources ? { resources: machine.resources } : {}) });
 				if (attached.error.code === "aborted") return attached;
 				// Its daemon is not up yet, or not yet as declared (a desktop whose display the first create is still
 				// starting): the first create is still making it. A refusal that holds past createMs is exists.

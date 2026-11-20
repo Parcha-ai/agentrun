@@ -15,10 +15,14 @@
 // says `unpriced`.
 //
 // The cap (computeMeter): a priced computer's time is held on the run's one ledger, under the run's max_cost_usd, one
-// stretch ahead, as browser time is. Before the claim creates it, one stretch at what its create asks for is held (a
-// refusal makes nothing, in the cap's words); once made, each stretch it ran is booked (owed: its provider is owed it, so
-// the cap never refuses it) and the next stretch held, a refusal of which pauses the run as a browser call's does; at its
-// delete, or when the run's park keeps it, the rest is booked and the hold let go. Time no claim holds (a computer kept
+// stretch ahead, as browser time is. A claim's first computer is made while the run's spec is built, before its cap can
+// judge: its first stretch is held once the cap can (owed: it is made), so the run's first request is judged beside it,
+// and a cap with no room parks the run there. A computer made once the cap judges (a lost sandbox's new one) has one
+// stretch at what its create asks for held first (a refusal makes nothing, in the cap's words). Each stretch it ran is
+// then booked (owed: its provider is owed it, so the cap never refuses it) and the next stretch held, a refusal of which
+// pauses the run as a browser call's does. Before the run's end or park is written (the spec's beforeRelease: settle),
+// what it ran since is booked and its hold let go, so the end's cost holds it; the moments between that and its delete
+// are no claim's. Time no claim holds (a computer kept
 // past its claim for a follow-up, one deleted after its run ended, one whose delete failed) is booked by none: it is on the
 // usage read (`unheld_quantity`) and in no cap.
 import { PROVIDERS } from "@parcha/agentrun-computer";
@@ -100,8 +104,9 @@ export const computeTag = (one: Pick<ResourceOf, "resource" | "gpuType">): strin
 /** Up to the millionth of a dollar, so the cap's words name a figure never below the hold. */
 const microUsd = (usd: number) => Math.ceil(Math.round(usd * 1e12) / 1e6) / 1e6;
 
-/** The run's ledger as the meter books on it, and the run's pause for a refusal of the next stretch. */
-export type ComputeLedger = { readonly paid?: PaidBooking; readonly pause?: (refusal: Refusal) => Promise<void> };
+/** The run's ledger as the meter books on it, the run's pause for a refusal of the next stretch, and whether its cap can
+ *  judge a step now (`judges`, RunLedger.judges: false while the run's spec, whose cap it is, is still built). */
+export type ComputeLedger = { readonly paid?: PaidBooking; readonly pause?: (refusal: Refusal) => Promise<void>; readonly judges?: () => boolean };
 
 /** A hold-only step on the ledger, given back by `drop`. */
 type Hold = { drop(): void };
@@ -152,12 +157,12 @@ export function computeMeter(options: ComputeMeterOptions): ComputeMeter {
   let seq = 0;
   /** A hold of `usd` for `provider`'s next stretch: admitted (refused in the cap's words, with its refusal); `owed`, time
    *  its provider is already owed (a computer already made), never refused. */
-  const holdOf = async (provider: string, usd: number, basis: string, owed: boolean): Promise<{ hold: Hold } | { refused: string; refusal?: Refusal }> => {
+  const holdOf = async (provider: string, usd: number, basis: string, given: { readonly owed?: true } = {}): Promise<{ hold: Hold } | { refused: string; refusal?: Refusal }> => {
     const paid = ledger.paid;
     if (!paid) return { hold: { drop: () => {} } };
     const id = `compute:${provider}#hold-${(seq += 1)}`;
     try {
-      await paid.admit({ id, name: `${provider}'s computer time`, holdUsd: usd, basis, chargedBy: provider, tool: COMPUTE_TOOL, hold: true, ...(owed ? { owed: true as const } : {}) });
+      await paid.admit({ id, name: `${provider}'s computer time`, holdUsd: usd, basis, chargedBy: provider, tool: COMPUTE_TOOL, hold: true, ...(given.owed ? { owed: true as const } : {}) });
     } catch (error) {
       const capped = (error as { code?: unknown })?.code === "spend_cap_reached";
       const given = error as { forGood?: boolean; figures?: Refusal["figures"] };
@@ -199,7 +204,7 @@ export function computeMeter(options: ComputeMeterOptions): ComputeMeter {
   /** Each stretch: what ran booked, the next stretch held (owed while the computer runs; a refusal pauses the run once). */
   const tick = async (one: Held): Promise<void> => {
     await book(one, now());
-    const next = await holdOf(one.provider, stretchUsd(one.priced), basisOf(one.provider, one.priced), false);
+    const next = await holdOf(one.provider, stretchUsd(one.priced), basisOf(one.provider, one.priced));
     one.hold?.drop();
     if ("hold" in next) {
       one.hold = next.hold;
@@ -229,8 +234,10 @@ export function computeMeter(options: ComputeMeterOptions): ComputeMeter {
     async before(provider, figures) {
       const priced = pricedOf(provider, figures, env);
       const usd = stretchUsd(priced);
-      if (!ledger.paid || usd === 0) return undefined;
-      const held = await holdOf(provider, usd, basisOf(provider, priced), false);
+      // A cap that can't judge yet (the claim's first computer, made while the run's spec is built) holds nothing ahead:
+      // the computer's first stretch is held, owed, once it can (start), before the run's first request is judged.
+      if (!ledger.paid || usd === 0 || ledger.judges?.() === false) return undefined;
+      const held = await holdOf(provider, usd, basisOf(provider, priced));
       if ("refused" in held) throw new ComputeRefused(held.refused);
       return held.hold;
     },
@@ -245,7 +252,7 @@ export function computeMeter(options: ComputeMeterOptions): ComputeMeter {
       held.set(k, one);
       // Its first stretch held at what it was made with (owed: it is made, so never refused), then the hold taken before
       // its create let go. The stretch's ticks wait for it, so a tick never drops a hold this has not set yet.
-      one.ticking = holdOf(provider, stretchUsd(priced), basisOf(provider, priced), true).then((first) => {
+      one.ticking = holdOf(provider, stretchUsd(priced), basisOf(provider, priced), { owed: true }).then((first) => {
         if ("hold" in first) {
           if (one.stopped) first.hold.drop();
           else one.hold = first.hold;
