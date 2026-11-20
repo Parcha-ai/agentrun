@@ -128,6 +128,16 @@ test("an API-only server serves the computers list and the Archil settings with 
   }
 });
 
+test("an API-only server's computers list says the run's folder each provider's computer holds: a bind in Mode 1 where it binds this machine's, else null", async (t) => {
+  withEnv(t, {}, ["ARCHIL_API_KEY", "AGENTRUN_ARCHIL_REGION", "AGENTRUN_ARCHIL_S3_URL", "AGENTRUN_ARCHIL_IMAGE"]);
+  const server = await serve(t, { apiOnly: true, runner: false });
+  const computers = await send(server, "GET", "/v2/computers");
+  assert.equal(computers.status, 200, JSON.stringify(computers.body));
+  const folderOf = (kind, id) => computers.body.kinds.find((one) => one.kind === kind).providers.find((one) => one.id === id).folder;
+  assert.deepEqual([folderOf("sandbox", "faux-sandbox"), folderOf("desktop", "faux-desktop")], ["bind", null], "Mode 1: the faux sandbox binds this machine's folder; the faux desktop takes none");
+  for (const row of computers.body.kinds.flatMap((kind) => kind.providers)) assert.ok(["bind", "archil", "sync", null].includes(row.folder), `${row.id}: ${JSON.stringify(row.folder)}`);
+});
+
 const REFUSED = [
   ["the console", "GET", "/", { token: false, headers: { accept: "text/html" } }],
   ["the console's assets", "GET", "/assets/index.js", { token: false }],
