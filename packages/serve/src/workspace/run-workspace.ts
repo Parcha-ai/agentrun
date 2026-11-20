@@ -3,16 +3,18 @@
 // tools' own end.
 //
 // Mode 2: the run's folder on the claim's Archil disk (archil-claim.ts), at runKey, in the image the server's Archil
-// settings name. Its exec spill folder is swept when the run starts (what a killed exec, a crash or a failed cleanup left)
-// and again at its end. A cleanup that leaves spill files (onCleanupFailed), or a sweep that fails, goes to the run's
-// log in words and never fails the run: the next sweep takes what is left.
+// settings name. The folder is made at the claim when it is not there yet; a folder that can't be made fails the claim
+// in Archil's words, as everything the run does is in it. Its exec spill folder is swept when the run starts (what a
+// killed exec, a crash or a failed cleanup left) and again at its end. A cleanup that leaves spill files
+// (onCleanupFailed), or a sweep that fails, goes to the run's log in words and never fails the run: the spill folder is
+// beside the run's folder, each exec's files are its own, and the next sweep takes what is left.
 // Mode 1: the run's local folder (runFolder). Its end does nothing here; the tools' end clears what they keep in it.
 import { mkdir } from "node:fs/promises";
 import { type ArchilClaim, HELD_ARCHIL } from "./archil-claim.js";
 import { archilWorkspace } from "./archil.js";
 import { localWorkspace } from "./local.js";
 import { runFolder, runKey } from "./paths.js";
-import type { Workspace } from "./workspace.js";
+import { type Workspace, WorkspaceError } from "./workspace.js";
 
 export type RunWorkspaceOptions = {
   readonly agentId: string;
@@ -71,9 +73,11 @@ export async function openRunWorkspace(options: RunWorkspaceOptions): Promise<Ru
       say(`the run's exec spill folder could not be swept at the run's ${when} (the next sweep takes what is left): ${(error as Error)?.message ?? error}`);
     }
   };
-  // The run's folder on the disk (its run key), ensured at the claim as Mode 1's is: a fresh run has none yet. A write would
-  // make its prefix anyway, so a failure here never fails the run; it is the next write's.
-  await workspace.mkdir("").catch((error: unknown) => say(`the run's folder could not be made on the disk (a write will make it): ${(error as Error)?.message ?? error}`));
+  // The run's folder on the disk (its run key), ensured at the claim as Mode 1's is: a fresh run has none yet. One already
+  // there (a later claim's, its kept computer perhaps holding it) is left as it is.
+  await workspace.ensureRoot().catch((error: WorkspaceError) => {
+    throw new WorkspaceError(error.code, `the run's folder on its Archil disk could not be made: ${error.message}`, { cause: error });
+  });
   await sweep("start");
   let ended: Promise<void> | undefined;
   return { workspace, end: () => (ended ??= sweep("end")) };

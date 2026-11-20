@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { AgentRun, AgentRunUsage, type ClientOptions } from '@parcha/agentrun-client';
-import { BackendLearningClient, renderLearningContext, type BackendLearningStart, type BackendLearningCheckpoint } from '@parcha/agentrun-client/learning';
+import { BackendLearningClient, renderLearningContext, type BackendLearningCheckpoint } from '@parcha/agentrun-client/learning';
 import { createWorkflowBridge } from '@parcha/agentrun-client/workflows';
 import type { SessionReader } from 'eve/sessions';
 import { collectTurn } from './evidence.js';
@@ -30,7 +30,7 @@ export interface TurnRecord {
   agentId: string;
   source: TurnSource;
   receipt: Receipt;
-  admission?: BackendLearningStart;
+  admission?: BackendLearningCheckpoint['source'];
   shadow?: BackendLearningCheckpoint['shadow'];
   expiresAt: number;
   submitted?: true;

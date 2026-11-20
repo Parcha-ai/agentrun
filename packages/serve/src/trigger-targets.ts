@@ -40,7 +40,7 @@ export interface TriggerTargetDeps {
    *  when it ended; undefined for a run that is unknown or did not complete (the run view). `carried`: the top-level
    *  fields the output schema it was checked against (its pinned revision's, never the agent's current one) names in
    *  `x-carried` (answer-json.ts carriedFields), absent when it names none. */
-  completedOutput(runId: string): Promise<{ output: unknown; endedAt: string | null; carried?: readonly string[] } | undefined>;
+  completedOutput(runId: string): Promise<CompletedOutput | undefined>;
 }
 
 /** The most of a trigger's firings, newest first, read for its last completed run. */
@@ -71,14 +71,28 @@ async function previousResultOf(store: Store, deps: TriggerTargetDeps, trigger: 
   const firings = (await store.triggers.firings(trigger.id)).filter((firing) => firing.key !== trigger.firing_key && firing.runId).slice(0, PREVIOUS_FIRINGS_READ);
   for (const firing of firings) {
     const done = await deps.completedOutput(firing.runId!);
-    if (!done) continue;
-    if (done.output === null || done.output === undefined) return "";
-    const json = JSON.stringify(done.output, null, 2);
-    const bytes = Buffer.byteLength(json);
-    if (bytes <= PREVIOUS_RESULT_MAX_BYTES) return previousResultWords(firing.runId!, done.endedAt, json);
-    return carriedOf(firing.runId!, done, bytes) ?? previousResultTooLarge(firing.runId!);
+    if (done) return previousHandover(firing.runId!, done).text;
   }
   return "";
+}
+
+/** A completed run's result as the trigger reads it back (TriggerTargetDeps.completedOutput). */
+export type CompletedOutput = { output: unknown; endedAt: string | null; carried?: readonly string[] };
+
+/** What a triggered run is handed of its trigger's last completed run `runId`, whose result is `done`: `whole`, its
+ *  result.output as it is; `carried`, its carried `fields` alone, `dropped` the entries each carried array gave up from its
+ *  front, by field (0 for one that gave up none; a carried field that is no array is not in it); `too_large`, nothing,
+ *  said so; `none`, nothing at all (it has no output: its answer did not meet its schema). `text` is the words the run's
+ *  message carries it in after the trigger's (empty for none). previousResultOf hands the text; a template eval grades
+ *  the rest (eval-previous.ts handedPrevious). */
+export type PreviousHandover = { kind: "whole" | "carried" | "too_large" | "none"; text: string; run_id?: string; fields?: string[]; dropped?: Record<string, number> };
+
+export function previousHandover(runId: string, done: CompletedOutput): PreviousHandover {
+  if (done.output === null || done.output === undefined) return { kind: "none", text: "" };
+  const json = JSON.stringify(done.output, null, 2);
+  const bytes = Buffer.byteLength(json);
+  if (bytes <= PREVIOUS_RESULT_MAX_BYTES) return { kind: "whole", text: previousResultWords(runId, done.endedAt, json), run_id: runId };
+  return carriedOf(runId, done, bytes) ?? { kind: "too_large", text: previousResultTooLarge(runId), run_id: runId };
 }
 
 /** A previous result over the limit, `bytes` whole, as its carried fields alone (`done.carried`, the ones it holds),
@@ -87,7 +101,7 @@ async function previousResultOf(store: Store, deps: TriggerTargetDeps, trigger: 
  *  array largest in bytes as handed right then (a tie: the first in x-carried order), until they fit. A scalar or an
  *  object is never cut, nor anything inside an entry. Undefined when it carries none, holds none of them, or they are
  *  still over with no entry left to drop. */
-function carriedOf(runId: string, done: { output: unknown; endedAt: string | null; carried?: readonly string[] }, bytes: number): string | undefined {
+function carriedOf(runId: string, done: CompletedOutput, bytes: number): PreviousHandover | undefined {
   const output = done.output;
   if (!done.carried || typeof output !== "object" || output === null || Array.isArray(output)) return undefined;
   const fields = done.carried.filter((field) => Object.hasOwn(output, field));
@@ -114,7 +128,8 @@ function carriedOf(runId: string, done: { output: unknown; endedAt: string | nul
     json = JSON.stringify(picked, null, 2);
     if (Buffer.byteLength(json) > PREVIOUS_RESULT_MAX_BYTES) return undefined;
   }
-  return previousCarriedWords(runId, done.endedAt, fields, bytes, json, fields.flatMap((field) => (dropped.has(field) ? [[field, dropped.get(field)!] as const] : [])));
+  const text = previousCarriedWords(runId, done.endedAt, fields, bytes, json, fields.flatMap((field) => (dropped.has(field) ? [[field, dropped.get(field)!] as const] : [])));
+  return { kind: "carried", text, run_id: runId, fields, dropped: Object.fromEntries(fields.flatMap((field) => (Array.isArray(picked[field]) ? [[field, dropped.get(field) ?? 0]] : []))) };
 }
 
 /** The bytes of a carried array from entry `from` on, as JSON.stringify(picked, null, 2) lays it out one level into the

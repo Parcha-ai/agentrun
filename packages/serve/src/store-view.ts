@@ -5,7 +5,7 @@
 // onto. viewOverStore answers the run read, summaryOverStore the run list, momentOverStore the one acceptance each act reads.
 import { isDeepStrictEqual } from "node:util";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { CAPS, isMessageRow, type TimelineEvent } from "./timeline/index.js";
+import { CAPS, type EntryLike, isMessageRow, type TimelineEvent } from "./timeline/index.js";
 import { runLink } from "./console-links.js";
 import { redacted, redactedAnswer, redactedOutput, withoutLoopback } from "./key-refusal.js";
 import { structuredAnswer } from "./answer-json.js";
@@ -51,7 +51,8 @@ import {
 } from "./run-view.js";
 import { reflects, type Reflect } from "./reflect-range.js";
 import { freeCeilingMessage, overCapMessage, SPEND_CAP_REACHED } from "@parcha/agentrun-kernel/kernel/cap";
-import { type BookedSpend, bookedSpend, cliModelWorked, type CostBasis, costBasisOf, costWordsOf, endCostOf, planSpend, type RunCost, runCostOf, storedBasisOf } from "./runner/metrics.js";
+import { booksDecisions, decisionsOverStore, parallelChargedDecisions } from "./store-reads/decisions.js";
+import { type BookedSpend, bookedDecisionsOf, bookedSpend, cliModelWorked, type CostBasis, costBasisOf, costWordsOf, endCostOf, planSpend, type RunCost, runCostOf, storedBasisOf } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
 import { laidOf, pathViewOf, roundsOf, runLearningEnd, usedOnly } from "./store-reads/learning.js";
@@ -401,7 +402,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // (runReflect). progressAt reads the latest tick, so a working run's last_progress_at advances as today.
   const sdkCompletion = records.entries.findLast(entry => entry.kind === "agentrun.sdk.completion")?.data as import("./sdk/runs.js").SdkCompletion | undefined;
   const sdkSession = records.entries.findLast(entry => entry.kind === "agentrun.sdk.session")?.data as {session_id:string} | undefined;
-  const sdk = launch?.sdk ? {runtime:launch.sdk.runtime,model:sdkCompletion?.model??launch.sdk.model??null,session_id:sdkCompletion?.session_id??sdkSession?.session_id??null,learning_revision:launch.learning?.seed??null,usage:sdkCompletion?.usage??null} : undefined;
+  const sdk = launch?.sdk ? {runtime:launch.sdk.runtime,...(launch.sdk.runtime === "external" ? {platform:launch.sdk.platform} : {}),model:sdkCompletion?.model??launch.sdk.model??null,session_id:sdkCompletion?.session_id??sdkSession?.session_id??null,learning_revision:launch.learning?.seed??null,usage:sdkCompletion?.usage??null} : undefined;
   const nativeConfiguration = records.entries.findLast(e=>e.kind === "agentrun.native.configuration")?.data as Record<string,unknown>|undefined;
   const nativeEvents = records.entries.filter(e=>e.kind === "agentrun.native.usage").map(e=>e.data as {phase:string;model?:string;usage:import("./native/types.js").NativeUsage;session_id:string});
   const reflectRange = (await runReflect(store, runId, context)) as Reflect | undefined;
@@ -614,7 +615,7 @@ function costOfView(run: StoreRun): Record<string, unknown> {
 
 /** What run `runId`'s paid tool calls cost, the run read's `cost.tools_usd` (server.ts allInViewOf): the charges its
  *  paid-tools session booked (a monid endpoint's, a priced MCP tool's, Parallel's behind the web tools, the browser's
- *  time), joined and rounded by the one rule its `usd` is (costWordsOf), less those in its end-of-run turn, which are
+ *  time) and the decisions Parallel charged on its own API (store-reads/decisions.ts chargedByParallel), joined and rounded by the one rule its `usd` is (costWordsOf), less those in its end-of-run turn, which are
  *  learning's as that turn's model requests are (runCostOf). A part of `usd`, never added to it; 0 with none. Null when
  *  one's charge is unknown (charged an unknown amount, cut, or still out) or counted at its hold; while the run is at work
  *  (not ended, stopped or failed), as its `usd` is the view's snapshot and a paid call booked after it would be read here
@@ -629,7 +630,9 @@ export async function toolsUsdOverStore(store: Store, runId: string): Promise<nu
   if (!runRow || !FINAL_STATES.includes(runRow.state) || runRow.importedFrom || launch?.native || launch?.sdk || (await roundsOf(store, runId)).length > 1) return null;
   const records = await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT);
   const turns = reflectRanges(records.submissions ?? [], records.entries);
-  const words = costWordsOf([bookedSpend(records.entries.filter((entry) => !inReflect(turns, Number(entry.id))) as never, "paid")]);
+  const entries = records.entries.filter((entry) => !inReflect(turns, Number(entry.id))) as unknown as EntryLike[];
+  const parallel = booksDecisions(entries) ? parallelChargedDecisions(await decisionsOverStore(store, runId, BACKGROUND_CONTEXT)) : new Set<string>();
+  const words = costWordsOf([bookedSpend(entries, "paid"), ...(parallel.size ? [bookedDecisionsOf(entries, parallel)] : [])]);
   return words.upper_bound ? null : words.usd;
 }
 
