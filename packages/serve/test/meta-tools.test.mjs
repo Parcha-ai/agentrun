@@ -152,6 +152,21 @@ test("a script stopped by a parked call lists each earlier call's result as the 
   ], answer.text);
 });
 
+test("a stopped script lists each call's whole value, a long one too: the model reads it nowhere else", async () => {
+  // QA: an HN item of about 9 KB, answered by the call a person approved, reached the model cut at 2,000 characters, so
+  // the title (late in the JSON) never did. The answer's own bound is the host's, on the whole answer (boundResult).
+  const item = { kids: Array.from({ length: 60 }, (_, i) => ({ id: i, text: `comment ${i} `.repeat(15) })), title: "My YC app: Dropbox - Throw away your USB drive" };
+  const user = { about: "Bug fixer.", karma: 157316, notes: "x".repeat(3_000) };
+  assert.ok(JSON.stringify(item).length > 8_000);
+  const first = { startedAt: 1, seed: 2, nonce: "the-first-run", tools: TOOLS.map((one) => [one.name, one.name]) };
+  const nested = { call: async (name) => (name === "send_email" ? { text: JSON.stringify(item), fresh: true } : { text: JSON.stringify(user), fresh: false }), memo: async () => first };
+  const [, , codemode] = metaTools({ tools: () => TOOLS, granted: async () => true, codemode: true, discovery: { search: true, call: true } });
+  const answer = await codemode.call({ script: "await tools.read_file({});\nreturn await tools.send_email({});" }, { signal: new AbortController().signal, nested });
+  const lines = answer.text.split("\n").filter((line) => /^\d+\. /.test(line));
+  assert.equal(lines[0], `1. read_file completed: ${JSON.stringify(user)}. Its effect is done; it was not run again.`);
+  assert.equal(lines[1], `2. send_email completed: ${JSON.stringify(item)}. Its effect is done; it was not run again.`);
+});
+
 test("a stopped script lists a call's string value as the script read it: its structured string, never its fuller text", async () => {
   // A nested call that showed text('note') and returned 'saved': text "note\nsaved", value "saved".
   const first = { startedAt: 1, seed: 2, nonce: "the-first-run", tools: TOOLS.map((one) => [one.name, one.name]) };
