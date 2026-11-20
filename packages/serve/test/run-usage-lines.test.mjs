@@ -51,8 +51,8 @@ test("a run on two models, a decision, two paid tools and a browser: a line per 
   assert.equal(line(lines, "tokens", "jev").usd, 0.00004, "a decision is a model request on its own model");
   assert.equal(line(lines, "tokens", "jev").provider, null);
 
-  assert.deepEqual(line(lines, "tools", "monid"), { meter: "tools", model: null, provider: null, charged_by: "monid", quantity: 2, unit: "call", basis: "estimate", usd: 0.006 });
-  assert.deepEqual(line(lines, "tools", "fake"), { meter: "tools", model: null, provider: null, charged_by: "fake", quantity: 1, unit: "call", basis: "estimate", usd: 0.05 });
+  assert.deepEqual(line(lines, "tools", "monid"), { meter: "tools", model: null, provider: "monid", charged_by: "monid", quantity: 2, unit: "call", basis: "estimate", usd: 0.006 });
+  assert.deepEqual(line(lines, "tools", "fake"), { meter: "tools", model: null, provider: "fake", charged_by: "fake", quantity: 1, unit: "call", basis: "estimate", usd: 0.05 });
   assert.deepEqual(line(lines, "browser_time", "browserbase"), { meter: "browser_time", model: null, provider: "browserbase", charged_by: null, quantity: 75.25, unit: "second", basis: "estimate", usd: 0.0025 });
 
   // 0.03 + 0.02 + 0.001 + 0.00004 + 0.003 + 0.05 + 0.003 + 0.002 + 0.0005
@@ -123,8 +123,8 @@ test("tool calls with no price set are counted on their charger's line, outside 
   const unmetered = (by) => e(1, "agentrun.tool_unmetered", { tool: "mcp__docs__search", charged_by: by, call: `c${id}` });
   const entries = [...keys(), ...paid(1, "mcp:fake/paid", "fake", 0.05), unmetered("fake"), unmetered("docs"), unmetered("docs")];
   const { lines, total } = usageLinesOf(entries);
-  assert.deepEqual(line(lines, "tools", "fake"), { meter: "tools", model: null, provider: null, charged_by: "fake", quantity: 1, unit: "call", basis: "estimate", usd: 0.05, not_metered_calls: 1 });
-  assert.deepEqual(line(lines, "tools", "docs"), { meter: "tools", model: null, provider: null, charged_by: "docs", quantity: 0, unit: "call", basis: "unpriced", usd: 0, not_metered_calls: 2 }, "a server its owner priced nothing on: its calls said, no charge booked");
+  assert.deepEqual(line(lines, "tools", "fake"), { meter: "tools", model: null, provider: "fake", charged_by: "fake", quantity: 1, unit: "call", basis: "estimate", usd: 0.05, not_metered_calls: 1 });
+  assert.deepEqual(line(lines, "tools", "docs"), { meter: "tools", model: null, provider: "docs", charged_by: "docs", quantity: 0, unit: "call", basis: "unpriced", usd: 0, not_metered_calls: 2 }, "a server its owner priced nothing on: its calls said, no charge booked");
   assert.deepEqual(total, { usd: 0.05 }, "they never make the cost unknown");
 });
 
@@ -162,7 +162,7 @@ test("one model reached two ways is two lines, each with its own route's provide
 
 /** A store over `run` and its journal (`entries`, `submissions`), each read inside its snapshot only: a read of the store
  *  outside it throws, and `reads` says what was read inside. */
-function snapshotStore(run, { entries = [], submissions = [], launch, rounds = 0 } = {}) {
+function snapshotStore(run, { entries = [], submissions = [], launch, rounds = 0, intervals = [] } = {}) {
   const reads = [];
   const conversations = [...new Set(entries.map((one) => one.conversationId))].map((one) => ({ id: one }));
   const page = (items) => ({ items });
@@ -178,6 +178,7 @@ function snapshotStore(run, { entries = [], submissions = [], launch, rounds = 0
       scanTasks: async () => page([]),
       scanSubmissions: async () => page(submissions),
     }),
+    computerIntervals: { forRun: async () => (reads.push("intervals"), intervals) },
   };
   const outside = new Proxy({}, { get: (_, key) => { throw new Error(`read outside the snapshot: ${String(key)}`); } });
   const store = new Proxy(outside, { get: (target, key) => (key === "snapshot" ? (read) => read(inside) : target[key]) });
@@ -190,7 +191,7 @@ test("an ended run's usage is read in one snapshot of the store, every read of i
   const { runUsageOverStore } = await import("../dist/run-usage.js");
   const { store, reads } = snapshotStore(ended(), { entries: [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1))] });
   const read = await runUsageOverStore(store, "run_1");
-  assert.deepEqual(reads, ["run", "launch", "rounds", "journal"], "each read inside the snapshot, none outside (an outside read throws)");
+  assert.deepEqual(reads, ["run", "launch", "rounds", "journal", "intervals"], "each read inside the snapshot, none outside (an outside read throws)");
   assert.equal(read.ended_at, "2026-11-19T10:00:00.000Z", "the moment the lines cover");
   assert.deepEqual(read.total, { usd: 0.01 });
   assert.equal(read.lines.length, 1);
@@ -199,7 +200,7 @@ test("an ended run's usage is read in one snapshot of the store, every read of i
 test("a run at work says so with no lines and no end; an unknown run is undefined", async () => {
   const { runUsageOverStore } = await import("../dist/run-usage.js");
   const { store } = snapshotStore({ id: "run_1", state: "running", endedAt: null });
-  assert.deepEqual(await runUsageOverStore(store, "run_1"), { run_id: "run_1", ended_at: null, currency: "USD", total: null, lines: null, browser_sessions: null, reason: "running" });
+  assert.deepEqual(await runUsageOverStore(store, "run_1"), { run_id: "run_1", ended_at: null, currency: "USD", total: null, lines: null, browser_sessions: null, computer_intervals: null, reason: "running" });
   assert.equal(await runUsageOverStore(snapshotStore(undefined).store, "run_nope"), undefined);
 });
 
@@ -259,6 +260,47 @@ test("served, a browser session's words are cut of the server's secrets too: its
   assert.ok(!JSON.stringify(read).includes(secret), "the secret is not served");
   assert.match(read.browser_sessions[0].provider_session_id, /^sess-\[redacted\]/);
   assert.equal(read.browser_sessions[0].provider_record.proxy_bytes, 12, "its figures are as read");
+});
+
+/** A computer interval row as the store reads it (store.computerIntervals.forRun), its times on the test's clock. */
+const interval = (providerId, extra = {}) => ({ runId: "run_1", provider: "e2b", providerId, kind: "sandbox", gpuType: null, gpuCount: null, cpus: null, memoryMb: null, startedAt: ENDED - 600_000, kept: false, endedAt: null, ...extra });
+
+test("an ended run's computers are served beside its lines, in the store's order, each time as ISO and its machine facts null where its create asked none; none is no line and leaves total alone", async () => {
+  const { runUsageOverStore } = await import("../dist/run-usage.js");
+  const intervals = [
+    interval("gpu-1", { provider: "daytona", gpuType: "H100", gpuCount: 1, cpus: 4, memoryMb: 8192, startedAt: ENDED - 900_000, endedAt: ENDED - 60_000 }),
+    interval("sbx-2", { kind: "desktop", kept: true }),
+  ];
+  const { store } = snapshotStore(ended(), { entries: [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1))], intervals });
+  const read = await runUsageOverStore(store, "run_1");
+  assert.deepEqual(read.computer_intervals, [
+    { provider: "daytona", provider_id: "gpu-1", kind: "sandbox", gpu: { type: "H100", count: 1 }, cpus: 4, memory_mb: 8192, started_at: "2026-11-19T09:45:00.000Z", ended_at: "2026-11-19T09:59:00.000Z", kept: false },
+    { provider: "e2b", provider_id: "sbx-2", kind: "desktop", gpu: null, cpus: null, memory_mb: null, started_at: "2026-11-19T09:50:00.000Z", ended_at: null, kept: true },
+  ]);
+  // Computer time is not priced: no line for it, and the total is the model request's alone.
+  assert.deepEqual(read.lines.map((one) => one.meter), ["tokens"]);
+  assert.deepEqual(read.total, { usd: 0.01 });
+});
+
+test("a run that made no computer reads [] for its computers; a run with no lines reads null, as its browser sessions do", async () => {
+  const { runUsageOverStore } = await import("../dist/run-usage.js");
+  const none = await runUsageOverStore(snapshotStore(ended(), { entries: [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1))] }).store, "run_1");
+  assert.deepEqual(none.computer_intervals, []);
+  const notBooked = await runUsageOverStore(snapshotStore(ended({ importedFrom: { harness: "claude-code", session: "s" } }), { intervals: [interval("sbx-1")] }).store, "run_1");
+  assert.deepEqual([notBooked.lines, notBooked.computer_intervals], [null, null]);
+});
+
+test("served, a computer's words are cut of the server's secrets: a secret planted in its provider's id, its kind or its GPU type is not served", async () => {
+  const { servedRunUsage } = await import("../dist/run-usage.js");
+  const secret = "sk-planted-computer-0123456789";
+  const intervals = [interval(`sbx-${secret}`, { gpuType: `gpu-${secret}`, gpuCount: 2, kind: `k-${secret}` })];
+  const { store } = snapshotStore(ended(), { entries: [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1))], intervals });
+  const served = new Proxy(store, { get: (target, key) => (key === "runs" ? { get: async () => ended(), launch: async () => { throw new Error("no launch"); } } : target[key]) });
+  const read = await servedRunUsage({ serverSecrets: () => [secret] }, served, "run_1");
+  assert.equal(read.computer_intervals.length, 1);
+  assert.ok(!JSON.stringify(read).includes(secret), "the secret is not served");
+  assert.match(read.computer_intervals[0].provider_id, /^sbx-\[redacted\]/);
+  assert.equal(read.computer_intervals[0].gpu.count, 2, "its figures are as read");
 });
 
 test("a job's browser released at the run's end, inside the learning turn's range, keeps its end; a session the learning turn opened is not the job's (#3285 review)", async () => {
