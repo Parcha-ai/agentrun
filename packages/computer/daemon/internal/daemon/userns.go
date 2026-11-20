@@ -66,7 +66,7 @@ func InitInUserNamespace(self string, args []string, refused error, logger *log.
 	}
 	pid := child.Process.Pid
 	// The child holds the computer; this init keeps nothing it could be made to use.
-	if err := Unprivileged(); err != nil {
+	if err := Unprivileged(nil); err != nil {
 		logger.Printf("init refuses to start: %v", err)
 		_ = syscall.Kill(pid, syscall.SIGKILL)
 		return 1

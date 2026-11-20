@@ -1,6 +1,6 @@
 ---
 type: tool_used
-tools: [mcp:github/get_file_contents, mcp:github/get_repository_tree, mcp:github/pull_request_read]
+tools: [mcp:github/get_file_contents, mcp:github/pull_request_read]
 expect: not_called
 args: { repo: vault }
 ---

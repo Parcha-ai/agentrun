@@ -89,6 +89,9 @@ const finite = (value: unknown): number | undefined => (typeof value === "number
 const count = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined);
 /** A time as the rows write theirs; undefined for one no Date holds. */
 const iso = (ms: number): string | undefined => (Math.abs(ms) <= 8.64e15 ? new Date(ms).toISOString() : undefined);
+/** An amount with a sum's floating-point noise off (0.1 + 0.2 is 0.3, not 0.30000000000000004), to a millionth of a
+ *  millionth of a dollar: far below any price, so no cost is rounded away. Every span's cost is written through it. */
+const noiseOff = (usd: number): number => Math.round(usd * 1e12) / 1e12;
 const STOP_REASONS = new Set(["stop", "length", "toolUse", "error", "aborted", "deferred", "pending"]);
 
 /** An answer's tokens, by the usage row's rule (timeline tokensOf): all four known, and some input unless it failed. */
@@ -183,7 +186,7 @@ export function traceSpans(rows: readonly TimelineEvent[], entries: readonly Ent
       stop_reason: typeof message.stopReason === "string" && STOP_REASONS.has(message.stopReason) ? message.stopReason : null,
       // A request cut before its end reported no final usage and no cost (the usage row counts it unknown).
       tokens: aborted ? null : tokensOf(message.usage, failed),
-      usd: booked || aborted || total === undefined || total < 0 ? null : total, decision: false,
+      usd: booked || aborted || total === undefined || total < 0 ? null : noiseOff(total), decision: false,
       charged: false, not_metered: false, tool_use_id: null, input_preview: null, result_preview: null, result_size_bytes: null,
     });
   }
@@ -207,7 +210,7 @@ export function traceSpans(rows: readonly TimelineEvent[], entries: readonly Ent
       stop_reason: null,
       // A receipt keeps its input whole, with no split by cache.
       tokens: input !== undefined && output !== undefined ? { input, cache_read: 0, cache_write: 0, output } : null,
-      usd: cost !== undefined && cost >= 0 ? cost : null, decision: true,
+      usd: cost !== undefined && cost >= 0 ? noiseOff(cost) : null, decision: true,
       charged: false, not_metered: false, tool_use_id: null, input_preview: null, result_preview: null, result_size_bytes: null,
     });
   });
@@ -291,7 +294,7 @@ export function traceSpans(rows: readonly TimelineEvent[], entries: readonly Ent
       at, id: nth === 0 ? `t:${key}` : `t:${key}#${nth + 1}`, kind: "tool", parent_id: parent, name: use.tool_name ?? "tool", agent_label: use.agent_label ?? null,
       started_at: iso(at) ?? use.timestamp, ended_at: over ? iso(done!) ?? null : null, status,
       stop_reason: null, tokens: null,
-      usd: charge?.charged ? (charge.unknown ? null : Math.round(charge.known * 1e12) / 1e12) : null,
+      usd: charge?.charged ? (charge.unknown ? null : noiseOff(charge.known)) : null,
       decision: false, charged: charge?.charged ?? false, not_metered: charge?.notMetered ?? false,
       tool_use_id: use.tool_use_id, input_preview: use.tool_input_preview ?? null,
       // A call that never ran has no result of its own: what its rows say of it is the Timeline's words, not its output.
