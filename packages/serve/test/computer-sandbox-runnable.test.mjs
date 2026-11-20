@@ -200,6 +200,37 @@ test("a cloud phone on a server with no adb on its PATH is not ready in Settings
   assert.equal(said.started[1], "agent_not_runnable", JSON.stringify(said));
 });
 
+// A computer every tool of which is set to deny is never started (computer-all-denied.test.mjs): its save warns in words,
+// on definition.computer, and its run's start asks nothing of it, so a phone with no adb or no key saved starts the run.
+// With its tools allowed, nothing is said of it at the save. The agent's own deny and the server's alike.
+const ALL_DENIED_PHONE = "Every tool for this agent's phone is set to deny, so a run never starts it: allow one, or set the computer to none.";
+for (const [where, setUp] of [["for this agent", async () => ({ tool_settings: { phone: { permission: "deny" } } })], ["on this server", async (api) => {
+  assert.equal((await api("PUT", "/settings/tools", { phone: { permission: "deny" } })).status, 200);
+  return {};
+}]]) {
+  test(`a phone set to deny ${where} saves with a warning that a run never starts it, and its run is not refused for it, with no adb and no key saved`, async (t) => {
+    const api = await server(t, { adb: false });
+    const said = await saveAndStart(api, `phone-denied-${where.replace(/ /g, "-")}`, { computer: { kind: "phone", provider: "phone-harness" }, ...(await setUp(api)) });
+    assert.deepEqual(said.saved, [["definition.computer", "not_allowed", ALL_DENIED_PHONE]], JSON.stringify(said));
+    assert.deepEqual(said.refused, [], `the run is not refused for its phone: ${JSON.stringify(said)}`);
+  });
+}
+
+test("a phone allowed, its key saved, saves with no warning on its computer", async (t) => {
+  const api = await server(t, {});
+  assert.equal((await api("PUT", "/computers/phone-harness/keys", { PHONE_HARNESS_API_KEY: "fake-test-key" })).status, 200);
+  const said = await saveAndStart(api, "phone-allowed", { computer: { kind: "phone", provider: "phone-harness" }, tool_settings: { phone: { permission: "allow" } } });
+  assert.deepEqual([said.saved, said.refused], [[], []], JSON.stringify(said));
+});
+
+test("under --faux, a desktop set to deny saves with the warning, and one allowed with none", async (t) => {
+  const api = await server(t, { faux: true });
+  const denied = await saveAndStart(api, "faux-desk-denied", { computer: { kind: "desktop", provider: "faux-desktop" }, tool_settings: { desktop: { permission: "deny" } } });
+  assert.deepEqual(denied.saved, [["definition.computer", "not_allowed", ALL_DENIED_PHONE.replace("phone", "desktop")]], JSON.stringify(denied));
+  const allowed = await saveAndStart(api, "faux-desk-allowed", { computer: { kind: "desktop", provider: "faux-desktop" } });
+  assert.deepEqual(allowed.saved, [], JSON.stringify(allowed));
+});
+
 // Local Chrome declares "open" and "allow", never "none" (public addresses from this machine, through its egress proxy):
 // under none, the operator's word for no network at all, a browser on it is refused at the start in the same words, by
 // its own name; under the default list (open) or the operator's own (that list) it is not refused for its network.
