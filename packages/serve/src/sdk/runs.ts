@@ -11,6 +11,7 @@ import { launchBody, type RunLaunch } from "../run-launch.js";
 import { learningStartFor, type StartDeps } from "../runs-over-store.js";
 import { chooseWorkflows, type LearnedWorkflow, learningFolderOf, seedAt, secretsShown } from "../learning.js";
 import { INSTRUCTION_EVIDENCE_BYTES } from "../native/instructions.js";
+import { refuseWhileNoRunner } from "../runner/presence.js";
 import { secretRedactor } from "../runner/redact.js";
 import { redactedOutput } from "../key-refusal.js";
 import { decodedStrings, draftProblems } from "../learn/workflow-draft.js";
@@ -240,8 +241,7 @@ export class SdkRuns {
       );
     // A runner keeps an SDK run's evidence and ends it: while every runner here refused to claim, the start is refused in
     // their words, as any start is (prepareLaunch), before the caller holds a receipt it would run on.
-    const refused = await deps.runnersRefused?.();
-    if (refused !== undefined) throw new ApiError("runner_refused", refused);
+    await refuseWhileNoRunner(this.store.runners);
     const learning = await learningStartFor(deps, entry, pinned.revision, revisionBody as never, {
       noWorkflows: !workflow,
       ...(compile.model ? { model: compile.model } : {}),

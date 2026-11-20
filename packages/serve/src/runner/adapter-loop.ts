@@ -80,7 +80,6 @@ import { sideEffect } from "./side-effects.js";
 import { McpClaimRefused } from "./mcp-claim.js";
 import { CODEMODE, defersCatalog, isCatalogWire, TOOLS_CALL, TOOLS_SEARCH } from "@parcha/agentrun-kernel";
 import { metaTools } from "./meta-tools.js";
-import { builtinHarness } from "../harness-table.js";
 import { Fenced } from "../store/index.js";
 import { answerAsServed } from "../answer-json.js";
 import type { ClaimMcp } from "./mcp-run.js";
@@ -133,9 +132,9 @@ export type SpecGate = ((call: ToolCall, options?: { readonly replayed?: boolean
 /** What one claimed run's adapter loop runs. */
 export interface AdapterRunSpec {
   readonly adapter: AgentAdapter;
-  /** The adapter's facts on the owner's table (harness-table.ts factsOf: a module's harness's too); absent, the built-in
-   *  harness's of the adapter's id (none for pi). */
-  readonly facts?: AdapterFacts;
+  /** The adapter's facts on the owner's table (harness-table.ts factsOf: a module's harness's too); undefined for one with
+   *  none. Always given: what codemode and tool search read, so a caller names them. */
+  readonly facts: AdapterFacts | undefined;
   readonly session: SessionSpec;
   /** The person's first message, sent once, on the run's first claim. */
   readonly input: string;
@@ -2309,7 +2308,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             }
           },
         });
-        const facts = spec.facts ?? builtinHarness(spec.adapter.id)?.facts;
+        const { facts } = spec;
         // tools_search, tools_call and codemode over the session's tools (meta-tools.ts), on every harness (codemode on
         // each but one that runs scripts of its own): what they call is called nested, each call asked about and recorded
         // as its own tool's. A search finds a tool whose setting is not deny; an MCP tool's setting is its catalog name's.

@@ -7,9 +7,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { COMPUTER_TOOLS, computerToolDefs } from "@parcha/agentrun-kernel/kernel";
-import { deniedText, noApproverText, runGate, settingsKeyOf } from "../dist/tool-gate.js";
+import { deniedText, noApproverText, runGate } from "../dist/tool-gate.js";
 import { KIND_KEYS, permissionsOf, settingsIssues } from "../dist/tool-plane.js";
-import { runnerGate, storedSettings } from "./gate-support.mjs";
+import { builtinKeyOf, runnerGate, storedSettings } from "./gate-support.mjs";
 
 test("the computer's tools are the desktop's and the phone's, each under its kind's key, by every harness's name for it", () => {
   assert.deepEqual([...KIND_KEYS], ["desktop", "phone"]);
@@ -17,7 +17,7 @@ test("the computer's tools are the desktop's and the phone's, each under its kin
   assert.deepEqual(computerToolDefs("phone", []).map((def) => [def.name, def.settingsKey]), COMPUTER_TOOLS.map((name) => [name, "phone"]));
   for (const name of COMPUTER_TOOLS) {
     for (const harness of ["pi", "claude-agent", "codex", "opencode"]) {
-      assert.equal(settingsKeyOf(harness, name), "desktop", `${harness} ${name}: named by the desktop's key in words`);    }
+      assert.equal(builtinKeyOf(harness, name), "desktop", `${harness} ${name}: named by the desktop's key in words`);    }
   }
 });
 
@@ -64,7 +64,7 @@ test("a script's shell, write and read are decided as the run's own bash, write 
 // stricter of the two keys.
 const PHONE_REVISION = { kind: "agentic", body: { computer: { kind: "phone", provider: "phone-harness" } } };
 const DESKTOP_REVISION = { kind: "agentic", body: { computer: { kind: "desktop", provider: "e2b" } } };
-const gateOf = (revision, read, approvers = true) => runGate({ root: "/nonexistent/run", work: "/nonexistent/run" }, "r1", revision, typeof read === "function" ? read : () => storedSettings(read), approvers);
+const gateOf = (revision, read, approvers = true) => runGate({ root: "/nonexistent/run", work: "/nonexistent/run", facts: undefined }, "r1", revision, typeof read === "function" ? read : () => storedSettings(read), approvers);
 const STEP_CALLS = [["computer_act", { steps: [{ press: "@e1" }] }], ["computer_observe", {}], ["computer_op", { op: "input.act", args: { actions: [] } }], ["computer_op", { op: "apps.open", args: { id: "com.android.settings" } }]];
 
 test("phone set to deny refuses a phone run's step tools and a script's nested computer_op in phone's words", async () => {

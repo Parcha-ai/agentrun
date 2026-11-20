@@ -65,10 +65,8 @@ starts the service. When it's live, open its `onrender.com` address and paste `A
 Environment tab as the setup code. Set your password, then Continue with ChatGPT or add a model key in the console.
 
 `render.yaml` sets `AGENTRUN_RUN_USER=same`: Render hasn't been shown to keep the image helper's file capabilities, so
-each run runs as the server's own user, still a process of its own. Keep it. Without it, where the helper can't switch
-users, the runner refuses to claim: the console and the API then refuse every run with `runner_refused` in the
-runner's words, `GET /v2/capabilities` says why in `runner_refused`, and `GET /v2/health` answers 200 `degraded` with
-its `runner` check `refused` (never 503, so Render does not restart the service over a setting).
+each run runs as the server's own user, still a process of its own. Keep `AGENTRUN_RUN_USER=same`; without it the
+runner refuses to claim and every run answers `runner_refused` (packages/serve/README.md).
 
 ### Railway
 
@@ -90,8 +88,8 @@ model key in the console.
 
 Railway mounts the volume as root. The service starts as root only to give the volume to the server's own user, then
 runs the server as that user. The template sets `AGENTRUN_RUN_USER=same`, as `render.yaml` does and for the same reason:
-each run runs as the server's own user, still a process of its own. Keep it; without it a runner that can't switch users
-refuses to claim, and the server refuses every run with `runner_refused` (see Render above).
+each run runs as the server's own user, still a process of its own. Keep `AGENTRUN_RUN_USER=same`; without it the
+runner refuses to claim and every run answers `runner_refused` (packages/serve/README.md).
 `railway/publish-and-walk.sh` publishes the template from `template.json` and walks it.
 Railway's API makes a template only by copying a project, and the copy drops plain values, optional flags and some
 deploy settings. So `template.json` holds only what survives: `PORT` and `RAILWAY_RUN_UID` are written as one-character

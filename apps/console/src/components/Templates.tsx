@@ -479,7 +479,7 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
               {servers && matches.length === 0 && (
                 <p role="status" data-missing-mcp={m.toolkit} className="mt-2 border border-warning/50 px-3 py-2 text-small text-warning-text">
                   {m.required ? `${m.toolkit} is required and not set up here: Apply is refused until it is.` : `${m.toolkit} is not set up here: Apply makes the agent without its tools (${m.tools.map((x) => x.name).join(", ")}).`}{" "}
-                  <a href={setUpHref(m)} className="font-mono text-primary-text underline-offset-2 hover:underline">{m.source === "github" ? "Set up GitHub App access" : m.source === "composio" ? `Add ${m.toolkit} from Composio` : `Set up ${m.toolkit}`}</a>
+                  <a href={setUpHref(m)} className="font-mono text-primary-text underline underline-offset-2 hover:decoration-2">{m.source === "github" ? "Set up GitHub App access" : m.source === "composio" ? `Add ${m.toolkit} from Composio` : `Set up ${m.toolkit}`}</a>
                 </p>
               )}
               <Issues issues={[...at(`mcp.${m.toolkit}`), ...at(`servers.${m.toolkit}`)]} />
