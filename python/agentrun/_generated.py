@@ -417,6 +417,8 @@ __all__ = [
     "GetRunUsageResponse",
     "GetRunUsageResponseBrowserSessionsItem",
     "GetRunUsageResponseBrowserSessionsItemProviderRecord",
+    "GetRunUsageResponseComputerIntervalsItem",
+    "GetRunUsageResponseComputerIntervalsItemGpu",
     "GetRunUsageResponseLinesItem",
     "GetRunUsageResponseLinesItemTokens",
     "GetRunUsageResponseTotal",
@@ -5819,6 +5821,7 @@ class GetRunUsageResponse(TypedDict):
     total: GetRunUsageResponseTotal | None
     lines: list[GetRunUsageResponseLinesItem] | None
     browser_sessions: list[GetRunUsageResponseBrowserSessionsItem] | None
+    computer_intervals: list[GetRunUsageResponseComputerIntervalsItem] | None
     reason: Literal["running", "not_booked", "reopened"] | None
 
 
@@ -5876,6 +5879,23 @@ class GetRunUsageResponseBrowserSessionsItemProviderRecord(TypedDict):
     started_at: str | None
     ended_at: str | None
     proxy_bytes: int | None
+
+
+class GetRunUsageResponseComputerIntervalsItem(TypedDict):
+    provider: str
+    provider_id: str
+    kind: str | None
+    gpu: GetRunUsageResponseComputerIntervalsItemGpu | None
+    cpus: float | None
+    memory_mb: int | None
+    started_at: str
+    ended_at: str | None
+    kept: bool
+
+
+class GetRunUsageResponseComputerIntervalsItemGpu(TypedDict):
+    type: str | None
+    count: int | None
 
 
 class _CompleteSdkRunBodyRequired(TypedDict):
