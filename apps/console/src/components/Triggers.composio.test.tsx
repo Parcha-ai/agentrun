@@ -193,6 +193,7 @@ describe("Triggers: from an app (Composio)", () => {
     const BRANCH = {
       ...ISSUE_ADDED, slug: "GITHUB_BRANCH_CHANGED_TRIGGER", name: "Branch Changed",
       description: "Triggers when a GitHub branch changes.\n\n**Payload details:**\n- ``head_sha`` -- the new head commit\n- ``protected`` -- whether the branch is protected",
+      instructions: "This trigger fires whenever a GitHub branch changes, including:\n\n- **New commits pushed** (head commit SHA changes)\n- **Protection status toggled**",
     };
     const ZEN = { ...ISSUE_ADDED, slug: "GITHUB_ZEN_EVENT", name: "zen Event", description: "Zen." };
     const s = server({ events: [STAR_ADDED, ZEN, ISSUE_ADDED, BRANCH] });
@@ -212,6 +213,10 @@ describe("Triggers: from an app (Composio)", () => {
     expect(said.querySelector("strong")?.textContent).toBe("Payload details:");
     expect([...said.querySelectorAll("li code")].map((c) => c.textContent)).toEqual(["head_sha", "protected"]);
     expect(said.textContent).not.toMatch(/\*\*|``/);
+    // Its instructions are Composio's Markdown too.
+    const told = t.host.querySelector("[data-event-instructions]");
+    expect([...(told?.querySelectorAll("li strong") ?? [])].map((b) => b.textContent), "instructions rendered").toEqual(["New commits pushed", "Protection status toggled"]);
+    expect(t.text()).not.toContain("**New commits pushed**");
     await typeFilter("star");
     expect(await listed(), "the picked event stays listed while a query hides it").toEqual(["Branch Changed", "Star Added"]);
     await typeFilter("nothing-like-it");
