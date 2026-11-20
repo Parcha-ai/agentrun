@@ -14,6 +14,7 @@ import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { existsSync, type Stats } from "node:fs";
 import { chmod, chown, lchown, lstat, mkdir, readdir, rm } from "node:fs/promises";
 import type { Socket } from "node:net";
+import type { Duplex } from "node:stream";
 import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { encode, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets } from "../secrets.js";
@@ -70,6 +71,9 @@ import { heardComputerHold } from "./computer-journal.js";
 import { type Claim, type Command, type CommandOutcome, type HeldState, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, type StopReason, ClaimRefused } from "./loop-contract.js";
 import { Channel, ChannelClosed } from "./run-channel.js";
 import { registerRunErrors } from "./run-errors.js";
+import { exposeSaveSlots } from "./save-slots.js";
+import { type RunBigWrites, runBigWrites } from "./big-writes.js";
+import { type SaveSlots, SERVER_SLOTS } from "../web-save.js";
 import { readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { SUBAGENT_TOOL } from "./subagent.js";
 import type { AlsoRow, JournalReads, Store } from "../store/store.js";
@@ -652,14 +656,15 @@ interface ClaimReads {
 const grantsEmail = (granted: readonly string[]): boolean => granted.some((tool) => tool.startsWith("email_"));
 
 /** Held (held.ts) for one claim, on the runner: each answer the claim's own, read with the runner's seal key from the
- *  runner's own reads of the claim; every argument from the run's process is checked or ignored. */
-export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, reads: ClaimReads, cut: (text: string) => string, log: (line: string) => void): { held: Held; inputs(): Promise<void>; release(): Promise<void> } {
+ *  runner's own reads of the claim; every argument from the run's process is checked or ignored. `bigs`: the run's pieced
+ *  writes (big-writes.ts), let go at the claim's release and, by the caller, when the run's channel ends. */
+export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, reads: ClaimReads, cut: (text: string) => string, log: (line: string) => void, bigs: RunBigWrites = runBigWrites()): { held: Held; inputs(): Promise<void>; release(): Promise<void> } {
   const { claim, run, launch, revision, claimed } = reads;
   const sealKey = deps.sealKey;
   const store = deps.store;
   const granted = ((revision.body as { tools?: unknown }).tools as readonly string[] | undefined) ?? [];
   const keys = { store, sealKey, env: deps.env };
-  const releases: (() => Promise<void> | void)[] = [];
+  const releases: (() => Promise<void> | void)[] = [() => bigs.close()];
   const fromGitHub = launch.inputOrigin?.kind === "trigger" && launch.inputOrigin.source === "github";
   const github = () => githubAppAccess(store, sealKey, launch.input, { ...(deps.githubApi ? { api: deps.githubApi } : {}), fromGitHub, ...(launch.repo !== undefined ? { repo: launch.repo } : {}) });
   /** Mode 2's Archil claim, made once for the claim on the runner, its folder the run's. */
@@ -668,7 +673,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
     (archil ??= (async () => {
       const settings = await loadArchilSettings(store, deps.env);
       if (settings === undefined) return undefined;
-      const made = await archilClaim({ settings, keys: store.sealedKeys, sealKey, signal: new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS, ...(deps.mountControl ?? {}) }, run: { agentId: run.agentId, ...(launch.archilDisk ? { launch: launch.archilDisk } : {}), store }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
+      const made = await archilClaim({ settings, keys: store.sealedKeys, sealKey, signal: new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS }, ...(deps.mountControl ? { control: deps.mountControl } : {}), run: { agentId: run.agentId, ...(launch.archilDisk ? { launch: launch.archilDisk } : {}), store }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
       releases.push(() => made.release());
       return made;
     })());
@@ -818,7 +823,8 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
       if (made === undefined) return undefined;
       const ws = await openRunWorkspace({ mode: 2, agentId: run.agentId, runId: claim.runId, archil: made, log });
       releases.push(() => ws.end());
-      return { workspace: ws.workspace, revoke: () => made.revoke(), inherit: async () => made.inherit(), release: async () => {} };
+      // A write bigger than the channel's frame is pulled in pieces and written here, on this Workspace (big-writes.ts).
+      return { workspace: ws.workspace, pieces: bigs.pieces(ws.workspace), revoke: () => made.revoke(), inherit: async () => made.inherit(), release: async () => {} };
     },
     endOfRun: async (input) => {
       // The step as the run's spec builds it in a runner (adapter-run-spec.ts), over the runner's reads of the claim: what
@@ -1038,6 +1044,17 @@ function childEnv(base: NodeJS.ProcessEnv, keys: Buffer, extra: Record<string, s
   return { ...env, ...extra, [SECRETS_FD_ENV]: "3", [SECRETS_LEN_ENV]: String(keys.length) };
 }
 
+/** The runner's side of a run's channel over `socket`. Each call of the run's process runs inside the ledger of the tool
+ *  call it was made in (paid-calls.ts). web_save's slots are `gate`, this runner's one (save-slots.ts); the channel's end
+ *  (the run's end, or its process gone) gives back every slot the run held or waited for, and lets go of every pieced write
+ *  of the run's `bigs` (big-writes.ts), held or waiting. `maxFrame`: the channel's (a test's), default MAX_FRAME. */
+export function runChannel(socket: Duplex, onClose: (why: Error) => void, gate: SaveSlots = SERVER_SLOTS, more: { readonly bigs?: RunBigWrites; readonly maxFrame?: number } = {}): Channel {
+  let saves: (() => void) | undefined;
+  const channel = new Channel(socket, { onClose: (why) => { onClose(why); saves?.(); more.bigs?.close(); }, within: withinCarried, ...(more.maxFrame ? { maxFrame: more.maxFrame } : {}) });
+  saves = exposeSaveSlots(channel, gate);
+  return channel;
+}
+
 function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDeps: LoopDeps): Loop {
   const { deps, isolation } = options;
   const cut: (text: string) => string = loopDeps.redact ?? ((text) => text);
@@ -1138,7 +1155,9 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         }
         if (isolation.kind === "uid" && slot !== undefined) hold = new SlotHold(slot, isolation.helper, log);
         const tops = runTops(deps.data, runRow.agentId, claim.runId);
-        const heldSide = heldFor({ ...deps, env: claimEnv }, { claim, run: runRow, launch, revision, claimed: gatewayKey ? withGatewayKey(claimed, gatewayKey) : claimed }, cut, log);
+        // The run's pieced writes (big-writes.ts): let go when its channel ends, or at the claim's release.
+        const bigs = runBigWrites();
+        const heldSide = heldFor({ ...deps, env: claimEnv }, { claim, run: runRow, launch, revision, claimed: gatewayKey ? withGatewayKey(claimed, gatewayKey) : claimed }, cut, log, bigs);
         try {
           let extra: Record<string, string> = {};
           let argv = [...(options.argv ?? childArgv())];
@@ -1169,8 +1188,7 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           keyPipe.end(keys);
           const socket = child.stdio[4] as Socket;
           let broke: Error | undefined;
-          // Each call of the run's process runs inside the ledger of the tool call it was made in (paid-calls.ts).
-          channel = new Channel(socket, { onClose: (why) => void (broke ??= why), within: withinCarried });
+          channel = runChannel(socket, (why) => void (broke ??= why), SERVER_SLOTS, { bigs });
           const bound: Bound = { claim, agentId: runRow.agentId, revisionId: runRow.revisionId };
           channel.expose("store", (method, args) => storeCall(deps.store, method, args, bound, log));
           channel.expose("journal", journalTarget(loopDeps.journal(claim), cut));

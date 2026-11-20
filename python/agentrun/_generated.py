@@ -183,6 +183,7 @@ __all__ = [
     "DefinitionInputPlace1",
     "DefinitionInputPlace2",
     "DefinitionInputSdk",
+    "DefinitionInputSdk2",
     "DefinitionInputToolSettings",
     "DefinitionInputToolSettingsAskPerson",
     "DefinitionInputToolSettingsBash",
@@ -204,6 +205,7 @@ __all__ = [
     "DefinitionInputToolSettingsRead",
     "DefinitionInputToolSettingsSubagent",
     "DefinitionInputToolSettingsWebFetch",
+    "DefinitionInputToolSettingsWebSave",
     "DefinitionInputToolSettingsWebSearch",
     "DefinitionInputToolSettingsWrite",
     "DefinitionLearning",
@@ -216,6 +218,7 @@ __all__ = [
     "DefinitionPlace1",
     "DefinitionPlace2",
     "DefinitionSdk",
+    "DefinitionSdk2",
     "DefinitionToolSettings",
     "DefinitionToolSettingsAskPerson",
     "DefinitionToolSettingsBash",
@@ -237,6 +240,7 @@ __all__ = [
     "DefinitionToolSettingsRead",
     "DefinitionToolSettingsSubagent",
     "DefinitionToolSettingsWebFetch",
+    "DefinitionToolSettingsWebSave",
     "DefinitionToolSettingsWebSearch",
     "DefinitionToolSettingsWrite",
     "DeleteAgentArchilResponse",
@@ -415,6 +419,10 @@ __all__ = [
     "GetRunTraceResponseSpansItem",
     "GetRunTraceResponseSpansItemTokens",
     "GetRunUsageResponse",
+    "GetRunUsageResponseBrowserSessionsItem",
+    "GetRunUsageResponseBrowserSessionsItemProviderRecord",
+    "GetRunUsageResponseComputerIntervalsItem",
+    "GetRunUsageResponseComputerIntervalsItemGpu",
     "GetRunUsageResponseLinesItem",
     "GetRunUsageResponseLinesItemTokens",
     "GetRunUsageResponseTotal",
@@ -714,6 +722,7 @@ __all__ = [
     "PutToolSettingsBodyRead",
     "PutToolSettingsBodySubagent",
     "PutToolSettingsBodyWebFetch",
+    "PutToolSettingsBodyWebSave",
     "PutToolSettingsBodyWebSearch",
     "PutToolSettingsBodyWrite",
     "PutToolSettingsResponse",
@@ -802,6 +811,8 @@ __all__ = [
     "RunResult",
     "RunReview",
     "RunSdk",
+    "RunSdk2",
+    "RunSdk2Usage",
     "RunSdkUsage",
     "RunState",
     "RunStatus",
@@ -822,6 +833,8 @@ __all__ = [
     "RunSummaryPending6",
     "RunSummaryReview",
     "RunSummarySdk",
+    "RunSummarySdk2",
+    "RunSummarySdk2Usage",
     "RunSummarySdkUsage",
     "RunSummaryTrigger",
     "RunSummaryWorkflow",
@@ -904,6 +917,7 @@ __all__ = [
     "StartRunResponse",
     "StartRunResponseHeld",
     "StartSdkRunBody",
+    "StartSdkRunBody2",
     "StartSdkRunBodyWorkflowToolsItem",
     "StartSdkRunResponse",
     "StartSdkRunResponseLearning",
@@ -1124,7 +1138,7 @@ class Definition(_DefinitionRequired, total=False):
     output_schema: JsonObject
     workflow: JsonObject
     max_cost_usd: float
-    sdk: DefinitionSdk
+    sdk: DefinitionSdk | DefinitionSdk2
     native: DefinitionNative
     model: str
     model_tiers: DefinitionModelTiers
@@ -1143,6 +1157,11 @@ JsonObject: TypeAlias = "dict[str, Any]"
 
 class DefinitionSdk(TypedDict):
     runtime: Literal["claude-agent-sdk", "codex-sdk", "eve"]
+
+
+class DefinitionSdk2(TypedDict):
+    runtime: Literal["external"]
+    platform: str
 
 
 class _DefinitionNativeRequired(TypedDict):
@@ -1234,6 +1253,7 @@ class DefinitionToolSettings(TypedDict, total=False):
     ask_person: DefinitionToolSettingsAskPerson
     web_fetch: DefinitionToolSettingsWebFetch
     web_search: DefinitionToolSettingsWebSearch
+    web_save: DefinitionToolSettingsWebSave
     email_search: DefinitionToolSettingsEmailSearch
     email_read: DefinitionToolSettingsEmailRead
     email_draft: DefinitionToolSettingsEmailDraft
@@ -1279,6 +1299,10 @@ class DefinitionToolSettingsWebFetch(TypedDict, total=False):
 
 class DefinitionToolSettingsWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionToolSettingsWebSave(TypedDict, total=False):
     permission: Literal["allow", "ask", "deny"]
 
 
@@ -1609,7 +1633,7 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
     output_schema: JsonObject
     workflow: JsonObject
     max_cost_usd: float
-    sdk: DefinitionInputSdk
+    sdk: DefinitionInputSdk | DefinitionInputSdk2
     native: DefinitionInputNative
     model: str
     model_tiers: DefinitionInputModelTiers
@@ -1625,6 +1649,11 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
 
 class DefinitionInputSdk(TypedDict):
     runtime: Literal["claude-agent-sdk", "codex-sdk", "eve"]
+
+
+class DefinitionInputSdk2(TypedDict):
+    runtime: Literal["external"]
+    platform: str
 
 
 class _DefinitionInputNativeRequired(TypedDict):
@@ -1716,6 +1745,7 @@ class DefinitionInputToolSettings(TypedDict, total=False):
     ask_person: DefinitionInputToolSettingsAskPerson
     web_fetch: DefinitionInputToolSettingsWebFetch
     web_search: DefinitionInputToolSettingsWebSearch
+    web_save: DefinitionInputToolSettingsWebSave
     email_search: DefinitionInputToolSettingsEmailSearch
     email_read: DefinitionInputToolSettingsEmailRead
     email_draft: DefinitionInputToolSettingsEmailDraft
@@ -1761,6 +1791,10 @@ class DefinitionInputToolSettingsWebFetch(TypedDict, total=False):
 
 class DefinitionInputToolSettingsWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionInputToolSettingsWebSave(TypedDict, total=False):
     permission: Literal["allow", "ask", "deny"]
 
 
@@ -2467,7 +2501,7 @@ class _RunSummaryRequired(TypedDict):
 
 
 class RunSummary(_RunSummaryRequired, total=False):
-    sdk: RunSummarySdk
+    sdk: RunSummarySdk | RunSummarySdk2
     native: RunSummaryNative
     console_url: str
     labels: dict[str, str]
@@ -2535,6 +2569,23 @@ class RunSummarySdk(TypedDict):
 
 
 class RunSummarySdkUsage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+
+
+class RunSummarySdk2(TypedDict):
+    runtime: Literal["external"]
+    platform: str
+    model: str | None
+    session_id: str | None
+    learning_revision: str | None
+    usage: RunSummarySdk2Usage | None
+
+
+class RunSummarySdk2Usage(TypedDict, total=False):
     input_tokens: int | None
     output_tokens: int | None
     cache_read_tokens: int | None
@@ -5023,7 +5074,7 @@ class _RunRequired(TypedDict):
 
 class Run(_RunRequired, total=False):
     effort: Effort
-    sdk: RunSdk
+    sdk: RunSdk | RunSdk2
     native: RunNative
     console_url: str
     labels: dict[str, str]
@@ -5062,6 +5113,23 @@ class RunSdk(TypedDict):
 
 
 class RunSdkUsage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+
+
+class RunSdk2(TypedDict):
+    runtime: Literal["external"]
+    platform: str
+    model: str | None
+    session_id: str | None
+    learning_revision: str | None
+    usage: RunSdk2Usage | None
+
+
+class RunSdk2Usage(TypedDict, total=False):
     input_tokens: int | None
     output_tokens: int | None
     cache_read_tokens: int | None
@@ -5820,6 +5888,8 @@ class GetRunUsageResponse(TypedDict):
     currency: Literal["USD"]
     total: GetRunUsageResponseTotal | None
     lines: list[GetRunUsageResponseLinesItem] | None
+    browser_sessions: list[GetRunUsageResponseBrowserSessionsItem] | None
+    computer_intervals: list[GetRunUsageResponseComputerIntervalsItem] | None
     reason: Literal["running", "not_booked", "reopened"] | None
 
 
@@ -5834,12 +5904,12 @@ class GetRunUsageResponseTotal(_GetRunUsageResponseTotalRequired, total=False):
 
 
 class _GetRunUsageResponseLinesItemRequired(TypedDict):
-    meter: Literal["tokens", "tools", "browser_time"]
+    meter: Literal["tokens", "tools", "browser_time", "compute_time"]
     model: str | None
     provider: str | None
     charged_by: str | None
     quantity: float | None
-    unit: Literal["token", "call", "second"]
+    unit: Literal["token", "call", "second", "vcpu_second", "gib_second", "gpu_second", "gb_month"]
     basis: Literal["reported", "estimate", "unpriced"]
     usd: float | None
 
@@ -5852,6 +5922,11 @@ class GetRunUsageResponseLinesItem(_GetRunUsageResponseLinesItemRequired, total=
     tokens: GetRunUsageResponseLinesItemTokens
     unmetered_requests: int
     not_metered_calls: int
+    resource: Literal["vcpu", "memory", "gpu", "disk"]
+    gpu_type: str | None
+    unheld_quantity: float | None
+    open_computers: int
+    measured_to: str
 
 
 class GetRunUsageResponseLinesItemTokens(TypedDict):
@@ -5859,6 +5934,43 @@ class GetRunUsageResponseLinesItemTokens(TypedDict):
     output: int
     cache_read: int
     cache_write: int
+
+
+class GetRunUsageResponseBrowserSessionsItem(TypedDict):
+    provider: str
+    tag: str
+    provider_session_id: str | None
+    started_at: str | None
+    ended_at: str | None
+    release_reason: str | None
+    charged_seconds: float | None
+    provider_record: GetRunUsageResponseBrowserSessionsItemProviderRecord | None
+    provider_record_status: Literal["read", "not_offered", "not_found", "failed", "no_session"] | None
+
+
+class GetRunUsageResponseBrowserSessionsItemProviderRecord(TypedDict):
+    started_at: str | None
+    ended_at: str | None
+    proxy_bytes: int | None
+
+
+class GetRunUsageResponseComputerIntervalsItem(TypedDict):
+    provider: str
+    provider_id: str
+    kind: str | None
+    gpu: GetRunUsageResponseComputerIntervalsItemGpu | None
+    cpus: float | None
+    memory_mb: int | None
+    disk_gb: float | None
+    started_at: str
+    ended_at: str | None
+    kept: bool
+    booked_seconds: float
+
+
+class GetRunUsageResponseComputerIntervalsItemGpu(TypedDict):
+    type: str | None
+    count: int | None
 
 
 class _CompleteSdkRunBodyRequired(TypedDict):
@@ -5972,6 +6084,17 @@ class _StartSdkRunBodyWorkflowToolsItemRequired(TypedDict):
 class StartSdkRunBodyWorkflowToolsItem(_StartSdkRunBodyWorkflowToolsItemRequired, total=False):
     output_schema: dict[str, Any]
     price_usd: float
+
+
+class _StartSdkRunBody2Required(TypedDict):
+    runtime: Literal["external"]
+    platform: str
+    input: str
+    instructions: str
+
+
+class StartSdkRunBody2(_StartSdkRunBody2Required, total=False):
+    model: str
 
 
 class StartSdkRunResponse(TypedDict):
@@ -7054,6 +7177,7 @@ class PutToolSettingsBody(TypedDict, total=False):
     ask_person: PutToolSettingsBodyAskPerson
     web_fetch: PutToolSettingsBodyWebFetch
     web_search: PutToolSettingsBodyWebSearch
+    web_save: PutToolSettingsBodyWebSave
     email_search: PutToolSettingsBodyEmailSearch
     email_read: PutToolSettingsBodyEmailRead
     email_draft: PutToolSettingsBodyEmailDraft
@@ -7098,6 +7222,10 @@ class PutToolSettingsBodyWebFetch(TypedDict, total=False):
 
 class PutToolSettingsBodyWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    permission: Literal["allow", "ask", "deny"]
+
+
+class PutToolSettingsBodyWebSave(TypedDict, total=False):
     permission: Literal["allow", "ask", "deny"]
 
 
@@ -9754,7 +9882,7 @@ class SdkRunsResource(Group):
         """Read SDK run and learning state (GET /sdk-runs/{run_id})."""
         return self._call("getSdkRun", (run_id,), None, None, timeout=timeout)
 
-    def start(self, agent_id: str, body: StartSdkRunBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> StartSdkRunResponse:
+    def start(self, agent_id: str, body: StartSdkRunBody | StartSdkRunBody2, *, idempotency_key: str | None = None, timeout: float | None = None) -> StartSdkRunResponse:
         """Register a task executed by an existing backend SDK (POST /agents/{agent_id}/sdk-runs)."""
         return self._call("startSdkRun", (agent_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
 

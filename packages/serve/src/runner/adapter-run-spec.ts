@@ -35,6 +35,7 @@ import { type ArgumentsOf, deniedText, noApproverText, type Permission, type Run
 import { DECISION_PROVIDER_KEYS, loadToolSettings, recheckPlane, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { readApprovers } from "../server-approvers.js";
 import { ASK_TOOL, askPerson, type EmailFake, type ToolEntry, type ToolHost, toolOf } from "../tools.js";
+import type { SaveSlots } from "../web-save.js";
 import type { WebFake } from "../web-fake.js";
 import { type HostToolCtx, hostToolOf } from "../host-tools.js";
 import { WEB_FETCH_TOOL } from "../web-fetch.js";
@@ -181,8 +182,8 @@ export interface AdapterSpecDeps {
   readonly computerDeps: ComputerDeps;
   /** A Mode 2 claim's Archil disk (a test's fake); absent, the real disk the Archil settings name. */
   readonly makeArchilDisk?: ArchilClaimOptions["makeDisk"];
-  /** The Archil mount credential's control plane, for a test's loopback fake (archilControlFake): its base URL and the
-   *  fetch to call it with, spread into the claim's mount. Absent, the real control plane the mount credential names. No
+  /** Archil's control plane, for a test's loopback fake (archilControlFake): its base URL and the fetch to call it with,
+   *  the claim's control (where the run's disk is read and its mount credential minted). Absent, the region's own. No
    *  test ever reaches the real Archil control plane. */
   readonly mountControl?: { readonly baseUrl?: string; readonly fetch?: typeof fetch };
   /** How a CLI run's claim waits for its harness's first-use install (harness-install.ts installSettled); a test wraps it
@@ -225,9 +226,11 @@ export interface AdapterSpecDeps {
    *  on purpose does not wait out MODEL_RETRY's two and a half minutes. No environment variable, flag or setting maps onto
    *  it; absent, MODEL_RETRY and MODEL_STREAM. */
   readonly modelRetry?: Pick<AdapterLoopOptions, "retry" | "stream">;
+  /** web_save's download slots (ToolHost.saveSlots): in a run's own process, its runner's (run-child.ts). */
+  readonly saveSlots?: SaveSlots;
 }
 
-/** One run's template eval fakes (template-eval.ts, from its case). `web`: its web_search and web_fetch answer from the
+/** One run's template eval fakes (template-eval.ts, from its case). `web`: its web_search, web_fetch and web_save answer from the
  *  case, and its harness's own search is never offered (web-fake.ts, fakedPlane). `now`: its clock, the date and time it
  *  is told wherever it reads "now" (environment.ts environmentLine, claude-agent's turn date); absent, the real clock.
  *  `monid`: its monid endpoints answer as monid unreachable does, never sent (monid-run.ts monidForClaim). `email`: the
@@ -486,10 +489,11 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // a 24 h ttl as the safety net if revoke never comes (revoke normally runs at the run's end, below). A run with no
     // mounting computer never mints one.
     // The mint is lazy (archil-claim.ts token(), k2's run-tools.ts): only a mounting computer asks for it, so a Mode 2 run
-    // with no computer makes no control-plane call. mountControl (a test's loopback control-plane fake) is spread into the
-    // mount, so no test reaches the real control plane. MOUNT_TTL_MS is the credential's safety net (its computer's 24 h bound), not its lifetime.
-    // The disk is the run's (run-disk.ts): its launch record's, else its agent's, made on its first run that needs one.
-    : await archilWhereHeld({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: run.signal ?? new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS, ...(deps.mountControl ?? {}) }, run: { agentId: runRow.agentId, ...(launch.archilDisk ? { launch: launch.archilDisk } : {}), store: deps.store }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
+    // with no computer mints nothing. mountControl (a test's loopback control-plane fake) is the claim's control, so no
+    // test reaches the real control plane. MOUNT_TTL_MS is the credential's safety net (its computer's 24 h bound), not its lifetime.
+    // The disk is the run's (run-disk.ts): its launch record's, else its agent's, made on its first run that needs one,
+    // and read at Archil at every claim.
+    : await archilWhereHeld({ settings: archilSettings, keys: deps.store.sealedKeys, sealKey: deps.sealKey, signal: run.signal ?? new AbortController().signal, env: deps.env, mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: MOUNT_TTL_MS }, ...(deps.mountControl ? { control: deps.mountControl } : {}), run: { agentId: runRow.agentId, ...(launch.archilDisk ? { launch: launch.archilDisk } : {}), store: deps.store }, ...(deps.makeArchilDisk ? { makeDisk: deps.makeArchilDisk } : {}) });
   // Each resource is held the moment it exists (spec-holds.ts): a throw after it lets it go.
   holds.hold({ archil });
   // The run's Workspace at the claim: Mode 1 the run's local folder (made here, the server's start made it before); Mode 2
@@ -558,7 +562,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
     // claim's is a new one whatever ended the earlier claim (a lost runner, a server's stop, a park past its keep). The
     // computer a park kept, attached again, brings its mount credential with it (inheritMount): none is minted. A
     // recording of its screen (computer.record) goes in the run's recordings folder, beside its folder, said on its timeline.
-    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, recordings: { folder: recordingsFolder(deps.data, runRow.agentId, claim.runId), say: (words) => run.phase?.(words) }, hadComputer: () => hadComputer(deps.journal(claim), context), stopRun: stopRunWith((refusal) => run.ledger.pause(refusal)), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke(), inheritMount: () => archil.inherit() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
+    { ...deps.computerDeps, mode, workspace: ws.workspace, sealKey: deps.sealKey, recordings: { folder: recordingsFolder(deps.data, runRow.agentId, claim.runId), say: (words) => run.phase?.(words) }, hadComputer: () => hadComputer(deps.journal(claim), context), stopRun: stopRunWith((refusal) => run.ledger.pause(refusal)), ...(run.ledger ? { compute: { ledger: { paid: run.ledger.paid, pause: (refusal: Refusal) => run.ledger.pause(refusal), judges: () => run.ledger.judges?.() ?? true }, env: deps.env } } : {}), ...(claimSignal ? { signal: claimSignal } : {}), ...(archil ? { revokeMount: () => archil.revoke(), inheritMount: () => archil.inherit() } : {}), ...(run.phase ? { onImageWait: (making, image) => run.phase?.(imageWaitWords(making, image)), onStarting: (said) => run.phase?.(computerStartingWords(said)), onConnected: (said) => run.phase?.(computerReadyWords(said)), onComputerNote: (words) => run.phase?.(words) } : {}) },
   );
 
   // The run's shell is its computer's (600 s) where one mounts its folder; with none, Archil's serverless exec in Mode 2
@@ -771,6 +775,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // Harness is open before the session, and at the run's end (the browser tool's reconcile and release hang off these). The
   // adapter loop runs them from the spec's `lifecycle` (adapter-loop.ts hostLifecycle).
   const life = hostLifecycle();
+  // The claim's computers' time booked up to now before the run's end or park is written (compute-cost.ts), so the end's
+  // cost holds it: the release that deletes them comes after the end.
+  const settleComputers = computer.settle;
+  if (settleComputers) life.register.beforeRelease(() => settleComputers());
 
   // The ToolHost the non-hand tools (browser, web, MCP, decisions, monid) bind through (buildToolHost, the one the CLI
   // spec builds too), on the claim's keys and the run's one ledger and redactor.
@@ -778,7 +786,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const claimBrowser = computer.computer?.kind === "browser" ? computer.computer.browser : undefined;
   const fakes = deps.evalFakes?.(runRow.agentId);
   const liveAt = await claimLiveAt(deps, claim.runId);
-  const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}), ...reach, ...(liveAt ? { liveAt } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
+  const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}), ...reach, ...(liveAt ? { liveAt } : {}), ...(deps.saveSlots ? { saveSlots: deps.saveSlots } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
   gate.askedOn(host);
 
   // The run's tools. The hands (read/write/edit/bash and the background tools) are the kernel registry's over the run's
@@ -1176,6 +1184,8 @@ export function buildToolHost(opts: {
   readonly own?: readonly string[];
   /** A runner on another host than its server: where the run's viewers answer, under its run's key (claimLiveAt). */
   readonly liveAt?: RunnerLive;
+  /** web_save's download slots (AdapterSpecDeps.saveSlots). */
+  readonly saveSlots?: SaveSlots;
 }): ToolHost {
   const { root, claim, run, life, liveAt } = opts;
   const { web, now, email } = opts.fakes ?? {};
@@ -1185,6 +1195,7 @@ export function buildToolHost(opts: {
     ...(email ? { emailFake: email } : {}),
     ...(opts.loopback ? { calendarLoopback: true } : {}),
     ...(opts.own ? { serverOwn: opts.own } : {}),
+    ...(opts.saveSlots ? { saveSlots: opts.saveSlots } : {}),
     // The run's directory and its per-claim environment: the hands come from runTools, so the non-hand tools get the run's
     // environment only.
     where: { root, work: root, ref: { id: claim.runId } },

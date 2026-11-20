@@ -22,6 +22,7 @@ import { bookedIn } from "../dist/paid-calls.js";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
+import { memoryIntervals } from "./memory-intervals.mjs";
 
 const dirs = [];
 after(() => { for (const dir of dirs) rmSync(dir, { recursive: true, force: true }); });
@@ -87,6 +88,7 @@ async function claim({ recreates, kept = false, synced, archil } = {}) {
     agents: { revision: async () => undefined },
     sealedKeys: { get: async (name) => keys.get(name), put: async (name, sealed) => void keys.set(name, sealed), remove: async () => {}, all: async () => [] },
     computerLedger: { put: async () => {}, get: async () => undefined, list: async () => [], remove: async () => {} },
+    computerIntervals: memoryIntervals(),
     settings: memorySettings(),
   };
   const sealKey = randomBytes(32);
@@ -180,7 +182,7 @@ async function claim({ recreates, kept = false, synced, archil } = {}) {
 const STAT = ["files.stat", { path: "/workspace" }];
 
 test("a lost Mode 2 sandbox: the next tool call's computer call starts a new one under the claim, its mount credential minted anew and the lost one's removed, read back, then serves the call", async () => {
-  const { record, answer, inCall, paused } = await claim();
+  const { record, answer, inCall, paused, store } = await claim();
   assert.equal(record.minted, 1, "the claim's first mount");
   record.lose = (id, method) => id === "c1" && method === "files.stat";
   const cut = await inCall(...STAT);
@@ -196,8 +198,12 @@ test("a lost Mode 2 sandbox: the next tool call's computer call starts a new one
   assert.deepEqual(record.released, [["c1", "delete"]], "the lost one let go");
   assert.deepEqual(record.notes, ["Its computer was lost; started a new one (c2)."]);
   assert.deepEqual(paused, []);
+  // Each sandbox its own interval (computer-intervals.ts): the lost one ended by its delete, the new one opened.
+  const intervals = async () => (await store.computerIntervals.forRun("run-1")).map((one) => [one.provider, one.providerId, one.kind, one.endedAt !== null]);
+  assert.deepEqual(await intervals(), [["modal", "c1", "sandbox", true], ["modal", "c2", "sandbox", false]]);
   await answer.release();
   assert.deepEqual(record.released, [["c1", "delete"], ["c2", "delete"]], "the run's end lets the new one go");
+  assert.deepEqual(await intervals(), [["modal", "c1", "sandbox", true], ["modal", "c2", "sandbox", true]]);
   assert.equal(record.revoked, 2);
 });
 

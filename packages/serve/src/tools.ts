@@ -32,11 +32,13 @@ import { bookedIn, booking, type Ledger, type PaidBooking } from "./paid-calls.j
 import type { Refusal } from "@parcha/agentrun-kernel";
 import { hostToolDefs, type ShellPlace } from "@parcha/agentrun-kernel/kernel";
 import { browserPrice, browserSpend } from "./browser-cost.js";
+import { sessionEnds } from "./browser-sessions.js";
 import { sessionRecordings } from "./computer-record.js";
 import { forModel } from "./result.js";
 import { fetchFor, pagesOf, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, type SearchOn, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
-import { fakeFetch, fakeSearch, type WebFake } from "./web-fake.js";
+import { fakeFetch, fakeSaveOptions, fakeSearch, type WebFake } from "./web-fake.js";
+import { SAVE_MAX_BYTES, type SaveSlots, WEB_SAVE_TOOL, webSaveTool } from "./web-save.js";
 import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, type Resolution, serverGate, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import type { DenyFrom, SettingFrom } from "./tool-gate.js";
 import { fauxFetch, PARALLEL_KEY_ENV } from "./decisions.js";
@@ -161,8 +163,8 @@ export type ToolHost = {
   /** The run's own models a native web_search goes through (hosted-search.ts), asked as a search runs: on the runner, the
    *  session's port (its proxy, policy, key, price and cap), this run's alone. Absent: a native search has no model. */
   search?: SearchOn;
-  /** A template eval's web fake for this run (web-fake.ts): its web_search and web_fetch answer from it, never the
-   *  network. Only the eval's own runner sets it (runner/beside.ts evalFakes). Absent: the plane's providers. */
+  /** A template eval's web fake for this run (web-fake.ts): its web_search, web_fetch and web_save answer from it, never
+   *  the network. Only the eval's own runner sets it (runner/beside.ts evalFakes). Absent: the plane's providers. */
   web?: WebFake;
   /** The run's clock where a template eval case sets one (its `now`): a draft's or a send's Date reads it. Absent: the real
    *  clock. */
@@ -176,6 +178,9 @@ export type ToolHost = {
   /** That server's own addresses (Serve.own, AdapterSpecDeps.mcpOwn): calendar_events never reads on loopback at their
    *  ports, a redirect's hop included, as the server's own read (calendar/routes.ts) never does. */
   serverOwn?: readonly string[];
+  /** web_save's download slots: in a run's own process, its runner's gate over the channel (runner/save-slots.ts).
+   *  Absent: this process's (web-save.ts SERVER_SLOTS). */
+  saveSlots?: SaveSlots;
 };
 /** A fake mail account's servers, on loopback (email/email-faux.ts), and the kind of server it plays: what email_file's
  *  description says, which a loopback account saved as `other` would otherwise read as folders. */
@@ -587,10 +592,17 @@ const browserTool: ToolEntry = {
     const saved = verify
       ? async (row: Parameters<typeof savedOnRelease>[0], change: string): Promise<void> => void (await verify(row, change))
       : undefined;
+    // Each session's end on the run's root, with its provider's own record of it where the provider keeps one, read once
+    // here (browser-sessions.ts): the run's usage read gives one record per session.
+    const sessionEnded = sessionEnds({
+      usage: "browser" in made ? made.browser.usage : undefined,
+      commit: (change) => (opened ? opened.commit(change, context) : Promise.reject(new Error("the run's journal is not open"))),
+    });
     // Both hosts of a session's changes: the live view's hand-over, and the sign-in's save (its verified_at, in the store).
     const onSessions = async (row: Parameters<typeof savedOnRelease>[0] & Parameters<typeof onSession>[0], change: string) => {
       // A session let go ends a wait on the person's answer that kept it open (personWait, below): the run parks.
       if (change === "released") hands.sessionEnded(row.session.tag);
+      if (change === "released") await sessionEnded((row as unknown as { session: Parameters<typeof sessionEnded>[0] }).session, (row as unknown as { conversationId: number }).conversationId);
       await recordSession(row.session.tag, change === "released" ? null : row.session.resourceId);
       // A session that opens, whatever let the last one go: the Screen tab's ended state goes (browser-wait-ended.ts).
       if (change === "launched" && host.store && host.claim) await clearWaitEnded(host.store.settings, host.claim.runId, host.claim.epoch).catch(() => undefined);
@@ -726,6 +738,17 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     // A template eval's web fake (host.web) answers in the provider's place.
     bind: async (host) => installTool(host, "web-search", booking(webSearchTool(host.env, host.search, host.web && ((args, provider) => fakeSearch(host.web!, args, provider)))) as unknown as ToolRegistration),
     effect: async (args, run) => bookedIn(run.ledger, () => searchFor(run.env, args, run.signal, run.search)),
+  },
+  // web_save (web-save.ts). It makes no paid request, so nothing books it. No node or call node names it: a workflow's
+  // effect has only a local work path, not the run's Workspace.
+  [WEB_SAVE_TOOL]: {
+    summary: `Download one public file into the run's work/ (a bare name under media/), never overwriting: { url, path } -> { ok: true, path, bytes, content_type, url } or { ok: false, url, refused | error }; at most ${SAVE_MAX_BYTES / (1024 * 1024)} MiB, a media type only when its bytes agree.`,
+    needs: [],
+    nodes: false,
+    bind: async (host) => {
+      const web = host.web;
+      return installTool(host, "web-save", webSaveTool(() => host.workspace ?? localWorkspace(host.where.work), async () => (web ? fakeSaveOptions(web) : fetchOptions(host.env, FAUX_ENV)), host.saveSlots) as unknown as ToolRegistration);
+    },
   },
   // The email tools (email/tools.ts) on the server's one email account (Settings → Email), every harness's as web_fetch is;
   // the mail libraries load at the first bind.

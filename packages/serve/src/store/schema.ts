@@ -18,7 +18,8 @@
 // The template packages imported from GitHub (imported_templates) are a table of their own that nothing
 // else reads, so it needs no version: the server adds it at its open to a store an earlier build of this version made
 // (IMPORTED_TEMPLATES), as it does the one-answer index. A hosted machine's minted token (minted_tokens, MINTED_TOKENS) is
-// added the same way, and so is each runner's word that it is there and whether it refused to claim (runners, RUNNERS).
+// added the same way, and so is each runner's word that it is there and whether it refused to claim (runners, RUNNERS),
+// and each computer a run made, from its create to its proven delete (computer_intervals, COMPUTER_INTERVALS).
 // Conventions: every time is INTEGER epoch milliseconds; JSON is TEXT checked by json_valid; money is REAL US dollars;
 // sealed columns hold ciphertext only (sealed with the server's key outside the store), so the store never sees a secret
 // in the clear. Foreign keys are on (the connection's pragma).
@@ -110,6 +111,41 @@ export const MINTED_TOKENS = `CREATE TABLE IF NOT EXISTS minted_tokens (
     run TEXT,
     refused TEXT
   ) STRICT`;
+
+/** Each computer a run's claim made through its provider (a sandbox, a desktop, a phone), by the provider's own id for it:
+ *  so an operator can see how long each lived for its run, find one left running after its run, and match the provider's
+ *  invoice by its id. `kind`, and what it was made with (`gpu_type` and `gpu_count`, `cpus`, `memory_mb`, `disk_gb`): the
+ *  provider's own figures where its answer gave them (CreatedComputer.resources), else what its create asked, null where
+ *  neither says (a hosted vendor that sizes its own machines and says nothing): never a guess. `booked_ms`: how much of
+ *  its time a claim of its run booked on the run's ledger (compute-cost.ts), the rest being time no claim held. `kept`: 1 once
+ *  the run's park kept it past the claim (computer-kept.ts). `ended_at`: written once, only when the provider's delete of
+ *  it answered ok; null while none did (still running, or its delete failed or was never asked), never a guessed end. Not
+ *  the agent's own computer (it outlives every run), a paired one or --faux's. In STORE_DDL, and added at a server open to
+ *  a store an earlier build of this version made, as MINTED_TOKENS is. */
+export const COMPUTER_INTERVALS = `CREATE TABLE IF NOT EXISTS computer_intervals (
+    provider TEXT NOT NULL,
+    provider_id TEXT NOT NULL,
+    run_id TEXT NOT NULL,
+    kind TEXT,
+    gpu_type TEXT,
+    gpu_count INTEGER,
+    cpus REAL,
+    memory_mb INTEGER,
+    disk_gb REAL,
+    started_at INTEGER NOT NULL,
+    kept INTEGER NOT NULL DEFAULT 0 CHECK (kept IN (0, 1)),
+    ended_at INTEGER,
+    booked_ms INTEGER NOT NULL DEFAULT 0 CHECK (booked_ms >= 0),
+    PRIMARY KEY (provider, provider_id)
+  ) STRICT`;
+/** The columns a computer_intervals an earlier build of this version made lacks (its disk and its booked time), each
+ *  added at a server open where missing (sqlite/store.ts). */
+export const COMPUTER_INTERVALS_ADDED: Readonly<Record<string, string>> = {
+  disk_gb: "ALTER TABLE computer_intervals ADD COLUMN disk_gb REAL",
+  booked_ms: "ALTER TABLE computer_intervals ADD COLUMN booked_ms INTEGER NOT NULL DEFAULT 0 CHECK (booked_ms >= 0)",
+};
+/** A run's computers, read by its run (store.computerIntervals.forRun). */
+export const COMPUTER_INTERVALS_RUN = "CREATE INDEX IF NOT EXISTS computer_intervals_run ON computer_intervals (run_id, started_at)";
 
 /** Each runner's word that it is there (runner/presence.ts), every runner's, beside a server or in a process of its own:
  *  its name, its incarnation (its process since its start, the one its relay's minted tokens and proofs name), why it
@@ -590,6 +626,8 @@ export const STORE_DDL: readonly string[] = [
   IMPORTED_TEMPLATES,
   MINTED_TOKENS,
   RUNNERS,
+  COMPUTER_INTERVALS,
+  COMPUTER_INTERVALS_RUN,
 
   // An agent's saved browser sign-ins (design 2.1, the browser sign-in rules): one live row per agent and browser provider, its
   // pointer (the vendor's context or profile id) sealed with the store's one rule (store/seal.ts, AAD

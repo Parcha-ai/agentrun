@@ -26,7 +26,7 @@ wait for your approval, or are refused.
 
 Many services publish a hosted MCP server. Check the service's docs for its MCP address.
 
-1. In the console, open **Settings → MCP servers** and add a server. Linear and Notion are listed as presets.
+1. In the console, open **Settings → MCP servers** and add a server. Linear and Notion are listed as presets. fal (image, video and audio generation) has two presets: "fal (key)" with your fal key, and "fal (sign in)". fal bills your fal account, and a run's spend cap does not count it: a template that uses fal caps its own fal spend with an input such as `max_fal_usd`. A template that needs fal links to the key one.
 2. Paste the service's MCP address and choose **Sign in with OAuth**.
 3. Choose **Sign in**, and sign in on the service's page. Signing in saves the server: AgentRun lists its tools and
    keeps the tokens, sealed, and refreshes them. There is no separate Save.

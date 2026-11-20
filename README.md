@@ -83,7 +83,8 @@ create an account or sign in. For help setting up your team's workflows,
 
 Prefer your own machine or infrastructure? Have your coding agent set it up below, or
 [self-host on Railway, Render, a VPS, Kubernetes, Coolify, Dokploy or Docker](#deploy-it) yourself. The
-[getting-started guide](docs/getting-started.md) explains the three options.
+[getting-started guide](docs/getting-started.md) explains the three options. Wherever it runs, AgentRun counts itself
+anonymously; `AGENTRUN_TELEMETRY=0` or `DO_NOT_TRACK=1` turns that off ([anonymous usage counts](docs/telemetry.md)).
 
 <a id="start-in-three-steps"></a>
 <a id="run-locally-in-three-steps"></a>
@@ -185,6 +186,7 @@ the run and supplies accepted learning to the next fresh task. Use the matching 
 | --- | --- |
 | Claude Agent SDK | [Wrap your existing query and custom tools](docs/tutorials/claude-sdk-learning.md) |
 | Codex SDK | [Wrap your existing Codex client and fresh threads](docs/tutorials/codex-sdk-learning.md) |
+| External platforms, including OpenClaw and Capy | [Report agents, scheduled jobs and threads from their platform](docs/tutorials/platform-sdk-runs.md) |
 
 The [live examples](examples/sdk-learning/README.md) verify native tool execution, an accepted note or skill, fresh-run reuse,
 and a learning-Off control. Reflection and independent grading run on the server and add model usage.

@@ -17,6 +17,7 @@
 // frame (FRAME, bytes no image decoder needs) once the page's screencast starts. It is started at the first connect. Each
 // Input command it gets (the person's input, through the live view) is logged by its name alone.
 //
+// With $FAUX_BROWSER_SESSION_USAGE, the provider keeps a record of each session it ran (see sessionUsage, below).
 // With $FAUX_BROWSER_STATE (a file), the backend's sessions outlive the run's process, as a vendor's do: each one created
 // or released is written there, and a process that starts finds the ones still running.
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
@@ -201,6 +202,15 @@ export default function browser(env = process.env, vendor = "browserbase", signI
       downloads: {
         list: async (ref) => { try { return ok(await fake.downloads.list(refOf(ref.id))); } catch (error) { return failed(error); } },
         read: async (ref, name, maxBytes) => { try { return ok(await fake.downloads.read(refOf(ref.id), name, maxBytes)); } catch (error) { return failed(error); } },
+      },
+    } : {}),
+    // With $FAUX_BROWSER_SESSION_USAGE: the vendor's own record of a session (BrowserComputerProvider.sessionUsage). `record`:
+    // its start and end a fixed 90 s apart, and 4096 proxy bytes; `fail`: the read fails. Unset: the provider keeps none.
+    ...(process.env.FAUX_BROWSER_SESSION_USAGE ? {
+      async sessionUsage(ref) {
+        if (process.env.FAUX_BROWSER_SESSION_USAGE === "fail") return fail("unreachable", "the vendor's session record could not be read");
+        if (!backend.sessions.has(ref.id)) return ok(undefined);
+        return ok({ startedAt: "2026-11-19T10:00:00.000Z", endedAt: "2026-11-19T10:01:30.000Z", proxyBytes: 4096 });
       },
     } : {}),
   };

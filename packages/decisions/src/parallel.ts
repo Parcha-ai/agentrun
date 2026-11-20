@@ -10,7 +10,8 @@ import type { DecisionCapabilities, DecisionContext, DecisionOutcome, DecisionPr
 import { parallelCitations } from "./evidence.js";
 import { openrouterProvider, type OpenRouterOptions } from "./openrouter.js";
 
-/** Parallel's list price for one `fast` decision request, up to 100 questions (docs.parallel.ai pricing, 2026-10-28). */
+/** Parallel's list price for one `fast` decision request, up to 100 questions: $1 per 1,000 requests
+ *  (https://docs.parallel.ai/resources/pricing, read 2026-11-20). */
 export const PARALLEL_LIST_PRICE_USD = 0.001;
 
 const KEY_VARIABLE = "PARALLEL_API_KEY";

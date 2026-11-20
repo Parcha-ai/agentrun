@@ -14,7 +14,7 @@ code-review/
   skills/<name>/SKILL.md   Agent Skills: front matter names the skill (= its folder) and describes it
   rules/*.md               rules each skill reads: apply puts a copy beside each SKILL.md
   evals/<case>/prompt.md   a case's run input (front matter: description, runs, max_cost_usd, ...)
-  evals/<case>/graders/*.md   front matter `type`: llm, regex, tool_used or file_exists
+  evals/<case>/graders/*.md   front matter `type`: llm, regex, tool_used, file_exists, mailbox or handed
   evals/<case>/case.yaml, evals/<case>/fixtures/   optional
   skills/review/findings.schema.json   any other file the manifest names (here the answer's schema, which the
                            reviewers' guides beside it read too)
@@ -101,11 +101,12 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   server writes them, under `Input:`; a body that holds its own `Input:` block is refused.
 - `case.yaml`, optional: `parameters` (the apply's parameters), `grants` (the gate names the apply grants, always a
   list), `mcp` (an `mcp` need's toolkit to a fixture file in the case that fakes it), `learning` (a file in the case holding
-  the corrections the agent starts with, as its `corrections.md`: one line each), `web` (fakes `web_search` and `web_fetch` for the case's runs),
+  the corrections the agent starts with, as its `corrections.md`: one line each), `web` (fakes `web_search`, `web_fetch` and `web_save` for the case's runs),
   `monid` (fakes the package's monid endpoints for the case's runs), `now` (the case's clock), `email` (a fake mailbox
-  for the case's runs), `calendar` (a fake calendar for the case's runs).
+  for the case's runs), `calendar` (a fake calendar for the case's runs), `feed` (fake feeds for the case's runs),
+  `previous` (the earlier results the schedule's run is handed).
 - `web: unavailable`: every `web_search` answers with the words a rate-limited free search answers with, and every
-  `web_fetch` fails as a page that never answers does; no call reaches the network. `web:` a fixture file in the case
+  `web_fetch` and `web_save` fails as a host that never answers does; no call reaches the network. `web:` a fixture file in the case
   answers from that file instead:
   ```json
   { "search": { "answers": [ { "query": "robot", "results": [ { "url": "https://...", "title": "...", "snippet": "...", "published": "2026-11-10" } ] },
@@ -113,13 +114,17 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
                 "default": { "results": [] } },
     "fetch": { "answers": [ { "url": "https://.../post", "title": "...", "text": "the page's text" },
                             { "url": "https://.../gone", "status": 404, "text": "" } ],
-               "default": { "error": "fetch failed" } } }
+               "default": { "error": "fetch failed" } },
+    "save": { "answers": [ { "url": "https://.../out.png", "content_type": "image/png", "base64": "iVBORw0KGgo..." },
+                           { "url": "https://.../gone.png", "error": "connect ETIMEDOUT" } ] } }
   ```
   A search answer's `query` is a regular expression over the call's query (case-insensitive), a fetch answer's `url`
   the exact URL; the first answer that matches is taken, else `default`. A `status` of 400 or more fails the fetch as
-  that answer would. The calls show in the run's timeline as any other, so a `tool_used` grader counts them. Each
+  that answer would. `save` is optional: each `web_save` file is the answer for exactly its URL (its body as `text` or
+  `base64`, with `content_type` and `status` optional), else `save.default` where there is one, else a refused
+  connection; the file goes through `web_save`'s own checks (its type against its bytes, the path, the cap). The calls show in the run's timeline as any other, so a `tool_used` grader counts them. Each
   harness gets the same fake: on claude-agent and codex their own web search is never offered to a `web:` case's runs.
-  The package's `tools` must name `web_search` or `web_fetch`. Only the eval's own server honours `web`, so a case with
+  The package's `tools` must name `web_search`, `web_fetch` or `web_save`. Only the eval's own server honours `web`, so a case with
   it refuses to run with `--server`.
 - `monid: unavailable`: every call of a monid endpoint the package grants answers as it does when monid can't be
   reached (`... was not sent: monid's price for it could not be read before the call (monid could not be reached: fetch
@@ -199,6 +204,26 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   `prompt.md` holds `description` and `runs` alone: the run's input and cap are the trigger's, and its graders' task is
   that input, the item's payload in its tag. Only the eval's own server honours `feed`, so a case with it refuses
   `--server`.
+- `previous: fixtures/previous.json`, a fixture file in the case: the earlier completed results of the package's
+  schedule trigger, which its next run is handed after its message. The fixture:
+  ```json
+  { "description": "Last week's digest listed two jobs; this week's leaves them out.",
+    "results": [ { "output": { "items": ["https://jobs.example.com/1"] } },
+                 { "output": { "items": ["https://jobs.example.com/2", "https://jobs.example.com/3"] },
+                   "output_schema": { "type": "object", "x-carried": ["items"], "properties": { "items": { "type": "array" } } } } ],
+    "trigger": "Weekly" }
+  ```
+  `results` are oldest first, at least one; each `output` is that run's `result.output`, checked when the case is read
+  against its own `output_schema` (the schema the run that made it had, `x-carried` included), else the package's
+  `output` schema. Each run's agent gets them written in the server's store as completed runs of that agent, a day
+  apart, each started by a firing of the trigger; then the trigger fires on the eval's clock, as a schedule does, and the
+  run is handed what a scheduled run is handed: the last result whole up to 32 KiB, else the fields its run's schema
+  names in `x-carried` (the first entries of the largest carried array dropped until they fit, and how many said), else
+  nothing, said so. `trigger` names the trigger when the package has more than one schedule. The case's `prompt.md`
+  holds `description` and `runs` alone; `previous` goes with neither `email` nor `feed`. What the run was handed is on
+  its report as `handed_previous` (`kind`: `whole`, `carried`, `too_large` or `none`; `text`, as handed; `run_id`; and
+  for carried fields, `fields` and `dropped`, the count each carried array gave up, 0 for none). Only the eval's own server honours
+  `previous`, so a case with it refuses `--server`.
 - A fake MCP server's fixture, one shape for every package:
   ```json
   { "server": "github", "description": "what the fake holds",
@@ -224,6 +249,10 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   - `mailbox`, on an `email` case: `message_id` is `in` a mailbox (or, on gmail, under a label) after the run, and in
     none of `not_in` (a list); `INBOX`, `Drafts` and `Sent` name the account's own on either layout. `in: INBOX` is
     the check that a message stayed in the inbox on both layouts: a gmail label keeps it there, a folders move does not.
+  - `handed`, on a `previous` case: the run was handed its trigger's last result as `expect` says (`whole`, `carried`,
+    `too_large` or `none`), and, with `expect: carried`, `dropped` (`{items: 192}`) is how many first entries each
+    named carried array gave up (0 for none); a name that is no carried array the run was handed (a typo, a scalar)
+    fails the grader.
 
   On an `email` case any grader may say `layouts` (`[gmail]`, `[folders]`): it grades the runs of those layouts alone,
   where a package's right behaviour differs by server (on folders, `tool_used` `email_file` `not_called`; on gmail,

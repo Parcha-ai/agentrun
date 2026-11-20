@@ -148,7 +148,7 @@ test("Rule 5: with every key planted, a Mode 1 sandbox's computer, a faux deskto
   const claim = await archilClaim({
     settings: PLANTED_ARCHIL_SETTINGS, keys: store.sealedKeys, sealKey, signal: new AbortController().signal, makeDisk: () => disk,
     run: { agentId: "a", launch: { diskId: PLANTED_ARCHIL_DISK, kind: "agent" }, store: agentDiskStore("a", PLANTED_ARCHIL_DISK) },
-    mount: { runId: "run-3", epoch: 1, ttlMs: 86_400_000, baseUrl: control.baseUrl, fetch: control.fetch },
+    mount: { runId: "run-3", epoch: 1, ttlMs: 86_400_000 }, control: { baseUrl: control.baseUrl, fetch: control.fetch },
   });
   const workspace = archilWorkspace(disk, "agents/a/runs/run-3/work", { region: PLANTED_ARCHIL_SETTINGS.region, mountToken: () => claim.token() });
   const mounted = { created: [], options: [] };

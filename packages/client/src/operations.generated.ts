@@ -124,6 +124,9 @@ export type DefinitionInput = {
   max_cost_usd?: number;
   sdk?: {
     runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
+  } | {
+    runtime: "external";
+    platform: string;
   };
   native?: {
     runtime: "claude-code" | "codex";
@@ -207,6 +210,9 @@ export type DefinitionInput = {
     };
     web_search?: {
       provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+      permission?: "allow" | "ask" | "deny";
+    };
+    web_save?: {
       permission?: "allow" | "ask" | "deny";
     };
     email_search?: {
@@ -352,6 +358,19 @@ export type RunSummary = {
   cost: Cost;
   sdk?: {
     runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
+    model: string | null;
+    session_id: string | null;
+    learning_revision: string | null;
+    usage: {
+      input_tokens?: number | null;
+      output_tokens?: number | null;
+      cache_read_tokens?: number | null;
+      cache_write_tokens?: number | null;
+      cost_usd?: number | null;
+    } | null;
+  } | {
+    runtime: "external";
+    platform: string;
     model: string | null;
     session_id: string | null;
     learning_revision: string | null;
@@ -627,6 +646,19 @@ export type Run = {
   poll_after_ms: number;
   sdk?: {
     runtime: "claude-agent-sdk" | "codex-sdk" | "eve";
+    model: string | null;
+    session_id: string | null;
+    learning_revision: string | null;
+    usage: {
+      input_tokens?: number | null;
+      output_tokens?: number | null;
+      cache_read_tokens?: number | null;
+      cache_write_tokens?: number | null;
+      cost_usd?: number | null;
+    } | null;
+  } | {
+    runtime: "external";
+    platform: string;
     model: string | null;
     session_id: string | null;
     learning_revision: string | null;
@@ -3700,12 +3732,12 @@ export type GetRunUsageResponse = {
     upper_bound?: true;
   } | null;
   lines: Array<{
-    meter: "tokens" | "tools" | "browser_time";
+    meter: "tokens" | "tools" | "browser_time" | "compute_time";
     model: string | null;
     provider: string | null;
     charged_by: string | null;
     quantity: number | null;
-    unit: "token" | "call" | "second";
+    unit: "token" | "call" | "second" | "vcpu_second" | "gib_second" | "gpu_second" | "gb_month";
     basis: "reported" | "estimate" | "unpriced";
     usd: number | null;
     so_far_usd?: number;
@@ -3720,6 +3752,42 @@ export type GetRunUsageResponse = {
     };
     unmetered_requests?: number;
     not_metered_calls?: number;
+    resource?: "vcpu" | "memory" | "gpu" | "disk";
+    gpu_type?: string | null;
+    unheld_quantity?: number | null;
+    open_computers?: number;
+    measured_to?: string;
+  }> | null;
+  browser_sessions: Array<{
+    provider: string;
+    tag: string;
+    provider_session_id: string | null;
+    started_at: string | null;
+    ended_at: string | null;
+    release_reason: string | null;
+    charged_seconds: number | null;
+    provider_record: {
+      started_at: string | null;
+      ended_at: string | null;
+      proxy_bytes: number | null;
+    } | null;
+    provider_record_status: "read" | "not_offered" | "not_found" | "failed" | "no_session" | null;
+  }> | null;
+  computer_intervals: Array<{
+    provider: string;
+    provider_id: string;
+    kind: string | null;
+    gpu: {
+      type: string | null;
+      count: number | null;
+    } | null;
+    cpus: number | null;
+    memory_mb: number | null;
+    disk_gb: number | null;
+    started_at: string;
+    ended_at: string | null;
+    kept: boolean;
+    booked_seconds: number;
   }> | null;
   reason: "running" | "not_booked" | "reopened" | null;
 };
@@ -3808,6 +3876,12 @@ export type StartSdkRunBody = {
     price_usd?: number;
   }>;
   workflow_adapters?: Array<"runNode" | "runJudge">;
+} | {
+  runtime: "external";
+  platform: string;
+  input: string;
+  instructions: string;
+  model?: string;
 };
 export interface StartSdkRunParams {
   "Idempotency-Key": string;
@@ -4369,6 +4443,9 @@ export type PutToolSettingsBody = {
   };
   web_search?: {
     provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+    permission?: "allow" | "ask" | "deny";
+  };
+  web_save?: {
     permission?: "allow" | "ask" | "deny";
   };
   email_search?: {
