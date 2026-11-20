@@ -44,6 +44,9 @@ export const deniedText = (tool: string, heldTo?: string, from: SettingFrom = "s
 export const computerOffWords = (kind: string): string => `The ${kind} is off for the rest of this run, so every later call of its tools is refused too.`;
 /** The refusal of a later call of an off computer's tools, short: decided on the runner alone, no setting read. */
 export const computerOffText = (kind: string, ran: "no" | "unknown" = "no"): string => `${DENIED_OPENING}the ${kind} is off for this run. ${ran === "no" ? NOT_RUN : RAN_UNKNOWN}`;
+/** Why a later claim of a run starts no computer: an earlier claim's deny turned it off for the run (runner/
+ *  computer-journal.ts computerTurnedOff). Said on the run's timeline. */
+export const computerStillOffWords = (kind: string): string => `The ${kind} is off for this run: an earlier call of its tools was refused for a deny, so it is not started again.`;
 /** Why a run never starts the agent's computer: every tool it serves is set to deny (tool-gate.ts computerDenied). A
  *  save's warning says it, and the run's timeline. */
 export const computerDeniedWords = (kind: string): string => `Every tool for this agent's ${kind} is set to deny, so a run never starts it: allow one, or set the computer to none.`;

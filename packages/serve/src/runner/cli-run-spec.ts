@@ -49,7 +49,7 @@ import { archilWhereHeld, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { loadArchilSettings } from "../archil-settings.js";
 import { settingOfDefinition } from "../computer-setting.js";
 import { computerKeptWords, computerReadyWords, computerReplacedNote, computerStartingWords, imageWaitWords } from "../workspace/computer-deps.js";
-import { hadComputer } from "./computer-journal.js";
+import { computerTurnedOff, hadComputer, offForRun, recordComputerOff } from "./computer-journal.js";
 import { type AdapterRun, type AdapterRunSpec, hostLifecycle, type RunCapConfig } from "./adapter-loop.js";
 import { adapterRunGate, type AdapterSpecDeps, answersCut, buildToolHost, capModelOf as capModelOfRoute, claimLiveAt, graderRouteOf, hostToolCtxOf, type LearnedTier, learnedTierRoutes, learnedTiers, learnedWorkflowHostTool, learnsWorkflows, mcpReachOf, modelAskOf, PI_WIRES, webHostTools } from "./adapter-run-spec.js";
 import { openTierProxies, type TierProxies } from "./adapters/pi.js";
@@ -400,7 +400,9 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // The run's computer, from the one shared claim-time function (the pi spec takes the same): none for a runner place.
   // It throws computer_unavailable (nothing made) when the computer cannot be had: the run fails in its words.
   const claimSignal = run.stopped ?? run.signal;
-  const computer = await deps.computerForClaim(
+  // An earlier claim's deny turned the run's computer off for the run (computerTurnedOff): this claim starts none.
+  const offAlready = await computerTurnedOff(deps.journal(claim), context);
+  const computer = offAlready ? offForRun(offAlready, (words) => run.phase?.(words)) : await deps.computerForClaim(
     { runId: claim.runId, epoch: claim.epoch, claim, agentId: runRow.agentId, revisionId: runRow.revisionId, place: launch.place },
     deps.store,
     // revokeMount removes the run's Archil mount credential at the computer's release (and if a start fails after a mint); the
@@ -574,7 +576,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // A pinned MCP tool is held to the arguments its listing in the run's pin declares (mcp.argumentsOf). The harness's
   // native tools are named by its facts on the owner's table (factsOf: a module's harness's too).
   const ownerFacts = factsOf(deps.env, name);
-  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, { ...(mcp ? { effectOf: (name: string) => mcp.effectOf(name), argumentsOf: (name: string) => mcp.argumentsOf(name) } : {}), facts: ownerFacts });
+  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, { ...(mcp ? { effectOf: (name: string) => mcp.effectOf(name), argumentsOf: (name: string) => mcp.argumentsOf(name) } : {}), facts: ownerFacts, turnedOff: offAlready !== undefined, onComputerOff: (kind) => recordComputerOff(run.harness, kind) });
 
   // The run's tools: the kernel registry's hands on its Workspace (and computer); the web host tools it is granted
   // (web_fetch, web_search, monid), bound by the binding the pi spec uses (webHostTools) on the ToolHost the pi spec builds

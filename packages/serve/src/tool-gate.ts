@@ -478,8 +478,9 @@ export class RunGate {
     const ran = options.replayed ? "unknown" : "no";
     // The run's computer once a call of its own tools was refused for a deny is off for the rest of the run: a later call
     // of them is refused here, short, with no setting read and nothing sent to it (a setting changed since included).
+    const off = this.offRefusal(name, options);
+    if (off) return off;
     const own = this.computerOwns(name);
-    if (own && this.off) return { deny: computerOffText(own, ran) };
     const held = heldAs(name, args);
     if (held && this.policy(name) !== "deny") return this.onComputer().decide(held.tool, held.args, options);
     const key = this.keyOf(name) ?? name;
@@ -500,8 +501,27 @@ export class RunGate {
     return this.approvers ? "ask" : { deny: noApproverText(tool, ran) };
   }
 
-  /** Set by the first deny of a call of the run's computer's own tools (computerOwns): the computer is off for the rest of
-   *  the run. A new claim's gate starts with it on; its claim starts no computer whose every tool is set to deny. */
+  /** The refusal of a call of the run's computer's own tools (computerOwns) once that computer is off for the rest of the
+   *  run (computerOff): short, decided with no setting read and nothing sent to it, a setting changed since included.
+   *  Undefined for any other call, or while the computer is on. */
+  offRefusal(name: string, options: { readonly replayed?: boolean } = {}): { deny: string } | undefined {
+    const own = this.off ? this.computerOwns(name) : undefined;
+    return own ? { deny: computerOffText(own, options.replayed ? "unknown" : "no") } : undefined;
+  }
+
+  /** The run's computer's kind once it is off for the rest of the run: by the first deny of a call of its own tools
+   *  (decide, whose refusal says so once), or from a claim's start (turnOff). Undefined while it is on. */
+  get computerOff(): string | undefined {
+    return this.off ? this.where.kind : undefined;
+  }
+
+  /** The run's computer off from this claim's start: an earlier claim's deny turned it off for the run
+   *  (computer-journal.ts computerTurnedOff), so each call of its tools is refused short, never said off again. */
+  turnOff(): void {
+    this.off = true;
+  }
+
+  /** Set by the first deny of a call of the run's computer's own tools (computerOwns), or by turnOff. */
   private off = false;
   /** The run's computer kind (where.kind) when `name` is one of that computer's own tools: a desktop's or a phone's
    *  (KIND_TOOLS), a browser's (held to the browser key). Undefined for any other call, a shell or file tool the computer

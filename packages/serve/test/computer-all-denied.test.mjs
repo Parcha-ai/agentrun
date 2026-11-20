@@ -11,6 +11,8 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { BACKGROUND_CONTEXT as bg } from "@earendil-works/chord/context";
+import { ROOT_CONVERSATION_ID } from "@earendil-works/pi-durable";
 import { COMPUTER_TOOLS } from "@parcha/agentrun-kernel/kernel";
 import { specFor, toolNames } from "./runner-spec-support.mjs";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
@@ -19,6 +21,10 @@ const { computerDepsFrom } = await import("../dist/workspace/index.js");
 const { fauxComputers } = await import("../dist/faux-computers.js");
 const { computerDenied, deniedText } = await import("../dist/tool-gate.js");
 const { computerDeniedWords, computerOffText, computerOffWords } = await import("../dist/refusal-words.js");
+const { journalEntries } = await import("../dist/runner/journal-reader.js");
+
+/** The root entry a run's first deny of its computer's tools writes (the computer off for the run), as its journal has it. */
+const OFF_KIND = "agentrun.computer.off";
 
 const FAUX_DESKTOP = { kind: "desktop", provider: "faux-desktop" };
 const PHONE = { kind: "phone", provider: "phone-harness" };
@@ -103,14 +109,19 @@ test("pi: the model calls a denied phone tool 4 times: the first is refused with
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const phone = fakeComputer(root);
   phone.overrides["input.actions"] = ({ actions }) => ({ done: actions.length });
-  const { spec, server } = await specFor(t, { body: { tools: ["read"], computer: PHONE }, computer: phoneComposer(phone) });
+  const { spec, server, store, claim } = await specFor(t, { body: { tools: ["read"], computer: PHONE }, computer: phoneComposer(phone) });
   assert.ok(toolNames(spec).includes("computer_act"), "the phone started with its tools allowed");
   const reached = () => phone.calls.filter(([method]) => method !== "hello" && method !== "ping").length;
   const before = reached();
+  // Each read of the stored tool settings the runner's gate makes.
+  const reads = { n: 0 };
+  const get = store.settings.get.bind(store.settings);
+  store.settings.get = (...args) => { reads.n += 1; return get(...args); };
   // The owner sets phone to deny while the run is going.
   await server.settings.put("tool-settings", { phone: { permission: "deny" } });
   await server.flush?.();
   const answers = [];
+  let readsAfterFirst = 0;
   for (let n = 1; n <= 4; n += 1) {
     const verdict = await spec.gate({ callId: `p${n}`, tool: "computer_act", args: CLICK });
     answers.push(verdict);
@@ -119,13 +130,39 @@ test("pi: the model calls a denied phone tool 4 times: the first is refused with
     if (n === 1) {
       await server.settings.put("tool-settings", {});
       await server.flush?.();
+      readsAfterFirst = reads.n;
     }
   }
   assert.equal(reached(), before, `no call reached the phone: ${JSON.stringify(answers)}; ${JSON.stringify(phone.calls.slice(before))}`);
+  assert.equal(reads.n, readsAfterFirst, "calls 2-4 are refused with no settings read");
+  // The run's journal says the phone is off for the run, once, so a later claim of the run starts none.
+  const offs = (await journalEntries(store.journal(claim), bg)).filter((entry) => entry.kind === OFF_KIND);
+  assert.deepEqual(offs.map((entry) => entry.data), [{ computer: "phone" }], "the off is in the run's journal once");
   assert.deepEqual(answers[0], { deny: `${deniedText("phone", "phone", "server")} ${computerOffWords("phone")}` }, "the first: the deny's words, then the phone off for the run");
   for (const [i, answer] of answers.slice(1).entries()) assert.deepEqual(answer, { deny: computerOffText("phone") }, `call ${i + 2} is refused short`);
   const said = answers.map((one) => one.deny ?? "").join("\n");
   assert.equal(said.split(computerOffWords("phone")).length - 1, 1, "the off words are said once");
   // A call of another tool is decided as before: the phone's being off holds no other tool.
   assert.equal(await spec.gate({ callId: "r1", tool: "read", args: { path: "notes.txt" } }), "allow");
+});
+
+test("pi: a later claim of a run whose phone an earlier claim's deny turned off starts no phone, its tools allowed again or not: each call of them is refused short, and the run's read still runs", async (t) => {
+  const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "computer-all-denied-"));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const phone = fakeComputer(root);
+  const claimed = { n: 0 };
+  const composer = phoneComposer(phone);
+  const counting = (given) => {
+    const made = composer(given);
+    return { ...made, computerForClaim: (...args) => { claimed.n += 1; return made.computerForClaim(...args); } };
+  };
+  // The earlier claim's deny, as its gate wrote it on the run's root; the phone allowed (no setting) since.
+  const earlier = (harness) => harness.commit((tx) => tx.appendEntry(ROOT_CONVERSATION_ID, { kind: OFF_KIND, data: { computer: "phone" } }), bg);
+  const { spec, workFolder } = await specFor(t, { body: { tools: ["read"], computer: PHONE }, computer: counting, journal: earlier });
+  assert.equal(claimed.n, 0, "the claim asked for no phone");
+  const names = toolNames(spec);
+  assert.deepEqual(COMPUTER_TOOLS.filter((name) => names.includes(name)), [], `no phone tool is handed: ${JSON.stringify(names)}`);
+  assert.doesNotMatch(spec.session.system.join("\n"), /phone-computer/, "the phone's skill is named to no one");
+  assert.deepEqual(await spec.gate({ callId: "p1", tool: "computer_act", args: CLICK }), { deny: computerOffText("phone") }, "refused short: the off was said in the earlier claim");
+  await readsItsFile(spec, workFolder);
 });

@@ -101,6 +101,11 @@ export const KINDS = {
    *  entry is how that claim knows the run had one when nothing of the earlier claim's is left to let go (a server's
    *  stop, a park): computer-journal.ts hadComputer. Neither a call nor a message, and never on the Timeline. */
   computerMade: "agentrun.computer.made",
+  /** The run's computer is off for the rest of the run (`computer`: its kind): written on the root by the claim's gate at
+   *  the first deny of a call of that computer's own tools (tool-gate.ts RunGate.computerOff), whose refusal said so. A
+   *  later claim of the run starts no computer and refuses each call of its tools short: computer-journal.ts
+   *  computerTurnedOff. Neither a call nor a message, and never on the Timeline. */
+  computerOff: "agentrun.computer.off",
   /** A grade's feedback round (runner/feedback-round.ts): the run opened again on a grade's words, asked no turn of the
    *  job's; its next end's end-of-run turn reads them (`text`, the `round`, whether the grade said right, the workflow a
    *  revision is asked of). Written on the root by the commit that takes the round's steer row. Neither a call nor a

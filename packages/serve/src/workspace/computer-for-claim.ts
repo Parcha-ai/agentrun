@@ -230,8 +230,9 @@ export interface ComputerForClaimDeps {
  *  owner's view let go, then the computer. */
 export interface ClaimComputer {
   readonly computer?: RunComputer;
-  /** The agent's computer was not started: every tool it serves the run is set to deny (tool-gate.ts computerDenied). The
-   *  run goes on without it, and its kind's skill is not named to the model. */
+  /** The agent's computer was not started: every tool it serves the run is set to deny (tool-gate.ts computerDenied), or
+   *  an earlier claim's deny turned it off for the run (runner/computer-journal.ts offForRun). The run goes on without it,
+   *  and its kind's skill is not named to the model. */
   readonly off?: true;
   readonly hold?: RunHold;
   readonly held?: HeldComputer;
