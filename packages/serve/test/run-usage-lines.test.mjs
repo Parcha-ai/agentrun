@@ -247,3 +247,16 @@ test("served, a name on a line is cut of the server's secrets, as the run's trac
   assert.match(read.lines[0].model, /^acme\/\[redacted\]/);
   assert.deepEqual(read.total, { usd: 0.01 }, "the figures are as read");
 });
+
+test("served, a browser session's words are cut of the server's secrets too: its provider's id for it and its provider's record", async () => {
+  const { servedRunUsage } = await import("../dist/run-usage.js");
+  const secret = "sk-planted-session-0123456789";
+  const ending = e(0, "agentrun.browser_session_ended", { tag: "t1", provider: "browserbase", provider_session_id: `sess-${secret}`, started_at: "2026-11-19T10:00:00.000Z", ended_at: "2026-11-19T10:01:00.000Z", release_reason: `closed ${secret}`, provider_record: { started_at: secret, ended_at: null, proxy_bytes: 12 }, provider_record_status: "read" });
+  const { store } = snapshotStore(ended(), { entries: [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1)), ending] });
+  const served = new Proxy(store, { get: (target, key) => (key === "runs" ? { get: async () => ended(), launch: async () => { throw new Error("no launch"); } } : target[key]) });
+  const read = await servedRunUsage({ serverSecrets: () => [secret] }, served, "run_1");
+  assert.equal(read.browser_sessions.length, 1);
+  assert.ok(!JSON.stringify(read).includes(secret), "the secret is not served");
+  assert.match(read.browser_sessions[0].provider_session_id, /^sess-\[redacted\]/);
+  assert.equal(read.browser_sessions[0].provider_record.proxy_bytes, 12, "its figures are as read");
+});

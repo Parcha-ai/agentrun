@@ -284,5 +284,20 @@ export async function servedRunUsage(deps: { serverSecrets: () => string[]; sign
   if (cut === "unreadable") throw new ApiError("forbidden", WITHHELD_SIGN_IN);
   if (!usage?.lines) return usage;
   const said = (text: string | null) => (text === null ? null : redacted(text, cut.values));
-  return { ...usage, lines: usage.lines.map((line) => ({ ...line, model: said(line.model), provider: said(line.provider), charged_by: said(line.charged_by) })) };
+  // A browser session's words too, every one its records keep: its provider names it, and the provider's record says the rest.
+  const session = (one: BrowserSessionLine): BrowserSessionLine => ({
+    ...one,
+    provider: redacted(one.provider, cut.values),
+    tag: redacted(one.tag, cut.values),
+    provider_session_id: said(one.provider_session_id),
+    started_at: said(one.started_at),
+    ended_at: said(one.ended_at),
+    release_reason: said(one.release_reason),
+    provider_record: one.provider_record && { ...one.provider_record, started_at: said(one.provider_record.started_at), ended_at: said(one.provider_record.ended_at) },
+  });
+  return {
+    ...usage,
+    lines: usage.lines.map((line) => ({ ...line, model: said(line.model), provider: said(line.provider), charged_by: said(line.charged_by) })),
+    browser_sessions: usage.browser_sessions && usage.browser_sessions.map(session),
+  };
 }
