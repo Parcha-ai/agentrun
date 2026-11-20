@@ -333,11 +333,11 @@ test("each provider's folder is the one a run's claim holds for its computer, pe
             seen.add(row.folder);
           }
         }
-        const folders = Object.fromEntries([["sandbox", "docker"], ["desktop", "docker"], ["sandbox", "daytona"], ["sandbox", "modal"], ["desktop", "e2b"], ["sandbox", "agent37"], ["sandbox", "morph"], ["desktop", "orgo"], ["phone", "phone-harness"], ["browser", "browserbase"]].map(([kind, id]) => [`${kind} ${id}`, providerOf(view, kind, id).folder]));
+        const folders = Object.fromEntries([["sandbox", "docker"], ["desktop", "docker"], ["sandbox", "daytona"], ["sandbox", "modal"], ["desktop", "modal"], ["desktop", "e2b"], ["sandbox", "agent37"], ["sandbox", "morph"], ["desktop", "orgo"], ["phone", "phone-harness"], ["browser", "browserbase"]].map(([kind, id]) => [`${kind} ${id}`, providerOf(view, kind, id).folder]));
         const archil = egress && snapshot ? "archil" : "sync";
         assert.deepEqual(folders, mode === "local"
-          ? { "sandbox docker": "bind", "desktop docker": "bind", "sandbox daytona": null, "sandbox modal": null, "desktop e2b": null, "sandbox agent37": null, "sandbox morph": null, "desktop orgo": null, "phone phone-harness": null, "browser browserbase": null }
-          : { "sandbox docker": null, "desktop docker": null, "sandbox daytona": archil, "sandbox modal": "archil", "desktop e2b": "archil", "sandbox agent37": "archil", "sandbox morph": "sync", "desktop orgo": null, "phone phone-harness": null, "browser browserbase": null }, settings);
+          ? { "sandbox docker": "bind", "desktop docker": "bind", "sandbox daytona": null, "sandbox modal": null, "desktop modal": null, "desktop e2b": null, "sandbox agent37": null, "sandbox morph": null, "desktop orgo": null, "phone phone-harness": null, "browser browserbase": null }
+          : { "sandbox docker": null, "desktop docker": null, "sandbox daytona": archil, "sandbox modal": "archil", "desktop modal": "sync", "desktop e2b": "archil", "sandbox agent37": "archil", "sandbox morph": "sync", "desktop orgo": null, "phone phone-harness": null, "browser browserbase": null }, settings);
         const text = JSON.stringify(view);
         assert.ok(!text.includes(EGRESS) && !text.includes(SNAPSHOT), `${settings}: no value in the view`);
       }
