@@ -4108,6 +4108,12 @@ export type ApplyTemplateResponse = {
   agent_id: string;
   servers: Record<string, string | null>;
   trigger_ids: Array<string>;
+  triggers: Array<{
+    trigger_id: string;
+    name: string;
+    kind: "schedule" | "webhook" | "github" | "composio" | "email" | "feed";
+    enabled: boolean;
+  }>;
   warnings: Array<InputIssue>;
   webhook_secrets?: Array<{
     trigger_id: string;

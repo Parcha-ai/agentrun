@@ -32,6 +32,17 @@ const NIGHTLY: Trigger = {
   created_at: "2026-11-04T00:00:00Z", updated_at: "2026-11-04T00:00:00Z", next_at: "2026-11-05T01:30:00Z", last_firing: null,
 };
 
+// The inbox assistant's new-mail trigger: an email trigger (made by a template's apply, through the API), its agent the
+// mailer, whose email_send asks; its last check and the first check's note, as the server writes them.
+const NEW_MAIL: Trigger = {
+  id: "trg_mail", name: "new-mail", enabled: true, source: { kind: "email", account: "default", mailbox: "INBOX", every_s: 60 },
+  target: { kind: "start_run", agent_id: "mailer", input: { content: "Sort the new mail." }, max_cost_usd: 0.5 },
+  catchup_window_s: 0, max_active_runs: 1, failures_in_a_row: 0, disabled: null, last_run_id: "r_mail",
+  created_at: "2026-11-04T00:00:00Z", updated_at: "2026-11-04T00:00:00Z", next_at: "2026-11-05T00:01:00Z", last_firing: null,
+  last_check: { at: "2026-11-05T00:00:00Z", ok: true, message: "Watching INBOX: 3 messages." },
+} as Trigger;
+const MAIL_FIRINGS = [{ key: "f_mail", by: "email", status: "started", nominal_at: "2026-11-05T00:00:30Z", run_id: "r_mail", catch_up: false, reason: null }];
+
 type Call = { method: string; path: string; body: unknown; ifMatch: string | null };
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
 
@@ -61,10 +72,12 @@ function server(agents: FakeAgent[] = [MAILER(), READER(), UNATTENDED()], { acco
     if (call.path === "/v2/integrations/github") return json(200, { app_id: "1", slug: "agentrun-test", installations: [{ id: 7, account: "acme" }] });
     if (call.path === "/v2/settings/mcp-servers") return json(200, { servers: [{ name: "gh", url: "https://backend.composio.test/mcp", auth: { type: "headers", headers: ["x-api-key"] }, source: "composio", toolkit: "github", credential: "sealed", tools: [], listed_at: "2026-11-04T10:00:00Z", updated_at: "2026-11-04T10:00:00Z" }] });
     if (call.path === "/v2/settings/mcp-servers/gh/composio/events") return json(200, { events: [] });
-    if (call.path === "/v2/triggers" && call.method === "GET") return json(200, { triggers: [NIGHTLY] });
+    if (call.path === "/v2/settings/email") return json(200, { configured: true, preset: "gmail", address: "inbox@example.com", user: "inbox@example.com", imap: { host: "imap.gmail.com", port: 993 }, smtp: { host: "smtp.gmail.com", port: 465 }, password_unreadable: false });
+    if (call.path === "/v2/triggers" && call.method === "GET") return json(200, { triggers: [NIGHTLY, NEW_MAIL] });
     const m = /^\/v2\/triggers\/([^/]+)(\/firings)?$/.exec(call.path);
-    if (m?.[2]) return json(200, { firings: [] });
+    if (m?.[2]) return json(200, { firings: decodeURIComponent(m[1]!) === NEW_MAIL.id ? MAIL_FIRINGS : [] });
     if (m && decodeURIComponent(m[1]!) === NIGHTLY.id) return json(200, NIGHTLY);
+    if (m && decodeURIComponent(m[1]!) === NEW_MAIL.id) return json(200, NEW_MAIL);
     return json(404, { error: { code: "not_found", message: call.path, retryable: false } });
   }) as typeof globalThis.fetch;
   return { v2: createClient({ fetch }), calls, byId };
@@ -195,6 +208,46 @@ describe("Triggers: an agent whose tools ask", () => {
     await t.click(/^Run unattended$/);
     expect(s.byId.get("mailer")!.definition.approvals).toBe("never");
     expect(t.warning()).toBeNull();
+  });
+
+  it("an email trigger's page opens: what it watches, its agent and runs, and the warning naming the tools that ask", async () => {
+    const s = server();
+    const t = await open(s.v2, { trigger: NEW_MAIL.id });
+    expect(t.host.textContent).not.toContain("this page doesn't open it yet");
+    expect(t.host.querySelector("h1")!.textContent).toBe("new-mail");
+    expect(t.host.textContent).toContain("Email · On each email in INBOX");
+    const dl = t.host.querySelector("dl")!;
+    expect(dl.querySelector("[data-mail-account]")!.textContent).toContain("inbox@example.com");
+    expect(dl.textContent).toContain("INBOX");
+    expect(dl.textContent).toContain("Every minute");
+    expect(dl.querySelector('a[href="#/agents/mailer"]')!.textContent).toBe("mailer");
+    expect(t.host.querySelector('section[aria-label="Last check"]')!.textContent).toContain("Watching INBOX: 3 messages.");
+    expect(t.host.querySelector('[data-firing="f_mail"]')!.textContent).toContain("On an email");
+    expect(t.host.querySelector('[data-firing="f_mail"] a[href="#/runs/r_mail"]')).not.toBeNull();
+    // No editor for an email trigger here: Pause, Run now and Delete only.
+    expect(t.button(/^Edit/)).toBeUndefined();
+    expect(t.button(/^Pause$/)).toBeDefined();
+    // The warning, as the other kinds' pages say it: a polled source's later mail is not said to be skipped.
+    expect(t.warning()?.textContent).toContain("Waits for your approval");
+    expect(t.warning()?.textContent).toContain(WAITS_ONLY);
+    expect(t.warning()?.textContent).toContain(FIX);
+  });
+
+  it("an email trigger's Run unattended saves the agent with approvals never, and the warning goes", async () => {
+    const s = server();
+    const t = await open(s.v2, { trigger: NEW_MAIL.id });
+    await t.click(/^Run unattended$/);
+    const put = s.calls.find((c) => c.method === "PUT" && c.path === "/v2/agents/mailer/definition");
+    expect(put?.ifMatch).toBe('"rev_mailer_1"');
+    expect((put!.body as { definition: Record<string, unknown> }).definition.approvals).toBe("never");
+    expect(s.byId.get("mailer")!.definition.approvals).toBe("never");
+    expect(t.warning()).toBeNull();
+  });
+
+  it("an email trigger's page with accounts off says each call is refused", async () => {
+    const t = await open(server(undefined, { accounts: false }).v2, { trigger: NEW_MAIL.id });
+    expect(t.warning()?.textContent).toContain("Refused without your approval");
+    expect(t.warning()?.textContent).toContain(REFUSED);
   });
 
   it("the trigger's page says nothing for an agent that runs unattended", async () => {

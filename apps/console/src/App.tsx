@@ -436,11 +436,11 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   const readCaps = () => { const n = ++capsAsked.current; return v2.capabilities().then((x) => { if (n === capsAsked.current) setCaps(x); return true; }, () => false); };
   useEffect(() => { readCaps(); }, [v2]); // eslint-disable-line react-hooks/exhaustive-deps
   // The agents' names, every page of the active ones and of the archived: read at the start, and again each time a runs
-  // view or Mission Control opens (the list, one agent's runs, a run's page), so an agent made since, here or elsewhere,
-  // is named at once, and again when an import at setup ends while this page watches (`refreshed`).
-  // Only the newest read lands.
+  // view, Mission Control or Triggers opens (the list, one agent's runs, a run's page, a trigger's page), so an agent made
+  // since, here or elsewhere (a template's apply makes one with its triggers), is named at once, and again when an import
+  // at setup ends while this page watches (`refreshed`). Only the newest read lands.
   useEffect(() => {
-    if (namesAsked.current && where.section !== "runs" && where.section !== "mission" && namesAfter.current === refreshed) return;
+    if (namesAsked.current && where.section !== "runs" && where.section !== "mission" && where.section !== "triggers" && namesAfter.current === refreshed) return;
     namesAfter.current = refreshed;
     const n = ++namesAsked.current;
     setNamesRead(false);

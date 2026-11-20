@@ -1347,6 +1347,17 @@ const TEMPLATE_APPLIED = closedWith({
   agent_id: { type: "string", description: "The agent made, or the one updated (GET /agents/{agent_id})." },
   servers: { type: "object", additionalProperties: { type: ["string", "null"] }, description: "The saved MCP server each of the package's toolkits runs on, by toolkit; null: none here matches it (said under `mcp.<toolkit>`)." },
   trigger_ids: { type: "array", items: { type: "string" }, description: "Its triggers, in the package's order (GET /triggers/{trigger_id})." },
+  triggers: {
+    type: "array",
+    description: "The same triggers, in the same order, each as the apply left it: every one it made or kept, of any kind. A trigger the apply skipped (said in `warnings`) is not here.",
+    items: closed({
+      trigger_id: { type: "string" },
+      name: { type: "string", description: "Its name: the package's name for it." },
+      kind: { enum: [...SOURCE_KINDS], description: "Its source's kind (GET /triggers/{trigger_id} `source.kind`)." },
+      enabled: { type: "boolean", description: "Whether it is on: made off where the package says so, or where the owner turned off the one it replaced; one changed in place keeps the owner's on or off." },
+    }),
+    "x-agentrun-serve": "template-triggers/1",
+  },
   warnings: { type: "array", items: ref("schemas/InputIssue"), description: "What this host still lacks for the agent to run, as POST /agents answers it; a webhook trigger the apply made adds a warning pointing to the console for its signing secret, never the secret itself (the first answer to the owner's signed-in session shows it once, under `webhook_secrets`)." },
 }, {
   webhook_secrets: {
@@ -2366,11 +2377,11 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
     put: {
       operationId: "saveEmailAccount", tags: ["local"], summary: "Save this server's email account, its password sealed",
-      description: "Replaces the account. A preset fills the servers (gmail: imap.gmail.com:993 and smtp.gmail.com:465; fastmail: imap.fastmail.com:993 and smtp.fastmail.com:465; icloud: imap.mail.me.com:993 and smtp.mail.me.com:587); `other` takes both. Every connection is TLS (993 and 465 from the start, any other port with STARTTLS required), never in the clear. The password is sealed under the server's seal key and is in no answer, event or log line. Nothing is checked against the servers here: POST /settings/email/test signs in. 422 by field for a body that does not read, and outlook is refused in words. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
+      description: "Replaces the account. A preset fills the servers (gmail: imap.gmail.com:993 and smtp.gmail.com:465; fastmail: imap.fastmail.com:993 and smtp.fastmail.com:465; icloud: imap.mail.me.com:993 and smtp.mail.me.com:587); `other` takes both. Every connection is TLS (993 and 465 from the start, any other port with STARTTLS required), never in the clear. The password is sealed under the server's seal key and is in no answer, event or log line. Saved only once it signs in: the save signs in to IMAP and to SMTP as POST /settings/email/test does, sending nothing, and a sign-in either server refuses, or a server not reached, is 424 with nothing saved and the account kept before as it was. 422 by field for a body that does not read (before any sign-in), and outlook is refused in words. A secret write: the owner's signed-in session alone (ownerSession), never the token, which is 403 forbidden in words.",
       "x-agentrun-secret": true,
       security: [{ ownerSession: [] }],
       requestBody: { required: true, content: { "application/json": { schema: { ...EMAIL_ACCOUNT_BODY, required: ["address", "password"] } } } },
-      responses: { "200": json(EMAIL_ACCOUNT, "Saved."), ...errors(400, 401, 403, 415, 422, 429, 500, 503) },
+      responses: { "200": json(EMAIL_ACCOUNT, "Saved: both servers signed in."), ...errors(400, 401, 403, 415, 422, 429, 500, 503), "424": { description: "`upstream_failed`: the account did not sign in (IMAP or SMTP refused it, or was not reached): nothing was saved, and the account kept before is as it was. The message says why in the test's words; `details.imap` and `details.smtp` are each half as POST /settings/email/test answers it ({ok, message}).", content: { "application/json": { schema: ref("schemas/Error") } } } },
       "x-agentrun-serve": "email/1",
     },
     delete: {

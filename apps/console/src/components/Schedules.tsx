@@ -21,7 +21,7 @@ import { keeper, uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
 import { ACCEPT_LIMITS, acceptFields, emptyRule, type RuleDraft, ruleDraftOf } from "@/lib/accept";
-import { atLeast, bodyOf, capOf, disabledWords, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENT_NAMES, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, type GitHubPicks, githubPicksOf, githubRulesOf, githubSourceOf, githubWhen, emailWhen, feedWhen, composioWhen, type ComposioDraft, type ComposioTrigger, composioBodyOf, composioSourceOf, type ConfigField, configFieldsOf, emptyComposio, isComposioTrigger, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, same, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf, webhookSourceOf, type FeedDraft, type FeedTrigger, emptyFeed, feedBodyOf, feedDraftOf, feedFields, feedSourceOf, feedUrlsOf, FEED_EVERY_S, isFeedTrigger, MAX_FEEDS, span } from "@/lib/schedules";
+import { atLeast, bodyOf, capOf, disabledWords, dollars, acceptWords, onceState, type OnceState, emptyGitHub, FIRED_BY, GITHUB_EVENT_NAMES, GITHUB_EVENTS, githubBodyOf, type GitHubDraft, type GitHubPicks, githubPicksOf, githubRulesOf, githubSourceOf, githubWhen, emailWhen, feedWhen, composioWhen, type ComposioDraft, type ComposioTrigger, composioBodyOf, composioSourceOf, type ConfigField, configFieldsOf, emptyComposio, isComposioTrigger, type GitHubTrigger, isGitHubTrigger, HOOK_URL_HINT, hookUrlOf, hookWhen, isScheduleTrigger, isWebhookTrigger, same, SIGNATURE_WORDS, utcWhen, type Draft, draftOf, type Schedule, type WebhookTrigger, emptyDraft, FIRING_LABEL, firingWords, instantKept, issuesOf, patchOf, pastWords, scheduleLine, emptyWebhook, type WebhookDraft, webhookBodyOf, webhookSourceOf, type FeedDraft, type FeedTrigger, emptyFeed, feedBodyOf, feedDraftOf, feedFields, feedSourceOf, feedUrlsOf, FEED_EVERY_S, isFeedTrigger, type EmailTrigger, isEmailTrigger, MAX_FEEDS, span } from "@/lib/schedules";
 import type { ComposioEvent, ComposioTriggers, Firing, Trigger, TriggerCreate, TriggerMade } from "@/lib/v2";
 import type { McpServer } from "@/lib/mcp";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
@@ -272,6 +272,16 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
     v2.composioTriggers(appServer).then((r) => { if (live) setAtComposio(r.triggers.find((x) => x.id === id)?.on_composio ?? "unknown"); }, () => { if (live) setAtComposio(null); });
     return () => { live = false; };
   }, [v2, appServer, id, trigger?.enabled]);
+  // An email trigger watches the server's one email account (Settings → Email): its address, read to say which (null:
+  // none saved; undefined: not read, as with a token, which can't read it).
+  const [mailAddress, setMailAddress] = useState<string | null | undefined>(undefined);
+  const watchesMail = trigger?.source.kind === "email";
+  useEffect(() => {
+    if (!watchesMail) return;
+    let live = true;
+    v2.emailAccount().then((a) => { if (live) setMailAddress(a.configured ? a.address : null); }, () => {});
+    return () => { live = false; };
+  }, [v2, watchesMail]);
   // Deleted here, with what Composio could not follow: said until the person leaves.
   if (gone !== null) {
     return (
@@ -293,8 +303,10 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
   // A feed trigger: its feeds, how often they are read, its last check (with the note of a first check's start), its
   // pointers and filter.
   const feed = isFeedTrigger(trigger) ? trigger : null;
-  if (!hook && !gh && !app && !feed && !isScheduleTrigger(trigger)) return <NotASchedule />;
-  const runs = trigger as Schedule | WebhookTrigger | GitHubTrigger | ComposioTrigger | FeedTrigger;
+  // An email trigger: the account and mailbox it watches, how often, its last check, its filter; no editor here.
+  const mail = isEmailTrigger(trigger) ? trigger : null;
+  if (!hook && !gh && !app && !feed && !mail && !isScheduleTrigger(trigger)) return <NotASchedule />;
+  const runs = trigger as Schedule | WebhookTrigger | GitHubTrigger | ComposioTrigger | FeedTrigger | EmailTrigger;
   // A one-time schedule whose time has passed: Done with when it ran (a started firing of its own time, the server's word:
   // nothing to resume), or that its time passed. Resume stays unless the server says it ran: the browser's clock alone
   // may run ahead of the server's.
@@ -345,11 +357,11 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
       <div className="mt-3 flex flex-col items-start gap-x-6 gap-y-3 sm:flex-row">
         <div className="min-w-0 flex-1 self-stretch">
           <h1 className="flex flex-wrap items-center gap-2 break-words text-2xl font-semibold leading-tight">{trigger.name}{!trigger.enabled && !done && <OffChip trigger={trigger} />}</h1>
-          <p className="mt-2 break-words font-mono text-small text-muted-foreground">{hook ? `Webhook · ${hookWhen(hook.source)}` : gh ? `GitHub · ${githubWhen(gh.source)}` : app ? `App · ${composioWhen(app.source)}` : feed ? `Feed · ${feedWhen(feed.source)}` : <span title={cronOf(trigger)}>{scheduleLine(runs.source as Schedule["source"], trigger.next_at, { instead: onceWords(done), now: now() })}</span>}</p>
+          <p className="mt-2 break-words font-mono text-small text-muted-foreground">{hook ? `Webhook · ${hookWhen(hook.source)}` : gh ? `GitHub · ${githubWhen(gh.source)}` : app ? `App · ${composioWhen(app.source)}` : feed ? `Feed · ${feedWhen(feed.source)}` : mail ? `Email · ${emailWhen(mail.source)}` : <span title={cronOf(trigger)}>{scheduleLine(runs.source as Schedule["source"], trigger.next_at, { instead: onceWords(done), now: now() })}</span>}</p>
         </div>
         <div className="flex flex-wrap items-center justify-end gap-2 self-stretch sm:self-auto">
           {!(done && "ran" in done) && <Button size="sm" onClick={() => void toggle()} disabled={busy !== null}>{trigger.enabled ? <><Pause aria-hidden /> Pause</> : <><Play aria-hidden /> Resume</>}</Button>}
-          <Button size="sm" onClick={() => go(`${hashOf(id)}/edit`)}><Pencil aria-hidden /> {hook || gh || app ? "Edit filter" : feed ? "Edit feed" : "Edit"}</Button>
+          {!mail && <Button size="sm" onClick={() => go(`${hashOf(id)}/edit`)}><Pencil aria-hidden /> {hook || gh || app ? "Edit filter" : feed ? "Edit feed" : "Edit"}</Button>}
           {hook && (!rotating ? <Button size="sm" onClick={() => setRotating(true)} disabled={busy !== null || renewing}><KeyRound aria-hidden /> Rotate secret</Button> : (
             <span className="flex items-center gap-2 border border-warning/50 px-2 py-1 text-small" role="alertdialog" aria-label="Make a new secret?">
               <span>The old secret stops signing at once.</span>
@@ -378,7 +390,7 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
       {trigger.target.kind === "start_run" && <UnattendedWarning v2={v2} agentId={trigger.target.agent_id} skips={trigger.source.kind === "schedule"} className="mt-4" />}
       {composioNote && <p role="status" data-composio-note className="mt-4 border border-warning/50 bg-warning/10 px-3 py-2 text-body text-warning-text">{composioNote}</p>}
       {hook && fresh && <SecretOnce label="The webhook's new secret" secret={fresh} />}
-      {feed && <LastCheck check={feed.last_check ?? null} newest={firings[0]} />}
+      {(feed || mail) && <LastCheck check={trigger.last_check ?? null} newest={firings[0]} />}
       <dl className="mt-5 grid grid-cols-1 gap-x-6 gap-y-3 border p-4 text-body sm:grid-cols-[max-content_minmax(0,1fr)]">
         <dt className="caps text-label text-muted-foreground">Agent</dt><dd className="min-w-0 break-words"><a href={agentHash(runs.target.agent_id)} className="hover:underline">{agentName(runs.target.agent_id) || runs.target.agent_id}</a></dd>
         <dt className="caps text-label text-muted-foreground">Each run is asked</dt><dd className="min-w-0 whitespace-pre-wrap break-words">{content ?? JSON.stringify(runs.target.input)}</dd>
@@ -410,6 +422,13 @@ function ScheduleDetail({ v2, go, agentName, id, every, now, failuresToPause }: 
           </>}
           <dt className="caps text-label text-muted-foreground">Accepts</dt>
           <dd className="min-w-0 break-words">{feed.source.accept?.length ? <ul className="space-y-1 font-mono text-small">{feed.source.accept.map((a, i) => <li key={i}>{acceptWords(a)}</li>)}</ul> : "Every new or updated item"}</dd>
+        </> : mail ? <>
+          <dt className="caps text-label text-muted-foreground">Account</dt>
+          <dd className="min-w-0 break-words" data-mail-account>{mailAddress ? <span className="font-mono">{mailAddress}</span> : mailAddress === null ? <span className="text-warning-text">None saved</span> : "This server's email account"}<span className="text-small text-muted-foreground"> · <a href="#/settings/email" className="hover:underline">Settings → Email</a></span></dd>
+          <dt className="caps text-label text-muted-foreground">Mailbox</dt><dd className="min-w-0 break-words font-mono">{mail.source.mailbox}</dd>
+          <dt className="caps text-label text-muted-foreground">Read</dt><dd>Every {span(mail.source.every_s)}</dd>
+          <dt className="caps text-label text-muted-foreground">Accepts</dt>
+          <dd className="min-w-0 break-words">{mail.source.accept?.length ? <ul className="space-y-1 font-mono text-small">{mail.source.accept.map((a, i) => <li key={i}>{acceptWords(a)}</li>)}</ul> : "Every new message"}</dd>
         </> : <>
           <dt className="caps text-label text-muted-foreground">While a run is going</dt><dd>The next time is skipped.</dd>
         </>}
@@ -1162,7 +1181,7 @@ function AppFilter({ where, onChange, issues, others = [] }: { where: RuleDraft[
 /** A feed trigger's last check, said where its page opens: whether it read, its words and when; and, when its newest
  *  firing is a note of its own that started nothing (a first check's start: the items already there), that note. */
 function LastCheck({ check, newest }: { check: NonNullable<Trigger["last_check"]> | null; newest?: Firing }) {
-  const note = newest && newest.by === "feed" && newest.status === "skipped" && !newest.run_id && newest.reason ? newest.reason : null;
+  const note = newest && (newest.by === "feed" || newest.by === "email") && newest.status === "skipped" && !newest.run_id && newest.reason ? newest.reason : null;
   return (
     <section aria-label="Last check" data-last-check={!check ? "none" : check.ok ? "ok" : "failed"} className={`mt-4 border px-4 py-3 text-body ${check && !check.ok ? "border-warning/50 bg-warning/10" : "border-primary/50 bg-primary/5"}`}>
       <p className="caps text-label text-muted-foreground">{!check ? "Not checked yet" : `${check.ok ? "Last check" : "Last check failed"} · ${at(check.at)}`}</p>

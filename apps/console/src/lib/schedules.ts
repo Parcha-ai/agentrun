@@ -413,6 +413,11 @@ export type ComposioTrigger = Trigger & { source: ComposioSource; target: Trigge
 export type ComposioSource = Extract<TriggerSource, { kind: "composio" }>;
 export const isComposioTrigger = (t: Trigger): t is ComposioTrigger => t.source.kind === "composio" && t.target.kind === "start_run";
 
+/** An email trigger that starts a run (serve's trigger-email.ts): each new message in a mailbox of the server's email
+ *  account (Settings → Email), read every `every_s`, and its filter. */
+export type EmailTrigger = Trigger & { source: Extract<TriggerSource, { kind: "email" }>; target: TriggerTarget };
+export const isEmailTrigger = (t: Trigger): t is EmailTrigger => t.source.kind === "email" && t.target.kind === "start_run";
+
 /** One field of an event's config, read from its JSON schema (the events list's `config`): its name, title, description,
  *  whether it is required, and how it is typed in (`json`: an object, a list or a type the form has no input for, typed as
  *  JSON). A deprecated field is never offered. */
