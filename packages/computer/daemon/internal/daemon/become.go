@@ -9,22 +9,19 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-	"unsafe"
 
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/isolate"
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/windowmanager"
 )
 
 const (
-	prCapbsetRead        = 23
-	prCapbsetDrop        = 24
-	prSetNoNewPrivs      = 38
-	prGetNoNewPrivs      = 39
-	prCapAmbient         = 47
-	prCapAmbientIsSet    = 1
-	prCapAmbientClearAll = 4
-	capVersion3          = 0x20080522
-	capLastCapFile       = "/proc/sys/kernel/cap_last_cap"
+	prCapbsetRead     = 23
+	prCapbsetDrop     = 24
+	prSetNoNewPrivs   = 38
+	prGetNoNewPrivs   = 39
+	prCapAmbient      = 47
+	prCapAmbientIsSet = 1
+	capLastCapFile    = "/proc/sys/kernel/cap_last_cap"
 )
 
 // Become is init's start on a vendor that runs every computer as root and has no user of its own to give (Modal: "Modal
@@ -144,7 +141,7 @@ func dropPrivileges(become func() error) error {
 			return err
 		}
 	}
-	if err := clearCapabilitiesOnEveryThread(); err != nil {
+	if err := isolate.ClearCapabilities(); err != nil {
 		return err
 	}
 	return checkUnprivileged(last)
@@ -193,32 +190,6 @@ func dropBoundingSetOnEveryThread(last uintptr) error {
 	return nil
 }
 
-type capHeader struct {
-	version uint32
-	pid     int32
-}
-
-type capData struct{ effective, permitted, inheritable uint32 }
-
-// The capset arguments live outside any goroutine's stack, which may move while AllThreadsSyscall runs.
-var (
-	capsetHeader = capHeader{version: capVersion3}
-	capsetData   [2]capData
-)
-
-// clearCapabilitiesOnEveryThread empties every thread's ambient, effective, permitted and inheritable sets. Dropping a
-// capability needs none. A kernel with no ambient set answers EINVAL to it, and has nothing there to empty.
-func clearCapabilitiesOnEveryThread() error {
-	if _, _, errno := syscall.AllThreadsSyscall6(syscall.SYS_PRCTL, prCapAmbient, prCapAmbientClearAll, 0, 0, 0, 0); errno != 0 && errno != syscall.EINVAL {
-		return fmt.Errorf("cannot empty the ambient capability set of every thread: %w", errno)
-	}
-	capsetData = [2]capData{}
-	if _, _, errno := syscall.AllThreadsSyscall(syscall.SYS_CAPSET, uintptr(unsafe.Pointer(&capsetHeader)), uintptr(unsafe.Pointer(&capsetData[0])), 0); errno != 0 {
-		return fmt.Errorf("cannot empty the capability sets of every thread: %w", errno)
-	}
-	return nil
-}
-
 // checkUnprivileged reads back what dropPrivileges set: no_new_privs, and no capability up to last in the bounding or
 // ambient set, through calls made on every thread, which agree or end the process; and every thread's effective,
 // permitted and inheritable sets, by its id.
@@ -244,15 +215,14 @@ func checkUnprivileged(last uintptr) error {
 		if err != nil {
 			continue
 		}
-		header := capHeader{version: capVersion3, pid: int32(tid)}
-		var data [2]capData
-		if _, _, errno := syscall.RawSyscall(syscall.SYS_CAPGET, uintptr(unsafe.Pointer(&header)), uintptr(unsafe.Pointer(&data[0])), 0); errno != 0 {
-			if errno == syscall.ESRCH {
-				continue
-			}
-			return fmt.Errorf("cannot read thread %d's capabilities back: %w", tid, errno)
+		data, err := isolate.ThreadCapabilities(tid)
+		if errors.Is(err, syscall.ESRCH) {
+			continue
 		}
-		if data != [2]capData{} {
+		if err != nil {
+			return fmt.Errorf("cannot read thread %d's capabilities back: %w", tid, err)
+		}
+		if data != [2]isolate.CapData{} {
 			return fmt.Errorf("thread %d still holds capabilities after they were emptied: %+v", tid, data)
 		}
 	}

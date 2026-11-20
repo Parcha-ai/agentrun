@@ -49,7 +49,7 @@ import { loopOf } from "../learning-setting.js";
 import { LEARNED_WORKFLOW_TOOL } from "../learned-workflow.js";
 import { launchBody, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { uuidv7 } from "../runs-over-store.js";
-import { FINAL_STATES, RunFinal, type RunRow, type Store, StoreConstraint } from "../store/store.js";
+import { FINAL_STATES, RunFinal, RunPurged, type RunRow, type Store, StoreConstraint } from "../store/store.js";
 import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { isCliRecord, piShaped, runEntries, runTimeline } from "../store-reads/journal.js";
 import type { McpPin } from "../mcp-gateway.js";
@@ -824,7 +824,9 @@ async function handedTo(deps: PromotionDeps, launch: ReplayLaunch, id: string): 
 /** Starts the replay of `workflow` at `digest` on agent run `of` (its launch `from`) as run `id` (the id its reserved
  *  record names), with the replay's chosen `launch` (replayLaunchOf: its run launch, revision and handed credentials,
  *  handedTo), whichever claim creates it. False when a run by that id exists already: another claim created it (a
- *  relaunch and the reserving claim at once), and it is left to that one. */
+ *  relaunch and the reserving claim at once), and it is left to that one; false too when run `of` was purged since its
+ *  launch was read (the store refuses it, RunPurged, nothing written): the replay never starts, counted so past its
+ *  deadline. */
 async function startReplay(deps: PromotionDeps, workflow: LearnedWorkflow, digest: string, of: string, from: RunLaunch, id: string, launch: ReplayLaunch): Promise<boolean> {
   const { store, agentId } = deps;
   const base = readLaunchBody(launch.body);
@@ -836,6 +838,10 @@ async function startReplay(deps: PromotionDeps, workflow: LearnedWorkflow, diges
     return true;
   } catch (error) {
     if (error instanceof StoreConstraint && (await store.runs.get(id))) return false;
+    if (error instanceof RunPurged) {
+      deps.log(`workflow-first: ${workflow.name} at ${digest}: the replay ${id} is not started: the run it replays was purged`);
+      return false;
+    }
     throw error;
   }
 }

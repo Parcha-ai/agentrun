@@ -5,8 +5,8 @@
 // runner's Archil Workspace across the run channel, where its readBackOf is a handle whose call answers as a promise.
 // The computer is an E2B sandbox on a fake provider in the runner, over a local folder; the disk is the Archil fake.
 // A computer whose read-back is exact is attached: the run's attached Workspace makes its scratch through the computer
-// and the run completes. One that reads back another epoch is refused in words that name the folder the claim expects,
-// never "undefined:/undefined in undefined" (v0.1.0-beta.46 refused every Mode 2 run so, its readBackOf unawaited).
+// and the run completes (v0.1.0-beta.46 refused every Mode 2 run, its readBackOf unawaited). A refusal's words over the
+// run channel are workspace-archil-mount.test.mjs's.
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync } from "node:fs";
 import { rm } from "node:fs/promises";
@@ -33,8 +33,8 @@ const UNSET = ["AGENTRUN_ARCHIL_REGION", "AGENTRUN_ARCHIL_S3_URL", "AGENTRUN_ARC
 /** A server with its runner apart, in Mode 2, and one runner of its own whose runs each run in a process of their own.
  *  The runner's computer for a claim is the runner's own composition (its check, its keys, its spec) on the test's kind
  *  registry, E2B's provider the fake: its create takes the Archil mount it is asked for, and its read-back is that mount's
- *  under the claim's epoch plus `epochOff`. */
-async function apart(t, { epochOff = 0 } = {}) {
+ *  under the claim's epoch. */
+async function apart(t) {
   withEnv(t, KEYS, [...Object.keys(KEYS), ...UNSET]);
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-apart-mode2-"));
   const data = join(dir, "agents");
@@ -61,7 +61,7 @@ async function apart(t, { epochOff = 0 } = {}) {
     create: async (spec) => {
       assert.equal(spec.mount?.kind, "archil", "the run's folder is mounted from its Archil disk");
       made.mounts.push(spec.mount);
-      mounted = readBackOf(spec.mount, epoch + epochOff);
+      mounted = readBackOf(spec.mount, epoch);
       return { ok: true, value: { id: `c${made.mounts.length}`, name: `c${made.mounts.length}` } };
     },
     connect: async () => ({ ok: true, value: { client: computer.client, hello: { version: "0", os: "linux", kind: "linux", arch: "amd64", groups: ["exec", "files", "processes"] }, close: async () => {} } }),
@@ -98,9 +98,6 @@ async function apart(t, { epochOff = 0 } = {}) {
   return { api, computer, folder, made, lines, runOf };
 }
 
-/** The words a read-back is said in (attach.ts shown), for the exact one of `mount` under `epoch`. */
-const shownExact = (mount, epoch) => `${mount.disk}:/${mount.folder} in ${mount.region}, exclusive under epoch ${epoch}`;
-
 test("runner apart, the run in its own process: a computer whose Archil read-back is exact is attached across the run channel, its scratch made through it, and the run completes", { timeout: 180_000 }, async (t) => {
   const { computer, folder, made, lines, runOf } = await apart(t);
   const { runId, run } = await runOf("mode2-exact");
@@ -118,17 +115,4 @@ test("runner apart, the run in its own process: a computer whose Archil read-bac
   const mkdirs = computer.calls.filter(([method, params]) => method === "files.mkdir" && params.path === "/workspace/.agentrun/tmp");
   assert.equal(mkdirs.length, 1, `the attached Workspace made its scratch through the computer: ${JSON.stringify(computer.calls.map(([method, params]) => [method, params?.path]))}`);
   assert.ok(existsSync(join(folder, ".agentrun")), "on the folder the computer mounts");
-});
-
-test("runner apart, the run in its own process: a computer that reads back another epoch is refused in words naming the folder the claim expects, never undefined", { timeout: 180_000 }, async (t) => {
-  const { made, lines, runOf } = await apart(t, { epochOff: 1 });
-  const { run } = await runOf("mode2-other-epoch");
-  const said = JSON.stringify(run);
-  assert.equal(run.status, "failed", `${said}\n${lines.join("\n")}`);
-  assert.equal(made.mounts.length >= 1, true, "a computer was made with the run's Archil mount");
-  const [mount] = made.mounts;
-  const epoch = made.epochs[0];
-  const message = run.error?.message ?? "";
-  assert.ok(message.includes(`does not hold this run's folder at /workspace: it mounts ${shownExact(mount, epoch + 1)}, not ${shownExact(mount, epoch)}`), `${message}\n${said}`);
-  assert.ok(!said.includes("undefined"), `no "undefined" in the refusal: ${said}`);
 });

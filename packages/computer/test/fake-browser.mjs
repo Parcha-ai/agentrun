@@ -6,7 +6,8 @@
 // a RUNNING session with a signed connectUrl and keeps userMetadata; GET /v1/sessions/{id} reads one (404: unknown);
 // a userMetadata key with a "." is refused with 400, as Browserbase answered live on 11-08;
 // GET /v1/sessions?status=&q= lists by status, q being user_metadata['key']:'value'; POST /v1/sessions/{id} with
-// status REQUEST_RELEASE ends one (COMPLETED, still readable); GET /v1/sessions/{id}/debug gives the live view's URLs.
+// status REQUEST_RELEASE ends one (COMPLETED, still readable, its endedAt 90 s after its startedAt; knobs.proxyBytes its
+// proxy's bytes); GET /v1/sessions/{id}/debug gives the live view's URLs.
 // POST /v1/contexts makes a context and DELETE /v1/contexts/{id} deletes one (404: unknown); GET /v1/downloads?sessionId=&limit=&offset= pages a session's
 // downloads (knobs.downloads, by session id) with their total, and GET /v1/downloads/{id} is one's bytes.
 // The key is the X-BB-API-Key header.
@@ -178,6 +179,9 @@ export function fakeBrowserbase(knobs = {}) {
 		keepAlive: s.keepAlive,
 		userMetadata: { ...s.userMetadata },
 		connectUrl: s.connectUrl,
+		...(s.startedAt ? { startedAt: s.startedAt } : {}),
+		...(s.endedAt ? { endedAt: s.endedAt } : {}),
+		...(s.proxyBytes !== undefined ? { proxyBytes: s.proxyBytes } : {}),
 	});
 	const lagging = (s) => {
 		if (s.lag > 0) {
@@ -207,6 +211,9 @@ export function fakeBrowserbase(knobs = {}) {
 				// Browserbase's own shape, wss: on browserbase.com (read live 11-08); knobs.connectUrl(sid) answers another, or none.
 				connectUrl: knobs.connectUrl ? knobs.connectUrl(sid) : `wss://connect.browserbase.com/${sid}?signingKey=SECRET-${sid}`,
 				lag: 0,
+				// Browserbase's own record of the session: when it started, and (knobs.proxyBytes) what its proxy moved.
+				startedAt: new Date(now + 500).toISOString(),
+				...(knobs.proxyBytes !== undefined ? { proxyBytes: knobs.proxyBytes } : {}),
 			};
 			sessions.set(sid, s);
 			known.add(s.connectUrl, () => s.status === "RUNNING");
@@ -253,6 +260,7 @@ export function fakeBrowserbase(knobs = {}) {
 			if (call.body?.status !== "REQUEST_RELEASE") return json(400, { error: "status must be REQUEST_RELEASE" });
 			if (s.status === "RUNNING") {
 				s.status = "COMPLETED";
+				s.endedAt = new Date(Date.parse(s.startedAt) + 90_000).toISOString();
 				s.lag = knobs.releaseLag ?? 0;
 			}
 			return json(200, view(s));

@@ -86,8 +86,24 @@ test("the contract's operations are as vendored; this server's own are added and
   const vendored = new Map(operations(VENDORED).map(({ path, method, op }) => [`${method} ${path}`, op]));
   assert.ok(vendored.has("put /agents/{agent_id}/definition") && doc.paths["/agents/{agent_id}/definition"].put["x-agentrun-serve-changed"], "PUT definition is a changed operation, its bodies checked below");
   const own = [];
-  for (const { path, method, op } of operations(doc)) {
+  const gone = [];
+  for (let { path, method, op } of operations(doc)) {
     const original = vendored.get(`${method} ${path}`);
+    // purge/1: every route of a run or an agent answers 410 purged (its DELETE aside), and so does each that writes to an
+    // agent its body names (a trigger made for it or moved to it, a template applied onto it); without it, the operation
+    // is what its other marks say.
+    const ofRunOrAgent = (/^\/(runs\/\{run_id\}|agents\/\{agent_id\})(\/|$)/.test(path) && !["deleteRun", "deleteAgent"].includes(op.operationId)) || ["createTrigger", "updateTrigger", "applyTemplate"].includes(op.operationId);
+    assert.equal(op.responses?.["410"]?.$ref, ofRunOrAgent ? "#/components/responses/Gone" : original?.responses?.["410"]?.$ref, `${method.toUpperCase()} ${path}: 410 purged where a run or agent is named`);
+    if (ofRunOrAgent) {
+      gone.push(`${method.toUpperCase()} ${path}`);
+      op = structuredClone(op);
+      delete op.responses["410"];
+      if (original && op["x-agentrun-serve-changed"].responses === "purge/1") {
+        assert.ok(doc.info["x-agentrun-serve"].changed.includes(`${method.toUpperCase()} ${path}`), `${op.operationId} is listed as changed`);
+        delete op["x-agentrun-serve-changed"].responses;
+        if (!Object.keys(op["x-agentrun-serve-changed"]).length) delete op["x-agentrun-serve-changed"];
+      }
+    }
     if (!original) {
       assert.ok(op["x-agentrun-serve"] === true || /^[a-z]+\/\d+$/.test(op["x-agentrun-serve"]), `${method.toUpperCase()} ${path} is this server's own, and marked`);
       own.push(`${method.toUpperCase()} ${path}`);
@@ -239,6 +255,8 @@ test("the contract's operations are as vendored; this server's own are added and
   assert.deepEqual(notServed.map((at) => vendored.get(at.replace(/^\S+/, (method) => method.toLowerCase()))?.operationId), ["exportHome", "importHome", "killRun"]);
   assert.equal(vendored.size - notServed.length + own.length, operations(doc).length, "no other contract operation is gone");
   assert.deepEqual(own.sort(), [...doc.info["x-agentrun-serve"].extensions].sort(), "info lists the server's own");
+  assert.ok(["GET /runs/{run_id}", "GET /runs/{run_id}/timeline", "GET /agents/{agent_id}", "POST /runs/{run_id}/messages", "POST /triggers", "PATCH /triggers/{trigger_id}"].every((one) => gone.includes(one)),`a purged run's and agent's routes answer 410: ${gone}`);
+  assert.equal(doc.components.responses.Gone["x-agentrun-serve"], "purge/1");
   // Every property this server adds is marked with the addition that made it, and listed; without them, the
   // contract's components are as vendored.
   const components = structuredClone(doc.components);
@@ -325,6 +343,8 @@ test("the contract's operations are as vendored; this server's own are added and
   }
   // A security scheme this server adds is its own, marked (the owner's session that approving a note takes).
   for (const [name, scheme] of Object.entries(components.securitySchemes ?? {})) if (scheme["x-agentrun-serve"] !== undefined) delete components.securitySchemes[name];
+  // A response this server adds is its own, marked (410 purged, purge/1).
+  for (const [name, response] of Object.entries(components.responses ?? {})) if (response["x-agentrun-serve"] !== undefined && !VENDORED.components.responses[name]) delete components.responses[name];
   // DefinitionInput: instructions, version, skills and tools are optional here where the server does not require them
   // (validate.ts, agents.ts definitionOf); Definition keeps only instructions optional, as a workflow revision's own
   // answer has none, and always sends the rest. Checked absent, then restored, so the comparison below is the

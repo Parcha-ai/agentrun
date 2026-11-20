@@ -2680,8 +2680,9 @@ so the store's files keep no copy of the old row: neither the one rewritten nor 
 free space. A marker beside the database (`store.sqlite.scrub`) is written before the rewrite and removed once the
 checkpoint is done. A `VACUUM` held off by another connection's write past the store's busy wait is tried once more
 after a short pause. A start that finds the marker (the server stopped mid-way, or another connection held the
-`VACUUM` or the checkpoint back, logged as `store_scrub_not_done`) runs the scrub again. On Postgres the old row version stays until the
-database vacuums it. The log line names the trigger and the field, never the value.
+`VACUUM` or the checkpoint back, logged as `store_scrub_not_done`) runs the scrub again. On Postgres the old row version
+stays on disk as a purged row's does (Purging a run or an agent made here: on disk). The log line names the trigger and
+the field, never the value.
 
 The create is refused before Composio is asked anything with `409 composio_no_public_url` when the server has no public
 address (`AGENTRUN_PUBLIC_URL`): Composio could not reach it. `features.triggers.public_url` on `GET /v2/capabilities`
@@ -2889,7 +2890,8 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
 | `POST /agents/{id}/archive`, `POST /agents/{id}/unarchive` | [Archiving](#archiving): hides the agent and its runs from the lists, or shows them again. Answers the agent, with `archived_at`. |
-| `DELETE /agents/{id}` | This server's own route (`x-agentrun-serve: "agentdelete/1"`): [deletes an agent another system owns](#deleting-an-agent-another-system-owns) (one an inline run made) whole. `204`; an agent made here is `409 agent_not_external`. |
+| `DELETE /agents/{id}` | This server's own route (`x-agentrun-serve: "agentdelete/1"`): [deletes an agent another system owns](#deleting-an-agent-another-system-owns) (one an inline run made) whole, and [purges](#purging-a-run-or-an-agent-made-here) an archived agent made here. `204`; an agent made here not archived is `409 agent_not_archived`. |
+| `DELETE /runs/{id}` | This server's own route (`x-agentrun-serve: "purge/1"`): [purges](#purging-a-run-or-an-agent-made-here) a run that is not live, its cost kept in every total. `204`, again on a second `DELETE`; a live run is `409 run_not_final`, and every route of a purged run is `410 purged`. |
 | `DELETE /agents/{id}/sign-ins/{key}` | This server's own route (`x-agentrun-serve: "signins/1"`): forgets one of the agent's [saved sign-ins](#saved-sign-ins), at its vendor and here. `409 sign_in_held` while a run holds its save lease, or while a run it was handed is still going. |
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. `file_ids` names [uploaded](#uploads) files, copied into the run's `work/inputs/` before it starts and named in its first message. `labels` (this server's own, `runlabels/1`) is the caller's map of its own strings for the run: at most 16 keys, each 1 to 63 letters, digits, `.`, `_`, `-` or `/` starting with a letter or a digit, each value 1 to 256 characters with no control character; kept as given, served as `labels` on every read of the run (`{}` when none), never read by the server otherwise, so no place for a secret. The agent's runs, newest first; `label` filters them as `GET /runs` does. |
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, `label=<key>:<value>` (`runlabels/1`, split at the first `:`, once per request) keeps the runs holding that label, and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
@@ -2903,6 +2905,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /agents/{id}/home/files`, and `GET`, `PUT`, `DELETE` on a file's path below it | The files in the agent's home, listed, read, written and deleted ([agent home](#agent-home)). This server's own routes (`x-agentrun-serve: "home/1"`). |
 | `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `needs_review`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates alone, no run's files opened. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`, but for an escalated one (completed, waiting for a person's review), which `needs_review` (`stats/3`) counts; `failed` never does. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` (`reported`, `estimate` or `unpriced`: [A run's cost](#a-runs-cost-its-tokens-and-its-basis)), or null beside a null `usd`; `unknown_runs` counts the rest. `analytics` (`stats/2`) sums the runs' metrics over the runs not archived that the `from` and `to` query parameters (RFC 3339 date-times to the millisecond, an impossible one or a finer fraction refused; runs started in [`from`, `to`)) and `agent` pick, each optional, 400 when malformed: `filter` echoes them; `totals` (runs, completed, an escalated run included, `needs_review` (`stats/3`), failed, never an escalated run, `runs_with_metrics`, tokens and each token kind, requests, unmetered, `cost_usd` and `unknown_cost_runs`), `time` (`wall_ms` over the ended runs, `active_ms` where metrics have it), `by_harness_effort`, `by_day` (UTC), `by_source` (`live` or the import source) and the top 20 `tools`. A run with no metrics counts in `runs` and in no token sum. `learning` (`learning/1`) counts the runs that tried to learn over the same filters, from the store ([Learning](#learning)). The query bounds `analytics` and `learning` alone. |
 | `GET /runs/{id}/graph` | A workflow run drawn, live: its workflow, the DSL's `workflowGraph`, each node's state (a map's items with their labels and the branch each route took for them, a route's branch), every decision with its receipt (answers, evidence, the state the judge saw, image links), every call with its input and output, and the totals (cost, null when any part is unknown). While the run goes it reads the run process's `live.json`, rewritten every 300 ms, never the run's store, which the process holds; once it ended, its store is read lock-free, so a poll never waits on it and never answers `home_busy`. An agentic run has none (`404`). |
+| `GET /runs/{id}/usage` | This server's own (`runusage/1`): what one run cost, line by line: its model requests by model and provider, its paid tool calls by who charged for them, its browser time by provider, joining to its `cost.usd` ([A run's cost, line by line](#a-runs-cost-line-by-line)); beside them its browser sessions (`runusage/2`) and the computers it made, each from its create to its proven delete (`runusage/3`). Lines once the run ended; `reason` says why there are none. |
 | `GET /runs/{id}/trace` | A run's trace, for a person who debugs it: each model request that answered and each tool call as one span, in the order they started. A span has its `kind` (`model` or `tool`), its `name` (the model, or the tool), when it started and ended, how it ended (`status`), and the span it ran under (`parent_id`: the request that made a call, the call a subagent's request was started by). A model request also has its `tokens` (`input` not read from cache, `cache_read`, `cache_write`, `output`, and `reasoning` where reported), and its `usd`. A tool call also has the head of its arguments and of its output, as its Timeline rows show them, and what was charged under it (`usd`, `charged`, `not_metered`). A call that asked for approval ends as its approval did: `waiting` until it is answered, `refused` on a deny, `interrupted` when it was withdrawn with its run. Nothing is measured again or estimated: `model_requests` says what the run's record keeps. `priced`: each request is a span with its cost. `tokens_only`: a workflow run. Its model nodes' requests carry tokens and no cost, since the run's cost is its booking's; each of its decisions (a judge's, a route's, a verify's request) is a span too (`decision: true`), named by the model its provider answered with and labelled by its node, with its own cost. `not_recorded`: a CLI harness's record keeps no request, so its trace is its tool calls. A computer's own time is its provider's to bill and is in no span. Readable while the run goes; one read serves the run's first 2,000 spans and counts the rest in `dropped`. Its words are cut as the Timeline's are, and a run whose handed sign-in can't be read back is refused (`403`), as its graph is. The console's Dev tools tab reads it. |
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
@@ -2985,15 +2988,8 @@ serves these routes alone:
 - `GET /capabilities`, `GET /health` and `GET /usage`;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
-A run's computer here takes the server's token, the backend's own, since there is no owner to sign in: `GET
-/runs/{id}/computer`, `POST /runs/{id}/computer/take-over` and `POST /runs/{id}/computer/hand-back`. For its user's
-browser, the backend asks `POST /runs/{id}/computer/viewer` for `{ url, expires_at }`: a link on `AGENTRUN_PUBLIC_URL`
-(refused in words when it is unset) to the run's live page, with a viewer credential in its query that opens that run's
-page and socket, from the public address alone, for 5 minutes. The credential is an HMAC of the run and its expiry under
-a key from the seal key, so every server on the store checks it, across restarts; the run's end (completed, failed or
-cancelled) revokes it and closes a socket open on it, and a stop does not, as the run goes on. The person watches, and
-takes over and hands back in the viewer's own bar; nothing else opens to the credential. A server that is not API-only
-answers the mint `404`, and its live page takes the owner's sign-in alone.
+Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on
+`AGENTRUN_PUBLIC_URL` that opens that run's live page and socket until the run ends (API doc).
 
 Every other address is `404 not_found`, answered before the request is read further: the console at `/` and its
 assets, sign-in and setup, every `/settings` route, `POST /mcp`, triggers and their
@@ -3302,9 +3298,9 @@ typed answers and their probabilities.
 
 ## Archiving
 
-An agent made here or a run is archived, never deleted: a run's `DELETE` stays `405`, and an agent's is `409
-agent_not_external` (an agent another system owns is [deleted](#deleting-an-agent-another-system-owns), and is never
-archived here). These routes are this server's own, outside the `/v2` contract, like `GET /runs` and an agent's
+Archiving an agent made here or a run hides it and keeps everything of it; [purging](#purging-a-run-or-an-agent-made-here)
+removes what it was given and did, its cost kept, and an agent made here is purged only once archived (an agent another
+system owns is [deleted](#deleting-an-agent-another-system-owns), and is never archived here). These routes are this server's own, outside the `/v2` contract, like `GET /runs` and an agent's
 revisions; capabilities list them in `features.archive`.
 
 - `POST /v2/agents/{id}/archive` hides the agent and its runs from `GET /agents`, `GET /runs` and
@@ -3323,6 +3319,54 @@ revisions; capabilities list them in `features.archive`.
 - A new run of an archived agent is `409 agent_not_runnable`, saying it is archived (`details.archived_at`); a run
   already going when its agent is archived keeps going.
 - The store keeps an archive as `archived_at` on the agent's or the run's row, null when it is not archived.
+
+## Purging a run or an agent made here
+
+An owner must be able to delete what a run read. `DELETE /v2/runs/{id}` purges a run that is not live; what it cost
+stays in every total.
+
+| Purged | Kept |
+| --- | --- |
+| Its launch record (input, prompt), journal and timeline, messages and commands, outputs and files, the answers kept under its idempotency keys, its folders (here, and its own folder on an Archil disk; the disk is kept), its settings, its labels and summary, its agent's grades of it, and its kept learning's content | Its row, as its tombstone: id, agent, state, how it ended (a code), started and ended, `cost_usd` (an upper bound when that is all it has), its paid tools' cost, its purge time, how its learning ended (for `/stats`), and the spend figures `/usage` and a cap read from its journal, and the intervals of the computers it made (each a provider's id and its times). Its metrics keep their figures alone: counts by tool name, the effort and the cost basis, no grader's words, call arguments or results |
+| Its kept learning's turn and proposal | Each kept learning row as a link alone (the run's and its learning run's ids, its state): `/usage`'s learning line reads it, and it keeps its learning run out of every run list |
+| What a promotion record copied from it: a check's or an audit's disagreement's input, answers and the grader's words, and the words a hold's reason quoted from them | The record's decision, numbers and run ids, the run's among them |
+
+- Every route of a purged run is `410 purged`, `details` its tombstone; no run list shows it. `/usage`, `/stats` and
+  the spend a cap reads are as they were. A second `DELETE` is `204`; a run never here is `404`.
+- The runs made from it are purged with it, each a tombstone: its audit's shadow run, the replay runs of its input,
+  and a learning run its kept learning names. A replay or a shadow run a check or an audit starts while the `DELETE`
+  runs holds it: `409 run_not_final` naming that run, the run not purged, and the next `DELETE` purges both. Once the
+  run is purged, no replay or shadow run of it is started.
+- A live run (queued, working, waiting on a person or an approval, or held by a runner), or a live run made from it,
+  is `409 run_not_final` (`details.runs`), nothing purged: cancel it first. A run that ended and takes a follow-up
+  (idle), or that a person stopped, is not live. Such a run reads idle a moment before its runner writes it ended: a
+  `DELETE` then waits for that, up to 30 seconds, and purges it.
+- A message, a trigger's message or a grade sent to the run while its `DELETE` runs waits for it, then is `410 purged`:
+  nothing opens the run again or keeps a grade of it under its purge.
+- `503 unavailable` while its folder on an Archil disk is not deleted there yet: the run is not purged, and the next
+  `DELETE` finishes it, as it finishes a purge that stopped part way (its purge time is set last).
+- On disk. On both stores the purge deletes or blanks the rows above; what the database files keep differs.
+  - **SQLite:** every store connection writes with `secure_delete` on, which zeroes the bytes a write frees, and a run's
+    or an agent's purge checkpoints the WAL once it commits. So the purged content is in neither `store.sqlite` nor
+    its `-wal` after the `DELETE`. A checkpoint another connection holds back is retried once, then logged, and the
+    next purge's checkpoint or the server's stop clears it. Copies outside the file are out of scope: backups,
+    snapshots, the filesystem's own journal.
+  - **PostgreSQL** (not closed): a purged row's old version stays in its table as a dead tuple. `VACUUM` (or
+    autovacuum, on its schedule) only marks its space reusable; the bytes stay in the data file until a later write
+    overwrites them. `VACUUM FULL` rewrites the table into a new file (under an exclusive lock), and the old file's
+    blocks go back to the filesystem unwiped. Postgres's own WAL and its archived WAL keep the old values until they are
+    recycled or expire, and backups keep them for their retention.
+- Its agent's other runs and what the agent learned are kept: a promotion record and the learning folder's history
+  may still name the run's id.
+- It takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token;
+  any other console session is `403 forbidden`, no credential `401`.
+
+An agent made here is purged the same way once archived: `DELETE /v2/agents/{id}`. Its revisions' content, name and
+description, learning, triggers, saved sign-ins, own computer, disk and folders go, and each of its runs is purged.
+Its row stays as its tombstone (id, archive and purge times): every route of it is `410 purged`, and no list shows it.
+Not archived: `409 agent_not_archived`. A live run of it: `409 run_not_final`. Purging one agent touches no other.
+An unarchive or a write to it sent while its `DELETE` runs waits for it, then is `410 purged`; after a purge stopped
+part way, each is `409 agent_not_runnable` until a `DELETE` finishes it.
 
 ## Deleting an agent another system owns
 
@@ -3682,6 +3726,14 @@ round on the agent's `main`, whatever its harness:
   promotion check (below) decides whether it serves. A compile whose drafts all failed is recorded as the compile's
   attempt (compile once), and its errors are on the run's learning (`draft_errors`), never silent.
   [`src/learn/SPEC.md`](src/learn/SPEC.md) has the rules.
+- Its answer's quote re-pick, with `learning.repick: true` (off by default): a workflow whose answer quotes the pages
+  its run fetched re-picks once when a quote is in none of them. Off, the re-pick reads its compact notes and its failed
+  draft. On, the server rewrites the passing draft before it commits it, so the re-pick reads the pages themselves,
+  sent as untrusted data (the model is told never to follow anything written in them, and the step has no tools), at
+  most `learning.repick_max_chars` characters of them (150000 by default, 1 to 400000; past it the longest pages are
+  cut first). Its request is the served run's, under the run's cost cap. The setting is read at each compile: turning
+  it on or off changes only the workflows compiled after that, never one already kept. An agent whose workflows run
+  through an SDK bridge ignores it.
 
 The turn runs under the run's own cap, with no reserve, and within 10 minutes; its rows are labelled `learning`, and the
 run's answer stays the job's. While it runs, the run reads `reflecting` on every harness. A run with no words from its
@@ -3865,6 +3917,82 @@ and says how its figure was reached.
   this, or a workflow run: its run read still says its basis from its booking) counts as `estimate` when it cost anything.
 
 The console shows the tokens beside the run's cost, and the figure says its basis: `$0.0042 est.`, `$0.0042 reported`.
+
+## A run's cost, line by line
+
+`GET /runs/{id}/usage` (`runusage/1`) says what one run cost and where each part goes: its model requests by model, its
+paid tool calls by who charged for them, its browser time by browser provider. It answers "what did this run cost, and
+whose invoice does each part land on?" for every run that books its cost: a pi run, a run on a CLI harness that sends
+its model requests through this server, and a workflow run with its decisions. The console's Dev tools tab shows it
+under "Cost by line". Each line has its quantity as measured, its dollars as the run's booking holds them, and how those
+were reached. Nothing is priced here, and nothing is rounded to a billing increment or topped up to a minimum.
+
+```json
+{ "run_id": "run_…", "ended_at": "2026-11-19T10:01:30.000Z", "currency": "USD", "total": { "usd": 0.0566 }, "reason": null,
+  "lines": [
+    { "meter": "tokens", "model": "claude-sonnet-5-5", "provider": "anthropic", "charged_by": null, "quantity": 3300, "unit": "token",
+      "basis": "reported", "usd": 0.0036, "requests": 3, "tokens": { "input": 3000, "output": 300, "cache_read": 0, "cache_write": 0 },
+      "unmetered_requests": 0 },
+    { "meter": "tools", "model": null, "provider": "monid", "charged_by": "monid", "quantity": 1, "unit": "call", "basis": "reported", "usd": 0.003 },
+    { "meter": "tools", "model": null, "provider": "docs", "charged_by": "docs", "quantity": 1, "unit": "call", "basis": "estimate", "usd": 0.05,
+      "not_metered_calls": 2 } ],
+  "browser_sessions": [],
+  "computer_intervals": [
+    { "provider": "daytona", "provider_id": "5f0c…", "kind": "sandbox", "gpu": null, "cpus": null, "memory_mb": null,
+      "started_at": "2026-11-19T10:00:04.000Z", "ended_at": "2026-11-19T10:01:31.000Z", "kept": false } ] }
+```
+
+- `tokens`: one line per model the requests were sent on (`model`; a workflow decision on the model its provider
+  answered with). `provider` is where the requests went, named only when this server sent them there itself: the run's
+  own model on a provider's key, or a decision's provider. Behind a model gateway it is null, since the gateway picks the
+  upstream. A model reached two ways is two lines, one per provider. `quantity` is the input, cache read, cache write and
+  output tokens as each request reported them (a decision's as its receipt does), with the split beside it; `basis` is the run's `cost.basis` rule over that model's requests alone.
+- `tools`: one line per charger (`charged_by`: `monid`, an MCP server's name, `parallel`), the vendor whose invoice the
+  calls land on. `provider` names the same vendor: the one that charges for a call is its provider. `quantity` is the charges booked, one per paid call. `basis` is `reported` when every charge is the
+  vendor's own figure (monid's answer says what it charged), `estimate` when any is a price this server holds (an MCP
+  tool's saved price, Parallel's). Calls of a tool with no price set ran outside the run's cost, as `GET /usage` counts
+  them: `not_metered_calls`, in neither `quantity` nor `usd`.
+- `browser_time`: one line per browser provider (`provider`). `quantity` is the seconds this server's clock charged the
+  provider's sessions for, the provider's minimum per session included as the browser charged it; `basis` is
+  `estimate`, the provider's price per hour on this server's clock, never its invoice.
+- A field a meter does not use is null, and so is a name the record does not keep: never `""`.
+- A charge of unknown cost makes its line's `usd` null, with `so_far_usd` and `unpriced` beside it, never $0. `total`
+  joins the lines by the rule `cost.usd` is, so `total.usd` is the run's `cost.usd`, with the same `so_far_usd`,
+  `unpriced` and `upper_bound` beside it; the `tools` lines sum to `cost.tools_usd`.
+- Learning is not on the lines. A learning run's end-of-run turn is this server's work for the agent, not the run's
+  task, and `cost.usd` leaves it out too; its spend is `learning_usd` on the run read.
+- When the lines can change: only while the run works. A follow-up opens an ended run again (a trigger's often does),
+  and it ends again later. `ended_at` is the end the lines cover: keep it with them, and read again at `run.ended`, which
+  fires at each end. A later read with another `ended_at`, or null, means the run moved since.
+- `lines` and `total` are null, with `reason`, while the run is at work (`running`), for a run whose figure is not its
+  booking's (`not_booked`: an imported, native or SDK run, or a CLI run whose model requests went past its proxy), and
+  for a learning run a follow-up opened again (`reopened`, whose booking can't be split by round).
+- Computer time is not priced yet: no line carries it, and its cost is not in `total`. What the run's computers did is
+  in `computer_intervals` (below), so it can be measured and matched to the provider's invoice.
+- `browser_sessions` (`runusage/2`) holds one record per browser session the run opened, in the order it opened them.
+  With it you can see how long each session ran, spot one that ended late or was lost, and find each on the provider's
+  own dashboard and invoice by its id: the provider's id for the session (`provider_session_id`), when
+  this server opened it and let it go (`started_at`, `ended_at`), why it ended (`release_reason`), the seconds charged
+  for it (`charged_seconds`, what the line sums), and the provider's own record of it, read once when it was let go
+  (`provider_record`: its `started_at`, `ended_at` and `proxy_bytes`). Browserbase keeps such a record; a provider that
+  keeps none says `provider_record_status: "not_offered"`, and a read that failed says `failed`, with `provider_record`
+  null, never zeros. A session whose end was never recorded (its run's process lost first) has `ended_at` null.
+  `charged_seconds` are the seconds charged for the session, its provider's minimum included where the browser charged
+  one at the release, as on the `browser_time` line; how long it ran is `ended_at` less `started_at`.
+- `computer_intervals` (`runusage/3`) holds one record per computer the run made through its provider (a sandbox, a
+  desktop or a phone), by when each was made. With it you can see how long each of the run's computers lived, find one
+  left running after its run, and match the provider's invoice by its own id: the provider (`provider`, this server's
+  name for it, as the agent's computer setting names it), the provider's id for the computer (`provider_id`), its
+  `kind`, what its create asked for (`gpu` with its `type` and `count`, `cpus`, `memory_mb`; null where it asked none, as
+  a hosted provider that sizes its own machines is never given numbers, and none is guessed), when the create answered
+  (`started_at`), and when the provider's delete of it answered ok (`ended_at`). `ended_at` is written only on that ok:
+  null means no delete was proven (the computer may still be running, or its delete failed or never answered), never a
+  guessed end. `kept` is true once the run's park kept the computer past its claim, for the person's answer. A computer
+  is ended wherever this server deletes it: the claim's release, a later claim letting an earlier one's go, the run's
+  end, a kept computer's end at its time, and the janitor's sweeps. The agent's own persistent computer (it outlives
+  every run), a paired computer and `--faux`'s are not the run's and have no record; a browser's sessions are in
+  `browser_sessions`. A run's computers made before this server kept them have none either. The records are kept in the
+  store's `computer_intervals` table (keyed by provider and the provider's id), and a purge of the run keeps them.
 
 ## Spend cap
 

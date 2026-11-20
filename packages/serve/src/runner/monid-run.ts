@@ -71,7 +71,7 @@ export function monidForClaim(pin: MonidPinBody | undefined, env: NodeJS.Process
   // left as a crash leaves it: the run is stopping or its claim is going.
   const estimated = async (ledger: PaidBooking, callId: string, name: string, at: Endpoint, input: Json, signal: AbortSignal): Promise<Estimated> => {
     const client = await clientOf();
-    const step = await paidStep<MonidAnswer>(ledger, callId, { name, holdUsd: 0, basis: READ_BASIS, by: "monid" }, () => client.run({ provider: at.provider, endpoint: `/${at.endpoint}`, input, maxCost: 0 }, signal), (outcome) => {
+    const step = await paidStep<MonidAnswer>(ledger, callId, { name, holdUsd: 0, basis: READ_BASIS, by: "monid", reported: true }, () => client.run({ provider: at.provider, endpoint: `/${at.endpoint}`, input, maxCost: 0 }, signal), (outcome) => {
       if (!("result" in outcome)) return null;
       const usd = chargeOf(outcome.result);
       return usd === undefined ? GIVEN_BACK : usd;
@@ -110,7 +110,7 @@ export function monidForClaim(pin: MonidPinBody | undefined, env: NodeJS.Process
   /** One paid step for the call `callId` of `name` on the run's ledger `ledger`: held at `held.usd`, `send` run, settled at
    *  what monid says it charged; a charge above the hold stops the run (overHold). */
   const paidCall = async (ledger: PaidBooking, callId: string, name: string, held: Held, send: () => Promise<MonidAnswer>) => {
-    const paid = await paidStep<MonidAnswer>(ledger, callId, { name, holdUsd: held.usd, basis: held.basis, by: "monid" }, send, (outcome) => {
+    const paid = await paidStep<MonidAnswer>(ledger, callId, { name, holdUsd: held.usd, basis: held.basis, by: "monid", reported: true }, send, (outcome) => {
       if (!("result" in outcome)) return null;
       const usd = chargeOf(outcome.result);
       return usd === undefined ? 0 : usd;

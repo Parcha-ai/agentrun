@@ -618,6 +618,9 @@ export async function runConformance(provider: ComputerProvider, options: Confor
 				observe(words: string) {
 					observed.push(words);
 				},
+				onScreenshot(png: Uint8Array) {
+					options.onScreenshot?.(png);
+				},
 			};
 			await c.run(t);
 		};

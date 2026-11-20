@@ -1,7 +1,7 @@
 // A run's desktop or phone, as its owner takes it: POST /v2/runs/{id}/computer/take-over and POST .../computer/hand-back
 // (the hand-back for every kind: a browser's answers its agent's ask, as POST .../browser/hand-back does). Owner-only, as
-// a run's browser is: the owner's password session in the console, never a token; on an API-only server (api-only.ts),
-// which has no owner, the server's token, its backend's own. GET /v2/runs/{id}/computer is answered by
+// a run's browser is; server.ts decides who may call them, with GET /v2/runs/{id}/computer, under one guard (the owner's
+// password session, or on an API-only server the server's token). GET /v2/runs/{id}/computer is answered by
 // server.ts from computerView (computer-view.ts) over computerHoldOf; computerViewOf is the store-backed read of the run's
 // computer the take-over tests check against.
 //
@@ -47,22 +47,13 @@ export async function computerViewOf(store: ComputerCallStore, runId: string, op
   return { kind, state: "live", hold: holdShown(hold, await store.commands(runId, 0)).state };
 }
 
-/** How a request to one of the routes came: by the owner's signed-in page, or with a token (the server's, checked before
- *  this); whether this server is API-only (its token is then its backend's, and takes the routes); whether this server
- *  has accounts (for the refusal's words); its body. */
-export type ComputerRequest = { readonly ownerSession: boolean; readonly token: boolean; readonly apiOnly: boolean; readonly accounts: boolean; readonly body?: unknown };
-
 /**
- * One of our routes (COMPUTER_ROUTES, by its name in serve's route table) for run `runId`: { hold, outcome? }, or an
- * ApiError. A token is refused (forbidden): a take-over drives the computer, so it takes the owner's signed-in page, as a
- * run's browser does; on an API-only server, which has no owner, the server's token takes it. The take-over takes an
- * empty body; the hand-back an `outcome` (done or cancelled) at most. Serve's dispatch sends what this answers.
+ * One of our routes (COMPUTER_ROUTES, by its name in serve's route table) for run `runId`, with the request's body:
+ * { hold, outcome? }, or an ApiError. The caller was admitted already (server.ts). The take-over takes an empty body; the
+ * hand-back an `outcome` (done or cancelled) at most. Serve's dispatch sends what this answers.
  */
-export async function computerRoute(name: string, runId: string, request: ComputerRequest, store: ComputerCallStore, options: ComputerCallOptions = {}): Promise<ComputerHoldAnswer> {
-  if (!request.ownerSession && request.token && !request.apiOnly) {
-    throw new ApiError("forbidden", request.accounts ? "A run's computer takes the owner's password sign-in in the console, never a token." : "A run's computer takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
-  }
-  const body = request.body ?? {};
+export async function computerRoute(name: string, runId: string, request: unknown, store: ComputerCallStore, options: ComputerCallOptions = {}): Promise<ComputerHoldAnswer> {
+  const body = request ?? {};
   if (typeof body !== "object" || body === null || Array.isArray(body)) throw new ApiError("input_invalid", "the body is a JSON object");
   const given = body as Record<string, unknown>;
   const issues = unknownFields(given, name === "handBackRunComputer" ? ["outcome"] : []);

@@ -138,10 +138,13 @@ async function holdingProxy(t, origin, held) {
  *  `says`, before `flows` landed in its learning folder, and a runner claiming every run from its stored launch. The
  *  node submits `submit(requestText)` ({answer: 42, sure: true} by default). `hold`: a model request whose body it
  *  matches is held until its run is cancelled or `proxy.release()`. */
-async function world(t, { prior = 6, learning = true, says = AGENT_SAYS, flows = FLOWS, submit, hold, env = {} } = {}) {
+async function world(t, { prior = 6, learning = true, says = AGENT_SAYS, flows = FLOWS, submit, hold, env = {}, runsCreate } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-promote-replay-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
-  const store = await openSqliteStore({ dataDir: dir, role: "runner" });
+  const opened = await openSqliteStore({ dataDir: dir, role: "runner" });
+  // `runsCreate(create, run, launch)`: the runner's runs.create, in its place (a test's interleave before a create).
+  const runs = runsCreate && { ...opened.runs, create: (run, launch) => runsCreate(opened.runs.create, run, launch) };
+  const store = runs ? new Proxy(opened, { get: (target, key) => (key === "runs" ? runs : typeof target[key] === "function" ? target[key].bind(target) : target[key]) }) : opened;
   const gw = await startFauxGateway({
     call: ({ body }) => (offers(body, "submit") && !hasResult(body) ? { name: "submit", input: { value: submit ? submit(JSON.stringify(body)) : { answer: 42, sure: true } } } : undefined),
     text: ({ body }) => (offers(body, "submit") ? "submitted" : says),
@@ -270,6 +273,23 @@ test("a check whose answers differ from the agent's holds the digest: the next r
   assert.deepEqual(decided.check.disagreements.map((one) => [one.agent, one.draft]), decided.check.disagreements.map(() => [AGENT_SAYS, JSON.stringify({ answer: 41, sure: true })]));
   assert.match(decided.reason, /answered 6 alone \(100\.0%, the bar 70\.0%\), and 0 of those said what the agent said \(0\.0%, the bar 80\.0%\): held/);
   assert.ok(logs.some((line) => line.includes(`answer at ${DIGEST} held:`)), logs.join("\n"));
+});
+
+test("a replay whose agent run is purged after the check read its input is never started (the store refuses it, nothing written): the check's other replay runs start, and the claimed run is the agent's", { timeout: 180_000 }, async (t) => {
+  const { server, start, replays, replaysEnded, logs } = await world(t, {
+    // The DELETE of prior-2 lands between the check's read of its launch and its replay's create.
+    runsCreate: async (create, run, launch) => {
+      if (launch?.body?.replay?.of === "prior-2") await server.runs.purge("prior-2", { meters: null, spend: { usd: null }, learning: null });
+      return create(run, launch);
+    },
+  });
+  const first = await start("run-1", "What is six times seven");
+  assert.equal(first.metrics?.path, "agent", JSON.stringify(first.metrics));
+  const made = await replaysEnded(5);
+  assert.deepEqual(made.map((row) => row.metrics.replay.of).sort(), PRIORS.filter((id) => id !== "prior-2"), "every other input's replay started");
+  assert.ok(logs.some((line) => /the replay \S+ is not started: the run it replays was purged/.test(line)), logs.join("\n"));
+  assert.ok((await server.runs.get("prior-2")).purgedAt !== null);
+  assert.equal((await replays()).length, 5, "no replay of the purged run is written");
 });
 
 // Review on #3032 (PRRT_kwDOUmdVMs64I-7l): a promotion with no input raced a newer revision's check. There is none now: a

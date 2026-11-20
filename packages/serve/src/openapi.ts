@@ -22,7 +22,7 @@ import { CALL_MS, PROTOCOL_METHODS } from "./computer-channel.js";
 import { LAUNCH_LOST, SETUP_LOST } from "./files.js";
 import { HARNESS_ID_PATTERN, HARNESSES } from "./harness.js";
 import { LEARNING_LABEL, LEARNING_MODES, LEARNING_REASONS, LEARNING_STATES, RUN_LEARNING_USE } from "./learning.js";
-import { AUDIT_DEFAULTS, AUDIT_MAX } from "./learning-setting.js";
+import { AUDIT_DEFAULTS, AUDIT_MAX, REPICK_MAX_CHARS_DEFAULT, REPICK_MAX_CHARS_MAX } from "./learning-setting.js";
 import { AFTER_STATES, CHEAPER_AFTER_RUNS, COST_CSV_COLUMNS, COST_WINDOW, COST_RUNS_DEFAULT, COST_RUNS_MAX, RUN_PATHS } from "./learning-cost.js";
 import { FEEDBACK_ROUNDS, FEEDBACK_STATUSES } from "./runner/feedback-round.js";
 import { COMPILE_AFTER_MAX } from "./learning-setting.js";
@@ -238,6 +238,91 @@ const RUN_GRAPH = {
       type: "object", additionalProperties: false, required: ["cost_usd", "decisions", "effects", "elapsed_ms"],
       properties: { cost_usd: { type: ["number", "null"], description: "Null when any part is unknown." }, decisions: { type: "integer" }, effects: { type: "integer" }, elapsed_ms: { type: ["integer", "null"] } },
     },
+  },
+};
+/** GET /runs/{run_id}/usage's answer (run-usage.ts): one run's cost by line. Its line is not the contract's UsageLine
+ *  (GET /usage's, a sum over runs by group). */
+const COST_WORDS = {
+  so_far_usd: { type: "number", minimum: 0, description: "Beside a null `usd`, or a bound: what is known of it, the charges' own figures alone." },
+  unpriced: { type: "integer", minimum: 0, description: "Beside `so_far_usd`: how many of its charges have no known figure, or count at their hold." },
+  upper_bound: { const: true, description: "`usd` counts a request a crash or a stop cut at the hold its cap kept for it: the most it can have cost." },
+};
+const RUN_USAGE_LINE = {
+  type: "object", additionalProperties: false, required: ["meter", "model", "provider", "charged_by", "quantity", "unit", "basis", "usd"],
+  properties: {
+    meter: { enum: ["tokens", "tools", "browser_time"], description: "`tokens`: model requests, by model. `tools`: paid tool calls, by who charged for them. `browser_time`: browser session time, by browser provider. A computer's own time is on no line: it is not priced yet, so its cost is not in `total` (each computer the run made is in `computer_intervals`)." },
+    model: { type: ["string", "null"], description: "On `tokens`: the model the requests were sent on, as the run's booking names it (a workflow decision's model too). One line per model and route: the same model reached two ways is two lines. Null on the other meters, and when the record names none." },
+    provider: { type: ["string", "null"], description: "On `tokens`: the provider the requests went to, named only when this server sent them there itself (the run's own model on a provider's key). Null behind a model gateway, whose upstream this server does not know, and for a model it did not route (a workflow decision's). On `tools`: the vendor that charged for the calls, the same name as `charged_by` (the vendor that charges for a call is its provider). On `browser_time`: the browser provider. Null where the record names none." },
+    charged_by: { type: ["string", "null"], description: "On `tools`: who charged for the calls, whose invoice they land on (`monid`, an MCP server's name, `parallel`). Null on the other meters, and when the record names none." },
+    quantity: { type: ["number", "null"], minimum: 0, description: "In `unit`, as measured: never rounded to a billing increment, never topped up to a minimum. On `tokens`, the requests' input, cache read, cache write and output tokens as each reported them (a workflow decision's as its receipt does; a request that reported none is in `unmetered_requests`, in no token); on `tools`, the charges booked, one per paid call; on `browser_time`, the seconds this server's clock charged the provider's sessions for, its minimum per session included as the browser charged it. Null when nothing measured it." },
+    unit: { enum: ["token", "call", "second"] },
+    basis: { enum: ["reported", "estimate", "unpriced"], description: "How `usd` was reached. On `tokens`, as the run's `cost.basis` is, over the line's requests alone: `reported` when every request priced had its gateway's or provider's own figure, `estimate` when any was priced from a price table, `unpriced` when none was priced. On `tools`, `reported` when every charge with a figure is the provider's own (monid's answer says what it charged), `estimate` when any is a price this server holds (an MCP tool's saved price, Parallel's), `unpriced` when none has a figure. On `browser_time`, `estimate` when any charge has a figure (the provider's price per hour on this server's clock, never its invoice), else `unpriced`." },
+    usd: { type: ["number", "null"], minimum: 0, description: "The line's cost on this server, as booked, joined by the rule `cost.usd` is (float noise rounded off at 1e-12). Null when a charge of it is unknown: never $0 for unknown." },
+    ...COST_WORDS,
+    requests: { type: "integer", minimum: 0, description: "On `tokens`: the model requests booked." },
+    tokens: closed({ input: { type: "integer", minimum: 0, description: "Input not read from cache." }, output: { type: "integer", minimum: 0 }, cache_read: { type: "integer", minimum: 0 }, cache_write: { type: "integer", minimum: 0 } }, "On `tokens`: `quantity` by kind."),
+    unmetered_requests: { type: "integer", minimum: 0, description: "On `tokens`: requests that reported no tokens (booked with no usage, or sent and never answered), in no token count." },
+    not_metered_calls: { type: "integer", minimum: 1, description: "On `tools`: calls with no price set (an MCP tool its owner set none for), as GET /usage counts them. They ran outside the run's cost and its cap, so they are in neither `quantity` nor `usd`: a line of such calls alone has `quantity` 0 and `usd` 0." },
+  },
+};
+/** One browser session on GET /runs/{run_id}/usage (browser-sessions.ts). */
+const BROWSER_SESSION = {
+  type: "object", additionalProperties: false,
+  required: ["provider", "tag", "provider_session_id", "started_at", "ended_at", "release_reason", "charged_seconds", "provider_record", "provider_record_status"],
+  properties: {
+    provider: { type: "string", description: "The browser provider, as the `browser_time` line's `provider` names it." },
+    tag: { type: "string", description: "The run's own name for the session, the same on every read." },
+    provider_session_id: { type: ["string", "null"], description: "The provider's id for the session, by which its own records and bill find it. Null when no session was made (its create failed) or its end is not recorded." },
+    started_at: { type: ["string", "null"], format: "date-time", description: "When this server began opening the session. Null while its end is not recorded." },
+    ended_at: { type: ["string", "null"], format: "date-time", description: "When this server let the session go. Null when its end is not recorded (a run whose process was lost before the release was told): unknown, never zero." },
+    release_reason: { type: ["string", "null"], description: "Why the session ended, in the browser's words: `tool` (the agent closed it), `idle`, `relaunch`, `close` (its run let it go), `ended` (the provider ended it), `lost`, `create_failed`." },
+    charged_seconds: { type: ["number", "null"], minimum: 0, description: "The seconds of the session's time this server charged, on its own clock: what the `browser_time` line sums, the provider's minimum per session included where the browser charged one at the release. How long the session ran is `ended_at` less `started_at`. Null when none was charged (a free provider's, or no charge recorded)." },
+    provider_record: {
+      type: ["object", "null"], additionalProperties: false, required: ["started_at", "ended_at", "proxy_bytes"],
+      description: "The provider's own record of the session, read once when it was let go, for matching it to the provider's invoice. Null unless `provider_record_status` is `read`. A field is null where the provider's record does not hold it.",
+      properties: {
+        started_at: { type: ["string", "null"], format: "date-time" },
+        ended_at: { type: ["string", "null"], format: "date-time", description: "Null where the provider had not ended it when read." },
+        proxy_bytes: { type: ["integer", "null"], minimum: 0, description: "The bytes the session moved through the provider's proxy, as the provider counts them." },
+      },
+    },
+    provider_record_status: { enum: ["read", "not_offered", "not_found", "failed", "no_session", null], description: "What came of reading the provider's record: `read`; `not_offered`, the provider keeps none this server reads; `not_found`, the provider did not know the session; `failed`, the read failed or timed out; `no_session`, none was made. Null while the session's end is not recorded." },
+  },
+};
+/** One computer a run made on GET /runs/{run_id}/usage (run-usage.ts computerIntervalsOf, store computer_intervals). */
+const COMPUTER_INTERVAL = {
+  type: "object", additionalProperties: false,
+  required: ["provider", "provider_id", "kind", "gpu", "cpus", "memory_mb", "started_at", "ended_at", "kept"],
+  properties: {
+    provider: { type: "string", description: "The computer provider, as this server's registry names it (the agent's computer setting's `provider`: `docker`, `e2b`, `daytona`, ...)." },
+    provider_id: { type: "string", description: "The provider's own id for the computer, by which its console, its API and its invoice find it." },
+    kind: { type: ["string", "null"], description: "`sandbox`, `desktop` or `phone`. Null when not known." },
+    gpu: {
+      type: ["object", "null"], additionalProperties: false, required: ["type", "count"],
+      description: "The GPU the computer's create asked for. Null when it asked for none.",
+      properties: { type: { type: ["string", "null"] }, count: { type: ["integer", "null"], minimum: 0 } },
+    },
+    cpus: { type: ["number", "null"], minimum: 0, description: "The CPUs the computer's create asked for. Null when it asked for none: a hosted provider that sizes its own machines is never given a number here, and none is guessed." },
+    memory_mb: { type: ["integer", "null"], minimum: 0, description: "The memory, in MB, the computer's create asked for. Null when it asked for none." },
+    started_at: { type: "string", format: "date-time", description: "When the provider's create answered with the computer, on this server's clock." },
+    ended_at: { type: ["string", "null"], format: "date-time", description: "When the provider's delete of the computer answered ok, on this server's clock. Null while none did: the computer may still be running (a run that ended with one open left it behind), or its delete failed or its answer is unknown. Never a guessed end." },
+    kept: { type: "boolean", description: "The run's park kept the computer past its claim, for the person's answer (it is deleted once its keep's time passes, or at the run's end)." },
+  },
+};
+const RUN_USAGE = {
+  type: "object", additionalProperties: false, required: ["run_id", "ended_at", "currency", "total", "lines", "browser_sessions", "computer_intervals", "reason"],
+  properties: {
+    run_id: ref("schemas/Id"),
+    ended_at: { type: ["string", "null"], format: "date-time", description: "When the run ended: the moment the lines cover. Null while it is at work. The lines change only while the run works, and a follow-up can open an ended run again (a trigger's often does); its next end is a later one. Keep `ended_at` beside the lines: a later read with another `ended_at`, or null, means the run moved since. `run.ended` fires at each end." },
+    currency: { const: "USD" },
+    total: {
+      type: ["object", "null"], additionalProperties: false, required: ["usd"], description: "The run's cost, joined from its lines. Null with no lines.",
+      properties: { usd: { type: ["number", "null"], minimum: 0, description: "The lines joined by the rule `cost.usd` is: the run's `cost.usd` on GET /runs/{run_id}. Null when a line's charge is unknown." }, ...COST_WORDS },
+    },
+    lines: { type: ["array", "null"], items: RUN_USAGE_LINE, description: "`tokens` lines first, then `tools`, then `browser_time`, each by its model, charger or provider. A meter the run used nothing of has no line. Null when the server can't split the run (`reason`)." },
+    browser_sessions: { type: ["array", "null"], items: BROWSER_SESSION, description: "One record per browser session the run opened, in the order it opened them, for matching `browser_time` to the provider's own records and invoice by its session id. Empty for a run that opened none. Null exactly when `lines` is. Its words are cut of this server's secrets and the run's sign-ins, as the lines' names are.", "x-agentrun-serve": "runusage/2" },
+    computer_intervals: { type: ["array", "null"], items: COMPUTER_INTERVAL, description: "One record per computer the run made through its provider (a sandbox, a desktop, a phone), by when each was made: how long each lived for the run, one left running after it (`ended_at` null), and the provider's own id to match its invoice by. Not the agent's own persistent computer, a paired computer, or a browser's sessions (those are `browser_sessions`). Computer time is not priced yet: its cost is on no line and not in `total`. Empty for a run that made none (or one made before this server kept them). Null exactly when `lines` is. Its words are cut of this server's secrets and the run's sign-ins, as the lines' names are.", "x-agentrun-serve": "runusage/3" },
+    reason: { enum: ["running", "not_booked", "reopened", null], description: "Why `lines` is null: `running`, the run is at work and its booking still moves; `not_booked`, its figure is not its booking's (an imported run's, a native or SDK run's harness figure, a CLI run whose model requests went past its model proxy); `reopened`, a learning run a follow-up opened again, whose `cost.usd` is its first round's and whose booking can't be split by round. Null with lines." },
   },
 };
 /** GET /runs/{run_id}/trace's answer (run-trace.ts). */
@@ -880,7 +965,7 @@ const COMPUTER_PROVIDER = closedWith({
   required: { type: "array", items: { type: "string" }, description: "The names of the secrets the provider needs; any other may stay unset." },
   ready: { type: "boolean", description: "Whether a run could have its computer of this kind here now: it fits this server's folder mode and every required key is saved." },
   runs_refused: PROVIDER_RUNS_REFUSED,
-  folder: { enum: ["bind", "archil", "sync", null], description: "The kind of the run's folder a run of an agent with this computer holds on this server now, by the rule a run's claim picks it by (this server's folder mode, and the provider's keys and image as this server has them): `bind`, a folder of this machine bound in (Mode 1: Docker); `archil`, the owner's Archil disk mounted (Mode 2, where the provider takes an Archil mount and Archil's image is in its account, and its computer of this kind does not dial this server: Modal's sandbox, and E2B's and Agent37's sandbox and desktop; Daytona's sandbox once DAYTONA_ARCHIL_EGRESS and AGENTRUN_DAYTONA_SNAPSHOT are set); `sync`, a synced folder the runner keeps on the owner's disk (Mode 2, any other computer that takes a folder, Modal's desktop among them: it dials this server, so it takes no Archil mount). Null where it holds none: a phone, a browser, a desktop whose provider takes no folder in this mode, or a sandbox this mode refuses (`why` says why). For a computer with no GPUs: `gpu.mounts` says which kinds its GPU computers take. A kind alone, never a key, an image or an address." },
+  folder: { enum: ["bind", "archil", "sync", null], description: "The kind of the run's folder a run of an agent with this computer holds on this server now, by the rule a run's claim picks it by (this server's folder mode, and the provider's keys and image as this server has them). `bind`: a folder of this machine (Mode 1). `archil`: the owner's Archil disk, where the provider takes an Archil mount, has Archil's image and does not dial this server. `sync`: a synced folder the runner keeps, for any other computer that takes a folder in Mode 2. Null: none. For a computer with no GPUs: `gpu.mounts` says which kinds its GPU computers take. A kind alone, never a key, an image or an address." },
   shell: CHOICE_SHELL,
   host_tools: CHOICE_HOST_TOOLS,
 }, {
@@ -1559,7 +1644,7 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
   "/runs/{run_id}/grade": {
     put: {
       operationId: "gradeRun", tags: ["runs"], summary: "Grade an ended run's answer: right or wrong, and the fields a right answer holds",
-      description: `A person's feedback or an eval's label on a run that ended, kept for its agent (one grade a run: a later one replaces it; the newest ${GRADES_KEPT} are kept). Promotion reads none: a revision's check is scored against the agent's own recorded answers. A replay run is never graded. The run's path never changes on a grade: a grade of a run its learned workflow answered alone, right or wrong, is kept and nothing more ($0); a run the agent finished, graded with a \`label\`, opens again on a look-back on it. That round asks the agent no turn of the job's, only its end-of-run turn, and its spend is the run's learning (\`feedback\`).`,
+      description: `A person's feedback or an eval's label on a run that ended, kept for its agent (one grade a run: a later one replaces it; the newest ${GRADES_KEPT} are kept). Promotion reads none: a revision's check is scored against the agent's own recorded answers. A replay run is never graded. The run's path never changes on a grade: a grade of a run its learned workflow answered alone, right or wrong, is kept and nothing more ($0); a run the agent finished, graded with a \`label\`, opens again on a look-back on it. That round asks the agent no turn of the job's, only its end-of-run turn, and its spend is the run's learning (\`feedback\`). A run that reads ended while it still learns from that end (its \`learning.state\` \`reflecting\`: its own look-back, or a grade's round) is \`409 run_learning\`, nothing kept: grade it once \`learning.state\` moves on.`,
       parameters: [ref("parameters/RunId")],
       requestBody: { required: true, content: { "application/json": { schema: { type: "object", additionalProperties: false, required: ["correct"], properties: { correct: { type: "boolean" }, expected: { type: "object", description: "The fields a right answer's JSON holds." }, source: { enum: [...GRADE_SOURCES], default: "feedback" }, label: { type: "string", maxLength: LABEL_MAX, description: "The grade's words (a teacher's label, a reviewer's note): what the run's look-back reads." } } } } } },
       responses: { "200": json(GRADE, "The run's grade."), ...errors(400, 401, 404, 409, 429, 500) },
@@ -1798,11 +1883,12 @@ const FILE_LIST = { type: "object", additionalProperties: false, required: ["fil
 const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}": {
     delete: {
-      operationId: "deleteAgent", tags: ["agents"], summary: "Delete an agent another system owns",
+      operationId: "deleteAgent", tags: ["agents"], summary: "Delete an agent another system owns, or purge an archived agent made here",
       description:
-        "Deletes an agent made by an inline run (`POST /runs` with `external`) whole: its runs and everything kept of them (journals, launch records, messages, files), its triggers, its learning, its saved sign-ins, its own computer and disk, its revisions and the agent. A run whose launch named an Archil disk (`archil_disk`, the caller's) has its own folder there deleted; the disk and everything else on it are kept, and a disk Archil says is gone has nothing left to delete. Shared things (MCP servers, keys, computers) are kept. In order: the agent refuses new runs (a mark in the store that outlives a restart: a run, an inline run, a trigger's firing, an SDK run or a message that would open one of its runs again is `409 agent_not_runnable`, as is a new trigger of it, off too, a trigger moved to it or turned on, and a write to its home or learning), and its runs still going are cancelled and waited for; then its learning (its learning folder, and its promotions and grades); then the rest. `204` when it is gone; a second `DELETE` is `404`. An agent made here is `409 agent_not_external`: archive it instead. `409 runs_in_flight` (a run did not end in time, or only its application ends it) and `409 learning_busy` (learning work in flight; each names what in `details.runs`) leave the agent refusing runs, as does `503 unavailable` while something it owns elsewhere is not deleted there yet: a trigger's registration upstream (Composio), a saved sign-in at its vendor, its own computer at its provider, its Archil disk (Archil failing or not reached, a run of another agent on it, or Archil off on this server), or a run's folder on a disk its launch named (Archil failing, a computer still holding the folder, or Archil off), or a trigger that reached the agent after its triggers were removed. Each is deleted there before the record here that names it, so none is left behind: send the `DELETE` again, which also finishes a delete that stopped part way.",
+        "An agent made here, once archived (`POST /agents/{agent_id}/archive`), is purged by the rule `DELETE /runs/{run_id}` purges a run by: its revisions' content (instructions, skills, notes), its name and description, its learning, its triggers, its saved sign-ins, its own computer, disk and folders go, and each of its runs is purged (a tombstone, its cost kept). The agent's row stays as its tombstone: every route of it answers `410 purged` with `details` {agent_id, archived_at, purged_at}, and no list shows it. What its runs cost stays in `/usage` and `/stats`. `204` when it is purged; a second `DELETE` is `204` too. An agent made here that is not archived is `409 agent_not_archived`, nothing purged; `409 run_not_final` while a run of it is live (`details.runs`), nothing purged; `503 unavailable` as below, the next `DELETE` finishing it. Purging one agent touches no other. Deleting or purging takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token: any other console session is `403 forbidden`.\n\n" +
+        "An agent made by an inline run (`POST /runs` with `external`) is deleted whole, archived or not: its runs and everything kept of them (journals, launch records, messages, files), its triggers, its learning, its saved sign-ins, its own computer and disk, its revisions and the agent. A run whose launch named an Archil disk (`archil_disk`, the caller's) has its own folder there deleted; the disk and everything else on it are kept, and a disk Archil says is gone has nothing left to delete. Shared things (MCP servers, keys, computers) are kept. In order: the agent refuses new runs (a mark in the store that outlives a restart: a run, an inline run, a trigger's firing, an SDK run or a message that would open one of its runs again is `409 agent_not_runnable`, as is a new trigger of it, off too, a trigger moved to it or turned on, and a write to its home or learning), and its runs still going are cancelled and waited for; then its learning (its learning folder, and its promotions and grades); then the rest. `204` when it is gone; a second `DELETE` is `404`. `409 runs_in_flight` (a run did not end in time, or only its application ends it) and `409 learning_busy` (learning work in flight; each names what in `details.runs`) leave the agent refusing runs, as does `503 unavailable` while something it owns elsewhere is not deleted there yet: a trigger's registration upstream (Composio), a saved sign-in at its vendor, its own computer at its provider, its Archil disk (Archil failing or not reached, a run of another agent on it, or Archil off on this server), or a run's folder on a disk its launch named (Archil failing, a computer still holding the folder, or Archil off), or a trigger that reached the agent after its triggers were removed. Each is deleted there before the record here that names it, so none is left behind: send the `DELETE` again, which also finishes a delete that stopped part way.",
       parameters: [AGENT_ID],
-      responses: { "204": { description: "Deleted." }, ...errors(401, 404, 409, 429, 500, 503) },
+      responses: { "204": { description: "Deleted, or purged." }, ...errors(401, 403, 404, 409, 429, 500, 503) },
       "x-agentrun-serve": "agentdelete/1",
     },
   },
@@ -1954,6 +2040,15 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       responses: { "200": json(RUN_TRACE, "The run's spans as they stand."), ...errors(401, 403, 404, 429, 500) },
     },
   },
+  "/runs/{run_id}/usage": {
+    get: {
+      operationId: "getRunUsage", tags: ["runs"], summary: "What a run cost, by model, by who charged for its tools, and by browser provider",
+      description: "One run's cost, line by line: its model requests by model (and the provider they went to, where this server sent them itself), its paid tool calls by who charged for them, and its browser time by provider. Each line has its quantity as measured, its dollars as the run's booking holds them, and how those were reached (`basis`). This server prices nothing here: the lines are the charges `cost.usd` already joins, so they add up to the run's `cost.usd` (`total`), and a charge no one knows is null, never $0. It reads the same for every kind of run that books its cost: an agentic run on any harness that sends its model requests through this server, and a workflow run with its decisions. Learning's spend for the run is not here: its end-of-run learning turn is this server's work for the agent, which `cost.usd` leaves out too; it is on the run read's `learning_usd`. While the run works, and for a run the server cannot split, `lines` is null and `reason` says why. A name on a line (a model, a provider, a charger) is cut of this server's secrets and the sign-ins the run was handed, as the run's trace is; 403 `forbidden` while this server can't read the browser sign-in the run was handed, as its trace answers.",
+      parameters: [ref("parameters/RunId")],
+      responses: { "200": json(RUN_USAGE, "The run's usage lines, or why it has none."), ...errors(401, 403, 404, 429, 500) },
+      "x-agentrun-serve": "runusage/1",
+    },
+  },
   "/runs/{run_id}/browser": {
     get: {
       operationId: "getRunBrowser", tags: ["runs"], summary: "Watch the run's browser live and take it over: its viewer link, for the owner",
@@ -2077,6 +2172,14 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
     },
   },
   "/runs/{run_id}": {
+    delete: {
+      operationId: "deleteRun", tags: ["runs"], summary: "Purge a run's content and keep its cost",
+      description:
+        "Purges a run that is not live: what it was given and what it did go, what it cost stays. Gone: its launch record (its input and prompt), its journal and timeline, its messages and commands, its outputs and files, the answers kept under its idempotency keys, its folders (on this machine, and its own folder on an Archil disk, its agent's or one its launch named; the disk and everything else on it are kept), its settings, the grades its agent keeps of it, and its kept learning's content (its learning's end, merged or dropped, stays, as `/stats` counts it). Its row stays as its tombstone: every route of it answers `410 purged` with `details` {run_id, agent_id, state, started_at, ended_at, cost_usd, cost_upper_bound, tools_usd, purged_at}, and no run list shows it. `/usage`, `/stats` and the spend a cap reads sum it as before: no total moves. The runs made from it are purged with it, each the same way: its audit's shadow run, the replay runs of its input and a learning run its kept learning names. Once it is purged, no replay or shadow run of it is started. Its agent, the agent's other runs and what its agent learned are kept: a promotion record keeps its decision, numbers and run ids (the run's among them), and what it copied from the run (a disagreement's input and answers, the grader's words, and the words a hold's reason quoted from them) is blanked; the learning folder's history may still name the run's id. `204` when it is purged; a second `DELETE` is `204` too; a run this server never had is `404`. Live (queued, working, waiting on a person or an approval, or held by a runner): `409 run_not_final` (`details.runs`, the run or each run made from it that is live, or a replay or shadow run of it a check or an audit started while the `DELETE` ran, which the next `DELETE` purges first), nothing purged; cancel it first (`POST /runs/{run_id}/cancel`). A run that ended and takes a follow-up (`idle`), or that a person stopped, is not live; one that reads so before its runner has written it ended is waited for (up to 30 seconds), then purged. `503 unavailable` while its folder on an Archil disk is not deleted there yet (Archil failing or off, a computer still holding the folder): the run is not purged, and the `DELETE` sent again finishes it, as it finishes a purge that stopped part way. Takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token: any other console session is `403 forbidden`.",
+      parameters: [ref("parameters/RunId")],
+      responses: { "204": { description: "Purged, now or before." }, ...errors(401, 403, 404, 409, 429, 500, 503) },
+      "x-agentrun-serve": "purge/1",
+    },
     patch: {
       operationId: "raiseRunCap", tags: ["runs"], summary: "Raise a run's spend cap",
       description: "Raises `max_cost_usd` of a run that named one, agentic or workflow; only a raise: the new cap is above the run's current cap, its last raise included (422 otherwise, and for a run with no cap); the same raise sent again (a retry) changes nothing and answers as the first did. The run's serve.json keeps it before anything else, so its next process and a server started again run under it. A run paused at its cap (`pending.kind` budget) goes on: the answer comes at once (`resumed` true, its `message_id`), and once its process has been let go the server sends it one follow-up turn under that id, \"The cap was raised to $X; continue the task.\", which runs under the new cap; it is sent once, by a server started again if this one stopped before it went. A second raise before it goes answers the same `message_id`; one that cannot be sent is tried again, then the run ends failed, saying why. Caps within 1e-9 are the same cap. A run working holds the new cap from its next step; a step already under way keeps the cap it was admitted at (`note` says so). A workflow run takes no follow-up: paused at its cap, the step that waits there is judged again under the new cap in its process, or, once the pause let its process go (10 minutes on), the run is opened again under it and resumes from its journal, sending no completed node again (`resumed` true, no `message_id`); a working one's process holds the new cap from its next check. 409 not_continuable for an ended run, and for a run a person stopped (send it a message to go on, then raise its cap).",
@@ -3024,7 +3127,7 @@ const LEARNING_NULL = "Null for a run that does not learn: its agent's `learning
 const LEARNING = {
   oneOf: [
     closedWith({
-      state: { enum: [...LEARNING_STATES], description: "`seeded` when the run started from what its agent learned; `reflecting` while its end-of-run step runs (its compile turn, its owner's correction), and until what it wrote is checked (after the run ended, so it may still read `reflecting` once the run reads completed or failed); `merged` once what it kept is on the folder's main; `dropped` when learning was skipped or refused, with `reason`." },
+      state: { enum: [...LEARNING_STATES], description: "`seeded` when the run started from what its agent learned; `reflecting` while its end-of-run step runs (its compile turn, its owner's correction), and until what it wrote is checked); `reflecting` after the run's job ended (its own look-back, or the feedback round a grade opened) keeps the run's end: the run reads completed, failed or cancelled, with its `ended_at`, `result` and `error` as its job left them, and is read again after `poll_after_ms` (above 0) until its learning settles, its timeline `final: false` till then; stop answers `stopped: false` and cancel `already_terminal: true`, and a run tells `run.ended` once; `merged` once what it kept is on the folder's main; `dropped` when learning was skipped or refused, with `reason`." },
       reason: LEARNING_REASON,
       detail: { type: ["string", "null"], maxLength: 300, description: "Where the run's learning stands, in one sentence in a person's words (at most 300 characters, ending in an ellipsis when cut; a workflow's name in it is cut of the host's secrets as they are now before it is cut short, so none is shown in part), the same as its timeline row says: \"Started from 2 corrections and 1 workflow.\", \"Keeping what this run learned…\", \"Learned the workflow <name>.\", \"Kept your correction.\", \"Waiting for your OK: workflow <name>.\", \"Nothing new to keep from this run.\", \"Not kept: it didn't pass the checks (<rules>).\", \"Not kept: learning stopped (<why>).\" and so on. Never a secret or a value from the input, cut of the host's secrets as they are now. For a person: a client that acts on it reads `state` and `reason`, whose codes do not change." },
       at: { type: "string", format: "date-time", description: "When the state last changed." },
@@ -3503,7 +3606,9 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
       hold_window: { type: "integer", minimum: 1, maximum: AUDIT_MAX, default: AUDIT_DEFAULTS.hold_window, description: "The audit rows of the serving revision the hold rule reads: its newest this many (an owner's grade on a served run is one too)." },
       hold_disagree: { type: "integer", minimum: 1, maximum: AUDIT_MAX, default: AUDIT_DEFAULTS.hold_disagree, description: "When at least this many of those rows disagree, the workflow stops serving (a hold, source `audit`) and is recompiled once with them as data, then checked again: promoted serves again, otherwise it stops. At most `hold_window`." },
       stop_window: { type: "integer", minimum: 1, maximum: AUDIT_MAX, default: AUDIT_DEFAULTS.stop_window, description: "A second hold within this many served runs of the first stops the workflow for good, asking no compile." },
-    } }], default: false, description: "Whether an agentic revision's runs learn: `true`, its owner's corrections and learned workflows; an object, the same with the loop's numbers set on it (`compile_after`, `agree_min`, `alone_min`, `agree_on`, `audit_every`, `audit_every_later`, `audit_later_after`, `hold_window`, `hold_disagree`, `stop_window`, each optional: one left out is its default; `true` is every default); `false`, nothing. A run that learns starts from what its agent has learned, its corrections.md whole in its instructions under `# Learned` and its learned workflows behind its learned_workflow tool; once its job is due, it is asked one compile turn that writes the job as a learned workflow, checked and committed. Kept when a definition says so, true, false or an object (its numbers in one order); a number out of range or an unknown key is a 422 `wrong_type`; absent, off, and an answer shows none. An edit that leaves it out keeps the agent's. A workflow revision keeps none. On a server whose learning is off (`capabilities.features.learning`), no run learns, whatever this says.", "x-agentrun-serve": "learning/1" },
+      repick: { type: "boolean", default: false, description: "`true`: a learned workflow compiled from now on re-picks its answer's quotes from the pages its run fetched. When a quote in its first answer is in none of those pages, its one re-pick writes the answer again from the pages themselves (each sent as data, told it is untrusted text from the web and never instructions, with no tools), not from its compact notes alone. It is read when a draft is committed, so a workflow already kept is unchanged until its next compile. An agent whose workflows run through an SDK bridge ignores it. `false` or absent: the re-pick reads its compact notes and its draft." },
+      repick_max_chars: { type: "integer", minimum: 1, maximum: REPICK_MAX_CHARS_MAX, default: REPICK_MAX_CHARS_DEFAULT, description: "The most characters of state a re-pick over the pages sends its model: past it, the longest strings (the pages) are cut first, each to one length and marked where it was cut. Its cost is the served run's, under the run's cost cap like every model request of the run. Read with `repick`, at each compile." },
+    } }], default: false, description: "Whether an agentic revision's runs learn: `true`, its owner's corrections and learned workflows; an object, the same with the loop's numbers set on it (`compile_after`, `agree_min`, `alone_min`, `agree_on`, `audit_every`, `audit_every_later`, `audit_later_after`, `hold_window`, `hold_disagree`, `stop_window`, `repick`, `repick_max_chars`, each optional: one left out is its default; `true` is every default); `false`, nothing. A run that learns starts from what its agent has learned, its corrections.md whole in its instructions under `# Learned` and its learned workflows behind its learned_workflow tool; once its job is due, it is asked one compile turn that writes the job as a learned workflow, checked and committed. Kept when a definition says so, true, false or an object (its numbers in one order); a number out of range or an unknown key is a 422 `wrong_type`; absent, off, and an answer shows none. An edit that leaves it out keeps the agent's. A workflow revision keeps none. On a server whose learning is off (`capabilities.features.learning`), no run learns, whatever this says.", "x-agentrun-serve": "learning/1" },
     checkout: { enum: ["pull_request", "none"], description: "What the server checks out in each run's folder before its first turn, an agentic definition's alone. `pull_request`: the pull request the run's GitHub event names (a GitHub trigger's firing: its repository, number, head and base), at its head, detached, in `repo/`, with its base and their merge base fetched beside it (refs `pr/head`, `pr/base`, `pr/merge-base`). The fetch is the server's own, one command on the run's folder, with an installation token of the server's GitHub App narrowed to that repository and `contents: read`, which the agent never holds: it is never in the folder, the checkout's git config, its remote's URL, the agent's environment or the log. With no App, or one not installed there, the fetch is anonymous, which a public repository answers. The run's system prompt says what was checked out, or why nothing was (no pull request named, the fetch failed), so it can read the change another way, such as the GitHub MCP. The checkout is removed when the run's claim ends. An edit that leaves it out keeps the agent's; `none` clears it. A template sets it from its manifest's `checkout`.", "x-agentrun-serve": "checkout/1" },
   },
   AgentCreate: {
@@ -3989,7 +4094,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   // A contract field this server takes with a meaning of its own, said on it.
   definition.properties.max_cost_usd = { ...definition.properties.max_cost_usd, "x-agentrun-serve-note": "The agent's default cap of each run started without a max_cost_usd of its own (a run's own wins), kept with its revision: above 0 sets it, 0 clears it (no default), and an edit that leaves the field out keeps the agent's, so leaving a field out never removes a spend limit. An agentic definition's or a workflow's alike." };
   definition.properties.output_schema = { ...definition.properties.output_schema, "x-agentrun-serve-note": "An agentic definition's alone (a workflow's output is its workflow's): the JSON Schema its final answer's last fenced json block meets, at most 64 KiB, refused at save when it does not compile. A completed run's result.output is that block's value when it meets the schema, else null. An edit that leaves the field out keeps the agent's. A template's answer schema (its manifest's `output`) is set here at apply. Over 32 KiB, a scheduled run is handed only the fields the producing run's schema names in `x-carried`; carried arrays lose entries from the front until they fit, and the run is told how many. A save refuses an `x-carried` that is not unique root property names." };
-  definition.properties.input_schema = { ...definition.properties.input_schema, "x-agentrun-serve-note": "An agentic definition's alone (a workflow's input is its workflow's own schema): a JSON Schema object schema (`type: object`), at most 64 KiB, refused at save when it does not compile. Every run's `input` is checked against it with the full compiler, by POST /agents/{agent_id}/runs, a trigger's start_run target (at save and when it fires) and a template's triggers, and refused 422 `input_invalid` with an issue at each path (`input.company`, `input.topics.1`). `content` is reserved: named, it is `{type: string}`; it is always taken as text (the run's message), and it stays required when the schema requires nothing else. The run's first message is `content`, then the other fields as one fenced json block under the line `Input:`. Absent: `{content: string}`. An edit that leaves the field out keeps the agent's. A template's `inputs` are set here at apply." };
+  definition.properties.input_schema = { ...definition.properties.input_schema, "x-agentrun-serve-note": "An agentic definition's alone (a workflow's input is its workflow's own schema): a JSON Schema object schema (`type: object`), at most 64 KiB, refused at save when it does not compile. Every run's `input` is checked against it with the full compiler, by POST /agents/{agent_id}/runs, a trigger's start_run target (at save and when it fires) and a template's triggers, and refused 422 `input_invalid` with an issue at each path (`input.company`, `input.topics.1`). `content` is reserved: named, it is `{type: string}`; it is always taken as text (the run's message). It is required when the schema has no field of its own; when the schema's own fields are all optional, a run gives `content` or one of them, and an input with none is refused at `input.content`. The run's first message is `content`, then the other fields as one fenced json block under the line `Input:`. Absent: `{content: string}`. An edit that leaves the field out keeps the agent's. A template's `inputs` are set here at apply." };
   const runResult = schemas.RunResult as Json & { properties: Record<string, Json> };
   runResult.properties.output = { ...runResult.properties.output, "x-agentrun-serve-note": "A workflow run's output, as its workflow ended; an agentic run's, its final answer's last fenced json block when it meets the agent's output_schema, else null (no schema, no block, not JSON, or a value the schema refuses). The runner gives the model the schema in its instructions on every harness, and asks once more, in the same session under the same cap, when the answer misses it; output_error says why one still missed." };
   // instructions XOR workflow (validate.ts): a workflow revision has none. version, skills and tools: this server
@@ -4223,8 +4328,9 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   const own = Object.keys(ERROR_STATUS).filter((code) => Array.isArray(errorCode.enum) && !errorCode.enum.includes(code));
   if (own.length) {
     errorCode.enum = [...errorCode.enum!, ...own];
-    // The newest addition that widened it: a client that validates against cappause/1 refuses runner_refused.
-    errorCode["x-agentrun-serve"] = "runners/1";
+    // The newest addition that widened it: a client that validates against runners/1 refuses run_not_final, purged and
+    // agent_not_archived.
+    errorCode["x-agentrun-serve"] = "purge/1";
     fields.push(...own.map((code) => `ErrorCode.${code}`));
   }
   // A start (or a message) while every runner here refused to claim any run: 503 runner_refused, not retryable, in the
@@ -4263,6 +4369,21 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     composio_in_use: closed({ triggers: { type: "array", items: closed({ id: { type: "string" }, name: { type: "string" } }), description: "The composio triggers that use it." } }),
     runs_in_flight: closed({ runs: { type: "array", items: { type: "string" }, description: "The agent's runs not ended (DELETE /agents/{agent_id})." } }),
     learning_busy: closed({ runs: { type: "array", items: { type: "string" }, description: "What of the agent's learning is at work (DELETE /agents/{agent_id}): each run of it not ended (its compile turn, a check's replay or an audit's shadow among them), by its id." } }),
+    run_not_final: closed({ runs: { type: "array", items: { type: "string" }, description: "What is live (DELETE /runs/{run_id}, and an archived agent's DELETE /agents/{agent_id}): the run itself, each run made from it that is live, or each live run of the agent, by its id." } }),
+    purged: {
+      oneOf: [
+        closed({
+          run_id: { type: "string" }, agent_id: { type: "string" },
+          state: { enum: ["ended", "stopped", "failed"], description: "The run's state as its row kept it: only a run that is not live is purged." },
+          started_at: { type: "string", format: "date-time" }, ended_at: { type: ["string", "null"], format: "date-time" },
+          cost_usd: { type: ["number", "null"], minimum: 0, description: "What it cost, as `/usage` sums it: its known cost, else its upper bound." },
+          cost_upper_bound: { type: "boolean", description: "`cost_usd` is an upper bound, not a known cost." },
+          tools_usd: { type: ["number", "null"], minimum: 0, description: "What its paid tools cost, as `/usage`'s tools meter read it; null when none was read." },
+          purged_at: { type: "string", format: "date-time" },
+        }, "A purged run's tombstone (every route of /runs/{run_id})."),
+        closed({ agent_id: { type: "string" }, archived_at: { type: ["string", "null"], format: "date-time" }, purged_at: { type: "string", format: "date-time" } }, "A purged agent's tombstone (every route of /agents/{agent_id})."),
+      ],
+    },
   };
   const extensions: string[] = [];
   for (const [path, item] of Object.entries(EXTENSIONS)) {
@@ -4271,6 +4392,17 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
       extensions.push(`${method.toUpperCase()} ${path}`);
     }
   }
+  // purge/1: every route of a purged run or agent (DELETE /runs/{run_id}, DELETE /agents/{agent_id}) answers 410 purged
+  // with its tombstone, its DELETE alone 204 again. A contract operation that gains the 410 is changed, and says so.
+  (doc.components as Json).responses = {
+    ...((doc.components as Json).responses as Record<string, Json>),
+    Gone: {
+      description: "`purged`: the run or agent was purged (`DELETE /runs/{run_id}`, `DELETE /agents/{agent_id}`); `details` is its tombstone.",
+      headers: { "X-Request-Id": ref("headers/RequestId") },
+      content: { "application/json": { schema: ref("schemas/Error") } },
+      "x-agentrun-serve": "purge/1",
+    },
+  };
   // examples/1: a working body for the operations in REQUEST_EXAMPLES, on the JSON media type; a contract operation that
   // gains one is changed, and says so.
   for (const [path, item] of Object.entries(doc.paths)) {
@@ -4304,6 +4436,27 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   Object.assign(doc.paths, hooks, NATIVE_PATHS, SDK_PATHS, OBSERVATION_PATHS);
   ((doc.info["x-agentrun-serve"] as Json).extensions as string[]).push(...Object.entries({...NATIVE_PATHS,...SDK_PATHS,...OBSERVATION_PATHS}).flatMap(([path,item])=>Object.keys(item).map(method=>`${method.toUpperCase()} ${path}`)));
   ((doc.info["x-agentrun-serve"] as Json).extensions as string[]).push(...Object.keys(hooks).map((path) => `POST ${path}`));
+  // purge/1, on every operation there is by now (each rewritten, never a shared constant's own object changed); `changed`
+  // is info's own list. Every route of a purged run or agent, and each that writes to an agent its body names (a trigger
+  // made for it or moved to it, a template applied onto it), which a purged one refuses.
+  const namesAgent = new Set(["createTrigger", "updateTrigger", "applyTemplate"]);
+  for (const [path, item] of Object.entries(doc.paths)) {
+    const ofPurgeable = /^\/(runs\/\{run_id\}|agents\/\{agent_id\})(\/|$)/.test(path);
+    if (!ofPurgeable && !Object.values(item).some((op) => typeof op === "object" && op !== null && namesAgent.has((op as Json).operationId as string))) continue;
+    const ops = { ...item } as Record<string, Json & { responses?: Record<string, Json> }>;
+    for (const [method, op] of Object.entries(ops)) {
+      if (method === "parameters" || method.startsWith("x-") || !op.responses) continue;
+      if (op.operationId === "deleteRun" || op.operationId === "deleteAgent") continue;
+      if (!ofPurgeable && !namesAgent.has(op.operationId as string)) continue;
+      ops[method] = { ...op, responses: { ...op.responses, "410": ref("responses/Gone") } };
+      if (op["x-agentrun-serve"] !== undefined) continue;
+      // An operation whose responses an earlier addition changed keeps that one's mark, as a schema two additions widen does.
+      const marks = (op["x-agentrun-serve-changed"] ?? {}) as Json;
+      ops[method]!["x-agentrun-serve-changed"] = { ...marks, responses: marks.responses ?? "purge/1" };
+      if (!changed.includes(`${method.toUpperCase()} ${path}`)) changed.push(`${method.toUpperCase()} ${path}`);
+    }
+    doc.paths[path] = ops;
+  }
   return doc;
 }
 

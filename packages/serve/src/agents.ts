@@ -2,7 +2,7 @@
 // (whenFree), then answered home_busy. The agents themselves are over the one store (agents-store.ts).
 import { ApiError } from "./errors.js";
 import { isObject } from "./validate.js";
-import { AgentDeleting, StoreBusy, StoreDeadline } from "./store/index.js";
+import { AgentDeleting, AgentPurged, StoreBusy, StoreDeadline } from "./store/index.js";
 
 /** SQLITE_BUSY or SQLITE_LOCKED: another connection holds the database. */
 export const sqliteBusy = (error: unknown) => isObject(error) && error.code === "ERR_SQLITE_ERROR" && typeof error.errcode === "number" && [5, 6].includes(error.errcode & 0xff);
@@ -42,12 +42,25 @@ export const homeBusy = () => new ApiError("home_busy", "the agent store is busy
 export const agentDeleting = (agentId: string) =>
   new ApiError("agent_not_runnable", `The agent ${agentId} is being deleted (DELETE /v2/agents/${agentId}): it starts no run, opens none again and takes no new trigger or write. Send the DELETE again to finish it.`);
 
+const isoOrNull = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
+
+/** 410 purged for a route of a purged agent (Agents.purge), or a write the store refused because it is (AgentPurged):
+ *  its tombstone in the details. */
+export const purgedAgent = (agent: { id: string; archivedAt: number | null; purgedAt: number | null }) =>
+  new ApiError("purged", `The agent ${agent.id} was purged: its definition, learning and runs' content are gone, and its runs' cost stays in every total.`, {
+    details: { agent_id: agent.id, archived_at: isoOrNull(agent.archivedAt), purged_at: isoOrNull(agent.purgedAt) },
+  });
+
 /** What a request's error answers, over HTTP and through an MCP tool alike (server.ts, mcp.ts dispatch): an ApiError as
  *  it is; a busy store home_busy (409, retryable), never 500; a run of an agent being deleted agent_not_runnable (409);
- *  anything else internal, its message kept. */
+ *  a write to a purged agent purged (410); anything else internal, its message kept. */
 export const answerOf = (error: unknown): ApiError =>
-  error instanceof ApiError ? error : storeBusy(error) ? homeBusy() : error instanceof AgentDeleting ? agentDeleting(error.agentId) : new ApiError("internal", (error as Error)?.message ?? String(error));
+  error instanceof ApiError ? error
+    : storeBusy(error) ? homeBusy()
+    : error instanceof AgentDeleting ? agentDeleting(error.agentId)
+    : error instanceof AgentPurged ? purgedAgent({ id: error.agentId, archivedAt: error.archivedAt, purgedAt: error.purgedAt })
+    : new ApiError("internal", (error as Error)?.message ?? String(error));
 
 /** Whether a request's error goes to the server's log: every fault the server did not answer on purpose. A busy wait
  *  is not one; a transaction past its deadline is (something held the store that long). */
-export const logged = (error: unknown): boolean => !(error instanceof ApiError) && !(error instanceof AgentDeleting) && (!storeBusy(error) || error instanceof StoreDeadline);
+export const logged = (error: unknown): boolean => !(error instanceof ApiError) && !(error instanceof AgentDeleting) && !(error instanceof AgentPurged) && (!storeBusy(error) || error instanceof StoreDeadline);

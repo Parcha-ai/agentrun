@@ -171,6 +171,8 @@ export interface CaseContext {
 	skip(reason: string): never;
 	/** Records what the case saw without asserting it (its result's observed), for a fact not yet known either way. */
 	observe(words: string): void;
+	/** Hands a whole screenshot, its PNG's bytes, to the run's onScreenshot (ConformanceOptions), when it has one. */
+	onScreenshot(png: Uint8Array): void;
 }
 
 export interface Case {
@@ -362,6 +364,9 @@ export interface ConformanceOptions {
 	mountFor?: (kind: MountKind) => Promise<RunFolder | undefined> | RunFolder | undefined;
 	/** Called as each case ends. */
 	onResult?: (result: CaseResult) => void;
+	/** Called once with the last whole screenshot screen.screenshot-size read, its PNG's bytes, whether the case passes or
+	 *  fails after it: a frame of what the screen showed. */
+	onScreenshot?: (png: Uint8Array) => void;
 	/** Notes the provider module gives for the report, printed before the verdict. */
 	notes?: string[];
 	/** The longest one case may run; default 180 s. */
