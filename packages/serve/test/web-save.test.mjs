@@ -1,6 +1,7 @@
 // web_save: one public file downloaded into the run's work folder through the public-host guard's bytes variant, granted
 // by its own name. The network is a table (no socket): names resolve from it and each URL answers from it.
 import assert from "node:assert/strict";
+import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
 import { connect, createServer } from "node:net";
@@ -654,4 +655,158 @@ test("one run process may have at most SAVE_SLOTS_PER_RUN takes held or waiting 
   await until(() => gate.waiting === SAVE_SLOTS_PER_RUN - 1, "a new take is accepted once one was released");
   run.end();
   await until(() => gate.busy === 0 && gate.waiting === 0, "the run's end let go of all of it");
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// A write bigger than a channel frame from a run's process (runner/big-writes.ts): the runner pulls it in pieces of the
+// length it asks, through a gate of its own, and writes it once on the Workspace it handed. Each "run" is a channel pair
+// of small frames over a real Unix socket; the runner hands a local Workspace with its pieced write, as heldFor's archil
+// hands the run's folder on its disk (run-child-held.test.mjs drives that one).
+
+const big = await import("../dist/runner/big-writes.js").catch(() => ({}));
+const FRAME = 256 * 1024;
+const PIECE = 64 * 1024;
+
+/** A run process over a channel of FRAME-byte frames whose runner hands `ws` (with its pieced write, on `gate`) as
+ *  target "folder": the run's side has `folder()`, what it was handed. */
+async function bigRun(t, gate, ws, options = {}) {
+  assert.equal(typeof big.runBigWrites, "function", "runner/big-writes.js exports runBigWrites");
+  const dir = await scratch(t);
+  const path = join(dir, `big-${socketCount++}.sock`);
+  const server = createServer();
+  await new Promise((resolve) => server.listen(path, resolve));
+  const accepted = once(server, "connection");
+  const childSocket = connect(path);
+  const [[runnerSocket]] = await Promise.all([accepted, once(childSocket, "connect")]);
+  server.close();
+  const bigs = big.runBigWrites({ gate, piece: PIECE, ...options });
+  const runner = runChannel(runnerSocket, () => {}, saveSlots(SAVE_CONCURRENCY), { bigs, maxFrame: FRAME });
+  runner.expose("folder", () => ({ workspace: ws, pieces: bigs.pieces(ws) }));
+  const child = new Channel(childSocket, { maxFrame: FRAME });
+  const end = () => { child.close(); runner.close(); };
+  t.after(end);
+  return { child, childSocket, end, folder: () => child.call("folder", "open", []) };
+}
+
+/** `ws` with every write it is asked counted: [path, bytes]. */
+const counted = (ws) => {
+  const writes = [];
+  const real = ws.write.bind(ws);
+  ws.write = async (path, data) => { writes.push([path, data.length]); return real(path, data); };
+  return { ws, writes };
+};
+
+test("a write bigger than the channel's frame lands byte for byte through the run's held Workspace, written once by the runner; a small one is one call", async (t) => {
+  const { work, ws: local } = await folders(t);
+  const { ws, writes } = counted(local);
+  const run = await bigRun(t, saveSlots(4), ws);
+  const handed = await run.folder();
+  assert.equal(handed.pieces.piece, PIECE, "the runner says the piece it pulls");
+  const remote = big.piecedWorkspace(handed.workspace, handed.pieces);
+  const bytes = randomBytes(3 * FRAME + 7);
+  await remote.write("media/big.bin", bytes);
+  assert.equal(Buffer.compare(readFileSync(join(work, "media", "big.bin")), bytes), 0, "byte for byte");
+  await remote.write("media/small.txt", "small");
+  assert.equal(readFileSync(join(work, "media", "small.txt"), "utf8"), "small");
+  assert.deepEqual(writes, [["media/big.bin", bytes.length], ["media/small.txt", 5]], "each file written once, the big one whole");
+  // Without the pieces the big write is one call, past the frame: what the run's process could not do before.
+  await assert.rejects(handed.workspace.write("media/again.bin", bytes), /past the channel's/);
+});
+
+test("a piece of another length than the runner asked is refused, and nothing is written; the gate is let go", async (t) => {
+  const { work, ws } = await folders(t);
+  const gate = saveSlots(4);
+  const run = await bigRun(t, gate, ws);
+  const { pieces } = await run.folder();
+  const size = 3 * PIECE;
+  for (const [what, pull] of [
+    ["short", async (offset, length) => new Uint8Array(offset === PIECE ? length - 1 : length)],
+    ["long", async (offset, length) => new Uint8Array(offset === PIECE ? length + 1 : length)],
+    ["not bytes", async (offset, length) => (offset === PIECE ? "x".repeat(length) : new Uint8Array(length))],
+  ]) {
+    await assert.rejects(pieces.write("media/bad.bin", size, pull), (error) => error.code === "REFUSED" && /the piece at 65536 of a write is .*not the 65536 asked for: nothing was written/.test(error.message), what);
+    assert.equal(existsSync(join(work, "media")), false, `${what}: nothing at the path, no temporary file`);
+    assert.deepEqual([gate.busy, gate.waiting], [0, 0], `${what}: the gate let go`);
+  }
+});
+
+test("a declared size over the cap is refused before anything is pulled or the gate is taken", async (t) => {
+  const { work, ws } = await folders(t);
+  const took = [];
+  const gate = { size: 4, busy: 0, waiting: 0, take: async () => { took.push("take"); return () => {}; } };
+  const run = await bigRun(t, gate, ws);
+  const { pieces } = await run.folder();
+  assert.equal(big.BIG_WRITE_MAX, SAVE_MAX_BYTES, "the cap is web_save's");
+  const pulled = [];
+  await assert.rejects(pieces.write("media/huge.bin", big.BIG_WRITE_MAX + 1, async (offset, length) => { pulled.push(offset); return new Uint8Array(length); }), (error) => error.code === "TOO_LARGE");
+  assert.deepEqual([pulled, took], [[], []], "nothing pulled, no slot taken");
+  assert.equal(existsSync(join(work, "media")), false);
+});
+
+test("the run's channel ending mid-transfer writes nothing and lets the gate go, its waiters too", async (t) => {
+  const { work, ws } = await folders(t);
+  const gate = saveSlots(1);
+  const run = await bigRun(t, gate, ws);
+  const { pieces } = await run.folder();
+  const pulled = [];
+  // The first piece comes, the second never does.
+  const stuck = (offset, length) => { pulled.push(offset); return offset === 0 ? Promise.resolve(new Uint8Array(length)) : new Promise(() => {}); };
+  const first = pieces.write("media/a.bin", 3 * PIECE, stuck);
+  const second = pieces.write("media/b.bin", 3 * PIECE, stuck);
+  first.catch(() => {});
+  second.catch(() => {});
+  await until(() => pulled.length === 2 && gate.waiting === 1, `one pulling, one waiting: ${pulled}, ${gate.waiting}`);
+  run.childSocket.destroy();
+  await until(() => gate.busy === 0 && gate.waiting === 0, `the run's end let go of the hold and the wait: ${gate.busy}, ${gate.waiting}`);
+  await assert.rejects(first);
+  await assert.rejects(second);
+  assert.equal(existsSync(join(work, "media")), false, "no file and no temporary one");
+});
+
+test("the runner's gate bounds big writes across runs, and the run's signal ends its own: a held one, aborted, writes nothing", async (t) => {
+  const { work, ws } = await folders(t);
+  const gate = saveSlots(2);
+  const [a, b] = [await bigRun(t, gate, ws), await bigRun(t, gate, ws)];
+  const [pa, pb] = [(await a.folder()).pieces, (await b.folder()).pieces];
+  const waiting = [];
+  /** A pull whose second piece waits until `go()`. */
+  const gated = () => {
+    let go;
+    const ready = new Promise((resolve) => (go = resolve));
+    return { go, pull: async (offset, length) => { if (offset > 0) { waiting.push(offset); await ready; } return new Uint8Array(length).fill(offset / PIECE + 1); } };
+  };
+  const [x, y, z] = [gated(), gated(), gated()];
+  const caller = new AbortController();
+  const wx = pa.write("media/x.bin", 2 * PIECE, x.pull, caller.signal);
+  const wy = pb.write("media/y.bin", 2 * PIECE, y.pull);
+  const wz = pb.write("media/z.bin", 2 * PIECE, z.pull);
+  wx.catch(() => {});
+  await until(() => gate.busy === 2 && gate.waiting === 1 && waiting.length === 2, `two held, one waits: ${gate.busy}, ${gate.waiting}, ${waiting}`);
+  caller.abort(new Error("the run stopped"));
+  await assert.rejects(wx, /the run stopped/);
+  await until(() => waiting.length === 3, "the waiter took the freed slot");
+  y.go();
+  z.go();
+  await Promise.all([wy, wz]);
+  assert.equal(existsSync(join(work, "media", "x.bin")), false, "the aborted write left nothing");
+  assert.deepEqual([...readFileSync(join(work, "media", "y.bin"))].slice(PIECE - 1, PIECE + 1), [1, 2], "the pieces in order");
+  assert.deepEqual([gate.busy, gate.waiting], [0, 0]);
+});
+
+test("one run may have at most BIG_WRITES_PER_RUN big writes held or waiting: the next is refused at once; a piece not answered in time fails its write", async (t) => {
+  const { work, ws } = await folders(t);
+  const gate = saveSlots(1);
+  const run = await bigRun(t, gate, ws, { pieceMs: 200 });
+  const { pieces } = await run.folder();
+  const never = () => new Promise(() => {});
+  const writes = Array.from({ length: big.BIG_WRITES_PER_RUN }, (_, i) => pieces.write(`media/${i}.bin`, 2 * PIECE, never));
+  for (const write of writes) write.catch(() => {});
+  await until(() => gate.busy === 1 && gate.waiting === big.BIG_WRITES_PER_RUN - 1, `1 held, the rest waiting: ${gate.busy}, ${gate.waiting}`);
+  await assert.rejects(pieces.write("media/over.bin", 2 * PIECE, never), /this run already has 8 big writes held or waiting/);
+  // The held one's piece never comes: it fails at the piece's deadline, and the next takes the slot, and so on.
+  await assert.rejects(writes[0], { name: "TimeoutError" });
+  await until(() => gate.waiting === big.BIG_WRITES_PER_RUN - 2, "the next waiter took the slot");
+  run.end();
+  await until(() => gate.busy === 0 && gate.waiting === 0, "the run's end let go of all of it");
+  assert.equal(existsSync(join(work, "media")), false);
 });
