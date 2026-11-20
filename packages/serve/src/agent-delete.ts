@@ -216,9 +216,13 @@ async function purgeOneOrRefuse(host: AgentDeleteHost, agentId: string, runId: s
     if (error instanceof RunsMadeFromLeft) throw notFinal(purged, error.runs);
     if (error instanceof StoreConstraint) throw notFinal(purged, [runId]);
     throw error;
+  } finally {
+    // Its answer and input as this process last served them, dropped whatever the purge answered: every route of it is 410
+    // once it committed, so none is read again. A purge can commit and still throw (its checkpoint held back and the
+    // scrub's marker not written, sqlite/store.ts #purged), and no later DELETE comes back here (purgeRun: a purged run is
+    // no work). One that did not commit loses a cache its next read fills again.
+    forgetServed(host.store, runId);
   }
-  // Its answer and input as this process last served them: every route of it is 410 from here, so none is read again.
-  forgetServed(host.store, runId);
 }
 
 /** Every run made from run `runId` that is there and not purged, each one's own before it (deepest first), never `runId`. */

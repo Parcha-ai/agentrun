@@ -10,12 +10,14 @@
 // not closed).
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
+import { purgeRun } from "../dist/agent-delete.js";
 import { openSqliteStore } from "../dist/store/index.js";
+import { forgetServed, viewOverStore } from "../dist/store-view.js";
 import { sqliteOnly } from "./store-target.mjs";
 import { follow, serve, startRun } from "./support.mjs";
 
@@ -187,4 +189,49 @@ test("a purge's checkpoint that a reader in another connection holds back waits 
   await within(Promise.all([purging, writing]), 30_000, "the purge, and a write queued behind its checkpoint");
   assert.equal((await store.runs.get("run-1")).purgedAt !== null, true, "the purge committed");
   assert.ok(await store.agents.get("other"), "the write is in");
+});
+
+test("a purge that commits, its checkpoint held back, and then cannot write the scrub's marker fails in words, and still drops what the process served of the run: its answer and input are in no in-process cache, and the next DELETE finds it purged", { ...sqliteOnly("the SQLite store's WAL checkpoint"), timeout: 120_000 }, async (t) => {
+  const word = `PURGE-SENTINEL-${randomBytes(6).toString("hex")}`;
+  const dir = mkdtempSync(join(tmpdir(), "purge-bytes-"));
+  let reader;
+  let store;
+  t.after(() => reader?.isOpen && reader.close());
+  t.after(() => store?.close());
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // A run with a launch the view reads back (its input, title and place), ended with an answer.
+  store = await openSqliteStore({ dataDir: dir });
+  await store.agents.create({ id: "agent-1", name: "agent-1" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: `Keep ${word} for run-1.` }, title: "Kept", place: { mode: "runner" } } });
+  const claim = await store.claim("run-1", "runner-test", { leaseMs: 30_000 });
+  assert.ok(claim, "run-1 is claimed");
+  await store.runs.update(claim, { state: "ended", outcome: "completed", costUsd: 0.01, summary: `It kept ${word}.`, endedAt: Date.now() });
+  // A read fills the view's answer and input slots; forgetServed says what it held, and the next read fills them again.
+  const deps = { origin: "", serverSecrets: () => [] };
+  const read = async () => assert.equal((await viewOverStore(store, "run-1", deps)).result.final_answer, `It kept ${word}.`);
+  await read();
+  assert.deepEqual(forgetServed(store, "run-1").slice(0, 2), ["answer run-1", "input run-1"], "a read keeps its answer and input");
+  await read();
+
+  // The checkpoint held back by a reader, and the marker's path a directory: the marker's write fails (EISDIR), as a
+  // full disk's would, after the purge committed.
+  reader = heldReader(dir);
+  const marker = join(dir, "store.sqlite.scrub");
+  mkdirSync(marker);
+  const host = {
+    store,
+    madeFrom: async () => [],
+    forgetCopies: async () => {},
+    forgetRun: async () => {},
+    kept: async () => KEPT,
+    turnOver: async () => false,
+    waitMs: 0,
+    pollMs: 20,
+  };
+  await assert.rejects(purgeRun(host, "run-1"), (error) => /^The purge committed, but its WAL checkpoint was held back and the scrub's marker could not be written \(EISDIR/.test(error.message), "the purge fails in words: a fault the server answers 500 and logs");
+  assert.notEqual((await store.runs.get("run-1")).purgedAt, null, "the purge committed");
+  assert.deepEqual(forgetServed(store, "run-1"), [], "nothing the process served of the run is kept: its answer and input went with the purge");
+  // The next DELETE: a purged run is no work (204).
+  assert.equal(await purgeRun(host, "run-1"), undefined, "the next DELETE finds it purged");
+  assert.deepEqual(forgetServed(store, "run-1"), [], "and nothing of it is kept after");
 });
