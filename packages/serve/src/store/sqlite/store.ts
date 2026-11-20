@@ -12,7 +12,7 @@ import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
-import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_RUN, DDL, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNNERS, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_ADDED, COMPUTER_INTERVALS_RUN, DDL, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNNERS, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
   AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, RunPurged, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -220,11 +220,11 @@ const settingOf = (r: SettingRecord): SettingRow => ({ key: r.key, value: JSON.p
 type SealedKeyRecord = { name: string; sealed: Uint8Array; updated_at: number };
 const sealedKeyOf = (r: SealedKeyRecord): SealedKeyRow => ({ name: r.name, sealed: Uint8Array.from(r.sealed), updatedAt: r.updated_at });
 type ComputerLedgerRecord = { provider: string; session_id: string; labels: string; detail: string; updated_at: number };
-type ComputerIntervalRecord = { run_id: string; provider: string; provider_id: string; kind: string | null; gpu_type: string | null; gpu_count: number | string | null; cpus: number | string | null; memory_mb: number | string | null; started_at: number | string; kept: number | string; ended_at: number | string | null };
+type ComputerIntervalRecord = { run_id: string; provider: string; provider_id: string; kind: string | null; gpu_type: string | null; gpu_count: number | string | null; cpus: number | string | null; memory_mb: number | string | null; disk_gb: number | string | null; started_at: number | string; kept: number | string; ended_at: number | string | null; booked_ms: number | string };
 const orNull = (value: number | string | null): number | null => (value === null ? null : Number(value));
 const intervalOf = (r: ComputerIntervalRecord): ComputerIntervalRow => ({
   runId: r.run_id, provider: r.provider, providerId: r.provider_id, kind: r.kind, gpuType: r.gpu_type, gpuCount: orNull(r.gpu_count), cpus: orNull(r.cpus),
-  memoryMb: orNull(r.memory_mb), startedAt: Number(r.started_at), kept: Number(r.kept) === 1, endedAt: orNull(r.ended_at),
+  memoryMb: orNull(r.memory_mb), diskGb: orNull(r.disk_gb), startedAt: Number(r.started_at), kept: Number(r.kept) === 1, endedAt: orNull(r.ended_at), bookedMs: Number(r.booked_ms),
 });
 const ledgerRowOf = (r: ComputerLedgerRecord): ComputerLedgerRow => ({ provider: r.provider, sessionId: r.session_id, labels: JSON.parse(r.labels), detail: JSON.parse(r.detail), updatedAt: r.updated_at });
 type ImportedTemplateRecord = { id: string; source: string; sha: string; publisher: string; files: string; imported_at: number };
@@ -433,6 +433,11 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         { sql: COMPUTER_INTERVALS_RUN },
         { sql: NATIVE_COMMANDS_INDEX },
       ], { full: true });
+      // A computer_intervals an earlier build of this version made has no disk or booked time (schema.ts
+      // COMPUTER_INTERVALS_ADDED): each column added where missing, its rows' disk unknown (null) and booked time none.
+      const intervalColumns = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('computer_intervals')")).map((column) => column.name));
+      const missing = Object.entries(COMPUTER_INTERVALS_ADDED).filter(([column]) => !intervalColumns.has(column)).map(([, sql]) => ({ sql }));
+      if (missing.length > 0) await connection.write(missing, { full: true });
       await backfillNativeCommandOwners(connection);
       if (found === 11) {
         const present = new Set((await connection.all<{ name: string }>("SELECT name FROM pragma_table_info('runs')")).map((column) => column.name));
@@ -1896,8 +1901,8 @@ class SqliteStore implements Store {
     this.computerIntervals = {
       opened: async (row) => {
         await db.write([{
-          sql: "INSERT INTO computer_intervals (provider, provider_id, run_id, kind, gpu_type, gpu_count, cpus, memory_mb, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (provider, provider_id) DO NOTHING",
-          params: [row.provider, row.providerId, row.runId, row.kind, row.gpuType, row.gpuCount, row.cpus, row.memoryMb, row.startedAt],
+          sql: "INSERT INTO computer_intervals (provider, provider_id, run_id, kind, gpu_type, gpu_count, cpus, memory_mb, disk_gb, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (provider, provider_id) DO NOTHING",
+          params: [row.provider, row.providerId, row.runId, row.kind, row.gpuType, row.gpuCount, row.cpus, row.memoryMb, row.diskGb, row.startedAt],
         }]);
       },
       kept: async (provider, providerId) => {
@@ -1906,8 +1911,12 @@ class SqliteStore implements Store {
       ended: async (provider, providerId, at) => {
         await db.write([{ sql: "UPDATE computer_intervals SET ended_at = ? WHERE provider = ? AND provider_id = ? AND ended_at IS NULL", params: [at, provider, providerId] }]);
       },
+      booked: async (provider, providerId, ms) => {
+        if (!Number.isSafeInteger(ms) || ms <= 0) return;
+        await db.write([{ sql: "UPDATE computer_intervals SET booked_ms = booked_ms + ? WHERE provider = ? AND provider_id = ?", params: [ms, provider, providerId] }]);
+      },
       forRun: async (runId) =>
-        (await db.all<ComputerIntervalRecord>("SELECT run_id, provider, provider_id, kind, gpu_type, gpu_count, cpus, memory_mb, started_at, kept, ended_at FROM computer_intervals WHERE run_id = ? ORDER BY started_at, provider, provider_id", runId)).map(intervalOf),
+        (await db.all<ComputerIntervalRecord>("SELECT run_id, provider, provider_id, kind, gpu_type, gpu_count, cpus, memory_mb, disk_gb, started_at, kept, ended_at, booked_ms FROM computer_intervals WHERE run_id = ? ORDER BY started_at, provider, provider_id", runId)).map(intervalOf),
     };
 
     const PAIRED = "SELECT id, name, hello, driver, labels, pairing_id, created_at, seen_at, revoked_at FROM paired_computers";

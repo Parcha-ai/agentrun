@@ -11,7 +11,12 @@ export function memoryIntervals({ fail = false } = {}) {
     rows,
     async opened(row) {
       refuse();
-      if (!rows.has(key(row.provider, row.providerId))) rows.set(key(row.provider, row.providerId), { ...row, kept: false, endedAt: null });
+      if (!rows.has(key(row.provider, row.providerId))) rows.set(key(row.provider, row.providerId), { ...row, kept: false, endedAt: null, bookedMs: 0 });
+    },
+    async booked(provider, providerId, ms) {
+      refuse();
+      const row = rows.get(key(provider, providerId));
+      if (row && Number.isSafeInteger(ms) && ms > 0) row.bookedMs += ms;
     },
     async kept(provider, providerId) {
       refuse();

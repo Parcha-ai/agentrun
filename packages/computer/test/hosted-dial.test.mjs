@@ -340,6 +340,27 @@ test("a machine that never dials is deleted, its token revoked, and create fails
 	assert.deepEqual(fake.live(), [], "the machine was deleted");
 });
 
+test("attachEgress: the machine is booted with AGENTRUN_ATTACH_EGRESS beside the five names, one that never dials fails naming the relay too, and a malformed one is refused at construction", async () => {
+	const { fake, provider } = setup({}, { attachEgress: "192.0.2.40:18443" });
+	const ref = made(await create(provider));
+	const { env } = fake.calls.find(([what]) => what === "create")[1].boot;
+	assert.deepEqual(Object.keys(env).sort(), ["AGENTRUN_ATTACH_EGRESS", "AGENTRUN_ATTACH_TOKEN", "AGENTRUN_ATTACH_URL", "AGENTRUN_DAEMON_SHA256", "AGENTRUN_DAEMON_URL", "AGENTRUN_INIT_ARGS"]);
+	assert.equal(env.AGENTRUN_ATTACH_EGRESS, "192.0.2.40:18443");
+	assert.equal(env.AGENTRUN_ATTACH_URL, "ws://127.0.0.1:8080/v2/computers/attach", "the address dialed by name is the public one still");
+	made(await provider.release(ref, "delete"));
+
+	const silent = setup({ dials: false }, { attachEgress: "192.0.2.40:18443" });
+	const failed = await create(silent.provider);
+	assert.equal(failed.error?.code, "timeout");
+	assert.match(failed.error.message, /did not dial ws:\/\/127\.0\.0\.1:8080\/v2\/computers\/attach through 192\.0\.2\.40:18443 within 1 s/);
+	assert.deepEqual(silent.fake.live(), []);
+
+	const empty = setup({}, { attachEgress: "" });
+	made(await create(empty.provider));
+	assert.equal("AGENTRUN_ATTACH_EGRESS" in empty.fake.calls.find(([what]) => what === "create")[1].boot.env, false, "an empty egress is none");
+	assert.throws(() => setup({}, { attachEgress: "relay.example:18443" }), /the attach egress is <IPv4 relay>:<port>, such as 192\.0\.2\.40:18443, a port from 1 to 65535; not "relay\.example:18443"/);
+});
+
 test("a machine whose daemon's sha256 is not the server's never dials, and create fails", async () => {
 	const { fake, provider } = setup({ daemon: Buffer.from("another build") });
 	const failed = await create(provider);

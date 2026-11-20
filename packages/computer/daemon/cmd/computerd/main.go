@@ -51,7 +51,9 @@
 //	                    init's socket is gone, 2 with no URL or token or a malformed one, 3 when the server refuses the
 //	                    token (401 at the upgrade, or 4401), 4 when its hello is not what the token was minted for
 //	                    (4400), 5 for another protocol version or a hello its kind does not serve (426, or 4426). No
-//	                    line it logs holds the token
+//	                    line it logs holds the token. With AGENTRUN_ATTACH_EGRESS (<IPv4>:<port>, the operator's relay),
+//	                    each dial opens TCP to the relay and speaks TLS and HTTP to the URL's host over it as it would
+//	                    directly; a malformed one exits 2
 //	computerd probe [--sockets] [--connect <host:port>[/udp]]...
 //	                    print one JSON line: this process's uid and gid, the kernel's release, the network interfaces
 //	                    it sees (interfaces, live; quiet; raised), with --sockets the unix sockets it can connect to

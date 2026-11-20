@@ -893,6 +893,33 @@ test('a pull request that moves the Python client\'s version is refused; one tha
   assert.equal(local().status, 0, local().stderr);
 }));
 
+test('a pull request whose recorded base predates a release merged since is checked from that release, not read as the release', () => repo(async (root, git) => {
+  await withVersion(root, git);
+  await pythonClient(root, git, '0.3.0');
+  await git('tag', 'v0.1.0-beta.13');
+  // The pull request opens here; CI keeps this as its base however far the branch moves.
+  const opened = (await git('rev-parse', 'HEAD')).stdout.trim();
+  // The release merges: it bumps the workspace and the client and is tagged.
+  await bump(root, '0.1.0-beta.14');
+  await setPythonVersion(root, '0.3.1');
+  await commitAll(git, 'release: 0.1.0-beta.14');
+  await git('tag', 'v0.1.0-beta.14');
+  // CI checks the pull request merged onto that tip: it regenerated the client and added a fragment, no version moved.
+  await writeFile(join(root, 'python/agentrun/_client.py'), 'START = 2\n');
+  await writeFile(join(root, 'changes/purge.md'), fragment('repo', 'fix', 'Purge.'));
+  await mkdir(join(root, 'scripts'));
+  await copyScript(root);
+  await commitAll(git, 'the pull request merged onto the tip');
+  const local = () => spawnSync(process.execPath, [join(root, 'scripts/changes.mjs'), '--check', '--base', opened], { cwd: root, encoding: 'utf8' });
+  const passed = local();
+  assert.equal(passed.status, 0, `the release's bumps are not the pull request's: ${passed.stderr}`);
+  // Checked from the release, a version the pull request itself moves is still refused, named from the release's.
+  await setPythonVersion(root, '0.3.2');
+  const moved = local();
+  assert.equal(moved.status, 1);
+  assert.match(moved.stderr, /python moved its version from 0\.3\.1 to 0\.3\.2/);
+}));
+
 test('a client change merged in an earlier pull request is still stale at the release that keeps its version: against the last release tag, not the release pull request\'s base', () => repo(async (root, git) => {
   await withVersion(root, git);
   await pythonClient(root, git, '0.3.0');

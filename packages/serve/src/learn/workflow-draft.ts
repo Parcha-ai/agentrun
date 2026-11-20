@@ -467,7 +467,10 @@ function synthesized(schema: unknown, definitions: Readonly<Record<string, unkno
 /** What the DSL's synthesizeInstance would build of `schema` over `definitions`, counted without building it. */
 export const synthesizedSize = (schema: unknown, definitions: Readonly<Record<string, unknown>> = {}): Synthesized => synthesized(schema, definitions, 0, new Map());
 
-const isRecord = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+/** A JSON object (no array, no null). */
+export const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+/** A workflow node: an object naming its `node` kind. */
+export const isNode = (value: unknown): value is Record<string, unknown> => isObject(value) && typeof value.node === "string";
 
 /** The nodes directly inside `node`, as the DSL reads them (recovery/execution-path.ts childrenOf): a chain's steps, a
  *  parallel's branches, a map's or a loop's body, a route's branch bodies. A composed workflow node's child is a
@@ -478,7 +481,7 @@ export function childNodes(node: Record<string, unknown>): unknown[] {
     case "chain": return Array.isArray(node.steps) ? node.steps : [];
     case "parallel": return Array.isArray(node.branches) ? node.branches : [];
     case "map": case "loop": return [node.body];
-    case "route": return isRecord(node.branches) ? Object.values(node.branches).map((branch) => (isRecord(branch) ? branch.body : undefined)) : [];
+    case "route": return isObject(node.branches) ? Object.values(node.branches).map((branch) => (isObject(branch) ? branch.body : undefined)) : [];
     default: return [];
   }
 }
@@ -487,13 +490,13 @@ export function childNodes(node: Record<string, unknown>): unknown[] {
  *  around it (their maxIters multiplied), and each node of it at a node position with the loops around that node. */
 function eachWorkflow(doc: unknown, visit: { workflow?: (workflow: Record<string, unknown>) => void; node?: (node: Record<string, unknown>, around: number) => number }): void {
   const walkNode = (value: unknown, around: number): void => {
-    if (!isRecord(value)) return;
+    if (!isObject(value)) return;
     const within = visit.node ? visit.node(value, around) : around;
     if (value.node === "workflow") return walkWorkflow(value.workflow, within);
     for (const child of childNodes(value)) walkNode(child, within);
   };
   const walkWorkflow = (value: unknown, around: number): void => {
-    if (!isRecord(value)) return;
+    if (!isObject(value)) return;
     visit.workflow?.(value);
     walkNode(value.root, around);
   };
@@ -515,10 +518,10 @@ const SCHEMA_ONES = ["items", "additionalItems", "additionalProperties", "contai
 
 /** Each schema in `schema`, itself first, at schema positions only (each once). */
 function eachSchema(schema: unknown, visit: (spec: Record<string, unknown>) => void, seen = new Set<unknown>()): void {
-  if (!isRecord(schema) || seen.has(schema)) return;
+  if (!isObject(schema) || seen.has(schema)) return;
   seen.add(schema);
   visit(schema);
-  for (const key of SCHEMA_MAPS) if (isRecord(schema[key])) for (const sub of Object.values(schema[key] as Record<string, unknown>)) eachSchema(sub, visit, seen);
+  for (const key of SCHEMA_MAPS) if (isObject(schema[key])) for (const sub of Object.values(schema[key] as Record<string, unknown>)) eachSchema(sub, visit, seen);
   for (const key of SCHEMA_LISTS) if (Array.isArray(schema[key])) for (const sub of schema[key] as unknown[]) eachSchema(sub, visit, seen);
   for (const key of SCHEMA_ONES) for (const sub of Array.isArray(schema[key]) ? (schema[key] as unknown[]) : [schema[key]]) eachSchema(sub, visit, seen);
 }
@@ -614,7 +617,7 @@ function shapeOf(schema: unknown, depth = 0): unknown {
     if (VALUE_KEYWORDS.has(key)) continue;
     if (key === "oneOf") oneOf = shapeOf(value, depth + 1);
     else if (key === "type") out.type = Array.isArray(value) ? [...new Set(value.map((one) => (one === "integer" ? "number" : one)))] : value === "integer" ? "number" : value;
-    else if (MAP_KEYWORDS.has(key) && isRecord(value)) out[key] = Object.fromEntries(Object.entries(value).map(([name, sub]) => [name, shapeOf(sub, depth + 1)]));
+    else if (MAP_KEYWORDS.has(key) && isObject(value)) out[key] = Object.fromEntries(Object.entries(value).map(([name, sub]) => [name, shapeOf(sub, depth + 1)]));
     else if (SUB_KEYWORDS.has(key)) out[key] = shapeOf(value, depth + 1);
     else out[key] = value;
   }

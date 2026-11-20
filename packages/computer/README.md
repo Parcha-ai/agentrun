@@ -452,7 +452,7 @@ in the kernel's tool registry, keyed by these groups.
   | id | label | kinds | keys (required unless marked) | mounts | metered |
   | --- | --- | --- | --- | --- | --- |
   | docker | Docker | sandbox, desktop | none | bind | no |
-  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS` (optional) | none (`unmounted`: archil); archil with `DAYTONA_ARCHIL_EGRESS` (`mountsWith`) | yes |
+  | daytona | Daytona | sandbox | `DAYTONA_API_KEY`; `DAYTONA_API_URL`, `DAYTONA_TARGET`, `DAYTONA_ARCHIL_EGRESS`, `DAYTONA_ATTACH_EGRESS` (optional) | none (`unmounted`: archil); archil with `DAYTONA_ARCHIL_EGRESS` (`mountsWith`) | yes |
   | modal | Modal | sandbox | `MODAL_TOKEN_ID`, `MODAL_TOKEN_SECRET` | archil | yes |
   | e2b | E2B | sandbox, desktop | `E2B_API_KEY` | archil | yes |
   | orgo | Orgo | desktop (Linux; Windows and macOS with `os`) | `ORGO_API_KEY` | none | yes |
@@ -1582,6 +1582,11 @@ the TTL.
   own namespace (`agentrun.computer`), `cpus`, `memoryMb` or `pids` (a snapshot's size is its own), `user`, `workdir`
   (the daemon works in `/work`), a GPU computer's snapshot other than the GPU snapshot or `"default"`, and any other
   field.
+- What the computer was given is the sandbox's own: `create` answers `resources` (`CreatedComputer.resources`) with
+  the `cpu`, `memory` (GiB, as `memoryMb`), `disk` (GiB, as `diskGb`) and GPUs (`gpu` and `gpuType`) Daytona's read of
+  the running sandbox says, each only where it says it. These are the figures Daytona bills by, and a host prices
+  computer time by them (serve's `AGENTRUN_COMPUTE_USD_PER_*` settings). E2B's create answers its `getInfo`'s `cpuCount`
+  and `memoryMB` the same way, and Fly's its machine guest's `cpus` and `memory_mb`; any other provider answers none.
 - `create(spec, { requestId })` names the computer `computer-<12 hex digits of sha256(requestId)>` and lists that name
   first: a retry of the same request finds the computer the first one made (the adapter's idempotent create,
   [PROVIDERS.md](PROVIDERS.md)). It sends `POST /sandbox` with that name, the snapshot (none for `"default"`), the
@@ -1708,14 +1713,19 @@ What each part of a dial sandbox rests on:
   ([api snapshot.service.ts:883-901](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/api/src/sandbox/services/snapshot.service.ts#L883-L901)),
   so `box/build-daytona.py` names the Dockerfile's CMD as the snapshot's `entrypoint`. The box snapshots it built
   before, `agentrun-archil-<recipe hash>`, have none and never dial, so the snapshot it builds now has a name of its
-  own, `agentrun-box-<recipe hash>`, which no snapshot without the entrypoint holds. (The Dockerfile's comment that Daytona runs its
-  CMD is wrong; it stays until the recipe next changes, since editing it changes the hash.)
+  own, `agentrun-box-<recipe hash>`, which no snapshot without the entrypoint holds.
 - **Outbound https, by tier.** Tier 1 and 2 organizations reach "essential services" alone, and those leave out shared
   hosting domains; Tier 3 and 4 have full access
   ([docs: tier-based network restrictions](https://www.daytona.io/docs/en/network-limits.md#tier-based-network-restrictions)).
   A server on such a domain (`*.onrender.com`) is out of a Tier 1 or 2 sandbox's reach unless Daytona adds that exact
   host to the list ([docs: essential services](https://www.daytona.io/docs/en/network-limits.md#essential-services)).
   **Unverified**: our organization's tier, and a dial from it.
+- **A target that reaches listed addresses alone: `attachEgress`.** A self-hosted target whose runners drop every
+  sandbox connection outside an allow list never reaches a public server. Give the operator's relay on that list as
+  `attachEgress` (`DAYTONA_ATTACH_EGRESS` in Settings), `<IPv4 relay>:<port>`, checked at construction: create puts it
+  in the boot env as `AGENTRUN_ATTACH_EGRESS`, and `agentrun-dial`'s daemon fetch (curl `--connect-to`) and
+  `computerd attach` both open TCP to it and speak TLS and HTTP to the public host through it, so the SNI, the
+  certificate checked and `Host` stay the public host's and TLS is end to end. Unset, nothing changes.
 - **No GPU on dial**, refused in words: `daytona-gpu` holds no `agentrun-dial`, and Daytona runs a GPU sandbox
   unprivileged (`Privileged: gpuIndex == nil`,
   [runner container_configs.go:205](https://github.com/daytonaio/daytona/blob/b5a5d9e7/apps/runner/pkg/docker/container_configs.go#L205)),

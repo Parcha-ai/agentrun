@@ -25,7 +25,7 @@ import { type LearningDiff, type RunLearningResultData, learningSteps } from "@/
 import { isEscalated, type MessageFeatures, type RunView, runState } from "@/lib/runState";
 import { cn } from "@/lib/utils";
 import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
-import { latest, NO_ANSWER, pendingQuestion } from "@/lib/viewing";
+import { isMedia, latest, NO_ANSWER, pendingQuestion, viewKind } from "@/lib/viewing";
 import type { ComputerHoldAnswer, Computers, GradeAnswer, GradeBody, HandBackOutcome, Run, RunComputer, RunFile, RunLearningRead, RunTrace as RunTraceData, RunUsage, TimelineRow } from "@/lib/v2";
 
 export type RunDetailProps = {
@@ -160,6 +160,8 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   const reads = useRef(latest()).current;
   const show = async (file: RunFile) => {
     const token = reads.begin();
+    // An image, a video or a sound shows from its file URL: it is never read as text.
+    if (fileUrl && isMedia(viewKind(file))) return setOpen({ file, text: "" });
     setOpen({ file, text: null });
     if (!readFile) return;
     const text = await readFile(file);
@@ -306,7 +308,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
       {view.canMessage && (
         <div className="border-t px-5 py-4 md:px-8"><div className="mx-auto max-w-4xl"><Composer mode={view.messageMode!} onSend={onMessage} purpose={approval ? DECLINES : ask && askMode ? NOT_THE_ASK[askMode] : undefined} /></div></div>
       )}
-      {open && <ArtifactViewer file={open.file} text={open.text} onClose={close} files={files} onOpen={show} />}
+      {open && <ArtifactViewer file={open.file} text={open.text} onClose={close} files={files} onOpen={show} src={fileUrl?.(open.file.path)} />}
     </div>
   );
 }

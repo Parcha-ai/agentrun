@@ -1258,9 +1258,13 @@ export interface ComputerIntervalRow {
   readonly gpuCount: number | null;
   readonly cpus: number | null;
   readonly memoryMb: number | null;
+  /** Its disk in GB, where its provider said it; null else. */
+  readonly diskGb: number | null;
   readonly startedAt: number;
   readonly kept: boolean;
   readonly endedAt: number | null;
+  /** How much of its time a claim of its run booked on the run's ledger (compute-cost.ts), in ms; 0 for none. */
+  readonly bookedMs: number;
 }
 
 /** Each computer a run made, from its create to its proven delete: how long it lived for its run, and one left running
@@ -1268,12 +1272,15 @@ export interface ComputerIntervalRow {
 export interface ComputerIntervals {
   /** The computer's row, made: a second call for the same provider and id changes nothing (a retried create answers the
    *  computer it made). */
-  opened(row: Omit<ComputerIntervalRow, "kept" | "endedAt">): Promise<void>;
+  opened(row: Omit<ComputerIntervalRow, "kept" | "endedAt" | "bookedMs">): Promise<void>;
   /** The computer was kept past its claim (the run's park). */
   kept(provider: string, providerId: string): Promise<void>;
   /** The provider's delete of the computer answered ok at `at`: its end, written only while none is (a later delete of
    *  one already ended never moves it). A computer with no row is left without one. */
   ended(provider: string, providerId: string, at: number): Promise<void>;
+  /** A claim booked `ms` more of the computer's time on its run's ledger: added to its booked time (a figure that is not
+   *  a whole number of ms above 0 adds nothing). A computer with no row is left without one. */
+  booked(provider: string, providerId: string, ms: number): Promise<void>;
   /** The run's computers, by when each was made. */
   forRun(runId: string): Promise<ComputerIntervalRow[]>;
 }

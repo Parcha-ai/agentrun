@@ -83,7 +83,8 @@ create an account or sign in. For help setting up your team's workflows,
 
 Prefer your own machine or infrastructure? Have your coding agent set it up below, or
 [self-host on Railway, Render, a VPS, Kubernetes, Coolify, Dokploy or Docker](#deploy-it) yourself. The
-[getting-started guide](docs/getting-started.md) explains the three options.
+[getting-started guide](docs/getting-started.md) explains the three options. Wherever it runs, AgentRun counts itself
+anonymously; `AGENTRUN_TELEMETRY=0` or `DO_NOT_TRACK=1` turns that off ([anonymous usage counts](docs/telemetry.md)).
 
 <a id="start-in-three-steps"></a>
 <a id="run-locally-in-three-steps"></a>

@@ -160,6 +160,61 @@ test("one model reached two ways is two lines, each with its own route's provide
   assert.deepEqual(lines.map((one) => [one.model, one.provider, one.usd]), [[null, "openrouter", 0.0001], ["openai/gpt-6.1-mini", null, 0.001], ["openai/gpt-6.1-mini", "openrouter", 0.0002]]);
 });
 
+test("a decision Parallel answered on its own API is a paid call on Parallel's tools line, beside its web search; one sent through OpenRouter stays a model's tokens; the lines still join to the run's cost", async () => {
+  const { runCostOf } = await import("../dist/runner/metrics.js");
+  const entries = [
+    ...keys(),
+    ...reported(7, 1, "m", 0.01, usage(100, 10)),
+    ...paid(1, "Parallel's search", "parallel", 0.001),
+    ...decision(1, "d1", 0.001),
+    ...decision(2, "d2", 0.001),
+    ...decision(3, "d3", 0.00003),
+    ...decision(4, "d4", 0.0012),
+  ];
+  const receipts = new Map([
+    // Parallel's API: its list price, an estimate (@parcha/agentrun-decisions parallelProvider).
+    ["d1", { model: "parallel-fast", provider: "parallel", cost_basis: "estimate", usage: { input_tokens: 120, output_tokens: 0 } }],
+    ["d2", { model: "parallel-fast", provider: "parallel", cost_basis: "estimate" }],
+    ["d3", { model: "jev-1.14.0", provider: "jev", cost_basis: "reported" }],
+    // The same provider through OpenRouter: the cost OpenRouter reported, OpenRouter's to charge.
+    ["d4", { model: "parallel/decisions-fast", provider: "parallel", cost_basis: "reported" }],
+  ]);
+  const { lines, total } = usageLinesOf(entries, undefined, receipts);
+  assert.deepEqual(lines.map((one) => `${one.meter}/${nameOf(one)}`), ["tokens/jev-1.14.0", "tokens/m", "tokens/parallel/decisions-fast", "tools/parallel"]);
+  // The search's $0.001 and the two decisions' $0.001 each.
+  assert.deepEqual(line(lines, "tools", "parallel"), { meter: "tools", model: null, provider: "parallel", charged_by: "parallel", quantity: 3, unit: "call", basis: "estimate", usd: 0.003 });
+  assert.equal(line(lines, "tokens", "parallel/decisions-fast").usd, 0.0012, "OpenRouter's route is a model's cost");
+  // 0.01 + 0.001 + 0.001 + 0.001 + 0.00003 + 0.0012
+  assert.deepEqual(total, { usd: 0.01423 }, "nothing counted twice");
+  assert.equal(micro(lines.reduce((sum, one) => sum + one.usd, 0)), micro(total.usd), "the lines sum to it");
+  assert.equal(micro(runCostOf(entries).usd), micro(total.usd), "and it is the run's cost");
+});
+
+test("a Parallel decision of unknown cost (sent, its answer lost) makes Parallel's tools line unknown, its known charges beside it", () => {
+  const entries = [...keys(), ...paid(1, "Parallel's search", "parallel", 0.001), e(8, "runner.request", { turn: 1, model: "decision:d1" }), e(8, "runner.turn", { turn: 1, usd: null, rule: "answered" })];
+  const receipts = new Map([["d1", { model: "parallel-fast", provider: "parallel", cost_basis: "estimate" }]]);
+  const { lines, total } = usageLinesOf(entries, undefined, receipts);
+  assert.deepEqual(lines.map((one) => [one.meter, nameOf(one), one.quantity, one.usd, one.so_far_usd, one.unpriced]), [["tools", "parallel", 2, null, 0.001, 1]]);
+  assert.deepEqual(total, { usd: null, so_far_usd: 0.001, unpriced: 1 });
+});
+
+test("bookedDecisionsOf: the decisions named, at what each was booked, every other decision and request left out", async () => {
+  const { bookedDecisionsOf } = await import("../dist/runner/metrics.js");
+  const entries = [...keys(), ...reported(7, 1, "m", 0.01, usage(100, 10)), ...paid(1, "x", "parallel", 0.001), ...decision(1, "d1", 0.001), ...decision(2, "d2", 0.00003)];
+  const charged = bookedDecisionsOf(entries, new Set(["d1"]));
+  assert.deepEqual([charged.requests, charged.usd], [1, 0.001]);
+  assert.deepEqual([bookedDecisionsOf(entries, new Set()).requests, bookedDecisionsOf(entries, new Set()).usd], [0, 0]);
+});
+
+test("chargedByParallel: Parallel's own API at its list price is Parallel's charge; its model through OpenRouter, and any other provider, is not", async () => {
+  const { chargedByParallel, parallelChargedDecisions } = await import("../dist/store-reads/decisions.js");
+  assert.equal(chargedByParallel({ provider: "parallel", cost_basis: "estimate" }), true);
+  assert.equal(chargedByParallel({ provider: "parallel", cost_basis: "reported" }), false, "OpenRouter's route reports its cost");
+  assert.equal(chargedByParallel({ provider: "parallel", cost_basis: "unknown" }), false);
+  assert.equal(chargedByParallel({ provider: "jev", cost_basis: "estimate" }), false);
+  assert.deepEqual([...parallelChargedDecisions([{ decision_id: "a", provider: "parallel", cost_basis: "estimate" }, { id: "b", provider: "parallel", cost_basis: "estimate" }, { decision_id: "c", provider: "openrouter", cost_basis: "reported" }])], ["a", "b"]);
+});
+
 /** A store over `run` and its journal (`entries`, `submissions`), each read inside its snapshot only: a read of the store
  *  outside it throws, and `reads` says what was read inside. */
 function snapshotStore(run, { entries = [], submissions = [], launch, rounds = 0, intervals = [] } = {}) {
@@ -263,23 +318,64 @@ test("served, a browser session's words are cut of the server's secrets too: its
 });
 
 /** A computer interval row as the store reads it (store.computerIntervals.forRun), its times on the test's clock. */
-const interval = (providerId, extra = {}) => ({ runId: "run_1", provider: "e2b", providerId, kind: "sandbox", gpuType: null, gpuCount: null, cpus: null, memoryMb: null, startedAt: ENDED - 600_000, kept: false, endedAt: null, ...extra });
+const interval = (providerId, extra = {}) => ({ runId: "run_1", provider: "e2b", providerId, kind: "sandbox", gpuType: null, gpuCount: null, cpus: null, memoryMb: null, diskGb: null, startedAt: ENDED - 600_000, kept: false, endedAt: null, bookedMs: 0, ...extra });
 
-test("an ended run's computers are served beside its lines, in the store's order, each time as ISO and its machine facts null where its create asked none; none is no line and leaves total alone", async () => {
+test("an ended run's computers are served beside its lines, in the store's order, each time as ISO and its machine facts null where nothing said them; its unpriced time is a compute line with no figure, and leaves total alone", async () => {
   const { runUsageOverStore } = await import("../dist/run-usage.js");
   const intervals = [
-    interval("gpu-1", { provider: "daytona", gpuType: "H100", gpuCount: 1, cpus: 4, memoryMb: 8192, startedAt: ENDED - 900_000, endedAt: ENDED - 60_000 }),
+    interval("gpu-1", { provider: "daytona", gpuType: "H100", gpuCount: 1, cpus: 4, memoryMb: 8192, diskGb: 10, startedAt: ENDED - 900_000, endedAt: ENDED - 60_000 }),
     interval("sbx-2", { kind: "desktop", kept: true }),
   ];
   const { store } = snapshotStore(ended(), { entries: [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1))], intervals });
   const read = await runUsageOverStore(store, "run_1");
   assert.deepEqual(read.computer_intervals, [
-    { provider: "daytona", provider_id: "gpu-1", kind: "sandbox", gpu: { type: "H100", count: 1 }, cpus: 4, memory_mb: 8192, started_at: "2026-11-19T09:45:00.000Z", ended_at: "2026-11-19T09:59:00.000Z", kept: false },
-    { provider: "e2b", provider_id: "sbx-2", kind: "desktop", gpu: null, cpus: null, memory_mb: null, started_at: "2026-11-19T09:50:00.000Z", ended_at: null, kept: true },
+    { provider: "daytona", provider_id: "gpu-1", kind: "sandbox", gpu: { type: "H100", count: 1 }, cpus: 4, memory_mb: 8192, disk_gb: 10, started_at: "2026-11-19T09:45:00.000Z", ended_at: "2026-11-19T09:59:00.000Z", kept: false, booked_seconds: 0 },
+    { provider: "e2b", provider_id: "sbx-2", kind: "desktop", gpu: null, cpus: null, memory_mb: null, disk_gb: null, started_at: "2026-11-19T09:50:00.000Z", ended_at: null, kept: true, booked_seconds: 0 },
   ]);
-  // Computer time is not priced: no line for it, and the total is the model request's alone.
-  assert.deepEqual(read.lines.map((one) => one.meter), ["tokens"]);
-  assert.deepEqual(read.total, { usd: 0.01 });
+  // No price is set and no claim booked any of it: every compute line is unpriced (usd null), all of its time unheld, and
+  // the total is the run's booked cost, the model request's alone. gpu-1 lived 840 s: 4 vCPUs are 3,360 vCPU-seconds, 8 GiB
+  // 6,720 GiB-seconds, one H100 840 GPU-seconds, 10 GB of disk 10 × 840 / 2,628,000 GB-months. sbx-2 said no figure.
+  const compute = read.lines.filter((one) => one.meter === "compute_time").map(({ measured_to, ...one }) => one);
+  const line = (provider, resource, gpu_type, quantity, unit, open = 0) => ({ meter: "compute_time", model: null, provider, charged_by: provider, quantity, unit, basis: "unpriced", usd: null, resource, gpu_type, unheld_quantity: quantity, open_computers: open });
+  assert.deepEqual(compute, [
+    line("daytona", "vcpu", null, 3360, "vcpu_second"),
+    line("daytona", "memory", null, 6720, "gib_second"),
+    line("daytona", "gpu", "H100", 840, "gpu_second"),
+    line("daytona", "disk", null, Math.round((10 * 840 / 2_628_000) * 1e6) / 1e6, "gb_month"),
+    line("e2b", "vcpu", null, null, "vcpu_second", 1),
+    line("e2b", "memory", null, null, "gib_second", 1),
+  ]);
+  assert.equal(read.lines[0].meter, "tokens");
+  assert.deepEqual(read.total, { usd: 0.01 }, "the run's booked cost: unpriced time is in no total");
+});
+
+test("a compute line's money is what the run's ledger booked for its provider and resource, so total stays the run's booked cost; the time no claim held is said apart", async () => {
+  const { usageLinesOf } = await import("../dist/run-usage.js");
+  // A sandbox with 2 vCPUs and 4 GiB lived 1,000 s; a claim booked 600 s of it (the rest it was kept for a follow-up).
+  // At $0.00001 a vCPU-second and $0.000002 a GiB-second, 600 s booked $0.012 of vCPU and $0.0048 of memory.
+  const rows = [interval("sbx-1", { cpus: 2, memoryMb: 4096, startedAt: ENDED - 1_000_000, endedAt: ENDED, kept: true, bookedMs: 600_000 })];
+  const computeStep = (turn, tag, usd) => paid(turn, "compute", "e2b", usd, { tool: "compute", tag, owed: true });
+  // A stretch's hold, given back: it names no resource and books nothing.
+  const hold = [e(9, "runner.request", { turn: 9, model: "paid:hold", paid: true, charged_by: "e2b", tool: "compute", hold: true }), e(9, "runner.turn", { turn: 9, usd: 0, givenBack: true, rule: "answered" })];
+  const entries = [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1)), ...computeStep(1, "vcpu", 0.012), ...computeStep(2, "memory", 0.0048), ...hold];
+  const { lines, total } = usageLinesOf(entries, undefined, new Map(), { rows, at: ENDED });
+  const compute = lines.filter((one) => one.meter === "compute_time");
+  assert.deepEqual(compute.map((one) => [one.resource, one.quantity, one.unit, one.basis, one.usd, one.unheld_quantity, one.open_computers]), [
+    ["vcpu", 2000, "vcpu_second", "estimate", 0.012, 800, 0],
+    ["memory", 4000, "gib_second", "estimate", 0.0048, 1600, 0],
+  ]);
+  assert.deepEqual(lines.filter((one) => one.meter === "tools"), [], "a computer's bookings are not tool calls");
+  assert.deepEqual(total, { usd: 0.0268 }, "the model's $0.01 and the $0.0168 booked for the computer: the lines' sum");
+});
+
+test("a computer still open is counted up to the read, and says so; a provider that bills nothing is $0, never unpriced", async () => {
+  const { usageLinesOf } = await import("../dist/run-usage.js");
+  const rows = [interval("box-1", { provider: "docker", cpus: 1, memoryMb: 1024, startedAt: ENDED - 60_000 })];
+  const { lines } = usageLinesOf([...keys()], undefined, new Map(), { rows, at: ENDED });
+  assert.deepEqual(lines.map((one) => [one.resource, one.quantity, one.basis, one.usd, one.open_computers, one.measured_to]), [
+    ["vcpu", 60, "estimate", 0, 1, new Date(ENDED).toISOString()],
+    ["memory", 60, "estimate", 0, 1, new Date(ENDED).toISOString()],
+  ]);
 });
 
 test("a run that made no computer reads [] for its computers; a run with no lines reads null, as its browser sessions do", async () => {
