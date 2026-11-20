@@ -31,3 +31,18 @@ export function cutKeyEndAtHead(text: string, keys: readonly string[]): string {
   }
   return text.slice(drop);
 }
+
+/** `text` without the start of a key at its end: the longest piece that starts one of `keys` and ends the text goes (a
+ *  key still being written, read mid-run, matches no key either). */
+export function cutKeyEndAtTail(text: string, keys: readonly string[]): string {
+  let drop = 0;
+  for (const key of keys) {
+    for (let n = Math.min(key.length - 1, text.length); n > drop; n--) {
+      if (text.endsWith(key.slice(0, n))) {
+        drop = n;
+        break;
+      }
+    }
+  }
+  return text.slice(0, text.length - drop);
+}
