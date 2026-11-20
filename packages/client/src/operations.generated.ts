@@ -2557,6 +2557,7 @@ export type ListComputersResponse = {
       required: Array<string>;
       ready: boolean;
       runs_refused: string | null;
+      folder: "bind" | "archil" | "sync" | null;
       shell: "computer" | "local" | "none";
       host_tools: Array<string>;
       why?: string;
@@ -2750,6 +2751,7 @@ export type SaveComputerKeysResponse = {
   required: Array<string>;
   ready: boolean;
   runs_refused: string | null;
+  folder: "bind" | "archil" | "sync" | null;
   shell: "computer" | "local" | "none";
   host_tools: Array<string>;
   why?: string;

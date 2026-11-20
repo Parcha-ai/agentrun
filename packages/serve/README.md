@@ -939,7 +939,10 @@ passes the binding's conformance cases (below) needs no change here.
   relay, save the relay's address as `DAYTONA_ARCHIL_EGRESS` (Settings → Computers, beside `DAYTONA_API_KEY`) and name
   a snapshot of `box/Dockerfile` in `AGENTRUN_DAYTONA_SNAPSHOT` (below): the Daytona sandbox then mounts the run's
   folder and is ready. With the relay but no snapshot named, it is refused, saying to name one. A boxd sandbox takes no
-  mount yet, so it is refused in both modes; a boxd desktop runs in either.
+  mount yet, so it is refused in both modes; a boxd desktop runs in either. Which folder a provider's computer holds on
+  this server now is on its row in `GET /v2/computers`, by the rule a run's claim picks it by: `folder` is `archil`
+  (mounted from the disk), `sync` (a synced folder the runner keeps on the disk), `bind` (Mode 1's folder of this
+  machine) or null (none).
 
   The PUT is a secret write, so it takes the owner's signed-in session. A server with none to give it (API only, or
   `AGENTRUN_ACCOUNTS=0` reached beyond loopback) is set where it is started instead: `AGENTRUN_ARCHIL_REGION` and

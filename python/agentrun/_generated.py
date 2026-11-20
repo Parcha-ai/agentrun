@@ -3826,6 +3826,7 @@ class _ListComputersResponseKindsItemProvidersItemRequired(TypedDict):
     required: list[str]
     ready: bool
     runs_refused: str | None
+    folder: Literal["bind", "archil", "sync"] | None
     shell: Literal["computer", "local", "none"]
     host_tools: list[str]
 
@@ -4089,6 +4090,7 @@ class _SaveComputerKeysResponseRequired(TypedDict):
     required: list[str]
     ready: bool
     runs_refused: str | None
+    folder: Literal["bind", "archil", "sync"] | None
     shell: Literal["computer", "local", "none"]
     host_tools: list[str]
 
