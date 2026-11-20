@@ -255,4 +255,32 @@ describe("the Tools step's filter box", () => {
     expect(cards()).toEqual(all);
     expect(status()).toBe("");
   });
+
+  it("counts a grant it shows that no saved server answers for, or shown after the servers could not be read, as one it keeps", async () => {
+    for (const servers of ["listed", "failed"] as const) {
+      const grants = ["read", "mcp:gone/search", "mcp:fake/delete_thing"];
+      const json = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
+      const fetch = (async (url: string) => {
+        const path = String(url);
+        if (path === "/v2/agents/calc") return json(200, agent(grants), { etag: '"r1"' });
+        if (path.startsWith("/v2/agents/calc/revisions")) return json(200, { revisions: [{ revision: "r1", version: 1, current: true, note: null, created_at: "2026-11-04T10:00:00Z", kind: "agentic", definition: definition(grants) }], next_cursor: null });
+        if (path === "/v2/settings/mcp-servers") return servers === "listed" ? json(200, { servers: [FAKE] }) : json(500, { error: { code: "internal", message: "down", retryable: false } });
+        return json(404, { error: { code: "not_found", message: path, retryable: false } });
+      }) as typeof globalThis.fetch;
+      const host = document.body.appendChild(document.createElement("div"));
+      root = createRoot(host);
+      act(() => root!.render(createElement(AgentEditPage, { v2: createClient({ fetch }), caps: CAPS, agentId: "calc", go: () => {} })));
+      const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+      await settle();
+      await act(async () => { [...host.querySelectorAll("button")].find((b) => b.textContent?.includes("Tools & skills"))!.click(); });
+      await settle();
+      const filter = host.querySelector('input[aria-label="Filter tools"]') as HTMLInputElement;
+      await act(async () => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(filter, "gone"); filter.dispatchEvent(new Event("input", { bubbles: true })); });
+      const shown = [...host.querySelectorAll<HTMLInputElement>('input[type="checkbox"][value]')].map((b) => b.value).filter((v) => v.startsWith("mcp:"));
+      expect(shown, servers).toEqual(["mcp:gone/search"]);
+      expect(filter.closest("div")!.querySelector('[role="status"]')!.textContent, servers).toMatch(/^1 of \d+ shown$/);
+      expect(host.textContent, servers).not.toContain("No tool matches");
+      act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
+    }
+  });
 });
