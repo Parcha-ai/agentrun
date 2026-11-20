@@ -19,6 +19,7 @@ import { decodedStrings, draftProblems } from "../learn/workflow-draft.js";
 import { sdkWorkflowManifest, sdkDraftTools } from "./workflows.js";
 import type { SdkWorkflowCheckEvent } from "./check.js";
 import { promotionOf, promotionsOf } from "../learn/promote.js";
+import { defaultLearningOf, learningIdOf } from "../learn/learning-of.js";
 import { championTextOf, releaseSdkCheck, reserveSdkCheck, type SdkWorkflowCheck } from "../runner/promotion.js";
 import { fits, workflowDigest } from "../runner/workflow-first.js";
 
@@ -242,7 +243,9 @@ export class SdkRuns {
     // A runner keeps an SDK run's evidence and ends it: while every runner here refused to claim, the start is refused in
     // their words, as any start is (prepareLaunch), before the caller holds a receipt it would run on.
     await refuseWhileNoRunner(this.store.runners);
+    // A connected agent's run names no disk: its learning is the agent's on the default disk (learn/learning-of.ts).
     const learning = await learningStartFor(deps, entry, pinned.revision, revisionBody as never, {
+      disk: null,
       noWorkflows: !workflow,
       ...(compile.model ? { model: compile.model } : {}),
     });
@@ -311,7 +314,7 @@ export class SdkRuns {
       // The reservation comes first because the launch it is created with withholds the champion from a check's turn.
       // No turn ran, so the check waits for the next one, the release uncounted: never a hold of a draft never compared.
       if (check) {
-        const record = promotionOf(await promotionsOf(this.store.settings, entry.agent.id).catch(() => []), check.workflow.name, check.digest);
+        const record = promotionOf(await promotionsOf(this.store.settings, learningIdOf(defaultLearningOf(entry.agent.id))).catch(() => []), check.workflow.name, check.digest);
         if (record?.decided === "replaying" && record.replay_id === check.id) await releaseSdkCheck(checkDeps, record, "its start could not be admitted", false).catch(() => undefined);
       }
       throw error;
@@ -357,7 +360,7 @@ export class SdkRuns {
       const { flows } = chooseWorkflows(seed, secretsShown(this.secrets(), { local: true }));
       const dsl = await import("@parcha/agentrun-dsl");
       const { tools, gated, deniedBy } = sdkDraftTools(binding.workflow_tools);
-      const records = await promotionsOf(this.store.settings, agentId);
+      const records = await promotionsOf(this.store.settings, learningIdOf(defaultLearningOf(agentId)));
       let room = 256 * 1024;
       const compatible = (flow: LearnedWorkflow) => {
         const bytes = Buffer.byteLength(JSON.stringify(flow));

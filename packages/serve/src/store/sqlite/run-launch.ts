@@ -16,6 +16,18 @@ export function writeLaunch(tx: Pick<SqliteExecutor, "run">, runId: string, laun
   return tx.run("INSERT INTO run_launch (run_id, body, sealed, created_at) VALUES (?, ?, ?, ?)", runId, JSON.stringify(launch.body ?? null), launch.sealed ?? null, at);
 }
 
+/** The disk a launch body names as the run's own (runs.disk, RunRow.disk): its `archil_disk` of kind "launch", by its id
+ *  (run-launch.ts launchBody writes it so); null for none, or its agent's own disk (the default disk). The one read of the
+ *  body's disk the store makes, at every create of a run, so no path that queues a run can leave it out. */
+export function launchDiskOf(launch: RunLaunchInput | undefined): string | null {
+  const body = launch?.body;
+  if (typeof body !== "object" || body === null) return null;
+  const disk = (body as { archil_disk?: unknown }).archil_disk;
+  if (typeof disk !== "object" || disk === null) return null;
+  const { disk_id: id, kind } = disk as { disk_id?: unknown; kind?: unknown };
+  return kind === "launch" && typeof id === "string" && id !== "" ? id : null;
+}
+
 /** A message's launch secrets written over the run's (runs.command, runs.reopen), inside `tx`: the bytes as given, or a
  *  function's answer to the bytes the launch holds now, read in the same transaction. */
 export async function writeLaunchSealed(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, launchSealed: LaunchSealed): Promise<void> {

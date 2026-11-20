@@ -28,6 +28,7 @@ import { type Place, resolvePlace } from "./place.js";
 import { githubTargetOf } from "./github.js";
 import { type RepoBinding, repoOf } from "./run-repo.js";
 import { type LaunchDisk, launchBody, type RunLaunch } from "./run-launch.js";
+import { learningDiskOf } from "./learn/learning-of.js";
 import { modelKeyRequired, serverKeyMissing } from "./run-model-key.js";
 import { type ApprovalDecision, raiseFollowUpId, type RunMoment } from "./run-view.js";
 import { sendCommand } from "./runner/commands.js";
@@ -507,14 +508,18 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
  *  null when its seed cannot be read (a learning fault never refuses a run). `use`: the run's start said `learning:
  *  "use"`, so it starts from what its agent learned, its revision's own learning aside, and keeps nothing. `noWorkflows`:
  *  a run never answered by a learned workflow nor asked to draft one (a native run's, an SDK run's with no workflow
- *  binding). `model`: an SDK run's compile model. */
-export async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, { use = false, noWorkflows = false, model }: { use?: boolean; noWorkflows?: boolean; model?: string } = {}): Promise<NonNullable<RunLaunch["learning"]> | undefined> {
+ *  binding). `model`: an SDK run's compile model. `disk`: the disk the run's launch names as its own (learn/learning-of.ts
+ *  learningDiskOf), null for the default disk: learning is per (agent, disk), and the folder seedFor reads is the default
+ *  disk's, so a run on a named disk is never started from it (seedFailed `other_disk`: it starts with nothing learned). */
+export async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, { use = false, noWorkflows = false, model, disk }: { use?: boolean; noWorkflows?: boolean; model?: string; disk: string | null }): Promise<NonNullable<RunLaunch["learning"]> | undefined> {
   // A run started with `learning: "use"` starts from what its agent learned whatever its revision says, and keeps
   // nothing; the server's learning off still gives it nothing.
   const learns = deps.learning !== undefined && deps.learning !== "off" && revision.kind === "agentic" && (learnsOf(rbody.learning) || use);
   if (!learns || !deps.seedFor) return undefined;
   const flows = noWorkflows || nativeOf(revision.body) ? { noWorkflows: true as const } : {};
   const own = { ...flows, ...(use ? { use: true as const } : {}), ...(model ? { model } : {}) };
+  // Another disk's learning is never read for it: not its corrections, not its workflows.
+  if (disk !== null) return { seed: null, section: "", seedFailed: "other_disk", ...own };
   const seeded = await deps.seedFor(entry.agent.id);
   // The folder could not be read (main's STOPPED.unreadable), or what it read could not be made into the start (main's
   // copy that threw, STOPPED.notCopied): the run starts with nothing learned, and its learning end says which.
@@ -699,15 +704,16 @@ export async function prepareLaunch(deps: StartDeps, entry: AgentEntry, body: Js
   const plane: Plane = tooling ? planeFor(deps.planeEnv(), tooling, deps.toolSettings(), { capped: cap !== undefined, run: true }) : {};
   // The run's model, resolved once, at start (the runner reads launch.model only).
   const model = await deps.modelOf(entry, revision);
-  // The run's learning start, decided here: a run learns when the server's learning is on and its revision says so; then
-  // its seed is read now and its # Learned text pinned in the launch for the runner to put in the prompt. A seed that
-  // cannot be read starts it with nothing (seed null); the end state is the runner's.
-  const learning = await learningStartFor(deps, entry, revision, rbody, { use: body.learning === RUN_LEARNING_USE });
   // The run's Archil disk, chosen now and kept in its launch (run-launch.ts archilDisk): the one the body names (a disk per
   // customer), else its agent's when it has one; with neither, its claim makes the agent's.
   const named = isObject(body.archil_disk) && typeof body.archil_disk.disk_id === "string" ? body.archil_disk.disk_id : undefined;
   if (named !== undefined && !deps.launchDiskOf) throw invalid([{ field: "archil_disk", reason: "not_allowed", message: "This server keeps no run on an Archil disk." }]);
   const archilDisk = deps.launchDiskOf ? await deps.launchDiskOf(entry.agent.id, named) : undefined;
+  // The run's learning start, decided here: a run learns when the server's learning is on and its revision says so; then
+  // its seed is read now and its # Learned text pinned in the launch for the runner to put in the prompt. A seed that
+  // cannot be read starts it with nothing (seed null); the end state is the runner's. Its learning is its disk's: a run on
+  // a disk its launch names is never started from the default disk's.
+  const learning = await learningStartFor(deps, entry, revision, rbody, { use: body.learning === RUN_LEARNING_USE, disk: archilDisk ? learningDiskOf({ archilDisk }) : null });
   // The run's effort: its own, else its revision's saved thinking, else the host's AGENT_THINKING (each a thinking level,
   // else none). Nothing set: none, so the run gets no effort note and its harness's own default. Kept in its launch, so
   // its harness's thinking, its guidance and its metrics all read the one value.

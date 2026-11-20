@@ -233,10 +233,11 @@ export const learningStartOf = (launch: RunLaunch): RunLaunch["learning"] => lau
 export const learningStartOfStored = (stored: unknown): RunLaunch["learning"] => (stored === undefined ? undefined : readLearning(stored) ?? { seed: null, section: "" });
 
 /** Why a learning run starts with nothing learned, as main says it: its agent's learning folder could not be read
- *  (`unreadable`, STOPPED.unreadable), or what was read could not be made into its start (`not_copied`,
- *  STOPPED.notCopied). */
-export type SeedFailed = "unreadable" | "not_copied";
-const SEED_FAILURES: readonly string[] = ["unreadable", "not_copied"];
+ *  (`unreadable`, STOPPED.unreadable), what was read could not be made into its start (`not_copied`,
+ *  STOPPED.notCopied), or its launch names a disk of its own, whose learning folder the server does not read
+ *  (`other_disk`, STOPPED.otherDisk): learning is per (agent, disk), so it is never started from another disk's. */
+export type SeedFailed = "unreadable" | "not_copied" | "other_disk";
+const SEED_FAILURES: readonly string[] = ["unreadable", "not_copied", "other_disk"];
 
 /** A learning start with no seed (no commit of main, runs-over-store.ts learningStartFor): the run learns nothing, is
  *  never asked what to keep, and so is never told it learns. Why is its `seedFailed`, when its start records one. */

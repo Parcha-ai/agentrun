@@ -66,7 +66,12 @@ export const STOPPED = {
   unanswered: "the turn that writes its workflow ended before it answered",
   notChecked: "what it learned could not be checked",
   refuseUnread: "what the run must never learn (its agent's browser sign-in, the server's secrets) could not be read back, so nothing it learned is kept",
+  otherDisk: "the run is on a disk its start named, and what the agent learned on that disk is not read here yet, so the run started without it; nothing learned on another disk is ever handed to it",
 } as const;
+
+/** Why a run whose start has no seed started with nothing learned (run-launch.ts SeedFailed), in words. */
+export const seedStopped = (failed: string | undefined): string =>
+  failed === "unreadable" ? STOPPED.unreadable : failed === "not_copied" ? STOPPED.notCopied : failed === "other_disk" ? STOPPED.otherDisk : STOPPED.noSeed;
 
 /** A run's learning, in words, by where it stands. */
 export const said = {

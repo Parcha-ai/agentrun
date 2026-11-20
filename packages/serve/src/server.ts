@@ -98,6 +98,7 @@ import { type AgenticBody, type McpCredentialMark, type MonidPinBody, type NewRe
 import { agentDeleting, answerOf, logged } from "./agents.js";
 import { keepGrade } from "./runner/feedback-round.js";
 import { gradeRow, notAuditableOf } from "./runner/audit.js";
+import { defaultLearningOf, learningIdOf } from "./learn/learning-of.js";
 import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf } from "./learn/audit.js";
 import { auditLoopOf, COMPILE_AFTER_MAX } from "./learning-setting.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
@@ -4371,13 +4372,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // The grade and its audit row are written to the agent's learning in its delete turn (agentWrite): a grade whose body
         // came in while a DELETE ran waits for it and finds the agent gone, so nothing is written after its learning went.
         const kept = await agentWrite(row.agentId, async () => {
+          // The graded run's learning: its agent's on the run's own disk (learn/learning-of.ts), its grades kept there.
+          const learning = { agentId: row.agentId, disk: row.disk };
           // Kept with what it asks of the run's learning (runner/feedback-round.ts): nothing, or a look-back.
           // Its feedback round is a turn with no caller's model key: on the server's key for the run's route, else not opened.
-          const graded = gradeView(await keepGrade(store, row.agentId, grade, typeof body.label === "string" ? body.label : undefined, (launch) => !serverKeyMissing(env, { kind: "agentic", model: launch.model, native: Boolean(launch.native) })));
+          const graded = gradeView(await keepGrade(store, learningIdOf(learning), grade, typeof body.label === "string" ? body.label : undefined, (launch) => !serverKeyMissing(env, { kind: "agentic", model: launch.model, native: Boolean(launch.native) })));
           // A grade of a run its learned workflow answered alone is an audit row too (runner/audit.ts gradeRow): the hold rule
-          // reads it with the shadows'. A row not written now is logged, never the grade refused.
+          // reads it with the shadows'. A row not written now is logged, never the grade refused. Only for a run on the
+          // default disk, whose ledger is the folder this server holds: a run on a named disk never adds a row to another
+          // disk's ledger.
           const said = (line: string) => log?.(logLine("audit", { run: row.id, said: line }));
-          await gradeRow({ store, agentId: row.agentId, revisionId: row.revisionId, context: ctx, folder: () => learningFolderOf(data, row.agentId), shown: () => learningShown(row.agentId), log: said }, row, grade.correct).catch((error) => said(`the grade wrote no audit row (${(error as Error)?.message ?? error})`));
+          if (learning.disk === null) await gradeRow({ store, ...learning, revisionId: row.revisionId, context: ctx, folder: () => learningFolderOf(data, row.agentId), shown: () => learningShown(row.agentId), log: said }, row, grade.correct).catch((error) => said(`the grade wrote no audit row (${(error as Error)?.message ?? error})`));
           return graded;
         });
         // Its workflow's name cut as GET /runs/{id}/learning cuts it (learningShown); withheld whole when that cut can't be
@@ -4878,8 +4883,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // Each workflow's status past its README.md's: where it stands as GET .../learning/promotions says it (servingStateOf
         // over the same records and the money rule's decision, costStopOverStore), so the view never says a workflow serves
         // that does not run first.
-        const records = await promotionsOf(store.settings, id);
-        const costStop = await costStopOverStore(store, id);
+        // The agent's learning on the default disk: the one this server's folder holds (learn/learning-of.ts).
+        const learning = defaultLearningOf(id);
+        const records = await promotionsOf(store.settings, learningIdOf(learning));
+        const costStop = await costStopOverStore(store, learning);
         const body = entry.revision?.body as AgenticBody | undefined;
         const modelEnv = !body || sdkOf(body) || nativeOf(body) ? env : envAtPlace(env, resolvePlace(body.place as Place | undefined, fallbackPlace(entry.revision!.kind === "workflow" ? "workflow" : "agentic", body.tools ?? [])));
         return send(res, 200, { ...await agentLearning(data, id, await learningShown(id), counts, impact, (workflow) => servingStateOf(records, workflow, costStop)), learning_model: await learningModelOf(modelEnv, entry.revision) });
@@ -4903,15 +4910,17 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // Each learned workflow's promotion records, oldest first (learn/promote.ts): its check's numbers and decisions,
         // its holds (a check's, an audit's). Every text in them cut as the other learning reads cut theirs
         // (promotionsShown: a reason as well as each workflow's name). Beside what serves, each one's state, its check's
-        // numbers and its audit line (learn/audit.ts servingLinesOf), at the agent's numbers.
-        const records = await promotionsOf(store.settings, id);
+        // numbers and its audit line (learn/audit.ts servingLinesOf), at the agent's numbers. The agent's learning on the
+        // default disk: the one this server's folder holds (learn/learning-of.ts).
+        const learning = defaultLearningOf(id);
+        const records = await promotionsOf(store.settings, learningIdOf(learning));
         const shown = await learningShown(id);
         const shownRead = promotionsShown(records, shown);
         // A ledger that can't be read now leaves each audit line at no rows, never the read refused.
         const loop = auditLoopOf((entry.revision?.body as { learning?: unknown } | undefined)?.learning);
         // Each one's state with the money rule's decision a run's launch reads (costStopOverStore): a champion it stopped
         // running first reads `stopped`.
-        const lines = servingLinesOf(records, await auditsOfAgent(id).catch(() => []), loop, await costStopOverStore(store, id));
+        const lines = servingLinesOf(records, await auditsOfAgent(id).catch(() => []), loop, await costStopOverStore(store, learning));
         // Why its runs are never audited, when the agent can call a tool that writes (learn/audit.ts auditWriterOf, the
         // rule startAudit reads); and how many of the serving revision's runs a trigger started (never audited).
         const writer = auditWriterOf(entry.revision ?? undefined);
@@ -4934,7 +4943,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         };
         const serving = await Promise.all(servingOf(records).map(async (one, i) => ({
           ...shownRead.serving[i]!, ...lines[i]!, audits_off: auditsOff,
-          not_auditable: one.digest === null ? 0 : await notAuditableOf(store, id, one.workflow, one.digest, loop).catch(() => 0),
+          not_auditable: one.digest === null ? 0 : await notAuditableOf(store, learning, one.workflow, one.digest, loop).catch(() => 0),
           champion: one.digest === null ? null : await championRead(one.workflow, one.digest),
         })));
         return send(res, 200, { agent: id, promotions: shownRead.promotions, serving });

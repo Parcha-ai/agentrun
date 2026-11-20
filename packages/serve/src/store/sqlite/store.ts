@@ -12,7 +12,7 @@ import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
-import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNNERS, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNNERS, RUNS_COST_UPPER_BOUND, RUNS_DISK, RUNS_DISK_FROM_LAUNCH, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
   AgentArchived, AgentDeleting, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -35,7 +35,7 @@ import { cleanText, type Dialect, settledBody } from "../dialect.js";
 import { inMemory } from "./memory.js";
 import { Connection, DEFAULT_BUSY_TIMEOUT_MS, type SqliteExecutor, type SqliteValue, type Statement, type StoreConnection, type Tx } from "./connection.js";
 import { applyRunPatch, EXACT_COST_USD, NOT_A_LEARNING_RUN, refuseLeftovers, REOPEN_SET, reopenableWhere, RUN_COLUMNS, runOf, SIGN_IN_HANDED_LOCK, type RunRecord } from "./run-patch.js";
-import { readLaunch, readLearningStarts, writeLaunch, writeLaunchSealed } from "./run-launch.js";
+import { launchDiskOf, readLaunch, readLearningStarts, writeLaunch, writeLaunchSealed } from "./run-launch.js";
 import { canonical } from "../agent-body.js";
 import { aadOf, sealedAt } from "../seal.js";
 
@@ -365,6 +365,13 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     if (!runColumns.has("cost_upper_bound")) {
       if (role === "runner") throw new StoreAwaitsServer("add the bound beside each run's cost");
       await connection.write([{ sql: RUNS_COST_UPPER_BOUND }], { full: true });
+    }
+    // An earlier build of this version kept no disk on a run (schema.ts RUNS_DISK): the server adds the column and writes each
+    // run's from its launch in the same write, a run whose launch named none reading as the default disk's. A runner reads
+    // each run through it (learning reads an agent's runs on one disk alone), so it waits for that server.
+    if (!runColumns.has("disk")) {
+      if (role === "runner") throw new StoreAwaitsServer("add each run's disk");
+      await connection.write([{ sql: RUNS_DISK }, { sql: RUNS_DISK_FROM_LAUNCH }], { full: true });
     }
     // An earlier build of this version kept no labels on a run (schema.ts RUNS_LABELS): the server adds the column, nullable,
     // every run it started reading as given none. A runner reads each run through it, so it waits for that server.
@@ -1006,7 +1013,7 @@ class SqliteStore implements Store {
           await d.lockRow(tx, "triggers", "id", firing.triggerId);
           // Never a run of an archived agent: the archive's commit is read here, in the transaction that would start it.
           await refuseArchived(tx, run.agentId);
-          const row = await tx.get<RunRecord>(`INSERT INTO runs (id, agent_id, revision_id, state, epoch, started_at) VALUES (?, ?, ?, 'queued', 0, ?) RETURNING ${RUN_COLUMNS}`, run.id, run.agentId, run.revisionId, at);
+          const row = await tx.get<RunRecord>(`INSERT INTO runs (id, agent_id, revision_id, state, epoch, disk, started_at) VALUES (?, ?, ?, 'queued', 0, ?, ?) RETURNING ${RUN_COLUMNS}`, run.id, run.agentId, run.revisionId, launchDiskOf(launch), at);
           // The run's launch row lands with it, through the store's one writer, or neither does.
           if (launch) await writeLaunch(tx, run.id, launch, at);
           // The due firing the engine recorded becomes started; one not recorded yet is recorded started. A firing already
@@ -1029,7 +1036,7 @@ class SqliteStore implements Store {
     this.runs = {
       create: async ({ id, agentId, revisionId, origin, labels }, launch) => {
         // sign_in_handed is not written here: the runner writes it at its claim (runs.update under the epoch fence).
-        const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, labels, started_at) VALUES (?, ?, ?, 'queued', 0, ?, ?) RETURNING ${RUN_COLUMNS}`;
+        const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, labels, disk, started_at) VALUES (?, ?, ?, 'queued', 0, ?, ?, ?) RETURNING ${RUN_COLUMNS}`;
         const labelled = labelsColumn(labels);
         // The run, its origin and its launch row in one transaction: the key -> run link holds even if the kept response
         // never lands, and a run never exists without the launch it was started with. Never a run of an agent being
@@ -1037,14 +1044,14 @@ class SqliteStore implements Store {
         return this.#queued(await db.transaction(async (tx) => {
           const at = now();
           await refuseDeleting(tx, agentId);
-          const row = await tx.get<RunRecord>(insert, id, agentId, revisionId, labelled, at);
+          const row = await tx.get<RunRecord>(insert, id, agentId, revisionId, labelled, launchDiskOf(launch), at);
           if (origin) await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", origin.key, id, origin.fingerprint ?? null, at);
           if (launch) await writeLaunch(tx, id, launch, at);
           return runOf(row!);
         }));
       },
       createInline: async ({ agent, revision, run, launch }) => {
-        const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, labels, started_at) VALUES (?, ?, ?, 'queued', 0, ?, ?) RETURNING ${RUN_COLUMNS}`;
+        const insert = `INSERT INTO runs (id, agent_id, revision_id, state, epoch, labels, disk, started_at) VALUES (?, ?, ?, 'queued', 0, ?, ?, ?) RETURNING ${RUN_COLUMNS}`;
         const made = await db.transaction(async (tx) => {
           const at = now();
           // Hold the external reference, so two first uses of the same expert serialize (SQLite's one writer already does).
@@ -1070,7 +1077,7 @@ class SqliteStore implements Store {
             await tx.run("UPDATE agents SET current_revision = ?, name = ?, description = ? WHERE id = ?", revisionId, agent.name, agent.description ?? null, mapped.id);
           }
           // The run, its origin and its launch, in the same transaction as the agent and the revision.
-          const row = await tx.get<RunRecord>(insert, run.id, mapped.id, revisionId, labelsColumn(run.labels), at);
+          const row = await tx.get<RunRecord>(insert, run.id, mapped.id, revisionId, labelsColumn(run.labels), launchDiskOf(launch), at);
           if (run.origin) await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", run.origin.key, run.id, run.origin.fingerprint ?? null, at);
           await writeLaunch(tx, run.id, launch, at);
           return runOf(row!);
@@ -1083,7 +1090,7 @@ class SqliteStore implements Store {
       },
       launch: (runId) => readLaunch(db, runId),
       learningStarts: (agentId) => readLearningStarts(db, agentId, NOT_A_LEARNING_RUN),
-      list: async ({ agentId, revisionId, state, archived, labels, limit }) => {
+      list: async ({ agentId, revisionId, state, archived, labels, disk, limit }) => {
         // A built-in learning run (a run's grade and merge, queued with its kept learning) is no run of a person's: no list,
         // count, stat or notice names it.
         const where: string[] = [NOT_A_LEARNING_RUN];
@@ -1094,6 +1101,8 @@ class SqliteStore implements Store {
         if (archived !== undefined) where.push(`archived_at IS ${archived ? "NOT NULL" : "NULL"}`);
         // Each label, key and value bound as parameters (never spliced into a JSON path), all of them held.
         for (const [key, value] of Object.entries(labels ?? {})) (where.push(d.jsonObjectHas("labels")), params.push(key, value));
+        if (disk === null) where.push("disk IS NULL");
+        else if (disk !== undefined) (where.push("disk = ?"), params.push(disk));
         const bounded = typeof limit === "number" && Number.isSafeInteger(limit) && limit >= 0;
         if (bounded) params.push(limit);
         const rows = await db.all<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs ${where.length ? `WHERE ${where.join(" AND ")}` : ""} ORDER BY started_at DESC, id DESC${bounded ? " LIMIT ?" : ""}`, ...params);
@@ -1570,11 +1579,14 @@ class SqliteStore implements Store {
           : await db.get<ProposalRecord>(`SELECT ${PROPOSAL_COLUMNS} FROM learning_proposals WHERE run_id = ? AND round = ?`, runId, round);
         return row ? proposalOf(row) : undefined;
       },
-      proposals: async (agentId, { limit = 100 } = {}) =>
-        (await db.all<ProposalRecord>(
-          `SELECT ${PROPOSAL_COLUMNS} FROM learning_proposals WHERE agent_id = ? ORDER BY created_at DESC, run_id DESC, round DESC LIMIT ?`,
-          agentId, limit,
-        )).map(proposalOf),
+      proposals: async (agentId, { limit = 100, disk } = {}) => {
+        const onDisk = disk === undefined ? "" : ` AND run_id IN (SELECT id FROM runs WHERE agent_id = ? AND ${disk === null ? "disk IS NULL" : "disk = ?"})`;
+        const diskParams: SqliteValue[] = disk === undefined ? [] : disk === null ? [agentId] : [agentId, disk];
+        return (await db.all<ProposalRecord>(
+          `SELECT ${PROPOSAL_COLUMNS} FROM learning_proposals WHERE agent_id = ?${onDisk} ORDER BY created_at DESC, run_id DESC, round DESC LIMIT ?`,
+          agentId, ...diskParams, limit,
+        )).map(proposalOf);
+      },
       kept: async (agentId) => {
         const proposals = (await db.all<ProposalRecord>(`SELECT ${PROPOSAL_COLUMNS} FROM learning_proposals WHERE agent_id = ? ORDER BY run_id, round`, agentId)).map(proposalOf);
         const learningRuns = (await db.all<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs WHERE id IN (SELECT learning_run_id FROM learning_proposals WHERE agent_id = ? AND learning_run_id IS NOT NULL)`, agentId)).map(runOf);
@@ -2357,11 +2369,11 @@ class SqliteStore implements Store {
       // writer): a crash between them leaves nothing. The run is created at epoch 0 with no runner, and the journal's fence
       // passes for that one row, by the rowid its insert returned (the claim fence's inserted-here form).
       const row = await tx.get<RunRecord & { inserted_rowid: number | null }>(
-        `INSERT INTO runs (id, agent_id, revision_id, state, epoch, cost_usd, metrics, summary, outcome, imported_from, started_at, ended_at)
-          VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?) RETURNING ${this.#db.dialect.insertedRow} AS inserted_rowid, ${RUN_COLUMNS}`,
+        `INSERT INTO runs (id, agent_id, revision_id, state, epoch, cost_usd, metrics, summary, outcome, imported_from, disk, started_at, ended_at)
+          VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING ${this.#db.dialect.insertedRow} AS inserted_rowid, ${RUN_COLUMNS}`,
         run.id, run.agentId, run.revisionId, state, run.costUsd ?? null,
         run.metrics === undefined || run.metrics === null ? null : json(run.metrics), run.summary ?? null,
-        run.outcome ?? null, JSON.stringify(run.importedFrom), run.startedAt, run.endedAt ?? at,
+        run.outcome ?? null, JSON.stringify(run.importedFrom), launchDiskOf(run.launch), run.startedAt, run.endedAt ?? at,
       );
       await writeLaunch(tx, run.id, run.launch, at);
       await new RunStorage(this.#db, { runId: run.id, epoch: 0 }, this.#now).applyIn(tx, run.transcript, row!.inserted_rowid ?? "this-transaction");

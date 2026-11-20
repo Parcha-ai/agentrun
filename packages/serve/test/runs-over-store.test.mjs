@@ -716,6 +716,22 @@ test("a learning run whose start can't be made from the seed it read starts with
   assert.deepEqual(learning, { seed: null, section: "", seedFailed: "not_copied" });
 });
 
+test("a learning run on a disk its start names starts from nothing the server's folder learned (other_disk), its row on that disk; its agent's own disk is the default's", async () => {
+  const store = await freshStore();
+  const read = [];
+  const deps = learningDeps({
+    seedFor: async (agentId) => (read.push(agentId), { seed: learningSeed() }),
+    launchDiskOf: async (_agentId, named) => (named === undefined ? { diskId: "agent-disk", kind: "agent" } : { diskId: named, kind: "launch" }),
+  });
+  const named = await startRun(store, deps, entryOf(), { input: { content: "hi" }, archil_disk: { disk_id: "customer-disk" } });
+  assert.deepEqual(readLaunchBody((await store.runs.launch(named.id)).body).learning, { seed: null, section: "", seedFailed: "other_disk" });
+  assert.equal(named.disk, "customer-disk", "the run's row keeps its disk");
+  assert.deepEqual(read, [], "the default disk's folder is never read for it");
+  const own = await startRun(store, deps, entryOf(), { input: { content: "hi" } });
+  assert.equal(readLaunchBody((await store.runs.launch(own.id)).body).learning.seed, "seed-abc", "the agent's own disk starts from the default disk's learning");
+  assert.equal(own.disk, null);
+});
+
 test("a launch's seedFailed outside its list is read as none", () => {
   assert.equal(readLaunchBody({ input: { content: "x" }, title: "t", place: { mode: "runner" }, learning: { seed: null, section: "", seedFailed: "elsewhere" } }).learning.seedFailed, undefined);
 });

@@ -234,6 +234,10 @@ export interface RunRow {
   readonly signInHanded: readonly string[] | null;
   /** The caller's labels, given at its start (RunLabels): opaque to the server, kept as given, {} when none. */
   readonly labels: RunLabels;
+  /** The disk the run's launch named as its own (a customer's Archil disk: the launch body's `archil_disk` of kind "launch"),
+   *  by its id, written once with the queued run; null for a run on the default disk (its launch named none, or its agent's
+   *  own). Learning is per (agent, disk): everything learning reads of an agent's runs reads only the runs on its disk. */
+  readonly disk: string | null;
   readonly startedAt: number;
   readonly endedAt: number | null;
 }
@@ -343,8 +347,9 @@ export interface LearningProposal {
 export interface Learning {
   /** The run's kept proposal of round `round`, else its newest round's; undefined when its end kept none. */
   proposal(runId: string, round?: number): Promise<LearningProposal | undefined>;
-  /** The agent's kept proposals (each round of a run one), newest first. */
-  proposals(agentId: string, options?: { limit?: number }): Promise<LearningProposal[]>;
+  /** The agent's kept proposals (each round of a run one), newest first. `disk`: only those of its runs on that disk
+   *  (RunRow.disk), null for the default disk's; not given, every disk's. */
+  proposals(agentId: string, options?: { limit?: number; disk?: string | null }): Promise<LearningProposal[]>;
   /** Everything agent `agentId`'s runs' learning kept, in two reads whatever the number of its runs: every round of every
    *  run's kept proposal (oldest round first within a run), and the rows of the learning runs they name (as runs.get
    *  reads one; a learning run named and never written has none). An agent-wide read's, never a read a run. */
@@ -805,8 +810,9 @@ export interface Runs {
    *  sealed bytes. A run with no launch row has no entry. */
   learningStarts(agentId: string): Promise<{ runId: string; learning: unknown }[]>;
   /** Newest first, at most `limit` (no limit: all). `archived` filters on the run's own archive time (true: archived,
-   *  false: not); its agent's archive is read apart. A built-in learning run (one a kept learning names) is never listed. `labels`: only runs holding every one of these labels, key and value. */
-  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; limit?: number }): Promise<RunRow[]>;
+   *  false: not); its agent's archive is read apart. A built-in learning run (one a kept learning names) is never listed. `labels`: only runs holding every one of these labels, key and value.
+   *  `disk`: only the runs on that disk (RunRow.disk), null for the default disk's; not given, every disk's. */
+  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; disk?: string | null; limit?: number }): Promise<RunRow[]>;
   /** A page of a runs list, in one read: newest first, `offset` rows on, at most `limit`, and whether more follow (`more`).
    *  Each with its listing as its row keeps it (RUN_LISTING_COLUMNS: null while none has been built), whether that is
    *  behind, and its agent's archive time. `archived` filters on the run's archive or its agent's (true: either; false:

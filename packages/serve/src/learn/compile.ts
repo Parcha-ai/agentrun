@@ -18,6 +18,7 @@ import { listed } from "../learning-words.js";
 import { excerptShown, redactSecrets } from "./secrets.js";
 import { isShadowRun } from "./audit.js";
 import type { Problem } from "./check.js";
+import type { LearningOf } from "./learning-of.js";
 
 /** The info word that opens a workflow draft's block in a compile answer: ````workflow <name>, fenced with four backticks
  *  so a ``` line inside does not close it. */
@@ -187,12 +188,14 @@ export const agentRun = (run: { readonly id: string; readonly state: string; rea
 const OWN_PAGE_MIN = 200;
 const OWN_PAGE_GROWTH = 4;
 
-/** The agent's newest `n` runs that `keep` keeps (of those the store lists by `listed`: e.g. only ended, not archived),
- *  newest first, picked before anything else limits them: runs it does not keep, however many, never push them out of the
- *  read (it reads more of the agent's runs until it has `n`, or there are no more). */
-export async function lastRunsOf(store: Pick<Store, "runs">, agentId: string, n: number, keep: (row: RunRow) => boolean, listed: { readonly state?: "ended"; readonly archived?: false } = {}): Promise<RunRow[]> {
+/** The newest `n` runs of `learning` (an agent's runs on one disk alone: learn/learning-of.ts) that `keep` keeps (of those
+ *  the store lists by `listed`: e.g. only ended, not archived), newest first, picked before anything else limits them:
+ *  runs it does not keep, however many, never push them out of the read (it reads more of the agent's runs until it has
+ *  `n`, or there are no more). A run on another disk is never read. */
+export async function lastRunsOf(store: Pick<Store, "runs">, learning: LearningOf, n: number, keep: (row: RunRow) => boolean, listed: { readonly state?: "ended"; readonly archived?: false } = {}): Promise<RunRow[]> {
+  const { agentId, disk } = learning;
   for (let limit = Math.max(OWN_PAGE_MIN, 3 * n); ; limit *= OWN_PAGE_GROWTH) {
-    const page = await store.runs.list({ agentId, ...listed, limit });
+    const page = await store.runs.list({ agentId, disk, ...listed, limit });
     const found = page.filter(keep).slice(0, n);
     if (found.length >= n || page.length < limit) return found;
   }
@@ -200,10 +203,10 @@ export async function lastRunsOf(store: Pick<Store, "runs">, agentId: string, n:
 
 /** The agent's last `n` completed runs of its own (agentRun: not one its learned workflow answered alone, not a replay
  *  nor a shadow audit; never `exceptRunId`, an archived run or an imported one), newest first (lastRunsOf: runs its
- *  workflow served since never push them out of the read). The one read of what compile_after counts and of a check's
- *  inputs. */
-export const lastOwnRuns = (store: Pick<Store, "runs">, agentId: string, n: number, exceptRunId?: string): Promise<RunRow[]> =>
-  lastRunsOf(store, agentId, n, (row) => row.id !== exceptRunId && agentRun(row) && row.archivedAt === null && !row.importedFrom, { state: "ended", archived: false });
+ *  workflow served since never push them out of the read), on `learning`'s disk alone. The one read of what compile_after
+ *  counts and of a check's inputs. */
+export const lastOwnRuns = (store: Pick<Store, "runs">, learning: LearningOf, n: number, exceptRunId?: string): Promise<RunRow[]> =>
+  lastRunsOf(store, learning, n, (row) => row.id !== exceptRunId && agentRun(row) && row.archivedAt === null && !row.importedFrom, { state: "ended", archived: false });
 
 /** Whether a run's look-back compiles its agent's job: the run completed, the agent has no learned workflow (active or
  *  waiting for its owner's OK), and it has `compileAfter` completed

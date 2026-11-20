@@ -400,7 +400,7 @@ test("(r2) a run a trigger started (GitHub's) is never audited: drawn by its id,
   const api = await w.start("api-1", "What is seven times six");
   assert.equal(api.metrics?.not_auditable, undefined);
   assert.ok(await w.shadowOf("api-1"), "a run over the API is audited");
-  assert.equal(await notAuditableOf(w.server, "agent-1", "answer", DIGEST, { stop_window: 100 }), 1, "the read counts the triggered run");
+  assert.equal(await notAuditableOf(w.server, { agentId: "agent-1", disk: null }, "answer", DIGEST, { stop_window: 100 }), 1, "the read counts the triggered run");
 });
 
 // Review on #3061 r3 (PRRT_kwDOUmdVMs64P8Kc): a hold's disagreement texts are redacted whole, then cut (learn/secrets.ts
@@ -522,7 +522,7 @@ test("(r2) the served count reads past the shadows: audit_every 1 over 1,100 ser
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const claimOf = async (served) => {
     const { store, made } = servedStore(served, learning, DIGEST);
-    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, folder: () => learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" }), shown: async () => ({ text: (text) => text }), log: () => {}, runId, launch }, serve);
+    await startAudit({ store, agentId: "agent-1", disk: null, revisionId: "rev-1", context: {}, folder: () => learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" }), shown: async () => ({ text: (text) => text }), log: () => {}, runId, launch }, serve);
     return { store, made };
   };
   // 900 served: under audit_later_after, every served run is drawn (1 in 1).
@@ -531,7 +531,7 @@ test("(r2) the served count reads past the shadows: audit_every 1 over 1,100 ser
   const { store, made } = await claimOf(1_100);
   assert.deepEqual(made, [], "past audit_later_after: 1 in 1,000, not drawn");
   const servedAt = (row) => row.metrics?.path === "workflow" && row.metrics.workflow_digest === DIGEST;
-  assert.equal((await lastRunsOf(store, "agent-1", 2_000, servedAt)).length, 1_100, "the served count's read");
+  assert.equal((await lastRunsOf(store, { agentId: "agent-1", disk: null }, 2_000, servedAt)).length, 1_100, "the served count's read");
 });
 
 // Review on #3061 r4 (PRRT_kwDOUmdVMs64QkBm): the shadow's cap is what its served run's cap left, read at the served
@@ -742,7 +742,7 @@ test("(r4) a drawn run whose cap leaves under a run's smallest cap (or a spend n
   const folder = () => learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" });
   const endOf = async (runId, room) => {
     const { store, made, launches } = servedStore(3, learning, DIGEST);
-    await startAudit({ store, agentId: "agent-1", revisionId: "rev-1", context: {}, folder, shown: async () => ({ text: (text) => text }), log: () => {}, runId, launch, room: async () => room }, serve);
+    await startAudit({ store, agentId: "agent-1", disk: null, revisionId: "rev-1", context: {}, folder, shown: async () => ({ text: (text) => text }), log: () => {}, runId, launch, room: async () => room }, serve);
     return { made, launches };
   };
   const fits = await endOf("room-fits", 0.7);

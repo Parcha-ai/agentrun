@@ -7,6 +7,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -22,6 +23,7 @@ const { learningWorkspace } = await import("../dist/workspace/index.js");
 const { launchBody } = await import("../dist/run-launch.js");
 const { promotionGate } = await import("../dist/runner/promotion.js");
 const { promotionsOf, recordPromotion } = await import("../dist/learn/promote.js");
+const { learningIdOf } = await import("../dist/learn/learning-of.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
 const { startAudit } = await import("../dist/runner/audit.js");
 
@@ -66,6 +68,33 @@ test("a run's disk is kept on its row from its launch: a named disk by its id, i
   assert.deepEqual(await ids({}), ["no-launch", "on-a", "on-b", "on-none", "on-own"], "no disk named: every run");
 });
 
+test("a store an earlier build made (no runs.disk) opens: a runner refuses it until the server adds the column and writes each run's disk from its launch", async (t) => {
+  const dir = scratch("agentrun-per-disk-upgrade-");
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const first = await openSqliteStore({ dataDir: dir, role: "server" });
+  await first.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
+  const base = { input: { content: "Q" }, title: "t", place: { mode: "runner" } };
+  await first.runs.create({ id: "on-a", agentId: "agent-1", revisionId: "rev-1" }, { body: launchBody({ ...base, ...launchDisk("disk-a") }) });
+  await first.runs.create({ id: "on-own", agentId: "agent-1", revisionId: "rev-1" }, { body: launchBody({ ...base, archilDisk: { diskId: "agent-disk", kind: "agent" } }) });
+  await first.runs.create({ id: "on-none", agentId: "agent-1", revisionId: "rev-1" }, { body: launchBody(base) });
+  await first.close();
+  const raw = new DatabaseSync(join(dir, "store.sqlite"));
+  try {
+    raw.exec("ALTER TABLE runs DROP COLUMN disk");
+  } finally {
+    raw.close();
+  }
+  await assert.rejects(openSqliteStore({ dataDir: dir, role: "runner" }), /Start the AgentRun server to add each run's disk/, "a runner, whose learning reads runs by disk, waits for the server");
+  const store = await openSqliteStore({ dataDir: dir, role: "server" });
+  try {
+    assert.deepEqual(await Promise.all(["on-a", "on-own", "on-none"].map(async (id) => (await store.runs.get(id)).disk)), ["disk-a", null, null], "each run's disk from its launch: a named one by its id, the agent's own or none as the default");
+  } finally {
+    await store.close();
+  }
+  const runner = await openSqliteStore({ dataDir: dir, role: "runner" });
+  await runner.close();
+});
+
 // -------------------------------------------------------------------------------------------- compile (the look-back)
 
 /** One agent (compile_after 2) whose runs run through a real runner, one at a time, each on its disk (`disk`: a named
@@ -90,7 +119,7 @@ async function world(t) {
     const store = await openSqliteStore({ dataDir: local, role: "runner" });
     open.push(() => store.close());
     // The folder of the run's own disk, as a Mode 2 claim opens it there (the claim's Archil disk).
-    const endOfRun = learningEndOfRun(launch, { store, data: local, env: {}, learningFolder: (agentId) => learningWorkspace({ mode: "local", data, agentId }), folderOn: "run_disk" });
+    const endOfRun = learningEndOfRun(launch, { store, data: local, env: {}, learningFolder: (agentId) => learningWorkspace({ mode: "local", data, agentId }) });
     const requests = [];
     const spec = piAdapterSpec({ script: learns ? [{ say: "42" }, { say: DRAFT }] : [{ say: "42" }], tools: {}, hooks: quiet }, { requests });
     const createLoop = (deps) => {
@@ -211,7 +240,7 @@ test("a check on disk A replays the inputs of disk A's own runs alone: never a r
   const gate = promotionGate({ store, shown: async () => secretsShown([]), agentId: "a", runId: "now", revisionId: "rev", launch: { input: { question: "Now" }, title: "", place: { mode: "runner" }, learning: LEARNING, ...launchDisk("disk-a") }, context: ctx, log: (line) => logs.push(line) });
   const digest = workflowDigest({ workflow: flowText });
   assert.equal(await gate({ name: "answer", workflow: flowText }, digest), undefined, "it does not serve while it is checked");
-  const record = (await promotionsOf(settings, { agentId: "a", disk: "disk-a" })).at(-1);
+  const record = (await promotionsOf(settings, learningIdOf({ agentId: "a", disk: "disk-a" }))).at(-1);
   assert.equal(record?.decided, "replaying", `${JSON.stringify(record)}\n${logs.join("\n")}`);
   assert.deepEqual(record.inputs, ["a-0", "a-1", "a-2"], "disk A's own three runs");
   for (const { launch } of created) {
@@ -219,8 +248,9 @@ test("a check on disk A replays the inputs of disk A's own runs alone: never a r
     assert.equal(text.includes(MARK["disk-b"]) || text.includes(MARK.default), false, `a replay on disk A replays no other disk's input: ${text}`);
     assert.deepEqual(launch.archil_disk, { disk_id: "disk-a", kind: "launch" }, "and runs on disk A");
   }
-  assert.deepEqual(await promotionsOf(settings, { agentId: "a", disk: "disk-b" }), [], "nothing is recorded for disk B");
-  assert.deepEqual(await promotionsOf(settings, { agentId: "a", disk: null }), [], "nor for the default disk");
+  assert.deepEqual(await promotionsOf(settings, learningIdOf({ agentId: "a", disk: "disk-b" })), [], "nothing is recorded for disk B");
+  assert.deepEqual(await promotionsOf(settings, learningIdOf({ agentId: "a", disk: null })), [], "nor for the default disk");
+  assert.equal(learningIdOf({ agentId: "a", disk: null }), "a", "the default disk's records keep the agent's own key");
 });
 
 // ------------------------------------------------------------------------------------------------------ serving
@@ -230,7 +260,7 @@ test("a workflow promoted on disk A serves a run on disk A, never a run on disk 
     check: { compile_after: 3, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 1, agreed: 1, alone: 1, of: [] } };
   const gateOn = async (disk) => {
     const { store, settings, created } = storeOf([], new Map());
-    assert.equal((await recordPromotion(settings, { agentId: "a", disk: "disk-a" }, promoted, () => true)).won, true);
+    assert.equal((await recordPromotion(settings, learningIdOf({ agentId: "a", disk: "disk-a" }), promoted, () => true)).won, true);
     const logs = [];
     const gate = promotionGate({ store, shown: async () => secretsShown([]), agentId: "a", runId: "now", revisionId: "rev", launch: { input: { question: "Now" }, title: "", place: { mode: "runner" }, learning: LEARNING, ...launchDisk(disk) }, context: ctx, log: (line) => logs.push(line) });
     return { served: await gate({ name: "answer", workflow: flowText }, promoted.digest), created, logs };

@@ -8,7 +8,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { currentLearning, holdsForOk, type ItemStatus, type Learning, LEARNING_REASONS, type Shown } from "../learning.js";
 import { runLearningBody } from "../learning-routes.js";
 import { learningStartOf, learningStartOfStored, readLaunchBody, type RunLaunch, seedFailed } from "../run-launch.js";
-import { said, STOPPED } from "../learning-words.js";
+import { said, seedStopped } from "../learning-words.js";
 import { type Impact, type ImpactLearning, learningImpact } from "../learning-run.js";
 import { amortize, type Bill, type BillHold, billOf, type CostReplay, costSummary, type CostRun, type CostSummary, JOB_PATHS, noiseOff, type RevisionSpend, RUN_PATHS, type RunPath, runCostOf, SERVED_PATHS, tookOverOf } from "../learning-cost.js";
 import { COMPILE_AFTER_DEFAULT } from "../learning-setting.js";
@@ -28,6 +28,7 @@ import { promotedOf } from "../learn/compile.js";
 import { isShadowRun, shadowRunId } from "../learn/audit.js";
 import { championOf, checkShares, gradesOf, gradeView, type PromotionRecord, promotionsOf } from "../learn/promote.js";
 import type { LearningProposal, Store } from "../store/store.js";
+import { defaultLearningOf, learningIdOf, type LearningOf } from "../learn/learning-of.js";
 
 /** A run's learning end: the Learning fields its end sets. */
 export type RunLearningEnd = Learning;
@@ -258,8 +259,10 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   // Each learned workflow that ran first, where it stands against the money rule (workflow-first.ts workflowCostsOf), over
   // the runs the run's launch reads (pastRunsOverStore) at the all-in cost this series shows: a workflow over the line
   // shows `needs_revision` with its two numbers, so the page and the launch's decision agree.
-  const workflows = workflowCostsOf(await pastRunsOverStore(store, agentId, new Map(runs.map((run) => [run.run_id, run.total_usd])), records));
-  const promotions = await promotionsOf(store.settings, agentId);
+  // The page's learning is the agent's on the default disk, the one the server reads (learn/learning-of.ts).
+  const learning = defaultLearningOf(agentId);
+  const workflows = workflowCostsOf(await pastRunsOverStore(store, learning, new Map(runs.map((run) => [run.run_id, run.total_usd])), records));
+  const promotions = await promotionsOf(store.settings, learningIdOf(learning));
   const replay = servingReplayOf(promotions, runs);
   // The owner's bill: booked $, every run of the series (billOf), from the series' first run on a served path (the
   // summary's takeover: read from the run rows by their place, as the promotion feed is trimmed and its oldest record need
@@ -402,8 +405,10 @@ export async function runAllInOverStore(store: Store, runId: string, rowUsd?: nu
   // Its share of its revision's compile and check: a served run's, over the agent's ledger.
   let shares: ReadonlyMap<string, number | null> = new Map();
   if (path !== null && SERVED_PATHS.includes(path) && revisionOfRow(run)) {
-    const listed = (await store.runs.list({ agentId: run.agentId })).filter((one) => one.agentId === run.agentId);
-    shares = (await agentLedgerOf(await agentRecordsOf(store, run.agentId, listed), await promotionsOf(store.settings, run.agentId), listed)).shares;
+    // The served run's learning: the agent's on the run's own disk, its runs and promotions alone (learn/learning-of.ts).
+    const learning = { agentId: run.agentId, disk: run.disk ?? null };
+    const listed = (await store.runs.list(learning)).filter((one) => one.agentId === run.agentId);
+    shares = (await agentLedgerOf(await agentRecordsOf(store, run.agentId, listed), await promotionsOf(store.settings, learningIdOf(learning)), listed)).shares;
   }
   const figures = { run_id: run.id, ...cost };
   const compiles = await compilesOf(store, run.id);
@@ -499,14 +504,15 @@ export async function costRunOf(store: RunRecords, run: RunRecord, n: number | n
   return { n, run_id: run.id, started_at: new Date(run.startedAt).toISOString(), path, workflow, digest, audited, cost_usd, cost_upper_bound, learning_usd, total_usd };
 }
 
-/** The runs the money rule reads for agent `agentId` (runner/workflow-first.ts costLineOf), one set for the run's launch
- *  and the cost page: of its newest PAST_RUNS runs, each that ended (ended, stopped or failed), is neither imported nor
- *  archived nor a workflow revision's run, with its all-in cost (allInOf). `known`: all-in costs already read, by run id
- *  (the cost page's series), read again for no run; `records`, where any other's rows are read (the store's by default). */
-export async function pastRunsOverStore(store: Store, agentId: string, known?: ReadonlyMap<string, number | null>, records: RunRecords = store): Promise<PastRun[]> {
+/** The runs the money rule reads for a learning (runner/workflow-first.ts costLineOf), one set for the run's launch and
+ *  the cost page: of the agent's newest PAST_RUNS runs on the learning's disk (learn/learning-of.ts: a run on another disk
+ *  is never read), each that ended (ended, stopped or failed), is neither imported nor archived nor a workflow revision's
+ *  run, with its all-in cost (allInOf). `known`: all-in costs already read, by run id (the cost page's series), read again
+ *  for no run; `records`, where any other's rows are read (the store's by default). */
+export async function pastRunsOverStore(store: Store, { agentId, disk }: LearningOf, known?: ReadonlyMap<string, number | null>, records: RunRecords = store): Promise<PastRun[]> {
   const kinds = new Map<string, string | undefined>();
   const kept: RunRecord[] = [];
-  const page = await store.runs.list({ agentId, limit: PAST_RUNS });
+  const page = await store.runs.list({ agentId, disk, limit: PAST_RUNS });
   // Each run's audit shadow is read off the page (allInOf's shadowSpendOf): a shadow starts after the run it audits ends,
   // so it is newer than that run and on the same page of the newest runs; one not on it was never started.
   const shadows = new Map(page.filter((run) => isShadowRun(run.id)).map((run) => [run.id, run]));
@@ -532,10 +538,10 @@ export async function pastRunsOverStore(store: Store, agentId: string, known?: R
   return past;
 }
 
-/** The money rule's decision for agent `agentId` (runner/workflow-first.ts costStopOf) over the runs a run's launch reads
+/** The money rule's decision for a learning (runner/workflow-first.ts costStopOf) over the runs a run's launch reads
  *  (pastRunsOverStore), as the launch reads them: runs that can't be read now stop nothing (workflowFirstOf serves). What
  *  the promotions read and the learning view fold into each workflow's state (learn/promote.ts servingStateOf). */
-export const costStopOverStore = async (store: Store, agentId: string) => costStopOf(await pastRunsOverStore(store, agentId).catch(() => []));
+export const costStopOverStore = async (store: Store, learning: LearningOf) => costStopOf(await pastRunsOverStore(store, learning).catch(() => []));
 
 /** The path run `runId` took and the learned workflow it ran, the one classifier its run record keeps (metrics.path,
  *  metrics.workflow, metrics.workflow_digest: workflow-first.ts pathMetrics, written at the run's end) and its cost per run
@@ -747,8 +753,7 @@ export function usedOnly(started: NonNullable<RunLaunch["learning"]>, terminal: 
   // A start that could not be made (a folder unreadable) handed the run nothing: said so from its start, as the end hook
   // says it for a run that learns, never "seeded" and then `use`. No proposal is written for it.
   if (seedFailed(started)) {
-    const why = started.seedFailed === "unreadable" ? STOPPED.unreadable : started.seedFailed === "not_copied" ? STOPPED.notCopied : STOPPED.noSeed;
-    return { state: "dropped", reason: "seed_failed", detail: said.stopped(why), at };
+    return { state: "dropped", reason: "seed_failed", detail: said.stopped(seedStopped(started.seedFailed)), at };
   }
   return terminal ? { state: "dropped", reason: "use", detail: said.use, at } : { state: "seeded", reason: null, detail: said.seeded(correctionCount(started.section), started.workflows?.length ?? 0), at };
 }
@@ -767,7 +772,7 @@ export async function runLearningOverStore(store: Store, runId: string, shown: S
   if (!end) return null;
   // A kept compile's promotion (learn/promote.ts), as the agent's records say now: unread, it stays undecided.
   if (end.compiled?.digest && row) {
-    const promoted = promotedOf(await promotionsOf(store.settings, row.agentId).catch(() => []), end.compiled.workflow, end.compiled.digest);
+    const promoted = promotedOf(await promotionsOf(store.settings, learningIdOf({ agentId: row.agentId, disk: row.disk ?? null })).catch(() => []), end.compiled.workflow, end.compiled.digest);
     if (promoted !== undefined) end.compiled = { ...end.compiled, promoted };
   }
   const used = !!started?.workflows?.length;
@@ -777,7 +782,7 @@ export async function runLearningOverStore(store: Store, runId: string, shown: S
   // The run's own grade (PUT /runs/{id}/grade), as its agent keeps it and the PUT answered it, with the round it opened.
   // Never its `expected` (a person's words, uncut), nor its label (not kept). Its workflow's name is cut as every other
   // learning name is (`shown.name`): a secret registered after the grade never shows here.
-  const grade = row ? (await gradesOf(store.settings, row.agentId).catch(() => [])).find((one) => one.run === runId) : undefined;
+  const grade = row ? (await gradesOf(store.settings, learningIdOf({ agentId: row.agentId, disk: row.disk ?? null })).catch(() => [])).find((one) => one.run === runId) : undefined;
   if (!grade) return body;
   const { expected: _, ...graded } = gradeView(grade);
   // How that round stands, from the run's journal and its steer's row (feedbackStatus: its words taken, then the run's

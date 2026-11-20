@@ -21,10 +21,10 @@ export const SIGN_IN_HANDED_LOCK = "sign_in_handed";
 export type RunRecord = {
   id: string; agent_id: string; revision_id: string; state: RunState; epoch: number; runner: string | null; claimed_until: number | null;
   wake_at: number | null; backoff_until: number | null; cost_usd: number | null; cost_upper_bound: number; metrics: string | null; summary: string | null;
-  outcome: string | null; archived_at: number | null; imported_from: string | null; sign_in_handed: string | null; labels: string | null; started_at: number; ended_at: number | null;
+  outcome: string | null; archived_at: number | null; imported_from: string | null; sign_in_handed: string | null; labels: string | null; disk: string | null; started_at: number; ended_at: number | null;
 };
 
-export const RUN_COLUMNS = "id, agent_id, revision_id, state, epoch, runner, claimed_until, wake_at, backoff_until, cost_usd, cost_upper_bound, metrics, summary, outcome, archived_at, imported_from, sign_in_handed, labels, started_at, ended_at";
+export const RUN_COLUMNS = "id, agent_id, revision_id, state, epoch, runner, claimed_until, wake_at, backoff_until, cost_usd, cost_upper_bound, metrics, summary, outcome, archived_at, imported_from, sign_in_handed, labels, disk, started_at, ended_at";
 
 /** A run's exact cost in SQL, for a query that reads runs.cost_usd itself (`alias`: its runs table's): NULL when the
  *  stored figure is only the most the run can have cost, as runOf reads it. Every raw read of the column goes through it. */
@@ -41,7 +41,7 @@ export const runOf = (r: RunRecord): RunRow => ({
   wakeAt: r.wake_at, backoffUntil: r.backoff_until, ...costOf(r.cost_usd, r.cost_upper_bound), metrics: r.metrics === null ? null : JSON.parse(r.metrics), summary: r.summary,
   outcome: (r.outcome as RunOutcome | null) ?? null, archivedAt: r.archived_at, importedFrom: r.imported_from === null ? null : (JSON.parse(r.imported_from) as ImportedFrom),
   signInHanded: r.sign_in_handed === null ? null : (JSON.parse(r.sign_in_handed) as string[]), labels: r.labels === null ? {} : (JSON.parse(r.labels) as RunLabels),
-  startedAt: r.started_at, endedAt: r.ended_at,
+  disk: r.disk, startedAt: r.started_at, endedAt: r.ended_at,
 });
 
 /** Applies `patch` to the claim's run, then writes `also`, through `tx` (an open transaction's handle). Fenced, with nothing

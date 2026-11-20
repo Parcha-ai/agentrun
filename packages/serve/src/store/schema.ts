@@ -13,7 +13,8 @@
 // build of this version made and drops the table, so a revision saved before has no pin until its first run pins it.
 // Its monid endpoints are pinned beside them (revisions.monid_pin, REVISIONS_MONID_PIN), added at a server open the same way.
 // A run's cost says whether it is the most the run can have cost (runs.cost_upper_bound, RUNS_COST_UPPER_BOUND), added at a
-// server open the same way. A run's labels (runs.labels, RUNS_LABELS) are added at a server open the same way, and so is
+// server open the same way. A run's labels (runs.labels, RUNS_LABELS) and its disk (runs.disk, RUNS_DISK) are added at a
+// server open the same way, and so is
 // a trigger's package mark (triggers.template_id, TRIGGERS_TEMPLATE_ID).
 // The template packages imported from GitHub (imported_templates) are a table of their own that nothing
 // else reads, so it needs no version: the server adds it at its open to a store an earlier build of this version made
@@ -64,6 +65,11 @@ export const RUNS_COST_UPPER_BOUND = `ALTER TABLE runs ADD COLUMN ${COST_UPPER_B
 /** A run's labels (JSON, null for none): in STORE_DDL, and added at a server open to a store an earlier build of this version
  *  made, as RUNS_COST_UPPER_BOUND is (a run started before reads as given none). */
 export const RUNS_LABELS = `ALTER TABLE runs ADD COLUMN ${json("labels", true)}`;
+/** A run's disk (RunRow.disk): in STORE_DDL, and added at a server open to a store an earlier build of this version made, as
+ *  RUNS_LABELS is, then written for every run already there from its launch body (RUNS_DISK_FROM_LAUNCH), as a new run's is
+ *  at its create: a run whose launch named no disk of its own reads as the default disk's. */
+export const RUNS_DISK = "ALTER TABLE runs ADD COLUMN disk TEXT";
+export const RUNS_DISK_FROM_LAUNCH = "UPDATE runs SET disk = (SELECT json_extract(body, '$.archil_disk.disk_id') FROM run_launch WHERE run_launch.run_id = runs.id AND json_extract(body, '$.archil_disk.kind') = 'launch')";
 /** A trigger's package mark (TriggerRow.templateId): the id of the template package whose apply made or last kept it, null
  *  for one a person made. In STORE_DDL, and added at a server open to a store an earlier build of this version made, as
  *  RUNS_LABELS is (a trigger made before reads as no package's). */
@@ -318,6 +324,10 @@ export const STORE_DDL: readonly string[] = [
     -- server and only filtered on (runs.list). Null when it was given none. Added at a server open to a store an earlier
     -- build of this version made (RUNS_LABELS), its runs reading as given none.
     ${json("labels", true)},
+    -- The disk the run's launch named as its own (RunRow.disk: a customer's Archil disk, by its id), set once with the queued
+    -- run from its launch body; null for the default disk's. Learning reads an agent's runs on one disk alone. Added at a
+    -- server open to a store an earlier build of this version made (RUNS_DISK), written then from each run's launch.
+    disk TEXT,
     started_at INTEGER NOT NULL,
     ended_at INTEGER,
     -- The run's listing (RUN_LISTING_COLUMNS): what a runs list shows of it, kept on its row so a list reads rows alone.
