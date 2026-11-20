@@ -443,6 +443,15 @@ export const wholeAnswerFor = (values: readonly string[]): WholeAnswer => ({
 const answersServed = new WeakMap<Store, Map<string, string>>();
 const ANSWERS_KEPT = 32;
 
+/** Run `runId`'s answer rows dropped from what the readers of `store` last served (wholeAnswers): a purged or deleted
+ *  run's text kept in no memory of this process (store-view.ts forgetServed). The keys it dropped. */
+export function forgetServedAnswers(store: Store, runId: string): string[] {
+  const kept = answersServed.get(store.origin);
+  const dropped = [...(kept?.keys() ?? [])].filter((key) => key.startsWith(`${runId}\0`));
+  for (const key of dropped) kept!.delete(key);
+  return dropped;
+}
+
 /** `rows` (runTimeline's, rendered with `options`) with each final answer whole, as main served a run's answer: the renderer
  *  cuts a row's text at CAPS.text, and its redactor (`options.redact`, key-refusal.ts redacted) reads only the head a row
  *  shows and cuts the rest, ending what it cut in "..." (short of the cap when it replaced a held value there), or giving

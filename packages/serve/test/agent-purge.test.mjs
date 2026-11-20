@@ -178,10 +178,17 @@ for (const step of ["after_step_2", "in_step_3"]) {
 
 /** `promise`, or a failure in words once `ms` have passed. */
 const within = (promise, ms, what) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${what}: not within ${ms} ms`)), ms).unref())]);
+/** The server's deleteTurnQueued seam over `gate.waits`: each queued(gate, agentId, n) settles once `n` requests wait in
+ *  that agent's delete turn, each provably behind the DELETE that holds it. */
+const queuedSeam = (gate) => (agentId, waiting) => {
+  for (const one of gate.waits) if (one.agentId === agentId && waiting >= one.n) one.resolve();
+};
+const queued = (gate, agentId, n) => new Promise((resolve) => gate.waits.push({ agentId, n, resolve }));
 
 test("an agent being purged takes no unarchive and no write (its home, its definition, its current revision): after a purge stopped part way each is 409 agent_not_runnable until a DELETE finishes it; one sent while the DELETE runs waits for it and is 410 purged, its home and definition never written again",{ timeout: 180_000 }, async (t) => {
-  const gate = { stop: false, hold: false };
+  const gate = { stop: false, hold: false, waits: [] };
   const { api, data, store } = await serve(t, {
+    deleteTurnQueued: queuedSeam(gate),
     agentDeleteAt: async (at) => {
       if (at === "after_step_2" && gate.stop) {
         gate.stop = false;
@@ -222,7 +229,7 @@ test("an agent being purged takes no unarchive and no write (its home, its defin
   const writing = api("PUT", homeFile("late.md"), "late notes");
   const editing = api(...edit);
   const moving = api(...move);
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  await within(queued(gate, "held", 4), 60_000, "the unarchive, the home write, the edit and the move wait in the DELETE's turn");
   gate.release();
   const [deleted, unarchived, written, edited, moved] = await Promise.all([deleting, unarchiving, writing, editing, moving]);
   assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
@@ -249,8 +256,17 @@ function slowSend(port, token, method, path, body) {
   return { answer, finish };
 }
 
-test("an edit of an agent's definition, or a move of its current revision, whose body arrives after its purge is 410 purged: no revision, text or move of it is written", { timeout: 120_000 }, async (t) => {
-  const { api, data, store, port, token, halt } = await haltable(t);
+test("an edit of an agent's definition, or a move of its current revision, whose body arrives while its purge runs (the agent read live when each was sent) waits for the purge and is 410 purged: no revision, text or move of it is written", { timeout: 120_000 }, async (t) => {
+  const gate = { hold: false, waits: [] };
+  const { api, data, store, port, token, halt } = await haltable(t, {
+    deleteTurnQueued: queuedSeam(gate),
+    agentDeleteAt: async (at) => {
+      if (at !== "in_step_3" || !gate.hold) return;
+      gate.hold = false;
+      gate.reach();
+      await gate.held;
+    },
+  });
   await agentWithRun(api, "edited", "The instructions before.");
   await halt();
   // A second revision, so a move of its current revision back to the first is a write.
@@ -259,15 +275,22 @@ test("an edit of an agent's definition, or a move of its current revision, whose
   const [first, current] = (await store.agents.revisions("edited")).map((revision) => revision.id);
   assert.equal((await api("POST", "/agents/edited/archive")).status, 200);
 
-  // Both routes read the agent when they are sent; their bodies come once it is purged.
+  // Both routes read the agent when they are sent, before its tombstone; their bodies come while the DELETE holds the
+  // agent's turn, and each waits there behind it.
   const LATE = "Instructions sent while the agent was purged.";
   const editing = slowSend(port, token, "PUT", "/v2/agents/edited/definition", { definition: { instructions: LATE, description: LATE } });
   const moving = slowSend(port, token, "POST", "/v2/agents/edited/current", { revision: first });
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  const deleted = await api("DELETE", "/agents/edited");
-  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  gate.hold = true;
+  const reached = new Promise((resolve) => (gate.reach = resolve));
+  gate.held = new Promise((resolve) => (gate.release = resolve));
+  const deleting = api("DELETE", "/agents/edited");
+  await within(reached, 60_000, "the DELETE reached its runs");
   editing.finish();
   moving.finish();
+  await within(queued(gate, "edited", 2), 60_000, "the edit and the move wait in the DELETE's turn");
+  gate.release();
+  const deleted = await deleting;
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
   for (const [answer, what] of [[await editing.answer, "the edit"], [await moving.answer, "the move"]]) {
     assert.deepEqual([answer.status, answer.body?.error?.code], [410, "purged"], `${what}: ${JSON.stringify(answer.body)}`);
   }

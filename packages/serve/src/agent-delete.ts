@@ -52,6 +52,7 @@
 import { ApiError } from "./errors.js";
 import { LearningInFlight } from "./learn/delete.js";
 import { FINAL_STATES, type PurgeKept, type RunState, RunsMadeFromLeft, type Store, StoreConstraint, TriggersLeft } from "./store/index.js";
+import { forgetServed } from "./store-view.js";
 
 /** The delete of an agent's learning: the server's is the learning module's deleteLearning over the agent's learning
  *  folder (learn/delete.ts). Idempotent; refuses with LearningInFlight while learning work of the agent is in flight. */
@@ -135,6 +136,7 @@ export async function deleteExternalAgent(host: AgentDeleteHost, agentId: string
   for (const run of await host.store.runs.every(agentId)) {
     await host.forgetRun(agentId, run.id, false);
     await host.store.runs.remove(run.id);
+    forgetServed(host.store, run.id);
     if (first) await host.at?.("in_step_3", agentId);
     first = false;
   }
@@ -215,6 +217,8 @@ async function purgeOneOrRefuse(host: AgentDeleteHost, agentId: string, runId: s
     if (error instanceof StoreConstraint) throw notFinal(purged, [runId]);
     throw error;
   }
+  // Its answer and input as this process last served them: every route of it is 410 from here, so none is read again.
+  forgetServed(host.store, runId);
 }
 
 /** Every run made from run `runId` that is there and not purged, each one's own before it (deepest first), never `runId`. */
@@ -324,12 +328,26 @@ async function stopRuns(host: AgentDeleteHost, agentId: string): Promise<void> {
 }
 
 /** One delete of an agent at a time: a second DELETE of the same agent waits for the first, then finds it gone (404) or
- *  finishes what the first left. */
-export function oneAtATime(): <T>(agentId: string, work: () => Promise<T>) => Promise<T> {
+ *  finishes what the first left. `queued`, a test's seam: told each time a work waits behind another of its agent's,
+ *  with how many of that agent's wait now (the one running not counted). */
+export function oneAtATime(queued?: (agentId: string, waiting: number) => void): <T>(agentId: string, work: () => Promise<T>) => Promise<T> {
   const turns = new Map<string, Promise<unknown>>();
+  const waiting = new Map<string, number>();
   return <T>(agentId: string, work: () => Promise<T>): Promise<T> => {
-    const before = turns.get(agentId) ?? Promise.resolve();
-    const turn = before.then(work, work);
+    const held = turns.get(agentId);
+    let run = work;
+    if (held && queued) {
+      waiting.set(agentId, (waiting.get(agentId) ?? 0) + 1);
+      run = () => {
+        const left = waiting.get(agentId)! - 1;
+        if (left) waiting.set(agentId, left);
+        else waiting.delete(agentId);
+        return work();
+      };
+      queued(agentId, waiting.get(agentId)!);
+    }
+    const before = held ?? Promise.resolve();
+    const turn = before.then(run, run);
     const settled = turn.then(
       () => undefined,
       () => undefined,

@@ -1364,6 +1364,7 @@ export interface operations {
       template: string;
       version: string;
       agent_id: string;
+      revision_version: number;
       servers: Record<string, string | null>;
       trigger_ids: string[];
       warnings: components["InputIssue"][];

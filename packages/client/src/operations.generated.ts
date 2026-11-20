@@ -4089,6 +4089,7 @@ export type ApplyTemplateResponse = {
   template: string;
   version: string;
   agent_id: string;
+  revision_version: number;
   servers: Record<string, string | null>;
   trigger_ids: Array<string>;
   warnings: Array<InputIssue>;

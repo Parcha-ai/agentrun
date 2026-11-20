@@ -57,7 +57,7 @@ import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
 import { laidOf, pathViewOf, roundsOf, runLearningEnd, usedOnly } from "./store-reads/learning.js";
 import { inReflect, reflectRanges } from "./runner/end-of-run.js";
 import { correctionCount } from "./learn/corrections.js";
-import { isCliRecord, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
+import { forgetServedAnswers, isCliRecord, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
 import { costOfRun, type RunReadState, readRun } from "./store-reads/runs.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
 import { Turns } from "./turns.js";
@@ -131,6 +131,15 @@ function keptOnce<T>(store: Store, slot: string, input: string, values: readonly
     served.delete(oldest);
   }
   return out;
+}
+/** Run `runId`'s text dropped from what the readers of `store` last served: its view's slots (its answer's, its input's)
+ *  and its whole answer rows (store-reads/journal.ts forgetServedAnswers), so a purged or deleted run's text stays in no
+ *  memory of this process (agent-delete.ts). What it dropped, by slot and key. */
+export function forgetServed(store: Store, runId: string): string[] {
+  const served = servedByStore.get(store.origin);
+  const dropped = [`answer ${runId}`, `input ${runId}`].filter((slot) => served?.has(slot));
+  for (const slot of dropped) served!.delete(slot);
+  return [...dropped, ...forgetServedAnswers(store, runId)];
 }
 /** A run's answer as served: redactedAnswer's, once per answer and held value set. */
 const servedOnce = (store: Store, runId: string, input: string, values: readonly string[]): string =>
