@@ -126,8 +126,10 @@ export const MINTED_TOKENS = `CREATE TABLE IF NOT EXISTS minted_tokens (
 
 /** Each computer a run's claim made through its provider (a sandbox, a desktop, a phone), by the provider's own id for it:
  *  so an operator can see how long each lived for its run, find one left running after its run, and match the provider's
- *  invoice by its id. `kind`, and what it was made with (`gpu_type` and `gpu_count`, `cpus`, `memory_mb`), as its create
- *  asked, null where the create asked none (a hosted vendor that sizes its own machines): never a guess. `kept`: 1 once
+ *  invoice by its id. `kind`, and what it was made with (`gpu_type` and `gpu_count`, `cpus`, `memory_mb`, `disk_gb`): the
+ *  provider's own figures where its answer gave them (CreatedComputer.resources), else what its create asked, null where
+ *  neither says (a hosted vendor that sizes its own machines and says nothing): never a guess. `booked_ms`: how much of
+ *  its time a claim of its run booked on the run's ledger (compute-cost.ts), the rest being time no claim held. `kept`: 1 once
  *  the run's park kept it past the claim (computer-kept.ts). `ended_at`: written once, only when the provider's delete of
  *  it answered ok; null while none did (still running, or its delete failed or was never asked), never a guessed end. Not
  *  the agent's own computer (it outlives every run), a paired one or --faux's. In STORE_DDL, and added at a server open to
@@ -141,11 +143,19 @@ export const COMPUTER_INTERVALS = `CREATE TABLE IF NOT EXISTS computer_intervals
     gpu_count INTEGER,
     cpus REAL,
     memory_mb INTEGER,
+    disk_gb REAL,
     started_at INTEGER NOT NULL,
     kept INTEGER NOT NULL DEFAULT 0 CHECK (kept IN (0, 1)),
     ended_at INTEGER,
+    booked_ms INTEGER NOT NULL DEFAULT 0 CHECK (booked_ms >= 0),
     PRIMARY KEY (provider, provider_id)
   ) STRICT`;
+/** The columns a computer_intervals an earlier build of this version made lacks (its disk and its booked time), each
+ *  added at a server open where missing (sqlite/store.ts). */
+export const COMPUTER_INTERVALS_ADDED: Readonly<Record<string, string>> = {
+  disk_gb: "ALTER TABLE computer_intervals ADD COLUMN disk_gb REAL",
+  booked_ms: "ALTER TABLE computer_intervals ADD COLUMN booked_ms INTEGER NOT NULL DEFAULT 0 CHECK (booked_ms >= 0)",
+};
 /** A run's computers, read by its run (store.computerIntervals.forRun). */
 export const COMPUTER_INTERVALS_RUN = "CREATE INDEX IF NOT EXISTS computer_intervals_run ON computer_intervals (run_id, started_at)";
 

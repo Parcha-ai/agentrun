@@ -52,8 +52,10 @@ if (command === "init") {
 	// A file the init arguments' pattern would match, were they globbed.
 	writeFileSync(join(dir, "allow:x.example.com"), "");
 	const fetches = [];
+	const hosts = [];
 	const server = createServer((req, res) => {
 		fetches.push({ url: req.url, authorization: req.headers.authorization });
+		hosts.push(req.headers.host);
 		res.end(daemon);
 	});
 	await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -76,7 +78,7 @@ if (command === "init") {
 				resolve({ status, stderr, calls: recorded });
 			});
 		});
-	return { dir, fixed, env, fetches, run };
+	return { dir, fixed, env, fetches, hosts, run };
 }
 
 test("agentrun-dial is POSIX shell that stops at the first failure, never globs and never traces, and hands the token to curl on stdin alone", () => {
@@ -127,6 +129,29 @@ test("agentrun-dial gives a desktop's DISPLAY to init alone: attach's environmen
 	assert.deepEqual(Object.keys(init.env).sort(), ["AGENTRUN_COMPUTERD_SOCKET", "DISPLAY", "HOME", "OLDPWD", "PATH", "PWD"]);
 	assert.equal(init.env.DISPLAY, ":0");
 	assert.deepEqual(calls.find((call) => call.command === "attach").env, { AGENTRUN_ATTACH_URL: env.AGENTRUN_ATTACH_URL, AGENTRUN_ATTACH_TOKEN: TOKEN });
+});
+
+test("agentrun-dial with AGENTRUN_ATTACH_EGRESS fetches the daemon through the relay, naming the URL's host, and gives attach the relay beside the URL and token; init gets none of it", async (t) => {
+	const { env, fetches, hosts, run } = await box(t);
+	// The URL names a host that resolves nowhere (.test, RFC 6761): the local server reached is the relay alone.
+	const relay = `127.0.0.1:${new URL(env.AGENTRUN_DAEMON_URL).port}`;
+	const { status, stderr, calls } = await run({ AGENTRUN_DAEMON_URL: "http://daemon.example.test/v2/computers/daemon?arch=amd64", AGENTRUN_ATTACH_EGRESS: relay });
+	assert.equal(status, 0, stderr);
+	assert.deepEqual(fetches, [{ url: "/v2/computers/daemon?arch=amd64", authorization: `Bearer ${TOKEN}` }]);
+	assert.deepEqual(hosts, ["daemon.example.test"], "the request names the URL's host, never the relay");
+	assert.deepEqual(Object.keys(calls.find((call) => call.command === "init").env).sort(), ["AGENTRUN_COMPUTERD_SOCKET", "HOME", "OLDPWD", "PATH", "PWD"]);
+	assert.deepEqual(calls.find((call) => call.command === "attach").env, { AGENTRUN_ATTACH_URL: env.AGENTRUN_ATTACH_URL, AGENTRUN_ATTACH_TOKEN: TOKEN, AGENTRUN_ATTACH_EGRESS: relay });
+});
+
+test("agentrun-dial refuses an AGENTRUN_ATTACH_EGRESS of anything but digits, dots and colons (exit 2), before it fetches or runs anything", async (t) => {
+	const { fetches, run } = await box(t);
+	for (const egress of ["relay.example:18443", "192.0.2.40:18443 -k", "192.0.2.40:18443;id"]) {
+		const { status, stderr, calls } = await run({ AGENTRUN_ATTACH_EGRESS: egress });
+		assert.equal(status, 2, `${egress}: ${stderr}`);
+		assert.match(stderr, /AGENTRUN_ATTACH_EGRESS is the relay's <IPv4>:<port>/);
+		assert.deepEqual(calls, []);
+	}
+	assert.deepEqual(fetches, []);
 });
 
 test("agentrun-dial refuses a daemon whose sha256 is not the one it was given, before it runs anything, and removes it", async (t) => {

@@ -1429,6 +1429,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
 | `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?}` in, a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel, one billed extract a page a run) | yes, yes |
 | `web_search` | Search the web, natively where the harness or the model's provider can, else through Parallel where the server holds its key, else keyless through Exa, or through the provider picked ([search and fetch](#search-and-fetch)): `{query, n?}` in, `{provider, query, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
+| `web_save` | Download one file from a public URL into the run's `work/` and keep it there, for a link that expires (a generated image, audio or video): `{url, path}` in, `path` relative to `work/` and a bare name under `media/`; `{ok: true, path, bytes, content_type, url}` or `{ok: false, url, refused \| error}` out. Never overwrites | nothing | no, no |
 | `browser` | A hosted browser, Browserbase's or Kernel's, on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`); Kernel keeps no downloads, so a run on Kernel has no `browser_downloads` | `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, or `KERNEL_API_KEY` | yes, no |
 | `monid:<provider>/<endpoint>`, `monid:<provider>/*` | One monid endpoint, or every endpoint monid lists for a provider (at most 50), each pinned at the save and run as a tool of its own, paid per call from the monid wallet: `{body?, queryParams?, pathParams?}` in, the run's `output`, `price` and `cost` out ([monid](#monid)) | `MONID_API_KEY` | no, no |
 | `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/` (`<stem>`: the document's path below its directory made one name, with a short hash, so two documents of one file name never share pages), the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
@@ -1470,6 +1471,29 @@ failure is a Page with `ok: false` and `refused` or `error`, never a thrown erro
 can branch on it. An agent gets the Page as JSON text; a workflow's `call` node `via: "tool", tool: "web_fetch"` gets
 it as its output (`args: {url, offset?, max_chars?}`, 50,000 characters of text by default, `out` a schema of that
 shape). A call node naming a tool the table cannot run that way is refused before the run starts (`409`).
+
+`web_save` downloads through the same guard (pi-browser's `publicDownload`, the same hop loop as `publicFetch`): every
+hop resolved, checked and dialled at the address checked, ports 80 and 443 only, a URL at most 4,096 characters. A
+file is at most 200 MiB and a download at most 10 minutes. It writes through the run's Workspace (the run's local
+`work/`, or its folder on the run's disk in Mode 2), so a path with `..`, an absolute path, and a link on the way or as
+the file are refused, and a path that already holds a file or folder is refused rather than overwritten (checked before
+the download and again before the write). The whole file is held in memory and written once (a temporary name renamed over the path
+on a local folder, one put on the run's disk), so a download that fails or passes the cap leaves nothing at the path.
+At most 4 downloads run at once per runner, across its runs (`SAVE_CONCURRENCY`); the rest wait for a free slot under
+their own 10-minute deadline, and one whose deadline passes while it waits answers that. A download whose host states its
+length (an unencoded `Content-Length`) is read into one buffer of that length, so it holds its file's size; one that does
+not is joined from its chunks at the end, about twice its size at the peak. So a runner's downloads hold at most 800 MiB at
+once when their hosts state their lengths, and about 1.6 GiB when none does. In Mode 2 a run in its own process writes
+through its runner's Workspace of the run's disk: a write over 8 MiB crosses to the runner in pieces, and the runner
+assembles it and writes it once, at most 4 such writes at once per runner (a gate of their own, at most 200 MiB each), so
+up to another 800 MiB in the runner while they are written. Its type is checked
+against its bytes: an image (png, jpeg, gif, webp), audio (mp3, wav, ogg, m4a) or video (mp4, webm) is saved only when
+its bytes carry that type's signature, the type the host declares agrees (or it declares none, or
+`application/octet-stream`), and the path's extension names a type that agrees (`media/card.png`; `media/card` and
+`media/card.bin` are refused with the extension to use, as the Files tab types a file by its extension); `content_type`
+answers that type. Any other type (a page, a PDF, text) is saved only to a path whose extension names the type the host
+declares. A call a crash cut off is answered interrupted, never run again. `web_save` makes no paid request. Only an agent that names `web_save` has it (`web_fetch` does not carry it),
+and no workflow node or call node may name it: a workflow's call has the run's local folder, not its Workspace.
 
 On another harness, every host tool's result reaches the model within the host's bound of 120,000 characters
 (`HOST_RESULT_MAX_CHARS`, `@parcha/agentrun-kernel`): the kernel's tool bridge cuts a longer one, its start with a line
@@ -2905,7 +2929,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /agents/{id}/home/files`, and `GET`, `PUT`, `DELETE` on a file's path below it | The files in the agent's home, listed, read, written and deleted ([agent home](#agent-home)). This server's own routes (`x-agentrun-serve: "home/1"`). |
 | `GET /stats` | This server's own route, outside the contract (`x-agentrun-serve: "stats/1"`): the agents, the runs (`total`, `active`, `needs_input`, `failed`, `needs_review`, `status_unknown`), each agent's run count, the cost and what is archived, read from the agent store's aggregates alone, no run's files opened. Archived agents and runs are left out of every number but `archived`. A completed or cancelled run counts only in `runs.total`, but for an escalated one (completed, waiting for a person's review), which `needs_review` (`stats/3`) counts; `failed` never does. Each running run is in exactly one of `active` (queued or working) and `needs_input` (`input_required`), both from the runs this server holds, and `status_unknown`: a running run it does not hold, or holds as ended before its end is written. `cost.usd` sums the runs that ended with a cost and is null when none did, never $0, with `basis` (`reported`, `estimate` or `unpriced`: [A run's cost](#a-runs-cost-its-tokens-and-its-basis)), or null beside a null `usd`; `unknown_runs` counts the rest. `analytics` (`stats/2`) sums the runs' metrics over the runs not archived that the `from` and `to` query parameters (RFC 3339 date-times to the millisecond, an impossible one or a finer fraction refused; runs started in [`from`, `to`)) and `agent` pick, each optional, 400 when malformed: `filter` echoes them; `totals` (runs, completed, an escalated run included, `needs_review` (`stats/3`), failed, never an escalated run, `runs_with_metrics`, tokens and each token kind, requests, unmetered, `cost_usd` and `unknown_cost_runs`), `time` (`wall_ms` over the ended runs, `active_ms` where metrics have it), `by_harness_effort`, `by_day` (UTC), `by_source` (`live` or the import source) and the top 20 `tools`. A run with no metrics counts in `runs` and in no token sum. `learning` (`learning/1`) counts the runs that tried to learn over the same filters, from the store ([Learning](#learning)). The query bounds `analytics` and `learning` alone. |
 | `GET /runs/{id}/graph` | A workflow run drawn, live: its workflow, the DSL's `workflowGraph`, each node's state (a map's items with their labels and the branch each route took for them, a route's branch), every decision with its receipt (answers, evidence, the state the judge saw, image links), every call with its input and output, and the totals (cost, null when any part is unknown). While the run goes it reads the run process's `live.json`, rewritten every 300 ms, never the run's store, which the process holds; once it ended, its store is read lock-free, so a poll never waits on it and never answers `home_busy`. An agentic run has none (`404`). |
-| `GET /runs/{id}/usage` | This server's own (`runusage/1`): what one run cost, line by line: its model requests by model and provider, its paid tool calls by who charged for them, its browser time by provider, joining to its `cost.usd` ([A run's cost, line by line](#a-runs-cost-line-by-line)); beside them its browser sessions (`runusage/2`) and the computers it made, each from its create to its proven delete (`runusage/3`). Lines once the run ended; `reason` says why there are none. |
+| `GET /runs/{id}/usage` | This server's own (`runusage/1`): what one run cost, line by line: its model requests by model and provider, its paid tool calls by who charged for them, its browser time by provider, its computers' time by provider and resource (`runusage/4`), joining to its `cost.usd` ([A run's cost, line by line](#a-runs-cost-line-by-line)); beside them its browser sessions (`runusage/2`) and the computers it made, each from its create to its proven delete (`runusage/3`). Lines once the run ended; `reason` says why there are none. |
 | `GET /runs/{id}/trace` | A run's trace, for a person who debugs it: each model request that answered and each tool call as one span, in the order they started. A span has its `kind` (`model` or `tool`), its `name` (the model, or the tool), when it started and ended, how it ended (`status`), and the span it ran under (`parent_id`: the request that made a call, the call a subagent's request was started by). A model request also has its `tokens` (`input` not read from cache, `cache_read`, `cache_write`, `output`, and `reasoning` where reported), and its `usd`. A tool call also has the head of its arguments and of its output, as its Timeline rows show them, and what was charged under it (`usd`, `charged`, `not_metered`). A call that asked for approval ends as its approval did: `waiting` until it is answered, `refused` on a deny, `interrupted` when it was withdrawn with its run. Nothing is measured again or estimated: `model_requests` says what the run's record keeps. `priced`: each request is a span with its cost. `tokens_only`: a workflow run. Its model nodes' requests carry tokens and no cost, since the run's cost is its booking's; each of its decisions (a judge's, a route's, a verify's request) is a span too (`decision: true`), named by the model its provider answered with and labelled by its node, with its own cost. `not_recorded`: a CLI harness's record keeps no request, so its trace is its tool calls. A computer's own time is its provider's to bill and is in no span. Readable while the run goes; one read serves the run's first 2,000 spans and counts the rest in `dropped`. Its words are cut as the Timeline's are, and a run whose handed sign-in can't be read back is refused (`403`), as its graph is. The console's Dev tools tab reads it. |
 | `POST /runs/{id}/pause`, `POST /runs/{id}/resume` | A workflow run: what is in flight finishes, and no node, model call or decision starts until it is resumed. Its status reads `paused`, and stays so across a server restart. An agentic run is `501`, an ended one `409`. |
 | `POST /workflows/validate` | `{workflow, tools?}`: every issue a save would refuse (`[{path, code, message}]`, the DSL's validation with code not run) and what this host lacks as `warnings`. Writes nothing. A refused save's `422` carries each issue as a field under `definition.workflow`, with its `code`. |
@@ -3976,8 +4000,19 @@ were reached. Nothing is priced here, and nothing is rounded to a billing increm
 - `lines` and `total` are null, with `reason`, while the run is at work (`running`), for a run whose figure is not its
   booking's (`not_booked`: an imported, native or SDK run, or a CLI run whose model requests went past its proxy), and
   for a learning run a follow-up opened again (`reopened`, whose booking can't be split by round).
-- Computer time is not priced yet: no line carries it, and its cost is not in `total`. What the run's computers did is
-  in `computer_intervals` (below), so it can be measured and matched to the provider's invoice.
+- `compute_time` (`runusage/4`): one line per computer provider and resource (`resource`: `vcpu`, `memory`, `gpu` with
+  its `gpu_type`, `disk`), for the computers the run made. Sum a provider's lines for its one compute figure. `quantity`
+  is every second of each such computer at its figure (`vcpu_second`, `gib_second`, `gpu_second`, or `gb_month` of disk
+  over a 730-hour month); a computer still open is counted up to `measured_to` (`open_computers` says how many). `usd` is
+  what the run's ledger booked for it while a claim held the computer, at the operator's price ([Computer
+  time](#computer-time)), so `total` stays the run's `cost.usd`. The part no claim held (`unheld_quantity`: a computer
+  kept past its claim for a follow-up, one deleted after its run, one whose delete failed) is in no cost. A resource with
+  no price set, or whose figure no one said, is `unpriced`, its `usd` null; a provider that bills nothing (`docker`) is
+  $0. A `compute_time` line that is `unpriced` and any `unheld_quantity` are outside `total`.
+  ```json
+  { "meter": "compute_time", "model": null, "provider": "daytona", "charged_by": "daytona", "resource": "vcpu", "gpu_type": null,
+    "quantity": 348, "unit": "vcpu_second", "basis": "estimate", "usd": 0.004872, "unheld_quantity": 0, "open_computers": 0 }
+  ```
 - `browser_sessions` (`runusage/2`) holds one record per browser session the run opened, in the order it opened them.
   With it you can see how long each session ran, spot one that ended late or was lost, and find each on the provider's
   own dashboard and invoice by its id: the provider's id for the session (`provider_session_id`), when
@@ -3992,8 +4027,9 @@ were reached. Nothing is priced here, and nothing is rounded to a billing increm
   desktop or a phone), by when each was made. With it you can see how long each of the run's computers lived, find one
   left running after its run, and match the provider's invoice by its own id: the provider (`provider`, this server's
   name for it, as the agent's computer setting names it), the provider's id for the computer (`provider_id`), its
-  `kind`, what its create asked for (`gpu` with its `type` and `count`, `cpus`, `memory_mb`; null where it asked none, as
-  a hosted provider that sizes its own machines is never given numbers, and none is guessed), when the create answered
+  `kind`, what it was made with (`gpu` with its `type` and `count`, `cpus`, `memory_mb`, `disk_gb`: the provider's own
+  figures where its answer gave them, as Daytona's, E2B's and Fly's do, else what its create asked for; null where neither
+  says, and none is guessed), how much of its time a claim held and booked (`booked_seconds`), when the create answered
   (`started_at`), and when the provider's delete of it answered ok (`ended_at`). `ended_at` is written only on that ok:
   null means no delete was proven (the computer may still be running, or its delete failed or never answered), never a
   guessed end. `kept` is true once the run's park kept the computer past its claim, for the person's answer. A computer
@@ -4002,6 +4038,46 @@ were reached. Nothing is priced here, and nothing is rounded to a billing increm
   every run), a paired computer and `--faux`'s are not the run's and have no record; a browser's sessions are in
   `browser_sessions`. A run's computers made before this server kept them have none either. The records are kept in the
   store's `computer_intervals` table (keyed by provider and the provider's id), and a purge of the run keeps them.
+
+### Computer time
+
+A computer's time is priced the way providers bill it: by what the computer holds (its vCPUs, its memory, its GPUs, its
+disk), for as long as it holds them. There are no sizes. Copy your provider's per-resource rates from its price sheet
+into these settings on the server, each in US dollars, `<PROVIDER>` being the provider as the agent's computer setting
+names it and `<GPU_TYPE>` the provider's own GPU name, both in capitals with every other character an underscore:
+
+| Setting | Price of |
+| --- | --- |
+| `AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_<PROVIDER>` | one vCPU for one second |
+| `AGENTRUN_COMPUTE_USD_PER_GIB_SECOND_<PROVIDER>` | one GiB of memory for one second |
+| `AGENTRUN_COMPUTE_USD_PER_GPU_SECOND_<PROVIDER>_<GPU_TYPE>` | one GPU of that type for one second (`..._DAYTONA_H100`) |
+| `AGENTRUN_COMPUTE_USD_PER_DISK_GB_MONTH_<PROVIDER>` | one GB of disk for a month of 730 hours |
+
+A price sheet that quotes by the hour divides by 3,600 (a vCPU at $0.0504 an hour is `0.000014`). What a computer holds
+is its provider's own figure where the provider's answer gives one (Daytona: vCPUs, memory, disk and GPUs; E2B and Fly:
+vCPUs and memory), else what its create asked for. Nothing is built in: a provider that bills nothing (`docker`) is $0,
+a resource set to `0` is $0 (its time booked at $0, its line `estimate` with `usd` 0), and with no setting a resource
+is unpriced.
+
+- **Priced:** the run's ledger holds the computer's time under the run's `max_cost_usd`, one stretch of 5 minutes ahead,
+  as a browser's time is held. A claim's computer is made while the run is set up, before its cap can judge anything:
+  its first stretch is held as soon as the cap can, so the run's first model request is judged beside it, and a cap
+  with no room parks the run there for a raise. A computer made later in the run (a new sandbox in place of a lost one)
+  has one stretch at what its create asks for held first, and a cap with no room for it makes nothing: the run fails in
+  the cap's words. Each stretch the computer ran is booked (its provider is owed it, so it is never refused) and the
+  next one held, the booked stretch's hold given back first so the cap never counts a stretch twice; a cap with no room
+  for the next pauses the run, as a paid tool call's refusal does, and a raise lets it go on. Before the run's end or park is written, the time since is booked and the hold let go, so the end's `cost.usd`
+  holds all of it. The booked time is in the run's `cost.usd` and on its `compute_time` lines.
+- **Unpriced** (no setting, or a figure no one said): nothing is held or booked, and nothing is refused. The computer
+  runs outside the cap, as a tool call with no price does, and its `compute_time` lines say `unpriced`. An operator who
+  sets no compute price keeps exactly the behavior before these settings.
+- **Not held by any claim:** a computer kept past its claim for a follow-up, one deleted after its run ended (the
+  seconds between the end's booking and its delete included), and one whose delete failed run on with no claim to hold
+  them. Their time is on the usage read (`unheld_quantity`, and the
+  interval's `booked_seconds` beside its life) but in no cap and no cost: check `computer_intervals` for such a computer.
+  A computer a later claim takes back is held again from then on.
+- A run whose process keeps no ledger here (a runner of its own with no run ledger) holds and books nothing, as if
+  unpriced.
 
 ## Spend cap
 

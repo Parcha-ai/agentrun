@@ -204,6 +204,7 @@ __all__ = [
     "DefinitionInputToolSettingsRead",
     "DefinitionInputToolSettingsSubagent",
     "DefinitionInputToolSettingsWebFetch",
+    "DefinitionInputToolSettingsWebSave",
     "DefinitionInputToolSettingsWebSearch",
     "DefinitionInputToolSettingsWrite",
     "DefinitionLearning",
@@ -237,6 +238,7 @@ __all__ = [
     "DefinitionToolSettingsRead",
     "DefinitionToolSettingsSubagent",
     "DefinitionToolSettingsWebFetch",
+    "DefinitionToolSettingsWebSave",
     "DefinitionToolSettingsWebSearch",
     "DefinitionToolSettingsWrite",
     "DeleteAgentArchilResponse",
@@ -718,6 +720,7 @@ __all__ = [
     "PutToolSettingsBodyRead",
     "PutToolSettingsBodySubagent",
     "PutToolSettingsBodyWebFetch",
+    "PutToolSettingsBodyWebSave",
     "PutToolSettingsBodyWebSearch",
     "PutToolSettingsBodyWrite",
     "PutToolSettingsResponse",
@@ -1238,6 +1241,7 @@ class DefinitionToolSettings(TypedDict, total=False):
     ask_person: DefinitionToolSettingsAskPerson
     web_fetch: DefinitionToolSettingsWebFetch
     web_search: DefinitionToolSettingsWebSearch
+    web_save: DefinitionToolSettingsWebSave
     email_search: DefinitionToolSettingsEmailSearch
     email_read: DefinitionToolSettingsEmailRead
     email_draft: DefinitionToolSettingsEmailDraft
@@ -1283,6 +1287,10 @@ class DefinitionToolSettingsWebFetch(TypedDict, total=False):
 
 class DefinitionToolSettingsWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionToolSettingsWebSave(TypedDict, total=False):
     permission: Literal["allow", "ask", "deny"]
 
 
@@ -1720,6 +1728,7 @@ class DefinitionInputToolSettings(TypedDict, total=False):
     ask_person: DefinitionInputToolSettingsAskPerson
     web_fetch: DefinitionInputToolSettingsWebFetch
     web_search: DefinitionInputToolSettingsWebSearch
+    web_save: DefinitionInputToolSettingsWebSave
     email_search: DefinitionInputToolSettingsEmailSearch
     email_read: DefinitionInputToolSettingsEmailRead
     email_draft: DefinitionInputToolSettingsEmailDraft
@@ -1765,6 +1774,10 @@ class DefinitionInputToolSettingsWebFetch(TypedDict, total=False):
 
 class DefinitionInputToolSettingsWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionInputToolSettingsWebSave(TypedDict, total=False):
     permission: Literal["allow", "ask", "deny"]
 
 
@@ -5840,12 +5853,12 @@ class GetRunUsageResponseTotal(_GetRunUsageResponseTotalRequired, total=False):
 
 
 class _GetRunUsageResponseLinesItemRequired(TypedDict):
-    meter: Literal["tokens", "tools", "browser_time"]
+    meter: Literal["tokens", "tools", "browser_time", "compute_time"]
     model: str | None
     provider: str | None
     charged_by: str | None
     quantity: float | None
-    unit: Literal["token", "call", "second"]
+    unit: Literal["token", "call", "second", "vcpu_second", "gib_second", "gpu_second", "gb_month"]
     basis: Literal["reported", "estimate", "unpriced"]
     usd: float | None
 
@@ -5858,6 +5871,11 @@ class GetRunUsageResponseLinesItem(_GetRunUsageResponseLinesItemRequired, total=
     tokens: GetRunUsageResponseLinesItemTokens
     unmetered_requests: int
     not_metered_calls: int
+    resource: Literal["vcpu", "memory", "gpu", "disk"]
+    gpu_type: str | None
+    unheld_quantity: float | None
+    open_computers: int
+    measured_to: str
 
 
 class GetRunUsageResponseLinesItemTokens(TypedDict):
@@ -5892,9 +5910,11 @@ class GetRunUsageResponseComputerIntervalsItem(TypedDict):
     gpu: GetRunUsageResponseComputerIntervalsItemGpu | None
     cpus: float | None
     memory_mb: int | None
+    disk_gb: float | None
     started_at: str
     ended_at: str | None
     kept: bool
+    booked_seconds: float
 
 
 class GetRunUsageResponseComputerIntervalsItemGpu(TypedDict):
@@ -7095,6 +7115,7 @@ class PutToolSettingsBody(TypedDict, total=False):
     ask_person: PutToolSettingsBodyAskPerson
     web_fetch: PutToolSettingsBodyWebFetch
     web_search: PutToolSettingsBodyWebSearch
+    web_save: PutToolSettingsBodyWebSave
     email_search: PutToolSettingsBodyEmailSearch
     email_read: PutToolSettingsBodyEmailRead
     email_draft: PutToolSettingsBodyEmailDraft
@@ -7139,6 +7160,10 @@ class PutToolSettingsBodyWebFetch(TypedDict, total=False):
 
 class PutToolSettingsBodyWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    permission: Literal["allow", "ask", "deny"]
+
+
+class PutToolSettingsBodyWebSave(TypedDict, total=False):
     permission: Literal["allow", "ask", "deny"]
 
 
