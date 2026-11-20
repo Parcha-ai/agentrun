@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startRunner } from "../dist/runner/runner.js";
-import { runnersRefused } from "../dist/runner/presence.js";
+import { keepPresence, runnersRefused } from "../dist/runner/presence.js";
 import { queue, stores, until } from "./runner-support.mjs";
 
 const TIMING = { leaseMs: 60_000, renewEveryMs: 50, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 20 };
@@ -96,4 +96,34 @@ test("the heartbeat goes on through a drain, until the runner has closed", async
   assert.equal(closed, false, "still draining");
   loops.started.get("run-draining")();
   await closing;
+});
+
+test("a refusal whose write failed is put again at each renewal until the store takes it: a cleared refusal never stays on the row", async () => {
+  const rows = [];
+  let failPuts = 0;
+  const runners = {
+    put: async (row) => {
+      if (failPuts > 0) {
+        failPuts--;
+        throw new Error("the store is down (a test's fault)");
+      }
+      rows.push(row.refused);
+      return true;
+    },
+    renew: async () => true,
+    remove: async () => undefined,
+  };
+  const presence = keepPresence(runners, "runner-flaky", null, { renewMs: 10 });
+  try {
+    await until(async () => rows.length === 1, "the first put");
+    await presence.refuse(WORDS);
+    assert.equal(rows.at(-1), WORDS);
+    // The clearing put fails: refuse rejects, and the renewals put the row again until one lands.
+    failPuts = 2;
+    await assert.rejects(presence.refuse(null), /the store is down/);
+    await until(async () => rows.at(-1) === null, "a renewal puts the cleared refusal once the store takes it");
+    assert.equal(failPuts, 0, "after the failed puts");
+  } finally {
+    await presence.close();
+  }
 });

@@ -61,7 +61,16 @@ export function keepPresence(runners: Runners, runner: string, refused: string |
   // name is live (Runners.put unlessLiveMs): an older process overlapping a restart never takes the later one's row back,
   // nor clears its relay.
   const again = () => runners.put(row(), { unlessLiveMs: PRESENCE_STALE_MS });
+  // A refusal changed (refuse) and not yet on the row: a renewal only marks the row seen, so until a put of the row lands
+  // each renewal is that put. A put that fails leaves it unsaid, for the next renewal.
+  let unsaid = false;
+  const sayRefusal = async () => {
+    unsaid = true;
+    await again();
+    unsaid = false;
+  };
   const renew = async () => {
+    if (unsaid) return void (await sayRefusal());
     if (!(await runners.renew(runner, incarnation, at))) await again();
   };
   let writing: Promise<unknown> = runners.put(row()).catch(failed);
@@ -87,9 +96,9 @@ export function keepPresence(runners: Runners, runner: string, refused: string |
       if (stopped) return Promise.resolve();
       // Its words are on the row, not on a renewal (Runners.renew writes the seen time and the relay's place alone): the
       // row is put again, its own incarnation's, never over a later process's of the same name.
-      const wrote = writing.then(again);
+      const wrote = writing.then(sayRefusal);
       writing = wrote.catch(failed);
-      return wrote.then(() => undefined);
+      return wrote;
     },
     async close() {
       if (stopped) return;

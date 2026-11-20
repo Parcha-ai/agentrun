@@ -84,7 +84,7 @@ test("on Postgres: every run-facing name the server holds must be the runner's, 
   const store = { AGENTRUN_STORE_URL: PG_URL, AGENTRUN_STORE_SCHEMA: schema };
   // The server holds a tool key and a model upstream on loopback (a forwarder beside it), and says their names.
   const server = spawn(process.execPath, [CLI, "--data", join(root, "server"), "--port", "0", "--faux", FAUX, "--no-runner"], {
-    env: { ...baseEnv(root), ...store, AGENTRUN_ACCOUNTS: "0", AGENTRUN_TOKEN: TOKEN, AGENTRUN_SEAL_KEY: SEAL, MONID_API_KEY: MONID, ANTHROPIC_BASE_URL: upstream },
+    env: { ...baseEnv(root), ...store, AGENTRUN_ACCOUNTS: "0", AGENTRUN_TOKEN: TOKEN, AGENTRUN_SEAL_KEY: SEAL, MONID_API_KEY: MONID, ANTHROPIC_BASE_URL: upstream, AGENT_MODEL_FAST: "faux-fast" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   const exited = new Promise((resolve) => server.once("exit", resolve));
@@ -111,10 +111,11 @@ test("on Postgres: every run-facing name the server holds must be the runner's, 
   assert.equal(stateOf(short.out, "AGENTRUN_SEAL_KEY"), "ok", short.out);
   assert.equal(stateOf(short.out, "MONID_API_KEY"), "missing", short.out);
   assert.equal(stateOf(short.out, "ANTHROPIC_BASE_URL"), "missing", short.out);
+  assert.equal(stateOf(short.out, "AGENT_MODEL_FAST"), "missing", "a tier's model the server holds is the runner's too");
   assert.match(short.err, /MONID_API_KEY: the server holds it/);
 
   // With both, and the forwarder answering: complete.
-  const whole = await check({ AGENTRUN_SEAL_KEY: SEAL, MONID_API_KEY: MONID, ANTHROPIC_BASE_URL: upstream });
+  const whole = await check({ AGENTRUN_SEAL_KEY: SEAL, MONID_API_KEY: MONID, ANTHROPIC_BASE_URL: upstream, AGENT_MODEL_FAST: "faux-fast" });
   neverPrinted(whole);
   assert.equal(whole.code, 0, whole.out + whole.err);
   assert.equal(stateOf(whole.out, "MONID_API_KEY"), "ok", whole.out);
@@ -122,18 +123,18 @@ test("on Postgres: every run-facing name the server holds must be the runner's, 
   assert.match(whole.out, /^ok\s+ANTHROPIC_BASE_URL\s+on this machine's loopback, and a forwarder answers there$/m);
   assert.match(whole.out, /^Runner environment: complete/m);
   // The server's own token on a runner is warned of, and fails nothing.
-  const tokened = await check({ AGENTRUN_SEAL_KEY: SEAL, MONID_API_KEY: MONID, ANTHROPIC_BASE_URL: upstream, AGENTRUN_TOKEN: TOKEN });
+  const tokened = await check({ AGENTRUN_SEAL_KEY: SEAL, MONID_API_KEY: MONID, ANTHROPIC_BASE_URL: upstream, AGENT_MODEL_FAST: "faux-fast", AGENTRUN_TOKEN: TOKEN });
   assert.equal(tokened.code, 0, tokened.out);
   assert.equal(stateOf(tokened.out, "AGENTRUN_TOKEN"), "warn", tokened.out);
   assert.ok(!tokened.out.includes(TOKEN), "nor the token");
 
   // Another seal key: bad. A forwarder that does not answer: bad.
-  const otherKey = await check({ AGENTRUN_SEAL_KEY: OTHER_SEAL, MONID_API_KEY: MONID, ANTHROPIC_BASE_URL: upstream });
+  const otherKey = await check({ AGENTRUN_SEAL_KEY: OTHER_SEAL, MONID_API_KEY: MONID, ANTHROPIC_BASE_URL: upstream, AGENT_MODEL_FAST: "faux-fast" });
   neverPrinted(otherKey);
   assert.equal(otherKey.code, 1);
   assert.equal(stateOf(otherKey.out, "AGENTRUN_SEAL_KEY"), "bad", otherKey.out);
   await forwarder.close();
-  const noForwarder = await check({ AGENTRUN_SEAL_KEY: SEAL, MONID_API_KEY: MONID, ANTHROPIC_BASE_URL: upstream });
+  const noForwarder = await check({ AGENTRUN_SEAL_KEY: SEAL, MONID_API_KEY: MONID, ANTHROPIC_BASE_URL: upstream, AGENT_MODEL_FAST: "faux-fast" });
   assert.equal(noForwarder.code, 1);
   assert.match(noForwarder.out, /^bad\s+ANTHROPIC_BASE_URL\s+on this machine's loopback, and nothing answers/m);
   assert.match(noForwarder.err, /ANTHROPIC_BASE_URL: on this machine's loopback, and nothing answers there/);
@@ -148,8 +149,8 @@ test("on Postgres: every run-facing name the server holds must be the runner's, 
 });
 
 test("the names a server says: its run-facing ones alone, never its own secrets, its store or its seal key", () => {
-  const env = { MONID_API_KEY: "x", ANTHROPIC_BASE_URL: "http://127.0.0.1:4000", DAYTONA_TARGET: "us", AGENTRUN_ARCHIL_REGION: "r", AGENTRUN_TOKEN: "t", AGENTRUN_STORE_URL: "postgres://x", AGENTRUN_SEAL_KEY: "k", AGENTRUN_BASE_URL: "http://a", UNRELATED: "u", EMPTY_API_URL: "" };
-  assert.deepEqual(runFacingNames((name) => env[name], Object.keys(env)), ["AGENTRUN_ARCHIL_REGION", "ANTHROPIC_BASE_URL", "DAYTONA_TARGET", "MONID_API_KEY"]);
+  const env = { MONID_API_KEY: "x", ANTHROPIC_BASE_URL: "http://127.0.0.1:4000", DAYTONA_TARGET: "us", AGENTRUN_ARCHIL_REGION: "r", AGENT_MODEL: "m", AGENT_MODEL_FAST: "f", AGENT_MODEL_STRONG: "s", AGENTRUN_TOKEN: "t", AGENTRUN_STORE_URL: "postgres://x", AGENTRUN_SEAL_KEY: "k", AGENTRUN_BASE_URL: "http://a", UNRELATED: "u", EMPTY_API_URL: "" };
+  assert.deepEqual(runFacingNames((name) => env[name], Object.keys(env)), ["AGENTRUN_ARCHIL_REGION", "AGENT_MODEL", "AGENT_MODEL_FAST", "AGENT_MODEL_STRONG", "ANTHROPIC_BASE_URL", "DAYTONA_TARGET", "MONID_API_KEY"]);
   assert.equal(runFacing("AGENTRUN_TOKEN"), false);
   assert.equal(RUN_ENV_KEY, "server.run_env");
   assert.deepEqual(loopbackTarget("http://localhost:4000/v1"), { host: "localhost", port: 4000 });

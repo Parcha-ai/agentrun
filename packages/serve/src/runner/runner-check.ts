@@ -7,9 +7,10 @@
 // - the seal key: AGENTRUN_SEAL_KEY (else the key file in --data) is the one the store's secrets are sealed under;
 // - the server's run-facing names: every one the server held at its last start (it keeps their names, never their values,
 //   in the store: RUN_ENV_KEY), the runner holds too. These are what a run's claim reads from its runner's environment:
-//   model, tool and box keys, the Archil settings, each box provider's settings, AGENT_MODEL, AGENTRUN_BOX_ALLOW and the
-//   upstreams a model or a tool is sent to (*_BASE_URL, *_API_URL). A server older than this release says none: then
-//   that part is skipped, said, and fails nothing;
+//   model, tool and box keys, the Archil settings, each box provider's settings, the tiers' models (AGENT_MODEL,
+//   AGENT_MODEL_FAST, AGENT_MODEL_STRONG), AGENTRUN_BOX_ALLOW and the upstreams a model or a tool is sent to
+//   (*_BASE_URL, *_API_URL). A server older than this release says none: then that part is skipped, said, and fails
+//   nothing;
 // - forwarder targets: each upstream the runner holds that names this machine's loopback (a forwarder beside the runner,
 //   such as a model gateway's) answers a TCP connect.
 //
@@ -44,7 +45,10 @@ const FIXED: ReadonlySet<string> = new Set([
   ...TOOL_KEY_ROWS.flatMap((row) => row.fields as readonly string[]),
   ...PROVIDERS.flatMap((provider) => provider.keys.map((key) => key.name)),
   ...Object.values(ARCHIL_SETTINGS_ENV),
+  // The model of each tier (model.ts TIER_ENV): the default, and the fast and strong ones a subagent may pick.
   "AGENT_MODEL",
+  "AGENT_MODEL_FAST",
+  "AGENT_MODEL_STRONG",
   BOX_ALLOW_ENV,
 ].filter((name) => !NOT_RUN_FACING.has(name)));
 
