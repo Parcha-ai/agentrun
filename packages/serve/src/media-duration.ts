@@ -1,6 +1,5 @@
 // A media file's length in seconds, read from its bytes alone: an ISO file's movie header (mp4, m4a, mov), a WAV's data
-// chunk over its byte rate, an MP3's frame count (Xing, Info or VBRI) or, with none, its bytes over its first frame's
-// bitrate. Pure: no decoder, nothing read past the bytes given. Undefined for anything else, or a file cut short of the
+// chunk over its byte rate, an MP3's frame count (Xing, Info or VBRI) or, with none, its frames walked one by one. Pure: no decoder, nothing read past the bytes given. Undefined for anything else, or a file cut short of the
 // header its length is in.
 
 const tag = (b: Uint8Array, at: number, text: string): boolean => at >= 0 && b.length >= at + text.length && [...text].every((c, i) => b[at + i] === c.charCodeAt(0));
@@ -67,7 +66,7 @@ const KBPS_V2: Record<number, readonly number[]> = {
   2: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],
   1: [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160],
 };
-type Frame = { rate: number; bitrate: number; samples: number; bytes: number; side: number };
+type Frame = { rate: number; samples: number; bytes: number; side: number };
 
 /** The MPEG audio frame header at `at`, or undefined when those four bytes are none. */
 function frameAt(b: Uint8Array, at: number): Frame | undefined {
@@ -81,14 +80,28 @@ function frameAt(b: Uint8Array, at: number): Frame | undefined {
   const mono = b[at + 3]! >> 6 === 3;
   const samples = layer === 3 ? 384 : layer === 2 || version === 3 ? 1152 : 576;
   const bytes = layer === 3 ? (Math.floor((12 * kbps * 1000) / rate) + padding) * 4 : Math.floor(((samples / 8) * kbps * 1000) / rate) + padding;
-  return { rate, bitrate: kbps * 1000, samples, bytes, side: version === 3 ? (mono ? 17 : 32) : mono ? 9 : 17 };
+  return { rate, samples, bytes, side: version === 3 ? (mono ? 17 : 32) : mono ? 9 : 17 };
 }
 
 /** The furthest past a tag an MP3's first frame is looked for. */
 const SYNC_SCAN = 64 * 1024;
 
+/** Every frame's samples over its rate, from the frame at `at` to `end`. A last frame cut short ends it; bytes that stop
+ *  being frames before that give no length, since a bitrate guessed for them could read the file short. */
+function walkedSeconds(b: Uint8Array, at: number, end: number): number | undefined {
+  let seconds = 0;
+  while (at < end) {
+    const frame = frameAt(b, at);
+    if (!frame) return undefined;
+    if (at + frame.bytes > end) break;
+    seconds += frame.samples / frame.rate;
+    at += frame.bytes;
+  }
+  return length(seconds);
+}
+
 /** An MP3's length: its first frame's Xing, Info or VBRI frame count times a frame's samples over its rate; with none,
- *  its audio bytes over that frame's bitrate (a constant bitrate), the frame taken only when another follows it. */
+ *  its frames walked one by one (a variable bitrate needs no header), the first taken only when another follows it. */
 function mp3Seconds(b: Uint8Array): number | undefined {
   let start = 0;
   // An ID3v2 tag: its size is four 7-bit bytes, with a 10-byte footer when flagged.
@@ -100,7 +113,7 @@ function mp3Seconds(b: Uint8Array): number | undefined {
     const xing = at + 4 + frame.side;
     if ((tag(b, xing, "Xing") || tag(b, xing, "Info")) && xing + 12 <= b.length && b[xing + 7]! & 1) return length((u32(b, xing + 8) * frame.samples) / frame.rate);
     if (tag(b, at + 36, "VBRI") && at + 54 <= b.length) return length((u32(b, at + 50) * frame.samples) / frame.rate);
-    if (at + frame.bytes === end || frameAt(b, at + frame.bytes)) return length(((end - at) * 8) / frame.bitrate);
+    if (at + frame.bytes === end || frameAt(b, at + frame.bytes)) return walkedSeconds(b, at, end);
   }
   return undefined;
 }

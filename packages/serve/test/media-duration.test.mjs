@@ -29,13 +29,29 @@ test("a wav reads its data chunk's bytes over its byte rate", async () => {
   near(mediaSeconds(SAMPLES.wav.bytes), SAMPLES.wav.seconds, 0.001, "wav");
 });
 
-test("an mp3 reads its Info header's frame count; one with none, its first frame's bitrate over its bytes, past an ID3 tag", async () => {
+test("an mp3 reads its Info header's frame count; one with none, its frames, past an ID3 tag", async () => {
   const { mediaSeconds } = await load();
   near(mediaSeconds(SAMPLES.mp3Info.bytes), SAMPLES.mp3Info.seconds, 0.001, "Info header");
   near(mediaSeconds(SAMPLES.mp3Cbr.bytes), SAMPLES.mp3Cbr.seconds, 0.05, "constant bitrate");
   // An ID3v2.3 tag of 300 bytes before the first frame (its size is four 7-bit bytes).
   const tagged = new Uint8Array([...ascii("ID3"), 3, 0, 0, 0, 0, 2, 44, ...new Array(300).fill(0), ...SAMPLES.mp3Cbr.bytes]);
   near(mediaSeconds(tagged), SAMPLES.mp3Cbr.seconds, 0.05, "constant bitrate after an ID3 tag");
+});
+
+test("an mp3 with no frame-count header is read frame by frame: a variable bitrate is never taken from its first frame", async () => {
+  const { mediaSeconds } = await load();
+  // MPEG-1 Layer III, 44.1 kHz, stereo, no CRC: 1152 samples a frame. Byte 2's high nibble is the bitrate index:
+  // 14 is 320 kbit/s (1044 bytes a frame), 1 is 32 kbit/s (104 bytes). A first frame at 320, then 200 at 32.
+  const at = (index, bytes) => [0xff, 0xfb, index << 4, 0x00, ...new Array(bytes - 4).fill(0)];
+  const quiet = Array.from({ length: 200 }, () => at(1, 104)).flat();
+  const vbr = [...at(14, 1044), ...quiet];
+  const seconds = (201 * 1152) / 44_100;
+  near(mediaSeconds(new Uint8Array(vbr)), seconds, 1e-9, "201 frames, not the first frame's bitrate over the bytes");
+  // A trailing ID3v1 tag (128 bytes from "TAG") and a last frame cut short are not frames, and end the walk.
+  near(mediaSeconds(new Uint8Array([...vbr, ...ascii("TAG"), ...new Array(125).fill(0)])), seconds, 1e-9, "before an ID3v1 tag");
+  near(mediaSeconds(new Uint8Array([...vbr, ...at(1, 104).slice(0, 50)])), seconds, 1e-9, "a last frame cut short");
+  // Bytes that stop being frames midway: the length can't be known, so none is given.
+  assert.equal(mediaSeconds(new Uint8Array([...vbr.slice(0, 1044 + 104 * 50), ...new Array(5000).fill(0x41), ...quiet])), undefined, "frames broken midway");
 });
 
 test("an mp3 with a VBRI header reads its frame count", async () => {
