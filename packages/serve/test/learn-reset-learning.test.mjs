@@ -347,6 +347,29 @@ test("a grade of a run served before the reset is kept, and writes no audit row:
   assert.deepEqual([audits.status, audits.body.audits], [200, []], "no audit row of a run before the reset");
 });
 
+test("a grade of a run on a named disk is kept, and writes no audit row: its answers never hold the agent's promotion nor reach its compile", async (t) => {
+  const { api, data, store } = await serve(t, { learning: "on", runner: false });
+  assert.equal((await api("POST", "/agents", agent("customer-graded", { learning: true }))).status, 201);
+  await learned(store, data, "customer-graded");
+  const revisionId = (await store.agents.get("customer-graded")).currentRevision;
+  const promoted = { workflow: "answer", digest: DIGEST, at: new Date(Date.now() - 60_000).toISOString(), decided: "promote", reason: "checked: promoted", check: { compile_after: 2, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 2, agreed: 2, alone: 2, of: [] } };
+  await store.settings.put(promotionsKey("customer-graded"), { v: 1, items: [promoted] });
+  const named = ["named-1", "named-2", "named-3"];
+  for (const id of named) {
+    await store.runs.create({ id, agentId: "customer-graded", revisionId }, { body: { input: ASK, title: "t", place: { mode: "runner" } } });
+    const claim = await store.claim(id, "runner-grade", { leaseMs: 60_000 });
+    await store.runs.update(claim, { state: "ended", costUsd: 0.1, metrics: { path: "workflow", workflow: "answer", workflow_digest: DIGEST } });
+    launchOnDisk(data, id, "customer-disk");
+  }
+  for (const id of named) {
+    const graded = await api("PUT", `/runs/${id}/grade`, { correct: false });
+    assert.deepEqual([graded.status, graded.body.correct], [200, false], JSON.stringify(graded.body));
+  }
+  assert.deepEqual((await promotionsOf(store.settings, "customer-graded")).map((one) => [one.decided, one.digest]), [["promote", DIGEST]], "the promotion stands: no hold, no disagreement copied from a named disk's run");
+  const audits = await api("GET", "/agents/customer-graded/learning/audits");
+  assert.deepEqual([audits.status, audits.body.audits], [200, []], "no audit row of a named disk's run");
+});
+
 /** An SDK agent of its own, with a draft of `status` landed on its learning folder (sdk-shadow-check.test.mjs). */
 const SDK_TOOL = { name: "mcp:backend/status", description: "Read release status.", input_schema: { type: "object" }, permission: "allow", price_usd: 0 };
 const SDK_FLOW = { name: "status", description: "Read release status.", workflow: { v: 2, name: "status", schemas: { Input: { type: "object", properties: { release: { type: "string" } }, required: ["release"] }, Answer: { type: "object", properties: { ready: { type: "boolean" } }, required: ["ready"] } }, input: { schemaId: "Input" }, output: { schemaId: "Answer", path: "answer" }, root: { node: "call", label: "read", via: "tool", tool: SDK_TOOL.name, args: {}, out: "Answer", as: "answer", deadline_s: 5 } } };
