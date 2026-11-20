@@ -775,10 +775,7 @@ test("connect dial: no Archil mount, no GPU and not Daytona's default snapshot, 
 	assert.equal(rec.requests.length, 0);
 });
 
-// Why a Daytona desktop is made on dial alone: the one test that pins the sentence whole.
-const EXEC_DESKTOP = 'Daytona gives a desktop computer on connect "dial" alone, not "exec": a desktop\'s sandbox boots from a snapshot of box/Dockerfile and dials this server, and none has run through the toolbox\'s session commands, so connect "exec" makes kind linux';
-
-test("kind desktop on connect dial: the desktop's groups, no GPU, the window manager computerd starts (init --window-manager), and DISPLAY beside the boot env, with no resources beside the snapshot; on connect exec it is refused when made, in words that say why", async () => {
+test("kind desktop on connect dial: the desktop's groups, no GPU, the window manager computerd starts (init --window-manager), and DISPLAY beside the boot env, with no resources beside the snapshot; on connect exec it is refused when made, in kindRefusal's words", async () => {
 	const rec = refusedCreate();
 	const dial = dialOf();
 	const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: rec.fetch, timeouts: TIMEOUTS, connect: "dial", dial, kind: "desktop" });
@@ -795,7 +792,7 @@ test("kind desktop on connect dial: the desktop's groups, no GPU, the window man
 	assert.match(body.env.AGENTRUN_INIT_ARGS, / --window-manager$/, "computerd starts the window manager, as root makes its network namespace");
 	assert.deepEqual([body.cpu, body.memory, body.disk], [undefined, undefined, undefined], "the snapshot's 2 CPUs and 4 GB: no resources beside a snapshot");
 	for (const connect of [undefined, "exec"]) {
-		assert.throws(() => setup({}, { ...(connect ? { connect } : {}), kind: "desktop" }), { message: EXEC_DESKTOP }, `connect ${connect}`);
+		assert.throws(() => setup({}, { ...(connect ? { connect } : {}), kind: "desktop" }), /^Error: Daytona gives a desktop computer on connect "dial" alone, not "exec"$/, `connect ${connect}`);
 		assert.equal(setup({}, { ...(connect ? { connect } : {}), kind: "linux" }).provider.capabilities().kind, "linux");
 	}
 });

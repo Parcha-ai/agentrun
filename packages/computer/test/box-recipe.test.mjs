@@ -385,7 +385,8 @@ test("the release publishes the box image beside agentrun-server, amd64, by the 
 });
 
 test("the image carries a desktop, nothing started: Xvfb, xfwm4 and the apps, each checked, with no sudo", async () => {
-  const { WINDOW_MANAGER } = await import("../dist/desktop.js");
+  // The script computerd's window-manager start becomes (daemon/internal/windowmanager).
+  const script = readFileSync(new URL("../daemon/internal/windowmanager/windowmanager.go", import.meta.url), "utf8").match(/^const script = `([^`]*)`$/m)?.[1] ?? "";
   const { DESKTOP_APPS } = await import("../dist/conformance/cases/apps.js");
   const desktop = step("desktop");
   const packages = desktop.match(/apt-get install -y -qq --no-install-recommends (.*?) >\/dev\/null\n/)?.[1].trim().split(/\s+/) ?? [];
@@ -395,11 +396,10 @@ test("the image carries a desktop, nothing started: Xvfb, xfwm4 and the apps, ea
   assert.ok(INSTALL.indexOf("desktop() {") < INSTALL.indexOf("checked() {") && /packages; desktop; helper; dial; checked/.test(INSTALL), "the sudo guard runs after the desktop's packages");
   const programs = desktop.match(/for x in ([^;]*); do command -v "\$x"/)?.[1].split(" ") ?? [];
   assert.ok(programs.includes("Xvfb"), "the build checks the X server is there");
-  // The window manager's programs beyond Debian's essential ones (unshare, util-linux's, and sh).
-  assert.equal(WINDOW_MANAGER[0], "unshare");
-  // xsetroot paints the desktop's background before xfwm4 starts, so a desktop with no window open is not a black screen.
+  // The window manager's programs beyond Debian's essential ones (sh). xsetroot paints the desktop's background before
+  // xfwm4 starts, so a desktop with no window open is not a black screen.
   for (const program of ["dbus-run-session", "xfwm4", "xsetroot"]) {
-    assert.ok(WINDOW_MANAGER.some((arg) => arg.includes(`${program} `)), `the window manager runs ${program}`);
+    assert.ok(script.includes(`${program} `), `the window manager runs ${program}`);
     assert.ok(programs.includes(program), `the build checks the window manager's ${program} is there`);
   }
   const apps = desktop.match(/for app in ([^;]*); do/)?.[1].split(" ") ?? [];

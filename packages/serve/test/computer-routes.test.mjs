@@ -2,10 +2,10 @@
 // POST .../hand-back, owner-only, driven at the route's own handler (computerRoute) as serve's dispatch calls it, and the
 // store-backed read the unified GET /computer builds on (computerViewOf, computerHoldOf): no server, no socket, no port. Everything
 // is read from the store: the run's journal entries (given here as the runner would commit them, computer-commands.ts's
-// contract) and its command rows (a real store in a temp dir). A token is refused; a run with no desktop or phone is off;
+// contract) and its command rows (a real store in a temp dir). A run with no desktop or phone is off;
 // one whose computer is not up is none; the agent's ask is answered by a hand-back, the first answer winning; a hand-back
-// with nothing to hand back is 404. The runner's side, and a take-over and hand-back end to end, are
-// computer-takeover-store.test.mjs's.
+// with nothing to hand back is 404. Who may call the routes is server.ts's (a token: api-only-computer.test.mjs). The
+// runner's side, and a take-over and hand-back end to end, are computer-takeover-store.test.mjs's.
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,8 +18,6 @@ import { openapiDocument } from "../dist/openapi.js";
 import { ROUTES } from "../dist/server.js";
 import { openSqliteStore } from "../dist/store/index.js";
 
-const OWNER = { ownerSession: true, token: false, accounts: true };
-const TOKEN = { ownerSession: false, token: true, accounts: true };
 const NOW = Date.parse("2026-11-09T12:00:00.000Z");
 const routes = { "take-over": "takeOverRunComputer", "hand-back": "handBackRunComputer" };
 
@@ -37,9 +35,9 @@ async function world(t, computer = { kind: "desktop", provider: "e2b" }) {
   const entries = [];
   const options = { entries: async () => entries, now: () => NOW };
   /** The route's answer, or its refusal as serve answers it: its status, code and words. */
-  const answer = async (name, request = { ...OWNER, body: {} }) => {
+  const answer = async (name, body = {}) => {
     try {
-      return { status: 200, body: await computerRoute(name, "run-1", request, store, options) };
+      return { status: 200, body: await computerRoute(name, "run-1", body, store, options) };
     } catch (error) {
       if (!(error?.code in ERROR_STATUS)) throw error;
       return { status: ERROR_STATUS[error.code], code: error.code, message: error.message };
@@ -65,13 +63,8 @@ test("serve's route table and document carry our two routes; the GET /computer i
   assert.deepEqual(answered.properties.hold.enum, ["agent", "pending", "person"], "the answer is who drives, exactly these three");
 });
 
-test("a token is refused; a run with no desktop or phone is off and its take-over 404; one not up is none, and its take-over 409; a field the route does not take is refused", async (t) => {
+test("a run with no desktop or phone is off and its take-over 404; one not up is none, and its take-over 409; a field the route does not take is refused", async (t) => {
   const off = await world(t, null);
-  for (const name of Object.values(routes)) {
-    const refused = await off.answer(name, { ...TOKEN, body: {} });
-    assert.deepEqual([refused.status, refused.code], [403, "forbidden"], `${name}: a token never reaches a run's computer`);
-    assert.match(refused.message, /owner's password sign-in in the console, never a token/);
-  }
   assert.deepEqual(await off.view(), { kind: null, state: "off", hold: "agent", why: "this run has no desktop or phone computer (a browser is watched at /v2/runs/{run_id}/browser)" });
   assert.equal((await off.answer(routes["take-over"])).status, 404);
   assert.equal((await off.answer(routes["hand-back"])).status, 404, "no browser ask either");
@@ -81,9 +74,9 @@ test("a token is refused; a run with no desktop or phone is off and its take-ove
   const notLive = await desk.answer(routes["take-over"]);
   assert.deepEqual([notLive.status, notLive.code], [409, "computer_not_live"]);
   desk.up();
-  const extra = await desk.answer(routes["take-over"], { ...OWNER, body: { why: "x" } });
+  const extra = await desk.answer(routes["take-over"], { why: "x" });
   assert.deepEqual([extra.status, extra.code], [422, "input_invalid"]);
-  const badOutcome = await desk.answer(routes["hand-back"], { ...OWNER, body: { outcome: "expired" } });
+  const badOutcome = await desk.answer(routes["hand-back"], { outcome: "expired" });
   assert.deepEqual([badOutcome.status, badOutcome.code], [422, "input_invalid"], "an expiry is the run's own, never a person's");
   const nothing = await desk.answer(routes["hand-back"]);
   assert.deepEqual([nothing.status, nothing.code], [404, "not_found"], "nothing asked, nothing taken");
@@ -111,16 +104,16 @@ test("the agent's ask: the run waits on it; the first hand-back answers it, the 
   desk.up();
   desk.entries.push(ask("ask-1"));
   assert.equal(computerAsk(desk.entries, [], NOW).instruction, "Sign in to the bank", "the run read's pending is the open ask");
-  assert.deepEqual(await desk.answer(routes["hand-back"], { ...OWNER, body: { outcome: "done" } }), { status: 200, body: { hold: "agent", outcome: "done" } });
+  assert.deepEqual(await desk.answer(routes["hand-back"], { outcome: "done" }), { status: 200, body: { hold: "agent", outcome: "done" } });
   assert.equal(computerAsk(desk.entries, await desk.store.commands("run-1", 0), NOW), undefined, "answered: the run waits no more");
   // The runner applied it.
   desk.entries.push({ kind: COMPUTER_HANDOVER_KIND, data: { state: "done", id: "ask-1", at: NOW } });
-  const again = await desk.answer(routes["hand-back"], { ...OWNER, body: { outcome: "cancelled" } });
+  const again = await desk.answer(routes["hand-back"], { outcome: "cancelled" });
   assert.deepEqual(again, { status: 409, code: "handoff_answered", message: "The agent's hand-over was already answered done." });
 
   desk.entries.push(ask("ask-2", { asked_at: new Date(NOW - 20 * 60_000).toISOString(), expires_at: new Date(NOW - 5 * 60_000).toISOString() }));
   desk.entries.push({ kind: COMPUTER_HANDOVER_KIND, data: { state: "expired", id: "ask-2", at: NOW - 5 * 60_000 } });
-  const late = await desk.answer(routes["hand-back"], { ...OWNER, body: { outcome: "done" } });
+  const late = await desk.answer(routes["hand-back"], { outcome: "done" });
   assert.deepEqual(late, { status: 409, code: "handoff_answered", message: "The agent's hand-over expired before this answer: the agent was told it expired." });
 });
 
@@ -128,7 +121,7 @@ test("two answers to one ask written together: the lowest row wins, the other wi
   const desk = await world(t);
   desk.up();
   desk.entries.push(ask("ask-1"));
-  const [a, b] = await Promise.all([desk.answer(routes["hand-back"], { ...OWNER, body: { outcome: "done" } }), desk.answer(routes["hand-back"], { ...OWNER, body: { outcome: "cancelled" } })]);
+  const [a, b] = await Promise.all([desk.answer(routes["hand-back"], { outcome: "done" }), desk.answer(routes["hand-back"], { outcome: "cancelled" })]);
   const rows = (await desk.store.commands("run-1", 0)).filter((row) => row.kind === COMPUTER_HAND_BACK);
   const first = rows[0].body.outcome;
   const [won, lost] = first === "done" ? [a, b] : [b, a];

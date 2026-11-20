@@ -106,10 +106,9 @@ const START = Date.now();
  *  - sha: "ok" or "lie"; install: the install's exit code; initFails: words init writes before it exits;
  *  - notListening: how many bridges find no daemon before one does;
  *  - box: what the daemon reports (hello patch, uid, gid, status, interfaces, reached, accepted, quiet, raised, and
- *    workspace, the stat of a synced folder's directory: { path, type, owner "uid:gid", mode }, else install's;
- *    olderDaemon, a computerd whose hello says nothing of a window manager it was asked to start);
- *  - display: "ok", "never", "dies", or, with the display up, "manager missing" (the window manager does not start) or
- *    "manager dies" (it ends at once);
+ *    workspace, the stat of a synced folder's directory: { path, type, owner "uid:gid", mode }, else install's);
+ *  - display: "ok", "never", "dies", or, with the display up, "manager missing" (the window manager computerd starts
+ *    finds no dbus-run-session) or "manager dies" (it ends at once);
  *  - lingers: { reads, lists, state } after a delete, a lingering read in state (running unless given); fileApi: false
  *    for a host with no upload;
  *  - timer: "ok" (extend moves the end and the deadline label: the vendor's timer, or with lifetime janitor the label
@@ -295,15 +294,11 @@ export function fakeHost({
 			return result({ exitCode: 0, stdout: Buffer.from(`${argv.join(" ")}\n`).toString("base64"), stderr: "", timedOut: false, truncated: false });
 		}
 		if (method === "process.start") {
-			const manager = params.argv.some((arg) => arg.includes("xfwm4"));
-			if (manager && display === "manager missing") return error("not_found", `${params.argv[0]}: executable file not found in $PATH`);
 			const entry = { id: `p${m.processes.length + 1}`, pid: 100 + m.processes.length, argv: params.argv, running: true, exitCode: null, signal: null, stderr: "" };
 			if (params.argv[0] === "Xvfb") {
 				m.xvfb = entry;
 				if (display === "dies") Object.assign(entry, { running: false, exitCode: 1, stderr: "(EE) Fatal server error:\n(EE) Cannot establish any listening sockets\n" });
 			}
-			// A window manager that starts and ends at once, as xfwm4 does with no session bus.
-			if (manager && display === "manager dies") Object.assign(entry, { running: false, exitCode: 1, stderr: "Xfconf could not be initialized\n" });
 			m.processes.push(entry);
 			return result({ id: entry.id, pid: entry.pid });
 		}
@@ -384,12 +379,11 @@ export function fakeHost({
 	}
 
 	/**
-	 * hello's windowManager where init was given --window-manager, and the box's daemon is not an older one that knows no
-	 * such flag (box.olderDaemon): starting until the display is up and on the first hello after, then running, or with
-	 * display "manager missing" or "manager dies", ended in computerd's words.
+	 * hello's windowManager where init was given --window-manager: starting until the display is up and on the first hello
+	 * after, then running, or with display "manager missing" or "manager dies", ended in computerd's words.
 	 */
 	function windowManagerOf(m, displayUp) {
-		if (!m.init?.windowManager || m.box.olderDaemon) return undefined;
+		if (!m.init?.windowManager) return undefined;
 		const words = "the window manager computerd started (dbus-run-session -- xfwm4 --compositor=off --sm-client-disable)";
 		if (!displayUp) return { state: "starting" };
 		m.managerHellos = (m.managerHellos ?? 0) + 1;

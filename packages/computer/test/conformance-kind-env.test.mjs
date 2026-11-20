@@ -35,7 +35,7 @@ test("Daytona: COMPUTER_DAYTONA_KIND=desktop on dial gives a desktop provider; o
 	assert.equal(daytona.createProvider({ env: on, dial: dial() }).capabilities().kind, "linux");
 	assert.equal(daytona.createProvider({ env: DAYTONA }).capabilities().kind, "linux");
 	assert.equal("kind" in daytona.settingsFromEnv({ ...on, COMPUTER_DAYTONA_KIND: "desktop" }), false);
-	assert.throws(() => daytona.createProvider({ env: { ...DAYTONA, COMPUTER_DAYTONA_KIND: "desktop" } }), /Daytona gives a desktop computer on connect "dial" alone, not "exec": a desktop's sandbox boots from a snapshot of box\/Dockerfile/);
+	assert.throws(() => daytona.createProvider({ env: { ...DAYTONA, COMPUTER_DAYTONA_KIND: "desktop" } }), /^Error: Daytona gives a desktop computer on connect "dial" alone, not "exec"$/);
 });
 
 test("Fly: COMPUTER_FLY_KIND=desktop gives a desktop provider; unset stays linux", () => {

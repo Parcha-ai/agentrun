@@ -57,8 +57,7 @@ A computer with the `ui` group also says its screen and its features:
   (`init --window-manager`): `{"state": "starting"}` until the display answers and for a second after the manager
   starts, then `{"state": "running"}`; once it ends, whenever that is, `{"state": "ended", "why": "<words>"}`, with
   its exit and its last lines of stderr. It runs as the computer's user, in a network namespace root made, on a session bus of its own. A client that
-  sees the field starts no window manager of its own and waits for `running`; `ended` fails its create in `why`. A
-  computer that omits it starts none, and a client may start one through `process.start`, as before.
+  sees the field waits for `running`; `ended` fails its create in `why`. A computer that omits it starts none.
 - `fence`: how init holds its programs off the computer's network when it gave them one of their own
   (`init --own-network`): `"netns"`, a network namespace root made, or `"userns-netns"`, one made inside a user
   namespace of its own where root may not make one. Absent when its programs have no network of their own. A provider
