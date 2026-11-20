@@ -650,6 +650,19 @@ export type SdkWorkflowCheck = { id: string; revision: string; digest: string; w
 
 /** A connected agent's check waiting for a native turn (`via` sdk, replaying, no turn reserved). */
 const waitingSdk = (record: PromotionRecord | undefined): boolean => record?.decided === "replaying" && record.via === "sdk" && !record.runs?.length;
+/** Whether a connected agent's check was overtaken: a record of another revision of its workflow came after its own
+ *  newest (a newer revision reserved, held by its owner, or promoted). An overtaken check is given no record of its own
+ *  on a release, a deadline or a set-aside, so it never hides that newer record from the compile (learn/compile.ts
+ *  heldNamesOf reads the workflow's newest), and it blocks no newer revision's reservation. A report that reached it
+ *  still decides it (decideCheck), as an older check's verdict stands. */
+const overtaken = (records: readonly PromotionRecord[], record: PromotionRecord): boolean => {
+  const own = promotionOf(records, record.workflow, record.digest);
+  const at = own ? records.lastIndexOf(own) : -1;
+  return at >= 0 && records.slice(at + 1).some((one) => one.workflow === record.workflow && one.digest !== record.digest);
+};
+/** The checks of `name` other than at `digest` that block reserving it: every replaying one but an overtaken SDK one. */
+const blocking = (records: readonly PromotionRecord[], name: string, digest: string) =>
+  replayingOf(records, name, digest).filter((one) => one.via !== "sdk" || !overtaken(records, one));
 /** What every record of a connected agent's check carries on from its reservation. */
 const sdkExtra = (record: PromotionRecord): Partial<PromotionRecord> => ({ via: "sdk", ...(record.runs ? { runs: record.runs } : {}), ...(record.replay_id ? { replay_id: record.replay_id } : {}), ...(record.commit ? { commit: record.commit } : {}) });
 /** A connected agent's run input as a check row quotes it: the task text its start was given. */
@@ -670,8 +683,9 @@ export async function reserveSdkCheck(deps: DecideDeps, turn: { readonly runId: 
   const now = deps.now ?? Date.now;
   for (const flow of turn.flows) {
     const digest = workflowDigest(flow);
-    for (const pending of replayingOf(await promotionsOf(deps.store.settings, deps.agentId), flow.name, null)) {
-      if (pending.via !== "sdk") continue;
+    const before = await promotionsOf(deps.store.settings, deps.agentId);
+    for (const pending of replayingOf(before, flow.name, null)) {
+      if (pending.via !== "sdk" || overtaken(before, pending)) continue;
       if (pending.runs?.length) {
         if (now() - Date.parse(pending.at) > REPLAY_DEADLINE_MS) await sdkCheckDeadline(deps, pending);
       } else if (pending.digest !== digest) await setAside(deps, pending);
@@ -679,14 +693,14 @@ export async function reserveSdkCheck(deps: DecideDeps, turn: { readonly runId: 
     if (!turn.takes(flow)) continue;
     const records = await promotionsOf(deps.store.settings, deps.agentId);
     const own = promotionOf(records, flow.name, digest);
-    if ((own && !waitingSdk(own)) || replayingOf(records, flow.name, digest).length) continue;
+    if ((own && !waitingSdk(own)) || blocking(records, flow.name, digest).length) continue;
     const id = uuidv7();
     const reserved = await recordPromotion(deps.store.settings, deps.agentId, {
       workflow: flow.name, digest, at: iso(now()), decided: "replaying", via: "sdk",
       reason: "Checking it in the connected agent against one independent native turn before it can be reused.",
       replay_id: id, runs: [turn.runId], inputs: [turn.runId], commit: revision,
       check: own?.check ?? { ...loopOf(turn.learning), attempt: attemptOf(records, flow.name, digest) },
-    }, (was, current) => (own ? waitingSdk(was) && was!.replay_id === own.replay_id : was === undefined) && replayingOf(current, flow.name, digest).length === 0);
+    }, (was, current) => (own ? waitingSdk(was) && was!.replay_id === own.replay_id : was === undefined) && blocking(current, flow.name, digest).length === 0);
     if (reserved.won) return { id, revision, digest, workflow: flow };
   }
 }
@@ -697,7 +711,7 @@ export async function reserveSdkCheck(deps: DecideDeps, turn: { readonly runId: 
  *  restarts its budget. */
 export async function sdkCheckDeadline(deps: DecideDeps, pending: PromotionRecord) {
   const runId = pending.runs?.[0];
-  if (!runId || !pending.check) return;
+  if (!runId || !pending.check || overtaken(await promotionsOf(deps.store.settings, deps.agentId), pending)) return;
   const launch = await deps.store.runs.launch(runId).then((one) => readLaunchBody(one.body), () => undefined);
   return decideCheck(deps, pending.workflow, pending.digest, pending.check, {
     rows: [{ of: runId, input: sdkInputText(launch), agent: null, outcome: "failed", answer: null }],
@@ -711,6 +725,10 @@ export async function sdkCheckDeadline(deps: DecideDeps, pending: PromotionRecor
  *  admitted). Kept only while the record is still this reservation. */
 export async function releaseSdkCheck(deps: DecideDeps, record: PromotionRecord, cause: string, counted = true) {
   if (!record.check) return;
+  if (overtaken(await promotionsOf(deps.store.settings, deps.agentId), record)) {
+    deps.log(`workflow-first: ${record.workflow} at ${record.digest} gave back its native turn (${cause}); a newer revision has a record since, so it is left as it is`);
+    return;
+  }
   const released = (record.check.released ?? 0) + (counted ? 1 : 0);
   const why = excerptShown(cause, await deps.shown(), CHECK_TEXT_MAX);
   const still = (was: PromotionRecord | undefined) => sameReplay(was, record);
@@ -734,7 +752,7 @@ async function setAside(deps: DecideDeps, pending: PromotionRecord) {
     ...pending, at: iso((deps.now ?? Date.now)()), decided: "hold",
     reason: `${NOTHING_TO_CHECK}: a newer revision of it landed before a native turn of the connected agent checked it. It is not promoted; the newer revision is checked instead`,
     check: { ...pending.check, n: 0, agreed: 0, alone: 0, of: [], stopped: true },
-  }, (was) => waitingSdk(was) && was!.replay_id === pending.replay_id);
+  }, (was, current) => waitingSdk(was) && was!.replay_id === pending.replay_id && !overtaken(current, was!));
 }
 
 /** The launch a replay's runs all run with (PromotionRecord.launch), chosen once by the claim or person reserving it:

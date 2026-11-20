@@ -258,6 +258,20 @@ test('a newer revision sets aside one still waiting for a turn', async t => {
   await cancel(server, next);
 });
 
+test('a given-back turn of a check a newer revision overtook writes nothing over the newer record', async t => {
+  const server = await setup(t, 'eve', false);
+  const { settleSdkCheck } = await import('../dist/sdk/check.js');
+  const first = await server.start('overtaken');
+  await land(server);
+  const owner = { workflow: flow.name, digest: workflowDigest({ workflow: JSON.stringify(nextFlow.workflow) }), at: new Date().toISOString(), decided: 'hold', reason: 'The owner held this revision for correction.' };
+  await recordPromotion(server.store.settings, server.id, owner, () => true);
+  assert.equal((await cancel(server, first)).status, 200);
+  await settleSdkCheck(await settleDeps(server, first));
+  await settleSdkCheck({ ...(await settleDeps(server, first)), inbox: { ...(await settleDeps(server, first)).inbox, completion: undefined, closed: 'expired' } });
+  assert.deepEqual(await server.latest(flow.name), owner, 'the owner\'s hold stays the workflow\'s newest, so the compile still reads it');
+  assert.ok(heldNamesOf(await server.records()).has(flow.name));
+});
+
 test('fresh reads the shadow made are kept on the check record', async t => {
   const server = await setup(t);
   const first = await server.start('fresh');
