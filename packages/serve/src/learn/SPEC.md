@@ -346,6 +346,14 @@ refuses it (409 `learning_busy`), since its learning lives in it, and nothing is
 revision they name is kept in the agent's reset ledger (`learning.reset-ledger.<agent>`: workflow, digest and K alone),
 so a kept served run's cost still carries its revision's compile and check; an agent's delete removes the ledger. Each
 run's diff (`.agentrun/diffs/`) goes with the folder. The folder's next write starts
-a new history. A run that read its seed before the reset holds a commit the folder no longer has: no workflow is laid
-at its claim, and its merge's `same` names that commit, which the script refuses, so it is a conflict and nothing it
-drafted lands.
+a new history.
+
+Before anything goes, the reset sets the agent's watermark (`learning.reset-at.<agent>`, beside the ledger; the agent's
+delete removes both): when it began, one setting for the agent whatever disk its runs used. Learning reads only the
+runs after it (`compile.ts` sinceReset): a run that started at or before it, or whose seed was read at or before it
+(its launch's `seededAt`, read in the same queue as the reset), counts toward no compile_after and is no compile's
+trace, no check's or owner's replay input, no audit's draw and no past run of the money rule, and the loop view lists
+none of its compiles. A run seeded before the reset whose row was made after it learns nothing: its learning end drops it at its entry
+(reason `reset`), before any look-back, merge, compile or record, as it does a run whose seed's commit the folder no
+longer holds. The learning script is a second wall: a run's merge names its seed (`seed <commit>`), which it refuses
+when the folder lacks it, a correction alone included. The runs themselves, their costs and what each kept stay.

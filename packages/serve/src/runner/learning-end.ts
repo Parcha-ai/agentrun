@@ -17,16 +17,18 @@
 //     keeps sealed (store-secrets.ts storeSecrets), the runner's secrets, the keys its claim handed it, and the sign-in
 //     pointers its row says it was handed, read back from the store (handed-values.ts handedValuesOf). A run whose
 //     pointers can't be read back learns nothing (the hook drops it, saying why), never over a shorter list.
-// A run whose seed could not be read keeps that drop.
+// A run whose seed could not be read keeps that drop. A run whose seed predates a reset of its agent's learning
+// (predatesReset) learns nothing at all, dropped at its entry with reason `reset`. Every read of the agent's runs here
+// reads only those after the reset (learn/compile.ts sinceReset).
 import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type EntryLike, isMessageRow, type TimelineEvent } from "../timeline/index.js";
 import { correctionRefused, learningCommit, type LearningChange, type LearningCommitResult } from "../learn/commit.js";
 import { type Change, checkDraft, problemWords, type Problem, unstorable } from "../learn/index.js";
-import { folderAt, type FolderRead, type LearningFolder, readLearning, readSnapshot, runMergeOf, snapshotAt, textsAt } from "../learn/folder.js";
-import { completedRun, type CompileAsk, compileStoppedOf, lastOwnRuns, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_TRACES, DRAFT_FAILED, type DraftChecked, type HeldAsk, heldNamesOf, newCompileAttempt } from "../learn/compile.js";
+import { folderAt, type FolderRead, holdsCommit,type LearningFolder, readLearning, readSnapshot, runMergeOf, snapshotAt, textsAt } from "../learn/folder.js";
+import { completedRun, type CompileAsk, compileStoppedOf, lastOwnRuns, sinceReset,type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_TRACES, DRAFT_FAILED, type DraftChecked, type HeldAsk, heldNamesOf, newCompileAttempt } from "../learn/compile.js";
 import { loopOf } from "../learning-setting.js";
-import { CHECK_TEXT_MAX, type PromotionRecord, promotionOf, promotionsOf, recordPromotion } from "../learn/promote.js";
+import { CHECK_TEXT_MAX, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, resetAtOf } from "../learn/promote.js";
 import { type DraftDecisions, draftDecisionProviders, draftDryRun, draftFiles, draftMcpTools, unpricedCalls, WORKFLOWS_DIR } from "../learn/workflow-draft.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
 import { handedValuesOf } from "../handed-values.js";
@@ -168,6 +170,12 @@ export function learningEndOfRun(launch: RunLaunch, deps: LearningEndDeps): EndO
       // Every end of it: the first's drop stands for a later one (the store keeps one a round, so it adds nothing new).
       return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "seed_failed", detail: said.stopped(why) } } }] };
     }
+    // The one check at the entry of a run's learning end, before any merge, look-back, compile, draft check or record: a
+    // run whose seed predates a reset of its agent's learning (read at or before the reset's watermark, or a commit the
+    // folder no longer holds) learns nothing, whole. Its corrections and compile would land on what the reset left.
+    if (await predatesReset(deps, input.agentId, start.seed!, start.seededAt)) {
+      return { also: [{ table: "learning_proposals", row: { turn: null, proposal: { state: "dropped", reason: "reset", detail: said.reset } } }] };
+    }
     // Which end of the run this is: the round after the newest it kept (a follow-up opened the run again after it), else
     // its first. A replayed end reads the same round: its rows are written only with the end that closes it.
     const prior = await deps.store.learning.proposal(input.runId);
@@ -224,6 +232,16 @@ export async function capSpendOf(store: Pick<Store, "runs">, runId: string, entr
 }
 
 /** `read` over agent `agentId`'s learning folder, opened for it and always ended after. */
+/** Whether a run of agent `agentId` seeded from `seed` at `seededAt` predates a reset of the agent's learning: never when
+ *  it was not reset (learn/promote.ts resetAtOf); else when its seed was read at or before the watermark (a start that
+ *  records no time is read as before it), or the agent's learning folder no longer holds the seed's commit. */
+async function predatesReset(deps: Pick<LearningEndDeps, "store" | "learningFolder">, agentId: string, seed: string, seededAt: number | undefined): Promise<boolean> {
+  const at = await resetAtOf(deps.store.settings, agentId);
+  if (at === undefined) return false;
+  if (seededAt === undefined || seededAt <= at) return true;
+  return !(await withFolder(deps, agentId, (folder) => holdsCommit(folder.workspace, seed)));
+}
+
 async function withFolder<T>(deps: Pick<LearningEndDeps, "learningFolder">, agentId: string, read: (folder: LearningFolder) => Promise<T>): Promise<T> {
   const folder = deps.learningFolder(agentId);
   try {
@@ -520,10 +538,12 @@ export async function compileAskOf(deps: LearningEndDeps, input: { runId: string
   // The loop's numbers on the agent's definition (the revision this run runs): the first compile waits for compile_after
   // completed agent runs, the ending one counted.
   const { compile_after: compileAfter } = await loopOfRun(deps.store, input.runId);
-  // The agent's latest runs, newest first: those after the ending one in the list started before it.
+  // The agent's latest runs, newest first: those after the ending one in the list started before it, and after its
+  // learning's reset (sinceReset): a run before the reset is never a compile's trace.
   const listed = await deps.store.runs.list({ agentId: input.agentId, limit: Math.max(200, 2 * compileAfter) });
   const at = listed.findIndex((run) => run.id === input.runId);
-  const earlier = (at < 0 ? listed : listed.slice(at + 1)).filter((run) => run.agentId === input.agentId);
+  const since = await sinceReset(deps.store, input.agentId);
+  const earlier = (at < 0 ? listed : listed.slice(at + 1)).filter((run) => run.agentId === input.agentId && since(run));
   const done = earlier.filter(completedRun);
   const byHand = (await lastOwnRuns(deps.store, input.agentId, compileAfter, input.runId)).length;
   const dueWith = (workflows: number) => compileDue({ completed: input.outcome === "completed", runs: byHand + (input.outcome === "completed" ? 1 : 0), workflows, compileAfter });

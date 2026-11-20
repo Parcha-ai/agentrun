@@ -34,7 +34,7 @@ import { FINAL_STATES, type RunRow, type Store, StoreConstraint } from "../store
 import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { isObject, type Json } from "../validate.js";
 import { type AuditRow, type AuditStarted, auditableLaunch, auditChange, auditEveryOf, auditDrawn, auditsOffWords, auditWriterOf, holdOf, type LedgerLine, ledgerOf, lineKey, openAudits, rowsOf, shadowRunId } from "../learn/audit.js";
-import { lastRunsOf } from "../learn/compile.js";
+import { lastRunsOf, sinceReset } from "../learn/compile.js";
 import { readLearning, writeLearning, type LearningFolder } from "../learn/folder.js";
 import { type AuditDisagreement, CHECK_TEXT_MAX, compareAnswers, comparedOf, type PromotionRecord, promotionOf, promotionsOf, promotionStartOf, recordPromotion, servingOf } from "../learn/promote.js";
 import { excerptShown } from "../learn/secrets.js";
@@ -106,14 +106,17 @@ export async function auditedAnswerOf(deps: Pick<AuditDeps, "store" | "context" 
   return open ? auditedAnswer(deps, open) : null;
 }
 
-/** The served runs of `workflow` (at `digest` when given) that `keep` keeps too, the newest `n` of them (lastRunsOf: the
- *  shadows and the agent's own runs among them never push one out of the read). */
-const servedRuns = (store: Pick<Store, "runs">, agentId: string, n: number, workflow: string, digest: string | undefined, keep: (row: RunRow) => boolean = () => true) =>
-  lastRunsOf(store, agentId, n, (row) => served(row) && metricsOf(row).workflow === workflow && (digest === undefined || metricsOf(row).workflow_digest === digest) && keep(row));
+/** The served runs of `workflow` (at `digest` when given) that `keep` keeps too, since the agent's learning's reset
+ *  (sinceReset), the newest `n` of them (lastRunsOf: the shadows and the agent's own runs among them never push one out
+ *  of the read). */
+const servedRuns = async (store: Pick<Store, "runs" | "settings">, agentId: string, n: number, workflow: string, digest: string | undefined, keep: (row: RunRow) => boolean = () => true) => {
+  const since = await sinceReset(store, agentId);
+  return lastRunsOf(store, agentId, n, (row) => served(row) && metricsOf(row).workflow === workflow && (digest === undefined || metricsOf(row).workflow_digest === digest) && keep(row) && since(row));
+};
 
 /** How many of the newest stop_window runs `workflow` at `digest` served were not auditable (auditableLaunch: a trigger
  *  started them): what the promotions read counts beside the audit line. */
-export async function notAuditableOf(store: Pick<Store, "runs">, agentId: string, workflow: string, digest: string, loop: Pick<AuditLoop, "stop_window">): Promise<number> {
+export async function notAuditableOf(store: Pick<Store, "runs" | "settings">, agentId: string, workflow: string, digest: string, loop: Pick<AuditLoop, "stop_window">): Promise<number> {
   return (await servedRuns(store, agentId, loop.stop_window, workflow, digest)).filter((row) => (metricsOf(row) as { not_auditable?: unknown }).not_auditable === true).length;
 }
 

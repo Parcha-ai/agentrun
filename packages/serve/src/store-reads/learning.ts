@@ -24,7 +24,7 @@ import { FINAL_STATES, StoreLaunchMissing } from "../store/store.js";
 import type { AnalyticsFilter } from "./analytics.js";
 import { KINDS } from "../runner/journal-kinds.js";
 import type { LoopRow } from "../learned-nodes.js";
-import { promotedOf } from "../learn/compile.js";
+import { promotedOf, sinceReset } from "../learn/compile.js";
 import { isShadowRun, shadowRunId } from "../learn/audit.js";
 import { championOf, checkShares, gradesOf, gradeView, type PromotionRecord, promotionsOf, type ResetRevision, resetLedgerOf } from "../learn/promote.js";
 import type { LearningProposal, Store } from "../store/store.js";
@@ -506,13 +506,16 @@ export async function costRunOf(store: RunRecords, run: RunRecord, n: number | n
 }
 
 /** The runs the money rule reads for agent `agentId` (runner/workflow-first.ts costLineOf), one set for the run's launch
- *  and the cost page: of its newest PAST_RUNS runs, each that ended (ended, stopped or failed), is neither imported nor
- *  archived nor a workflow revision's run, with its all-in cost (allInOf). `known`: all-in costs already read, by run id
- *  (the cost page's series), read again for no run; `records`, where any other's rows are read (the store's by default). */
+ *  and the cost page's workflow lines: of its newest PAST_RUNS runs, each that ended (ended, stopped or failed) since its
+ *  learning's reset (learn/compile.ts sinceReset: a workflow before it is not the one it learned after, whatever its
+ *  name), is neither imported nor archived nor a workflow revision's run, with its all-in cost (allInOf). `known`: all-in
+ *  costs already read, by run id (the cost page's series), read again for no run; `records`, where any other's rows are
+ *  read (the store's by default). */
 export async function pastRunsOverStore(store: Store, agentId: string, known?: ReadonlyMap<string, number | null>, records: RunRecords = store): Promise<PastRun[]> {
   const kinds = new Map<string, string | undefined>();
   const kept: RunRecord[] = [];
-  const page = await store.runs.list({ agentId, limit: PAST_RUNS });
+  const since = await sinceReset(store, agentId);
+  const page = (await store.runs.list({ agentId, limit: PAST_RUNS })).filter(since);
   // Each run's audit shadow is read off the page (allInOf's shadowSpendOf): a shadow starts after the run it audits ends,
   // so it is newer than that run and on the same page of the newest runs; one not on it was never started.
   const shadows = new Map(page.filter((run) => isShadowRun(run.id)).map((run) => [run.id, run]));

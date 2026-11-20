@@ -522,7 +522,7 @@ export async function learningStartFor(deps: StartDeps, entry: AgentEntry, revis
   try {
     const shown = deps.shown ? deps.shown() : noShown;
     const workflows = flows.noWorkflows ? [] : chooseWorkflows(seeded.seed, shown).flows.map(({ name }) => name);
-    return { seed: seeded.seed.sha, section: learnedSection(seeded.seed, shown), ...(workflows.length ? { workflows } : {}), ...own };
+    return { seed: seeded.seed.sha, section: learnedSection(seeded.seed, shown), ...(workflows.length ? { workflows } : {}), ...(seeded.seed.at !== undefined ? { seededAt: seeded.seed.at } : {}), ...own };
   } catch {
     return { seed: null, section: "", seedFailed: "not_copied", ...own };
   }

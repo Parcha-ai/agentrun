@@ -269,8 +269,24 @@ export async function keepResetLedger(settings: Pick<Settings, "get" | "putIfAbs
   });
 }
 
+/** The agent's reset watermark: when its newest reset began (epoch ms), one setting for the agent whatever disk its runs
+ *  use, as the store holds every disk's runs. Learning reads only the runs after it (learn/compile.ts sinceReset): a
+ *  run that started, or read its learning seed, at or before it learns nothing and is read by no compile, check, audit
+ *  or money rule. Kept with the reset ledger, and removed with it by the agent's delete (learn/delete.ts). */
+export const resetAtKey = (agentId: string): string => `learning.reset-at.${agentId}`;
+
+/** The agent's reset watermark (resetAtKey), or undefined when its learning was never reset. */
+export const resetAtOf = async (settings: Pick<Settings, "get">, agentId: string): Promise<number | undefined> => {
+  const read = await settings.get(resetAtKey(agentId));
+  const at = typeof read === "object" && read !== null ? (read as { at?: unknown }).at : undefined;
+  return typeof at === "number" && Number.isFinite(at) ? at : undefined;
+};
+
+/** Agent `agentId`'s reset watermark set to `at`, in place of an earlier reset's. */
+export const keepResetAt = (settings: Pick<Settings, "put">, agentId: string, at: number): Promise<void> => settings.put(resetAtKey(agentId), { at });
+
 /** The agent's grades, oldest first. */
-export const gradesOf = async (settings: Pick<Settings, "get">, agentId: string): Promise<Grade[]> => itemsOf<Grade>(await settings.get(gradesKey(agentId)));
+export const gradesOf =async (settings: Pick<Settings, "get">, agentId: string): Promise<Grade[]> => itemsOf<Grade>(await settings.get(gradesKey(agentId)));
 
 /** Keeps `grade`, in place of any earlier grade of the same run, the newest GRADES_KEPT kept, at the next `seq`. */
 export const putGrade = async (settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, grade: Grade): Promise<Grade> => {

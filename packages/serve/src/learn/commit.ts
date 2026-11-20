@@ -29,7 +29,8 @@ export type LearningChange = {
   /** Paths written with `status: pending` (waiting for the owner's OK): a draft's README.md. */
   held?: string[];
   /** The commit the run started from: a file that is not on main as it was on it (a person retired or approved it,
-   *  another run's merge changed it) is a conflict. The script checks it on main as it commits. */
+   *  another run's merge changed it) is a conflict, and so is the whole merge when the folder no longer holds it (a
+   *  reset of the agent's learning). The script checks both on main as it commits. */
   seed?: string;
   /** A file checked against another commit than `seed`, by its path: a workflow the run's compile turn revised from
    *  main's text, against the commit it read that text at. */
@@ -60,6 +61,7 @@ type Computed = LearningCommitResult | { pending: true; refusedCorrection?: Prob
 /** A write's failure as a result: the script's precondition (a file changed since the seed: a conflict), a write past
  *  what one exec carries, or the folder unavailable (retry later). */
 function failure(error: unknown): LearningCommitResult {
+  if (error instanceof FolderRefused && error.seed !== undefined) return { ok: false, reason: "conflict", problems: [{ rule: "kept", detail: "the agent's learning was reset after the run started, so what it learned has nothing to land on" }] };
   if (error instanceof FolderRefused) return { ok: false, reason: "conflict", problems: [...error.same, ...error.absent].map((path): Problem => ({ rule: "kept", path, detail: `${path} changed on main after the run started` })) };
   if (error instanceof FolderTooLarge) return { ok: false, reason: "refused", problems: [{ rule: "too_large", detail: error.message }] };
   return { ok: false, reason: "unavailable", error: (error as Error)?.message ?? String(error) };
@@ -111,7 +113,9 @@ export async function learningCommit(ws: Workspace, change: LearningChange, opts
         if (full) refusedCorrection = [full];
         else writes.push({ path: CORRECTIONS_FILE, text });
       }
-      return { result: { pending: true, ...(refusedCorrection ? { refusedCorrection } : {}) }, change: { by: run(change.runId, change.reason, change.round), writes, ...(same.length ? { same } : {}) } };
+      // `seed`: the script refuses the merge when the folder no longer holds the run's seed (a reset removed it), a
+      // correction alone included, which no `same` covers.
+      return { result: { pending: true, ...(refusedCorrection ? { refusedCorrection } : {}) }, change: { by: run(change.runId, change.reason, change.round), writes, ...(same.length ? { same } : {}), ...(change.seed ? { seed: change.seed } : {}) } };
     }, opts.retries ?? 3);
     const { result } = done;
     return "merged" in result ? await already(ws, change, result.merged.merge, result.merged) : landed({ ...done, result });

@@ -707,6 +707,7 @@ const LEARNING_REASON = {
     "`cancelled`: a person cancelled the run. `crashed`: the run's process went. `reflect_failed`: the compile turn ended on an error.",
     "`empty`: the compile turn kept no workflow and the owner gave no correction, or the run was not asked its compile turn because its only tool work was its learned workflows, each answering, with nothing said after its first message (its `detail` says so). `checker`: the checks (or the workflow's dry run) refused it, or the owner's correction would pass corrections.md's cap, and nothing was written to git.",
     "`use`: the run was started with `learning: \"use\"`: it started from what its agent learned and keeps nothing, so it was never asked its end-of-run turn.",
+    "`reset`: the run read what its agent learned before a reset of the agent's learning (DELETE /v2/agents/{agent_id}/learning), so nothing it learned is kept and it was never asked its end-of-run turn.",
   ].join(" "),
 };
 // ---- learning/1: what a person sees and controls of an agent's learning (learning-routes.ts) ---------------------------

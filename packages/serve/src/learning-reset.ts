@@ -22,15 +22,18 @@
 //      deleted. Then deleteLearning, which reads them once more itself.
 // Idempotent: an agent that never learned, or one reset already, has nothing to delete, and is answered as done.
 //
-// A run whose start read the learning folder before step 2 and whose row the store wrote after it keeps what it was
-// started with (its corrections are in its launch), but nothing it learns lands on what the reset left: the workflows it
-// would be served are read at its seed's commit, which the folder no longer holds, so none is laid; and its merge names
-// that commit, which the learning script refuses as a conflict (learning.sh `same`).
+// Step 2 sets the agent's reset watermark (learn/promote.ts resetAtKey) before it deletes: from then on learning reads
+// only runs after it (learn/compile.ts sinceReset: compile_after's count, a compile's traces, a check's inputs, an
+// audit's draws, the money rule), whatever disk they ran on. A run whose start read the learning folder before step 2
+// and whose row the store wrote after it keeps what it was started with (its corrections are in its launch), but
+// learns nothing: its seed was read before the watermark, so its learning end drops it whole at its entry
+// (runner/learning-end.ts, reason `reset`), and the learning script refuses a merge on a seed the folder no longer holds
+// (learning.sh `seed`). No workflow is laid for it either: they are read at its seed's commit, which is gone.
 import { ApiError } from "./errors.js";
 import type { DeleteLearning } from "./agent-delete.js";
 import { LearningInFlight } from "./learn/delete.js";
 import { isShadowRun } from "./learn/audit.js";
-import { keepResetLedger, promotionsOf } from "./learn/promote.js";
+import { keepResetAt, keepResetLedger, promotionsOf, resetAtKey, resetAtOf } from "./learn/promote.js";
 import { readLaunchBody } from "./run-launch.js";
 import { FINAL_STATES, type RunState, type Store, StoreLaunchMissing } from "./store/index.js";
 
@@ -85,12 +88,21 @@ export async function resetLearning(host: LearningResetHost, agentId: string): P
     if (still.length) throw busy(agentId, still.map((run) => run.id), still.some((run) => !run.learning) ? OWN(still.filter((run) => !run.learning).length) : "its learning work started again");
     // What the agent's kept runs carry of their revisions' compile and check, kept before the records it is read from go.
     await keepResetLedger(host.store.settings, agentId, await promotionsOf(host.store.settings, agentId));
+    // The watermark, before anything goes: learning reads no run that started, or read its seed, at or before it (each
+    // seed is read in this queue, so one read before this moment holds an earlier time). Set first, so no moment has the
+    // folder gone and the old runs still read; a delete that fails puts the earlier one back, its learning left as it was.
+    const earlier = await resetAtOf(host.store.settings, agentId);
+    const at = Date.now();
+    await keepResetAt(host.store.settings, agentId, at);
     try {
       await host.deleteLearning(host.store, agentId, { keepResetLedger: true, agentDisk: true });
     } catch (error) {
+      await (earlier === undefined ? host.store.settings.remove(resetAtKey(agentId)) : keepResetAt(host.store.settings, agentId, earlier));
       if (!(error instanceof LearningInFlight)) throw error;
       throw busy(agentId, error.runs, "its learning work is in flight");
     }
+    // Out of the queue only once the clock is past the watermark: a seed read after the reset is always later than it.
+    while (Date.now() <= at) await sleep(1);
   });
 }
 

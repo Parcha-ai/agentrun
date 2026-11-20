@@ -114,6 +114,8 @@ export const said = {
   noBudget: "Skipped: no budget left in this run to write what it learned.",
   unknownCost: "Skipped: this run's spend is unknown, so its budget can't cover writing what it learned.",
   stopped: (cause: string) => `Not kept: learning stopped (${cause}).`,
+  /** A run whose learning seed predates a reset of its agent's learning (runner/learning-end.ts, reason `reset`). */
+  reset: "Dropped: its learning seed predates a reset of the agent's learning.",
 };
 
 /** A run's learning in words as a read says them, whole: what it learned and what waits for the owner's OK, said again
