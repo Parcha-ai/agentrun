@@ -37,7 +37,7 @@ import { uuidFrom } from './ids.js';
 import { MessageQueue } from './inbox.js';
 import { sandboxSpawn } from './spawn.js';
 import { MCP_OUTPUT_TOKENS, toolServer } from './host/tool-server.js';
-import { releasedSearches, resumeDanglingCalls, resumeDanglingSearches, searchKey, WEB_SEARCH } from './resume.js';
+import { answeredCalls, releasedSearches, resumeDanglingCalls, resumeDanglingSearches, searchKey, WEB_SEARCH } from './resume.js';
 import { JournalSessionStore } from './store.js';
 import { MCP_SERVER, TranscriptBuilder, type TurnEnd } from './transcript.js';
 import { CLAUDE_AGENT_CLI_SKILL_NAMES } from './cli-names.js';
@@ -775,7 +775,9 @@ export function claudeCodeHarness(options: ClaudeCodeHarnessOptions = {}): Harne
         // in this drive's system prompt, not in a user message the model might answer back to the user. A resumed
         // session sends the system prompt recorded at its start (`snapshot`), whatever a later launch passes, so this
         // drive alone renders its own (`snapshot: false`, which records nothing: the next drive's is the recorded one).
-        const recovered = recoverySystemNote(ctx.state());
+        // A call whose result the transcript now holds (the CLI wrote it, or the resume above did) is told as there: a note
+        // saying its output is not shown sends the model to run it again (a parked call, approved and run once, was).
+        const recovered = recoverySystemNote(ctx.state(), answeredCalls(store.lines()));
         // The day this drive's system prompt names, while the CLI holds no record of the session: its first launch's
         // prompt is fresh, and the first launch with snapshot on records its own (a first launch that recovers records
         // nothing). Once a record exists a resume sends it, whatever day it names, and a recovery's own fresh prompt is
@@ -1105,10 +1107,14 @@ export function recoveryUserTurn(state: SessionState, store: Pick<JournalSession
  * only the harness's own words. Each tool call of the cut-off turn by its name, its id and its status, and never its
  * input, output or error text: those can hold what a file or a web page said, and the system prompt would give that the
  * harness's authority. Nor do they go in the user's turn, which would give it the user's.
+ * `shown`: the tool uses whose result the transcript holds. A completed or failed call among them (or made inside one,
+ * `<tool_use id>/<key>`: codemode, tools_call) is told as in the conversation, never as not shown: told so, the model
+ * runs it again (a call parked for approval, then run once on the resume, was).
  */
-export function recoverySystemNote(state: SessionState): string | undefined {
+export function recoverySystemNote(state: SessionState, shown: ReadonlySet<string> = new Set()): string | undefined {
   const note = recoveryNote(state, { pending: [] });
   if (!note) return undefined;
+  const carried = (c: (typeof note.calls)[number]) => (shown.has(c.callId) || shown.has(c.callId.split('/')[0]!)) && (c.status === 'completed' || c.status === 'failed');
   const lines = [
     'The harness, not the user, adds this about the turn before this one:',
     '[Recovery] Your previous turn was interrupted: the process running it stopped, and this session was resumed from its durable log.',
@@ -1117,12 +1123,20 @@ export function recoverySystemNote(state: SessionState): string | undefined {
   if (note.calls.length === 0) lines.push('No tool call had started in that turn.');
   else {
     lines.push('What the log records about the tool calls since that turn began (none was run again):');
-    for (const c of note.calls) lines.push(`- ${c.name}, call ${c.callId}: ${RECOVERY_STATUS[c.status]}`);
-    lines.push('', 'The output of those calls is not shown here. Check the actual state before relying on it.');
+    for (const c of note.calls) lines.push(`- ${c.name}, call ${c.callId}: ${carried(c) ? RECOVERY_SHOWN[c.status as 'completed' | 'failed'] : RECOVERY_STATUS[c.status]}`);
+    const unshown = note.calls.filter((c) => !carried(c)).length;
+    if (unshown === note.calls.length) lines.push('', 'The output of those calls is not shown here. Check the actual state before relying on it.');
+    else if (unshown > 0) lines.push('', 'The output of the other calls is not shown here. Check the actual state before relying on it.');
   }
   lines.push('', 'Check the actual state before repeating anything that may have taken effect, then carry on with the task.');
   return lines.join('\n');
 }
+
+/** What the note says of a call whose outcome the conversation holds: where it is, so the model reads it there. */
+const RECOVERY_SHOWN = {
+  completed: 'completed. Its result is in the conversation above: use it, do not run the call again.',
+  failed: 'failed. Its error is in the conversation above.',
+} as const;
 
 /** What the note says of a call in each status the log can give it (the shared note's words, harness-process 010). */
 const RECOVERY_STATUS: Record<NonNullable<ReturnType<typeof recoveryNote>>['calls'][number]['status'], string> = {

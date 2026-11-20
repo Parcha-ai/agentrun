@@ -30,7 +30,7 @@ const answers = (records, callId) =>
   claudeLines(records).filter((line) => line?.type === 'user' && Array.isArray(line.message?.content) && line.message.content.some((c) => c?.tool_use_id === callId));
 
 /** A session of the adapter over `store`, whose "model" calls `lookup` on "go" (and says the rest). */
-async function openOn(t, store, { gate, lookup, signal }) {
+async function openOn(t, store, { gate, lookup, signal, systems = [] }) {
   const provider = await fakeAnthropic({ reply: () => ({ text: 'ok' }) });
   t.after(() => provider.close());
   const adapter = claudeAgentAdapter({
@@ -38,7 +38,7 @@ async function openOn(t, store, { gate, lookup, signal }) {
     provider: { origin: provider.url, credential: () => 'provider-secret' },
     price: () => 0,
     standIn: { command: process.execPath },
-    sdk: fakeSdk({ mirrorLagMs: 10, script: (text) => (text === 'go' ? 'call lookup {"q":"x"}' : undefined) }),
+    sdk: fakeSdk({ mirrorLagMs: 10, onSystem: (system) => systems.push(system), script: (text) => (text === 'go' ? 'call lookup {"q":"x"}' : undefined) }),
   });
   const tool = { name: 'lookup', description: 'Look a thing up.', inputSchema: { type: 'object', properties: { q: { type: 'string' } } }, replay: 'never', call: lookup };
   const io = { writer: await store.open('s1'), models: MODELS, signal, dir: scratch(), onEvent: () => {}, gate };
@@ -64,7 +64,8 @@ test('a call the gate parked runs on the resume, once, under its own id, and its
   assert.deepEqual(lookupStarts(await store.read('s1')), [], 'nothing of the parked call written');
 
   // The resume: the person's answer is in, the gate allows.
-  const second = await openOn(t, store, { signal: new AbortController().signal, lookup, gate: async (call) => { asked.push(call.callId); return 'allow'; } });
+  const systems = [];
+  const second = await openOn(t, store, { signal: new AbortController().signal, lookup, systems, gate: async (call) => { asked.push(call.callId); return 'allow'; } });
   try {
     assert.equal(second.state, 'open_turn', 'the cut-off turn is open');
     await second.recover();
@@ -81,6 +82,11 @@ test('a call the gate parked runs on the resume, once, under its own id, and its
   assert.equal(lines.length, 1, 'one result line for the call in the transcript');
   assert.match(JSON.stringify(lines[0]), /found it/, 'its result, as the CLI loads it');
   assert.doesNotMatch(JSON.stringify(lines[0]), /Tool call interrupted/);
+  // The resumed turn's note tells the model the result it holds is there: told it is not shown, it ran the call again.
+  const [resuming] = systems;
+  assert.ok(resuming?.resumed, 'the resume launches the CLI on the session');
+  assert.match(resuming.sent, new RegExp(`- lookup, call ${asked[0]}: completed\\. Its result is in the conversation above: use it, do not run the call again\\.`));
+  assert.doesNotMatch(resuming.sent, /not shown/, 'never that its output is missing');
 });
 
 test('a call that started before the process died is never run again: the CLI answers it interrupted, as before', async (t) => {
