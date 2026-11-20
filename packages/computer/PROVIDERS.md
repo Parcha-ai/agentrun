@@ -486,7 +486,10 @@ For an app that exists in an org your token can't see, Fly answers `403 unauthor
 
 Core for any dial provider runs inside the server its machines dial: `packages/serve/scripts/dial-conformance.mjs`,
 in the server's image at `/opt/agentrun/packages/serve/scripts/`. It runs serve's attach routes on `$PORT`, runs Core
-with `--long`, prints the report between `DIAL-CONFORMANCE-REPORT-BEGIN` and `-END`, then idles until it is stopped
+with `--long`, prints the report between `DIAL-CONFORMANCE-REPORT-BEGIN` and `-END`, then idles until it is stopped.
+Before the report, a desktop's run prints the last whole-screen shot its cases read, as base64 lines between
+`DIAL-CONFORMANCE-FRAME-BEGIN <sha256> <bytes>` and `DIAL-CONFORMANCE-FRAME-END`. The report's `daemons` carry each
+hello's `windowManager`, so a live run shows that computerd started the manager
 (`--exit` exits 0 on a pass, else 1):
 
 ```sh

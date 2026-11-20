@@ -2944,7 +2944,7 @@ pass, facts: [{ id, value, means }], factsProblem? }`.
 An id is resolved through the provider registry, and only there; the usage lists every id it holds. A module path is
 resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
 usage error, and 3 on a partial run; `--json` prints the report object (`{ provider, providerVersion, kind,
-daemonMode, image, daemons: [{ computer, role, version, os, arch, fence? }], only?, coreNotRun?, results: [{ id, level,
+daemonMode, image, daemons: [{ computer, role, version, os, arch, fence?, windowManager? }], only?, coreNotRun?, results: [{ id, level,
 group, status, reason?, undeclared? }], core, undeclared, cleanup, computers: { peak, cap? }, notes?, computerNotes? }`).
 `computers.peak` is the most computers the run had alive at once, each counted from its create's call until its release
 (the text report's `computers alive at once: <peak> at most` line). `--concurrency <n>` (`concurrency` in
