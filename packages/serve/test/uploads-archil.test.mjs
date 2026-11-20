@@ -20,6 +20,8 @@ import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const HOUR = 60 * 60_000;
+/** A fake Archil account key: the fake control plane takes any. */
+const FAKE_ARCHIL = "fake-test-key-archil-unit-01";
 const DAY = 24 * HOUR;
 
 function uploadsOn() {
@@ -147,7 +149,7 @@ async function mode2(t, { wrap = (disk) => disk, placeTimeoutMs } = {}) {
     return disks.get(id);
   };
   const control = archilControlFetch({ region: "aws-us-east-1" });
-  const files = archilUploads({ store, sealKey: undefined, env: { ARCHIL_API_KEY: "fake-test-key-archil-unit-01" }, control: { baseUrl: control.baseUrl, fetch: control.fetch, makeDisk: ({ disk }) => wrap(diskOf(disk)) }, ...(placeTimeoutMs ? { placeTimeoutMs } : {}) });
+  const files = archilUploads({ store, sealKey: undefined, env: { ARCHIL_API_KEY: FAKE_ARCHIL }, control: { baseUrl: control.baseUrl, fetch: control.fetch, makeDisk: ({ disk }) => wrap(diskOf(disk)) }, ...(placeTimeoutMs ? { placeTimeoutMs } : {}) });
   return { files, disks, store };
 }
 
