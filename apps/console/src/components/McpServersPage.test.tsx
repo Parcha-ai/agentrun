@@ -515,8 +515,11 @@ describe("Settings → MCP servers, GitHub App", () => {
     expect(row.textContent).not.toContain("no credential");
     expect(row.querySelector('[data-secret="mcp:github"]')).toBeNull();
     expect(row.textContent).not.toMatch(/Missing/);
-    // Headers saved with it are its one secret, shown as any other.
-    const withHeaders = await open(server([[app({ auth: { type: "github_app", headers: ["X-GitHub-Toolsets"] }, credential: "sealed", secret: { ...secret!, set: true } })]]).v2);
+  });
+
+  it("a github_app server's saved headers are its one secret, shown as any other", async () => {
+    const secret = { name: "mcp:github", set: true, source: "console", changed_at: null } as McpServer["secret"];
+    const withHeaders = await open(server([[app({ auth: { type: "github_app", headers: ["X-GitHub-Toolsets"] }, credential: "sealed", secret })]]).v2);
     expect(withHeaders.row("github").querySelector('[data-secret="mcp:github"]')).not.toBeNull();
     expect(withHeaders.row("github").textContent).toContain("sealed");
   });
