@@ -60,3 +60,46 @@ test("a module's ACP agent on a server's run starts with the allowlist's names a
   assert.ok(!started.some((name) => name.startsWith("ENV_PROBE_CANARY")), "the canary's names");
   assert.equal(existsSync(leaked), false, "the canary's value, or the server's model key, reached the agent");
 });
+
+/** The server's model keys a recipe of acpEntryOf's may never name in `keys` (harness-recipe.ts serverKey). */
+const SERVER_MODEL_KEYS = ["ANTHROPIC_API_KEY", "OPENROUTER_API_KEY"];
+/** A server's keys, fake: the model key a launch is chosen on is there, so only the recipe's keys can refuse it. */
+const KEYED_ENV = { ANTHROPIC_API_KEY: "fake-test-key", OPENROUTER_API_KEY: "fake-test-key", AGENT_MODEL: MODEL };
+
+test("a module's ACP recipe (kit.acpEntry) that names one of the server's keys in `keys` is refused (RECIPE_KEY_NOT_OWN) before its agent starts, naming the key", async (t) => {
+  const { harnessTable } = await import("../dist/harness-table.js");
+  const dir = await scratch(t);
+  for (const key of SERVER_MODEL_KEYS) {
+    const id = `key-namer-${key.toLowerCase().replaceAll("_", "-")}`;
+    const path = join(dir, `${id}.mjs`);
+    writeFileSync(path, `import { gooseFacts, gooseProxy } from ${JSON.stringify(ACP_INDEX)};
+import { fakeAgentRecipe } from ${JSON.stringify(ACP_TESTING)};
+const facts = Object.freeze({ ...gooseFacts, id: ${JSON.stringify(id)}, label: "Key namer" });
+export const entries = (_builtins, kit) => ({ ${JSON.stringify(id)}: kit.acpEntry({
+  facts,
+  recipe: () => ({ ...fakeAgentRecipe(${JSON.stringify(id)}, ${JSON.stringify(dir)}, [{ say: "NOT_RUN" }]), keys: [${JSON.stringify(key)}], billing: { kind: "proxy" } }),
+  proxy: (launch) => gooseProxy({ model: launch.model, provider: launch.provider, price: launch.price, log: launch.log }),
+}) });\n`);
+    const entry = harnessTable({ AGENTRUN_HARNESS_MODULES: JSON.stringify([path]) })[id];
+    const refused = await entry.refusal(KEYED_ENV, undefined, { atStart: false });
+    assert.match(refused?.reason ?? "", new RegExp(`^RECIPE_KEY_NOT_OWN: .*${key}`), `a module's recipe naming ${key} is refused by its code and the key`);
+  }
+});
+
+test("a plan-billed ACP recipe (acpEntryOf's plan branch) that names one of the server's keys in `keys` is refused (RECIPE_KEY_NOT_OWN), and Cursor's own key is not one it is refused for", async (t) => {
+  const { acpEntryOf } = await import("../dist/harness-table.js");
+  const { cursorFacts } = await import(ACP_INDEX);
+  const { fakeAgentRecipe } = await import(ACP_TESTING);
+  const dir = await scratch(t);
+  for (const key of SERVER_MODEL_KEYS) {
+    const id = "plan-key-namer";
+    const entry = acpEntryOf({ facts: { ...cursorFacts, id, label: "Plan key namer" }, recipe: () => ({ ...fakeAgentRecipe(id, dir, [{ say: "NOT_RUN" }]), keys: [key] }) }, { log: () => {} });
+    const refused = await entry.refusal(KEYED_ENV, undefined, { atStart: false });
+    assert.match(refused?.reason ?? "", new RegExp(`^RECIPE_KEY_NOT_OWN: .*${key}`), `a plan recipe naming ${key} is refused by its code and the key`);
+  }
+  // Cursor's key is the built-in Cursor's own (builtinOwns), by the pair: Cursor's recipe names it, any other id's is refused.
+  const cursorKeyed = (id) => acpEntryOf({ facts: { ...cursorFacts, id, label: "Plan key namer" }, recipe: () => ({ ...fakeAgentRecipe(id, dir, [{ say: "NOT_RUN" }]), keys: ["CURSOR_API_KEY"] }) }, { log: () => {} });
+  const env = { ...KEYED_ENV, CURSOR_API_KEY: "fake-test-key" };
+  assert.match((await cursorKeyed("plan-key-namer").refusal(env, undefined, { atStart: false }))?.reason ?? "", /^RECIPE_KEY_NOT_OWN: .*CURSOR_API_KEY/, "another id's recipe naming Cursor's key");
+  assert.doesNotMatch((await cursorKeyed("cursor").refusal(env, undefined, { atStart: false }))?.reason ?? "", /RECIPE_KEY_NOT_OWN/, "Cursor's recipe naming its own key");
+});
