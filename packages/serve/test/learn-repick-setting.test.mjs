@@ -240,7 +240,7 @@ test("the compile: off, the committed workflow.json is the draft's text; on, its
   assert.deepEqual(composed.errors, [], JSON.stringify(composed));
   assert.deepEqual(JSON.parse(keptJson(composed)), parent(rewrite(draft, 150_000)));
   const lines = [];
-  const chained = citedDraft({ node: "chain", label: "write", steps: [ANSWER_STEP] });
+  const chained = citedDraft({ node: "chain", steps: [ANSWER_STEP] });
   const unreached = await compiled(t, { repick: true }, chained, (line) => lines.push(line));
   assert.deepEqual(unreached.errors, [], JSON.stringify(unreached));
   assert.equal(keptJson(unreached), `${JSON.stringify(chained)}\n`);
