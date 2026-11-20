@@ -31,6 +31,9 @@ export interface TriggerTargetDeps {
   /** A run's live moment, for a message's acceptance and a target's cap/kind check (the run view → RunMoment); undefined
    *  for an unknown run. */
   momentOf(runId: string): Promise<RunMoment | undefined>;
+  /** `work`, a write that may open run `runId` of agent `agentId` again, done in the agent's delete turn (server.ts
+   *  runWrite): never under a purge of the run, and 410 purged after one. */
+  runWrite<T>(agentId: string, runId: string, work: () => Promise<T>): Promise<T>;
   /** A run's v2 status, or null for an unknown run (the run view): the trigger engine's overlap and active-run checks. */
   runStatus(runId: string): Promise<string | null>;
   /** A completed run's result.output as GET /runs/{id} serves it (cut of the secrets it holds; null when it has none), and
@@ -208,7 +211,7 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
         // (store.triggers.message): a server that goes down after it never sends it again, and past the bound the firing
         // is skipped in words. A firing no longer due there (already sent) writes nothing.
         const triggerId = (from as { trigger_id: string }).trigger_id;
-        const queued = await message(store, run, String((input as { content?: unknown }).content), {
+        const queued = await deps.runWrite(run.agentId, run.id, () => message(store, run, String((input as { content?: unknown }).content), {
           answers: false,
           origin: from,
           requestId: key,
@@ -217,7 +220,7 @@ export function triggerTargets(store: Store & RunsStore, deps: TriggerTargetDeps
             const done = await store.triggers.message({ triggerId, key }, run.id, command, bound);
             return done && "skipped" in done ? { skipped: done.skipped } : undefined;
           },
-        });
+        }));
         if (queued.skipped !== undefined) return { skipped: queued.skipped };
       } catch (error) {
         if (error instanceof ApiError && error.message === WAITS_ON_A_PERSON) return { skipped: WAITS_ON_A_PERSON };

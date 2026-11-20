@@ -2,7 +2,8 @@
 // rule as a run. Its revisions' content, its learning, its triggers, its sign-ins, its computer, disk and folders go; each
 // of its runs becomes a tombstone; its own row stays as its tombstone (its id, archive and purge times), and every route
 // of it is 410 purged. What its runs cost stays in every total. Not archived: 409 agent_not_archived. A run of it live:
-// 409 run_not_final, nothing purged. Purging one agent never touches another. Another system's agent keeps its delete
+// 409 run_not_final, nothing purged. Purging one agent never touches another. An unarchive or a write sent while its
+// purge runs is 410 once it ends; after a purge stopped part way, each is 409 agent_not_runnable. Another system's agent keeps its delete
 // whole (agent-delete.test.mjs).
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
@@ -10,7 +11,7 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { shadowRunId } from "../dist/learn/audit.js";
-import { runFolder } from "../dist/workspace/paths.js";
+import { agentHomeFolder, runFolder } from "../dist/workspace/paths.js";
 import { agent, FAUX, follow, serve, startInProcessRunner } from "./support.mjs";
 
 const WINDOW = "from=2026-01-01T00:00:00Z&to=2030-01-01T00:00:00Z";
@@ -147,3 +148,51 @@ for (const step of ["after_step_2", "in_step_3"]) {
     for (const run of [first, second.body.run_id]) assert.ok((await store.runs.get(run)).purgedAt !== null, `${run} is a tombstone`);
   });
 }
+
+/** `promise`, or a failure in words once `ms` have passed. */
+const within = (promise, ms, what) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${what}: not within ${ms} ms`)), ms).unref())]);
+
+test("an agent being purged takes no unarchive and no write: after a purge stopped part way each is 409 agent_not_runnable until a DELETE finishes it; one sent while the DELETE runs waits for it and is 410 purged, its home never made again", { timeout: 180_000 }, async (t) => {
+  const gate = { stop: false, hold: false };
+  const { api, data, store } = await serve(t, {
+    agentDeleteAt: async (at) => {
+      if (at === "after_step_2" && gate.stop) {
+        gate.stop = false;
+        throw new Error(`stopped ${at}`);
+      }
+      if (at !== "in_step_3" || !gate.hold) return;
+      gate.hold = false;
+      gate.reach();
+      await gate.held;
+    },
+  });
+  await agentWithRun(api, "held", "Answer.");
+  const homeFile = (name) => ["/agents", "held", "home", "files", name].join("/");
+  assert.equal((await api("PUT", homeFile("notes.md"), "kept notes")).status, 200);
+  assert.equal((await api("POST", "/agents/held/archive")).status, 200);
+
+  // A purge stopped once its learning went: the agent stays archived and takes no unarchive or write.
+  gate.stop = true;
+  assert.equal((await api("DELETE", "/agents/held")).status, 500);
+  for (const [method, path, body] of [["POST", "/agents/held/unarchive"], ["PUT", homeFile("late.md"), "late notes"]]) {
+    const answer = await api(method, path, body);
+    assert.deepEqual([answer.status, answer.body.error?.code], [409, "agent_not_runnable"], `${method} ${path} after a purge stopped part way: ${JSON.stringify(answer.body)}`);
+  }
+  assert.ok((await store.agents.get("held")).archivedAt !== null, "it is still archived");
+
+  // The next DELETE, held in its runs' step: an unarchive and a write sent meanwhile wait for it, then are 410.
+  gate.hold = true;
+  const reached = new Promise((resolve) => (gate.reach = resolve));
+  gate.held = new Promise((resolve) => (gate.release = resolve));
+  const deleting = api("DELETE", "/agents/held");
+  await within(reached, 60_000, "the DELETE reached its runs");
+  const unarchiving = api("POST", "/agents/held/unarchive");
+  const writing = api("PUT", homeFile("late.md"), "late notes");
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  gate.release();
+  const [deleted, unarchived, written] = await Promise.all([deleting, unarchiving, writing]);
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  for (const [answer, what] of [[unarchived, "the unarchive"], [written, "the home write"]]) assert.deepEqual([answer.status, answer.body.error?.code], [410, "purged"], `${what}: ${JSON.stringify(answer.body)}`);
+  assert.ok(!existsSync(agentHomeFolder(data, "held")), "its home is not made again");
+  assert.equal(await store.settings.get("agent.purging.held"), undefined, "its purge's mark goes with it");
+});

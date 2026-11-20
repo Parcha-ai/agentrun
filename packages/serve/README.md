@@ -3318,7 +3318,8 @@ stays in every total.
 
 | Purged | Kept |
 | --- | --- |
-| Its launch record (input, prompt), journal and timeline, messages and commands, outputs and files, the answers kept under its idempotency keys, its folders (here, and its own folder on an Archil disk; the disk is kept), its settings, its agent's grades of it, and its kept learning's content | Its row, as its tombstone: id, agent, state, started and ended, `cost_usd` (an upper bound when that is all it has), its paid tools' cost, its purge time, how its learning ended (for `/stats`), and the spend figures `/usage` and a cap read from its journal |
+| Its launch record (input, prompt), journal and timeline, messages and commands, outputs and files, the answers kept under its idempotency keys, its folders (here, and its own folder on an Archil disk; the disk is kept), its settings, its labels and summary, its agent's grades of it, and its kept learning's content | Its row, as its tombstone: id, agent, state, how it ended (a code), started and ended, `cost_usd` (an upper bound when that is all it has), its paid tools' cost, its purge time, how its learning ended (for `/stats`), and the spend figures `/usage` and a cap read from its journal. Its metrics keep their figures and the names they are keyed by (tools, models, effort, cost basis, the path it took): no grader's words, call arguments or results |
+| Its kept learning's turn and proposal | Each kept learning row as a link alone (the run's and its learning run's ids, its state): `/usage`'s learning line reads it, and it keeps its learning run out of every run list |
 
 - Every route of a purged run is `410 purged`, `details` its tombstone; no run list shows it. `/usage`, `/stats` and
   the spend a cap reads are as they were. A second `DELETE` is `204`; a run never here is `404`.
@@ -3328,6 +3329,8 @@ stays in every total.
   is `409 run_not_final` (`details.runs`), nothing purged: cancel it first. A run that ended and takes a follow-up
   (idle), or that a person stopped, is not live. Such a run reads idle a moment before its runner writes it ended: a
   `DELETE` then waits for that, up to 30 seconds, and purges it.
+- A message, a trigger's message or a grade sent to the run while its `DELETE` runs waits for it, then is `410 purged`:
+  nothing opens the run again or keeps a grade of it under its purge.
 - `503 unavailable` while its folder on an Archil disk is not deleted there yet: the run is not purged, and the next
   `DELETE` finishes it, as it finishes a purge that stopped part way (its purge time is set last).
 - Its agent's other runs and what the agent learned are kept: a promotion's record and the learning folder's history
@@ -3339,6 +3342,8 @@ An agent made here is purged the same way once archived: `DELETE /v2/agents/{id}
 description, learning, triggers, saved sign-ins, own computer, disk and folders go, and each of its runs is purged.
 Its row stays as its tombstone (id, archive and purge times): every route of it is `410 purged`, and no list shows it.
 Not archived: `409 agent_not_archived`. A live run of it: `409 run_not_final`. Purging one agent touches no other.
+An unarchive or a write to it sent while its `DELETE` runs waits for it, then is `410 purged`; after a purge stopped
+part way, each is `409 agent_not_runnable` until a `DELETE` finishes it.
 
 ## Deleting an agent another system owns
 

@@ -3,7 +3,9 @@
 // and cost) and everything else of it goes (its launch, journal and timeline, messages and commands, outputs and files,
 // kept answers, folders and settings, the grades its agent keeps of it, its kept learning's content), with the runs made
 // from it (its audit's shadow run, a learning run that grades it, the replays of its input), each a tombstone too.
-//   - Money: /usage by meter, agent and day, /stats, and a run's spend as the cap reads it are deep-equal before and after.
+//   - Money: /usage by every group it takes (none is a label), /stats, and a run's spend as the cap reads it are
+//     deep-equal before and after. Its metrics keep figures and names alone; its kept learning row is a link alone.
+//   - A message or a grade sent while its DELETE runs waits for it and is 410 purged.
 //   - Reads: every route of it 410 purged, with its tombstone; its DELETE 204 again; an unknown run 404.
 //   - Live (queued, running, waiting on a person, or held by a runner): 409 run_not_final, nothing purged. A run that
 //     ended and takes a follow-up (it reads idle), or that a person stopped, is not live.
@@ -54,6 +56,25 @@ function mentions(data, id) {
   }
 }
 
+/** The rows `sql` reads from the store's file. */
+function rowsOf(data, sql, ...params) {
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
+  try {
+    return db.prepare(sql).all(...params);
+  } finally {
+    db.close();
+  }
+}
+
+/** Every string a JSON value holds as a value (never a key), with where: its keys joined by ".", an object of names'
+ *  entry by its parent's name and "*" (tools.*.calls), an array's by "[]". */
+function stringsIn(value, at = "") {
+  if (typeof value === "string") return [[at, value]];
+  if (value === null || typeof value !== "object") return [];
+  const named = new Set(["tools", "models"]);
+  return Object.entries(value).flatMap(([key, each]) => stringsIn(each, Array.isArray(value) ? `${at}[]` : named.has(at) ? `${at}.*` : at ? `${at}.${key}` : key));
+}
+
 /** Statements on the store's file, for rows the server has no route to write. */
 function write(data, statements) {
   const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 5_000 });
@@ -98,11 +119,11 @@ async function storedRun(store, agentId, id, patch, launch = { input: { content:
   return claim;
 }
 
-/** Everything a total reads: /usage by meter, by agent and by day; /stats; and each of `runs`' spend and meters as the cap
- *  and /usage read them over the store. */
+/** Everything a total reads: /usage by each group it takes (meter, agent, key, day, region; none is a label); /stats; and
+ *  each of `runs`' spend and meters as the cap and /usage read them over the store. */
 async function money(api, store, runs) {
   const usage = {};
-  for (const group of ["meter", "agent", "day"]) {
+  for (const group of ["meter", "agent", "key", "day", "region"]) {
     const answer = await api("GET", `/usage?${WINDOW}&group_by=${group}`);
     assert.equal(answer.status, 200, JSON.stringify(answer.body));
     usage[group] = answer.body;
@@ -123,7 +144,7 @@ async function money(api, store, runs) {
 /** A purged run's read: 410 purged. */
 const purged = (answer, what) => assert.deepEqual([answer.status, answer.body?.error?.code ?? answer.json?.error?.code], [410, "purged"], `${what}: ${answer.status} ${JSON.stringify(answer.body ?? answer.text)}`);
 
-test("DELETE /runs/{id} purges an ended run and keeps its money: /usage by meter, agent and day, /stats and its spend deep-equal, with its audit's shadow and the learning run that grades it; every read of it 410 with its tombstone; in no listing; no table names it but its tombstone; a second DELETE 204; an unknown run 404", { timeout: 180_000 }, async (t) => {
+test("DELETE /runs/{id} purges an ended run and keeps its money: /usage by each group, /stats and its spend deep-equal, its metrics figures and names alone, its kept learning a link alone, with its audit's shadow and the learning run that grades it; every read of it 410 with its tombstone; in no listing; no table names it but its tombstone; a second DELETE 204; an unknown run 404", { timeout: 180_000 }, async (t) => {
   const { api, data, store, port, token, halt } = await haltable(t);
   const [gone, kept] = await twoRuns(api, store);
   await halt();
@@ -134,6 +155,8 @@ test("DELETE /runs/{id} purges an ended run and keeps its money: /usage by meter
   write(data, [
     ["UPDATE runs SET cost_usd = ? WHERE id = ?", 0.25, gone],
     ["INSERT INTO learning_proposals (run_id, round, agent_id, turn, proposal, learning_run_id, created_at) VALUES (?, 99, 'calc', ?, ?, 'learn-1', ?)", gone, JSON.stringify({ asked: "What the run read." }), JSON.stringify({ state: "merged", detail: "What it learned from the run." }), Date.now()],
+    // Words its metrics may hold beside their figures: a grader's verdict, a learned loop's nodes, an audit's link.
+    ["UPDATE runs SET metrics = json_set(coalesce(metrics, '{}'), '$.compared', json(?), '$.loops', json(?), '$.audit', json(?)) WHERE id = ?", JSON.stringify({ same: false, differs_on: "What the grader said of https://example.com/read" }), JSON.stringify([{ node: "What the loop read", iterations: 2, met: true }]), JSON.stringify({ of: "another-run", workflow: "flow" }), gone],
   ]);
   const runs = [gone, kept, shadow, "learn-1"];
   const before = await money(api, store, runs);
@@ -164,6 +187,18 @@ test("DELETE /runs/{id} purges an ended run and keeps its money: /usage by meter
   assert.deepEqual((await api("GET", "/agents/calc/runs")).body.runs.map((run) => run.run_id), [kept], "its agent lists its other run alone");
   assert.deepEqual(mentions(data, gone), ["learning_proposals.run_id", "runs.id"], "no table names it but its tombstone (its shadow's is named after it) and its kept learning's row");
   assert.deepEqual(mentions(data, "What the run read"), [], "its kept learning's content is gone");
+  // Its kept learning row is a money link alone: its ids and its state, no turn or proposal text.
+  const [link] = rowsOf(data, "SELECT * FROM learning_proposals WHERE run_id = ?", gone);
+  assert.deepEqual([link.agent_id, link.learning_run_id, link.turn, JSON.parse(link.proposal)], ["calc", "learn-1", "{}", { state: "merged" }], `its kept learning row: ${JSON.stringify(link)}`);
+  // Its metrics are figures and the names they are keyed by: every string in them a key, a tool's or a model's name (a
+  // key too), or a code at a place that holds one; no grader's words, loop or link.
+  const [{ metrics: stored, outcome }] = rowsOf(data, "SELECT metrics, outcome FROM runs WHERE id = ?", gone);
+  const metrics = JSON.parse(stored);
+  assert.ok(Object.keys(metrics.tools ?? {}).length + Object.keys(metrics.models ?? {}).length > 0, `its tools or models are kept by name: ${stored}`);
+  const CODES = new Set(["model", "effort", "costBasis", "path", "workflow", "workflow_digest", "purged.spend.basis", "purged.learning.state", "purged.learning.reason"]);
+  for (const [at, text] of stringsIn(metrics)) assert.ok(CODES.has(at) && /^[\w.:/@+-]+$/.test(text), `a string in its metrics that is no name or code: ${at} = ${JSON.stringify(text)}`);
+  for (const words of ["What the grader said", "What the loop read", "another-run", "example.com/read"]) assert.deepEqual(mentions(data, words), [], `${words}: gone from its metrics`);
+  assert.ok(outcome === null || ["completed", "escalated", "stopped", "cancelled"].includes(outcome), `its outcome is a code: ${outcome}`);
   assert.ok(!existsSync(dirname(runFolder(data, "calc", gone))), "its folder is gone");
   assert.ok(!existsSync(scratchFolder(data, "calc", gone)), "and its scratch folder");
   assert.deepEqual(((await store.settings.get(gradesKey("calc")))?.items ?? []).map((grade) => grade.run), [kept], "its grade is dropped, its sibling's kept");
@@ -322,6 +357,78 @@ for (const step of ["run_made_from_gone", "run_forgotten"]) {
     assert.ok(!existsSync(dirname(runFolder(data, "calc", gone))), "nor its folder");
   });
 }
+
+/** `promise`, or a failure in words once `ms` have passed. */
+const within = (promise, ms, what) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${what}: not within ${ms} ms`)), ms).unref())]);
+
+/** A server whose run DELETE holds at `step` for the run `gate.run` once `gate.arm()` was called: `gate.reached` settles
+ *  when it holds there, `gate.release()` lets it go on. */
+async function heldAt(t, step) {
+  const gate = { armed: false, run: undefined };
+  gate.arm = (run) => {
+    gate.run = run;
+    gate.armed = true;
+    gate.reached = new Promise((resolve) => (gate.reach = resolve));
+    gate.held = new Promise((resolve) => (gate.release = resolve));
+  };
+  const server = await haltable(t, {
+    agentDeleteAt: async (at, id) => {
+      if (at !== step || !gate.armed || id !== gate.run) return;
+      gate.armed = false;
+      gate.reach();
+      await gate.held;
+    },
+  });
+  return { ...server, gate };
+}
+
+test("a message sent while a run's DELETE runs (its folders gone, its tombstone not yet written) waits for it and is 410 purged: the run is never opened again under its purge", { timeout: 120_000 }, async (t) => {
+  const { api, data, store, halt, gate } = await heldAt(t, "run_forgotten");
+  const [gone] = await twoRuns(api, store);
+  await halt();
+  assert.equal((await api("GET", `/runs/${gone}`)).body.state, "idle", "a message would open it again");
+  gate.arm(gone);
+  const deleting = api("DELETE", `/runs/${gone}`);
+  await within(gate.reached, 60_000, "the DELETE reached its folders' end");
+  const sending = api("POST", `/runs/${gone}/messages`, { content: "And eight?" });
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  gate.release();
+  const [deleted, sent] = await Promise.all([deleting, sending]);
+  assert.equal(deleted.status, 204, `the DELETE: ${deleted.status} ${JSON.stringify(deleted.body)}`);
+  purged(sent, "the message");
+  purged(await api("GET", `/runs/${gone}`), "the run");
+  assert.deepEqual(mentions(data, gone), ["runs.id"], "no message or command of it is written");
+});
+
+/** A PUT of `path` whose JSON body is sent in two parts, `tail` once `finish()` is called: its answer. */
+function slowPut(port, token, path, head, tail) {
+  let finish;
+  const answer = new Promise((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port, method: "PUT", path, headers: { host: `127.0.0.1:${port}`, authorization: `Bearer ${token}`, "content-type": "application/json", "content-length": Buffer.byteLength(head + tail) } }, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => resolve({ status: res.statusCode, body: JSON.parse(Buffer.concat(chunks).toString("utf8") || "null") }));
+    });
+    req.on("error", reject);
+    req.write(head);
+    finish = () => req.end(tail);
+  });
+  return { answer, finish };
+}
+
+test("a grade whose body arrives after its run's purge is 410 purged: no grade of the run is kept", { timeout: 120_000 }, async (t) => {
+  const { api, data, store, port, token, halt } = await haltable(t);
+  const [gone, kept] = await twoRuns(api, store);
+  await halt();
+  // The grade's run is read when it is sent; its body comes once the run is purged.
+  const grading = slowPut(port, token, `/v2/runs/${gone}/grade`, '{"correct":', " false}");
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+  grading.finish();
+  purged(await grading.answer, "the grade");
+  assert.deepEqual(((await store.settings.get(gradesKey("calc")))?.items ?? []).map((grade) => grade.run), [kept], "no grade of the purged run");
+  assert.deepEqual(mentions(data, gone), ["runs.id"], "no table names it but its tombstone");
+});
 
 /** A test's owner password (no secret: joined so a scan for a literal one never reads it as one). */
 const PASSWORD = ["not-a-secret", "owner"].join("-");

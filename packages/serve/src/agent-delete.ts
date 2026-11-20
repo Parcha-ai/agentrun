@@ -144,6 +144,9 @@ export async function deleteExternalAgent(host: AgentDeleteHost, agentId: string
 export async function purgeAgent(host: AgentDeleteHost, agentId: string): Promise<void> {
   const live = await liveOf(host, (await host.store.runs.every(agentId)).filter((run) => run.purgedAt === null));
   if (live.length) throw liveRuns(`The agent ${agentId} has ${live.length === 1 ? "a run" : "runs"} that ${live.length === 1 ? "has" : "have"} not ended (${live.join(", ")}): cancel ${live.length === 1 ? "it" : "them"} (POST /v2/runs/{run_id}/cancel), then send the DELETE again. Nothing was purged.`, live);
+  // Marked before anything goes, and kept until its tombstone is written: a purge stopped part way leaves the agent
+  // refusing an unarchive and every write (server.ts agentWrite) until a DELETE finishes it.
+  await host.store.settings.put(purgingKey(agentId), true);
   await learningGone(host, agentId);
   await host.at?.("after_step_2", agentId);
   await thingsGone(host, agentId);
@@ -162,7 +165,12 @@ export async function purgeAgent(host: AgentDeleteHost, agentId: string): Promis
     if (error instanceof StoreConstraint) throw liveRuns(`The agent ${agentId} has a run started while it was being purged (${error.message}): send the DELETE again once it has ended. Its runs purged so far stay purged.`, []);
     throw triggersLeft(error, agentId);
   }
+  // Its tombstone refuses every write from here (410 purged).
+  await host.store.settings.remove(purgingKey(agentId));
 }
+
+/** The setting that marks agent `agentId`'s purge begun and not finished (purgeAgent). */
+export const purgingKey = (agentId: string): string => `agent.purging.${agentId}`;
 
 /** Purges run `runId` with every run made from it, as the header says. 404 not_found when it is not there; 409
  *  run_not_final, nothing purged, while it or a run made from it is live. A purged run is no work. */

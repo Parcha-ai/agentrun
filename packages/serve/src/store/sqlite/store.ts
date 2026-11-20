@@ -23,7 +23,7 @@ import {
   RevisionMoved, SignInHandedTo, SignInMissing, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
   type ComputerLedger, type ComputerLedgerRow, type PairedComputerRow, type PairedComputers, RUN_CHANGES_PAGE, type RunChangeCursor,
   type ImportedTemplates, type MintedTokenRow, type MintedTokens, type SecureRewrite,
-  RUNNER_ROWS_KEPT_MS, type RunnerRow, type Runners,
+  RUNNER_ROWS_KEPT_MS, type RunnerRow, type Runners, tombstoneMetrics,
 } from "../store.js";
 
 /** The seq a run-change cursor names (Runs.changedSince): only a cursor this store handed back, a whole number. */
@@ -1295,8 +1295,9 @@ class SqliteStore implements Store {
             const state = (JSON.parse(row.proposal) as { state?: unknown } | null)?.state;
             await tx.run("UPDATE learning_proposals SET turn = '{}', proposal = ? WHERE run_id = ? AND round = ?", json(typeof state === "string" ? { state } : {}), runId, row.round);
           }
-          // Its row's content, with what its spend's readers read from its journal folded into its metrics.
-          const metrics = { ...((run.metrics === null ? {} : JSON.parse(run.metrics)) as Record<string, unknown>), purged: kept };
+          // Its row's content, its metrics cut to their figures and names (tombstoneMetrics), with what its spend's readers
+          // read from its journal folded in. Its outcome stays: a code (RunOutcome), never words.
+          const metrics = tombstoneMetrics(run.metrics === null ? null : JSON.parse(run.metrics), kept);
           await tx.run("UPDATE runs SET summary = NULL, labels = NULL, sign_in_handed = NULL, metrics = ? WHERE id = ?", json(metrics), runId);
           // Its listing, and its purge time last: no list shows it, and no lister builds it again.
           await tx.run("UPDATE runs SET listing = NULL, list_status = NULL, listing_mark = list_mark, listing_live = 0, listing_until = NULL, listing_flags = 0, purged_at = ? WHERE id = ?", now(), runId);

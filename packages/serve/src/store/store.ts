@@ -255,6 +255,27 @@ export interface PurgeKept {
   readonly learning: { readonly state: string; readonly reason: string | null } | null;
 }
 
+/** A run's metrics as its tombstone keeps them (Runs.purge): the figures every total and the analytics read, and the
+ *  names they key them by, never a call's arguments or results, a prompt, a URL or a grader's words. Each number (or an
+ *  unknown one's null) at the top; each tool's calls and errors by its name; each model's requests by its name; the
+ *  model, the effort and the cost basis; the path it took with its learned workflow's name and digest, which its agent's
+ *  cost series reads; and `purged`, `kept`. Everything else (a grader's verdict, an audit's or a replay's link, a learned
+ *  loop's nodes) goes. */
+export function tombstoneMetrics(metrics: unknown, kept: PurgeKept): Record<string, unknown> {
+  const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
+  const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
+  const from = isObject(metrics) ? metrics : {};
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(from)) if (value === null || (typeof value === "number" && Number.isFinite(value))) out[key] = value;
+  if (isObject(from.tools)) out.tools = Object.fromEntries(Object.entries(from.tools).map(([name, each]) => [name, { calls: count(isObject(each) ? each.calls : 0), errors: count(isObject(each) ? each.errors : 0) }]));
+  if (isObject(from.models)) out.models = Object.fromEntries(Object.entries(from.models).map(([name, requests]) => [name, count(requests)]));
+  // Names and codes, each kept only as one: no space, at most a model name's length.
+  const code = (value: unknown) => typeof value === "string" && /^[\w.:/@+-]{1,256}$/.test(value);
+  for (const key of ["model", "effort", "costBasis", "path", "workflow", "workflow_digest"]) if (code(from[key])) out[key] = from[key];
+  out.purged = kept;
+  return out;
+}
+
 /** What a runner may change on its run's row, under its claim. A final state with no `endedAt` is stamped now. */
 export interface RunPatch {
   readonly state?: RunState;

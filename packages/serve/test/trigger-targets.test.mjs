@@ -60,6 +60,8 @@ const deps = (over = {}) => {
     getAgent: async () => entryOf(),
     needAgent: async () => entryOf(),
     momentOf: async () => moment(),
+    // The server's delete turn: here the write alone.
+    runWrite: (_agentId, _runId, work) => work(),
     runStatus: async () => "working",
     ...rest,
   };
@@ -254,6 +256,24 @@ test("message to a working run writes a steer that answers no person, its firing
   assert.deepEqual(await t.message(target, { content: "from the schedule" }, "f2", from, BOUND), { skipped: BOUND.reason });
   assert.equal((await store.commands("run-1", 0)).length, 1, "the second waits for nothing: skipped");
   assert.equal((await store.triggers.firing("t1", "f2")).status, "skipped");
+});
+
+test("a firing's message is sent in its run's agent's delete turn (runWrite): refused there, as a purge of the run refuses it, it writes nothing and its firing stays due", async () => {
+  const store = await freshStore();
+  await store.runs.create({ id: "run-1", agentId: "a1", revisionId: "r1" });
+  await dueFirings(store, ["f1"]);
+  const turns = [];
+  const purged = new Error("The run run-1 was purged.");
+  const t = triggerTargets(store, deps({
+    runWrite: async (agentId, runId) => {
+      turns.push([agentId, runId]);
+      throw purged;
+    },
+  }));
+  await assert.rejects(() => t.message({ kind: "message_run", run_id: "run-1", input: { content: "hi" } }, { content: "hi" }, "f1", from, BOUND), (error) => error === purged);
+  assert.deepEqual(turns, [["a1", "run-1"]], "in the turn of its run's agent");
+  assert.equal((await store.commands("run-1", 0)).length, 0, "nothing written");
+  assert.notEqual((await store.triggers.firing("t1", "f1")).status, "sent", "its firing is not marked sent");
 });
 
 test("message to a run waiting on a person is skipped, nothing written", async () => {
