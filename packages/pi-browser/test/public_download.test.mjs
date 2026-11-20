@@ -188,9 +188,10 @@ test("a stated length: the bytes come back exactly, in one buffer of that length
   assert.deepEqual([answer.bytes.buffer.byteLength, answer.bytes.byteOffset], [10, 0], "the bytes are the one buffer allocated for the stated length");
 });
 
-test("a stated length: a body longer is refused at the chunk that runs past it, while the body is still coming", async () => {
+test("a stated length: a body longer is refused at the chunk that runs past it, while the body is still coming", { timeout: 10_000 }, async () => {
   const net = stated(chunked([[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]], { hang: true }), 10);
-  // The body hangs after the chunk that runs past the length: a read that waited for its end never settles.
+  // The body hangs after the chunk that runs past the length: a read that waited for its end never settles, and the
+  // test's timeout catches it.
   const settled = await publicDownload("https://cdn.example/f", { ...net, maxBytes: MAX }).then(() => "read whole", (error) => error);
   assert.ok(refused(/^refused: the file is longer than the 10 bytes its host stated$/)(settled), `refused as the extra bytes came: ${settled?.message ?? settled}`);
 });

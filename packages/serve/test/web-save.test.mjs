@@ -624,7 +624,7 @@ test("a run process's release after its channel ended leaves no unhandled reject
   assert.deepEqual(unhandled.map(String), []);
 });
 
-test("one run process may have at most SAVE_SLOTS_PER_RUN takes held or waiting at its runner: the next is refused at once, never queued", async (t) => {
+test("one run process may have at most SAVE_SLOTS_PER_RUN takes held or waiting at its runner: the next is refused at once, never queued", { timeout: 10_000 }, async (t) => {
   const { SAVE_SLOTS_PER_RUN } = sharedSlots;
   assert.equal(SAVE_SLOTS_PER_RUN, 16, "save-slots.js exports SAVE_SLOTS_PER_RUN");
   const gate = saveSlots(1);
