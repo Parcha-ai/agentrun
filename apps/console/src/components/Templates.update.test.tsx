@@ -60,6 +60,39 @@ describe("a template that already made an agent here", () => {
     expect(listAgents).toHaveBeenCalledTimes(pages);
   });
 
+  // An apply with warnings shows its result. The words say what it did: an Update updated the agent (its revision read
+  // back), never "made"; only an Apply, which made a new agent, says made.
+  const warned = vi.fn(async (_name: string, body: { agent_id?: string }) => ({ agent_id: body.agent_id ?? "made-1", trigger_ids: [], warnings: [{ field: "computer", message: "No shell here." }] }));
+  const result = (host: HTMLElement) => host.querySelector('section[aria-label="Applied"]')?.textContent ?? "";
+  it("an Update with warnings says it updated the agent and the revision it wrote, never that the agent is made", async () => {
+    const getAgent = vi.fn(async (id: string) => ({ agent: { agent_id: id, definition: { name: "Morning notes", version: 2 } }, etag: null }));
+    const host = await mount({ ...client([agentOf("notes-1", "Morning notes", base.id)]), applyTemplate: warned, getAgent } as never);
+    await act(async () => button(host, "Update Morning notes")!.click());
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(getAgent).toHaveBeenCalledWith("notes-1");
+    expect(host.querySelector("h1")?.textContent).toContain("Daily notes updated");
+    expect(result(host)).toContain("Updated: rev 2. The server says:");
+    expect(result(host)).not.toContain("made");
+    expect(result(host)).not.toContain("applied");
+  });
+  it("an Update whose agent can't be read back says Updated alone", async () => {
+    const getAgent = vi.fn(async () => { throw new Error("down"); });
+    const host = await mount({ ...client([agentOf("notes-1", "Morning notes", base.id)]), applyTemplate: warned, getAgent } as never);
+    await act(async () => button(host, "Update Morning notes")!.click());
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(result(host)).toContain("Updated. The server says:");
+    expect(result(host)).not.toContain("made");
+  });
+  it("an Apply with warnings made a new agent, and says so", async () => {
+    const getAgent = vi.fn();
+    const host = await mount({ ...client([agentOf("notes-1", "Morning notes", base.id)]), applyTemplate: warned, getAgent } as never);
+    await act(async () => button(host, "Apply")!.click());
+    expect(host.querySelector("h1")?.textContent).toContain("Daily notes applied");
+    expect(result(host)).toContain("The agent is made. The server says:");
+    expect(result(host)).not.toContain("Updated");
+    expect(getAgent).not.toHaveBeenCalled();
+  });
+
   it("offers no Update when no agent here was made from it, and Apply sends no agent_id", async () => {
     const host = await mount(client([agentOf("plain", "Plain", null)]));
     expect([...host.querySelectorAll("button")].some((b) => b.textContent?.trim().startsWith("Update "))).toBe(false);
