@@ -1701,9 +1701,11 @@ Parallel's fees are the run's spend, booked as monid's are: each search and each
 run's records before it is sent (`agentrun.tool_started`, held at its price) and settled once Parallel answers
 (`agentrun.tool_cost`: `tool` `web_search` or `web_fetch`, `charged_by` `"parallel"`, `usd`), shown on its timeline
 (`Tool cost: parallel charged $0.0010 for web_search`), summed into its cost and under `/usage`'s `tools` meter. Parallel
-answers what it used as counts, never an amount, so each is booked at Parallel's published price (docs.parallel.ai,
-read 2026-11-03), an estimate: a `fast` search $0.001 for up to 10 results and $0.001 for each one past them, an extract
-$0.001 a URL; on a 4xx other than a 408 nothing (Parallel refused it), and on a 408, a 5xx, a timeout or a lost
+answers what it used as counts, never an amount, so each is booked at Parallel's published price
+([docs.parallel.ai/resources/pricing](https://docs.parallel.ai/resources/pricing), read 2026-11-20), an estimate: a
+search by its mode, `turbo` or `fast` $0.001 and `basic` or `advanced` $0.005, each for up to 10 results, and $0.001 for
+each result past them (`web_search` always searches `fast`); an extract $0.001 a URL. A search in a mode with no price
+here, or naming none, is never sent, as an endpoint with no price is not; on a 4xx other than a 408 nothing (Parallel refused it), and on a 408, a 5xx, a timeout or a lost
 connection its price (Parallel may have billed it). Under a [spend cap](#spend-cap) each is a paid call: sent only when
 what the run has spent and holds, plus its price, fits the cap. Otherwise nothing reaches Parallel: a search answers the
 cap's refusal (`spend_cap_reached: Not sent: this run has spent $0 of its $0.0009 cap, and the next step, Parallel's search, could cost up to $0.001 …`) and a page is the
@@ -2943,7 +2945,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET` and `POST /triggers`, `GET`, `PATCH` and `DELETE /triggers/{id}`, `POST /triggers/{id}/fire`, `GET /triggers/{id}/firings`, `POST /triggers/{id}/secret`, `POST /hooks/{id}` (no token: [signed](#webhook-triggers)) | [Schedules](#schedules), this server's own routes (`x-agentrun-serve: "trigger/1"`): schedules that start an agent's capped runs, each firing once, and their history. |
 | `GET /templates`, `POST /templates/{name}/apply` | [Templates](#templates), this server's own routes (`x-agentrun-serve: "templates/1"`): the template packages it ships, and an apply that makes one's agent and triggers, all or nothing. |
 | `POST /mcp` | This server's own route (`x-agentrun-serve: "mcp/1"`): the [MCP endpoint](#for-coding-agents), Streamable HTTP with one JSON-RPC message per POST (`initialize`, `ping`, `tools/list`, `tools/call`), answered as JSON, stateless. Its ten tools call these routes in process with the caller's token. The Bearer token only, never the page's cookie; a browser `Origin` other than this server's own is `403`; any other method is `405`. |
-| `GET /usage` | The runs' costs, by meter, agent, key, day or region (`key` and `region` are one line, `local`). A run of unknown cost adds what it is known to have spent so far (its `so_far_usd`: each priced charge, browser time and paid tools included) and is counted in `unpriced_runs` (in the total and in each line it is unknown on), so no sum is ever null, it never passes as $0, and a total is never below a line of its own: with `unpriced_runs` above 0 the total is a lower bound. `basis` says how the costs were reached ([A run's cost](#a-runs-cost-its-tokens-and-its-basis)). |
+| `GET /usage` | The runs' costs, by meter, agent, key, day or region (`key` and `region` are one line, `local`). By meter, `tools` holds the runs' paid tool calls and the workflow decisions Parallel charged on its own API, as `cost.tools_usd` does. A run of unknown cost adds what it is known to have spent so far (its `so_far_usd`: each priced charge, browser time and paid tools included) and is counted in `unpriced_runs` (in the total and in each line it is unknown on), so no sum is ever null, it never passes as $0, and a total is never below a line of its own: with `unpriced_runs` above 0 the total is a lower bound. `basis` says how the costs were reached ([A run's cost](#a-runs-cost-its-tokens-and-its-basis)). |
 
 Quotes answer `501 unsupported_here` naming the feature. Home export and import (`GET` and `PUT /agents/{id}/home`) and
 `POST /runs/{id}/kill` are not served here: they answer `404`, and the served document leaves them out (its
@@ -3935,10 +3937,11 @@ and says how its figure was reached.
   and do not change it. A native, SDK or imported run's figure is its harness's own, an `estimate`; so is an imported
   session's catalog estimate where its source priced none ([importing your sessions](#importing-your-sessions)). LiteLLM writes no
   cost into a streamed answer's headers, so a run whose answers stream through LiteLLM reads `estimate`.
-- `tools_usd` (on `GET /runs/{id}` alone, `toolsusd/1`): the part of `usd` its paid tool calls cost (monid's endpoints,
-  MCP tools with a saved price, Parallel behind `web_search` and `web_fetch`, browser time), as the run's ledger booked
-  them, rounded as `usd` is. It is inside `usd`, never added to it: `usd` less `tools_usd` is what its model requests and
-  decisions cost. A paid call in a learning run's end-of-run turn is learning's (in `learning_usd`), never in
+- `tools_usd` (on `GET /runs/{id}` alone, `toolsusd/1`; Parallel's decisions in it since `toolsusd/2`): the part of `usd` its paid tool calls cost (monid's endpoints,
+  MCP tools with a saved price, Parallel behind `web_search` and `web_fetch`, browser time, and a workflow decision
+  Parallel answered on its own API, on `PARALLEL_API_KEY`, at Parallel's list price), as the run's ledger booked them,
+  rounded as `usd` is. It is inside `usd`, never added to it: `usd` less `tools_usd` is what its model requests and its
+  other decisions cost (Jev's, an OpenRouter model's, Parallel's model reached through OpenRouter). A paid call in a learning run's end-of-run turn is learning's (in `learning_usd`), never in
   `tools_usd`. 0 when it made no paid call. Null while a paid call's charge is unknown (as `usd` is then); while the run
   is at work (until it ended, stopped or failed); for a learning run a follow-up opened again, whose `usd` is what its
   first round had cost; and for an imported, native or SDK run, whose `usd` is its import's or its harness's own figure
@@ -3974,14 +3977,17 @@ were reached. Nothing is priced here, and nothing is rounded to a billing increm
 ```
 
 - `tokens`: one line per model the requests were sent on (`model`; a workflow decision on the model its provider
-  answered with). `provider` is where the requests went, named only when this server sent them there itself: the run's
+  answered with, except a decision Parallel charged for, which is on Parallel's `tools` line). `provider` is where the requests went, named only when this server sent them there itself: the run's
   own model on a provider's key, or a decision's provider. Behind a model gateway it is null, since the gateway picks the
   upstream. A model reached two ways is two lines, one per provider. `quantity` is the input, cache read, cache write and
   output tokens as each request reported them (a decision's as its receipt does), with the split beside it; `basis` is the run's `cost.basis` rule over that model's requests alone.
 - `tools`: one line per charger (`charged_by`: `monid`, an MCP server's name, `parallel`), the vendor whose invoice the
   calls land on. `provider` names the same vendor: the one that charges for a call is its provider. `quantity` is the charges booked, one per paid call. `basis` is `reported` when every charge is the
   vendor's own figure (monid's answer says what it charged), `estimate` when any is a price this server holds (an MCP
-  tool's saved price, Parallel's). Calls of a tool with no price set ran outside the run's cost, as `GET /usage` counts
+  tool's saved price, Parallel's). A workflow decision Parallel answered on its own API (`PARALLEL_API_KEY`) is a paid
+  call on the `parallel` line, beside `web_search` and `web_fetch`, at Parallel's list price for one decision request
+  (`estimate`), and on no `tokens` line. A `parallel` decision sent through OpenRouter (no `PARALLEL_API_KEY`, the
+  OpenRouter key) is OpenRouter's to charge, at the cost OpenRouter reported: a `tokens` line, as any decision model's. Calls of a tool with no price set ran outside the run's cost, as `GET /usage` counts
   them: `not_metered_calls`, in neither `quantity` nor `usd`.
 - `browser_time`: one line per browser provider (`provider`). `quantity` is the seconds this server's clock charged the
   provider's sessions for, the provider's minimum per session included as the browser charged it; `basis` is

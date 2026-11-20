@@ -7,7 +7,8 @@ import { test } from "node:test";
 import { KEY as MONID_KEY } from "./fixtures/faux-monid.mjs";
 import { REQUEST_USD } from "./fixtures/faux-tools-cost.mjs";
 import { startFakeMcp } from "./fixtures/fake-mcp-server.mjs";
-import { agent, follow, scratch, serve, withEnv } from "./support.mjs";
+import { CANARY as PARALLEL_CANARY } from "./fixtures/faux-parallel.mjs";
+import { agent, flowAgent, follow, scratch, serve, withEnv } from "./support.mjs";
 
 const FAUX = new URL("./fixtures/faux-tools-cost.mjs", import.meta.url).pathname;
 const FAUX_MONID = new URL("./fixtures/faux-monid.mjs", import.meta.url).pathname;
@@ -106,4 +107,42 @@ test("a run still at work has no lines yet, and says so; an unknown run is a 404
   assert.equal(usage.status, 200);
   assert.deepEqual(usage.body, { run_id: run.body.run_id, ended_at: null, currency: "USD", total: null, lines: null, browser_sessions: null, computer_intervals: null, reason: "running" });
   assert.equal((await api("GET", "/runs/run_nope/usage")).status, 404);
+});
+
+const FAUX_PARALLEL = new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname;
+
+test("a workflow decision Parallel answered on this server's key: a paid call on Parallel's tools line, in cost.tools_usd and in GET /usage's tools meter, never a tokens line; the total is still cost.usd", { timeout: 120_000 }, async (t) => {
+  withEnv(t, { PARALLEL_API_KEY: PARALLEL_CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: join(await scratch(t), "parallel-calls.jsonl") }, ["TYPESAFE_API_KEY", "OPENROUTER_API_KEY", "AGENT_MODEL_BASE_URL", "AGENT_MODEL_API_KEY"]);
+  const { api } = await serve(t, { fauxParallel: FAUX_PARALLEL });
+  const flow = {
+    v: 2, name: "judged",
+    schemas: {
+      In: { type: "object", required: ["doc"], properties: { doc: { type: "string" } } },
+      Verdict: { type: "object", additionalProperties: false, required: ["is_coi"], properties: { is_coi: { type: "boolean", description: "Is `doc` a certificate of incorporation?" } } },
+    },
+    input: { schemaId: "In" },
+    output: { schemaId: "Verdict", path: "verdict" },
+    root: { node: "judge", label: "coi", provider: "parallel", state: { doc: "{doc}" }, out: "Verdict", as: "verdict" },
+  };
+  assert.equal((await api("POST", "/agents", flowAgent("judged", flow))).status, 201);
+  const started = await api("POST", "/agents/judged/runs", { input: { doc: "Certificate of Incorporation of Example Widgets, Inc." } });
+  assert.equal(started.status, 202, JSON.stringify(started.body));
+  await follow(api, started.body.run_id, ["completed", "failed"], { deadlineMs: 60_000 });
+  const view = (await api("GET", `/runs/${started.body.run_id}`)).body;
+  assert.equal(view.status, "completed", JSON.stringify(view.error));
+  const usage = (await api("GET", `/runs/${started.body.run_id}/usage`)).body;
+
+  // Parallel's list price for one decision request is $0.001 (https://docs.parallel.ai/resources/pricing): the run's whole cost.
+  assert.equal(micro(view.cost.usd), micro(0.001), JSON.stringify(view.cost));
+  assert.equal(micro(view.cost.tools_usd), micro(0.001), "the decision is a paid call Parallel charged: in the tools figure");
+  assert.deepEqual(usage.lines.map((line) => [line.meter, line.model, line.provider, line.charged_by, line.quantity, line.unit, line.basis, line.usd]), [["tools", null, "parallel", "parallel", 1, "call", "estimate", 0.001]], "one tools line, Parallel's; no tokens line for it");
+  assert.equal(micro(usage.total.usd), micro(view.cost.usd), "the lines' join is still the run's cost.usd");
+
+  // GET /usage by meter: the same $0.001 on tools, none of it on tokens.
+  const from = new Date(Date.now() - 3_600_000).toISOString();
+  const meters = (await api("GET", `/usage?group_by=meter&from=${encodeURIComponent(from)}`)).body;
+  const meter = (name) => meters.lines.find((line) => line.meter === name);
+  assert.equal(micro(meter("tools")?.usd), micro(0.001), JSON.stringify(meters.lines));
+  assert.equal(micro(meter("tokens")?.usd ?? 0), 0, JSON.stringify(meters.lines));
+  assert.equal(micro(meters.total_usd), micro(view.cost.usd));
 });

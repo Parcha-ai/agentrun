@@ -152,6 +152,16 @@ export function bookedSpend(entries: readonly EntryLike[], which: "model" | "pai
   return { usd: unpriced ? null : known + bounded, known, bounded, unpriced, atMost, requests, unmetered, models, tokens, priced: { reported, estimated }, ...(requests > 0 && free === requests ? { free: true as const } : {}) };
 }
 
+/** The run's decisions whose ids are in `ids` (each booked as `decision:<id>`), as bookedSpend reads its decisions, with
+ *  every other decision left out: the ones a vendor charged as a paid call (store-reads/decisions.ts
+ *  parallelChargedDecisions), which the run's tools figures count beside its paid tool calls. */
+export function bookedDecisionsOf(entries: readonly EntryLike[], ids: ReadonlySet<string>): BookedSpend {
+  const turnOf = (e: EntryLike) => `${String(e.conversationId)}:${String((e.data as { turn?: unknown } | undefined)?.turn)}`;
+  const named = (e: EntryLike) => (e.data as { model?: unknown } | undefined)?.model;
+  const kept = new Set(entries.filter((e) => e.kind === RUNNER_RECORDS.request && typeof named(e) === "string" && (named(e) as string).startsWith("decision:") && ids.has((named(e) as string).slice("decision:".length))).map(turnOf));
+  return bookedSpend(entries.filter((e) => !(e.kind === RUNNER_RECORDS.request || e.kind === RUNNER_RECORDS.turn) || kept.has(turnOf(e))), "decisions");
+}
+
 /** A sum of charges with its float noise rounded off, nothing more (as the decisions row rounds, decision-rows.ts): a
  *  decision costs millionths of a dollar, so a sum rounded to the millionth would lose it. */
 const floatNoiseOff = (usd: number): number => Math.round(usd * 1e12) / 1e12;
