@@ -686,32 +686,41 @@ test("the watermark's readers: a run before the reset, or one whose seed was rea
   assert.deepEqual(launched, [], "no replay of a run before the reset");
 });
 
-test("a run's kept learning cut to its state alone (as a run purge keeps that row): no learning read fails on it or reads any text from it", async (t) => {
+test("runs purged by DELETE /runs/{id} (their kept learning cut to its state alone): no learning read fails on them or reads any text of them, and the agent's learning reset over them is 204 with every read still whole", async (t) => {
   const { api, data, store } = await serve(t, { learning: "on", runner: false });
   assert.equal((await api("POST", "/agents", agent("cut", { learning: true }))).status, 201);
   const revisionId = (await store.agents.get("cut")).currentRevision;
   const LEARNS = { input: ASK, title: "t", place: { mode: "runner" }, learning: { seed: "a".repeat(40), section: "" } };
-  for (const [id, proposal] of [["cut-1", { state: "merged" }], ["cut-2", {}]]) {
+  const TEXT = "What the purged run learned";
+  for (const [id, proposal] of [["cut-1", { state: "merged", detail: `${TEXT}: merged.` }], ["cut-2", { detail: `${TEXT}: proposed.` }], ["kept-1", { state: "merged", detail: "What the kept run learned." }]]) {
     await store.runs.create({ id, agentId: "cut", revisionId }, { body: LEARNS });
     const claim = await store.claim(id, "runner-cut", { leaseMs: 60_000 });
     await store.runs.update(claim, { state: "ended", costUsd: 0.1, metrics: { path: "agent" } });
     const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 10_000 });
     try {
-      db.prepare("INSERT INTO learning_proposals (run_id, round, agent_id, turn, proposal, created_at) VALUES (?, 1, ?, '{}', ?, ?)").run(id, "cut", JSON.stringify(proposal), Date.now());
+      db.prepare("INSERT INTO learning_proposals (run_id, round, agent_id, turn, proposal, created_at) VALUES (?, 1, ?, ?, ?, ?)").run(id, "cut", JSON.stringify({ asked: `${TEXT}: its turn.` }), JSON.stringify(proposal), Date.now());
     } finally {
       db.close();
     }
   }
-  const reads = ["/agents/cut", "/agents/cut/learning", "/agents/cut/learning/cost", "/agents/cut/learning/loop", "/agents/cut/learning/promotions", "/agents/cut/learning/log", "/runs/cut-1", "/runs/cut-2", "/stats", "/usage"];
-  for (const path of reads) {
-    const read = await api("GET", path);
-    assert.equal(read.status, 200, `${path}: ${JSON.stringify(read.body)}`);
-  }
   for (const id of ["cut-1", "cut-2"]) {
-    const learning = (await api("GET", `/runs/${id}`)).body.learning;
-    assert.equal(learning?.detail ?? null, null, `${id} says nothing of what it learned: ${JSON.stringify(learning)}`);
-    assert.equal(learning?.workflows ?? null, null);
-    assert.equal(learning?.corrections ?? null, null);
+    const purged = await api("DELETE", `/runs/${id}`);
+    assert.equal(purged.status, 204, `DELETE /runs/${id}: ${JSON.stringify(purged.body)}`);
   }
+  const reads = ["/agents/cut", "/agents/cut/learning", "/agents/cut/learning/cost", "/agents/cut/learning/loop", "/agents/cut/learning/promotions", "/agents/cut/learning/log", "/runs/kept-1", "/stats", "/usage"];
+  const readAll = async (when) => {
+    for (const path of reads) {
+      const read = await api("GET", path);
+      assert.equal(read.status, 200, `${when}, ${path}: ${JSON.stringify(read.body)}`);
+      assert.ok(!JSON.stringify(read.body).includes(TEXT), `${when}, ${path} reads no text of a purged run: ${JSON.stringify(read.body)}`);
+    }
+    for (const id of ["cut-1", "cut-2"]) assert.equal((await api("GET", `/runs/${id}`)).status, 410, `${when}, ${id} is purged`);
+  };
+  await readAll("purged");
   assert.deepEqual((await api("GET", "/agents/cut/learning/loop")).body.compiles, [], "no compile read from a row with none");
+
+  const reset = await api("DELETE", "/agents/cut/learning");
+  assert.equal(reset.status, 204, `the reset over purged runs: ${JSON.stringify(reset.body)}`);
+  await readAll("reset");
+  assert.equal((await api("GET", "/runs/kept-1")).status, 200, "the kept run stays");
 });
