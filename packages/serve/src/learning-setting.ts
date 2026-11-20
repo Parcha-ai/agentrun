@@ -15,6 +15,11 @@
 // JSON object that say the decision (`verdict.decision`); absent, the whole answer. Nothing is read off the output
 // schema: its enum can be an echo of the owner's setting, not the decision, and a wrong field that promotes is worse than
 // none.
+// A compile reads two more (runner/learning-end.ts checkDraftOf, learn/repick.ts), off by default:
+//   repick: the answer's quote re-pick (learn/check.ts quoteRule) reads the run's fetched pages on its second pass, as
+//     H6c's re-pick tier did, where the compiled one reads its compact facts and its draft alone;
+//   repick_max_chars: the most characters of state that second pass sends, its longest strings cut first.
+// Each is read when a draft is committed, so a change reaches the workflows compiled after it, never one already kept.
 
 /** The loop's settings as a definition may set them (each optional: its default stands in). */
 export interface LearningLoop {
@@ -28,7 +33,11 @@ export interface LearningLoop {
   readonly hold_window?: number;
   readonly hold_disagree?: number;
   readonly stop_window?: number;
+  readonly repick?: boolean;
+  readonly repick_max_chars?: number;
 }
+/** The re-pick's settings (learn/repick.ts), each at its default where the definition leaves it out. */
+export type RepickLoop = Required<Pick<LearningLoop, "repick" | "repick_max_chars">>;
 /** The check's numbers (runner/promotion.ts): what a check record keeps of the loop, with the paths it compares on (the
  *  definition's agree_on; absent, the whole answer). */
 export type CheckLoop = Required<Pick<LearningLoop, "compile_after" | "agree_min" | "alone_min">> & Pick<LearningLoop, "agree_on">;
@@ -46,8 +55,13 @@ export const AUDIT_DEFAULTS: AuditLoop = { audit_every: 10, audit_every_later: 2
 /** The most any audit number may be: 1 in 1,000 runs, a window of 1,000 (the ledger keeps more rows than that). */
 export const AUDIT_MAX = 1_000;
 
+/** The most characters of state a re-pick's second pass sends by default: three pages at web_fetch's cut (50,000 each). */
+export const REPICK_MAX_CHARS_DEFAULT = 150_000;
+/** The most repick_max_chars may be: about 100,000 tokens, half a 200,000-token model's context. */
+export const REPICK_MAX_CHARS_MAX = 400_000;
+
 const AUDIT_KEYS = ["audit_every", "audit_every_later", "audit_later_after", "hold_window", "hold_disagree", "stop_window"] as const;
-const LOOP_KEYS = ["compile_after", "agree_min", "alone_min", "agree_on", ...AUDIT_KEYS] as const;
+const LOOP_KEYS = ["compile_after", "agree_min", "alone_min", "agree_on", ...AUDIT_KEYS, "repick", "repick_max_chars"] as const;
 /** The most paths agree_on names, the most characters of each, and the most segments of each. */
 export const AGREE_ON_MAX = 16;
 export const AGREE_ON_PATH_MAX = 128;
@@ -99,6 +113,16 @@ export function auditLoopOf(learning: unknown): AuditLoop {
   return Object.fromEntries(AUDIT_KEYS.map((key) => [key, set[key] ?? AUDIT_DEFAULTS[key]])) as unknown as AuditLoop;
 }
 
+/** The re-pick's settings for a revision's `learning`: off and REPICK_MAX_CHARS_DEFAULT where its object leaves them out
+ *  (`true` is every default, so off). */
+export function repickOf(learning: unknown): RepickLoop {
+  const set = isLoop(learning) ? learning : {};
+  return { repick: set.repick === true, repick_max_chars: set.repick_max_chars ?? REPICK_MAX_CHARS_DEFAULT };
+}
+
+/** Whether `n` is a repick_max_chars a definition may set. */
+export const isRepickMaxChars = (n: unknown): n is number => Number.isInteger(n) && (n as number) >= 1 && (n as number) <= REPICK_MAX_CHARS_MAX;
+
 /** What is wrong with a definition's `learning`, in words naming the field (`at` its path), or undefined when it is one
  *  of true, false or an object of the loop's numbers. */
 export function learningSettingIssue(value: unknown, at = "learning"): string | undefined {
@@ -123,6 +147,9 @@ export function learningSettingIssue(value: unknown, at = "learning"): string | 
     const n = (value as Record<string, unknown>)[key];
     if (n !== undefined && !(Number.isInteger(n) && (n as number) >= 1 && (n as number) <= AUDIT_MAX)) return `${at}.${key} ${AUDIT_WORDS[key]}: a whole number from 1 to ${AUDIT_MAX}`;
   }
+  const { repick, repick_max_chars: maxChars } = value as Record<string, unknown>;
+  if (repick !== undefined && typeof repick !== "boolean") return `${at}.repick is true or false: true, a quote re-pick's second pass reads the run's fetched pages`;
+  if (maxChars !== undefined && !isRepickMaxChars(maxChars)) return `${at}.repick_max_chars is the most characters a re-pick's second pass sends: a whole number from 1 to ${REPICK_MAX_CHARS_MAX}`;
   const audit = auditLoopOf(value);
   if (audit.hold_disagree > audit.hold_window) return `${at}.hold_disagree is at most hold_window (${audit.hold_window}): the disagreements are counted in that many rows`;
   return undefined;

@@ -85,5 +85,5 @@ test("a manifest's learning object is checked as a definition's, and each agree_
     }
   };
   assert.deepEqual(nullableVerdict('learning: { agree_on: ["verdict.decision"] }'), ["agent.md: learning.agree_on[0] is verdict.decision, which kyb.schema.json does not make verdict an object only: an answer may give it as null or another type, and a path through it never resolves"]);
-  assert.deepEqual(problemsOf("learning: on"), ["agent.md: learning is true, false or an object of the loop's numbers ({compile_after?, agree_min?, alone_min?, agree_on?, audit_every?, audit_every_later?, audit_later_after?, hold_window?, hold_disagree?, stop_window?}, on with those set)"]);
+  assert.deepEqual(problemsOf("learning: on"), ["agent.md: learning is true, false or an object of the loop's numbers ({compile_after?, agree_min?, alone_min?, agree_on?, audit_every?, audit_every_later?, audit_later_after?, hold_window?, hold_disagree?, stop_window?, repick?, repick_max_chars?}, on with those set)"]);
 });
