@@ -1429,6 +1429,7 @@ agent_not_runnable`, with `details.unbound` and `details.missing`).
 | `ask_person` | Ask the person who started the run; the turn ends until a message answers | nothing | no, no |
 | `web_fetch` | Read one web page from a public host through the guarded direct fetch, or through Parallel's extract where Parallel is picked ([search and fetch](#search-and-fetch)), a part at a time: `{url, offset?, max_chars?}` in, a Page out, `{ok, url, status, title, text, chars, truncated?, original_chars?, beyond_read?, offset?, next_offset?, html_chars?, converted?, links, links_omitted?, via, parallel?, refused?, error?}` | nothing (`PARALLEL_API_KEY` for Parallel, one billed extract a page a run) | yes, yes |
 | `web_search` | Search the web, natively where the harness or the model's provider can, else through Parallel where the server holds its key, else keyless through Exa, or through the provider picked ([search and fetch](#search-and-fetch)): `{query, n?}` in, `{provider, query, results: [{url, title, snippet, published?}], text?}` or `{error}` out | nothing (`PARALLEL_API_KEY` for Parallel) | yes, yes |
+| `web_save` | Download one file from a public URL into the run's `work/` and keep it there, for a link that expires (a generated image, audio or video): `{url, path}` in, `path` relative to `work/` and a bare name under `media/`; `{ok: true, path, bytes, content_type, url}` or `{ok: false, url, refused \| error}` out. Never overwrites | nothing | no, no |
 | `browser` | A hosted browser, Browserbase's or Kernel's, on pi-browser's durable adapter: `snapshot`, `run`, `screenshot`, `browser_read`, `browser_release`, `browser_relaunch`, `browser_downloads` and `browser_upload` (into and from the run's `work/`); Kernel keeps no downloads, so a run on Kernel has no `browser_downloads` | `BROWSERBASE_API_KEY` and `BROWSERBASE_PROJECT_ID`, or `KERNEL_API_KEY` | yes, no |
 | `monid:<provider>/<endpoint>`, `monid:<provider>/*` | One monid endpoint, or every endpoint monid lists for a provider (at most 50), each pinned at the save and run as a tool of its own, paid per call from the monid wallet: `{body?, queryParams?, pathParams?}` in, the run's `output`, `price` and `cost` out ([monid](#monid)) | `MONID_API_KEY` | no, no |
 | `pdf_pages` | A workflow call only: `{path, maxPages?, dpi?}` in, `{name, pageCount, dpi, pages: [{page, image}], text}` out. Draws a document's first pages (3 by default, at 110 dpi) as PNGs under the run's `work/pages/<stem>/<dpi>/` (`<stem>`: the document's path below its directory made one name, with a short hash, so two documents of one file name never share pages), the dpi lowered so a page's long side is at most 1568 px, with its text (`pdftotext`, cut at 20,000 characters). A PNG or JPEG passes through as one page, scaled down to 1568 px. `path` is under `--documents` or the run's `work/`, never outside | `pdftoppm`, `pdftotext` | no, yes |
@@ -1470,6 +1471,29 @@ failure is a Page with `ok: false` and `refused` or `error`, never a thrown erro
 can branch on it. An agent gets the Page as JSON text; a workflow's `call` node `via: "tool", tool: "web_fetch"` gets
 it as its output (`args: {url, offset?, max_chars?}`, 50,000 characters of text by default, `out` a schema of that
 shape). A call node naming a tool the table cannot run that way is refused before the run starts (`409`).
+
+`web_save` downloads through the same guard (pi-browser's `publicDownload`, the same hop loop as `publicFetch`): every
+hop resolved, checked and dialled at the address checked, ports 80 and 443 only, a URL at most 4,096 characters. A
+file is at most 200 MiB and a download at most 10 minutes. It writes through the run's Workspace (the run's local
+`work/`, or its folder on the run's disk in Mode 2), so a path with `..`, an absolute path, and a link on the way or as
+the file are refused, and a path that already holds a file or folder is refused rather than overwritten (checked before
+the download and again before the write). The whole file is held in memory and written once (a temporary name renamed over the path
+on a local folder, one put on the run's disk), so a download that fails or passes the cap leaves nothing at the path.
+At most 4 downloads run at once per runner, across its runs (`SAVE_CONCURRENCY`); the rest wait for a free slot under
+their own 10-minute deadline, and one whose deadline passes while it waits answers that. A download whose host states its
+length (an unencoded `Content-Length`) is read into one buffer of that length, so it holds its file's size; one that does
+not is joined from its chunks at the end, about twice its size at the peak. So a runner's downloads hold at most 800 MiB at
+once when their hosts state their lengths, and about 1.6 GiB when none does. In Mode 2 a run in its own process writes
+through its runner's Workspace of the run's disk: a write over 8 MiB crosses to the runner in pieces, and the runner
+assembles it and writes it once, at most 4 such writes at once per runner (a gate of their own, at most 200 MiB each), so
+up to another 800 MiB in the runner while they are written. Its type is checked
+against its bytes: an image (png, jpeg, gif, webp), audio (mp3, wav, ogg, m4a) or video (mp4, webm) is saved only when
+its bytes carry that type's signature, the type the host declares agrees (or it declares none, or
+`application/octet-stream`), and the path's extension names a type that agrees (`media/card.png`; `media/card` and
+`media/card.bin` are refused with the extension to use, as the Files tab types a file by its extension); `content_type`
+answers that type. Any other type (a page, a PDF, text) is saved only to a path whose extension names the type the host
+declares. A call a crash cut off is answered interrupted, never run again. `web_save` makes no paid request. Only an agent that names `web_save` has it (`web_fetch` does not carry it),
+and no workflow node or call node may name it: a workflow's call has the run's local folder, not its Workspace.
 
 On another harness, every host tool's result reaches the model within the host's bound of 120,000 characters
 (`HOST_RESULT_MAX_CHARS`, `@parcha/agentrun-kernel`): the kernel's tool bridge cuts a longer one, its start with a line

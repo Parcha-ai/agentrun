@@ -17,6 +17,7 @@ import { routeOf } from "./model-route.js";
 import { heldRedactor, processSecretRedactor } from "./redact.js";
 import { Channel } from "./run-channel.js";
 import { registerRunErrors } from "./run-errors.js";
+import { remoteSaveSlots } from "./save-slots.js";
 import { runEnv } from "./main.js";
 import { carriedLedger } from "../paid-calls.js";
 import { heldHands, type ComputerHold, type HoldAsk, type HoldEvent, type HoldState } from "../workspace/computer-hold.js";
@@ -201,6 +202,8 @@ function childDeps(init: ChildInit, store: Store, journal: Journal, held: Held):
     computerForClaim,
     computerDeps: {} as AdapterSpecDeps["computerDeps"],
     installForClaim: heldInstall as AdapterSpecDeps["installForClaim"],
+    // web_save's download slots are the runner's, shared by all its runs (save-slots.ts).
+    saveSlots: remoteSaveSlots(channel),
     ...(init.githubApi ? { githubApi: init.githubApi } : {}),
     ...(init.githubWeb ? { githubWeb: init.githubWeb } : {}),
     ...(init.githubMcpOrigin ? { githubMcpOrigin: init.githubMcpOrigin } : {}),

@@ -401,6 +401,9 @@ export interface components {
         provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
         permission?: "allow" | "ask" | "deny";
       };
+      web_save?: {
+        permission?: "allow" | "ask" | "deny";
+      };
       email_search?: {
         permission?: "allow" | "ask" | "deny";
         scope?: "thread" | "mailbox";
@@ -4548,6 +4551,9 @@ export interface operations {
       };
       web_search?: {
         provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+        permission?: "allow" | "ask" | "deny";
+      };
+      web_save?: {
         permission?: "allow" | "ask" | "deny";
       };
       email_search?: {

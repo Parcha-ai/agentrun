@@ -40,6 +40,9 @@ export const MCP_URL_PRESETS = [
   { id: "github-token", label: "GitHub (token)", name: "github", url: GITHUB_MCP_URL, readOnly: `${GITHUB_MCP_URL}readonly`, auth: "bearer", note: "A fine-grained personal access token for the repositories it may use, with Contents, Issues and Pull requests (read-only, or read and write)." },
   { id: "linear", label: "Linear", name: "linear", url: "https://mcp.linear.app/mcp", auth: "oauth", note: "Sign in with your Linear account: this server keeps the tokens." },
   { id: "notion", label: "Notion", name: "notion", url: "https://mcp.notion.com/mcp", auth: "oauth", note: "Sign in with your Notion workspace: this server keeps the tokens." },
+  // fal's image, video and audio models: the key first, so a template that needs fal links to it (setUpHref).
+  { id: "fal", label: "fal (key)", name: "fal", url: "https://mcp.fal.ai/mcp", auth: "bearer", note: "Image, video and audio models. Your fal key, from fal.ai's API keys page: generations bill your fal account. This server keeps the key; the agent never sees it." },
+  { id: "fal-sign-in", label: "fal (sign in)", name: "fal", url: "https://mcp.fal.ai/mcp-relay", auth: "oauth", note: "Image, video and audio models. Sign in with your fal account: generations bill it, and this server keeps the tokens." },
 ] as const satisfies readonly McpPreset[];
 export type McpPresetId = (typeof MCP_URL_PRESETS)[number]["id"];
 /** The URL preset of `id`, or undefined for any other. */

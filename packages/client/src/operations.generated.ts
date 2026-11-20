@@ -209,6 +209,9 @@ export type DefinitionInput = {
       provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
       permission?: "allow" | "ask" | "deny";
     };
+    web_save?: {
+      permission?: "allow" | "ask" | "deny";
+    };
     email_search?: {
       permission?: "allow" | "ask" | "deny";
       scope?: "thread" | "mailbox";
@@ -4398,6 +4401,9 @@ export type PutToolSettingsBody = {
   };
   web_search?: {
     provider?: "auto" | "native" | "exa-keyless" | "parallel" | "off";
+    permission?: "allow" | "ask" | "deny";
+  };
+  web_save?: {
     permission?: "allow" | "ask" | "deny";
   };
   email_search?: {

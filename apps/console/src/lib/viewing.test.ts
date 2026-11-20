@@ -29,7 +29,18 @@ describe("viewKind", () => {
     expect(viewKind(file("notes.md", null))).toBe("markdown");
     expect(viewKind(file("out.json", "application/json"))).toBe("text");
     expect(viewKind(file("log.txt", "text/plain"))).toBe("text");
-    expect(viewKind(file("photo.png", "image/png"))).toBe("download");
+    expect(viewKind(file("report.pdf", "application/pdf"))).toBe("download");
+  });
+  it("shows an image, a video and a sound by the type the server serves it as", () => {
+    expect(viewKind(file("media/card.png", "image/png"))).toBe("image");
+    expect(viewKind(file("media/card.webp", "image/webp"))).toBe("image");
+    expect(viewKind(file("media/clip.mp4", "video/mp4"))).toBe("video");
+    expect(viewKind(file("media/clip.webm", "video/webm"))).toBe("video");
+    expect(viewKind(file("media/voice.mp3", "audio/mpeg"))).toBe("audio");
+    expect(viewKind(file("media/voice.wav", "audio/wav"))).toBe("audio");
+  });
+  it("never shows an image the server would not serve inline: an SVG stays a download", () => {
+    expect(viewKind(file("logo.svg", "image/svg+xml"))).toBe("download");
   });
   it("treats a type the server does not know (null) as unknown: download only", () => {
     expect(viewKind(file("data.bin", null))).toBe("download");

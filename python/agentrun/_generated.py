@@ -204,6 +204,7 @@ __all__ = [
     "DefinitionInputToolSettingsRead",
     "DefinitionInputToolSettingsSubagent",
     "DefinitionInputToolSettingsWebFetch",
+    "DefinitionInputToolSettingsWebSave",
     "DefinitionInputToolSettingsWebSearch",
     "DefinitionInputToolSettingsWrite",
     "DefinitionLearning",
@@ -237,6 +238,7 @@ __all__ = [
     "DefinitionToolSettingsRead",
     "DefinitionToolSettingsSubagent",
     "DefinitionToolSettingsWebFetch",
+    "DefinitionToolSettingsWebSave",
     "DefinitionToolSettingsWebSearch",
     "DefinitionToolSettingsWrite",
     "DeleteAgentArchilResponse",
@@ -718,6 +720,7 @@ __all__ = [
     "PutToolSettingsBodyRead",
     "PutToolSettingsBodySubagent",
     "PutToolSettingsBodyWebFetch",
+    "PutToolSettingsBodyWebSave",
     "PutToolSettingsBodyWebSearch",
     "PutToolSettingsBodyWrite",
     "PutToolSettingsResponse",
@@ -1238,6 +1241,7 @@ class DefinitionToolSettings(TypedDict, total=False):
     ask_person: DefinitionToolSettingsAskPerson
     web_fetch: DefinitionToolSettingsWebFetch
     web_search: DefinitionToolSettingsWebSearch
+    web_save: DefinitionToolSettingsWebSave
     email_search: DefinitionToolSettingsEmailSearch
     email_read: DefinitionToolSettingsEmailRead
     email_draft: DefinitionToolSettingsEmailDraft
@@ -1283,6 +1287,10 @@ class DefinitionToolSettingsWebFetch(TypedDict, total=False):
 
 class DefinitionToolSettingsWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionToolSettingsWebSave(TypedDict, total=False):
     permission: Literal["allow", "ask", "deny"]
 
 
@@ -1720,6 +1728,7 @@ class DefinitionInputToolSettings(TypedDict, total=False):
     ask_person: DefinitionInputToolSettingsAskPerson
     web_fetch: DefinitionInputToolSettingsWebFetch
     web_search: DefinitionInputToolSettingsWebSearch
+    web_save: DefinitionInputToolSettingsWebSave
     email_search: DefinitionInputToolSettingsEmailSearch
     email_read: DefinitionInputToolSettingsEmailRead
     email_draft: DefinitionInputToolSettingsEmailDraft
@@ -1765,6 +1774,10 @@ class DefinitionInputToolSettingsWebFetch(TypedDict, total=False):
 
 class DefinitionInputToolSettingsWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    permission: Literal["allow", "ask", "deny"]
+
+
+class DefinitionInputToolSettingsWebSave(TypedDict, total=False):
     permission: Literal["allow", "ask", "deny"]
 
 
@@ -7095,6 +7108,7 @@ class PutToolSettingsBody(TypedDict, total=False):
     ask_person: PutToolSettingsBodyAskPerson
     web_fetch: PutToolSettingsBodyWebFetch
     web_search: PutToolSettingsBodyWebSearch
+    web_save: PutToolSettingsBodyWebSave
     email_search: PutToolSettingsBodyEmailSearch
     email_read: PutToolSettingsBodyEmailRead
     email_draft: PutToolSettingsBodyEmailDraft
@@ -7139,6 +7153,10 @@ class PutToolSettingsBodyWebFetch(TypedDict, total=False):
 
 class PutToolSettingsBodyWebSearch(TypedDict, total=False):
     provider: Literal["auto", "native", "exa-keyless", "parallel", "off"]
+    permission: Literal["allow", "ask", "deny"]
+
+
+class PutToolSettingsBodyWebSave(TypedDict, total=False):
     permission: Literal["allow", "ask", "deny"]
 
 

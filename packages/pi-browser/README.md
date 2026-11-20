@@ -268,8 +268,11 @@ The pi peers are `@earendil-works/pi-durable` and `chord` `1.5.2` exactly. CI te
 - `@parcha/pi-browser`: the host-neutral core. The model contract (tool names, descriptions, JSON schemas, effect and
   replay classes, the `browser` and `web` prompt sections), the typed failure envelope, the redactor, the screenshot
   budget, the repeat guard, evidence and decision-hook types, usage and prices, `find` (chunking and ranking a long page),
-  `browser_downloads`, the opt-in request observer, and the provider interface. The public-host guard is here too: `publicFetch(url, { lookup?, fetchImpl?, signal?, maxBytes? })` and
-  `readPage(html, url, { deadlineMs?, signal? })`, with `isPrivateAddress` and `pinnedLookup`. `readPage` never holds
+  `browser_downloads`, the opt-in request observer, and the provider interface. The public-host guard is here too: `publicFetch(url, { lookup?, fetchImpl?, signal?, maxBytes? })`, its bytes
+  variant `publicDownload(url, { lookup?, fetchImpl?, signal?, maxBytes? })` (one file of any type, `{ url, status,
+  contentType, bytes }`, `bytes` null for a status that is not 2xx; the same hops, checks and pinned dial as
+  `publicFetch`, a declared length over `maxBytes` refused before the body is read and a body over it refused as it is
+  read), and `readPage(html, url, { deadlineMs?, signal? })`, with `isPrivateAddress` and `pinnedLookup`. `readPage` never holds
   the event loop: it drops a page's script, style, svg, noscript and template blocks, cuts what is left at
   `READ_MAX_CHARS` (`truncated`, with the page's length in `html_chars`), and converts it to markdown in a worker thread
   within `READ_DEADLINE_MS`, falling back to the page's plain text (`converted: "text"`). `browser_read`'s markdown goes
