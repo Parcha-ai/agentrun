@@ -253,7 +253,7 @@ func becomeChild(args []string) int {
 	}
 	drop := func() error { return Become(uid, gid, args[1], args[2], isolation) }
 	if args[0] == "none" {
-		drop = Unprivileged
+		drop = func() error { return Unprivileged(nil) }
 	}
 	if err := drop(); err != nil {
 		fmt.Println("refused", err)

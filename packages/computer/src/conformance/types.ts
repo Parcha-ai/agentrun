@@ -1,6 +1,6 @@
 // The conformance suite's shapes: a case is data that names its level, its group and the capabilities it needs.
 import type { MountKind, MountSpec } from "../mount.js";
-import type { ComputerClient, ComputerKind, ComputerOs, DaemonMethod, DaemonMethods, ExecRunParams, Group, HelloResult, NetworkFence } from "../protocol.js";
+import type { ComputerClient, ComputerKind, ComputerOs, DaemonMethod, DaemonMethods, ExecRunParams, Group, HelloResult, NetworkFence, WindowManagerFact } from "../protocol.js";
 import type { ComputerConnection, ComputerProvider, ComputerRef, ComputerSpec, DaemonMode, GpuSpec } from "../provider.js";
 import type { ComputerError, ComputerErrorCode, Result } from "../result.js";
 import type { KindCapabilities } from "../kinds.js";
@@ -293,7 +293,10 @@ export interface CreatedNote extends ComputerNote {
 	role: ComputerRole;
 }
 
-/** What one computer's first hello said: the computer, its role, and the fence when it names one. */
+/**
+ * What one computer's first hello said: the computer, its role, the fence when it names one, and the window manager
+ * computerd started when it says one (a live run's evidence that computerd, not create, started it).
+ */
 export interface ComputerDaemon {
 	computer: string;
 	role: ComputerRole;
@@ -301,6 +304,7 @@ export interface ComputerDaemon {
 	os: string;
 	arch: string;
 	fence?: NetworkFence;
+	windowManager?: WindowManagerFact;
 }
 
 /**

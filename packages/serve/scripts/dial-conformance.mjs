@@ -7,7 +7,9 @@
 // /v2/health is answered by this process (reachesThisRun), as a host swapping instances answers from the old one first.
 // Then it runs Core, provider.deadline and drift.arch
 // among it, and prints the report as JSON between two marker lines, DIAL-CONFORMANCE-REPORT-BEGIN and
-// DIAL-CONFORMANCE-REPORT-END, so a log that holds other lines still yields it. Then it idles, /v2/health still
+// DIAL-CONFORMANCE-REPORT-END, so a log that holds other lines still yields it. A desktop's run first prints the last
+// whole-screen shot its cases read, as base64 lines between DIAL-CONFORMANCE-FRAME-BEGIN <sha256> <bytes> and
+// DIAL-CONFORMANCE-FRAME-END (keepingFrames, frameLines). Then it idles, /v2/health still
 // answered, until SIGTERM or SIGINT ends it with the run's status: a host that restarts an exited process (Render's)
 // would start a second run. With --exit it exits instead: 0 when Core passes, else 1. A refusal before the server
 // listens (a usage error, no AGENTRUN_PUBLIC_URL or PORT) exits 1 either way.
@@ -46,6 +48,8 @@ import { createAttachRoutes, sha256Hex } from "../dist/computer-attach.js";
 
 const BEGIN = "DIAL-CONFORMANCE-REPORT-BEGIN";
 const END = "DIAL-CONFORMANCE-REPORT-END";
+const FRAME_BEGIN = "DIAL-CONFORMANCE-FRAME-BEGIN";
+const FRAME_END = "DIAL-CONFORMANCE-FRAME-END";
 const USAGE = "usage: node dial-conformance.mjs --provider <registry id or module path> [--only <groups and case ids>] [--exit], with AGENTRUN_PUBLIC_URL and PORT set";
 /** A name of a module's ENV that holds a secret (the conformance CLI's rule). */
 const SECRET_NAME = /(^|_)(KEY|TOKEN|SECRET)(_|$)/;
@@ -141,6 +145,46 @@ export const FIXTURE_PATH = fileURLToPath(new URL("../../computer/dist/computerd
 /** What a run of `kind` checks effects with: a desktop's computerd-fixture (its screen and input cases skip without it, and
  *  Core cannot pass), none otherwise. */
 export const fixtureFor = (kind, path = FIXTURE_PATH) => (kind === "desktop" ? path : undefined);
+
+/**
+ * Keeps the last whole-screen shot a case read to its end over `provider`'s connections (screen.shot with no region,
+ * then its screen.read chunks to eof), as the computer gave it: a live run's frame of the desktop. A fixture of this
+ * script alone. `kept.png` is undefined until one is whole.
+ */
+export function keepingFrames(provider) {
+	const kept = { png: undefined };
+	const connect = provider.connect.bind(provider);
+	provider.connect = async (...args) => {
+		const connected = await connect(...args);
+		if (!connected.ok) return connected;
+		const { client } = connected.value;
+		const call = client.call.bind(client);
+		const reading = new Map();
+		client.call = async (method, params, options) => {
+			const result = await call(method, params, options);
+			if (!result.ok) return result;
+			const whole = method === "screen.shot" && params?.region === undefined;
+			const id = method === "screen.read" ? params.id : whole ? result.value.id : undefined;
+			if (id === undefined || (method === "screen.read" && !reading.has(id))) return result;
+			const parts = [...(reading.get(id) ?? []), Buffer.from(result.value.data, "base64")];
+			if (result.value.eof) {
+				reading.delete(id);
+				kept.png = Buffer.concat(parts);
+			} else reading.set(id, parts);
+			return result;
+		};
+		return connected;
+	};
+	return kept;
+}
+
+/** The lines a kept frame is printed as: its sha256 and size after the begin marker, its base64 in lines of `width`. */
+export function frameLines(png, width = 512) {
+	const data = png.toString("base64");
+	const lines = [];
+	for (let at = 0; at < data.length; at += width) lines.push(data.slice(at, at + width));
+	return [`${FRAME_BEGIN} ${createHash("sha256").update(png).digest("hex")} ${png.length}`, ...lines, FRAME_END];
+}
 
 /** The version a drifted daemon reports: the provider's, its last character changed, so the bytes keep their length. */
 export const driftedVersion = (version) => `${version.slice(0, -1)}${version.endsWith("x") ? "y" : "x"}`;
@@ -329,6 +373,8 @@ async function main({ provider: name, only, exit }, env, state) {
 	const options = { env, dial: { url: publicUrl, tokens: minting(), hub }, onNote: (note) => notes.push({ computer: note.computer, note: note.note }) };
 	try {
 		const provider = await module.createProvider(options);
+		// A desktop's run keeps a frame of its screen, printed before the report: what the computer showed.
+		const frames = provider.capabilities().kind === "desktop" ? keepingFrames(provider) : undefined;
 		// The same provider with no public address, its host's creates counted: provider.dial-token's unreachable().
 		const bare = await module.createProvider({ ...options, dial: { tokens: minting(), hub } });
 		let creates = 0;
@@ -421,6 +467,7 @@ async function main({ provider: name, only, exit }, env, state) {
 		const hellos = [...new Set(drift.hellos)];
 		const helloOk = hellos.every((said) => copies.some((copy) => copy.version === said));
 		if (copies.length > 0) report.driftedDaemon = { copies, hellos, matches: helloOk };
+		if (frames?.png !== undefined) process.stdout.write(`${frameLines(frames.png).join("\n")}\n`);
 		process.stdout.write(`${BEGIN}\n${scrub(JSON.stringify(report, null, 2))}\n${END}\n`);
 		say(`Core ${report.core}`);
 		if (!helloOk) say(`the drifted twin's hellos reported ${hellos.join(", ")}, not the daemon copy's ${copies.map((copy) => copy.version).join(", ")}`);
