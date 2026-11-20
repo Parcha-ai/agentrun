@@ -18,6 +18,7 @@ import { defineExtension, type Extension, ROOT_CONVERSATION_ID, type ToolExecuti
 import { type CapModel, type CapRefused, checkRaise, followUpOf, freeModelRequestsOf, parkOf, planCapModel } from "@parcha/agentrun-kernel/kernel/cap";
 import { inspectWorkflow, type Workflow } from "@parcha/agentrun-dsl";
 import type { AdapterFacts, BeforeRequest, HostTool, NestedCalls, Refusal, SessionSpec, Wire } from "@parcha/agentrun-kernel";
+import { factsOf } from "../harness-table.js";
 import { decisionProvidersIn } from "../decisions.js";
 import type { Approvals } from "../approvals.js";
 import type { installForClaim, installSettled } from "../harness-install.js";
@@ -355,7 +356,7 @@ export type RunPermissions = {
   readonly refresh: () => Promise<void>;
 };
 
-export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell?: ShellPlace, options: { readonly effectOf?: (name: string) => ToolEffect | undefined; readonly argumentsOf?: ArgumentsOf; readonly facts?: AdapterFacts } = {}): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void; readonly askedOn: (host: ToolHost) => void }> {
+export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick<Claim, "runId">, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals } }, root: RunFiles, shell: ShellPlace | undefined, options: { readonly effectOf?: (name: string) => ToolEffect | undefined; readonly argumentsOf?: ArgumentsOf; readonly facts: AdapterFacts | undefined }): Promise<NonNullable<AdapterRunSpec["gate"]> & { readonly permissions: RunPermissions; readonly learn: (flows: readonly LearnedWorkflow[]) => void; readonly askedOn: (host: ToolHost) => void }> {
   let current = await storeSettings(store);
   const approvers = await readApprovers(store.settings);
   // A Workspace's paths are in the run's folder: its folder named as a computer names it, for the gate's path checks.
@@ -363,7 +364,7 @@ export async function adapterRunGate(store: Pick<Store, "settings">, claim: Pick
   // Where the run's shell is (run-tools.ts shell): with no computer, a tool no setting names takes the kernel's ruled
   // default (tool-gate.ts defaultPermission): bash asks first, the background tools are refused.
   // An MCP tool's effect as the run's pin marks it (ClaimMcp.effectOf): what "allow reads" lifts an ask by.
-  const where = { root: folder, work: folder, ...(options.effectOf ? { effectOf: options.effectOf } : {}), ...(options.argumentsOf ? { argumentsOf: options.argumentsOf } : {}), ...(options.facts ? { facts: options.facts } : {}) };
+  const where = { root: folder, work: folder, ...(options.effectOf ? { effectOf: options.effectOf } : {}), ...(options.argumentsOf ? { argumentsOf: options.argumentsOf } : {}), facts: options.facts };
   const gate = runGate({ ...where, ...(shell === undefined ? {} : { computer: shell === "computer" }) }, claim.runId, revision, () => current, approvers);
   // The run's learned workflows, once its spec has read them (learn): a learned_workflow call is asked about its MCP nodes.
   let learned: readonly LearnedWorkflow[] = [];
@@ -672,8 +673,10 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const root = runFolder(deps.data, runRow.agentId, claim.runId);
   // The gate names the run's folder by its Workspace (Mode 2: its folder on the run's disk, never this machine's folder at
   // the same path), for its path checks; it reads nothing in it.
-  // A pinned MCP tool is held to the arguments its listing in the run's pin declares (mcp.argumentsOf).
-  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, mcp ? { effectOf: (name: string) => mcp.effectOf(name), argumentsOf: (name: string) => mcp.argumentsOf(name) } : {});
+  // A pinned MCP tool is held to the arguments its listing in the run's pin declares (mcp.argumentsOf). The harness's facts
+  // are its entry's on the owner's table (factsOf): none for pi, nor for a module's harness on a runner of its own.
+  const facts = factsOf(deps.env, revision.body.harness);
+  const gate = await adapterRunGate(deps.store, claim, revision, ws.workspace, tools.shell, { ...(mcp ? { effectOf: (name: string) => mcp.effectOf(name), argumentsOf: (name: string) => mcp.argumentsOf(name) } : {}), facts });
 
   // The run's one cap, as the loop's runCap reads it (adapter-loop.ts RunCapConfig): the launch's cap figure (undefined
   // uncapped — every paid request still books through the one cap), the run's model priced WITH tiers, strict where the
@@ -880,6 +883,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
 
   return {
     adapter,
+    facts,
     // Who keeps the run's visible record: its runner says (none: the adapter, as pi keeps its own).
     ...(runner.record ? { record: runner.record } : {}),
     session,

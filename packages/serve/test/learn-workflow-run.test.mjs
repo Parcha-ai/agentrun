@@ -407,10 +407,11 @@ test("a claude-agent run on Claude's dotted name (anthropic/claude-sonnet-5.5) w
 // The faux model priced on output alone, $100 a million tokens: a request's least (1,024 tokens) is $0.1024. The faux
 // harness books each of its requests at $0.001. Under the faux harness claude-agent and codex run one path.
 test("learned_workflow is a tool the gate holds like any: its settings key is learned_workflow, it defaults to allow, and an agent may set it to ask or deny", async () => {
-  const { settingsKeyOf, defaultPermission } = await import("../dist/tool-gate.js");
+  const { defaultPermission } = await import("../dist/tool-gate.js");
   const { settingsIssues, SERVE_OWN_TOOLS } = await import("../dist/tool-plane.js");
+  const { builtinKeyOf } = await import("./gate-support.mjs");
   assert.ok(SERVE_OWN_TOOLS.includes(LEARNED_WORKFLOW_TOOL), "the plane's own tools name it");
-  for (const harness of ["pi", "claude-agent", "codex", "opencode"]) assert.equal(settingsKeyOf(harness, LEARNED_WORKFLOW_TOOL), LEARNED_WORKFLOW_TOOL, harness);
+  for (const harness of ["pi", "claude-agent", "codex", "opencode"]) assert.equal(builtinKeyOf(harness, LEARNED_WORKFLOW_TOOL), LEARNED_WORKFLOW_TOOL, harness);
   assert.equal(defaultPermission(LEARNED_WORKFLOW_TOOL), "allow");
   for (const permission of ["allow", "ask", "deny"]) assert.deepEqual(settingsIssues({ [LEARNED_WORKFLOW_TOOL]: { permission } }), [], permission);
 });

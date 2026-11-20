@@ -12,8 +12,8 @@ import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { test } from "node:test";
 import { BACKGROUND_TOOLS } from "../dist/background.js";
-import { permissionFrom, settingsKeyOf } from "../dist/tool-gate.js";
-import { runnerGate } from "./gate-support.mjs";
+import { permissionFrom } from "../dist/tool-gate.js";
+import { builtinKeyOf, runnerGate } from "./gate-support.mjs";
 import { loadToolSettings, settingsIssues, TOOL_SETTINGS_KEY } from "../dist/tool-plane.js";
 import { openSqliteStore, STORE_FILE } from "../dist/store/sqlite/store.js";
 import { agent, follow, runDir, scratch, serve } from "./support.mjs";
@@ -27,7 +27,7 @@ async function onPi(settings, name, { overrides = {}, approvers = true } = {}) {
 test("each background tool is held to bash's settings key, on every harness, and is no settings key of its own", () => {
   assert.equal(BACKGROUND_TOOLS.length, 5);
   for (const name of BACKGROUND_TOOLS) {
-    for (const harness of ["pi", "claude-agent", "codex", "opencode"]) assert.equal(settingsKeyOf(harness, name), "bash", `${harness} ${name}`);
+    for (const harness of ["pi", "claude-agent", "codex", "opencode"]) assert.equal(builtinKeyOf(harness, name), "bash", `${harness} ${name}`);
     assert.deepEqual(settingsIssues({ [name]: { permission: "deny" } }).map((issue) => [issue.field, issue.reason]), [[name, "not_allowed"]], `${name} is set by bash`);
   }
 });

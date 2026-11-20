@@ -11,6 +11,7 @@ import { after, test } from "node:test";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
+import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { fakeSdk } from "@parcha/agentrun-harness-claude/testing";
 import { closeOpenSessions, MODEL } from "./conformance-claude-agent.mjs";
 import { scriptedOrigin } from "./conformance-pi-adapter.mjs";
@@ -68,6 +69,7 @@ test("a learned workflow's models taken at its spec's build, before the session 
         { run, model: MODEL, provider: { origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, price: () => 0, sessionsDir: dir, fetch: scriptedOrigin([{ say: "the side answer" }], upstream) },
         { standIn: { command: process.execPath }, sdk: fakeSdk({ mirrorLagMs: 10, script: (text) => (text === INPUT || text.endsWith(`\n\n${INPUT}`) ? "call node {}" : undefined), reply: () => "done" }) },
       ),
+      facts: claudeFacts,
       record: harness.record,
       session: { key: "root", label: "root", system: ["Follow the script."], tools: [node], context: "fresh" },
       input: INPUT,

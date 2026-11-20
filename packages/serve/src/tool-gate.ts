@@ -29,7 +29,6 @@ import { COMPUTER_OP_TOOL, computerToolDefs, defaultPermissionOf, SHELL_FAMILY, 
 import { type AdapterFacts, READ_SKILL_FILE } from "@parcha/agentrun-kernel";
 import { COMPUTER_ROOT } from "./workspace/paths.js";
 import type { Workspace } from "./workspace/workspace.js";
-import { builtinHarness } from "./harness-table.js";
 import { META_TOOLS } from "./meta-tool-names.js";
 import { DEFAULT_HARNESS } from "./harness.js";
 import { DECISION_PROVIDER_KEYS, KIND_KEYS, SERVE_OWN_TOOLS, type ToolSettingsRead } from "./tool-plane.js";
@@ -112,8 +111,8 @@ export type NameMap = ReadonlyMap<string, string>;
  *  table, own and decision tools, read_skill_file (`read`), the kinds' tools (a shared one by its first kind), nativeTools,
  *  the browser's registrations. The names are the host's own: each adapter maps its CLI's names to them (its facts'
  *  hostName). The first named wins. `facts`: the adapter's, as the owner's table has them (harness-table.ts factsOf: a
- *  module's harness's too); absent, the built-in harness's. */
-export function nameMapOf(harness: string, facts: AdapterFacts | undefined = builtinHarness(harness)?.facts): NameMap {
+ *  module's harness's too); undefined for a harness with none (pi). */
+export function nameMapOf(harness: string, facts: AdapterFacts | undefined): NameMap {
   const names = new Map<string, string>();
   const name = (own: string, key: string): void => void (names.has(own) || names.set(own, key));
   for (const [own, key] of Object.entries(SHELL_FAMILY)) name(own, key);
@@ -129,7 +128,7 @@ export function nameMapOf(harness: string, facts: AdapterFacts | undefined = bui
  *  open family no list holds (a catalog name, `mcp:<server>/<tool>` or `monid:<provider>/<endpoint>`). Undefined: nothing
  *  maps it, and the gate asks (an MCP tool's or monid endpoint's wire name is read back by the loop, ClaimMcp.catalogOf,
  *  before the gate is asked). */
-export function settingsKeyOf(harness: string, name: string, names: NameMap = nameMapOf(harness)): string | undefined {
+export function settingsKeyOf(harness: string, name: string, names: NameMap): string | undefined {
   const own = names.get(name);
   if (own !== undefined) return own;
   return isCatalogName(name) ? name : undefined;
@@ -402,10 +401,10 @@ export function previewOf(text: string): string {
  *  settings as the runner read them from the one store at the claim (tool-plane.ts loadToolSettings), read at each call as
  *  the gate reads them. `approvers`: whether anyone can answer an ask here, the store's (server-approvers.ts, read at each
  *  claim). The gate reads nothing of the run's own files: they are the agent's to write. */
-export function runGate(where: { root: string; work: string; computer?: boolean; effectOf?: (name: string) => ToolEffect | undefined; argumentsOf?: ArgumentsOf; facts?: AdapterFacts }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals; computer?: unknown; place?: unknown } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
+export function runGate(where: { root: string; work: string; computer?: boolean; effectOf?: (name: string) => ToolEffect | undefined; argumentsOf?: ArgumentsOf; facts: AdapterFacts | undefined }, runId: string, revision: { kind: string; body: { toolSettings?: unknown; harness?: string; approvals?: Approvals; computer?: unknown; place?: unknown } }, serverSettings: () => ToolSettingsRead, approvers: boolean): RunGate {
   // The run's computer kind, from its revision's setting (as the claim starts it): a computer tool's words name it.
   const kind = settingOfDefinition(revision.body)?.computer.kind;
-  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.computer === undefined ? {} : { computer: where.computer }), ...(kind !== undefined ? { kind } : {}), ...(where.effectOf ? { effectOf: where.effectOf } : {}), ...(where.argumentsOf ? { argumentsOf: where.argumentsOf } : {}), ...(where.facts ? { facts: where.facts } : {}) }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
+  return new RunGate({ root: where.root, work: where.work, runId, harness: revision.body.harness ?? DEFAULT_HARNESS, ...(where.computer === undefined ? {} : { computer: where.computer }), ...(kind !== undefined ? { kind } : {}), ...(where.effectOf ? { effectOf: where.effectOf } : {}), ...(where.argumentsOf ? { argumentsOf: where.argumentsOf } : {}), facts: where.facts }, serverSettings, (revision.body.toolSettings ?? {}) as PermissionSettings, approvers, approvalsOf(revision.body.approvals));
 }
 
 /** The top-level arguments the listing of the MCP tool `name` (`mcp:<server>/<tool>`) in the run's pin declares under
@@ -425,7 +424,7 @@ export class RunGate {
    *  pinned revision's (definition.approvals): "never" runs the agent unattended, an ask allowed (permissionFrom). */
   /** `where.effectOf`: an MCP tool's effect as the run's pin marks it (ClaimMcp.effectOf), what "allow reads" reads;
    *  never a live listing, so a server can't widen a run's access mid-run. */
-  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; computer?: boolean; /** The run's computer kind (its revision's setting): the key a computer tool's refusal and ask name on a tie (kindSetting). */ kind?: string; effectOf?: (name: string) => ToolEffect | undefined; /** The arguments each MCP tool's listing in the run's pin declares (ClaimMcp.argumentsOf), for a pinned tool's closure (pinRefusal). */ argumentsOf?: ArgumentsOf; /** The harness's adapter facts on the owner's table (its native tools' names, nameMapOf); absent, the built-in harness's. */ facts?: AdapterFacts }, private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
+  constructor(private readonly where: { root: string; work: string; runId: string; harness?: string; computer?: boolean; /** The run's computer kind (its revision's setting): the key a computer tool's refusal and ask name on a tie (kindSetting). */ kind?: string; effectOf?: (name: string) => ToolEffect | undefined; /** The arguments each MCP tool's listing in the run's pin declares (ClaimMcp.argumentsOf), for a pinned tool's closure (pinRefusal). */ argumentsOf?: ArgumentsOf; /** The harness's adapter facts on the owner's table (its native tools' names, nameMapOf); undefined for one with none. */ facts: AdapterFacts | undefined }, private readonly readServerSettings: () => ToolSettingsRead, private readonly overrides: PermissionSettings = {}, private readonly approvers = true, private readonly approvals: Approvals = "ask") {}
   private names?: NameMap;
 
   /** A tool's permission now (permissionOf): the revision's own over the server's setting, read at each call, so a change
@@ -474,7 +473,7 @@ export class RunGate {
     const kinds = this.kindKeysOf(name);
     if (kinds) return this.kindSetting(name, kinds).key;
     const harness = this.where.harness ?? DEFAULT_HARNESS;
-    return settingsKeyOf(harness, name, (this.names ??= nameMapOf(harness, this.where.facts ?? builtinHarness(harness)?.facts)));
+    return settingsKeyOf(harness, name, (this.names ??= nameMapOf(harness, this.where.facts)));
   }
 
   /** A computer tool's settings keys (KIND_TOOLS), the run's own kind first (where.kind); undefined for any other tool. */

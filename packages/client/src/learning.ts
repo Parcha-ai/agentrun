@@ -104,7 +104,9 @@ export interface BackendLearningStart {
 export type SdkLearningEvent =
   | { type: 'text'; text: string }
   | { type: 'session'; session_id: string }
-  | { type: 'workflow_check'; id: string; digest: string; outcome: 'answered' | 'handed_back' | 'failed' | 'skipped_write'; answer?: string; reason?: string; skipped?: { tool: string; unmarked?: true } }
+  | { type: 'workflow_check'; id: string; digest: string; outcome: 'answered' | 'handed_back' | 'failed' | 'skipped_write'; answer?: string; reason?: string; skipped?: { tool: string; unmarked?: true };
+      /** Fresh read-only calls the shadow made where the native recording had no result (shadowReadFallback). Absent: none. */
+      fresh_reads?: number }
   | { type: 'tool'; id: string; name: string; status: 'started' | 'completed' | 'failed'; input?: unknown; output?: unknown; parent_tool_use_id?: string };
 
 /** Local shadow evidence only. A buffered result cannot prove effect order. SDK adapters explicitly identify

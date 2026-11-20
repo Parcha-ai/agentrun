@@ -862,13 +862,16 @@ export interface Runs {
   /** Moves the mark of every run whose listing read something outside the run (`flags`, RUN_LISTING_COLUMNS' listing_flags),
    *  of agent `agentId` when given: the server's keys changed, or an agent's learning folder did. The number of runs moved. */
   relist(options: { flags: number; agentId?: string }): Promise<number>;
-  /** Writes `usd`, an exact figure its booking gives, as ended run `runId`'s stored cost, only while that cost is still
-   *  unknown (null, no bound) and the run is the end it was read at (`epoch`, `endedAt`): one conditional write, so a
+  /** Writes `cost`, what its booking gives by the end's own rule (metrics.ts endCostOf: a figure, the most the run can
+   *  have cost when `costUpperBound`), as ended run `runId`'s stored cost, as its end would have, only while that cost is
+   *  still unknown (null, no bound) and the run is the end it was read at (`epoch`, `endedAt`): one conditional write, so a
    *  stored figure is never overwritten, a run reopened or ended again since keeps what its end wrote, and a second heal
    *  writes nothing. True when it was written. */
-  healCost(runId: string, at: { readonly epoch: number; readonly endedAt: number }, usd: number): Promise<boolean>;
+  healCost(runId: string, at: { readonly epoch: number; readonly endedAt: number }, cost: { readonly costUsd: number; readonly costUpperBound: boolean }): Promise<boolean>;
   /** Ended runs, not imported, whose stored cost is unknown (null, no bound), by id after `after`, at most `limit`: what
-   *  the server's start sweep reads to heal (cost-heal.ts). */
+   *  the server's start sweep reads to heal (cost-heal.ts). Left out are those the heal's rule refuses by what the store
+   *  holds alone: a person's stop of an agentic run, a native run, a run with no booked answer (sqlite/store.ts says
+   *  which are kept, and why). */
   costUnknown(options: { limit: number; after?: string }): Promise<string[]>;
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;
@@ -1333,17 +1336,14 @@ export const RUNNER_ROWS_KEPT_MS = 24 * 60 * 60_000;
 /** Every runner's word that it is there (runner/presence.ts). */
 export interface Runners {
   /** Keeps `row` for its runner, replacing any earlier incarnation's, seen now; rows no runner renewed for
-   *  RUNNER_ROWS_KEPT_MS go in the same write. Its host and port go together: both absent (or null) for no relay. */
-  put(row: Omit<RunnerRow, "seenAt" | "host" | "port"> & { readonly host?: string | null; readonly port?: number | null }): Promise<void>;
-  /** Keeps `row` for its runner unless another incarnation's row of the same name was seen within `staleMs`: a process's
-   *  put again of a row that went (pruned, a store restored) never takes back a later process's live one. False when
-   *  such a row is there and nothing was written. */
-  putUnlessLive(row: Omit<RunnerRow, "seenAt" | "host" | "port"> & { readonly host?: string | null; readonly port?: number | null }, staleMs: number): Promise<boolean>;
-  /** Says on the runner's row where its relay answers (`at`, or null for nowhere), seen now, while the row is still this
-   *  incarnation's. False when it is not (or there is none), and nothing was written. */
-  relayAt(runner: string, incarnation: string, at: { readonly host: string; readonly port: number } | null): Promise<boolean>;
-  /** Marks the runner's row seen now, while it is still this incarnation's. False when it is not (or there is none). */
-  seen(runner: string, incarnation: string): Promise<boolean>;
+   *  RUNNER_ROWS_KEPT_MS go in the same write. Its host and port go together: both absent (or null) for no relay. With
+   *  `unlessLiveMs`, not over another incarnation's row of the same name seen within that: a process's put again of a row
+   *  that went (pruned, a store restored) never takes back a later process's live one. False when such a row is there and
+   *  nothing was written. */
+  put(row: Omit<RunnerRow, "seenAt" | "host" | "port"> & { readonly host?: string | null; readonly port?: number | null }, options?: { readonly unlessLiveMs?: number }): Promise<boolean>;
+  /** Marks the runner's row seen now and says on it where its relay answers (`at`, or null for nowhere), while the row is
+   *  still this incarnation's. False when it is not (or there is none), and nothing was written. */
+  renew(runner: string, incarnation: string, at: { readonly host: string; readonly port: number } | null): Promise<boolean>;
   /** Every runner's row, by name. */
   list(): Promise<RunnerRow[]>;
   /** The rows seen within `staleMs`, by name. Every row's time (a put's, a seen's) and this "now" are the deadlines'

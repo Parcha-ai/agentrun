@@ -41,7 +41,7 @@ async function twoCalls(t, between) {
   const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-gate-live-"));
   // The gate as the dispatch builds it at the claim (adapterRunGate, the one the spec builder uses).
   const loop = createAdapterLoop(async (claim, run) => {
-    const gate = await adapterRunGate(runnerStore, claim, { kind: "agentic", body: { approvals: "ask" } }, root);
+    const gate = await adapterRunGate(runnerStore, claim, { kind: "agentic", body: { approvals: "ask" } }, root, undefined, { facts: undefined });
     return { ...(await base(claim, run)), gate };
   }, { restartLimit: MAX_RESTARTS });
   const runner = startRunner({ store: runnerStore, createLoop: loop, name: "runner-a", ...TIMING });

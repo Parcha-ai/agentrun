@@ -231,7 +231,7 @@ test("R4b: an MCP call outside its server's argument pin is refused in the pin's
     script,
     grants: ["mcp:fake/add"],
     before: ({ server }) => server.settings.put("tool-settings", { "mcp:fake/add": { permission: "allow", pin: { a: 2 } } }),
-    settings: ({ store, claim, work }) => adapterRunGate(store, claim, { kind: "agentic", body: {} }, work),
+    settings: ({ store, claim, work }) => adapterRunGate(store, claim, { kind: "agentic", body: {} }, work, undefined, { facts: undefined }),
   });
   assert.equal(row.state, "ended", JSON.stringify(row));
   const said = lastResult(sent);

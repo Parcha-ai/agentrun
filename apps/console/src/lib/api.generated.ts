@@ -3792,11 +3792,14 @@ export interface operations {
             differs_on?: string;
           }[];
           stopped?: true;
+          released?: number;
+          fresh_reads?: number;
         };
         runs?: string[];
         inputs?: string[];
         replay_id?: string;
         commit?: string;
+        via?: "sdk";
         audit?: {
           window: number;
           disagree: number;
@@ -3878,6 +3881,8 @@ export interface operations {
               differs_on?: string;
             }[];
             stopped?: true;
+            released?: number;
+            fresh_reads?: number;
           } | null;
         } | null;
       }[];
@@ -5259,6 +5264,7 @@ export interface operations {
           tool: string;
           unmarked?: true;
         };
+        fresh_reads?: number;
       } | {
         type: "tool";
         id: string;

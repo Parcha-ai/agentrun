@@ -5,7 +5,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { hostToolOf } from "../dist/host-tools.js";
 import { permissionsOf } from "../dist/tool-plane.js";
-import { defaultPermission, settingsKeyOf } from "../dist/tool-gate.js";
+import { defaultPermission } from "../dist/tool-gate.js";
+import { builtinKeyOf } from "./gate-support.mjs";
 import { blurbOf, isHostTool, tableTools } from "../dist/tool-list.js";
 
 const REG = { name: "x", description: "x", parameters: {} };
@@ -29,7 +30,7 @@ test("each pinned name is permitted, defaulted, keyed and replayed as written", 
   for (const [name, [permissions, defaults, key, replay]] of Object.entries(PINNED)) {
     assert.deepEqual([...permissionsOf(name)], permissions, `${name} permissions`);
     assert.deepEqual([defaultPermission(name), defaultPermission(name, { computer: false })], defaults, `${name} default`);
-    assert.equal(settingsKeyOf("pi", name), key, `${name} key`);
+    assert.equal(builtinKeyOf("pi", name), key, `${name} key`);
     assert.equal(hostToolOf(name, REG, {})?.replay, replay, `${name} replay`);
   }
 });
