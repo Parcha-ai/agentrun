@@ -175,6 +175,12 @@ test("the check: off, the clone's page read is refused as any is; on, only the c
   // and no cap reaches its clone at run time.
   const answered = parent(rewritten);
   assert.deepEqual(compactStateProblems(answered, { repick: true }), []);
+  // A child handed the marker key by its node's input would start on pass 2: its marker counts for nothing, its clone is
+  // a page read, and no cap reaches it.
+  const handed = structuredClone(answered);
+  handed.root.steps[0].input.repick_next = { taken: "pages" };
+  assert.deepEqual(compactStateProblems(handed, { repick: true }), [COMPACT_PAGE("answer_pages")]);
+  assert.equal(pagesCap(handed), undefined);
   const aside = { ...answered, root: { node: "chain", steps: [{ ...answered.root.steps[0], as: "notes" }] } };
   assert.deepEqual(compactStateProblems(aside, { repick: true }), [COMPACT_PAGE("answer_pages")]);
   assert.equal(pagesCap(aside), undefined);
