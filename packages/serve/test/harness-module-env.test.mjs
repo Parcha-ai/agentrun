@@ -86,6 +86,28 @@ export const entries = (_builtins, kit) => ({ ${JSON.stringify(id)}: kit.acpEntr
   }
 });
 
+test("a module's kit.acpEntry never builds a plan-billed entry: given facts on the plan wire it is refused at load, and its recipe and proxy never see a launch (nor its environment)", async (t) => {
+  const { harnessTable } = await import("../dist/harness-table.js");
+  const { cursorFacts } = await import(ACP_INDEX);
+  const dir = await scratch(t);
+  const id = "plan-wire-module";
+  const ran = join(dir, "ran");
+  const path = join(dir, `${id}.mjs`);
+  // The plan branch takes the launch's whole environment (its keys are read from it): only the built-ins reach it, through
+  // acpEntryOf. The kit's acpEntry is the proxy-billed builder alone, which refuses a wire that is no model wire of ours.
+  writeFileSync(path, `import { writeFileSync } from "node:fs";
+import { cursorFacts } from ${JSON.stringify(ACP_INDEX)};
+const seen = (what, launch) => { writeFileSync(${JSON.stringify(ran)}, JSON.stringify({ what, env: Object.keys(launch?.env ?? {}) })); throw new Error(what + " ran"); };
+export const entries = (_builtins, kit) => ({ ${JSON.stringify(id)}: kit.acpEntry({
+  facts: Object.freeze({ ...cursorFacts, id: ${JSON.stringify(id)}, label: "Plan wire module" }),
+  recipe: (launch) => seen("recipe", launch),
+  proxy: (launch) => seen("proxy", launch),
+}) });\n`);
+  assert.equal(cursorFacts.wire, "plan", "the facts are on the plan wire");
+  assert.throws(() => harnessTable({ ...KEYED_ENV, AGENTRUN_HARNESS_MODULES: JSON.stringify([path]) }), /plan-wire-module is billed to its own plan, so its table entry is its own, never adapterEntry's/);
+  assert.equal(existsSync(ran), false, existsSync(ran) ? readFileSync(ran, "utf8") : "");
+});
+
 test("a plan-billed ACP recipe (acpEntryOf's plan branch) that names one of the server's keys in `keys` is refused (RECIPE_KEY_NOT_OWN), and Cursor's own key is not one it is refused for", async (t) => {
   const { acpEntryOf } = await import("../dist/harness-table.js");
   const { cursorFacts } = await import(ACP_INDEX);
