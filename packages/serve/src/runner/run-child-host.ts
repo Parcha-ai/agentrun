@@ -71,7 +71,7 @@ import { heardComputerHold } from "./computer-journal.js";
 import { type Claim, type Command, type CommandOutcome, type HeldState, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, type StopReason, ClaimRefused } from "./loop-contract.js";
 import { Channel, ChannelClosed } from "./run-channel.js";
 import { registerRunErrors } from "./run-errors.js";
-import { readLaunchBody, type RunLaunch } from "../run-launch.js";
+import { launchOnItsDisk, readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { SUBAGENT_TOOL } from "./subagent.js";
 import type { AlsoRow, JournalReads, Store } from "../store/store.js";
 import type { Tier } from "../model.js";
@@ -1092,7 +1092,9 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
       return (started ??= (async (): Promise<LoopEnd> => {
         const runRow = await deps.store.runs.get(claim.runId);
         if (!runRow) throw new Error(`run ${claim.runId}: its row is gone from the store`);
-        const launch = readLaunchBody((await deps.store.runs.launch(claim.runId)).body);
+        // The launch as this run runs it: on a named disk, with nothing learned on another disk (launchOnItsDisk).
+        const read = readLaunchBody((await deps.store.runs.launch(claim.runId)).body);
+        const launch = read && launchOnItsDisk(read);
         if (!launch) throw new Error(`run ${claim.runId}: its launch record could not be read as a launch`);
         const revisionRow = await deps.store.agents.revision(runRow.revisionId);
         if (!revisionRow) throw new Error(`run ${claim.runId}: its revision ${runRow.revisionId} is gone from the store`);

@@ -185,14 +185,15 @@ function readLearning(value: unknown): NonNullable<RunLaunch["learning"]> | unde
   return { seed, section, ...(workflows.length ? { workflows } : {}), ...(value.noWorkflows === true ? { noWorkflows: true as const } : {}), ...(typeof value.model === "string" && value.model !== "" ? { model: value.model } : {}), ...(typeof value.seedFailed === "string" && SEED_FAILURES.includes(value.seedFailed) ? { seedFailed: value.seedFailed as SeedFailed } : {}), ...(value.use === true ? { use: true as const } : {}) };
 }
 
-/** A launch's learning start as a run on `disk` may hold it: on a disk its launch names as its own (kind "launch"), never
- *  a seed, a # Learned section or a learned workflow, whatever the body says (a start made before its run's disk was
- *  read, or written by hand): the server's seed is the default disk's, never that disk's (learn/learning-of.ts). It
- *  starts with nothing learned (`other_disk`), its flags kept. Any other run's, as read. */
-function onItsDisk(learning: NonNullable<RunLaunch["learning"]>, disk: LaunchDisk | undefined): NonNullable<RunLaunch["learning"]> {
-  if (disk?.kind !== "launch") return learning;
-  const { noWorkflows, model, use } = learning;
-  return { seed: null, section: "", seedFailed: "other_disk", ...(noWorkflows ? { noWorkflows } : {}), ...(model ? { model } : {}), ...(use ? { use } : {}) };
+/** The launch a runner runs (runner/dispatch.ts, run-child-host.ts): on a disk the launch names as its own (kind
+ *  "launch"), its learning start holds no seed, # Learned section or learned workflow, whatever the body says (a start
+ *  made before its run's disk was read, or written by hand), as the server's seed is the default disk's, never that
+ *  disk's (learn/learning-of.ts): the run starts with nothing learned (`other_disk`), its flags kept. Any other launch as
+ *  read. readLaunchBody keeps the body as written: a finished run's views show what it ran. */
+export function launchOnItsDisk(launch: RunLaunch): RunLaunch {
+  if (!launch.learning || launch.archilDisk?.kind !== "launch") return launch;
+  const { noWorkflows, model, use } = launch.learning;
+  return { ...launch, learning: { seed: null, section: "", seedFailed: "other_disk", ...(noWorkflows ? { noWorkflows } : {}), ...(model ? { model } : {}), ...(use ? { use } : {}) } };
 }
 
 /** A launch body read back into a `RunLaunch`, with the input-origin fail-safe applied through the body's own trigger, or
@@ -223,7 +224,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(boxAllow !== undefined ? { boxAllow } : {}),
     ...(stored.box_allow_set === true ? { boxAllowSet: true as const } : {}),
     ...(Array.isArray(stored.files) && stored.files.every((id) => typeof id === "string") ? { files: stored.files as string[] } : {}),
-    ...(stored.learning !== undefined ? { learning: onItsDisk(readLearning(stored.learning) ?? { seed: null, section: "" }, archilDisk) } : {}),
+    ...(stored.learning !== undefined ? { learning: readLearning(stored.learning) ?? { seed: null, section: "" } } : {}),
     ...(stored.workflow_first === false ? { workflowFirst: false as const } : {}),
     ...(readReplay(stored.replay) ? { replay: readReplay(stored.replay)! } : {}),
     ...(readReplay(stored.audit) ? { audit: readReplay(stored.audit)! } : {}),
