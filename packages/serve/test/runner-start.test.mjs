@@ -225,6 +225,19 @@ test("a store its server has yet to upgrade: the runner exits 3 on SQLite and on
   }
 });
 
+test("a store a later server moved past this runner while it ran: it stops claiming, hands its runs back and exits 3, saying why", { timeout: 60_000 }, async (t) => {
+  const dir = await serverData(t);
+  const child = runnerChild(t, ["--data", dir], { AGENTRUN_RUNNER_NAME: "runner-floor" });
+  await child.line(READY);
+  // A later release's server upgraded the file: on SQLite a runner opens only its own version, so its floor is the version.
+  const db = new DatabaseSync(join(dir, STORE_FILE));
+  db.prepare("UPDATE store_meta SET schema_version = ?").run(SCHEMA_VERSION + 1);
+  db.close();
+  // Read again at its next renewal (every 10 s), idle as it is.
+  assert.deepEqual(await child.exited, { code: 3, signal: null }, child.err.join("\n"));
+  assert.match(child.err.join("\n"), new RegExp(`Runner runner-floor stops claiming and hands its runs back: the store is at schema version ${SCHEMA_VERSION + 1}, and its runner floor rose to ${SCHEMA_VERSION + 1}, above the version this runner knows \\(${SCHEMA_VERSION}\\)`));
+});
+
 test("on the server's store the runner says it is ready in one line, then its memory budget in another, claims nothing with nothing queued, and SIGTERM closes it with exit 0", async (t) => {
   const dir = await serverData(t);
   const child = runnerChild(t, ["--data", dir, "--loops", "3"], { AGENTRUN_RUNNER_NAME: "runner-solo" });

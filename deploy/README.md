@@ -294,8 +294,17 @@ A runner exits with:
 | --- | --- |
 | 0 | It was stopped (SIGTERM or SIGINT) and handed its runs back. |
 | 2 | Bad arguments. |
-| 3 | The store's schema is one it does not know, or the store is not set up yet. Start the server first; run a runner of the server's release. |
+| 3 | It can't run on the store's schema. The store isn't set up yet, or the server hasn't migrated it to this runner's version yet (start the server first), or the store's runner floor is above this runner's version (run a runner of the server's release). A runner checks the floor at its start and every 10 s after. When the floor rises while it runs, it first claims nothing more, drains and hands its runs back. |
 | 1 | Anything else. |
+
+**Upgrading on Postgres.** Deploy the server first: it migrates the store under the running runners, then roll the
+runners. A runner opens a store a later server migrated as long as the store's runner floor is at most this runner's
+schema version. Additive migrations leave the floor where it was, so the earlier runners keep running. A migration marked
+breaking raises the floor, and each earlier runner then stops as above and exits 3. To check a store before a deploy,
+`agentrun-serve store-schema` prints its schema version and runner floor beside the version this build knows, as one
+line of JSON, and changes nothing. A running server reports the same values in `GET /v2/capabilities` (`store_schema`).
+`agentrun-serve store-schema --build` prints only the build's own versions, with no store. Never deploy a server whose
+build is older than the store: it refuses the store.
 
 On SIGTERM a runner claims nothing more and lets each busy run finish its turn for up to `--drain-timeout` (default 6 s),
 so a model request in flight is not cut and sent again; then it stops the loops left where they can resume and hands

@@ -69,6 +69,12 @@ cd spec/lean && lake build
 
 If the model does not need to change, say why in the pull request. Never delete a property to make a check pass: fix the code, or record the counterexample with a test that reproduces it. CI runs the TLA+ checks when a change touches `spec/receipts/` or `scripts/spec/`, and every night on `main`.
 
+### Changing the store's Postgres schema
+
+A schema change is a new file in `packages/serve/src/store/postgres/migrations/` (`NNNN_name.sql`, never an edit of an applied one). The server applies it at its start, while runners of the earlier release keep running on the schema it leaves. So a migration is additive by default: add tables, nullable columns, or NOT NULL columns with a default.
+
+A migration that an earlier runner can't run beside carries `-- runners: breaking` on a line of its leading comment. That covers a migration that drops or renames anything, changes a column's type, makes a column NOT NULL, or adds a NOT NULL column with no default. Applying a breaking migration raises the store's runner floor to its version: every runner of an earlier build stops claiming, hands its runs back and exits 3, and its platform starts one of the new release. Split such a change across two releases: the additive half first, and the destructive cleanup, marked, one release later. `test/store-migration-lint.test.mjs` fails an unmarked migration with any of these statements. It reads statements, not meaning: a new constraint that an earlier runner's writes would break is not found, so mark that one too. The SQLite store has no migration files: a SQLite runner opens only its own schema version.
+
 The [findings table](spec/lean/README.md#findings) distinguishes runtime fixes, validation gaps, and documented limits. Documentation-only changes do not require installing Lean. CI runs the Lean checks separately from `npm run check`.
 
 The website is maintained separately in a private repository. Send website feedback through this repository's [issues](https://github.com/Parcha-ai/agentrun/issues). Documentation illustrations in this repository have their own [asset instructions](docs/assets/README.md).

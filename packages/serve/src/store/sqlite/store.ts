@@ -458,7 +458,14 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     await connection.close().catch(() => undefined);
     throw error;
   }
-  return storeOver(connection, options.now ?? Date.now, inMemory(file) ? undefined : file, options.warn);
+  const store = storeOver(connection, options.now ?? Date.now, inMemory(file) ? undefined : file, options.warn);
+  // A SQLite runner opens only its own version (the server upgrades the file in place at its start, never beside a
+  // runner on another build): its floor is the version itself.
+  const schemaState = async () => {
+    const version = await versionOf(connection);
+    return { version, runnerFloor: version, known: SCHEMA_VERSION };
+  };
+  return Object.assign(store, { schemaState });
 }
 
 /** Every unrefused approve or deny after the first for one approval of a run, refused with why (the open above). */

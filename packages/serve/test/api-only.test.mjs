@@ -97,7 +97,11 @@ async function send(server, method, path, { token = true, body, headers = {} } =
 test("an API-only server serves a run's routes with the token", async (t) => {
   const server = await serve(t, { apiOnly: true, runner: false });
   assert.equal((await send(server, "GET", "/v2/health", { token: false })).status, 200, "health");
-  assert.equal((await send(server, "GET", "/v2/capabilities")).status, 200, "capabilities");
+  const capabilities = await send(server, "GET", "/v2/capabilities");
+  assert.equal(capabilities.status, 200, "capabilities");
+  // The store's schema and runner floor beside this build's, for a deploy's skew check (runner-floor/1).
+  const { version, runner_floor: floor, known } = capabilities.body.store_schema;
+  assert.ok(Number.isSafeInteger(known) && version === known && Number.isSafeInteger(floor) && floor <= known, JSON.stringify(capabilities.body.store_schema));
   const runs = await send(server, "GET", "/v2/runs");
   assert.equal(runs.status, 200, `the runs list: ${JSON.stringify(runs.body)}`);
   assert.equal((await send(server, "GET", "/v2/usage")).status, 200, "usage");

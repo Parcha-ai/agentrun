@@ -1,0 +1,213 @@
+// A runner beside a server of a later release, on Postgres (migrate.ts runnerFloorOf; runner/main.ts watchFloor). The
+// server migrates first, under runners of the earlier release that keep running:
+//   - an additive migration leaves the runner floor where it was: a runner of the earlier build opens the schema ahead of
+//     it, and one already running finishes its run and goes on claiming;
+//   - a breaking migration (its `-- runners: breaking` header) raises the floor to its version: a running runner of an
+//     earlier build reads it at its next renewal, claims nothing more, hands its run back for another runner, and its
+//     process ends with exit 3; one starting is refused (RunnerBelowFloor);
+//   - a runner of a later build than the schema's waits for its server (StoreAwaitsServer: refused, nothing written), and
+//     runs once that server migrated.
+// "This build" is the earlier release here: the later one is this build's migrations and one more, applied as its server
+// would (migrate()).
+import assert from "node:assert/strict";
+import { createHash, randomBytes } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test } from "node:test";
+import { startRunnerProcess } from "../dist/runner/main.js";
+import { LAST_UNMARKED, migrate, migrationsIn, openPostgresStore, RunnerBelowFloor, runnerFloorOf, StoreAwaitsServer } from "../dist/store/index.js";
+import { readStoreSchema } from "../dist/store-schema.js";
+import { fauxLoops, until } from "./runner-support.mjs";
+import { client, dropSchema, freshSchema, PG_URL, postgresOnly } from "./store-target.mjs";
+
+const ONLY = postgresOnly("a runner beside a later server's migrations");
+const SEAL = randomBytes(32).toString("base64");
+const KNOWN = migrationsIn().at(-1).version;
+
+/** The later release's migration, one past this build's last: additive unless `breaking`. */
+function later(breaking, version = KNOWN + 1) {
+  const sql = breaking
+    ? `-- A later release's cleanup.\n-- runners: breaking\nCREATE TABLE skew_later_${version} (id TEXT PRIMARY KEY);\nUPDATE store_meta SET schema_version = ${version} WHERE singleton = 1;\n`
+    : `-- A later release's additive step.\nALTER TABLE runs ADD COLUMN IF NOT EXISTS skew_note_${version} TEXT;\nUPDATE store_meta SET schema_version = ${version} WHERE singleton = 1;\n`;
+  return { version, name: breaking ? "later_breaking" : "later_additive", sql, sha256: createHash("sha256").update(sql).digest("hex"), breaking };
+}
+
+/** A scratch schema dropped at the test's end, with a test client on it. */
+async function schemaFor(t) {
+  const schema = await freshSchema();
+  const sql = await client();
+  t.after(async () => {
+    await sql.end();
+    await dropSchema(schema);
+  });
+  return { schema, sql };
+}
+
+/** The later release's server migrates `schema` to this build's migrations and `more`. */
+const migrateTo = (sql, schema, more) => migrate(sql, schema, Date.now(), [...migrationsIn(), ...more]);
+
+/** agent-1 and `runs` queued, made by this build's server, which then closes. */
+async function setUp(schema, runs) {
+  const server = await openPostgresStore({ url: PG_URL, schema });
+  try {
+    await server.agents.create({ id: "agent-1", name: "Agent one" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
+    for (const id of runs) await server.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" });
+  } finally {
+    await server.close();
+  }
+}
+
+/** A run's row, read straight from the schema. */
+const row = async (sql, schema, id) => (await sql.query(`SELECT state, runner FROM ${schema}.runs WHERE id = $1`, [id])).rows[0];
+
+function runner(t, schema, options) {
+  const dataDir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-skew-"));
+  t.after(() => rmSync(dataDir, { recursive: true, force: true }));
+  return startRunnerProcess({ dataDir, storeUrl: PG_URL, env: { ...process.env, AGENTRUN_STORE_SCHEMA: schema, AGENTRUN_SEAL_KEY: SEAL }, loops: 2, ...options });
+}
+
+test("the server records which migrations break runners: the floor is the newest of them, or LAST_UNMARKED", ONLY, async (t) => {
+  const { schema, sql } = await schemaFor(t);
+  assert.deepEqual(await runnerFloorOf(sql, schema), { version: null, runnerFloor: null }, "nothing set up");
+  await migrateTo(sql, schema, []);
+  assert.deepEqual(await runnerFloorOf(sql, schema), { version: KNOWN, runnerFloor: LAST_UNMARKED });
+  await migrateTo(sql, schema, [later(false)]);
+  assert.deepEqual(await runnerFloorOf(sql, schema), { version: KNOWN + 1, runnerFloor: LAST_UNMARKED }, "an additive migration leaves the floor");
+  await migrateTo(sql, schema, [later(false), later(true, KNOWN + 2), later(false, KNOWN + 3)]);
+  assert.deepEqual(await runnerFloorOf(sql, schema), { version: KNOWN + 3, runnerFloor: KNOWN + 2 }, "a breaking one raises it to its version, and the next additive one leaves it there");
+  const marks = (await sql.query(`SELECT version, runners_breaking FROM ${schema}.schema_migrations WHERE version > $1 ORDER BY version`, [KNOWN])).rows;
+  assert.deepEqual(marks.map((m) => [Number(m.version), m.runners_breaking]), [[KNOWN + 1, false], [KNOWN + 2, true], [KNOWN + 3, false]]);
+});
+
+test("a ledger an earlier server kept, with no breaking marks, has its version as its floor", ONLY, async (t) => {
+  const { schema, sql } = await schemaFor(t);
+  await migrateTo(sql, schema, []);
+  await sql.query(`ALTER TABLE ${schema}.schema_migrations DROP COLUMN runners_breaking`);
+  assert.deepEqual(await runnerFloorOf(sql, schema), { version: KNOWN, runnerFloor: KNOWN });
+  // This build's server marks it again at its next start.
+  await migrateTo(sql, schema, []);
+  assert.deepEqual(await runnerFloorOf(sql, schema), { version: KNOWN, runnerFloor: LAST_UNMARKED });
+});
+
+test("after an additive migration, a runner of the earlier build opens the schema ahead of it and runs a run to its end", ONLY, async (t) => {
+  const { schema, sql } = await schemaFor(t);
+  await setUp(schema, ["run-1"]);
+  await migrateTo(sql, schema, [later(false)]);
+  const said = [];
+  const started = await runner(t, schema, { name: "runner-old", createLoop: fauxLoops({ turns: 2, turnMs: 10 }).createLoop, warn: (line) => said.push(line) });
+  let closed = false;
+  t.after(() => (closed ? undefined : started.close()));
+  assert.ok(said.some((line) => line.includes(`the store is at schema version ${KNOWN + 1}, ahead of this runner's ${KNOWN}; its runner floor is ${LAST_UNMARKED}`)), said.join(" | "));
+  await until(async () => (await row(sql, schema, "run-1")).state === "ended", "the run ends on the newer schema", 15_000);
+  await until(async () => (await row(sql, schema, "run-1")).runner === null, "its release");
+  await started.close();
+  closed = true;
+});
+
+test("an additive migration under a running runner of the earlier build: it finishes its run, goes on claiming, and never stops", ONLY, async (t) => {
+  const { schema, sql } = await schemaFor(t);
+  await setUp(schema, ["run-1"]);
+  const faux = fauxLoops({ turns: 40, turnMs: 25 });
+  const started = await runner(t, schema, { name: "runner-old", createLoop: faux.createLoop, floorEveryMs: 50 });
+  let closed = false;
+  t.after(() => (closed ? undefined : started.close()));
+  let outdated;
+  void started.outdated.then((why) => (outdated = why));
+  await until(async () => (await row(sql, schema, "run-1")).runner === "runner-old", "it holds the run");
+  await migrateTo(sql, schema, [later(false)]);
+  // The later server queues one more run, on the schema it migrated (a store opened on it as a runner opens one).
+  const newer = await openPostgresStore({ url: PG_URL, schema, role: "runner" });
+  try {
+    await newer.runs.create({ id: "run-2", agentId: "agent-1", revisionId: "rev-1" });
+  } finally {
+    await newer.close();
+  }
+  for (const id of ["run-1", "run-2"]) await until(async () => (await row(sql, schema, id)).state === "ended", `${id} ends`, 20_000);
+  assert.equal(outdated, undefined, "the floor did not rise: it never stopped");
+  assert.deepEqual(faux.loops.map((loop) => loop.claim.runner), ["runner-old", "runner-old"]);
+  await started.close();
+  closed = true;
+});
+
+test("a breaking migration under a running runner of the earlier build: it claims nothing more, hands its run back, and says why", ONLY, async (t) => {
+  const { schema, sql } = await schemaFor(t);
+  await setUp(schema, ["run-1"]);
+  const faux = fauxLoops({ turns: 400, turnMs: 25 });
+  const started = await runner(t, schema, { name: "runner-old", createLoop: faux.createLoop, floorEveryMs: 50 });
+  let closed = false;
+  t.after(() => (closed ? undefined : started.close()));
+  await until(async () => (await row(sql, schema, "run-1")).runner === "runner-old", "it holds the run");
+  await migrateTo(sql, schema, [later(true)]);
+  const why = await Promise.race([started.outdated, new Promise((resolve) => setTimeout(() => resolve("never"), 10_000))]);
+  assert.equal(why, `the store is at schema version ${KNOWN + 1}, and its runner floor rose to ${KNOWN + 1}, above the version this runner knows (${KNOWN}): a later server changed the schema in a way this runner cannot run beside`);
+  // The process's stop (runnerMain: runUntilSignalled, then exit 3): the close, its run handed back.
+  await started.close();
+  closed = true;
+  const after = await row(sql, schema, "run-1");
+  assert.equal(after.runner, null, "handed back: no runner holds it");
+  assert.ok(!["ended", "stopped", "failed"].includes(after.state), `not ended for the stop: ${after.state}`);
+  assert.equal(faux.loops.length, 1, "it claimed nothing after the floor rose");
+  assert.deepEqual(faux.loops.map((loop) => loop.stopCalls.map((call) => call.kind)), [["shutdown"]], "its loop was stopped for a shutdown, to resume elsewhere");
+  // A runner of the earlier build starting now is refused, in words that say what to run.
+  await assert.rejects(runner(t, schema, { createLoop: fauxLoops().createLoop }), (error) => {
+    assert.equal(error.name, "RunnerRefused");
+    assert.ok(error.cause instanceof RunnerBelowFloor, String(error.cause));
+    assert.equal(error.message, `The store in the Postgres schema ${schema} is at schema version ${KNOWN + 1}, and a runner on it must know version ${KNOWN + 1} or later; this runner knows ${KNOWN}: run a runner of the server's release.`);
+    return true;
+  });
+});
+
+test("an idle runner of the earlier build, holding no run, reads the floor too: a breaking migration stops it", ONLY, async (t) => {
+  const { schema, sql } = await schemaFor(t);
+  await setUp(schema, []);
+  const started = await runner(t, schema, { name: "runner-idle", createLoop: fauxLoops().createLoop, floorEveryMs: 50 });
+  t.after(() => started.close());
+  assert.deepEqual(started.runner.held(), [], "it holds nothing");
+  await migrateTo(sql, schema, [later(true)]);
+  const why = await Promise.race([started.outdated, new Promise((resolve) => setTimeout(() => resolve("never"), 10_000))]);
+  assert.match(why, new RegExp(`runner floor rose to ${KNOWN + 1}, above the version this runner knows \\(${KNOWN}\\)`));
+});
+
+test("a runner of a later build than the schema's waits for its server: refused, nothing written, then it runs once the server migrated", ONLY, async (t) => {
+  const { schema, sql } = await schemaFor(t);
+  // The earlier release's server left the schema one migration behind this build.
+  await migrate(sql, schema, Date.now(), migrationsIn().slice(0, -1));
+  const ledger = async () => (await sql.query(`SELECT * FROM ${schema}.schema_migrations ORDER BY version`)).rows;
+  const before = await ledger();
+  const faux = fauxLoops({ turns: 1, turnMs: 10 });
+  await assert.rejects(runner(t, schema, { name: "runner-new", createLoop: faux.createLoop }), (error) => {
+    assert.equal(error.name, "RunnerRefused");
+    assert.ok(error.cause instanceof StoreAwaitsServer, String(error.cause));
+    assert.match(error.message, /is behind this runner: start the server first, which upgrades the store in place, then the runner/);
+    return true;
+  });
+  assert.deepEqual(await ledger(), before, "the runner migrated nothing");
+  assert.equal(faux.loops.length, 0, "and claimed nothing");
+  // The server of the runner's release migrates, and queues a run: the runner, started again, runs it.
+  await setUp(schema, ["run-1"]);
+  const started = await runner(t, schema, { name: "runner-new", createLoop: faux.createLoop });
+  t.after(() => started.close());
+  await until(async () => (await row(sql, schema, "run-1")).state === "ended", "the run ends", 15_000);
+  assert.equal(faux.loops[0].claim.runner, "runner-new");
+});
+
+test("store-schema reads the live schema and floor beside this build's version, and writes nothing", ONLY, async (t) => {
+  const { schema, sql } = await schemaFor(t);
+  const env = { ...process.env, AGENTRUN_STORE_SCHEMA: schema };
+  const read = () => readStoreSchema("/nonexistent-data-dir", env, PG_URL);
+  const where = `the Postgres schema ${schema}`;
+  assert.deepEqual(await read(), { store: "postgres", where, schema: null, runnerFloor: null, build: KNOWN, server: "sets up", runner: "refused" });
+  assert.equal((await sql.query("SELECT 1 FROM pg_namespace WHERE nspname = $1", [schema])).rowCount, 0, "no schema made");
+  await migrate(sql, schema, Date.now(), migrationsIn().slice(0, -1));
+  assert.deepEqual(await read(), { store: "postgres", where, schema: KNOWN - 1, runnerFloor: KNOWN - 1, build: KNOWN, server: "migrates", runner: "waits" });
+  await migrateTo(sql, schema, []);
+  assert.deepEqual(await read(), { store: "postgres", where, schema: KNOWN, runnerFloor: LAST_UNMARKED, build: KNOWN, server: "opens", runner: "opens" });
+  await migrateTo(sql, schema, [later(false)]);
+  assert.deepEqual(await read(), { store: "postgres", where, schema: KNOWN + 1, runnerFloor: LAST_UNMARKED, build: KNOWN, server: "refuses", runner: "opens" }, "a rollback across a migration: this build's server refuses, its runner still opens");
+  await migrateTo(sql, schema, [later(false), later(true, KNOWN + 2)]);
+  assert.deepEqual(await read(), { store: "postgres", where, schema: KNOWN + 2, runnerFloor: KNOWN + 2, build: KNOWN, server: "refuses", runner: "refused" });
+  const ledger = (await sql.query(`SELECT * FROM ${schema}.schema_migrations ORDER BY version`)).rows;
+  await read();
+  assert.deepEqual((await sql.query(`SELECT * FROM ${schema}.schema_migrations ORDER BY version`)).rows, ledger, "a read changes nothing");
+});

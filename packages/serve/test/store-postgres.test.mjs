@@ -14,7 +14,7 @@ import { inspect } from "node:util";
 import { queued, storeOn } from "./store-helpers.mjs";
 import { client, dropSchema, freshSchema, PG_URL, postgresOnly, schemaOf } from "./store-target.mjs";
 
-const { migrate, migrationsIn, openPostgresStore, postgresVersionOf: versionOf, postgresWhere, openStore, PgConnection, SchemaVersionUnknown, storeTarget, StoreBusy, StoreConstraint, STORE_CONNECT_TIMEOUT_MS, StoreDeadline, StoreOwned, Unanswered, LEASE_DEADLINE_MS } = await import("../dist/store/index.js");
+const { migrate, migrationsIn, openPostgresStore, postgresVersionOf: versionOf, postgresWhere, openStore, PgConnection, RunnerBelowFloor, SchemaVersionUnknown, storeTarget, StoreBusy, StoreConstraint, STORE_CONNECT_TIMEOUT_MS, StoreDeadline, StoreOwned, Unanswered, LEASE_DEADLINE_MS } = await import("../dist/store/index.js");
 const { RUNNER_RENEW_EVERY_MS, RunnerRefused, startRunnerProcess } = await import("../dist/runner/main.js");
 
 const ONLY = postgresOnly("the Postgres adapter");
@@ -731,7 +731,7 @@ test("servers of two schemas in one database hold their own owner locks", ONLY, 
   await one.close();
 });
 
-test("a runner refuses a schema not set up yet, and one of a version it does not know (SchemaVersionUnknown); so does a server", ONLY, async (t) => {
+test("a runner refuses a schema not set up yet, and one a later build migrated past its runner floor (RunnerBelowFloor); a server refuses any later schema", ONLY, async (t) => {
   const schema = await schemaFor(t);
   await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "runner" }), (error) => error instanceof SchemaVersionUnknown && error.found === null && error.message.includes(`the Postgres schema ${schema}`));
   const server = await openPostgresStore({ url: PG_URL, schema });
@@ -739,8 +739,15 @@ test("a runner refuses a schema not set up yet, and one of a version it does not
   // A later build's migration, applied: one past this build's last.
   const known = migrationsIn().at(-1).version;
   await sql(schema, "INSERT INTO schema_migrations (version, name, sha256, applied_at) VALUES ($1, 'later', 'x', 0)", known + 1);
-  await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "runner" }), (error) => error instanceof SchemaVersionUnknown && error.found === known + 1 && error.known === known);
-  await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "server" }), SchemaVersionUnknown, "nor does the server open a later build's schema");
+  // Additive (unmarked): the runner floor stays, and a runner of this build runs on the schema ahead of it.
+  const runner = await openPostgresStore({ url: PG_URL, schema, role: "runner" });
+  assert.deepEqual(await runner.schemaState(), { version: known + 1, runnerFloor: 23, known });
+  await runner.close();
+  await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "server" }), SchemaVersionUnknown, "the server does not open a later build's schema");
+  // Breaking (marked): the floor rises past this build, and its runner is refused, as a schema it does not know.
+  await sql(schema, "INSERT INTO schema_migrations (version, name, sha256, applied_at, runners_breaking) VALUES ($1, 'later_breaking', 'y', 0, true)", known + 2);
+  await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "runner" }), (error) => error instanceof RunnerBelowFloor && error instanceof SchemaVersionUnknown && error.found === known + 2 && error.known === known && error.floor === known + 2);
+  await assert.rejects(openPostgresStore({ url: PG_URL, schema, role: "server" }), SchemaVersionUnknown, "nor does the server");
 });
 
 test("a runner sets nothing up: its open of a schema not set up leaves no schema behind", ONLY, async (t) => {
