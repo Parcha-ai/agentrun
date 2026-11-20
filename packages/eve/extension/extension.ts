@@ -13,8 +13,6 @@ export default defineExtension({
     // Initial registration only. An existing agent's console setting always wins.
     learning: z.union([z.boolean(), z.strictObject({
       compile_after: z.number().int().min(1).max(200).optional(),
-      agree_min: z.number().min(0).max(1).optional(),
-      alone_min: z.number().min(0).max(1).optional(),
     })]).default(false),
     // Host functions are runtime mount configuration, never serialized into an API request or model prompt.
     workflows: z.custom<EveWorkflowOptions>(value => !!value && typeof value === 'object').optional(),

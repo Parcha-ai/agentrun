@@ -143,6 +143,13 @@ export interface components {
     features: components["Features"];
     regions: components["Region"][];
     limits: components["Limits"];
+    learning_model: {
+      location: "server" | "native";
+      ready: boolean;
+      model: string | null;
+      needs: "key" | "model" | null;
+      reason: string | null;
+    };
     learning: {
       pending: true;
       approve: boolean;
@@ -1537,6 +1544,13 @@ export interface operations {
     body: components["RunCreate"];
     answer: components["Run"];
   };
+  createRunComputerViewer: {
+    body: Record<string, never>;
+    answer: {
+      url: string;
+      expires_at: string;
+    };
+  };
   createTrigger: {
     body: {
       name?: string;
@@ -2132,6 +2146,13 @@ export interface operations {
   getAgentLearning: {
     body: never;
     answer: {
+      learning_model: {
+        location: "server" | "native";
+        ready: boolean;
+        model: string | null;
+        needs: "key" | "model" | null;
+        reason: string | null;
+      };
       agent: string;
       main: string | null;
       corrections: string;
@@ -3647,6 +3668,7 @@ export interface operations {
           required: string[];
           ready: boolean;
           runs_refused: string | null;
+          folder: "bind" | "archil" | "sync" | null;
           shell: "computer" | "local" | "none";
           host_tools: string[];
           why?: string;
@@ -3811,11 +3833,14 @@ export interface operations {
             differs_on?: string;
           }[];
           stopped?: true;
+          released?: number;
+          fresh_reads?: number;
         };
         runs?: string[];
         inputs?: string[];
         replay_id?: string;
         commit?: string;
+        via?: "sdk";
         audit?: {
           window: number;
           disagree: number;
@@ -3897,6 +3922,8 @@ export interface operations {
               differs_on?: string;
             }[];
             stopped?: true;
+            released?: number;
+            fresh_reads?: number;
           } | null;
         } | null;
       }[];
@@ -5041,6 +5068,7 @@ export interface operations {
       required: string[];
       ready: boolean;
       runs_refused: string | null;
+      folder: "bind" | "archil" | "sync" | null;
       shell: "computer" | "local" | "none";
       host_tools: string[];
       why?: string;
@@ -5268,6 +5296,18 @@ export interface operations {
         type: "session";
         session_id: string;
       } | {
+        type: "workflow_check";
+        id: string;
+        digest: string;
+        outcome: "answered" | "handed_back" | "failed" | "skipped_write";
+        answer?: string;
+        reason?: string;
+        skipped?: {
+          tool: string;
+          unmarked?: true;
+        };
+        fresh_reads?: number;
+      } | {
         type: "tool";
         id: string;
         name: string;
@@ -5380,6 +5420,16 @@ export interface operations {
           workflow: string;
           description: string;
         }[];
+        check?: {
+          id: string;
+          revision: string;
+          digest: string;
+          workflow: {
+            name: string;
+            workflow: string;
+            description: string;
+          };
+        };
       };
     };
   };

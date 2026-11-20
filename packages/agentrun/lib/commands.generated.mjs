@@ -2176,6 +2176,30 @@ export const COMMANDS = [
   {
     "command": [
       "runs",
+      "create-run-computer-viewer"
+    ],
+    "operationId": "createRunComputerViewer",
+    "method": "POST",
+    "path": "/runs/{run_id}/computer/viewer",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": true,
+    "bodyRequired": false,
+    "bodyTypes": [
+      "application/json"
+    ],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Mint a link to the run's live view for the backend's user"
+  },
+  {
+    "command": [
+      "runs",
       "files"
     ],
     "operationId": "listRunFiles",

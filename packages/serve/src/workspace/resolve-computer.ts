@@ -339,6 +339,25 @@ const selectedOf = (serving: readonly KindCapabilities[], setting: ComputerSetti
   return one ? [one] : [];
 };
 
+/** The kind of the run's folder a computer of `setting` on `entry`'s `configuration` holds in `mode` (folderOf), or
+ *  undefined for none: none where the agent runs no programs of its own; of the kinds its GPU computers take, where a
+ *  sandbox's setting asks for GPUs. resolveComputer's folder, and runFolderOf's. */
+const settingFolderOf = (setting: ComputerSetting, kind: ComputerSettingKind, entry: ProviderEntry, configuration: KindCapabilities, mode: 1 | 2): MountKind | undefined =>
+  noPrograms(setting) ? undefined : folderOf(kind, entry, [configuration], mode, kind === "sandbox" && setting.gpu ? configuration.gpu?.mounts : undefined);
+
+/** The kind of the run's folder a run of an agent with computer `setting` holds in `mode`, read off the setting and the
+ *  kind registry before anything starts, as the claim picks it (resolveComputer: the configuration the setting selects,
+ *  settingFolderOf): a bind, an Archil mount or a synced folder, or undefined for none (kind none, a computer that holds
+ *  no folder, or a setting the claim refuses). `registry` is as this server has it (registryHere, entryHere). */
+export function runFolderOf(setting: ComputerSetting, mode: 1 | 2, registry: Pick<KindRegistry, "SETTING_KINDS" | "servingRefusals" | "PROVIDERS">): MountKind | undefined {
+  const kind = setting.kind as ComputerSettingKind;
+  if (kind === "none" || !Object.hasOwn(registry.SETTING_KINDS, kind)) return undefined;
+  const entry = registry.PROVIDERS.find((one) => one.id === setting.provider);
+  if (!entry) return undefined;
+  const [configuration] = selectedOf(servingOf(registry, entry, kind), setting, entry, kind);
+  return configuration ? settingFolderOf(setting, kind, entry, configuration, mode) : undefined;
+}
+
 /**
  * Where a run of an agent with computer `setting` has its shell in `mode` (shellPlaceOf), read off the setting and the
  * kind registry before anything starts: what the claim's runTools gives the run once its computer is started. "computer"
@@ -435,7 +454,7 @@ export async function resolveComputer(given: ComputerSetting | undefined, mode: 
   // (of the kinds its GPU computers take, where the setting asks for GPUs), and the agent may run programs there (a
   // folder is mounted for its shell).
   const gpu = kind === "sandbox" && setting.gpu ? setting.gpu : undefined;
-  const folder = noPrograms(setting) ? undefined : folderOf(kind, entry, [configuration], mode, gpu ? configuration.gpu?.mounts : undefined);
+  const folder = settingFolderOf(setting, kind, entry, configuration, mode);
   const mounts = folder !== undefined;
   if (kind === "sandbox" && folder === undefined) {
     if (mode === 1) return { refused: `Mode 1 runs a sandbox only on Docker: ${aLabel(entry.label)} sandbox can't reach the run's folder on this machine. Pick Docker for this agent's computer in ${SETTINGS}, or another kind of computer.` };

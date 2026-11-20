@@ -238,7 +238,7 @@ test("C3b: a CLI's call outside its server's argument pin is refused in the pin'
   // The server's setting allows the tool pinned to a = 7; the CLI calls it with a = 2.
   const { seen, fake } = await cliRun(t, {
     before: ({ server }) => server.settings.put("tool-settings", { "mcp:fake/add": { permission: "allow", pin: { a: 7 } } }),
-    gateOf: ({ store, claim, work }) => adapterRunGate(store, claim, { kind: "agentic", body: {} }, work),
+    gateOf: ({ store, claim, work }) => adapterRunGate(store, claim, { kind: "agentic", body: {} }, work, undefined, { facts: undefined }),
   });
   const said = seen.answer?.text ?? "";
   assert.equal(seen.answer?.isError, true, JSON.stringify(seen.answer));

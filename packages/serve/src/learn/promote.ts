@@ -99,6 +99,10 @@ export interface PromotionRecord {
   /** The learning commit whose workflows/<workflow>/workflow.json is this digest's text: the seed of the claim that
    *  recorded it. What the digest serves from as the champion (championOf) once a newer revision is on the folder's main. */
   readonly commit?: string;
+  /** `sdk`: a connected (SDK) agent's check (runner/promotion.ts reserveSdkCheck), on its reservation and the record that
+   *  decides it. Its one run (`runs`) is the agent's own native turn, not a replay run; a replaying one with no `runs`
+   *  waits for the next native turn the draft takes. Absent: a server replay's. */
+  readonly via?: "sdk";
 }
 
 /** One audit row a hold was decided on that disagreed: the served run (`served`) and its input, the run whose answer is
@@ -166,6 +170,13 @@ export type CheckRecord = CheckBar & {
   readonly skipped_tools?: readonly SkippedTool[];
   readonly disagreements?: readonly CheckDisagreement[];
   readonly stopped?: true;
+  /** A connected agent's check: how many of its reserved native turns gave no answer to check the draft against (a
+   *  cancelled or refused turn, a subagent, redacted evidence, no shadow report) and were given back to wait for the
+   *  next one (runner/promotion.ts SDK_CHECK_RELEASES stops it). Absent: none. */
+  readonly released?: number;
+  /** A connected agent's check: how many fresh read-only calls its shadow made where the native turn's recording had
+   *  no result (the client's opt-in shadowReadFallback). Absent: none, every call was answered from the recording. */
+  readonly fresh_reads?: number;
   /** How it compared with no agree_on: the fast model that read the answers (its name), when it was asked on any input.
    *  With agree_on, the paths compared (CheckBar.agree_on); with neither, the whole answer. */
   readonly grader?: string;

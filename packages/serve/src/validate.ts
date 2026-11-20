@@ -7,7 +7,7 @@ import { placeIssues } from "./place.js";
 import { computerIssues, settingConflict } from "./computer-setting.js";
 import { settingsIssues } from "./tool-plane.js";
 import { APPROVALS } from "./approvals.js";
-import { schemaCheck } from "./answer-json.js";
+import { carriedProblem, schemaCheck, X_CARRIED } from "./answer-json.js";
 import { learningSettingIssue } from "./learning-setting.js";
 
 export const ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -123,6 +123,9 @@ export function definitionIssues(definition: unknown, { at = "definition", creat
     else {
       const compiled = schemaCheck(d.output_schema);
       if ("why" in compiled) out.push(issue(`${at}.output_schema`, "bad_format", `${at}.output_schema ${compiled.why}`));
+      // The fields a trigger's next run is handed when the whole answer is too large (answer-json.ts X_CARRIED).
+      const carried = carriedProblem(d.output_schema);
+      if (carried) out.push(issue(`${at}.output_schema.${X_CARRIED}`, "bad_format", `${at}.output_schema.${X_CARRIED} ${carried}`, `Make ${X_CARRIED} a list of unique names from ${at}.output_schema.properties, or remove it.`));
     }
   }
   // An agentic revision's typed input: the JSON Schema each run's input meets (inputSchemaOf, the schema in force). A

@@ -8,10 +8,7 @@ import { facts as claudeFacts } from "@parcha/agentrun-harness-claude/facts";
 import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
 import type { AdapterRun } from "../adapter-loop.js";
 import { facts as openCodeFacts } from "../../harness-opencode/facts.js";
-import { harnessOf } from "../../harness-table.js";
-import { acpPackage } from "../../acp-package.js";
-import { GOOSE_ID } from "../../harness-goose.js";
-import { CURSOR_ID } from "../../harness-cursor.js";
+import { harnessOf, ON_TABLE } from "../../harness-table.js";
 import { piAdapter, type PiAdapterOptions } from "./pi.js";
 
 /** What every adapter is given for one claim, from the run's launch. */
@@ -112,44 +109,15 @@ export const RUNNER_HARNESSES: Readonly<Record<string, RunnerHarness>> = {
       });
     },
   },
-  // Goose, where its package is beside serve (acp-package.ts): on the binary `extra.binary` names, which its owner
-  // installed (harness-goose.ts); a run on serve's table builds its adapter from its entry (adapters.ts gooseOf).
-  [GOOSE_ID]: {
-    record: "loop",
-    adapter: async (launch, extra = {}) => {
-      const acp = acpPackage();
-      if (!acp) throw new Error("Goose's adapter (@parcha/agentrun-harness-acp) is not installed beside this runner");
-      if (typeof extra.binary !== "string") throw new Error("Goose's runner adapter needs the installed binary's path (extra.binary)");
-      return acp.gooseAdapter({
-        model: launch.model,
-        provider: { origin: launch.provider.origin, credential: launch.provider.credential, ...(launch.provider.headers ? { headers: launch.provider.headers } : {}), ...(launch.provider.auth ? { auth: launch.provider.auth } : {}) },
-        ...(launch.price ? { price: launch.price } : {}),
-        ...(launch.fetch ? { fetch: launch.fetch } : {}),
-        sessionsDir: launch.sessionsDir,
-        ...extra,
-      });
-    },
-  },
-  // Cursor, where the same package is beside serve: on the launcher `extra.binary` names, which its owner installed
-  // (harness-cursor.ts), and its owner's key read by name from `extra.env`; billed to the owner's Cursor plan, so the
-  // launch's provider and price are never its. A run on serve's table builds its adapter from its entry (adapters.ts
-  // cursorOf).
-  [CURSOR_ID]: {
-    record: "loop",
-    adapter: async (launch, extra = {}) => {
-      const acp = acpPackage();
-      if (!acp) throw new Error("Cursor's adapter (@parcha/agentrun-harness-acp) is not installed beside this runner");
-      if (typeof extra.binary !== "string") throw new Error("Cursor's runner adapter needs the installed launcher's path (extra.binary)");
-      return acp.cursorAdapter({ sessionsDir: launch.sessionsDir, ...extra });
-    },
-  },
 };
 
 /** The harness the launch names, as `env`'s harness table has it (harness-table.ts harnessOf): a built-in one's runner is
- *  the runner's own (RUNNER_HARNESSES), one a harness module adds brings its own (HarnessEntry.runner). Undefined when
- *  the table has none by that name. `env`: the run's environment (this process's when not given). */
+ *  the runner's own (RUNNER_HARNESSES), one a harness module adds (and Goose) brings its own (HarnessEntry.runner), and any
+ *  other entry with facts and an adapter (Cursor's: harness-loops.ts cliRunSpecFromLaunch builds the run from the entry) is
+ *  run from the table (harness-table.ts ON_TABLE, the modules' runner too). Undefined when the table has none by that name. `env`:
+ *  the run's environment (this process's when not given). */
 export function resolveHarness(harness: string, env: NodeJS.ProcessEnv = process.env): RunnerHarness | undefined {
   const entry = harnessOf(env, harness);
   if (!entry) return undefined;
-  return entry.runner ?? (Object.prototype.hasOwnProperty.call(RUNNER_HARNESSES, harness) ? RUNNER_HARNESSES[harness] : undefined);
+  return entry.runner ?? (Object.prototype.hasOwnProperty.call(RUNNER_HARNESSES, harness) ? RUNNER_HARNESSES[harness] : entry.facts && entry.adapter ? ON_TABLE : undefined);
 }

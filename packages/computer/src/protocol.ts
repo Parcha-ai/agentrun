@@ -92,6 +92,11 @@ export interface HelloResult {
 	display?: string;
 	/** How init holds its programs off the computer's network, when it gave them one of their own (init --own-network). */
 	fence?: NetworkFence;
+	/**
+	 * The desktop's window manager computerd starts itself (init --window-manager), and how it goes. Absent where computerd
+	 * starts none: a client whose host's desktops run one then starts it itself.
+	 */
+	windowManager?: WindowManagerFact;
 	/** The main screen, in points. Absent on a computer with no screen. */
 	screen?: ScreenSize;
 	/**
@@ -150,6 +155,16 @@ export type Feature = keyof typeof FEATURES;
  * no CAP_SYS_ADMIN). Either way the programs reach their own loopback alone.
  */
 export type NetworkFence = "netns" | "userns-netns";
+
+/**
+ * The window manager computerd starts once the display answers: "starting" until it answers and through the manager's
+ * first second, "running" once the manager has run that second, "ended" when it ended or never started, with why in
+ * words (how it ended, when, and its last lines).
+ */
+export interface WindowManagerFact {
+	state: "starting" | "running" | "ended";
+	why?: string;
+}
 
 /** Every NetworkFence, as hello may report it. */
 export const NETWORK_FENCES: readonly NetworkFence[] = ["netns", "userns-netns"];

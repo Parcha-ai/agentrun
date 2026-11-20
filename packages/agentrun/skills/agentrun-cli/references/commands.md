@@ -305,7 +305,7 @@ Install a harness AgentRun runs only once its owner installs it (goose, cursor, 
 
 Route: none, it runs on this machine.
 
-- `--recipe FILE` (string, this CLI's own): in place of HARNESS: a recipe file (docs/harness-recipe.md), checked against its five rules before anything is downloaded
+- `--recipe FILE` (string, this CLI's own): in place of HARNESS: a recipe file (HARNESS.md#a-recipe), checked against its five rules before anything is downloaded
 - `--data DIR` (string, this CLI's own): the data directory of the AgentRun it is for (default ~/.agentrun, where npx @parcha/agentrun keeps it)
 
 ## harness-check
@@ -316,7 +316,7 @@ Run a recipe's installed agent for real and check it (tools off, env allowlist, 
 
 Route: none, it runs on this machine.
 
-- `--recipe FILE` (string, this CLI's own): the recipe file (docs/harness-recipe.md); its agent installed first with agentrun harness install --recipe FILE
+- `--recipe FILE` (string, this CLI's own): the recipe file (HARNESS.md#a-recipe); its agent installed first with agentrun harness install --recipe FILE
 - `--model PROVIDER/MODEL` (string, this CLI's own): the run's model, for a recipe billed through the proxy (openrouter/anthropic/claude-haiku-4.5, anthropic/claude-haiku-4-5)
 - `--report FILE` (string, this CLI's own): where the JSON report goes (default ./harness-check-ID.json)
 - `--cap USD` (string, this CLI's own): the most the check may spend (default 0.25)
@@ -677,6 +677,15 @@ Route: `POST /runs`.
 - `--hold` (boolean): true: the run claims its computer and holds it for its owner. Its agent waits until POST /runs/{run_id}/start; meanwhile POST /runs/{run_id}/computer/call sends the computer protocol calls, to set a task up. After the agent's end the run keeps the computer, for the owner's calls (to check what the agent left), until POST /runs/{run_id}/computer/release; then it ends as its agent did. A stop (POST /runs/{run_id}/stop) ends the agent and keeps the computer the same way, and the run ends stopped at the release; a cancel ends the run at once and lets the computer go. Each wait lets the computer go after `hold_minutes` with no call from the owner: before the start, the run then ends cancelled. The run read's `computer.held` says where the hold is. Only for an agent whose computer is a sandbox, a desktop or a phone, never a workflow (422 `hold` not_an_option otherwise). A run that loses its runner, or whose harness restarts after a fault, loses the computer it held: it fails, and `computer.held.why` is `lost`.
 - `--hold-minutes INTEGER` (integer): With `hold: true`: how long the held computer waits with no call from its owner, before the start and after the agent's end. Absent: 30. Above 120, or without hold, is 422.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun runs create-run-computer-viewer RUN_ID`
+
+Mint a link to the run's live view for the backend's user.
+
+Route: `POST /runs/{run_id}/computer/viewer`.
+
+- `--body JSON|@FILE|-` (application/json): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
 
 ### `agentrun runs files RUN_ID`

@@ -5,10 +5,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
 import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
-import { learningFolderOf } from "../learning.js";
+import { learningFolderOf, secretsShown } from "../learning.js";
 import { said, STOPPED } from "../learning-words.js";
 import type { RunLaunch } from "../run-launch.js";
-import { closeSdkInbox, sdkInbox } from "../sdk/runs.js";
+import { closeSdkInbox, type SdkInbox, sdkInbox } from "../sdk/runs.js";
+import { settleSdkCheck } from "../sdk/check.js";
 import type { RunPatch, Store } from "../store/store.js";
 import { runPathOverStore } from "../store-reads/learning.js";
 import type { AdapterSpecDeps } from "./adapter-run-spec.js";
@@ -105,6 +106,21 @@ export function createSdkLoop(
                 },
               },
             }] : undefined;
+          // A connected agent's check settles at its run's end (sdk/check.ts), its error logged: never one that skips the
+          // run's own end or its learning.
+          const settleCheck = async (inbox: SdkInbox, agentId?: string) => {
+            try {
+              const agent = agentId ?? (await host.store.runs.get(claim.runId))?.agentId;
+              if (!agent) return;
+              await settleSdkCheck({
+                store: host.store, agentId: agent, launch, inbox,
+                shown: async () => secretsShown(Object.values(await storeSecrets(host.store, host.sealKey, host.data)), { local: true }),
+                log: (line) => host.log?.(line),
+              });
+            } catch (error) {
+              host.log?.(`workflow-first: the connected agent's check on run ${claim.runId} could not be settled (${error instanceof Error ? error.message : String(error)}); it is decided at its deadline`);
+            }
+          };
           let endPatch: Pick<RunPatch, "costUsd" | "metrics"> = END_PATCH_UNKNOWN;
           // The end keeps cost and path together, under the same bound as the other loops. A failed or late read
           // leaves both unknown; the completed backend task is still completed. No read writes after this end.
@@ -175,6 +191,7 @@ export function createSdkLoop(
                   if (event.type === "text") partial = (partial + event.text).slice(-16_000);
                   else if (event.type === "session")
                     entries.push({ kind: `${MARK}.session`, data: { session_id: event.session_id } });
+                  else if (event.type === "workflow_check") entries.push({ kind: `${MARK}.workflow_check`, data: event });
                   else if (event.type === "tool") {
                     if (event.status === "started") {
                       liveTools.set(event.id, { callId: event.id, name: event.name, args: event.input });
@@ -262,6 +279,7 @@ export function createSdkLoop(
                   },
                 },
               ]);
+            await settleCheck(inbox, source.agentId);
             if (result.status === "completed") {
               const end = learningEndOfRun(launch, {
                 store: host.store,
@@ -458,6 +476,8 @@ export function createSdkLoop(
               const inbox = await closeSdkInbox(host.store, claim, stopped?.kind === "command" ? "cancelled" : "failed");
               if (inbox.completion && stopped?.kind !== "command")
                 return { state: "interrupted" as const };
+              // No completion: a stopped or failed turn gives its check back, an expired one is its deadline.
+              if (!inbox.completion) await settleCheck(inbox);
               if (stopped?.kind === "command") {
                 const end = stopEnd(stopped.cancel);
                 await append([{ kind: KINDS.end, data: end }], { ...end, ...endPatch }, droppedLearning(true), stopped.commandId);

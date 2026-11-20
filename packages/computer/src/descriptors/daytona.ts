@@ -2,10 +2,15 @@
 // the operator gives an Archil egress relay (a self-hosted Daytona target), never on Daytona's hosted cloud.
 import { defineProvider } from "../descriptor.js";
 import type { GpuCapability } from "../provider.js";
-import { SANDBOX } from "./shared.js";
+import { LINUX_DESKTOP, SANDBOX } from "./shared.js";
 
-/** Why Daytona gives no desktop (measured 11-19): PROVIDERS.md, Machines that dial in. The descriptor's unserved desktop. */
-export const DAYTONA_NO_DESKTOP = "its sandboxes run under AppArmor's restrict_unprivileged_userns, so the tool user can't make the user and network namespaces the window manager runs in";
+/**
+ * Why a Daytona desktop is made on connect dial alone: its X server and window manager come from a snapshot of
+ * box/Dockerfile, whose sandbox boots agentrun-dial and dials the server, the path a live run proves; no desktop has run
+ * on exec, where init is a command started through the toolbox's session. The provider's constructor refuses kind
+ * desktop on exec in these words, after kindRefusal's.
+ */
+export const DAYTONA_DIAL_DESKTOP = "a desktop's sandbox boots from a snapshot of box/Dockerfile and dials this server, and none has run through the toolbox's session commands, so connect \"exec\" makes kind linux";
 
 /** The key that turns on a Daytona computer's Archil mount: the operator's Archil egress relay (archilEgress). */
 export const DAYTONA_ARCHIL_EGRESS = "DAYTONA_ARCHIL_EGRESS";
@@ -114,9 +119,12 @@ export const DAYTONA = defineProvider({
 	// its programs' one way out is init's egress proxy, which reaches the public internet alone, and with a list its hosts
 	// alone (hosted/network.ts).
 	network: ["none", "open", "allow"],
-	// A linux computer, with GPUs when asked. No desktop, on any connect (DAYTONA_NO_DESKTOP).
-	capabilities: [{ ...SANDBOX, gpu: DAYTONA_GPU }],
-	unserved: { desktop: DAYTONA_NO_DESKTOP },
+	// A linux computer, with GPUs when asked; or, on connect dial alone, a desktop with none: a snapshot of box/Dockerfile's
+	// X server, started through computerd over the socket the sandbox dialed, and xfwm4, which computerd starts itself
+	// (init --window-manager), at the snapshot's 2 CPUs and 4 GiB (box/build-daytona.py). The desktop's configuration
+	// selects dial itself, whatever daytonaConnect says: a provider on connect exec refuses kind desktop when it is made
+	// (DAYTONA_DIAL_DESKTOP).
+	capabilities: [{ ...SANDBOX, gpu: DAYTONA_GPU }, { ...LINUX_DESKTOP, options: { kind: "desktop", connect: "dial" } }],
 	defaultImage: { sandbox: DAYTONA_DEFAULT_SNAPSHOT },
 	// The operator's own snapshot for every Daytona computer, named here; the default snapshot stands while unset. A
 	// computer with an Archil mount needs a snapshot of box/Dockerfile (box/build-daytona.py prints its name).

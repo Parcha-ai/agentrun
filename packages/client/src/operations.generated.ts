@@ -964,6 +964,13 @@ export type Capabilities = {
   features: Features;
   regions: Array<Region>;
   limits: Limits;
+  learning_model: {
+    location: "server" | "native";
+    ready: boolean;
+    model: string | null;
+    needs: "key" | "model" | null;
+    reason: string | null;
+  };
   learning: {
     pending: true;
     approve: boolean;
@@ -1549,11 +1556,14 @@ export type ListLearningPromotionsResponse = {
         differs_on?: string;
       }>;
       stopped?: true;
+      released?: number;
+      fresh_reads?: number;
     };
     runs?: Array<string>;
     inputs?: Array<string>;
     replay_id?: string;
     commit?: string;
+    via?: "sdk";
     audit?: {
       window: number;
       disagree: number;
@@ -1635,6 +1645,8 @@ export type ListLearningPromotionsResponse = {
           differs_on?: string;
         }>;
         stopped?: true;
+        released?: number;
+        fresh_reads?: number;
       } | null;
     } | null;
   }>;
@@ -2080,6 +2092,13 @@ export type GetLearningCostResponse = {
 
 /** What the agent has learned: its corrections, workflow drafts, log of changes and counts (GET /agents/{agent_id}/learning). */
 export type GetAgentLearningResponse = {
+  learning_model: {
+    location: "server" | "native";
+    ready: boolean;
+    model: string | null;
+    needs: "key" | "model" | null;
+    reason: string | null;
+  };
   agent: string;
   main: string | null;
   corrections: string;
@@ -2538,6 +2557,7 @@ export type ListComputersResponse = {
       required: Array<string>;
       ready: boolean;
       runs_refused: string | null;
+      folder: "bind" | "archil" | "sync" | null;
       shell: "computer" | "local" | "none";
       host_tools: Array<string>;
       why?: string;
@@ -2731,6 +2751,7 @@ export type SaveComputerKeysResponse = {
   required: Array<string>;
   ready: boolean;
   runs_refused: string | null;
+  folder: "bind" | "archil" | "sync" | null;
   shell: "computer" | "local" | "none";
   host_tools: Array<string>;
   why?: string;
@@ -3361,6 +3382,13 @@ export interface CreateInlineRunParams {
 }
 export type CreateInlineRunResponse = Run;
 
+/** Mint a link to the run's live view for the backend's user (POST /runs/{run_id}/computer/viewer). */
+export type CreateRunComputerViewerBody = Record<string, never>;
+export type CreateRunComputerViewerResponse = {
+  url: string;
+  expires_at: string;
+};
+
 /** The files the run wrote (GET /runs/{run_id}/files). */
 export type ListRunFilesResponse = RunFileList;
 
@@ -3725,6 +3753,18 @@ export type SdkRunEventsBody = {
     type: "session";
     session_id: string;
   } | {
+    type: "workflow_check";
+    id: string;
+    digest: string;
+    outcome: "answered" | "handed_back" | "failed" | "skipped_write";
+    answer?: string;
+    reason?: string;
+    skipped?: {
+      tool: string;
+      unmarked?: true;
+    };
+    fresh_reads?: number;
+  } | {
     type: "tool";
     id: string;
     name: string;
@@ -3782,6 +3822,16 @@ export type StartSdkRunResponse = {
       workflow: string;
       description: string;
     }>;
+    check?: {
+      id: string;
+      revision: string;
+      digest: string;
+      workflow: {
+        name: string;
+        workflow: string;
+        description: string;
+      };
+    };
   };
 };
 
@@ -5668,6 +5718,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   callRunComputer: {"method":"POST","path":"/runs/{run_id}/computer/call","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   releaseRunComputer: {"method":"POST","path":"/runs/{run_id}/computer/release","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createInlineRun: {"method":"POST","path":"/runs","pathParams":[],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  createRunComputerViewer: {"method":"POST","path":"/runs/{run_id}/computer/viewer","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   listRunFiles: {"method":"GET","path":"/runs/{run_id}/files","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRun: {"method":"GET","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   gradeRun: {"method":"PUT","path":"/runs/{run_id}/grade","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5956,6 +6007,8 @@ export function resources(call: Call) {
       computerRelease: (runId: string, body?: ReleaseRunComputerBody, options?: RequestOptions): Promise<ReleaseRunComputerResponse> => call("releaseRunComputer", [runId], body, undefined, options),
       /** Start a run of an agent another system owns, given inline (POST /runs). */
       createInlineRun: (body: CreateInlineRunBody, params?: CreateInlineRunParams, options?: RequestOptions): Promise<CreateInlineRunResponse> => call("createInlineRun", [], body, params, options),
+      /** Mint a link to the run's live view for the backend's user (POST /runs/{run_id}/computer/viewer). */
+      createRunComputerViewer: (runId: string, body?: CreateRunComputerViewerBody, options?: RequestOptions): Promise<CreateRunComputerViewerResponse> => call("createRunComputerViewer", [runId], body, undefined, options),
       /** The files the run wrote (GET /runs/{run_id}/files). */
       files: (runId: string, options?: RequestOptions): Promise<ListRunFilesResponse> => call("listRunFiles", [runId], undefined, undefined, options),
       /** One run (GET /runs/{run_id}). */

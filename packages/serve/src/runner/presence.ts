@@ -10,6 +10,7 @@
 // runs still queued (server.ts). With no runner there at all (a server with --no-runner and its runner not started yet),
 // it refuses nothing: runs queue for the runner to come, as before.
 import { randomUUID } from "node:crypto";
+import { ApiError } from "../errors.js";
 import type { Runners } from "../store/store.js";
 
 /** How often a runner says again that it is there. */
@@ -50,15 +51,17 @@ export function keepPresence(runners: Runners, runner: string, refused: string |
   };
   let at: RelayAt | null = null;
   const row = () => ({ runner, incarnation, refused, host: at?.host ?? null, port: at?.port ?? null });
-  // Its first put takes the name over from an earlier process's row. Every write after it (a renewal's put again, the
-  // relay's place) touches its own row only, or puts one where no other process of the name is live (Runners
-  // putUnlessLive): an older process overlapping a restart never takes the later one's row back, nor clears its relay.
-  const again = () => runners.putUnlessLive(row(), PRESENCE_STALE_MS);
+  // Its first put takes the name over from an earlier process's row. Every write after it (a renewal, the relay's place:
+  // one Runners.renew, with the place it holds now) touches its own row only, or puts one where no other process of the
+  // name is live (Runners.put unlessLiveMs): an older process overlapping a restart never takes the later one's row back,
+  // nor clears its relay.
+  const again = () => runners.put(row(), { unlessLiveMs: PRESENCE_STALE_MS });
+  const renew = async () => {
+    if (!(await runners.renew(runner, incarnation, at))) await again();
+  };
   let writing: Promise<unknown> = runners.put(row()).catch(failed);
   const timer = setInterval(() => {
-    writing = writing.then(async () => {
-      if (!(await runners.seen(runner, incarnation))) await again();
-    }).catch(failed);
+    writing = writing.then(renew).catch(failed);
   }, renewMs);
   timer.unref();
   let stopped = false;
@@ -69,9 +72,7 @@ export function keepPresence(runners: Runners, runner: string, refused: string |
       // Once closed or stopped it writes nothing more: a relay's close after its presence's never puts the row back.
       if (stopped) return Promise.resolve();
       // After any write in flight, so a renewal's put never lands over it with the place before.
-      const wrote = writing.then(async () => {
-        if (!(await runners.relayAt(runner, incarnation, next))) await again();
-      });
+      const wrote = writing.then(renew);
       writing = wrote.catch(failed);
       return wrote;
     },
@@ -96,6 +97,13 @@ export async function runnersRefused(runners: Pick<Runners, "live">, staleMs = P
   if (live.length === 0 || live.some((row) => row.refused === null)) return undefined;
   const reasons = [...new Set(live.map((row) => row.refused as string))];
   return `No runner of this server can take a run: ${reasons.join(" ")}`;
+}
+
+/** Refuses a run no runner here can take (runner_refused, in the runners' words: runnersRefused), before anything is made
+ *  for it; nothing while one can, or none is there yet. Every refusal of a start or a message is this one throw. */
+export async function refuseWhileNoRunner(runners: Pick<Runners, "live">): Promise<void> {
+  const refused = await runnersRefused(runners);
+  if (refused !== undefined) throw new ApiError(RUNNER_REFUSED_CODE, refused);
 }
 
 /** The code a run fails with when no runner here could take it (its error's code, and a launch's refusal's). */

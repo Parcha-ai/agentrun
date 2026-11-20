@@ -116,9 +116,9 @@ export function harnessOffers(env: NodeJS.ProcessEnv): Promise<HarnessCapability
           // lacks only a key is (a save warns of that, never refuses).
           const { MODEL_REF } = await import("./validate.js");
           const { providerFor, HarnessUnavailable } = await import("./provider.js");
-          const { adapterFactsOf } = await import("./adapter-facts.js");
           const { FAUX_ENV } = await import("./model.js");
-          const facts = adapterFactsOf(offer.id);
+          const { factsOf } = await import("./harness-table.js");
+          const facts = factsOf(env, offer.id);
           for (const id of new Set([...pickerCandidates(env, offer.id), ...free.map((m) => m.id)])) {
             if (!MODEL_REF.test(id)) continue;
             const chosen = await entry.model(env, id, true);

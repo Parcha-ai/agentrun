@@ -27,6 +27,7 @@ import { ACP_CODES } from "./facts.js";
 import { homePath, type AcpRecipe } from "./recipe.js";
 import { restoreState, STATE_STREAM, StateMirror, type StateRecord } from "./state.js";
 import { startAgent, type AgentProcess } from "./host/agent.js";
+import { cutKeys, keysToCut } from "./host/key-cut.js";
 import type { ConfineChild } from "./host/child.js";
 import { startMcpServer, type McpServer } from "./host/mcp.js";
 
@@ -246,13 +247,18 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     const refusal = recipe.refusals?.find((r) => text.includes(r.says));
     return refusal && `${refusal.code}: ${refusal.words}`;
   };
-  /** `text` (the agent's stderr, or an error carrying it) as a failure's words: the terminal's escapes out, and every
-   *  line holding words the recipe calls quiet (recipe.quiet) left out, the last 300 characters of what is left. */
+  /** The values of the recipe's keys, read by name as the agent's start reads them: cut from anything the agent says
+   *  before it is shortened (key-cut.ts), so no cut lands inside one. */
+  const heldKeys = (): string[] => keysToCut((recipe.keys ?? []).map((name) => (options.env ?? process.env)[name]));
+  /** An error's words, the recipe's keys cut, its first 300 characters. */
+  const said = (error: unknown): string => cutKeys(message(error), heldKeys()).slice(0, 300);
+  /** `text` (the agent's stderr, or an error carrying it) as a failure's words: the terminal's escapes out, the recipe's
+   *  keys cut, and every line holding words the recipe calls quiet (recipe.quiet) left out, the last 300 characters of what
+   *  is left. */
   // eslint-disable-next-line no-control-regex
   const ESCAPES = /\u001b\[[0-9;?]*[A-Za-z]/g;
   const lastWords = (text: string): string =>
-    text
-      .replace(ESCAPES, "")
+    cutKeys(text.replace(ESCAPES, ""), heldKeys())
       .split("\n")
       .filter((line) => !(recipe.quiet ?? []).some((words) => line.includes(words)))
       .join("\n")
@@ -269,7 +275,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     try {
       rt.mirror.take(journal);
     } catch (error) {
-      log("acp: the mirror of the agent's session store failed; the next point takes it again", { error: message(error).slice(0, 300) });
+      log("acp: the mirror of the agent's session store failed; the next point takes it again", { error: said(error) });
     }
   };
 
@@ -512,7 +518,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
             try {
               rmSync(dir, { recursive: true, force: true });
             } catch (error) {
-              log("acp: the agent's private HOME could not be removed", { dir, error: message(error).slice(0, 300) });
+              log("acp: the agent's private HOME could not be removed", { dir, error: said(error) });
             }
           }
         }
@@ -549,6 +555,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
         ...(options.env ? { from: options.env } : {}),
         ...(options.confine ? { confine: options.confine } : {}),
         ...(options.parentWatch ? { parentWatch: options.parentWatch } : {}),
+        keys: Object.values(keyEnv),
         signal,
         onUpdate: (notification) => onUpdate(rt, notification),
         onPermission: (request, connection) => onPermission(rt, request, connection),
@@ -564,7 +571,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
           const named = refusalIn(`${live.stderrTail()}\n${message(error)}`);
           if (named) throw new Error(named);
           if (!live.alive() || live.connection.signal.aborted) throw new Error(`${ACP_CODES.agentExited}: the agent ended during ${what}: ${whyEnded(live, error)}`);
-          throw new Error(`acp: ${what} failed: ${message(error).slice(0, 300)}`);
+          throw new Error(`acp: ${what} failed: ${said(error)}`);
         });
       const init: InitializeResponse = await ask("initialize", () =>
         live.connection.agent.request("initialize", { protocolVersion: PROTOCOL_VERSION, clientCapabilities: { fs: { readTextFile: false, writeTextFile: false }, terminal: false }, clientInfo: { name: "agentrun", version: "1" } }),
@@ -594,7 +601,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
           rt.fresh = false;
         } catch (error) {
           if (signal.aborted || !live.alive()) throw error;
-          log("acp: the agent did not load its session; a new one starts with the conversation so far", { error: message(error).slice(0, 300) });
+          log("acp: the agent did not load its session; a new one starts with the conversation so far", { error: said(error) });
         } finally {
           rt.loading = false;
         }
@@ -756,7 +763,7 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
       if (turn.limitHit) outcome = { status: "failed", error: turn.limitHit };
       else if (failure !== undefined) {
         const named = refusalIn(`${agent.agent.stderrTail()}\n${message(failure)}`);
-        outcome = { status: "failed", error: named ?? (agent.agent.alive() && !agent.agent.connection.signal.aborted ? `acp: session/prompt failed: ${message(failure).slice(0, 300)}` : `${ACP_CODES.agentExited}: the agent ended during the turn: ${whyEnded(agent.agent, failure)}`) };
+        outcome = { status: "failed", error: named ?? (agent.agent.alive() && !agent.agent.connection.signal.aborted ? `acp: session/prompt failed: ${said(failure)}` : `${ACP_CODES.agentExited}: the agent ended during the turn: ${whyEnded(agent.agent, failure)}`) };
       } else {
         const reason = answer?.stopReason;
         if (reason === "end_turn") outcome = { status: "completed" };
