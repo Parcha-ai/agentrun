@@ -25,7 +25,9 @@ const { saveArchilSettings } = await import("../dist/archil-settings.js");
 const { claimComputer } = await import("../dist/workspace/index.js");
 
 const REGION = "aws-us-east-1";
-const KEYS = { ARCHIL_API_KEY: "fake-test-key-archil-m2-0001", E2B_API_KEY: "fake-test-key-e2b-m2-0001" };
+const FAKE_ARCHIL = "fake-test-key-archil-m2-0001";
+const FAKE_E2B = "fake-test-key-e2b-m2-0001";
+const KEYS = { ARCHIL_API_KEY: FAKE_ARCHIL, E2B_API_KEY: FAKE_E2B };
 const UNSET = ["AGENTRUN_ARCHIL_REGION", "AGENTRUN_ARCHIL_S3_URL", "AGENTRUN_ARCHIL_IMAGE", "AGENTRUN_SEAL_KEY"];
 
 /** A server with its runner apart, in Mode 2, and one runner of its own whose runs each run in a process of their own.
