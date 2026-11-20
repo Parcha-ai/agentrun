@@ -178,9 +178,19 @@ test("a served run's cost keeps its share of its revision's paid check after the
   assert.deepEqual(await recordsOf(store, "paid"), [], "the records are gone");
   assert.deepEqual(await costs(), before, "each run's cost and the bill read as before");
   assert.deepEqual((await store.settings.get(resetLedgerKey("paid")))?.items, [{ workflow: "answer", digest: DIGEST, k: 2 }], "the revision's workflow, digest and K alone");
-  // A second reset keeps it as it is.
+  // A second reset with no records keeps it as it is.
   assert.equal((await api("DELETE", "/agents/paid/learning")).status, 204);
   assert.deepEqual(await costs(), before);
+  // The agent learns the same revision again, now at K = 4, and serves two more runs: the ledger reads the records' K,
+  // each of the four served runs carries $0.15; the next reset keeps K = 4, so each still does.
+  for (const id of ["served-c", "served-d"]) await ended(id, 0.1, { path: "workflow", workflow: "answer", workflow_digest: DIGEST });
+  await store.settings.put(promotionsKey("paid"), { v: 1, items: [{ workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", reason: "checked: promoted", check: { compile_after: 4, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 2, agreed: 2, alone: 2, of: [] } }] });
+  const four = async () => Object.fromEntries(await Promise.all(["served-a", "served-b", "served-c", "served-d"].map(async (id) => [id, (await api("GET", `/runs/${id}`)).body.cost.learning_usd])));
+  const relearned = { shares: await four(), bill: (await costs()).bill };
+  assert.deepEqual(relearned.shares, { "served-a": 0.15, "served-b": 0.15, "served-c": 0.15, "served-d": 0.15 }, "$0.60 over K = 4");
+  assert.equal((await api("DELETE", "/agents/paid/learning")).status, 204);
+  assert.deepEqual({ shares: await four(), bill: (await costs()).bill }, relearned, "the second reset keeps the K the records had");
+  assert.deepEqual((await store.settings.get(resetLedgerKey("paid")))?.items, [{ workflow: "answer", digest: DIGEST, k: 4 }]);
   await deleteLearning(store, "paid", learningFolderOf(data, "paid"));
   assert.equal(await store.settings.get(resetLedgerKey("paid")), undefined, "the agent's delete removes it");
 });
