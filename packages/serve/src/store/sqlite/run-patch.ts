@@ -135,8 +135,12 @@ export const reopenableWhere = (d: Dialect): string => `(state = 'ended' OR (sta
  *  before the end, it opens the run here; after it, the store refuses a new row (RunFinal) and runs.reopen takes it.
  *  A person's stop is the same (reopenableWhere): a message waiting at it is the run's next turn, as main's stop leaves a
  *  message submitted before it to run; a cancel's refuses it. A run left final here has its launch secrets erased (its
- *  launch row's `sealed`); a run opened again keeps the ones its waiting message wrote. */
-export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, state: RunState | undefined, now: number, dialect: Dialect = SQLITE): Promise<void> {
+ *  launch row's `sealed`); a run opened again keeps the ones its waiting message wrote.
+ *  An end that keeps its job's end (`keepsEnd`: a look-back's, RunPatch.keepsEnd) is that end, which every reader served
+ *  while the run looked back: a cancel at it cut the look-back alone and is refused with the rest. Only with a person's
+ *  message waiting (the run read as going on from it, as a completed run a message opens again) is a cancel, waiting or
+ *  taken in this commit, that message's run's: it ends cancelled, at this commit's time. */
+export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, runId: string, state: RunState | undefined, now: number, dialect: Dialect = SQLITE, keepsEnd = false): Promise<void> {
   if (state !== "ended" && state !== "stopped" && state !== "failed") return;
   // A cancel the API accepted (202, not refused) promised a cancelled run, and the view reads cancelled from that 202 on.
   // A normal end that commits with it still waiting is the cancel's: the run is stopped with outcome 'cancelled' (stopEnd's
@@ -144,10 +148,14 @@ export async function refuseLeftovers(tx: Pick<SqliteExecutor, "run" | "get">, r
   // A stop's end is the same (state 'stopped', outcome 'stopped': a CLI turn its harness interrupted on its own, or a
   // person's stop): it would leave the run open to a message, so the cancel wins it too, and the run takes no more.
   if (state === "ended" || state === "stopped") {
+    const cancel = keepsEnd
+      ? `EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.refused IS NULL AND commands.kind = 'cancel' AND (commands.taken_at IS NULL OR commands.taken_at = ?))
+        AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.kind = 'steer')`
+      : "EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.refused IS NULL AND commands.kind = 'cancel')";
     const won = await tx.get<{ id: string }>(
-      `UPDATE runs SET state = 'stopped', outcome = 'cancelled', summary = 'cancelled' WHERE id = ? AND (state = 'ended' OR (state = 'stopped' AND outcome = 'stopped'))
-        AND EXISTS (SELECT 1 FROM commands WHERE commands.run_id = runs.id AND commands.taken_at IS NULL AND commands.refused IS NULL AND commands.kind = 'cancel') RETURNING id`,
-      runId,
+      `UPDATE runs SET state = 'stopped', outcome = 'cancelled', summary = 'cancelled'${keepsEnd ? ", ended_at = ?" : ""} WHERE id = ? AND (state = 'ended' OR (state = 'stopped' AND outcome = 'stopped'))
+        AND ${cancel} RETURNING id`,
+      ...(keepsEnd ? [now, runId, now] : [runId]),
     );
     if (won) {
       await tx.run("UPDATE commands SET taken_at = ? WHERE run_id = ? AND taken_at IS NULL AND refused IS NULL AND kind = 'cancel'", now, runId);

@@ -2,7 +2,7 @@ import { act, createElement } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
 import { RunDetail } from "@/components/RunDetail";
-import { NO_WORDS } from "@/components/RunGrade";
+import { NO_WORDS, STILL_LEARNING } from "@/components/RunGrade";
 import { messageFeatures } from "@/fixtures";
 import { ClientError } from "@/lib/client";
 import type { GradeAnswer, GradeBody, Run, RunGraded, RunLearningRead } from "@/lib/v2";
@@ -390,6 +390,23 @@ describe("a run's page, the Grade control", () => {
     await t.click("Right");
     expect(t.section()!.querySelector('[role="alert"]')?.textContent).toContain("A replay run is never graded");
     expect(t.button("Right")).toBeTruthy();
+  });
+
+  it("offers no grade while an ended run still learns from its answer (the server refuses one: 409 run_learning), says why, and offers it once that ends", async () => {
+    const learning = run({ poll_after_ms: 1000, learning: { detail: null, at: "2026-11-14T10:00:09Z", state: "reflecting", reason: null } });
+    const t = await open(learning);
+    for (const name of ["Right", "Wrong"]) expect(t.button(name), `no ${name} while it learns`).toBeUndefined();
+    expect(t.section()!.textContent).toContain(STILL_LEARNING);
+    await t.rerender(run());
+    expect(t.section()!.textContent).not.toContain(STILL_LEARNING);
+    await t.click("Right");
+    expect(t.sent).toEqual([{ correct: true }]);
+    act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
+    // A graded run learning from a later answer (a follow-up's look-back): its grade stands, and no re-grade until that ends.
+    const regrade = await open(learning, { graded: gradedOf({ correct: true }) });
+    expect(regrade.section()!.textContent).toContain("Graded right");
+    expect(regrade.section()!.textContent).toContain(STILL_LEARNING);
+    expect(regrade.button("Grade again")).toBeUndefined();
   });
 
   it("is not there for a run that does not learn, one that only uses what was learned, or one under way with no grade", async () => {

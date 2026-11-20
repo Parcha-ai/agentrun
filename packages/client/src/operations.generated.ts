@@ -272,6 +272,8 @@ export type DefinitionInput = {
     hold_window?: number;
     hold_disagree?: number;
     stop_window?: number;
+    repick?: boolean;
+    repick_max_chars?: number;
   };
   checkout?: "pull_request" | "none";
 };

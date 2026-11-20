@@ -24,10 +24,11 @@ import { createHash } from "node:crypto";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type EntryLike, isMessageRow, type TimelineEvent } from "../timeline/index.js";
 import { correctionRefused, learningCommit, type LearningChange, type LearningCommitResult } from "../learn/commit.js";
-import { type Change, checkDraft, problemWords, type Problem, unstorable } from "../learn/index.js";
-import { folderAt, type FolderRead, holdsCommit,type LearningFolder, readLearning, readSnapshot, runMergeOf, snapshotAt, textsAt } from "../learn/folder.js";
+import { CAPS, type Change, checkDraft, problemWords, type Problem, unstorable } from "../learn/index.js";
+import { repickRewrite } from "../learn/repick.js";
+import { folderAt, type FolderRead, holdsCommit, type LearningFolder, readLearning, readSnapshot, runMergeOf, snapshotAt, textsAt } from "../learn/folder.js";
 import { completedRun, type CompileAsk, compileStoppedOf, lastOwnRuns, sinceReset, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_TRACES, DRAFT_FAILED, type DraftChecked, type HeldAsk, heldNamesOf, newCompileAttempt } from "../learn/compile.js";
-import { loopOf } from "../learning-setting.js";
+import { loopOf, repickOf } from "../learning-setting.js";
 import { CHECK_TEXT_MAX, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, resetAtOf } from "../learn/promote.js";
 import { type DraftDecisions, draftDecisionProviders, draftDryRun, draftFiles, draftMcpTools, unpricedCalls, WORKFLOWS_DIR } from "../learn/workflow-draft.js";
 import { DECISION_PROVIDER_KEYS } from "../tool-plane.js";
@@ -395,23 +396,42 @@ export async function checkDraftOf(deps: LearningEndDeps, input: { runId: string
   }
   const { tools, gated, deniedBy, decisions, outputSchema, workflowAdapters, manifest } = await draftTools(deps, input.runId);
   const dsl = await import("@parcha/agentrun-dsl");
+  // The owner's learning.repick (learning-setting.ts), read as the draft is checked: a change reaches the workflows
+  // compiled after it, never one main already holds. An SDK bridge's runNode is its own (it picks every model and takes
+  // none of the compact state rule), so an SDK agent's drafts are never rewritten.
+  const repick = workflowAdapters === undefined ? repickOf(await learningOfRun(deps.store, input.runId)) : undefined;
   // A draft whose text on main has a status is a person's call (retired, or waiting for their OK): never changed.
   const kept = at.snapshot.workflows.filter((item) => item.status !== "active").map((item) => item.file);
-  const changes = [changeOf(jsonPath, json), changeOf(readmePath, readme)];
-  const check = (dryRuns?: Parameters<typeof checkDraft>[0]["dryRuns"]) => checkDraft({
-    changes, refuseValues: input.refuse, tools, dsl,
+  const check = (text: string, dryRuns?: Parameters<typeof checkDraft>[0]["dryRuns"]) => checkDraft({
+    changes: [changeOf(jsonPath, text), changeOf(readmePath, readme)], refuseValues: input.refuse, tools, dsl,
     ...(Object.keys(gated).length ? { gated } : {}), ...(Object.keys(deniedBy).length ? { deniedBy } : {}), ...(decisions ? { decisions } : {}),
     ...(workflowAdapters !== undefined ? { workflowAdapters } : {}), ...(kept.length ? { kept } : {}), ...(dryRuns ? { dryRuns } : {}),
+    ...(repick?.repick ? { repick: true } : {}),
   });
-  const statics = check();
-  if (statics.length) return refused(statics);
-  const ran = check({ [jsonPath]: await draftDryRun(dsl, json, example, outputSchema) });
-  if (ran.length) return refused(ran);
-  const files = [{ path: jsonPath, text: json }, { path: readmePath, text: readme }];
+  const checked = async (text: string): Promise<Problem[]> => {
+    const statics = check(text);
+    return statics.length ? statics : check(text, { [jsonPath]: await draftDryRun(dsl, text, example, outputSchema) });
+  };
+  const problems = await checked(json);
+  if (problems.length) return refused(problems);
+  // With learning.repick on, what is committed is the draft with its answer's re-pick reading the run's pages on its
+  // second pass (learn/repick.ts), through the same checks and dry run, so the digest that serves is the doc the
+  // promotion check replays. A rewrite they refuse (one past CAPS.file even on one line) leaves the draft as compiled,
+  // which the log says by rule alone.
+  let text = json;
+  const rewritten = repick?.repick ? repickRewrite(JSON.parse(json), repick.repick_max_chars) : undefined;
+  if (rewritten) {
+    const marked = workflowText(rewritten);
+    const again = marked === json ? [] : await checked(marked);
+    if (!again.length) text = marked;
+    else deps.log?.(`learning.repick: workflow ${name} is kept as compiled; its re-pick over the run's pages failed the checks (${[...new Set(again.map((problem) => problem.rule))].join(", ")})`);
+  }
+  if (text !== json && at.texts[jsonPath] === text && at.texts[readmePath] === readme) return { errors: [] };
+  const files = [{ path: jsonPath, text }, { path: readmePath, text: readme }];
   return {
     errors: [],
-    kept: { name, files, ...((await heldOf(deps.store, json, manifest)) ? { held: [readmePath] } : {}), ...(revised ? { bases: { [jsonPath]: revised.base, [readmePath]: revised.base } } : {}) },
-    digest: workflowDigest({ workflow: json }),
+    kept: { name, files, ...((await heldOf(deps.store, text, manifest)) ? { held: [readmePath] } : {}), ...(revised ? { bases: { [jsonPath]: revised.base, [readmePath]: revised.base } } : {}) },
+    digest: workflowDigest({ workflow: text }),
   };
 }
 
@@ -450,16 +470,27 @@ async function describedOf(tools: readonly string[], store: Pick<Store, "mcp">):
 /** The most of an agent's kept learning, newest first, read for a held workflow's ask since its hold (compileAskOf). */
 const HELD_ASKED_READ = 200;
 
-/** The loop's numbers (learning-setting.ts loopOf) of the revision run `runId` runs: its definition's `learning`. */
-async function loopOfRun(store: Store, runId: string) {
+/** The definition's `learning` of the revision run `runId` runs; undefined when it can't be read. */
+async function learningOfRun(store: Store, runId: string): Promise<unknown> {
   try {
     const run = await store.runs.get(runId);
     const revision = run ? await store.agents.revision(run.revisionId) : undefined;
-    return loopOf((revision?.body as { learning?: unknown } | undefined)?.learning);
+    return (revision?.body as { learning?: unknown } | undefined)?.learning;
   } catch {
-    return loopOf(undefined);
+    return undefined;
   }
 }
+
+/** The loop's numbers (learning-setting.ts loopOf) of the revision run `runId` runs: its definition's `learning`. */
+async function loopOfRun(store: Store, runId: string) {
+  return loopOf(await learningOfRun(store, runId));
+}
+
+/** A rewritten workflow.json's text: indented as JSON.stringify indents, or on one line when only that fits CAPS.file. */
+const workflowText = (doc: unknown): string => {
+  const text = `${JSON.stringify(doc, null, 2)}\n`;
+  return Buffer.byteLength(text) <= CAPS.file ? text : `${JSON.stringify(doc)}\n`;
+};
 
 /** Compile once: run `runId`'s compile turn whose drafts all failed their checks is the compile's attempt, kept as a
  *  promotion record of the shape a check's stop has (runner/promotion.ts stopUnchecked): a hold with nothing checked,

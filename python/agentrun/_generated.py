@@ -1357,6 +1357,8 @@ class DefinitionLearning(TypedDict, total=False):
     hold_window: int
     hold_disagree: int
     stop_window: int
+    repick: bool
+    repick_max_chars: int
 
 
 class Source(TypedDict):
@@ -1837,6 +1839,8 @@ class DefinitionInputLearning(TypedDict, total=False):
     hold_window: int
     hold_disagree: int
     stop_window: int
+    repick: bool
+    repick_max_chars: int
 
 
 SkillFiles: TypeAlias = "dict[str, str]"

@@ -292,6 +292,10 @@ export interface RunPatch {
    *  fence); null clears them. While the run runs, a sign-in hashing to one of these cannot be forgotten (sign-ins-store.ts). */
   readonly signInHanded?: readonly string[] | null;
   readonly endedAt?: number | null;
+  /** A final patch that writes the end the run's job kept before its look-back (feedback-round.ts KeptEnd): a stop or a
+   *  cancel waiting at its commit cut the look-back, never the job's end, and is refused (refuseLeftovers), unless a
+   *  person's message waits too: that message's run is the one they stop or cancel. */
+  readonly keepsEnd?: boolean;
 }
 
 /** The row runs.update answers. When the patch wrote `signInHanded` (the runner's bind at its claim), `save` rides with it:
@@ -953,8 +957,9 @@ export interface Runs {
    *  so its next turn is booked on top of what it spent), and `command` (the follow-up's steer) is written untaken for it.
    *  Only an agentic run that ended completed (state 'ended') or that a person stopped (state 'stopped', outcome
    *  'stopped'), not imported and not a learning run, reopens: a workflow, a failed or cancelled run, any other, or none
-   *  is RunFinal, and nothing is written. */
-  reopen(runId: string, command: { kind: string; body?: unknown }, options?: LaunchSealedWrite): Promise<Command>;
+   *  is RunFinal, and nothing is written. With `endedAt`, only the run whose end is at that time (a grade's round opens
+   *  the end it read, never a later one): any other is RunFinal too. */
+  reopen(runId: string, command: { kind: string; body?: unknown }, options?: LaunchSealedWrite & { readonly endedAt?: number }): Promise<Command>;
   /** Wakes a parked run: its wake_at set to now on the deadlines' clock, so a runner claims it at its next poll (the
    *  claimable rule's wake branch) and its loop reads what it waits on again. True when the run was parked; a run in any
    *  other state (or none) is left as it is, false. Its claim, if one holds it while it parks, is let go as before: the
