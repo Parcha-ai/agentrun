@@ -6,23 +6,19 @@ import type { Route } from "./server.js";
 /** The variable that turns the profile on. */
 export const API_ONLY_ENV = "AGENTRUN_API_ONLY";
 
-/** The routes (server.ts ROUTES, by name) an API-only server serves. Those past a run's own:
- *  - getComputerDaemon: a run's hosted machine that dials fetches computerd with its own token, as the attach upgrade
- *    takes such a machine alone (a paired computer is the console's).
- *  - listComputers, getWorkspaceArchil: the two reads a backend checks before it launches, naming keys and never a
- *    value; their writes and tests stay the console's.
- *  - getAgentArchil, deleteAgentArchil, deleteAgent: an agent's disk and the delete of an agent its inline runs made,
- *    which the backend that made it sends.
- *  - deleteAgentLearning: an agent's learning reset, the agent and its runs kept, which a backend erasing what an agent
- *    learned sends.
- *  - getRunComputer, takeOverRunComputer, handBackRunComputer, createRunComputerViewer: a run's computer, its take-over
- *    and hand-back, and its viewer credential's mint (viewer-credential.ts), by the server's token, the backend's own;
- *    the live page and socket take that credential. */
+/** The routes (server.ts ROUTES, by name) an API-only server serves. Past a run's own, why each group is here:
+ *  - a run's hosted machine fetches computerd with the token its create minted, not the server's;
+ *  - the computers list and the Archil settings are read before a launch, naming keys, never a value;
+ *  - an agent its inline runs made has its disk and its delete sent by the backend that made it;
+ *  - a run's computer, take-over, hand-back and viewer link go to the backend, which has no owner's session here;
+ *  - a backend reads what its agents learned (loop, promotions, cost per run, a run's learning), cut as the console's,
+ *    and resets it (deleteAgentLearning: the agent and its runs kept) when it erases what an agent learned. */
 export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createRun", "createInlineRun", "getComputerDaemon",
   "getRunComputer", "takeOverRunComputer", "handBackRunComputer", "createRunComputerViewer",
   "listComputers", "getWorkspaceArchil",
   "getAgentArchil", "deleteAgentArchil", "deleteAgent", "deleteAgentLearning",
+  "getLearningLoop", "listLearningPromotions", "getLearningCost", "getRunLearning",
   "getRun", "listRuns", "listAllRuns", "getTimeline",
   "sendMessage", "stopRun", "cancelRun", "raiseRunCap", "gradeRun",
   "listRunFiles", "readRunFile",

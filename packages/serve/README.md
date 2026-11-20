@@ -3000,7 +3000,8 @@ item (`["/number", "/title", "/html_url", "/user/login"]`): `item` then keeps on
 serves these routes alone:
 
 - a run's launch (`POST /agents/{id}/runs`, `POST /runs`), read (`GET /runs/{id}`), lists (`GET /agents/{id}/runs`,
-  `GET /runs`), timeline, messages, stop, cancel, kill (`501` here, as above) and cap raise (`PATCH /runs/{id}`);
+  `GET /runs`), timeline, messages, stop, cancel, kill (`501` here, as above), cap raise (`PATCH /runs/{id}`) and grade
+  (`PUT /runs/{id}/grade`);
 - its files (`GET /runs/{id}/files`, `GET /runs/{id}/files/{path}`) and [uploads](#uploads) (`/files`);
 - an agent's Archil disk (`GET` and `DELETE /agents/{id}/archil`);
 - the [delete of an agent another system owns](#deleting-an-agent-another-system-owns) (`DELETE /agents/{id}`), for
@@ -3009,6 +3010,12 @@ serves these routes alone:
   key names and whether each is saved, and whether it is ready) and `GET /workspace/archil` (whether runs' folders are
   on Archil, and whether its account key is saved). Neither answers a key's value. Their writes, tests and key choices
   are the console's, refused here;
+- what an agent learned, for the backend whose runs it learned from: the loop's compile turns
+  (`GET /agents/{id}/learning/loop`), each learned workflow's promotion and what serves
+  (`GET /agents/{id}/learning/promotions`), the cost per run (`GET /agents/{id}/learning/cost`) and a run's learning
+  (`GET /runs/{id}/learning`), each cut of the host's secrets as the console's reads are;
+- a run's hosted machine fetching this server's computerd build (`GET /computers/daemon`), with the token its create
+  minted;
 - `GET /capabilities`, `GET /health` and `GET /usage`;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
