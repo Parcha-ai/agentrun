@@ -350,6 +350,35 @@ test("per disk: an agent that learned on the default disk and on a disk a launch
   assert.deepEqual(await Promise.all([...learnings.map(resetLedgerKey), resetAtKey("two")].map((key) => store.settings.get(key))), [undefined, undefined, undefined, undefined], "the agent's delete removes every disk's ledger and the watermark");
 });
 
+test("Mode 2, the last run naming a caller's disk purged (DELETE /runs/{id}, its launch record gone, its tombstone keeping the disk): the reset still deletes the agent's learning folder on that disk, and leaves no other learning setting of the agent", { timeout: 120_000 }, async (t) => {
+  const customer = "dsk-c0570e4e00000003";
+  const control = archilControlFetch({ region: "aws-us-east-1", strict: true, disks: [{ id: customer, name: "a-customers-disk" }] });
+  withEnv(t, { ARCHIL_API_KEY: "fake-test-key" }, ["ARCHIL_API_KEY", "AGENTRUN_ARCHIL_REGION", "AGENTRUN_ARCHIL_S3_URL", "AGENTRUN_ARCHIL_IMAGE"]);
+  const disk = Object.assign(new FakeArchilDisk(), { id: customer });
+  const { api, data, store } = await serve(t, { learning: "on", runner: false, archilControl: { baseUrl: control.baseUrl, fetch: control.fetch, makeDisk: () => disk } });
+  await saveArchilSettings(store, { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" });
+  assert.equal((await api("POST", "/agents", agent("gone-run", { learning: true }))).status, 201);
+  await learned(store, data, "gone-run");
+  const revisionId = (await store.agents.get("gone-run")).currentRevision;
+  await store.runs.create({ id: "on-customer", agentId: "gone-run", revisionId }, { body: { input: ASK, title: "t", place: { mode: "runner" } } });
+  await endAsRunner(store, "on-customer", "ended");
+  launchOnDisk(data, "on-customer", customer);
+  const dir = `agents/${agentDirOf("gone-run")}`;
+  for (const key of [`${dir}/learning/corrections.md`, `${dir}/learning/.git/HEAD`, `${dir}/runs/on-customer/work/notes.md`, "shared/customers.csv"]) await disk.putObject(key, Buffer.from("bytes"));
+  const learningOn = () => [...disk.files.keys(), ...disk.dirs].filter((key) => key === `${dir}/learning` || key.startsWith(`${dir}/learning/`));
+
+  const purged = await api("DELETE", "/runs/on-customer");
+  assert.equal(purged.status, 204, JSON.stringify(purged.body));
+  assert.equal(disk.files.has(`${dir}/runs/on-customer/work/notes.md`), false, "the purge took the run's folder there");
+  assert.ok(learningOn().length > 0, "and left the agent's learning folder there");
+
+  const reset = await api("DELETE", "/agents/gone-run/learning");
+  assert.equal(reset.status, 204, JSON.stringify(reset.body));
+  assert.deepEqual(learningOn(), [], "no learning of the agent is left on the caller's disk");
+  assert.ok(disk.files.has("shared/customers.csv"), "what is not the agent's stays");
+  assert.deepEqual((await store.settings.all({ prefix: "learning." })).map((row) => row.key).filter((key) => key.includes("gone-run") && !key.startsWith("learning.reset")), [], "no other learning setting of the agent is left");
+});
+
 test("an agent that never learned: 204, and 204 again; an unknown agent is 404; without the token it is 401, as a learning write is", async (t) => {
   const { api, baseUrl, store } = await serve(t, { learning: "on", runner: false });
   assert.equal((await api("POST", "/agents", agent("fresh", { learning: true }))).status, 201);
