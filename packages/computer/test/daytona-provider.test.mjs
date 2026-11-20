@@ -346,7 +346,7 @@ test("the read-back: Daytona's states as the adapter's, its end, its GPUs and it
 	};
 	const autoDestroyAt = "2026-01-02T03:04:05.000Z";
 	const clean = await read({ autoDestroyAt });
-	assert.deepEqual(Object.keys(clean).sort(), ["endsAt", "id", "labels", "state"], "no drift, network, size or image: Daytona's create options are not read back");
+	assert.deepEqual(Object.keys(clean).sort(), ["endsAt", "id", "labels", "resources", "state"], "no drift, network or image: Daytona's create options are not read back; what it gave the sandbox is (resources)");
 	assert.equal(clean.state, "running");
 	assert.equal(clean.endsAt.toISOString(), autoDestroyAt);
 	for (const [state, want] of [
@@ -371,6 +371,19 @@ test("the read-back: Daytona's states as the adapter's, its end, its GPUs and it
 	assert.equal(Object.hasOwn(await read({ snapshot: "daytona-gpu", gpu: 1, gpuType: "H100", autoDeleteInterval: 0 }), "gpu"), false, "a GPU is the adapter's label, not a read-back");
 	const { provider } = setup({ [`GET /api/sandbox/${REF.id}`]: { status: 404, body: { statusCode: 404, message: "not found" } } });
 	assert.equal(await provider.host.get(REF.id, { timeoutMs: 1_000 }), undefined);
+});
+
+test("the read-back's resources are what Daytona's answer says the sandbox was given (memory and disk in GiB), each only where it says it", async () => {
+	const read = async (fields) => {
+		const sb = sandbox(fields);
+		const { provider } = setup({ [`GET /api/sandbox/${sb.id}`]: { body: sb } });
+		return await provider.host.get(sb.id, { timeoutMs: 1_000 });
+	};
+	assert.deepEqual((await read({ cpu: 4, memory: 8, disk: 10, gpu: 1, gpuType: "H100" })).resources, { cpus: 4, memoryMb: 8192, diskGb: 10, gpu: { type: "H100", count: 1 } });
+	assert.deepEqual((await read({ cpu: 2, memory: 4 })).resources, { cpus: 2, memoryMb: 4096 }, "no disk or GPU said: none");
+	assert.deepEqual((await read({ cpu: 2, memory: undefined, gpu: 0, gpuType: "H100" })).resources, { cpus: 2 }, "no GPUs given");
+	assert.deepEqual((await read({ cpu: 2, memory: undefined, gpu: 1 })).resources, { cpus: 2 }, "a GPU count with no type is no GPU figure");
+	assert.equal(Object.hasOwn(await read({ cpu: "four", memory: -1 }), "resources"), false, "a figure that is not a positive number is none");
 });
 
 test("list: the adapter's label alone is asked for, every page followed, destroyed ones left out; the adapter keeps the rest by labels and reads each by get", async () => {

@@ -53,6 +53,7 @@ import {
 	type ComputerInfo,
 	type ComputerProvider,
 	type ComputerRef,
+	type ComputerResources,
 	type ComputerSpec,
 	type CreateContext,
 	type CreatedComputer,
@@ -322,6 +323,9 @@ export class HostedProvider implements ComputerProvider {
 	readonly #requests = new CreateRequests();
 	/** Each computer's last extend, by machine id, while one runs: the next waits for it. */
 	readonly #extending = new Map<string, Promise<void>>();
+	/** What the vendor said a machine this create made was given (Machine.resources), by machine id, from its read once it
+	 *  ran (#prepare) until the create answers with it (#createOnce). */
+	readonly #given = new Map<string, ComputerResources>();
 	/** A dial host's server: what its machines reach, and what holds their tokens and sockets. */
 	readonly #dial: HostedDial | undefined;
 	/** The host's descriptor's mounts as its machines reach this server (mountsOf): a dial host's take no Archil mount. */
@@ -679,6 +683,8 @@ export class HostedProvider implements ComputerProvider {
 		const first = await this.#converge(name, ref.id, signal);
 		if (first.ok && first.value !== undefined && first.value.id !== ref.id) return this.#again(spec, name, first.value, signal);
 		const prepared = await this.#prepare(spec, ref, made, signal);
+		const given = this.#given.get(ref.id);
+		this.#given.delete(ref.id);
 		if (signal?.aborted) return this.#abandon(ref, { code: "aborted", message: "create was aborted" }, signal);
 		if (!prepared.ok) {
 			// A create of this request on another instance, whose machine is older, deletes this one under it: answer that one.
@@ -694,7 +700,7 @@ export class HostedProvider implements ComputerProvider {
 		const last = await this.#converge(name, ref.id, signal);
 		if (!last.ok) return this.#abandon(ref, last.error, signal, true);
 		if (last.value !== undefined && last.value.id !== ref.id) return this.#again(spec, name, last.value, signal);
-		return ok(prepared.value.length > 0 ? { ...ref, notes: prepared.value } : ref);
+		return ok({ ...ref, ...(prepared.value.length > 0 ? { notes: prepared.value } : {}), ...(given === undefined ? {} : { resources: given }) });
 	}
 
 	/**
@@ -988,6 +994,7 @@ export class HostedProvider implements ComputerProvider {
 		const { uploadMs, execMs } = this.#timeouts;
 		const running = await this.#running(ref, signal);
 		if (!running.ok) return running;
+		if (running.value.resources !== undefined) this.#given.set(ref.id, running.value.resources);
 		const drift = this.#machineDrift(running.value, labels);
 		if (drift.length > 0) return this.#fail("refused", `it did not match its spec: ${drift.join("; ")}`);
 		const gpu = spec.gpu !== undefined;

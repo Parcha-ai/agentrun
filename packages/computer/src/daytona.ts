@@ -18,7 +18,7 @@ import { allPages, jsonOf, type Rest, rest } from "./hosted/rest.js";
 import { shellLine } from "./hosted/scripts.js";
 import { dateOf, isWhole, sizeRefusals } from "./hosted/values.js";
 import { MAX_LINE_BYTES } from "./protocol.js";
-import { type ComputerSpec, checkGpu, type Refusal } from "./provider.js";
+import { type ComputerResources, type ComputerSpec, checkGpu, type Refusal } from "./provider.js";
 import { type ComputerError, type ComputerErrorCode, ok, type Result, vendorFail } from "./result.js";
 
 /** The parts of a WebSocket the host uses: Node's global WebSocket, or a stand-in in tests. */
@@ -97,10 +97,30 @@ interface Sandbox {
 	gpu?: number;
 	/** The GPU type Daytona assigned (its GpuType enum), when the sandbox has GPUs. */
 	gpuType?: string;
+	/** The sandbox's CPUs, memory and disk as Daytona gave them (its Sandbox: memory and disk in GiB), which it bills by. */
+	cpu?: number;
+	memory?: number;
+	disk?: number;
 	autoDestroyAt?: string;
 	/** When Daytona made the sandbox, by its clock: the adapter keeps the oldest of two machines one request made. */
 	createdAt?: string;
 	toolboxProxyUrl?: string;
+}
+
+/** A positive finite figure of Daytona's answer, else undefined (absent, zero or not a number: never guessed). */
+const given = (value: unknown): number | undefined => (typeof value === "number" && Number.isFinite(value) && value > 0 ? value : undefined);
+
+/** What Daytona says a sandbox was given (Machine.resources): its CPUs, its memory (GiB, as MB), its disk (GiB) and its
+ *  GPUs (count and type), each where its answer says it; none where it says nothing. */
+function resourcesOf(sb: Pick<Sandbox, "cpu" | "memory" | "disk" | "gpu" | "gpuType">): { resources?: ComputerResources } {
+	const [cpus, memory, disk, gpus] = [given(sb.cpu), given(sb.memory), given(sb.disk), given(sb.gpu)];
+	const resources: ComputerResources = {
+		...(cpus === undefined ? {} : { cpus }),
+		...(memory === undefined ? {} : { memoryMb: memory * 1024 }),
+		...(disk === undefined ? {} : { diskGb: disk }),
+		...(gpus !== undefined && typeof sb.gpuType === "string" && sb.gpuType !== "" ? { gpu: { type: sb.gpuType, count: gpus } } : {}),
+	};
+	return Object.keys(resources).length > 0 ? { resources } : {};
 }
 
 /**
@@ -279,6 +299,7 @@ class DaytonaHost implements MachineHost {
 			state: stateOf(sb),
 			...(made ? { createdAt: made } : {}),
 			...(endsAt ? { endsAt } : {}),
+			...resourcesOf(sb),
 			// A failed sandbox always carries a why, Daytona's or ours, so create stops on it as vendor, never as gone.
 			...(typeof sb.errorReason === "string" && sb.errorReason !== "" ? { why: sb.errorReason } : FAILED.has(sb.state ?? "") ? { why: `Daytona reads the sandbox ${sb.state}, with no reason given` } : {}),
 		};
