@@ -11,7 +11,10 @@
 //   untied     titles each call of ours under another server's name (`github: check echo`), a title the adapter does
 //              not tie to our tool, so its permission reaches the host's gate as the agent's own (`acp_other`);
 //   plan       billed on its vendor's plan: its model is MODEL_AGENT_VENDOR (host:port), reached through HTTPS_PROXY's
-//              CONNECT on its own key MODEL_AGENT_API_KEY, as a plan-billed agent reaches its vendor beyond loopback.
+//              CONNECT on its own key MODEL_AGENT_API_KEY, as a plan-billed agent reaches its vendor beyond loopback;
+//   leak-key   at each prompt, says on stderr that its vendor refused its key, the key MODEL_AGENT_API_KEY written out,
+//              and exits 1: a vendor CLI that echoes its key on an auth failure. MODEL_AGENT_LEAK_AFTER: that many
+//              characters more after it on the line (diagnostics), so a cut of the last words lands inside the key.
 // Its model is MODEL_AGENT_MODEL; the proxy's address is ANTHROPIC_HOST, else ANTHROPIC_BASE_URL (the recipe's hostEnv).
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
@@ -188,6 +191,11 @@ const app = agent({ name: "model-agent" })
   .onRequest("session/prompt", async ({ params, client }) => {
     const session = sessions.get(params.sessionId);
     if (!session) throw RequestError.resourceNotFound(params.sessionId);
+    if (mode === "leak-key") {
+      const after = Number(process.env.MODEL_AGENT_LEAK_AFTER ?? 0);
+      process.stderr.write(`model-agent: the vendor refused the key ${process.env.MODEL_AGENT_API_KEY ?? ""} (401)${after > 0 ? ` ${".".repeat(after)}` : ""}\n`);
+      process.exit(1);
+    }
     return takeTurn(client, session, params.prompt);
   })
   .onNotification("session/cancel", () => {});

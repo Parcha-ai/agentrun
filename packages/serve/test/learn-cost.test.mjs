@@ -4,6 +4,7 @@
 // takeover, the mean before it with learning left out, the mean of the runs it served after it with learning kept in, and "times cheaper" only
 // once 20 runs follow the takeover). The same runs as CSV for the CLI.
 import assert from "node:assert/strict";
+import { promoteChecked } from "./learned-workflow-seed-support.mjs";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -181,7 +182,7 @@ async function landFlow(data, id, name) {
 }
 
 test("GET /agents/{id}/learning/cost: the agent's runs in order, by hand until a learned workflow takes over, each path read from its run's records, the workflow revision that ran it and its costs; the same as CSV; limit keeps each run's number", { timeout: 240_000 }, async (t) => {
-  const { api, data } = await serve(t, { learning: "on" });
+  const { api, data, store } = await serve(t, { learning: "on" });
   const id = "invoice-sorter";
   assert.equal((await api("POST", "/agents", agent(id, { learning: true, harness: "pi", instructions: "Answer the question." }))).status, 201);
   const runOf = async (content) => {
@@ -197,6 +198,9 @@ test("GET /agents/{id}/learning/cost: the agent's runs in order, by hand until a
 
   const byHand = [await runOf("What is six times seven."), await runOf("What is two times three.")];
   await landFlow(data, id, "answer");
+  assert.equal((await cost()).summary.replay, null, "landing a draft provides no check evidence");
+  // This series begins serving only after the learned revision has passed its check.
+  await promoteChecked(store.settings, id, [{ name: "answer", workflow: answerFlow() }]);
   const alone = await runOf("Use the learned workflow answer on What is six times seven.");
   const back = await runOf("Use the learned workflow absent on What is two.");
   const body = await cost();
@@ -234,7 +238,10 @@ test("GET /agents/{id}/learning/cost: the agent's runs in order, by hand until a
   assert.equal(body.runs[2].learning_usd, 0, "a run a learned workflow finished alone is asked no compile turn");
   const before = Math.round(((body.runs[0].cost_usd + body.runs[1].cost_usd) / 2) * 1e6) / 1e6;
   const after = Math.round(((body.runs[2].total_usd + body.runs[3].total_usd) / 2) * 1e6) / 1e6;
-  assert.deepEqual(body.summary, { ...EMPTY, ...PRICED, takeover: { n: 3, run_id: alone }, before: { runs: 2, mean_usd: before }, after: { runs: 2, mean_usd: after }, hand_backs: { ran: 2, back: 1 } });
+  // promoteChecked's specified prior check compared one input, answered it alone and agreed: the summary must show
+  // that evidence once the checked revision serves, without changing which runs make up the cost series.
+  const replay = { n: 1, workflow_pct: 100, agent_pct: 100, cleared: true, agreed: 1, alone: 1, agree_min: 0.8 };
+  assert.deepEqual(body.summary, { ...EMPTY, ...PRICED, takeover: { n: 3, run_id: alone }, before: { runs: 2, mean_usd: before }, after: { runs: 2, mean_usd: after }, hand_backs: { ran: 2, back: 1 }, replay });
   assert.ok(body.runs.every((run) => run.cost_upper_bound === false), "no run's stored cost is a bound");
   assert.deepEqual([body.total_runs, body.unknown_cost_runs, body.unknown_path_runs], [4, 0, 0], "every run that learns ended with its path");
   assert.deepEqual(body.workflows, [], "the money rule holds a workflow that ran first; the agent calling one is the agent's own run");

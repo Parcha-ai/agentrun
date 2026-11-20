@@ -50,6 +50,57 @@ onStop(async () => writeFileSync(${JSON.stringify(mark)}, "deleted")); console.l
   }
 });
 
+test("a walk stopped by SIGINT, then SIGTERM while its delete is still running (Actions' cancel), finishes the delete before it exits, though its finally took the handlers off", async () => {
+  const { spawn } = await import("node:child_process");
+  const { mkdtemp, readFile: read } = await import("node:fs/promises");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const mark = join(await mkdtemp(join(tmpdir(), "walk-stop-")), "deleted");
+  const walk = new URL("deploy/railway/publish-and-walk.mjs", ROOT).href;
+  // The stand-in's delete takes 1.5 s. The walk goes on after the SIGINT, and its `finally` calls onStop's off() while
+  // that delete runs; then it says "deleting", and the SIGTERM lands in the middle of the delete.
+  const script = `const { onStop } = await import(${JSON.stringify(walk)}); const { writeFileSync } = await import("node:fs");
+const off = onStop(async () => { setTimeout(() => { off(); console.log("deleting"); }, 0); await new Promise((r) => setTimeout(r, 1500)); writeFileSync(${JSON.stringify(mark)}, "deleted"); });
+console.log("made"); setTimeout(() => {}, 60_000);`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", script], { stdio: ["ignore", "pipe", "inherit"] });
+  const exited = new Promise((r) => child.once("exit", (code, signal) => r({ code, signal })));
+  const said = (word) => Promise.race([new Promise((r) => { const on = (c) => { if (String(c).includes(word)) { child.stdout.off("data", on); r(true); } }; child.stdout.on("data", on); }), exited.then(() => false)]);
+  assert.ok(await said("made"), "the stand-in walk started");
+  const deleting = said("deleting");
+  child.kill("SIGINT");
+  assert.ok(await deleting, "the SIGINT started the delete");
+  child.kill("SIGTERM");
+  const { code, signal } = await exited;
+  assert.equal(await read(mark, "utf8").catch(() => "not deleted"), "deleted", "the delete finished");
+  assert.deepEqual({ code, signal }, { code: 130, signal: null }, "it exits as the first signal says, not killed by the second");
+});
+
+test("the first run's wait asks again when the network cuts a read of the run, and fails at once on an answer the server refused", async () => {
+  const { firstRunOf, rows } = await import("../../../deploy/railway/publish-and-walk.mjs");
+  const json = (status, body) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const walk = (reads) => {
+    const client = {
+      sleep: async () => {},
+      http: async (url, init) => {
+        if (init?.method === "PUT") return new Response(null, { status: 204 });
+        if (url.endsWith("/agents")) return json(201, { agent_id: "a1" });
+        if (url.endsWith("/runs")) return json(201, { run_id: "r1" });
+        const next = reads.shift();
+        if (next instanceof Error) throw next;
+        return next;
+      },
+    };
+    const step = rows(() => {});
+    const times = { clicked: Date.now() };
+    return { step, done: firstRunOf(client, { base: "https://walk.test", token: "t", cookie: "s=1", key: "k", model: "m", step, times }) };
+  };
+  const cut = walk([new TypeError("fetch failed"), Object.assign(new Error("timed out"), { name: "TimeoutError" }), json(200, { status: "running" }), json(200, { status: "completed", cost: { usd: 0.001 }, result: "notes" })]);
+  await cut.done;
+  assert.equal(cut.step.all.at(-1)[0], "first run finished");
+  const refused = walk([json(401, { error: { message: "unauthorized" } })]);
+  await assert.rejects(refused.done, /GET \/v2\/runs\/r1 answered 401: unauthorized/);
+});
+
 test("the walk tries a request again only while Render's edge answers (502, 503 or 504, not JSON), a POST under one Idempotency-Key, within its time", async () => {
   const { throughEdge } = await import("../../../deploy/render/walk.mjs");
   // The edge answers in HTML or nothing; the server always in JSON.
@@ -78,16 +129,23 @@ test("the walk tries a request again only while Render's edge answers (502, 503 
     assert.equal(once.sent.length, 1);
   }
 
-  // An edge that keeps failing: its last answer once the time is up, with no send after the deadline.
+  // An edge that keeps failing: its last answer once the time is up, with no send after the deadline. One that ignored
+  // forMs would hang into the test's own timeout.
   const down = { n: 0, fetch: async () => { down.n++; return edge(502); } };
-  let t = Date.now();
   assert.equal((await throughEdge("https://x.onrender.com/", {}, { fetch: down.fetch, waitMs: 5, forMs: 50 })).status, 502);
-  assert.ok(Date.now() - t < 1_000);
   assert.ok(down.n <= 11, `${down.n} sends in 50 ms at 5 ms apart`);
 
   // A request that never answers is cut at the time left, not waited on.
   const hung = (url, init) => new Promise((_, reject) => init.signal.addEventListener("abort", () => reject(init.signal.reason)));
-  t = Date.now();
-  await assert.rejects(throughEdge("https://x.onrender.com/", {}, { fetch: hung, waitMs: 5, forMs: 100 }));
-  assert.ok(Date.now() - t < 1_000, `${Date.now() - t} ms`);
+  // Each send's timeout is the time left, never more: read from what it asks of AbortSignal.timeout, not from a clock.
+  const timeout = AbortSignal.timeout;
+  const asked = [];
+  AbortSignal.timeout = (ms) => (asked.push(ms), timeout.call(AbortSignal, ms));
+  try {
+    await assert.rejects(throughEdge("https://x.onrender.com/", {}, { fetch: hung, waitMs: 5, forMs: 100 }));
+  } finally {
+    AbortSignal.timeout = timeout;
+  }
+  assert.equal(asked.length, 1, "one send, cut at the deadline");
+  assert.ok(asked[0] >= 1 && asked[0] <= 100, `the send's timeout is ${asked[0]} ms, not the 100 ms left or less`);
 });

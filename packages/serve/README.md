@@ -3200,13 +3200,29 @@ the console all read that table. An owner adds harnesses with a harness module: 
 takes the same flag and setting, and needs them to run the module's harnesses. MODULE is a path, or a package installed
 with `npm install --prefix <data>/harnesses <package>`.
 
-A module exports `entries(builtins)`, which returns new entries by id. Each entry gives `label`, `steer`, `runMib`,
-`oneAlwaysFits`, `runs`, `onWire`, `model`, `priceModel`, `refusal` and its `runner`, and may give `promises`. A run of
-the harness runs on its runner's `adapter(launch, extra)`, and is admitted by the `runMib` its entry declares. A module
-adds harnesses and never replaces one. The start of the server, or of a separate runner, is refused, naming the module
-and the id, when a module:
+A module exports `entries(builtins, kit)`, which returns new entries by id. [HARNESS.md](../../HARNESS.md) walks through
+writing one, and [examples/harness-module](../../examples/harness-module/README.md) is a whole one. Its types are
+`@parcha/agentrun-serve/harness`, which loads nothing of serve. `kit` holds the builders the built-in adapter harnesses
+are made with, on the running server's own copy:
+- `kit.adapterEntry(facts, adapter, extra?)` makes an adapter harness's whole entry from its facts (the kernel's
+  `AdapterFacts`): its models are its wire's vendor's, its key rows are that vendor's and OpenRouter's, and its tools are
+  gated and named by its facts, as for claude-agent, codex and opencode. `adapter(launch)` builds the adapter for one run
+  from the launch serve chose on this server's keys (`ModuleLaunch`: the provider's model id, the origin and credential
+  the session's proxy forwards to, the price of a request's usage, a log, the skills a `skillCheck` in `extra` accepted,
+  taken out of the prompt, and the server's environment). A person's
+  Claude Code login is never a launch's credential.
+- `kit.acpEntry({facts, recipe, proxy, beforeStart?, promises?})` makes an ACP agent's entry on serve's own ACP adapter
+  (`@parcha/agentrun-harness-acp`), promising `load`, `permission` and `proxy` unless `promises` says otherwise.
+- Either takes `missing(env)`: what no model key fixes (its binary, say), asked before the key, so the harness's offer
+  says it and names no key until it is there.
+
+An entry made otherwise gives `label`, `steer`, `runMib`, `oneAlwaysFits`, `runs`, `onWire`, `model`, `priceModel`,
+`refusal` and its `runner`, and may give `promises`; a run of it runs on its runner's `adapter(launch, extra)`. Every
+harness is admitted by the `runMib` its entry declares. A module adds harnesses and never replaces one: the built-in
+harnesses' facts, offers, key rows, default models and tool names are the same with any module loaded. The start of the
+server, or of a separate runner, is refused, naming the module and the id, when a module:
 - gives an id that does not match `^[a-z][a-z0-9-]{0,39}$`;
-- names an id serve's own runs carry: `learning`, `sdk`, `workflow`, `claude-agent-sdk` or `codex-sdk`;
+- takes a name serve reserves (listed in [HARNESS.md's `id` row](../../HARNESS.md#field-by-field));
 - names a built-in harness;
 - names an id another module adds;
 - gives an entry that is missing a member;
@@ -3215,6 +3231,10 @@ and the id, when a module:
 A module's entry that gives no adapter `facts` runs on the general spec, with pi's tools: capabilities list its id on
 every tool pi runs (`tools[].harnesses`) and on MCP grants (`features.mcp_client.harnesses`), so an agent on it keeps
 its tool choices. One that gives `facts` runs the host tools, as the other built-in harnesses do.
+
+A module's author proves its harness with `@parcha/agentrun-serve/conformance`: the same suite (`registerHarnessConformance`),
+adapter loop (`createAdapterLoop`) and host tools (`suiteHostTools`) this repository proves its own harnesses with. An ACP
+agent's module runs it on `@parcha/agentrun-harness-acp/testing`'s fake ACP agent, which needs no binary, model or key.
 
 The harnesses a module adds are listed in `capabilities.harnesses` after the built-in ones. Each offer there carries a
 `label` and `promises`:
@@ -3561,8 +3581,20 @@ job, once it repeats: after `learning.compile_after` completed runs (20 by defau
 for the whole job as one workflow, which is checked in code, replayed on the agent's own past inputs, and served as one
 tool once it agrees with the agent's own answers. The console reads `GET /v2/agents/{id}/learning` for the agent's
 corrections, workflows and history, and `GET /v2/runs/{id}/learning` and its `/diff` for an individual result.
-Observation requires no model key; producing new learning requires an agentic run through this server with learning
-enabled and a configured model.
+Observation requires no model key. Creating workflow drafts requires an agentic run executed or reported through this
+server with learning enabled and access to its configured compile model. For a connected SDK agent, compilation runs
+on this server; shadow execution and tool access remain in the original application, as described below.
+
+Set up **Settings → API Keys → Model keys** with a provider key that matches the learning model, such as OpenRouter,
+Anthropic or OpenAI, or a supported server sign-in. An unrelated provider key, tool API key, AgentRun connection key or
+decision-provider key does not supply compiler access. Background compilation cannot borrow a caller's per-request
+gateway key. The new SDK shadow comparison is deterministic and needs no separate Jev key. Native project connections
+use their original runtime's sign-in for corrections; learned workflows are not available on that connection.
+
+The agent's Learning tab and Learning Dojo show missing setup for that agent's actual model. `learning_model` in
+`GET /v2/agents/{id}/learning` describes that route; the same field in capabilities describes the server default.
+`ready` means the route and credentials are configured, not that quota or provider availability has been verified.
+These reads make no paid request, and saving a matching key refreshes the setup guidance.
 
 Importing Claude Code, Codex or pi session history does not replay learning or connect a live learning stream.
 Before/after cost and duration are observations, not an accuracy evaluation.
@@ -3592,7 +3624,8 @@ Each run of an agent that learns starts from `main` as it is when the run is mad
   follow-up reads the same.
 - The workflows the agent learned, each a folder `workflows/<name>/` on `main` with its `workflow.json` and its
   `README.md`, are the run's as one tool, `learned_workflow {name, input}`, on every harness (pi, claude-agent, codex),
-  with no edit of the agent's definition. Only an active one is: its `README.md` sets no status, or `active`; front
+  with no edit of the agent's definition. Only an active, promoted revision is: its `README.md` sets no status, or `active`,
+  and its promotion record names the checked champion. A compiled draft without that record is withheld; front
   matter that does not read one way (not closed, a key indented under another, a key set twice, a status over more
   than one line) reads as retired, so no run is given it. Its description names each workflow with the line its README gives, 8 KiB of lines in all: by name, each
   while its line fits, and one that does not, or holds one of the server's secrets, is left out. A README whose front
@@ -3660,12 +3693,38 @@ The round's commit is made with plumbing: the passing draft's files added or cha
 the commit the change was made on (once more on a `main` that moved meanwhile), and a run a trailer already names is
 merged, never twice. A draft file that is not on `main` as it was on the run's seed is a conflict, never written over.
 
-A new workflow revision serves only once its promotion check passes: the first run that lays it replays it on the
+A new workflow revision serves only once its promotion check passes. For a server-run agent, the first run that lays it replays it on the
 inputs of the agent's last `compile_after` completed runs, one replay run each at workflow cost, and scores each against
 the agent's own recorded answer. It is promoted when it agrees on at least `learning.agree_min` (0.8) of them and
 answers at least `learning.alone_min` (0.7) alone; under either bar it is held, and the next run asks one revision with
 the inputs it disagreed on. Held again, it stops, and nothing compiles again until its owner acts. A promotion by
 check is never moved by grades. `GET /agents/{agent_id}/learning/promotions` reads every record.
+
+Connected SDK agents (Claude Agent SDK, Codex SDK and Eve) check where their original tools live. When an application
+starts an SDK run with a workflow bridge, `learning.workflows` contains only compatible promoted revisions. If a
+compiled draft needs a check, the server instead reserves one candidate in
+`learning.check: {id, revision, digest, workflow}` and returns an empty `learning.workflows` list. The candidate is
+not a tool for the model. The application completes its ordinary native turn first, then the bridge executes the
+candidate in shadow using that turn's recorded tool results. It makes no fresh tool calls by default and never repeats
+a write. A host can explicitly enable `shadowReadFallback` for its declared read-only callbacks under its original
+policy. Missing or changed evidence, an input that cannot be bound to the workflow, and unsupported adapters fail the
+check closed.
+
+The bridge posts one `workflow_check` event with the reservation's `id` and `digest`, its execution `outcome`
+(`answered`, `handed_back`, `failed` or `skipped_write`), and its answer or reason. It does not choose whether the
+workflow passes. The server compares the answer with the immutable native completion and applies the same
+`agree_min` and `alone_min` promotion policy. This initial SDK check uses **one independent native turn** (`n: 1`),
+not the server-run agent's historical replay set. Agreement is whole-answer equality (JSON values or trimmed text), or equality of the owner's
+configured `agree_on` fields; there is no semantic model grader on this path. A paraphrase can therefore be held even
+when a person would consider it equivalent. Incomplete, redacted, failed, cancelled or workflow-assisted native evidence
+cannot promote a draft. A skipped write records no agreement.
+
+Concurrent starts reserve at most one check per workflow; retries keep the same reservation, and a late report cannot
+replace a recorded decision. An abandoned reservation is held when a later start sees it past the one-hour deadline.
+An older checked champion can still serve while a newer revision is checking or held, except on the independent
+check turn itself. Learning Off returns neither workflows nor a check. Without a workflow bridge the application gets
+no workflow to execute. The application's tools, model callbacks and credentials stay in its process; the server receives
+evidence and the shadow result through the run-scoped SDK credential.
 
 The run's `learning` (on `GET /runs/{run_id}`, and `{state, reason, detail}` in run lists, the detail cut to 140
 characters and no time) says how it went: `seeded`, then `reflecting` during its end step, and `merged`, or `dropped`

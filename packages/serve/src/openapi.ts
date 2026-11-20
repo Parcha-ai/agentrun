@@ -765,7 +765,15 @@ const LEARNED_WORKFLOW = {
   },
   "x-agentrun-serve": "learning/3",
 };
+const LEARNING_MODEL = closed({
+  location: { enum: ["server", "native"], description: "Server model route, or the connected native runtime's existing sign-in (no copied server key required)." },
+  ready: { type: "boolean", description: "The required model route and credential are configured. This read makes no paid model request and does not verify provider quota or future availability." },
+  model: { ...NULL_STRING, description: "The resolved model for this agent, or the server default in capabilities; null when none is configured." },
+  needs: { enum: ["key", "model", null], description: "What must be configured: a credential for the selected model route, or a supported model. A tool or decision-provider key alone is insufficient." },
+  reason: { ...NULL_STRING, description: "Setup guidance when unavailable, or how native sign-in supplies the model." },
+});
 const AGENT_LEARNING = closed({
+  learning_model: LEARNING_MODEL,
   agent: { type: "string" },
   main: { ...NULL_STRING, description: "Main's head commit; null while the agent has no learning folder (its learning was never on), when every page is empty." },
   corrections: { type: "string", description: "corrections.md on main, cut of the host's secrets: what the agent's next run is given whole under # Learned, one line per correction its owner gave. Empty when there is none. GET .../learning/corrections reads it with its ETag; PUT writes it.", "x-agentrun-serve": "learning/4" },
@@ -3021,7 +3029,7 @@ const CONSOLE_URL = (what: string): Json => ({ type: "string", format: "uri", de
 /** The RUN_FIELDS every run's view and summary hold (runs.ts): required, beside the contract's. */
 export const RUN_FIELDS_SENT = ["revision", "kind", "archived_at"];
 /** The capabilities every answer carries beside the contract's required ones (server.ts capabilitiesWith). */
-export const CAPABILITIES_SENT = ["models", "places", "tools", "learning", "switches", "harnesses"];
+export const CAPABILITIES_SENT = ["learning_model", "models", "places", "tools", "learning", "switches", "harnesses"];
 /** This server's own agent fields every agent answer carries (agents-store.ts agentView): required, beside the contract's. */
 export const AGENT_FIELDS_SENT = ["kind", "revision", "revisions", "archived_at"];
 /** The field every saved sign-in is sent with beside the contract's, required: `secret`, its one secret's metadata
@@ -3554,6 +3562,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     warnings: { type: "array", items: ref("schemas/InputIssue"), description: "What this host still lacks for the agent to run, as a create (POST /agents) or a commit (PUT .../definition) answers it, the same shape apply's warnings take. Absent from every other answer (GET and list never send it).", "x-agentrun-serve": "warnings/1" },
   },
   Capabilities: {
+    learning_model: { ...LEARNING_MODEL, "x-agentrun-serve": "learningmodel/1" },
     learning: {
       type: "object", additionalProperties: false, required: ["pending", "approve"],
       properties: {

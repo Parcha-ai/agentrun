@@ -1,8 +1,9 @@
 // A learned workflow runs as one tool, learned_workflow, on pi, claude-agent and codex: the run's start chooses the
-// workflows the agent learned whose README sets no status (or `active`), never a pending or retired one; the tool's
+// checked workflows the agent learned whose README sets no status (or `active`), never a pending or retired one; the tool's
 // description names each; a call checks the workflow again against the agent's own tools, runs it with the workflow DSL
 // on this server's models, and its model requests are the run's, as side requests labelled learned_workflow.
 import assert from "node:assert/strict";
+import { promoteChecked } from "./learned-workflow-seed-support.mjs";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { createServer } from "node:http";
@@ -52,9 +53,12 @@ async function folderWith(data, id, files) {
 
 /** Agent `id` on `harness`, learning, with `files` learned (`extra`: more of its definition); one run of ASK (`fields`:
  *  more of its start, a cap), ended: its id, rows and view. */
-async function ran(api, data, id, harness, files, tools = [], { extra = {}, fields = {}, deadlineMs = 60_000, ask = ASK, ends = ["completed", "failed"] } = {}) {
+async function ran(api, data, store, id, harness, files, tools = [], { extra = {}, fields = {}, deadlineMs = 60_000, ask = ASK, ends = ["completed", "failed"] } = {}) {
   assert.equal((await api("POST", "/agents", agent(id, { learning: true, harness, instructions: ask, tools, ...extra }))).status, 201);
   await folderWith(data, id, files);
+  // Serving and runtime revalidation start from an already checked revision, including legacy definitions that
+  // today's runtime rejects. The seed excludes pending/retired drafts; those tests receive no promotion.
+  await promoteChecked(store.settings, id, (await seedOf(data, id)).workflows.map(({ name, workflow }) => ({ name, workflow: JSON.parse(workflow) })));
   const started = await api("POST", `/agents/${id}/runs`, { input: { content: ask }, ...fields });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   const runId = started.body.run_id;
@@ -130,10 +134,10 @@ test("learned_workflow's description is short: one line of what it does, one lin
 });
 
 test("a learned workflow whose output names no path is refused before any node runs: its output is the value at output.path", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { learning: "on" });
+  const { api, data, store } = await serve(t, { learning: "on" });
   const flow = answerFlow();
   delete flow.output.path;
-  const { runId, rows } = await ran(api, data, "pathless", "pi", flowFiles("answer", flow));
+  const { runId, rows } = await ran(api, data, store, "pathless", "pi", flowFiles("answer", flow));
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
   assert.match(JSON.stringify(result), /The learned workflow answer was not run: its output names no path: a learned workflow's output is the value at output\.path/, JSON.stringify(result));
@@ -146,8 +150,8 @@ for (const harness of ["claude-agent", "codex"]) {
   test(`a ${harness} run calls the workflow its agent learned as learned_workflow and gets its output, with no edit of its definition; its model requests are the run's, as side requests`, { timeout: 120_000 }, async (t) => {
     const opened = join(await scratch(t), "opened.jsonl");
     withEnv(t, { AGENTRUN_TEST_FAUX_HARNESS_OPENED: opened });
-    const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), ...(await routed(t, harness)) });
-    const { runId, rows, view } = await ran(api, data, `flow-${harness}`, harness, flowFiles("answer", answerFlow()));
+    const { api, data, store } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), ...(await routed(t, harness)) });
+    const { runId, rows, view } = await ran(api, data, store, `flow-${harness}`, harness, flowFiles("answer", answerFlow()));
     assert.equal(view.status, "completed", JSON.stringify(view));
     const use = rows.find((row) => row.kind === "tool_use" && row.tool_name === LEARNED_WORKFLOW_TOOL);
     assert.ok(use, JSON.stringify(rows.map((row) => [row.kind, row.tool_name, row.summary])));
@@ -164,8 +168,8 @@ for (const harness of ["claude-agent", "codex"]) {
 }
 
 test("a learned workflow whose node names a tool the agent was not granted is refused at the call, never run", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { learning: "on" });
-  const { runId, rows } = await ran(api, data, "offlist", "pi", flowFiles("answer", withTools(["web_fetch"])));
+  const { api, data, store } = await serve(t, { learning: "on" });
+  const { runId, rows } = await ran(api, data, store, "offlist", "pi", flowFiles("answer", withTools(["web_fetch"])));
   const result = rows.find((row) => row.kind === "tool_result" && row.tool_name === LEARNED_WORKFLOW_TOOL);
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
   assert.match(JSON.stringify(result), /The learned workflow answer was not run: the workflow DSL refuses it/, JSON.stringify(result));
@@ -176,8 +180,8 @@ for (const [why, extra] of [["waits for its owner's OK", "status: pending\n"], [
   test(`a learned workflow that ${why} is not the run's: no harness is given learned_workflow`, { timeout: 120_000 }, async (t) => {
     const opened = join(await scratch(t), "opened.jsonl");
     withEnv(t, { AGENTRUN_TEST_FAUX_HARNESS_OPENED: opened });
-    const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS) });
-    const { runId, rows } = await ran(api, data, `held-${extra.includes("pending") ? "p" : "r"}`, "claude-agent", flowFiles("answer", answerFlow(), extra));
+    const { api, data, store } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS) });
+    const { runId, rows } = await ran(api, data, store, `held-${extra.includes("pending") ? "p" : "r"}`, "claude-agent", flowFiles("answer", answerFlow(), extra));
     const given = readFileSync(opened, "utf8").split("\n").filter(Boolean).map((line) => JSON.parse(line)).filter((entry) => entry.tools);
     assert.ok(given.length && given.every((entry) => !entry.tools.includes(LEARNED_WORKFLOW_TOOL)), JSON.stringify(given));
     assert.ok(!rows.some((row) => row.kind === "tool_result" && row.tool_status === "success" && row.tool_name === LEARNED_WORKFLOW_TOOL));
@@ -214,7 +218,7 @@ test("the tool's description gives its workflows a budget: by name, each whose l
 });
 
 test("a learned workflow's model node runs with its own signal: a sibling branch that fails stops it at once, never after its own answer", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { learning: "on" });
+  const { api, data, store } = await serve(t, { learning: "on" });
   const flow = answerFlow();
   // The sibling's call fails at once: the guarded fetch never reaches a loopback address, and its answer is no Answer.
   flow.root.steps = [{ node: "parallel", label: "both", branches: [
@@ -223,7 +227,7 @@ test("a learned workflow's model node runs with its own signal: a sibling branch
   ] }];
   const began = Date.now();
   // The question is the node's prompt (its state): "Take your time" holds the faux model's answer 60 s, until it is stopped.
-  const { rows } = await ran(api, data, "siblings", "pi", flowFiles("answer", flow), ["web_fetch"], { deadlineMs: 45_000, ask: "Use the learned workflow answer on Take your time." });
+  const { rows } = await ran(api, data, store, "siblings", "pi", flowFiles("answer", flow), ["web_fetch"], { deadlineMs: 45_000, ask: "Use the learned workflow answer on Take your time." });
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
   assert.match(JSON.stringify(result), /The learned workflow answer failed/, JSON.stringify(result));
@@ -231,13 +235,13 @@ test("a learned workflow's model node runs with its own signal: a sibling branch
 });
 
 test("a learned workflow whose later model node names a tool, though the agent was granted it, is refused before any node runs: no model request is sent", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { learning: "on" });
+  const { api, data, store } = await serve(t, { learning: "on" });
   const flow = answerFlow();
   flow.root.steps = [
     { node: "extract", label: "first", instructions: "Answer the question.", out: "Answer", as: "first" },
     { node: "extract", label: "second", instructions: "Answer the question.", out: "Answer", as: "answer", tools: ["web_fetch"] },
   ];
-  const { runId, rows } = await ran(api, data, "late-tools", "pi", flowFiles("answer", flow), ["web_fetch"]);
+  const { runId, rows } = await ran(api, data, store, "late-tools", "pi", flowFiles("answer", flow), ["web_fetch"]);
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
   assert.match(JSON.stringify(result), /The learned workflow answer was not run: the model node at \/root\/steps\/1 names a tool \(web_fetch\): a learned workflow's model node runs without tools/, JSON.stringify(result));
@@ -245,13 +249,13 @@ test("a learned workflow whose later model node names a tool, though the agent w
 });
 
 test("a learned workflow whose later agent node asks context fork is refused before any node runs: no model request is sent", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { learning: "on" });
+  const { api, data, store } = await serve(t, { learning: "on" });
   const flow = answerFlow();
   flow.root.steps = [
     { node: "extract", label: "first", instructions: "Answer the question.", out: "Answer", as: "first" },
     { node: "agent", label: "forked", instructions: "Answer the question.", out: "Answer", as: "answer", context: "fork" },
   ];
-  const { runId, rows } = await ran(api, data, "forked-flow", "pi", flowFiles("answer", flow));
+  const { runId, rows } = await ran(api, data, store, "forked-flow", "pi", flowFiles("answer", flow));
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
   assert.match(JSON.stringify(result), /The learned workflow answer was not run: .*asks context fork/, JSON.stringify(result));
@@ -259,13 +263,13 @@ test("a learned workflow whose later agent node asks context fork is refused bef
 });
 
 test("a learned workflow whose later agent node asks max_turns over the learned runner's cap is refused before any node runs: no model request is sent", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { learning: "on" });
+  const { api, data, store } = await serve(t, { learning: "on" });
   const flow = answerFlow();
   flow.root.steps = [
     { node: "extract", label: "first", instructions: "Answer the question.", out: "Answer", as: "first" },
     { node: "agent", label: "long", instructions: "Answer the question.", out: "Answer", as: "answer", max_turns: 10 },
   ];
-  const { runId, rows } = await ran(api, data, "long-turns", "pi", flowFiles("answer", flow));
+  const { runId, rows } = await ran(api, data, store, "long-turns", "pi", flowFiles("answer", flow));
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
   assert.match(JSON.stringify(result), /The learned workflow answer was not run: .*asks max_turns 10/, JSON.stringify(result));
@@ -273,14 +277,14 @@ test("a learned workflow whose later agent node asks max_turns over the learned 
 });
 
 test("a learned workflow whose later node is a judge is refused before any node runs: no model request is sent", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { learning: "on" });
+  const { api, data, store } = await serve(t, { learning: "on" });
   const flow = answerFlow();
   flow.schemas.Check = { type: "object", properties: { right: { type: "boolean", description: "Is the answer right?" } }, required: ["right"] };
   flow.root.steps = [
     { node: "extract", label: "first", instructions: "Answer the question.", out: "Answer", as: "answer" },
     { node: "judge", label: "check", state: { answer: "{answer}" }, out: "Check", as: "check" },
   ];
-  const { runId, rows } = await ran(api, data, "late-judge", "pi", flowFiles("answer", flow));
+  const { runId, rows } = await ran(api, data, store, "late-judge", "pi", flowFiles("answer", flow));
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
   assert.match(JSON.stringify(result), /The learned workflow answer was not run: .*judge node \\?"check\\?" names the decision provider jev, which this host does not have/, JSON.stringify(result));
@@ -336,10 +340,10 @@ test("a learned workflow holding one of the server's secrets is left out, and th
 test("a learned workflow's model node of a tier the host has no model of (no AGENT_MODEL_FAST) runs on the run's own model", { timeout: 120_000 }, async (t) => {
   // learn-workflow-tiers.test.mjs: a tier the host has a model of runs on it, at its own price.
   withEnv(t, {}, ["AGENT_MODEL_FAST"]);
-  const { api, data } = await serve(t, { learning: "on" });
+  const { api, data, store } = await serve(t, { learning: "on" });
   const flow = answerFlow();
   flow.root.steps[0].tier = "fast";
-  const { rows, view } = await ran(api, data, "tiered", "pi", flowFiles("answer", flow));
+  const { rows, view } = await ran(api, data, store, "tiered", "pi", flowFiles("answer", flow));
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "success", JSON.stringify(result));
   assert.match(JSON.stringify(result), /\{\\?"answer\\?":42\}/);
@@ -350,8 +354,8 @@ test("a learned workflow's call node through a paid web tool is booked under the
   const { CANARY } = await import("./fixtures/faux-parallel.mjs");
   const file = join(await scratch(t), "parallel.jsonl");
   withEnv(t, { PARALLEL_API_KEY: CANARY, AGENTRUN_TEST_FAUX_PARALLEL_CALLS: file }, ["AGENTRUN_TEST_FAUX_PARALLEL_SEARCH"]);
-  const { api, data } = await serve(t, { learning: "on", fauxParallel: new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname });
-  const { runId, rows, view } = await ran(api, data, "paid", "pi", flowFiles("answer", searchFlow()), ["web_search"], { extra: { tool_settings: { web_search: { provider: "parallel" } } }, fields: { max_cost_usd: 1 } });
+  const { api, data, store } = await serve(t, { learning: "on", fauxParallel: new URL("./fixtures/faux-parallel.mjs", import.meta.url).pathname });
+  const { runId, rows, view } = await ran(api, data, store, "paid", "pi", flowFiles("answer", searchFlow()), ["web_search"], { extra: { tool_settings: { web_search: { provider: "parallel" } } }, fields: { max_cost_usd: 1 } });
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "success", JSON.stringify(result));
   assert.match(JSON.stringify(result), /registry\.example/, JSON.stringify(result));
@@ -368,9 +372,9 @@ test("a claude-agent run's learned workflow searches natively through the sessio
   const dir = await scratch(t);
   const upstream = join(dir, "upstream.jsonl");
   withEnv(t, { ANTHROPIC_API_KEY: "not-a-secret", ANTHROPIC_BASE_URL: await upstreamAt(t), AGENT_MODEL: "anthropic/claude-sonnet-5-5", AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: upstream }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_TEST_FAUX_UPSTREAM"]);
-  const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), faux: undefined });
+  const { api, data, store } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), faux: undefined });
   assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "native" } })).status, 200);
-  const { rows } = await ran(api, data, "native-flow", "claude-agent", flowFiles("answer", searchFlow()), ["web_search"]);
+  const { rows } = await ran(api, data, store, "native-flow", "claude-agent", flowFiles("answer", searchFlow()), ["web_search"]);
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "success", JSON.stringify(result));
   assert.match(JSON.stringify(result), /public\.example/, JSON.stringify(result));
@@ -388,9 +392,9 @@ test("a claude-agent run on Claude's dotted name (anthropic/claude-sonnet-5.5) w
   const guardLog = join(dir, "guard.jsonl");
   withEnv(t, { ANTHROPIC_API_KEY: "not-a-secret", ANTHROPIC_BASE_URL: base, AGENT_MODEL: "anthropic/claude-sonnet-5.5", AGENTRUN_TEST_FAUX_UPSTREAM_CALLS: upstream, NET_GUARD_LOG: guardLog, NODE_OPTIONS: `--import=${pathToFileURL(GUARD).href}` }, ["PARALLEL_API_KEY", "AGENT_MODEL_BASE_URL", "AGENTRUN_TEST_FAUX_UPSTREAM", "OPENROUTER_API_KEY", "NODE_OPTIONS", "NET_GUARD_LOG"]);
   assert.equal(process.env.ANTHROPIC_BASE_URL, base, "the server's env names it");
-  const { api, data } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), faux: undefined });
+  const { api, data, store } = await serve(t, { learning: "on", harnessTable: fauxTable(FAUX_HARNESS), faux: undefined });
   assert.equal((await api("PUT", "/settings/tools", { web_search: { provider: "native" } })).status, 200);
-  const { rows } = await ran(api, data, "dotted-flow", "claude-agent", flowFiles("answer", searchFlow()), ["web_search"]);
+  const { rows } = await ran(api, data, store, "dotted-flow", "claude-agent", flowFiles("answer", searchFlow()), ["web_search"]);
   const result = learnedResult(rows);
   assert.doesNotMatch(JSON.stringify(result), /no model to search on/, JSON.stringify(result));
   assert.equal(result?.tool_status, "success", JSON.stringify(result));
@@ -412,8 +416,8 @@ test("learned_workflow is a tool the gate holds like any: its settings key is le
 });
 
 test("on pi, learned_workflow set to deny for the agent is refused by the gate in its words: no node runs", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { learning: "on" });
-  const { runId, rows } = await ran(api, data, "denied-flow", "pi", flowFiles("answer", answerFlow()), [], { extra: { tool_settings: { [LEARNED_WORKFLOW_TOOL]: { permission: "deny" } } } });
+  const { api, data, store } = await serve(t, { learning: "on" });
+  const { runId, rows } = await ran(api, data, store, "denied-flow", "pi", flowFiles("answer", answerFlow()), [], { extra: { tool_settings: { [LEARNED_WORKFLOW_TOOL]: { permission: "deny" } } } });
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
   assert.match(JSON.stringify(result), /Permission denied: learned_workflow is set to deny for this agent/, JSON.stringify(result));
@@ -427,8 +431,8 @@ const callFlow = (tool, nested = false) => {
 };
 
 test("a learned workflow whose call node's tool was set to deny after it was learned is refused before any node runs, in #1601's words", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { learning: "on" });
-  const { runId, rows } = await ran(api, data, "denied-call", "pi", flowFiles("answer", callFlow("web_fetch")), ["web_fetch"], { extra: { tool_settings: { web_fetch: { permission: "deny" } } } });
+  const { api, data, store } = await serve(t, { learning: "on" });
+  const { runId, rows } = await ran(api, data, store, "denied-call", "pi", flowFiles("answer", callFlow("web_fetch")), ["web_fetch"], { extra: { tool_settings: { web_fetch: { permission: "deny" } } } });
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "failed", JSON.stringify(result));
   assert.match(JSON.stringify(result), /The learned workflow answer was not run: This workflow's call node calls web_fetch, which is set to deny for this agent\./, JSON.stringify(result));
@@ -464,8 +468,8 @@ test("a learned workflow's input line reads a reference in the schema's own defi
 });
 
 test("a learned workflow's call reads on the run's timeline as the workflow it ran and what it gave: 'Ran the learned workflow <name>' and its output in one line", { timeout: 120_000 }, async (t) => {
-  const { api, data } = await serve(t, { learning: "on" });
-  const { rows } = await ran(api, data, "labelled", "pi", flowFiles("answer", answerFlow()));
+  const { api, data, store } = await serve(t, { learning: "on" });
+  const { rows } = await ran(api, data, store, "labelled", "pi", flowFiles("answer", answerFlow()));
   const use = rows.find((row) => row.kind === "tool_use" && row.tool_name === LEARNED_WORKFLOW_TOOL);
   const result = learnedResult(rows);
   assert.equal(use?.summary, "Ran the learned workflow answer", JSON.stringify(use));
@@ -504,8 +508,8 @@ test("a learned workflow's output is handed back as text when it is text, one st
 
 test("a learned workflow whose last node writes a report in a fixed format hands the run that report line by line, never JSON-quoted, and the run's answer holds it so (#2412)", { timeout: 120_000 }, async (t) => {
   const { REPORT } = await import("./fixtures/faux-model.mjs");
-  const { api, data } = await serve(t, { learning: "on" });
-  const { rows, view } = await ran(api, data, "formatted", "pi", flowFiles("card-report", reportFlow()), [], { ask: "Use the learned workflow card-report on the week's card transactions." });
+  const { api, data, store } = await serve(t, { learning: "on" });
+  const { rows, view } = await ran(api, data, store, "formatted", "pi", flowFiles("card-report", reportFlow()), [], { ask: "Use the learned workflow card-report on the week's card transactions." });
   const result = learnedResult(rows);
   assert.equal(result?.tool_status, "success", JSON.stringify(result));
   assert.equal(view.status, "completed", JSON.stringify(view));
@@ -515,8 +519,8 @@ test("a learned workflow whose last node writes a report in a fixed format hands
 
 test("a caller that replies with a learned workflow's text output as it is answers exactly the report its last node wrote, and the call's row sums the report up line by line (#2412)", { timeout: 120_000 }, async (t) => {
   const { REPORT } = await import("./fixtures/faux-model.mjs");
-  const { api, data } = await serve(t, { learning: "on" });
-  const { rows, view } = await ran(api, data, "verbatim", "pi", flowFiles("card-report", reportFlow()), [], { ask: "Reply with the learned workflow card-report's output on the week's card transactions." });
+  const { api, data, store } = await serve(t, { learning: "on" });
+  const { rows, view } = await ran(api, data, store, "verbatim", "pi", flowFiles("card-report", reportFlow()), [], { ask: "Reply with the learned workflow card-report's output on the week's card transactions." });
   assert.equal(view.status, "completed", JSON.stringify(view));
   assert.equal(view.result.final_answer, REPORT, "the answer is the report, exactly");
   assert.equal(learnedResult(rows)?.summary, "Ran the learned workflow card-report: | Category | Count | Total | / |---|---|---| / | Office | 2 | 1663.10 | / Flagged: Best Buy / Grand total: $1663.10");

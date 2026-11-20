@@ -19,7 +19,7 @@ import { runInNewContext } from "node:vm";
 import { seal } from "../dist/sealing.js";
 import { storeOn } from "./store-helpers.mjs";
 import { stranger } from "./fixtures/stranger.mjs";
-import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
+import { landWorkflows, promoteChecked, startAt } from "./learned-workflow-seed-support.mjs";
 
 // Namespaces: a name the runner does not export reads as undefined, and its assertion says what is missing.
 const host = await import("../dist/runner/run-child-host.js");
@@ -117,11 +117,12 @@ test("a run's process gets no decision or tier key its claim's learned workflows
   const plain = heldOf(store, { env });
   assert.deepEqual(await plain.decisionKeys(["parallel"]), {}, "a run with no learned workflow naming parallel");
   assert.deepEqual((await plain.tierModelKeys(["strong"])).keys, {}, "a run with no learned workflow naming the strong tier");
-  // A run whose seed lays a learned workflow asking Parallel: its key once the runner chose it, and no other provider's.
+  // A run whose seed lays a checked workflow asking Parallel: its key once the runner chose it, and no other provider's.
   const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "run-child-held-"));
   t.after(() => rmSync(data, { recursive: true, force: true }));
   const flow = judgeFlow("on-parallel", "parallel");
   const sha = await landWorkflows(data, "agent-own", [{ name: "on-parallel", description: "Checks a certificate", workflow: flow }]);
+  await promoteChecked(store.settings, "agent-own", [{ name: "on-parallel", workflow: flow }]);
   const learning = heldOf(store, { env, data, launch: { input: { content: "Hello." }, learning: startAt(sha) } });
   assert.deepEqual(await learning.decisionKeys(["parallel"]), {}, "none before the runner chose the claim's workflows");
   const first = await learning.learnedFirst({ laid: true });

@@ -68,9 +68,11 @@ export type LearningCounts = { merged: number; dropped: Record<string, number>; 
 export type ImpactSide = { runs: number; median_duration_s: number };
 /** The agent's runs before its first learned item against its runs that started from one; null until each side has two. */
 export type Impact = { before: ImpactSide; after: ImpactSide } | null;
+/** Configuration readiness only: the server does not make a paid model request to report this. */
+export type LearningModelAccess = { location: "server" | "native"; ready: boolean; model: string | null; needs: "key" | "model" | null; reason: string | null };
 /** GET /v2/agents/{id}/learning. `main` is null until the agent first learns; `corrections` is corrections.md's text on
- *  main, empty when there is none. */
-export type AgentLearning = { agent: string; main: string | null; corrections: string; workflows: LearnedItem[]; log: Page<LearningChange>; counts: LearningCounts; impact: Impact };
+ *  main, empty when there is none. `learning_model` is absent on older servers. */
+export type AgentLearning = { agent: string; main: string | null; corrections: string; workflows: LearnedItem[]; log: Page<LearningChange>; counts: LearningCounts; impact: Impact; learning_model?: LearningModelAccess };
 /** GET and PUT /v2/agents/{id}/learning/corrections: the file's whole text, its version (the If-Match of a PUT) and the
  *  most bytes it holds. */
 export type Corrections = { text: string; etag: string; cap_bytes: number };

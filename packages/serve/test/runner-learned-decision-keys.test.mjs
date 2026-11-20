@@ -15,7 +15,7 @@ import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { specFor } from "./runner-spec-support.mjs";
 import { linkHarnesses } from "./support.mjs";
-import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
+import { landWorkflows, promoteChecked, startAt } from "./learned-workflow-seed-support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { claimSecrets, learnedDecisionKeys } = await import("../dist/runner/claim-secrets.js");
@@ -122,8 +122,9 @@ async function piHeld(t, flows) {
     launch,
     ledger,
     redact: cut,
-    before: async (_server, _key, dir) => {
+    before: async (server, _key, dir) => {
       if (flows.length) launch.learning = startAt(await landWorkflows(dir, "agent-1", flows));
+      await promoteChecked(server.settings, "agent-1", flows);
     },
   });
   return held;
@@ -153,6 +154,7 @@ async function codexHeld(t, flows) {
     rmSync(dir, { recursive: true, force: true });
   });
   const sha = flows.length ? await landWorkflows(dir, "agent-1", flows) : undefined;
+  await promoteChecked(server.settings, "agent-1", flows);
   await server.agents.create({ id: "agent-1", name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness: "codex", tools: ["read"], learning: true } });
   const launch = { input: { content: "Check it." }, title: "t", place: { mode: "runner" }, harness: "codex", model: { provider: "openai", modelId: "gpt-6.1-sol" }, ...(sha !== undefined ? { learning: startAt(sha) } : {}) };
   await server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });

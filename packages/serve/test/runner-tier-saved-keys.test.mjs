@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
+import { landWorkflows, promoteChecked, startAt } from "./learned-workflow-seed-support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
@@ -86,6 +86,7 @@ for (const harness of ["pi", "claude-agent"]) {
   test(`${harness}: a learned fast node on another provider's model whose key is saved alone runs on it, the saved key on its request`, { timeout: 60_000 }, async (t) => {
     const { dir, server, store, gw, env } = await world(t, harness);
     const seed = await landWorkflows(dir, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: fastFlow }]);
+    await promoteChecked(server.settings, "agent-1", [{ name: "answer", workflow: fastFlow }]);
     const launch = { input: { content: ASK }, title: "t", place: { mode: "runner" }, harness, model: { provider: "anthropic", modelId: "claude-sonnet-5-5" }, learning: startAt(seed) };
     await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
     await server.flush?.();

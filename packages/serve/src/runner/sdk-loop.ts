@@ -5,10 +5,11 @@ import { setTimeout as delay } from "node:timers/promises";
 import { BACKGROUND_CONTEXT, withAbortSignal } from "@earendil-works/chord/context";
 import { ROOT_CONVERSATION_ID, type StorageWrite } from "@earendil-works/pi-durable";
 import { freeModelRequestsOf } from "@parcha/agentrun-kernel/kernel/cap";
-import { learningFolderOf } from "../learning.js";
+import { learningFolderOf, secretsShown } from "../learning.js";
 import { said, STOPPED } from "../learning-words.js";
 import type { RunLaunch } from "../run-launch.js";
 import { closeSdkInbox, sdkInbox } from "../sdk/runs.js";
+import { settleSdkCheck } from "../sdk/check.js";
 import type { RunPatch, Store } from "../store/store.js";
 import { runPathOverStore } from "../store-reads/learning.js";
 import type { AdapterSpecDeps } from "./adapter-run-spec.js";
@@ -175,6 +176,7 @@ export function createSdkLoop(
                   if (event.type === "text") partial = (partial + event.text).slice(-16_000);
                   else if (event.type === "session")
                     entries.push({ kind: `${MARK}.session`, data: { session_id: event.session_id } });
+                  else if (event.type === "workflow_check") entries.push({ kind: `${MARK}.workflow_check`, data: event });
                   else if (event.type === "tool") {
                     if (event.status === "started") {
                       liveTools.set(event.id, { callId: event.id, name: event.name, args: event.input });
@@ -262,6 +264,11 @@ export function createSdkLoop(
                   },
                 },
               ]);
+            await settleSdkCheck({
+              store: host.store, agentId: source.agentId, revisionId: source.revisionId, launch, inbox,
+              shown: async () => secretsShown(Object.values(await storeSecrets(host.store, host.sealKey, host.data)), { local: true }),
+              log: () => {},
+            });
             if (result.status === "completed") {
               const end = learningEndOfRun(launch, {
                 store: host.store,

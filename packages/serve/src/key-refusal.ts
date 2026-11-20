@@ -4,7 +4,7 @@
 // count, a file name, a duration, another service's status) is no refused key, and the error is left as it is.
 import { DEFAULT_HARNESS } from "./harness.js";
 import { harnessOf } from "./harness-table.js";
-import { redactSecrets, valueMatcher } from "./learn/secrets.js";
+import { endsInScheme, redactSecrets, valueMatcher } from "./learn/secrets.js";
 import { hostModel, MODEL_KEYS } from "./model.js";
 import { modelWire, openRouterOnly, WIRES } from "./provider.js";
 import { savedGatewayIn } from "./model-gateway.js";
@@ -88,7 +88,8 @@ export const answerPasses = { count: 0 };
 /** `text`, a run's answer as serve serves it (its final answer, or a string in its workflow output), with no held secret
  *  in it, and NEVER cut: an answer is shown whole. The same rule as redacted() (redactSecrets over `secrets`), over the
  *  whole text, read in pieces of about ANSWER_PIECE characters cut at whitespace. No form of a held value redactSecrets
- *  finds as it stands (as written, JSON-escaped, base64, hex) holds whitespace, so a cut there splits none. A run of more
+ *  finds as it stands (as written, JSON-escaped, base64, hex) holds whitespace, so a cut there splits none; the one shape
+ *  read across whitespace, a Bearer scheme and its token, is never cut between the two (endsInScheme). A run of more
  *  than ANSWER_PIECE characters with no whitespace is no person's text and is shown as "[redacted]", unread. A value split
  *  by whitespace across a cut, or a form only found across pieces, still shows to one valueMatcher pass over the joined
  *  output, and then the whole answer is "[redacted]", as redactSecrets does with a text that still holds a value. */
@@ -109,6 +110,20 @@ export function redactedAnswer(text: string, secrets: readonly string[]): string
         continue;
       }
       to = from + space + 1;
+      // A cut after a Bearer scheme would leave its token at the head of the next piece, where no shape reads it (the
+      // shape is the scheme, then the token). The cut moves back to the whitespace before the scheme; with none in this
+      // piece, the scheme and its token are read as one run, to the next whitespace, as a run with no whitespace is.
+      if (endsInScheme(text.slice(from, to))) {
+        const before = text.slice(from, to).trimEnd().search(/\s[^\s]*$/);
+        if (before > 0) to = from + before + 1;
+        else {
+          const next = text.slice(to).search(/\s/);
+          to = next < 0 ? text.length : to + next;
+          parts.push(to - from > ANSWER_PIECE ? "[redacted]" : redactSecrets(text.slice(from, to), secrets, Buffer.byteLength(text.slice(from, to))));
+          from = to;
+          continue;
+        }
+      }
     }
     const piece = text.slice(from, to);
     parts.push(redactSecrets(piece, secrets, Buffer.byteLength(piece)));

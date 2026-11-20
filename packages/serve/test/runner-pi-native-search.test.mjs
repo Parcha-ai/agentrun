@@ -158,7 +158,7 @@ test("a pi run with native web_search whose answer only mentions a search call (
 // A learned workflow's call node that names web_search runs its tool's effect, not the agent's binding: on a pi run whose
 // web_search is native, its search goes through the run's models as the agent's own search does, labelled web_search.
 const { specFor } = await import("./runner-spec-support.mjs");
-const { landWorkflows, startAt } = await import("./learned-workflow-seed-support.mjs");
+const { landWorkflows, promoteChecked, startAt } = await import("./learned-workflow-seed-support.mjs");
 const { LEARNED_WORKFLOW_TOOL } = await import("../dist/learned-workflow.js");
 const SEARCH_FLOW = { v: 2, name: "search-one", schemas: { In: { type: "object", properties: { q: { type: "string" } }, required: ["q"] }, Found: { type: "object" } }, input: { schemaId: "In" }, output: { schemaId: "Found", path: "found" }, root: { node: "call", label: "search", via: "tool", tool: "web_search", args: { query: "{q}" }, out: "Found", as: "found", deadline_s: 30 } };
 
@@ -173,8 +173,9 @@ test("a learned workflow's web_search call node on a pi run with native search s
     body: { learning: true, tools: ["web_search"] },
     launch,
     ledger,
-    before: async (_server, _key, dir) => {
+    before: async (server, _key, dir) => {
       launch.learning = startAt(await landWorkflows(dir, "agent-1", [{ name: "search-one", description: "Searches once", workflow: SEARCH_FLOW }]));
+      await promoteChecked(server.settings, "agent-1", [{ name: "search-one", workflow: SEARCH_FLOW }]);
     },
   });
   const tool = spec.session.tools.find((one) => one.name === LEARNED_WORKFLOW_TOOL);

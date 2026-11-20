@@ -1,6 +1,6 @@
 # Add self-improvement to an existing Vercel eve agent
 
-Mount the AgentRun eve extension in your existing eve project. Continue invoking eve normally: it keeps the model, tools, credentials, approvals, channels and durable execution. AgentRun records each supported turn, compiles repeated tool procedures, and supplies the committed revision to the next turn.
+Mount the AgentRun eve extension in your existing eve project. Continue invoking eve normally: it keeps the model, tools, credentials, approvals, channels and durable execution. AgentRun records each supported turn, compiles repeated tool procedures, checks a draft against an independent native answer, and supplies promoted workflows to later turns.
 
 This integration targets **eve 1.0.0**, **Node 24.22.3 or newer**, and an AgentRun server supporting the `eve` SDK runtime. The client, extension and server must come from the matching reviewed candidate or release. `@parcha/agentrun-eve` is currently held from npm publication; a built candidate can be installed without an AgentRun checkout.
 
@@ -53,13 +53,14 @@ For each supported turn:
 1. Before the first ordinary model call, the extension registers one AgentRun run and pins its corrections/workflow revision.
 2. Dynamic instructions add the pinned owner corrections while eve keeps its original tools and execution.
 3. When eve settles the turn, the extension combines durable history with its bounded private hook-event buffer and reports the outcome. This handles eve flushing a step only after its hooks finish.
-4. With workflow bindings and enough completed traces, AgentRun compiles a repeatable procedure, checks its structure and synthesized dry run, and commits a passing draft. A future native turn can call it with fresh inputs.
+4. With workflow bindings and enough completed traces, AgentRun compiles a repeatable procedure, checks its structure and synthesized dry run, and commits a passing draft.
+5. A fresh native turn receives that draft only as a reserved check, outside its model context. Eve answers with its original tools. The shared client checks the draft in process against the completed native turn's recorded tool evidence; the server compares the two answers. Only a promoted workflow is available to a later turn.
 
 The answer can finish before compilation. Wait for the recorded learning result before testing the new workflow. A pinned revision proves delivery; actual original callbacks and canonical server events prove execution. Owner corrections can be edited through the console or version-checked Corrections API; they are not automatically inferred from ordinary SDK task messages.
 
 ## Retry and evidence boundaries
 
-A deterministic key ties admission to the eve session and turn, so repeating admission after a lost response resolves to the same AgentRun receipt. Committed turn evidence is uploaded with stable sequence numbers. Retrying evidence delivery does not rerun the model or original tools. The next turn retries pending delivery from the same session; keep eve's durable state and stream retention intact.
+A deterministic key ties admission to the eve session and turn, so repeating admission after a lost response resolves to the same AgentRun receipt. Committed turn evidence is uploaded with stable sequence numbers. Retrying evidence delivery does not rerun the model or original tools. The next turn makes a bounded retry of pending delivery from the same session. A refused earlier upload is logged for that receipt and does not fail the new native turn. If the bounded backlog is full, the native turn continues without new learning admission until entries resolve or expire. Keep eve's durable state and stream retention intact; these retries do not rerun the original model or tools.
 
 Missing, unsupported or oversized evidence is not treated as a complete training trace. Failed and cancelled turns remain observable without silently committing new learning. Usage that the native runtime does not report stays unknown. Evidence writes expire one hour after admission; an expired task is not replayed to recover telemetry.
 
@@ -67,7 +68,7 @@ The base extension supplies owner-authored corrections. It does not install loca
 
 Turning learning Off stops delivery to future turns. It cannot erase learning already included in an open conversation. Use a fresh session for the Off comparison.
 
-## Execute committed workflows with existing tools
+## Execute promoted workflows with existing tools
 
 Optionally give the extension an interpreter and a catalog of the **same functions** your existing authored eve tools execute:
 
@@ -108,24 +109,24 @@ export default agentrun({
 
 An `execute(args, ctx)` callback receives an abort signal, AgentRun run id, workflow name and idempotency key. Continue enforcing the application's authorization inside the callback or policy. Names, input/output schemas and read-only declarations must describe the actual original tool. `nativeName` explicitly maps eve's recorded tool name to the canonical workflow name; the extension does not infer permissions or tools from the model provider.
 
-Workflow learning (`learning: true`, or an object such as `learning: { compile_after: 5 }`) enables normal compilation of repeated successful patterns. The default threshold is 20 completed native runs; prior completed Off runs also count. A smaller threshold changes when compilation is attempted, not the structural or dry-run checks. Passing drafts commit directly. The SDK can offer them while a separate runtime promotion check is still checking or holding them; do not describe commitment as independent promotion. Initial mount settings apply only to new ids. Change an existing agent through the version-checked Agents API or console.
+Workflow learning (`learning: true`, or an object such as `learning: { compile_after: 5 }`) enables normal compilation of repeated successful patterns. The default threshold is 20 completed native runs; prior completed Off runs also count. A smaller threshold changes when compilation is attempted, not the structural or dry-run checks. Passing drafts commit directly but are withheld from ordinary execution. A fresh native turn supplies an independent answer and its recorded tool evidence for an in-process shadow check. The server promotes the draft only when that check answers independently and agrees with the native answer. The initial check uses one task (`n = 1`) and compares exact answers, or the owner's configured `agree_on` JSON fields; it does not invoke a semantic grader. A mismatch, incomplete evidence or a skipped call leaves it unavailable. Compilation is not promotion. Initial mount settings apply only to new ids. Change an existing agent through the version-checked Agents API or console.
 
-On a later native turn, the extension pins the committed workflow revision and advertises its name and input schema. Eve can call `agentrun__learned_workflow` with `{ name, input }`. Within that native tool execution the extension opens a short-lived MCP server on localhost inside the eve application, invokes the workflow through MCP, and closes it. The interpreter runs only explicitly bound original callbacks with fresh arguments. AgentRun stores compiled workflows and receives execution records; tools and their credentials stay with eve. There is no separate public MCP service to deploy.
+On a later native turn, the extension pins the promoted workflow revision and advertises its name and input schema. Eve can call `agentrun__learned_workflow` with `{ name, input }`. Within that native tool execution the extension calls the shared workflow executor directly in process. Eve does not open a localhost MCP server for this call. The interpreter runs only explicitly bound original callbacks with fresh arguments. AgentRun stores compiled workflows and receives execution records; tools and their credentials stay with eve. There is no separate public MCP service to deploy.
 
-The model sees the workflow's textual result. AgentRun records a workflow invocation and child tool metadata; private callback results, MCP credentials and signed evidence do not become model instructions. Original native tools remain available. A workflow is an optional execution path, not an automatic side effect of receiving learned context.
+The model sees the workflow's textual result. AgentRun records a workflow invocation and child tool metadata; private callback results, run credentials and signed evidence do not become model instructions. Original native tools remain available. A workflow is an optional execution path, not an automatic side effect of receiving learned context.
 
 The first eve workflow bridge supports **explicitly read-only callbacks**. It refuses model/judge adapters and does not grant shell or workflow code execution. A tool-only workflow needs no Jev key; ordinary eve model calls and AgentRun's compiler calls still need their own configured routes. The extension permits one logical workflow invocation per turn. A durably recorded result replays without invoking callbacks again; a native retry before that checkpoint may repeat read-only callbacks. This is not exactly-once execution, and uncertain workflows are not automatically retried by the bridge. Turning full learning Off also blocks a new workflow invocation in a turn admitted earlier; an invocation already running is not undone.
 
 Keep the mount named `agent/extensions/agentrun.ts`. If you intentionally use another name, set `workflows.toolName` to the exact namespaced eve runtime tool name. That name is used for evidence correlation as well as instructions.
 
-The [executable workflow example](../../examples/eve-learning/README.md#learn-and-execute-a-workflow-with-the-original-tools) proves run-owned compilation, static/dry-run validation, commitment and changed-input reuse through the same two callbacks, and a fresh Off control on the same agent. It saves resumable evidence and stops on direct-tool fallback, pending review or incomplete history.
+The [executable workflow example](../../examples/eve-learning/README.md#learn-and-execute-a-workflow-with-the-original-tools) proves run-owned compilation, static/dry-run validation, an independent shadow check and promotion before changed-input reuse through the same two callbacks, and a fresh Off control on the same agent. It saves resumable evidence and stops on direct-tool fallback, pending review or incomplete history.
 
 ## Run the proof
 
 The [release-reporter example](../../examples/eve-learning/README.md) contains two distinct proofs:
 
 - **Owner corrections:** original baseline → connect → Off task → explicit owner correction → fresh-session reuse with different tool data → same-agent Off control. This proves correction delivery, not automatic learning.
-- **Automatic workflows:** original baseline → connect the original callbacks → Off task → enable workflow learning → repeated native tasks → new compiled workflow → fresh-session MCP execution with original callbacks → same-agent Off control. Compiler attempts/digest, run-owned commit, fresh callback observations and the server's parent/child timeline are required. The validator never writes corrections or seeds workflows.
+- **Automatic workflows:** original baseline → connect the original callbacks → Off task → enable workflow learning → repeated native tasks → new compiled workflow → independent native shadow check → promotion → fresh-session execution with original callbacks → same-agent Off control. Compiler attempts/digest, run-owned commit, fresh callback observations and the server's parent/child timeline are required. The validator never writes corrections or seeds workflows.
 
 Both checkpoint confirmed sessions and stop on uncertain submissions rather than resending paid tasks.
 

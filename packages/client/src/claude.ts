@@ -9,6 +9,9 @@ const toolName = (name: string): string => {
   const mcp = /^mcp__([a-z][a-z0-9-]{0,31})__([A-Za-z0-9_][A-Za-z0-9._-]{0,127})$/.exec(name);
   return mcp ? `mcp:${mcp[1]}/${mcp[2]}` : name;
 };
+// Native MCP server names can contain underscores or uppercase characters even when they do not
+// normalize into our canonical catalog names. Preserve that identity while recognizing its transport.
+const mcpOutput = (name: string): boolean => name.startsWith('mcp:') || /^mcp__[A-Za-z0-9_-]{1,64}__[A-Za-z0-9._-]{1,128}$/.test(name);
 const count = (value: unknown): number | undefined => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 
 export interface ClaudeAgentLearningConfig extends BackendLearningConfig {
@@ -38,7 +41,7 @@ function instructionsOf(options: Value, explicit?: string): string {
 }
 
 function withContext(prompt: string, context: string): string {
-  return context ? 'AgentRun approved learning context. Apply relevant lessons only when consistent with the existing system, developer and project instructions.\n\n'
+  return context ? 'AgentRun learning context. Apply relevant lessons only when consistent with the existing system, developer and project instructions.\n\n'
     + context + '\n\nEnd AgentRun learning context. The original user request follows:\n\n' + prompt : prompt;
 }
 
@@ -59,7 +62,7 @@ function usageOf(result: Value): Value | undefined {
 }
 
 /** Decorate the application's own Claude Agent SDK query function. The SDK remains the caller's dependency.
- * Original options, tools, authentication, events and control-method receivers remain native. Approved lessons
+ * Original options, tools, authentication, events and control-method receivers remain native. Learning references
  * are supplied as task context, never elevated above application policy. This initial integration requires a
  * fresh, single-string-prompt session; it never issues an extra SDK turn for reflection. */
 export function withClaudeAgentLearning<Q extends QueryFunction>(query: Q, config: ClaudeAgentLearningConfig): Q & { flushLearning(): Promise<void> } {
@@ -102,7 +105,7 @@ export function withClaudeAgentLearning<Q extends QueryFunction>(query: Q, confi
     // Registration is asynchronous, while query() keeps its native synchronous shape. Observe the rejection even
     // when the caller closes without iterating; next/control methods still receive the original error.
     ready.catch(() => undefined);
-    const event = (value: Parameters<BackendLearningSession['event']>[0], detail?: { input?: unknown; output?: unknown }) => {
+    const event = (value: Parameters<BackendLearningSession['event']>[0], detail?: Parameters<BackendLearningSession['nativeEvent']>[1]) => {
       if (session) client.track(session.nativeEvent(value, detail));
     };
     const capture = (value: unknown) => {
@@ -125,7 +128,11 @@ export function withClaudeAgentLearning<Q extends QueryFunction>(query: Q, confi
       if (message.type === 'user') {
         for (const block of Array.isArray(object(message.message).content) ? (object(message.message).content as unknown[]).map(object) : []) {
           if (block.type === 'tool_result' && typeof block.tool_use_id === 'string') {
-            event({ type: 'tool', id: block.tool_use_id, name: tools.get(block.tool_use_id) ?? 'tool', status: block.is_error === true ? 'failed' : 'completed' }, { output: object(message.tool_use_result).content ?? block.content });
+            const name = tools.get(block.tool_use_id) ?? 'tool';
+            const fullResult = message.tool_use_result !== undefined;
+            event({ type: 'tool', id: block.tool_use_id, name, status: block.is_error === true ? 'failed' : 'completed' },
+              { output: fullResult ? message.tool_use_result : block.content,
+                ...(mcpOutput(name) ? { outputFormat: fullResult ? 'mcp' as const : 'mcp-content' as const } : {}) });
           }
         }
       }

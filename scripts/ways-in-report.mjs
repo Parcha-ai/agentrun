@@ -20,7 +20,7 @@ export const ROWS = [
   { job: 'coolify', name: 'Coolify', walks: "main's template and image on Coolify: deploy, first run and its page in the console, remove (selfhost-walk.yml)" },
   { job: 'dokploy', name: 'Dokploy', walks: "main's template and image on Dokploy: deploy, first run and its page in the console, remove (selfhost-walk.yml)" },
   { job: 'railway-hosted', name: 'Railway (hosted)', walks: "the README's Deploy on Railway template as published, on Railway: deploy, setup with the token, a first run on a capped key, deleted (deploy/railway/publish-and-walk.sh --walk)" },
-  { job: 'render-hosted', name: 'Render (hosted)', walks: "render.yaml's service as the Render button makes it, on Render: deploy, setup with the token, a first run on a capped key, deleted (deploy/render/walk.mjs)" },
+  { job: 'render-hosted', name: 'Render (hosted)', walks: "render.yaml's service, made through Render's API, on Render: deploy, setup with the token, a first run on a capped key, deleted (deploy/render/walk.mjs)" },
 ];
 const PREFIX = 'ways in: ';
 const SUFFIX = ' broke';

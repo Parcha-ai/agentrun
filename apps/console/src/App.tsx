@@ -658,10 +658,10 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
   const learningCap = caps ? ((caps as unknown as { features?: { learning?: "on" | "off" } }).features?.learning ?? null) : undefined;
   editorCaps.learning = learningCap ?? undefined;
   // While no managed model is ready, read capabilities again every MODEL_CHECK_MS and when the page returns to view,
-  // so execution setup clears once a model is configured. Native connections use their own authentication.
+  // so execution and learning setup clear once their models are configured. Native connections use their own authentication.
   const modelsReady = caps?.models?.ready;
   useEffect(() => {
-    if (modelsReady !== false) return;
+    if (modelsReady !== false && caps?.learning_model?.ready !== false) return;
     // Through the one guarded reader, so an older answer never undoes a newer one. The timer starts no read while its last
     // one is still answering: a read slower than MODEL_CHECK_MS would otherwise be overtaken by the next tick's, and its
     // answer dropped. Coming back into view always reads now, and that newer answer is the one that lands.
@@ -674,7 +674,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
     const timer = setInterval(tick, MODEL_CHECK_MS);
     window.addEventListener("focus", again);
     return () => { clearInterval(timer); window.removeEventListener("focus", again); };
-  }, [v2, modelsReady]);
+  }, [v2, modelsReady, caps?.learning_model?.ready]);
   // The server's ChatGPT sign-in (chatgpt/1), read each time no model is ready: the first screen's card and the bar offer it
   // first. Null before it is read and on a server without it.
   const [plan, setPlan] = useState<ChatGPTView | null>(null);
@@ -728,7 +728,7 @@ function ConsolePage({ v2, onSignedOut }: ConsoleProps) {
                   plan={<><ChatGPTRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /><ClaudeLoginRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /><ModelGatewayRow v2={v2} writable={secretsWritable} whyNot={secretsWhyNot} onChange={() => void readCaps()} /></>} />}
           </Settings>
         : where.section === "dojo"
-        ? <AgentDojo key={refreshed} v2={v2} server={learningCap} />
+        ? <AgentDojo key={refreshed} v2={v2} server={learningCap} modelAccess={caps?.learning_model} />
         : where.section === "mission"
         // Source connection and history browsing need no managed model; setup follows an explicit choice to run here.
         ? <div className="flex h-full flex-col">

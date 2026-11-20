@@ -6,7 +6,7 @@ import { learningState, workflowInvocations } from '../lib/state.js';
 import { executeLearnedWorkflow, workflowInvocation } from '../lib/workflows.js';
 
 const tool = defineTool({
-  description: 'Execute one approved AgentRun workflow with its exact name and fresh input using the original read-only tools. Return the completed textual result verbatim. At most one workflow invocation per turn; never retry a failed or uncertain invocation.',
+  description: 'Execute one compiled AgentRun workflow that fits the current task with its exact name and fresh input using the original read-only tools. Return the completed textual result verbatim. At most one workflow invocation per turn; never retry a failed or uncertain invocation.',
   inputSchema: z.object({ name: z.string().min(1).max(256), input: z.record(z.string(), z.unknown()) }).strict(),
   availableInSubagents: false,
   async execute(input, ctx) {

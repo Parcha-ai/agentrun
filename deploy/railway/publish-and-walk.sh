@@ -13,7 +13,8 @@
 #       Also the first run a person makes. OPENROUTER_API_KEY (from the environment or stdin, as the token is) is saved
 #       in the console's Settings with the session the setup signed in, then a no-tool "Release notes" agent on pi runs
 #       to completion over the API with the deploy's AGENTRUN_TOKEN. The run is capped at $1.
-#   ... publish-and-walk.sh WORKSPACE_ID --walk CODE       walks the template CODE and publishes nothing (a release's check)
+#   ... publish-and-walk.sh WORKSPACE_ID --walk [CODE]     walks the template CODE (else deploy/README.md's button's) and
+#       publishes nothing (a release's check)
 #   ... publish-and-walk.sh WORKSPACE_ID --template CODE   walks and publishes CODE, a template made in Railway's editor
 #   deploy/railway/publish-and-walk.sh --dry-run [WORKSPACE_ID]
 #       No token, no network: the plan of a first run, every call in order with its variables, against a stand-in.
