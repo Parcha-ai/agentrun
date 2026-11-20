@@ -388,6 +388,24 @@ test("harness-check cuts the recipe's key from its report and its output: an age
   assert.match(run.report.stage3.mcp_tool.error ?? "", /the vendor refused the key \[redacted\] \(401\)/, "the agent's words, its key cut in place");
 });
 
+/** Each `n`-character piece of `key`: text holding any of them holds part of the key. */
+const piecesOf = (key, n = 8) => Array.from({ length: key.length - n + 1 }, (_, i) => key.slice(i, i + n));
+
+test("harness-check leaves no piece of the recipe's key where the agent's last words were cut inside it (the key, then 280 characters)", { skip: linux, timeout: 120_000 }, async (t) => {
+  // A fake literal, never a real key: its pieces match nothing else a report says.
+  const key = "fake-Qz7Wv9Lm2Np4Rs6Tx8Yb3Kc5Hd";
+  // " (401) " and 273 more: 280 characters after the key, so the last 300 of its words start 20 characters into it.
+  const { data, file } = await installed(t, recipeOf(undefined, { keys: ["MODEL_AGENT_API_KEY"], env: { MODEL_AGENT_MODE: "leak-key", MODEL_AGENT_LEAK_AFTER: "273" }, model: { billing: "plan", maxTurns: 8, maxToolCalls: 8, hosts: ["vendor.example.invalid"] } }));
+  const run = await check(t, file, data, cliEnv({ MODEL_AGENT_API_KEY: key }));
+  assert.equal(run.status, 1, "an agent that dies at each prompt fails the check");
+  assert.ok(run.written, "the report was written");
+  for (const [where, text] of [["the report on disk", run.written], ["stdout", run.stdout], ["stderr", run.stderr]]) {
+    const held = piecesOf(key).filter((piece) => text.includes(piece)).length;
+    assert.equal(held, 0, `${where} holds ${held} 8-character pieces of the recipe's key`);
+  }
+  assert.match(run.report.stage3.mcp_tool.error ?? "", /\(401\) \.{20}/, "the agent's last words are still there");
+});
+
 /** What a report says, without what differs run to run (pids, paths, digests, times): its result, its refusal's code,
  *  its facts, each stage row's name, result and fields, and its failures. */
 const shapeOf = (report) => ({
