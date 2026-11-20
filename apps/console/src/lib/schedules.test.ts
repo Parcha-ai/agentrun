@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ClientError } from "./client";
+import { agentInputOf } from "./inputForm";
 import { bodyOf, capWords, disabledWords, type Draft, draftOf, type Schedule, emptyDraft, firingWords, instantOf, issuesOf, patchOf, scheduleLine, span, utcWhen, wallOf } from "./schedules";
 import type { Firing } from "./v2";
 
@@ -227,7 +228,38 @@ describe("a 422, by field", () => {
       rest: ["source.kind is schedule"],
     });
   });
+  it("keeps an issue at one of the agent's input fields whole, to say at that field; one at any other part of the input goes under the message", () => {
+    const e = new ClientError(422, "input_invalid", "input.company is required");
+    e.fields = [
+      { field: "target.input.company", reason: "missing", message: "input.company is required" },
+      { field: "target.input.topics.1", reason: "wrong_type", message: "input.topics[1] is text" },
+      { field: "target.input.other", reason: "not_allowed", message: "input.other is not allowed" },
+    ];
+    expect(issuesOf(e, ["company", "topics"])).toEqual({ fields: { "target.input": "input.other is not allowed" }, rest: [], input: e.fields.slice(0, 2) });
+  });
   it("is the whole message for any other refusal", () => {
     expect(issuesOf(new ClientError(409, "scope_taken", "another trigger listens there"))).toEqual({ fields: {}, rest: ["scope_taken: another trigger listens there"] });
+  });
+});
+
+// A trigger's run takes its agent's typed input (lib/inputForm.ts): an edit keeps what the form doesn't show of it, and a
+// field emptied in the form is left out.
+describe("a schedule's typed input", () => {
+  const shape = agentInputOf({ type: "object", properties: { company: { type: "string" }, note: { type: "string" }, topics: { type: "array", items: { type: "string" } } }, required: ["company"] });
+  const typed = (input: Record<string, unknown>) => trigger({ target: { kind: "start_run", agent_id: "kyb", input, max_cost_usd: 2 } });
+  it("reads an input back into its fields, and an edit left alone changes nothing", () => {
+    const t = typed({ company: "Acme GmbH", note: "first", topics: ["a", "b"], extra: { deep: 1 } });
+    expect(draftOf(t).values).toEqual({ company: "Acme GmbH", note: "first", topics: "a\nb" });
+    expect(patchOf(t, bodyOf({ ...draftOf(t), shape }).body!)).toEqual({});
+  });
+  it("leaves out a field emptied in the form, and keeps what no field shows", () => {
+    const t = typed({ company: "Acme GmbH", note: "first", extra: { deep: 1 } });
+    const d = draftOf(t);
+    expect(patchOf(t, bodyOf({ ...d, shape, values: { ...d.values, note: "" } }).body!).target?.input).toEqual({ company: "Acme GmbH", extra: { deep: 1 } });
+  });
+  it("needs no message when the schema requires another field, and says a whole input that is no JSON object", () => {
+    expect(bodyOf({ ...draft({ content: "", cron: "30 1 * * *" }), shape, values: { company: "Acme GmbH" } }).body?.target?.input).toEqual({ company: "Acme GmbH" });
+    const json = agentInputOf({ type: "object", properties: { filters: { type: "object" } } });
+    expect(bodyOf({ ...draft({ cron: "30 1 * * *" }), shape: json, json: "[1]" }).issues).toEqual({ "target.input": "The agent's input is a JSON object: this is not." });
   });
 });
