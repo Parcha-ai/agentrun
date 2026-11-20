@@ -1073,7 +1073,23 @@ test("each computer's daemon is in the report under its own name and role, with 
 	assert.ok(lines.includes("note fake-2 (gpu.present): fence: userns-netns"), lines.join("\n"));
 	const plain = await runConformance(fakeComputers().provider, { image: IMAGE, cases: [pass("health.ping")] });
 	assert.deepEqual(plain.daemons.map((one) => Object.hasOwn(one, "fence")), [false], "no fence in hello, none in the report");
+	assert.deepEqual(plain.daemons.map((one) => Object.hasOwn(one, "windowManager")), [false], "no window manager in hello, none in the report");
 	assert.ok(formatReport(plain).split("\n").includes("daemon fake-1 (shared): computerd 1.0.0 linux/amd64"));
+});
+
+test("a computer's daemon in the report carries the window manager its hello says computerd started, as it said it", async () => {
+	const fake = fakeComputers();
+	const provider = {
+		...fake.provider,
+		connect: async (ref) => {
+			const connected = await fake.provider.connect(ref);
+			return connected.ok ? { ok: true, value: { ...connected.value, hello: { ...connected.value.hello, fence: "netns", windowManager: { state: "running" } } } } : connected;
+		},
+	};
+	const report = await runConformance(provider, { image: IMAGE, cases: [pass("health.ping", { run: async (t) => void (await t.connect()) })] });
+	assert.equal(report.core, "pass", JSON.stringify(reasons(report)));
+	assert.deepEqual(report.daemons, [{ computer: "fake-1", role: "shared", version: "1.0.0", os: "linux", arch: "amd64", fence: "netns", windowManager: { state: "running" } }]);
+	assert.ok(formatReport(report).split("\n").includes("daemon fake-1 (shared): computerd 1.0.0 linux/amd64 · fence netns · window manager running"), formatReport(report));
 });
 
 test("drift.version passes only on a refusal that is the version drift, never on a create or connect refused for another reason", async () => {

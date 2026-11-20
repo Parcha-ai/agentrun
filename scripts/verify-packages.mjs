@@ -75,13 +75,15 @@ const allowedExtraFiles = {
   'run-adapters-claude-agent': ['package/vendor/durable-harness/UPSTREAM.json'],
   'run-adapters-codex': ['package/vendor/durable-harness/UPSTREAM.json'],
   // The ACP adapter reads Goose's and Cursor's recipes from its own folder (src/goose.ts recipeFile) and starts its stdio MCP
-  // bridge by path (src/harness.ts STDIO_BRIDGE).
-  'run-adapters-acp': ['package/recipes/goose.json', 'package/recipes/cursor.json', 'package/dist/host/mcp-stdio.js', 'package/dist/facts.js'],
+  // bridge by path (src/harness.ts STDIO_BRIDGE). Its ./testing export starts the fake ACP agent by path (src/testing.ts
+  // FAKE_ACP_AGENT).
+  'run-adapters-acp': ['package/recipes/goose.json', 'package/recipes/cursor.json', 'package/dist/host/mcp-stdio.js', 'package/dist/facts.js', 'package/testing/fake-acp-agent.mjs'],
   // The server's bin is its launcher, which hands the server its secrets over a pipe (launcher/agentrun-serve).
   // And the locks the CLI harnesses' first use installs by (src/harness-install.ts): each the package.json it locks and
   // npm's lock, metadata naming the package at its pin and every package of its tree by sha512, never the CLI itself.
   // And the template packages it ships, which it reads at its start (src/templates.ts), with their format (templates/README.md).
-  serve: ['package/launcher/agentrun-serve', 'package/harnesses/claude-agent/package.json', 'package/harnesses/claude-agent/package-lock.json', 'package/harnesses/codex/package.json', 'package/harnesses/codex/package-lock.json', ...templateFiles()],
+  // And the two subpaths a harness's author imports (HARNESS.md): the module's types and the conformance suite.
+  serve: ['package/launcher/agentrun-serve', 'package/dist/harness-module.js', 'package/dist/harness-module.d.ts', 'package/dist/conformance.js', 'package/dist/conformance.d.ts','package/harnesses/claude-agent/package.json', 'package/harnesses/claude-agent/package-lock.json', 'package/harnesses/codex/package.json', 'package/harnesses/codex/package-lock.json', ...templateFiles()],
   // `npx @parcha/agentrun` is a command, not a library: its bin and the module the bin loads, plain JavaScript with no build,
   // and the API's CLI with its command table generated from the server's OpenAPI document (scripts/generate-clients.mjs),
   // its wait-and-follow module (follow.mjs), the commands that read a secret from stdin (login.mjs), its skill's
@@ -191,7 +193,8 @@ const requiredFiles = {
   computer: ['package/LICENSE', 'package/NOTICE', 'package/README.md', 'package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/mount.js', 'package/dist/mount.d.ts', 'package/box/recipe.mjs', ...egressCode.map(file => `package/dist/docker/${file}`), ...Object.keys(daemonMachines).map(arch => `package/dist/computerd-linux-${arch}`), `package/dist/${DAEMON_RECORD}`],
   // What serve loads of the ACP adapter at runtime: its entry, Goose's and Cursor's recipes (recipeFile), and the stdio MCP
   // bridge an agent's MCP client starts by path (STDIO_BRIDGE), which no import reaches, so the import smoke alone misses it.
-  'run-adapters-acp': ['package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/facts.js', 'package/dist/host/mcp-stdio.js', 'package/recipes/goose.json', 'package/recipes/cursor.json'],
+  // And the fake ACP agent a harness module's author tests on, which ./testing starts by path.
+  'run-adapters-acp': ['package/dist/index.js', 'package/dist/index.d.ts', 'package/dist/facts.js', 'package/dist/host/mcp-stdio.js', 'package/recipes/goose.json', 'package/recipes/cursor.json', 'package/dist/testing.js', 'package/testing/fake-acp-agent.mjs'],
   eve: ['package/LICENSE', 'package/NOTICE', 'package/README.md', 'package/dist/index.mjs', 'package/dist/index.d.ts', 'package/dist/tools/index.mjs', 'package/dist/tools/index.d.ts', 'package/dist/extension/_manifest.json', 'package/dist/extension/extension.mjs', 'package/dist/extension/hooks/learning.mjs', 'package/dist/extension/instructions.mjs', 'package/dist/extension/tools/learned_workflow.mjs'],
 };
 
@@ -368,6 +371,29 @@ syncBuiltinESMExports();
     tarballs: Object.fromEntries(['client', 'dsl', 'eve'].map(directory => [directory, tarballs[packageDirectories.indexOf(directory)]])) });
   receipt.checks.push('Standalone eve project installed client/DSL/eve archives; mount types, production build without agent overrides, deployed schema assets and original callback execution passed offline.');
   console.log('Installed eve extension: mount, production build, package assets and workflow callback passed without network.');
+
+  // The harness module HARNESS.md walks through, outside this checkout on the packed tarballs: it typechecks against the
+  // installed @parcha/agentrun-serve/harness and /conformance types, and passes the conformance suite on the installed
+  // fake ACP agent. The suite's cases reach the fake over loopback (MCP over HTTP), so the deny-network preload is off.
+  const harnessModule = join(temporary, 'harness-module');
+  await cp(join(root, 'examples/harness-module'), harnessModule, {
+    recursive: true, filter: path => !['node_modules', 'dist'].includes(basename(path)),
+  });
+  receipt.harnessModule = { commands: [], network: 'Installation, and loopback alone during the tests: the suite reaches the fake ACP agent on this machine.' };
+  async function harnessModuleCommand(args) {
+    const result = await run('npm', args, harnessModule, true, env);
+    receipt.harnessModule.commands.push({ command: ['npm', ...args], ...result });
+    assert.equal(result.exitCode, 0, `Harness module example: npm ${args.join(' ')} failed: ${result.stderr || result.stdout}`);
+    return result.stdout;
+  }
+  await harnessModuleCommand(['install', '--ignore-scripts', '--no-audit', '--no-fund', ...tarballs]);
+  assert.ok((await lstat(join(harnessModule, 'node_modules/@parcha/agentrun-harness-acp'))).isDirectory(), 'The harness module must install the ACP adapter package, not a workspace symlink');
+  const harnessModuleOutput = await harnessModuleCommand(['test']);
+  assert.match(harnessModuleOutput, /ℹ fail 0/);
+  assert.match(harnessModuleOutput, /ℹ pass 25/);
+  receipt.harnessModule.status = 'passed';
+  receipt.checks.push('The harness module example installed from the tarballs, typechecked against the installed harness and conformance types, and passed the conformance suite on the installed fake ACP agent.');
+  console.log('Harness module example: installed packages, typecheck and the conformance suite on the fake ACP agent passed.');
   const offlineNode = args => run(process.execPath, ['--import', './deny-network.mjs', ...args], consumer);
   for (const scenario of ['billing', 'technical', 'ambiguous']) {
     const result = JSON.parse((await offlineNode(['node_modules/@parcha/agentrun-dsl/dist/cli.js', 'demo', '--scenario', scenario, '--json'])).stdout);
@@ -409,8 +435,11 @@ import { createModels } from '@earendil-works/pi-ai/models';
 import { BACKGROUND_CONTEXT } from '@earendil-works/chord/context';
 import { execFileSync } from 'node:child_process';
 import * as serve from '@parcha/agentrun-serve';
+import * as serveHarness from '@parcha/agentrun-serve/harness';
+import * as serveConformance from '@parcha/agentrun-serve/conformance';
 import * as acp from '@parcha/agentrun-harness-acp';
 import * as acpFacts from '@parcha/agentrun-harness-acp/facts';
+import * as acpTesting from '@parcha/agentrun-harness-acp/testing';
 import * as computer from '@parcha/agentrun-computer';
 import * as computerMount from '@parcha/agentrun-computer/mount';
 assert.equal(validateWorkflow(supportTriage).ok,true);
@@ -433,7 +462,9 @@ assert.equal(typeof authorWorkflow,'function');
 assert.ok(browser.BROWSER_TOOLS.length>0); assert.equal(typeof browserDurable.createBrowserExtension,'function'); assert.equal(typeof browserTesting.FakeBackend,'function'); assert.equal(typeof browserCdp.cdpProvider,'function');
 assert.ok(loadAuthorReference('language').includes(authorContract()));
 { assert.equal(typeof serve.startServe,'function'); const servePkg=join(process.cwd(),'node_modules','@parcha','agentrun-serve'); assert.ok(JSON.parse(await readFile(join(servePkg,'dist','openapi','agentrun-v2.openapi.json'),'utf8')).openapi,'the install has the contract its build copies, dist/openapi/agentrun-v2.openapi.json'); const caps=await serve.capabilities({}); assert.equal(caps.contract,'agentrun.v2/0'); assert.equal(caps.backend,'local'); assert.deepEqual(caps.models,{source:'providers',route_prefix:null,fast:null,default:null,strong:null,ready:false,needs:'key',priced:null}); assert.deepEqual(caps.harnesses.map((h)=>[h.id,h.default_model]),[['pi',null],['claude-agent',null],['codex',null],['opencode',null]]); assert.equal(serve.ERROR_STATUS.unsupported_here,501); }
+{ assert.deepEqual(Object.keys(serveHarness),[],'the harness subpath is types alone: a module that imports it loads nothing of serve'); assert.deepEqual(Object.keys(serveConformance).sort(),['MAX_RESTARTS','createAdapterLoop','registerHarnessConformance','suiteHostTools']); assert.equal(typeof serveConformance.registerHarnessConformance,'function'); assert.equal(typeof serveConformance.suiteHostTools,'function'); assert.equal(typeof serveConformance.createAdapterLoop,'function'); assert.equal(serveConformance.MAX_RESTARTS,5); }
 { assert.equal(typeof acp.acpAdapter,'function'); assert.equal(acpFacts.acpFacts,acp.acpFacts); assert.equal(acp.gooseFacts.id,'goose'); assert.equal(acp.recipeFile('goose').id,'goose','the install reads Goose\\'s recipe from its own recipes/goose.json'); assert.ok(acp.GOOSE_PIN.version,'Goose\\'s pin'); }
+{ assert.deepEqual(Object.keys(acpTesting).sort(),['FAKE_ACP_AGENT','fakeAgentRecipe']); assert.ok(acpTesting.FAKE_ACP_AGENT.endsWith('/testing/fake-acp-agent.mjs')); await readFile(acpTesting.FAKE_ACP_AGENT,'utf8'); const recipe=acpTesting.fakeAgentRecipe('packed',await mkdtemp(join(tmpdir(),'fake-acp-')),[]); assert.equal(recipe.args[0],acpTesting.FAKE_ACP_AGENT,'the fake agent a module tests on is the one in its own install'); }
 { const faux=adaptersTesting.fauxAdapter({script:()=>[{submit:{answer:'ok'}}]}); const runNode=adapters.createHarnessRunner(faux,{store:adaptersTesting.memorySessionStore()}); assert.deepEqual(await runNode({kind:'agent',label:'smoke',system:[],user:'{}',schema:{type:'object',required:['answer'],properties:{answer:{type:'string'}}}}),{answer:'ok'}); assert.equal(faux.requests,1); assert.equal(typeof adapters.HarnessRunError,'function'); assert.equal(adapters.SUBMIT_TOOL,'submit'); }
 { const drive=await adaptersKernel.openDrive({writer:await adaptersTesting.memorySessionStore().open('packed'),signal:new AbortController().signal}); assert.equal(await drive.effect('k',{name:'k',replay:'never'},async()=>'ok'),'ok'); await drive.submit({id:'p',kind:'prompt',text:'hi'}); await adaptersProcess.placeSubmissions(drive,drive.pending()); assert.deepEqual(drive.pending(),[]); assert.equal(typeof adaptersKernel.Restart,'function'); assert.equal(typeof adaptersProcess.NativeJournal,'function'); }
 { const fetch=async()=>new Response(JSON.stringify({mode:'fast',answers:{holds:{type:'noul',noul:0.9},pick:{type:'choice',choice:'a',probabilities:{a:0.75,b:0.25}}},citations:[{url:'https://example.org/a',excerpts:[]}],usage:{input_tokens:1,output_tokens:0},decision_id:'decisions_0'}),{status:200,headers:{'content-type':'application/json'}}); const result=await judgeFromProvider(decisions.parallelProvider({apiKey:'fake-test-key',fetch}))({label:'smoke',kind:'judge',state:{},questions:{holds:{type:'noul',instructions:'Q?'},pick:{type:'choice',instructions:'Which?',criteria:{a:null,b:null}}}}); assert.equal(result.answers.holds.noul,0.9); assert.equal(result.answers.pick.confidence,0.5); assert.deepEqual([result.cost_basis,result.evidence.length,result.confidence_source.pick],['estimate',1,'derived']); assert.equal(typeof registerDecisionProviderConformance,'function'); }
@@ -582,6 +613,28 @@ const leaked: MountReadBack = { kind: 'archil', disk: 'd', region: 'r', folder: 
 void [back, checkMount(spec, kinds), takes, leaked, undefined as ComputerProvider | undefined];
 `);
   await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'computer-consumer.ts'], consumer);
+  // A harness module's author (HARNESS.md) types a module and a conformance subject from serve's two subpaths alone.
+  await writeFile(join(consumer, 'harness-consumer.ts'), `import type { HarnessEntry, HarnessLaunch, HarnessModuleKit, HarnessTableModule, ModuleLaunch, RunnerHarness } from '@parcha/agentrun-serve/harness';
+import { createAdapterLoop, MAX_RESTARTS, registerHarnessConformance, suiteHostTools, type ConformanceSubject, type TestFunction } from '@parcha/agentrun-serve/conformance';
+const runner: RunnerHarness = { record: 'loop', adapter: async (launch: HarnessLaunch) => { throw new Error('not in this check: ' + launch.model); } };
+export const entries: HarnessTableModule['entries'] = (builtins: Readonly<Record<string, HarnessEntry>>, kit: HarnessModuleKit) => ({
+  mine: { ...builtins.pi, label: 'Mine', runner },
+  theirs: kit.acpEntry({
+    facts: builtins['claude-agent']!.facts!,
+    recipe: (launch: ModuleLaunch) => ({ id: 'theirs', command: '/opt/theirs/bin/agent', args: ['acp', '--model', launch.model], declares: { load: true, mcp: 'http' }, billing: { kind: 'proxy' } }),
+    proxy: () => async () => ({ env: {}, close: async () => {} }),
+  }),
+  unfinished: kit.acpEntry({
+    facts: builtins['claude-agent']!.facts!,
+    // @ts-expect-error a recipe names its id, command, declares and billing
+    recipe: (launch: ModuleLaunch) => ({ model: launch.model }),
+    proxy: () => async () => ({ env: {}, close: async () => {} }),
+  }),
+});
+const subject: ConformanceSubject = { name: 'mine', createLoop: () => createAdapterLoop(async () => { throw new Error('not in this check'); }, { restartLimit: MAX_RESTARTS }) };
+void [subject, suiteHostTools({}), registerHarnessConformance as (subject: ConformanceSubject, options: { test: TestFunction }) => void];
+`);
+  await run(process.execPath, ['node_modules/typescript/bin/tsc', '--noEmit', '--strict', '--skipLibCheck', '--target', 'ES2023', '--module', 'NodeNext', '--moduleResolution', 'NodeNext', 'harness-consumer.ts'], consumer);
   // The Claude Agent adapter installed without its SDK (an optional peer the host brings) says so in one line that ends with
   // the line installing the pinned SDK. That line, run exactly as printed in a consumer of its own, is all it takes for the
   // adapter's checks to pass: the SDK, its platform package (the CLI) and the MCP library it brings as a peer.

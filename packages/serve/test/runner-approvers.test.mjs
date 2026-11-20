@@ -27,7 +27,7 @@ function folder(t) {
 test("a runner reads whether anyone can answer an ask from the store at each claim: with no row an ask parks; set off, the next claim's ask is refused at once in words; set on again, it parks", async (t) => {
   const { store } = await storeOn(t);
   const root = folder(t);
-  const claim = async (runId) => adapterRunGate(store, { runId }, REVISION, root);
+  const claim = async (runId) => adapterRunGate(store, { runId }, REVISION, root, undefined, { facts: undefined });
   assert.equal(await (await claim("r1"))(CALL), "ask", "no row: a server from before it, so someone can answer");
   await store.settings.put(APPROVERS, { approvers: false });
   assert.deepEqual(await (await claim("r2"))(CALL), { deny: noApproverText("web_fetch", "no") }, "the next claim reads the server's accounts off");

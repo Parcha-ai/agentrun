@@ -4,6 +4,7 @@
 // before any node runs and the server sees nothing; set to ask, the learned_workflow call itself asks once, the run parks,
 // and the owner's allow runs it once; a stop while it runs cuts the call at the server. pi, on the faux model.
 import assert from "node:assert/strict";
+import { promoteChecked } from "./learned-workflow-seed-support.mjs";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -65,6 +66,8 @@ async function learnedRun(server, id, tools, flows, content, run = {}) {
   git(repo, ["add", "--", ...Object.keys(files)]);
   git(repo, ["commit", "-q", "-m", "learned"]);
   await resnap(data, id);
+  // Execution permissions and recovery are rechecked even for a previously promoted revision.
+  await promoteChecked(server.store.settings, id, flows.map((workflow) => ({ name: workflow.name, workflow })));
   const started = await retried(api)("POST", `/agents/${id}/runs`,{ input: { content }, ...run });
   assert.equal(started.status, 202, JSON.stringify(started.body));
   return started.body.run_id;

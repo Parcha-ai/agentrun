@@ -344,6 +344,15 @@ function replyTo(context, faux) {
   if (first.includes("six times seven")) return faux.message([faux.thinking("six times seven"), faux.text("The answer is 42.")]);
   // An answer of nothing: one empty thinking block and one empty text block, a stop with no tool call.
   if (first.includes("Answer with nothing")) return faux.message([faux.thinking(""), faux.text("")]);
+  // "Keep <word> everywhere.": a write of <word> to a file, a read of it back, then an answer that says it (in its
+  // thinking too); a follow-up's answer quotes the follow-up (run-purge-sweep.test.mjs: every copy a run makes).
+  const keep = /^Keep (\S+) everywhere\.$/.exec(first)?.[1];
+  if (keep) {
+    if (users.length > 1) return faux.message(`Again: ${last}`);
+    if (results === 0) return faux.message(faux.toolCall("write", { path: "kept.md", content: `${keep}\n` }), { stopReason: "toolUse" });
+    if (results === 1) return faux.message(faux.toolCall("read", { path: "kept.md" }), { stopReason: "toolUse" });
+    return faux.message([faux.thinking(`Thinking of ${keep}`), faux.text(`Kept ${keep}.`)]);
+  }
   if (first.includes("Write the report")) {
     if (answered) return faux.message("I wrote report.md.");
     return faux.message(faux.toolCall("write", { path: "report.md", content: "# Report\n\nThe answer is 42.\n" }), { stopReason: "toolUse" });

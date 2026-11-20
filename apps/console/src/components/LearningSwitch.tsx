@@ -44,6 +44,7 @@ export function LearningField({ fields, onFields, saved, server, error, warning 
     <div>
       <div className="mb-2"><span className="caps text-small font-semibold">Learning</span></div>
       <LearningSwitch id="learning-switch" className="border px-4 py-3" checked={on} server={server} onChange={(next) => pick(next ? full : false)} />
+      <p className="mt-2 text-small text-muted-foreground">Workflow drafting uses this server's model access: a provider key for the selected model, or a supported server sign-in. Tool API keys do not enable it. <a href="#/settings/keys" className="text-primary-text underline underline-offset-2">Configure Model keys in API Keys</a>.</p>
       {error && <p className="mt-2 font-mono text-small text-destructive-text" role="alert">{error}</p>}
       {warning && <p className="mt-2 font-mono text-small text-warning-text">{warning}</p>}
     </div>

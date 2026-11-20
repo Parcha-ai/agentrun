@@ -15,6 +15,7 @@ import { bridgeTool, recoveryNote, settleTurn, transcriptOf } from "@parcha/agen
 import { serialWriter, type ParentWatch } from "@parcha/agentrun-kernel/host";
 import { acpHarness, sentSubmissions, type DriveControl } from "./harness.js";
 import { recipeProblems, type AcpRecipe } from "./recipe.js";
+import { cutKeys, keysToCut } from "./host/key-cut.js";
 import type { ConfineChild } from "./host/child.js";
 
 /** A tool name every ACP agent we know keeps whole in its MCP client. */
@@ -152,8 +153,10 @@ export function acpAdapter(options: AcpAdapterOptions): AgentAdapter {
             if (ended?.stopReason === "length") cut = { stopReason: "length" };
             outcome = ended?.status ? { status: ended.status, ...(ended.error ? { error: ended.error } : {}) } : interrupted ? { status: "interrupted" } : { status: "failed", error: "the turn ended with no outcome in the session's records" };
           } catch (error) {
-            // Stopped by the session or its host: interrupted. Halted by anything else: failed, naming why.
-            outcome = current.signal.aborted ? abortedOutcome(current.signal, io.signal) : { status: "failed", error: String((error as Error)?.message ?? error).slice(0, 500) };
+            // Stopped by the session or its host: interrupted. Halted by anything else: failed, naming why, the recipe's keys
+            // cut before the words are shortened (key-cut.ts).
+            const keys = keysToCut((recipe.keys ?? []).map((name) => (options.env ?? process.env)[name]));
+            outcome = current.signal.aborted ? abortedOutcome(current.signal, io.signal) : { status: "failed", error: cutKeys(String((error as Error)?.message ?? error), keys).slice(0, 500) };
             if (current.signal.aborted) state = holdsTurn(current.state()) ? "open_turn" : "idle";
           }
           io.onEvent({ type: "turn_end", status: outcome.status, ...(cut && outcome.status === "completed" ? cut : {}) });

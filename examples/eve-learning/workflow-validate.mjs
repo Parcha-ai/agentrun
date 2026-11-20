@@ -1,4 +1,4 @@
-// Real native traces → normal compilation → committed workflow → original callbacks. No seeded workflow.
+// Real native traces → compilation → independent native shadow check → promoted workflow → original callbacks. No seeded workflow.
 import assert from 'node:assert/strict';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
@@ -103,11 +103,11 @@ export async function demonstrateWorkflows({ baseUrl = process.env.AGENTRUN_BASE
     },
   });
   if (resume) {
-    assert.equal(resume.kind, 'eve-executable-workflow'); assert.equal(resume.version, 2, 'Legacy note/skill proofs cannot be resumed with the compile lifecycle.'); assert.equal(resume.agentId, agentId);
+    assert.equal(resume.kind, 'eve-executable-workflow'); assert.equal(resume.version, 3, 'Older proofs did not require a native shadow check; start a fresh proof.'); assert.equal(resume.agentId, agentId);
     assert.ok(resume.sessions && Array.isArray(resume.settings), 'Malformed saved workflow proof.');
   }
   const priorStage = resume?.stage;
-  const proof = resume ? structuredClone(resume) : { kind: 'eve-executable-workflow', version: 2, agentId,
+  const proof = resume ? structuredClone(resume) : { kind: 'eve-executable-workflow', version: 3, agentId,
     startedAt: new Date().toISOString(), stage: 'preflight', sessions: {}, settings: [] };
   if (resume) { proof.resumptions = [...proof.resumptions ?? [], { at: new Date().toISOString(), stage: priorStage, failure: proof.failure }]; delete proof.failure; }
   const save = () => checkpoint(proof);
@@ -217,6 +217,20 @@ export async function demonstrateWorkflows({ baseUrl = process.env.AGENTRUN_BASE
         .map(([, saved]) => saved.run.runId) }; await save();
     }
     assert.ok(proof.committed.revision && (proof.committed.revision === learned.main || learned.log.items.some(row => row.commit === proof.committed.revision)), 'The saved committed revision is absent from real learning history.');
+    // A compile/dry-run result is only a draft. Let one independent native turn answer first; its private
+    // shadow execution is compared with that answer, without advertising the candidate as a reusable tool.
+    if (!proof.sessions.shadow_check?.sessionId) await setLearning(DEMO_LEARNING);
+    const checked = await invoke('shadow_check', workflowTask('demo-worker'), 'demo-worker', 'native');
+    assert.equal(checked.result.toolCalls.filter(call => call.workflow || call.name === 'agentrun__learned_workflow').length, 0,
+      'An unpromoted draft was offered before the independent native answer.');
+    await settle(checked.run.run_id);
+    const checkedLearning = await readLearning();
+    for (const workflow of proof.committed.workflows) {
+      const candidate = checkedLearning.workflows.find(item => item.name === workflow.name && item.run === workflow.run);
+      assert.equal(candidate?.status, 'serving', 'The native shadow check did not promote the compiled workflow. Do not reuse a checking or held draft.');
+    }
+    proof.check = { runId: checked.run.run_id, workflows: proof.committed.workflows.map(({ name }) => name), state: 'promoted' };
+    await save();
     if (!proof.sessions.reused?.sessionId) await setLearning(DEMO_LEARNING);
     const reused = await invoke('reused', workflowTask('demo-worker'), 'demo-worker', 'workflow');
     assertExecutableReuse(reused.result, reused.run, proof.committed, reused.chain);
@@ -247,7 +261,7 @@ export async function demonstrateWorkflows({ baseUrl = process.env.AGENTRUN_BASE
 
 if (import.meta.main) {
   const args = process.argv.slice(2); let output, resumePath;
-  if (!args.includes('--live')) throw new Error('This starts up to eight native model tasks and server compilation. Configure the example and pass --live.');
+  if (!args.includes('--live')) throw new Error('This starts up to nine native model tasks and server compilation. Configure the example and pass --live.');
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--live') continue;
     if (!['--output', '--resume'].includes(args[i]) || !args[i + 1] || args[i + 1].startsWith('--')) throw new Error('Usage: node workflow-validate.mjs --live --output new-proof.json [--resume saved-proof.json]');

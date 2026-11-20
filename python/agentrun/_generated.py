@@ -47,6 +47,7 @@ __all__ = [
     "CapabilitiesHarnessesItemPromises",
     "CapabilitiesHome",
     "CapabilitiesLearning",
+    "CapabilitiesLearningModel",
     "CapabilitiesLinks",
     "CapabilitiesModels",
     "CapabilitiesPlaces",
@@ -91,6 +92,8 @@ __all__ = [
     "CreateInlineRunResponse",
     "CreatePairingResponse",
     "CreateRunBody",
+    "CreateRunComputerViewerBody",
+    "CreateRunComputerViewerResponse",
     "CreateRunResponse",
     "CreateTriggerBody",
     "CreateTriggerBodySource1",
@@ -303,6 +306,7 @@ __all__ = [
     "GetAgentLearningResponseImpact",
     "GetAgentLearningResponseImpactAfter",
     "GetAgentLearningResponseImpactBefore",
+    "GetAgentLearningResponseLearningModel",
     "GetAgentLearningResponseLog",
     "GetAgentLearningResponseLogItemsItem",
     "GetAgentLearningResponseLogItemsItemBy1",
@@ -877,6 +881,8 @@ __all__ = [
     "SdkRunEventsBodyEventsItem1",
     "SdkRunEventsBodyEventsItem2",
     "SdkRunEventsBodyEventsItem3",
+    "SdkRunEventsBodyEventsItem3Skipped",
+    "SdkRunEventsBodyEventsItem4",
     "SdkRunEventsResponse",
     "SdkRunsResource",
     "SecretMeta",
@@ -903,6 +909,8 @@ __all__ = [
     "StartSdkRunBodyWorkflowToolsItem",
     "StartSdkRunResponse",
     "StartSdkRunResponseLearning",
+    "StartSdkRunResponseLearningCheck",
+    "StartSdkRunResponseLearningCheckWorkflow",
     "StartSdkRunResponseLearningWorkflowsItem",
     "StopResult",
     "StopRunResponse",
@@ -2259,6 +2267,7 @@ class ListLearningPromotionsResponsePromotionsItem(_ListLearningPromotionsRespon
     inputs: list[str]
     replay_id: str
     commit: str
+    via: Literal["sdk"]
     audit: ListLearningPromotionsResponsePromotionsItemAudit
 
 
@@ -2282,6 +2291,8 @@ class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsR
     skipped_tools: list[ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem]
     disagreements: list[ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem]
     stopped: Literal[True]
+    released: int
+    fresh_reads: int
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckOutcomes(TypedDict):
@@ -2399,6 +2410,8 @@ class ListLearningPromotionsResponseServingItemChampionCheck(_ListLearningPromot
     skipped_tools: list[ListLearningPromotionsResponseServingItemChampionCheckSkippedToolsItem]
     disagreements: list[ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem]
     stopped: Literal[True]
+    released: int
+    fresh_reads: int
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckOutcomes(TypedDict):
@@ -3274,6 +3287,7 @@ class GetLearningCostResponseBillHoldsItem(TypedDict):
 
 
 class GetAgentLearningResponse(TypedDict):
+    learning_model: GetAgentLearningResponseLearningModel
     agent: str
     main: str | None
     corrections: str
@@ -3281,6 +3295,14 @@ class GetAgentLearningResponse(TypedDict):
     log: GetAgentLearningResponseLog
     counts: GetAgentLearningResponseCounts
     impact: GetAgentLearningResponseImpact | None
+
+
+class GetAgentLearningResponseLearningModel(TypedDict):
+    location: Literal["server", "native"]
+    ready: bool
+    model: str | None
+    needs: Literal["key", "model"] | None
+    reason: str | None
 
 
 class _GetAgentLearningResponseWorkflowsItemRequired(TypedDict):
@@ -3812,6 +3834,7 @@ class _ListComputersResponseKindsItemProvidersItemRequired(TypedDict):
     required: list[str]
     ready: bool
     runs_refused: str | None
+    folder: Literal["bind", "archil", "sync"] | None
     shell: Literal["computer", "local", "none"]
     host_tools: list[str]
 
@@ -4075,6 +4098,7 @@ class _SaveComputerKeysResponseRequired(TypedDict):
     required: list[str]
     ready: bool
     runs_refused: str | None
+    folder: Literal["bind", "archil", "sync"] | None
     shell: Literal["computer", "local", "none"]
     host_tools: list[str]
 
@@ -5230,6 +5254,14 @@ class RunWorkflow(TypedDict):
     repick: Literal["found", "missed"] | None
 
 
+CreateRunComputerViewerBody: TypeAlias = "dict[str, Any]"
+
+
+class CreateRunComputerViewerResponse(TypedDict):
+    url: str
+    expires_at: str
+
+
 ListRunFilesResponse: TypeAlias = "RunFileList"
 
 
@@ -5873,7 +5905,7 @@ class CompleteSdkRunResponse(TypedDict):
 
 class SdkRunEventsBody(TypedDict):
     sequence: int
-    events: list[SdkRunEventsBodyEventsItem1 | SdkRunEventsBodyEventsItem2 | SdkRunEventsBodyEventsItem3]
+    events: list[SdkRunEventsBodyEventsItem1 | SdkRunEventsBodyEventsItem2 | SdkRunEventsBodyEventsItem3 | SdkRunEventsBodyEventsItem4]
 
 
 class SdkRunEventsBodyEventsItem1(TypedDict):
@@ -5887,13 +5919,35 @@ class SdkRunEventsBodyEventsItem2(TypedDict):
 
 
 class _SdkRunEventsBodyEventsItem3Required(TypedDict):
+    type: Literal["workflow_check"]
+    id: str
+    digest: str
+    outcome: Literal["answered", "handed_back", "failed", "skipped_write"]
+
+
+class SdkRunEventsBodyEventsItem3(_SdkRunEventsBodyEventsItem3Required, total=False):
+    answer: str
+    reason: str
+    skipped: SdkRunEventsBodyEventsItem3Skipped
+    fresh_reads: int
+
+
+class _SdkRunEventsBodyEventsItem3SkippedRequired(TypedDict):
+    tool: str
+
+
+class SdkRunEventsBodyEventsItem3Skipped(_SdkRunEventsBodyEventsItem3SkippedRequired, total=False):
+    unmarked: Literal[True]
+
+
+class _SdkRunEventsBodyEventsItem4Required(TypedDict):
     type: Literal["tool"]
     id: str
     name: str
     status: Literal["started", "completed", "failed"]
 
 
-class SdkRunEventsBodyEventsItem3(_SdkRunEventsBodyEventsItem3Required, total=False):
+class SdkRunEventsBodyEventsItem4(_SdkRunEventsBodyEventsItem4Required, total=False):
     input: Any
     output: Any
     parent_tool_use_id: str
@@ -5945,14 +5999,31 @@ class StartSdkRunResponse(TypedDict):
     learning: StartSdkRunResponseLearning
 
 
-class StartSdkRunResponseLearning(TypedDict):
+class _StartSdkRunResponseLearningRequired(TypedDict):
     enabled: bool
     revision: str | None
     context: str
     workflows: list[StartSdkRunResponseLearningWorkflowsItem]
 
 
+class StartSdkRunResponseLearning(_StartSdkRunResponseLearningRequired, total=False):
+    check: StartSdkRunResponseLearningCheck
+
+
 class StartSdkRunResponseLearningWorkflowsItem(TypedDict):
+    name: str
+    workflow: str
+    description: str
+
+
+class StartSdkRunResponseLearningCheck(TypedDict):
+    id: str
+    revision: str
+    digest: str
+    workflow: StartSdkRunResponseLearningCheckWorkflow
+
+
+class StartSdkRunResponseLearningCheckWorkflow(TypedDict):
     name: str
     workflow: str
     description: str
@@ -5970,6 +6041,7 @@ class _CapabilitiesRequired(TypedDict):
     features: Features
     regions: list[Region]
     limits: Limits
+    learning_model: CapabilitiesLearningModel
     learning: CapabilitiesLearning
     places: CapabilitiesPlaces
     harnesses: list[CapabilitiesHarnessesItem]
@@ -6185,6 +6257,14 @@ class LimitsMaxCostUsd(TypedDict):
 
 
 Usd: TypeAlias = "float"
+
+
+class CapabilitiesLearningModel(TypedDict):
+    location: Literal["server", "native"]
+    ready: bool
+    model: str | None
+    needs: Literal["key", "model"] | None
+    reason: str | None
 
 
 class _CapabilitiesLearningRequired(TypedDict):
@@ -9065,6 +9145,8 @@ OPERATIONS: dict[str, Operation] = {
     "callRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/call", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "releaseRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/release", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createInlineRun": Operation(method="POST", path="/runs", path_params=(), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "createRunComputerViewer": Operation(method="POST", path="/runs/{run_id}/computer/viewer", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "deleteRun": Operation(method="DELETE", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "listRunFiles": Operation(method="GET", path="/runs/{run_id}/files", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getRun": Operation(method="GET", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "gradeRun": Operation(method="PUT", path="/runs/{run_id}/grade", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -9146,7 +9228,7 @@ class AgentsResource(Group):
         return self._call("createAgent", (), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
 
     def delete_agent(self, agent_id: str, *, timeout: float | None = None) -> None:
-        """Delete an agent another system owns (DELETE /agents/{agent_id})."""
+        """Delete an agent another system owns, or purge an archived agent made here (DELETE /agents/{agent_id})."""
         return self._call("deleteAgent", (agent_id,), None, None, timeout=timeout)
 
     def delete_agent_archil(self, agent_id: str, *, timeout: float | None = None) -> DeleteAgentArchilResponse:
@@ -9576,6 +9658,14 @@ class RunsResource(Group):
     def create_inline_run(self, body: CreateInlineRunBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> CreateInlineRunResponse:
         """Start a run of an agent another system owns, given inline (POST /runs)."""
         return self._call("createInlineRun", (), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
+
+    def create_run_computer_viewer(self, run_id: str, body: CreateRunComputerViewerBody | None = None, *, timeout: float | None = None) -> CreateRunComputerViewerResponse:
+        """Mint a link to the run's live view for the backend's user (POST /runs/{run_id}/computer/viewer)."""
+        return self._call("createRunComputerViewer", (run_id,), body, None, timeout=timeout)
+
+    def delete(self, run_id: str, *, timeout: float | None = None) -> None:
+        """Purge a run's content and keep its cost (DELETE /runs/{run_id})."""
+        return self._call("deleteRun", (run_id,), None, None, timeout=timeout)
 
     def files(self, run_id: str, *, timeout: float | None = None) -> ListRunFilesResponse:
         """The files the run wrote (GET /runs/{run_id}/files)."""

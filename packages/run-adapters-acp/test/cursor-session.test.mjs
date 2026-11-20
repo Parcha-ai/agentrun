@@ -9,7 +9,17 @@ import { join } from 'node:path';
 import { test as nodeTest } from 'node:test';
 import { memorySessionStore } from '@parcha/agentrun-kernel/testing';
 import { ACP_CODES, recipeFile, STATE_STREAM, TOOLS_STREAM } from '@parcha/agentrun-harness-acp';
-import { fakeEvents, fakeRecipe, openSession, scratch, streamRecords, tool, toolEffects } from './helpers.mjs';
+import { fakeEvents, fakeRecipe, openSession, scratch, streamRecords, tool, toolEffects, until } from './helpers.mjs';
+
+/** Whether the process `pid` is still there (signal 0 checks, and sends nothing). */
+const running = (pid) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 const test = (name, fn) => nodeTest(name, { timeout: 60_000 }, fn);
 const KEY = 'fake-test-key';
@@ -75,7 +85,7 @@ test('a hard kill leaves no credential on disk: the agent never wrote one, so th
   const { pid } = fakeEvents(recipe).find((e) => e.type === 'start');
   // SIGKILL, as a run's host dying takes its agent: no dispose runs, no HOME is removed.
   process.kill(pid, 'SIGKILL');
-  await new Promise((resolve) => setTimeout(resolve, 200));
+  await until(() => !running(pid), 'the killed agent to exit');
   assert.deepEqual(holdingCredential(sessionsDir), [], 'no file anywhere under the session folder holds it');
   assert.equal(filesIn(join(homeOf(sessionsDir), '.config/cursor/auth.json')).length, 0, 'auth.json is no file, and holds none');
 });

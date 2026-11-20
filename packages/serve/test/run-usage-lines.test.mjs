@@ -234,3 +234,16 @@ test("the end-of-run learning turn is not on the lines: it is the server's work 
   assert.deepEqual(read.lines.map((one) => [one.model, one.requests, one.usd]), [["m", 1, 0.01]], "the job's request alone");
   assert.deepEqual(read.total, { usd: 0.01 });
 });
+
+test("served, a name on a line is cut of the server's secrets, as the run's trace serves a model's name (#3281 review)", async () => {
+  const { servedRunUsage } = await import("../dist/run-usage.js");
+  const secret = "sk-planted-0123456789abcdef";
+  const { store } = snapshotStore(ended(), { entries: [...keys(), ...reported(7, 1, `acme/${secret}`, 0.01, usage(10, 1))] });
+  // The cut reads the run's row outside the snapshot, as the trace's does.
+  const served = new Proxy(store, { get: (target, key) => (key === "runs" ? { get: async () => ended(), launch: async () => { throw new Error("no launch"); } } : target[key]) });
+  const read = await servedRunUsage({ serverSecrets: () => [secret] }, served, "run_1");
+  assert.equal(read.lines.length, 1);
+  assert.ok(!JSON.stringify(read).includes(secret), "the secret is not served");
+  assert.match(read.lines[0].model, /^acme\/\[redacted\]/);
+  assert.deepEqual(read.total, { usd: 0.01 }, "the figures are as read");
+});

@@ -143,6 +143,13 @@ export interface components {
     features: components["Features"];
     regions: components["Region"][];
     limits: components["Limits"];
+    learning_model: {
+      location: "server" | "native";
+      ready: boolean;
+      model: string | null;
+      needs: "key" | "model" | null;
+      reason: string | null;
+    };
     learning: {
       pending: true;
       approve: boolean;
@@ -506,7 +513,7 @@ export interface components {
       detail: string;
     }[];
   };
-  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "slack_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "replay_conflict" | "agent_not_external" | "runs_in_flight" | "learning_busy" | "model_key_required" | "runner_refused";
+  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "slack_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "replay_conflict" | "runs_in_flight" | "learning_busy" | "agent_not_archived" | "run_not_final" | "purged" | "model_key_required" | "runner_refused";
   ExternalRef: {
     source: string;
     kind: string;
@@ -1537,6 +1544,13 @@ export interface operations {
     body: components["RunCreate"];
     answer: components["Run"];
   };
+  createRunComputerViewer: {
+    body: Record<string, never>;
+    answer: {
+      url: string;
+      expires_at: string;
+    };
+  };
   createTrigger: {
     body: {
       name?: string;
@@ -1921,6 +1935,10 @@ export interface operations {
       problem: string | null;
     };
   };
+  deleteRun: {
+    body: never;
+    answer: never;
+  };
   deleteSlack: {
     body: never;
     answer: never;
@@ -2132,6 +2150,13 @@ export interface operations {
   getAgentLearning: {
     body: never;
     answer: {
+      learning_model: {
+        location: "server" | "native";
+        ready: boolean;
+        model: string | null;
+        needs: "key" | "model" | null;
+        reason: string | null;
+      };
       agent: string;
       main: string | null;
       corrections: string;
@@ -3662,6 +3687,7 @@ export interface operations {
           required: string[];
           ready: boolean;
           runs_refused: string | null;
+          folder: "bind" | "archil" | "sync" | null;
           shell: "computer" | "local" | "none";
           host_tools: string[];
           why?: string;
@@ -3826,11 +3852,14 @@ export interface operations {
             differs_on?: string;
           }[];
           stopped?: true;
+          released?: number;
+          fresh_reads?: number;
         };
         runs?: string[];
         inputs?: string[];
         replay_id?: string;
         commit?: string;
+        via?: "sdk";
         audit?: {
           window: number;
           disagree: number;
@@ -3912,6 +3941,8 @@ export interface operations {
               differs_on?: string;
             }[];
             stopped?: true;
+            released?: number;
+            fresh_reads?: number;
           } | null;
         } | null;
       }[];
@@ -5056,6 +5087,7 @@ export interface operations {
       required: string[];
       ready: boolean;
       runs_refused: string | null;
+      folder: "bind" | "archil" | "sync" | null;
       shell: "computer" | "local" | "none";
       host_tools: string[];
       why?: string;
@@ -5283,6 +5315,18 @@ export interface operations {
         type: "session";
         session_id: string;
       } | {
+        type: "workflow_check";
+        id: string;
+        digest: string;
+        outcome: "answered" | "handed_back" | "failed" | "skipped_write";
+        answer?: string;
+        reason?: string;
+        skipped?: {
+          tool: string;
+          unmarked?: true;
+        };
+        fresh_reads?: number;
+      } | {
         type: "tool";
         id: string;
         name: string;
@@ -5395,6 +5439,16 @@ export interface operations {
           workflow: string;
           description: string;
         }[];
+        check?: {
+          id: string;
+          revision: string;
+          digest: string;
+          workflow: {
+            name: string;
+            workflow: string;
+            description: string;
+          };
+        };
       };
     };
   };

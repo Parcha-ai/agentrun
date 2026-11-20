@@ -36,7 +36,7 @@ Route: `POST /agents`.
 
 ### `agentrun agents delete-agent AGENT_ID`
 
-Delete an agent another system owns.
+Delete an agent another system owns, or purge an archived agent made here.
 
 Route: `DELETE /agents/{agent_id}`.
 
@@ -305,7 +305,7 @@ Install a harness AgentRun runs only once its owner installs it (goose, cursor, 
 
 Route: none, it runs on this machine.
 
-- `--recipe FILE` (string, this CLI's own): in place of HARNESS: a recipe file (docs/harness-recipe.md), checked against its five rules before anything is downloaded
+- `--recipe FILE` (string, this CLI's own): in place of HARNESS: a recipe file (HARNESS.md#a-recipe), checked against its five rules before anything is downloaded
 - `--data DIR` (string, this CLI's own): the data directory of the AgentRun it is for (default ~/.agentrun, where npx @parcha/agentrun keeps it)
 
 ## harness-check
@@ -316,7 +316,7 @@ Run a recipe's installed agent for real and check it (tools off, env allowlist, 
 
 Route: none, it runs on this machine.
 
-- `--recipe FILE` (string, this CLI's own): the recipe file (docs/harness-recipe.md); its agent installed first with agentrun harness install --recipe FILE
+- `--recipe FILE` (string, this CLI's own): the recipe file (HARNESS.md#a-recipe); its agent installed first with agentrun harness install --recipe FILE
 - `--model PROVIDER/MODEL` (string, this CLI's own): the run's model, for a recipe billed through the proxy (openrouter/anthropic/claude-haiku-4.5, anthropic/claude-haiku-4-5)
 - `--report FILE` (string, this CLI's own): where the JSON report goes (default ./harness-check-ID.json)
 - `--cap USD` (string, this CLI's own): the most the check may spend (default 0.25)
@@ -678,6 +678,21 @@ Route: `POST /runs`.
 - `--hold-minutes INTEGER` (integer): With `hold: true`: how long the held computer waits with no call from its owner, before the start and after the agent's end. Absent: 30. Above 120, or without hold, is 422.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun runs create-run-computer-viewer RUN_ID`
+
+Mint a link to the run's live view for the backend's user.
+
+Route: `POST /runs/{run_id}/computer/viewer`.
+
+- `--body JSON|@FILE|-` (application/json): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
+- `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun runs delete RUN_ID`
+
+Purge a run's content and keep its cost.
+
+Route: `DELETE /runs/{run_id}`.
 
 ### `agentrun runs files RUN_ID`
 

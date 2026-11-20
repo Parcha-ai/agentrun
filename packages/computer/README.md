@@ -1405,8 +1405,8 @@ conformance module's `dialKit()` refuses, as E2B's does: the Core run happens in
 run image with `COMPUTER_MODAL_CONNECT=dial` is the box image, the one that holds `agentrun-dial` (debian:bookworm-slim
 on exec, as before).
 
-A dial sandbox may be a desktop (`kind: "desktop"`): the box image's X server and xfwm4, started over the socket it
-dialed, at 2 CPUs and 4 GiB on the VM runtime, with no GPU. On exec a Modal computer is kind `linux` alone, and the
+A dial sandbox may be a desktop (`kind: "desktop"`): the box image's X server, started over the socket it dialed, and
+xfwm4, which computerd starts, at 2 CPUs and 4 GiB on the VM runtime, with no GPU. On exec a Modal computer is kind `linux` alone, and the
 constructor refuses `kind: "desktop"` in words. The descriptor's desktop configuration selects `connect: "dial"` itself,
 so a server whose `modalConnect` is exec still makes its desktop over dial (it needs the dial's public address). In
 serve's Mode 2 the run's folder is an Archil mount, which a dial machine takes none of yet, so a Modal desktop there is
@@ -1561,7 +1561,7 @@ the TTL.
 
 | Capability | Declared | Why |
 | --- | --- | --- |
-| `kind` | `linux` | a Linux shell with computerd: exec, files and processes |
+| `kind` | `linux`; `desktop` on dial | a Linux shell with computerd: exec, files and processes; on dial, `kind: "desktop"` adds the box snapshot's display ([Daytona on dial](#daytona-on-dial)) |
 | `lifetime` | `vendor` | `ttlMinutes` destroys the sandbox in any state once it elapses; set to the lifetime in whole minutes, rounded up. Init also ends every process at the deadline itself. |
 | `network` | `none`, `open`, `allow` | none: `networkBlockAll` at create, and the daemon's own network namespace; open and a list: not blocked (the account's tier may still limit where it goes), and the daemon's own namespace whose one way out is init's egress proxy (public internet only; a list's hosts alone) |
 | `vendorAgentPorts` | `[2280]` | the toolbox's port, on every interface; isolation.vendor-agent checks a program of the computer's user reaches it on neither loopback |
@@ -1644,7 +1644,7 @@ when it runs (`settingsFromEnv`) and passes each to `create()` as the option in 
 (`apiKey`, required), `COMPUTER_DAYTONA_API_URL` (`apiUrl`), `COMPUTER_DAYTONA_DAEMON` (`daemonPath`),
 `COMPUTER_DAYTONA_ARCH` (`arch`), `COMPUTER_DAYTONA_TARGET` (`target`), `COMPUTER_DAYTONA_CLASS` (`sandboxClass`),
 `COMPUTER_DAYTONA_USER` (`daemonUser`), `COMPUTER_DAYTONA_GPU_SNAPSHOT` (`gpuSnapshot`) and `COMPUTER_DAYTONA_CONNECT`
-(`connect`). It exports `createProvider()` and `createDriftedProvider()` (which builds a
+(`connect`); the providers it makes also read `COMPUTER_DAYTONA_KIND` (`kind`, `desktop` on dial only). It exports `createProvider()` and `createDriftedProvider()` (which builds a
 daemon of another version with Go), and reads `COMPUTER_DAYTONA_SNAPSHOT` (the run's image; unset, `"default"`,
 Daytona's default snapshot, or on dial the box image's snapshot, `agentrun-box-<recipe hash>`). It never reads `DAYTONA_API_KEY`, `DAYTONA_API_URL` or `DAYTONA_TARGET`, not even as a
 fallback: on a host that runs other Daytona work they may hold another organization's key. Those are serve's names,
@@ -1681,8 +1681,11 @@ default) a Daytona sandbox dials the server instead ([PROVIDERS.md](PROVIDERS.md
 no exec and no upload, and nothing goes through the toolbox: create sends the boot env as `CreateSandbox.env` and
 `networkBlockAll: false` (the machine's root reaches the server; network none is init's, inside), and the snapshot's
 entrypoint runs `agentrun-dial`. No Archil mount, no GPU, and not `image: "default"` (Daytona's default snapshot holds
-no `agentrun-dial`): `check()` refuses each in words. Labels as on exec. A Daytona computer is kind `linux` alone, on
-dial as on exec; why: [PROVIDERS.md](PROVIDERS.md#machines-that-dial-in).
+no `agentrun-dial`): `check()` refuses each in words. Labels as on exec. A dial sandbox may be a desktop
+(`kind: "desktop"`): the box snapshot's X server, started over the socket it dialed, and xfwm4, which computerd starts
+(init's `--window-manager`), at the snapshot's 2 CPUs and 4 GiB, with no GPU. On exec a Daytona computer is kind
+`linux` alone, and the constructor refuses `kind: "desktop"` in words; the descriptor's desktop configuration selects
+`connect: "dial"` itself. Why computerd, not the client, starts the manager here: [PROVIDERS.md](PROVIDERS.md#machines-that-dial-in).
 What each part of a dial sandbox rests on:
 
 - **A snapshot, never an image.** A create names a snapshot; a snapshot is made from "any publicly accessible image"
@@ -1894,12 +1897,16 @@ E2B's envd is the sandbox's first process, a systemd service with `Restart=alway
    whose start answers after the call gave up on it (its bound passed, or the caller aborted) is killed as it lands.
 6. A desktop's X server, `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp`, starts through the daemon with
    `process.start`, as the computer's user, and create waits until hello declares the display (`src/desktop.ts`,
-   shared with Docker). Then xfwm4, which the template has, starts the same way on it (`xfwm4 --compositor=off
-   --sm-client-disable`, `WINDOW_MANAGER`), so the apps an agent opens are framed and focused. xfwm4 reads its
-   settings over a session bus and exits without one. So it runs under `dbus-run-session`, in a user namespace (the
-   same uid) and a network namespace of its own (`unshare --user --map-current-user --net`), and its bus listens on an
-   abstract name there, which a program of the computer's user cannot connect to. One that joins those namespaces
-   (nsenter) can, as the same uid can ptrace xfwm4. xfwm4 reaches the display by its path. It and every app `apps.launch` opens get `NO_AT_BRIDGE=1`: the template has at-spi2-core, so GTK's
+   shared with Docker). Then xfwm4, which the template has, starts on it (`xfwm4 --compositor=off
+   --sm-client-disable`), so the apps an agent opens are framed and focused: computerd starts it itself, asked by
+   init's `--window-manager` (the host's facts say `windowManager`), once the display answers, and hello's
+   `windowManager` says it runs, which create waits on. xfwm4 reads its settings over a session bus and exits without
+   one. So it runs under `dbus-run-session`, as the computer's user, in a network namespace of its own that init makes
+   as root before it drops to that user (no user namespace is needed), and its bus listens on an abstract name there,
+   which a program of the computer's user cannot connect to. One that joins that namespace (nsenter) can, as the same
+   uid can ptrace xfwm4. xfwm4 reaches the display by its path. An older computerd, whose hello has no
+   `windowManager`, gets the manager through `process.start`, as before (`WINDOW_MANAGER`, under `unshare --user
+   --map-current-user --net`). It and every app `apps.launch` opens get `NO_AT_BRIDGE=1`: the template has at-spi2-core, so GTK's
    accessibility bridge would start an at-spi bus, a socket of the user's at `/work/.cache/at-spi/bus_0` that nothing
    of ours uses. An app also gets no session bus (`DBUS_SESSION_BUS_ADDRESS=disabled:`). Given none, it would start
    one with the template's dbus-launch, and that bus starts gnome-keyring-daemon, a socket of the user's at
@@ -2061,8 +2068,8 @@ provider does in `process.env`. `COMPUTER_E2B_PUBLIC_STREAM` is no longer read.
 With `connect: "dial"` (a server's `e2bConnect` setting; `exec` by default) an E2B sandbox dials the server instead
 ([PROVIDERS.md](PROVIDERS.md#machines-that-dial-in)): a desktop by default, as on exec, since the box template has
 the desktop (`box/install.sh`'s `desktop` step), or kind linux; no Archil mount, and the host has no
-exec and no upload. A desktop's launch adds `DISPLAY` to the boot env, and its X server and xfwm4 start over the
-socket the sandbox dialed, through `process.start`. A dial desktop whose X server has gone is not refused at `connect()`
+exec and no upload. A desktop's launch adds `DISPLAY` and init's `--window-manager` to the boot env; its X server
+starts over the socket the sandbox dialed, through `process.start`, and computerd starts xfwm4 once it answers. A dial desktop whose X server has gone is not refused at `connect()`
 as on exec: it reads back kind `linux`, and its screen, input, apps and ui calls are refused in words, never sent, until
 its hello says `desktop` again. E2B runs a template's start command once, at the template's build, and snapshots it running, so
 it never sees a create's env ([docs.e2b.dev/template/start-ready-command](https://docs.e2b.dev/template/start-ready-command)).
@@ -2219,8 +2226,8 @@ kernel `4.19.0-gvisor`): root has no `CAP_SYS_ADMIN`, and init made its namespac
 `create({ kind: "desktop", ... })` (serve builds the descriptor's desktop configuration so) makes a desktop: the
 adapter gives init `DISPLAY` and starts `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp` through the daemon as the tool
 user (`src/desktop.ts`), as on E2B, so the X server is one process in init's table, in its own network namespace, and
-ends with the computer; xfwm4 starts the same way once the display answers, its session bus out of the user's reach, as
-on E2B. It starts from the box image the release publishes, `ghcr.io/parcha-ai/agentrun-box:<recipe hash>`
+ends with the computer; computerd starts xfwm4 itself once the display answers (init's `--window-manager`), its
+session bus out of the user's reach, as on E2B. It starts from the box image the release publishes, `ghcr.io/parcha-ai/agentrun-box:<recipe hash>`
 (`box/Dockerfile`: the archil client, the helper, the tool user, FUSE, no sudo, plus Xvfb, xfwm4, and the apps E2B
 Desktop has that are cheap to carry, which the `apps` group lists and opens), as a template of the key's own workspace
 named `agentrun-box-<recipe hash>`. A sandbox that mounts an Archil disk starts from the same template.
@@ -2943,7 +2950,7 @@ pass, facts: [{ id, value, means }], factsProblem? }`.
 An id is resolved through the provider registry, and only there; the usage lists every id it holds. A module path is
 resolved from the directory npm was run in. It exits 0 when Core passes, 1 when it fails, 2 on a
 usage error, and 3 on a partial run; `--json` prints the report object (`{ provider, providerVersion, kind,
-daemonMode, image, daemons: [{ computer, role, version, os, arch, fence? }], only?, coreNotRun?, results: [{ id, level,
+daemonMode, image, daemons: [{ computer, role, version, os, arch, fence?, windowManager? }], only?, coreNotRun?, results: [{ id, level,
 group, status, reason?, undeclared? }], core, undeclared, cleanup, computers: { peak, cap? }, notes?, computerNotes? }`).
 `computers.peak` is the most computers the run had alive at once, each counted from its create's call until its release
 (the text report's `computers alive at once: <peak> at most` line). `--concurrency <n>` (`concurrency` in

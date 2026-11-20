@@ -6,6 +6,7 @@
 //
 // The run counts an agent view shows (runs.count, runs.live) are E3's run reads, not this module's; agentView takes them.
 import { randomBytes } from "node:crypto";
+import { purgedAgent } from "./agents.js";
 import { agentLink } from "./console-links.js";
 import { approvalsOf } from "./approvals.js";
 import { ApiError, invalid } from "./errors.js";
@@ -267,6 +268,9 @@ export function makeRevision(definition: Json, files: Record<string, string>, no
   return note !== undefined ? { ...revision, note } : revision;
 }
 
+/** Runs a write's last read and its commit in the agent's delete turn (server.ts agentWrite). */
+export type InTurn = <T>(work: () => Promise<T>) => Promise<T>;
+
 /** How many times an edit with no If-Match is built again on a current revision that moved while it was checked. */
 const EDIT_TRIES = 5;
 
@@ -283,12 +287,13 @@ const EDIT_TRIES = 5;
  *  revision it does not follow. `contract`: an edit that always makes a new revision, even one equal to the current.
  *  `template`: the package an apply with agent_id wrote it from, kept on the revision (getAgent's `template`).
  *  `fromPackage`: the definition is a whole package's (an apply with agent_id), so what it leaves out is not carried over
- *  (editOn). */
+ *  (editOn). `inTurn`: where the agent is read again and the revision written (the server's agentWrite, which refuses a
+ *  purged agent, or one whose purge stopped part way); the check runs outside it. */
 export async function commitAgent(
   store: AgentsStore,
   read: AgentEntry,
   { definition, skills, note }: DefinitionBody,
-  { ifCurrent, check, contract = false, template, fromPackage = false }: { ifCurrent?: string | null; check?: SaveCheck; contract?: boolean; template?: TemplatePackage; fromPackage?: boolean } = {},
+  { ifCurrent, check, contract = false, template, fromPackage = false, inTurn }: { ifCurrent?: string | null; check?: SaveCheck; contract?: boolean; template?: TemplatePackage; fromPackage?: boolean; inTurn?: InTurn } = {},
 ): Promise<AgentEntry> {
   const stale = () => new ApiError("precondition_failed", "the agent's current revision moved since the If-Match it was read at: read the agent again");
   const held = (entry: AgentEntry): AgentEntry => {
@@ -296,6 +301,8 @@ export async function commitAgent(
     return entry;
   };
   let entry = (await getAgent(store, read.agent.id)) ?? read;
+  // Purged since the request read it: 410 before anything is checked (the commit's turn and the store refuse it too).
+  if (entry.agent.purgedAt !== null) throw purgedAgent(entry.agent);
   refuseExternal(entry.agent);
   held(entry);
   const { agent } = entry;
@@ -314,8 +321,12 @@ export async function commitAgent(
     const edit = template ? { ...made, package: template } : made;
     const revision = stamped(edit, await check?.(edit, entry.revision));
     const base = entry.revision?.id ?? null;
-    const now = held((await getAgent(store, agent.id)) ?? entry);
-    if ((now.revision?.id ?? null) === base) {
+    // The agent read again and the revision written in `inTurn` (the server's agent delete turn): the check above, which
+    // may wait on a server's listing, runs outside it, so edits of one agent are checked at once and a DELETE never waits
+    // on a check.
+    const landed = await (inTurn ?? ((work) => work()))(async (): Promise<AgentEntry | undefined> => {
+      const now = held((await getAgent(store, agent.id)) ?? entry);
+      if ((now.revision?.id ?? null) !== base) return undefined;
       // A new description is a real edit: a revision, even with the body unchanged. The same one again writes nothing.
       const described = description !== undefined && description !== now.agent.description;
       if (!contract && !described && now.revision && sameRevision(now.revision, revision)) {
@@ -331,8 +342,10 @@ export async function commitAgent(
         return (await getAgent(store, agent.id))!;
       } catch (error) {
         if (!(error instanceof RevisionMoved)) storeError(error);
+        return undefined;
       }
-    }
+    });
+    if (landed) return landed;
     // Moved while it was checked or written: with If-Match that is stale; without, built and checked again on it.
     if (ifCurrent !== undefined) throw stale();
     if (tries >= EDIT_TRIES) throw new ApiError("precondition_failed", "the agent's current revision kept moving while this edit was checked: read the agent again");

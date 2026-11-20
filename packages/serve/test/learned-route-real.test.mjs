@@ -6,6 +6,7 @@
 // records. claude-agent runs the real pinned CLI against a scripted Anthropic endpoint on loopback (no key, no network),
 // codex the real adapter against its stand-in for Codex's app-server and a faux gateway on loopback.
 import assert from "node:assert/strict";
+import { promoteChecked } from "./learned-workflow-seed-support.mjs";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -103,6 +104,8 @@ for (const harness of ["claude-agent", "codex"]) {
       const id = `real-${harness}-${restart ? "restart" : "live"}`;
       assert.equal((await first.api("POST", "/agents", agent(id, { learning: true, harness, instructions: route.ask, tool_settings: { [LEARNED_WORKFLOW_TOOL]: { permission: "ask" } } }))).status, 201);
       await folderWith(first.data, id);
+      // The owner approves this tool call; the workflow itself already passed its independent check.
+      await promoteChecked(first.store.settings, id, [{ name: "answer", workflow: answerFlow() }]);
       const started = await first.api("POST", `/agents/${id}/runs`, { input: { content: route.ask } });
       assert.equal(started.status, 202, JSON.stringify(started.body));
       const runId = started.body.run_id;

@@ -62,6 +62,7 @@
     "stopRun": ["runs", "stop"],
     "cancelRun": ["runs", "cancel"],
     "raiseRunCap": ["runs", "raise-cap"],
+    "deleteRun": ["runs", "delete"],
     "pauseRun": ["runs", "pause"],
     "resumeRun": ["runs", "resume"],
     "startRun": ["runs", "start-held"],

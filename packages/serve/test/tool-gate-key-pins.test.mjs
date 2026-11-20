@@ -4,8 +4,7 @@
 // permission under denies]
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { settingsKeyOf } from "../dist/tool-gate.js";
-import { runnerGate } from "./gate-support.mjs";
+import { builtinKeyOf, runnerGate } from "./gate-support.mjs";
 
 const DENY = Object.fromEntries(["bash", "read", "browser", "desktop", "monid:faux/*", "mcp:srv/echo", "web_search"].map((key) => [key, { permission: "deny" }]));
 const ROWS = [
@@ -49,7 +48,7 @@ const ROWS = [
 
 test("each name shape maps to the settings key and permission pinned, on every harness", () => {
   for (const [harness, name, key, open, shut] of ROWS) {
-    assert.equal(settingsKeyOf(harness, name), key, `${harness} ${name}`);
+    assert.equal(builtinKeyOf(harness, name), key, `${harness} ${name}`);
     assert.equal(runnerGate({ harness, settings: {} }).policy(name), open, `${harness} ${name} (open)`);
     assert.equal(runnerGate({ harness, settings: DENY }).policy(name), shut, `${harness} ${name} (deny)`);
   }

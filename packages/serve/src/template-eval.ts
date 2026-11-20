@@ -29,7 +29,8 @@ import { EMAIL_TOOLS } from "./email/names.js";
 import { CALENDAR_EVENTS } from "./calendar/names.js";
 import type { IcsFaux } from "./calendar/ics-faux.js";
 import type { MonidFake } from "./runner/monid-run.js";
-import { settingsKeyOf, shellToolOf } from "./tool-gate.js";
+import { nameMapOf, settingsKeyOf, shellToolOf } from "./tool-gate.js";
+import { builtinHarness } from "./harness-table.js";
 import { webShownOf } from "./timeline/index.js";
 import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
 import { type WebFake, webFixtureOf } from "./web-fake.js";
@@ -906,10 +907,12 @@ async function waitRun(api: Api, runId: string, deadline: number, signal?: Abort
  *  its output's head as the rows of a calls=whole read carry them (tool_input, tool_result_text), else its previews. */
 export function callsOf(rows: readonly Json[], harness: string, toolkits: Readonly<Record<string, string>> = {}): ToolCall[] {
   const results = new Map(rows.filter((row) => row.kind === "tool_result" && row.tool_use_id).map((row) => [String(row.tool_use_id), row]));
+  // The rows are a server's, read over its API: the names are the built-in harness's, the only facts known here.
+  const names = nameMapOf(harness, builtinHarness(harness)?.facts);
   return rows.filter((row) => row.kind === "tool_use" && typeof row.tool_name === "string").map((row) => {
     const name = row.tool_name as string;
     const result = results.get(String(row.tool_use_id));
-    const key = settingsKeyOf(harness, name);
+    const key = settingsKeyOf(harness, name, names);
     const output = typeof result?.tool_result_text === "string" ? result.tool_result_text : ((result?.tool_result_preview as string | undefined) ?? null);
     return { tool: shellToolOf(name) ?? (key === undefined ? undefined : onServerName(key, toolkits)) ?? name, name, preview: (row.tool_input_preview as string | null) ?? null, ...(isObject(row.tool_input) ? { arguments: row.tool_input } : {}), status: (result?.tool_status as string | undefined) ?? null, result: output };
   });

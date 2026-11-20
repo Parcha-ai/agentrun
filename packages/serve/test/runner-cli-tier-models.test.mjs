@@ -13,7 +13,7 @@ import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { createModels } from "@earendil-works/pi-ai/models";
 import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
-import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
+import { landWorkflows, promoteChecked, startAt } from "./learned-workflow-seed-support.mjs";
 import { fauxTable } from "./fixtures/faux-table.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
@@ -112,6 +112,7 @@ async function tieredRun(t, harness, tier, tiers) {
   // The faux harness reads the turn from the system prompt: the instruction names the learned workflow to run.
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Use the learned workflow answer on What is six times seven.", harness, tools: ["read"], learning: true } });
   const seed = await landWorkflows(dir, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: flowOf(tier) }]);
+  await promoteChecked(server.settings, "agent-1", [{ name: "answer", workflow: flowOf(tier) }]);
   // Capped: every request is admitted under the run's one cap, held at its model's price before it leaves.
   const launch = { input: { content: "Do the task." }, title: "t", place: { mode: "runner" }, harness, model: MODELS[harness].launch, max_cost_usd: 50, learning: startAt(seed) };
   await server.runs.create({ id: RUN, agentId: "agent-1", revisionId: "rev-1" }, { body: launch });

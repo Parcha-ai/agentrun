@@ -445,8 +445,8 @@ while [ ! -e "$0" ]; do sleep 0.01; done`, ready}, Orphans: "keep"})
 	}
 }
 
-// With a window manager (xfwm4 in a session bus of its own, as the desktops run it, src/desktop.ts WINDOW_MANAGER, here
-// without its namespaces; test/docker/desktop-xfwm4.docker.test.mjs runs WINDOW_MANAGER itself), the app's window is inside the manager's frame: launch answers once it shows and the manager has made it the active
+// With a window manager (xfwm4 in a session bus of its own, as the desktops run it, internal/windowmanager, here
+// without its network namespace; test/docker/desktop-xfwm4.docker.test.mjs has computerd start it), the app's window is inside the manager's frame: launch answers once it shows and the manager has made it the active
 // window, and terminate ends it.
 func TestAppsUnderAWindowManager(t *testing.T) {
 	for _, program := range []string{"xfwm4", "dbus-run-session"} {

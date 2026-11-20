@@ -15,7 +15,7 @@ const pkg = (name) => readPackage(join(TEMPLATES_DIR, name));
 const need = (p, toolkit) => p.mcp.find((m) => m.toolkit === toolkit);
 const SCOPE = { owner: "${parameters.owner}", repo: "${parameters.repo}" };
 // GitHub MCP tools that take owner and repo: a tool a GitHub template lists is one of these, or the test names it.
-const OWNER_REPO = new Set(["pull_request_read", "get_file_contents", "get_repository_tree", "pull_request_review_write", "add_comment_to_pending_review", "list_releases", "get_latest_release", "get_release_by_tag", "list_tags", "get_tag", "list_commits", "get_commit", "list_pull_requests", "list_issues", "get_label", "issue_write"]);
+const OWNER_REPO = new Set(["pull_request_read", "get_file_contents", "pull_request_review_write", "add_comment_to_pending_review", "list_releases", "get_latest_release", "get_release_by_tag", "list_tags", "get_tag", "list_commits", "get_commit", "list_pull_requests", "list_issues", "get_label", "issue_write"]);
 
 for (const name of ["code-review", "release-notes"]) {
   test(`${name}: every GitHub tool is pinned to the owner and repo it was applied to, reads too, and no search is listed`, () => {

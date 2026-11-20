@@ -9,6 +9,35 @@ afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.in
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
 describe("App Learning Dojo", () => {
+  it("refreshes missing learning credentials even when ordinary model requests are ready", async () => {
+    let ready = false;
+    let reads = 0;
+    vi.stubGlobal("fetch", async (url: string) => {
+      const path = new URL(url, "https://console.example.test").pathname;
+      if (path === "/v2/auth/session") return json({ password_set: true, signed_in: true });
+      if (path === "/v2/setup/import") return json({ offer: false });
+      if (path === "/v2/capabilities") {
+        reads++;
+        return json({ harnesses: [], models: { ready: true }, learning_model: { location: "server", ready, model: "openrouter/example-model", needs: ready ? null : "key", reason: ready ? null : "The learning model needs server credentials." }, features: { learning: "on" } });
+      }
+      if (path === "/v2/agents") return json({ agents: [], next_cursor: null });
+      return json({ error: { code: "not_found", message: "No route", retryable: false } }, 404);
+    });
+    location.hash = "#/dojo";
+    const host = document.body.appendChild(document.createElement("div")); root = createRoot(host);
+    act(() => root!.render(createElement(App)));
+    const settle = async () => { for (let i = 0; i < 15; i++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); }); };
+    await settle();
+    expect(host.querySelector('[aria-label="Learning model setup"]')).not.toBeNull();
+    const before = reads;
+    ready = true;
+    await act(async () => { window.dispatchEvent(new Event("focus")); });
+    await settle();
+    expect(reads).toBeGreaterThan(before);
+    expect(host.querySelector('[aria-label="Learning model setup"]')).toBeNull();
+    expect(host.textContent).toContain("openrouter/example-model");
+  });
+
   it("opens actual learning without a provider key and keeps the learning link on the same agent", async () => {
     const calls: string[] = [];
     vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {

@@ -1,6 +1,7 @@
 // A run's desktop or phone, as its owner takes it: POST /v2/runs/{id}/computer/take-over and POST .../computer/hand-back
 // (the hand-back for every kind: a browser's answers its agent's ask, as POST .../browser/hand-back does). Owner-only, as
-// a run's browser is: the owner's password session in the console, never a token. GET /v2/runs/{id}/computer is answered by
+// a run's browser is: the owner's password session in the console, never a token; on an API-only server (api-only.ts),
+// which has no owner, the server's token, its backend's own. GET /v2/runs/{id}/computer is answered by
 // server.ts from computerView (computer-view.ts) over computerHoldOf; computerViewOf is the store-backed read of the run's
 // computer the take-over tests check against.
 //
@@ -30,7 +31,8 @@ export type ComputerViewRead = {
   readonly why?: string;
 };
 
-/** Our routes' names in serve's route table: each takes the owner's password session, never a token. */
+/** Our routes' names in serve's route table: each takes the owner's password session, never a token (the server's token
+ *  on an API-only server). */
 export const COMPUTER_ROUTES: ReadonlySet<string> = new Set(["takeOverRunComputer", "handBackRunComputer"]);
 
 /** How long a take-over lasts with no input from the owner, in minutes, for the API's words. */
@@ -45,18 +47,19 @@ export async function computerViewOf(store: ComputerCallStore, runId: string, op
   return { kind, state: "live", hold: holdShown(hold, await store.commands(runId, 0)).state };
 }
 
-/** How a request to one of the routes came: by the owner's signed-in page, or with a token; whether this server has
- *  accounts (for the refusal's words); its body. */
-export type ComputerRequest = { readonly ownerSession: boolean; readonly token: boolean; readonly accounts: boolean; readonly body?: unknown };
+/** How a request to one of the routes came: by the owner's signed-in page, or with a token (the server's, checked before
+ *  this); whether this server is API-only (its token is then its backend's, and takes the routes); whether this server
+ *  has accounts (for the refusal's words); its body. */
+export type ComputerRequest = { readonly ownerSession: boolean; readonly token: boolean; readonly apiOnly: boolean; readonly accounts: boolean; readonly body?: unknown };
 
 /**
  * One of our routes (COMPUTER_ROUTES, by its name in serve's route table) for run `runId`: { hold, outcome? }, or an
  * ApiError. A token is refused (forbidden): a take-over drives the computer, so it takes the owner's signed-in page, as a
- * run's browser does. The take-over takes an empty body; the hand-back an `outcome` (done or cancelled) at most. Serve's
- * dispatch sends what this answers.
+ * run's browser does; on an API-only server, which has no owner, the server's token takes it. The take-over takes an
+ * empty body; the hand-back an `outcome` (done or cancelled) at most. Serve's dispatch sends what this answers.
  */
 export async function computerRoute(name: string, runId: string, request: ComputerRequest, store: ComputerCallStore, options: ComputerCallOptions = {}): Promise<ComputerHoldAnswer> {
-  if (!request.ownerSession && request.token) {
+  if (!request.ownerSession && request.token && !request.apiOnly) {
     throw new ApiError("forbidden", request.accounts ? "A run's computer takes the owner's password sign-in in the console, never a token." : "A run's computer takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
   }
   const body = request.body ?? {};
