@@ -124,14 +124,16 @@ test("under allow, a POST the network service took with it is told to the call a
   assert.deepEqual(server.nonGet(), ["POST /api/order"]);
 });
 
-test("under deny, a POST the network service took with it is told lost, nothing reaches the server, and the observer still holds and denies after the restart", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
+test("under deny, a POST the network service took with it is told lost (or, lost in the observer's one round trip before it confirmed the old service, told nothing), never journaled, nothing reaches the server, and the observer still holds and denies after the restart", { skip: NO_CHROME, timeout: 120_000 }, async (t) => {
   const rigged = await rig(t, "ns-deny", "deny");
   const { server, target, call } = rigged;
   const restarted = await killAtPreflight(server, target);
   const { rows, lost } = await call(G3);
   await restarted();
-  assert.equal(lost.length, 1, `the call is told (its journal: ${JSON.stringify(rows)})`);
-  assert.deepEqual(rows, []);
+  // Told lost, or told nothing by design (checkedCall): which one is the kill's timing against the observer's round trip.
+  const xorigin = `${new URL(server.base).protocol}//localhost:${new URL(server.base).port}`;
+  assert.ok(lost.length === 0 || (lost.length === 1 && lost[0] === `POST ${xorigin}/api/xorigin`), `the call is told the request lost, or nothing (its lost: ${JSON.stringify(lost)}, journal: ${JSON.stringify(rows)})`);
+  assert.deepEqual(rows, [], "never journaled as sent or denied");
   // After the restart each POST is held and denied, or, should Chrome restart the service on its own again, told lost.
   await checkedCall(rigged, C, "deny");
   await checkedCall(rigged, G3, "deny", `http://localhost:${new URL(server.base).port}`);

@@ -184,6 +184,7 @@ __all__ = [
     "DefinitionInputPlace1",
     "DefinitionInputPlace2",
     "DefinitionInputSdk",
+    "DefinitionInputSdk2",
     "DefinitionInputToolSettings",
     "DefinitionInputToolSettingsAskPerson",
     "DefinitionInputToolSettingsBash",
@@ -218,6 +219,7 @@ __all__ = [
     "DefinitionPlace1",
     "DefinitionPlace2",
     "DefinitionSdk",
+    "DefinitionSdk2",
     "DefinitionToolSettings",
     "DefinitionToolSettingsAskPerson",
     "DefinitionToolSettingsBash",
@@ -814,6 +816,8 @@ __all__ = [
     "RunResult",
     "RunReview",
     "RunSdk",
+    "RunSdk2",
+    "RunSdk2Usage",
     "RunSdkUsage",
     "RunState",
     "RunStatus",
@@ -834,6 +838,8 @@ __all__ = [
     "RunSummaryPending6",
     "RunSummaryReview",
     "RunSummarySdk",
+    "RunSummarySdk2",
+    "RunSummarySdk2Usage",
     "RunSummarySdkUsage",
     "RunSummaryTrigger",
     "RunSummaryWorkflow",
@@ -916,6 +922,7 @@ __all__ = [
     "StartRunResponse",
     "StartRunResponseHeld",
     "StartSdkRunBody",
+    "StartSdkRunBody2",
     "StartSdkRunBodyWorkflowToolsItem",
     "StartSdkRunResponse",
     "StartSdkRunResponseLearning",
@@ -1136,7 +1143,7 @@ class Definition(_DefinitionRequired, total=False):
     output_schema: JsonObject
     workflow: JsonObject
     max_cost_usd: float
-    sdk: DefinitionSdk
+    sdk: DefinitionSdk | DefinitionSdk2
     native: DefinitionNative
     model: str
     model_tiers: DefinitionModelTiers
@@ -1155,6 +1162,11 @@ JsonObject: TypeAlias = "dict[str, Any]"
 
 class DefinitionSdk(TypedDict):
     runtime: Literal["claude-agent-sdk", "codex-sdk", "eve"]
+
+
+class DefinitionSdk2(TypedDict):
+    runtime: Literal["external"]
+    platform: str
 
 
 class _DefinitionNativeRequired(TypedDict):
@@ -1626,7 +1638,7 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
     output_schema: JsonObject
     workflow: JsonObject
     max_cost_usd: float
-    sdk: DefinitionInputSdk
+    sdk: DefinitionInputSdk | DefinitionInputSdk2
     native: DefinitionInputNative
     model: str
     model_tiers: DefinitionInputModelTiers
@@ -1642,6 +1654,11 @@ class DefinitionInput(_DefinitionInputRequired, total=False):
 
 class DefinitionInputSdk(TypedDict):
     runtime: Literal["claude-agent-sdk", "codex-sdk", "eve"]
+
+
+class DefinitionInputSdk2(TypedDict):
+    runtime: Literal["external"]
+    platform: str
 
 
 class _DefinitionInputNativeRequired(TypedDict):
@@ -2489,7 +2506,7 @@ class _RunSummaryRequired(TypedDict):
 
 
 class RunSummary(_RunSummaryRequired, total=False):
-    sdk: RunSummarySdk
+    sdk: RunSummarySdk | RunSummarySdk2
     native: RunSummaryNative
     console_url: str
     labels: dict[str, str]
@@ -2557,6 +2574,23 @@ class RunSummarySdk(TypedDict):
 
 
 class RunSummarySdkUsage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+
+
+class RunSummarySdk2(TypedDict):
+    runtime: Literal["external"]
+    platform: str
+    model: str | None
+    session_id: str | None
+    learning_revision: str | None
+    usage: RunSummarySdk2Usage | None
+
+
+class RunSummarySdk2Usage(TypedDict, total=False):
     input_tokens: int | None
     output_tokens: int | None
     cache_read_tokens: int | None
@@ -5073,7 +5107,7 @@ class _RunRequired(TypedDict):
 
 class Run(_RunRequired, total=False):
     effort: Effort
-    sdk: RunSdk
+    sdk: RunSdk | RunSdk2
     native: RunNative
     console_url: str
     labels: dict[str, str]
@@ -5112,6 +5146,23 @@ class RunSdk(TypedDict):
 
 
 class RunSdkUsage(TypedDict, total=False):
+    input_tokens: int | None
+    output_tokens: int | None
+    cache_read_tokens: int | None
+    cache_write_tokens: int | None
+    cost_usd: float | None
+
+
+class RunSdk2(TypedDict):
+    runtime: Literal["external"]
+    platform: str
+    model: str | None
+    session_id: str | None
+    learning_revision: str | None
+    usage: RunSdk2Usage | None
+
+
+class RunSdk2Usage(TypedDict, total=False):
     input_tokens: int | None
     output_tokens: int | None
     cache_read_tokens: int | None
@@ -6066,6 +6117,17 @@ class _StartSdkRunBodyWorkflowToolsItemRequired(TypedDict):
 class StartSdkRunBodyWorkflowToolsItem(_StartSdkRunBodyWorkflowToolsItemRequired, total=False):
     output_schema: dict[str, Any]
     price_usd: float
+
+
+class _StartSdkRunBody2Required(TypedDict):
+    runtime: Literal["external"]
+    platform: str
+    input: str
+    instructions: str
+
+
+class StartSdkRunBody2(_StartSdkRunBody2Required, total=False):
+    model: str
 
 
 class StartSdkRunResponse(TypedDict):
@@ -9862,7 +9924,7 @@ class SdkRunsResource(Group):
         """Read SDK run and learning state (GET /sdk-runs/{run_id})."""
         return self._call("getSdkRun", (run_id,), None, None, timeout=timeout)
 
-    def start(self, agent_id: str, body: StartSdkRunBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> StartSdkRunResponse:
+    def start(self, agent_id: str, body: StartSdkRunBody | StartSdkRunBody2, *, idempotency_key: str | None = None, timeout: float | None = None) -> StartSdkRunResponse:
         """Register a task executed by an existing backend SDK (POST /agents/{agent_id}/sdk-runs)."""
         return self._call("startSdkRun", (agent_id,), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
 

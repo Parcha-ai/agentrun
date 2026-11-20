@@ -4,9 +4,9 @@
 // host's secrets and of text shaped like one, and a field over PRINT_MAX is redacted whole.
 import { placeholdersOf, placeholderValue } from "@parcha/agentrun-dsl";
 import { hiddenCharacter } from "./invisible.js";
-import { REPICK_PASSES, repickCheckOf, repickMarked } from "./repick.js";
+import { REPICK_PASSES, repickCheckOf, repickLabelOf, repickMarked, type RepickSite } from "./repick.js";
 import { learnedSecretShapes, redactLearned, valueMatcher } from "./secrets.js";
-import { childNodes, type DraftDecisions, type DraftDryRun, draftProblems, type DraftReader, decodedStrings, DECODED_DEPTH, DRY_RUN_FAILED, frontKeys, frontValues, LEARNED_KEYS, learnedPlace, type LearnedPlace, readmeProblems, WORKFLOW_NAME, WORKFLOWS_DIR } from "./workflow-draft.js";
+import { childNodes, type DraftDecisions, type DraftDryRun, draftProblems, type DraftReader, decodedStrings, DECODED_DEPTH, DRY_RUN_FAILED, frontKeys, frontValues, LEARNED_KEYS, isNode, isObject, learnedPlace, type LearnedPlace, readmeProblems, WORKFLOW_NAME, WORKFLOWS_DIR } from "./workflow-draft.js";
 
 /** Byte caps (UTF-8). Over a cap is refused, never cut. */
 export const CAPS = Object.freeze({
@@ -135,7 +135,6 @@ function decodedScanned(path: string, text: string, refused: (text: string) => b
 /** The model node kinds a tier routes (model.ts MODEL_NODES); a decision node (judge, pick, sift) goes to its decision
  *  provider, never a tier. */
 export const TIERED_KINDS: ReadonlySet<string> = new Set(["agent", "decide", "extract", "report"]);
-const isNode = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value) && typeof (value as { node?: unknown }).node === "string";
 /** The state key a step writes (the DSL's writeKeyOf): a report's `report_markdown`, else its `as`, else an agent's,
  *  decide's or extract's label. */
 const writeKeyOf = (node: Record<string, unknown>): unknown => (node.node === "report" ? "report_markdown" : typeof node.as === "string" && node.as ? node.as : ["agent", "decide", "extract"].includes(node.node as string) ? node.label : undefined);
@@ -224,14 +223,14 @@ function pagesRead(value: unknown, state: Record<string, unknown>, out = new Set
  *  child sees an input key as a page when its value reads one. Pages reach a step on the agent's model only through a fast-tier step's
  *  output: chain14b's drafts fed whole pages to the answering step (4.1 requests a run at ~70k cached tokens each,
  *  $0.364 a served run), where the research shape (a fast extract's compact facts to the answering step) booked ~$0.08.
- *  One line each, in words the compile retry acts on. With `repick` (the agent's learning.repick), a top-level re-pick
- *  loop of the draft whose body is the host's pass marker is read as its pass 1 (learn/repick.ts repickMarked): the
- *  clone its pass 2 runs reads the pages by the owner's setting, the one page read on the agent's model a draft may
+ *  One line each, in words the compile retry acts on. With `repick` (the agent's learning.repick), the answer's re-pick
+ *  loop (repickSiteOf), when its body is the host's pass marker, is read as its pass 1 (learn/repick.ts repickMarked):
+ *  the clone its pass 2 runs reads the pages by the owner's setting, the one page read on the agent's model a draft may
  *  hold, and only that exact clone at that place. */
 export function compactStateProblems(doc: unknown, { repick = false }: { readonly repick?: boolean } = {}): string[] {
   const problems = new Set<string>();
-  // The draft's own top-level marked loops alone (repickMarked): a marker in a composed child is read as written.
-  const marked = new Map<unknown, Record<string, unknown>>(repick ? repickMarked(doc).map(({ loop, step }) => [loop, step]) : []);
+  // The answer's re-pick loop alone (repickMarked): a marker anywhere else is read as written.
+  const marked = repick ? repickMarked(repickSiteOf(doc)) : undefined;
   const walk = (node: unknown, pages: ReadonlySet<string>, depth: number): Set<string> => {
     const after = new Set(pages);
     if (!isNode(node) || depth > 32) return after;
@@ -269,7 +268,7 @@ export function compactStateProblems(doc: unknown, { repick = false }: { readonl
       // until the marks stop changing. The set read grows on each further pass, so it stops within one pass a key the
       // workflow names, and never past maxIters; each pass's way out holds the ones before it.
       const passes = typeof node.maxIters === "number" && node.maxIters >= 1 ? Math.floor(node.maxIters) : Number.POSITIVE_INFINITY;
-      const body = marked.get(node) ?? node.body;
+      const body = node === marked?.loop ? marked.step : node.body;
       let read = after;
       let out = walk(body, read, depth + 1);
       for (let pass = 2; pass <= passes; pass++) {
@@ -324,7 +323,6 @@ export function compactStateProblems(doc: unknown, { repick = false }: { readonl
 
 /** The property names that make an answer carry quotes. */
 const QUOTE_KEYS: ReadonlySet<string> = new Set(["quote", "quotes"]);
-const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
 
 /** A place in an answer holding quotes: its keys from the answer down ("[]" for an array's items, "*" for any key of a
  *  map), and the quote_missing `path` (from the answer down) and `field` that read them, when one pair can: a quote, a
@@ -521,10 +519,13 @@ const repickOn = (step: unknown, check: QuoteRead): boolean => {
   const of = repickCheckOf(step);
   return !!of && of.path === check.path && (of.field ?? "") === check.field && JSON.stringify(of.pages) === JSON.stringify(check.pages);
 };
-/** The labels a run's loop events give `workflow`'s quote re-pick (quoteRule `repicks`): what marks a loop's exit a
- *  re-pick (learned-nodes.ts LoopRow `repick`). Any other loop that ran twice is an ordinary loop. */
+/** Where `workflow`'s answer is re-picked (quoteRule `repick`): what learning.repick rewrites (learn/repick.ts). */
+export const repickSiteOf = (workflow: unknown): RepickSite | undefined => (isObject(workflow) ? quoteRule(workflow, {}).repick : undefined);
+/** The labels a run's loop events give `workflow`'s quote re-pick (repickSiteOf): what marks a loop's exit a re-pick
+ *  (learned-nodes.ts LoopRow `repick`). Any other loop that ran twice is an ordinary loop. */
 export function repickLabels(workflow: unknown): Set<string> {
-  return new Set(isObject(workflow) ? quoteRule(workflow, {}).repicks : []);
+  const site = repickSiteOf(workflow);
+  return new Set(site ? [repickLabelOf(site)] : []);
 }
 /** Whether a step's `state` map names state key `key` as the whole marked placeholder `"{answer?}"` (a whole string):
  *  null on a re-pick loop's first pass, before any draft exists, and the failed draft on its second. No path below the
@@ -567,34 +568,34 @@ const quoteEscalatesIn = (node: unknown, depth = 0): string[] => {
  *  (its path and field; a place no one pair reads is refused, as quote_missing reads none of it). Its pages are state keys holding a page as
  *  fetched (holdsPage). A composed workflow node writing the whole answer (its `as` the answer's path) whose child
  *  passes this rule in its own state has checked the places in the answer its child's schema declares too; the parent
- *  still checks any other place its own schema declares. `checked`: the places a passing workflow checked. `repicks`:
- *  the answer's re-pick as a run's loop events label it, whether the rule applies or not: the step writing the answer
- *  when it is a loop of REPICK_PASSES until `not` of a quote_missing, else that step's composed child's, which the DSL
- *  labels `<step>/<its label>` (scopeDepsToChild). */
-function quoteRule(workflow: Record<string, unknown>, schemasAround: Record<string, unknown>, depth = 0): { applies: boolean; problems: string[]; checked: string[]; repicks: string[] } {
+ *  still checks any other place its own schema declares. `checked`: the places a passing workflow checked. `repick`:
+ *  where the answer is re-picked, whether the rule applies or not: the step writing the answer when it is a loop of
+ *  REPICK_PASSES until `not` of a quote_missing, else that step's composed child's, which the DSL labels
+ *  `<step>/<its label>` (scopeDepsToChild). */
+function quoteRule(workflow: Record<string, unknown>, schemasAround: Record<string, unknown>, depth = 0): { applies: boolean; problems: string[]; checked: string[]; repick: RepickSite | undefined } {
   const output = isObject(workflow.output) ? workflow.output : {};
   const answerPath = typeof output.path === "string" ? output.path : "";
   const schemas = isObject(workflow.schemas) ? workflow.schemas : schemasAround;
   const schemaId = typeof output.schemaId === "string" ? output.schemaId : "";
-  if (!answerPath || depth > 8) return { applies: false, problems: [], checked: [], repicks: [] };
+  if (!answerPath || depth > 8) return { applies: false, problems: [], checked: [], repick: undefined };
   const steps = isNode(workflow.root) && workflow.root.node === "chain" && Array.isArray(workflow.root.steps) ? workflow.root.steps as unknown[] : [workflow.root];
   const answered = steps.findLastIndex((step) => writesKey(step, answerPath.split(".")[0]));
   const writer = steps[answered];
   const child = isNode(writer) && writer.node === "workflow" && isObject(writer.workflow) ? quoteRule(writer.workflow, schemas, depth + 1) : undefined;
-  const repicks = !isNode(writer) ? [] : repickCheckOf(writer) ? [String(writer.label)] : (child?.repicks ?? []).map((label) => `${String(writer.label)}/${label}`);
-  const none = { applies: false, problems: [], checked: [], repicks };
+  const repick: RepickSite | undefined = !isNode(writer) ? undefined : repickCheckOf(writer) ? { at: answered, step: writer } : child?.repick && { at: answered, step: writer, inner: child.repick };
+  const none = { applies: false, problems: [], checked: [], repick };
   if (!Object.hasOwn(schemas, schemaId)) return none;
   // Its refs read as the DSL reads them (resolveSchemaForWorkflow): the schema's own inline definitions first, then the catalog.
   const answerSchema = schemas[schemaId];
   const inline = isObject(answerSchema) && isObject(answerSchema.definitions) ? answerSchema.definitions : {};
   const { sites: declared, over } = quoteSitesOf(answerSchema, { ...schemas, ...inline });
   if ((!declared.length && !over) || !fetches(workflow.root)) return none;
-  if (over) return { applies: true, checked: [], repicks, problems: [`the answer's schema (${schemaId.slice(0, 64)}) holds quotes in more than ${QUOTE_SITES_MAX} places or nests past ${QUOTE_SITE_DEPTH} keys, past what the quote check reads, and the workflow fetches pages: give the answer fewer places holding quotes, each a quote, a list of quotes or a list of records holding one`] };
+  if (over) return { applies: true, checked: [], repick, problems: [`the answer's schema (${schemaId.slice(0, 64)}) holds quotes in more than ${QUOTE_SITES_MAX} places or nests past ${QUOTE_SITE_DEPTH} keys, past what the quote check reads, and the workflow fetches pages: give the answer fewer places holding quotes, each a quote, a list of quotes or a list of records holding one`] };
   const where = (site: QuoteSite) => `${schemaId}.${site.keys.join(".").replace(/\.(\[\]|\*)/g, "$1")}`.slice(0, 120);
   const pages = pageKeysOf(workflow.root);
   const covered = child?.applies && !child.problems.length && isNode(writer) && writer.as === answerPath ? child.checked : [];
   const sites = declared.filter((site) => !covered.includes(siteKey(site)));
-  const passed = { applies: true, problems: [], checked: declared.map(siteKey), repicks };
+  const passed = { applies: true, problems: [], checked: declared.map(siteKey), repick };
   if (!sites.length) return passed;
   // A place no one path and field reads (quotes under two lists, in a map, in records with no quote key): quote_missing
   // would read none of its quotes, so no check passes it.
@@ -639,8 +640,8 @@ function quoteRule(workflow: Record<string, unknown>, schemasAround: Record<stri
     }
   }
   // A composed workflow writing the answer that applies the rule and fails it: its own check is the one to fix.
-  if (problems.length && child?.problems.length) return { applies: true, checked: [], repicks, problems: child.problems.map((problem) => `the composed workflow step ${JSON.stringify(String((writer as Record<string, unknown>).label ?? "(no label)").slice(0, 64))} writes the answer: ${problem}`) };
-  return problems.length ? { applies: true, problems, checked: [], repicks } : passed;
+  if (problems.length && child?.problems.length) return { applies: true, checked: [], repick, problems: child.problems.map((problem) => `the composed workflow step ${JSON.stringify(String((writer as Record<string, unknown>).label ?? "(no label)").slice(0, 64))} writes the answer: ${problem}`) };
+  return problems.length ? { applies: true, problems, checked: [], repick } : passed;
 }
 
 /** What a draft may write of a workflow (`place`), by itself: a good folder name, never a deletion, a regular file

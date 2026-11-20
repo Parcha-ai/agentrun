@@ -3122,7 +3122,8 @@ export const COMMANDS = [
         "enum": [
           "claude-agent-sdk",
           "codex-sdk",
-          "eve"
+          "eve",
+          "external"
         ],
         "required": true,
         "description": ""
@@ -3144,6 +3145,12 @@ export const COMMANDS = [
         "type": "string",
         "required": false,
         "description": ""
+      },
+      {
+        "name": "platform",
+        "type": "string",
+        "required": false,
+        "description": "External source's display label, such as openclaw or capy. Preserved exactly; no surrounding whitespace, controls or lone surrogates. Never selects a managed harness or workflow capability."
       }
     ],
     "hasBody": true,

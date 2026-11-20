@@ -3,6 +3,7 @@
 // before this field existed and one that names pi are the same revision. Which harnesses this server runs is said in
 // capabilities, and a revision naming one it does not run saves with a warning and is refused at run time.
 import type { HarnessPromises } from "./harness-table.js";
+import { SDK_RUNTIMES } from "./sdk/runtimes.js";
 
 
 /** The built-in harnesses' ids, in the table's order (harness-table.ts BUILTIN; harness-one-table.test.mjs holds them
@@ -19,7 +20,7 @@ export const HARNESS_ID_PATTERN = "^[a-z][a-z0-9-]{0,39}$";
  *  runtime's (sdk/schema.ts SDK_BINDING). Also every name a plain object already has that the id pattern admits
  *  (`constructor`): serve looks harnesses up by id in plain objects, where such an id would read Object's own member. */
 export const RESERVED_HARNESS_IDS: readonly string[] = Object.freeze([
-  "learning", "sdk", "workflow", "claude-agent-sdk", "codex-sdk", "eve",
+  "learning", "sdk", "workflow", ...SDK_RUNTIMES,
   ...Object.getOwnPropertyNames(Object.prototype).filter((name) => new RegExp(HARNESS_ID_PATTERN).test(name)),
 ]);
 /** The harnesses that run on a person's ChatGPT plan (chatgpt-plan.ts): those whose requests go to OpenAI's Responses
