@@ -451,9 +451,10 @@ function ScheduleEdit({ v2, go, id, minEvery, now }: FormProps & { id: string })
   return <ScheduleForm v2={v2} go={go} trigger={trigger} minEvery={minEvery} now={now} />;
 }
 
-/** One input with its label, its hint, and the issue under it (`data-issue`: the field the server names). */
-function Field({ label, field, issue, hint, children }: { label: string; field: string; issue?: string; hint?: string; children: ReactNode }) {
-  return <UiField className="min-w-0" label={label} hint={hint} error={issue ? <span data-issue={field}>{issue}</span> : undefined}>{children}</UiField>;
+/** One input with its label (marked * when the save refuses it empty), its hint, and the issue under it (`data-issue`: the
+ *  field the server names). */
+function Field({ label, field, issue, hint, required, children }: { label: string; field: string; issue?: string; hint?: string; required?: boolean; children: ReactNode }) {
+  return <UiField className="min-w-0" label={label} required={required} hint={hint} error={issue ? <span data-issue={field}>{issue}</span> : undefined}>{children}</UiField>;
 }
 
 /** An empty cap field's placeholder: the picked agent's own default cap as served (definition.max_cost_usd), which an
@@ -578,15 +579,15 @@ function ScheduleForm({ v2, go, trigger, minEvery, now = Date.now }: FormProps &
           </div>
           {restarts && <p className="mt-3 text-small text-warning-text" role="note">Changing when restarts the schedule from now.</p>}
         </fieldset>
-        <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
+        <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]} required>
           <Picker name="agent" label="Agent" className="w-full" value={draft.agentId} onChange={(v) => set("agentId")(v)}
             options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
               ...live.map((a) => ({ value: a.agent_id, label: `${a.definition.name || a.agent_id}${a.kind === "workflow" ? " (workflow)" : ""}` })),
               ...(draft.agentId && agents && !live.some((a) => a.agent_id === draft.agentId) ? [{ value: draft.agentId, label: draft.agentId }] : [])]} />
         </Field>
         <UnattendedWarning v2={v2} agentId={draft.agentId} skips />
-        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]}><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
-        <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
+        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} required><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
+        <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]} required={!capOptional}
           hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : capOptional ? "Uses the agent's default if empty." : "Required: each run this schedule starts stops at this spend."}>
           <Input name="maxCost" inputMode="decimal" className="max-w-64" value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
         </Field>
@@ -701,14 +702,14 @@ function WebhookForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
         </fieldset>
         <p className="text-small text-muted-foreground">Events from an app Composio connects start runs through an app trigger instead: <a href="#/triggers/new-composio" className="underline underline-offset-2">New app trigger</a></p>
         <WebhookFilter signature={draft.signature} rules={draft.accept} onChange={set("accept")} issues={issues} cap={null} />
-        <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
+        <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]} required>
           <Picker name="agent" label="Agent" className="w-full" value={draft.agentId} onChange={(v) => set("agentId")(v)}
             options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
               ...live.map((a) => ({ value: a.agent_id, label: `${a.definition.name || a.agent_id}${a.kind === "workflow" ? " (workflow)" : ""}` }))]} />
         </Field>
         <UnattendedWarning v2={v2} agentId={draft.agentId} />
-        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]}><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
-        <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
+        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} required><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
+        <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]} required={agentCap === undefined}
           hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : "Required: each run this webhook starts stops at this spend."}>
           <Input name="maxCost" inputMode="decimal" className="max-w-64" value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
         </Field>
@@ -794,14 +795,14 @@ function GitHubForm({ v2, go }: { v2: Client; go: (hash: string) => void }) {
       <div className={`mt-5 ${formColumnsClass}`}>
         <Field label="Name" field="name" issue={issues.name}><Input name="name" value={draft.name} onChange={(e) => set("name")(e.target.value)} placeholder="review PRs" /></Field>
         <GitHubEvents picks={draft} onChange={(picks) => setDraft((d) => ({ ...d, ...picks }))} issues={issues} />
-        <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
+        <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]} required>
           <Picker name="agent" label="Agent" className="w-full" value={draft.agentId} onChange={(v) => set("agentId")(v)}
             options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
               ...live.map((a) => ({ value: a.agent_id, label: `${a.definition.name || a.agent_id}${a.kind === "workflow" ? " (workflow)" : ""}` }))]} />
         </Field>
         <UnattendedWarning v2={v2} agentId={draft.agentId} />
-        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} hint="The event's payload comes with it."><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
-        <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
+        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} required hint="The event's payload comes with it."><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
+        <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]} required={agentCap === undefined}
           hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : "Required: each run this trigger starts stops at this spend."}>
           <Input name="maxCost" inputMode="decimal" className="max-w-64" value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
         </Field>
@@ -874,7 +875,8 @@ function ComposioForm({ v2, go, noAddress }: { v2: Client; go: (hash: string) =>
   // The server's events A to Z by the words the list shows (Composio sends them in no order a person reads by), and those
   // the filter box keeps; the picked one stays in the list, so the field still says it while a query hides it.
   const listedEvents = events?.server === draft.server ? [...events.events].sort((a, b) => eventLabel(a).localeCompare(eventLabel(b), undefined, { sensitivity: "base" })) : [];
-  const keptEvents = listedEvents.filter((e) => e.slug === draft.event || matchesFilter(eventQuery, e.name, e.slug, e.description));
+  const matchedEvents = listedEvents.filter((e) => matchesFilter(eventQuery, e.name, e.slug, e.description));
+  const keptEvents = listedEvents.filter((e) => e.slug === draft.event || matchedEvents.includes(e));
   const fields: ConfigField[] = configFieldsOf(event?.config, event?.sealed);
   const agentCapRaw = (agents ?? []).find((a) => a.agent_id === draft.agentId)?.definition.max_cost_usd;
   const agentCap = typeof agentCapRaw === "number" && agentCapRaw > 0 ? agentCapRaw : undefined;
@@ -947,10 +949,10 @@ function ComposioForm({ v2, go, noAddress }: { v2: Client; go: (hash: string) =>
         </Field>
         {draft.server && (eventsError ? <ProblemCard problem={eventsError} onRetry={() => setEventTries((n) => n + 1)} className="" /> : (
           <div className="space-y-2">
-            {listedEvents.length > 0 && <ListFilter value={eventQuery} onChange={setEventQuery} label="Filter events" placeholder="Filter by name, slug or description" shown={keptEvents.length} total={listedEvents.length} />}
+            {listedEvents.length > 0 && <ListFilter value={eventQuery} onChange={setEventQuery} label="Filter events" placeholder="Filter by name, slug or description" shown={matchedEvents.length} total={listedEvents.length} />}
             <Field label="Event" field="source.event" issue={issues["source.event"]}>
               <Picker name="event" label="Event" className="w-full" value={draft.event} onChange={pickEvent} disabled={!events}
-                options={[{ value: "", label: !events ? "Loading the events" : !listedEvents.length ? "Composio offers no event for this toolkit" : keptEvents.length ? "Pick an event" : `No event matches “${eventQuery.trim()}”` }, ...keptEvents.map((x) => ({ value: x.slug, label: eventLabel(x) }))]} />
+                options={[{ value: "", label: !events ? "Loading the events" : !listedEvents.length ? "Composio offers no event for this toolkit" : matchedEvents.length ? "Pick an event" : `No event matches “${eventQuery.trim()}”` }, ...keptEvents.map((x) => ({ value: x.slug, label: eventLabel(x) }))]} />
             </Field>
             {/* Composio writes an event's description in Markdown (lists, ``code``): rendered, never shown as its marks. */}
             {event?.description && <div data-event-description className="report report-sm text-muted-foreground" dangerouslySetInnerHTML={{ __html: markdown(event.description) }} />}
@@ -973,14 +975,14 @@ function ComposioForm({ v2, go, noAddress }: { v2: Client; go: (hash: string) =>
             <AppFilter where={draft.where} onChange={set("where")} issues={issues} />
           </>
         )}
-        <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
+        <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]} required>
           <Picker name="agent" label="Agent" className="w-full" value={draft.agentId} onChange={(v) => set("agentId")(v)}
             options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
               ...live.map((a) => ({ value: a.agent_id, label: `${a.definition.name || a.agent_id}${a.kind === "workflow" ? " (workflow)" : ""}` }))]} />
         </Field>
         <UnattendedWarning v2={v2} agentId={draft.agentId} />
-        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} hint="What Composio delivered comes with it."><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
-        <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
+        <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} required hint="What Composio delivered comes with it."><Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} /></Field>
+        <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]} required={agentCap === undefined}
           hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : "Required: each run this trigger starts stops at this spend."}>
           <Input name="maxCost" inputMode="decimal" className="max-w-64" value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
         </Field>
@@ -1285,16 +1287,16 @@ function FeedForm({ v2, go, trigger, minEvery }: FormProps & { trigger?: FeedTri
           </div>
         </fieldset>
         {!trigger && <>
-          <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]}>
+          <Field label="Agent" field="target.agent_id" issue={issues["target.agent_id"]} required>
             <Picker name="agent" label="Agent" className="w-full" value={draft.agentId} onChange={(v) => set("agentId")(v)}
               options={[{ value: "", label: agents ? "Pick an agent" : "Loading the agents" },
                 ...live.map((a) => ({ value: a.agent_id, label: `${a.definition.name || a.agent_id}${a.kind === "workflow" ? " (workflow)" : ""}` }))]} />
           </Field>
           <UnattendedWarning v2={v2} agentId={draft.agentId} />
-          <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} hint="The item comes with it: its title, link, summary and feed.">
+          <Field label="Each run is asked" field="target.input" issue={issues["target.input"]} required hint="The item comes with it: its title, link, summary and feed.">
             <Textarea name="content" rows={4} className="p-3 font-sans" value={draft.content} onChange={(e) => set("content")(e.target.value)} />
           </Field>
-          <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]}
+          <Field label="Cost cap, US dollars a run" field="target.max_cost_usd" issue={issues["target.max_cost_usd"]} required={agentCap === undefined}
             hint={agentCap !== undefined ? `Uses the agent's default (${dollars(agentCap)}) if empty.` : "Required: each run this trigger starts stops at this spend."}>
             <Input name="maxCost" inputMode="decimal" className="max-w-64" value={draft.maxCost} onChange={(e) => set("maxCost")(e.target.value)} placeholder={capPlaceholder(agentCap)} />
           </Field>
