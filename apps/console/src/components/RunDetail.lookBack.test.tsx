@@ -7,9 +7,8 @@ import type { Run, RunGraded, RunLearningRead } from "@/lib/v2";
 
 // A run looking back (its learning `reflecting`) after its job ended, as the server serves it: completed, with its answer
 // and its end time, still polled (poll_after_ms 1000). Its page shows the answer, offers no Stop or Cancel (the server
-// refuses both on an ended run), and says it is learning: from the grade when a grade's round opened it, from the run
-// itself when it is the run's own look-back. The look-back keeps the run's end, so its learning settling (not its end
-// moving) is what says a grade's round ended.
+// refuses both on an ended run), and never says it is writing the answer. The look-back keeps the run's end, so its
+// learning settling (not its end moving) is what says a grade's round ended, and the page reads its learning again then.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 let root: ReturnType<typeof createRoot> | undefined;
 afterEach(() => { act(() => root?.unmount()); root = undefined; document.body.innerHTML = ""; });
@@ -39,32 +38,29 @@ async function open(grade?: RunGraded) {
   act(() => show(run()));
   await settle();
   const buttons = () => [...host.querySelectorAll("button")].map((b) => b.textContent?.trim() ?? "");
-  const cue = () => host.querySelector('[aria-label="Learning"][role="status"]')?.textContent;
   const gradeText = () => host.querySelector('section[aria-label="Grade"]')?.textContent ?? "";
   /** The round settles on the server: its grade's round ended, the run read again with its learning merged, its end kept. */
   const settled = async () => { if (stored) stored = { ...stored, feedback_status: "ended" }; act(() => show(run(MERGED))); await settle(); };
-  return { host, buttons, cue, gradeText, settled };
+  return { host, buttons, gradeText, settled };
 }
 
 describe("a completed run whose learning looks back", () => {
-  it("after a grade: shows its answer, no Stop or Cancel, and that it is learning from the grade", async () => {
+  it("after a grade: shows its answer, no Stop or Cancel, and the grade's round as reviewing", async () => {
     const t = await open(graded("running"));
     expect(t.host.textContent).toContain(ANSWER);
     expect(t.host.textContent).not.toContain("Writing the answer");
     expect(t.buttons().filter((b) => /Cancel run|Stop/.test(b))).toEqual([]);
-    expect(t.cue()).toBe("Learning from your grade");
     expect(t.gradeText()).toContain("Reviewing");
   });
-  it("its own look-back: the same, learning from the run", async () => {
+  it("its own look-back: the same, with its answer and no Stop or Cancel", async () => {
     const t = await open();
     expect(t.host.textContent).toContain(ANSWER);
+    expect(t.host.textContent).not.toContain("Writing the answer");
     expect(t.buttons().filter((b) => /Cancel run|Stop/.test(b))).toEqual([]);
-    expect(t.cue()).toBe("Learning from this run");
   });
-  it("once the grade's round settles with the run's end unchanged, reads its learning again: no longer reviewing, no cue", async () => {
+  it("once the grade's round settles with the run's end unchanged, reads its learning again: no longer reviewing", async () => {
     const t = await open(graded("running"));
     await t.settled();
-    expect(t.cue()).toBeUndefined();
     expect(t.gradeText()).not.toContain("Reviewing");
     expect(t.host.textContent).toContain(ANSWER);
   });
