@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFil
 import { join } from "node:path";
 import { test } from "node:test";
 import { localWorkspace } from "../dist/workspace/index.js";
-import { SAVE_MAX_BYTES, SAVE_TIMEOUT_MS, WEB_SAVE_TOOL, webSave } from "../dist/web-save.js";
+import { SAVE_MAX_BYTES, SAVE_TIMEOUT_MS, WEB_SAVE_TOOL, webSave, webSaveTool } from "../dist/web-save.js";
 import { CALL_TOOLS, NODE_TOOLS, TOOLS } from "../dist/tools.js";
 import { isAskable, isHostTool, isTableTool, isWebHostTool, replayOf } from "../dist/tool-list.js";
 import { webHostTools } from "../dist/runner/adapter-run-spec.js";
@@ -209,6 +209,21 @@ test("the type is checked: a declared type the bytes disagree with, a path whose
   await refusedFor(BODY.html, "", "media/page", /type/);
 });
 
+test("media bytes at a path whose extension names no type are refused with the extension to use, and nothing is written", async (t) => {
+  const { work, ws } = await folders(t);
+  for (const [path, hint] of [["media/card", "media/card.png"], ["media/card.bin", "media/card.png"]]) {
+    const saved = await webSave({ url: "https://cdn.example/f", path }, ws, serving("https://cdn.example/f", BODY.png, "image/png"));
+    assert.equal(saved.refused, `refused: ${path} has no extension of image/png; save it as ${hint}`, JSON.stringify(saved));
+    assert.equal(existsSync(join(work, path)), false, path);
+  }
+  const untyped = await webSave({ url: "https://cdn.example/f", path: "media/clip" }, ws, serving("https://cdn.example/f", BODY.m4a, null));
+  assert.match(untyped.refused ?? "", /save it as media\/clip\.m4a$/, JSON.stringify(untyped));
+  assert.deepEqual(existsSync(join(work, "media")) ? readdirSync(join(work, "media")) : [], []);
+  const named = await webSave({ url: "https://cdn.example/f", path: "media/card.png" }, ws, serving("https://cdn.example/f", BODY.png, "image/png"));
+  assert.deepEqual([named.ok, named.content_type], [true, "image/png"], JSON.stringify(named));
+  assert.deepEqual([...readFileSync(join(work, "media", "card.png"))], [...BODY.png]);
+});
+
 test("the type is sniffed: an octet-stream of PNG bytes saves as image/png; a page or a PDF saves only to a path whose extension says that type", async (t) => {
   const { work, ws } = await folders(t);
   const sniffed = await webSave({ url: "https://cdn.example/f", path: "media/s.png" }, ws, serving("https://cdn.example/f", BODY.png, "application/octet-stream"));
@@ -235,9 +250,10 @@ test("an error status, a bad URL or a missing path is a failed answer, never a t
   assert.equal(existsSync(join(work, "media")), false);
 });
 
-test("web_save is a table tool, a host tool every harness binds by its name, askable and safe to run again; no node or call node names it", () => {
+test("web_save is a table tool, a host tool every harness binds by its name, askable and never run again (it writes a file a repeat would find taken); no node or call node names it", () => {
   assert.equal(WEB_SAVE_TOOL, "web_save");
-  assert.deepEqual([isTableTool("web_save"), isWebHostTool("web_save"), isHostTool("web_save"), isAskable("web_save"), replayOf("web_save")], [true, true, true, true, "safe"]);
+  assert.deepEqual([isTableTool("web_save"), isWebHostTool("web_save"), isHostTool("web_save"), isAskable("web_save"), replayOf("web_save")], [true, true, true, true, "never"]);
+  assert.equal(webSaveTool(() => localWorkspace("."), () => ({})).replay, "unsafe", "pi's registration: a cut-off call is answered interrupted, not rerun");
   assert.equal(TOOLS.web_save.nodes, false);
   assert.equal(TOOLS.web_save.effect, undefined);
   assert.equal(NODE_TOOLS.includes("web_save") || CALL_TOOLS.includes("web_save"), false);
@@ -253,7 +269,7 @@ test("only an agent granted web_save by name gets it: web_fetch alone binds no w
   assert.deepEqual(await names(["read", "web_fetch", "web_search"]).then((all) => all.includes("web_save")), false);
   assert.deepEqual(await names(["web_save"]), ["web_save"]);
   const [tool] = await webHostTools(hostOn(work), ["web_save"], {});
-  assert.equal(tool.replay, "safe");
+  assert.equal(tool.replay, "never");
 });
 
 test("bound for a run, web_save fetches through the server's faux web and saves into the run's Workspace (host.workspace where given)", async (t) => {

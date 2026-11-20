@@ -1481,9 +1481,10 @@ the download and again before the write). The whole file is held in memory and w
 on a local folder, one put on the run's disk), so a download that fails or passes the cap leaves nothing at the path. Its type is checked
 against its bytes: an image (png, jpeg, gif, webp), audio (mp3, wav, ogg, m4a) or video (mp4, webm) is saved only when
 its bytes carry that type's signature, the type the host declares agrees (or it declares none, or
-`application/octet-stream`), and the path's extension, where it names a type, agrees; `content_type` answers the type
-the bytes show. Any other type (a page, a PDF, text) is saved only to a path whose extension names the type the host
-declares. `web_save` makes no paid request. Only an agent that names `web_save` has it (`web_fetch` does not carry it),
+`application/octet-stream`), and the path's extension names a type that agrees (`media/card.png`; `media/card` and
+`media/card.bin` are refused with the extension to use, as the Files tab types a file by its extension); `content_type`
+answers that type. Any other type (a page, a PDF, text) is saved only to a path whose extension names the type the host
+declares. A call a crash cut off is answered interrupted, never run again. `web_save` makes no paid request. Only an agent that names `web_save` has it (`web_fetch` does not carry it),
 and no workflow node or call node may name it: a workflow's call has the run's local folder, not its Workspace.
 
 On another harness, every host tool's result reaches the model within the host's bound of 120,000 characters

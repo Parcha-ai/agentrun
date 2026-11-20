@@ -12,13 +12,15 @@
 // nothing at the path.
 //
 // The type is checked against the bytes: a media type the server plays (file-types.ts) is saved only when its bytes
-// carry that type's signature (MEDIA), and the path's extension, where it names a type, must agree. Anything else (a
-// page, a PDF, text) is saved only to a path whose extension names exactly the type the host declared.
+// carry that type's signature (MEDIA), and the path's extension must name a type that agrees: the type is not stored, the
+// console and the file route take it from the extension. Anything else (a page, a PDF, text) is saved only to a path
+// whose extension names exactly the type the host declared.
+import { extname } from "node:path";
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { TSchema } from "typebox";
 import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
 import type { PublicFetchOptions } from "@parcha/pi-browser";
-import { typeOf } from "./file-types.js";
+import { extensionOf, typeOf } from "./file-types.js";
 import { clip, URL_MAX } from "./web-fetch-direct.js";
 import { forModel } from "./result.js";
 import { isWorkspaceError, type Workspace, workspaceErrorWords } from "./workspace/index.js";
@@ -84,7 +86,12 @@ export function typeFor(bytes: Uint8Array, declared: string, path: string): { ty
     const sniffed = kind.types[0]!;
     if (!UNTYPED.has(said) && !kind.types.includes(said)) return { refused: `refused: the host says ${said}, but the bytes are ${sniffed}` };
     if (named && !kind.types.includes(named)) return { refused: `refused: the path's extension ${ext} is ${named}, but the bytes are ${sniffed}; save it under an extension of that type` };
-    return { type: named ?? (kind.types.includes(said) ? said : sniffed) };
+    if (!named) {
+      const type = kind.types.includes(said) ? said : sniffed;
+      // audio/webm has no extension of its own; .webm (video/webm) holds it.
+      return { refused: `refused: ${path} has no extension of ${type}; save it as ${path.slice(0, path.length - extname(path).length)}.${extensionOf(type) ?? extensionOf(sniffed)}` };
+    }
+    return { type: named };
   }
   if (MEDIA_TYPES.has(said)) return { refused: `refused: the host says ${said}, but the bytes are not ${said}` };
   if (named !== undefined && named === said) return { type: said };
@@ -155,7 +162,7 @@ export const savedText = (answer: Saved | Unsaved): string => JSON.stringify(ans
 export function webSaveTool(work: () => Promise<Workspace> | Workspace, guard: () => Promise<Omit<PublicFetchOptions, "maxBytes" | "signal">> | Omit<PublicFetchOptions, "maxBytes" | "signal">): ToolRegistration<TSchema, JsonValue> {
   return defineTool({
     name: WEB_SAVE_TOOL,
-    description: `Download one file from a public URL into this run's folder, where it stays (the run's Files show and play it): use it for a generated image, audio or video a service answered with a link that expires. path is where to save it, relative to the run's folder; a bare name (cat.png) goes under ${MEDIA_DIR}/. A path that already holds a file is refused, never overwritten. The file must be a type its bytes show: an image (png, jpeg, gif, webp), audio (mp3, wav, ogg, m4a) or video (mp4, webm), with the path's extension, where it has one, of that type; any other type (a page, a PDF, text) is saved only to a path whose extension names the type the host declares. At most ${SAVE_MAX_BYTES / (1024 * 1024)} MiB and ${SAVE_TIMEOUT_MS / 60_000} minutes. A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, at every redirect too. Answers JSON: { ok: true, path, bytes, content_type, url } (url the final one, after redirects), or { ok: false, url, refused } when it was refused, { ok: false, url, error } when it failed; nothing is left at the path when it does not save.`,
+    description: `Download one file from a public URL into this run's folder, where it stays (the run's Files show and play it): use it for a generated image, audio or video a service answered with a link that expires. path is where to save it, relative to the run's folder; a bare name (cat.png) goes under ${MEDIA_DIR}/. A path that already holds a file is refused, never overwritten. The file must be a type its bytes show: an image (png, jpeg, gif, webp), audio (mp3, wav, ogg, m4a) or video (mp4, webm), and the path must have an extension of that type (cat.png, not cat or cat.bin); any other type (a page, a PDF, text) is saved only to a path whose extension names the type the host declares. At most ${SAVE_MAX_BYTES / (1024 * 1024)} MiB and ${SAVE_TIMEOUT_MS / 60_000} minutes. A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, at every redirect too. Answers JSON: { ok: true, path, bytes, content_type, url } (url the final one, after redirects), or { ok: false, url, refused } when it was refused, { ok: false, url, error } when it failed; nothing is left at the path when it does not save.`,
     parameters: {
       type: "object",
       additionalProperties: false,
@@ -165,7 +172,7 @@ export function webSaveTool(work: () => Promise<Workspace> | Workspace, guard: (
       },
       required: ["url", "path"],
     } as unknown as TSchema,
-    replay: "safe",
+    replay: "unsafe",
     execute: async (args, _api, context) => {
       const answer = await webSave(args, await work(), { ...(await guard()), ...(context?.abortSignal ? { signal: context.abortSignal } : {}) });
       return forModel(savedText(answer), { details: answer as unknown as JsonValue });

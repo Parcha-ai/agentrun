@@ -11,3 +11,5 @@ const TYPES: ReadonlyMap<string, string> = new Map(Object.entries({
 export const INLINE_TYPES: ReadonlySet<string> = new Set([...TYPES.values()].filter((type) => type !== "application/pdf"));
 /** The type of a file at `path`, by its extension; undefined for one the table does not know. */
 export const typeOf = (path: string): string | undefined => TYPES.get(extname(path).slice(1).toLowerCase());
+/** The usual extension of a file of `type` (the first the table lists for it, so jpg for image/jpeg); undefined for one it does not serve. */
+export const extensionOf = (type: string): string | undefined => [...TYPES].find(([, served]) => served === type)?.[0];

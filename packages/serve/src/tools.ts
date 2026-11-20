@@ -733,7 +733,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
   // request, so nothing books it. No node or call node names it: a workflow's effect has only a local work path, not the
   // run's Workspace, which in Mode 2 is elsewhere.
   [WEB_SAVE_TOOL]: {
-    summary: `Download one file from a public URL into the run's work/ (a bare name under media/), never overwriting: { url, path } -> { ok: true, path, bytes, content_type, url } or { ok: false, url, refused | error }; at most ${SAVE_MAX_BYTES / (1024 * 1024)} MiB, its type checked against its bytes (an image, audio or video the console plays, its extension agreeing; any other type only to a path whose extension names it); a private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused at every redirect.`,
+    summary: `Download one file from a public URL into the run's work/ (a bare name under media/), never overwriting: { url, path } -> { ok: true, path, bytes, content_type, url } or { ok: false, url, refused | error }; at most ${SAVE_MAX_BYTES / (1024 * 1024)} MiB, its type checked against its bytes (an image, audio or video the console plays, at a path with an extension of its type; any other type only to a path whose extension names it); a private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused at every redirect.`,
     needs: [],
     nodes: false,
     bind: async (host) => {
