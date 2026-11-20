@@ -2680,8 +2680,9 @@ so the store's files keep no copy of the old row: neither the one rewritten nor 
 free space. A marker beside the database (`store.sqlite.scrub`) is written before the rewrite and removed once the
 checkpoint is done. A `VACUUM` held off by another connection's write past the store's busy wait is tried once more
 after a short pause. A start that finds the marker (the server stopped mid-way, or another connection held the
-`VACUUM` or the checkpoint back, logged as `store_scrub_not_done`) runs the scrub again. On Postgres the old row version stays until the
-database vacuums it. The log line names the trigger and the field, never the value.
+`VACUUM` or the checkpoint back, logged as `store_scrub_not_done`) runs the scrub again. On Postgres the old row version
+stays on disk as a purged row's does (Purging a run or an agent made here: on disk). The log line names the trigger and
+the field, never the value.
 
 The create is refused before Composio is asked anything with `409 composio_no_public_url` when the server has no public
 address (`AGENTRUN_PUBLIC_URL`): Composio could not reach it. `features.triggers.public_url` on `GET /v2/capabilities`
@@ -3351,6 +3352,17 @@ stays in every total.
   nothing opens the run again or keeps a grade of it under its purge.
 - `503 unavailable` while its folder on an Archil disk is not deleted there yet: the run is not purged, and the next
   `DELETE` finishes it, as it finishes a purge that stopped part way (its purge time is set last).
+- On disk. On both stores the purge deletes or blanks the rows above; what the database files keep differs.
+  - **SQLite:** every store connection writes with `secure_delete` on, which zeroes the bytes a write frees, and a run's
+    or an agent's purge checkpoints the WAL once it commits. So the purged content is in neither `store.sqlite` nor
+    its `-wal` after the `DELETE`. A checkpoint another connection holds back is retried once, then logged, and the
+    next purge's checkpoint or the server's stop clears it. Copies outside the file are out of scope: backups,
+    snapshots, the filesystem's own journal.
+  - **PostgreSQL** (not closed): a purged row's old version stays in its table as a dead tuple. `VACUUM` (or
+    autovacuum, on its schedule) only marks its space reusable; the bytes stay in the data file until a later write
+    overwrites them. `VACUUM FULL` rewrites the table into a new file (under an exclusive lock), and the old file's
+    blocks go back to the filesystem unwiped. Postgres's own WAL and its archived WAL keep the old values until they are
+    recycled or expire, and backups keep them for their retention.
 - Its agent's other runs and what the agent learned are kept: a promotion record and the learning folder's history
   may still name the run's id.
 - It takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token;
