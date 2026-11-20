@@ -24,6 +24,18 @@ export function onCursorPin(pinned, make) {
   assert.throws(make, (error) => error.code === ACP_CODES.binaryUnpinned, 'refused ACP_BINARY_UNPINNED where no release is pinned');
 }
 
+/** `run()` in this process with `process.arch` said to be `arch` (acpPlatform reads it at each call), put back after. */
+export function onArch(arch, run) {
+  const own = Object.getOwnPropertyDescriptor(process, 'arch');
+  Object.defineProperty(process, 'arch', { value: arch, configurable: true, enumerable: true });
+  try {
+    return run();
+  } finally {
+    if (own) Object.defineProperty(process, 'arch', own);
+    else delete process.arch;
+  }
+}
+
 export const FAKE = fileURLToPath(new URL('../testing/fake-acp-agent.mjs', import.meta.url));
 const ROOT = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'agentrun-acp-test-'));
 after(() => rmSync(ROOT, { recursive: true, force: true }));

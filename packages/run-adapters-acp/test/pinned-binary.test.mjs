@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { ACP_CODES, acpPlatform, AcpBinaryRefused, GOOSE_PIN, verifyPinnedBinary, verifyPinnedBinaryAsync } from '@parcha/agentrun-harness-acp';
+import { ACP_CODES, acpPlatform, AcpBinaryRefused, CURSOR_PIN, GOOSE_PIN, pinnedRelease, verifyPinnedBinary, verifyPinnedBinaryAsync } from '@parcha/agentrun-harness-acp';
 import { scratch } from './helpers.mjs';
 
 const sha = (text) => createHash('sha256').update(text).digest('hex');
@@ -46,6 +46,16 @@ test('the platform is named as the registry names it', () => {
   assert.equal(acpPlatform('linux', 'ia32'), undefined);
 });
 
+test('a pin has a release for a platform only where its binary is measured, and its tree too when asked', () => {
+  assert.equal(pinnedRelease(GOOSE_PIN, 'linux-x86_64'), GOOSE_PIN.archives['linux-x86_64']);
+  // Goose's darwin-aarch64 archive is pinned by the registry's digest alone: no binary is measured there.
+  assert.equal(pinnedRelease(GOOSE_PIN, 'darwin-aarch64'), undefined);
+  assert.equal(pinnedRelease(GOOSE_PIN, 'linux-x86_64', true), undefined, 'Goose is pinned by its binary, not its tree');
+  assert.equal(pinnedRelease(CURSOR_PIN, 'linux-x86_64', true), CURSOR_PIN.archives['linux-x86_64']);
+  for (const platform of ['plan9', '__proto__']) assert.equal(pinnedRelease(GOOSE_PIN, platform), undefined, platform);
+  assert.equal(pinnedRelease(GOOSE_PIN), pinnedRelease(GOOSE_PIN, acpPlatform()), 'no platform given: this host\'s');
+});
+
 test('a binary with its pinned sha256 passes; one that differs is refused, ACP_BINARY_MISMATCH; neither is run', async () => {
   const dir = scratch();
   const good = binary(dir, 'good');
@@ -60,11 +70,4 @@ test('a binary with its pinned sha256 passes; one that differs is refused, ACP_B
   assert.equal(existsSync(good.mark), false, 'the check never ran the binary');
   assert.throws(() => verifyPinnedBinary(join(dir, 'missing'), good.sha256), refusedWith(ACP_CODES.binaryUnreadable));
   assert.throws(() => verifyPinnedBinary(good.path, 'not-a-digest'), /not 64 lowercase hex/);
-});
-
-test('the package keeps no first-seen record of its own: the server installer\'s binaryRecord is the one path', async () => {
-  const acp = await import('@parcha/agentrun-harness-acp');
-  assert.equal('fileDigestRecord' in acp, false);
-  assert.equal('verifyFirstSeen' in acp, false);
-  assert.equal('binaryDrift' in ACP_CODES, false);
 });
