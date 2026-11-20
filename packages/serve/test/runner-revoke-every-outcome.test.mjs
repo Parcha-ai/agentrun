@@ -89,7 +89,7 @@ async function revokeRun(t, { script, extra = () => ({}), holdRelease = () => un
       settings: SETTINGS, keys: store.sealedKeys, sealKey: undefined, env: { ARCHIL_API_KEY: "fake-test-key" },
       run: { agentId: "agent-1", launch: { diskId: SETTINGS.diskId, kind: "agent" }, store: agentDiskStore("agent-1", SETTINGS.diskId) },
       signal: new AbortController().signal, makeDisk: () => new FakeArchilDisk(),
-      mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: 60_000, baseUrl: control.baseUrl, fetch: control.fetch },
+      mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: 60_000 }, control: { baseUrl: control.baseUrl, fetch: control.fetch },
     });
     await archil.token();
     minted.push(claim.epoch);

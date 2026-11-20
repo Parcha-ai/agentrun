@@ -46,7 +46,7 @@ async function claimOf({ store, control }, { agentId, runId = `run-${agentId}`, 
     env: { ARCHIL_API_KEY: API },
     signal,
     makeDisk: (options) => { made.push(options); return { id: options.disk }; },
-    mount: { runId, epoch, ttlMs: 3_600_000, baseUrl: control.baseUrl, fetch: control.fetch },
+    mount: { runId, epoch, ttlMs: 3_600_000 }, control: { baseUrl: control.baseUrl, fetch: control.fetch },
     run: { agentId, ...(launch ? { launch } : {}), store },
   });
   return { claim, disk: made[0].disk };

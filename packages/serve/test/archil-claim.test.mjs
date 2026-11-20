@@ -6,7 +6,7 @@
 // first asks, and revoked by its identifier.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { sealColumn, sealedAt } from "../dist/store/seal.js";
 import * as archilSettings from "../dist/archil-settings.js";
 import { ARCHIL_API_KEY_ROW, ArchilClaimRefused, archilClaim, openRunWorkspace } from "../dist/workspace/index.js";
@@ -21,14 +21,19 @@ const API = "fake-test-key-api-0001";
 /** The token the fake control API mints first. */
 const TOKEN = "fake-minted-token-1";
 
-/** A loopback fake of Archil's control API, closed with the test: the claim's mount option points at it. */
+/** A loopback fake of Archil's control API, closed with the test: claimOf makes it the claim's control, and the claim's
+ *  mount option names the run and its epoch. */
 async function controlOn(t, options) {
   const fake = await archilControlFake(options);
   t.after(() => fake.close());
-  return { fake, mount: { runId: "run-1", epoch: 3, ttlMs: 86_400_000, baseUrl: fake.baseUrl } };
+  return { fake, mount: { runId: "run-1", epoch: 3, ttlMs: 86_400_000, fake } };
 }
+/** The control plane of a claim made with no mount (no credential to mint): a loopback fake still, so its read of the
+ *  disk never leaves the process. */
+let noMountControl;
+after(() => noMountControl?.close());
 /** The Archil settings as the store keeps them (archil-settings.ts), and the disk the run's launch record names as its
- *  agent's (run-disk.ts: no Archil call resolves it). */
+ *  agent's (run-disk.ts: read at Archil once at the claim, never made). */
 const SETTINGS = { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
 const DISK = "dsk-0000000000000001";
 /** The agent's disk is stored on it (archil-settings.ts agentDiskOf), as its launch recorded it. */
@@ -39,10 +44,14 @@ const PINNED = `docker.io/library/debian@sha256:${"9e".repeat(32)}`;
 const rowsOf = (key = KEY, values = { [ARCHIL_API_KEY_ROW]: API }) =>
   new Map(Object.entries(values).map(([name, value]) => [name, sealColumn(key, sealedAt.sealedKey(name), value)]));
 
-/** A claim over `rows`, with the disk it makes captured instead of made (no call leaves the process). */
+/** A claim over `rows`, with the disk it makes captured instead of made (no call leaves the process). The claim reads its
+ *  disk at the control plane once (run-disk.ts); that read is checked here and left out of the fake's record, so a test
+ *  counts the mount credential's requests alone. */
 async function claimOf({ rows = rowsOf(), settings = SETTINGS, sealKey = KEY, signal = new AbortController().signal, mount, env, disk } = {}) {
   const asked = [];
   const made = [];
+  const { fake = (noMountControl ??= await archilControlFake()), ...run } = mount ?? {};
+  const from = fake.requests.length;
   const claim = await archilClaim({
     settings,
     keys: { get: async (name) => { asked.push(name); return rows.get(name); } },
@@ -50,9 +59,12 @@ async function claimOf({ rows = rowsOf(), settings = SETTINGS, sealKey = KEY, si
     signal,
     makeDisk: (options) => { made.push(options); return disk ?? { id: options.disk, made: true }; },
     run: RUN,
-    ...(mount ? { mount } : {}),
+    control: { baseUrl: fake.baseUrl },
+    ...(mount ? { mount: run } : {}),
     ...(env ? { env } : {}),
   });
+  assert.deepEqual(fake.requests.slice(from).map((one) => [one.method, one.path]), [["GET", `/api/disks/${DISK}`]], "the claim reads its disk once");
+  fake.requests.splice(from);
   return { claim, asked, made };
 }
 

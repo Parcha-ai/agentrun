@@ -75,8 +75,9 @@ function controlState({ answer, tokenOf = (n) => `fake-minted-token-${n}`, exist
     if (method === "GET" && /^\/api\/disks\/[^/]+$/.test(url.pathname)) {
       const listed = [...users.values()].filter((user) => onDisk(user, diskId) && !unlisted.has(user.identifier));
       unlisted.clear();
-      const disk = disks.get(diskId);
-      return { status: 200, json: { success: true, data: { ...(disk ? view(disk) : {}), authorizedUsers: listed.map(({ identifier, nickname }) => ({ type: "token", identifier, nickname })) } } };
+      // Not strict: a disk it does not hold reads as there, available in the fake's region.
+      const disk = disks.get(diskId) ?? { id: diskId, name: diskId, region, status: "available" };
+      return { status: 200, json: { success: true, data: { ...view(disk), authorizedUsers: listed.map(({ identifier, nickname }) => ({ type: "token", identifier, nickname })) } } };
     }
     if (method === "DELETE" && /^\/api\/disks\/[^/]+$/.test(url.pathname)) {
       if (!disks.has(diskId)) return { status: 404, json: { success: false, error: `disk ${diskId} not found`, code: "not_found" } };
