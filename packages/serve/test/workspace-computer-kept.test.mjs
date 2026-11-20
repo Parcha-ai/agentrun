@@ -22,6 +22,7 @@ import { computerKeptWords, computerReadyWords, computerReplacedNote } from "../
 import { computerLapsedWords, endKept, KEEP_MS, keptKeyOf, readKept, sweepKept, writeKept } from "../dist/workspace/computer-kept.js";
 import { startJanitor, sweepKeptComputers } from "../dist/workspace/computer-janitor.js";
 import { fakeComputer } from "./workspace-fake-computer.mjs";
+import { memoryIntervals } from "./memory-intervals.mjs";
 import { KINDS } from "./workspace-kinds-fixture.mjs";
 
 const dirs = [];
@@ -67,6 +68,7 @@ function memoryStore() {
     settings: memorySettings(),
     sealedKeys: { get: async (name) => keys.get(name), put: async (name, sealed) => void keys.set(name, sealed), remove: async (name) => void keys.delete(name), all: async () => [...keys].map(([name]) => ({ name })) },
     computerLedger: { put: async () => {}, get: async () => undefined, list: async () => [], remove: async () => {} },
+    computerIntervals: memoryIntervals(),
   };
 }
 
@@ -546,6 +548,7 @@ test("a paired computer and --faux's desktop are never kept: their park lets the
   assert.equal(fauxDesk.keeps, undefined, "--faux's desktop");
   assert.equal(await fauxDesk.park(), false);
   assert.equal(store.settings.rows.size, 0);
+  assert.equal(store.computerIntervals.rows.size, 0, "--faux's desktop is no computer of a provider's: no interval");
 
   const driver = new FakeUiDriver({ groups: ["screen", "input.pointer", "input.keys", "apps", "ui"] });
   const row = { id: "c-1", name: "Test Mac", hello: driver.hello(), driver: "0", labels: { owner: "test" }, pairingId: "p-1", createdAt: 0, seenAt: 0, revokedAt: null };
@@ -559,6 +562,7 @@ test("a paired computer and --faux's desktop are never kept: their park lets the
     assert.equal(held.keeps, undefined, "a paired computer");
     assert.equal(await held.park(), false);
     assert.equal(pairedStore.settings.rows.size, 0);
+    assert.equal(pairedStore.computerIntervals.rows.size, 0, "a paired computer is no computer of the run's own: no interval");
   } finally {
     driver.close();
   }
@@ -580,3 +584,65 @@ function socketPair() {
   });
   return [side(ends[0], ends[1]), side(ends[1], ends[0])];
 }
+
+// Each computer a run made, from its create to its proven delete (computer-intervals.ts): the rows the claim, its park,
+// its release and the janitor write. The expected rows are worked out from the vendor's ids (c1, c2, ...) and the test's
+// clock, under the setting's provider (e2b): this server's id for the provider, not the provider object's own ("fake").
+const intervalsOf = (one) => one.store.computerIntervals.forRun("run-1");
+
+test("a run's desktop has an interval: opened at its create by the provider's id, the create's asks null where it asked none; kept at the park; ended when the keep's end deletes it", async () => {
+  const one = await server();
+  const first = await one.claim(3);
+  const opened = { runId: "run-1", provider: "e2b", providerId: "c1", kind: "desktop", gpuType: null, gpuCount: null, cpus: null, memoryMb: null, startedAt: T0 };
+  assert.deepEqual(await intervalsOf(one), [{ ...opened, kept: false, endedAt: null }]);
+  one.clock.now = T0 + 30_000;
+  assert.equal(await first.park(), true);
+  assert.deepEqual(await intervalsOf(one), [{ ...opened, kept: true, endedAt: null }], "kept past its claim, not ended");
+  one.clock.now = T0 + 30_000 + KEEP_MS;
+  assert.deepEqual(await one.janitor(), { ended: ["c1"], failed: [] });
+  assert.deepEqual(await intervalsOf(one), [{ ...opened, kept: true, endedAt: T0 + 30_000 + KEEP_MS }], "ended when its delete answered ok");
+});
+
+test("a run's sandbox released at its end is ended at that moment; a release whose delete fails leaves it open, never a guessed end", async () => {
+  const one = await server(SANDBOX);
+  const first = await one.claim(3, { spec: () => ({ ...SPEC(), cpus: 2, memoryMb: 4096 }) });
+  one.clock.now = T0 + 90_000;
+  await first.release();
+  assert.deepEqual(await intervalsOf(one), [{ runId: "run-1", provider: "docker", providerId: "c1", kind: "sandbox", gpuType: null, gpuCount: null, cpus: 2, memoryMb: 4096, startedAt: T0, kept: false, endedAt: T0 + 90_000 }]);
+
+  const two = await server(SANDBOX);
+  const held = await two.claim(3);
+  two.account.provider.release = async () => ({ ok: false, error: { code: "unavailable", message: "the vendor did not answer" } });
+  await assert.rejects(held.release(), /the vendor did not answer/);
+  assert.deepEqual((await intervalsOf(two)).map((row) => [row.providerId, row.endedAt]), [["c1", null]], "left open: no delete was proven");
+});
+
+test("an earlier claim's computer let go by a later claim's launch is ended; the new one is opened beside it", async () => {
+  const one = await server();
+  await one.claim(3);
+  // The runner that held claim 3 is lost: claim 5 lets its desktop go (releaseOlderClaims) and makes a new one.
+  one.clock.now = T0 + 60_000;
+  const later = await one.claim(5);
+  assert.deepEqual((await intervalsOf(one)).map((row) => [row.providerId, row.startedAt, row.endedAt]), [["c1", T0, T0 + 60_000], ["c2", T0 + 60_000, null]]);
+  await later.release();
+});
+
+test("a resumed kept desktop is the same interval: no second row, and the run's end ends it", async () => {
+  const one = await server();
+  await (await one.claim(3)).park();
+  one.clock.now = T0 + 60_000;
+  const resumed = await one.claim(5, { hadComputer: async () => true });
+  one.clock.now = T0 + 120_000;
+  await resumed.release();
+  assert.deepEqual((await intervalsOf(one)).map((row) => [row.providerId, row.kept, row.endedAt]), [["c1", true, T0 + 120_000]]);
+});
+
+test("an interval that can't be written never fails the claim: it is said on the log, and the computer is the run's as before", async () => {
+  const one = await server();
+  one.store.computerIntervals = memoryIntervals({ fail: true });
+  const said = [];
+  const held = await one.claim(3, { log: (line) => void said.push(line) });
+  assert.equal(held.computer.kind, "desktop");
+  assert.equal(await held.park(), true, "its park keeps it as before");
+  assert.deepEqual(said, ["the computer interval of e2b c1 (run run-1) was not written: the store is down", "the computer interval of e2b c1 was not written: the store is down"]);
+});
