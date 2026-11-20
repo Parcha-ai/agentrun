@@ -267,3 +267,81 @@ test("the server's routes: a token's PUT is 403 in the one secret-write refusal 
   assert.deepEqual(cleared.body, { hosts: [] });
   assert.deepEqual((await call(server.port, { path, headers: byToken })).json, { hosts: [] }, "cleared");
 });
+
+// The operator's bound (AGENTRUN_PRIVATE_HOSTS), above the owner's list: read from the dialling process's own environment
+// at each use. Unset, the owner's list holds; `none`, no owner's host is allowed or saved (a runner many customers share,
+// whose private network is the platform's); a range list narrows where a listed host may resolve. A value that is neither
+// reads as none.
+test("the operator's bound is read as written: unset the owner's, none, a range list, and anything else as none, saying why", async () => {
+  const { privateHostsBound, privateHostsSwitchValue, PRIVATE_HOSTS_ENV } = await import("../dist/mcp-private-hosts.js");
+  assert.equal(PRIVATE_HOSTS_ENV, "AGENTRUN_PRIVATE_HOSTS");
+  assert.deepEqual(privateHostsBound({}), { mode: "owner" });
+  assert.deepEqual(privateHostsBound({ AGENTRUN_PRIVATE_HOSTS: " " }), { mode: "owner" });
+  assert.deepEqual(privateHostsBound({ AGENTRUN_PRIVATE_HOSTS: "none" }), { mode: "none" });
+  const ranges = privateHostsBound({ AGENTRUN_PRIVATE_HOSTS: "10.20.0.0/16, fd12:3456::/32" });
+  assert.deepEqual([ranges.mode, ranges.ranges], ["ranges", ["10.20.0.0/16", "fd12:3456::/32"]]);
+  for (const bad of ["10.20.0.0", "10.20.0.0/33", "corp.test/8", "off", ",", "fd12::/129"]) {
+    const read = privateHostsBound({ AGENTRUN_PRIVATE_HOSTS: bad });
+    assert.equal(read.mode, "none", bad);
+    assert.match(read.invalid, /read as none$/, bad);
+  }
+  assert.equal(privateHostsSwitchValue({}), null);
+  assert.equal(privateHostsSwitchValue({ AGENTRUN_PRIVATE_HOSTS: "none" }), "none");
+  assert.equal(privateHostsSwitchValue({ AGENTRUN_PRIVATE_HOSTS: "10.20.0.0/16" }), "10.20.0.0/16");
+  assert.match(privateHostsSwitchValue({ AGENTRUN_PRIVATE_HOSTS: "off" }), /^none \(AGENTRUN_PRIVATE_HOSTS: off is not an address range/);
+});
+
+test("the operator's none: a host the owner listed is refused unsent as a private address; a range list allows a listed host only inside it, cloud metadata never", async (t) => {
+  const { withEnv } = await import("./support.mjs");
+  withEnv(t, { AGENTRUN_PRIVATE_HOSTS: "none" });
+  for (const address of ["10.20.30.40", "172.16.5.4", "192.168.7.8", "100.64.1.2", "fd12:3456::7"]) {
+    const listed = await refreshAgainst([address], [AS]);
+    assert.match(listed.refused ?? "", PRIVATE_ADDRESS, `${address} listed, operator none`);
+    assert.deepEqual(listed.dialled, [], `${address}: nothing sent`);
+  }
+  // A public address is still reached: the bound is on private networks alone.
+  assert.ok((await refreshAgainst([PUBLIC], [])).ok);
+  process.env.AGENTRUN_PRIVATE_HOSTS = "10.20.0.0/16,100.64.0.0/10";
+  const inside = await refreshAgainst(["10.20.30.40"], [AS]);
+  assert.ok(inside.ok, inside.refused);
+  assert.deepEqual(inside.dialled, [[`https://${AS}/token`, "10.20.30.40"]]);
+  for (const address of ["10.30.0.1", "192.168.7.8", "100.100.100.200"]) {
+    const outside = await refreshAgainst([address], [AS]);
+    assert.match(outside.refused ?? "", PRIVATE_ADDRESS, `${address} outside the operator's ranges (or metadata)`);
+    assert.deepEqual(outside.dialled, []);
+  }
+  // A value the operator mistyped allows nothing (fail closed).
+  process.env.AGENTRUN_PRIVATE_HOSTS = "10.20.0.0";
+  assert.match((await refreshAgainst(["10.20.30.40"], [AS])).refused ?? "", PRIVATE_ADDRESS);
+});
+
+test("the operator's none: the owner's saved list is not read (every reader gets none), and only the empty list can be saved, the refusal naming the switch", async (t) => {
+  const { withEnv } = await import("./support.mjs");
+  const { store } = await storeOn(t);
+  await savePrivateOAuthHosts(store, [AS]);
+  withEnv(t, { AGENTRUN_PRIVATE_HOSTS: "none" });
+  assert.deepEqual(await privateOAuthHosts(store), []);
+  assert.deepEqual(await store.settings.get(MCP_PRIVATE_HOSTS_KEY), { hosts: [AS] }, "the owner's row is kept, for a server whose operator lifts the bound");
+  assert.throws(() => checkPrivateHosts({ hosts: [AS] }), (error) => error.code === "input_invalid" && error.extra.fields[0]?.field === "hosts" && /This server's operator allows no private-network host \(AGENTRUN_PRIVATE_HOSTS=none\)/.test(error.extra.fields[0].message));
+  assert.deepEqual(checkPrivateHosts({ hosts: [] }), []);
+  // The runner's refresh under the bound: the listed host refused unsent.
+  const url = "https://mcp.example.test/mcp";
+  await store.mcp.put({ name: "corp", url, auth: "oauth", tools: [{ name: "add", inputSchema: { type: "object" } }], sealed: sealMcpCredential(KEY, "corp", { type: "oauth", set: setAt(`https://${AS}/token`, T0 - 1_000) }, url) });
+  await queued(store, "run-1", { mcpPin: await registryPin(store) });
+  const claim = await store.claim("run-1", "runner-a", { leaseMs: 60_000 });
+  const network = networkOf({ [AS]: ["10.20.30.40"] });
+  const claimed = await mcpClaim({ store, claim, grants: ["mcp:corp/add"], sealKey: KEY, signal: new AbortController().signal, bounds: { requestMs: 500, tries: 2 }, now: () => T0, network });
+  assert.equal(claimed.credentials.corp?.headers, undefined);
+  assert.match(claimed.credentials.corp?.unopened ?? "", PRIVATE_ADDRESS, "refused as a private address, never with words that say an owner can allow it");
+  assert.deepEqual(network.dialled, [], "nothing sent");
+  claimed.release();
+});
+
+test("capabilities' switches list the operator's bound, unset by default", async () => {
+  const { startSwitches } = await import("../dist/start-switches.js");
+  const off = startSwitches({}, { mcpLoopback: false, webhookPrivateTargets: false }).AGENTRUN_PRIVATE_HOSTS;
+  assert.deepEqual([off.on, off.value], [false, null]);
+  assert.match(off.allows, /none, no private host at all \(set it on a server or runner many customers share\)/);
+  const none = startSwitches({ AGENTRUN_PRIVATE_HOSTS: "none" }, { mcpLoopback: false, webhookPrivateTargets: false }).AGENTRUN_PRIVATE_HOSTS;
+  assert.deepEqual([none.on, none.value], [true, "none"]);
+});
