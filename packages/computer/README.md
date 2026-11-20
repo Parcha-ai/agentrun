@@ -1582,6 +1582,11 @@ the TTL.
   own namespace (`agentrun.computer`), `cpus`, `memoryMb` or `pids` (a snapshot's size is its own), `user`, `workdir`
   (the daemon works in `/work`), a GPU computer's snapshot other than the GPU snapshot or `"default"`, and any other
   field.
+- What the computer was given is the sandbox's own: `create` answers `resources` (`CreatedComputer.resources`) with
+  the `cpu`, `memory` (GiB, as `memoryMb`), `disk` (GiB, as `diskGb`) and GPUs (`gpu` and `gpuType`) Daytona's read of
+  the running sandbox says, each only where it says it. These are the figures Daytona bills by, and a host prices
+  computer time by them (serve's `AGENTRUN_COMPUTE_USD_PER_*` settings). E2B's create answers its `getInfo`'s `cpuCount`
+  and `memoryMB` the same way, and Fly's its machine guest's `cpus` and `memory_mb`; any other provider answers none.
 - `create(spec, { requestId })` names the computer `computer-<12 hex digits of sha256(requestId)>` and lists that name
   first: a retry of the same request finds the computer the first one made (the adapter's idempotent create,
   [PROVIDERS.md](PROVIDERS.md)). It sends `POST /sandbox` with that name, the snapshot (none for `"default"`), the
