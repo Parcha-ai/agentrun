@@ -4,7 +4,7 @@
 
 ## 0.1.0-beta.48 (2026-11-20)
 
-This release gives harness modules the built-in harnesses' builders: a module's ACP or adapter harness is offered, keyed and gated the way Goose and Cursor are, and Cursor, Goose and `harness-check`'s plan-billed agents are built by the same one. A schedule trigger's next run keeps the fields its last answer carried when that answer is over 32 KiB, a connected agent's compiled workflow is checked against a native answer before it is reused, an ended run whose booking held a charge heals to that charge as an upper bound, and a run's views cut a `Bearer` token and a URL parameter named like a credential. The store does not change: SQLite stays at version 13 and Postgres at migration 0020, so going back to beta.47 opens the same store.
+This release gives harness modules the built-in harnesses' builders: a module's ACP or adapter harness is offered, keyed and gated the way Goose and Cursor are, and Cursor, Goose and `harness-check`'s plan-billed agents are built by the same one. A schedule trigger's next run keeps the fields its last answer carried when that answer is over 32 KiB, a connected agent's compiled workflow is checked against a native answer before it is reused, an ended run whose booking held a charge heals to that charge as an upper bound, and a run's views cut a `Bearer` token and a URL parameter named like a credential. A codemode script stopped for a person's answer hands back each call's value whole, and the code-review template no longer asks for a GitHub tool the hosted server leaves off. The store does not change: SQLite stays at version 13 and Postgres at migration 0020, so going back to beta.47 opens the same store.
 
 **Upgrading and going back:**
 
@@ -31,6 +31,13 @@ Runs and the server
 
 - A schedule trigger's next run keeps what its last answer carried when that answer is over 32 KiB: an agent's `output_schema` may name, in `x-carried`, the top-level fields its next run reads back, and the next run is handed those fields alone, with words naming them and the whole result's size. A carried array over the limit gives up its oldest entries until the fields fit, and the words say how many each lost. A save refuses an `x-carried` that is not a list of the schema's own top-level fields (`422 input_invalid`) (#3310). <!-- changes/x-carried-previous-result.md -->
 - A run's views no longer show a `Bearer` token or the value of a URL parameter named like a credential (`?api_key=`, `&access_token=`, `&client_secret=`, a signed URL's `sig=` or `X-Amz-Signature=`): both are cut to `[redacted]` in its Timeline, its trace, the Dev tools tab, its answer and its error, keeping the scheme and the parameter's name. Learning refuses a draft that holds either. Placeholders such as `Bearer <token>` and names that only resemble a credential's (`page_token`) are left as written (#3293). <!-- changes/redact-bearer-token-and-url-credential.md -->
+- A run's trace (`GET /v2/runs/{id}/trace`, `agentrun runs trace`) shows a model request's or a decision's cost without floating-point noise: `0.001893`, not `0.0018930000000000002`. The amount is unchanged (#3298). <!-- changes/trace-span-cost-no-float-noise.md -->
+- When a codemode script stops at a call that waited for a person's answer, its answer gives every call's value whole, where each was cut at 2,000 characters; it is still held to the host's bound on a tool answer (#3311). <!-- changes/codemode-stopped-whole-values.md -->
+
+Templates
+
+- The code-review template no longer asks for GitHub's `get_repository_tree`, which the hosted GitHub MCP server leaves off by default, so applying the template with its suggested tools was refused. The review reads the repository from its checkout or through `get_file_contents` (#3296). <!-- changes/code-review-no-repository-tree.md -->
+- Applying a template that grants `issue_write` on a GitHub App whose installation has only Issues: read warns that GitHub refuses it on a private repository and says a public repository takes it, where it said GitHub always refuses it (#3297). <!-- changes/issue-write-warning-public-repos.md -->
 
 Costs
 
@@ -44,6 +51,9 @@ Learning
 Console
 
 - The API playground's Request pane and Code/Response pane rule their header and footer lines at the same heights, and the footer's note wraps beside the buttons (#3299). <!-- changes/playground-pane-lines.md -->
+- After an agent is created in the API playground, "Open agent" sits beside the response status, above the definition, so a long definition no longer pushes it out of view (#3306). <!-- changes/playground-open-agent-top.md -->
+- The Tools step lays out an MCP server's tools and the monid row across the whole width, in the built-in tools' columns, where they sat in two middle columns (#3301). <!-- changes/tools-step-mcp-full-row.md -->
+- The "Set up GitHub App access" link under a template's missing tool and "Browse history" on Start here are always underlined, not only on hover; in light mode the link read as plain text in the warning box (#3294). <!-- changes/inline-link-underline.md -->
 
 ## 0.1.0-beta.47 (2026-11-19)
 
