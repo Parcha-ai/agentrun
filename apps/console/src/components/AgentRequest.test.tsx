@@ -157,7 +157,10 @@ describe("AgentRequest, local definition requests", () => {
     expect(button("Send request").disabled).toBe(true);
     await send();
     expect(writes()).toHaveLength(1);
-    expect(host.querySelector('a[href="#/agents/created"]')?.textContent).toContain("Open agent");
+    const open = host.querySelector('a[href="#/agents/created"]')!;
+    expect(open.textContent).toContain("Open agent");
+    // Beside the status, above the definition: a long one (dozens of tools) does not push it out of view.
+    expect(open.compareDocumentPosition(host.querySelector("pre")!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
   it("refuses invalid JSON and sends all supplied JSON fields unchanged once corrected", async () => {
