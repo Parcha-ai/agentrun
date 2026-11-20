@@ -333,3 +333,13 @@ snapshot (`.agentrun/snapshot.json`, what every read reads). A stop between the 
 ref with no diff: the next read of the round's merge (the end step's, or a second merge's) writes it from the ref. A person's replace of `corrections.md` is one commit the
 same way, under the ETag they read. A workflow is never deleted by a run: a retired one stays in the folder and
 serves no run.
+
+## The reset
+
+`DELETE /v2/agents/{id}/learning` (`learning-reset.ts`) deletes the folder whole, its git history and audit ledger
+included, then the agent's promotions and grades (`delete.ts` deleteLearning); the agent and its runs stay. It cancels
+the runs that exist only for learning (replays, audit shadows) and waits for them; a run of the agent's own still going
+refuses it (409 `learning_busy`), since its learning lives in it, and nothing is deleted. The folder's next write starts
+a new history. A run that read its seed before the reset holds a commit the folder no longer has: no workflow is laid
+at its claim, and its merge's `same` names that commit, which the script refuses, so it is a conflict and nothing it
+drafted lands.

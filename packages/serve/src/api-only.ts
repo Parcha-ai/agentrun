@@ -12,11 +12,13 @@ export const API_ONLY_ENV = "AGENTRUN_API_ONLY";
  *  - listComputers, getWorkspaceArchil: the two reads a backend checks before it launches, naming keys and never a
  *    value; their writes and tests stay the console's.
  *  - getAgentArchil, deleteAgentArchil, deleteAgent: an agent's disk and the delete of an agent its inline runs made,
- *    which the backend that made it sends. */
+ *    which the backend that made it sends.
+ *  - deleteAgentLearning: an agent's learning reset, the agent and its runs kept, which a backend erasing what an agent
+ *    learned sends. */
 export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createRun", "createInlineRun", "getComputerDaemon",
   "listComputers", "getWorkspaceArchil",
-  "getAgentArchil", "deleteAgentArchil", "deleteAgent",
+  "getAgentArchil", "deleteAgentArchil", "deleteAgent", "deleteAgentLearning",
   "getRun", "listRuns", "listAllRuns", "getTimeline",
   "sendMessage", "stopRun", "cancelRun", "raiseRunCap", "gradeRun",
   "listRunFiles", "readRunFile",

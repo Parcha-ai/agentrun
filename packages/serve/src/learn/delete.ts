@@ -1,6 +1,8 @@
-// An agent's learning, deleted: the learning half of an agent's delete. Its caller (DELETE /v2/agents/{id}) stops the
-// agent's runs and learning work first, then calls deleteLearning, then deletes the agent's store rows, in that order:
-// a call again after a crash finishes what a first one began, and no learning is left with no agent to own it.
+// An agent's learning, deleted: the learning half of an agent's delete, and the whole of a reset of its learning. Its
+// callers stop the agent's learning work first: DELETE /v2/agents/{id} stops all its runs, calls deleteLearning, then
+// deletes the agent's store rows, in that order, so a call again after a crash finishes what a first one began and no
+// learning is left with no agent to own it; DELETE /v2/agents/{id}/learning (learning-reset.ts) keeps the agent and its
+// runs.
 import { isWorkspaceError } from "../workspace/workspace.js";
 import { FINAL_STATES, type Store } from "../store/store.js";
 import type { LearningFolder } from "./folder.js";

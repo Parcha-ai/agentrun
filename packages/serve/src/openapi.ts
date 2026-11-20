@@ -1611,6 +1611,13 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "Read at main's head with git's plumbing; every text cut of the host's secrets as they are now, and a file name holding one `[redacted]` whole. An agent whose learning was never on has no folder: `main` null, `corrections` empty and every page empty. An archived agent's is readable." + " " + SIGN_IN_WITHHELD,
       parameters: [AGENT_ID], responses: { "200": json(AGENT_LEARNING, "The agent's learning."), ...errors(401, 403, 404, 429, 500) }, ...MARK,
     },
+    delete: {
+      operationId: "deleteAgentLearning", tags: ["agents"], summary: "Reset the agent's learning: everything it learned deleted, the agent and its runs kept",
+      description: "Deletes what the agent learned: its learning folder whole (`corrections.md`, its learned workflows, their history and the audit ledger), then its promotion records and grades. The agent, its definition, its runs and everything kept of them (their files, timelines, costs and each one's learning) stay, so the run list, `GET /stats` and `GET /usage` read the same after. From then on no run is given a correction or a learned workflow of before, and the agent's next run takes the agent path; learning starts again from the agent's runs, as for a new agent. Its learning work in flight is stopped first: a run that exists only for learning (a check's or an owner's replay, an audit's shadow run) is cancelled and waited for. A run of the agent's own still going (queued, running or parked) carries its learning with it (what it was started with, its compile turn and look-back at its end) and is never cancelled for this: while one is, or a learning run this server cannot end (an SDK run) or one not ended in time, it is `409 learning_busy`, each named in `details.runs`, and nothing of the agent's learning is deleted. `204` when done; idempotent: an agent that never learned, or one reset already, is `204` too. An agent being deleted is `409 agent_not_runnable`. Served in the API-only profile (`AGENTRUN_API_ONLY=1`) too, with the token, as the other learning writes take it.",
+      parameters: [AGENT_ID],
+      responses: { "204": { description: "The agent's learning is reset." }, ...errors(401, 404, 409, 429, 500) },
+      "x-agentrun-serve": "learningreset/1",
+    },
   },
   "/agents/{agent_id}/learning/cost": {
     get: {
@@ -4244,7 +4251,7 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     composio_account_ambiguous: closed({ server: { type: "string" }, user_id: { type: "string", description: "The Composio user the server runs as." }, accounts: { type: "array", items: closed({ id: { type: "string", description: "Composio's id for the connected account." }, created_at: { type: "string", description: "When it was connected, as Composio says." } }), description: "The user's ACTIVE accounts for the toolkit, oldest first." } }),
     composio_in_use: closed({ triggers: { type: "array", items: closed({ id: { type: "string" }, name: { type: "string" } }), description: "The composio triggers that use it." } }),
     runs_in_flight: closed({ runs: { type: "array", items: { type: "string" }, description: "The agent's runs not ended (DELETE /agents/{agent_id})." } }),
-    learning_busy: closed({ runs: { type: "array", items: { type: "string" }, description: "What of the agent's learning is at work (DELETE /agents/{agent_id}): each run of it not ended (its compile turn, a check's replay or an audit's shadow among them), by its id." } }),
+    learning_busy: closed({ runs: { type: "array", items: { type: "string" }, description: "What of the agent's learning is at work (DELETE /agents/{agent_id}, DELETE /agents/{agent_id}/learning): each run of it not ended (a run of its own, whose compile turn and look-back are at its end, a check's replay or an audit's shadow among them), by its id." } }),
   };
   const extensions: string[] = [];
   for (const [path, item] of Object.entries(EXTENSIONS)) {

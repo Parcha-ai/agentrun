@@ -3798,6 +3798,13 @@ with the token, an archived agent's too:
 - `GET .../learning/workflows/{name}/revisions` lists a learned workflow's revisions on `main`;
   `GET .../learning/promotions` its promotion records; `GET .../learning/loop` each compile turn; and
   `GET .../learning/cost` the agent's cost per run, run after run.
+- `DELETE /agents/{agent_id}/learning` resets the agent's learning: its learning folder whole (`corrections.md`, its
+  workflows, their history and the audit ledger), then its promotion records and grades. The agent and its runs stay,
+  with their files, costs and each run's own learning, so the run list, `GET /stats` and `GET /usage` read the same;
+  the next run takes the agent path, given nothing learned. It cancels the runs that exist only for learning (replays,
+  audit shadows) and waits for them; while a run of the agent's own is still going it is `409 learning_busy` (each named
+  in `details.runs`), and nothing is deleted. `204`, a second call and an agent that never learned included. The
+  API-only profile serves it too.
 - `GET /runs/{run_id}/learning`: the run's learning whole (its seed, its merge, the corrections it added, the workflow it
   wrote, its compile turn's attempts and the checks' problems), `null` for a run that does not learn.
   `GET /runs/{run_id}/learning/diff`: a merged run's merge commit against its parent, each file's patch as git writes it

@@ -1871,6 +1871,10 @@ export interface operations {
       } | null;
     };
   };
+  deleteAgentLearning: {
+    body: never;
+    answer: never;
+  };
   deleteCalendar: {
     body: never;
     answer: never;

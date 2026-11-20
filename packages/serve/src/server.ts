@@ -49,7 +49,7 @@ import { DEFAULT_HOST, elsewhereOf, listenOn, minFreeMibOf, takeOver, urlOf } fr
 import { IMPORT_ASKED, type ImportCandidate, MAX_CANDIDATES } from "./import.js";
 import type { ImportAnswer, ImportTask } from "./import-worker.js";
 import { answerStoreCall, type StoreCall } from "./import-proxy.js";
-import { LEARNING_LABEL, learningFolderOf, secretsShown, type LearningMode, learningOf, learnsOf, RUN_LEARNING_USE, seedOf } from "./learning.js";
+import { LEARNING_LABEL, learningFolderOf, secretsShown, type LearningMode, learningOf, learnsOf, RUN_LEARNING_USE, seedOf, withAgentRepo } from "./learning.js";
 import { askReplay, type ReplayAsk, ReplayRefused, replayView } from "./runner/promotion.js";
 import { agentLearning, changeWorkflow, correctionsView, correctionsWrite, learningLog, pendingCount, readLearnedFile, sendText, statusesOf, textBody, workflowAtDigest, workflowRevisions } from "./learning-routes.js";
 import type { DraftDecisions } from "./learn/workflow-draft.js";
@@ -198,6 +198,7 @@ import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folder
 import { type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { writesHeld } from "./workspace.js";
 import { type AgentDeleteHost, type AgentDeleteStep, type DeleteLearning, deleteExternalAgent, oneAtATime } from "./agent-delete.js";
+import { type LearningResetHost, resetLearning } from "./learning-reset.js";
 import { agentComputerHoldKey } from "./workspace/agent-computer.js";
 import { sdkRunKey } from "./sdk/runs.js";
 import { waitEndedKey } from "./browser-wait-ended.js";
@@ -729,6 +730,8 @@ export const ROUTES: readonly Route[] = [
   // Answered before routing (mcp.ts), with the token only: listed here for the document.
   { method: "POST", pattern: /^\/mcp$/, name: "callMcp" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning$/, name: "getAgentLearning" },
+  // The agent's learning reset, the agent and its runs kept (learning-reset.ts).
+  { method: "DELETE", pattern: /^\/agents\/([^/]+)\/learning$/, name: "deleteAgentLearning" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/cost$/, name: "getLearningCost" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/promotions$/, name: "listLearningPromotions" },
   { method: "GET", pattern: /^\/agents\/([^/]+)\/learning\/audits$/, name: "listLearningAudits" },
@@ -2483,6 +2486,16 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     waitMs: options.agentDeleteWaitMs ?? 30_000,
     pollMs: 200,
     ...(options.agentDeleteAt ? { at: options.agentDeleteAt } : {}),
+  };
+  /** What DELETE /agents/{id}/learning does outside the learning module (learning-reset.ts): the agent delete's learning
+   *  step, cancel path and wait, and the agent's learning queue, where a run's start reads its seed. */
+  const learningResetHost: LearningResetHost = {
+    store,
+    deleteLearning: learningDelete,
+    cancel: agentDeleteHost.cancel,
+    inQueue: (agentId, work) => withAgentRepo(data, agentId, work),
+    waitMs: agentDeleteHost.waitMs,
+    pollMs: agentDeleteHost.pollMs,
   };
   // A run's live moment from the store (store-view momentOf), for the one acceptance each act a run takes reads. The run
   // routes read from the store + the run view now, not a live Run.
@@ -4982,6 +4995,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // A write to the agent's learning: in its delete turn (agentWrite), the body read before, outside it.
         const written = await agentWrite(id, () => correctionsWrite(data, id, { text, ifMatch: typeof req.headers["if-match"] === "string" ? req.headers["if-match"] : undefined, refuse }));
         return send(res, 200, written, { etag: written.etag });
+      }
+      case "deleteAgentLearning": {
+        // The agent's learning reset (learning-reset.ts), a write to its learning: in its delete turn (agentWrite), which
+        // reads the agent there (404 unknown) and refuses one being deleted.
+        await agentWrite(id, () => resetLearning(learningResetHost, id));
+        // A run's list row that read a workflow of the agent's says what the folder says now, at the next list.
+        await lister.learningChanged(id);
+        res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
+        return void res.end();
       }
       case "listLearnedWorkflowRevisions":
         await needAgent(id);

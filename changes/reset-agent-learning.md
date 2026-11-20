@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun-client, @parcha/agentrun
+kind: feature
+---
+`DELETE /v2/agents/{agent_id}/learning` resets an agent's learning without deleting the agent: its learning folder whole (corrections, learned workflows, their history and the audit ledger), then its promotion records and grades. The agent, its runs and their files stay, and the run list, `GET /stats` and `GET /usage` read the same; the next run takes the agent path with nothing learned. Learning-only runs in flight (replays, audit shadows) are cancelled first; while a run of the agent's own is still going it answers `409 learning_busy` naming the runs, and nothing is deleted. `204` when done, idempotent (an agent that never learned is `204` too), with the token, in the API-only profile as well. The TypeScript and Python clients add `learning.reset(agent_id)`, and the CLI `agentrun learning reset <agent_id>`.
