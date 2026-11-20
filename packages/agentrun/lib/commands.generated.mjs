@@ -128,7 +128,7 @@ export const COMMANDS = [
     "bodyTypes": [],
     "secretBody": false,
     "raw": false,
-    "summary": "Delete an agent another system owns"
+    "summary": "Delete an agent another system owns, or purge an archived agent made here"
   },
   {
     "command": [
@@ -2196,6 +2196,28 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "Mint a link to the run's live view for the backend's user"
+  },
+  {
+    "command": [
+      "runs",
+      "delete"
+    ],
+    "operationId": "deleteRun",
+    "method": "DELETE",
+    "path": "/runs/{run_id}",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Purge a run's content and keep its cost"
   },
   {
     "command": [

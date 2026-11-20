@@ -9074,6 +9074,7 @@ OPERATIONS: dict[str, Operation] = {
     "releaseRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/release", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createInlineRun": Operation(method="POST", path="/runs", path_params=(), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createRunComputerViewer": Operation(method="POST", path="/runs/{run_id}/computer/viewer", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "deleteRun": Operation(method="DELETE", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "listRunFiles": Operation(method="GET", path="/runs/{run_id}/files", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getRun": Operation(method="GET", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "gradeRun": Operation(method="PUT", path="/runs/{run_id}/grade", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -9154,7 +9155,7 @@ class AgentsResource(Group):
         return self._call("createAgent", (), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
 
     def delete_agent(self, agent_id: str, *, timeout: float | None = None) -> None:
-        """Delete an agent another system owns (DELETE /agents/{agent_id})."""
+        """Delete an agent another system owns, or purge an archived agent made here (DELETE /agents/{agent_id})."""
         return self._call("deleteAgent", (agent_id,), None, None, timeout=timeout)
 
     def delete_agent_archil(self, agent_id: str, *, timeout: float | None = None) -> DeleteAgentArchilResponse:
@@ -9588,6 +9589,10 @@ class RunsResource(Group):
     def create_run_computer_viewer(self, run_id: str, body: CreateRunComputerViewerBody | None = None, *, timeout: float | None = None) -> CreateRunComputerViewerResponse:
         """Mint a link to the run's live view for the backend's user (POST /runs/{run_id}/computer/viewer)."""
         return self._call("createRunComputerViewer", (run_id,), body, None, timeout=timeout)
+
+    def delete(self, run_id: str, *, timeout: float | None = None) -> None:
+        """Purge a run's content and keep its cost (DELETE /runs/{run_id})."""
+        return self._call("deleteRun", (run_id,), None, None, timeout=timeout)
 
     def files(self, run_id: str, *, timeout: float | None = None) -> ListRunFilesResponse:
         """The files the run wrote (GET /runs/{run_id}/files)."""

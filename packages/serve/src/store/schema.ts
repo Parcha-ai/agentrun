@@ -33,8 +33,11 @@
 // Version 12 keeps each run's listing on its row (RUN_LISTING_COLUMNS): what a runs list shows of it, so a list reads rows
 // alone. Version 13 names the runner in a process of its own that minted a hosted machine's token (minted_tokens.runner,
 // .incarnation), the run the machine works for (.run), why the server refused to relay its dial (.refused), and where each
-// such runner takes the dials the server relays to it (runners.host and .port, dial-relay.ts). The server upgrades these two in place at its open (listingUpgrade from 11, then relayUpgrade from 12); a runner waits for it.
-export const SCHEMA_VERSION = 13;
+// such runner takes the dials the server relays to it (runners.host and .port, dial-relay.ts). Version 14 keeps when a run or
+// an agent was purged (runs.purged_at, agents.purged_at; DELETE /runs/{id} and /agents/{id}, agent-delete.ts): its row is
+// then a tombstone, its content gone and its cost kept. The server upgrades these in place at its open (listingUpgrade from
+// 11, relayUpgrade from 12, then purgeUpgrade from 13); a runner waits for it.
+export const SCHEMA_VERSION = 14;
 
 /** One answer per approval of a run: a second approve or deny command naming the same approval is refused
  *  (StoreConstraint), so the first answer a person gives wins from the moment it is written, before the runner takes it
@@ -125,6 +128,16 @@ export const RUNNERS = `CREATE TABLE IF NOT EXISTS runners (
     port INTEGER,
     seen_at INTEGER NOT NULL
   ) STRICT`;
+
+/** Version 13 → 14 on SQLite (the server's open, sqlite/store.ts), given the runs' and the agents' columns now: when each
+ *  run and each agent was purged (null: none was), and the version, in one durable write. */
+export function purgeUpgrade(runColumns: ReadonlySet<string>, agentColumns: ReadonlySet<string>): readonly string[] {
+  return [
+    ...(runColumns.has("purged_at") ? [] : ["ALTER TABLE runs ADD COLUMN purged_at INTEGER"]),
+    ...(agentColumns.has("purged_at") ? [] : ["ALTER TABLE agents ADD COLUMN purged_at INTEGER"]),
+    "UPDATE store_meta SET schema_version = 14 WHERE singleton = 1",
+  ];
+}
 
 /** Version 12 → 13 on SQLite (the server's open, sqlite/store.ts), given minted_tokens' columns now: the minting runner,
  *  its incarnation, the machine's run and a refused relay's words on each token's row (none of the rows there has one: the
@@ -247,7 +260,10 @@ export const STORE_DDL: readonly string[] = [
     current_revision TEXT,
     created_at INTEGER NOT NULL,
     archived_at INTEGER,
-    external_ref TEXT
+    external_ref TEXT,
+    -- When the agent was purged (DELETE /agents/{id} of an archived agent made here): its row is then a tombstone, its
+    -- name, description and revisions' content blanked, kept for its runs' tombstones and their cost. Null: not purged.
+    purged_at INTEGER
   ) STRICT`,
   `CREATE UNIQUE INDEX IF NOT EXISTS agents_external ON agents (external_ref) WHERE external_ref IS NOT NULL`,
   // A revision's skills (the P4 fold of the old agent store's skill table): the revision's own skill files, a JSON object
@@ -321,7 +337,10 @@ export const STORE_DDL: readonly string[] = [
     started_at INTEGER NOT NULL,
     ended_at INTEGER,
     -- The run's listing (RUN_LISTING_COLUMNS): what a runs list shows of it, kept on its row so a list reads rows alone.
-    ${RUN_LISTING_COLUMNS.join(",\n    ")}
+    ${RUN_LISTING_COLUMNS.join(",\n    ")},
+    -- When the run was purged (DELETE /runs/{id}, Runs.purge): its row is then a tombstone, every record of what it was
+    -- given or did gone and its cost kept, which no list shows and every total still sums. Null: not purged.
+    purged_at INTEGER
   ) STRICT`,
   `CREATE INDEX IF NOT EXISTS runs_by_agent ON runs (agent_id, started_at)`,
   `CREATE INDEX IF NOT EXISTS runs_by_revision ON runs (revision_id, started_at)`,

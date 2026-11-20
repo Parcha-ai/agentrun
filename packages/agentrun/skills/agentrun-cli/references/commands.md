@@ -36,7 +36,7 @@ Route: `POST /agents`.
 
 ### `agentrun agents delete-agent AGENT_ID`
 
-Delete an agent another system owns.
+Delete an agent another system owns, or purge an archived agent made here.
 
 Route: `DELETE /agents/{agent_id}`.
 
@@ -687,6 +687,12 @@ Route: `POST /runs/{run_id}/computer/viewer`.
 
 - `--body JSON|@FILE|-` (application/json): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun runs delete RUN_ID`
+
+Purge a run's content and keep its cost.
+
+Route: `DELETE /runs/{run_id}`.
 
 ### `agentrun runs files RUN_ID`
 
