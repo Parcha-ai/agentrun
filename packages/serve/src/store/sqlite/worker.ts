@@ -2,7 +2,7 @@
 // the disk (a flush at FULL, or a write behind another process's lock) waits here, never on the event loop the runner's
 // loops share. WAL with synchronous=NORMAL: a commit is durable against a process crash at once, and against a lost box
 // only after the next FULL commit (flush). Every write starts BEGIN IMMEDIATE, so a write never upgrades a read lock and
-// deadlocks another writer; busy_timeout covers another process's write in flight. Foreign keys are on.
+// deadlocks another writer; busy_timeout covers another process's write in flight. Foreign keys and secure_delete are on.
 //
 // The messages (connection.ts sends them one at a time, in order):
 //   open {file, busyTimeoutMs, owner}     the connection and its pragmas; `owner` also takes the store's owner lock (one
@@ -214,6 +214,10 @@ function handle(request: Request): unknown {
       if (request.owner) keepPrivate(request.file, false);
       db.exec(NORMAL);
       db.exec("PRAGMA foreign_keys = ON");
+      // Every byte a write of this connection frees (a deleted row, an overwritten value, a freed page) is zeroed in the
+      // page it writes, so a purge (or any delete) leaves no copy in the file's free space once the WAL is checkpointed
+      // (sqlite/store.ts #purged). Per connection: the server's and each runner's, every one that writes, set here.
+      db.exec("PRAGMA secure_delete = ON");
       return null;
     }
     case "exec":

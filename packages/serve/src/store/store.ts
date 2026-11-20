@@ -747,7 +747,7 @@ export interface Agents {
    *  blanked, and its purge time set last. Only once each of its runs is purged (Runs.purge) and no trigger is left:
    *  refused while a run is not (StoreConstraint) or a trigger is (TriggersLeft), nothing written. Its row and its
    *  revisions' ids stay, so its runs' tombstones and every total over them read as before. An agent with no row, or one
-   *  purged already, is no write. */
+   *  purged already, is no write. On SQLite, once it commits, a WAL checkpoint (Runs.purge). */
   purge(agentId: string): Promise<void>;
 }
 
@@ -911,7 +911,10 @@ export interface Runs {
    *  before. Only a run that is final and that no runner holds: one that is not is refused (StoreConstraint), nothing
    *  written; so is one a run made from it (madeFrom's replays and shadow) not purged names (RunsMadeFromLeft): each is
    *  purged first, and Runs.create, under the same row lock, makes none once it is purged. A run with no row, or one
-   *  purged already, is no write. */
+   *  purged already, is no write. On SQLite, once it commits, a WAL checkpoint (TRUNCATE): with secure_delete on in every
+   *  connection, neither the file nor its WAL keeps the purged bytes after it. A checkpoint another connection holds back
+   *  is retried once, then told to the store's `warn`; it never fails the purge. Postgres: the old row versions are the
+   *  database's until its VACUUM. */
   purge(runId: string, kept: PurgeKept): Promise<void>;
   /** The run's rows gone, in one transaction: its journal, commands, origin, launch, live view and viewers, its channel
    *  posts with their tries and what each channel was told of it, its kept learning, its changes in the run-change feed,
@@ -1610,9 +1613,9 @@ export interface Store {
   readonly sealedSecrets: SealedSecrets;
   /** Runs `work`, writes that replace a secret the store kept in the clear (it answers how many rows it rewrote), so the
    *  bytes they replace are not left in the store's files. SQLite: a marker file beside the database is written first;
-   *  secure_delete is on while `work` runs (a rewritten row's old bytes zeroed in its page); then, when a row was rewritten
-   *  or an earlier start left the marker, a VACUUM (no free page or free block keeps a copy an earlier, ordinary update
-   *  left) and a WAL checkpoint (TRUNCATE: the log keeps no older frame). The marker is removed once the checkpoint is
+   *  secure_delete is on in every connection from its open, so a rewritten row's old bytes are zeroed in its page; then,
+   *  when a row was rewritten or an earlier start left the marker, a VACUUM (no free page or free block keeps a copy an
+   *  update left before secure_delete was on) and a WAL checkpoint (TRUNCATE: the log keeps no older frame). The marker is removed once the checkpoint is
    *  done; `left` says why it was kept, for the next start to finish. Postgres: `work` alone (a replaced row version is
    *  the database's until its vacuum). */
   secureRewrite?(work: () => Promise<number>, options?: SecureRewriteOptions): Promise<SecureRewrite>;

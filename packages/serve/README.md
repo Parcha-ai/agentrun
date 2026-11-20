@@ -3336,6 +3336,12 @@ stays in every total.
   nothing opens the run again or keeps a grade of it under its purge.
 - `503 unavailable` while its folder on an Archil disk is not deleted there yet: the run is not purged, and the next
   `DELETE` finishes it, as it finishes a purge that stopped part way (its purge time is set last).
+- On disk, SQLite: every store connection writes with `secure_delete` on, and a run's or an agent's purge checkpoints
+  the WAL once it commits, so the purged content is in neither `store.sqlite` nor its `-wal` after the `DELETE`. A
+  checkpoint another connection holds back is retried once, then logged, and the next purge's checkpoint or the
+  server's stop clears it. A backup, a copy the OS made and the filesystem's own journal are out of its reach. Postgres: a purged row's old version stays
+  in its table as a dead tuple until VACUUM; autovacuum reclaims it on its schedule, and an operator who needs the bytes
+  gone at once runs `VACUUM` on the touched tables.
 - Its agent's other runs and what the agent learned are kept: a promotion record and the learning folder's history
   may still name the run's id.
 - It takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token;
