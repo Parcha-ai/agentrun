@@ -114,6 +114,12 @@ label is 1–80 Unicode characters without surrounding whitespace, controls or u
 report runs and receive owner corrections; they cannot supply a workflow bridge. See [external platform reporting](../../docs/tutorials/platform-sdk-runs.md).
 `BackendLearningSource` accepts either the existing, extensible `BackendLearningStart` interface or an `ExternalLearningStart`.
 
+The generated `StartSdkRunBody` type is now a union: external starts require `platform` and exclude workflow fields.
+If your code extends this generated type with an interface, use a type intersection such as
+`type JobStart = StartSdkRunBody & { jobId: string }` instead. To refer to SDK workflow fields, first select
+`Extract<StartSdkRunBody, { runtime: "claude-agent-sdk" | "codex-sdk" | "eve" }>` or narrow a value by its `runtime`.
+The higher-level `BackendLearningStart` remains an interface that applications can extend.
+
 Your backend still starts and cancels tasks. The wrapper records original source policy/input, assistant text,
 tool names/status and usage. With an explicit workflow bridge, bounded arguments/results for its registered tools also supply compilation evidence; other raw tool payloads and SDK credentials are not sent. AgentRun supplies the
 owner's corrections (`corrections.md`, whole) to the next fresh task, and compiles a workflow once the agent has
