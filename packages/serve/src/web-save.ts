@@ -9,7 +9,8 @@
 //
 // The whole file is held in memory and written once, through Workspace.write (a temporary name in the same folder,
 // renamed over the path on the local disk; one put on Archil's), so a download that fails, or goes past the cap, leaves
-// nothing at the path. So at most SAVE_CONCURRENCY downloads run at once (saveSlots); the rest wait, under their own deadline.
+// nothing at the path. So at most SAVE_CONCURRENCY downloads run at once per runner, across its runs (SERVER_SLOTS); the
+// rest wait, under their own deadline.
 //
 // The type is checked against the bytes: a media type the server plays (file-types.ts) is saved only when its bytes
 // carry that type's signature (MEDIA), and the path's extension must name a type that agrees: the type is not stored, the
@@ -89,8 +90,9 @@ export function saveSlots(size: number): SaveSlots {
     },
   };
 }
-// Per process: every run this server holds shares these.
-const SERVER_SLOTS = saveSlots(SAVE_CONCURRENCY);
+/** The runner's one gate: at most SAVE_CONCURRENCY downloads at once per runner, across its runs. A run in the runner's
+ *  own process takes it here; a run in a process of its own takes it over its channel (runner/save-slots.ts). */
+export const SERVER_SLOTS = saveSlots(SAVE_CONCURRENCY);
 
 /** A media type the server plays, by its signature: `types`, the types those bytes may be declared or named as, the first
  *  the one they are answered as. */
@@ -220,8 +222,9 @@ export async function webSave(args: unknown, work: Workspace, options: SaveOptio
 /** The words the model reads: the answer's JSON. */
 export const savedText = (answer: Saved | Unsaved): string => JSON.stringify(answer);
 
-/** web_save on `work`, its download through `guard` (a test's or the fakes' resolver and fetch, none for the network). */
-export function webSaveTool(work: () => Promise<Workspace> | Workspace, guard: () => Promise<Omit<PublicFetchOptions, "maxBytes" | "signal">> | Omit<PublicFetchOptions, "maxBytes" | "signal">): ToolRegistration<TSchema, JsonValue> {
+/** web_save on `work`, its download through `guard` (a test's or the fakes' resolver and fetch, none for the network), its
+ *  slots `slots` (none: SERVER_SLOTS). */
+export function webSaveTool(work: () => Promise<Workspace> | Workspace, guard: () => Promise<Omit<PublicFetchOptions, "maxBytes" | "signal">> | Omit<PublicFetchOptions, "maxBytes" | "signal">, slots?: SaveSlots): ToolRegistration<TSchema, JsonValue> {
   return defineTool({
     name: WEB_SAVE_TOOL,
     description: `Download one file from a public URL into this run's folder, where it stays (the run's Files show and play it): use it for a generated image, audio or video a service answered with a link that expires. path is where to save it, relative to the run's folder; a bare name (cat.png) goes under ${MEDIA_DIR}/. A path that already holds a file is refused, never overwritten. The file must be a type its bytes show: an image (png, jpeg, gif, webp), audio (mp3, wav, ogg, m4a) or video (mp4, webm), and the path must have an extension of that type (cat.png, not cat or cat.bin); any other type (a page, a PDF, text) is saved only to a path whose extension names the type the host declares. At most ${SAVE_MAX_BYTES / (1024 * 1024)} MiB and ${SAVE_TIMEOUT_MS / 60_000} minutes. A private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused, at every redirect too. Answers JSON: { ok: true, path, bytes, content_type, url } (url the final one, after redirects), or { ok: false, url, refused } when it was refused, { ok: false, url, error } when it failed; nothing is left at the path when it does not save.`,
@@ -236,7 +239,7 @@ export function webSaveTool(work: () => Promise<Workspace> | Workspace, guard: (
     } as unknown as TSchema,
     replay: "unsafe",
     execute: async (args, _api, context) => {
-      const answer = await webSave(args, await work(), { ...(await guard()), ...(context?.abortSignal ? { signal: context.abortSignal } : {}) });
+      const answer = await webSave(args, await work(), { ...(await guard()), ...(context?.abortSignal ? { signal: context.abortSignal } : {}), ...(slots ? { slots } : {}) });
       return forModel(savedText(answer), { details: answer as unknown as JsonValue });
     },
   });

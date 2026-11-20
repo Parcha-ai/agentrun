@@ -14,6 +14,7 @@ import { type ChildProcess, execFile, spawn } from "node:child_process";
 import { existsSync, type Stats } from "node:fs";
 import { chmod, chown, lchown, lstat, mkdir, readdir, rm } from "node:fs/promises";
 import type { Socket } from "node:net";
+import type { Duplex } from "node:stream";
 import { dirname, join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { encode, SECRET_NAMES, SECRETS_FD_ENV, SECRETS_LEN_ENV, withoutSecrets } from "../secrets.js";
@@ -70,6 +71,8 @@ import { heardComputerHold } from "./computer-journal.js";
 import { type Claim, type Command, type CommandOutcome, type HeldState, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, type StopReason, ClaimRefused } from "./loop-contract.js";
 import { Channel, ChannelClosed } from "./run-channel.js";
 import { registerRunErrors } from "./run-errors.js";
+import { exposeSaveSlots } from "./save-slots.js";
+import { type SaveSlots, SERVER_SLOTS } from "../web-save.js";
 import { readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { SUBAGENT_TOOL } from "./subagent.js";
 import type { AlsoRow, JournalReads, Store } from "../store/store.js";
@@ -1038,6 +1041,16 @@ function childEnv(base: NodeJS.ProcessEnv, keys: Buffer, extra: Record<string, s
   return { ...env, ...extra, [SECRETS_FD_ENV]: "3", [SECRETS_LEN_ENV]: String(keys.length) };
 }
 
+/** The runner's side of a run's channel over `socket`. Each call of the run's process runs inside the ledger of the tool
+ *  call it was made in (paid-calls.ts). web_save's slots are `gate`, this runner's one (save-slots.ts); the channel's end
+ *  (the run's end, or its process gone) gives back every slot the run held or waited for. */
+export function runChannel(socket: Duplex, onClose: (why: Error) => void, gate: SaveSlots = SERVER_SLOTS): Channel {
+  let saves: (() => void) | undefined;
+  const channel = new Channel(socket, { onClose: (why) => { onClose(why); saves?.(); }, within: withinCarried });
+  saves = exposeSaveSlots(channel, gate);
+  return channel;
+}
+
 function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDeps: LoopDeps): Loop {
   const { deps, isolation } = options;
   const cut: (text: string) => string = loopDeps.redact ?? ((text) => text);
@@ -1169,8 +1182,7 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
           keyPipe.end(keys);
           const socket = child.stdio[4] as Socket;
           let broke: Error | undefined;
-          // Each call of the run's process runs inside the ledger of the tool call it was made in (paid-calls.ts).
-          channel = new Channel(socket, { onClose: (why) => void (broke ??= why), within: withinCarried });
+          channel = runChannel(socket, (why) => void (broke ??= why));
           const bound: Bound = { claim, agentId: runRow.agentId, revisionId: runRow.revisionId };
           channel.expose("store", (method, args) => storeCall(deps.store, method, args, bound, log));
           channel.expose("journal", journalTarget(loopDeps.journal(claim), cut));

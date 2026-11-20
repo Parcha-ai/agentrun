@@ -35,6 +35,7 @@ import { type ArgumentsOf, deniedText, noApproverText, type Permission, type Run
 import { DECISION_PROVIDER_KEYS, loadToolSettings, recheckPlane, TOOL_PLANE_ENV } from "../tool-plane.js";
 import { readApprovers } from "../server-approvers.js";
 import { ASK_TOOL, askPerson, type EmailFake, type ToolEntry, type ToolHost, toolOf } from "../tools.js";
+import type { SaveSlots } from "../web-save.js";
 import type { WebFake } from "../web-fake.js";
 import { type HostToolCtx, hostToolOf } from "../host-tools.js";
 import { WEB_FETCH_TOOL } from "../web-fetch.js";
@@ -225,6 +226,8 @@ export interface AdapterSpecDeps {
    *  on purpose does not wait out MODEL_RETRY's two and a half minutes. No environment variable, flag or setting maps onto
    *  it; absent, MODEL_RETRY and MODEL_STREAM. */
   readonly modelRetry?: Pick<AdapterLoopOptions, "retry" | "stream">;
+  /** web_save's download slots (ToolHost.saveSlots): in a run's own process, its runner's (run-child.ts). */
+  readonly saveSlots?: SaveSlots;
 }
 
 /** One run's template eval fakes (template-eval.ts, from its case). `web`: its web_search, web_fetch and web_save answer from the
@@ -778,7 +781,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   const claimBrowser = computer.computer?.kind === "browser" ? computer.computer.browser : undefined;
   const fakes = deps.evalFakes?.(runRow.agentId);
   const liveAt = await claimLiveAt(deps, claim.runId);
-  const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}), ...reach, ...(liveAt ? { liveAt } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
+  const host: ToolHost = { ...buildToolHost({ root, workspace: ws.workspace, claim, env: toolEnv, run, store: deps.store, sealKey: deps.sealKey, life, redact: cut, launch, toolSettings: body.toolSettings, ...(fakes ? { fakes } : {}), ...reach, ...(liveAt ? { liveAt } : {}), ...(deps.saveSlots ? { saveSlots: deps.saveSlots } : {}) }), ...(claimBrowser ? { browserComputer: claimBrowser } : {}) };
   gate.askedOn(host);
 
   // The run's tools. The hands (read/write/edit/bash and the background tools) are the kernel registry's over the run's
@@ -1176,6 +1179,8 @@ export function buildToolHost(opts: {
   readonly own?: readonly string[];
   /** A runner on another host than its server: where the run's viewers answer, under its run's key (claimLiveAt). */
   readonly liveAt?: RunnerLive;
+  /** web_save's download slots (AdapterSpecDeps.saveSlots). */
+  readonly saveSlots?: SaveSlots;
 }): ToolHost {
   const { root, claim, run, life, liveAt } = opts;
   const { web, now, email } = opts.fakes ?? {};
@@ -1185,6 +1190,7 @@ export function buildToolHost(opts: {
     ...(email ? { emailFake: email } : {}),
     ...(opts.loopback ? { calendarLoopback: true } : {}),
     ...(opts.own ? { serverOwn: opts.own } : {}),
+    ...(opts.saveSlots ? { saveSlots: opts.saveSlots } : {}),
     // The run's directory and its per-claim environment: the hands come from runTools, so the non-hand tools get the run's
     // environment only.
     where: { root, work: root, ref: { id: claim.runId } },

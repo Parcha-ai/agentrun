@@ -37,7 +37,7 @@ import { forModel } from "./result.js";
 import { fetchFor, pagesOf, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, type SearchOn, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
 import { fakeFetch, fakeSaveOptions, fakeSearch, type WebFake } from "./web-fake.js";
-import { SAVE_MAX_BYTES, WEB_SAVE_TOOL, webSaveTool } from "./web-save.js";
+import { SAVE_MAX_BYTES, type SaveSlots, WEB_SAVE_TOOL, webSaveTool } from "./web-save.js";
 import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, type Resolution, serverGate, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import type { DenyFrom, SettingFrom } from "./tool-gate.js";
 import { fauxFetch, PARALLEL_KEY_ENV } from "./decisions.js";
@@ -177,6 +177,9 @@ export type ToolHost = {
   /** That server's own addresses (Serve.own, AdapterSpecDeps.mcpOwn): calendar_events never reads on loopback at their
    *  ports, a redirect's hop included, as the server's own read (calendar/routes.ts) never does. */
   serverOwn?: readonly string[];
+  /** web_save's download slots: in a run's own process, its runner's gate over the channel (runner/save-slots.ts).
+   *  Absent: this process's (web-save.ts SERVER_SLOTS). */
+  saveSlots?: SaveSlots;
 };
 /** A fake mail account's servers, on loopback (email/email-faux.ts), and the kind of server it plays: what email_file's
  *  description says, which a loopback account saved as `other` would otherwise read as folders. */
@@ -738,7 +741,7 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     nodes: false,
     bind: async (host) => {
       const web = host.web;
-      return installTool(host, "web-save", webSaveTool(() => host.workspace ?? localWorkspace(host.where.work), async () => (web ? fakeSaveOptions(web) : fetchOptions(host.env, FAUX_ENV))) as unknown as ToolRegistration);
+      return installTool(host, "web-save", webSaveTool(() => host.workspace ?? localWorkspace(host.where.work), async () => (web ? fakeSaveOptions(web) : fetchOptions(host.env, FAUX_ENV)), host.saveSlots) as unknown as ToolRegistration);
     },
   },
   // The email tools (email/tools.ts) on the server's one email account (Settings → Email), every harness's as web_fetch is;

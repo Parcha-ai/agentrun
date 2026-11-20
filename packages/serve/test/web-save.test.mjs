@@ -2,6 +2,8 @@
 // by its own name. The network is a table (no socket): names resolve from it and each URL answers from it.
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
+import { once } from "node:events";
+import { connect, createServer } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
 import { localWorkspace } from "../dist/workspace/index.js";
@@ -9,7 +11,7 @@ import { SAVE_MAX_BYTES, SAVE_TIMEOUT_MS, WEB_SAVE_TOOL, webSave, webSaveTool } 
 import * as webSaveModule from "../dist/web-save.js";
 import { CALL_TOOLS, NODE_TOOLS, TOOLS } from "../dist/tools.js";
 import { isAskable, isHostTool, isTableTool, isWebHostTool, replayOf } from "../dist/tool-list.js";
-import { webHostTools } from "../dist/runner/adapter-run-spec.js";
+import { buildToolHost, webHostTools } from "../dist/runner/adapter-run-spec.js";
 import { webFixtureOf } from "../dist/web-fake.js";
 import { PNG } from "./fixtures/faux-web-files.mjs";
 import { scratch } from "./support.mjs";
@@ -355,7 +357,7 @@ const until = async (ok, what) => {
 };
 const { SAVE_CONCURRENCY, saveSlots } = webSaveModule;
 
-test("at most 4 downloads at once per server: a fifth waits without dialling until one ends, then all five save", async (t) => {
+test("at most 4 downloads at once per runner: a fifth waits without dialling until one ends, then all five save", async (t) => {
   assert.equal(SAVE_CONCURRENCY, 4);
   assert.equal(typeof saveSlots, "function", "web-save.js exports saveSlots");
   const { work, ws } = await folders(t);
@@ -471,4 +473,185 @@ test("a caller's abort while waiting for a slot leaves the queue without taking 
   assert.equal((await first).ok, true);
   assert.deepEqual(net.started, ["https://cdn.example/a.png"], "the aborted save never dialled");
   assert.deepEqual([slots.busy, slots.waiting], [0, 0]);
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The runner's one gate, shared by its runs' own processes over their channels (runner/save-slots.ts). Each "run" here is
+// a channel pair over a real Unix socket: the runner's side is the runner's own (run-child-host.ts runChannel, on a gate of
+// the test's), the run's side takes its slots as run-child.ts does (remoteSaveSlots).
+
+const sharedSlots = await import("../dist/runner/save-slots.js").catch(() => ({}));
+const { runChannel } = await import("../dist/runner/run-child-host.js");
+const { Channel } = await import("../dist/runner/run-channel.js");
+const { SERVER_SLOTS } = webSaveModule;
+
+let socketCount = 0;
+/** A runner's channel to one run's process and the run's side of it, over a Unix socket pair in a scratch folder; both
+ *  ended when the test ends. */
+async function runProcess(t, gate) {
+  assert.equal(typeof runChannel, "function", "run-child-host.js exports runChannel");
+  assert.equal(typeof sharedSlots.remoteSaveSlots, "function", "runner/save-slots.js exports remoteSaveSlots");
+  const dir = await scratch(t);
+  const path = join(dir, `run-${socketCount++}.sock`);
+  const server = createServer();
+  await new Promise((resolve) => server.listen(path, resolve));
+  const accepted = once(server, "connection");
+  const childSocket = connect(path);
+  const [[runnerSocket]] = await Promise.all([accepted, once(childSocket, "connect")]);
+  server.close();
+  const runner = runChannel(runnerSocket, () => {}, gate);
+  const child = new Channel(childSocket);
+  const end = () => { child.close(); runner.close(); };
+  t.after(end);
+  return { runner, child, childSocket, slots: sharedSlots.remoteSaveSlots(child), end };
+}
+
+test("two run processes share their runner's one gate of 4: three saves in each, four dial, two wait; one ends, one more dials", async (t) => {
+  const gate = saveSlots(SAVE_CONCURRENCY);
+  const [a, b] = [await runProcess(t, gate), await runProcess(t, gate)];
+  const [wa, wb] = [await folders(t), await folders(t)];
+  const net = held();
+  const saves = [
+    ...[0, 1, 2].map((i) => webSave({ url: `https://cdn.example/a${i}.png`, path: `media/a${i}.png` }, wa.ws, { ...net, slots: a.slots })),
+    ...[0, 1, 2].map((i) => webSave({ url: `https://cdn.example/b${i}.png`, path: `media/b${i}.png` }, wb.ws, { ...net, slots: b.slots })),
+  ];
+  await until(() => net.started.length >= 4 && gate.waiting === 2, `four dialled, two wait: ${net.started}, ${gate.waiting}`);
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(net.started.length, 4, `exactly four dialled: ${net.started}`);
+  assert.deepEqual([gate.busy, gate.waiting], [4, 2]);
+  net.answer(net.started[0]);
+  await until(() => net.started.length === 5, "one more dials once one ends");
+  assert.deepEqual([gate.busy, gate.waiting], [4, 1]);
+  for (const url of net.started.slice(1)) net.answer(url);
+  await until(() => net.started.length === 6, "the last dials");
+  net.answer(net.started[5]);
+  const answers = await Promise.all(saves);
+  assert.deepEqual(answers.map((answer) => answer.ok), [true, true, true, true, true, true], JSON.stringify(answers));
+  await until(() => gate.busy === 0, "every slot back");
+  assert.deepEqual([gate.busy, gate.waiting], [0, 0]);
+  a.end();
+  b.end();
+});
+
+test("a run process that holds slots and dies frees them, and its waiters, at its runner: a waiter of another run then dials", async (t) => {
+  const gate = saveSlots(SAVE_CONCURRENCY);
+  const [a, b] = [await runProcess(t, gate), await runProcess(t, gate)];
+  const [wa, wb] = [await folders(t), await folders(t)];
+  const net = held();
+  const doomed = [0, 1, 2, 3, 4, 5].map((i) => webSave({ url: `https://cdn.example/a${i}.png`, path: `media/a${i}.png` }, wa.ws, { ...net, slots: a.slots }));
+  await until(() => net.started.length === 4 && gate.waiting === 2, "the first run holds all four and waits for two more");
+  const other = webSave({ url: "https://cdn.example/b.png", path: "media/b.png" }, wb.ws, { ...net, slots: b.slots });
+  await until(() => gate.waiting === 3, "the other run waits behind it");
+  // Its process is gone: its end of the socket closes under the runner.
+  a.childSocket.destroy();
+  await until(() => net.started.includes("https://cdn.example/b.png"), "the other run's save dials once the dead run's slots are back");
+  assert.deepEqual([gate.busy, gate.waiting], [1, 0], "the dead run holds and waits for nothing");
+  net.answer("https://cdn.example/b.png");
+  assert.equal((await other).ok, true);
+  for (const url of net.started.filter((url) => url.includes("/a"))) net.answer(url);
+  await Promise.all(doomed);
+  assert.deepEqual([gate.busy, gate.waiting], [0, 0]);
+  b.end();
+});
+
+test("a run process's abort or deadline while it waits crosses to its runner: the waiter leaves the gate's queue, takes no slot, and says why", async (t) => {
+  const gate = saveSlots(SAVE_CONCURRENCY);
+  const [a, b] = [await runProcess(t, gate), await runProcess(t, gate)];
+  const [wa, wb] = [await folders(t), await folders(t)];
+  const net = held();
+  const holding = [0, 1, 2, 3].map((i) => webSave({ url: `https://cdn.example/a${i}.png`, path: `media/a${i}.png` }, wa.ws, { ...net, slots: a.slots }));
+  await until(() => gate.busy === 4 && net.started.length === 4, "the first run holds all four");
+  const caller = new AbortController();
+  const aborted = webSave({ url: "https://cdn.example/w.png", path: "media/w.png" }, wb.ws, { ...net, slots: b.slots, signal: caller.signal });
+  await until(() => gate.waiting === 1, "the other run's save waits at the runner");
+  caller.abort();
+  assert.deepEqual(await aborted, { ok: false, url: "https://cdn.example/w.png", path: "media/w.png", error: "This operation was aborted" });
+  assert.deepEqual([gate.busy, gate.waiting], [4, 0], "it left the queue");
+  const late = await webSave({ url: "https://cdn.example/late.png", path: "media/late.png" }, wb.ws, { ...net, slots: b.slots, timeoutMs: 50 });
+  assert.deepEqual(late, { ok: false, url: "https://cdn.example/late.png", path: "media/late.png", error: "the download did not finish in 0.05 s: it waited all that time for a free download slot (at most 4 at once)" });
+  assert.deepEqual([gate.busy, gate.waiting], [4, 0], "the late one left the queue too");
+  assert.equal(net.started.length, 4, "neither dialled");
+  for (const url of net.started) net.answer(url);
+  assert.deepEqual((await Promise.all(holding)).map((answer) => answer.ok), [true, true, true, true]);
+  await until(() => gate.busy === 0, "every slot back");
+  a.end();
+  b.end();
+});
+
+test("a run process's release frees its own take's slot once: a second call frees nothing, and the target answers nothing but take", async (t) => {
+  const gate = saveSlots(SAVE_CONCURRENCY);
+  const run = await runProcess(t, gate);
+  const signal = new AbortController().signal;
+  const first = await run.child.call("saves", "take", [signal]);
+  await run.child.call("saves", "take", [signal]);
+  assert.equal(gate.busy, 2);
+  await first();
+  await first();
+  assert.equal(gate.busy, 1, "the second call of one release freed no other slot");
+  await assert.rejects(run.child.call("saves", "free", []), /no free/);
+  await assert.rejects(run.child.call("saves", "take", ["not a signal"]), /under the call's signal/);
+  run.end();
+  await until(() => gate.busy === 0, "the run's end gave its last slot back");
+});
+
+test("in a run's own process web_save takes its slots where its ToolHost says (its runner's gate), else this process's", async (t) => {
+  const { work } = await folders(t);
+  const took = [];
+  const spy = { size: 4, busy: 0, waiting: 0, take: async (signal) => { took.push(signal instanceof AbortSignal); return () => took.push("released"); } };
+  const { tools: [tool] } = await TOOLS.web_save.bind(hostOn(work, { saveSlots: spy }));
+  const answer = JSON.parse((await tool.execute({ url: "https://cdn.example/r/cat", path: "cat.png" }, {}, undefined)).output[0].text);
+  assert.equal(answer.ok, true, JSON.stringify(answer));
+  assert.deepEqual(took, [true, "released"], "the host's slots were taken and released");
+  assert.equal(SERVER_SLOTS?.size, SAVE_CONCURRENCY, "web-save.js exports the process's gate");
+  const host = buildToolHost({ root: work, workspace: localWorkspace(work), claim: { runId: "run-1" }, env: {}, run: {}, store: {}, sealKey: undefined, life: { register: {} }, redact: (text) => text, saveSlots: spy });
+  assert.equal(host.saveSlots, spy, "the spec's ToolHost carries the deps' slots");
+});
+
+test("a run process's release after its channel ended leaves no unhandled rejection behind (its runner freed the slot at the end)", async (t) => {
+  const gate = saveSlots(SAVE_CONCURRENCY);
+  const run = await runProcess(t, gate);
+  const unhandled = [];
+  const listen = (reason) => unhandled.push(reason);
+  process.on("unhandledRejection", listen);
+  t.after(() => process.off("unhandledRejection", listen));
+  const release = await run.slots.take(new AbortController().signal);
+  assert.equal(gate.busy, 1);
+  run.end();
+  await until(() => gate.busy === 0, "the channel's end freed the slot");
+  release();
+  // And whatever the release's call answers (here a rejection of its own, not the channel's stand-in's), never unhandled.
+  const stub = sharedSlots.remoteSaveSlots({ call: async () => () => Promise.reject(new Error("the channel ended")) });
+  (await stub.take(new AbortController().signal))();
+  for (let i = 0; i < 5; i++) await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(unhandled.map(String), []);
+});
+
+test("one run process may have at most SAVE_SLOTS_PER_RUN takes held or waiting at its runner: the next is refused at once, never queued", async (t) => {
+  const { SAVE_SLOTS_PER_RUN } = sharedSlots;
+  assert.equal(SAVE_SLOTS_PER_RUN, 16, "save-slots.js exports SAVE_SLOTS_PER_RUN");
+  const gate = saveSlots(1);
+  const run = await runProcess(t, gate);
+  const callers = Array.from({ length: SAVE_SLOTS_PER_RUN }, () => new AbortController());
+  const takes = callers.map((caller) => run.child.call("saves", "take", [caller.signal]));
+  for (const take of takes) take.catch(() => {});
+  await until(() => gate.busy === 1 && gate.waiting === SAVE_SLOTS_PER_RUN - 1, `1 held, 15 waiting: ${gate.busy}, ${gate.waiting}`);
+  // Bounded: a take that queued instead would never settle.
+  const over = run.child.call("saves", "take", [new AbortController().signal]);
+  over.catch(() => {});
+  const outcome = await Promise.race([over.then(() => "granted", (error) => error), new Promise((resolve) => setTimeout(() => resolve("still waiting after a second"), 1_000))]);
+  assert.match(String(outcome?.message ?? outcome), /this run already has 16 web_save downloads held or waiting/);
+  assert.deepEqual([gate.busy, gate.waiting], [1, SAVE_SLOTS_PER_RUN - 1], "the refused take never queued");
+  callers.at(-1).abort();
+  await until(() => gate.waiting === SAVE_SLOTS_PER_RUN - 2, "the aborted waiter left");
+  const again = run.child.call("saves", "take", [new AbortController().signal]);
+  again.catch(() => {});
+  await until(() => gate.waiting === SAVE_SLOTS_PER_RUN - 1, "a new take is accepted once one left");
+  const held = await takes[0];
+  await held();
+  await until(() => gate.waiting === SAVE_SLOTS_PER_RUN - 2, "the held one released, the next waiter took it");
+  const third = run.child.call("saves", "take", [new AbortController().signal]);
+  third.catch(() => {});
+  await until(() => gate.waiting === SAVE_SLOTS_PER_RUN - 1, "a new take is accepted once one was released");
+  run.end();
+  await until(() => gate.busy === 0 && gate.waiting === 0, "the run's end let go of all of it");
 });
