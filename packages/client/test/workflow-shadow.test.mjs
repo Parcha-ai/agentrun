@@ -174,6 +174,7 @@ test('shadow may call explicitly read-only tools, but never an unmarked write',a
   const result=await run({input:'{"service":"api"}',events:[]});
   assert.equal(result.outcome,'answered');
   assert.equal(result.answer,'fresh live status');
+  assert.equal(result.fresh_reads,1,'the report names each fresh read, so the server records it');
   assert.equal(reads,1);
   assert.equal(writes(),0);
 });
