@@ -20,7 +20,7 @@ import { correctionCount } from "../learn/corrections.js";
 import type { RunRow } from "../agent-rows.js";
 import type { EntryLike, TimelineEvent } from "../timeline/index.js";
 import { runEntries, runReflect, runTimeline, withoutFeedbackRounds } from "./journal.js";
-import { FINAL_STATES, StoreLaunchMissing } from "../store/store.js";
+import { FINAL_STATES, type PurgeKept, StoreLaunchMissing } from "../store/store.js";
 import type { AnalyticsFilter } from "./analytics.js";
 import { KINDS } from "../runner/journal-kinds.js";
 import type { LoopRow } from "../learned-nodes.js";
@@ -145,9 +145,11 @@ export async function learningCountsOverStore(store: Store, filter: AnalyticsFil
   const out: LearningCounts = { runs: 0, merged: 0, dropped: {}, in_progress: 0 };
   const agentArchived = new Map<string, boolean>();
   const workflow = new Map<string, boolean>();
-  const listed = await store.runs.list(filter.agent !== undefined ? { agentId: filter.agent } : {});
+  // Purged runs too: a tombstone keeps how its learning ended (PurgeKept.learning), which these counts read as before.
+  const listed = await store.runs.list({ purged: true, ...(filter.agent !== undefined ? { agentId: filter.agent } : {}) });
   const byAgent = new Map<string, RunRecord[]>();
   for (const run of listed) {
+    if (run.purgedAt !== null) continue;
     const runs = byAgent.get(run.agentId);
     if (runs) runs.push(run);
     else byAgent.set(run.agentId, [run]);
@@ -166,7 +168,7 @@ export async function learningCountsOverStore(store: Store, filter: AnalyticsFil
     if (agentArchived.get(run.agentId)) continue;
     if (!workflow.has(run.revisionId)) workflow.set(run.revisionId, (await store.agents.revision(run.revisionId))?.kind === "workflow");
     if (workflow.get(run.revisionId)) continue;
-    const learning = await runLearningEnd(store, run.id, undefined, await recordsOf(run.agentId));
+    const learning = run.purgedAt !== null ? (run.metrics as { purged?: PurgeKept } | null)?.purged?.learning : await runLearningEnd(store, run.id, undefined, await recordsOf(run.agentId));
     // A reason this server does not give is not counted.
     if (!learning || (learning.reason !== null && !(LEARNING_REASONS as readonly string[]).includes(learning.reason))) continue;
     out.runs += 1;

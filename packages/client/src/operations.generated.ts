@@ -1308,7 +1308,7 @@ export interface CreateAgentParams {
 }
 export type CreateAgentResponse = Agent;
 
-/** Delete an agent another system owns (DELETE /agents/{agent_id}). */
+/** Delete an agent another system owns, or purge an archived agent made here (DELETE /agents/{agent_id}). */
 
 /** Remove an agent's own Archil disk, and everything on it (DELETE /agents/{agent_id}/archil). */
 export type DeleteAgentArchilResponse = {
@@ -2557,6 +2557,7 @@ export type ListComputersResponse = {
       required: Array<string>;
       ready: boolean;
       runs_refused: string | null;
+      folder: "bind" | "archil" | "sync" | null;
       shell: "computer" | "local" | "none";
       host_tools: Array<string>;
       why?: string;
@@ -2750,6 +2751,7 @@ export type SaveComputerKeysResponse = {
   required: Array<string>;
   ready: boolean;
   runs_refused: string | null;
+  folder: "bind" | "archil" | "sync" | null;
   shell: "computer" | "local" | "none";
   host_tools: Array<string>;
   why?: string;
@@ -3379,6 +3381,15 @@ export interface CreateInlineRunParams {
   "Idempotency-Key"?: string;
 }
 export type CreateInlineRunResponse = Run;
+
+/** Mint a link to the run's live view for the backend's user (POST /runs/{run_id}/computer/viewer). */
+export type CreateRunComputerViewerBody = Record<string, never>;
+export type CreateRunComputerViewerResponse = {
+  url: string;
+  expires_at: string;
+};
+
+/** Purge a run's content and keep its cost (DELETE /runs/{run_id}). */
 
 /** The files the run wrote (GET /runs/{run_id}/files). */
 export type ListRunFilesResponse = RunFileList;
@@ -5673,6 +5684,8 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   callRunComputer: {"method":"POST","path":"/runs/{run_id}/computer/call","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   releaseRunComputer: {"method":"POST","path":"/runs/{run_id}/computer/release","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createInlineRun: {"method":"POST","path":"/runs","pathParams":[],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  createRunComputerViewer: {"method":"POST","path":"/runs/{run_id}/computer/viewer","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  deleteRun: {"method":"DELETE","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   listRunFiles: {"method":"GET","path":"/runs/{run_id}/files","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRun: {"method":"GET","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   gradeRun: {"method":"PUT","path":"/runs/{run_id}/grade","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5746,7 +5759,7 @@ export function resources(call: Call) {
       connectNative: (body: ConnectNativeBody, options?: RequestOptions): Promise<ConnectNativeResponse> => call("connectNative", [], body, undefined, options),
       /** Create an agent home (POST /agents). */
       create: (body: CreateAgentBody, params?: CreateAgentParams, options?: RequestOptions): Promise<CreateAgentResponse> => call("createAgent", [], body, params, options),
-      /** Delete an agent another system owns (DELETE /agents/{agent_id}). */
+      /** Delete an agent another system owns, or purge an archived agent made here (DELETE /agents/{agent_id}). */
       deleteAgent: (agentId: string, options?: RequestOptions): Promise<void> => call("deleteAgent", [agentId], undefined, undefined, options),
       /** Remove an agent's own Archil disk, and everything on it (DELETE /agents/{agent_id}/archil). */
       deleteAgentArchil: (agentId: string, options?: RequestOptions): Promise<DeleteAgentArchilResponse> => call("deleteAgentArchil", [agentId], undefined, undefined, options),
@@ -5960,6 +5973,10 @@ export function resources(call: Call) {
       computerRelease: (runId: string, body?: ReleaseRunComputerBody, options?: RequestOptions): Promise<ReleaseRunComputerResponse> => call("releaseRunComputer", [runId], body, undefined, options),
       /** Start a run of an agent another system owns, given inline (POST /runs). */
       createInlineRun: (body: CreateInlineRunBody, params?: CreateInlineRunParams, options?: RequestOptions): Promise<CreateInlineRunResponse> => call("createInlineRun", [], body, params, options),
+      /** Mint a link to the run's live view for the backend's user (POST /runs/{run_id}/computer/viewer). */
+      createRunComputerViewer: (runId: string, body?: CreateRunComputerViewerBody, options?: RequestOptions): Promise<CreateRunComputerViewerResponse> => call("createRunComputerViewer", [runId], body, undefined, options),
+      /** Purge a run's content and keep its cost (DELETE /runs/{run_id}). */
+      delete: (runId: string, options?: RequestOptions): Promise<void> => call("deleteRun", [runId], undefined, undefined, options),
       /** The files the run wrote (GET /runs/{run_id}/files). */
       files: (runId: string, options?: RequestOptions): Promise<ListRunFilesResponse> => call("listRunFiles", [runId], undefined, undefined, options),
       /** One run (GET /runs/{run_id}). */
