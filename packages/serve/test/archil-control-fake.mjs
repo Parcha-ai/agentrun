@@ -7,9 +7,9 @@
 // /api/disks/{id} removes one and its users (404 once gone). `disks` seeds some, each {id, name?, region?}: another
 // region's for a test of the region check. `strict`: a disk the fake does not hold is 404 (default: any disk id reads
 // as there, as the older tests of one disk had it). It records each request, its Authorization and body. `answer`
-// overrides a reply ({status, body}) for a test that wants a refusal. `lagging`: the first list read after a mint omits
-// the user it minted, as Archil's list did live (mint-4: the read right after epoch 1's mint lacked it; 15 s later it
-// was there). `seen(predicate)`: a promise of the first request `predicate(request, index, requests)` holds for, made
+// overrides a reply ({status, body}) for a test that wants a refusal. `lagging`: the first list read after a mint (or the
+// first n, `lagging: n`) omits the user it minted, as Archil's list did live (mint-4: the read right after epoch 1's mint
+// lacked it; 15 s later it was there). `seen(predicate)`: a promise of the first request `predicate(request, index, requests)` holds for, made
 // already or still to come, so a test awaits the request it means to read after instead of polling for it.
 // `accepts(disk, token)`: whether a mount of `disk` would take `token`, as Archil decides it: a live token user of that
 // disk (a user seeded with no disk belongs to every disk, as the one-disk tests had it).
@@ -31,8 +31,9 @@ function controlState({ answer, tokenOf = (n) => `fake-minted-token-${n}`, exist
   const users = new Map(existing.map((user) => [user.identifier, { ...user }]));
   /** The account's disks by id. */
   const disks = new Map(seeded.map((disk) => [disk.id, { name: disk.id, region, status: "available", ...disk }]));
-  /** With `lagging`: the users minted since the last list read, which that read leaves out. */
-  const unlisted = new Set();
+  /** With `lagging`: the users minted lately, each with the list reads still to leave it out. */
+  const unlisted = new Map();
+  const lag = lagging === true ? 1 : Number(lagging) || 0;
   let minted = 0;
   let made = 0;
   /** The awaited predicates, each with the resolve of its promise. */
@@ -74,7 +75,7 @@ function controlState({ answer, tokenOf = (n) => `fake-minted-token-${n}`, exist
     }
     if (method === "GET" && /^\/api\/disks\/[^/]+$/.test(url.pathname)) {
       const listed = [...users.values()].filter((user) => onDisk(user, diskId) && !unlisted.has(user.identifier));
-      unlisted.clear();
+      for (const [id, left] of unlisted) left > 1 ? unlisted.set(id, left - 1) : unlisted.delete(id);
       // Not strict: a disk it does not hold reads as there, available in the fake's region.
       const disk = disks.get(diskId) ?? { id: diskId, name: diskId, region, status: "available" };
       return { status: 200, json: { success: true, data: { ...view(disk), authorizedUsers: listed.map(({ identifier, nickname }) => ({ type: "token", identifier, nickname })) } } };
@@ -89,7 +90,7 @@ function controlState({ answer, tokenOf = (n) => `fake-minted-token-${n}`, exist
       minted += 1;
       const user = { token: tokenOf(minted), identifier: `tok-${minted}`, nickname: body?.nickname, ttl: body?.ttl, disk: diskId };
       users.set(user.identifier, user);
-      if (lagging) unlisted.add(user.identifier);
+      if (lag > 0) unlisted.set(user.identifier, lag);
       const { disk: _disk, ...shown } = user;
       return { status: 201, json: { success: true, data: shown } };
     }

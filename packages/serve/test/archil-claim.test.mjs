@@ -32,6 +32,9 @@ async function controlOn(t, options) {
  *  disk never leaves the process. */
 let noMountControl;
 after(() => noMountControl?.close());
+const shared = async () => (noMountControl ??= await archilControlFake());
+/** That loopback as a claim's control option. */
+const loopback = async () => ({ baseUrl: (await shared()).baseUrl });
 /** The Archil settings as the store keeps them (archil-settings.ts), and the disk the run's launch record names as its
  *  agent's (run-disk.ts: read at Archil once at the claim, never made). */
 const SETTINGS = { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
@@ -50,7 +53,7 @@ const rowsOf = (key = KEY, values = { [ARCHIL_API_KEY_ROW]: API }) =>
 async function claimOf({ rows = rowsOf(), settings = SETTINGS, sealKey = KEY, signal = new AbortController().signal, mount, env, disk } = {}) {
   const asked = [];
   const made = [];
-  const { fake = (noMountControl ??= await archilControlFake()), ...run } = mount ?? {};
+  const { fake = await shared(), ...run } = mount ?? {};
   const from = fake.requests.length;
   const claim = await archilClaim({
     settings,
@@ -167,7 +170,7 @@ test("archil claim: a claim that cannot open its key is refused in words, before
   await refused({ rows: moved }, /does not open/);
   // The real disk checks its S3 endpoint when it is made (no call is sent): a bad one refuses the claim.
   await assert.rejects(
-    archilClaim({ settings: { ...SETTINGS, s3Url: "http://s3.example.com" }, keys: { get: async (name) => rowsOf().get(name) }, sealKey: KEY, signal: new AbortController().signal, run: RUN }),
+    archilClaim({ settings: { ...SETTINGS, s3Url: "http://s3.example.com" }, keys: { get: async (name) => rowsOf().get(name) }, sealKey: KEY, signal: new AbortController().signal, run: RUN, control: await loopback() }),
     (error) => error instanceof ArchilClaimRefused && /S3 endpoint/.test(error.message) && !error.message.includes(API),
   );
 });
@@ -176,12 +179,12 @@ test("archil claim: over the store's own sealed_keys rows, as the server saved t
   const { store } = await storeOn(t);
   for (const [name, sealed] of rowsOf()) await store.sealedKeys.put(name, sealed);
   const made = [];
-  const claim = await archilClaim({ settings: SETTINGS, keys: store.sealedKeys, sealKey: KEY, signal: new AbortController().signal, run: RUN, makeDisk: (options) => { made.push(options); return { id: options.disk }; } });
+  const claim = await archilClaim({ settings: SETTINGS, keys: store.sealedKeys, sealKey: KEY, signal: new AbortController().signal, run: RUN, control: await loopback(), makeDisk: (options) => { made.push(options); return { id: options.disk }; } });
   assert.equal(await made[0].key(), API);
   assert.equal(claim.disk.id, DISK);
   await store.sealedKeys.remove(ARCHIL_API_KEY_ROW);
   await assert.rejects(
-    archilClaim({ settings: SETTINGS, keys: store.sealedKeys, sealKey: KEY, signal: new AbortController().signal, run: RUN, makeDisk: () => assert.fail("no disk") }),
+    archilClaim({ settings: SETTINGS, keys: store.sealedKeys, sealKey: KEY, signal: new AbortController().signal, run: RUN, control: await loopback(), makeDisk: () => assert.fail("no disk") }),
     (error) => error instanceof ArchilClaimRefused && /no archil\.api_key key is saved/.test(error.message),
   );
 });
@@ -214,8 +217,9 @@ test("archil claim: a reclaim removes the run's token users of an earlier epoch 
 });
 
 test("archil claim: a reclaim whose list lags the earlier epoch's mint misses its user; the newer claim's revoke removes it with its own", async (t) => {
-  // Archil's list, read right after a mint, may not hold that user yet (the live reclaim of mint-3; mint-4 saw it lag).
-  const { fake, mount } = await controlOn(t, { lagging: true });
+  // Archil's list, read right after a mint, may not hold that user yet (the live reclaim of mint-3; mint-4 saw it lag):
+  // neither the next claim's read of its disk nor its reclaim's list, both right after.
+  const { fake, mount } = await controlOn(t, { lagging: 2 });
   const first = await claimOf({ mount: { ...mount, epoch: 1 } });
   await first.claim.token();
   // A crashed runner: epoch 1's claim is neither revoked nor released. Epoch 2's list is the first read after its mint.
