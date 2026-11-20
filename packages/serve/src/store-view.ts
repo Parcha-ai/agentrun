@@ -59,7 +59,7 @@ import { inReflect, reflectRanges } from "./runner/end-of-run.js";
 import { correctionCount } from "./learn/corrections.js";
 import { isCliRecord, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
 import { costOfRun, type RunReadState, readRun, runReadState } from "./store-reads/runs.js";
-import { feedbackOf, keptEndOf } from "./runner/feedback-round.js";
+import { feedbackOf, type KeptEnd, keptEndOf } from "./runner/feedback-round.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
 import { Turns } from "./turns.js";
 import { harnessOfBody } from "./harness.js";
@@ -325,6 +325,29 @@ export async function healStoredCost(store: Store, runId: string, heal: NonNulla
   }
 }
 
+/** A person's message not taken yet: a steer that is no grade's round (feedback-round.ts feedbackOf). */
+const waitingMessage = (command: Command): boolean => command.kind === "steer" && command.takenAt === null && command.refused === null && feedbackOf(command.body) === undefined;
+
+/** The end run `stored` keeps while it looks back after its job ended (its end-of-run step: a fresh run's, or a grade's
+ *  feedback round), from its root `entries` and its command rows (`commands`), else undefined. Every reader serves that
+ *  end: completed (or as its job ended), its answer, its end time, its learning reflecting, while its runner still holds
+ *  it. A person's message waiting (not taken yet) makes it a run going on again, as a completed run a message opens again
+ *  reads: its end is the message's turn's to write. */
+async function lookingBackOf(stored: RunRow, entries: Awaited<ReturnType<typeof journalRecords>>["entries"], commands: () => Promise<readonly Command[]>): Promise<KeptEnd | undefined> {
+  if (stored.state !== "running") return undefined;
+  const rows = await commands();
+  const kept = keptEndOf(entries, rows);
+  return kept !== undefined && !rows.some(waitingMessage) ? kept : undefined;
+}
+
+/** The end run `runId` keeps while it looks back after its job ended, as every reader serves it (lookingBackOf), else
+ *  undefined: a run that reads ended while it is still learning from that end. */
+export async function lookingBackEnd(store: Store, runId: string): Promise<KeptEnd | undefined> {
+  const stored = await store.runs.get(runId);
+  if (stored?.state !== "running") return undefined;
+  return lookingBackOf(stored, (await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT)).entries, () => store.commands(runId, 0));
+}
+
 /** `storeRunOf`'s reads, over `store` (a snapshot) and the run's cut. */
 async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awaited<ReturnType<typeof runCutValues>>): Promise<(StoreRun & { readonly shownEnd: Learning | null }) | undefined> {
   const context = BACKGROUND_CONTEXT;
@@ -338,13 +361,8 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const records = await journalRecords(store.readJournal(runId), context);
   let commandRows: Awaited<ReturnType<Store["commands"]>> | undefined;
   const commandsNow = async () => (commandRows ??= await store.commands(runId, 0));
-  // A run looking back after its job ended (its end-of-run step: a fresh run's, or a grade's feedback round) is that end,
-  // as every reader serves it: completed (or as its job ended), its answer, its end time, its learning reflecting, while its
-  // runner still holds it. A person's message waiting (not taken yet) makes it a run going on again, as a completed run a
-  // message opens again reads: its end is the message's turn's to write.
-  const message = (command: Command) => command.kind === "steer" && command.takenAt === null && command.refused === null && feedbackOf(command.body) === undefined;
-  const kept = stored.state === "running" ? keptEndOf(records.entries, await commandsNow()) : undefined;
-  const lookingBack = kept !== undefined && !(await commandsNow()).some(message) ? kept : undefined;
+  // A run looking back after its job ended is that end, as every reader serves it (lookingBackOf).
+  const lookingBack = await lookingBackOf(stored, records.entries, commandsNow);
   const runRow: RunRow = lookingBack ? { ...stored, state: lookingBack.state, summary: lookingBack.summary ?? null, outcome: lookingBack.outcome ?? null, endedAt: lookingBack.endedAt } : stored;
   const row: typeof read = lookingBack ? keptRead(read, runRow) : read;
   const launch = await launchOf(store, runId);

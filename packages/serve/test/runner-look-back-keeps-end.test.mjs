@@ -292,6 +292,22 @@ for (const [name, open] of Object.entries(LOOK_BACKS)) {
     assert.equal(new Date(row.endedAt).toISOString(), mid.ended_at, "its marker, the end time, is the one read while it looked back");
   });
 
+  test(`${name}: a grade while it looks back is 409 run_learning, nothing kept; the same grade is taken once the look-back ends`, { timeout: 120_000 }, async (t) => {
+    const w = await world(t);
+    const { above, held } = await open(w, "run-grade");
+    const graded = async () => (await w.api("GET", "/runs/run-grade/learning")).body.graded ?? null;
+    const before = await graded();
+    const refused = await w.api("PUT", "/runs/run-grade/grade", { correct: true });
+    assert.deepEqual([refused.status, refused.body.error?.code], [409, "run_learning"], `the grade waits for the look-back's end: ${JSON.stringify(refused.body)}`);
+    assert.match(refused.body.error.message, /still learning from its answer: grade it once that ends/);
+    assert.deepEqual(await graded(), before, "nothing kept");
+    held.release();
+    await w.endedPast("run-grade", above);
+    const taken = await w.api("PUT", "/runs/run-grade/grade", { correct: true });
+    assert.equal(taken.status, 200, `taken once it ended: ${JSON.stringify(taken.body)}`);
+    assert.equal((await graded())?.correct, true);
+  });
+
   test(`${name}: a runner lost before the look-back's first ask leaves the next claim the job's end at its time, never a later one`, { timeout: 120_000 }, async (t) => {
     const w = await world(t);
     await open(w, "run-lost");
