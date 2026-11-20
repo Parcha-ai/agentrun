@@ -185,6 +185,16 @@ function readLearning(value: unknown): NonNullable<RunLaunch["learning"]> | unde
   return { seed, section, ...(workflows.length ? { workflows } : {}), ...(value.noWorkflows === true ? { noWorkflows: true as const } : {}), ...(typeof value.model === "string" && value.model !== "" ? { model: value.model } : {}), ...(typeof value.seedFailed === "string" && SEED_FAILURES.includes(value.seedFailed) ? { seedFailed: value.seedFailed as SeedFailed } : {}), ...(value.use === true ? { use: true as const } : {}) };
 }
 
+/** A launch's learning start as a run on `disk` may hold it: on a disk its launch names as its own (kind "launch"), never
+ *  a seed, a # Learned section or a learned workflow, whatever the body says (a start made before its run's disk was
+ *  read, or written by hand): the server's seed is the default disk's, never that disk's (learn/learning-of.ts). It
+ *  starts with nothing learned (`other_disk`), its flags kept. Any other run's, as read. */
+function onItsDisk(learning: NonNullable<RunLaunch["learning"]>, disk: LaunchDisk | undefined): NonNullable<RunLaunch["learning"]> {
+  if (disk?.kind !== "launch") return learning;
+  const { noWorkflows, model, use } = learning;
+  return { seed: null, section: "", seedFailed: "other_disk", ...(noWorkflows ? { noWorkflows } : {}), ...(model ? { model } : {}), ...(use ? { use } : {}) };
+}
+
 /** A launch body read back into a `RunLaunch`, with the input-origin fail-safe applied through the body's own trigger, or
  *  undefined when the body is not one (not an object, or it names no place: a damaged or hand-edited body). */
 export function readLaunchBody(stored: unknown): RunLaunch | undefined {
@@ -213,7 +223,7 @@ export function readLaunchBody(stored: unknown): RunLaunch | undefined {
     ...(boxAllow !== undefined ? { boxAllow } : {}),
     ...(stored.box_allow_set === true ? { boxAllowSet: true as const } : {}),
     ...(Array.isArray(stored.files) && stored.files.every((id) => typeof id === "string") ? { files: stored.files as string[] } : {}),
-    ...(stored.learning !== undefined ? { learning: readLearning(stored.learning) ?? { seed: null, section: "" } } : {}),
+    ...(stored.learning !== undefined ? { learning: onItsDisk(readLearning(stored.learning) ?? { seed: null, section: "" }, archilDisk) } : {}),
     ...(stored.workflow_first === false ? { workflowFirst: false as const } : {}),
     ...(readReplay(stored.replay) ? { replay: readReplay(stored.replay)! } : {}),
     ...(readReplay(stored.audit) ? { audit: readReplay(stored.audit)! } : {}),

@@ -266,8 +266,10 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   const replay = servingReplayOf(promotions, runs);
   // The owner's bill: booked $, every run of the series (billOf), from the series' first run on a served path (the
   // summary's takeover: read from the run rows by their place, as the promotion feed is trimmed and its oldest record need
-  // not be the first promotion), and each revision's compile and check over the served runs that carry it.
-  const ledger = await agentLedgerOf(records, promotions, listed);
+  // not be the first promotion), and each revision's compile and check over the served runs that carry it: the default
+  // disk's runs alone, as its promotions are (a run's own figures read its disk's ledger the same way, runAllInOverStore), so a run on a
+  // named disk never takes a share of a default-disk revision's cost nor adds its replays to it.
+  const ledger = await agentLedgerOf(records, promotions, listed.filter((run) => run.disk === learning.disk));
   const summary = costSummary(runs, replay);
   const booked = billOf(runs, summary);
   // What no run carries is the booked total less every run's all-in (A8), so a revision whose records aged out of the
