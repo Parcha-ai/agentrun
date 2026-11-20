@@ -2,6 +2,59 @@
 
 ## Unreleased
 
+## 0.1.0-beta.48 (2026-11-20)
+
+This release gives harness modules the built-in harnesses' builders: a module's ACP or adapter harness is offered, keyed and gated the way Goose and Cursor are, and Cursor, Goose and `harness-check`'s plan-billed agents are built by the same one. A schedule trigger's next run keeps the fields its last answer carried when that answer is over 32 KiB, a connected agent's compiled workflow is checked against a native answer before it is reused, an ended run whose booking held a charge heals to that charge as an upper bound, and a run's views cut a `Bearer` token and a URL parameter named like a credential. A codemode script stopped for a person's answer hands back each call's value whole, and the code-review template no longer asks for a GitHub tool the hosted server leaves off. The store does not change: SQLite stays at version 13 and Postgres at migration 0020, so going back to beta.47 opens the same store.
+
+**Upgrading and going back:**
+
+- No store change: SQLite's schema stays at version 13 and Postgres's at migration `0020_runners.sql`, as in beta.47. beta.47 opens a store this release used, and going back is the beta.47 image or package. From beta.46 or older, beta.47's notes hold first.
+- At each start the server heals, in the background, the ended runs whose stored cost is unknown and whose booking can be read; it now rereads only runs that can heal, and a booking that holds a charge at its hold heals as an upper bound (`cost.upper_bound: true`). It writes only over an unknown cost with no bound, and a stored figure is never written over (#3303).
+- A harness module that names a built-in harness's own key in its entry's `ownKeys` (`CURSOR_API_KEY`) now stops the server's start with `HARNESS_KEY_OWNED`, naming the module, the harness and the key: take the key out of the module (#3300).
+
+**Known issues:**
+
+- Under the image's default command, no run can use a paired computer, a paired Linux sandbox included. Start the image with the server's options alone for one.
+- A learned workflow refused for a host setting (a tool gated, denied or missing) still reads `serving`, while every run it is given hands back to the agent. A workflow this release's DSL refuses is held.
+- For up to about 10 minutes after the release is published, an install can fail while npm shows the new packages one by one. Try again a few minutes later.
+- An API token's `GET /v2/settings/calendar` is refused 403 in the words for saving a secret. Reading the calendar's settings takes the owner's signed-in session in the console, as saving them does.
+
+**Changes:**
+
+Harnesses
+
+- A harness module builds its harness the way the built-in harnesses are built: `entries(builtins, kit)` gets a kit with `kit.adapterEntry(facts, adapter)` and `kit.acpEntry({ facts, recipe, proxy })`, so the module's harness is offered its wire's vendor's models, named on that vendor's and OpenRouter's key rows, and gated and named by its own facts. `missing(env)` says what no model key fixes (a binary, say) before any key is asked for, an adapter that loads skills itself takes the run's skills as `launch.skills`, and `kit.acpEntry` promises resume `"restart"` unless its recipe declares `load`. [HARNESS.md](https://github.com/Parcha-ai/agentrun/blob/v0.1.0-beta.48/HARNESS.md) is the guide and `examples/harness-module` a whole module (Goose under an id of its own); `@parcha/agentrun-serve/conformance` adds `suiteHostTools` and `@parcha/agentrun-harness-acp/testing` exports the fake ACP agent, so a module's author runs the conformance suite with no binary, model or key (#3198, #3300). <!-- changes/harness-modules-kit.md -->
+- Cursor, Goose and `harness-check`'s plan-billed agents are built by that same builder. Only a built-in harness owns a key: Cursor's `CURSOR_API_KEY` goes to Cursor's runs alone, a module that claims it is refused at the start (see Upgrading), and a module's recipe that names a key the server holds (`ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY`, an `AGENTRUN_*` or `AGENT_MODEL_*` setting) is refused `RECIPE_KEY_NOT_OWN` before any run of it starts (#3300). <!-- changes/module-own-keys.md -->
+- `agentrun-serve check-harness` cuts the recipe's keys and the server's secrets from its report and its output, and the ACP adapter cuts a recipe's keys from an agent's failure words before it shortens them, so an agent that prints its key as it fails leaves no piece of it on disk or on screen. Goose and Cursor share one install module (#3304). <!-- changes/harness-check-redacts-keys.md --> <!-- changes/acp-cut-keys-before-tail.md -->
+
+Runs and the server
+
+- A schedule trigger's next run keeps what its last answer carried when that answer is over 32 KiB: an agent's `output_schema` may name, in `x-carried`, the top-level fields its next run reads back, and the next run is handed those fields alone, with words naming them and the whole result's size. A carried array over the limit gives up its oldest entries until the fields fit, and the words say how many each lost. A save refuses an `x-carried` that is not a list of the schema's own top-level fields (`422 input_invalid`) (#3310). <!-- changes/x-carried-previous-result.md -->
+- A run's views no longer show a `Bearer` token or the value of a URL parameter named like a credential (`?api_key=`, `&access_token=`, `&client_secret=`, a signed URL's `sig=` or `X-Amz-Signature=`): both are cut to `[redacted]` in its Timeline, its trace, the Dev tools tab, its answer and its error, keeping the scheme and the parameter's name. Learning refuses a draft that holds either. Placeholders such as `Bearer <token>` and names that only resemble a credential's (`page_token`) are left as written (#3293). <!-- changes/redact-bearer-token-and-url-credential.md -->
+- A run's trace (`GET /v2/runs/{id}/trace`, `agentrun runs trace`) shows a model request's or a decision's cost without floating-point noise: `0.001893`, not `0.0018930000000000002`. The amount is unchanged (#3298). <!-- changes/trace-span-cost-no-float-noise.md -->
+- When a codemode script stops at a call that waited for a person's answer, its answer gives every call's value whole, where each was cut at 2,000 characters; it is still held to the host's bound on a tool answer (#3311). <!-- changes/codemode-stopped-whole-values.md -->
+
+Templates
+
+- The code-review template no longer asks for GitHub's `get_repository_tree`, which the hosted GitHub MCP server leaves off by default, so applying the template with its suggested tools was refused. The review reads the repository from its checkout or through `get_file_contents` (#3296). <!-- changes/code-review-no-repository-tree.md -->
+- Applying a template that grants `issue_write` on a GitHub App whose installation has only Issues: read warns that GitHub refuses it on a private repository and says a public repository takes it, where it said GitHub always refuses it (#3297). <!-- changes/issue-write-warning-public-repos.md -->
+
+Costs
+
+- An ended run whose end could not read its booking heals by the end's own rule: a booking that holds a charge at its hold heals as an upper bound (`cost.upper_bound: true`), so `GET /v2/usage` and `GET /v2/runs/{id}` read the same figure. The start sweep no longer rereads runs that can never heal (a native run, a person's stop of an agentic run, a run with no booked answer), so its `cost_heal` line's `read` counts only runs that could (#3303). <!-- changes/cost-heal-reads-only-healable.md -->
+
+Learning
+
+- A connected agent's compiled workflow (Claude Agent SDK, Codex SDK) stays out of its reusable workflow list until a shadow check has compared it with an independent native answer: the full answer, or the owner's agreement fields. A mismatch, missing evidence, an expired check, an ambiguous input or a failed execution never promotes a draft, and the native result is never changed. Writes in a check use only the turn's matching recorded results; an unrecorded write stops the check. Native and remote runner tools also withhold unchecked drafts. Agent Learning and Learning Dojo say when the learning model has no server access, name the model and link to API Keys (#3280). <!-- changes/connected-workflow-shadow-checks.md -->
+- A shadow check reserves a native turn only when the draft takes its input, and a turn that cannot be its baseline (cancelled or failed, served by a learned workflow, redacted, or with no shadow report) gives its reservation back; the fifth given back stops the check with nothing checked. A turn the backend never completed within the hour counts as one failed input. Check records say `via: "sdk"` and count `released` turns and the shadow's `fresh_reads` (#3308). <!-- changes/sdk-check-release-and-deadline.md -->
+
+Console
+
+- The API playground's Request pane and Code/Response pane rule their header and footer lines at the same heights, and the footer's note wraps beside the buttons (#3299). <!-- changes/playground-pane-lines.md -->
+- After an agent is created in the API playground, "Open agent" sits beside the response status, above the definition, so a long definition no longer pushes it out of view (#3306). <!-- changes/playground-open-agent-top.md -->
+- The Tools step lays out an MCP server's tools and the monid row across the whole width, in the built-in tools' columns, where they sat in two middle columns (#3301). <!-- changes/tools-step-mcp-full-row.md -->
+- The "Set up GitHub App access" link under a template's missing tool and "Browse history" on Start here are always underlined, not only on hover; in light mode the link read as plain text in the warning box (#3294). <!-- changes/inline-link-underline.md -->
+
 ## 0.1.0-beta.47 (2026-11-19)
 
 This release publishes the ACP harness package, so a server installed from npm offers Goose and Cursor once their pinned release is installed (`agentrun harness install goose` or `cursor`), and any ACP agent can be brought in as a recipe. AgentRun Server gets a Helm chart published with each release and Coolify and Dokploy templates. An ended run reads its booked cost instead of null, a compacted pi run reads its priced cost, and a run's cost carries its tokens, how its figure was reached and what its paid tool calls cost. A Composio server can act as each run's own account and price its calls, a model gateway is saved from the console, run notices post to Slack, `agentrun doctor` checks a setup, and a server whose runners all refuse to claim says so instead of queueing runs for good. The store moves on Postgres (migration 0020) and changes a table on SQLite: back up before you upgrade, since going back to beta.46 is that backup.
@@ -91,6 +144,7 @@ Console
 - A trigger whose agent asks before a tool call says a run will wait for you, and Run unattended fixes it in one click (#3131).
 - A finished run's Screen tab plays its own recording (#3204), and an open live viewer hears a Take over and a Hand back made from the run page's header (#3200).
 - The Computer step keeps image, persistent, GPU, surface, exec and record across a switch where the new pick takes them, and names each one it drops (#3213). A workflow run's Graph names a map item by its label's head when the label is text (#3223). The Dev tools tab no longer scrolls sideways beside an open panel, and its cache finding compares a request only with its own conversation's (#3206).
+- A run paused at its spend cap shows one raise form: the header's Raise the cap button goes to the form under the pause banner, where it opened a second one, and from the Graph and Dev tools tabs it opens the Timeline's (#3209). The API playground's `max_cost_usd` box shows the agent's default cap, or the picked revision's, and says an empty box uses it, where it said an empty box meant no cap (#3208). <!-- changes/one-raise-box.md --> <!-- changes/playground-cap-default.md -->
 
 Install, deploy and the command
 
