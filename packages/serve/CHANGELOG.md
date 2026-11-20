@@ -46,6 +46,8 @@
   as the built-in tools. They took two columns before, so on a wide window a server's tools sat in two middle columns
   with empty space on both sides.
 - A run's trace (`GET /v2/runs/{id}/trace`, `agentrun runs trace`) no longer shows a model request's or a decision's cost with floating-point noise: a request that cost $0.001893 reads `0.001893`, not `0.0018930000000000002`. A tool call's charges already read so. The amount is unchanged, and the Dev tools tab, which rounds for display, shows what it did. <!-- changes/trace-span-cost-no-float-noise.md -->
+- GET /v2/computers says, on each provider's row, the run's folder a computer of it holds on this server now: `folder` is `bind` (Mode 1's folder of this machine), `archil` (the owner's Archil disk mounted), `sync` (a synced folder the runner keeps on the disk) or null (none). It is read by the rule a run's claim picks the folder by, in this server's mode and with the provider's keys and image as this server has them, so a caller no longer guesses from DAYTONA_ARCHIL_EGRESS. The API-only profile serves it too. <!-- changes/computers-folder-kind.md -->
+- An operator's backend can show a run's live view and let its user take over: on an API-only server (`AGENTRUN_API_ONLY=1`), `GET /runs/{id}/computer`, `POST /runs/{id}/computer/take-over` and `POST /runs/{id}/computer/hand-back` take the server's token, and `POST /runs/{id}/computer/viewer` mints a 5-minute link on `AGENTRUN_PUBLIC_URL` that opens that run's live page and socket for the backend's user, until the run ends. <!-- changes/operator-live-view.md -->
 
 ## 0.1.0-beta.47 (2026-11-19)
 
