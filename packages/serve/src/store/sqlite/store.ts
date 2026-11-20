@@ -614,6 +614,10 @@ class SqliteStore implements Store {
   readonly #released = new Map<string, number>();
   /** secureRewrite's marker (SCRUB_SUFFIX): set on a SQLite store with a file, never on a snapshot. */
   readonly #scrubMarker: string | undefined;
+  /** How many times a purge left the marker (#purged). The marker has two owners: secureRewrite removes it only when no
+   *  purge left it since the step that covers that purge's log (its own start, or the checkpoint it asked), so a marker a
+   *  purge left is never removed without a checkpoint that truncated the purge's frames. */
+  #purgeMarks = 0;
 
   constructor(db: StoreConnection, now: () => number, origin?: Store, scrubMarker?: string) {
     this.#db = db;
@@ -2222,7 +2226,9 @@ class SqliteStore implements Store {
     const db = this.#db;
     if (marker === undefined || !(db instanceof Connection)) return;
     const checkpoint = await db.checkpoint(PURGE_CHECKPOINT_BUSY_MS).catch(() => undefined);
-    if (checkpoint?.busy !== 0) markScrub(marker);
+    if (checkpoint?.busy === 0) return;
+    this.#purgeMarks++;
+    markScrub(marker);
   }
 
   async secureRewrite(work: () => Promise<number>, options: SecureRewriteOptions = {}): Promise<SecureRewrite> {
@@ -2232,10 +2238,13 @@ class SqliteStore implements Store {
     // Written before any byte changes: a server that dies after the rewrite committed, and before the scrub below is done,
     // leaves it, and its next start scrubs though no row is left in the clear.
     const pending = existsSync(marker);
+    const purgesBefore = this.#purgeMarks;
     markScrub(marker);
     // secure_delete is on for the connection's whole life (worker.ts open): a rewritten row's old bytes are zeroed in its page.
     const rewritten = await work();
-    if (rewritten === 0 && !pending) {
+    // Nothing rewritten, and the marker is this call's alone: no purge left it while the work ran (#purgeMarks). One that
+    // did needs the checkpoint below, or the next start's scrub.
+    if (rewritten === 0 && !pending && this.#purgeMarks === purgesBefore) {
       rmSync(marker, { force: true });
       return { rewritten };
     }
@@ -2251,10 +2260,12 @@ class SqliteStore implements Store {
         await new Promise((resolve) => setTimeout(resolve, VACUUM_RETRY_MS));
         await this.#db.all("VACUUM");
       });
+      const purgesBefore = this.#purgeMarks;
       const checkpoint = await db.checkpoint();
       // A reader in another connection (a runner, a backup) held the log back: the old frames are there until a
-      // checkpoint is done, so the marker stays.
-      if (checkpoint?.busy !== 0) return { rewritten, left: "busy" };
+      // checkpoint is done, so the marker stays. So does one a purge left after this checkpoint was asked: its frames may
+      // be past it.
+      if (checkpoint?.busy !== 0 || this.#purgeMarks !== purgesBefore) return { rewritten, left: "busy" };
     } catch (error) {
       return { rewritten, left: error instanceof StoreBusy ? "busy" : "failed" };
     }

@@ -443,9 +443,17 @@ export const wholeAnswerFor = (values: readonly string[]): WholeAnswer => ({
 const answersServed = new WeakMap<Store, Map<string, string>>();
 const ANSWERS_KEPT = 32;
 
+/** How many times the readers of each store were told to forget a run's text (forgetServedAnswers). A read takes it
+ *  before it reads anything (servedSince) and keeps what it made only while it is the same, so a read begun before a
+ *  purge, which may still hold the purged run's text, never puts that text back once the purge dropped it. */
+const forgetsOf = new WeakMap<Store, number>();
+export const servedSince = (store: Store): number => forgetsOf.get(store.origin) ?? 0;
+
 /** Run `runId`'s answer rows dropped from what the readers of `store` last served (wholeAnswers): a purged or deleted
- *  run's text kept in no memory of this process (store-view.ts forgetServed). The keys it dropped. */
+ *  run's text kept in no memory of this process (store-view.ts forgetServed). Counted (servedSince), so no read begun
+ *  before it keeps what it read. The keys it dropped. */
 export function forgetServedAnswers(store: Store, runId: string): string[] {
+  forgetsOf.set(store.origin, servedSince(store) + 1);
   const kept = answersServed.get(store.origin);
   const dropped = [...(kept?.keys() ?? [])].filter((key) => key.startsWith(`${runId}\0`));
   for (const key of dropped) kept!.delete(key);
@@ -458,8 +466,9 @@ export function forgetServedAnswers(store: Store, runId: string): string[] {
  *  "[redacted]" alone when all it read was redacted. A final answer row at the cap, ending so or reading so is read again
  *  from the journal, settled as the rows were, with no text cap and none
  *  of the rows' redactor, the same row by its id (its entry's), and given through `whole.serve`, which reads every byte
- *  of it and never cuts. Every other row is as it was. */
-export async function wholeAnswers(store: Store, runId: string, context: Context, rows: TimelineEvent[], options: TimelineOptions, whole: WholeAnswer): Promise<TimelineEvent[]> {
+ *  of it and never cuts. Every other row is as it was. What it read is kept only while no run's text was forgotten since
+ *  `since` (servedSince, taken before the read began). */
+export async function wholeAnswers(store: Store, runId: string, context: Context, rows: TimelineEvent[], options: TimelineOptions, whole: WholeAnswer, since: number): Promise<TimelineEvent[]> {
   // The rows' redactor gives exactly "[redacted]" for a text whose head it read was all held or secret-shaped values: the
   // rest of the answer is past what it read, so that row is read again too.
   const cut = (row: TimelineEvent) => row.kind === "final_answer" && row.text !== null && (row.text.length >= CAPS.text || row.text.endsWith("...") || row.text === "[redacted]");
@@ -485,11 +494,13 @@ export async function wholeAnswers(store: Store, runId: string, context: Context
         continue;
       }
       served = whole.serve(text);
-      kept.delete(key);
-      kept.set(key, served);
-      for (const oldest of kept.keys()) {
-        if (kept.size <= ANSWERS_KEPT) break;
-        kept.delete(oldest);
+      if (servedSince(store) === since) {
+        kept.delete(key);
+        kept.set(key, served);
+        for (const oldest of kept.keys()) {
+          if (kept.size <= ANSWERS_KEPT) break;
+          kept.delete(oldest);
+        }
       }
     }
     out.push({ ...row, text: served });

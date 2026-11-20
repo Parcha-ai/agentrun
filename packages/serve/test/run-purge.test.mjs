@@ -605,6 +605,47 @@ test("a purged run's answer and input stay in no in-process cache of its store: 
   assert.deepEqual(forgetServed(store, run), [], "nothing of it is kept once it is purged");
 });
 
+test("a read begun before a run's purge and finished after it keeps none of the purged run's text: its answer and input stay in no in-process cache, and no later read serves them", { timeout: 120_000 }, async (t) => {
+  const { store, halt } = await haltable(t);
+  await halt();
+  // A run whose learning held a draft for its owner's OK: its read checks the agent's folder (deps.statuses) after its
+  // snapshot, and the test holds it there.
+  const run = "run-read-over-purge";
+  const answer = "The held answer, purged.";
+  const input = { content: "The held input, purged." };
+  await store.agents.create({ id: "calc", name: "Calc" }, { id: "rev-calc", kind: "agentic", body: { instructions: "Answer.", learning: true } });
+  const claim = await storedRun(store, "calc", run, null, { input, title: "Held", place: { mode: "runner" } });
+  const file = "workflows/held/workflow.json";
+  await store.runs.update(claim, { state: "ended", outcome: "completed", summary: answer, costUsd: 0, endedAt: Date.now() }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: { state: "merged", merged: "c1", detail: "Waiting for your OK: workflow held.", workflows: [{ file, name: "held", pending: true }] } } }] });
+  let asked;
+  const askedFolder = new Promise((resolve) => (asked = resolve));
+  let release;
+  const folderRead = new Promise((resolve) => (release = resolve));
+  const deps = { origin: "", serverSecrets: () => [], statuses: async () => (asked(), folderRead) };
+  const reading = viewOverStore(store, run, deps);
+  await askedFolder;
+
+  const host = {
+    store,
+    madeFrom: async () => [],
+    forgetCopies: async () => {},
+    forgetRun: async () => {},
+    kept: async () => ({ meters: null, spend: { usd: null }, learning: null }),
+    turnOver: async () => false,
+    waitMs: 0,
+    pollMs: 20,
+  };
+  await purgeRun(host, run);
+  assert.notEqual((await store.runs.get(run)).purgedAt, null, "the run is purged while its read waits");
+  release(new Map([[file, { status: "pending" }]]));
+  const held = await reading;
+  assert.deepEqual([held.result.final_answer, held.input], [answer, input], "the read served what it read before the purge");
+
+  assert.deepEqual(forgetServed(store, run), [], "the read that the purge overtook kept none of the run's text");
+  const after = JSON.stringify((await viewOverStore(store, run, { origin: "", serverSecrets: () => [] })) ?? null);
+  assert.ok(!after.includes(answer) && !after.includes(input.content), `no read after the purge serves its answer or input: ${after}`);
+});
+
 test("a run's purge leaves what its agent learned from it in the agent's learning folder (its merge's diff, a corrections line), as the README says; the agent's purge removes the folder", { timeout: 120_000 }, async (t) => {
   const { api, data, store, halt } = await haltable(t);
   const [gone] = await twoRuns(api, store);

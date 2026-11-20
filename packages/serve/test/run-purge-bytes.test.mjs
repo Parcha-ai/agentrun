@@ -135,6 +135,43 @@ test("a purge whose checkpoint a reader in another connection holds back still c
   assert.deepEqual(holding(dir, word), [], "no store file holds the sentinel");
 });
 
+test("a purge whose checkpoint is held back while a rewrite that finds nothing to rewrite is under way keeps its scrub's marker: the rewrite never removes a marker a purge left, and the next start's scrub truncates the log", { ...sqliteOnly("the SQLite store's WAL checkpoint"), timeout: 120_000 }, async (t) => {
+  const word = `PURGE-SENTINEL-${randomBytes(6).toString("hex")}`;
+  const dir = mkdtempSync(join(tmpdir(), "purge-bytes-"));
+  let reader;
+  t.after(() => reader?.isOpen && reader.close());
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const store = await storeWithRun(dir, word);
+  const marker = join(dir, "store.sqlite.scrub");
+  assert.equal(existsSync(marker), false, "no scrub is pending before the rewrite");
+  // A rewrite as the server runs one while it serves (server.ts sealMarked: no VACUUM), whose work the test holds until
+  // the purge is done, and which then finds nothing to rewrite (another write changed the row meanwhile).
+  let entered;
+  const inWork = new Promise((resolve) => (entered = resolve));
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  const rewriting = store.secureRewrite(async () => (entered(), await held, 0), { vacuum: false });
+  await inWork;
+  reader = heldReader(dir);
+  await store.runs.purge("run-1", KEPT);
+  assert.equal((await store.runs.get("run-1")).purgedAt !== null, true, "the purge committed");
+  release();
+  const rewrote = await rewriting;
+  assert.ok(existsSync(marker), "the marker the purge left (its checkpoint held back) outlives the rewrite");
+  assert.deepEqual(rewrote, { rewritten: 0, left: "deferred" }, "the rewrite says the scrub is left to the next start");
+
+  reader.exec("COMMIT");
+  await store.close();
+  assert.notDeepEqual(holding(dir, word), [], "the store's bytes still hold the sentinel");
+  // The next start's scrub, as in the test above: it finds the marker, and truncates the log.
+  const next = await openSqliteStore({ dataDir: dir });
+  t.after(() => next.close());
+  assert.deepEqual(await next.secureRewrite(async () => 0), { rewritten: 0 }, "the scrub finishes");
+  assert.equal(existsSync(marker), false, "the next start's scrub is done: its marker is gone");
+  assert.equal(statSync(join(dir, "store.sqlite-wal")).size, 0, "and it truncated the log");
+  assert.deepEqual(holding(dir, word), [], "no store file holds the sentinel");
+});
+
 test("a purge's checkpoint that a reader in another connection holds back waits its own short busy wait, never the store's: on a store whose busy wait is ten minutes, the purge and a write sent behind it both answer", { ...sqliteOnly("the SQLite store's WAL checkpoint"), timeout: 120_000 }, async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "purge-bytes-"));
   let reader;
