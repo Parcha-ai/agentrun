@@ -194,9 +194,9 @@ test("DELETE /runs/{id} purges an ended run and keeps its money: /usage by each 
   // key too), or a code at a place that holds one; no grader's words, loop or link.
   const [{ metrics: stored, outcome }] = rowsOf(data, "SELECT metrics, outcome FROM runs WHERE id = ?", gone);
   const metrics = JSON.parse(stored);
-  assert.ok(Object.keys(metrics.tools ?? {}).length + Object.keys(metrics.models ?? {}).length > 0, `its tools or models are kept by name: ${stored}`);
-  const CODES = new Set(["model", "effort", "costBasis", "path", "workflow", "workflow_digest", "purged.spend.basis", "purged.learning.state", "purged.learning.reason"]);
-  for (const [at, text] of stringsIn(metrics)) assert.ok(CODES.has(at) && /^[\w.:/@+-]+$/.test(text), `a string in its metrics that is no name or code: ${at} = ${JSON.stringify(text)}`);
+  assert.equal(typeof metrics.requests, "number", `its figures are kept: ${stored}`);
+  const CODES = new Set(["effort", "costBasis", "purged.spend.basis", "purged.learning.state", "purged.learning.reason"]);
+  for (const [at, text] of stringsIn(metrics)) assert.ok(CODES.has(at) && /^[\w-]+$/.test(text), `a string in its metrics that is no name or code: ${at} = ${JSON.stringify(text)}`);
   for (const words of ["What the grader said", "What the loop read", "another-run", "example.com/read"]) assert.deepEqual(mentions(data, words), [], `${words}: gone from its metrics`);
   assert.ok(outcome === null || ["completed", "escalated", "stopped", "cancelled"].includes(outcome), `its outcome is a code: ${outcome}`);
   assert.ok(!existsSync(dirname(runFolder(data, "calc", gone))), "its folder is gone");
