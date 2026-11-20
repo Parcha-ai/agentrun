@@ -416,6 +416,12 @@ __all__ = [
     "GetRunTraceResponse",
     "GetRunTraceResponseSpansItem",
     "GetRunTraceResponseSpansItemTokens",
+    "GetRunUsageResponse",
+    "GetRunUsageResponseBrowserSessionsItem",
+    "GetRunUsageResponseBrowserSessionsItemProviderRecord",
+    "GetRunUsageResponseLinesItem",
+    "GetRunUsageResponseLinesItemTokens",
+    "GetRunUsageResponseTotal",
     "GetSdkRunResponse",
     "GetSlackResponse",
     "GetSlackResponseObject1",
@@ -1361,6 +1367,8 @@ class DefinitionLearning(TypedDict, total=False):
     hold_window: int
     hold_disagree: int
     stop_window: int
+    repick: bool
+    repick_max_chars: int
 
 
 class Source(TypedDict):
@@ -1846,6 +1854,8 @@ class DefinitionInputLearning(TypedDict, total=False):
     hold_window: int
     hold_disagree: int
     stop_window: int
+    repick: bool
+    repick_max_chars: int
 
 
 SkillFiles: TypeAlias = "dict[str, str]"
@@ -5819,6 +5829,72 @@ class GetRunTraceResponseSpansItemTokens(_GetRunTraceResponseSpansItemTokensRequ
 UnarchiveRunResponse: TypeAlias = "dict[str, Any]"
 
 
+class GetRunUsageResponse(TypedDict):
+    run_id: Id
+    ended_at: str | None
+    currency: Literal["USD"]
+    total: GetRunUsageResponseTotal | None
+    lines: list[GetRunUsageResponseLinesItem] | None
+    browser_sessions: list[GetRunUsageResponseBrowserSessionsItem] | None
+    reason: Literal["running", "not_booked", "reopened"] | None
+
+
+class _GetRunUsageResponseTotalRequired(TypedDict):
+    usd: float | None
+
+
+class GetRunUsageResponseTotal(_GetRunUsageResponseTotalRequired, total=False):
+    so_far_usd: float
+    unpriced: int
+    upper_bound: Literal[True]
+
+
+class _GetRunUsageResponseLinesItemRequired(TypedDict):
+    meter: Literal["tokens", "tools", "browser_time"]
+    model: str | None
+    provider: str | None
+    charged_by: str | None
+    quantity: float | None
+    unit: Literal["token", "call", "second"]
+    basis: Literal["reported", "estimate", "unpriced"]
+    usd: float | None
+
+
+class GetRunUsageResponseLinesItem(_GetRunUsageResponseLinesItemRequired, total=False):
+    so_far_usd: float
+    unpriced: int
+    upper_bound: Literal[True]
+    requests: int
+    tokens: GetRunUsageResponseLinesItemTokens
+    unmetered_requests: int
+    not_metered_calls: int
+
+
+class GetRunUsageResponseLinesItemTokens(TypedDict):
+    input: int
+    output: int
+    cache_read: int
+    cache_write: int
+
+
+class GetRunUsageResponseBrowserSessionsItem(TypedDict):
+    provider: str
+    tag: str
+    provider_session_id: str | None
+    started_at: str | None
+    ended_at: str | None
+    release_reason: str | None
+    charged_seconds: float | None
+    provider_record: GetRunUsageResponseBrowserSessionsItemProviderRecord | None
+    provider_record_status: Literal["read", "not_offered", "not_found", "failed", "no_session"] | None
+
+
+class GetRunUsageResponseBrowserSessionsItemProviderRecord(TypedDict):
+    started_at: str | None
+    ended_at: str | None
+    proxy_bytes: int | None
+
+
 class _CompleteSdkRunBodyRequired(TypedDict):
     status: Literal["completed", "failed", "cancelled"]
     answer: str
@@ -9092,6 +9168,7 @@ OPERATIONS: dict[str, Operation] = {
     "releaseRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/release", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createInlineRun": Operation(method="POST", path="/runs", path_params=(), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createRunComputerViewer": Operation(method="POST", path="/runs/{run_id}/computer/viewer", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "deleteRun": Operation(method="DELETE", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "listRunFiles": Operation(method="GET", path="/runs/{run_id}/files", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getRun": Operation(method="GET", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "gradeRun": Operation(method="PUT", path="/runs/{run_id}/grade", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
@@ -9112,6 +9189,7 @@ OPERATIONS: dict[str, Operation] = {
     "getTimeline": Operation(method="GET", path="/runs/{run_id}/timeline", path_params=("run_id",), multi_segment=(), query=("after", "wait_ms", "limit", "calls"), headers=("Last-Event-ID",), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getRunTrace": Operation(method="GET", path="/runs/{run_id}/trace", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "unarchiveRun": Operation(method="POST", path="/runs/{run_id}/unarchive", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
+    "getRunUsage": Operation(method="GET", path="/runs/{run_id}/usage", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "completeSdkRun": Operation(method="POST", path="/sdk-runs/{run_id}/complete", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "sdkRunEvents": Operation(method="POST", path="/sdk-runs/{run_id}/events", path_params=("run_id",), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "getSdkRun": Operation(method="GET", path="/sdk-runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -9172,7 +9250,7 @@ class AgentsResource(Group):
         return self._call("createAgent", (), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
 
     def delete_agent(self, agent_id: str, *, timeout: float | None = None) -> None:
-        """Delete an agent another system owns (DELETE /agents/{agent_id})."""
+        """Delete an agent another system owns, or purge an archived agent made here (DELETE /agents/{agent_id})."""
         return self._call("deleteAgent", (agent_id,), None, None, timeout=timeout)
 
     def delete_agent_archil(self, agent_id: str, *, timeout: float | None = None) -> DeleteAgentArchilResponse:
@@ -9607,6 +9685,10 @@ class RunsResource(Group):
         """Mint a link to the run's live view for the backend's user (POST /runs/{run_id}/computer/viewer)."""
         return self._call("createRunComputerViewer", (run_id,), body, None, timeout=timeout)
 
+    def delete(self, run_id: str, *, timeout: float | None = None) -> None:
+        """Purge a run's content and keep its cost (DELETE /runs/{run_id})."""
+        return self._call("deleteRun", (run_id,), None, None, timeout=timeout)
+
     def files(self, run_id: str, *, timeout: float | None = None) -> ListRunFilesResponse:
         """The files the run wrote (GET /runs/{run_id}/files)."""
         return self._call("listRunFiles", (run_id,), None, None, timeout=timeout)
@@ -9690,6 +9772,10 @@ class RunsResource(Group):
     def unarchive(self, run_id: str, *, timeout: float | None = None) -> UnarchiveRunResponse:
         """Show the archived run in the lists again (POST /runs/{run_id}/unarchive)."""
         return self._call("unarchiveRun", (run_id,), None, None, timeout=timeout)
+
+    def usage(self, run_id: str, *, timeout: float | None = None) -> GetRunUsageResponse:
+        """What a run cost, by model, by who charged for its tools, and by browser provider (GET /runs/{run_id}/usage)."""
+        return self._call("getRunUsage", (run_id,), None, None, timeout=timeout)
 
 
 class SdkRunsResource(Group):

@@ -55,6 +55,12 @@ Console
 - The Tools step lays out an MCP server's tools and the monid row across the whole width, in the built-in tools' columns, where they sat in two middle columns (#3301). <!-- changes/tools-step-mcp-full-row.md -->
 - The "Set up GitHub App access" link under a template's missing tool and "Browse history" on Start here are always underlined, not only on hover; in light mode the link read as plain text in the warning box (#3294). <!-- changes/inline-link-underline.md -->
 
+Computers
+
+- computerd starts a desktop's window manager itself (`init --window-manager`), with no user namespace, so a host that refuses one runs it too, and a Daytona desktop works again on `connect: "dial"`; hello's `windowManager` says how the start went (#3319). <!-- changes/computer-computerd-starts-window-manager.md -->
+- `GET /v2/computers` says, on each provider's row, which run folder a computer of it holds on this server (`bind`, `archil`, `sync` or none), read by the rule a run's claim picks it by, so a caller no longer guesses (#3320). <!-- changes/computers-folder-kind.md -->
+- An operator's backend can show a run's live view and let its user take over on an API-only server: the run's computer routes take the server's token, and `POST /runs/{id}/computer/viewer` mints a 5-minute link to that run's live page (#3247). <!-- changes/operator-live-view.md -->
+
 ## 0.1.0-beta.47 (2026-11-19)
 
 This release publishes the ACP harness package, so a server installed from npm offers Goose and Cursor once their pinned release is installed (`agentrun harness install goose` or `cursor`), and any ACP agent can be brought in as a recipe. AgentRun Server gets a Helm chart published with each release and Coolify and Dokploy templates. An ended run reads its booked cost instead of null, a compacted pi run reads its priced cost, and a run's cost carries its tokens, how its figure was reached and what its paid tool calls cost. A Composio server can act as each run's own account and price its calls, a model gateway is saved from the console, run notices post to Slack, `agentrun doctor` checks a setup, and a server whose runners all refuse to claim says so instead of queueing runs for good. The store moves on Postgres (migration 0020) and changes a table on SQLite: back up before you upgrade, since going back to beta.46 is that backup.

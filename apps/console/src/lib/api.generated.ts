@@ -492,6 +492,8 @@ export interface components {
       hold_window?: number;
       hold_disagree?: number;
       stop_window?: number;
+      repick?: boolean;
+      repick_max_chars?: number;
     };
     checkout?: "pull_request" | "none";
   };
@@ -516,7 +518,7 @@ export interface components {
       detail: string;
     }[];
   };
-  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "slack_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "replay_conflict" | "agent_not_external" | "runs_in_flight" | "learning_busy" | "model_key_required" | "runner_refused";
+  ErrorCode: "bad_request" | "invalid_file_path" | "unauthenticated" | "insufficient_credits" | "spend_cap_reached" | "forbidden" | "system_file_forbidden" | "not_found" | "method_not_allowed" | "agent_exists" | "agent_not_runnable" | "home_busy" | "idempotency_mismatch" | "idempotency_in_progress" | "not_continuable" | "quote_invalid" | "precondition_failed" | "payload_too_large" | "unsupported_media_type" | "range_not_satisfiable" | "input_invalid" | "home_check_failed" | "rate_limited" | "internal" | "unsupported_here" | "unavailable" | "name_taken" | "agent_archived" | "request_timeout" | "key_set_by_server" | "budget_reached" | "webhook_off" | "slack_off" | "precondition_required" | "auth_required" | "not_mcp" | "upstream_failed" | "wrong_origin" | "sign_in_held" | "handoff_answered" | "computer_not_live" | "scope_taken" | "github_not_connected" | "github_already_connected" | "github_no_public_url" | "github_wrong_origin" | "github_failed" | "composio_no_public_url" | "composio_subscription_elsewhere" | "composio_not_connected" | "composio_account_ambiguous" | "composio_in_use" | "external_body_conflict" | "replay_conflict" | "runs_in_flight" | "learning_busy" | "agent_not_archived" | "run_not_final" | "run_learning" | "purged" | "model_key_required" | "runner_refused";
   ExternalRef: {
     source: string;
     kind: string;
@@ -1938,6 +1940,10 @@ export interface operations {
       problem: string | null;
     };
   };
+  deleteRun: {
+    body: never;
+    answer: never;
+  };
   deleteSlack: {
     body: never;
     answer: never;
@@ -2878,6 +2884,58 @@ export interface operations {
         result_size_bytes: number | null;
       }[];
       dropped: number;
+    };
+  };
+  getRunUsage: {
+    body: never;
+    answer: {
+      run_id: components["Id"];
+      ended_at: string | null;
+      currency: "USD";
+      total: {
+        usd: number | null;
+        so_far_usd?: number;
+        unpriced?: number;
+        upper_bound?: true;
+      } | null;
+      lines: {
+        meter: "tokens" | "tools" | "browser_time";
+        model: string | null;
+        provider: string | null;
+        charged_by: string | null;
+        quantity: number | null;
+        unit: "token" | "call" | "second";
+        basis: "reported" | "estimate" | "unpriced";
+        usd: number | null;
+        so_far_usd?: number;
+        unpriced?: number;
+        upper_bound?: true;
+        requests?: number;
+        tokens?: {
+          input: number;
+          output: number;
+          cache_read: number;
+          cache_write: number;
+        };
+        unmetered_requests?: number;
+        not_metered_calls?: number;
+      }[] | null;
+      browser_sessions: {
+        provider: string;
+        tag: string;
+        provider_session_id: string | null;
+        started_at: string | null;
+        ended_at: string | null;
+        release_reason: string | null;
+        charged_seconds: number | null;
+        provider_record: {
+          started_at: string | null;
+          ended_at: string | null;
+          proxy_bytes: number | null;
+        } | null;
+        provider_record_status: "read" | "not_offered" | "not_found" | "failed" | "no_session" | null;
+      }[] | null;
+      reason: "running" | "not_booked" | "reopened" | null;
     };
   };
   getSdkRun: {

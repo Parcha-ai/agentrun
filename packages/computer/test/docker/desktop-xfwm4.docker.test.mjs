@@ -57,8 +57,8 @@ describe("xfwm4 as E2B and Agent37 start it", { skip: LIVE ? false : "set AGENTR
 			if (Date.now() > until) assert.fail(`init did not answer hello within 30 s: ${JSON.stringify(hello)}; logs: ${spawnSync("docker", ["logs", name], { encoding: "utf8" }).stderr}`);
 			await sleep(300);
 		}
-		// As a host whose facts say windowManager (E2B's, Agent37's): the display, then computerd's manager on it.
-		const started = await startDisplay(client, desktopOf({}), { version: VERSION, vendor: "docker", windowManager: true });
+		// As a host whose facts say windowManager (E2B's, Agent37's): the display, then the wait on computerd's manager.
+		const started = await startDisplay(client, desktopOf({}), { version: VERSION, vendor: "docker" });
 		assert.ok(started.ok, started.ok || started.error.message);
 		const hello = await client.call("hello", { client: "desktop-xfwm4 test" });
 		assert.deepEqual(hello.ok && hello.value.windowManager, { state: "running" }, "computerd says its window manager runs");
@@ -89,11 +89,16 @@ describe("xfwm4 as E2B and Agent37 start it", { skip: LIVE ? false : "set AGENTR
 
 	// The bus's activation leaves xfconfd an orphan. The manager's start reaps its orphans, so xfconfd stays under
 	// dbus-run-session; one handed to init would be killed by init's sweep, and xfwm4 would wait on a new one at every read.
+	// xfwm4 has the bus start xfconfd at its first settings read, which may come after hello says it runs: read for 10 s.
 	it("keeps the xfconfd its bus started under the manager's start, out of init's sweep", async () => {
 		const script = 'for p in /proc/[0-9]*; do printf "%s %s %s\\n" "${p#/proc/}" "$(awk \'/^PPid:/ {print $2}\' $p/status)" "$(tr "\\0" " " < $p/cmdline | cut -d" " -f1)"; done';
-		const ran = await client.call("exec.run", { argv: ["sh", "-c", script], timeoutMs: 10_000 });
-		assert.ok(ran.ok, JSON.stringify(ran));
-		const rows = Buffer.from(ran.value.stdout, "base64").toString().trim().split("\n").map((line) => line.split(" "));
+		let rows;
+		for (const until = Date.now() + 10_000; ; await sleep(250)) {
+			const ran = await client.call("exec.run", { argv: ["sh", "-c", script], timeoutMs: 10_000 });
+			assert.ok(ran.ok, JSON.stringify(ran));
+			rows = Buffer.from(ran.value.stdout, "base64").toString().trim().split("\n").map((line) => line.split(" "));
+			if (rows.some(([, , argv0]) => argv0.endsWith("/xfconfd")) || Date.now() > until) break;
+		}
 		const session = rows.find(([, , argv0]) => argv0 === "dbus-run-session");
 		const xfconfd = rows.find(([, , argv0]) => argv0.endsWith("/xfconfd"));
 		assert.ok(session && xfconfd, `dbus-run-session and xfconfd run: ${JSON.stringify(rows)}`);

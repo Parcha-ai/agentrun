@@ -97,13 +97,14 @@ export async function archiveRun(store: RunsStore, runId: string, archived: bool
 
 /** Stops the run: one stop command row, which the run's runner reads and applies (it aborts the turn in flight, withdraws a
  *  tool call waiting for approval, and ends the run stopped). A stop always lands — one command, no second path. An imported
- *  or already-ended run has none to stop: `false`, nothing written (store.command refuses a final run, RunFinal). */
-export async function stop(store: RunsStore, runId: string): Promise<boolean> {
-  const row = await store.runs.get(runId);
-  if (!row || row.importedFrom) return false;
-  await refuseSdkStop(store,runId);
+ *  run, or one that reads ended (`moment.terminal`: one looking back after its job's end among them, whose end its
+ *  look-back never undoes), has none to stop: `false`, nothing written (and store.command refuses a final run, RunFinal). */
+export async function stop(store: RunsStore, moment: RunMoment): Promise<boolean> {
+  if (moment.importedSource !== undefined) return false;
+  await refuseSdkStop(store, moment.id);
+  if (moment.terminal) return false;
   try {
-    await sendCommand(store, runId, { kind: "stop", body: {} });
+    await sendCommand(store, moment.id, { kind: "stop", body: {} });
     return true;
   } catch (error) {
     if (error instanceof RunFinal) return false;
@@ -614,7 +615,7 @@ export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "a
   const entry: AgentEntry = stored
     ? firstOfVersion ? { ...stored, agent: { ...stored.agent, name: inline.name, description: inline.description } } : stored
     : {
-        agent: { id: uuidv7(), name: inline.name, description: inline.description, currentRevision: null, createdAt: Date.now(), archivedAt: null, externalRef: ref },
+        agent: { id: uuidv7(), name: inline.name, description: inline.description, currentRevision: null, createdAt: Date.now(), archivedAt: null, externalRef: ref, purgedAt: null },
         revision: null, version: 0, revisions: 0, sizes: new Map(),
       };
   // A store revision is the revision the run path reads as a pi Revision (its body is the revision body), as pinnedOf hands

@@ -128,7 +128,7 @@ export const COMMANDS = [
     "bodyTypes": [],
     "secretBody": false,
     "raw": false,
-    "summary": "Delete an agent another system owns"
+    "summary": "Delete an agent another system owns, or purge an archived agent made here"
   },
   {
     "command": [
@@ -2200,6 +2200,28 @@ export const COMMANDS = [
   {
     "command": [
       "runs",
+      "delete"
+    ],
+    "operationId": "deleteRun",
+    "method": "DELETE",
+    "path": "/runs/{run_id}",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Purge a run's content and keep its cost"
+  },
+  {
+    "command": [
+      "runs",
       "files"
     ],
     "operationId": "listRunFiles",
@@ -2889,6 +2911,28 @@ export const COMMANDS = [
     "secretBody": false,
     "raw": false,
     "summary": "Show the archived run in the lists again"
+  },
+  {
+    "command": [
+      "runs",
+      "usage"
+    ],
+    "operationId": "getRunUsage",
+    "method": "GET",
+    "path": "/runs/{run_id}/usage",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "What a run cost, by model, by who charged for its tools, and by browser provider"
   },
   {
     "command": [

@@ -1,0 +1,5 @@
+---
+packages: @parcha/agentrun-serve, @parcha/agentrun-kernel
+kind: feature
+---
+`GET /v2/runs/{run_id}/usage` (`runusage/1`) says what one run cost, line by line, and whose invoice each part lands on: `tokens` per model (`model`, and `provider` where the server sent the requests itself; null behind a gateway), `tools` per charger (`charged_by`, with calls of unpriced tools in `not_metered_calls`), and `browser_time` per browser provider (`provider`, seconds). Each line has its quantity as measured, its dollars as the run's booking holds them, and its basis (`reported`, `estimate`, `unpriced`). It reads the same for a pi run, a CLI-harness run and a workflow run (its decisions on the model that answered them). The lines join to `total`, the run's `cost.usd`; a charge of unknown cost is null with what is known beside it, never $0. `ended_at` is the end the lines cover: a follow-up can reopen an ended run, and a later read with another `ended_at` says it moved. The console's Dev tools tab shows the lines as "Cost by line". In the kernel, a paid request may say `reported` (it settles at the provider's own figure), written on its `runner.request`.

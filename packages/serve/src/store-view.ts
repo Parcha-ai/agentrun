@@ -58,7 +58,8 @@ import { laidOf, pathViewOf, roundsOf, runLearningEnd, usedOnly } from "./store-
 import { inReflect, reflectRanges } from "./runner/end-of-run.js";
 import { correctionCount } from "./learn/corrections.js";
 import { isCliRecord, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
-import { costOfRun, type RunReadState, readRun } from "./store-reads/runs.js";
+import { costOfRun, type RunReadState, readRun, runReadState } from "./store-reads/runs.js";
+import { feedbackOf, type KeptEnd, keptEndOf } from "./runner/feedback-round.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
 import { Turns } from "./turns.js";
 import { harnessOfBody } from "./harness.js";
@@ -67,7 +68,7 @@ import { browserAsk as browserAskOf, BROWSER_HANDOVER_KIND } from "./browser-com
 import { computerAsk as computerAskOf, COMPUTER_HANDOVER_KIND } from "./computer-commands.js";
 import type { PendingAsk } from "./browser-person.js";
 import { approvalsOf, type Approvals } from "./approvals.js";
-import { FINAL_STATES, type KeptListing, type RunListing, type RunRow, stoppedByPerson, type Store } from "./store/store.js";
+import { type Command, FINAL_STATES, type KeptListing, type RunListing, type RunRow, stoppedByPerson, type Store } from "./store/store.js";
 import { LISTING_HELD, LISTING_KEYED } from "./store/schema.js";
 import { createHash } from "node:crypto";
 import type { RecordingView } from "./run-recordings.js";
@@ -263,6 +264,9 @@ interface StoreRun {
    *  null with no bound and its booking gives a figure, written by the end's own rule (endCostOf: a bound when a cut
    *  request's hold is counted in it). */
   readonly heal?: { readonly epoch: number; readonly endedAt: number; readonly costUsd: number; readonly costUpperBound: boolean };
+  /** The run looks back after its job's end (`row` and `runRow` read as that end): nothing of it is settled until the
+   *  look-back's own end is in (poll_after_ms 1000, the timeline not final). */
+  readonly lookingBack?: true;
 }
 
 /** A runner holds the run's claim now: it is not in a final state, a runner is named on its row, and its lease has not run
@@ -321,13 +325,46 @@ export async function healStoredCost(store: Store, runId: string, heal: NonNulla
   }
 }
 
+/** A person's message not taken yet: a steer that is no grade's round (feedback-round.ts feedbackOf). */
+const waitingMessage = (command: Command): boolean => command.kind === "steer" && command.takenAt === null && command.refused === null && feedbackOf(command.body) === undefined;
+
+/** The end run `stored` keeps while it looks back after its job ended (its end-of-run step: a fresh run's, or a grade's
+ *  feedback round), from its root `entries` and its command rows (`commands`), else undefined. Every reader serves that
+ *  end: completed (or as its job ended), its answer, its end time, its learning reflecting, while its runner still holds
+ *  it. A person's message waiting (not taken yet) makes it a run going on again, as a completed run a message opens again
+ *  reads: its end is the message's turn's to write. */
+async function lookingBackOf(stored: RunRow, entries: Awaited<ReturnType<typeof journalRecords>>["entries"], commands: () => Promise<readonly Command[]>): Promise<KeptEnd | undefined> {
+  if (stored.state !== "running") return undefined;
+  const rows = await commands();
+  const kept = keptEndOf(entries, rows);
+  return kept !== undefined && !rows.some(waitingMessage) ? kept : undefined;
+}
+
+/** The end run `runId` keeps while it looks back after its job ended, as every reader serves it (lookingBackOf), else
+ *  undefined: a run that reads ended while it is still learning from that end. */
+export async function lookingBackEnd(store: Store, runId: string): Promise<KeptEnd | undefined> {
+  const stored = await store.runs.get(runId);
+  if (stored?.state !== "running") return undefined;
+  return lookingBackOf(stored, (await journalRecords(store.readJournal(runId), BACKGROUND_CONTEXT)).entries, () => store.commands(runId, 0));
+}
+
 /** `storeRunOf`'s reads, over `store` (a snapshot) and the run's cut. */
 async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awaited<ReturnType<typeof runCutValues>>): Promise<(StoreRun & { readonly shownEnd: Learning | null }) | undefined> {
   const context = BACKGROUND_CONTEXT;
-  const row = await readRun(store, runId, context);
-  if (!row) return undefined;
-  const runRow = await store.runs.get(runId);
-  if (!runRow) return undefined;
+  const read = await readRun(store, runId, context);
+  if (!read) return undefined;
+  const stored = await store.runs.get(runId);
+  if (!stored) return undefined;
+  // The run's root records (the turns it took, its asks, its ends), and its command rows, read once for what needs them:
+  // the end it keeps while it looks back, a stop or a cancel asked for, a hand-over's answers, the person's messages not
+  // yet taken.
+  const records = await journalRecords(store.readJournal(runId), context);
+  let commandRows: Awaited<ReturnType<Store["commands"]>> | undefined;
+  const commandsNow = async () => (commandRows ??= await store.commands(runId, 0));
+  // A run looking back after its job ended is that end, as every reader serves it (lookingBackOf).
+  const lookingBack = await lookingBackOf(stored, records.entries, commandsNow);
+  const runRow: RunRow = lookingBack ? { ...stored, state: lookingBack.state, summary: lookingBack.summary ?? null, outcome: lookingBack.outcome ?? null, endedAt: lookingBack.endedAt } : stored;
+  const row: typeof read = lookingBack ? keptRead(read, runRow) : read;
   const launch = await launchOf(store, runId);
   const unshown = cut === "unreadable";
   const values = cut === "unreadable" ? [] : cut.values;
@@ -344,8 +381,9 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // The timeline, then the waiting row a run asking a question shows (withAsks), as the file path's rows carried it, so a
   // run waiting on a question reads the same status and pending.
   // Its final answer whole (store-reads/journal.ts wholeAnswers), as main served a run's answer: a row's cut is no answer's.
-  // A run that ended reads settled, and its usage row says its cost ("Cost: …"), never what it has cost so far.
-  const timelineOptions = { settled: terminal, ended: terminal, redact: (text: string) => redacted(text, values) };
+  // A run that ended reads settled, and its usage row says its cost ("Cost: …"), never what it has cost so far. One
+  // looking back is still going: its look-back's rows come yet.
+  const timelineOptions = { settled: terminal && !lookingBack, ended: terminal && !lookingBack, redact: (text: string) => redacted(text, values) };
   const timeline = withAsks(await wholeAnswers(store, runId, context, await runTimeline(store, runId, context, timelineOptions), timelineOptions, wholeAnswerFor(values)));
   const revisions = await store.agents.revisions(row.agent);
   const version = revisions.findIndex((r) => r.id === row.revision) + 1;
@@ -354,13 +392,13 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // Whether a runner holds the run now, and the time of its latest change: the live tick while it runs (store.live, the
   // runner's own tick), its end once ended, its start before either.
   const [liveRow] = await store.live.read([runId]);
-  const live = liveOf(runRow, deps.now?.() ?? Date.now());
+  // A run looking back is held by the runner that looks back: its claim is served as such.
+  const live = liveOf(stored, deps.now?.() ?? Date.now());
   const updatedAtMs = liveRow?.updatedAt ?? runRow.endedAt ?? runRow.startedAt;
 
   // The turns the run took, rebuilt from the journal the same way the file path's noteTurns fed Turns: the root's records
   // (a CLI session's own conversation skipped) and the input submissions, with the end-of-run turn's entries left out
   // (runReflect). progressAt reads the latest tick, so a working run's last_progress_at advances as today.
-  const records = await journalRecords(store.readJournal(runId), context);
   const sdkCompletion = records.entries.findLast(entry => entry.kind === "agentrun.sdk.completion")?.data as import("./sdk/runs.js").SdkCompletion | undefined;
   const sdkSession = records.entries.findLast(entry => entry.kind === "agentrun.sdk.session")?.data as {session_id:string} | undefined;
   const sdk = launch?.sdk ? {runtime:launch.sdk.runtime,model:sdkCompletion?.model??launch.sdk.model??null,session_id:sdkCompletion?.session_id??sdkSession?.session_id??null,learning_revision:launch.learning?.seed??null,usage:sdkCompletion?.usage??null} : undefined;
@@ -382,10 +420,12 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // (main's seeded and reflecting).
   const started = launch ? learningStartOf(launch) : undefined;
   const under = !ended && started && started.use ? usedOnly(started, terminal, iso(runRow.endedAt ?? runRow.startedAt)) : !ended && started && !seedFailed(started) ? underWay(started, laidOf(records.entries), reflectRange, iso(runRow.startedAt)) : null;
-  const shownEnd = ended ?? under;
+  // A run looking back after its job's end reads reflecting from that end on, a graded one too (its last end's learning
+  // is the earlier round's).
+  const shownEnd = lookingBack && started && !started.use ? { state: "reflecting" as const, reason: null, detail: said.reflecting, at: iso(lookingBack.endedAt) } : ended ?? under;
   const turns = new Turns();
   turns.note(recordOf(records.entries), records.submissions ?? [], skip, liveRow?.updatedAt ?? deps.now?.() ?? Date.now());
-  const working = live && turns.open > 0;
+  const working = !lookingBack && live && turns.open > 0;
   const progress = terminal || row.kind === "workflow" ? undefined : turns.progressAt();
   const lastProgressAt = progress === undefined ? null : iso(progress);
 
@@ -393,10 +433,6 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // the answers given, which the status, pending and moment views read the same as the file path read them from the run's
   // store entries.
   const approvals = asksOf(records.entries);
-  // The run's command rows, read once for what needs them: a stop or a cancel asked for, a hand-over's answers, and the
-  // person's messages not yet taken.
-  let commandRows: Awaited<ReturnType<Store["commands"]>> | undefined;
-  const commandsNow = async () => (commandRows ??= await store.commands(runId, 0));
   // A person's stop of an agentic run (stoppedByPerson: its row reads running, readRun) is main's stop mark: the run is
   // stopped while no message is newer than the stop (statusOf: input_required and idle), and a message reopens it. A stop
   // asked for and not yet taken (stopAsked) is the mark too once nothing works: between the turn's cut and the end that
@@ -497,10 +533,19 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   const bookedCost = bookedCostOf(row, native !== undefined, records.entries);
   const endCost = bookedCost?.requests ? bookedCost : undefined;
   const endSaid = (records.entries.findLast((entry) => entry.kind === KINDS.end)?.data as EndData | undefined)?.costUsd;
-  const endSaidCost = endCost ? endSaid !== undefined : false;
-  const endUnread = bookedCost !== undefined && !endCost && endSaid === null;
-  const heal = healOf(endCost, runRow);
-  return { ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan, model, ...(endCost ? { endCost, endSaidCost } : {}), ...(endUnread ? { endUnread } : {}), ...(heal ? { heal } : {}) };
+  // A run looking back has no end of its own stored yet (its job's is kept apart): its cost is its booking so far, by the
+  // rule its end will store it by, and nothing is healed.
+  const endSaidCost = endCost && !lookingBack ? endSaid !== undefined : false;
+  const endUnread = !lookingBack && bookedCost !== undefined && !endCost && endSaid === null;
+  const heal = lookingBack ? undefined : healOf(endCost, runRow);
+  return { ...(sdk ? {sdk}:{}), ...(native ? {native}:{}), row, runRow, launch, rows, version, harness, learningEnd: shownEnd, shownEnd, view, unshown, values, live, updatedAtMs, lastProgressAt, budget, paused, browserAsk, computerAsk, approvalsMode, output, ...(review ? { review } : {}), structured, decisions, plan, model, ...(endCost ? { endCost, endSaidCost } : {}), ...(endUnread ? { endUnread } : {}), ...(heal ? { heal } : {}), ...(lookingBack ? { lookingBack: true } : {}) };
+}
+
+/** Run read `read` (a run still going, as the store holds it) as the end `ended` keeps (its state, summary and end time:
+ *  the end a run looking back keeps), its cost as read. */
+function keptRead<T extends NonNullable<Awaited<ReturnType<typeof readRun>>>>(read: T, ended: RunRow): T {
+  const { endedAt: _endedAt, summary: _summary, ...rest } = read;
+  return { ...rest, state: runReadState(ended, read.kind), ...(ended.endedAt !== null ? { endedAt: iso(ended.endedAt) } : {}), ...(ended.summary !== null ? { summary: ended.summary } : {}) } as T;
 }
 
 /** A run's learning as the view shows it: its end from the store (what it held for the owner's OK as it reads now), in a
@@ -710,7 +755,8 @@ async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: Store
   // it holds none of the run's words, so a withheld run says it too.
   const redactor = redactorOf(values);
   const pending: Pending = !unshown && status === "input_required" && state === "waiting" ? (approvalOf(view, redactor) ?? run.budget ?? browserPending(run.browserAsk, redactor) ?? computerPending(run.computerAsk, redactor) ?? pendingOf(run.rows)) : stoppedTurn(view, { status, state }) ? { kind: "stopped" } : null;
-  const settled = terminal && ended;
+  // A run looking back reads its job's end, and is settled only once its look-back's end is in.
+  const settled = terminal && ended && !run.lookingBack;
 
   return {
     ...(run.sdk && !unshown ? {sdk:redactedOutput(run.sdk,values)}:{}),

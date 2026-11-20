@@ -53,9 +53,9 @@ export function viewerCredentialOf(req: IncomingMessage): string | undefined {
   return given ?? cookiesOf(req, COOKIE)[0];
 }
 
-/** The cookie the page's answer sets: run `runId`'s live view's path alone, until the credential expires. */
-export const viewerCookie = (req: IncomingMessage, runId: string, credential: string, expiresAt: number, now: number): string =>
-  `${COOKIE}=${credential}; HttpOnly; SameSite=Strict; Path=/v2/runs/${runId}/computer/live; Max-Age=${Math.max(0, Math.floor((expiresAt - now) / 1000))}${overHttps(req) ? "; Secure" : ""}`;
-
-/** When `credential` expires (ms since the epoch): read only after viewerCredentialFor took it. */
-export const viewerExpiry = (credential: string): number => Number(credential.split(".")[0]);
+/** The cookie the page's answer sets, for a credential viewerCredentialFor took: run `runId`'s live view's path alone,
+ *  until the credential expires. */
+export function viewerCookie(req: IncomingMessage, runId: string, credential: string): string {
+  const expiresAt = Number(credential.split(".")[0]);
+  return `${COOKIE}=${credential}; HttpOnly; SameSite=Strict; Path=/v2/runs/${runId}/computer/live; Max-Age=${Math.max(0, Math.floor((expiresAt - Date.now()) / 1000))}${overHttps(req) ? "; Secure" : ""}`;
+}

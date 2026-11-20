@@ -66,7 +66,7 @@ export interface OpenStoreOptions {
   /** The environment AGENTRUN_STORE_SCHEMA and AGENTRUN_STORE_POOL_SIZE are read from (process.env). Neither is a secret. */
   readonly env?: NodeJS.ProcessEnv;
   /** Told what a person should know at the open (a runner's clock far from Postgres's; a server waiting for another to
-   *  let the Postgres schema go). */
+   *  let the Postgres schema go), or later (a SQLite purge's checkpoint that left the WAL as it was). */
   readonly warn?: (message: string) => void;
   /** A server's, on Postgres: told when its owner lock is lost for good (PostgresStoreOptions.onOwnerLost). */
   readonly onOwnerLost?: (error: StoreOwned) => void;
@@ -77,6 +77,6 @@ export interface OpenStoreOptions {
 export async function openStore({ dataDir, role = "server", now, url, env = process.env, warn, onOwnerLost }: OpenStoreOptions): Promise<Store> {
   const target = storeTarget(dataDir, env, url ?? storeUrl());
   const poolSize = storePoolSize(env);
-  if (target.kind === "sqlite") return openSqliteStore({ dataDir, role, ...(now ? { now } : {}) });
+  if (target.kind === "sqlite") return openSqliteStore({ dataDir, role, ...(now ? { now } : {}), ...(warn ? { warn } : {}) });
   return openPostgresStore({ url: target.url, schema: target.schema, role, poolSize, ...(now ? { now } : {}), ...(warn ? { warn } : {}), ...(onOwnerLost ? { onOwnerLost } : {}) });
 }

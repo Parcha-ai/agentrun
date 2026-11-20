@@ -4,6 +4,7 @@
 // host's secrets and of text shaped like one, and a field over PRINT_MAX is redacted whole.
 import { placeholdersOf, placeholderValue } from "@parcha/agentrun-dsl";
 import { hiddenCharacter } from "./invisible.js";
+import { REPICK_PASSES, repickCheckOf, repickMarked } from "./repick.js";
 import { learnedSecretShapes, redactLearned, valueMatcher } from "./secrets.js";
 import { childNodes, type DraftDecisions, type DraftDryRun, draftProblems, type DraftReader, decodedStrings, DECODED_DEPTH, DRY_RUN_FAILED, frontKeys, frontValues, LEARNED_KEYS, learnedPlace, type LearnedPlace, readmeProblems, WORKFLOW_NAME, WORKFLOWS_DIR } from "./workflow-draft.js";
 
@@ -47,6 +48,10 @@ export type DraftCheckInput = {
   readonly deniedBy?: Readonly<Record<string, "agent" | "server" | "default">>;
   /** Explicit host adapter capabilities; absent keeps the managed runner defaults. */
   readonly workflowAdapters?: readonly ("runNode" | "runJudge")[];
+  /** The agent's learning.repick (learning-setting.ts): true, a re-pick loop whose body is the pass marker the host derives
+   *  from its pass 1 (learn/repick.ts repickPassOne) is read as that pass 1 by the compact state rule, so its clone's page
+   *  read passes; any other page read on the agent's model is refused as ever. */
+  readonly repick?: boolean;
   /** The workflow DSL a draft is read with. */
   readonly dsl: DraftReader;
   /** The decision providers a draft's decision nodes may ask, and the gate's setting of each (workflow-draft.ts
@@ -219,9 +224,14 @@ function pagesRead(value: unknown, state: Record<string, unknown>, out = new Set
  *  child sees an input key as a page when its value reads one. Pages reach a step on the agent's model only through a fast-tier step's
  *  output: chain14b's drafts fed whole pages to the answering step (4.1 requests a run at ~70k cached tokens each,
  *  $0.364 a served run), where the research shape (a fast extract's compact facts to the answering step) booked ~$0.08.
- *  One line each, in words the compile retry acts on. */
-export function compactStateProblems(doc: unknown): string[] {
+ *  One line each, in words the compile retry acts on. With `repick` (the agent's learning.repick), a top-level re-pick
+ *  loop of the draft whose body is the host's pass marker is read as its pass 1 (learn/repick.ts repickMarked): the
+ *  clone its pass 2 runs reads the pages by the owner's setting, the one page read on the agent's model a draft may
+ *  hold, and only that exact clone at that place. */
+export function compactStateProblems(doc: unknown, { repick = false }: { readonly repick?: boolean } = {}): string[] {
   const problems = new Set<string>();
+  // The draft's own top-level marked loops alone (repickMarked): a marker in a composed child is read as written.
+  const marked = new Map<unknown, Record<string, unknown>>(repick ? repickMarked(doc).map(({ loop, step }) => [loop, step]) : []);
   const walk = (node: unknown, pages: ReadonlySet<string>, depth: number): Set<string> => {
     const after = new Set(pages);
     if (!isNode(node) || depth > 32) return after;
@@ -259,13 +269,14 @@ export function compactStateProblems(doc: unknown): string[] {
       // until the marks stop changing. The set read grows on each further pass, so it stops within one pass a key the
       // workflow names, and never past maxIters; each pass's way out holds the ones before it.
       const passes = typeof node.maxIters === "number" && node.maxIters >= 1 ? Math.floor(node.maxIters) : Number.POSITIVE_INFINITY;
+      const body = marked.get(node) ?? node.body;
       let read = after;
-      let out = walk(node.body, read, depth + 1);
+      let out = walk(body, read, depth + 1);
       for (let pass = 2; pass <= passes; pass++) {
         const next = new Set([...read, ...out]);
         if (next.size === read.size) break;
         read = next;
-        out = walk(node.body, read, depth + 1);
+        out = walk(body, read, depth + 1);
       }
       return out;
     }
@@ -500,15 +511,10 @@ export function quoteCheckProblems(doc: unknown): string[] {
 
 const siteKey = (site: QuoteSite): string => site.keys.join("\u0000");
 
-/** The passes of a checked answer's re-pick loop: the draft, then one re-pick. */
-const REPICK_PASSES = 2;
 /** A quote_missing predicate as a refusal writes it out. */
 type QuoteRead = { readonly path: unknown; readonly field: unknown; readonly pages: readonly unknown[] };
 const quoteMissingText = ({ path, field, pages }: QuoteRead): string =>
   `{"predicate": "quote_missing", "path": ${JSON.stringify(path)}${field ? `, "field": ${JSON.stringify(field)}` : ""}, "pages": ${JSON.stringify(pages)}}`;
-/** The quote_missing a re-pick loop waits on: `step`'s, when it is a loop of REPICK_PASSES until `not` of a quote_missing. */
-const repickCheckOf = (step: unknown): Record<string, unknown> | undefined =>
-  isNode(step) && step.node === "loop" && step.maxIters === REPICK_PASSES && isObject(step.until) && step.until.predicate === "not" && isObject(step.until.of) && step.until.of.predicate === "quote_missing" ? step.until.of : undefined;
 /** Whether `step` is the re-pick of an answer `check` reads: a loop of REPICK_PASSES until that check's quote_missing (its
  *  path, field and pages) no longer holds. */
 const repickOn = (step: unknown, check: QuoteRead): boolean => {
@@ -663,7 +669,7 @@ function learnedChecked(change: Change, place: LearnedPlace, refused: (text: str
     // (the SDK bridge's runNode picks every model itself: it names no tier), and its quote check to code.
     if (!problems.length) {
       const doc = JSON.parse(text);
-      const compact = input.workflowAdapters === undefined ? compactStateProblems(doc) : [];
+      const compact = input.workflowAdapters === undefined ? compactStateProblems(doc, { repick: input.repick === true }) : [];
       problems.push(...[...answerTierProblems(doc), ...compact, ...quoteCheckProblems(doc)].map((detail) => ({ rule: "workflow" as const, detail })));
     }
     for (const { rule, detail } of problems) add(rule, detail, path);

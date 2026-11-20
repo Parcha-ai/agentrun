@@ -1897,16 +1897,11 @@ E2B's envd is the sandbox's first process, a systemd service with `Restart=alway
    whose start answers after the call gave up on it (its bound passed, or the caller aborted) is killed as it lands.
 6. A desktop's X server, `Xvfb :0 -screen 0 1280x800x24 -nolisten tcp`, starts through the daemon with
    `process.start`, as the computer's user, and create waits until hello declares the display (`src/desktop.ts`,
-   shared with Docker). Then xfwm4, which the template has, starts on it (`xfwm4 --compositor=off
-   --sm-client-disable`), so the apps an agent opens are framed and focused: computerd starts it itself, asked by
-   init's `--window-manager` (the host's facts say `windowManager`), once the display answers, and hello's
-   `windowManager` says it runs, which create waits on. xfwm4 reads its settings over a session bus and exits without
-   one. So it runs under `dbus-run-session`, as the computer's user, in a network namespace of its own that init makes
-   as root before it drops to that user (no user namespace is needed), and its bus listens on an abstract name there,
-   which a program of the computer's user cannot connect to. One that joins that namespace (nsenter) can, as the same
-   uid can ptrace xfwm4. xfwm4 reaches the display by its path. An older computerd, whose hello has no
-   `windowManager`, gets the manager through `process.start`, as before (`WINDOW_MANAGER`, under `unshare --user
-   --map-current-user --net`). It and every app `apps.launch` opens get `NO_AT_BRIDGE=1`: the template has at-spi2-core, so GTK's
+   shared with Docker). Then computerd starts xfwm4 itself (init `--window-manager`, where the host's facts say
+   `windowManager`; see `daemon/internal/windowmanager`) on a session bus of its own, in a network namespace root
+   made, so the apps an agent opens are framed and focused; hello's `windowManager` says it runs, which create waits
+   on. A program of the user can't join it: root made it, and the user holds no capability there; the same uid may
+   still ptrace xfwm4. It and every app `apps.launch` opens get `NO_AT_BRIDGE=1`: the template has at-spi2-core, so GTK's
    accessibility bridge would start an at-spi bus, a socket of the user's at `/work/.cache/at-spi/bus_0` that nothing
    of ours uses. An app also gets no session bus (`DBUS_SESSION_BUS_ADDRESS=disabled:`). Given none, it would start
    one with the template's dbus-launch, and that bus starts gnome-keyring-daemon, a socket of the user's at
@@ -2475,6 +2470,12 @@ kind browser that declares them.
 | `profile` | a context: `browserSettings.context { id, persist }` | a profile by name: `profile { name, save_changes }`, made first if Kernel does not know it | not declared |
 | `profiles { create, remove }` | `POST /v1/contexts`, `DELETE /v1/contexts/{id}` | `POST /profiles` under a random name (the pointer), `DELETE /profiles/{name}` | none |
 | `downloads { list, read }` | `GET /v1/downloads?sessionId=` (paged), `GET /v1/downloads/{id}`, cut at `maxBytes` | none | none |
+| `sessionUsage(ref)` | `GET /v1/sessions/{id}`: its `startedAt`, `endedAt` and `proxyBytes` | none | none |
+
+`sessionUsage(ref)` is the vendor's own record of a session, for a host that reconciles its own measure of a session's
+time with the vendor's bill: `{ startedAt, endedAt, proxyBytes }`, each null where the vendor's answer does not hold a
+well-formed one (a session still running has no end), never a zero in its place; undefined for a session the vendor
+does not know. A host reads it once, when it lets the session go.
 
 A pointer is a capability: whoever holds it opens the profile, so no error's words carry one.
 

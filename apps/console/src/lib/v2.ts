@@ -139,6 +139,10 @@ export type TimelinePage = components["TimelinePage"];
 /** GET /v2/runs/{id}/trace's answer: each model request and tool call of a run as a span (the Dev tools tab). */
 export type RunTrace = Answer<"getRunTrace">;
 export type TraceSpan = RunTrace["spans"][number];
+/** GET /v2/runs/{id}/usage's answer: the run's cost line by line, from the server's booking (a line for each model, each
+ *  vendor that charged for a tool, each browser provider), or none and why (`reason`). */
+export type RunUsage = Answer<"getRunUsage">;
+export type UsageLine = NonNullable<RunUsage["lines"]>[number];
 
 export type RunFile = components["RunFile"];
 export type RunFiles = components["RunFileList"];

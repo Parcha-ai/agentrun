@@ -275,6 +275,8 @@ export type DefinitionInput = {
     hold_window?: number;
     hold_disagree?: number;
     stop_window?: number;
+    repick?: boolean;
+    repick_max_chars?: number;
   };
   checkout?: "pull_request" | "none";
 };
@@ -1311,7 +1313,7 @@ export interface CreateAgentParams {
 }
 export type CreateAgentResponse = Agent;
 
-/** Delete an agent another system owns (DELETE /agents/{agent_id}). */
+/** Delete an agent another system owns, or purge an archived agent made here (DELETE /agents/{agent_id}). */
 
 /** Remove an agent's own Archil disk, and everything on it (DELETE /agents/{agent_id}/archil). */
 export type DeleteAgentArchilResponse = {
@@ -3392,6 +3394,8 @@ export type CreateRunComputerViewerResponse = {
   expires_at: string;
 };
 
+/** Purge a run's content and keep its cost (DELETE /runs/{run_id}). */
+
 /** The files the run wrote (GET /runs/{run_id}/files). */
 export type ListRunFilesResponse = RunFileList;
 
@@ -3686,6 +3690,57 @@ export type GetRunTraceResponse = {
 
 /** Show the archived run in the lists again (POST /runs/{run_id}/unarchive). */
 export type UnarchiveRunResponse = Record<string, unknown>;
+
+/** What a run cost, by model, by who charged for its tools, and by browser provider (GET /runs/{run_id}/usage). */
+export type GetRunUsageResponse = {
+  run_id: Id;
+  ended_at: string | null;
+  currency: "USD";
+  total: {
+    usd: number | null;
+    so_far_usd?: number;
+    unpriced?: number;
+    upper_bound?: true;
+  } | null;
+  lines: Array<{
+    meter: "tokens" | "tools" | "browser_time";
+    model: string | null;
+    provider: string | null;
+    charged_by: string | null;
+    quantity: number | null;
+    unit: "token" | "call" | "second";
+    basis: "reported" | "estimate" | "unpriced";
+    usd: number | null;
+    so_far_usd?: number;
+    unpriced?: number;
+    upper_bound?: true;
+    requests?: number;
+    tokens?: {
+      input: number;
+      output: number;
+      cache_read: number;
+      cache_write: number;
+    };
+    unmetered_requests?: number;
+    not_metered_calls?: number;
+  }> | null;
+  browser_sessions: Array<{
+    provider: string;
+    tag: string;
+    provider_session_id: string | null;
+    started_at: string | null;
+    ended_at: string | null;
+    release_reason: string | null;
+    charged_seconds: number | null;
+    provider_record: {
+      started_at: string | null;
+      ended_at: string | null;
+      proxy_bytes: number | null;
+    } | null;
+    provider_record_status: "read" | "not_offered" | "not_found" | "failed" | "no_session" | null;
+  }> | null;
+  reason: "running" | "not_booked" | "reopened" | null;
+};
 
 /** Complete a backend SDK task (POST /sdk-runs/{run_id}/complete). */
 export type CompleteSdkRunBody = {
@@ -5689,6 +5744,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   releaseRunComputer: {"method":"POST","path":"/runs/{run_id}/computer/release","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createInlineRun: {"method":"POST","path":"/runs","pathParams":[],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   createRunComputerViewer: {"method":"POST","path":"/runs/{run_id}/computer/viewer","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":false,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  deleteRun: {"method":"DELETE","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"none","secret":false,"publicFields":[],"tagged":false},
   listRunFiles: {"method":"GET","path":"/runs/{run_id}/files","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRun: {"method":"GET","path":"/runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   gradeRun: {"method":"PUT","path":"/runs/{run_id}/grade","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5709,6 +5765,7 @@ export const OPERATIONS: Readonly<Record<string, Operation>> = {
   getTimeline: {"method":"GET","path":"/runs/{run_id}/timeline","pathParams":["run_id"],"multiSegment":[],"query":["after","wait_ms","limit","calls"],"headers":["Last-Event-ID"],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getRunTrace: {"method":"GET","path":"/runs/{run_id}/trace","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   unarchiveRun: {"method":"POST","path":"/runs/{run_id}/unarchive","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
+  getRunUsage: {"method":"GET","path":"/runs/{run_id}/usage","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
   completeSdkRun: {"method":"POST","path":"/sdk-runs/{run_id}/complete","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   sdkRunEvents: {"method":"POST","path":"/sdk-runs/{run_id}/events","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":["Idempotency-Key"],"body":{"required":true,"types":["application/json"]},"answer":"json","secret":false,"publicFields":[],"tagged":false},
   getSdkRun: {"method":"GET","path":"/sdk-runs/{run_id}","pathParams":["run_id"],"multiSegment":[],"query":[],"headers":[],"body":null,"answer":"json","secret":false,"publicFields":[],"tagged":false},
@@ -5762,7 +5819,7 @@ export function resources(call: Call) {
       connectNative: (body: ConnectNativeBody, options?: RequestOptions): Promise<ConnectNativeResponse> => call("connectNative", [], body, undefined, options),
       /** Create an agent home (POST /agents). */
       create: (body: CreateAgentBody, params?: CreateAgentParams, options?: RequestOptions): Promise<CreateAgentResponse> => call("createAgent", [], body, params, options),
-      /** Delete an agent another system owns (DELETE /agents/{agent_id}). */
+      /** Delete an agent another system owns, or purge an archived agent made here (DELETE /agents/{agent_id}). */
       deleteAgent: (agentId: string, options?: RequestOptions): Promise<void> => call("deleteAgent", [agentId], undefined, undefined, options),
       /** Remove an agent's own Archil disk, and everything on it (DELETE /agents/{agent_id}/archil). */
       deleteAgentArchil: (agentId: string, options?: RequestOptions): Promise<DeleteAgentArchilResponse> => call("deleteAgentArchil", [agentId], undefined, undefined, options),
@@ -5978,6 +6035,8 @@ export function resources(call: Call) {
       createInlineRun: (body: CreateInlineRunBody, params?: CreateInlineRunParams, options?: RequestOptions): Promise<CreateInlineRunResponse> => call("createInlineRun", [], body, params, options),
       /** Mint a link to the run's live view for the backend's user (POST /runs/{run_id}/computer/viewer). */
       createRunComputerViewer: (runId: string, body?: CreateRunComputerViewerBody, options?: RequestOptions): Promise<CreateRunComputerViewerResponse> => call("createRunComputerViewer", [runId], body, undefined, options),
+      /** Purge a run's content and keep its cost (DELETE /runs/{run_id}). */
+      delete: (runId: string, options?: RequestOptions): Promise<void> => call("deleteRun", [runId], undefined, undefined, options),
       /** The files the run wrote (GET /runs/{run_id}/files). */
       files: (runId: string, options?: RequestOptions): Promise<ListRunFilesResponse> => call("listRunFiles", [runId], undefined, undefined, options),
       /** One run (GET /runs/{run_id}). */
@@ -6018,6 +6077,8 @@ export function resources(call: Call) {
       trace: (runId: string, options?: RequestOptions): Promise<GetRunTraceResponse> => call("getRunTrace", [runId], undefined, undefined, options),
       /** Show the archived run in the lists again (POST /runs/{run_id}/unarchive). */
       unarchive: (runId: string, options?: RequestOptions): Promise<UnarchiveRunResponse> => call("unarchiveRun", [runId], undefined, undefined, options),
+      /** What a run cost, by model, by who charged for its tools, and by browser provider (GET /runs/{run_id}/usage). */
+      usage: (runId: string, options?: RequestOptions): Promise<GetRunUsageResponse> => call("getRunUsage", [runId], undefined, undefined, options),
     },
     sdkRuns: {
       /** Complete a backend SDK task (POST /sdk-runs/{run_id}/complete). */
