@@ -5840,12 +5840,12 @@ class GetRunUsageResponseTotal(_GetRunUsageResponseTotalRequired, total=False):
 
 
 class _GetRunUsageResponseLinesItemRequired(TypedDict):
-    meter: Literal["tokens", "tools", "browser_time"]
+    meter: Literal["tokens", "tools", "browser_time", "compute_time"]
     model: str | None
     provider: str | None
     charged_by: str | None
     quantity: float | None
-    unit: Literal["token", "call", "second"]
+    unit: Literal["token", "call", "second", "vcpu_second", "gib_second", "gpu_second", "gb_month"]
     basis: Literal["reported", "estimate", "unpriced"]
     usd: float | None
 
@@ -5858,6 +5858,11 @@ class GetRunUsageResponseLinesItem(_GetRunUsageResponseLinesItemRequired, total=
     tokens: GetRunUsageResponseLinesItemTokens
     unmetered_requests: int
     not_metered_calls: int
+    resource: Literal["vcpu", "memory", "gpu", "disk"]
+    gpu_type: str | None
+    unheld_quantity: float | None
+    open_computers: int
+    measured_to: str
 
 
 class GetRunUsageResponseLinesItemTokens(TypedDict):
@@ -5892,9 +5897,11 @@ class GetRunUsageResponseComputerIntervalsItem(TypedDict):
     gpu: GetRunUsageResponseComputerIntervalsItemGpu | None
     cpus: float | None
     memory_mb: int | None
+    disk_gb: float | None
     started_at: str
     ended_at: str | None
     kept: bool
+    booked_seconds: float
 
 
 class GetRunUsageResponseComputerIntervalsItemGpu(TypedDict):

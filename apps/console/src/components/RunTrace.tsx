@@ -389,7 +389,7 @@ const MODEL_TONES = ["bg-trace-model", `bg-trace-model ${HATCH}`, TINT];
 
 /** A tool vendor's mark where the cost is split by line: the first the full colour, the next striped, the rest light. */
 const TOOL_TONES = ["bg-trace-tool", `bg-trace-tool ${HATCH}`, "border border-trace-tool bg-trace-tool/30"];
-/** Browser time's mark: its own colour, hollow, told from a tool vendor's by more than its hue. */
+/** Browser and computer time's mark: its own colour, hollow, told from a tool vendor's by more than its hue. */
 const BROWSER_TONE = "border border-trace-tool bg-card";
 
 /** Each usage line as a part of the split, with its mark: a model's tones in turn, a tool vendor's, browser time's. A line
@@ -397,7 +397,7 @@ const BROWSER_TONE = "border border-trace-tool bg-card";
 function lineParts(lines: readonly UsageLine[]) {
   const seen = { tokens: 0, tools: 0 };
   return lines.map((line) => {
-    const tone = line.meter === "browser_time" ? BROWSER_TONE
+    const tone = line.meter === "browser_time" || line.meter === "compute_time" ? BROWSER_TONE
       : line.meter === "tokens" ? MODEL_TONES[Math.min(seen.tokens++, MODEL_TONES.length - 1)]! : TOOL_TONES[Math.min(seen.tools++, TOOL_TONES.length - 1)]!;
     return { word: lineName(line), tone, n: line.usd ?? line.so_far_usd ?? 0, says: bookedWords(line) };
   });
@@ -424,7 +424,7 @@ function CostLines({ lines }: { lines: readonly UsageLine[] }) {
           <tbody>
             {lines.map((line, i) => {
               const notes = lineNotes(line);
-              const kind = line.meter === "tokens" ? `Tokens${line.provider ? ` · sent to ${line.provider}` : ""}` : line.meter === "tools" ? "Tool charges" : "Browser time";
+              const kind = line.meter === "tokens" ? `Tokens${line.provider ? ` · sent to ${line.provider}` : ""}` : line.meter === "tools" ? "Tool charges" : line.meter === "compute_time" ? "Computer time" : "Browser time";
               return (
                 <tr key={i} className="border-b last:border-b-0">
                   <th scope="row" className="py-1.5 text-left font-normal">

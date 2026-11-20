@@ -261,10 +261,18 @@ export function costSplit(spans: readonly TraceSpan[]): { parts: { name: string;
   return known ? { parts, total } : null;
 }
 
-/** A usage line's name: its model; the vendor that charged for a tool; or the provider of browser time. */
+/** A computer resource in words, a GPU by its type. */
+const RESOURCE_WORDS = { vcpu: "vCPU", memory: "memory", gpu: "GPU", disk: "disk" } as const;
+
+/** A usage line's name: its model; the vendor that charged for a tool; the provider of browser time; or the provider and
+ *  resource of computer time. */
 export function lineName(line: UsageLine): string {
   if (line.meter === "tokens") return line.model ?? "A model with no name";
   if (line.meter === "tools") return `${line.charged_by ?? "An unnamed vendor"} · tools`;
+  if (line.meter === "compute_time") {
+    const resource = line.resource === "gpu" && line.gpu_type ? `${line.gpu_type} GPU` : RESOURCE_WORDS[line.resource ?? "vcpu"];
+    return `${line.provider ?? "An unnamed provider"} · ${resource}`;
+  }
   return `${line.provider ?? "An unnamed provider"} · browser time`;
 }
 
@@ -275,12 +283,21 @@ export function bookedWords(cost: Pick<NonNullable<RunUsage["total"]>, "usd" | "
   return cost.so_far_usd !== undefined ? `Unknown, ${usd(cost.so_far_usd)} known` : "Unknown";
 }
 
-const UNITS = { token: ["token", "tokens"], call: ["call", "calls"], second: ["second", "seconds"] } as const;
-/** A usage line's quantity with its unit ("12,400 tokens", "3 calls", "84.5 seconds"); null when it was not measured. */
-export function quantityWords(line: Pick<UsageLine, "quantity" | "unit">): string | null {
-  if (line.quantity === null) return null;
+const UNITS = {
+  token: ["token", "tokens"],
+  call: ["call", "calls"],
+  second: ["second", "seconds"],
+  vcpu_second: ["vCPU-second", "vCPU-seconds"],
+  gib_second: ["GiB-second", "GiB-seconds"],
+  gpu_second: ["GPU-second", "GPU-seconds"],
+  gb_month: ["GB-month", "GB-months"],
+} as const;
+/** A usage line's quantity with its unit ("12,400 tokens", "3 calls", "84.5 seconds", "0.000064 GB-months"); null when it
+ *  was not measured. A month of disk is a small figure for a run, so it keeps more places. */
+export function quantityWords(line: Pick<UsageLine, "quantity" | "unit">, quantity: number | null = line.quantity): string | null {
+  if (quantity === null) return null;
   const [one, many] = UNITS[line.unit];
-  return `${line.quantity.toLocaleString("en-US", { maximumFractionDigits: 1 })} ${line.quantity === 1 ? one : many}`;
+  return `${quantity.toLocaleString("en-US", { maximumFractionDigits: line.unit === "gb_month" ? 6 : 1 })} ${quantity === 1 ? one : many}`;
 }
 
 /** How a line's dollars were reached, in words. */
@@ -291,6 +308,8 @@ export function lineNotes(line: UsageLine): string[] {
   const notes: string[] = [];
   if (line.not_metered_calls) notes.push(`${line.not_metered_calls} call${line.not_metered_calls === 1 ? "" : "s"} not metered: no price is set, so ${line.not_metered_calls === 1 ? "it is" : "they are"} outside the cost`);
   if (line.unmetered_requests) notes.push(`${line.unmetered_requests} request${line.unmetered_requests === 1 ? "" : "s"} reported no tokens`);
+  if (line.unheld_quantity) notes.push(`${quantityWords(line, line.unheld_quantity)} no claim held: outside the cost`);
+  if (line.open_computers) notes.push(`${line.open_computers} computer${line.open_computers === 1 ? "" : "s"} still running when read`);
   return notes;
 }
 

@@ -2896,12 +2896,12 @@ export interface operations {
         upper_bound?: true;
       } | null;
       lines: {
-        meter: "tokens" | "tools" | "browser_time";
+        meter: "tokens" | "tools" | "browser_time" | "compute_time";
         model: string | null;
         provider: string | null;
         charged_by: string | null;
         quantity: number | null;
-        unit: "token" | "call" | "second";
+        unit: "token" | "call" | "second" | "vcpu_second" | "gib_second" | "gpu_second" | "gb_month";
         basis: "reported" | "estimate" | "unpriced";
         usd: number | null;
         so_far_usd?: number;
@@ -2916,6 +2916,11 @@ export interface operations {
         };
         unmetered_requests?: number;
         not_metered_calls?: number;
+        resource?: "vcpu" | "memory" | "gpu" | "disk";
+        gpu_type?: string | null;
+        unheld_quantity?: number | null;
+        open_computers?: number;
+        measured_to?: string;
       }[] | null;
       browser_sessions: {
         provider: string;
@@ -2942,9 +2947,11 @@ export interface operations {
         } | null;
         cpus: number | null;
         memory_mb: number | null;
+        disk_gb: number | null;
         started_at: string;
         ended_at: string | null;
         kept: boolean;
+        booked_seconds: number;
       }[] | null;
       reason: "running" | "not_booked" | "reopened" | null;
     };

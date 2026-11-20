@@ -51,7 +51,8 @@ import { type AgentComputerHold, agentComputerOf, forgetAgentComputer, holdAgent
 import type { MountCheck } from "./attach.js";
 import { type AttachedComputers, pairedProvider, withPaired } from "./attached-computers.js";
 import { computerHold, type HeldComputer, heldHands } from "./computer-hold.js";
-import { endingDeletes, type IntervalWrites, intervalWrites } from "./computer-intervals.js";
+import { endingDeletes, figuresOf, type IntervalWrites, intervalWrites } from "./computer-intervals.js";
+import { type ComputeLedger, type ComputeMeter, computeMeter, type ComputeMeterOptions } from "../compute-cost.js";
 import { deleteKept, endKept, KEEP_MS, type Kept, type ParkCause, type ParkedEnd, readKept, takeKept, writeKept } from "./computer-kept.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
 import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer } from "./resolve-computer.js";
@@ -211,6 +212,11 @@ export interface ComputerForClaimDeps {
   readonly now?: () => number;
   /** Where a computer interval that could not be written is said (computer-intervals.ts). Default the runner's stderr. */
   readonly log?: (line: string) => void;
+  /** The run's one ledger and the server's environment, for its computers' time (compute-cost.ts): each computer the
+   *  claim makes or takes back is metered there, priced by the operator's per-resource settings, its next stretch held
+   *  under the run's cap. Absent (a runner of its own with no ledger here), nothing is held or booked: its time is on the
+   *  usage read alone. */
+  readonly compute?: { readonly ledger: ComputeLedger; readonly env: NodeJS.ProcessEnv; readonly every?: ComputeMeterOptions["every"] };
   readonly signal?: AbortSignal;
 }
 
@@ -466,15 +472,23 @@ async function providerLaunch(
   claim: { readonly runId: string; readonly epoch: number },
   spec: ComputerSpec,
   signal: AbortSignal | undefined,
-  interval: { readonly writes: IntervalWrites; readonly entry: string; readonly kind: string },
+  interval: { readonly writes: IntervalWrites; readonly entry: string; readonly kind: string; readonly meter?: ComputeMeter },
 ): Promise<ProviderComputer & { releasedOlder: boolean }> {
   const { writes, entry } = interval;
   const releasedOlder = await releaseOlderClaims(provider, claim, signal, { entry, writes });
+  // Its first stretch held under the run's cap at what the create asks for, before anything is made: refused, nothing is.
+  const ahead = await interval.meter?.before(entry, figuresOf(spec));
   // The claim is the request: a retry of this launch under the same epoch gets the computer it made, never a second.
   const created = await provider.create(spec, { requestId: claimRequestId(claim), ...(signal ? { signal } : {}) });
-  if (!created.ok) throw new Error(created.error.message);
+  if (!created.ok) {
+    ahead?.drop();
+    throw new Error(created.error.message);
+  }
   const ref = { id: created.value.id, name: created.value.name };
-  await writes.opened(entry, ref.id, claim.runId, interval.kind, spec);
+  // What it was made with: its provider's figures where it said them, else what was asked. Metered from here.
+  const figures = figuresOf(spec, created.value.resources);
+  await writes.opened(entry, ref.id, claim.runId, interval.kind, figures);
+  interval.meter?.start(entry, ref.id, figures, ahead);
   const ended = () => writes.ended(entry, ref.id);
   const connected = await provider.connect(ref);
   if (!connected.ok) {
@@ -859,7 +873,23 @@ export async function computerForClaim(
   let ownKind: MadeKind | undefined;
   const now = deps.now ?? Date.now;
   /** Each computer this claim makes through its provider, from its create to its proven delete. */
-  const writes = intervalWrites(store, deps.log, now);
+  const written = intervalWrites(store, deps.log, now);
+  /** Its time on the run's ledger (compute-cost.ts), while this claim holds it; none with no ledger here. */
+  const meter = deps.compute ? computeMeter({ env: deps.compute.env, ledger: deps.compute.ledger, booked: written.booked, now, ...(deps.compute.every ? { every: deps.compute.every } : {}), ...(deps.log ? { log: deps.log } : {}) }) : undefined;
+  /** The writes, each computer's meter stopped (its time booked up to now) before it is kept or its end written. */
+  const writes: IntervalWrites = meter
+    ? {
+        ...written,
+        kept: async (provider, providerId) => {
+          await meter.stop(provider, providerId);
+          await written.kept(provider, providerId);
+        },
+        ended: async (provider, providerId) => {
+          await meter.stop(provider, providerId);
+          await written.ended(provider, providerId);
+        },
+      }
+    : written;
   /** The computer an earlier claim of the run kept at its park (computer-kept.ts), read once: attached again when it is
    *  the setting's and its time is not over (reattach), else left to the launch's releaseOlderClaims. A read that fails
    *  is none. A run's first claim follows no park. */
@@ -923,10 +953,16 @@ export async function computerForClaim(
         mount = await deps.workspace.mountSpec();
       }
       const call = deps.signal ? { signal: deps.signal } : {};
+      const ahead = await meter?.before(entry.id, figuresOf(spec));
       const created = await provider.create({ ...spec, ...(mount ? { mount } : {}) }, { requestId: `${claimRequestId(launch)}#lost-${times}`, ...call });
-      if (!created.ok) throw new Error(created.error.message);
+      if (!created.ok) {
+        ahead?.drop();
+        throw new Error(created.error.message);
+      }
       const ref = { id: created.value.id, name: created.value.name };
-      await writes.opened(entry.id, ref.id, launch.runId, "sandbox", spec);
+      const figures = figuresOf(spec, created.value.resources);
+      await writes.opened(entry.id, ref.id, launch.runId, "sandbox", figures);
+      meter?.start(entry.id, ref.id, figures, ahead);
       const ended = () => writes.ended(entry.id, ref.id);
       const connected = await provider.connect(ref);
       if (!connected.ok) {
@@ -978,6 +1014,9 @@ export async function computerForClaim(
         const provider = await vendorProvider(entry, keys, configuration);
         const taken = await keptLaunch(provider, record, signal, () => writes.ended(entry.id, record.id));
         if (!taken) return undefined;
+        // Metered again from here, with what its interval says it was made with: the time it was kept is no claim's.
+        const row = meter ? (await store.computerIntervals?.forRun(launch.runId).catch(() => undefined))?.find((one) => one.provider === entry.id && one.providerId === record.id) : undefined;
+        if (row) meter?.start(entry.id, record.id, row);
         deps.inheritMount?.();
         // A sandbox taken back is started again when it is lost as one this claim made (lostAware): the new one is this
         // claim's, made from this claim's spec, its folder mounted.
@@ -1043,7 +1082,7 @@ export async function computerForClaim(
         // go. A paired computer is the same one at every claim, and is no computer of the run's own.
         const journalSays = !pairedRow && launch.epoch > 1 && (await deps.hadComputer?.()) === true;
         // A paired computer is no computer of the run's own: it has no interval.
-        const fresh = await providerLaunch(provider, launch, spec, signal, pairedRow ? { writes: intervalWrites(undefined), entry: entry.id, kind } : { writes, entry: entry.id, kind });
+        const fresh = await providerLaunch(provider, launch, spec, signal, pairedRow ? { writes: intervalWrites(undefined), entry: entry.id, kind } : { writes, entry: entry.id, kind, ...(meter ? { meter } : {}) });
         // A sandbox the claim made is started again when its provider loses it mid-run (lostAware): never a paired
         // computer, nor a desktop or a phone (a person may hold or watch it), nor the agent's own (persistent, above).
         const { releasedOlder } = fresh;
@@ -1080,6 +1119,8 @@ export async function computerForClaim(
     const disk = diskOf();
     started = await resolved.start({ workspace: deps.workspace, check: { ...deps.check, epoch: deps.check.epoch ?? launch.epoch }, ...(disk ? { store: disk } : {}), held: folderHeld, ...(deps.signal ? { signal: deps.signal } : {}) });
   } catch (error) {
+    // A computer made before the start failed is the claim's no more: its time booked up to now.
+    await meter?.stopAll().catch(() => undefined);
     await revoke().catch(() => undefined);
     throw error;
   }
@@ -1109,6 +1150,7 @@ export async function computerForClaim(
       const opened = await deps.openComputerView({ store, sealKey: deps.sealKey, claim: launch.claim ?? { runId: launch.runId, epoch: launch.epoch }, kind: computer.kind, input, tag: made.id, watch, hold: theHold, ...(made.gone ? { gone: made.gone } : {}) });
       if (!opened.ok) {
         await started.release().catch(() => undefined);
+        await meter?.stopAll().catch(() => undefined);
         await revoke().catch(() => undefined);
         if (opened.refused === "fenced") throw claimLost(`run ${launch.runId}'s claim (epoch ${launch.epoch}) is no longer this runner's, so its ${computer.kind} was released: ${opened.message}`);
         throw unavailable(`the ${computer.kind}'s live view could not be opened: ${opened.message}`);
@@ -1131,6 +1173,8 @@ export async function computerForClaim(
       try {
         await started.release();
       } finally {
+        // A computer whose delete failed is held by no claim from here: its time is booked up to now, and no more.
+        await meter?.stopAll();
         await revoke();
       }
     })());
