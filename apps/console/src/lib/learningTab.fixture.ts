@@ -1,7 +1,7 @@
 import SAMPLE from "@/components/CostPerRun.sample.json";
 import type { Agent } from "./agentForm";
 import type { AgentLearning } from "./learning";
-import type { AuditRow, Bill, CostRun, LearningCost, LearningLoop, Promotions } from "./v2";
+import type { AuditRow, Bill, CostRun, LearningCost, LearningLoop, Promotions, WorkflowRevisions } from "./v2";
 
 // A whole Learning tab's reads for the console's stories and tests, invented: the cost sample (80 runs of an invoice
 // sorter whose learned workflow serves from run 21) with a bill over it, two revisions of that workflow (the first held
@@ -123,8 +123,23 @@ export const VIEW: AgentLearning = {
   impact: { before: { runs: 20, median_duration_s: 41 }, after: { runs: 59, median_duration_s: 6 } },
 };
 
+/** The learned workflow in its two revisions, as the revisions read answers: the first names the account and hands the
+ *  run back where it is unsure; the second, written after its audits disagreed, looks the vendor up first. */
+const step = (label: string, instructions: string) => ({ node: "extract", label, instructions, out: "Account", as: label.replace(/ /g, "_"), tier: "fast" });
+const UNSURE = { node: "escalate", label: "unsure", when: { predicate: "field_equals", path: "name_the_account.sure", value: false }, kind: "unsure", stage: "account", summary: "not sure of the account" };
+const workflowJson = (steps: unknown[]) => JSON.stringify({ v: 2, name: WORKFLOW, schemas: { In: { type: "object" }, Account: { type: "object" } }, input: { schemaId: "In" }, output: { schemaId: "Account", path: "account" }, root: { node: "chain", steps } });
+export const REVISIONS: WorkflowRevisions = {
+  name: WORKFLOW, total: 2, truncated: false,
+  revisions: [
+    { commit: "1".repeat(40), at: run(20).started_at, by: { run: run(20).run_id }, reason: "Compiled from the agent's own runs.", digest: FIRST,
+      text: workflowJson([step("name the account", "Name the ledger account this invoice belongs to; say whether you are sure."), UNSURE]) },
+    { commit: "2".repeat(40), at: run(SECOND_FROM - 1).started_at, by: { run: run(SECOND_FROM - 1).run_id }, reason: "A new revision after its audits disagreed.", digest: SECOND,
+      text: workflowJson([step("find the vendor", "Read the vendor's name off the invoice."), step("name the account", "Name the ledger account for this vendor. A subscription is 6400 Software. Say whether you are sure."), UNSURE]) },
+  ],
+};
+
 /** A client that answers the tab's reads with the fixture, for a story or a test: every write resolves and changes nothing. */
-export function fixtureClient(over: Partial<{ cost: LearningCost; audits: AuditRow[]; promotions: Promotions; view: AgentLearning; loop: LearningLoop }> = {}) {
+export function fixtureClient(over: Partial<{ cost: LearningCost; audits: AuditRow[]; promotions: Promotions; view: AgentLearning; loop: LearningLoop; revisions: WorkflowRevisions }> = {}) {
   const view = over.view ?? VIEW;
   return {
     agentLearning: async () => view,
@@ -138,7 +153,7 @@ export function fixtureClient(over: Partial<{ cost: LearningCost; audits: AuditR
     getAgent: async () => ({ agent: AGENT, etag: '"rv1"' }),
     updateDefinition: async () => ({ agent: AGENT, etag: '"rv2"' }),
     capabilities: async () => ({}),
-    learnedWorkflowRevisions: async (_id: string, name: string) => ({ name, revisions: [], total: 0, truncated: false }),
+    learnedWorkflowRevisions: async () => over.revisions ?? REVISIONS,
     learningCost: async () => over.cost ?? COST,
     learningPromotions: async () => over.promotions ?? PROMOTIONS,
     learningLoop: async () => over.loop ?? LOOP,

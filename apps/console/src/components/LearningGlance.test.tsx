@@ -6,7 +6,7 @@ import { LearningTab } from "./Learning";
 import { LearningGlance } from "./LearningGlance";
 import type { Client } from "@/lib/client";
 import { revisionsOf } from "@/lib/learningGlance";
-import { AGENT, AUDITS, COST, fixtureClient, PROMOTIONS } from "@/lib/learningTab.fixture";
+import { AGENT, AUDITS, COST, fixtureClient, PROMOTIONS, VIEW } from "@/lib/learningTab.fixture";
 import type { LearningCost } from "@/lib/v2";
 
 // The Learning tab at a glance and its cost against agreement chart, over the tab's invented reads
@@ -147,5 +147,27 @@ describe("the Learning tab", () => {
     expect(host.querySelector('[data-testid="cost-agreement"]')).not.toBeNull();
     expect(cell(host, "learning-audits")).toContain("All time: 12 of 15 agreed");
     expect(reads).toBe(1);
+  });
+  it("stands the learned workflow in one row with the cost of a run, after it and before the bill, drawn at its newest revision", async () => {
+    const host = draw(createElement(LearningTab, { agent: AGENT, v2: fixtureClient() as unknown as Client, server: "on" }));
+    await settle();
+    const row = host.querySelector('[data-testid="cost-and-workflow"] > div')!;
+    const workflow = host.querySelector('section[aria-label="Learned workflow"]')!;
+    expect([...row.children]).toEqual([host.querySelector('[data-testid="cost-per-run"]'), workflow]);
+    expect(host.querySelectorAll('section[aria-label="Learned workflow"]').length).toBe(1);
+    expect(row.compareDocumentPosition(host.querySelector('[data-testid="learning-bill"]')!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(workflow.textContent).toContain("Revision 2 of 2");
+    const graph = workflow.querySelector('svg[role="img"]')!;
+    expect(graph.getAttribute("aria-label")).toBe("The workflow at revision 2 of 2, as a graph");
+    expect(graph.textContent).toContain("find the vendor");
+    expect(workflow.querySelector('[data-testid="standing"]')!.textContent).toContain("Serving");
+  });
+  it("leaves the cost of a run on a row of its own while no workflow is given to runs", async () => {
+    const view = { ...VIEW, workflows: VIEW.workflows.map((w) => ({ ...w, status: "pending" as const })) };
+    const host = draw(createElement(LearningTab, { agent: AGENT, v2: fixtureClient({ view }) as unknown as Client, server: "on" }));
+    await settle();
+    expect(host.querySelector('[data-testid="cost-per-run"]')).not.toBeNull();
+    expect(host.querySelector('[data-testid="cost-and-workflow"]')).toBeNull();
+    expect(host.querySelector('section[aria-label="Learned workflow"]')).toBeNull();
   });
 });

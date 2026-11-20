@@ -182,6 +182,7 @@ function LearningView({ agent, v2, server, onAgent, onChanged }: LearningProps) 
   // The drafts a person retired are no longer given to a run: under Earlier workflows.
   const inUse = workflows.filter((x) => x.status !== "retired");
   const gone = workflows.filter((x) => x.status === "retired");
+  const costChart = <CostPerRun v2={v2} agentId={agent.agent_id} on={on} promotions={promotions} onCost={setCost} reads={costReads} execution={execution} />;
   return frame(
     <div className="space-y-6">
       {/* What learning did, in one sentence and four figures, once a learned workflow has taken a run over. */}
@@ -189,10 +190,18 @@ function LearningView({ agent, v2, server, onAgent, onChanged }: LearningProps) 
       {/* The loop at a glance. */}
       <LoopStory stages={story} />
       {shownImpact(view.impact) && <ImpactCard impact={view.impact} cost={cost} />}
-      <CostPerRun v2={v2} agentId={agent.agent_id} on={on} promotions={promotions} onCost={setCost} reads={costReads} execution={execution} />
+      {/* The learned workflow stands beside the cost of a run where the tab has room for both, and under it otherwise:
+          the tab's own width decides, since the agent's page keeps a column of its own beside the tab. */}
+      {workflows.some((w) => givenToRuns(w.status)) ? (
+        <div className="[container-type:inline-size]" data-testid="cost-and-workflow">
+          <div className="grid grid-cols-1 gap-6 [@container(min-width:760px)_and_(max-width:1099.98px)]:grid-cols-[minmax(0,1fr)_17.5rem] [@container(min-width:1100px)]:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
+            {costChart}
+            <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} promotions={promotions} serving={serving} cost={cost} onReplayed={() => { void read(); }} className="min-w-0" />
+          </div>
+        </div>
+      ) : costChart}
       <LearningBill v2={v2} agentId={agent.agent_id} cost={cost} serving={serving} audits={audits}
         beside={revisions.some((p) => p.served && agreementOf(p)) ? <CostAgreement cost={cost} revisions={revisions} /> : undefined} />
-      <WorkflowReplay v2={v2} agentId={agent.agent_id} workflows={workflows} promotions={promotions} serving={serving} cost={cost} onReplayed={() => { void read(); }} />
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
         <div className="min-w-0 space-y-6">
           {stale}
