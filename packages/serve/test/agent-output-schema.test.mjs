@@ -237,6 +237,19 @@ test("the carried fields are read from the schema the completed run was checked 
   assert.deepEqual(blockOf(pinned.handed), { seen: SEEN }, `the first run's revision's x-carried, never the newer one's: ${pinned.handed.slice(0, 300)}`);
 });
 
+test("a carried field absent from the output is left out, never a null in its place; a pick with none of them present is the too-large line", { timeout: 120_000 }, async (t) => {
+  const { api } = await serve(t, { triggerClock: fakeClock("2026-06-01T00:00:00Z") });
+  const { tag: _absent, ...noTag } = BIG;
+  // x-carried ["seen", "tag"], an answer with no tag: {seen} alone, and the words name seen alone.
+  const partial = await firedTwice(api, "partial", carrying(["seen", "tag"]), noTag);
+  assert.deepEqual(blockOf(partial.handed), { seen: SEEN }, `an absent carried field is left out, never null: ${partial.handed.slice(0, 300)}`);
+  assert.match(partial.handed, new RegExp(`${CARRIED} \\(seen\\) of this trigger's last completed run \\(${partial.first.runId}, `));
+  // x-carried ["tag"], an answer with no tag: nothing to pick, so the too-large line, as with no x-carried.
+  const none = await firedTwice(api, "none-present", carrying(["tag"]), noTag);
+  assert.equal(TOO_LARGE.exec(none.handed)?.[1], none.first.runId, `a pick with no carried field present is the too-large line: ${none.handed.slice(0, 300)}`);
+  assert.ok(!none.handed.includes(CARRIED) && !none.handed.includes("```json"), "and nothing of the result, not {}");
+});
+
 test("an output_schema's x-carried is a list of unique names of its root's properties: anything else is refused by field", { timeout: 60_000 }, async (t) => {
   const { api } = await serve(t);
   const made = await api("POST", "/agents", agent("watch", { output_schema: carrying(["seen", "tag"]) }));
