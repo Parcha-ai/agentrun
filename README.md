@@ -402,7 +402,7 @@ computer:
 | --- | --- | --- |
 | `none` | Read and write files in its run folder; no shell (with Archil, commands run on Archil's exec) | none needed |
 | `sandbox` | Run code, install packages, keep processes in the background, on Linux | Docker, Daytona, Modal, E2B, Cloudflare (through a relay Worker you deploy) |
-| `desktop` | See a Linux screen, move the mouse, type | Orgo, E2B, Docker (your own image with an X server), and on dial Modal, Cloudflare and Fly Machines (the box image's desktop) |
+| `desktop` | See a Linux screen, move the mouse, type | Orgo, E2B, Docker (your own image with an X server), and on dial Daytona, Modal, Cloudflare and Fly Machines (the box image's desktop) |
 | `phone` | Tap, swipe, type, open apps and read the screen on Android | phone harness (a rented cloud Android) |
 | `browser` | Browse the web, and hand the controls to you at any point | Browserbase, Kernel |
 

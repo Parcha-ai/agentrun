@@ -420,9 +420,13 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
   `backstopAt`, whichever comes first. A machine that never dials within `createMs` is deleted.
 - **No Archil mount.** A spec with one is refused in words (`mountsOf` drops it on dial).
 - **A desktop over dial** works as on exec: create adds `DISPLAY` (`:0`) to the boot env, `agentrun-dial` gives it
-  to init, and once the machine dials, its X server and window manager start through computerd's `process.start` over
-  that socket, as the tool user. A machine minted a desktop may say `linux` (same os and arch) until its display
-  answers; a `connect` while it says `linux` fails as drift, as on exec. Every dial provider but Daytona takes one, from the box image, whose
+  to init, and once the machine dials, its X server starts through computerd's `process.start` over that socket, as
+  the tool user. Where the host's facts say `windowManager`, create also gives init `--window-manager`, and computerd
+  starts the window manager itself once the display answers: as root it makes the manager's network namespace, then
+  drops to the tool user, so no user namespace is needed. Hello's `windowManager` says how it went, and create waits
+  on it (an older computerd says nothing, and create starts the manager through `process.start`, as before). A machine
+  minted a desktop may say `linux` (same os and arch) until its display answers; a `connect` while it says `linux`
+  fails as drift, as on exec. Every dial provider takes one, from the box image, whose
   `desktop` step (`box/install.sh`) installs Xvfb, xfwm4, xfce4-terminal, mousepad and firefox-esr. A desktop gets the
   sandbox's size, 2 CPUs and 4 GiB by default, which holds Xvfb at 1280x800, xfwm4 and a browser:
   - **E2B**: its default on either connect, from the box template (the template's own size).
@@ -436,16 +440,18 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
   - **Modal**: `kind: "desktop"` on `connect: "dial"` alone; 2 CPUs and 4 GiB on Modal's VM runtime, with no GPU (a GPU
     sandbox runs on gVisor). On `connect: "exec"` the constructor refuses a desktop in words; the descriptor's desktop
     configuration selects dial itself.
-  - **Daytona** gives no desktop, on any connect. The window manager runs under
-    `unshare --user --map-current-user --net` as the tool user, and Daytona's container sandboxes run under Sysbox on a
-    kernel (Ubuntu 6.8) with `kernel.apparmor_restrict_unprivileged_userns=1`: there root makes every namespace, but the
-    tool user (uid 2510) can make a user namespace without writing its `uid_map`
-    (`unshare: write failed /proc/self/uid_map: Operation not permitted`) and can't make a network namespace (measured
-    11-19). Only computerd holds root, and having it start the window manager would change the protocol. The descriptor
-    declares no desktop and says why (`unserved.desktop`): serve refuses a desktop setting naming Daytona in those
-    words, and the constructor refuses `kind: "desktop"` in them on every connect.
+  - **Daytona**: `kind: "desktop"` on `connect: "dial"` alone, from the operator's snapshot of box/Dockerfile
+    (`AGENTRUN_DAYTONA_SNAPSHOT`) at its 2 CPUs and 4 GiB, with no GPU. Its container sandboxes run under Sysbox on a
+    kernel (Ubuntu 6.8) with `kernel.apparmor_restrict_unprivileged_userns=1`: root makes every namespace, but the tool
+    user (uid 2510) can't write a user namespace's `uid_map` and can't make a network namespace (measured 11-19), so
+    the window manager the client used to start under `unshare --user --net` failed there
+    (`unshare: write failed /proc/self/uid_map: Operation not permitted`). computerd starts it now, as root makes its
+    network namespace. On `connect: "exec"` the constructor refuses a desktop in words that say why: a desktop's sandbox
+    boots from the snapshot and dials, and none has run through the toolbox's session commands. The descriptor's
+    desktop configuration selects dial itself.
 
-  Xvfb and the window manager over the dial were verified live (dial desktop runs 11-18/19: E2B, Fly, Cloudflare, Modal).
+  Xvfb and the window manager over the dial were verified live (dial desktop runs 11-18/19: E2B, Fly, Cloudflare,
+  Modal), with the client starting the manager; computerd's start of it is **unverified** live on every host.
 - **Prove it** as below. Your conformance module also exports `dialKit()`, the server your machines dial, for the
   Core case `provider.dial-token` (`test/fixtures/dial-provider.mjs` is one).
 - **No REST call that starts a machine?** Ship a relay the operator deploys once, as Cloudflare's
@@ -480,7 +486,10 @@ For an app that exists in an org your token can't see, Fly answers `403 unauthor
 
 Core for any dial provider runs inside the server its machines dial: `packages/serve/scripts/dial-conformance.mjs`,
 in the server's image at `/opt/agentrun/packages/serve/scripts/`. It runs serve's attach routes on `$PORT`, runs Core
-with `--long`, prints the report between `DIAL-CONFORMANCE-REPORT-BEGIN` and `-END`, then idles until it is stopped
+with `--long`, prints the report between `DIAL-CONFORMANCE-REPORT-BEGIN` and `-END`, then idles until it is stopped.
+Before the report, a desktop's run prints the last whole-screen shot its cases read, as base64 lines between
+`DIAL-CONFORMANCE-FRAME-BEGIN <sha256> <bytes>` and `DIAL-CONFORMANCE-FRAME-END`. The report's `daemons` carry each
+hello's `windowManager`, so a live run shows that computerd started the manager
 (`--exit` exits 0 on a pass, else 1):
 
 ```sh
@@ -488,7 +497,7 @@ COMPUTER_FLY_API_TOKEN=… COMPUTER_FLY_APP=agentrun-computers-<org slug> AGENTR
   node packages/serve/scripts/dial-conformance.mjs --provider fly
 ```
 
-`COMPUTER_FLY_KIND=desktop` runs the desktop suite (unset, linux); Cloudflare and Modal's modules read `COMPUTER_CLOUDFLARE_KIND` and `COMPUTER_MODAL_KIND` the same way.
+`COMPUTER_FLY_KIND=desktop` runs the desktop suite (unset, linux); Cloudflare, Modal and Daytona's modules read `COMPUTER_CLOUDFLARE_KIND`, `COMPUTER_MODAL_KIND` and `COMPUTER_DAYTONA_KIND` the same way.
 
 ### Wire it up
 

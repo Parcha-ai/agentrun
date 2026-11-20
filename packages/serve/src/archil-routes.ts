@@ -274,9 +274,10 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
    *  so is the folder of a disk Archil says is gone, which has nothing left to delete (one the caller deleted, or the
    *  agent's own disk named in the launch, which the agent's delete removed whole before its runs' folders).
    *  Archil off, or no account key, is 503 unavailable; a delete Archil refuses (a computer that still holds the folder,
-   *  Archil not reached) is 424 upstream_failed, what was not deleted left for the next call. */
-  async function removeRunFolder(agentId: string, runId: string, diskId: string): Promise<void> {
-    const what = `The run ${runId}'s folder on the Archil disk ${diskId}, which its launch named,`;
+   *  Archil not reached) is 424 upstream_failed, what was not deleted left for the next call. `whose` "agent": the run is
+   *  deleted alone (DELETE /runs/{id}), its folder on its agent's own disk, which stays. */
+  async function removeRunFolder(agentId: string, runId: string, diskId: string, whose: "launch" | "agent" = "launch"): Promise<void> {
+    const what = `The run ${runId}'s folder on the Archil disk ${diskId}, ${whose === "launch" ? "which its launch named" : "its agent's own"},`;
     const settings = await loadArchilSettings(store, env);
     if (settings === undefined) throw new ApiError("unavailable", `${what} is not deleted yet: Archil is off on this server, so it can't be reached. Turn Archil on again (PUT /v2/workspace/archil)`);
     const key = await keyOr("unavailable", `${what} can't be deleted`);

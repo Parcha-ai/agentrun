@@ -345,6 +345,30 @@ test("an update whose read of the agent went stale before it wrote answers 412 a
   assert.equal((await triggersOf(api, made.agent_id)).daily.target.input.content, "Today's note on cats.", "no trigger changed");
 });
 
+test("an update whose agent was archived and purged after it read it answers 410 purged and writes nothing of the package", { timeout: 90_000 }, async (t) => {
+  const hold = readHold();
+  const { api, data } = await served(t, { templateApplyRead: hold.seam });
+  const made = await applied(api, "digest", { parameters: { topic: "cats" } });
+  const LATE = "zebras-applied-after-the-purge";
+  const update = api("POST", "/templates/digest/apply", { parameters: { topic: LATE }, agent_id: made.agent_id });
+  await Promise.race([hold.reached, update]);
+  assert.equal((await api("POST", `/agents/${made.agent_id}/archive`)).status, 200);
+  const deleted = await api("DELETE", `/agents/${made.agent_id}`);
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  hold.release();
+  const refused = await update;
+  assert.deepEqual([refused.status, refused.body.error?.code], [410, "purged"], JSON.stringify(refused.body));
+  // No row of the store holds what the update was given: no revision, description or trigger of it.
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
+  try {
+    const found = db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").all()
+      .flatMap(({ name }) => db.prepare(`SELECT * FROM "${name}"`).all().flatMap((row) => Object.entries(row).filter(([, value]) => String(value instanceof Uint8Array ? Buffer.from(value) : value).includes(LATE)).map(([column]) => `${name}.${column}`)));
+    assert.deepEqual(found, [], "nothing of the update is in the store");
+  } finally {
+    db.close();
+  }
+});
+
 test("a trigger made again for a kind change keeps the owner's off: the package's daily, a schedule the owner turned off, made again as a feed, is off", { timeout: 120_000 }, async (t) => {
   const quiet = await feed(t, { format: "json-list", items: [] });
   const first = await serve(t, { templates: await templates(t, V1), runner: false, feedsAt: () => quiet.url });

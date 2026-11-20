@@ -3,8 +3,8 @@
 // restart) and its runs in flight and its learning work are stopped through the cancel path, each waited for until it is
 // terminal; then its learning (the learning module's deleteLearning, the server's own unless a test injects a fake that
 // records its calls); then its rows: its runs and everything kept by them, its triggers, its revisions and the agent. 204
-// when done; 404 for an unknown agent, and for a second DELETE after one that finished; 409 for an agent made here
-// (archive it instead); 409 learning_busy while learning work is in flight, the agent left refusing runs. A DELETE stopped
+// when done; 404 for an unknown agent, and for a second DELETE after one that finished; 409 agent_not_archived for an
+// agent made here not archived (agent-purge.test.mjs purges one archived); 409 learning_busy while learning work is in flight, the agent left refusing runs. A DELETE stopped
 // at any step (a crash) is finished by the next one.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
@@ -293,12 +293,12 @@ test("a learning delete that fails for another reason than work in flight is 500
   assert.deepEqual(rowsOf(data, agentId, [runId]), NONE);
 });
 
-test("an agent made here is not deleted: 409 that points at archive, nothing touched", { timeout: 60_000 }, async (t) => {
+test("an agent made here, not archived, is not purged: 409 agent_not_archived that points at archive, nothing touched", { timeout: 60_000 }, async (t) => {
   const learning = fakeLearning();
   const { api } = await serve(t, { runner: false, deleteLearning: learning.deleteLearning });
   assert.equal((await api("POST", "/agents", agent("local-1"))).status, 201);
   const refused = await api("DELETE", "/agents/local-1");
-  assert.deepEqual([refused.status, refused.body.error?.code], [409, "agent_not_external"], JSON.stringify(refused.body));
+  assert.deepEqual([refused.status, refused.body.error?.code], [409, "agent_not_archived"], JSON.stringify(refused.body));
   assert.match(refused.body.error.message, /archive/);
   assert.equal(learning.calls.length, 0);
   assert.equal((await api("GET", "/agents/local-1")).status, 200);

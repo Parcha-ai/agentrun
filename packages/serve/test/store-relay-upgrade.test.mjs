@@ -132,7 +132,7 @@ test("SQLite: a fresh store keeps runners and no runner_relays", sqliteOnly("the
   }
 });
 
-test("SQLite: a version 12 store comes to 13 at its server's open, never at a runner's, its minted rows the server's own", sqliteOnly("the SQLite upgrade"), async (t) => {
+test("SQLite: a version 12 store comes to this version at its server's open (13 on the way), never at a runner's, its minted rows the server's own", sqliteOnly("the SQLite upgrade"), async (t) => {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-relay-upgrade-"));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const file = join(dir, "store.sqlite");
@@ -163,7 +163,7 @@ test("SQLite: a version 12 store comes to 13 at its server's open, never at a ru
   };
   const before = read();
   assert.deepEqual([before.version, before.relays, before.minted.includes("runner")], [12, 0, false]);
-  await assert.rejects(openSqliteStore({ file, role: "runner" }), /Start the AgentRun server to bring this store from version 12 to 13 before opening a runner/);
+  await assert.rejects(openSqliteStore({ file, role: "runner" }), new RegExp(`Start the AgentRun server to bring this store from version 12 to ${SCHEMA_VERSION} before opening a runner`));
   assert.deepEqual(read(), before, "a runner's refusal changes nothing");
   const store = await openSqliteStore({ file });
   try {

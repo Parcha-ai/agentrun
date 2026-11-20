@@ -804,6 +804,8 @@ export class HostedProvider implements ComputerProvider {
 		if ("problem" in stored) return this.#fail("refused", `labels: ${stored.problem}`);
 		const archil = spec.mount?.kind === "archil";
 		const user = this.#userOf(spec);
+		// A desktop whose host runs a window manager has computerd start it (init --window-manager).
+		const windowManager = this.#desktop !== undefined && this.host.facts.windowManager === true;
 		const commands = hostedCommands({
 			staging: `${STAGING}${randomBytes(8).toString("hex")}`,
 			deadline,
@@ -820,10 +822,11 @@ export class HostedProvider implements ComputerProvider {
 			network: formOf(spec.network),
 			// A synced folder's /workspace, the computer's user's, made by install before init.
 			workspace: spec.mount?.kind === "sync",
+			windowManager,
 		});
 		const backstopAt = new Date(now + this.#maxLifetimeMs + BACKSTOP_MARGIN_MS).toISOString();
 		const run = spec.labels?.[RUN_LABEL];
-		const boot = this.#dialing ? await this.#boot(name, backstopAt, { deadline, user, maxDeadline, network: formOf(spec.network) }, sha256, typeof run === "string" ? run : undefined) : undefined;
+		const boot = this.#dialing ? await this.#boot(name, backstopAt, { deadline, user, maxDeadline, network: formOf(spec.network), windowManager }, sha256, typeof run === "string" ? run : undefined) : undefined;
 		if (boot !== undefined && !boot.ok) return boot;
 		const request: MachineRequest = {
 			name,

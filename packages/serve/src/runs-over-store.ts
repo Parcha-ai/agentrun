@@ -614,7 +614,7 @@ export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "a
   const entry: AgentEntry = stored
     ? firstOfVersion ? { ...stored, agent: { ...stored.agent, name: inline.name, description: inline.description } } : stored
     : {
-        agent: { id: uuidv7(), name: inline.name, description: inline.description, currentRevision: null, createdAt: Date.now(), archivedAt: null, externalRef: ref },
+        agent: { id: uuidv7(), name: inline.name, description: inline.description, currentRevision: null, createdAt: Date.now(), archivedAt: null, externalRef: ref, purgedAt: null },
         revision: null, version: 0, revisions: 0, sizes: new Map(),
       };
   // A store revision is the revision the run path reads as a pi Revision (its body is the revision body), as pinnedOf hands

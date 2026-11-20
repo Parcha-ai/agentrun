@@ -28,7 +28,7 @@ import { rm } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import type { Revision, RunOrigin } from "./agent-rows.js";
 import { pinFirst as pinFirstOf } from "./mcp-pin-first.js";
-import { type AgentEntry, agentRevision, agentRevisions, agentView, commitAgent, createAgent, etagOf, externalKey, getAgent, listAgents, makeRevision, refuseExternal, revisionView, type SaveCheck, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
+import { type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView, commitAgent, createAgent, etagOf, externalKey, getAgent, listAgents, makeRevision, refuseExternal, revisionView, type SaveCheck, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
@@ -89,19 +89,19 @@ import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { labelFilter, labelsIssues } from "./run-labels.js";
 import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
 import { runEntries } from "./store-reads/journal.js";
-import { metersOverStore } from "./store-reads/cap.js";
+import { metersOverStore, spendOverStore } from "./store-reads/cap.js";
 import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type LaunchSealed, openRunLaunch, type RunMcpAuth, type RunRow, sealRunLaunch, type Store, StoreLaunchMissing, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
-import { agentDeleting, answerOf, logged } from "./agents.js";
+import { type AgenticBody, type AgentRow, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type LaunchSealed, openRunLaunch, type RunMcpAuth, type RunRow, sealRunLaunch, type Store, StoreLaunchMissing, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
+import { agentDeleting, answerOf, logged, purgedAgent } from "./agents.js";
 import { keepGrade } from "./runner/feedback-round.js";
 import { gradeRow, notAuditableOf } from "./runner/audit.js";
-import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf } from "./learn/audit.js";
+import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf, shadowRunId } from "./learn/audit.js";
 import { auditLoopOf, COMPILE_AFTER_MAX } from "./learning-setting.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
-import { championOf, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown, servingOf, servingStateOf, shownDeep } from "./learn/promote.js";
+import { championOf, forgetRunCopies, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown, servingOf, servingStateOf, shownDeep } from "./learn/promote.js";
 import { workflowNodesOf } from "./learn/workflow-nodes.js";
 import { deleteLearning } from "./learn/delete.js";
 import { runModelRef } from "./model.js";
@@ -182,6 +182,8 @@ import { recordingsOf, recordingsWorkspace } from "./run-recordings.js";
 import { recordingsFolder } from "./workspace/paths.js";
 import { heldRoute, holdIssues, runComputerRead } from "./computer-held-routes.js";
 import { COMPUTER_ROUTES, computerHoldOf, computerRoute, runComputerKind } from "./computer-routes.js";
+import { runOver } from "./computer-commands.js";
+import { mintViewerCredential, VIEWER_PARAM, viewerCookie, viewerCredentialFor, viewerCredentialKey, viewerCredentialOf, viewerExpiry } from "./viewer-credential.js";
 import { ATTACH_PATH, AttachHub, type HostedDial, PROVIDERS as COMPUTER_PROVIDERS, SETTING_KINDS, servingRefusals } from "@parcha/agentrun-computer";
 import { type AttachTiming, createAttachRoutes, liveRelays, pairedView } from "./computer-attach.js";
 import { pairedRefusal, withPaired } from "./workspace/attached-computers.js";
@@ -192,12 +194,12 @@ import { noAccount, openAccount } from "./email/account.js";
 import { emailRoute } from "./email/routes.js";
 import { addressForms, openCalendar } from "./calendar/address.js";
 import { calendarRoute } from "./calendar/routes.js";
-import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, runDiskKey } from "./archil-settings.js";
+import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, runDiskKept, runDiskKey } from "./archil-settings.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, settingsComputerRoute } from "./computers.js";
 import { type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { writesHeld } from "./workspace.js";
-import { type AgentDeleteHost, type AgentDeleteStep, type DeleteLearning, deleteExternalAgent, oneAtATime } from "./agent-delete.js";
+import { type AgentDeleteHost, type AgentDeleteStep, type DeleteLearning, deleteExternalAgent, oneAtATime, purgeAgent, purgeRun, purgingKey } from "./agent-delete.js";
 import { type LearningResetHost, resetLearning } from "./learning-reset.js";
 import { agentComputerHoldKey } from "./workspace/agent-computer.js";
 import { sdkRunKey } from "./sdk/runs.js";
@@ -427,9 +429,9 @@ export type ServeOptions = {
   /** A test's seam: step 2 of DELETE /agents/{id} (agent-delete.ts) in place of the learning module's deleteLearning over
    *  the agent's learning folder (learn/delete.ts), the server's own. */
   deleteLearning?: DeleteLearning;
-  /** A test's seam: awaited at each step's point of DELETE /agents/{id} (agent-delete.ts AgentDeleteStep), so a throw
-   *  there stops the delete as a crash would. */
-  agentDeleteAt?: (step: AgentDeleteStep, agentId: string) => void | Promise<void>;
+  /** A test's seam: awaited at each step's point of DELETE /agents/{id} and DELETE /runs/{id} (agent-delete.ts
+   *  AgentDeleteStep), with the agent's id or the run's, so a throw there stops the delete as a crash would. */
+  agentDeleteAt?: (step: AgentDeleteStep, id: string) => void | Promise<void>;
   /** A test's seam: awaited with a request's path and answer once its work under an Idempotency-Key is done, before the
    *  answer is kept, so a test can hold a request there while a DELETE /agents/{id} runs. */
   beforeKeep?: (path: string, answer: unknown) => void | Promise<void>;
@@ -530,6 +532,20 @@ async function tokenIn(file: string): Promise<{ token: string; made: boolean }> 
 const sha256Hex = (text: string) => createHash("sha256").update(text).digest("hex");
 const SESSION_S = SESSION_MS / 1000;
 
+const isoOrNull = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
+/** 410 purged for a route of a purged run (Runs.purge): its tombstone, what is kept of it. `tools_usd`: its paid tools'
+ *  meter as /usage read it at its purge (null: unknown, or none read). */
+function purgedRun(row: RunRow): ApiError {
+  const meters = (row.metrics as { purged?: { meters?: { tools?: unknown } } } | null)?.purged?.meters;
+  return new ApiError("purged", `The run ${row.id} was purged: what it was given and did is gone, and its cost stays in every total.`, {
+    details: {
+      run_id: row.id, agent_id: row.agentId, state: row.state, started_at: isoOrNull(row.startedAt), ended_at: isoOrNull(row.endedAt),
+      cost_usd: row.costUsd ?? row.costAtMostUsd, cost_upper_bound: row.costUsd === null && row.costAtMostUsd !== null, tools_usd: typeof meters?.tools === "number" ? meters.tools : null,
+      purged_at: isoOrNull(row.purgedAt),
+    },
+  });
+}
+
 /** A route: `name` is its operationId in the OpenAPI document (openapi.ts); `capability`, when this server turns it off;
  *  `raw`, a route whose body is bytes and not JSON, which the page's session may send with any content type, still only
  *  with the page's own Origin (page.ts). Only a PUT or a POST carries it. The Origin is the lock: a browser sends it with
@@ -588,6 +604,8 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/runs$/, name: "createInlineRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)$/, name: "getRun" },
   { method: "PATCH", pattern: /^\/runs\/([^/]+)$/, name: "raiseRunCap" },
+  // A final run deleted whole, with the runs made from it (agent-delete.ts deleteRun).
+  { method: "DELETE", pattern: /^\/runs\/([^/]+)$/, name: "deleteRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/timeline$/, name: "getTimeline" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/messages$/, name: "sendMessage" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/stop$/, name: "stopRun" },
@@ -610,6 +628,8 @@ export const ROUTES: readonly Route[] = [
   // store-backed take-over lands). The run routes stay together.
   { method: "GET", pattern: /^\/runs\/([^/]+)\/computer$/, name: "getRunComputer" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/take-over$/, name: "takeOverRunComputer" },
+  // An API-only server's viewer credential for a run's live view (viewer-credential.ts), minted for its backend.
+  { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/viewer$/, name: "createRunComputerViewer" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/computer\/hand-back$/, name: "handBackRunComputer" },
   // A held computer's (computer-held-routes.ts): a run started with hold: true waits for its start, takes its owner's
   // protocol calls, and keeps its computer after its agent's end until released.
@@ -1412,6 +1432,13 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const sealKey = seal.key;
   // SDK runs' credentials are signed with a key from the seal key, never an API token: a rotation leaves them working.
   const sdkSecret = sdkRunSecret(sealKey);
+  // An API-only server's viewer credentials (viewer-credential.ts) are signed with another key from it: every server on
+  // this store checks them alike, across restarts.
+  const viewerKey = viewerCredentialKey(sealKey);
+  /** Whether `credential` opens run `runId`'s live view now: minted for that run, not expired, and its run not ended,
+   *  read from the store each time (its revocation). */
+  const viewerHolds = async (credential: string | undefined, runId: string): Promise<boolean> =>
+    credential !== undefined && viewerCredentialFor(viewerKey, runId, credential, Date.now()) && !(await runOver(store, runId));
   // Each run's viewers are asked under that run's key (live-reach.ts reachForRun).
   const answers = (runId: string) => (handover: LiveHandover): Promise<boolean> => viewerAnswers(handover, reachForRun(reach, runId));
   // Settings → Computers and the owner's Archil settings, over the one store (computers.ts, archil-routes.ts), built once
@@ -1556,7 +1583,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     list: (options: { archived?: boolean } = {}) => listAgents(store, options),
     create: (body: DefinitionBody, check?: SaveCheck, fresh?: { place: RevisionPlace; tools: readonly string[] }, template?: TemplatePackage) =>
       createAgent(store, body, { ...(check ? { check } : {}), ...(fresh ? { fresh } : {}), ...(template ? { template } : {}) }),
-    commit: (entry: AgentEntry, body: DefinitionBody, options: { ifCurrent?: string | null; check?: SaveCheck; contract?: boolean; template?: TemplatePackage; fromPackage?: boolean } = {}) => commitAgent(store, entry, body, options),
+    commit: (entry: AgentEntry, body: DefinitionBody, options: { ifCurrent?: string | null; check?: SaveCheck; contract?: boolean; template?: TemplatePackage; fromPackage?: boolean; inTurn?: InTurn } = {}) => commitAgent(store, entry, body, options),
     revisions: (id: string) => agentRevisions(store, id),
     revision: (agentId: string, revisionId: string) => agentRevision(store, agentId, revisionId),
     setCurrent: (entry: AgentEntry, revisionId: string) => setCurrentRevision(store, entry, revisionId),
@@ -1830,6 +1857,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     getAgent: async (agentId: string) => (await getAgent(store, agentId)) ?? undefined,
     needAgent,
     momentOf: (runId: string) => momentOverStore(store, runId, viewDepsFor(ownOriginOf())),
+    // Read when a firing's message is sent (declared below, with the delete turn).
+    runWrite: (agentId, runId, work) => runWrite(agentId, runId, work),
     runStatus: async (runId: string) => ((await viewOverStore(store, runId, viewDepsFor(ownOriginOf())))?.status as string | undefined) ?? null,
     completedOutput: async (runId: string) => {
       const view = await viewOverStore(store, runId, viewDepsFor(ownOriginOf()));
@@ -2405,18 +2434,36 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const agentWrite = <T>(id: string, work: () => Promise<T>): Promise<T> =>
     deleteInTurn(id, async () => {
       const entry = await needAgent(id);
+      // A purged agent's row stays as its tombstone: a write that waited on its purge is 410, never a folder made again.
+      if (entry.agent.purgedAt !== null) throw purgedAgent(entry.agent);
       if (entry.agent.archivedAt && entry.agent.externalRef !== null) throw agentDeleting(id);
+      // A purge stopped part way (its mark still there): nothing of the agent is written, nor is it unarchived, until a
+      // DELETE finishes it.
+      if (entry.agent.archivedAt && (await store.settings.get(purgingKey(id))) !== undefined) throw agentDeleting(id);
+      return work();
+    });
+  /** `work`, a write that names run `runId` of agent `agentId` (a message, which may open it again; a grade, which keeps its
+   *  id and expected answer), done in the agent's delete turn, the agent and the run read there: a purge of the run (or of
+   *  its agent) holds that turn from its live check to its tombstone, so such a write waits for it and is then 410, never
+   *  a run opened again under a purge nor a grade saved after one. */
+  const runWrite = <T>(agentId: string, runId: string, work: () => Promise<T>): Promise<T> =>
+    agentWrite(agentId, async () => {
+      const row = await store.runs.get(runId);
+      if (!row) throw new ApiError("not_found", `no run ${runId}`);
+      if (row.purgedAt !== null) throw purgedRun(row);
       return work();
     });
   const AGAIN = "It starts no run meanwhile: send the DELETE again to finish it.";
-  /** `work`, a thing a deleted agent owns elsewhere deleted there: a refusal of one of `codes` (it is not deleted there
-   *  yet) answered as the delete answers each such one, 503 unavailable, retryable, saying to send the DELETE again. */
-  const notYetWith = async (work: () => Promise<unknown>, codes: readonly string[] = ["unavailable"]): Promise<void> => {
+  const RUN_AGAIN = "The run is kept: send the DELETE again to finish it.";
+  /** `work`, a thing a deleted agent or run owns elsewhere deleted there: a refusal of one of `codes` (it is not deleted
+   *  there yet) answered as the delete answers each such one, 503 unavailable, retryable, saying to send the DELETE again
+   *  (`again`: the words for an agent's delete, or a run's). */
+  const notYetWith = async (work: () => Promise<unknown>, codes: readonly string[] = ["unavailable"], again = AGAIN): Promise<void> => {
     try {
       await work();
     } catch (error) {
       if (!(error instanceof ApiError && codes.includes(error.code))) throw error;
-      throw new ApiError("unavailable", `${error.message.replace(/[.\s]*$/, "")}. ${AGAIN}`, { retry_after_ms: 5_000 });
+      throw new ApiError("unavailable", `${error.message.replace(/[.\s]*$/, "")}. ${again}`, { retry_after_ms: 5_000 });
     }
   };
   /** The Archil disks agent `agentId`'s learning folder may be on: a Mode 2 run's end writes it on the disk its claim
@@ -2490,12 +2537,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // Archil's failure (424), a live run of another agent on the disk (412) or no key (503): each is retried by the next DELETE.
       await notYetWith(() => archil.removeAgentDisk({ id: agentId, archived: true, external: true, liveOn: (diskId: string) => liveRunsOnDisk(store.runs, agentId, diskId) }), ["upstream_failed", "precondition_failed", "unavailable"]);
     },
-    forgetRun: async (agentId, runId) => {
+    forgetRun: async (agentId, runId, alone) => {
+      const again = alone ? RUN_AGAIN : AGAIN;
       // Its own folder on a disk its launch named (the caller's disk, which stays): read from its launch record, which goes
       // with the run's rows after this, so a failure or a stop here leaves the record that names the disk for the next
-      // DELETE. A run on its agent's own disk has none: that disk went whole (removeDisk), its folder with it.
+      // DELETE. A run on its agent's own disk: with its agent's delete that disk went whole (removeDisk), its folder with
+      // it; deleted alone, its folder there is deleted, the disk kept, read from its disk setting, which goes after.
       const launched = await store.runs.launch(runId).then((row) => readLaunchBody(row.body)?.archilDisk, (error: unknown) => (error instanceof StoreLaunchMissing ? undefined : Promise.reject(error)));
-      if (launched?.kind === "launch") await notYetWith(() => archil.removeRunFolder(agentId, runId, launched.diskId), ["unavailable", "upstream_failed"]);
+      if (launched?.kind === "launch") await notYetWith(() => archil.removeRunFolder(agentId, runId, launched.diskId), ["unavailable", "upstream_failed"], again);
+      else if (alone) {
+        const own = launched?.diskId ?? (await runDiskKept(store, runId));
+        if (own) await notYetWith(() => archil.removeRunFolder(agentId, runId, own, "agent"), ["unavailable", "upstream_failed"], again);
+      }
       // The run's folder (its work and what sits beside it), its scratch and its native context, on this machine.
       for (const folder of [dirname(runFolder(data, agentId, runId)), scratchFolder(data, agentId, runId), join(data, "native-context", runId)]) await rm(folder, { recursive: true, force: true });
       // Its settings: an SDK run's row, its browser wait's end, the Archil disk it resolved to. Its kept computer's row
@@ -2511,6 +2564,25 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       await rm(agentFolder(data, agentId), { recursive: true, force: true });
       await rm(join(data, "scratch", agentDirName(agentId)), { recursive: true, force: true });
       await forgetKept("agent", agentId);
+    },
+    // The replay runs of its input, its audit's shadow run and a learning run it names (the store's), and its audit's shadow
+    // run by its id (one whose launch is gone too).
+    madeFrom: async (runId) => [...new Set([...(await store.runs.madeFrom(runId)), shadowRunId(runId)])],
+    forgetCopies: (agentId, runId) => forgetRunCopies(store.settings, agentId, runId),
+    // /usage's meters and a live read's spend, from its journal, as they read now (store-reads/cap.ts), and how its
+    // learning ended as /stats counts it (its state and reason alone).
+    kept: async (runId) => {
+      const spend = await spendOverStore(store, runId, ctx);
+      const learning = await runLearningEnd(store, runId);
+      return {
+        meters: await metersOverStore(store, runId, ctx),
+        spend: { usd: spend.usd, ...(spend.basis === undefined ? {} : { basis: spend.basis }) },
+        learning: learning ? { state: learning.state, reason: learning.reason } : null,
+      };
+    },
+    turnOver: async (runId) => {
+      const read = await runStatusState(runId);
+      return read.state === "idle" && read.status !== "paused";
     },
     waitMs: options.agentDeleteWaitMs ?? 30_000,
     pollMs: 200,
@@ -2857,7 +2929,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       warnings = saved.warnings;
       return saved.stamp;
     };
-    const edited = await agents.commit(entry, checkDefinitionBody(body, { creating: false, harnesses }), { check, ...options });
+    // Its last read and its commit in the agent's delete turn (agentWrite), the check outside it: an edit or a template
+    // update whose commit comes once the agent is purged is 410, and one after a purge stopped part way is 409, nothing
+    // written (the store refuses a purged agent's revision too, AgentPurged).
+    const edited = await agents.commit(entry, checkDefinitionBody(body, { creating: false, harnesses }), { check, ...options, inTurn: (work) => agentWrite(entry.agent.id, work) });
     reconcileComputer(entry.agent.id);
     return { entry: edited, warnings };
   }
@@ -4025,19 +4100,28 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       throw new ApiError("forbidden", owner ? "Replaying a learned workflow's revision takes the owner's password sign-in in the console, never a token." : "Replaying a learned workflow's revision takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
     // A run's live computer view is a full-control credential for its computer: the owner's signed-in page alone, as
-    // approving a note is (never a token a run, an MCP client or a script may hold).
-    if ((found.name === "getRunBrowser" || found.name === "handBackRunBrowser" || found.name === "getRunComputer") && !byOwnerSession(req) && req.headers.authorization !== undefined) {
+    // approving a note is (never a token a run, an MCP client or a script may hold). An API-only server has no owner: there
+    // the server's token, its backend's own, takes a run's computer, checked below as every route's token is.
+    if ((found.name === "getRunBrowser" || found.name === "handBackRunBrowser" || (found.name === "getRunComputer" && !options.apiOnly)) && !byOwnerSession(req) && req.headers.authorization !== undefined) {
       const what = found.name.endsWith("Browser") ? "browser" : "computer";
       authFailed(`/v2${path}`, `${what}_without_session`);
       throw new ApiError("forbidden", owner ? `A run's live ${what} takes the owner's password sign-in in the console, never a token.` : `A run's live ${what} takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).`);
     }
     // A run's desktop or phone view drives it once taken over: the owner's signed-in page alone (computer-routes.ts decides).
-    if (COMPUTER_ROUTES.has(found.name) && !byOwnerSession(req) && req.headers.authorization !== undefined) authFailed(`/v2${path}`, "computer_without_session");
+    if (COMPUTER_ROUTES.has(found.name) && !options.apiOnly && !byOwnerSession(req) && req.headers.authorization !== undefined) authFailed(`/v2${path}`, "computer_without_session");
     // Answering a tool call that waits for approval (tool-gate.ts) is the same: the owner's signed-in page alone, never a
     // token, which the run's own process, an agent's MCP client or a script may hold.
     if (found.name === "answerApproval" && !byOwnerSession(req) && req.headers.authorization !== undefined) {
       authFailed(`/v2${path}`, "approve_without_session");
       throw new ApiError("forbidden", owner ? "Answering a tool call's approval takes the owner's password sign-in in the console, never a token." : "Answering a tool call's approval takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
+    }
+    // Purging a run or an agent, or deleting another system's agent, cannot be undone: the owner's session or the API
+    // token. A console session counts as the owner's only where it does for a secret (secret-writes.ts: accounts off on a
+    // loopback-bound server); bound off loopback with accounts off, whoever opened the console is no owner. With no
+    // credential at all it is 401, as every route is.
+    if ((found.name === "deleteRun" || found.name === "deleteAgent") && byConsoleSession(req) && !writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) })) {
+      authFailed(`/v2${path}`, "delete_without_owner");
+      throw new ApiError("forbidden", "Deleting a run or an agent takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token.");
     }
     // Saving, replacing or removing a secret (secret-writes.ts): the one check. Who may is mayWriteSecrets' alone (the
     // owner's session); which writes are secret is each plane's registered predicate, read from the body, so a token's
@@ -4109,6 +4193,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (["discoverNative","connectNative"].includes(found.name) && (options.apiOnly || options.publicUrl || !isLoopback(host))) throw new ApiError("forbidden", "Native connections require AgentRun on the source machine, bound to loopback without a public URL. A hosted browser cannot discover your laptop.");
     const [, first, second] = found.pattern.exec(path)!;
     const id = first ? decodeURIComponent(first) : "";
+    // A purged run or agent (DELETE /runs/{id}, /agents/{id}): every route of it but its DELETE answers 410 purged, with
+    // its tombstone in the details.
+    if (id && ID.test(id)) {
+      if (found.name !== "deleteRun" && found.pattern.source.startsWith("^\\/runs\\/([^/]+)")) {
+        const row = await store.runs.get(id);
+        if (row && row.purgedAt !== null) throw purgedRun(row);
+      }
+      if (found.name !== "deleteAgent" && found.pattern.source.startsWith("^\\/agents\\/([^/]+)")) {
+        const agent = await store.agents.get(id);
+        if (agent && agent.purgedAt !== null) throw purgedAgent(agent);
+      }
+    }
     switch (found.name) {
       case "startSdkRun": {
         if(!req.headers["idempotency-key"])throw new ApiError("bad_request","An SDK run requires Idempotency-Key so a retried start never duplicates execution.");
@@ -4224,8 +4320,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           if (match === undefined) throw new ApiError("precondition_failed", "If-Match is required: the agent's ETag, as GET /agents/{agent_id} returned it.");
           if (body.version === undefined || (typeof body.version === "number" && body.version <= entry.version)) throw invalid([{ field: "definition.version", reason: body.version === undefined ? "missing" : "not_an_option", message: `definition.version must be greater than the current one, ${entry.version}` }]);
         }
-        // The check above is a fast path; the store compares If-Match again inside the commit, so of two edits that read
-        // the same revision exactly one lands.
+        // The checks above are a fast path on the agent as the request found it, its body read after. The commit reads the
+        // agent again in its delete turn (reviseAgentOf, agentWrite): one whose body arrived once the agent was purged is
+        // 410, nothing written. The store compares If-Match again inside the commit, so of two edits that read the same
+        // revision exactly one lands.
         const { entry: edited, warnings } = await reviseAgentOf(entry, contract ? { definition: body } : body, { contract, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
         return send(res, 200, { ...agentView(edited, linkOrigin(req), await agentExtra(edited)), warnings }, { etag: etagOf(edited) });
       }
@@ -4239,32 +4337,38 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, { revisions: page, next_cursor: nextCursor(offset + limit, all.length) });
       }
       case "setCurrent": {
-        const entry = await needAgent(id);
+        // The body read first, outside the agent's delete turn; the move made in it (agentWrite), as an edit's revision is:
+        // one whose body arrives while the agent is purged is 410 (the store refuses it too, AgentPurged).
         const body = await bodyOf(req);
-        const extra = unknownFields(body, ["revision"]);
-        if (extra.length) throw invalid(extra);
-        const revision = body.revision;
-        if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
-        const candidate = await agents.revision(id, revision);
-        if (!candidate) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
-        if (stable(nativeOf(candidate.revision.body)) !== stable(nativeOf(entry.revision?.body))) throw new ApiError("input_invalid", "This revision changes the native connection. Reconnect or verify through the native connection controls; ordinary revision restore cannot change its source or connection state.");
-        if (nativeOf(candidate.revision.body)) {
-          const overrides = nativeModelOverrides(candidate.revision.body);
-          if (overrides.length) throw invalid(overrides.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_MODEL_SETTINGS_UNSUPPORTED })));
-          const execution = nativeExecutionOverrides(candidate.revision.body);
-          if (execution.length) throw invalid(execution.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_EXECUTION_SETTINGS_UNSUPPORTED })));
-        }
-        const moved = await agents.setCurrent(entry, revision);
+        const moved = await agentWrite(id, async () => {
+          const entry = await needAgent(id);
+          const extra = unknownFields(body, ["revision"]);
+          if (extra.length) throw invalid(extra);
+          const revision = body.revision;
+          if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
+          const candidate = await agents.revision(id, revision);
+          if (!candidate) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
+          if (stable(nativeOf(candidate.revision.body)) !== stable(nativeOf(entry.revision?.body))) throw new ApiError("input_invalid", "This revision changes the native connection. Reconnect or verify through the native connection controls; ordinary revision restore cannot change its source or connection state.");
+          if (nativeOf(candidate.revision.body)) {
+            const overrides = nativeModelOverrides(candidate.revision.body);
+            if (overrides.length) throw invalid(overrides.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_MODEL_SETTINGS_UNSUPPORTED })));
+            const execution = nativeExecutionOverrides(candidate.revision.body);
+            if (execution.length) throw invalid(execution.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_EXECUTION_SETTINGS_UNSUPPORTED })));
+          }
+          return agents.setCurrent(entry, revision);
+        });
         reconcileComputer(id);
         return send(res, 200, agentView(moved, linkOrigin(req), await agentExtra(moved)), { etag: etagOf(moved) });
       }
       case "deleteAgent": {
-        // Another system's agent, deleted whole (agent-delete.ts); one delete of an agent at a time, the agent read in its
-        // turn, so a DELETE after one that finished is 404.
+        // Another system's agent deleted whole; one made here purged once archived (agent-delete.ts). One delete of an agent
+        // at a time, the agent read in its turn, so a DELETE after one that finished is 404 (deleted) or 204 (purged).
         await deleteInTurn(id, async () => {
-          const entry = await needAgent(id);
-          if (entry.agent.externalRef === null) throw new ApiError("agent_not_external", `The agent ${id} was made here, not by another system's inline run, and is not deleted: archive it instead (POST /v2/agents/${id}/archive), which keeps its runs and stops new ones.`);
-          await deleteExternalAgent(agentDeleteHost, id);
+          const { agent } = await needAgent(id);
+          if (agent.purgedAt !== null) return;
+          if (agent.externalRef !== null) return deleteExternalAgent(agentDeleteHost, id);
+          if (agent.archivedAt === null) throw new ApiError("agent_not_archived", `The agent ${id} is not archived: archive it first (POST /v2/agents/${id}/archive), which stops new runs and turns its triggers off, then send the DELETE again. Nothing was purged.`);
+          await purgeAgent(agentDeleteHost, id);
         });
         res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
         return void res.end();
@@ -4278,7 +4382,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // agent_archived in that same store transaction; unarchived, none turns on. Never archived first by another path,
         // which would turn its triggers off with no reason and leave the answer empty. Both answer the triggers off for
         // the archive, each turned on again by PATCH /triggers/{id} {enabled: true}.
-        const triggersOff = found.name === "archiveAgent" ? await triggers.agentArchived(id) : await triggers.agentUnarchived(id);
+        // In the agent's delete turn (agentWrite): an unarchive sent while its purge runs waits for it and is 410, so no
+        // run of it starts between the purge's live check and its tombstone.
+        const triggersOff = await agentWrite(id, () => (found.name === "archiveAgent" ? triggers.agentArchived(id) : triggers.agentUnarchived(id)));
         // An archived agent's own computer is deleted (an unarchived one gets a new one at its next persistent run).
         if (found.name === "archiveAgent") reconcileComputer(id);
         const entry = await needAgent(id);
@@ -4342,7 +4448,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           if (typeof content !== "string" || !/\S/.test(content)) throw invalid([{ field: "content", reason: content === undefined ? "missing" : "wrong_type", message: "content is a non-empty string" }]);
           if (content.length > MAX_MESSAGE) throw invalid([{ field: "content", reason: "too_long", message: `content is at most ${MAX_MESSAGE} characters` }]);
           // Its mcp_auth and model_key replace the run's in the steer's own write, so the turn it starts uses them.
-          const { mode, messageId } = await message(store, run, content, { ...(seal ? { launchSealed: seal } : {}), ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}) });
+          // In its agent's delete turn (runWrite): a message that may open the run again never lands under its purge.
+          const { mode, messageId } = await runWrite(run.agentId, run.id, () => message(store, run, content, { ...(seal ? { launchSealed: seal } : {}), ...(options.beforeSubmit ? { beforeSubmit: options.beforeSubmit } : {}) }));
           // The run's state after the command row is written (the run view): the runner applies the steer; the client polls.
           const { status, state } = await runStatusState(run.id);
           return { status: 202, body: { run_id: run.id, message_id: messageId, mode, status, state, poll_after_ms: 1000 } };
@@ -4365,6 +4472,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const { resumed, messageId, note } = await raiseCap(store, run, cap);
         const { status, state } = await runStatusState(run.id);
         return send(res, 200, { run_id: run.id, max_cost_usd: cap, resumed, ...(messageId ? { message_id: messageId } : {}), ...(note ? { note } : {}), status, state });
+      }
+      case "deleteRun": {
+        // In its agent's delete turn (an agent's delete or purge, or another purge of one of its runs, finishes first), the
+        // run read in that turn, so a DELETE after one that finished is 204 again (purgeRun: a purged run is no work).
+        const row = ID.test(id) ? await store.runs.get(id) : undefined;
+        if (!row) throw new ApiError("not_found", `no run ${id}`);
+        await deleteInTurn(row.agentId, () => purgeRun(agentDeleteHost, id));
+        res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
+        return void res.end();
       }
       case "stopRun": {
         const run = await needRun(id);
@@ -4412,7 +4528,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         };
         // The grade and its audit row are written to the agent's learning in its delete turn (agentWrite): a grade whose body
         // came in while a DELETE ran waits for it and finds the agent gone, so nothing is written after its learning went.
-        const kept = await agentWrite(row.agentId, async () => {
+        const kept = await runWrite(row.agentId, row.id, async () => {
           // Kept with what it asks of the run's learning (runner/feedback-round.ts): nothing, or a look-back.
           // Its feedback round is a turn with no caller's model key: on the server's key for the run's route, else not opened.
           const graded = gradeView(await keepGrade(store, row.agentId, grade, typeof body.label === "string" ? body.label : undefined, (launch) => !serverKeyMissing(env, { kind: "agentic", model: launch.model, native: Boolean(launch.native) })));
@@ -4496,9 +4612,27 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // hand-back is the browser's own answer row, as POST .../browser/hand-back writes it.
         const run = await needRun(id);
         const answer = await computerRoute(found.name, run.id, {
-          ownerSession: byOwnerSession(req), token: req.headers.authorization !== undefined, accounts: owner !== undefined, body: await bodyOf(req),
+          ownerSession: byOwnerSession(req), token: req.headers.authorization !== undefined, apiOnly: options.apiOnly === true, accounts: owner !== undefined, body: await bodyOf(req),
         }, store, { context: ctx });
         return send(res, 200, answer, { "cache-control": "no-store" });
+      }
+      case "createRunComputerViewer": {
+        // A viewer credential for the run's live view (viewer-credential.ts), for an API-only server's backend to hand its
+        // user: a link on the public address to the run's open viewer, the credential in its query, the viewer's own token
+        // in its fragment. A server with no backend in between has an owner who opens the view in the console: not here.
+        if (!options.apiOnly) throw new ApiError("not_found", "A run's viewer link is minted on an API-only server alone (AGENTRUN_API_ONLY=1): here its owner opens the live view in the console.");
+        const run = await needRun(id);
+        const body = await bodyOf(req);
+        const issues = unknownFields(body, []);
+        if (issues.length) throw invalid(issues);
+        if (!options.publicUrl) throw new ApiError("unsupported_here", "A run's viewer link is on this server's public address, and AGENTRUN_PUBLIC_URL is unset: set it to the address your users' browsers open this server at.");
+        if (await runOver(store, run.id)) throw new ApiError("computer_not_live", "This run has ended: its computer has no live view.");
+        const link = await computerViewerLink(store, sealKey, run.id, answers(run.id));
+        if (link === undefined) throw new ApiError("computer_not_live", "This run's computer has no live view open now: ask again once GET /v2/runs/{run_id}/computer reads live.");
+        const { credential, expiresAt } = mintViewerCredential(viewerKey, run.id, Date.now());
+        const [path, fragment] = link.viewer.split("#");
+        const minted = `${options.publicUrl.replace(/\/+$/, "")}${path}?${VIEWER_PARAM}=${credential}${fragment === undefined ? "" : `#${fragment}`}`;
+        return send(res, 201, { url: minted, expires_at: new Date(expiresAt).toISOString() }, { "cache-control": "no-store" });
       }
       case "startRun":
       case "callRunComputer":
@@ -5239,6 +5373,29 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  only the viewer's WebSocket reaches the run. */
   async function liveRoute(req: IncomingMessage, res: ServerResponse, runId: string, family: LiveFamily, rest: string): Promise<void> {
     if (req.method !== "GET" && req.method !== "HEAD") throw new ApiError("method_not_allowed", `${req.method} is not a method of a run's live view`, {}, { allow: "GET, HEAD" });
+    if (options.apiOnly) {
+      // API-only: no owner here. The viewer credential its backend minted for this run (viewer-credential.ts), on the
+      // public address alone: a navigation sends no Origin, any other request this page's own. The page's answer sets it as
+      // the cookie its files and socket carry.
+      const sent = req.headers.origin;
+      if (sent !== undefined && sent.toLowerCase() !== publicOrigin) {
+        authFailed(`/v2/runs/${runId}/${family}/live`, "live_view_origin");
+        throw new ApiError("forbidden", "a run's live view here is opened on this server's public address (AGENTRUN_PUBLIC_URL) alone");
+      }
+      const credential = viewerCredentialOf(req);
+      if (credential === undefined) {
+        authFailed(`/v2/runs/${runId}/${family}/live`, "no_credential");
+        throw new ApiError("unauthenticated", "a run's live view here takes the viewer link its backend minted (POST /v2/runs/{run_id}/computer/viewer)");
+      }
+      if (!(await viewerHolds(credential, runId))) {
+        authFailed(`/v2/runs/${runId}/${family}/live`, "viewer_credential");
+        throw new ApiError("forbidden", "this viewer link is expired, for another run, or its run has ended: ask for a new one");
+      }
+      const handover = await liveViewerFor(store, sealKey, runId, rest);
+      if (handover === undefined) throw new ApiError("not_found", `this run's ${family} has no live view at that address`);
+      res.setHeader("set-cookie", viewerCookie(req, runId, credential, viewerExpiry(credential), Date.now()));
+      return serveViewerFile(req, res, rest, (handover.kind ?? "browser") === "browser" ? "browser" : "computer");
+    }
     if (!byOwnerSession(req)) {
       authFailed(`/v2/runs/${runId}/${family}/live`, req.headers.authorization === undefined ? "no_credential" : `${family}_without_session`);
       throw req.headers.authorization === undefined ? new ApiError("unauthenticated", `a run's live ${family} view takes the owner's password sign-in in the console`) : new ApiError("forbidden", `a run's live ${family} view takes the owner's password sign-in in the console, never a token`);
@@ -5352,9 +5509,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // address sends its own name as Origin too, which the Origin check below would take, so its Host is what gives it
     // away. Its name alone, on any port, as the HTTP routes check it.
     if (names && !names.has(hostName(req.headers.host) ?? "")) return deny("403 Forbidden");
-    // API-only: a run's live view is the console's, and refused with it; so are paired computers (Settings), whose tokens
-    // the attach socket takes as unknown there (machinesOnly). A run's hosted machine that dials still reaches it.
-    if (options.apiOnly && raw !== ATTACH_PATH) return deny("404 Not Found");
+    // API-only: paired computers are the console's (Settings), and refused with it, whose tokens the attach socket takes as
+    // unknown there (machinesOnly). A run's hosted machine that dials still reaches it, and a run's computer live view takes
+    // its viewer credential (below); a browser's live view stays the console's.
+    if (options.apiOnly && raw !== ATTACH_PATH && viewing?.[2] !== "computer") return deny("404 Not Found");
     // A paired computer's driver or a hosted machine dialing the attach socket (computer-attach.ts): its token, not the
     // owner's, lets it in.
     if (raw === ATTACH_PATH) {
@@ -5367,13 +5525,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (!viewing || !ID.test(viewing[1]!) || !/^\/v\/[A-Za-z0-9_-]{22}\/ws$/.test(viewing[3]!)) return deny("404 Not Found");
     // A browser always sends its page's origin on a WebSocket, which no other page's script can forge: this server's own
     // (as this request reaches it, or its public address, which a TLS proxy that rewrites Host or drops
-    // X-Forwarded-Proto leaves as the only one the owner's page has), and the owner signed in, or nothing.
+    // X-Forwarded-Proto leaves as the only one the owner's page has), and the owner signed in, or nothing. API-only: the
+    // public address alone, where the minted link opens the page, and the viewer credential for this run (its cookie).
     const sent = String(req.headers.origin ?? "").toLowerCase();
-    if (sent === "" || (sent !== ownOrigin(req) && sent !== publicOrigin)) return (authFailed(raw, "live_view_origin"), deny("403 Forbidden"));
-    if (!owner || !signedIn(req, owner)) return (authFailed(raw, "live_view_without_session"), deny("401 Unauthorized"));
+    const credential = options.apiOnly ? viewerCredentialOf(req) : undefined;
+    if (options.apiOnly) {
+      if (sent === "" || sent !== publicOrigin) return (authFailed(raw, "live_view_origin"), deny("403 Forbidden"));
+      if (credential === undefined) return (authFailed(raw, "no_credential"), deny("401 Unauthorized"));
+    } else {
+      if (sent === "" || (sent !== ownOrigin(req) && sent !== publicOrigin)) return (authFailed(raw, "live_view_origin"), deny("403 Forbidden"));
+      if (!owner || !signedIn(req, owner)) return (authFailed(raw, "live_view_without_session"), deny("401 Unauthorized"));
+    }
     // Once the run's WebSocket is piped to this socket, a failure here only ends it: an HTTP line would land mid-stream.
     let piping = false;
     void (async () => {
+      if (options.apiOnly && !(await viewerHolds(credential, viewing[1]!))) return (authFailed(raw, "viewer_credential"), deny("403 Forbidden"));
       const run = ID.test(viewing[1]!) ? await momentOverStore(store, viewing[1]!, viewDepsFor(ownOriginOf())) : undefined;
       // The run's live viewer from the store (the runner's browser/computer tool wrote it under its claim): none for a run no
       // runner holds. A /computer/live socket reaches a viewer of every kind, a
@@ -5384,10 +5550,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // Gone during the lookup, or the server is closing and has ended its viewers, or is about to.
       if (socket.destroyed || closing) return void socket.destroy();
       // Checked again after the lookup, then for as long as the socket is open: the sessions that let it in, and no other.
-      const held = heldSessions(req);
-      const admitted = () => held.some((value) => owner.valid(value));
-      if (!admitted()) return deny("401 Unauthorized");
-      viewers.watch(socket, admitted);
+      // API-only: the credential's run not ended, read from the store (its revocation); its expiry bounds the opening alone.
+      if (options.apiOnly) viewers.watch(socket, async () => !(await runOver(store, run!.id)));
+      else {
+        const held = heldSessions(req);
+        const admitted = () => held.some((value) => owner!.valid(value));
+        if (!admitted()) return deny("401 Unauthorized");
+        viewers.watch(socket, admitted);
+      }
       proxyLiveUpgrade(req, socket, head, handover, viewing[3]!, () => { piping = true; }, reachForRun(reach, run!.id));
     })().catch(() => (piping ? void socket.destroy() : deny("500 Internal Server Error")));
   };

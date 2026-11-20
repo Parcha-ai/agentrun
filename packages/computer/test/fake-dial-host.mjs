@@ -66,7 +66,7 @@ export function bootDial(env, { tokens, hub }, { daemon, arch = "amd64" }) {
 	if (env.AGENTRUN_DAEMON_SHA256 !== createHash("sha256").update(daemon).digest("hex")) return { machine: m, box, dialed: false };
 	const args = env.AGENTRUN_INIT_ARGS.split(" ");
 	const flag = (name) => (args.includes(name) ? args[args.indexOf(name) + 1] : "");
-	m.init = { deadline: flag("--deadline"), user: flag("--user"), display: env.DISPLAY ?? "", max: flag("--max-deadline"), network: flag("--network") };
+	m.init = { deadline: flag("--deadline"), user: flag("--user"), display: env.DISPLAY ?? "", max: flag("--max-deadline"), network: flag("--network"), windowManager: args.includes("--window-manager") };
 	const [uid, gid] = m.init.user.split(":").map(Number);
 	Object.assign(m.box, { uid, gid });
 	m.box.hello = { ...m.box.hello, arch };
@@ -85,9 +85,10 @@ let desktops = 0;
 /**
  * A vendor's desktop, made by `provider` (built from its descriptor's desktop configuration) through the dial path, as a
  * test sees it through to the screen: create made it, its machine (`booted()`, bootDial's answer for it, which the
- * vendor's fake made from what its create was given) started init with DISPLAY :0 and dialed `dial`, the X server and
- * then the window manager started over that socket as computerd's processes, and nothing else; connect's hello says
- * desktop, with the screen, and release deletes it. Asserts each, and answers the vendor's ref.
+ * vendor's fake made from what its create was given) started init with DISPLAY :0 and --window-manager and dialed
+ * `dial`, the X server started over that socket as computerd's process, and nothing else (computerd starts the window
+ * manager); connect's hello says desktop, with the screen and the manager running, and release deletes it. Asserts
+ * each, and answers the vendor's ref.
  */
 export async function desktopOverDial(provider, dial, booted, spec) {
 	const created = await provider.create(spec, { requestId: `desktop-${++desktops}` });
@@ -96,13 +97,14 @@ export async function desktopOverDial(provider, dial, booted, spec) {
 	const { machine, dialed } = booted();
 	assert.equal(dialed, true, "the machine's daemon is the server's: it dialed");
 	assert.equal(machine.init.display, ":0", "init started with the boot env's DISPLAY");
-	assert.deepEqual(machine.processes.map(({ argv }) => argv[0]), ["Xvfb", "unshare"], "the X server, then the window manager, over the socket it dialed");
-	assert.ok(machine.processes[1].argv.some((arg) => arg.includes("xfwm4")), "the window manager is xfwm4");
+	assert.equal(machine.init.windowManager, true, "init was asked to start the window manager");
+	assert.deepEqual(machine.processes.map(({ argv }) => argv[0]), ["Xvfb"], "the X server alone over the socket it dialed: computerd starts the window manager");
 	assert.equal(dial.hub.hello(ref.name)?.kind, "linux", "the hub keeps the hello the machine dialed with, before its display");
 	const connection = await provider.connect(ref);
 	assert.equal(connection.ok, true, connection.ok ? "" : `${connection.error.code}: ${connection.error.message}`);
 	assert.equal(connection.value.hello.kind, "desktop");
 	assert.ok(connection.value.hello.groups.includes("screen"));
+	assert.deepEqual(connection.value.hello.windowManager, { state: "running" });
 	await connection.value.close();
 	const released = await provider.release(ref, "delete");
 	assert.equal(released.ok, true, released.ok ? "" : `${released.error.code}: ${released.error.message}`);
