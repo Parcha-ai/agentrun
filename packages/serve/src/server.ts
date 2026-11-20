@@ -3586,11 +3586,12 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   // ---- usage ----------------------------------------------------------------------------------------------------------
 
   // Each ended run's meters, over the one store (store-reads/cap metersOverStore, cap.ts meterFiguresFrom over A's journal):
-  // kept, as a settled run's journal no longer changes, keyed by its end, so a run opened again and ended again is read
-  // again. A run whose journal cannot be read leaves it all tokens.
+  // kept, as a settled run's journal no longer changes, keyed by its end and its cost, so a run opened again and ended
+  // again is read again: a grade's round ends it again at the same end time (its look-back keeps the end), its cost moved
+  // by the round's spend. A run whose journal cannot be read leaves it all tokens.
   const endedMeters = new Map<string, Awaited<ReturnType<typeof metersOverStore>>>();
-  const metersOf = async (row: { id: string; endedAt?: string | null }) => {
-    const key = `${row.id} ${row.endedAt}`;
+  const metersOf = async (row: { id: string; endedAt?: string | null; costUsd?: number | null }) => {
+    const key = `${row.id} ${row.endedAt} ${row.costUsd}`;
     let meters = endedMeters.get(key);
     if (!meters) {
       // An ended run's meter figures over the one store: cap.ts meterFiguresFrom over A's journal, its paid tools' charges
@@ -4338,7 +4339,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       }
       case "stopRun": {
         const run = await needRun(id);
-        const stopped = await stopRunOverStore(store, run.id);
+        const stopped = await stopRunOverStore(store, run);
         const { status, state } = await runStatusState(run.id);
         return send(res, 200, { run_id: run.id, stopped, status, state });
       }

@@ -12,6 +12,7 @@ import { RunLearningResult } from "@/components/RunLearningResult";
 import { keptUntilOf, ScreenPanel, useRunScreen } from "@/components/RunScreen";
 import { ComputerAskCard } from "@/components/ComputerAskCard";
 import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 import { RunChanges, useRunChanges } from "@/components/RunChanges";
 import { RunGrade } from "@/components/RunGrade";
 import { RunUsed, useRunLearning } from "@/components/RunUsed";
@@ -284,6 +285,11 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {/* With no served cap the banner names none to raise above; the run header's raise reads the run's own cap. */}
           {bannerRaise && <div ref={bannerRaiseRef}><RaiseCap key={`${run.run_id}:${budget!.at}`} cap={budget!.cap_usd!} suggested={suggestedCap(budget)} least={leastCap(budget)} paused onRaise={actions!.onRaiseCap!} /></div>}
           {tab === "report" && <RunResult run={run} rows={rows} files={files} onOpen={show} schema={outputSchema} />}
+          {/* A run that ended and looks back (its learning reflecting) keeps its answer and its end: what it learns is said
+              under the answer, from the grade whose round runs, else from the run itself. */}
+          {tab === "report" && runEnded(run.status) && run.learning?.state === "reflecting" && (
+            <p role="status" aria-label="Learning" className="flex items-center gap-2 text-small text-muted-foreground"><Spinner />{runGrade?.feedback_status === "running" ? "Learning from your grade" : "Learning from this run"}</p>
+          )}
           {tab === "report" && !run.result && !view.final && <Working {...beforeAnswer(run, view)} />}
           {tab === "report" && view.final && !run.result?.final_answer?.trim() && !run.result?.output && !rows.some((r) => r.kind === "final_answer" && r.text?.trim()) && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
             <p className="font-mono text-body text-muted-foreground">{NO_ANSWER}{view.canMessage ? " Send a follow-up below to ask for one." : ""}</p>

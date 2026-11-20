@@ -1250,14 +1250,15 @@ class SqliteStore implements Store {
           await tx.run("DELETE FROM runs WHERE id = ?", runId);
         });
       },
-      reopen: async (runId, { kind, body = null }, { launchSealed } = {}) => {
+      reopen: async (runId, { kind, body = null }, { launchSealed, endedAt } = {}) => {
         const command = await db.transaction(async (tx) => {
           // Never a run of an agent being deleted opened again (its mark, read in this transaction).
           const of = await tx.get<{ agent_id: string }>("SELECT agent_id FROM runs WHERE id = ?", runId);
           if (of) await refuseDeleting(tx, of.agent_id);
           // Back to running, released: the epoch, the journal, cost_usd and metrics stay (its next turn is booked on what it
           // spent); the end's own fields go. Only an agentic run that ended completed, not imported, not a learning run.
-          const reopened = await tx.runCounted(`UPDATE runs SET ${REOPEN_SET} WHERE id = ? AND ${reopenableWhere(d)}`, runId);
+          const at = endedAt === undefined ? { sql: "", params: [] } : { sql: " AND ended_at = ?", params: [endedAt] };
+          const reopened = await tx.runCounted(`UPDATE runs SET ${REOPEN_SET} WHERE id = ? AND ${reopenableWhere(d)}${at.sql}`, runId, ...at.params);
           if (reopened === 0) throw new RunFinal(runId);
           // The message's launch secrets, with it: the claim that runs its turn reads them.
           if (launchSealed) await writeLaunchSealed(tx, runId, launchSealed);
@@ -1330,7 +1331,7 @@ class SqliteStore implements Store {
             }
           }
           // An update that made the run final: its other untaken rows are refused in this transaction, after its own takes.
-          await refuseLeftovers(tx, claim.runId, patch.state, at, d);
+          await refuseLeftovers(tx, claim.runId, patch.state, at, d, patch.keepsEnd === true);
           // The bind's save lease, in this same transaction as the sign_in_handed write just made (applyRunPatch, under
           // SIGN_IN_HANDED_LOCK): this run saves unless another run already holds one of the handed pointers (a running run,
           // or — within signInSettleMs of leaving running, a vendor's settle window — one that left running less than that
