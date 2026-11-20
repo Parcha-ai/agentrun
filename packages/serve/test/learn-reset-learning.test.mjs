@@ -250,10 +250,12 @@ test("Mode 2: the agent's learning folder on every Archil disk its runs used (it
   // What Mode 2 runs left on each disk: the agent's learning folder (learningKey) and each run's folder (runKey), beside
   // what is not the agent's.
   const dir = `agents/${agentDirOf("spread")}`;
-  const learning = [`${dir}/learning/corrections.md`, `${dir}/learning/workflows/answer/workflow.json`, `${dir}/learning/.git/HEAD`, `${dir}/learning/.agentrun/snapshot.json`];
-  const kept = { [own]: [`${dir}/runs/on-own/work/notes.md`, `agents/${agentDirOf("another")}/learning/corrections.md`], [customer]: [`${dir}/runs/on-customer/work/notes.md`, "shared/customers.csv"] };
+  // With what a learning exec spilled beside it (archil.ts spillFolderOf: "<root>.exec-out"), a write's input text left
+  // there by a failed cleanup.
+  const learning = [`${dir}/learning/corrections.md`, `${dir}/learning/workflows/answer/workflow.json`, `${dir}/learning/.git/HEAD`, `${dir}/learning/.agentrun/snapshot.json`, `${dir}/learning.exec-out/in-1/corrections.md`];
+  const kept = { [own]: [`${dir}/runs/on-own/work/notes.md`, `${dir}/runs/on-own/exec-out/spill.txt`, `agents/${agentDirOf("another")}/learning/corrections.md`, `agents/${agentDirOf("another")}/learning.exec-out/in-1/corrections.md`], [customer]: [`${dir}/runs/on-customer/work/notes.md`, "shared/customers.csv"] };
   for (const [id, disk] of disks) for (const key of [...learning, ...kept[id]]) await disk.putObject(key, Buffer.from("bytes"));
-  const learningOn = (id) => [...disks.get(id).files.keys(), ...disks.get(id).dirs].filter((key) => key === `${dir}/learning` || key.startsWith(`${dir}/learning/`));
+  const learningOn = (id) => [...disks.get(id).files.keys(), ...disks.get(id).dirs].filter((key) => [`${dir}/learning`, `${dir}/learning.exec-out`].some((root) => key === root || key.startsWith(`${root}/`)));
 
   // Archil off (its settings not saved yet): the disks can't be reached, so nothing is deleted: 503, for the next call.
   const off = await api("DELETE", "/agents/spread/learning");
