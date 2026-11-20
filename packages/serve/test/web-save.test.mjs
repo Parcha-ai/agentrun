@@ -810,3 +810,29 @@ test("one run may have at most BIG_WRITES_PER_RUN big writes held or waiting: th
   await until(() => gate.busy === 0 && gate.waiting === 0, "the run's end let go of all of it");
   assert.equal(existsSync(join(work, "media")), false);
 });
+
+test("the run's channel ending lets its waiting big writes leave the gate at once, while one of its writes is still being written", async (t) => {
+  const { work, ws } = await folders(t);
+  // The runner's write of the first file waits until the test lets it go: its slot stays held through the channel's end.
+  let finish;
+  const writing = new Promise((resolve) => (finish = resolve));
+  const real = ws.write.bind(ws);
+  const started = [];
+  ws.write = async (path, data) => { started.push(path); await writing; return real(path, data); };
+  const gate = saveSlots(1);
+  const run = await bigRun(t, gate, ws);
+  const { pieces } = await run.folder();
+  const bytes = async (_offset, length) => new Uint8Array(length);
+  const first = pieces.write("media/a.bin", 2 * PIECE, bytes);
+  await until(() => started.length === 1, "the first is being written");
+  const queued = [pieces.write("media/b.bin", 2 * PIECE, bytes), pieces.write("media/c.bin", 2 * PIECE, bytes)];
+  for (const write of [first, ...queued]) write.catch(() => {});
+  await until(() => gate.waiting === 2, "two wait behind it");
+  run.childSocket.destroy();
+  await until(() => gate.waiting === 0, `the run's end took its waiters out of the gate: ${gate.waiting}`);
+  assert.equal(gate.busy, 1, "the write in progress still holds its slot");
+  finish();
+  await until(() => gate.busy === 0, "and gives it back when it returns");
+  assert.deepEqual(started, ["media/a.bin"], "no waiter was ever written");
+  assert.equal(existsSync(join(work, "media", "b.bin")) || existsSync(join(work, "media", "c.bin")), false);
+});
