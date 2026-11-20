@@ -218,7 +218,7 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   nothing, said so. `trigger` names the trigger when the package has more than one schedule. The case's `prompt.md`
   holds `description` and `runs` alone; `previous` goes with neither `email` nor `feed`. What the run was handed is on
   its report as `handed_previous` (`kind`: `whole`, `carried`, `too_large` or `none`; `text`, as handed; `run_id`; and
-  for carried fields, `fields` and `dropped`, the count each array gave up). Only the eval's own server honours
+  for carried fields, `fields` and `dropped`, the count each carried array gave up, 0 for none). Only the eval's own server honours
   `previous`, so a case with it refuses `--server`.
 - A fake MCP server's fixture, one shape for every package:
   ```json
@@ -247,7 +247,8 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
     the check that a message stayed in the inbox on both layouts: a gmail label keeps it there, a folders move does not.
   - `handed`, on a `previous` case: the run was handed its trigger's last result as `expect` says (`whole`, `carried`,
     `too_large` or `none`), and, with `expect: carried`, `dropped` (`{items: 192}`) is how many first entries each
-    named carried array gave up (0 for none).
+    named carried array gave up (0 for none); a name that is no carried array the run was handed (a typo, a scalar)
+    fails the grader.
 
   On an `email` case any grader may say `layouts` (`[gmail]`, `[folders]`): it grades the runs of those layouts alone,
   where a package's right behaviour differs by server (on folders, `tool_used` `email_file` `not_called`; on gmail,

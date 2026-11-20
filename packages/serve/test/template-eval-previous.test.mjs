@@ -12,7 +12,8 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { CaseError, evalTemplate, readCases } from "../dist/template-eval.js";
 import { PREVIOUS_RESULT_MAX_BYTES, previousResultTooLarge, previousResultWords } from "../dist/trigger-targets.js";
-import { scratch } from "./support.mjs";
+import { asOwner, scratch, serve } from "./support.mjs";
+import { ADDRESS, mailbox, saved } from "./email-support.mjs";
 
 const FAUX = new URL("./fixtures/faux-template-eval.mjs", import.meta.url).pathname;
 
@@ -87,7 +88,7 @@ test("a previous case's run is handed its trigger's seeded last result: whole af
     // (b) Over the limit, its schema carrying items: only items, its first entries dropped to fit, the count named.
     big: {
       fixture: { results: [{ output: { items: BIG, summary: "five hundred listings" } }] },
-      graders: { "trimmed.md": handedGrader("carried", { items: DROPPED }), "miscounted.md": handedGrader("carried", { items: DROPPED + 1 }) },
+      graders: { "trimmed.md": handedGrader("carried", { items: DROPPED }), "miscounted.md": handedGrader("carried", { items: DROPPED + 1 }), "misspelled.md": handedGrader("carried", { itmes: 0 }) },
     },
     // (c) Its own run's schema carries summary alone, a scalar still over: nothing is handed, said so. The package's
     // schema (carrying items, which would fit) is not the one read: the producing run's revision's is.
@@ -124,6 +125,9 @@ test("a previous case's run is handed its trigger's seeded last result: whole af
   assert.ok(big.handed_previous.text.includes(`(items: the first ${DROPPED} entries dropped)`), big.handed_previous.text.slice(0, 600));
   assert.ok(big.handed_previous.text.endsWith(`\`\`\`json\n${JSON.stringify({ items: BIG.slice(DROPPED) }, null, 2)}\n\`\`\``), "the rest handed in their order, nothing of summary");
   assert.deepEqual([verdictOf(big, "trimmed.md").pass, verdictOf(big, "miscounted.md").pass], [true, false], JSON.stringify(big.graders));
+  // A misspelled field is no carried array the run was handed: it fails by name, never read as 0 dropped.
+  assert.equal(verdictOf(big, "misspelled.md").pass, false, JSON.stringify(big.graders));
+  assert.match(verdictOf(big, "misspelled.md").reason, /the grader counts itmes, which is no carried array it was handed \(items\)$/, verdictOf(big, "misspelled.md").reason);
   assert.match(verdictOf(big, "miscounted.md").reason, new RegExp(`items: the first ${DROPPED} entries dropped; the grader expects items: the first ${DROPPED + 1} dropped$`), verdictOf(big, "miscounted.md").reason);
 
   const scalar = run("scalar");
@@ -183,4 +187,19 @@ test("a previous case checks when it is read: its fixture's shape and each outpu
   assert.ok(problems(unscheduled).some((p) => /small\/fixtures\/previous\.json: a previous case starts its run through the package's schedule trigger, and the package has none/.test(p)), problems(unscheduled).join("\n"));
 
   await assert.rejects(evalTemplate({ dir: good, cases: ["small"], server: { baseUrl: "http://127.0.0.1:9", token: "x" } }), (error) => error instanceof CaseError && error.problems.some((p) => /evals\/small: previous seeds the case's earlier runs in the server's store on the eval's own server alone: run it without --server/.test(p)));
+});
+
+test("a previous case on an owner's folder whose server keeps an email account runs: it saves no mailbox, so the account is no reason to refuse it, and it stays", { timeout: 600_000 }, async (t) => {
+  const faux = await mailbox(t);
+  const data = join(await scratch(t), "agents");
+  const first = await serve(t, { data });
+  await saved(asOwner(first), faux);
+  await first.stop();
+  const dir = await digestPackage(t, { small: { fixture: { results: [{ output: { items: ["https://jobs.example.com/1"], summary: "one listing" } }] } } });
+  const report = await evalTemplate({ dir, data, serve: { faux: FAUX } });
+  assert.equal(report.cases[0].runs[0]?.status, "completed", JSON.stringify(report.cases[0], null, 1).slice(0, 2000));
+  assert.equal(report.cases[0].runs[0].handed_previous.kind, "whole", JSON.stringify(report.cases[0].runs[0].handed_previous));
+  const again = await serve(t, { data });
+  const account = await asOwner(again)("GET", "/settings/email");
+  assert.equal(account.body.address, ADDRESS, JSON.stringify(account.body));
 });

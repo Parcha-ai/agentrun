@@ -1171,7 +1171,8 @@ export async function evalTemplate(options: EvalOptions): Promise<Report> {
     }
     // On the owner's folder, an email case's fake mailbox would replace the account its server keeps (one account, saved
     // and removed per run): refused before anything runs, the account as it was.
-    if (clock && options.data !== undefined) {
+    // Only an email case saves a mailbox: a previous or feed case on the clock leaves the account alone.
+    if (cases.some((one) => one.email) && options.data !== undefined) {
       const kept = await api("GET", "/settings/email", undefined, owner).catch(() => undefined);
       const address = kept?.status === 200 && isObject(kept.body) ? kept.body.address : undefined;
       if (typeof address === "string" || kept?.status !== 200) {

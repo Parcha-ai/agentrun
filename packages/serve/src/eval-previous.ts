@@ -126,8 +126,8 @@ export async function seedPrevious(store: Store, fixture: PreviousFixture, { age
 }
 
 /** What a previous case's run was handed after its trigger's message: `whole`, the last result's output as it is;
- *  `carried`, its carried `fields` alone, `dropped` the entries each carried array gave up from its front (none listed
- *  when none did); `too_large`, nothing, said so; `none`, nothing at all. `text` is the words as handed, `run_id` the
+ *  `carried`, its carried `fields` alone, `dropped` the entries each carried array gave up from its front, by field, 0
+ *  for one that gave up none (a carried field that is not an array in both is not in it); `too_large`, nothing, said so; `none`, nothing at all. `text` is the words as handed, `run_id` the
  *  seeded run they name. */
 export type HandedPrevious = { kind: "whole" | "carried" | "too_large" | "none"; text: string; run_id?: string; fields?: string[]; dropped?: Record<string, number> };
 export const HANDED_KINDS = ["whole", "carried", "too_large", "none"] as const;
@@ -155,18 +155,22 @@ export function handedPrevious(content: string, seeded: readonly Seeded[]): Hand
   const output = (from?.output ?? {}) as Json;
   const dropped = Object.fromEntries(Object.entries(picked).flatMap(([field, value]) => {
     const was = output[field];
-    return Array.isArray(was) && Array.isArray(value) && was.length > value.length ? [[field, was.length - value.length]] : [];
+    return Array.isArray(was) && Array.isArray(value) ? [[field, Math.max(0, was.length - value.length)]] : [];
   }));
   return { ...handed, fields: Object.keys(picked), dropped };
 }
 
 /** A `handed` grader's verdict: the run was handed its previous result as `expect` says (and, for carried fields, each
- *  array in `dropped` gave up exactly that many first entries, 0 for none). */
+ *  array in `dropped` gave up exactly that many first entries, 0 for none). A field the grader counts that is no carried
+ *  array the run was handed (a misspelled name, a scalar) fails it by name: never read as 0 dropped. */
 export function handedVerdict(handed: HandedPrevious | undefined, expect: HandedPrevious["kind"], dropped?: Readonly<Record<string, number>>): { pass: boolean; reason: string } {
   if (!handed) return { pass: false, reason: "the run has no previous result seeded to read" };
   const said = handedWords(handed);
   if (handed.kind !== expect) return { pass: false, reason: `${said}; the grader expects ${KIND_WORDS[expect]}` };
-  const wrong = Object.entries(dropped ?? {}).filter(([field, n]) => (handed.dropped?.[field] ?? 0) !== n);
+  const lists = Object.keys(handed.dropped ?? {});
+  const unknown = Object.keys(dropped ?? {}).filter((field) => !lists.includes(field));
+  if (unknown.length) return { pass: false, reason: `${said}; the grader counts ${unknown.join(", ")}, which ${unknown.length === 1 ? "is" : "are"} no carried array it was handed (${lists.length ? lists.join(", ") : "none"})` };
+  const wrong = Object.entries(dropped ?? {}).filter(([field, n]) => handed.dropped![field] !== n);
   if (wrong.length) return { pass: false, reason: `${said}; the grader expects ${wrong.map(([field, n]) => `${field}: the first ${n} dropped`).join(", ")}` };
   return { pass: true, reason: said };
 }
@@ -181,6 +185,6 @@ const KIND_WORDS: Record<HandedPrevious["kind"], string> = {
 /** What a run was handed, in words. */
 function handedWords(handed: HandedPrevious): string {
   if (handed.kind !== "carried") return `the run was handed ${KIND_WORDS[handed.kind]}`;
-  const dropped = Object.entries(handed.dropped ?? {});
+  const dropped = Object.entries(handed.dropped ?? {}).filter(([, n]) => n > 0);
   return `the run was handed ${KIND_WORDS.carried} (${(handed.fields ?? []).join(", ")})${dropped.length ? `, ${dropped.map(([field, n]) => `${field}: the first ${n} ${n === 1 ? "entry" : "entries"} dropped`).join("; ")}` : ", nothing dropped"}`;
 }
