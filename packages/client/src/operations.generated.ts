@@ -1308,7 +1308,7 @@ export interface CreateAgentParams {
 }
 export type CreateAgentResponse = Agent;
 
-/** Delete an agent (DELETE /agents/{agent_id}). */
+/** Delete an agent another system owns, or purge an archived agent made here (DELETE /agents/{agent_id}). */
 
 /** Remove an agent's own Archil disk, and everything on it (DELETE /agents/{agent_id}/archil). */
 export type DeleteAgentArchilResponse = {
@@ -3375,7 +3375,7 @@ export interface CreateInlineRunParams {
 }
 export type CreateInlineRunResponse = Run;
 
-/** Delete a run (DELETE /runs/{run_id}). */
+/** Purge a run's content and keep its cost (DELETE /runs/{run_id}). */
 
 /** The files the run wrote (GET /runs/{run_id}/files). */
 export type ListRunFilesResponse = RunFileList;
@@ -5743,7 +5743,7 @@ export function resources(call: Call) {
       connectNative: (body: ConnectNativeBody, options?: RequestOptions): Promise<ConnectNativeResponse> => call("connectNative", [], body, undefined, options),
       /** Create an agent home (POST /agents). */
       create: (body: CreateAgentBody, params?: CreateAgentParams, options?: RequestOptions): Promise<CreateAgentResponse> => call("createAgent", [], body, params, options),
-      /** Delete an agent (DELETE /agents/{agent_id}). */
+      /** Delete an agent another system owns, or purge an archived agent made here (DELETE /agents/{agent_id}). */
       deleteAgent: (agentId: string, options?: RequestOptions): Promise<void> => call("deleteAgent", [agentId], undefined, undefined, options),
       /** Remove an agent's own Archil disk, and everything on it (DELETE /agents/{agent_id}/archil). */
       deleteAgentArchil: (agentId: string, options?: RequestOptions): Promise<DeleteAgentArchilResponse> => call("deleteAgentArchil", [agentId], undefined, undefined, options),
@@ -5957,7 +5957,7 @@ export function resources(call: Call) {
       computerRelease: (runId: string, body?: ReleaseRunComputerBody, options?: RequestOptions): Promise<ReleaseRunComputerResponse> => call("releaseRunComputer", [runId], body, undefined, options),
       /** Start a run of an agent another system owns, given inline (POST /runs). */
       createInlineRun: (body: CreateInlineRunBody, params?: CreateInlineRunParams, options?: RequestOptions): Promise<CreateInlineRunResponse> => call("createInlineRun", [], body, params, options),
-      /** Delete a run (DELETE /runs/{run_id}). */
+      /** Purge a run's content and keep its cost (DELETE /runs/{run_id}). */
       delete: (runId: string, options?: RequestOptions): Promise<void> => call("deleteRun", [runId], undefined, undefined, options),
       /** The files the run wrote (GET /runs/{run_id}/files). */
       files: (runId: string, options?: RequestOptions): Promise<ListRunFilesResponse> => call("listRunFiles", [runId], undefined, undefined, options),

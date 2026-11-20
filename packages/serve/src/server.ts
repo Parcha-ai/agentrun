@@ -88,12 +88,12 @@ import { triggerTargets, type TriggerTargetDeps } from "./trigger-targets.js";
 import { labelFilter, labelsIssues } from "./run-labels.js";
 import { listRuns as listRunsOverStore, readRun as readRunOverStore, runOfOrigin as runOfOriginOverStore } from "./store-reads/runs.js";
 import { runEntries } from "./store-reads/journal.js";
-import { metersOverStore } from "./store-reads/cap.js";
+import { metersOverStore, spendOverStore } from "./store-reads/cap.js";
 import { watchRun } from "./live/stream.js";
 import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { type AgenticBody, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type LaunchSealed, openRunLaunch, type RunMcpAuth, type RunRow, sealRunLaunch, type Store, StoreLaunchMissing, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
+import { type AgenticBody, type AgentRow, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type LaunchSealed, openRunLaunch, type RunMcpAuth, type RunRow, sealRunLaunch, type Store, StoreLaunchMissing, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
 import { agentDeleting, answerOf, logged } from "./agents.js";
 import { keepGrade } from "./runner/feedback-round.js";
 import { gradeRow, notAuditableOf } from "./runner/audit.js";
@@ -196,7 +196,7 @@ import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceVie
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, settingsComputerRoute } from "./computers.js";
 import { type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { writesHeld } from "./workspace.js";
-import { type AgentDeleteHost, type AgentDeleteStep, type DeleteLearning, deleteAgent, deleteRun, oneAtATime } from "./agent-delete.js";
+import { type AgentDeleteHost, type AgentDeleteStep, type DeleteLearning, deleteExternalAgent, oneAtATime, purgeAgent, purgeRun } from "./agent-delete.js";
 import { agentComputerHoldKey } from "./workspace/agent-computer.js";
 import { sdkRunKey } from "./sdk/runs.js";
 import { waitEndedKey } from "./browser-wait-ended.js";
@@ -527,6 +527,25 @@ async function tokenIn(file: string): Promise<{ token: string; made: boolean }> 
 
 const sha256Hex = (text: string) => createHash("sha256").update(text).digest("hex");
 const SESSION_S = SESSION_MS / 1000;
+
+const isoOrNull = (ms: number | null) => (ms === null ? null : new Date(ms).toISOString());
+/** 410 purged for a route of a purged run (Runs.purge): its tombstone, what is kept of it. `tools_usd`: its paid tools'
+ *  meter as /usage read it at its purge (null: unknown, or none read). */
+function purgedRun(row: RunRow): ApiError {
+  const meters = (row.metrics as { purged?: { meters?: { tools?: unknown } } } | null)?.purged?.meters;
+  return new ApiError("purged", `The run ${row.id} was purged: what it was given and did is gone, and its cost stays in every total.`, {
+    details: {
+      run_id: row.id, agent_id: row.agentId, state: row.state, started_at: isoOrNull(row.startedAt), ended_at: isoOrNull(row.endedAt),
+      cost_usd: row.costUsd ?? row.costAtMostUsd, cost_upper_bound: row.costUsd === null && row.costAtMostUsd !== null, tools_usd: typeof meters?.tools === "number" ? meters.tools : null,
+      purged_at: isoOrNull(row.purgedAt),
+    },
+  });
+}
+/** 410 purged for a route of a purged agent (Agents.purge): its tombstone. */
+const purgedAgent = (agent: AgentRow) =>
+  new ApiError("purged", `The agent ${agent.id} was purged: its definition, learning and runs' content are gone, and its runs' cost stays in every total.`, {
+    details: { agent_id: agent.id, archived_at: isoOrNull(agent.archivedAt), purged_at: isoOrNull(agent.purgedAt) },
+  });
 
 /** A route: `name` is its operationId in the OpenAPI document (openapi.ts); `capability`, when this server turns it off;
  *  `raw`, a route whose body is bytes and not JSON, which the page's session may send with any content type, still only
@@ -2337,8 +2356,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  a person's start (createRun) and a replay's (startLearnedWorkflowReplay), asks this before it reserves or writes anything. */
   async function needRunnableAgent(id: string): Promise<AgentEntry> {
     const entry = await needAgent(id);
-    // An agent being deleted (its delete archives it too), or another system's, archived only by its delete.
-    if (entry.agent.deleting || (entry.agent.archivedAt && entry.agent.externalRef !== null)) throw agentDeleting(id);
+    // Another system's agent is archived only by its delete (its archive route is refused).
+    if (entry.agent.archivedAt && entry.agent.externalRef !== null) throw agentDeleting(id);
     if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${id} is archived: unarchive it to run it.`, { details: { archived_at: new Date(entry.agent.archivedAt).toISOString() } });
     return entry;
   }
@@ -2400,7 +2419,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const agentWrite = <T>(id: string, work: () => Promise<T>): Promise<T> =>
     deleteInTurn(id, async () => {
       const entry = await needAgent(id);
-      if (entry.agent.deleting) throw agentDeleting(id);
+      if (entry.agent.archivedAt && entry.agent.externalRef !== null) throw agentDeleting(id);
       return work();
     });
   const AGAIN = "It starts no run meanwhile: send the DELETE again to finish it.";
@@ -2424,10 +2443,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const agentDeleteHost: AgentDeleteHost = {
     store,
     deleteLearning: learningDelete,
-    refuse: async (agentId) => {
-      await store.agents.markDeleting(agentId);
-      await triggers.agentArchived(agentId);
-    },
+    refuse: async (agentId) => void (await triggers.agentArchived(agentId)),
     cancel: async (runId) => {
       const moment = await momentOverStore(store, runId, viewDepsFor(ownOriginOf()));
       if (!moment) return true;
@@ -2492,6 +2508,21 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     // The replay runs of its input and a learning run it names (the store's), and its audit's shadow run.
     madeFrom: async (runId) => [...(await store.runs.madeFrom(runId)), shadowRunId(runId)],
     forgetGrades: (agentId, runId) => dropGrades(store.settings, agentId, runId),
+    // /usage's meters and a live read's spend, from its journal, as they read now (store-reads/cap.ts), and how its
+    // learning ended as /stats counts it (its state and reason alone).
+    kept: async (runId) => {
+      const spend = await spendOverStore(store, runId, ctx);
+      const learning = await runLearningEnd(store, runId);
+      return {
+        meters: await metersOverStore(store, runId, ctx),
+        spend: { usd: spend.usd, ...(spend.basis === undefined ? {} : { basis: spend.basis }) },
+        learning: learning ? { state: learning.state, reason: learning.reason } : null,
+      };
+    },
+    turnOver: async (runId) => {
+      const read = await runStatusState(runId);
+      return read.state === "idle" && read.status !== "paused";
+    },
     waitMs: options.agentDeleteWaitMs ?? 30_000,
     pollMs: 200,
     ...(options.agentDeleteAt ? { at: options.agentDeleteAt } : {}),
@@ -4009,6 +4040,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       authFailed(`/v2${path}`, "approve_without_session");
       throw new ApiError("forbidden", owner ? "Answering a tool call's approval takes the owner's password sign-in in the console, never a token." : "Answering a tool call's approval takes the owner's password sign-in, and this server has no accounts (AGENTRUN_ACCOUNTS=0).");
     }
+    // Purging a run or an agent, or deleting another system's agent, cannot be undone: the owner's session or the API
+    // token. A console session counts as the owner's only where it does for a secret (secret-writes.ts: accounts off on a
+    // loopback-bound server); bound off loopback with accounts off, whoever opened the console is no owner. With no
+    // credential at all it is 401, as every route is.
+    if ((found.name === "deleteRun" || found.name === "deleteAgent") && byConsoleSession(req) && !writesSecretsAllowed(req, { accounts: owner !== undefined, loopbackBound: isLoopback(host) })) {
+      authFailed(`/v2${path}`, "delete_without_owner");
+      throw new ApiError("forbidden", "Deleting a run or an agent takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token.");
+    }
     // Saving, replacing or removing a secret (secret-writes.ts): the one check. Who may is mayWriteSecrets' alone (the
     // owner's session); which writes are secret is each plane's registered predicate, read from the body, so a token's
     // non-secret edit on the same route still goes through. A body that does not read counts as the plane says of none.
@@ -4079,6 +4118,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     if (["discoverNative","connectNative"].includes(found.name) && (options.apiOnly || options.publicUrl || !isLoopback(host))) throw new ApiError("forbidden", "Native connections require AgentRun on the source machine, bound to loopback without a public URL. A hosted browser cannot discover your laptop.");
     const [, first, second] = found.pattern.exec(path)!;
     const id = first ? decodeURIComponent(first) : "";
+    // A purged run or agent (DELETE /runs/{id}, /agents/{id}): every route of it but its DELETE answers 410 purged, with
+    // its tombstone in the details.
+    if (id && ID.test(id)) {
+      if (found.name !== "deleteRun" && found.pattern.source.startsWith("^\\/runs\\/([^/]+)")) {
+        const row = await store.runs.get(id);
+        if (row && row.purgedAt !== null) throw purgedRun(row);
+      }
+      if (found.name !== "deleteAgent" && found.pattern.source.startsWith("^\\/agents\\/([^/]+)")) {
+        const agent = await store.agents.get(id);
+        if (agent && agent.purgedAt !== null) throw purgedAgent(agent);
+      }
+    }
     switch (found.name) {
       case "startSdkRun": {
         if(!req.headers["idempotency-key"])throw new ApiError("bad_request","An SDK run requires Idempotency-Key so a retried start never duplicates execution.");
@@ -4229,11 +4280,14 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, agentView(moved, linkOrigin(req), await agentExtra(moved)), { etag: etagOf(moved) });
       }
       case "deleteAgent": {
-        // The agent deleted whole, one made here or another system's (agent-delete.ts); one delete of an agent at a time,
-        // the agent read in its turn, so a DELETE after one that finished is 404.
+        // Another system's agent deleted whole; one made here purged once archived (agent-delete.ts). One delete of an agent
+        // at a time, the agent read in its turn, so a DELETE after one that finished is 404 (deleted) or 204 (purged).
         await deleteInTurn(id, async () => {
-          await needAgent(id);
-          await deleteAgent(agentDeleteHost, id);
+          const { agent } = await needAgent(id);
+          if (agent.purgedAt !== null) return;
+          if (agent.externalRef !== null) return deleteExternalAgent(agentDeleteHost, id);
+          if (agent.archivedAt === null) throw new ApiError("agent_not_archived", `The agent ${id} is not archived: archive it first (POST /v2/agents/${id}/archive), which stops new runs and turns its triggers off, then send the DELETE again. Nothing was purged.`);
+          await purgeAgent(agentDeleteHost, id);
         });
         res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
         return void res.end();
@@ -4241,10 +4295,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "archiveAgent":
       case "unarchiveAgent": {
         // An agent another system owns is that system's to keep or drop: archiving it here is refused, as an edit is.
-        const before = (await needAgent(id)).agent;
-        refuseExternal(before);
-        // An agent being deleted stays archived until it is gone: its delete's next DELETE finishes it.
-        if (before.deleting) throw agentDeleting(id);
+        refuseExternal((await needAgent(id)).agent);
         // No run sweep on archive: a runner reads an archived agent's run rows directly, nothing to sweep.
         // The engine archives (or unarchives) the agent itself: archived, every trigger that runs as it turns off with
         // agent_archived in that same store transaction; unarchived, none turns on. Never archived first by another path,
@@ -4339,11 +4390,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, { run_id: run.id, max_cost_usd: cap, resumed, ...(messageId ? { message_id: messageId } : {}), ...(note ? { note } : {}), status, state });
       }
       case "deleteRun": {
-        // In its agent's delete turn (an agent's delete, or another delete of one of its runs, finishes first), the run
-        // read in that turn, so a DELETE after one that finished is 404.
+        // In its agent's delete turn (an agent's delete or purge, or another purge of one of its runs, finishes first), the
+        // run read in that turn, so a DELETE after one that finished is 204 again (purgeRun: a purged run is no work).
         const row = ID.test(id) ? await store.runs.get(id) : undefined;
         if (!row) throw new ApiError("not_found", `no run ${id}`);
-        await deleteInTurn(row.agentId, () => deleteRun(agentDeleteHost, id));
+        await deleteInTurn(row.agentId, () => purgeRun(agentDeleteHost, id));
         res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
         return void res.end();
       }

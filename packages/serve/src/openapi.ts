@@ -1793,11 +1793,12 @@ const FILE_LIST = { type: "object", additionalProperties: false, required: ["fil
 const EXTENSIONS: Record<string, Record<string, Json>> = {
   "/agents/{agent_id}": {
     delete: {
-      operationId: "deleteAgent", tags: ["agents"], summary: "Delete an agent",
+      operationId: "deleteAgent", tags: ["agents"], summary: "Delete an agent another system owns, or purge an archived agent made here",
       description:
-        "Deletes an agent whole, one made here or one made by an inline run (`POST /runs` with `external`), archived or not: its runs and everything kept of them (journals, launch records, messages, files), its triggers, its learning, its saved sign-ins, its own computer and disk, its revisions and the agent. A run whose launch named an Archil disk (`archil_disk`, the caller's) has its own folder there deleted; the disk and everything else on it are kept, and a disk Archil says is gone has nothing left to delete. Shared things (MCP servers, keys, computers) are kept. In order: the agent refuses new runs (a mark in the store that outlives a restart: a run, an inline run, a trigger's firing, an SDK run or a message that would open one of its runs again is `409 agent_not_runnable`, as is a new trigger of it, off too, a trigger moved to it or turned on, and a write to its home or learning), and its runs still going are cancelled and waited for; then its learning (its learning folder, and its promotions and grades); then the rest. `204` when it is gone; a second `DELETE` is `404`. Deleting one agent touches no other: another agent's runs, learning and folders are kept. While it is being deleted its archive and unarchive are `409 agent_not_runnable`. `409 runs_in_flight` (a run did not end in time, or only its application ends it) and `409 learning_busy` (learning work in flight; each names what in `details.runs`) leave the agent refusing runs, as does `503 unavailable` while something it owns elsewhere is not deleted there yet: a trigger's registration upstream (Composio), a saved sign-in at its vendor, its own computer at its provider, its Archil disk (Archil failing or not reached, a run of another agent on it, or Archil off on this server), or a run's folder on a disk its launch named (Archil failing, a computer still holding the folder, or Archil off), or a trigger that reached the agent after its triggers were removed. Each is deleted there before the record here that names it, so none is left behind: send the `DELETE` again, which also finishes a delete that stopped part way.",
+        "An agent made here, once archived (`POST /agents/{agent_id}/archive`), is purged by the rule `DELETE /runs/{run_id}` purges a run by: its revisions' content (instructions, skills, notes), its name and description, its learning, its triggers, its saved sign-ins, its own computer, disk and folders go, and each of its runs is purged (a tombstone, its cost kept). The agent's row stays as its tombstone: every route of it answers `410 purged` with `details` {agent_id, archived_at, purged_at}, and no list shows it. What its runs cost stays in `/usage` and `/stats`. `204` when it is purged; a second `DELETE` is `204` too. An agent made here that is not archived is `409 agent_not_archived`, nothing purged; `409 run_not_final` while a run of it is live (`details.runs`), nothing purged; `503 unavailable` as below, the next `DELETE` finishing it. Purging one agent touches no other. Deleting or purging takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token: any other console session is `403 forbidden`.\n\n" +
+        "An agent made by an inline run (`POST /runs` with `external`) is deleted whole, archived or not: its runs and everything kept of them (journals, launch records, messages, files), its triggers, its learning, its saved sign-ins, its own computer and disk, its revisions and the agent. A run whose launch named an Archil disk (`archil_disk`, the caller's) has its own folder there deleted; the disk and everything else on it are kept, and a disk Archil says is gone has nothing left to delete. Shared things (MCP servers, keys, computers) are kept. In order: the agent refuses new runs (a mark in the store that outlives a restart: a run, an inline run, a trigger's firing, an SDK run or a message that would open one of its runs again is `409 agent_not_runnable`, as is a new trigger of it, off too, a trigger moved to it or turned on, and a write to its home or learning), and its runs still going are cancelled and waited for; then its learning (its learning folder, and its promotions and grades); then the rest. `204` when it is gone; a second `DELETE` is `404`. `409 runs_in_flight` (a run did not end in time, or only its application ends it) and `409 learning_busy` (learning work in flight; each names what in `details.runs`) leave the agent refusing runs, as does `503 unavailable` while something it owns elsewhere is not deleted there yet: a trigger's registration upstream (Composio), a saved sign-in at its vendor, its own computer at its provider, its Archil disk (Archil failing or not reached, a run of another agent on it, or Archil off on this server), or a run's folder on a disk its launch named (Archil failing, a computer still holding the folder, or Archil off), or a trigger that reached the agent after its triggers were removed. Each is deleted there before the record here that names it, so none is left behind: send the `DELETE` again, which also finishes a delete that stopped part way.",
       parameters: [AGENT_ID],
-      responses: { "204": { description: "Deleted." }, ...errors(401, 404, 409, 429, 500, 503) },
+      responses: { "204": { description: "Deleted, or purged." }, ...errors(401, 403, 404, 409, 429, 500, 503) },
       "x-agentrun-serve": "agentdelete/1",
     },
   },
@@ -2057,12 +2058,12 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   "/runs/{run_id}": {
     delete: {
-      operationId: "deleteRun", tags: ["runs"], summary: "Delete a run",
+      operationId: "deleteRun", tags: ["runs"], summary: "Purge a run's content and keep its cost",
       description:
-        "Deletes a run that has ended whole: its row, its journal and timeline, its launch record, its messages and commands, its outputs and files, the answers kept under its idempotency keys, its folders (on this machine, and its own folder on an Archil disk, its agent's or one its launch named; the disk and everything else on it are kept), and the grades its agent keeps of it. The runs made from it go with it, each the same way: its audit's shadow run, the replay runs of its input and a learning run its kept learning names. Its agent, the agent's other runs and what its agent learned are kept: a promotion's record and the learning folder's history may still name the run (delete the agent to remove what it learned). `/usage` and `/stats` read the runs there, so their totals drop by the run's cost; a trigger whose last run it was keeps no link to it. `204` when it is gone; a second `DELETE` is `404`. `409 run_not_final` while the run, or a run made from it, has not ended (`details.runs`): nothing is deleted; cancel it first (`POST /runs/{run_id}/cancel`). `503 unavailable` while its folder on an Archil disk is not deleted there yet (Archil failing or off, a computer still holding the folder): the run is kept, and the `DELETE` sent again finishes it, as it finishes a delete that stopped part way.",
+        "Purges a run that is not live: what it was given and what it did go, what it cost stays. Gone: its launch record (its input and prompt), its journal and timeline, its messages and commands, its outputs and files, the answers kept under its idempotency keys, its folders (on this machine, and its own folder on an Archil disk, its agent's or one its launch named; the disk and everything else on it are kept), its settings, the grades its agent keeps of it, and its kept learning's content (its learning's end, merged or dropped, stays, as `/stats` counts it). Its row stays as its tombstone: every route of it answers `410 purged` with `details` {run_id, agent_id, state, started_at, ended_at, cost_usd, cost_upper_bound, tools_usd, purged_at}, and no run list shows it. `/usage`, `/stats` and the spend a cap reads sum it as before: no total moves. The runs made from it are purged with it, each the same way: its audit's shadow run, the replay runs of its input and a learning run its kept learning names. Its agent, the agent's other runs and what its agent learned are kept: a promotion's record and the learning folder's history may still name the run's id. `204` when it is purged; a second `DELETE` is `204` too; a run this server never had is `404`. Live (queued, working, waiting on a person or an approval, or held by a runner): `409 run_not_final` (`details.runs`, the run or each run made from it that is live), nothing purged; cancel it first (`POST /runs/{run_id}/cancel`). A run that ended and takes a follow-up (`idle`), or that a person stopped, is not live; one that reads so before its runner has written it ended is waited for (up to 30 seconds), then purged. `503 unavailable` while its folder on an Archil disk is not deleted there yet (Archil failing or off, a computer still holding the folder): the run is not purged, and the `DELETE` sent again finishes it, as it finishes a purge that stopped part way. Takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token: any other console session is `403 forbidden`.",
       parameters: [ref("parameters/RunId")],
-      responses: { "204": { description: "Deleted." }, ...errors(401, 404, 409, 429, 500, 503) },
-      "x-agentrun-serve": "rundelete/1",
+      responses: { "204": { description: "Purged, now or before." }, ...errors(401, 403, 404, 409, 429, 500, 503) },
+      "x-agentrun-serve": "purge/1",
     },
     patch: {
       operationId: "raiseRunCap", tags: ["runs"], summary: "Raise a run's spend cap",
@@ -4210,8 +4211,9 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   const own = Object.keys(ERROR_STATUS).filter((code) => Array.isArray(errorCode.enum) && !errorCode.enum.includes(code));
   if (own.length) {
     errorCode.enum = [...errorCode.enum!, ...own];
-    // The newest addition that widened it: a client that validates against runners/1 refuses run_not_final.
-    errorCode["x-agentrun-serve"] = "rundelete/1";
+    // The newest addition that widened it: a client that validates against runners/1 refuses run_not_final, purged and
+    // agent_not_archived.
+    errorCode["x-agentrun-serve"] = "purge/1";
     fields.push(...own.map((code) => `ErrorCode.${code}`));
   }
   // A start (or a message) while every runner here refused to claim any run: 503 runner_refused, not retryable, in the
@@ -4250,7 +4252,21 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
     composio_in_use: closed({ triggers: { type: "array", items: closed({ id: { type: "string" }, name: { type: "string" } }), description: "The composio triggers that use it." } }),
     runs_in_flight: closed({ runs: { type: "array", items: { type: "string" }, description: "The agent's runs not ended (DELETE /agents/{agent_id})." } }),
     learning_busy: closed({ runs: { type: "array", items: { type: "string" }, description: "What of the agent's learning is at work (DELETE /agents/{agent_id}): each run of it not ended (its compile turn, a check's replay or an audit's shadow among them), by its id." } }),
-    run_not_final: closed({ runs: { type: "array", items: { type: "string" }, description: "What has not ended (DELETE /runs/{run_id}): the run itself, or each run made from it not ended, by its id." } }),
+    run_not_final: closed({ runs: { type: "array", items: { type: "string" }, description: "What is live (DELETE /runs/{run_id}, and an archived agent's DELETE /agents/{agent_id}): the run itself, each run made from it that is live, or each live run of the agent, by its id." } }),
+    purged: {
+      oneOf: [
+        closed({
+          run_id: { type: "string" }, agent_id: { type: "string" },
+          state: { enum: ["ended", "stopped", "failed"], description: "The run's state as its row kept it: only a run that is not live is purged." },
+          started_at: { type: "string", format: "date-time" }, ended_at: { type: ["string", "null"], format: "date-time" },
+          cost_usd: { type: ["number", "null"], minimum: 0, description: "What it cost, as `/usage` sums it: its known cost, else its upper bound." },
+          cost_upper_bound: { type: "boolean", description: "`cost_usd` is an upper bound, not a known cost." },
+          tools_usd: { type: ["number", "null"], minimum: 0, description: "What its paid tools cost, as `/usage`'s tools meter read it; null when none was read." },
+          purged_at: { type: "string", format: "date-time" },
+        }, "A purged run's tombstone (every route of /runs/{run_id})."),
+        closed({ agent_id: { type: "string" }, archived_at: { type: ["string", "null"], format: "date-time" }, purged_at: { type: "string", format: "date-time" } }, "A purged agent's tombstone (every route of /agents/{agent_id})."),
+      ],
+    },
   };
   const extensions: string[] = [];
   for (const [path, item] of Object.entries(EXTENSIONS)) {
@@ -4259,6 +4275,17 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
       extensions.push(`${method.toUpperCase()} ${path}`);
     }
   }
+  // purge/1: every route of a purged run or agent (DELETE /runs/{run_id}, DELETE /agents/{agent_id}) answers 410 purged
+  // with its tombstone, its DELETE alone 204 again. A contract operation that gains the 410 is changed, and says so.
+  (doc.components as Json).responses = {
+    ...((doc.components as Json).responses as Record<string, Json>),
+    Gone: {
+      description: "`purged`: the run or agent was purged (`DELETE /runs/{run_id}`, `DELETE /agents/{agent_id}`); `details` is its tombstone.",
+      headers: { "X-Request-Id": ref("headers/RequestId") },
+      content: { "application/json": { schema: ref("schemas/Error") } },
+      "x-agentrun-serve": "purge/1",
+    },
+  };
   // examples/1: a working body for the operations in REQUEST_EXAMPLES, on the JSON media type; a contract operation that
   // gains one is changed, and says so.
   for (const [path, item] of Object.entries(doc.paths)) {
@@ -4292,6 +4319,23 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   Object.assign(doc.paths, hooks, NATIVE_PATHS, SDK_PATHS, OBSERVATION_PATHS);
   ((doc.info["x-agentrun-serve"] as Json).extensions as string[]).push(...Object.entries({...NATIVE_PATHS,...SDK_PATHS,...OBSERVATION_PATHS}).flatMap(([path,item])=>Object.keys(item).map(method=>`${method.toUpperCase()} ${path}`)));
   ((doc.info["x-agentrun-serve"] as Json).extensions as string[]).push(...Object.keys(hooks).map((path) => `POST ${path}`));
+  // purge/1, on every operation there is by now (each rewritten, never a shared constant's own object changed); `changed`
+  // is info's own list.
+  for (const [path, item] of Object.entries(doc.paths)) {
+    if (!/^\/(runs\/\{run_id\}|agents\/\{agent_id\})(\/|$)/.test(path)) continue;
+    const ops = { ...item } as Record<string, Json & { responses?: Record<string, Json> }>;
+    for (const [method, op] of Object.entries(ops)) {
+      if (method === "parameters" || method.startsWith("x-") || !op.responses) continue;
+      if (op.operationId === "deleteRun" || op.operationId === "deleteAgent") continue;
+      ops[method] = { ...op, responses: { ...op.responses, "410": ref("responses/Gone") } };
+      if (op["x-agentrun-serve"] !== undefined) continue;
+      // An operation whose responses an earlier addition changed keeps that one's mark, as a schema two additions widen does.
+      const marks = (op["x-agentrun-serve-changed"] ?? {}) as Json;
+      ops[method]!["x-agentrun-serve-changed"] = { ...marks, responses: marks.responses ?? "purge/1" };
+      if (!changed.includes(`${method.toUpperCase()} ${path}`)) changed.push(`${method.toUpperCase()} ${path}`);
+    }
+    doc.paths[path] = ops;
+  }
   return doc;
 }
 

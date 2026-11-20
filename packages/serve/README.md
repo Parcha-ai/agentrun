@@ -2886,14 +2886,14 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | `GET /agents/{id}/revisions` | The agent's revisions, newest first: `revision`, `version`, `parent`, `kind`, `current`, `note`, `created_at` and the `definition`. |
 | `POST /agents/{id}/current` | `{revision}`: one of the agent's revisions becomes current again. |
 | `POST /agents/{id}/archive`, `POST /agents/{id}/unarchive` | [Archiving](#archiving): hides the agent and its runs from the lists, or shows them again. Answers the agent, with `archived_at`. |
-| `DELETE /agents/{id}` | This server's own route (`x-agentrun-serve: "agentdelete/1"`): [deletes an agent](#deleting-an-agent-or-a-run) whole, one made here or one an inline run made, archived or not. `204`. |
-| `DELETE /runs/{id}` | This server's own route (`x-agentrun-serve: "rundelete/1"`): [deletes a run that has ended](#deleting-an-agent-or-a-run) whole, with the runs made from it. `204`; a run not ended is `409 run_not_final` (cancel it first), nothing deleted. |
+| `DELETE /agents/{id}` | This server's own route (`x-agentrun-serve: "agentdelete/1"`): [deletes an agent another system owns](#deleting-an-agent-another-system-owns) (one an inline run made) whole, and [purges](#purging-a-run-or-an-agent-made-here) an archived agent made here. `204`; an agent made here not archived is `409 agent_not_archived`. |
+| `DELETE /runs/{id}` | This server's own route (`x-agentrun-serve: "purge/1"`): [purges](#purging-a-run-or-an-agent-made-here) a run that is not live, its cost kept in every total. `204`, again on a second `DELETE`; a live run is `409 run_not_final`, and every route of a purged run is `410 purged`. |
 | `DELETE /agents/{id}/sign-ins/{key}` | This server's own route (`x-agentrun-serve: "signins/1"`): forgets one of the agent's [saved sign-ins](#saved-sign-ins), at its vendor and here. `409 sign_in_held` while a run holds its save lease, or while a run it was handed is still going. |
 | `POST /agents/{id}/runs`, `GET /agents/{id}/runs` | A run of the current revision, or of `revision`. An agentic run's input is `{content: string}`; a workflow run's is what its workflow's input schema takes. `file_ids` names [uploaded](#uploads) files, copied into the run's `work/inputs/` before it starts and named in its first message. `labels` (this server's own, `runlabels/1`) is the caller's map of its own strings for the run: at most 16 keys, each 1 to 63 letters, digits, `.`, `_`, `-` or `/` starting with a letter or a digit, each value 1 to 256 characters with no control character; kept as given, served as `labels` on every read of the run (`{}` when none), never read by the server otherwise, so no place for a secret. The agent's runs, newest first; `label` filters them as `GET /runs` does. |
 | `GET /runs` | Every agent's runs, newest first, a page of at most 100; `agent`, `revision` and `status` narrow it, `label=<key>:<value>` (`runlabels/1`, split at the first `:`, once per request) keeps the runs holding that label, and `archived=true` lists only archived ones. A failed run's summary carries its `error`, and a waiting run's its `pending`. |
 | `GET /runs/{id}` | The run: its revision, kind, status, state, result, error, `pending` (this server's own, `pending/1`: what a waiting run waits on, by `kind`: `{kind: "question", question, asked_at}` for a question it asked a person; `approval` for a tool call held for a person's approval, with the tool, its arguments and its price; `budget` for a run paused at its cap ([a run paused at its cap](#a-run-paused-at-its-cap)); `{kind: "browser", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner in its browser; or `{kind: "computer", computer: "desktop" \| "phone", instruction, completion_condition, asked_at, expires_at}` for its agent's ask for the owner on its desktop or phone; else null, a stopped turn's included) and cost (`basis` `reported`, `estimate` or `unpriced`, with its model requests' `tokens`: [A run's cost](#a-runs-cost-its-tokens-and-its-basis); $0 before its first model request, a cancelled run's included). |
 | `GET /runs/{id}/timeline` | JSON pages with the change-number cursor (`after`, `next_after`, `reset`, `drop`, `has_more`, `final`, `wait_ms` long poll, and this server's own `limit`, 1 to 500 rows a page, default 500), or server-sent events with `Accept: text/event-stream` (`id` is the cursor, `Last-Event-ID` resumes). Rows sort by `seq`; the usage row (`Cost so far`), the run's running total, is always the last row, and moves to the end when a row comes after it. |
-| `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (it waits for one when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable` (a run of an agent [being deleted](#deleting-an-agent-or-a-run), `409 agent_not_runnable`); a workflow run takes none (`501`). |
+| `POST /runs/{id}/messages` | To an agentic run: `steer` while the agent works, `answer` when it asked the person, `follow_up` after a stop or after it completed: a completed run opens again, the same run on its own session and store, takes a place under `--max-runs` (it waits for one when none is free), and completes again. A failed or cancelled run, an archived run and a run of an archived agent are `409 not_continuable` (a run of an agent [being deleted](#deleting-an-agent-another-system-owns), `409 agent_not_runnable`); a workflow run takes none (`501`). |
 | `POST /runs/{id}/stop`, `POST /runs/{id}/cancel` | Stop ends an agentic run's turn and leaves the run `input_required` and idle. Cancel ends a run `cancelled` once its process has exited. |
 | `POST /runs/{id}/archive`, `POST /runs/{id}/unarchive` | [Archiving](#archiving) one run. Answers the run, with `archived_at`. |
 | `GET /runs/{id}/files`, `GET /runs/{id}/files/{path}` | The files under the run's `work/`, raw, one byte range at a time on asking (`Range`, `206`); and its screen recordings under `recordings/` ([A video of each run](#computers)). |
@@ -2974,8 +2974,8 @@ serves these routes alone:
   `GET /runs`), timeline, messages, stop, cancel, kill (`501` here, as above) and cap raise (`PATCH /runs/{id}`);
 - its files (`GET /runs/{id}/files`, `GET /runs/{id}/files/{path}`) and [uploads](#uploads) (`/files`);
 - an agent's Archil disk (`GET` and `DELETE /agents/{id}/archil`);
-- the [delete of an agent](#deleting-an-agent-or-a-run) (`DELETE /agents/{id}`), for the backend whose inline runs
-  made it, and of a run (`DELETE /runs/{id}`);
+- the [delete of an agent another system owns](#deleting-an-agent-another-system-owns) (`DELETE /agents/{id}`), for
+  the backend whose inline runs made it;
 - the computer settings' two reads, for a backend to check before it launches: `GET /computers` (each provider, its
   key names and whether each is saved, and whether it is ready) and `GET /workspace/archil` (whether runs' folders are
   on Archil, and whether its account key is saved). Neither answers a key's value. Their writes, tests and key choices
@@ -3301,8 +3301,9 @@ typed answers and their probabilities.
 
 ## Archiving
 
-Archiving keeps an agent or a run with its history, and hides it; [deleting](#deleting-an-agent-or-a-run) removes it
-(an agent another system owns is never archived here, only deleted). These routes are this server's own, outside the `/v2` contract, like `GET /runs` and an agent's
+Archiving an agent made here or a run hides it and keeps everything of it; [purging](#purging-a-run-or-an-agent-made-here)
+removes what it was given and did, its cost kept, and an agent made here is purged only once archived (an agent another
+system owns is [deleted](#deleting-an-agent-another-system-owns), and is never archived here). These routes are this server's own, outside the `/v2` contract, like `GET /runs` and an agent's
 revisions; capabilities list them in `features.archive`.
 
 - `POST /v2/agents/{id}/archive` hides the agent and its runs from `GET /agents`, `GET /runs` and
@@ -3322,28 +3323,42 @@ revisions; capabilities list them in `features.archive`.
   already going when its agent is archived keeps going.
 - The store keeps an archive as `archived_at` on the agent's or the run's row, null when it is not archived.
 
-## Deleting an agent or a run
+## Purging a run or an agent made here
 
-An owner may have to delete what an agent or a run read, and an agent made by an inline run (`POST /v2/runs` with
-`external`) belongs to the system that sent it, which may have to delete what it sent. Both deletes take the API token,
-as every route does. Deleting one agent or run touches no other agent: the other agent's runs, learning and folders are kept.
+An owner must be able to delete what a run read. `DELETE /v2/runs/{id}` purges a run that is not live; what it cost
+stays in every total.
 
-`DELETE /v2/runs/{id}` deletes a run that has ended whole: its row, journal and timeline, launch record, messages and
-commands, origin, live view, channel posts, kept learning proposals, files and scratch folders (its own folder on an
-Archil disk too, its agent's or one its launch named; the disk is kept), the answers kept under its idempotency keys,
-and the grades its agent keeps of it. The runs made from it go first, each the same way: its audit's shadow run, the
-replay runs of its input and a learning run its kept learning names. Kept: its agent and the agent's other runs, and what the agent learned from it (a
-promotion's record and the learning folder's history may still name the run; delete the agent to remove them). `/usage`
-and `/stats` read the runs there, so their totals drop by the run's cost; a trigger whose last run it was, and its
-firings, keep no link to it. `204` once it is gone; a second `DELETE` is `404`. A run not ended, or one with a run made
-from it not ended, is `409 run_not_final` (`details.runs`), nothing deleted: cancel it first. `503 unavailable` while its
-folder on an Archil disk is not deleted there yet keeps the run; the `DELETE` sent again finishes it, as it finishes one
-stopped part way (the run's row goes last).
+| Purged | Kept |
+| --- | --- |
+| Its launch record (input, prompt), journal and timeline, messages and commands, outputs and files, the answers kept under its idempotency keys, its folders (here, and its own folder on an Archil disk; the disk is kept), its settings, its agent's grades of it, and its kept learning's content | Its row, as its tombstone: id, agent, state, started and ended, `cost_usd` (an upper bound when that is all it has), its paid tools' cost, its purge time, how its learning ended (for `/stats`), and the spend figures `/usage` and a cap read from its journal |
 
-`DELETE /v2/agents/{id}` deletes an agent whole, archived or not, in three steps, each done before the next:
+- Every route of a purged run is `410 purged`, `details` its tombstone; no run list shows it. `/usage`, `/stats` and
+  the spend a cap reads are as they were. A second `DELETE` is `204`; a run never here is `404`.
+- The runs made from it are purged with it, each a tombstone: its audit's shadow run, the replay runs of its input,
+  and a learning run its kept learning names.
+- A live run (queued, working, waiting on a person or an approval, or held by a runner), or a live run made from it,
+  is `409 run_not_final` (`details.runs`), nothing purged: cancel it first. A run that ended and takes a follow-up
+  (idle), or that a person stopped, is not live. Such a run reads idle a moment before its runner writes it ended: a
+  `DELETE` then waits for that, up to 30 seconds, and purges it.
+- `503 unavailable` while its folder on an Archil disk is not deleted there yet: the run is not purged, and the next
+  `DELETE` finishes it, as it finishes a purge that stopped part way (its purge time is set last).
+- Its agent's other runs and what the agent learned are kept: a promotion's record and the learning folder's history
+  may still name the run's id.
+- It takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token;
+  any other console session is `403 forbidden`, no credential `401`.
 
-1. The agent refuses new runs: a mark is kept in the store, so the refusal outlives a restart, then it is archived with
-   its triggers turned off in the same write (its archive and unarchive are refused until it is gone). From then a run of
+An agent made here is purged the same way once archived: `DELETE /v2/agents/{id}`. Its revisions' content, name and
+description, learning, triggers, saved sign-ins, own computer, disk and folders go, and each of its runs is purged.
+Its row stays as its tombstone (id, archive and purge times): every route of it is `410 purged`, and no list shows it.
+Not archived: `409 agent_not_archived`. A live run of it: `409 run_not_final`. Purging one agent touches no other.
+
+## Deleting an agent another system owns
+
+An agent made by an inline run (`POST /v2/runs` with `external`) belongs to the system that sent it, which may have to
+delete what it sent. `DELETE /v2/agents/{id}` deletes such an agent whole, in three steps, each done before the next:
+
+1. The agent refuses new runs: its `archived_at` is set (only this delete sets it on such an agent, whose archive route
+   is refused) and its triggers are turned off in the same write, so the refusal outlives a restart. From then a run of
    it, an inline run of its reference, a trigger's firing, an SDK run and a message that would open one of its finished
    runs again are `409 agent_not_runnable`, saying it is being deleted; so is a new trigger of it (off too), a trigger
    moved to it or one of its turned on, and a write to its home or its learning (a home file's write or delete, a

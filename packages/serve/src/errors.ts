@@ -74,13 +74,19 @@ export const ERROR_STATUS = {
   // A replay its owner asked of a learned workflow's revision that cannot start now (runner/promotion.ts askReplay): one
   // replays already, another revision of it replays, it is promoted, or no graded input fits it.
   replay_conflict: 409,
-  // DELETE /agents/{id} (agent-delete.ts): an agent whose runs did not end by the delete's wait (or one only its
-  // application ends, an SDK run's); an agent whose learning refused its delete while learning work was in flight. Both
-  // leave the agent refusing runs, and a DELETE sent again finishes it.
+  // DELETE /agents/{id} (agent-delete.ts): another system's agent whose runs did not end by the delete's wait (or one only
+  // its application ends, an SDK run's); an agent whose learning refused its delete while learning work was in flight.
+  // Both leave the agent refusing runs, and a DELETE sent again finishes it. An agent made here that is not archived:
+  // archive it first, then purge it.
   runs_in_flight: 409,
   learning_busy: 409,
-  // DELETE /runs/{id} (agent-delete.ts deleteRun): a run, or a run made from it, that has not ended. Nothing is deleted.
+  agent_not_archived: 409,
+  // DELETE /runs/{id} and /agents/{id} (agent-delete.ts purgeRun): a run, or a run made from it, that is live (not final,
+  // or held by a runner). Nothing is purged.
   run_not_final: 409,
+  // A run or an agent that was purged (DELETE /runs/{id}, /agents/{id}): every route of it reads its tombstone in the
+  // error's details, and its DELETE answers 204 again.
+  purged: 410,
   // A run start, or a message that would start a turn, with no model_key where the server holds no key for the run's
   // model (run-model-key.ts): nothing to spend, so refused before any model call.
   model_key_required: 422,

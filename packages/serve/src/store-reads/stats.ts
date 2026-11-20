@@ -30,7 +30,8 @@ const emptyCounts = (): RunCounts => ({ total: 0, running: 0, completed: 0, fail
 
 /** Every agent, by name then id (the old order), with its archive and name. */
 async function allAgents(store: Store): Promise<Array<{ id: string; name: string; archived: boolean }>> {
-  const [live, archived] = await Promise.all([store.agents.list({ archived: false }), store.agents.list({ archived: true })]);
+  // A purged agent (an archived one's tombstone) still counts, as its runs' cost does.
+  const [live, archived] = await Promise.all([store.agents.list({ archived: false, purged: true }), store.agents.list({ archived: true, purged: true })]);
   return [...live.map((a) => ({ id: a.id, name: a.name, archived: false })), ...archived.map((a) => ({ id: a.id, name: a.name, archived: true }))].sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }
 
@@ -39,7 +40,8 @@ async function allAgents(store: Store): Promise<Array<{ id: string; name: string
 export async function stats(store: Store): Promise<StoreStats> {
   const agents = await allAgents(store);
   const archivedAgent = new Set(agents.filter((a) => a.archived).map((a) => a.id));
-  const runs = await store.runs.list({});
+  // A purged run's tombstone keeps its state and cost: every count and sum reads it as before its purge.
+  const runs = await store.runs.list({ purged: true });
 
   // Per agent, the runs whose own archive is null (shown) and the count whose own archive is set (hidden).
   const shown = new Map<string, { counts: RunCounts; costUsd: number; known: number; shadowUsd: number; bases: CostBasis[] }>();

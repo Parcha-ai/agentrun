@@ -9136,7 +9136,7 @@ class AgentsResource(Group):
         return self._call("createAgent", (), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
 
     def delete_agent(self, agent_id: str, *, timeout: float | None = None) -> None:
-        """Delete an agent (DELETE /agents/{agent_id})."""
+        """Delete an agent another system owns, or purge an archived agent made here (DELETE /agents/{agent_id})."""
         return self._call("deleteAgent", (agent_id,), None, None, timeout=timeout)
 
     def delete_agent_archil(self, agent_id: str, *, timeout: float | None = None) -> DeleteAgentArchilResponse:
@@ -9568,7 +9568,7 @@ class RunsResource(Group):
         return self._call("createInlineRun", (), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
 
     def delete(self, run_id: str, *, timeout: float | None = None) -> None:
-        """Delete a run (DELETE /runs/{run_id})."""
+        """Purge a run's content and keep its cost (DELETE /runs/{run_id})."""
         return self._call("deleteRun", (run_id,), None, None, timeout=timeout)
 
     def files(self, run_id: str, *, timeout: float | None = None) -> ListRunFilesResponse:

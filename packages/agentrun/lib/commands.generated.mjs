@@ -128,7 +128,7 @@ export const COMMANDS = [
     "bodyTypes": [],
     "secretBody": false,
     "raw": false,
-    "summary": "Delete an agent"
+    "summary": "Delete an agent another system owns, or purge an archived agent made here"
   },
   {
     "command": [
@@ -2193,7 +2193,7 @@ export const COMMANDS = [
     "bodyTypes": [],
     "secretBody": false,
     "raw": false,
-    "summary": "Delete a run"
+    "summary": "Purge a run's content and keep its cost"
   },
   {
     "command": [

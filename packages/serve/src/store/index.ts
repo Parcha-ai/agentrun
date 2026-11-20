@@ -6,7 +6,7 @@ export type {
   McpServerRow, McpServerStamp, McpServerWrite, MintedTokenRow, MintedTokens, NewFiring, NewPairedComputer, NewRevision, NewTrigger, PairedComputerRow, PairedComputers, ReleasedState, RevisionRow, RunnerRow, Runners, RunPatch, RunRow, Runs, RunState, SealedKeyRow, SealedKeys, SealedPlane, SealedSecretRow, SealedSecrets, SettingRow, Settings, Staged,
   StagedTake, Store, StoreRole, TemplatePackage, Templates, TriggerDef, TriggerPatch, TriggerRow, Triggers, TriggerScope, TriggerSettingRow,
   TriggerSettings, Channels, ChannelAttemptRow, ChannelPostRow, ChannelToldRow, ImportedFrom, ImportSource, ImportRunInput, JournalReads, RunLabels, RunOrigin, RunOutcome, RunLaunchInput, RunLaunchRow, LaunchSealed, LaunchSealedWrite, Learning,
-  LearningProposal, LiveViewerRow, LiveViewers, SignIns, SignInRow, SignInTombstoneRow, UpdatedRun, ViewerKind,
+  LearningProposal, LiveViewerRow, LiveViewers, PurgeKept, SignIns, SignInRow, SignInTombstoneRow, UpdatedRun, ViewerKind,
 } from "./store.js";
 export { aadOf, type McpCredential, type OpenedMcpCredential, openMcpCredential, openRunLaunch, openRunMcpAuth, type RunLaunchSecrets, type ComposioBinding, type RunMcpAuth, type RunMcpEntry, type RunModelKey, sealColumn, type SealedAt, sealedAt, sealMcpCredential, sealRunLaunch, sealRunMcpAuth, unsealColumn } from "./seal.js";
 export {

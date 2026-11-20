@@ -36,7 +36,7 @@ Route: `POST /agents`.
 
 ### `agentrun agents delete-agent AGENT_ID`
 
-Delete an agent.
+Delete an agent another system owns, or purge an archived agent made here.
 
 Route: `DELETE /agents/{agent_id}`.
 
@@ -681,7 +681,7 @@ Route: `POST /runs`.
 
 ### `agentrun runs delete RUN_ID`
 
-Delete a run.
+Purge a run's content and keep its cost.
 
 Route: `DELETE /runs/{run_id}`.
 

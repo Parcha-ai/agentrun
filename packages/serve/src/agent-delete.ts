@@ -1,14 +1,32 @@
-// DELETE /v2/agents/{agent_id}: an agent deleted whole, one made here or one another system owns (made by an inline run,
-// POST /runs with `external`), for an owner or a host that must delete what it sent. DELETE /v2/runs/{run_id}: one final
-// run deleted whole, with the runs made from it, by the same per-run step (removeRun).
+// DELETE /v2/agents/{agent_id}: an agent another system owns (made by an inline run, POST /runs with `external`) deleted
+// whole, for a host that must delete what it sent (deleteExternalAgent). An agent made here is purged once it is archived
+// (purgeAgent; 409 agent_not_archived before). DELETE /v2/runs/{run_id}: one run purged (purgeRun), with the runs made
+// from it. An owner must be able to delete what a run read; what it cost stays in every total. So a purge keeps each
+// run's row, and an agent's, as a tombstone, and removes everything else of it.
 //
-// An agent, in order, each step finished before the next:
-//   1. The agent refuses new runs, as a mark in the store that outlives a restart (store Agents.markDeleting), then
-//      archived by the trigger engine with its triggers off in the same commit. From the mark a person's run, an inline
-//      run, an SDK run, a follow-up that would open one of its runs again and a trigger made, moved to it or turned on are
-//      refused (store AgentDeleting, each read in the transaction that would write); from the archive a trigger's firing
-//      is (AgentArchived). Then each of its runs not yet final, its learning runs included, is cancelled through the cancel
-//      path, and waited for until it is final.
+// A run's purge (purgeRun), only once it is not live (409 run_not_final otherwise, nothing purged: live is not final, or
+// held by a runner; a run that ended and can take a follow-up is not live), nor any run made from it: first each run made
+// from it (the replay runs of its input, its audit's shadow run, a learning run its kept learning names; each one's own
+// such runs before it), then the grades its agent keeps of it, then the run, each by purgeOne: the figures its spend's
+// readers read from its journal (kept on the tombstone, PurgeKept), its folders (its own folder on the agent's Archil disk
+// it resolved to, and on a disk its launch named), settings and kept answers, then its rows (store runs.purge, which sets
+// its purge time last). A DELETE stopped part way finds the run not purged yet and the next DELETE finishes it; a DELETE
+// of a purged run is 204 again, and every other route of it is 410 purged with its tombstone.
+//
+// An archived agent made here (purgeAgent), by the same rule: 409 run_not_final while a run of it is live. Then its
+// learning, its things (triggers, sign-ins, its own computer, its disk), each of its runs by purgeOne, its folders,
+// settings and kept answers, and its rows (store agents.purge: its revisions' content, its name and description blanked,
+// its purge time last). Each step is idempotent, so a DELETE stopped part way is finished by the next. Archived, the agent
+// takes no new run and no trigger fires it; a run that reached it anyway keeps it unpurged (the store refuses), for the
+// next DELETE.
+//
+// Another system's agent (deleteExternalAgent), in order, each step finished before the next:
+//   1. The agent refuses new runs, as a mark in the store that outlives a restart: its archive time, which only this
+//      delete writes on an agent another system owns (its archive route is refused), set by the trigger engine with its
+//      triggers off in the same commit. From that commit a person's run, an inline run, a trigger's firing, an SDK run and
+//      a follow-up that would open one of its runs again are refused (store AgentDeleting / AgentArchived, each read in
+//      the transaction that would start the run). Then each of its runs not yet final, its learning runs included, is
+//      cancelled through the cancel path, and waited for until it is final.
 //   2. Its learning, by the learning module's deleteLearning (learn/delete.ts: its learning folder's files, then its
 //      promotions and grades; idempotent; it refuses with LearningInFlight while learning work
 //      is in flight, which answers 409 learning_busy with the agent left refusing runs).
@@ -16,7 +34,7 @@
 //      settings, then its row), its saved sign-ins (each vendor object too), its own computer, its Archil disk; then each
 //      run's folders (on a disk its launch named, the caller's, too: the run's own folder there, never the disk), settings
 //      and kept answers, and its rows (store runs.remove); then the agent's folders, settings and kept answers, and its
-//      rows (store agents.remove, which commits last and takes the mark with them).
+//      rows (store agents.remove, which commits last).
 // A DELETE stopped at any step finds the agent still there, marked, and does every step again: each is idempotent, so the
 // next DELETE finishes it. Once the agent's row is gone the agent is unknown: 404. Nothing the agent owns elsewhere (a
 // trigger's registration upstream, a saved sign-in at its vendor, its own computer, its Archil disk, a run's folder on a
@@ -26,16 +44,9 @@
 // the agent takes no new trigger, off or on (the trigger engine and the store refuse it), and no write to its home or its
 // learning (the server's, in the delete's turn); a trigger that reached it anyway keeps its row (store TriggersLeft): the
 // same 503, and the next DELETE removes that trigger as it removes the others.
-//
-// A run (deleteRun), only once it is final, and every run made from it final too (409 run_not_final otherwise, nothing
-// deleted): first each run made from it (the replay runs of its input, its audit's shadow run, a learning run its kept
-// learning names; each one's own such runs before it), then the grades its agent keeps of it, then the run, each by
-// removeRun: its folders (its own folder on the agent's Archil disk it resolved to, and on a disk its launch named),
-// settings and kept answers, then its rows (store runs.remove). The run's row goes last, so a DELETE stopped part way
-// finds it still there and the next DELETE finishes it; then it is unknown: 404.
 import { ApiError } from "./errors.js";
 import { LearningInFlight } from "./learn/delete.js";
-import { FINAL_STATES, type RunState, type Store, StoreConstraint, TriggersLeft } from "./store/index.js";
+import { FINAL_STATES, type PurgeKept, type RunState, type Store, StoreConstraint, TriggersLeft } from "./store/index.js";
 
 /** The delete of an agent's learning: the server's is the learning module's deleteLearning over the agent's learning
  *  folder (learn/delete.ts). Idempotent; refuses with LearningInFlight while learning work of the agent is in flight. */
@@ -43,16 +54,15 @@ export type DeleteLearning = (store: Store, agentId: string) => Promise<unknown>
 
 /** A point of a delete a test may stop it at (AgentDeleteHost.at). An agent's: after step 1, after step 2, in step 3
  *  between a trigger's removal upstream and its settings', between its settings' and its row's, and in step 3 once its
- *  triggers and the agent's first run are gone. A run's: once the runs made from it are gone, and once its own things
- *  outside its rows are (its rows kept). */
+ *  triggers and the agent's first run are gone (a purge's: after its learning, then the same). A run's: once the runs
+ *  made from it are purged, and once its own things outside its rows are gone (its rows kept). */
 export type AgentDeleteStep = "after_step_1" | "after_step_2" | "in_step_3_trigger" | "in_step_3_trigger_settings" | "in_step_3" | "run_made_from_gone" | "run_forgotten";
 
 /** What a delete does outside the store's own rows, as the server does it. */
 export interface AgentDeleteHost {
   readonly store: Store;
   readonly deleteLearning: DeleteLearning;
-  /** Step 1's mark (store Agents.markDeleting), then the agent archived, its triggers off in the same commit (the trigger
-   *  engine's agentArchived). */
+  /** Step 1's mark: the agent archived, its triggers off in the same commit (the trigger engine's agentArchived). */
   refuse(agentId: string): Promise<void>;
   /** The cancel path, for one run that is not final: true once a cancel stands for it (written now, or the run is ending
    *  already), false when this server cannot end it (an SDK run, which only its application ends; an imported run). */
@@ -74,9 +84,9 @@ export interface AgentDeleteHost {
   removeDisk(agentId: string): Promise<void>;
   /** A final run's things outside its rows: its folders (its own folder on an Archil disk its launch named, read from its
    *  launch record, which goes with its rows after; an ApiError (503 unavailable) while that folder is not deleted
-   *  there), its settings, the answers kept under its idempotency keys. `alone`: the run is deleted by itself, its agent
-   *  kept, so its own folder on the agent's Archil disk it resolved to is deleted there too (with the agent's, that disk
-   *  goes whole). */
+   *  there), its settings, the answers kept under its idempotency keys. `alone`: its agent's Archil disk stays (a run's
+   *  purge, or its agent's), so its own folder on that disk is deleted there too; with an external agent's delete that
+   *  disk went whole. */
   forgetRun(agentId: string, runId: string, alone: boolean): Promise<void>;
   /** The agent's things outside its rows: its folders, its settings, the answers kept under its idempotency keys. */
   forgetAgent(agentId: string): Promise<void>;
@@ -84,7 +94,12 @@ export interface AgentDeleteHost {
   madeFrom(runId: string): Promise<string[]>;
   /** The grades agent `agentId` keeps of run `runId` dropped (learn/promote.ts). */
   forgetGrades(agentId: string, runId: string): Promise<void>;
-  /** How long step 1 waits for the agent's runs to be final, and how often it reads them meanwhile. */
+  /** What run `runId`'s spend reads from its journal, read before its purge removes it (store-reads/cap.ts). */
+  kept(runId: string): Promise<PurgeKept>;
+  /** Whether run `runId`'s turn is over (it reads idle, a paused workflow aside): its runner writes it final next. */
+  turnOver(runId: string): Promise<boolean>;
+  /** How long step 1 waits for the agent's runs to be final (a purge: for a run whose turn is over), and how often it reads
+   *  them meanwhile. */
   readonly waitMs: number;
   readonly pollMs: number;
   /** A test's seam: awaited at each step's point with the agent's id (a run's step: the run's), so a throw there stops
@@ -95,15 +110,137 @@ export interface AgentDeleteHost {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 const isFinal = (state: RunState) => (FINAL_STATES as readonly RunState[]).includes(state);
 
-/** Deletes agent `agentId` in the three steps above. Throws ApiError runs_in_flight while a run of it is not final by the
- *  wait's end, learning_busy while its learning refuses. */
-export async function deleteAgent(host: AgentDeleteHost, agentId: string): Promise<void> {
+/** Deletes agent `agentId` (another system's, as the route checked) in the three steps above. Throws ApiError
+ *  runs_in_flight while a run of it is not final by the wait's end, learning_busy while its learning refuses. */
+export async function deleteExternalAgent(host: AgentDeleteHost, agentId: string): Promise<void> {
   // 1. No new run, then none in flight.
   await host.refuse(agentId);
   await stopRuns(host, agentId);
   await host.at?.("after_step_1", agentId);
 
-  // 2. Its learning. Its refusal while learning work is in flight is learning_busy; any other failure is the server's own.
+  // 2. Its learning.
+  await learningGone(host, agentId);
+  await host.at?.("after_step_2", agentId);
+
+  // 3. Its things, then its rows; the agent's row last.
+  await thingsGone(host, agentId);
+  let first = true;
+  for (const run of await host.store.runs.every(agentId)) {
+    await host.forgetRun(agentId, run.id, false);
+    await host.store.runs.remove(run.id);
+    if (first) await host.at?.("in_step_3", agentId);
+    first = false;
+  }
+  await host.forgetAgent(agentId);
+  try {
+    await host.store.agents.remove(agentId);
+  } catch (error) {
+    throw triggersLeft(error, agentId);
+  }
+}
+
+/** Purges archived agent `agentId`, made here (as the route checked), as the header says: 409 run_not_final, nothing
+ *  purged, while a run of it is live; learning_busy while its learning refuses. */
+export async function purgeAgent(host: AgentDeleteHost, agentId: string): Promise<void> {
+  const live = await liveOf(host, (await host.store.runs.every(agentId)).filter((run) => run.purgedAt === null));
+  if (live.length) throw liveRuns(`The agent ${agentId} has ${live.length === 1 ? "a run" : "runs"} that ${live.length === 1 ? "has" : "have"} not ended (${live.join(", ")}): cancel ${live.length === 1 ? "it" : "them"} (POST /v2/runs/{run_id}/cancel), then send the DELETE again. Nothing was purged.`, live);
+  await learningGone(host, agentId);
+  await host.at?.("after_step_2", agentId);
+  await thingsGone(host, agentId);
+  let first = true;
+  for (const run of await host.store.runs.every(agentId)) {
+    if (run.purgedAt !== null) continue;
+    // Its disk went whole above, each run's folder there with it.
+    await purgeOneOrRefuse(host, agentId, run.id, agentId, false);
+    if (first) await host.at?.("in_step_3", agentId);
+    first = false;
+  }
+  await host.forgetAgent(agentId);
+  try {
+    await host.store.agents.purge(agentId);
+  } catch (error) {
+    if (error instanceof StoreConstraint) throw liveRuns(`The agent ${agentId} has a run started while it was being purged (${error.message}): send the DELETE again once it has ended. Its runs purged so far stay purged.`, []);
+    throw triggersLeft(error, agentId);
+  }
+}
+
+/** Purges run `runId` with every run made from it, as the header says. 404 not_found when it is not there; 409
+ *  run_not_final, nothing purged, while it or a run made from it is live. A purged run is no work. */
+export async function purgeRun(host: AgentDeleteHost, runId: string): Promise<void> {
+  const run = await host.store.runs.get(runId);
+  if (!run) throw new ApiError("not_found", `no run ${runId}`);
+  if (run.purgedAt !== null) return;
+  const made = await madeFromAll(host, runId);
+  const live = await liveOf(host, [run, ...made]);
+  if (live.length) throw notFinal(runId, live);
+  for (const one of made) await purgeOneOrRefuse(host, one.agentId, one.id, runId, true);
+  await host.at?.("run_made_from_gone", runId);
+  await host.forgetGrades(run.agentId, runId);
+  await purgeOneOrRefuse(host, run.agentId, runId, runId, true);
+}
+
+/** The one per-run step of both purges: the figures its spend's readers read from its journal, its things outside its
+ *  rows, then its rows (a tombstone). Its store's refusal of a run gone live again since it was read (a follow-up opened
+ *  it) is 409 run_not_final, as a run read live is (`purged`: the run or agent the DELETE names; `alone`: its agent's disk
+ *  stays, AgentDeleteHost.forgetRun). */
+async function purgeOneOrRefuse(host: AgentDeleteHost, agentId: string, runId: string, purged: string, alone: boolean): Promise<void> {
+  const kept = await host.kept(runId);
+  await host.forgetRun(agentId, runId, alone);
+  await host.at?.("run_forgotten", runId);
+  try {
+    await host.store.runs.purge(runId, kept);
+  } catch (error) {
+    if (error instanceof StoreConstraint) throw notFinal(purged, [runId]);
+    throw error;
+  }
+}
+
+/** Every run made from run `runId` that is there and not purged, each one's own before it (deepest first), never `runId`. */
+async function madeFromAll(host: AgentDeleteHost, runId: string, seen = new Set<string>([runId])): Promise<{ id: string; agentId: string; state: RunState; runner: string | null }[]> {
+  const out: { id: string; agentId: string; state: RunState; runner: string | null }[] = [];
+  for (const id of await host.madeFrom(runId)) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const row = await host.store.runs.get(id);
+    if (!row || row.purgedAt !== null) continue;
+    out.push(...(await madeFromAll(host, id, seen)), { id, agentId: row.agentId, state: row.state, runner: row.runner });
+  }
+  return out;
+}
+
+/** Live: not final, or held by a runner. A run that ended and can take a follow-up (it reads idle) is not. */
+const isLive = (run: { state: RunState; runner: string | null }) => !isFinal(run.state) || run.runner !== null;
+
+/** Of `runs`, the ids of the live ones. A run whose turn is over (it reads idle: a person's stop, or its turn's end) is
+ *  written final by its runner a moment after it reads so, so while every live run is such a one, each is read again
+ *  every host.pollMs, for host.waitMs at most, until it is final and let go. A live run whose turn is not over makes the
+ *  answer at once, and so does one still live at the end. */
+async function liveOf(host: AgentDeleteHost, runs: readonly { id: string; state: RunState; runner: string | null }[]): Promise<string[]> {
+  const deadline = Date.now() + host.waitMs;
+  let live = runs.filter(isLive).map((run) => run.id);
+  for (;;) {
+    if (!live.length) return live;
+    for (const id of live) if (!(await host.turnOver(id))) return live;
+    if (Date.now() >= deadline) return live;
+    await sleep(host.pollMs);
+    const rows = await Promise.all(live.map((id) => host.store.runs.get(id)));
+    live = rows.filter((row) => row !== undefined && row.purgedAt === null && isLive(row)).map((row) => row!.id);
+  }
+}
+
+const liveRuns = (message: string, runs: readonly string[]) => new ApiError("run_not_final", message, { details: { runs: [...runs] } });
+
+const notFinal = (runId: string, live: readonly string[]) =>
+  liveRuns(
+    live.length === 1 && live[0] === runId
+      ? `The run ${runId} has not ended: cancel it first (POST /v2/runs/${runId}/cancel), then send the DELETE again. Nothing was purged.`
+      : `${runId} has ${live.length === 1 ? "a run" : "runs"} that ${live.length === 1 ? "has" : "have"} not ended (${live.join(", ")}): send the DELETE again once ${live.length === 1 ? "it has" : "they have"} ended. Runs purged so far stay purged.`,
+    live,
+  );
+
+/** An agent's learning deleted (step 2 of a delete, the first of a purge). Its refusal while learning work is in flight is
+ *  learning_busy; any other failure is the server's own. */
+async function learningGone(host: AgentDeleteHost, agentId: string): Promise<void> {
   try {
     await host.deleteLearning(host.store, agentId);
   } catch (error) {
@@ -114,11 +251,13 @@ export async function deleteAgent(host: AgentDeleteHost, agentId: string): Promi
       { details: { runs: [...error.runs] }, retry_after_ms: 5_000 },
     );
   }
-  await host.at?.("after_step_2", agentId);
+}
 
-  // 3. Its things, then its rows; the agent's row last.
+/** An agent's things outside the store's rows: its triggers through the trigger engine (each one's registration upstream
+ *  first, then its settings, then its row: the row names what is left to remove until each is gone), its saved sign-ins,
+ *  its own computer, its Archil disk. */
+async function thingsGone(host: AgentDeleteHost, agentId: string): Promise<void> {
   for (const trigger of await host.store.triggers.list(agentId)) {
-    // Upstream first, then its settings, then its row: the row names what is left to remove until each is gone.
     await host.removeTriggerThere(trigger.id);
     await host.at?.("in_step_3_trigger", agentId);
     await host.removeTriggerSettings(trigger.id);
@@ -128,76 +267,14 @@ export async function deleteAgent(host: AgentDeleteHost, agentId: string): Promi
   await host.forgetSignIns(agentId);
   await host.removeOwnComputer(agentId);
   await host.removeDisk(agentId);
-  let first = true;
-  for (const run of await host.store.runs.every(agentId)) {
-    await removeRun(host, agentId, run.id, false);
-    if (first) await host.at?.("in_step_3", agentId);
-    first = false;
-  }
-  await host.forgetAgent(agentId);
-  try {
-    await host.store.agents.remove(agentId);
-  } catch (error) {
-    // A trigger that reached the agent after the listing above (the store refuses one once the agent is marked; this is
-    // its backstop): the agent is kept, refusing, for the next DELETE to remove it upstream, its settings, then its row.
-    if (!(error instanceof TriggersLeft)) throw error;
-    throw new ApiError("unavailable", `The agent ${agentId} has ${error.triggerIds.length === 1 ? "a trigger" : "triggers"} made while it was being deleted (${error.triggerIds.join(", ")}), not removed yet. It starts no run meanwhile: send the DELETE again to finish it.`, { details: { triggers: error.triggerIds }, retry_after_ms: 5_000 });
-  }
 }
 
-/** Deletes final run `runId` whole, with every run made from it, as the header says. 404 not_found when it is not there;
- *  409 run_not_final, nothing deleted, while it or a run made from it is not final. */
-export async function deleteRun(host: AgentDeleteHost, runId: string): Promise<void> {
-  const run = await host.store.runs.get(runId);
-  if (!run) throw new ApiError("not_found", `no run ${runId}`);
-  const made = await madeFromAll(host, runId);
-  const live = [...(isFinal(run.state) ? [] : [runId]), ...made.filter((one) => !isFinal(one.state)).map((one) => one.id)];
-  if (live.length) throw notFinal(runId, live);
-  for (const one of made) await removeRunOrRefuse(host, one.agentId, one.id, runId);
-  await host.at?.("run_made_from_gone", runId);
-  await host.forgetGrades(run.agentId, runId);
-  await removeRunOrRefuse(host, run.agentId, runId, runId);
+/** A trigger that reached the agent after its delete listed them (the store refuses one once the agent is marked; this is
+ *  its backstop): the agent is kept for the next DELETE to remove it upstream, its settings, then its row. */
+function triggersLeft(error: unknown, agentId: string): unknown {
+  if (!(error instanceof TriggersLeft)) return error;
+  return new ApiError("unavailable", `The agent ${agentId} has ${error.triggerIds.length === 1 ? "a trigger" : "triggers"} made while it was being deleted (${error.triggerIds.join(", ")}), not removed yet. It starts no run meanwhile: send the DELETE again to finish it.`, { details: { triggers: error.triggerIds }, retry_after_ms: 5_000 });
 }
-
-/** The one per-run step of both deletes: a final run's things outside its rows, then its rows. */
-async function removeRun(host: AgentDeleteHost, agentId: string, runId: string, alone: boolean): Promise<void> {
-  await host.forgetRun(agentId, runId, alone);
-  if (alone) await host.at?.("run_forgotten", runId);
-  await host.store.runs.remove(runId);
-}
-
-/** removeRun for a run deleted alone: its store's refusal of a run not final (a follow-up opened it again since it was
- *  read) is 409 run_not_final, as a run read not final is. */
-async function removeRunOrRefuse(host: AgentDeleteHost, agentId: string, id: string, deleted: string): Promise<void> {
-  try {
-    await removeRun(host, agentId, id, true);
-  } catch (error) {
-    if (error instanceof StoreConstraint) throw notFinal(deleted, [id]);
-    throw error;
-  }
-}
-
-/** Every run made from run `runId` that is there, each one's own before it (deepest first), never `runId` itself. */
-async function madeFromAll(host: AgentDeleteHost, runId: string, seen = new Set<string>([runId])): Promise<{ id: string; agentId: string; state: RunState }[]> {
-  const out: { id: string; agentId: string; state: RunState }[] = [];
-  for (const id of await host.madeFrom(runId)) {
-    if (seen.has(id)) continue;
-    seen.add(id);
-    const row = await host.store.runs.get(id);
-    if (!row) continue;
-    out.push(...(await madeFromAll(host, id, seen)), { id, agentId: row.agentId, state: row.state });
-  }
-  return out;
-}
-
-const notFinal = (runId: string, live: readonly string[]) =>
-  new ApiError(
-    "run_not_final",
-    live.length === 1 && live[0] === runId
-      ? `The run ${runId} has not ended: cancel it first (POST /v2/runs/${runId}/cancel), then send the DELETE again. Nothing was deleted.`
-      : `The run ${runId} has ${live.length === 1 ? "a run" : "runs"} made from it that ${live.length === 1 ? "has" : "have"} not ended (${live.join(", ")}): send the DELETE again once ${live.length === 1 ? "it has" : "they have"} ended. Nothing was deleted.`,
-    { details: { runs: [...live] } },
-  );
 
 /** Step 1's second half: each run of the agent not final cancelled once, then read again until every one is final. A run's
  *  end may queue its learning run, so the runs are listed again on each read. A run this server cannot end, or one still
@@ -224,8 +301,8 @@ async function stopRuns(host: AgentDeleteHost, agentId: string): Promise<void> {
   }
 }
 
-/** One delete at a time per key (an agent's id: its delete, and each delete of one of its runs): a second DELETE waits for
- *  the first, then finds it gone (404) or finishes what the first left. */
+/** One delete of an agent at a time: a second DELETE of the same agent waits for the first, then finds it gone (404) or
+ *  finishes what the first left. */
 export function oneAtATime(): <T>(agentId: string, work: () => Promise<T>) => Promise<T> {
   const turns = new Map<string, Promise<unknown>>();
   return <T>(agentId: string, work: () => Promise<T>): Promise<T> => {

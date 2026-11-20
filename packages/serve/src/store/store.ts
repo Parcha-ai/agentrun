@@ -66,16 +66,10 @@ export interface AgentRow {
   /** The reference of the agent this one mirrors in another system ("<source>:<kind>:<id>"), or null for one made here. An
    *  agent with a reference is read-only from here: it is written on the first run that names it and never edited. */
   readonly externalRef: string | null;
-  /** The agent is being deleted (DELETE /agents/{id}, agent-delete.ts; Agents.markDeleting): from the commit of that mark
-   *  no run of it starts, none of its runs opens again, and no trigger of it is made, moved to it or turned on. Kept until
-   *  its rows go (Agents.remove), so a restart keeps it. */
-  readonly deleting: boolean;
+  /** When the agent was purged (Agents.purge): its row is then a tombstone, its name and description blanked; null when it
+   *  was not. */
+  readonly purgedAt: number | null;
 }
-
-/** The settings key of an agent's delete mark (Agents.markDeleting): a row, not a column, read in the transaction that
- *  would start one of its runs. */
-export const AGENT_DELETING_PREFIX = "agent.deleting.";
-export const agentDeletingKey = (agentId: string): string => `${AGENT_DELETING_PREFIX}${agentId}`;
 
 /** The template package an agent was applied from, kept on the revision the apply made (its first): the package's id
  *  (a bundled one's name, an imported one's `github:<owner>/<repo>[/<path>]`), its SemVer version, and the commit SHA it
@@ -245,6 +239,20 @@ export interface RunRow {
   readonly labels: RunLabels;
   readonly startedAt: number;
   readonly endedAt: number | null;
+  /** When the run was purged (Runs.purge): its row is then a tombstone, its cost and times kept, everything else of it
+   *  gone; null when it was not. */
+  readonly purgedAt: number | null;
+}
+
+/** What a purge keeps of a run on its tombstone's metrics (`purged`), read from its journal before that goes: the reads of
+ *  its spend that read the journal answer from it after (store-reads/cap.ts). `meters`: /usage's meter figures
+ *  (metersOverStore); `spend`: what it spent as a run that reads running reads it (spendOverStore); `learning`: how its
+ *  learning ended as GET /stats counts it (store-reads/learning.ts learningCountsOverStore), its state and reason alone,
+ *  null for none. */
+export interface PurgeKept {
+  readonly meters: unknown;
+  readonly spend: { readonly usd: number | null; readonly basis?: string };
+  readonly learning: { readonly state: string; readonly reason: string | null } | null;
 }
 
 /** What a runner may change on its run's row, under its claim. A final state with no `endedAt` is stamped now. */
@@ -646,10 +654,10 @@ export class AgentArchived extends Error {
   }
 }
 
-/** A run of an agent being deleted, or a follow-up that would open one of its runs again: refused, nothing written. The
- *  mark its delete leaves (DELETE /agents/{id}, agent-delete.ts; Agents.markDeleting) is read by runs.create,
- *  runs.createInline, runs.reopen and the trigger writes, each in the transaction that would write, and a restart keeps
- *  it. The delete archives the agent too, which triggers.fire refuses (AgentArchived). */
+/** A run of an agent being deleted, or a follow-up that would open one of its runs again: refused, nothing written. An
+ *  agent another system owns is never archived here (its archive route is refused), so its archive time is the mark its
+ *  delete leaves (DELETE /agents/{id}, agent-delete.ts): from that commit runs.create, runs.createInline, runs.reopen and
+ *  triggers.fire refuse it, each in the transaction that would start the run, and a restart keeps the mark. */
 export class AgentDeleting extends Error {
   override name = "AgentDeleting";
   constructor(readonly agentId: string) {
@@ -689,7 +697,8 @@ export interface Agents {
   hasExternalVersion(agentId: string, version: string): Promise<boolean>;
   /** The revision that maps `version` of its owning system, or undefined before that version's first run. */
   externalRevision(agentId: string, version: string): Promise<RevisionRow | undefined>;
-  list(options?: { archived?: boolean }): Promise<AgentRow[]>;
+  /** The agents, by `archived` (default false). A purged agent (Agents.purge) only with `purged`: what a total counts. */
+  list(options?: { archived?: boolean; purged?: boolean }): Promise<AgentRow[]>;
   /** Archives the agent, or unarchives it. Archived, every trigger of it that is on is turned off in the same transaction
    *  (`disabled` set to `why`, JSON; its scope rows dropped), and those are the answer: from its commit no firing starts a
    *  run of the agent (triggers.fire refuses it, AgentArchived), and none of its triggers is made on or turned on.
@@ -709,16 +718,19 @@ export interface Agents {
    *  the revision still has none, and the pin it has then is the answer, so two first runs at once agree on one. Null when
    *  there is no such revision. */
   pinOnce(revisionId: string, pin: unknown): Promise<unknown>;
-  /** The first write of DELETE /agents/{id} (agent-delete.ts): the agent marked as being deleted (AgentRow.deleting, a
-   *  settings row under agentDeletingKey), under the agent row's lock, so a run start that read it unmarked commits
-   *  before it. Idempotent; an agent with no row is no write. */
-  markDeleting(agentId: string): Promise<void>;
   /** The agent's own rows gone, in one transaction (the last write of DELETE /agents/{id}, agent-delete.ts): its learning
-   *  rows and kept proposals, its sign-ins and their tombstones, its revisions, the answer a template apply kept naming
-   *  it, its delete mark and the agent. Only once it has no run and
+   *  rows and kept proposals, its sign-ins and their tombstones, its revisions and the agent. Only once it has no run and
    *  no trigger left (runs.remove and the trigger engine's remove each first): refused while a run is (StoreConstraint)
    *  or a trigger is (TriggersLeft), read under the agent row's lock, nothing written. An agent with no row is no write. */
   remove(agentId: string): Promise<void>;
+  /** The last write of DELETE /agents/{id} for an archived agent made here (agent-delete.ts purgeAgent), in one
+   *  transaction under the agent row's lock: its learning rows, its sign-ins and their tombstones, the answer a template
+   *  apply kept naming it, its revisions' content (body, skills, package, note, pins) and its own name and description
+   *  blanked, and its purge time set last. Only once each of its runs is purged (Runs.purge) and no trigger is left:
+   *  refused while a run is not (StoreConstraint) or a trigger is (TriggersLeft), nothing written. Its row and its
+   *  revisions' ids stay, so its runs' tombstones and every total over them read as before. An agent with no row, or one
+   *  purged already, is no write. */
+  purge(agentId: string): Promise<void>;
 }
 
 export interface Templates {
@@ -819,8 +831,10 @@ export interface Runs {
    *  sealed bytes. A run with no launch row has no entry. */
   learningStarts(agentId: string): Promise<{ runId: string; learning: unknown }[]>;
   /** Newest first, at most `limit` (no limit: all). `archived` filters on the run's own archive time (true: archived,
-   *  false: not); its agent's archive is read apart. A built-in learning run (one a kept learning names) is never listed. `labels`: only runs holding every one of these labels, key and value. */
-  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; limit?: number }): Promise<RunRow[]>;
+   *  false: not); its agent's archive is read apart. A built-in learning run (one a kept learning names) is never listed. `labels`: only runs holding every one of these labels, key and value.
+   *  A purged run (Runs.purge) only with `purged`: the readers of money and counts (usage, stats, analytics) and an
+   *  import's read of the sessions it holds, never a reader of a run's content. */
+  list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; limit?: number; purged?: boolean }): Promise<RunRow[]>;
   /** A page of a runs list, in one read: newest first, `offset` rows on, at most `limit`, and whether more follow (`more`).
    *  Each with its listing as its row keeps it (RUN_LISTING_COLUMNS: null while none has been built), whether that is
    *  behind, and its agent's archive time. `archived` filters on the run's archive or its agent's (true: either; false:
@@ -859,16 +873,26 @@ export interface Runs {
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;
   /** Every run of agent `agentId` with its state, oldest first, its built-in learning runs included (which list leaves
-   *  out): what deleting the agent stops and removes. */
-  every(agentId: string): Promise<{ id: string; state: RunState }[]>;
+   *  out): what deleting the agent stops and removes, with the runner that holds each (null: none) and its purge time. */
+  every(agentId: string): Promise<{ id: string; state: RunState; runner: string | null; purgedAt: number | null }[]>;
   /** The runs made from run `runId` that hold what it was given or did, by id: each replay run whose launch replays its
    *  input (the launch body's `replay.of`), and each learning run its kept learning names (learning_proposals'
-   *  learning_run_id). What deleting the run alone deletes with it (an audit's shadow run is found by its id). */
+   *  learning_run_id). What purging the run purges with it (an audit's shadow run is found by its id). */
   madeFrom(runId: string): Promise<string[]>;
+  /** A run purged, in one transaction under its row's lock (DELETE /runs/{id}, agent-delete.ts): its journal, commands,
+   *  origin, launch, live view and viewers, its channel posts with their tries and what each channel was told of it, a
+   *  trigger's conversation that names it and its changes in the run-change feed gone; a trigger's last run, a firing's run
+   *  or wait and a machine's token that name it let go (null); its kept learning's content blanked, each row kept with its
+   *  proposal's state alone, as the learning meter and the list of learning runs read it; its row's content blanked
+   *  (summary, labels, handed sign-ins, listing) with `kept` folded into its metrics (`purged`), and its purge time set
+   *  last. Its id, agent, revision, state, outcome, times, cost and metrics stay: a tombstone, which every total sums as
+   *  before. Only a run that is final and that no runner holds: one that is not is refused (StoreConstraint), nothing
+   *  written. A run with no row, or one purged already, is no write. */
+  purge(runId: string, kept: PurgeKept): Promise<void>;
   /** The run's rows gone, in one transaction: its journal, commands, origin, launch, live view and viewers, its channel
    *  posts with their tries and what each channel was told of it, its kept learning, its changes in the run-change feed,
    *  a trigger's conversation that names it, and the run (a firing or trigger that names it keeps no run: ON DELETE SET
-   *  NULL; a firing that waited behind it waits no more). Only a final run: one that is not is refused (StoreConstraint), nothing written, so no runner's claim is ever
+   *  NULL). Only a final run: one that is not is refused (StoreConstraint), nothing written, so no runner's claim is ever
    *  on a run that goes. A run with no row is no write. From then a late write under an old claim of it is Fenced and
    *  writes nothing (its row is gone), and a command for it is RunFinal. */
   remove(runId: string): Promise<void>;
