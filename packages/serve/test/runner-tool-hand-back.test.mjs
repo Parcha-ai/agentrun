@@ -44,14 +44,18 @@ async function setup(t) {
   const { server, runners: [storeA, storeB] } = await stores({ runners: 2 });
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "agentrun-tool-hand-back-"));
   const started = [];
+  // The run's folder, made below: a test that fails before its own release lets the held bash finish here, before its
+  // runners close (a killed runner's close does nothing, and its sandbox's command would hold on).
+  let folder;
   t.after(async () => {
+    if (folder) await writeMark(folder, "release");
     for (const runner of started) await runner.close().catch(() => {});
     await release({ server });
     rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-bash", name: "Bash" }, { id: "rev-bash", kind: "agentic", body: { instructions: "Run it, then say done.", tools: ["bash"] } });
   await server.runs.create({ id: RUN, agentId: "agent-bash", revisionId: "rev-bash" }, { body: { input: { content: "Go." }, title: "t", place: { mode: "runner" }, harness: "pi", model: { provider: "anthropic", modelId: "claude-sonnet-5-5" } } });
-  const folder = runFolder(dir, "agent-bash", RUN);
+  folder = runFolder(dir, "agent-bash", RUN);
   mkdirSync(folder, { recursive: true });
   const requests = [];
   const route = {
@@ -173,33 +177,36 @@ async function writeMark(dir, name) {
   await writeFile(join(dir, name), "").catch(() => {});
 }
 
-// A claude-agent turn cut mid-request (no tool in flight) by its runner's hand-back goes on on the next runner: the request
-// is asked again there, once, and the run ends with its one answer. harness-run.test.mjs's skipped case (#2089) is the
-// same cut by a whole server's stop and restart; this is the runner split's hand-back between two runners.
-test("claude-agent: a turn its runner hands back mid-request goes on on the next runner and ends with one answer, each request counted once", { timeout: 120_000 }, async (t) => {
+// A claude-agent turn cut mid-request by its runner's hand-back goes on on the next runner: the model request open at the
+// hand-back (admitted, not answered: fixtures/faux-harness.mjs untilSignalled) is cut, the next runner resumes the open
+// turn, and the run ends with one answer, the resumed turn's (the faux adapter's resume goes on with its script's next
+// request; a real CLI's is the kernel's recovery note). harness-run.test.mjs's skipped case (#2089) is a turn cut by a whole server's stop and restart;
+// this is the runner split's hand-back between two runners.
+test("claude-agent: a turn its runner hands back while a model request is open goes on on the next runner and ends with one answer", { timeout: 120_000 }, async (t) => {
   const harnessTable = fauxTable(FAUX_HARNESS);
   const { api, data } = await serve(t, { runner: false, harnessTable });
   const runnerOf = (name) => startInProcessRunner(data, { harnessTable, runnerTiming: { ...STEADY, name } });
-  const go = join(await scratch(t), "go");
-  assert.equal((await api("POST", "/agents", { definition: { id: "waits", version: 1, name: "waits", instructions: `Wait for ${go} before the answer.`, skills: [], tools: ["read"], harness: "claude-agent" } })).status, 201);
+  const marks = await scratch(t);
+  const [go, open] = [join(marks, "go"), join(marks, "open")];
+  assert.equal((await api("POST", "/agents", { definition: { id: "waits", version: 1, name: "waits", instructions: `Read, then hold a request until ${go} exists (signal ${open}), then answer.`, skills: [], tools: ["read"], harness: "claude-agent" } })).status, 201);
   const made = await api("POST", "/agents/waits/runs", { input: { content: "hi" } });
   assert.equal(made.status, 202, JSON.stringify(made.body));
   const runId = made.body.run_id;
   const a = await runnerOf("runner-a");
   let b;
   t.after(async () => {
+    await writeMark(marks, "go");
     await b?.().catch(() => {});
     await a().catch(() => {});
   });
-  // The first request is paid and its tool has ended: its row is in, then the turn holds on its second request.
-  await until(async () => (await api("GET", `/runs/${runId}/timeline`)).body.rows.some((r) => r.kind === "tool_result"), "the first request's tool row", 60_000);
+  // The held request is admitted and open on runner-a: the hand-back cuts it in flight.
+  await until(() => existsSync(open), "the held request open on runner-a", 60_000);
   await a();
   b = await runnerOf("runner-b");
-  await import("node:fs/promises").then(({ writeFile }) => writeFile(go, ""));
+  await writeMark(marks, "go");
   const { last, rows } = await follow(api, runId, ["completed", "failed", "cancelled"], { deadlineMs: 90_000 });
   const shown = JSON.stringify(rows.map((r) => [r.kind, r.summary]));
   assert.equal(last.status, "completed", shown);
-  assert.deepEqual(rows.filter((r) => r.kind === "final_answer").map((r) => r.summary), ["Done after the wait."], `one answer: ${shown}`);
-  const usage = rows.findLast((r) => r.kind === "usage")?.usage;
-  assert.equal(usage?.requests, 2, `the request before the hand-back and the one after it, once each: ${JSON.stringify(usage)}`);
+  assert.deepEqual(rows.filter((r) => r.kind === "final_answer").map((r) => r.summary), ["Done after the hand-back."], `one answer, the resumed turn's; never the cut request's: ${shown}`);
+  assert.deepEqual(rows.filter((r) => r.kind === "tool_result").length, 1, `the read before the hand-back, never run again: ${shown}`);
 });

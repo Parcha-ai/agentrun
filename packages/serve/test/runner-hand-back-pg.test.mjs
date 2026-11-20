@@ -93,7 +93,9 @@ async function deployment(t, { storeUrl = PG_URL } = {}) {
       const exited = new Promise((resolve) => child.once("exit", resolve));
       child.kill("SIGCONT");
       child.kill("SIGTERM");
-      await Promise.race([exited, sleep(60_000).then(() => child.kill("SIGKILL"))]);
+      let backstop;
+      await Promise.race([exited, new Promise((resolve) => (backstop = setTimeout(() => resolve(child.kill("SIGKILL")), 60_000)))]);
+      clearTimeout(backstop);
     }
     assert.deepEqual(await connectionsLeft([schema]), [], "every process has exited before the schema goes");
     await dropSchema(schema);
