@@ -1,23 +1,6 @@
-// web_save: one file from a public host saved into the run's folder, so a URL that expires (a generation service's CDN
-// link) becomes a file the run keeps and the console's Files tab shows and plays. It downloads through the public-host
-// guard's bytes variant (pi-browser publicDownload): every hop's name resolved, checked public and dialled at the address
-// checked, ports 80 and 443 only, at most SAVE_MAX_BYTES, under one deadline for the whole file.
-//
-// The path is the run's Workspace's (host.workspace, else the local folder at where.work), so its refusals hold: no `..`,
-// no absolute path, no link followed on the way or as the file. A bare name goes under media/. A path that already holds
-// anything is refused, never overwritten, checked before the download and again before the write.
-//
-// The whole file is held in memory and written once, through Workspace.write (a temporary name in the same folder,
-// renamed over the path on the local disk; one put on Archil's), so a download that fails, or goes past the cap, leaves
-// nothing at the path. So at most SAVE_CONCURRENCY downloads run at once per runner, across its runs (SERVER_SLOTS); the
-// rest wait, under their own deadline. A download holds its file's size when its host states its length, about twice that
-// at its peak when it does not (publicDownload). In a Mode 2 run's own process the write crosses to the runner in pieces
-// and the runner writes it (runner/big-writes.ts), under a gate of its own.
-//
-// The type is checked against the bytes: a media type the server plays (file-types.ts) is saved only when its bytes
-// carry that type's signature (MEDIA), and the path's extension must name a type that agrees: the type is not stored, the
-// console and the file route take it from the extension. Anything else (a page, a PDF, text) is saved only to a path
-// whose extension names exactly the type the host declared.
+// web_save: one public file saved into the run's Workspace (a bare name under media/), so a link that expires becomes a
+// file the run keeps. It downloads through the public-host guard's bytes variant (pi-browser publicDownload, web_fetch's
+// hop loop) and writes once through the Workspace, never over a path in use, a media type only when its bytes agree.
 import { extname } from "node:path";
 import type { JsonValue } from "@earendil-works/chord/json";
 import type { TSchema } from "typebox";
@@ -48,7 +31,10 @@ export type Unsaved = { ok: false; url: string; path?: string; refused: string }
  *  server's (a test's). */
 export type SaveOptions = Omit<PublicFetchOptions, "maxBytes"> & { maxBytes?: number; timeoutMs?: number; slots?: SaveSlots };
 
-/** The most web_save downloads held in memory at once (at most SAVE_MAX_BYTES each). */
+/** The most web_save downloads at once per runner, across its runs (SERVER_SLOTS); the rest wait under their own
+ *  deadline. Each holds its file in memory until its one write: its size when its host states its length, about twice
+ *  that at the peak when it does not (publicDownload). So a runner's downloads hold at most 800 MiB at 200 MiB a file,
+ *  about 1.6 GiB when no host states a length; Mode 2's pieced writes (runner/big-writes.ts) can add 800 MiB more. */
 export const SAVE_CONCURRENCY = 4;
 /** Slots for downloads, handed out first come first served. `take` answers the slot's release (once), or rejects with
  *  the signal's reason if it aborts first, leaving the queue. */

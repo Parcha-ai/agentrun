@@ -1472,28 +1472,13 @@ can branch on it. An agent gets the Page as JSON text; a workflow's `call` node 
 it as its output (`args: {url, offset?, max_chars?}`, 50,000 characters of text by default, `out` a schema of that
 shape). A call node naming a tool the table cannot run that way is refused before the run starts (`409`).
 
-`web_save` downloads through the same guard (pi-browser's `publicDownload`, the same hop loop as `publicFetch`): every
-hop resolved, checked and dialled at the address checked, ports 80 and 443 only, a URL at most 4,096 characters. A
-file is at most 200 MiB and a download at most 10 minutes. It writes through the run's Workspace (the run's local
-`work/`, or its folder on the run's disk in Mode 2), so a path with `..`, an absolute path, and a link on the way or as
-the file are refused, and a path that already holds a file or folder is refused rather than overwritten (checked before
-the download and again before the write). The whole file is held in memory and written once (a temporary name renamed over the path
-on a local folder, one put on the run's disk), so a download that fails or passes the cap leaves nothing at the path.
-At most 4 downloads run at once per runner, across its runs (`SAVE_CONCURRENCY`); the rest wait for a free slot under
-their own 10-minute deadline, and one whose deadline passes while it waits answers that. A download whose host states its
-length (an unencoded `Content-Length`) is read into one buffer of that length, so it holds its file's size; one that does
-not is joined from its chunks at the end, about twice its size at the peak. So a runner's downloads hold at most 800 MiB at
-once when their hosts state their lengths, and about 1.6 GiB when none does. In Mode 2 a run in its own process writes
-through its runner's Workspace of the run's disk: a write over 8 MiB crosses to the runner in pieces, and the runner
-assembles it and writes it once, at most 4 such writes at once per runner (a gate of their own, at most 200 MiB each), so
-up to another 800 MiB in the runner while they are written. Its type is checked
-against its bytes: an image (png, jpeg, gif, webp), audio (mp3, wav, ogg, m4a) or video (mp4, webm) is saved only when
-its bytes carry that type's signature, the type the host declares agrees (or it declares none, or
-`application/octet-stream`), and the path's extension names a type that agrees (`media/card.png`; `media/card` and
-`media/card.bin` are refused with the extension to use, as the Files tab types a file by its extension); `content_type`
-answers that type. Any other type (a page, a PDF, text) is saved only to a path whose extension names the type the host
-declares. A call a crash cut off is answered interrupted, never run again. `web_save` makes no paid request. Only an agent that names `web_save` has it (`web_fetch` does not carry it),
-and no workflow node or call node may name it: a workflow's call has the run's local folder, not its Workspace.
+`web_save {url, path}` downloads one public file through the same guard (pi-browser's `publicDownload`, the same hop
+loop), at most 200 MiB in at most 10 minutes, into the run's Workspace (a bare name goes under `media/`), so `..`, an
+absolute path and a link are refused, and a path already in use is refused, never overwritten. The file is written once,
+after the whole download, so a failed one leaves nothing. An image, audio or video is saved only when its bytes, the
+declared type and the path's extension agree (`media/card.png`, never `media/card`); any other type only to a path whose
+extension names the declared type. It makes no paid request and is never run again after a crash. Only an agent that
+names `web_save` has it; no workflow node or call node may name it.
 
 On another harness, every host tool's result reaches the model within the host's bound of 120,000 characters
 (`HOST_RESULT_MAX_CHARS`, `@parcha/agentrun-kernel`): the kernel's tool bridge cuts a longer one, its start with a line
@@ -4094,7 +4079,11 @@ before each model request, the agent's and a compaction's alike, on every harnes
 what each request still in flight is held at, plus the most this request can cost must stay within it, or the
 request is not sent and the run pauses ([below](#a-run-paused-at-its-cap)). The cap is a hard stop for everything but
 the charge of a monid call priced by usage, which can pass the estimate it was held at: when it does, the run stops at
-once ([monid](#monid)). A request costs its input, plus the output it
+once ([monid](#monid)). An MCP tool counts only at the price saved for it (its server's `prices`); one with none is
+not metered and bills its own account outside the cap. fal's generations are such calls: they bill your fal account at
+fal's price for the model and the output, the fal presets save no price, and the cap does not count them. A template
+that uses fal caps its fal spend itself, with an input such as `max_fal_usd` that it prices its plan against before the
+first paid call. A request costs its input, plus the output it
 is sent with at the output price, plus any fee its tokens do not show (below). Its input is priced at its worst case:
 every input token at the higher of the input and cache-write prices, since the provider may bill any of it as a cache
 write and a cache can miss at any request. So no request passes the cap, a cache miss included: a request costs at most
