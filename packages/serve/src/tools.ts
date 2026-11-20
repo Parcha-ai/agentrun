@@ -36,7 +36,8 @@ import { sessionRecordings } from "./computer-record.js";
 import { forModel } from "./result.js";
 import { fetchFor, pagesOf, WEB_FETCH_TOOL, webFetchTool } from "./web-fetch.js";
 import { searchFor, type SearchOn, WEB_SEARCH_TOOL, webSearchTool } from "./web-search.js";
-import { fakeFetch, fakeSearch, type WebFake } from "./web-fake.js";
+import { fakeFetch, fakeSaveOptions, fakeSearch, type WebFake } from "./web-fake.js";
+import { SAVE_MAX_BYTES, WEB_SAVE_TOOL, webSaveTool } from "./web-save.js";
 import { browserNeeds, explainsView, isUnavailable, NO_PARALLEL_KEY, type Pickable, PICKABLE, planeOf, type Plane, PROVIDERS, type Resolution, serverGate, type Tooling, type ToolSettingsMap, whyUnavailable, withDefaults } from "./tool-plane.js";
 import type { DenyFrom, SettingFrom } from "./tool-gate.js";
 import { fauxFetch, PARALLEL_KEY_ENV } from "./decisions.js";
@@ -161,8 +162,8 @@ export type ToolHost = {
   /** The run's own models a native web_search goes through (hosted-search.ts), asked as a search runs: on the runner, the
    *  session's port (its proxy, policy, key, price and cap), this run's alone. Absent: a native search has no model. */
   search?: SearchOn;
-  /** A template eval's web fake for this run (web-fake.ts): its web_search and web_fetch answer from it, never the
-   *  network. Only the eval's own runner sets it (runner/beside.ts evalFakes). Absent: the plane's providers. */
+  /** A template eval's web fake for this run (web-fake.ts): its web_search, web_fetch and web_save answer from it, never
+   *  the network. Only the eval's own runner sets it (runner/beside.ts evalFakes). Absent: the plane's providers. */
   web?: WebFake;
   /** The run's clock where a template eval case sets one (its `now`): a draft's or a send's Date reads it. Absent: the real
    *  clock. */
@@ -726,6 +727,19 @@ export const TOOLS: Readonly<Record<string, ToolEntry>> = Object.freeze({
     // A template eval's web fake (host.web) answers in the provider's place.
     bind: async (host) => installTool(host, "web-search", booking(webSearchTool(host.env, host.search, host.web && ((args, provider) => fakeSearch(host.web!, args, provider)))) as unknown as ToolRegistration),
     effect: async (args, run) => bookedIn(run.ledger, () => searchFor(run.env, args, run.signal, run.search)),
+  },
+  // web_save (web-save.ts): a public file into the run's own Workspace (host.workspace, else the local folder at where.work),
+  // through the guarded download; a template eval's web fake (host.web) answers its files from the case. It makes no paid
+  // request, so nothing books it. No node or call node names it: a workflow's effect has only a local work path, not the
+  // run's Workspace, which in Mode 2 is elsewhere.
+  [WEB_SAVE_TOOL]: {
+    summary: `Download one file from a public URL into the run's work/ (a bare name under media/), never overwriting: { url, path } -> { ok: true, path, bytes, content_type, url } or { ok: false, url, refused | error }; at most ${SAVE_MAX_BYTES / (1024 * 1024)} MiB, its type checked against its bytes (an image, audio or video the console plays, its extension agreeing; any other type only to a path whose extension names it); a private or local address, a port other than 80 or 443, or a scheme other than http(s) is refused at every redirect.`,
+    needs: [],
+    nodes: false,
+    bind: async (host) => {
+      const web = host.web;
+      return installTool(host, "web-save", webSaveTool(() => host.workspace ?? localWorkspace(host.where.work), async () => (web ? fakeSaveOptions(web) : fetchOptions(host.env, FAUX_ENV))) as unknown as ToolRegistration);
+    },
   },
   // The email tools (email/tools.ts) on the server's one email account (Settings → Email), every harness's as web_fetch is;
   // the mail libraries load at the first bind.

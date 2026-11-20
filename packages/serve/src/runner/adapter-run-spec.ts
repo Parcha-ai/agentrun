@@ -227,7 +227,7 @@ export interface AdapterSpecDeps {
   readonly modelRetry?: Pick<AdapterLoopOptions, "retry" | "stream">;
 }
 
-/** One run's template eval fakes (template-eval.ts, from its case). `web`: its web_search and web_fetch answer from the
+/** One run's template eval fakes (template-eval.ts, from its case). `web`: its web_search, web_fetch and web_save answer from the
  *  case, and its harness's own search is never offered (web-fake.ts, fakedPlane). `now`: its clock, the date and time it
  *  is told wherever it reads "now" (environment.ts environmentLine, claude-agent's turn date); absent, the real clock.
  *  `monid`: its monid endpoints answer as monid unreachable does, never sent (monid-run.ts monidForClaim). `email`: the

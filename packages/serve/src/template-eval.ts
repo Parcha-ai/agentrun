@@ -35,6 +35,7 @@ import { webShownOf } from "./timeline/index.js";
 import { ASK_TOOL, BOUND_TOOLS } from "./tools.js";
 import { type WebFake, webFixtureOf } from "./web-fake.js";
 import { WEB_FETCH_TOOL } from "./web-fetch.js";
+import { WEB_SAVE_TOOL } from "./web-save.js";
 import { WEB_SEARCH_TOOL } from "./web-search.js";
 import { dayIn, serverZone } from "./environment.js";
 import { instantOf } from "./trigger-adapter.js";
@@ -374,7 +375,7 @@ export function readCases(dir: string, names?: readonly string[]): { pkg: Packag
     if (c.web !== undefined) {
       const path = c.web === "unavailable" ? undefined : inside(root, c.web, "file");
       // Only a package that names a web tool has one: one that names no tools gets its computer's shell tools, or none.
-      if (!pkg.tools?.includes(WEB_SEARCH_TOOL) && !pkg.tools?.includes(WEB_FETCH_TOOL)) bad(`${at}/case.yaml: web fakes web_search and web_fetch, and the package's tools name neither`);
+      if (![WEB_SEARCH_TOOL, WEB_FETCH_TOOL, WEB_SAVE_TOOL].some((tool) => pkg.tools?.includes(tool))) bad(`${at}/case.yaml: web fakes web_search, web_fetch and web_save, and the package's tools name none of them`);
       else if (c.web === "unavailable") web = "unavailable";
       else if (!path) bad(`${at}/case.yaml: web is unavailable, or a fixture file in the case (not ${JSON.stringify(c.web)})`);
       else {

@@ -1,0 +1,9 @@
+---
+packages: @parcha/agentrun-serve, @parcha/pi-browser
+kind: feature
+---
+A new host tool, `web_save`, downloads one file from a public URL into the run's `work/`, so a link that expires (a generation service's CDN URL) becomes a file the run keeps and the Files tab shows and plays. An agent gets it only by naming `web_save`: `web_fetch` does not carry it. It runs on every harness, takes `{url, path}` (a bare name goes under `media/`) and answers `{ok: true, path, bytes, content_type, url}`, or `{ok: false, url, refused | error}`; it never throws at the model.
+- It downloads through pi-browser's new `publicDownload`, which shares `publicFetch`'s hop loop: every redirect resolved, checked public and dialled at the address checked, ports 80 and 443 only. A file is at most 200 MiB and a download at most 10 minutes.
+- It writes through the run's Workspace, so `..`, an absolute path and a link on the way or as the file are refused. A path that already holds a file or folder is refused, never overwritten. The file is written once, after the whole download, so a failed or over-cap download leaves nothing at the path.
+- The type is checked against the bytes: png, jpeg, gif, webp, mp3, wav, ogg, mp4, m4a and webm save only when their signature, the declared type and the path's extension agree, and `content_type` answers the type the bytes show. Any other type (a page, a PDF, text) saves only to a path whose extension names the type the host declares.
+- A template eval's `web:` fixture takes an optional `save` section (`{url, content_type?, status?, text | base64}` or `{url, error}`, and `default`), and a package naming only `web_save` may use `web:`. No workflow node or call node may name `web_save`.
