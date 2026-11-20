@@ -1,5 +1,4 @@
 import { NATIVE_RUN_OVERRIDES_UNSUPPORTED, nativeOf, nativeRunOverrides } from "./native/binding.js";
-import { serialBy } from "./files.js";
 import { launchNative } from "./native/connection.js";
 // The write half of the run's server cut (design 2.1, "the runner takes every run"): the functions the v2 routes call to
 // start a run and to act on one (message, stop, raise, approve, archive), over the one store (A). The old per-run-process
@@ -621,18 +620,25 @@ const bodyConflict = ({ source, kind, id, version }: InlineAgent["external"]): A
  *  `origin`, a key that already started a run gets that run, as startRun's. */
 export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "agents">, deps: StartDeps, inline: InlineAgent, body: Json, options: Pick<StartOptions, "origin" | "sealed"> = {}): Promise<RunRow> {
   const ref = externalKey(inline.external);
-  if (await store.agents.byExternal(ref)) return await startInlineOnce(store, deps, inline, body, options);
-  // A reference's first starts take turns in this server: each prepares its launch, and in Mode 2 places its files, under
-  // the agent id it will be written with. Two at once would each mint an agent id, and the one whose transaction found
-  // the other's agent would keep files placed under its own (uploads-archil.ts place). The second reads the agent the
-  // first wrote. (One server writes a store: its owner lock.)
-  return await serialBy(firstInlineStarts, ref, () => startInlineOnce(store, deps, inline, body, options));
+  // A reference's first starts that overlap in this server share one agent id: each prepares its launch, and in Mode 2
+  // places its files (uploads-archil.ts place), under the id the agent is written with, whichever start's transaction
+  // writes it (createInline writes the agent once per reference and reads it back). They run at once; none waits on
+  // another. (One server writes a store: its owner lock.)
+  let tentative = tentativeAgents.get(ref);
+  if (!tentative) tentativeAgents.set(ref, (tentative = { id: uuidv7(), starts: 0 }));
+  tentative.starts += 1;
+  try {
+    return await startInlineOnce(store, deps, inline, body, options, tentative.id);
+  } finally {
+    tentative.starts -= 1;
+    if (tentative.starts === 0 && tentativeAgents.get(ref) === tentative) tentativeAgents.delete(ref);
+  }
 }
 
-/** Each reference's first inline starts in progress (startInline). */
-const firstInlineStarts = new Map<string, Promise<unknown>>();
+/** The agent id each reference's first starts in progress share (startInline). */
+const tentativeAgents = new Map<string, { readonly id: string; starts: number }>();
 
-async function startInlineOnce(store: Pick<Store, "runs" | "runOfOrigin" | "agents">, deps: StartDeps, inline: InlineAgent, body: Json, { origin, sealed }: Pick<StartOptions, "origin" | "sealed"> = {}): Promise<RunRow> {
+async function startInlineOnce(store: Pick<Store, "runs" | "runOfOrigin" | "agents">, deps: StartDeps, inline: InlineAgent, body: Json, { origin, sealed }: Pick<StartOptions, "origin" | "sealed">, newAgentId: string): Promise<RunRow> {
   const { external, revision, stored: storedRevision } = inline;
   const ref = externalKey(external);
   // A version's body never changes here: a different one is refused before anything else is read or written.
@@ -649,7 +655,7 @@ async function startInlineOnce(store: Pick<Store, "runs" | "runOfOrigin" | "agen
   const entry: AgentEntry = stored
     ? firstOfVersion ? { ...stored, agent: { ...stored.agent, name: inline.name, description: inline.description } } : stored
     : {
-        agent: { id: uuidv7(), name: inline.name, description: inline.description, currentRevision: null, createdAt: Date.now(), archivedAt: null, externalRef: ref, purgedAt: null },
+        agent: { id: newAgentId, name: inline.name, description: inline.description, currentRevision: null, createdAt: Date.now(), archivedAt: null, externalRef: ref, purgedAt: null },
         revision: null, version: 0, revisions: 0, sizes: new Map(),
       };
   // A store revision is the revision the run path reads as a pi Revision (its body is the revision body), as pinnedOf hands
