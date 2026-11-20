@@ -18,7 +18,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { startRunnerProcess } from "../dist/runner/main.js";
 import { LAST_UNMARKED, migrate, Unanswered, migrationsIn, openPostgresStore, RunnerBelowFloor, runnerFloorOf, StoreAwaitsServer } from "../dist/store/index.js";
-import { readStoreSchema } from "../dist/store-schema.js";
+import { readStoreSchema } from "../dist/store/store-schema.js";
 import { SCHEMA_STATE_MS } from "../dist/store/postgres/store.js";
 import { fauxLoops, until } from "./runner-support.mjs";
 import { client, dropSchema, freshSchema, PG_URL, postgresOnly } from "./store-target.mjs";

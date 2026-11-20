@@ -17,11 +17,11 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { parseArgs } from "node:util";
-import { migrationsIn, runnerFloorOf, runnerOn, type SchemaState } from "./store/postgres/migrate.js";
-import { STORE_CONNECT_TIMEOUT_MS } from "./store/postgres/connection.js";
-import { storePlace, storeTarget, type StoreTarget } from "./store/open.js";
-import { SCHEMA_VERSION } from "./store/schema.js";
-import { STORE_FILE } from "./store/sqlite/store.js";
+import { migrationsIn, runnerFloorOf, runnerOn, type SchemaState } from "./postgres/migrate.js";
+import { STORE_CONNECT_TIMEOUT_MS } from "./postgres/connection.js";
+import { storePlace, storeTarget, type StoreTarget } from "./open.js";
+import { SCHEMA_VERSION } from "./schema.js";
+import { STORE_FILE } from "./sqlite/store.js";
 
 /** The line `agentrun-serve store-schema` prints. */
 export interface StoreSchemaReport {

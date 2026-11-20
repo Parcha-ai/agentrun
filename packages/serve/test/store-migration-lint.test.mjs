@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { LAST_UNMARKED, marksBreaking, migrationsIn, RUNNERS_BREAKING } from "../dist/store/index.js";
 import { breakingStatements } from "../dist/store/postgres/migration-lint.js";
-import { buildSchema } from "../dist/store-schema.js";
+import { buildSchema } from "../dist/store/store-schema.js";
 import { SCHEMA_VERSION } from "../dist/store/schema.js";
 
 const name = (m) => `${String(m.version).padStart(4, "0")}_${m.name}.sql`;

@@ -375,9 +375,9 @@ if (process.argv[2] === "runner") {
   process.exit(await runnerMain(process.argv.slice(3)));
 }
 
-// The store's schema and runner floor, read-only (store-schema.ts), for a deploy's skew check.
+// The store's schema and runner floor, read-only (store/store-schema.ts), for a deploy's skew check.
 if (process.argv[2] === "store-schema") {
-  const { storeSchemaMain } = await import("./store-schema.js");
+  const { storeSchemaMain } = await import("./store/store-schema.js");
   process.exit(await storeSchemaMain(process.argv.slice(3), defaultData(), USAGE));
 }
 
