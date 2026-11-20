@@ -172,6 +172,13 @@ async function handedAfter(output, carried) {
   return content.slice("Go.".length);
 }
 
+test("the run is told how many entries each carried array lost from its front, never that they were its oldest: the engine reads no dates", () => {
+  const words = previousCarriedWords("run-x", null, ["b", "a"], 40000, "{}", [["b", 2], ["a", 1]]);
+  assert.ok(words.includes("dropped to fit (b: the first 2 entries dropped; a: the first entry dropped)"), `per field, the first N entries: ${words}`);
+  assert.ok(words.includes("(the template keeps the array oldest first)"), `the order is the template's: ${words}`);
+  assert.doesNotMatch(words, /oldest entr/, "never that the engine knows which entries are the oldest");
+});
+
 test("over the limit with no x-carried: the too-large line, never every field read as carried; beside it, the same result carrying seen", async () => {
   // Over the limit by an array alone: read as carried, its first entries would go and the rest would fit.
   const output = { seen: entries("seen", 300), tag: "newer" };

@@ -13,6 +13,7 @@ import { agent, flowAgent, follow, serve, withEnv } from "./support.mjs";
 import { fakeClock, schedule } from "./trigger-support.mjs";
 
 const { previousCarriedWords, previousResultTooLarge } = await import("../dist/trigger-targets.js");
+const { carriedFields } = await import("../dist/answer-json.js");
 
 /** A digest's schema: what a market monitor's answer holds, cut down. */
 const DIGEST = {
@@ -233,4 +234,13 @@ test("an output_schema's x-carried is a list of unique names of its root's prope
   assert.deepEqual(refusals, [["not-a-list", 422, field], ["not-strings", 422, field], ["repeated", 422, field], ["no-such-property", 422, field], ["empty-name", 422, field]]);
   const noProperties = await api("POST", "/agents", agent("bare", { output_schema: { type: "object", "x-carried": ["seen"] } }));
   assert.deepEqual([noProperties.status, noProperties.body.error?.fields?.map((f) => [f.field, f.reason])], [422, field], "a schema with no properties carries none");
+});
+
+test("a stored x-carried the save would refuse is read as none, so its run gets the too-large line; one the save takes is read as written", () => {
+  assert.deepEqual(carriedFields(carrying(["seen", "tag"])), ["seen", "tag"]);
+  const read = [["not-a-list", "seen"], ["not-strings", ["seen", 3]], ["repeated", ["seen", "seen"]], ["no-such-property", ["seen", "unknown"]], ["empty-name", [""]]]
+    .map(([name, carried]) => [name, carriedFields({ ...carrying(undefined), "x-carried": carried })]);
+  assert.deepEqual(read, [["not-a-list", undefined], ["not-strings", undefined], ["repeated", undefined], ["no-such-property", undefined], ["empty-name", undefined]], "the save's rule, one reader");
+  assert.equal(carriedFields(carrying(undefined)), undefined);
+  assert.equal(carriedFields("not a schema"), undefined);
 });
