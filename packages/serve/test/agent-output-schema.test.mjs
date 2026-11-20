@@ -4,12 +4,15 @@
 // result.output is null, as before. The runner tells the model the schema in its instructions, and asks once more when
 // the answer misses it; one that still misses says why (result.output_error). And a triggered run is handed its trigger's previous result (#2144): a scheduled run
 // of the same trigger reads what its last completed run answered, so a weekly digest can leave out what it reported. A
-// result over the limit is handed as the fields its run's output schema names in `x-carried` alone, when they fit.
+// result over the limit is handed as the fields its run's output schema names in `x-carried` alone; how they are cut to
+// fit is trigger-targets.test.mjs's.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { agent, flowAgent, follow, serve, withEnv } from "./support.mjs";
 import { fakeClock, schedule } from "./trigger-support.mjs";
+
+const { previousCarriedWords, previousResultTooLarge } = await import("../dist/trigger-targets.js");
 
 /** A digest's schema: what a market monitor's answer holds, cut down. */
 const DIGEST = {
@@ -172,14 +175,10 @@ const SEEN = ["https://jobs.example.com/1", "https://jobs.example.com/2"];
 /** An answer whose whole result is over PREVIOUS_RESULT_MAX_BYTES (32 KiB as 2-space JSON); its `seen` is small. Its
  *  noise is words, not one 33 KiB run of letters, which a run's cut takes for a key and redacts. */
 const BIG = { seen: SEEN, noise: "word ".repeat(7 * 1024).trim(), tag: "newer" };
-const SMALL = { seen: SEEN, noise: "short", tag: "small" };
 
-const PREVIOUS = "The result of this trigger's last completed run";
-const CARRIED = "The carried fields";
-const TOO_LARGE = /This trigger's last completed run \(([^)]+)\) has a result over 32768 bytes, so it is not handed to you here\./;
 /** A scheduled trigger on a new agent `id` with output schema `schema`, whose runs answer `json`, fired twice: the first
- *  run's id and what the second was handed (the faux model quotes it back as "Handed: ..."). `between` runs after the
- *  first firing (an edit of the agent). */
+ *  run's id and end, and what the second was handed (the faux model quotes it back as "Handed: ..."). `between` runs
+ *  after the first firing (an edit of the agent). */
 async function firedTwice(api, id, schema, json, between) {
   assert.equal((await api("POST", "/agents", agent(id, { output_schema: schema }))).status, 201);
   const input = { content: `Answer with this json: ${JSON.stringify(json)}` };
@@ -190,7 +189,7 @@ async function firedTwice(api, id, schema, json, between) {
     await follow(api, fired.body.run_id, ["completed"]);
     const run = (await api("GET", `/runs/${fired.body.run_id}`)).body;
     assert.deepEqual(run.result.output, json, `${id}: its own answer is its result`);
-    return { runId: fired.body.run_id, handed: /\n\nHanded: ([\s\S]*)\n\n```json\n[^\n]*\n```$/.exec(run.result.final_answer)?.[1] ?? "" };
+    return { runId: fired.body.run_id, endedAt: run.ended_at, handed: /\n\nHanded: ([\s\S]*)\n\n```json\n[^\n]*\n```$/.exec(run.result.final_answer)?.[1] ?? "" };
   };
   const first = await fire(`${id}-1`);
   if (between) await between();
@@ -202,27 +201,10 @@ const blockOf = (handed) => JSON.parse(/```json\n([\s\S]*?)\n```\s*$/.exec(hande
 test("a previous result over the limit whose run's output schema names x-carried is handed as those fields alone, said so with its whole size", { timeout: 120_000 }, async (t) => {
   const { api } = await serve(t, { triggerClock: fakeClock("2026-06-01T00:00:00Z") });
   const carried = await firedTwice(api, "carried", carrying(["seen"]), BIG);
-  assert.ok(!TOO_LARGE.test(carried.handed), `a result over the limit whose schema carries fields is not refused whole: ${carried.handed.slice(0, 300)}`);
-  assert.deepEqual(blockOf(carried.handed), { seen: SEEN }, "only the carried fields are handed, as an object with their names");
-  assert.match(carried.handed, new RegExp(`${CARRIED} \\(seen\\) of this trigger's last completed run \\(${carried.first.runId}, ended [^)]+\\): its whole result is ${Buffer.byteLength(JSON.stringify(BIG, null, 2))} bytes, over 32768`));
+  assert.ok(!carried.handed.includes(previousResultTooLarge(carried.first.runId).trim()), `a result over the limit whose schema carries fields is not refused whole: ${carried.handed.slice(0, 300)}`);
+  const words = previousCarriedWords(carried.first.runId, carried.first.endedAt, ["seen"], Buffer.byteLength(JSON.stringify(BIG, null, 2)), JSON.stringify({ seen: SEEN }, null, 2), []);
+  assert.ok(carried.handed.endsWith(words.trim()), `only the carried fields, named, with the whole result's size: ${carried.handed.slice(0, 600)}`);
   assert.ok(!carried.handed.includes("word word") && !carried.handed.includes('"tag"'), "nothing of the fields it does not carry");
-});
-
-test("beside it, over the limit with no x-carried, or a carried string over the limit itself (a scalar is never cut, only a carried array's oldest entries): the too-large line; under the limit: the whole result", { timeout: 180_000 }, async (t) => {
-  const { api } = await serve(t, { triggerClock: fakeClock("2026-06-01T00:00:00Z") });
-  // The positive control in the same run: a schema that carries `seen` is handed {seen}.
-  const control = await firedTwice(api, "control", carrying(["seen"]), BIG);
-  assert.deepEqual(blockOf(control.handed), { seen: SEEN }, `the control is handed its carried fields: ${control.handed.slice(0, 300)}`);
-  const plain = await firedTwice(api, "uncarried", carrying(undefined), BIG);
-  assert.equal(TOO_LARGE.exec(plain.handed)?.[1], plain.first.runId, `no x-carried, the too-large line: ${plain.handed.slice(0, 300)}`);
-  assert.ok(!plain.handed.includes(CARRIED) && !plain.handed.includes("```json"), "and nothing of the result");
-  const heavy = await firedTwice(api, "heavy", carrying(["noise"]), BIG);
-  assert.equal(TOO_LARGE.exec(heavy.handed)?.[1], heavy.first.runId, `a carried string over the limit is never cut, the too-large line: ${heavy.handed.slice(0, 300)}`);
-  assert.ok(!heavy.handed.includes(CARRIED) && !heavy.handed.includes("```json"), "and nothing of the result");
-  const under = await firedTwice(api, "under", carrying(["seen"]), SMALL);
-  assert.match(under.handed, new RegExp(`${PREVIOUS} \\(${under.first.runId}, ended `));
-  assert.ok(under.handed.includes(JSON.stringify(SMALL, null, 2)), `under the limit the whole result is handed, x-carried or not: ${under.handed}`);
-  assert.ok(!under.handed.includes(CARRIED));
 });
 
 test("the carried fields are read from the schema the completed run was checked against (its revision), never the agent's newer one", { timeout: 120_000 }, async (t) => {
@@ -235,19 +217,6 @@ test("the carried fields are read from the schema the completed run was checked 
   });
   assert.deepEqual((await api("GET", "/agents/pinned")).body.definition.output_schema["x-carried"], ["tag"], "the agent's current schema carries tag");
   assert.deepEqual(blockOf(pinned.handed), { seen: SEEN }, `the first run's revision's x-carried, never the newer one's: ${pinned.handed.slice(0, 300)}`);
-});
-
-test("a carried field absent from the output is left out, never a null in its place; a pick with none of them present is the too-large line", { timeout: 120_000 }, async (t) => {
-  const { api } = await serve(t, { triggerClock: fakeClock("2026-06-01T00:00:00Z") });
-  const { tag: _absent, ...noTag } = BIG;
-  // x-carried ["seen", "tag"], an answer with no tag: {seen} alone, and the words name seen alone.
-  const partial = await firedTwice(api, "partial", carrying(["seen", "tag"]), noTag);
-  assert.deepEqual(blockOf(partial.handed), { seen: SEEN }, `an absent carried field is left out, never null: ${partial.handed.slice(0, 300)}`);
-  assert.match(partial.handed, new RegExp(`${CARRIED} \\(seen\\) of this trigger's last completed run \\(${partial.first.runId}, `));
-  // x-carried ["tag"], an answer with no tag: nothing to pick, so the too-large line, as with no x-carried.
-  const none = await firedTwice(api, "none-present", carrying(["tag"]), noTag);
-  assert.equal(TOO_LARGE.exec(none.handed)?.[1], none.first.runId, `a pick with no carried field present is the too-large line: ${none.handed.slice(0, 300)}`);
-  assert.ok(!none.handed.includes(CARRIED) && !none.handed.includes("```json"), "and nothing of the result, not {}");
 });
 
 test("an output_schema's x-carried is a list of unique names of its root's properties: anything else is refused by field", { timeout: 60_000 }, async (t) => {
