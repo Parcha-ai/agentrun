@@ -246,6 +246,10 @@ function hostOver(rows, turnOver, { waitMs = 5_000, flips = {} } = {}) {
   const reads = {};
   const asked = {};
   const store = {
+    // A store's own origin is itself (Store.origin): the readers' caches key on it (store-view.ts forgetServed).
+    get origin() {
+      return this;
+    },
     runs: {
       get: async (id) => {
         reads[id] = (reads[id] ?? 0) + 1;
