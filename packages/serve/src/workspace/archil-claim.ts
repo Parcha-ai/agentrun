@@ -25,6 +25,7 @@ import { type ArchilMountCredentialOptions, type MountCredential, mintMountToken
 import { COMPUTER_LIFETIME_MS } from "./computer-deps.js";
 import type { LaunchDisk } from "../run-launch.js";
 import { heldOrThrow } from "../runner/held.js";
+import { piecedWorkspace } from "./pieced.js";
 import type { Workspace } from "./workspace.js";
 import { type RunDisk, type RunDiskOptions, runDiskOf } from "./run-disk.js";
 
@@ -117,7 +118,9 @@ export async function archilWhereHeld(options: ArchilClaimOptions): Promise<Arch
     secrets: new Set<string>(),
     release: () => void given.release().catch(() => undefined),
   } as unknown as ArchilClaim;
-  HELD_ARCHIL.set(claim, given.workspace);
+  // A write bigger than a piece crosses in pieces its runner pulls, and is written there once (runner/big-writes.ts): one
+  // call would not fit the channel's frame.
+  HELD_ARCHIL.set(claim, piecedWorkspace(given.workspace, given.pieces, options.signal));
   return claim;
 }
 

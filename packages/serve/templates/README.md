@@ -101,11 +101,11 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
   server writes them, under `Input:`; a body that holds its own `Input:` block is refused.
 - `case.yaml`, optional: `parameters` (the apply's parameters), `grants` (the gate names the apply grants, always a
   list), `mcp` (an `mcp` need's toolkit to a fixture file in the case that fakes it), `learning` (a file in the case holding
-  the corrections the agent starts with, as its `corrections.md`: one line each), `web` (fakes `web_search` and `web_fetch` for the case's runs),
+  the corrections the agent starts with, as its `corrections.md`: one line each), `web` (fakes `web_search`, `web_fetch` and `web_save` for the case's runs),
   `monid` (fakes the package's monid endpoints for the case's runs), `now` (the case's clock), `email` (a fake mailbox
   for the case's runs), `calendar` (a fake calendar for the case's runs).
 - `web: unavailable`: every `web_search` answers with the words a rate-limited free search answers with, and every
-  `web_fetch` fails as a page that never answers does; no call reaches the network. `web:` a fixture file in the case
+  `web_fetch` and `web_save` fails as a host that never answers does; no call reaches the network. `web:` a fixture file in the case
   answers from that file instead:
   ```json
   { "search": { "answers": [ { "query": "robot", "results": [ { "url": "https://...", "title": "...", "snippet": "...", "published": "2026-11-10" } ] },
@@ -113,13 +113,17 @@ Each `evals/<case>/` is one test of the package's agent. No eval runs on the ser
                 "default": { "results": [] } },
     "fetch": { "answers": [ { "url": "https://.../post", "title": "...", "text": "the page's text" },
                             { "url": "https://.../gone", "status": 404, "text": "" } ],
-               "default": { "error": "fetch failed" } } }
+               "default": { "error": "fetch failed" } },
+    "save": { "answers": [ { "url": "https://.../out.png", "content_type": "image/png", "base64": "iVBORw0KGgo..." },
+                           { "url": "https://.../gone.png", "error": "connect ETIMEDOUT" } ] } }
   ```
   A search answer's `query` is a regular expression over the call's query (case-insensitive), a fetch answer's `url`
   the exact URL; the first answer that matches is taken, else `default`. A `status` of 400 or more fails the fetch as
-  that answer would. The calls show in the run's timeline as any other, so a `tool_used` grader counts them. Each
+  that answer would. `save` is optional: each `web_save` file is the answer for exactly its URL (its body as `text` or
+  `base64`, with `content_type` and `status` optional), else `save.default` where there is one, else a refused
+  connection; the file goes through `web_save`'s own checks (its type against its bytes, the path, the cap). The calls show in the run's timeline as any other, so a `tool_used` grader counts them. Each
   harness gets the same fake: on claude-agent and codex their own web search is never offered to a `web:` case's runs.
-  The package's `tools` must name `web_search` or `web_fetch`. Only the eval's own server honours `web`, so a case with
+  The package's `tools` must name `web_search`, `web_fetch` or `web_save`. Only the eval's own server honours `web`, so a case with
   it refuses to run with `--server`.
 - `monid: unavailable`: every call of a monid endpoint the package grants answers as it does when monid can't be
   reached (`... was not sent: monid's price for it could not be read before the call (monid could not be reached: fetch

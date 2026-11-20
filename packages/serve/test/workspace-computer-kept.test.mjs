@@ -593,14 +593,14 @@ const intervalsOf = (one) => one.store.computerIntervals.forRun("run-1");
 test("a run's desktop has an interval: opened at its create by the provider's id, the create's asks null where it asked none; kept at the park; ended when the keep's end deletes it", async () => {
   const one = await server();
   const first = await one.claim(3);
-  const opened = { runId: "run-1", provider: "e2b", providerId: "c1", kind: "desktop", gpuType: null, gpuCount: null, cpus: null, memoryMb: null, startedAt: T0 };
-  assert.deepEqual(await intervalsOf(one), [{ ...opened, kept: false, endedAt: null }]);
+  const opened = { runId: "run-1", provider: "e2b", providerId: "c1", kind: "desktop", gpuType: null, gpuCount: null, cpus: null, memoryMb: null, diskGb: null, startedAt: T0 };
+  assert.deepEqual(await intervalsOf(one), [{ ...opened, kept: false, endedAt: null, bookedMs: 0 }]);
   one.clock.now = T0 + 30_000;
   assert.equal(await first.park(), true);
-  assert.deepEqual(await intervalsOf(one), [{ ...opened, kept: true, endedAt: null }], "kept past its claim, not ended");
+  assert.deepEqual(await intervalsOf(one), [{ ...opened, kept: true, endedAt: null, bookedMs: 0 }], "kept past its claim, not ended");
   one.clock.now = T0 + 30_000 + KEEP_MS;
   assert.deepEqual(await one.janitor(), { ended: ["c1"], failed: [] });
-  assert.deepEqual(await intervalsOf(one), [{ ...opened, kept: true, endedAt: T0 + 30_000 + KEEP_MS }], "ended when its delete answered ok");
+  assert.deepEqual(await intervalsOf(one), [{ ...opened, kept: true, endedAt: T0 + 30_000 + KEEP_MS, bookedMs: 0 }], "ended when its delete answered ok");
 });
 
 test("a run's sandbox released at its end is ended at that moment; a release whose delete fails leaves it open, never a guessed end", async () => {
@@ -608,7 +608,7 @@ test("a run's sandbox released at its end is ended at that moment; a release who
   const first = await one.claim(3, { spec: () => ({ ...SPEC(), cpus: 2, memoryMb: 4096 }) });
   one.clock.now = T0 + 90_000;
   await first.release();
-  assert.deepEqual(await intervalsOf(one), [{ runId: "run-1", provider: "docker", providerId: "c1", kind: "sandbox", gpuType: null, gpuCount: null, cpus: 2, memoryMb: 4096, startedAt: T0, kept: false, endedAt: T0 + 90_000 }]);
+  assert.deepEqual(await intervalsOf(one), [{ runId: "run-1", provider: "docker", providerId: "c1", kind: "sandbox", gpuType: null, gpuCount: null, cpus: 2, memoryMb: 4096, diskGb: null, startedAt: T0, kept: false, endedAt: T0 + 90_000, bookedMs: 0 }]);
 
   const two = await server(SANDBOX);
   const held = await two.claim(3);
@@ -657,4 +657,163 @@ test("an interval that can't be written never fails the claim: it is said on the
   assert.equal(held.computer.kind, "desktop");
   assert.equal(await held.park(), true, "its park keeps it as before");
   assert.deepEqual(said, ["the computer interval of e2b c1 (run run-1) was not written: the store is down", "the computer interval of e2b c1 was not written: the store is down"]);
+});
+
+// A computer's time on the run's ledger (compute-cost.ts), priced by the operator's per-resource settings: its first
+// stretch held before its create, each stretch booked and the next held, the rest booked when it is let go. The ledger
+// here records each admit and settle; `refuse` refuses a hold (never an owed booking) in the cap's words.
+function ledgerOf({ refuse = () => false } = {}) {
+  const admits = [];
+  const settles = [];
+  const pauses = [];
+  const paid = {
+    async admit(request) {
+      if (!request.owed && refuse(request)) throw Object.assign(new Error("spend_cap_reached: this run's cap of $0.01 has no room for the computer's next stretch"), { code: "spend_cap_reached", forGood: false });
+      admits.push(request);
+      return {};
+    },
+    async settle(id, usd, options) {
+      settles.push([id, usd, options?.givenBack === true]);
+      return usd;
+    },
+  };
+  return { admits, settles, pauses, ledger: { paid, pause: async (refusal) => void pauses.push(refusal) } };
+}
+/** $0.00001 a vCPU-second and $0.000002 a GiB-second on e2b: 2 vCPUs and 4 GiB cost $0.000028 a second, $0.0084 a stretch. */
+const PRICES = { AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_E2B: "0.00001", AGENTRUN_COMPUTE_USD_PER_GIB_SECOND_E2B: "0.000002" };
+const SIZED = () => ({ ...SPEC(), cpus: 2, memoryMb: 4096 });
+/** The meter's timer, run by hand: `tick()` runs each stretch's tick once and waits for it. */
+function ticker() {
+  const ticks = new Set();
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+  return { every: (tick) => (ticks.add(tick), () => ticks.delete(tick)), settle, tick: async () => { for (const tick of ticks) tick(); await settle(); } };
+}
+const bookings = (admits) => admits.filter((one) => one.owed && !one.hold).map((one) => [one.tag, Math.round(one.holdUsd * 1e9) / 1e9]);
+
+test("a priced computer's first stretch is held before its create; a cap with no room for it makes nothing, in the cap's words", async () => {
+  const one = await server();
+  const { ledger, admits } = ledgerOf({ refuse: () => true });
+  await assert.rejects(one.claim(3, { spec: SIZED, compute: { ledger, env: PRICES } }), /spend_cap_reached: this run's cap of \$0\.01 has no room for the computer's next stretch/);
+  assert.deepEqual(creates(one.account), [], "nothing made, nothing billed");
+  assert.deepEqual(admits, [], "nothing held");
+});
+
+test("a priced computer's time is booked each stretch, the next held; the rest is booked at its delete, its holds given back, and its interval says how much was booked", async () => {
+  const one = await server();
+  const { ledger, admits, settles } = ledgerOf();
+  const clock = ticker();
+  const held = await one.claim(3, { spec: SIZED, compute: { ledger, env: PRICES, every: clock.every } });
+  await clock.settle();
+  const holds = () => admits.filter((one) => one.hold).map((one) => [one.holdUsd, one.owed === true]);
+  assert.deepEqual(holds(), [[0.0084, false], [0.0084, true]], "a stretch held before the create, then one owed for the computer made");
+  one.clock.now = T0 + 300_000;
+  await clock.tick();
+  // 300 s of 2 vCPUs at $0.00001 is $0.006; of 4 GiB at $0.000002, $0.0024.
+  assert.deepEqual(bookings(admits), [["vcpu", 0.006], ["memory", 0.0024]]);
+  assert.ok(admits.filter((one) => one.owed && !one.hold).every((one) => one.tool === "compute" && one.chargedBy === "e2b"));
+  one.clock.now = T0 + 345_000;
+  await held.release();
+  // The last 45 s at its delete: $0.0009 and $0.00036.
+  assert.deepEqual(bookings(admits), [["vcpu", 0.006], ["memory", 0.0024], ["vcpu", 0.0009], ["memory", 0.00036]]);
+  await clock.settle();
+  const holdIds = admits.filter((one) => one.hold).map((one) => one.id);
+  assert.ok(holdIds.every((id) => settles.some(([settled, usd, back]) => settled === id && usd === 0 && back)), `every hold given back: ${JSON.stringify(settles)}`);
+  assert.deepEqual((await intervalsOf(one)).map((row) => [row.cpus, row.memoryMb, row.bookedMs, row.endedAt]), [[2, 4096, 345_000, T0 + 345_000]]);
+});
+
+test("a cap with no room for a computer's next stretch pauses the run once, and the time it runs on is still booked, never refused", async () => {
+  const one = await server();
+  let full = false;
+  const { ledger, admits, pauses } = ledgerOf({ refuse: () => full });
+  const clock = ticker();
+  const held = await one.claim(3, { spec: SIZED, compute: { ledger, env: PRICES, every: clock.every } });
+  full = true;
+  one.clock.now = T0 + 300_000;
+  await clock.tick();
+  one.clock.now = T0 + 600_000;
+  await clock.tick();
+  assert.equal(pauses.length, 1, "paused once, in the cap's words");
+  assert.match(pauses[0].refuse, /spend_cap_reached/);
+  assert.equal(pauses[0].forGood, false, "a raise lets it go on");
+  assert.deepEqual(bookings(admits), [["vcpu", 0.006], ["memory", 0.0024], ["vcpu", 0.006], ["memory", 0.0024]], "both stretches booked");
+  await held.release();
+});
+
+test("a computer with no price set is never refused and never held: it runs as before, its time on the usage read alone", async () => {
+  const one = await server();
+  const { ledger, admits } = ledgerOf({ refuse: () => true });
+  const held = await one.claim(3, { spec: SIZED, compute: { ledger, env: {} } });
+  assert.deepEqual(creates(one.account), ["c1"]);
+  one.clock.now = T0 + 60_000;
+  await held.release();
+  assert.deepEqual(admits, [], "nothing held or booked");
+  assert.deepEqual((await intervalsOf(one)).map((row) => row.bookedMs), [0]);
+});
+
+test("the provider's own figures price the computer where its create said them, over what was asked", async () => {
+  const one = await server();
+  const create = one.account.provider.create.bind(one.account.provider);
+  one.account.provider.create = async (spec) => {
+    const made = await create(spec);
+    return { ok: true, value: { ...made.value, resources: { cpus: 4, memoryMb: 8192, diskGb: 20 } } };
+  };
+  const { ledger, admits } = ledgerOf();
+  const clock = ticker();
+  const held = await one.claim(3, { spec: SIZED, compute: { ledger, env: PRICES, every: clock.every } });
+  one.clock.now = T0 + 100_000;
+  await held.release();
+  // 100 s of 4 vCPUs: $0.004; of 8 GiB: $0.0016. Its disk has no price set: unpriced, never booked.
+  assert.deepEqual(bookings(admits), [["vcpu", 0.004], ["memory", 0.0016]]);
+  assert.deepEqual((await intervalsOf(one)).map((row) => [row.cpus, row.memoryMb, row.diskGb]), [[4, 8192, 20]]);
+});
+
+test("a computer's next stretch is asked for once the booked one's hold is given back, so a cap with room for it holds it (#3338 review)", async () => {
+  // A cap of $0.02 that counts what is booked and what is still held: a stretch is $0.0084. At the first tick $0.0084 is
+  // booked; with the booked stretch's hold still counted, a next $0.0084 would make $0.0252 and be refused.
+  const one = await server();
+  const live = new Map();
+  let spent = 0;
+  const admits = [];
+  const pauses = [];
+  const paid = {
+    async admit(request) {
+      const held = [...live.values()].reduce((sum, usd) => sum + usd, 0);
+      if (!request.owed && spent + held + request.holdUsd > 0.02 + 1e-12) throw Object.assign(new Error("spend_cap_reached: no room"), { code: "spend_cap_reached", forGood: false });
+      admits.push(request);
+      if (request.hold) live.set(request.id, request.holdUsd);
+      else spent += request.holdUsd;
+      return {};
+    },
+    async settle(id, usd) {
+      live.delete(id);
+      return usd;
+    },
+  };
+  const clock = ticker();
+  const held = await one.claim(3, { spec: SIZED, compute: { ledger: { paid, pause: async (refusal) => void pauses.push(refusal) }, env: PRICES, every: clock.every } });
+  await clock.settle();
+  one.clock.now = T0 + 300_000;
+  await clock.tick();
+  assert.deepEqual(pauses, [], "the run is not paused: the cap has room for the next stretch");
+  assert.equal(live.size, 1, "the next stretch is held");
+  assert.ok(Math.abs([...live.values()][0] - 0.0084) < 1e-9);
+  await held.release();
+  await clock.settle();
+  assert.equal(live.size, 0, "every hold given back at its delete");
+});
+
+test("a computer whose resources the operator priced at $0 is booked at $0 each stretch, never held, so its usage reads $0 and not unpriced (#3338 review)", async () => {
+  const one = await server();
+  const { ledger, admits } = ledgerOf({ refuse: () => true });
+  const clock = ticker();
+  const env = { AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_E2B: "0", AGENTRUN_COMPUTE_USD_PER_GIB_SECOND_E2B: "0" };
+  const held = await one.claim(3, { spec: SIZED, compute: { ledger, env, every: clock.every } });
+  assert.deepEqual(creates(one.account), ["c1"], "made, though the cap refuses every hold: nothing is held");
+  one.clock.now = T0 + 300_000;
+  await clock.tick();
+  one.clock.now = T0 + 345_000;
+  await held.release();
+  assert.deepEqual(admits.filter((one) => one.hold), [], "nothing held");
+  assert.deepEqual(bookings(admits), [["vcpu", 0], ["memory", 0], ["vcpu", 0], ["memory", 0]], "each stretch booked at $0");
+  assert.deepEqual((await intervalsOf(one)).map((row) => row.bookedMs), [345_000], "its time is held by the claim, not unheld");
 });

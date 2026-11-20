@@ -1152,14 +1152,16 @@ describe("Settings → MCP servers, a server's tool settings", () => {
 });
 
 describe("Settings → MCP servers, URL presets", () => {
-  // The five servers the free templates use: each fills the add form's name, address, credential and toolkit, and says
-  // one line about it. Preview and Save are the form's own: the server checks the address as it checks any.
+  // The servers the templates use: each fills the add form's name, address, credential and toolkit, and says one line
+  // about it. Preview and Save are the form's own: the server checks the address as it checks any.
   const PRESETS = [
     { label: "Parallel Search", name: "parallel", url: "https://mcp.parallel.ai/mcp", auth: "none", note: /no key/i },
     { label: "Firecrawl", name: "firecrawl", url: "https://mcp.firecrawl.dev/v2/mcp", auth: "none", note: /without a key/i },
     { label: "GitHub (token)", name: "github", url: "https://api.githubcopilot.com/mcp/", auth: "bearer", note: /fine-grained/i },
     { label: "Linear", name: "linear", url: "https://mcp.linear.app/mcp", auth: "oauth", note: /sign in/i },
     { label: "Notion", name: "notion", url: "https://mcp.notion.com/mcp", auth: "oauth", note: /sign in/i },
+    { label: "fal (key)", name: "fal", url: "https://mcp.fal.ai/mcp", auth: "bearer", note: /your fal key.*bill your fal account/i },
+    { label: "fal (sign in)", name: "fal", url: "https://mcp.fal.ai/mcp-relay", auth: "oauth", note: /sign in with your fal account.*bill/i },
   ] as const;
   const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const checkedAuth = (host: HTMLElement) => host.querySelector<HTMLInputElement>('input[name="mcp-auth"]:checked')?.value;
