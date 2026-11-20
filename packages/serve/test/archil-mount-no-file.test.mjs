@@ -62,7 +62,7 @@ async function mountedRun(t, { existing = [] } = {}) {
   const controller = new AbortController();
   const claim = await archilClaim({
     settings: SETTINGS, keys: store.sealedKeys, sealKey, signal: controller.signal, makeDisk: () => disk,
-    // The run's agent's disk, as its launch record names it (run-disk.ts): no Archil call resolves it.
+    // The run's agent's disk, as its launch record names it (run-disk.ts): read at Archil once at the claim, never made.
     run: { agentId: "a", launch: { diskId: SETTINGS.diskId, kind: "agent" }, store: agentDiskStore("a", SETTINGS.diskId) },
     mount: { runId: "run-1", epoch: 3, ttlMs: 86_400_000 }, control: { baseUrl: control.baseUrl },
   });
