@@ -307,7 +307,7 @@ agentrun-serve runner: Runner runner-1 claims nothing: this runner's data direct
 ```
 
 It never fails a run for that. Runs wait for a runner on the server's data directory; while every runner there refuses,
-the server refuses a new run (`409 runner_refused`, in the runner's words) and fails the runs still queued, as it does for
+the server refuses a new run (`503 runner_refused`, in the runner's words) and fails the runs still queued, as it does for
 any runner that can't serve. The runner checks again every 5 s, and claims again once the Archil settings are saved. A
 store whose server is older than this release has said no data root, and every runner is taken as sharing its disk, as
 before. Not on a disk of its own yet: a run's uploads (`file_ids`), which the server holds on its own disk (such a run
