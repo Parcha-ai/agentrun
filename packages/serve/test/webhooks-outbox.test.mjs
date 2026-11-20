@@ -273,20 +273,35 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     assert.deepEqual([view.url, view.disabled], [shownUrl(fresh.url), null], "the new setting stands, on");
   });
 
-  test("redeliveries that fail leave the message's own schedule as it was: it is still tried on every wait", async (t) => {
-    const hook = await receiver(t, () => 500);
-    const log = logged();
-    const { api } = await serve(t, { ...PRIVATE_OK, webhookRetryMs: [1_500, 100, 100], log: log.push });
-    assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
-    const run = await startRun(api, "redone", "hi");
+  test("a message pending when its server stops goes on from the next one, under the same webhook-id; a run the next server reads as it already stood notices nothing", async (t) => {
+    let answer = 503;
+    const hook = await receiver(t, () => answer);
+    const data = join(await scratch(t), "agents");
+    const first = await startWithRunner(t, { data, port: 0, faux: FAUX, drainTimeout: "5s", webhookRetryMs: [2_000] });
+    let stopped = false;
+    t.after(() => stopped || first.close());
+    let api = client(first.baseUrl, first.token);
+    const { body: set } = await api("PUT", "/settings/webhook", { url: hook.url });
+    const run = await startRun(api, "pending", "hi");
     await follow(api, run.run_id, ["completed"]);
     await hook.when(1);
-    const id = hook.got[0].headers["webhook-id"];
-    for (let i = 0; i < 4; i++) assert.equal((await api("POST", `/settings/webhook/deliveries/${id}/redeliver`, {})).body.status_code, 500);
-    const failed = await log.when("condition=delivery_failed");
-    assert.ok(failed.includes("attempts=4"), `its own four tries, every wait: ${failed}`);
-    const tries = (await api("GET", "/settings/webhook/deliveries")).body.attempts;
-    assert.deepEqual([tries.filter((a) => !a.redelivery).length, tries.filter((a) => a.redelivery).length], [4, 4]);
+    // Its first try answered and its next one set, as the outbox on disk says it.
+    await onDisk(data, () => outboxOf(data).messages.some((m) => m.status === "pending" && m.attempts === 1 && m.next_at));
+    await first.close();
+    stopped = true;
+    answer = 200;
+    const next = await startWithRunner(t, { data, port: 0, faux: FAUX, drainTimeout: "5s" });
+    t.after(() => next.close());
+    api = client(next.baseUrl, next.token);
+    await hook.when(2);
+    assert.equal(hook.got[1].headers["webhook-id"], hook.got[0].headers["webhook-id"]);
+    new Webhook(set.signing_secret).verify(hook.got[1].body, hook.got[1].headers);
+    assert.equal((await api("GET", `/runs/${run.run_id}`)).body.status, "completed");
+    // Delivered, and the ledger holds the run's end as the store does: a start's catch-up queues no end the ledger has, so
+    // the run, read as it already ended, is no new notice.
+    await onDisk(data, () => outboxOf(data).messages.every((m) => m.status !== "pending"));
+    assert.equal(noticed(data, run.run_id)?.ended, (await api("GET", `/runs/${run.run_id}`)).body.ended_at);
+    assert.equal(hook.got.length, 2, "the run, read as it already ended, is no new notice");
   });
 
   test("a run that ends while its server stops still gives its notice: kept pending, delivered by the next server", async (t) => {
@@ -309,6 +324,49 @@ describe("the outbound webhook: the outbox, its tries and its durability", { con
     // the next server.
     await follow(api, run.run_id, ["completed"]);
     await hook.when((got) => ofType(got, "run.ended").some((r) => JSON.parse(r.body).data.run_id === run.run_id));
+  });
+
+  test("a try in flight when its server closes is cut and waited for; nothing is written after, and the next server delivers it; a test send left queued is not tried again", async (t) => {
+    let release;
+    const held = new Promise((resolve) => (release = resolve));
+    const hook = await receiver(t, (n) => (n === 1 ? held.then(() => 200) : 200));
+    t.after(() => release());
+    const data = join(await scratch(t), "agents");
+    const first = await startWithRunner(t, { data, port: 0, faux: FAUX, drainTimeout: "5s" });
+    let stopped = false;
+    t.after(() => stopped || first.close());
+    let api = client(first.baseUrl, first.token);
+    assert.equal((await api("PUT", "/settings/webhook", { url: hook.url })).status, 201);
+    const run = await startRun(api, "held", "hi");
+    await follow(api, run.run_id, ["completed"]);
+    await hook.when(1);
+    const before = JSON.stringify(outboxOf(data));
+    // The close comes back while the receiver still holds the try unanswered: the try is cut, not waited out (a close
+    // that waited for its answer would never come back before the release below).
+    await first.close();
+    stopped = true;
+    release();
+    // The held answer goes out to a cut connection; nothing of the closed server reads it.
+    await held;
+    await turn();
+    assert.equal(JSON.stringify(outboxOf(data)), before, "nothing written after the close");
+    const [pending] = outboxOf(data).messages;
+    assert.deepEqual([pending.status, pending.attempts], ["pending", 0]);
+    // A test send an earlier server left queued: the next one drops it and never sends it.
+    const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 10_000 });
+    db.prepare("INSERT INTO channel_posts (id, channel, moment, body, next_at, state, created_at) VALUES (?, 'webhook-out', 'webhook.test', ?, ?, 'queued', ?)")
+      .run(`msg_${"0".repeat(32)}`, JSON.stringify({ type: "webhook.test", timestamp: new Date().toISOString(), data: {} }), Date.now(), Date.now());
+    db.close();
+    const next = await startWithRunner(t, { data, port: 0, faux: FAUX, drainTimeout: "5s" });
+    t.after(() => next.close());
+    api = client(next.baseUrl, next.token);
+    await hook.when(2);
+    assert.equal(hook.got[1].headers["webhook-id"], pending.id);
+    // The next server dropped the test send as it read the outbox, so no try of it is armed: once the run's message is
+    // delivered, nothing is pending, and nothing more is sent.
+    await settled(data);
+    assert.equal(hook.got.length, 2, "the test send is not sent again");
+    assert.equal(outboxOf(data).messages.find((m) => m.type === "webhook.test")?.status ?? "failed", "failed");
   });
 
   test("a notice the store refuses is told again once it takes the write: none is lost, and it is sent once", async (t) => {
