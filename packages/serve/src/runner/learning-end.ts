@@ -25,7 +25,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type EntryLike, isMessageRow, type TimelineEvent } from "../timeline/index.js";
 import { correctionRefused, learningCommit, type LearningChange, type LearningCommitResult } from "../learn/commit.js";
 import { CAPS, type Change, checkDraft, problemWords, type Problem, unstorable } from "../learn/index.js";
-import { repickRewrite } from "../learn/repick.js";
+import { repickSiteOf } from "../learn/check.js";
+import { repickLabelOf, repickRewrite } from "../learn/repick.js";
 import { folderAt, type FolderRead, holdsCommit, type LearningFolder, readLearning, readSnapshot, runMergeOf, snapshotAt, textsAt } from "../learn/folder.js";
 import { completedRun, type CompileAsk, compileStoppedOf, lastOwnRuns, sinceReset, type CompileTrace, compileDue, compilePrompt, compileReference, COMPILE_TRACES, DRAFT_FAILED, type DraftChecked, type HeldAsk, heldNamesOf, newCompileAttempt } from "../learn/compile.js";
 import { loopOf, repickOf } from "../learning-setting.js";
@@ -416,10 +417,13 @@ export async function checkDraftOf(deps: LearningEndDeps, input: { runId: string
   if (problems.length) return refused(problems);
   // With learning.repick on, what is committed is the draft with its answer's re-pick reading the run's pages on its
   // second pass (learn/repick.ts), through the same checks and dry run, so the digest that serves is the doc the
-  // promotion check replays. A rewrite they refuse (one past CAPS.file even on one line) leaves the draft as compiled,
-  // which the log says by rule alone.
+  // promotion check replays. A re-pick the rewrite does not reach, or a rewrite they refuse (one past CAPS.file even on
+  // one line), leaves the draft as compiled, which the log says (the latter by rule alone).
   let text = json;
-  const rewritten = repick?.repick ? repickRewrite(JSON.parse(json), repick.repick_max_chars) : undefined;
+  const doc: unknown = repick?.repick ? JSON.parse(json) : undefined;
+  const site = repickSiteOf(doc);
+  const rewritten = repick?.repick ? repickRewrite(doc, site, repick.repick_max_chars) : undefined;
+  if (site && repick?.repick && !rewritten) deps.log?.(`learning.repick: workflow ${name} is kept as compiled: its re-pick ${JSON.stringify(repickLabelOf(site))} is not one the rewrite reaches`);
   if (rewritten) {
     const marked = workflowText(rewritten);
     const again = marked === json ? [] : await checked(marked);
