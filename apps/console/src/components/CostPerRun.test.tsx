@@ -78,6 +78,8 @@ describe("the ratio format", () => {
 describe("the execution mix's arithmetic", () => {
   it("cuts every run, its cost known or not, one a column up to 20, then into blocks of 5 or more, about 20 blocks at most", () => {
     expect([blockSizeOf(3), blockSizeOf(20), blockSizeOf(21), blockSizeOf(80), blockSizeOf(400), blockSizeOf(1000)]).toEqual([1, 1, 5, 5, 20, 50]);
+    // A plot that gives each run a column 4px wide draws a run a column however many there are; a narrower one, blocks.
+    expect([blockSizeOf(80, 560), blockSizeOf(80, 320), blockSizeOf(80, 319), blockSizeOf(400, 1600), blockSizeOf(1000, 1600)]).toEqual([1, 1, 5, 1, 50]);
     const blocks = blocksOf(sample.runs, 5);
     expect(blocks).toHaveLength(16);
     expect(blocks[4]).toEqual({ from: 21, to: 25, runs: 5, counts: { agent: 1, handed_back: 1, workflow: 3, replay: 0 } });
@@ -153,7 +155,8 @@ describe("CostChart", () => {
     expect(text(phone)).not.toContain("Served after takeover");
   });
   it("carries the takeover marker down through the mix as one line on the left edge of the takeover's block, never a ring cutting a column", () => {
-    const mix = draw(sample).querySelector<HTMLElement>('[data-testid="execution-mix"]')!;
+    // A phone's plot has no room for a column a run: the 80 runs are in blocks of 5.
+    const mix = draw(sample, true, 390).querySelector<HTMLElement>('[data-testid="execution-mix"]')!;
     const marker = mix.querySelector('[data-testid="mix-takeover"]')!;
     const paths = [...marker.querySelectorAll("path")];
     expect(paths.map((p) => p.getAttribute("class"))).toEqual(["stroke-chart-workflow"]);
@@ -163,7 +166,7 @@ describe("CostChart", () => {
     expect(Number(/^M([\d.]+),/.exec(paths[0]!.getAttribute("d")!)![1])).toBeCloseTo(edge, 1);
   });
   it("tiles the mix in whole blocks on the run axis: every block as wide as the others, the last one alone shorter, no gap between", () => {
-    const mix = draw(sample).querySelector<HTMLElement>('[data-testid="execution-mix"]')!;
+    const mix = draw(sample, true, 390).querySelector<HTMLElement>('[data-testid="execution-mix"]')!;
     const targets = [...mix.querySelectorAll("svg g")].map((g) => g.querySelector("rect")).filter((r): r is SVGRectElement => !!r && r.getAttribute("fill-opacity") === "0");
     const spans = targets.map((r) => [Number(r.getAttribute("x")), Number(r.getAttribute("width"))] as const);
     expect(spans).toHaveLength(16);
@@ -215,8 +218,21 @@ describe("CostChart", () => {
     expect(live).toMatch(/^Run 21, \$0\.\d+ all-in, Learned workflow: sort-invoice$/);
     expect(live).not.toContain("No learned workflow ran");
   });
+  it("draws a column a run while the plot gives each one room: who finished each run reads run by run, the last 20 runs' share said", () => {
+    const mix = draw(sample).querySelector<HTMLElement>('[data-testid="execution-mix"]')!;
+    expect(mix.textContent).toContain("Who finished each run");
+    expect(mix.textContent).not.toContain(", by ");
+    expect(mix.textContent).toContain("Last 20 runs: 100% by the learned workflow");
+    // 80 runs, 80 columns, each one path's colour.
+    expect([...mix.querySelectorAll("svg rect")].filter((r) => r.getAttribute("class")?.startsWith("fill-chart-"))).toHaveLength(80);
+    // A run's hover names its run and the path it took; a screen reader is still read the runs in blocks.
+    act(() => { mix.querySelectorAll("svg g")[36]!.dispatchEvent(new MouseEvent("pointerover", { bubbles: true })); });
+    expect(mix.querySelector(".shadow-float")!.textContent).toBe("Run 37Handed back");
+    expect(mix.querySelector(".sr-only")!.textContent).toContain("Execution mix in blocks of 5 runs. ");
+    expect(mix.querySelector(".sr-only")!.textContent).toContain("Runs 21 to 25: by the agent 1, handed back 1, learned workflow 3");
+  });
   it("draws the execution mix on the run axis: a column a block, a segment a path it took, the last block's share said", () => {
-    const host = draw(sample);
+    const host = draw(sample, true, 390);
     const mix = host.querySelector<HTMLElement>('[data-testid="execution-mix"]')!;
     expect(mix.textContent).toContain("Who finished each run, by 5");
     expect(mix.textContent).toContain("Last 5 runs: 100% by the learned workflow");

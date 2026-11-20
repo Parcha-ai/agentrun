@@ -353,20 +353,25 @@ const runsOf = (b: Block) => (b.from === b.to ? `Run ${b.from}` : `Runs ${b.from
 function Mix({ runs, width, x, step, plot, takeover }: { runs: readonly CostRun[]; width: number; x: (n: number) => number; step: number; plot: [number, number]; takeover: number | null }) {
   const height = MIX_H;
   // Blocks of the runs that do a job: a replay does none, so it is in no block (blocksOf).
-  const size = blockSizeOf(jobsOf(runs).length);
+  const [left, right] = plot;
+  const jobs = useMemo(() => jobsOf(runs), [runs]);
+  const size = blockSizeOf(jobs.length, right - left);
   const blocks = useMemo(() => blocksOf(runs, size), [runs, size]);
+  // What a screen reader is read: the runs in blocks whatever the width, never a line for each of hundreds of runs.
+  const saidSize = blockSizeOf(jobs.length);
+  const said = useMemo(() => blocksOf(runs, saidSize), [runs, saidSize]);
   const [hover, setHover] = useState<number | null>(null);
   if (!blocks.length) return null;
-  const [left, right] = plot;
   const clamp = (v: number) => Math.min(right, Math.max(left, v));
   /** A block's whole slots on the axis: from half a run before its first to half a run after its last, inside the plot. */
   const span = (b: Block) => ({ from: clamp(x(b.from) - step / 2), to: clamp(x(b.to) + step / 2) });
   const y = (share: number) => MIX_M.top + height * (1 - share);
-  const last = blocks.at(-1)!;
+  // What the last words count: the last block; on a strip of more than 20 runs (a run a column), the last 20 runs.
+  const last = size === 1 && jobs.length > 20 ? blocksOf(jobs.slice(-20), 20)[0]! : blocks.at(-1)!;
   const edges = (b: Block) => {
     const { from, to } = span(b);
-    // A 2px card gap between columns, when a column is wide enough to give it.
-    const gap = to - from > 4 ? 1 : 0;
+    // A 2px card gap between columns, when a column is wide enough to give it; a hairline between a strip's runs.
+    const gap = to - from <= 4 ? 0 : size === 1 && to - from < 12 ? 0.5 : 1;
     return { x0: from + gap, w: Math.max(1, to - from - 2 * gap) };
   };
   const words = (b: Block) => `${runsOf(b)}: ${PATHS.filter((p) => b.counts[p.path]).map((p) => `${p.label.toLowerCase()} ${b.counts[p.path]}`).join(", ")}`;
@@ -418,10 +423,11 @@ function Mix({ runs, width, x, step, plot, takeover }: { runs: readonly CostRun[
         <div className={cn("pointer-events-none absolute z-raised whitespace-nowrap border bg-card px-2 py-1 font-mono text-label shadow-float", tipLeft && "-translate-x-full")}
           style={{ left: tipLeft ? edges(shown).x0 - 6 : edges(shown).x0 + edges(shown).w + 6, top: 40 }}>
           <span className="block font-semibold">{runsOf(shown)}</span>
-          {PATHS.filter((p) => shown.counts[p.path]).map((p) => <span key={p.path} className="block text-muted-foreground">{p.label} {shown.counts[p.path]} ({pct(shown.counts[p.path], shown.runs)})</span>)}
+          {/* One run: the path it took. A block: how many took each. */}
+          {PATHS.filter((p) => shown.counts[p.path]).map((p) => <span key={p.path} className="block text-muted-foreground">{shown.runs === 1 ? p.label : `${p.label} ${shown.counts[p.path]} (${pct(shown.counts[p.path], shown.runs)})`}</span>)}
         </div>
       )}
-      <p className="sr-only">{`Execution mix in blocks of ${size} runs. ${blocks.map(words).join(". ")}. ${lastWords}.`}</p>
+      <p className="sr-only">{`Execution mix in blocks of ${saidSize} runs. ${said.map(words).join(". ")}. ${lastWords}.`}</p>
     </div>
   );
 }

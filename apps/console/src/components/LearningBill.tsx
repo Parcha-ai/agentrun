@@ -14,15 +14,11 @@ import type { Bill, BillPoint, CostRun, LearningCost, Serving } from "@/lib/v2";
 // the server placed it on) and the workflow that serves, as the promotions read gives its champion: its nodes with
 // their tiers and code checks, and the check it was promoted on.
 
-/** The bill, the audit line and the serving workflow for an agent: nothing until the bill has a run. `cost`: the tab's
- *  cost read (CostPerRun's); `serving`: the promotions read's. The audits are read here: while they are read the line
- *  says nothing of all time, and a read that fails says so. */
-export function LearningBill({ v2, agentId, cost, serving, width }: { v2: Client; agentId: string; cost: LearningCost | null; serving: readonly Serving[]; width?: number }) {
-  const bill = cost?.bill;
-  const shown = !!bill?.points.length;
+/** The agent's audit ledger (GET /v2/agents/{id}/learning/audits), read once the bill has a run and again with each
+ *  cost read (`cost`): `loading` while it is read, `failed` when the read failed. Null `cost`: nothing is read. */
+export function useAudits(v2: Client, agentId: string, cost: LearningCost | null): Audits {
   const [audits, setAudits] = useState<Audits>("loading");
-  // The revision that serves first: the one with a digest, kept while a replacement is checked (state `checking`).
-  const serves = serving.find((one) => one.digest !== null && one.champion) ?? null;
+  const shown = !!cost?.bill?.points.length;
   useEffect(() => {
     if (!shown) return;
     let live = true;
@@ -30,10 +26,26 @@ export function LearningBill({ v2, agentId, cost, serving, width }: { v2: Client
     Promise.resolve().then(() => v2.learningAudits(agentId)).then((r) => { if (live) setAudits(r.audits); }, () => { if (live) setAudits("failed"); });
     return () => { live = false; };
   }, [v2, agentId, shown, cost]); // eslint-disable-line react-hooks/exhaustive-deps
+  return audits;
+}
+
+/** The bill, the audit line and the serving workflow for an agent: nothing until the bill has a run. `cost`: the tab's
+ *  cost read (CostPerRun's); `serving`: the promotions read's. The audits are read here: while they are read the line
+ *  says nothing of all time, and a read that fails says so. */
+export function LearningBill({ v2, agentId, cost, serving, width, audits: given, beside }: { v2: Client; agentId: string; cost: LearningCost | null; serving: readonly Serving[]; width?: number; audits?: Audits; beside?: ReactNode }) {
+  const bill = cost?.bill;
+  const shown = !!bill?.points.length;
+  // The tab reads the ledger once and gives it (`audits`); alone, the bill reads its own.
+  const own = useAudits(v2, agentId, given === undefined ? cost : null);
+  const audits = given ?? own;
+  // The revision that serves first: the one with a digest, kept while a replacement is checked (state `checking`).
+  const serves = serving.find((one) => one.digest !== null && one.champion) ?? null;
   if (!bill || !shown) return null;
   return (
     <>
-      <BillChart bill={bill} takeover={cost.summary.takeover} width={width} />
+      {/* `beside`: a chart of the same evidence (the cost against agreement), next to the bill where the page has room for
+          two charts (the agent's page keeps a column of its own beside the tab), above it otherwise. */}
+      {beside ? <div className="grid grid-cols-1 gap-6 2xl:grid-cols-2">{beside}<BillChart bill={bill} takeover={cost.summary.takeover} width={width} /></div> : <BillChart bill={bill} takeover={cost.summary.takeover} width={width} />}
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         <AuditLine serving={serving} audits={audits} bill={bill} runs={cost.runs} />
         {serves?.champion && <ServingWorkflow workflow={serves.workflow} champion={serves.champion} />}
@@ -238,7 +250,7 @@ export function ServingWorkflow({ workflow, champion }: { workflow: string; cham
   );
 }
 
-function Card({ title, headline, testid, children }: { title: string; headline: string | null; testid: string; children: ReactNode }) {
+export function Card({ title, headline, testid, children }: { title: string; headline: string | null; testid: string; children: ReactNode }) {
   return (
     <section className="min-w-0 border bg-card" aria-label={title} data-testid={testid}>
       <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 border-b px-4 py-3">
@@ -251,7 +263,7 @@ function Card({ title, headline, testid, children }: { title: string; headline: 
 }
 
 /** A label on the plot: text tokens only, with a halo of the card under it so a line never cuts through it. */
-function Label({ x, y, anchor = "start", strong = false, children }: { x: number; y: number; anchor?: "start" | "end"; strong?: boolean; children: ReactNode }) {
+export function Label({ x, y, anchor = "start", strong = false, children }: { x: number; y: number; anchor?: "start" | "middle" | "end"; strong?: boolean; children: ReactNode }) {
   return (
     <text x={x} y={y} textAnchor={anchor} className={cn("stroke-card text-label [paint-order:stroke]", strong ? "fill-foreground font-semibold" : "fill-muted-foreground")} strokeWidth={4} strokeLinejoin="round">
       {children}
