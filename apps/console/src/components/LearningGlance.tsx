@@ -10,7 +10,6 @@ import type { LearningCost } from "@/lib/v2";
 // break-even the bill's. Nothing before a takeover: the loop's strip says what comes next.
 
 const runsWord = (n: number) => `${n} ${n === 1 ? "run" : "runs"}`;
-const dollars = (value: number) => (value >= 1 ? `$${value.toFixed(2)}` : usd(value));
 
 export function LearningGlance({ cost, revisions }: { cost: LearningCost | null; revisions: readonly RevisionPoint[] }) {
   const g = cost ? glanceOf(cost, revisions) : null;
@@ -21,7 +20,7 @@ export function LearningGlance({ cost, revisions }: { cost: LearningCost | null;
   // The bar is the check's: said only beside a check's figure.
   const needed = agreement?.on === "check" ? g.revision!.check!.agree_min : null;
   const audited = agreement?.on === "check" && g.revision!.audits && auditsOf(g.revision!) ? ` · audits since: ${auditWords(g.revision!.audits)}` : "";
-  // A server from before the bill answers none: the break-even cell says so, the rest stand.
+  // A cost read with no bill: the break-even cell says so, the rest stand.
   const bill = (cost as { bill?: LearningCost["bill"] }).bill ?? null;
   const last = bill?.points.at(-1);
   const even = g.even;
@@ -56,10 +55,10 @@ export function LearningGlance({ cost, revisions }: { cost: LearningCost | null;
           {g.alone && <Interval share={g.alone} />}
         </Figure>
         <Figure label="Break-even" testid="glance-even"
-          value={even === null ? "Not promoted" : "n" in even ? `Run ${even.n}` : "Not yet"}
-          basis={even === null || !bill || !last ? "The bill is the agent's own so far."
-            : "n" in even ? `${dollars(bill.booked_usd)} booked over ${runsWord(bill.points.length)}${last.agent_usd !== null ? `, ${dollars(last.agent_usd)} had the agent done all of it` : ""}`
-              : even.gap_usd !== null ? `${dollars(even.gap_usd)} over the agent for all of it at run ${last.n}` : "The bill is still over the agent for all of it."}>
+          value={even === null ? "No bill" : "n" in even ? `Run ${even.n}` : "Not yet"}
+          basis={even === null || !bill || !last ? "The cost read gave no bill."
+            : "n" in even ? `${usd(bill.booked_usd)} booked over ${runsWord(bill.points.length)}${last.agent_usd !== null ? `, ${usd(last.agent_usd)} had the agent done all of it` : ""}`
+              : even.gap_usd !== null ? `${usd(even.gap_usd)} over the agent for all of it at run ${last.n}` : "The bill is still over the agent for all of it."}>
           {even !== null && "n" in even && bill && last && <Place at={even.n} first={bill.points[0]!.n} last={last.n} />}
         </Figure>
       </dl>

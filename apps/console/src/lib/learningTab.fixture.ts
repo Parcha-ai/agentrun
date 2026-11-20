@@ -1,4 +1,5 @@
 import SAMPLE from "@/components/CostPerRun.sample.json";
+import { SERVED_AGENT } from "@/test/agent";
 import type { Agent } from "./agentForm";
 import type { AgentLearning } from "./learning";
 import type { AuditRow, Bill, CostRun, LearningCost, LearningLoop, Promotions, WorkflowRevisions } from "./v2";
@@ -50,7 +51,6 @@ function billOf(runs: readonly CostRun[]): Bill {
   const even = over + 1 < points.length ? points[Math.max(over + 1, from)]! : null;
   const jobs = runs.reduce((total, r) => total + r.cost_usd!, 0);
   return {
-    baseline: { runs: before.length, mean_usd: mean }, promoted: { n: promoted.n!, run_id: promoted.run_id, at: promoted.started_at },
     learning_usd: round(points.at(-1)!.actual_usd - jobs), points,
     break_even: even && { n: even.n, run_id: even.run_id }, gap_usd: even ? null : round(points.at(-1)!.actual_usd - points.at(-1)!.agent_usd),
     withheld: 0, booked_usd: points.at(-1)!.actual_usd,
@@ -110,7 +110,7 @@ export const LOOP: LearningLoop = {
 };
 
 export const AGENT: Agent = {
-  agent_id: "invoice-sorter", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
+  ...SERVED_AGENT, agent_id: "invoice-sorter", kind: "agentic", revision: "rv1", revisions: 1, archived_at: null,
   definition: { version: 1, name: "Invoice sorter", description: "Sorts an invoice into its ledger account.", instructions: "Answer in one line.", harness: "pi", skills: [], tools: ["read"], learning: true },
 };
 

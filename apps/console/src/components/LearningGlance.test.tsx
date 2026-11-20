@@ -40,11 +40,11 @@ describe("LearningGlance", () => {
     act(() => root?.unmount());
     expect(draw(createElement(LearningGlance, { cost: null, revisions: [] })).textContent).toBe("");
   });
-  it("still draws for a cost read with no bill (a server from before it): the break-even cell says the bill is the agent's own", () => {
+  it("still draws for a cost read with no bill: the break-even cell says so", () => {
     const { bill: _bill, ...older } = COST;
     const host = draw(createElement(LearningGlance, { cost: older as LearningCost, revisions: REVISIONS }));
     expect(cell(host, "glance-headline")).toBe("7.7x cheaper a run, agreeing with the agent on 21 of 22 checked answers.");
-    expect(cell(host, "glance-even")).toBe("Break-evenNot promotedThe bill is the agent's own so far.");
+    expect(cell(host, "glance-even")).toBe("Break-evenNo billThe cost read gave no bill.");
   });
   it("says a figure is not there yet in words, never a 0% or a $0", () => {
     const bare: LearningCost = { ...COST, summary: { ...COST.summary, before: null, after: null, after_state: "cost_unknown", times_cheaper: null, hand_backs: null }, bill: { ...COST.bill, break_even: null, gap_usd: 2.5 } };
