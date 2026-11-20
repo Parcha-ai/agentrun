@@ -48,6 +48,15 @@ describe("a template that already made an agent here", () => {
     expect(go).toHaveBeenCalledWith(agentHash("notes-1"));
   });
 
+  it("names each agent's id when agents it made share a name, so each Update says which agent it updates", async () => {
+    const host = await mount(client([agentOf("monitor-1", "Market monitor", base.id), agentOf("monitor-2", "Market monitor", base.id), agentOf("solo", "Morning notes", base.id)]));
+    expect(button(host, "Update Market monitor")).toBeUndefined();
+    expect(button(host, "Update Market monitor (monitor-1)")).toBeDefined();
+    expect(button(host, "Update Morning notes"), "a name no other agent has stays as it is").toBeDefined();
+    await act(async () => button(host, "Update Market monitor (monitor-2)")!.click());
+    expect(applyTemplate.mock.calls[0]?.[1]).toMatchObject({ agent_id: "monitor-2" });
+  });
+
   it("offers Update for an agent it made however far down the agent list it is, past twenty pages", async () => {
     const pages = 25;
     const listAgents = vi.fn(async ({ cursor }: { cursor?: string | null } = {}) => {
