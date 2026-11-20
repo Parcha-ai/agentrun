@@ -19,6 +19,8 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { lastOwnRuns } from "../dist/learn/compile.js";
 import { gradesKey, promotionsKey, promotionsOf, resetLedgerKey } from "../dist/learn/promote.js";
 import { learningIdOf } from "../dist/learn/learning-of.js";
+import { getAgent } from "../dist/agents-store.js";
+import { SdkRuns } from "../dist/sdk/runs.js";
 import { learningFolderOf, secretsShown, seedOf, withAgentRepo } from "../dist/learning.js";
 import { notAuditableOf } from "../dist/runner/audit.js";
 import { askReplay } from "../dist/runner/promotion.js";
@@ -377,6 +379,83 @@ test("Mode 2, the last run naming a caller's disk purged (DELETE /runs/{id}, its
   assert.deepEqual(learningOn(), [], "no learning of the agent is left on the caller's disk");
   assert.ok(disk.files.has("shared/customers.csv"), "what is not the agent's stays");
   assert.deepEqual((await store.settings.all({ prefix: "learning." })).map((row) => row.key).filter((key) => key.includes("gone-run") && !key.startsWith("learning.reset")), [], "no other learning setting of the agent is left");
+});
+
+test("a grade of a run served before the reset is kept, and writes no audit row: a promotion of the same digest after the reset is never held by the old runs' grades", async (t) => {
+  const { api, data, store } = await serve(t, { learning: "on", runner: false });
+  assert.equal((await api("POST", "/agents", agent("regraded", { learning: true }))).status, 201);
+  await learned(store, data, "regraded");
+  const revisionId = (await store.agents.get("regraded")).currentRevision;
+  const before = ["served-1", "served-2", "served-3"];
+  for (const id of before) {
+    await store.runs.create({ id, agentId: "regraded", revisionId }, { body: { input: ASK, title: "t", place: { mode: "runner" } } });
+    const claim = await store.claim(id, "runner-grade", { leaseMs: 60_000 });
+    await store.runs.update(claim, { state: "ended", costUsd: 0.1, metrics: { path: "workflow", workflow: "answer", workflow_digest: DIGEST } });
+  }
+  assert.equal((await api("DELETE", "/agents/regraded/learning")).status, 204);
+  // The agent learns the same workflow again after the reset, and its check promotes the same digest.
+  const promoted = { workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", reason: "checked: promoted", check: { compile_after: 2, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 2, agreed: 2, alone: 2, of: [] } };
+  await store.settings.put(promotionsKey("regraded"), { v: 1, items: [promoted] });
+  for (const id of before) {
+    const graded = await api("PUT", `/runs/${id}/grade`, { correct: false });
+    assert.deepEqual([graded.status, graded.body.correct], [200, false], JSON.stringify(graded.body));
+  }
+  assert.deepEqual((await promotionsOf(store.settings, "regraded")).map((one) => [one.decided, one.digest]), [["promote", DIGEST]], "the promotion after the reset stands: no hold from a run before it");
+  const audits = await api("GET", "/agents/regraded/learning/audits");
+  assert.deepEqual([audits.status, audits.body.audits], [200, []], "no audit row of a run before the reset");
+});
+
+/** An SDK agent of its own, with a draft of `status` landed on its learning folder (sdk-shadow-check.test.mjs). */
+const SDK_TOOL = { name: "mcp:backend/status", description: "Read release status.", input_schema: { type: "object" }, permission: "allow", price_usd: 0 };
+const SDK_FLOW = { name: "status", description: "Read release status.", workflow: { v: 2, name: "status", schemas: { Input: { type: "object", properties: { release: { type: "string" } }, required: ["release"] }, Answer: { type: "object", properties: { ready: { type: "boolean" } }, required: ["ready"] } }, input: { schemaId: "Input" }, output: { schemaId: "Answer", path: "answer" }, root: { node: "call", label: "read", via: "tool", tool: SDK_TOOL.name, args: {}, out: "Answer", as: "answer", deadline_s: 5 } } };
+const SDK_START = { runtime: "eve", input: '{"release":"r1"}', instructions: "Report readiness.", workflow_tools: [SDK_TOOL] };
+async function sdkAgent(t, id) {
+  const server = await serve(t, { learning: "on", runner: false });
+  assert.equal((await server.api("POST", "/agents", { definition: { id, name: id, instructions: "Report readiness.", sdk: { runtime: "eve" }, learning: { compile_after: 200 }, tools: [] } })).status, 201);
+  await landWorkflows(server.data, id, [SDK_FLOW]);
+  const entry = await getAgent(server.store, id);
+  const sdk = new SdkRuns(server.store, server.data, "s".repeat(32));
+  /** An SDK start of the agent through SdkRuns.start, as POST /agents/{id}/sdk-runs makes it, `afterSeed` called once its
+   *  learning seed is read. */
+  const start = (afterSeed) => sdk.start(entry, SDK_START, {
+    learning: "on",
+    shown: () => secretsShown([]),
+    pinnedOf: async (one) => ({ revision: one.revision, version: one.version }),
+    seedFor: async (agentId) => {
+      const seed = await seedOf(server.data, agentId);
+      await afterSeed(agentId);
+      return { seed };
+    },
+  }, undefined, { model: "test-model", check: async () => {} }, "http://console.test");
+  const admitted = async () => [(await server.store.runs.list({ agentId: id })).length, (await promotionsOf(server.store.settings, id)).length];
+  return { ...server, start, admitted };
+}
+
+test("an SDK start whose learning seed was read before a reset is refused, to start again: no check of a deleted draft reserved, no run made", async (t) => {
+  const server = await sdkAgent(t, "sdk-reset");
+  await assert.rejects(server.start(async (agentId) => assert.equal((await server.api("DELETE", `/agents/${agentId}/learning`)).status, 204)), (error) => {
+    assert.equal(error.code, "unavailable", String(error));
+    assert.match(error.message, /reset/);
+    return true;
+  });
+  assert.deepEqual(await server.admitted(), [0, 0], "no run, and no promotion record of the deleted draft");
+});
+
+test("an SDK start is admitted in its agent's learning queue (the reset's): its check is reserved and its run made only once the queue is free", async (t) => {
+  const server = await sdkAgent(t, "sdk-queued");
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  let held;
+  const started = server.start(async (agentId) => void (held = withAgentRepo(server.data, agentId, () => gate)));
+  for (let waited = 0; waited < 2_000; waited += 50) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.deepEqual(await server.admitted(), [0, 0], "nothing admitted while the queue is held");
+  }
+  release();
+  await held;
+  const receipt = await started;
+  assert.equal(receipt.learning.check?.workflow.name, "status", "then admitted, the draft's check reserved");
+  assert.deepEqual(await server.admitted(), [1, 1]);
 });
 
 test("an agent that never learned: 204, and 204 again; an unknown agent is 404; without the token it is 401, as a learning write is", async (t) => {
