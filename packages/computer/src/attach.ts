@@ -16,6 +16,20 @@ import { fail, ok, type Result } from "./result.js";
 export const ATTACH_PATH = "/v2/computers/attach";
 /** Where a hosted machine that dials fetches the server's computerd for its arch (?arch=amd64|arm64), with its token. */
 export const DAEMON_PATH = "/v2/computers/daemon";
+/** The boot env name of a dial machine's attach egress (HostedOptions.attachEgress), which agentrun-dial and computerd attach read. */
+export const ATTACH_EGRESS_ENV = "AGENTRUN_ATTACH_EGRESS";
+const ATTACH_EGRESS = /^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d):(?:[1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])$/;
+
+/**
+ * Reads an attach egress, `<IPv4 relay>:<port>` such as 192.0.2.40:18443: the operator's relay a dial machine opens TCP
+ * to in place of the public host, for its daemon fetch and its attach socket alike, speaking TLS and HTTP to the public
+ * host through it (the SNI, the certificate checked and the Host header stay the public host's). computerd attach holds
+ * it to the same shape. Anything else throws, in words.
+ */
+export function attachEgressOf(text: string): string {
+	if (!ATTACH_EGRESS.test(text)) throw new Error(`the attach egress is <IPv4 relay>:<port>, such as 192.0.2.40:18443, a port from 1 to 65535; not ${JSON.stringify(text)}`);
+	return text;
+}
 /** The WebSocket subprotocol a driver asks for: the protocol version it speaks. Serve answers with it or refuses. */
 export const ATTACH_SUBPROTOCOL = `agentrun.computer.${PROTOCOL_VERSION}`;
 /** Each side pings this often (WebSocket ping frames, not JSON-RPC), so a NAT keeps the path open. */

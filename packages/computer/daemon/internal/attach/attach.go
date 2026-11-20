@@ -17,10 +17,12 @@ import (
 	"github.com/Parcha-ai/agentrun/packages/computer/daemon/internal/daemon"
 )
 
-// The environment `computerd attach` reads: the attach socket's URL and the machine's token.
+// The environment `computerd attach` reads: the attach socket's URL and the machine's token, and, where the machine
+// reaches the server only through the operator's relay (a hosted provider's attach egress), the relay's <IPv4>:<port>.
 const (
-	URLEnv   = "AGENTRUN_ATTACH_URL"
-	TokenEnv = "AGENTRUN_ATTACH_TOKEN"
+	URLEnv    = "AGENTRUN_ATTACH_URL"
+	TokenEnv  = "AGENTRUN_ATTACH_TOKEN"
+	EgressEnv = "AGENTRUN_ATTACH_EGRESS"
 )
 
 // The exit codes of `computerd attach`.
@@ -68,8 +70,24 @@ func FromEnv(socket, subprotocol string, maxMessage int) (Config, error) {
 	if !tokenPattern.MatchString(cfg.Token) {
 		return cfg, fmt.Errorf("%s is the machine's token, art_ and 43 base64url characters", TokenEnv)
 	}
-	cfg.Options = Options{Token: cfg.Token, Subprotocol: subprotocol, MaxMessage: maxMessage, Heartbeat: 20 * time.Second, Idle: time.Minute}
+	egress := os.Getenv(EgressEnv)
+	if egress != "" && !egressPattern.MatchString(egress) {
+		return cfg, fmt.Errorf("%s is the relay the machine reaches the server through, <IPv4>:<port> such as 192.0.2.40:18443, not %q", EgressEnv, egress)
+	}
+	cfg.Options = Options{Token: cfg.Token, Subprotocol: subprotocol, MaxMessage: maxMessage, Heartbeat: 20 * time.Second, Idle: time.Minute, Egress: egress}
 	return cfg, nil
+}
+
+// A relay's address, as the provider checks it (attachEgressOf): an IPv4 address and a port from 1 to 65535, with no
+// leading zero in either.
+var egressPattern = regexp.MustCompile(`^(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d):(?:[1-9]\d{0,3}|[1-5]\d{4}|6[0-4]\d{3}|65[0-4]\d{2}|655[0-2]\d|6553[0-5])$`)
+
+// via is where a dial goes: the URL, and the relay it goes through when there is one.
+func via(cfg Config) string {
+	if cfg.Egress == "" {
+		return cfg.URL
+	}
+	return cfg.URL + " through " + cfg.Egress
 }
 
 // RedialDelay is attach.md's redialDelay: 1 s doubling to 60 s, less up to a fifth at random.
@@ -90,7 +108,7 @@ func Run(ctx context.Context, cfg Config, logger *log.Logger) int {
 			attempt = 0
 		}
 		wait := cfg.Delay(attempt)
-		logger.Printf("attach: %s; dialing %s again in %s", why, cfg.URL, wait.Round(time.Millisecond))
+		logger.Printf("attach: %s; dialing %s again in %s", why, via(cfg), wait.Round(time.Millisecond))
 		select {
 		case <-ctx.Done():
 			return ExitStopped
@@ -130,7 +148,7 @@ func once(ctx context.Context, cfg Config, logger *log.Logger) (int, string, tim
 	case err != nil:
 		return -1, err.Error(), 0
 	}
-	logger.Printf("attach: attached to %s", cfg.URL)
+	logger.Printf("attach: attached to %s", via(cfg))
 	up := time.Now()
 	defer context.AfterFunc(ctx, func() { conn.Close(CloseGoingAway, stopping) })()
 	daemon.Carry(initConn, conn, conn)

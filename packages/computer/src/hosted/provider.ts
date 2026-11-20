@@ -11,7 +11,7 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
-import { ATTACH_PATH, type AttachHub, DAEMON_PATH, type MachineTokens } from "../attach.js";
+import { ATTACH_EGRESS_ENV, ATTACH_PATH, type AttachHub, attachEgressOf, DAEMON_PATH, type MachineTokens } from "../attach.js";
 import { CreateRequests, endedWords, otherSpecWords, readBackDiffer } from "../create-requests.js";
 import { mountsOf, syncs } from "../descriptor.js";
 import { type DesktopOptions, desktopOf, startDisplay } from "../desktop.js";
@@ -137,6 +137,13 @@ export interface HostedOptions {
 	 * Given to the helper's mount and revoke. Unset or empty, the client reaches Archil as the machine's network allows.
 	 */
 	archilEgress?: string;
+	/**
+	 * The relay a dial machine reaches this server through, `<IPv4 relay>:<port>` such as 192.0.2.40:18443
+	 * (attachEgressOf): for a vendor whose machines reach only addresses the operator allows. A dial machine is booted with
+	 * it as AGENTRUN_ATTACH_EGRESS, and its daemon fetch and attach socket both open TCP to it, speaking TLS and HTTP to
+	 * the public host through it. Unset or empty, they go to the public host; a host whose machines don't dial ignores it.
+	 */
+	attachEgress?: string;
 	/** What a host whose facts.connect is "dial" needs: create refuses without it, before any call to the vendor, in words
 	 *  that name serve's one-process start (a runner apart from the server has none). */
 	dial?: HostedDial;
@@ -317,6 +324,7 @@ export class HostedProvider implements ComputerProvider {
 	readonly #probeTargets: string[];
 	readonly #onNote: ProviderNote | undefined;
 	readonly #archilEgress: ArchilEgress | undefined;
+	readonly #attachEgress: string | undefined;
 	/** Each create in flight, and the names of the computers this provider ended (create-requests.ts). In memory alone:
 	 *  past it, and past this process, the vendor's listing is what holds. */
 	readonly #requests = new CreateRequests();
@@ -338,6 +346,7 @@ export class HostedProvider implements ComputerProvider {
 			probeTargets = DEFAULT_PROBE_TARGETS,
 			onNote,
 			archilEgress,
+			attachEgress,
 		} = options;
 		const { id, label, capabilities } = host.descriptor;
 		if (kind !== "desktop" && kind !== "linux") throw new Error(`kind is desktop or linux, not ${String(kind)}`);
@@ -350,6 +359,7 @@ export class HostedProvider implements ComputerProvider {
 		this.#fail = failFor(id);
 		this.#onNote = onNote;
 		this.#archilEgress = archilEgress === undefined || archilEgress === "" ? undefined : archilEgressOf(archilEgress);
+		this.#attachEgress = attachEgress === undefined || attachEgress === "" ? undefined : attachEgressOf(attachEgress);
 		if (!isWhole(maxLifetimeMs) || maxLifetimeMs <= 0 || maxLifetimeMs > host.facts.maxLifetimeMs) {
 			throw new Error(`maxLifetimeMs must be a whole number of ms above 0 and at most ${host.facts.maxLifetimeMs} ms, the longest ${label} keeps a computer`);
 		}
@@ -890,6 +900,8 @@ export class HostedProvider implements ComputerProvider {
 			AGENTRUN_INIT_ARGS: initFlags(init).join(" "),
 			// A desktop's init gets its display as the exec path's start gives it: DISPLAY, which agentrun-dial passes on.
 			...(this.#desktop === undefined ? {} : { DISPLAY: this.#desktop.display }),
+			// The relay the machine reaches this server through: agentrun-dial's fetch and computerd attach both dial it.
+			...(this.#attachEgress === undefined ? {} : { [ATTACH_EGRESS_ENV]: this.#attachEgress }),
 		});
 	}
 
@@ -1206,7 +1218,8 @@ export class HostedProvider implements ComputerProvider {
 			if (left <= 0) {
 				const dialed = this.#dialed();
 				const to = "problem" in dialed ? "this server" : dialed.attach;
-				return this.#fail("timeout", `${ref.name} did not dial ${to} within ${seconds(createMs)}: the machine must reach that address, and run agentrun-dial (the box image's entrypoint while AGENTRUN_ATTACH_URL is set)`);
+				const through = this.#attachEgress === undefined ? "" : ` through ${this.#attachEgress}`;
+				return this.#fail("timeout", `${ref.name} did not dial ${to}${through} within ${seconds(createMs)}: the machine must reach that address, and run agentrun-dial (the box image's entrypoint while AGENTRUN_ATTACH_URL is set)`);
 			}
 			const polled = pause(Math.min(this.#startPollMs(), left), signal).then(() => false as const);
 			reading ??= this.#dialRefused(ref.name, Math.min(requestMs, left), signal);

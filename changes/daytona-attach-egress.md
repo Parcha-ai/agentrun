@@ -1,0 +1,6 @@
+---
+packages: @parcha/agentrun-computer
+kind: feature
+---
+A Daytona machine that dials (`connect: "dial"`, and every Daytona desktop) can reach the server through the operator's relay: `DAYTONA_ATTACH_EGRESS` is a new optional Daytona key beside `DAYTONA_ARCHIL_EGRESS`, filling the shared adapter's new `attachEgress` option, `<IPv4 relay>:<port>` such as `192.0.2.40:18443`, refused at construction in words when it has another shape. It is for a self-hosted target whose runners drop every sandbox connection outside an allow list that the public address is not on. Set, a dial create adds `AGENTRUN_ATTACH_EGRESS` to the boot env; `agentrun-dial`'s daemon fetch (curl `--connect-to`) and `computerd attach` then open TCP to the relay and speak TLS and HTTP to the public host through it, so the SNI, the certificate checked and `Host` stay the public host's, and the relay never terminates TLS. Unset, nothing changes. The conformance module reads `COMPUTER_DAYTONA_ATTACH_EGRESS`.
+The box recipe changed (agentrun-dial, and the Dockerfile's comment on Daytona's entrypoint), so its hash is new: a Daytona dial server needs a new `agentrun-box-<hash>` snapshot (`box/build-daytona.py`) named in `AGENTRUN_DAYTONA_SNAPSHOT`, and the Cloudflare relay names the new box image (`relays/cloudflare/wrangler.json`): redeploy it once the release publishes that image.

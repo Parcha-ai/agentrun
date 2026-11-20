@@ -189,6 +189,11 @@ test("the constructor refuses what it cannot run with, in words", () => {
 	assert.throws(make({ archilEgress: "192.0.2.40:8100:42050" }), /the Archil egress is <IPv4 gateway>:<mount lane>:<data lane>/);
 	assert.throws(make({ archilEgress: "relay.example:18100:42050" }), /the Archil egress is/);
 	assert.doesNotThrow(make({ archilEgress: EGRESS }), "a well-formed egress is taken");
+	for (const attachEgress of ["relay.example:18443", "192.0.2.40", "192.0.2.40:0", "192.0.2.40:65536", "192.0.2.40:018443", "192.0.2.040:18443", "[2001:db8::1]:18443", "192.0.2.40:18443:1", " 192.0.2.40:18443"]) {
+		assert.throws(make({ attachEgress }), /the attach egress is <IPv4 relay>:<port>, such as 192\.0\.2\.40:18443, a port from 1 to 65535; not "/, attachEgress);
+	}
+	assert.doesNotThrow(make({ attachEgress: "192.0.2.40:18443" }), "a well-formed attach egress is taken");
+	assert.doesNotThrow(make({ attachEgress: "" }), "an empty one is none");
 	assert.throws(make({ timeouts: { retryMs: 0 } }), /retryMs/);
 });
 
@@ -750,6 +755,23 @@ test("connect dial: create sends the boot env as the sandbox's env and its netwo
 	assert.equal(plain.provider.host.facts.connect, undefined);
 	assert.equal(typeof plain.provider.host.exec, "function");
 	assert.equal(typeof plain.provider.host.upload, "function");
+});
+
+test("connect dial with DAYTONA_ATTACH_EGRESS's attachEgress: the boot env carries the relay as AGENTRUN_ATTACH_EGRESS, the public addresses unchanged; a desktop's too; exec sends no env still", async () => {
+	assert.deepEqual(DAYTONA.keys.find((key) => key.name === "DAYTONA_ATTACH_EGRESS"), { name: "DAYTONA_ATTACH_EGRESS", option: "attachEgress", required: false });
+	for (const kind of ["linux", "desktop"]) {
+		const rec = refusedCreate();
+		const provider = new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: rec.fetch, timeouts: TIMEOUTS, connect: "dial", dial: dialOf(), attachEgress: "192.0.2.40:18443", kind });
+		await provider.create({ ...SPEC, image: "agentrun-box-0123456789ab" }, { requestId: `r-dial-egress-${kind}` });
+		const { env } = posted(rec);
+		assert.deepEqual(Object.keys(env).sort(), [...BOOT_NAMES, "AGENTRUN_ATTACH_EGRESS", ...(kind === "desktop" ? ["DISPLAY"] : [])].sort(), kind);
+		assert.equal(env.AGENTRUN_ATTACH_EGRESS, "192.0.2.40:18443");
+		assert.equal(env.AGENTRUN_ATTACH_URL, "ws://127.0.0.1:8080/v2/computers/attach", "the machine still dials the public address, by name, through the relay");
+		assert.equal(env.AGENTRUN_DAEMON_URL, "http://127.0.0.1:8080/v2/computers/daemon?arch=amd64");
+	}
+	const rec = refusedCreate();
+	await new DaytonaProvider({ apiKey: KEY, apiUrl: API, daemonPath: DAEMON, fetch: rec.fetch, timeouts: TIMEOUTS, attachEgress: "192.0.2.40:18443" }).create(SPEC, { requestId: "r-exec-egress" });
+	assert.deepEqual(posted(rec).env, {}, "a machine on exec dials nothing, so it is given nothing");
 });
 
 test("connect dial: no Archil mount, no GPU and not Daytona's default snapshot, each refused in words; labels refused as on exec; no value but exec or dial", () => {
