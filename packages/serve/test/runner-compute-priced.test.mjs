@@ -87,7 +87,7 @@ function fauxVendor() {
 
 /** run-1 on a priced faux desktop, run by a runner on the pi spec with a scripted model that answers at once, until it
  *  rests (within `ms`); `patch` changes the vendor first. Its row and vendor. */
-async function pricedRun(t, { patch = () => {}, ms = 60_000 } = {}) {
+async function pricedRun(t, { patch = () => {}, ms = 60_000, env = PRICES } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-compute-priced-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -105,7 +105,7 @@ async function pricedRun(t, { patch = () => {}, ms = 60_000 } = {}) {
   const vendor = fauxVendor();
   patch(vendor);
   const computerDeps = { kinds: FAUX.kinds, keyTable: FAUX.keyTable, providers: { "faux-desktop": () => vendor.provider }, spec: () => ({ image: "faux", lifetimeMs: 600_000, network: "open", cpus: 2, memoryMb: 4096 }), check: { readBackOf } };
-  const deps = { env: PRICES, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim, computerDeps };
+  const deps = { env, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim, computerDeps };
   runner = startRunner({
     store, name: "runner-a", ...CONFORMANCE_TIMING, leaseMs: 30_000, stopMarginMs: 5_000,
     createLoop: createDispatchLoop({ launchOf: (runId) => store.runs.launch(runId), resolve: (name, given) => (name === "pi" ? createAdapterLoop((claim, run) => adapterRunSpecFromLaunch(given, run, deps, claim)) : undefined) }),
@@ -159,4 +159,13 @@ test("a run on a priced computer runs (its computer is made before the cap can j
   const [interval] = await server.computerIntervals.forRun(RUN);
   assert.ok(interval.bookedMs > 0, "its interval says how much was booked");
   assert.ok(Math.abs(lines[0].usd - 2 * 0.01 * (interval.bookedMs / 1000)) < 1e-9, "the vCPU line is 2 vCPUs at $0.01 for the booked seconds");
+});
+
+test("a run on a computer whose resources the operator priced at $0 reads $0 on its compute lines, never unpriced (#3338 review)", { timeout: 120_000 }, async (t) => {
+  const { server, row } = await pricedRun(t, { env: { AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_FAUX_DESKTOP: "0", AGENTRUN_COMPUTE_USD_PER_GIB_SECOND_FAUX_DESKTOP: "0" } });
+  assert.equal(row.state, "ended", `the run ran: ${JSON.stringify(row)}`);
+  const usage = await runUsageOverStore(server, RUN);
+  const lines = usage.lines.filter((line) => line.meter === "compute_time");
+  assert.deepEqual(lines.map((line) => [line.resource, line.basis, line.usd]), [["vcpu", "estimate", 0], ["memory", "estimate", 0]]);
+  assert.equal(usage.total.usd, 0, "the usage total is $0");
 });

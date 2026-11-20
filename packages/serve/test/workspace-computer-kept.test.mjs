@@ -766,3 +766,54 @@ test("the provider's own figures price the computer where its create said them, 
   assert.deepEqual(bookings(admits), [["vcpu", 0.004], ["memory", 0.0016]]);
   assert.deepEqual((await intervalsOf(one)).map((row) => [row.cpus, row.memoryMb, row.diskGb]), [[4, 8192, 20]]);
 });
+
+test("a computer's next stretch is asked for once the booked one's hold is given back, so a cap with room for it holds it (#3338 review)", async () => {
+  // A cap of $0.02 that counts what is booked and what is still held: a stretch is $0.0084. At the first tick $0.0084 is
+  // booked; with the booked stretch's hold still counted, a next $0.0084 would make $0.0252 and be refused.
+  const one = await server();
+  const live = new Map();
+  let spent = 0;
+  const admits = [];
+  const pauses = [];
+  const paid = {
+    async admit(request) {
+      const held = [...live.values()].reduce((sum, usd) => sum + usd, 0);
+      if (!request.owed && spent + held + request.holdUsd > 0.02 + 1e-12) throw Object.assign(new Error("spend_cap_reached: no room"), { code: "spend_cap_reached", forGood: false });
+      admits.push(request);
+      if (request.hold) live.set(request.id, request.holdUsd);
+      else spent += request.holdUsd;
+      return {};
+    },
+    async settle(id, usd) {
+      live.delete(id);
+      return usd;
+    },
+  };
+  const clock = ticker();
+  const held = await one.claim(3, { spec: SIZED, compute: { ledger: { paid, pause: async (refusal) => void pauses.push(refusal) }, env: PRICES, every: clock.every } });
+  await clock.settle();
+  one.clock.now = T0 + 300_000;
+  await clock.tick();
+  assert.deepEqual(pauses, [], "the run is not paused: the cap has room for the next stretch");
+  assert.equal(live.size, 1, "the next stretch is held");
+  assert.ok(Math.abs([...live.values()][0] - 0.0084) < 1e-9);
+  await held.release();
+  await clock.settle();
+  assert.equal(live.size, 0, "every hold given back at its delete");
+});
+
+test("a computer whose resources the operator priced at $0 is booked at $0 each stretch, never held, so its usage reads $0 and not unpriced (#3338 review)", async () => {
+  const one = await server();
+  const { ledger, admits } = ledgerOf({ refuse: () => true });
+  const clock = ticker();
+  const env = { AGENTRUN_COMPUTE_USD_PER_VCPU_SECOND_E2B: "0", AGENTRUN_COMPUTE_USD_PER_GIB_SECOND_E2B: "0" };
+  const held = await one.claim(3, { spec: SIZED, compute: { ledger, env, every: clock.every } });
+  assert.deepEqual(creates(one.account), ["c1"], "made, though the cap refuses every hold: nothing is held");
+  one.clock.now = T0 + 300_000;
+  await clock.tick();
+  one.clock.now = T0 + 345_000;
+  await held.release();
+  assert.deepEqual(admits.filter((one) => one.hold), [], "nothing held");
+  assert.deepEqual(bookings(admits), [["vcpu", 0], ["memory", 0], ["vcpu", 0], ["memory", 0]], "each stretch booked at $0");
+  assert.deepEqual((await intervalsOf(one)).map((row) => row.bookedMs), [345_000], "its time is held by the claim, not unheld");
+});

@@ -4023,7 +4023,8 @@ names it and `<GPU_TYPE>` the provider's own GPU name, both in capitals with eve
 A price sheet that quotes by the hour divides by 3,600 (a vCPU at $0.0504 an hour is `0.000014`). What a computer holds
 is its provider's own figure where the provider's answer gives one (Daytona: vCPUs, memory, disk and GPUs; E2B and Fly:
 vCPUs and memory), else what its create asked for. Nothing is built in: a provider that bills nothing (`docker`) is $0,
-and with no setting a resource is unpriced.
+a resource set to `0` is $0 (its time booked at $0, its line `estimate` with `usd` 0), and with no setting a resource
+is unpriced.
 
 - **Priced:** the run's ledger holds the computer's time under the run's `max_cost_usd`, one stretch of 5 minutes ahead,
   as a browser's time is held. A claim's computer is made while the run is set up, before its cap can judge anything:
@@ -4031,8 +4032,8 @@ and with no setting a resource is unpriced.
   with no room parks the run there for a raise. A computer made later in the run (a new sandbox in place of a lost one)
   has one stretch at what its create asks for held first, and a cap with no room for it makes nothing: the run fails in
   the cap's words. Each stretch the computer ran is booked (its provider is owed it, so it is never refused) and the
-  next one held; a cap with no room for the next pauses the run, as a paid tool call's refusal does, and a raise lets it
-  go on. Before the run's end or park is written, the time since is booked and the hold let go, so the end's `cost.usd`
+  next one held, the booked stretch's hold given back first so the cap never counts a stretch twice; a cap with no room
+  for the next pauses the run, as a paid tool call's refusal does, and a raise lets it go on. Before the run's end or park is written, the time since is booked and the hold let go, so the end's `cost.usd`
   holds all of it. The booked time is in the run's `cost.usd` and on its `compute_time` lines.
 - **Unpriced** (no setting, or a figure no one said): nothing is held or booked, and nothing is refused. The computer
   runs outside the cap, as a tool call with no price does, and its `compute_time` lines say `unpriced`. An operator who

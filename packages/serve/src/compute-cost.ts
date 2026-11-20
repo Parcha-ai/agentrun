@@ -9,7 +9,8 @@
 //   AGENTRUN_COMPUTE_USD_PER_DISK_GB_MONTH_<PROVIDER>            USD per GB-month of disk (a month: 730 hours)
 //
 // <PROVIDER> and <GPU_TYPE> in capitals, every other character an underscore (daytona, H100 → DAYTONA_H100). No price is
-// built in: a provider whose descriptor bills nothing (metered false) is $0, and any other resource with no price set, or
+// built in: a provider whose descriptor bills nothing (metered false) is $0, as is a resource set at 0 (booked at $0, its
+// usage line $0, never `unpriced`), and any other resource with no price set, or
 // with a figure its provider never said, is unpriced: its time is never $0 and never refused. An unpriced resource runs
 // outside the cap, as a tool call with no price does (TOOL_UNMETERED): nothing of it is held or booked, and its usage line
 // says `unpriced`.
@@ -108,8 +109,8 @@ const microUsd = (usd: number) => Math.ceil(Math.round(usd * 1e12) / 1e6) / 1e6;
  *  judge a step now (`judges`, RunLedger.judges: false while the run's spec, whose cap it is, is still built). */
 export type ComputeLedger = { readonly paid?: PaidBooking; readonly pause?: (refusal: Refusal) => Promise<void>; readonly judges?: () => boolean };
 
-/** A hold-only step on the ledger, given back by `drop`. */
-type Hold = { drop(): void };
+/** A hold-only step on the ledger, given back by `drop` (answered once the ledger has it back). */
+type Hold = { drop(): Promise<void> };
 
 /** A computer the claim refused to create: the cap had no room for its first stretch. Its words are the cap's. */
 export class ComputeRefused extends Error {
@@ -159,7 +160,8 @@ export function computeMeter(options: ComputeMeterOptions): ComputeMeter {
    *  its provider is already owed (a computer already made), never refused. */
   const holdOf = async (provider: string, usd: number, basis: string, given: { readonly owed?: true } = {}): Promise<{ hold: Hold } | { refused: string; refusal?: Refusal }> => {
     const paid = ledger.paid;
-    if (!paid) return { hold: { drop: () => {} } };
+    // Nothing to hold: no ledger, or a stretch of resources whose operator set them at $0.
+    if (!paid || usd === 0) return { hold: { drop: async () => {} } };
     const id = `compute:${provider}#hold-${(seq += 1)}`;
     try {
       await paid.admit({ id, name: `${provider}'s computer time`, holdUsd: usd, basis, chargedBy: provider, tool: COMPUTE_TOOL, hold: true, ...(given.owed ? { owed: true as const } : {}) });
@@ -169,8 +171,8 @@ export function computeMeter(options: ComputeMeterOptions): ComputeMeter {
       const refused = capped ? String((error as Error).message) : `${provider}'s computer time could not be held: ${String((error as Error)?.message ?? error)}`;
       return { refused, ...(capped ? { refusal: { refuse: refused, code: "spend_cap_reached", forGood: given.forGood ?? true, ...(given.figures ? { figures: given.figures } : {}) } } : {}) };
     }
-    let dropped = false;
-    return { hold: { drop: () => void (dropped || ((dropped = true), paid.settle(id, 0, { givenBack: true }).catch(() => undefined))) } };
+    let dropped: Promise<void> | undefined;
+    return { hold: { drop: () => (dropped ??= paid.settle(id, 0, { givenBack: true }).then(() => undefined, () => undefined)) } };
   };
   /** Whether the run's cap can judge a step now: false while the run's spec, whose cap it is, is built. */
   const judging = () => ledger.judges?.() !== false;
@@ -206,19 +208,26 @@ export function computeMeter(options: ComputeMeterOptions): ComputeMeter {
     await options.booked?.(one.provider, one.providerId, ms).catch(() => undefined);
   };
 
-  /** Each stretch: what ran booked, the next stretch held (owed while the computer runs; a refusal pauses the run once). */
+  /** Each stretch: what ran booked, the next stretch held (a refusal pauses the run, once until a hold is taken again). */
   const tick = async (one: Held): Promise<void> => {
     // A stretch that passes while the run's spec is still built (a long image build) waits for the next: what ran is
     // booked from where it was then.
     if (!judging()) return;
     await book(one, now());
+    // The stretch just booked is no longer ahead: its hold is given back, and the ledger has it back, before the next
+    // stretch is asked for. Else the cap would count that stretch twice (booked and still held), and refuse a next one
+    // it has room for.
+    const last = one.hold;
+    one.hold = undefined;
+    await last?.drop();
     const next = await holdOf(one.provider, stretchUsd(one.priced), basisOf(one.provider, one.priced));
-    one.hold?.drop();
     if ("hold" in next) {
-      one.hold = next.hold;
+      if (one.stopped) await next.hold.drop();
+      else one.hold = next.hold;
+      // Held again (the run's cap was raised, or room came back): a later refusal pauses the run again.
+      one.paused = false;
       return;
     }
-    one.hold = undefined;
     if (!one.paused && next.refusal && ledger.pause) {
       one.paused = true;
       await ledger.pause(next.refusal).catch(() => undefined);
@@ -232,8 +241,9 @@ export function computeMeter(options: ComputeMeterOptions): ComputeMeter {
       one.cancel();
       await one.ticking;
       await book(one, now());
-      one.hold?.drop();
+      const last = one.hold;
       one.hold = undefined;
+      await last?.drop();
       held.delete(key(provider, providerId));
     })());
   };
@@ -252,8 +262,11 @@ export function computeMeter(options: ComputeMeterOptions): ComputeMeter {
     start(provider, providerId, figures, ahead) {
       const priced = pricedOf(provider, figures, env);
       const k = key(provider, providerId);
-      if (held.has(k) || priced.length === 0 || priced.every((one) => one.usdPerSecond === 0)) {
-        ahead?.drop();
+      // A computer with nothing priced is held and booked by nothing (its time unpriced), as is a provider that bills
+      // nothing. One whose resources the operator priced at $0 is booked at $0 each stretch, so its usage read says $0
+      // (never `unpriced`): nothing of it is held.
+      if (held.has(k) || priced.length === 0 || unmetered(provider)) {
+        void ahead?.drop();
         return;
       }
       const one: Held = { provider, providerId, priced, from: now(), hold: undefined, cancel: () => {}, ticking: Promise.resolve(), paused: false };
@@ -264,10 +277,10 @@ export function computeMeter(options: ComputeMeterOptions): ComputeMeter {
       // fails would wait forever), and the hold, once the cap can judge, is let go at once if the computer was stopped.
       const first = holdOf(provider, stretchUsd(priced), basisOf(provider, priced), { owed: true }).then((answer) => {
         if ("hold" in answer) {
-          if (one.stopped) answer.hold.drop();
+          if (one.stopped) void answer.hold.drop();
           else one.hold = answer.hold;
         }
-        ahead?.drop();
+        void ahead?.drop();
       });
       if (judging()) one.ticking = first;
       else void first.catch(() => undefined);

@@ -485,7 +485,7 @@ async function providerLaunch(
   // The claim is the request: a retry of this launch under the same epoch gets the computer it made, never a second.
   const created = await provider.create(spec, { requestId: claimRequestId(claim), ...(signal ? { signal } : {}) });
   if (!created.ok) {
-    ahead?.drop();
+    void ahead?.drop();
     throw new Error(created.error.message);
   }
   const ref = { id: created.value.id, name: created.value.name };
@@ -960,7 +960,7 @@ export async function computerForClaim(
       const ahead = await meter?.before(entry.id, figuresOf(spec));
       const created = await provider.create({ ...spec, ...(mount ? { mount } : {}) }, { requestId: `${claimRequestId(launch)}#lost-${times}`, ...call });
       if (!created.ok) {
-        ahead?.drop();
+        void ahead?.drop();
         throw new Error(created.error.message);
       }
       const ref = { id: created.value.id, name: created.value.name };
