@@ -3201,22 +3201,9 @@ takes the same flag and setting, and needs them to run the module's harnesses. M
 with `npm install --prefix <data>/harnesses <package>`.
 
 A module exports `entries(builtins, kit)`, which returns new entries by id. [HARNESS.md](../../HARNESS.md) walks through
-writing one, and [examples/harness-module](../../examples/harness-module/README.md) is a whole one. Its types are
-`@parcha/agentrun-serve/harness`, which loads nothing of serve. `kit` holds the builders the built-in adapter harnesses
-are made with, on the running server's own copy:
-- `kit.adapterEntry(facts, adapter, extra?)` makes an adapter harness's whole entry from its facts (the kernel's
-  `AdapterFacts`): its models are its wire's vendor's, its key rows are that vendor's and OpenRouter's, and its tools are
-  gated and named by its facts, as for claude-agent, codex and opencode. `adapter(launch)` builds the adapter for one run
-  from the launch serve chose on this server's keys (`ModuleLaunch`: the provider's model id, the origin and credential
-  the session's proxy forwards to, the price of a request's usage, a log, the skills a `skillCheck` in `extra` accepted,
-  taken out of the prompt, and the server's environment). A person's
-  Claude Code login is never a launch's credential.
-- `kit.acpEntry({facts, recipe, proxy, beforeStart?, promises?})` makes an ACP agent's entry on serve's own ACP adapter
-  (`@parcha/agentrun-harness-acp`), promising `load`, `permission` and `proxy` unless `promises` says otherwise.
-- Either takes `missing(env)`: what no model key fixes (its binary, say), asked before the key, so the harness's offer
-  says it and names no key until it is there.
+writing one, and [examples/harness-module](../../examples/harness-module/README.md) is a whole one.
 
-An entry made otherwise gives `label`, `steer`, `runMib`, `oneAlwaysFits`, `runs`, `onWire`, `model`, `priceModel`,
+An entry made without `kit` gives `label`, `steer`, `runMib`, `oneAlwaysFits`, `runs`, `onWire`, `model`, `priceModel`,
 `refusal` and its `runner`, and may give `promises`; a run of it runs on its runner's `adapter(launch, extra)`. Every
 harness is admitted by the `runMib` its entry declares. A module adds harnesses and never replaces one: the built-in
 harnesses' facts, offers, key rows, default models and tool names are the same with any module loaded. The start of the
@@ -3226,6 +3213,7 @@ server, or of a separate runner, is refused, naming the module and the id, when 
 - names a built-in harness;
 - names an id another module adds;
 - gives an entry that is missing a member;
+- names in an entry's `ownKeys` a key a built-in harness owns (`HARNESS_KEY_OWNED`);
 - does not resolve.
 
 A module's entry that gives no adapter `facts` runs on the general spec, with pi's tools: capabilities list its id on
