@@ -427,9 +427,10 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
                         onToggle={() => { setToolsTouched(true); set({ tools: on ? f.tools!.filter((x) => x !== t.name) : [...(f.tools ?? []), t.name] }); }} /></li>
                     );
                   })}
-                  {caps.mcp && !workflow && <li className="sm:col-span-2"><McpToolPicker servers={mcpServers} tools={f.tools ?? []} harness={f.harness ?? "pi"} harnesses={caps.mcpHarnesses} onRetry={onRetryMcp} onChange={(tools) => { setToolsTouched(true); set({ tools }); }} /></li>}
+                  {/* The MCP and monid groups span the whole row: each lays out its own cards in the same columns. */}
+                  {caps.mcp && !workflow && <li className="col-span-full"><McpToolPicker servers={mcpServers} tools={f.tools ?? []} harness={f.harness ?? "pi"} harnesses={caps.mcpHarnesses} onRetry={onRetryMcp} onChange={(tools) => { setToolsTouched(true); set({ tools }); }} /></li>}
                   {/* monid's endpoints, granted by name (a workflow's nodes bind none): each grant the agent has, and a field for another. */}
-                  {!workflow && <li className="sm:col-span-2"><MonidGrants tools={f.tools ?? []} listed={monidSeen} notes={monidWarnings.map(({ grant, warning }) => ({ grant, message: warning.message }))} refused={monidRefused} onChange={(tools) => { setMonidSeen((seen) => [...new Set([...seen, ...tools.filter(isMonidName)])]); setToolsTouched(true); set({ tools }); }} /></li>}
+                  {!workflow && <li className="col-span-full"><MonidGrants tools={f.tools ?? []} listed={monidSeen} notes={monidWarnings.map(({ grant, warning }) => ({ grant, message: warning.message }))} refused={monidRefused} onChange={(tools) => { setMonidSeen((seen) => [...new Set([...seen, ...tools.filter(isMonidName)])]); setToolsTouched(true); set({ tools }); }} /></li>}
                 </ul>
                 {/* Quiet, here only: an agent can be given no web tool on purpose (one that works on files). */}
                 {!workflow && !reachesWeb(f.tools ?? []) && (
