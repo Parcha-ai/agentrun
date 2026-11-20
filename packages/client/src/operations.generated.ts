@@ -3736,6 +3736,20 @@ export type GetRunUsageResponse = {
     } | null;
     provider_record_status: "read" | "not_offered" | "not_found" | "failed" | "no_session" | null;
   }> | null;
+  computer_intervals: Array<{
+    provider: string;
+    provider_id: string;
+    kind: string | null;
+    gpu: {
+      type: string | null;
+      count: number | null;
+    } | null;
+    cpus: number | null;
+    memory_mb: number | null;
+    started_at: string;
+    ended_at: string | null;
+    kept: boolean;
+  }> | null;
   reason: "running" | "not_booked" | "reopened" | null;
 };
 

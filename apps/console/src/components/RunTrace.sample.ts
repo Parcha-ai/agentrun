@@ -100,9 +100,10 @@ export const USAGE_CLI: RunUsage = {
   total: { usd: null, so_far_usd: 0.4379, unpriced: 1 },
   lines: [
     { meter: "tokens", model: "claude-sonnet-5-5", provider: null, charged_by: null, quantity: 184_220, unit: "token", basis: "reported", usd: 0.4125, requests: 12, tokens: { input: 1_840, output: 6_120, cache_read: 160_400, cache_write: 15_860 } },
-    { meter: "tools", model: null, provider: null, charged_by: "monid", quantity: 3, unit: "call", basis: "estimate", usd: 0.015, not_metered_calls: 2 },
+    { meter: "tools", model: null, provider: "monid", charged_by: "monid", quantity: 3, unit: "call", basis: "estimate", usd: 0.015, not_metered_calls: 2 },
     { meter: "browser_time", model: null, provider: "browserbase", charged_by: null, quantity: 312, unit: "second", basis: "estimate", usd: null, so_far_usd: 0.0104, unpriced: 1 },
   ],
   browser_sessions: [],
+  computer_intervals: [],
   reason: null,
 };
