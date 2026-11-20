@@ -231,6 +231,11 @@ const MAX_WAIT_MS = 25_000;
 const REFUSED_SWEEP_MS = 2_000;
 const PAGE_ROWS = 500;
 const FILE_LIST_CAP = 2_000;
+/** The setting that notes the callers' Archil disks a purged run of agent `agentId` named (its launch record gone with
+ *  it), the agent's learning folder maybe on each, until its learning is reset or deleted (learningDisksOf). */
+const learningDisksKey = (agentId: string): string => `learning.purged-disks.${agentId}`;
+/** The disk ids a purged-disk note holds (learningDisksKey): none when it is not there. */
+const notedDisks = (noted: unknown): string[] => (Array.isArray(noted) ? noted.filter((one): one is string => typeof one === "string") : []);
 /** Where the stop's lines go (ServeOptions.notice). Best-effort: a notice that throws never stops a close or a start. */
 const noticeOf = (options: Pick<ServeOptions, "notice">) => (line: string): void => {
   try {
@@ -2470,8 +2475,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  mounted (workspace/learning-workspace.ts, at learningKey), the agent's stored disk (named here only for
    *  `agentDisk`) or one a launch named (kind "launch", a customer's). A run's kept disk, or a launch's kind "agent", is
    *  the agent's own disk, mounted only while it is still the stored one (workspace/run-disk.ts runDiskOf): one no longer
-   *  stored was removed at Archil, its folder with it. */
-  const learningDisksOf = async (agentId: string, agentDisk: boolean): Promise<string[]> => {
+   *  stored was removed at Archil, its folder with it. A disk a purged run's launch named is read from the agent's
+   *  purged-disk note (learningDisksKey), read after the launches: a purge notes its disk before its launch record goes,
+   *  so a launch found gone was noted first. `noted`: the note as read, for its removal once each folder is gone. */
+  const learningDisksOf = async (agentId: string, agentDisk: boolean): Promise<{ disks: string[]; noted: unknown }> => {
     const disks = new Set<string>();
     const stored = agentDisk ? await agentDiskOf(store, agentId) : undefined;
     if (stored) disks.add(stored.diskId);
@@ -2479,7 +2486,23 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       const named = await store.runs.launch(run.id).then((row) => readLaunchBody(row.body)?.archilDisk, (error: unknown) => (error instanceof StoreLaunchMissing ? undefined : Promise.reject(error)));
       if (named?.kind === "launch") disks.add(named.diskId);
     }
-    return [...disks];
+    const noted = await store.settings.get(learningDisksKey(agentId));
+    for (const diskId of notedDisks(noted)) disks.add(diskId);
+    return { disks: [...disks], noted };
+  };
+  /** Disk `diskId`, which a launch of agent `agentId`'s run named (a caller's), added to the agent's purged-disk note
+   *  before the run's purge removes the launch record that names it: the agent's learning folder there stays (a run's
+   *  purge is not its agent's learning's), for its next reset or delete to find (learningDisksOf). */
+  const noteLearningDisk = async (agentId: string, diskId: string): Promise<void> => {
+    const key = learningDisksKey(agentId);
+    for (let tries = 0; tries < 20; tries++) {
+      const was = await store.settings.get(key);
+      const disks = notedDisks(was);
+      if (disks.includes(diskId)) return;
+      const value = [...disks, diskId].sort();
+      if (was === undefined ? JSON.stringify(await store.settings.putIfAbsent(key, value)) === JSON.stringify(value) : await store.settings.replaceIf(key, was, value)) return;
+    }
+    throw new Error(`${key} kept changing under this write; try again`);
   };
   /** Step 2 of DELETE /agents/{id}, and DELETE /agents/{id}/learning: the learning module's delete over the agent's
    *  learning folder on this server's disk, as the learning routes open it (learningFolderOf), which deleteLearning ends
@@ -2489,7 +2512,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const learningDelete: DeleteLearning = options.deleteLearning ?? ((given, agentId, { keepResetLedger = false, agentDisk = false } = {}) => deleteLearning(given, agentId, learningFolderOf(data, agentId), {
     keepResetLedger,
     elsewhere: async () => {
-      for (const diskId of await learningDisksOf(agentId, agentDisk)) {
+      const { disks, noted } = await learningDisksOf(agentId, agentDisk);
+      for (const diskId of disks) {
         try {
           await archil.removeLearningFolder(agentId, diskId);
         } catch (error) {
@@ -2497,6 +2521,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           throw new ApiError("unavailable", `${error.message.replace(/[.\s]*$/, "")}. The agent's learning folder on this server and its learning records are kept: send the DELETE again once it can be reached.`, { retry_after_ms: 5_000 });
         }
       }
+      // Each noted disk's folder is gone: the note goes, unless a purge noted another disk since it was read.
+      if (noted !== undefined) await store.settings.removeIf(learningDisksKey(agentId), noted);
     },
   }));
   /** What DELETE /agents/{id} does outside the store's rows, on this server (agent-delete.ts AgentDeleteHost). */
@@ -2544,8 +2570,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // DELETE. A run on its agent's own disk: with its agent's delete that disk went whole (removeDisk), its folder with
       // it; deleted alone, its folder there is deleted, the disk kept, read from its disk setting, which goes after.
       const launched = await store.runs.launch(runId).then((row) => readLaunchBody(row.body)?.archilDisk, (error: unknown) => (error instanceof StoreLaunchMissing ? undefined : Promise.reject(error)));
-      if (launched?.kind === "launch") await notYetWith(() => archil.removeRunFolder(agentId, runId, launched.diskId), ["unavailable", "upstream_failed"], again);
-      else if (alone) {
+      if (launched?.kind === "launch") {
+        // Purged alone, the agent's learning stays, and may be on that disk too: noted, for its reset or delete to find.
+        if (alone) await noteLearningDisk(agentId, launched.diskId);
+        await notYetWith(() => archil.removeRunFolder(agentId, runId, launched.diskId), ["unavailable", "upstream_failed"], again);
+      } else if (alone) {
         const own = launched?.diskId ?? (await runDiskKept(store, runId));
         if (own) await notYetWith(() => archil.removeRunFolder(agentId, runId, own, "agent"), ["unavailable", "upstream_failed"], again);
       }
