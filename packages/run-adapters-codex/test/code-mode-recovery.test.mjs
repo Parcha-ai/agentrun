@@ -144,9 +144,11 @@ test("a cut-off exec tells a nested host tool's call the host parked the same: i
 
 /** An exec whose script's nested MCP call the host's gate parked (a person's approval: the call never reached its intent),
  *  cut when the run parked, then resumed by the next drive under `gate`: the exec's recovered output, and what ran. */
-async function gateParkedExec(gate, repair = 'note') {
+async function gateParkedExec(gate, repair = 'note', { nests = false, loose = false } = {}) {
   const ran = [];
-  const host = { name: 'mcp__fake__add', description: 'Adds.', inputSchema: { type: 'object' }, replay: 'never', call: async (args) => (ran.push(args), { text: String(args.a + args.b) }) };
+  // `nests`: a tool that nests calls (a learned workflow), which leaves no effect record of its own. `loose`: the call's
+  // script could not be told (its tie names no exec).
+  const host = { name: 'mcp__fake__add', description: 'Adds.', inputSchema: { type: 'object' }, replay: 'never', ...(nests ? { nests: true } : {}), call: async (args) => (ran.push(args), { text: String(args.a + args.b) }) };
   const store = memorySessionStore();
   const first = await openDrive({ writer: await store.open('code'), signal: new AbortController().signal });
   await first.submit({ id: 's1', kind: 'prompt', text: 'Add them.' });
@@ -158,7 +160,7 @@ async function gateParkedExec(gate, repair = 'note') {
   parked.abort();
   await assert.rejects(held, /was parked/);
   // The tie the request handler wrote as the call came, with the call's tool (Codex's name for it) and arguments.
-  const ties = [{ callId: 'exec-1', exec: EXEC, since, tool: 'mcp_fake__add', args: { a: 2, b: 3 } }];
+  const ties = [{ callId: 'exec-1', exec: loose ? null : EXEC, since, tool: 'mcp_fake__add', args: { a: 2, b: 3 } }];
   const next = await openDrive({ writer: await store.open('code'), signal: new AbortController().signal });
   // What the session's journal keeps beside the ties (appended, as the harness's does), read back by a later recovery.
   const kept = [];
@@ -224,6 +226,22 @@ test("a nested call the gate parked and the person denied is never run: the exec
   // Told as the person's answer, never as a crash: a model told its script was cut short retried the declined call.
   assert.match(items[0].output, /^The exec stopped at a call that waited for a person's approval/);
   assert.doesNotMatch(items[0].output, /cut short|session stopped/);
+  assert.match(items[0].output, /A refused call \(a person declined it, or a setting on this server denies it\) is an answer, not a failure: don't make it again\./);
+});
+
+test("a nested call of a tool that nests (no effect record of its own) that the person allowed reads as run, never as declined", async () => {
+  const { ran, recovered, items } = await gateParkedExec(async () => 'allow', 'note', { nests: true });
+  await recovered;
+  assert.deepEqual(ran, [{ a: 2, b: 3 }], 'it ran once');
+  assert.match(items[0].output, /\n1\. mcp_fake__add waited for a person's approval, then ran: "5"\. Its effect is done; it was not run again\./);
+  assert.doesNotMatch(items[0].output, /It did not run|A refused call/);
+});
+
+test("a call whose script could not be told that the person declined on the resume carries the reminder not to make it again", async () => {
+  const { recovered, ran, items } = await gateParkedExec(async () => ({ deny: 'Denied: not now.' }), 'note', { loose: true });
+  await recovered;
+  assert.deepEqual(ran, [], 'never run');
+  assert.match(items[0].output, /\n1\. mcp_fake__add waited for a person's approval, then: "Denied: not now\."\. It did not run\./);
   assert.match(items[0].output, /A refused call \(a person declined it, or a setting on this server denies it\) is an answer, not a failure: don't make it again\./);
 });
 

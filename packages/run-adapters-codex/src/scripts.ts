@@ -360,8 +360,8 @@ export function execRecovery(facts: readonly NestedFact[], loose: readonly Neste
     const apart = others.length
       ? `\n${others.length} ${others.length === 1 ? "call" : "calls"} ran whose script could not be told (an answer of the model's could not be read to its end):\n${others.map((t) => lineOf(t, cap)).join("\n")}`
       : "";
-    if (own.length === 0) return `The exec was cut short, and no call of its own was recorded; the calls below ran, though which script made them could not be told, so do not run it again to find out.${apart}`;
-    return `${facts.some((fact) => fact.resumed) ? EXEC_ANSWERED_OPENER : EXEC_CUT_OPENER}${own.map((t) => lineOf(t, cap)).join("\n")}${apart}${declinedTail(facts)}`;
+    if (own.length === 0) return `The exec was cut short, and no call of its own was recorded; the calls below ran, though which script made them could not be told, so do not run it again to find out.${apart}${declinedTail(loose)}`;
+    return `${facts.some((fact) => fact.resumed) ? EXEC_ANSWERED_OPENER : EXEC_CUT_OPENER}${own.map((t) => lineOf(t, cap)).join("\n")}${apart}${declinedTail([...facts, ...loose])}`;
   });
 }
 
