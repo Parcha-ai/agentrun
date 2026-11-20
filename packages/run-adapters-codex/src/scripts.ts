@@ -314,7 +314,7 @@ export function waitResumed(cell: string, resumed: readonly NestedFact[]): Recov
 /** What follows the outcomes when a person declined one of the calls: their answer, not a failure to work around. Without
  *  it, a model told its script was cut off read the refusal as the stop's and made the same call again, asking the person
  *  the same question until they cancelled. */
-const DECLINED_TAIL = "\nA call a person declined is their answer, not a failure: don't make it again. Finish without it, or say what you needed it for.";
+const DECLINED_TAIL = "\nA refused call (a person declined it, or a setting on this server denies it) is an answer, not a failure: don't make it again. Finish without it, or say what you needed it for.";
 const declinedTail = (facts: readonly NestedFact[]): string => (facts.some((fact) => fact.resumed && !fact.resumed.ran) ? DECLINED_TAIL : "");
 
 /** The words a resumed `wait`'s output opens with (waitResumed): the model is told its cell's script went with the session. */
