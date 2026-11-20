@@ -50,7 +50,7 @@
 // through the file API as the runner keeps it, its files and `dir/` markers, and its modes and links in sync.json beside
 // the root (syncMetaOf), and attach() with check.sync reads back a synced folder under the claim's epoch instead.
 import { type FolderMeta, folderPathProblem, type MountSpec, type Result } from "@parcha/agentrun-computer";
-import { type ArchilDisk, type ArchilImage, type ArchilListPage, DENY_EGRESS, pinnedImage } from "./archil-disk.js";
+import { type ArchilDisk, ArchilDiskMissing, type ArchilImage, type ArchilListPage, DENY_EGRESS, pinnedImage } from "./archil-disk.js";
 import { ArchilEgressRefused, archilExec, COMMAND_MAX_MS, DEFAULT_QUEUE_MS, type ExecJob, MAX_EXEC_MS, spillKeys, spillName } from "./archil-exec.js";
 import { type AttachableComputer, attachedWorkspace, checkReadBack, type MountCheck, noProcesses } from "./attach.js";
 import { globRegex } from "./glob.js";
@@ -98,12 +98,14 @@ const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 const quiet = <T>(promise: Promise<T>): Promise<T> => { promise.catch(() => undefined); return promise; };
 const byName = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
-/** A disk API failure as a WorkspaceError. */
+/** A disk API failure as a WorkspaceError, Archil's words kept. A disk that is not there is UNAVAILABLE, never a file or
+ *  folder that is not there: no caller takes it for an empty folder. */
 function failed(error: unknown, path: string, what: string): WorkspaceError {
   if (error instanceof WorkspaceError) return error;
   const status = statusOf(error);
   const at = { path, cause: error };
-  if (status === 404) return new WorkspaceError("NOT_FOUND", `${show(path)} is not there`, at);
+  if (error instanceof ArchilDiskMissing) return new WorkspaceError("UNAVAILABLE", `${what} ${show(path)}: ${error.message}`, at);
+  if (status === 404) return new WorkspaceError("NOT_FOUND", `${show(path)} is not there (Archil: ${describe(error)})`, at);
   if (status === 413 || (error as { code?: unknown })?.code === "EntityTooLarge") return new WorkspaceError("TOO_LARGE", `${what} ${show(path)}: more than the disk takes in one call`, at);
   if (status === 401 || status === 403) return new WorkspaceError("UNAVAILABLE", `${what} ${show(path)}: Archil refused the key: ${describe(error)}`, at);
   return new WorkspaceError("UNAVAILABLE", `${what} ${show(path)}: ${describe(error)}`, at);
@@ -309,7 +311,8 @@ class ArchilWorkspace implements Workspace {
     } catch (error) {
       const why = await this.#writeFailed(error, rel, "file", "append");
       const status = statusOf(error);
-      const refused = status !== undefined && status >= 400 && status < 500;
+      // A disk that is not there took nothing either.
+      const refused = error instanceof ArchilDiskMissing || (status !== undefined && status >= 400 && status < 500);
       if (chunks === 1) {
         // A refusal (4xx) applied nothing; any other failure may have come after the bytes were committed.
         if (refused) throw why;
@@ -391,6 +394,20 @@ class ArchilWorkspace implements Workspace {
       await this.#write(rel, () => this.#disk.putObject(`${this.#key(rel)}/`, new Uint8Array(0)));
     } catch (error) {
       throw await this.#writeFailed(error, rel, "dir", "mkdir");
+    }
+  }
+
+  /** The root made on the disk when it is not there yet; one already there is not put again, so a computer whose mount
+   *  holds it (Archil's write delegation refuses a put there) never stands in the way. A failure throws, in Archil's words. */
+  async ensureRoot(): Promise<void> {
+    const marker = `${this.#root}/`;
+    try {
+      for await (const page of this.#pages(this.#root, false)) {
+        if (page.commonPrefixes.includes(marker) || page.objects.some((o) => o.key === marker)) return;
+      }
+      await this.#write("", () => this.#disk.putObject(marker, new Uint8Array(0)));
+    } catch (error) {
+      throw failed(error, "", "mkdir");
     }
   }
 
