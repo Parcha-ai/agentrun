@@ -1042,17 +1042,23 @@ const CASES: readonly Case[] = [
     title: "a double-clicked approval runs the call once: the first answers it, and the store refuses the second (one answer per approval)",
     async body(subject, t) {
       const w = await world(subject, t);
-      const { tools, ran } = suiteTools();
-      await w.start("runner-a", { script: [{ call: "asked" }, { say: "done" }], tools, hooks: quiet });
+      const { tools, ran, letSlowGo } = suiteTools();
+      // The gated `slow` call after it keeps the run from ending until the second click is sent: a run that ended first
+      // refuses any command as final (RunFinal) before the one-answer index is reached, which is not this case.
+      await w.start("runner-a", { script: [{ call: "asked" }, { call: "slow" }, { say: "done" }], tools, hooks: quiet });
       await w.ended("parked");
       const callId = await w.askedCall();
       const first = await sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } });
-      await assert.rejects(sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } }), AnswerTaken, "a second answer to one approval is never written: the store says it is answered already");
+      try {
+        await assert.rejects(sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } }), AnswerTaken, "a second answer to one approval is never written: the store says it is answered already");
+      } finally {
+        letSlowGo();
+      }
       await w.ended("ended");
       assert.equal(ran.asked, 1, "the call ran once");
       assert.equal((await w.commandRow(first.id)).refused, null, "the first approve answered it");
       const { calls } = await w.read();
-      assert.deepEqual(calls.map((call) => [call.tool, call.status]), [["asked", "done"]]);
+      assert.deepEqual(calls.map((call) => [call.tool, call.status]), [["asked", "done"], ["slow", "done"]]);
     },
   },
   {
