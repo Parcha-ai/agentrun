@@ -7,4 +7,6 @@ The console also:
 - Takes a run with only a field for an agent whose `input_schema` fields are all optional, as the server does, and says a refusal of neither at the message box.
 - Offers the Grade form on an ended run whose learning reads `reflecting`, and says a `409 run_learning` in the server's words, keeping the choice.
 
+`POST /templates/{template}/apply` answers what it did to the agent: `revision_version`, the agent's current revision once it is done, and `agent_change`, `made`, `updated` (a new revision written) or `unchanged` (an update with `agent_id` whose package and parameters the current revision already holds, no revision written). The console's apply result, on Templates and in the API playground, says it from the answer: an update that changed nothing reads "Nothing to update: rev 2 is current.", never that the agent is made or applied.
+
 A look-back cut by a stop or cancel is said as "a stop or cancel cut it while it wrote what it learned", and the learning state's `reflecting` description names the run's end it reads.

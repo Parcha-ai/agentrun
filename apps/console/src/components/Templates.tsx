@@ -230,8 +230,13 @@ const installHash = (source: string) => `#/templates/install?src=${encodeURIComp
  *  show first: a schedule with when it runs and its next run, as the Triggers page says them. */
 /** How long the Apply page waits on one of its new triggers' read-back before it leaves that trigger out. */
 export const TRIGGER_READ_MS = 3_000;
-/** What an Update says it did: the revision it wrote when that was read back ("Updated: rev 2"), else "Updated". */
-const updatedWords = (rev: number | null) => (rev === null ? "Updated" : `Updated: rev ${rev}`);
+/** What an apply did to its agent, as its answer says it (agent_change, revision_version): the title's last word and the
+ *  sentence above its warnings. An Update that changed nothing wrote no revision, and says so. */
+const CHANGE_WORDS: Record<TemplateApplied["agent_change"], { title: string; said: (rev: number) => string }> = {
+  made: { title: "applied", said: () => "The agent is made" },
+  updated: { title: "updated", said: (rev) => `Updated: rev ${rev}` },
+  unchanged: { title: "unchanged", said: (rev) => `Nothing to update: rev ${rev} is current` },
+};
 /** What starts a run of each kind of trigger, in plain words: an apply's result says it of each trigger it made. */
 const TRIGGER_WORDS: Record<TemplateApplied["triggers"][number]["kind"], string> = {
   schedule: "A schedule: it starts a run at its times.",
@@ -270,9 +275,6 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
   // The refusal's own words beside Apply; `withIssues` when it came with issues, so it goes once the last of them does.
   const [said, setSaid] = useState<{ text: string; withIssues: boolean } | null>(null);
   const [made, setMade] = useState<TemplateApplied | null>(null);
-  // An Update's (agent_id sent): the agent was updated, not made. `rev` is its revision as read back (GET /agents/{id}),
-  // null until read, or when it can't be read within TRIGGER_READ_MS. Null for an Apply, which made a new agent.
-  const [updated, setUpdated] = useState<{ rev: number | null } | null>(null);
   // The schedules the apply made, each read back (GET /triggers/{id}) for its line and next run.
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   // The parameters an apply sent: what its "applied" title names, whatever was typed while it was under way.
@@ -364,22 +366,14 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
         const read = await Promise.all(done.triggers.filter((x) => x.kind === "schedule").map((x) => bounded(v2.getTrigger(x.trigger_id), TRIGGER_READ_MS).catch(() => null)));
         return read.filter((x): x is Schedule => x !== null && x !== undefined && isScheduleTrigger(x));
       };
-      // An Update says the revision it wrote, read back; never "made". A slow or failed read says "Updated" alone.
-      const updating = () => {
-        if (!onto) { setUpdated(null); return; }
-        setUpdated({ rev: null });
-        void bounded(v2.getAgent(done.agent_id), TRIGGER_READ_MS).then((r) => {
-          const rev = r?.agent.definition?.version;
-          if (shown.current && typeof rev === "number") setUpdated({ rev });
-        }, () => {});
-      };
-      // An apply that made no trigger and says nothing more opens the agent at once.
+      // An apply that changed the agent, made no trigger and says nothing more opens the agent at once. One that changed
+      // nothing (agent_change unchanged) says so first.
       if (!shown.current) return;
-      if (!done.warnings.length && !done.webhook_secrets?.length && !done.triggers.length) { go(agentHash(done.agent_id)); return; }
-      // Otherwise its result is shown at once: a warning, a webhook's once-shown secret, and every trigger it made or kept
-      // (the answer's own list); a schedule's line and next run are added as it is read back.
+      if (done.agent_change !== "unchanged" && !done.warnings.length && !done.webhook_secrets?.length && !done.triggers.length) { go(agentHash(done.agent_id)); return; }
+      // Otherwise its result is shown at once, in the answer's words for what it did (CHANGE_WORDS): a warning, a webhook's
+      // once-shown secret, and every trigger it made or kept (the answer's own list); a schedule's line and next run are
+      // added as it is read back.
       setSentValues(sending);
-      updating();
       setMade(done);
       if (done.triggers.some((x) => x.kind === "schedule")) void schedulesOf().then((read) => { if (shown.current) setSchedules(read); }, () => {});
     } catch (e) {
@@ -400,12 +394,13 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
   const placed = (i: FieldIssue) => /^(parameters|mcp|servers)\./.test(i.field) || /^grants\.\d+$/.test(i.field) || (i.field === "overrides.choice" && !!t.model?.choices?.length)
     || (i.field.startsWith("secrets.") && [...t.secrets, ...choiceKeys(picked?.secrets ?? [])].includes(i.field.slice("secrets.".length)));
   if (made) {
+    const change = CHANGE_WORDS[made.agent_change];
     return (
       <section aria-label="Applied" className="max-w-page">
-        <Heading className="mb-4 flex items-center gap-2 text-2xl font-semibold"><Check className="size-5 text-success-text" aria-hidden /> {titleOf(t, sentValues)} {updated ? "updated" : "applied"}</Heading>
-        {updated && made.warnings.length === 0 && <p className="mb-3 text-lead">{updatedWords(updated.rev)}.</p>}
+        <Heading className="mb-4 flex items-center gap-2 text-2xl font-semibold"><Check className="size-5 text-success-text" aria-hidden /> {titleOf(t, sentValues)} {change.title}</Heading>
+        {made.agent_change !== "made" && made.warnings.length === 0 && <p className="mb-3 text-lead">{change.said(made.revision_version)}.</p>}
         {made.warnings.length > 0 && <>
-          <p className="mb-3 text-lead">{updated ? updatedWords(updated.rev) : "The agent is made"}. The server says:</p>
+          <p className="mb-3 text-lead">{change.said(made.revision_version)}. The server says:</p>
           <ul className="mb-5 space-y-2 border bg-card px-4 py-3 text-body" role="status" aria-label="Warnings">
             {made.warnings.map((w, i) => {
               // A webhook trigger's (triggers.<i>.secret): the trigger the apply made (trigger_ids, in the template's order)

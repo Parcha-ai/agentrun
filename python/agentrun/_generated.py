@@ -6748,6 +6748,8 @@ class _ApplyTemplateResponseRequired(TypedDict):
     template: str
     version: str
     agent_id: str
+    revision_version: int
+    agent_change: Literal["made", "updated", "unchanged"]
     servers: dict[str, str | None]
     trigger_ids: list[str]
     triggers: list[ApplyTemplateResponseTriggersItem]

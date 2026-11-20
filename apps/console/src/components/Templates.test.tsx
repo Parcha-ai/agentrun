@@ -69,7 +69,8 @@ async function open(name?: string, fake: Fake = {}) {
       if (!fake.triggers?.[id]) throw new ClientError(404, "not_found", `No trigger ${id}.`);
       return fake.triggers[id];
     },
-    applyTemplate: async (n: string, body: never, key: string) => { sent.push({ name: n, body, key }); return (fake.apply ?? (async () => ({ template: n, version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: [], triggers: [], warnings: [] })))(n, body, key); },
+    // Every apply here makes a new agent: the server's answer says so (agent_change made, its first revision).
+    applyTemplate: async (n: string, body: never, key: string) => { sent.push({ name: n, body, key }); return { revision_version: 1, agent_change: "made", ...(await (fake.apply ?? (async () => ({ template: n, version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: [], triggers: [], warnings: [] })))(n, body, key) as object) }; },
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
