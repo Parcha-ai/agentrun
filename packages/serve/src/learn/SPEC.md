@@ -394,4 +394,8 @@ none of its compiles. A run seeded before the reset whose row was made after it 
 writes the folder on its disk, which never held the seed the server read from its own, so a commit missing there says
 nothing of a reset. The learning script is a second wall: once the agent was reset, a run whose folder holds its seed
 at its end's entry names it on its merge (`seed <commit>`), which the script refuses when the folder no longer holds
-it, a correction alone included. The runs themselves, their costs and what each kept stay.
+it, a correction alone included. A grade of a run before the reset is kept, but writes no audit row (`runner/audit.ts`
+gradeRow), so a promotion of the same digest after the reset is never held by what came before it. An SDK start is
+admitted (its check reserved, its inbox and run row made) in the same queue (`sdk/runs.ts`): a start whose seed was read
+before the reset is refused (`503 unavailable`, start it again), so no check of a draft the reset deleted is reserved.
+The runs themselves, their costs and what each kept stay.

@@ -294,10 +294,12 @@ export async function settleAudits(deps: AuditDeps): Promise<void> {
 
 /** The row an owner's grade of served run `run` writes (source grade, agreed = the grade, counted for the digest's
  *  promotion now), then the hold rule: only for a run the workflow answered alone (its answer is the workflow's).
- *  Nothing else: no round, no compile by itself. */
+ *  Nothing else: no round, no compile by itself. A run before the agent's learning reset (sinceReset) adds no row: its
+ *  grade is kept, but a promotion of the same digest after the reset is never held by what came before it. */
 export async function gradeRow(deps: AuditDeps, run: RunRow, correct: boolean): Promise<void> {
   const m = metricsOf(run);
   if (m.path !== "workflow" || typeof m.workflow !== "string" || typeof m.workflow_digest !== "string") return;
+  if (!(await sinceReset(deps.store, deps.agentId))(run)) return;
   const promoted = promotionStartOf(await promotionsOf(deps.store.settings, recordsOf(deps)), m.workflow, m.workflow_digest);
   // The answer graded: the run's newest now, kept by its row's id (as a shadow's audit keeps its turn).
   const turn = turnOf((await answerRowOf(deps.store, run.id, deps.context))?.id);
