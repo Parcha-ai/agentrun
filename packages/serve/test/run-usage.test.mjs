@@ -104,6 +104,6 @@ test("a run still at work has no lines yet, and says so; an unknown run is a 404
   await follow(api, run.body.run_id, ["input_required"], { deadlineMs: 60_000 });
   const usage = await api("GET", `/runs/${run.body.run_id}/usage`);
   assert.equal(usage.status, 200);
-  assert.deepEqual(usage.body, { run_id: run.body.run_id, ended_at: null, currency: "USD", total: null, lines: null, reason: "running" });
+  assert.deepEqual(usage.body, { run_id: run.body.run_id, ended_at: null, currency: "USD", total: null, lines: null, browser_sessions: null, reason: "running" });
   assert.equal((await api("GET", "/runs/run_nope/usage")).status, 404);
 });

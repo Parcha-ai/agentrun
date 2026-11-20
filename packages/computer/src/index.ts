@@ -87,6 +87,7 @@ export {
 	type BrowserDownloads,
 	type BrowserFile,
 	type BrowserProfiles,
+	type BrowserSessionUsage,
 	browserSpecRefusals,
 	type BrowserStream,
 	isBrowserProvider,
