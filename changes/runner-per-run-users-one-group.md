@@ -2,7 +2,7 @@
 packages: @parcha/agentrun-serve
 kind: feature
 ---
-A runner that holds many customers' runs keeps per-run users without putting its own user in 256 groups, and its operator can stop owners from allowing private-network hosts (`AGENTRUN_PRIVATE_HOSTS`). See [docs/multi-tenant-runners.md](../../docs/multi-tenant-runners.md) for the threat model.
+A runner that holds many customers' runs keeps per-run users without putting its own user in 256 groups, and its operator can stop owners from allowing private-network hosts (`AGENTRUN_PRIVATE_HOSTS`). See [docs/multi-tenant-runners.md](https://github.com/Parcha-ai/agentrun/blob/main/docs/multi-tenant-runners.md) for the threat model.
 
 - In the image, the server's user (node) is now in one group, its own, and in no slot's group. A platform that reads a user's groups at start (Northflank's environment injector refused node's 257 groups) can run the image with per-run users on, so `AGENTRUN_RUN_USER=same` is no longer needed there.
 - A run's folders are given to its slot before it starts (`agentrun-runas own <slot>`: the slot's uid, node's group, folders `2770` with the setgid bit) and back to node at its end (`own runner`). The server reads a running run's files through its one group; no other slot can enter them, nor the slot's next run. The helper gains `cap_chown` (kept alone while it gives folders, each entry changed through a descriptor opened without following a link); `reown` and `reap --fix` are gone. A give-back that fails retires the slot, as a reap that does not hold does.
