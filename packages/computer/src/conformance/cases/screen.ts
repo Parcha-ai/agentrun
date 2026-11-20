@@ -67,27 +67,30 @@ export const screenCases: Case[] = [
 		async run(t) {
 			const off = captureOff(t);
 			if (off !== undefined) return refusedOff(t, off, "screen.shot");
-			const desktop = t.provider.capabilities().kind === "desktop";
 			const { shot, image, png } = await shoot(t);
-			// The run's frame: this shot, or on a desktop the one with the fixture painted.
-			if (!desktop) t.onScreenshot(png);
-			t.assert(shot.width > 0 && shot.height > 0, `the shot is ${shot.width}x${shot.height}`);
-			t.deepEqual([image.width, image.height], [shot.width, shot.height], "the PNG's size (IHDR), against the shot's width and height");
-			t.assert(typeof shot.scale === "number" && shot.scale > 0, `scale is a number above 0, not ${JSON.stringify(shot.scale)}`);
-			const region: Rect = [Math.floor(shot.width / 4), Math.floor(shot.height / 4), Math.max(1, Math.floor(shot.width / 2)), Math.max(1, Math.floor(shot.height / 2))];
-			const part = await shoot(t, region);
-			t.deepEqual([part.image.width, part.image.height], [region[2], region[3]], `the PNG of region ${JSON.stringify(region)}: its size (IHDR)`);
-			t.deepEqual([part.shot.width, part.shot.height], [region[2], region[3]], `the shot of region ${JSON.stringify(region)}: its width and height`);
-			if (!desktop) return;
-			const fixture = await t.fixture();
-			const [x, y, w, h] = fixture.bounds;
-			const last = await shoot(t);
-			t.onScreenshot(last.png);
-			const painted = last.image;
-			for (const [i, [fx, fy]] of [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]].entries()) {
-				const px = Math.floor(x + (fx as number) * w);
-				const py = Math.floor(y + (fy as number) * h);
-				t.deepEqual(painted.rgb(px, py), FIXTURE_COLORS[i], `the fixture's ${QUADRANTS[i]} quadrant, at (${px}, ${py})`);
+			// The run's frame, handed over once however the case ends: its last whole shot (on a desktop that reached it, the
+			// one with the fixture painted).
+			let frame = png;
+			try {
+				t.assert(shot.width > 0 && shot.height > 0, `the shot is ${shot.width}x${shot.height}`);
+				t.deepEqual([image.width, image.height], [shot.width, shot.height], "the PNG's size (IHDR), against the shot's width and height");
+				t.assert(typeof shot.scale === "number" && shot.scale > 0, `scale is a number above 0, not ${JSON.stringify(shot.scale)}`);
+				const region: Rect = [Math.floor(shot.width / 4), Math.floor(shot.height / 4), Math.max(1, Math.floor(shot.width / 2)), Math.max(1, Math.floor(shot.height / 2))];
+				const part = await shoot(t, region);
+				t.deepEqual([part.image.width, part.image.height], [region[2], region[3]], `the PNG of region ${JSON.stringify(region)}: its size (IHDR)`);
+				t.deepEqual([part.shot.width, part.shot.height], [region[2], region[3]], `the shot of region ${JSON.stringify(region)}: its width and height`);
+				if (t.provider.capabilities().kind !== "desktop") return;
+				const fixture = await t.fixture();
+				const [x, y, w, h] = fixture.bounds;
+				const last = await shoot(t);
+				frame = last.png;
+				for (const [i, [fx, fy]] of [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]].entries()) {
+					const px = Math.floor(x + (fx as number) * w);
+					const py = Math.floor(y + (fy as number) * h);
+					t.deepEqual(last.image.rgb(px, py), FIXTURE_COLORS[i], `the fixture's ${QUADRANTS[i]} quadrant, at (${px}, ${py})`);
+				}
+			} finally {
+				t.onScreenshot(frame);
 			}
 		},
 	},

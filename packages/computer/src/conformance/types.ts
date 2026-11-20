@@ -364,7 +364,8 @@ export interface ConformanceOptions {
 	mountFor?: (kind: MountKind) => Promise<RunFolder | undefined> | RunFolder | undefined;
 	/** Called as each case ends. */
 	onResult?: (result: CaseResult) => void;
-	/** Called with the last whole screenshot screen.screenshot-size read, its PNG's bytes: a frame of what the screen showed. */
+	/** Called once with the last whole screenshot screen.screenshot-size read, its PNG's bytes, whether the case passes or
+	 *  fails after it: a frame of what the screen showed. */
 	onScreenshot?: (png: Uint8Array) => void;
 	/** Notes the provider module gives for the report, printed before the verdict. */
 	notes?: string[];
