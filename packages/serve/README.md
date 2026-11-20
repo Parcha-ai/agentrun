@@ -4071,9 +4071,17 @@ row holds the claim's turn and attempt, and `cause`, which says why the attempt 
 | `lease_lapse` | Its runner was still there but could not renew the claim in time. |
 | `retry` | Its loop ended interrupted on its own, or its end was refused, and the run was released to be tried again. |
 
-A turn is the work one claim starts afresh: the run's first, a follow-up's, or a resume after a park. A claim's journal
-entries are read as that claim's from the run's next entry id at the moment it claimed. A computer belongs to the claim
-it was made under, matched by the store's clock.
+A turn is the work one claim starts afresh: the run's first, a follow-up's, or a resume after a park. Each part of the
+usage is matched to its claim this way:
+
+- **Journal entries:** a claim's entries start at the run's next entry id at the moment it claimed. Anything written
+  before the run's first recorded claim belongs to no attempt and stays billable, unless that claim was the run's first.
+- **Browser charges:** a charge whose booking a later claim recovered is the attempt's that wrote the charge, matched
+  by its ref.
+- **Computer time:** a computer's time is split across the claims that held it, by each claim's window on the store's
+  clock. A computer kept across a park is billed by the claim that resumed it. Its `unheld_quantity` is spread over those
+  windows by their share of its life.
+- **Computer intervals:** each record's own `attempt` is the claim that made the computer.
 
 Each model request a claim sends to this server's model gateway carries the run, turn and attempt as LiteLLM's
 spend-logs metadata, in the header `x-litellm-spend-logs-metadata` (LiteLLM v1.110.0 and later). For example:

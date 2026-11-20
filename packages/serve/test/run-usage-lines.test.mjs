@@ -444,3 +444,53 @@ test("a run with a cut attempt: each line is one attempt's, the cut attempt's no
   assert.deepEqual([tags.atEntry("5"), tags.atEntry("150"), tags.atEntry("250")], [{ attempt: 1, billable: false }, { attempt: 2, billable: true }, { attempt: 1, billable: true }]);
   assert.deepEqual(attemptTags([]).atEntry("5"), { attempt: null, billable: true }, "a run from before attempts were kept: every part billable");
 });
+
+/** A claim's attempt row as the store reads it (store.runAttempts.forRun). */
+const claimRow = (epoch, turn, attempt, journalFrom, claimedAt, extra = {}) => ({ runId: "run_1", epoch, turn, attempt, cause: attempt > 1 ? "drain" : null, cut: null, runner: "r", from: epoch === 1 ? "queued" : "running", journalFrom, claimedAt, ...extra });
+const ids = (from, entries) => entries.map((one, i) => ({ ...one, id: String(from + i) }));
+
+test("a browser charge whose booking the next claim recovered (its ref) stays one line, the attempt's that wrote the charge, its total known (#3351 review)", async () => {
+  const { usageLinesOf, infraUsdOf } = await import("../dist/run-usage.js");
+  // Attempt 1 (cut by a drain) committed the charge on the root, then lost its process before the booking; attempt 2's
+  // reopen booked it by its ref (bookRootCharges).
+  const attempts = [claimRow(1, 1, 1, 1, ENDED - 900_000, { cut: "drain" }), claimRow(3, 1, 2, 100, ENDED - 600_000)];
+  const charge = { tool: "browser", charged_by: "browserbase", seconds: 60, tag: "s1", at: "2026-11-19T09:50:00.000Z" };
+  const entries = [
+    ...ids(1, [...keys(), e(1, "agentrun.browser_charged", charge)]),
+    ...ids(100, [...paid(1, "browser", "browserbase", 0.002, { tool: "browser", tag: "s1", ref: "browser:s1@2026-11-19T09:50:00.000Z" }), ...reported(7, 1, "m", 0.01, usage(10, 1))]),
+  ];
+  const { lines, total } = usageLinesOf(entries, undefined, new Map(), { rows: [], at: 0 }, attempts);
+  const browser = lines.filter((one) => one.meter === "browser_time");
+  assert.deepEqual(browser.map((one) => [one.quantity, one.usd, one.attempt, one.billable]), [[60, 0.002, 1, false]], "its seconds and its money on one line, the cut attempt's");
+  assert.equal(micro(total.usd), micro(0.012), "the total is known");
+  assert.equal(micro(infraUsdOf(lines)), micro(0.002));
+});
+
+test("a computer kept across a park is billed by the claims that held it: each claim's window of its time sits with that claim's bookings, never a line of unknown quantity (#3351 review)", async () => {
+  const { usageLinesOf } = await import("../dist/run-usage.js");
+  // Made under claim 1 (turn 1, parked), kept; claim 2 (turn 2) resumed it and was cut; claim 3 (turn 2, attempt 2)
+  // ended the run. 1 vCPU, 1,000 s: 200 s in claim 1's window, 300 s in claim 2's, 500 s in claim 3's.
+  const attempts = [claimRow(1, 1, 1, 1, ENDED - 1_000_000), claimRow(3, 2, 1, 100, ENDED - 800_000, { cut: "drain" }), claimRow(5, 2, 2, 200, ENDED - 500_000)];
+  const rows = [interval("sbx-1", { cpus: 1, startedAt: ENDED - 1_000_000, endedAt: ENDED, kept: true, bookedMs: 1_000_000 })];
+  const computeStep = (turn, usd) => paid(turn, "compute", "e2b", usd, { tool: "compute", tag: "vcpu", owed: true });
+  const entries = [...ids(1, [...keys(), ...computeStep(1, 0.002)]), ...ids(100, computeStep(2, 0.003)), ...ids(200, computeStep(3, 0.005))];
+  const { lines, total } = usageLinesOf(entries, undefined, new Map(), { rows, at: ENDED }, attempts);
+  // Its vCPU lines (its memory said no figure: those lines have no quantity, and no booking).
+  const compute = lines.filter((one) => one.meter === "compute_time" && one.resource === "vcpu");
+  assert.deepEqual(compute.map((one) => [one.attempt, one.billable, one.quantity, one.usd, one.unheld_quantity]), [
+    [1, false, 300, 0.003, 0],
+    [1, true, 200, 0.002, 0],
+    [2, true, 500, 0.005, 0],
+  ], "a line per claim's window, its quantity and its money together");
+  assert.equal(micro(total.usd), micro(0.01));
+});
+
+test("a run that took its first attempt row after its earlier work (an older run's follow-up): what came before is no attempt's, billable, even when that follow-up is cut (#3351 review)", async () => {
+  const { usageLinesOf, infraUsdOf, attemptTags } = await import("../dist/run-usage.js");
+  const attempts = [claimRow(7, 2, 1, 100, ENDED - 600_000, { from: "running", cut: "drain" }), claimRow(9, 2, 2, 200, ENDED - 300_000)];
+  const entries = [...ids(1, [...keys(), ...reported(7, 1, "m", 0.01, usage(10, 1))]), ...ids(100, reported(7, 2, "m", 0.02, usage(10, 1))), ...ids(200, reported(7, 3, "m", 0.04, usage(10, 1)))];
+  const { lines } = usageLinesOf(entries, undefined, new Map(), { rows: [], at: 0 }, attempts);
+  assert.deepEqual(lines.map((one) => [one.attempt, one.billable, micro(one.usd)]), [[null, true, micro(0.01)], [1, false, micro(0.02)], [2, true, micro(0.04)]]);
+  assert.equal(micro(infraUsdOf(lines)), micro(0.02), "only the cut follow-up's request");
+  assert.deepEqual(attemptTags(attempts).atTime(ENDED - 700_000), { attempt: null, billable: true }, "a computer made before it too");
+});

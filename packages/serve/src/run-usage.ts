@@ -171,21 +171,38 @@ const NO_ATTEMPT: AttemptTag = { attempt: null, billable: true };
 
 /** A run's attempts (`rows`, by epoch) as tags: the attempt a journal entry was written in (the last claim whose first
  *  entry id is at or below the entry's), and the one a time falls in (the last claim made at or before it, on the
- *  store's clock: a computer is made a moment after its claim). An attempt is billable unless another claim worked its
- *  turn again after it (the same turn, one attempt more). With no rows (a run from before them), every part is
- *  NO_ATTEMPT: attempt null, billable. */
-export function attemptTags(rows: readonly RunAttemptRow[]): { atEntry(id: unknown): AttemptTag; atTime(ms: number): AttemptTag } {
+ *  store's clock: a computer is made a moment after its claim). `spans` splits a stretch of time across the claims whose
+ *  windows it falls in (each claim's window runs from its claim to the next claim's). An attempt is billable unless
+ *  another claim worked its turn again after it (the same turn, one attempt more). With no rows (a run from before
+ *  them), every part is NO_ATTEMPT: attempt null, billable. A part before the first row is NO_ATTEMPT too, unless that
+ *  row is the run's first claim (taken from queued): then nothing came before it, and a part read a moment early (a
+ *  runner's clock behind the store's) is that claim's. A run that took its first row after the change that writes them
+ *  (an older run's follow-up) never counts what it did before as any attempt's. */
+export function attemptTags(rows: readonly RunAttemptRow[]): { atEntry(id: unknown): AttemptTag; atTime(ms: number): AttemptTag; spans(from: number, to: number): { at: AttemptTag; ms: number }[] } {
   const sorted = [...rows].sort((a, b) => a.epoch - b.epoch);
   const tagOf = (row: RunAttemptRow | undefined): AttemptTag =>
     row === undefined ? NO_ATTEMPT : { attempt: row.attempt, billable: !sorted.some((later) => later.epoch > row.epoch && later.turn === row.turn && later.attempt === row.attempt + 1) };
   const last = (fits: (row: RunAttemptRow) => boolean): RunAttemptRow | undefined => sorted.filter(fits).at(-1);
+  const before = sorted[0]?.from === "queued" ? sorted[0] : undefined;
   return {
     atEntry: (id) => {
       const n = Number(id);
-      // An entry before every claim's first (a run's own first writes, made before its first row) is its first claim's.
-      return Number.isFinite(n) ? tagOf(last((row) => row.journalFrom <= n) ?? sorted[0]) : tagOf(sorted.at(-1));
+      return Number.isFinite(n) ? tagOf(last((row) => row.journalFrom <= n) ?? before) : tagOf(sorted.at(-1));
     },
-    atTime: (ms) => tagOf(last((row) => row.claimedAt <= ms) ?? sorted[0]),
+    atTime: (ms) => tagOf(last((row) => row.claimedAt <= ms) ?? before),
+    spans: (from, to) => {
+      if (!(to > from)) return [{ at: tagOf(last((row) => row.claimedAt <= from) ?? before), ms: 0 }];
+      const out: { at: AttemptTag; ms: number }[] = [];
+      // The edges of each claim's window, the first one's reaching back to `from` when it is the run's first claim.
+      const edges = sorted.map((row, i) => ({ row, start: i === 0 && before ? Number.NEGATIVE_INFINITY : row.claimedAt, end: sorted[i + 1]?.claimedAt ?? Number.POSITIVE_INFINITY }));
+      const firstStart = edges[0]?.start ?? Number.POSITIVE_INFINITY;
+      if (from < firstStart) out.push({ at: NO_ATTEMPT, ms: Math.min(to, firstStart) - from });
+      for (const edge of edges) {
+        const ms = Math.min(to, edge.end) - Math.max(from, edge.start);
+        if (ms > 0) out.push({ at: tagOf(edge.row), ms });
+      }
+      return out;
+    },
   };
 }
 const attemptKey = (at: AttemptTag) => `${at.attempt ?? ""}:${at.billable ? 1 : 0}`;
@@ -246,8 +263,19 @@ export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLau
   // Each booked request's attempt: the claim that wrote its first record (its hold, or its booking), never a later
   // claim's settling of it.
   const tags = attemptTags(attempts);
+  // A browser charge is the attempt's whose claim wrote it on the root (BROWSER_CHARGED), even when its booking landed
+  // under a later claim (browser-cost.ts bookRootCharges books one its process lost): the booking names it by its ref.
+  const chargeAt = new Map<string, AttemptTag>();
+  for (const e of entries) {
+    const d = (e.data ?? {}) as { tag?: unknown; at?: unknown; final?: unknown };
+    if (e.kind === BROWSER_CHARGED && typeof d.tag === "string") chargeAt.set(`browser:${d.tag}@${String(d.at)}${d.final ? "/final" : ""}`, tags.atEntry(e.id));
+  }
   const atOf = new Map<string, AttemptTag>();
-  for (const e of entries) if ((e.kind === RUNNER_RECORDS.request || e.kind === RUNNER_RECORDS.turn) && !atOf.has(turnOf(e))) atOf.set(turnOf(e), tags.atEntry(e.id));
+  for (const e of entries) {
+    if (!(e.kind === RUNNER_RECORDS.request || e.kind === RUNNER_RECORDS.turn) || atOf.has(turnOf(e))) continue;
+    const ref = (e.data as { ref?: unknown } | undefined)?.ref;
+    atOf.set(turnOf(e), (typeof ref === "string" ? chargeAt.get(ref) : undefined) ?? tags.atEntry(e.id));
+  }
   const at = (e: EntryLike) => atOf.get(turnOf(e)) ?? tags.atEntry(e.id);
   // Each booked request's group, by its turn: a model request's or a decision's, the model its runner.request was sent on;
   // a paid charge's, who charged for it (`charged_by`), on browser_time when it is the browser's session time. A paid
@@ -363,7 +391,7 @@ export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLau
       lines.push({ meter: "browser_time", model: null, provider: group.name, charged_by: null, quantity: s === undefined ? null : Math.round(s * 1e6) / 1e6, unit: "second", basis: priced > 0 ? "estimate" : "unpriced", ...group.at, ...words });
     }
   }
-  lines.push(...computeLinesOf(computers.rows, computers.at, computeBooked, tags.atTime));
+  lines.push(...computeLinesOf(computers.rows, computers.at, computeBooked, tags.spans));
   // Each meter by its name (a model, a charger, a browser provider; none first), `tokens` then by its route's provider,
   // `compute_time` then by its resource in compute-cost.ts's order and a GPU's type.
   const sortKey = (line: RunUsageLine) =>
@@ -396,21 +424,28 @@ const micro = (value: number) => Math.round(value * 1e6) / 1e6;
  *  its figure, an open one's up to `at` (the read), and the part no claim held (its life less its booked time) apart in
  *  `unheld_quantity`. Its money is what the run's ledger booked for it (`booked`, by computeKey): `estimate` when any was;
  *  $0 for a provider that bills nothing; else `unpriced`, its usd null. A figure no one said makes its quantity null. */
-function computeLinesOf(rows: readonly ComputerIntervalRow[], at: number, booked: ReadonlyMap<string, { booked: ReturnType<typeof joined>; at: AttemptTag }>, atTime: (ms: number) => AttemptTag): RunUsageLine[] {
+function computeLinesOf(rows: readonly ComputerIntervalRow[], at: number, booked: ReadonlyMap<string, { booked: ReturnType<typeof joined>; at: AttemptTag }>, spans: (from: number, to: number) => { at: AttemptTag; ms: number }[]): RunUsageLine[] {
   type Sum = { provider: string; resource: ComputeResource; gpuType: string | null; quantity: number | null; unheld: number | null; open: number; at: AttemptTag };
   const sums = new Map<string, Sum>();
   for (const row of rows) {
-    const livedS = Math.max(0, (row.endedAt ?? at) - row.startedAt) / 1000;
+    const end = row.endedAt ?? at;
+    const livedS = Math.max(0, end - row.startedAt) / 1000;
     const unheldS = Math.max(0, livedS - row.bookedMs / 1000);
-    // A computer is its maker's: the claim it was made under (each claim makes its own).
-    const made = atTime(row.startedAt);
-    for (const one of resourcesOf(row)) {
-      const key = computeKey(row.provider, computeTag(one), made);
-      const sum = sums.get(key) ?? { provider: row.provider, resource: one.resource, gpuType: one.gpuType, quantity: 0, unheld: 0, open: 0, at: made };
-      sum.quantity = sum.quantity === null || one.perSecond === null ? null : sum.quantity + one.perSecond * livedS;
-      sum.unheld = sum.unheld === null || one.perSecond === null ? null : sum.unheld + one.perSecond * unheldS;
-      if (row.endedAt === null) sum.open += 1;
-      sums.set(key, sum);
+    // Its time is the claims' that held it, by each claim's window (a computer kept across a park is billed by the claim
+    // that resumed it), so each stretch sits with the attempt whose bookings paid for it. The part no claim held is kept
+    // per computer alone: it is spread over the windows by their share of its life.
+    const pieces = spans(row.startedAt, end);
+    for (const span of pieces) {
+      const share = livedS > 0 ? span.ms / 1000 / livedS : 1;
+      for (const one of resourcesOf(row)) {
+        const key = computeKey(row.provider, computeTag(one), span.at);
+        const sum = sums.get(key) ?? { provider: row.provider, resource: one.resource, gpuType: one.gpuType, quantity: 0, unheld: 0, open: 0, at: span.at };
+        sum.quantity = sum.quantity === null || one.perSecond === null ? null : sum.quantity + one.perSecond * (span.ms / 1000);
+        sum.unheld = sum.unheld === null || one.perSecond === null ? null : sum.unheld + one.perSecond * unheldS * share;
+        // An open computer counts once, on the line of the window it is in now.
+        if (row.endedAt === null && span === pieces.at(-1)) sum.open += 1;
+        sums.set(key, sum);
+      }
     }
   }
   // A booking whose computer has no row here (one made before this server kept them): its money, with no quantity.
