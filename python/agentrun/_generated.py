@@ -28,6 +28,7 @@ __all__ = [
     "ApplyTemplateBody",
     "ApplyTemplateBodyOverrides",
     "ApplyTemplateResponse",
+    "ApplyTemplateResponseTriggersItem",
     "ApplyTemplateResponseWebhookSecretsItem",
     "ArchiveAgentResponse",
     "ArchiveRunResponse",
@@ -6729,11 +6730,19 @@ class _ApplyTemplateResponseRequired(TypedDict):
     agent_id: str
     servers: dict[str, str | None]
     trigger_ids: list[str]
+    triggers: list[ApplyTemplateResponseTriggersItem]
     warnings: list[InputIssue]
 
 
 class ApplyTemplateResponse(_ApplyTemplateResponseRequired, total=False):
     webhook_secrets: list[ApplyTemplateResponseWebhookSecretsItem]
+
+
+class ApplyTemplateResponseTriggersItem(TypedDict):
+    trigger_id: str
+    name: str
+    kind: Literal["schedule", "webhook", "github", "composio", "email", "feed"]
+    enabled: bool
 
 
 class _ApplyTemplateResponseWebhookSecretsItemRequired(TypedDict):

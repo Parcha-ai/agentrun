@@ -169,16 +169,16 @@ describe("the schedules list", () => {
     expect(h1.querySelector("svg")?.getAttribute("class")).toContain("lucide-calendar-clock");
     for (const c of ["min-h-12", "border-b"]) expect(header.className.split(" ")).toContain(c);
     const actions = [...header.querySelectorAll("button")];
-    expect(actions.map((b) => b.textContent?.trim())).toEqual(["New app trigger", "New GitHub trigger", "New webhook", "New feed trigger", "New schedule"]);
+    expect(actions.map((b) => b.textContent?.trim())).toEqual(["New app trigger", "New GitHub trigger", "New webhook", "New feed trigger", "New email trigger", "New schedule"]);
     // Toolbar-sized, and one main action, the last.
     for (const b of actions) expect(b.className.split(" "), b.textContent ?? "").toContain("h-control-sm");
-    expect(actions.map((b) => /\bbg-primary\/10\b/.test(b.className))).toEqual([false, false, false, false, true]);
+    expect(actions.map((b) => /\bbg-primary\/10\b/.test(b.className))).toEqual([false, false, false, false, false, true]);
   });
 
-  it("offers the five kinds as peers, unframed, when there is none: no main action among them", async () => {
+  it("offers the six kinds as peers, unframed, when there is none: no main action among them", async () => {
     const t = await open(server({ triggers: [] }).v2, {});
     const panel = t.host.querySelector('section[aria-labelledby="first-trigger"]')!;
-    // No frame around the panel: the five cards are its only boxes, and it starts at the page's own left edge.
+    // No frame around the panel: the six cards are its only boxes, and it starts at the page's own left edge.
     expect(panel.className).not.toMatch(/primary|border|\bp-\d/);
     expect(panel.parentElement!.className.split(" ")).toContain("px-5");
     for (const b of panel.querySelectorAll("li button")) expect(b.className, b.textContent ?? "").not.toMatch(/bg-primary/);
@@ -189,14 +189,15 @@ describe("the schedules list", () => {
     const t = await open(server({ triggers: [] }).v2, {});
     expect(t.text()).toContain("No triggers yet");
     expect(t.button(/^New schedule$/)).toBeTruthy();
-    // The five things that can start a run, each with its own way in.
+    // The six things that can start a run, each with its own way in.
     const panel = t.host.querySelector('section[aria-labelledby="first-trigger"]')!;
     expect(panel.querySelector("h2")?.textContent).toBe("Start runs without being here");
-    expect([...panel.querySelectorAll("li button")].map((b) => b.textContent)).toEqual(["New schedule", "New webhook", "New GitHub trigger", "New app trigger", "New feed trigger"]);
+    expect([...panel.querySelectorAll("li button")].map((b) => b.textContent)).toEqual(["New schedule", "New webhook", "New GitHub trigger", "New app trigger", "New feed trigger", "New email trigger"]);
     expect(panel.textContent).toContain("At the times you set: every day or week at a time, every few minutes or hours, or once.");
+    expect(panel.textContent).toContain("Save the account in Settings → Email first.");
     expect(panel.textContent).not.toMatch(/cron/i);
-    // Each is on the page once: the header's five show when there is a trigger.
-    for (const name of ["New schedule", "New webhook", "New GitHub trigger", "New app trigger", "New feed trigger"]) expect([...t.host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === name).length, name).toBe(1);
+    // Each is on the page once: the header's six show when there is a trigger.
+    for (const name of ["New schedule", "New webhook", "New GitHub trigger", "New app trigger", "New feed trigger", "New email trigger"]) expect([...t.host.querySelectorAll("button")].filter((b) => b.textContent?.trim() === name).length, name).toBe(1);
   });
 });
 

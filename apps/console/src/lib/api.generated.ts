@@ -1370,6 +1370,12 @@ export interface operations {
       agent_id: string;
       servers: Record<string, string | null>;
       trigger_ids: string[];
+      triggers: {
+        trigger_id: string;
+        name: string;
+        kind: "schedule" | "webhook" | "github" | "composio" | "email" | "feed";
+        enabled: boolean;
+      }[];
       warnings: components["InputIssue"][];
       webhook_secrets?: {
         trigger_id: string;

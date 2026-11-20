@@ -42,6 +42,9 @@ const REVIEWER: TemplateView = {
 };
 const NOTES: TemplateView = { ...REVIEWER, name: "meeting-notes", display_name: null, version: "0.2.0", description: "Turns a transcript into notes.", mcp: [], parameters: params({}), secrets: [], budget: null, triggers: [], category: null, tags: [] };
 
+/** The triggers an inbound-lead apply made, as its answer lists them: its webhook and its weekly schedule. */
+const LEAD_TRIGGERS = [{ trigger_id: "trg_hook", name: "lead-webhook", kind: "webhook", enabled: true }, { trigger_id: "trg_cron", name: "weekly", kind: "schedule", enabled: true }];
+
 // A saved MCP server as the list reads it: its name, and the source and toolkit a need is matched on.
 type Saved = { name: string; source: "composio" | "github" | "url"; toolkit: string | null };
 type Fake = { apply?: (name: string, body: unknown, key: string) => Promise<unknown>; servers?: Saved[]; serversDown?: { now: boolean }; templates?: TemplateView[]; triggers?: Record<string, unknown>; stallTriggers?: boolean; triggersAfter?: Promise<void>; imported?: (source: string, options: { dryRun?: boolean; trustPublisher?: boolean }) => Promise<unknown>; install?: string; playground?: boolean };
@@ -66,7 +69,7 @@ async function open(name?: string, fake: Fake = {}) {
       if (!fake.triggers?.[id]) throw new ClientError(404, "not_found", `No trigger ${id}.`);
       return fake.triggers[id];
     },
-    applyTemplate: async (n: string, body: never, key: string) => { sent.push({ name: n, body, key }); return (fake.apply ?? (async () => ({ template: n, version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: [], warnings: [] })))(n, body, key); },
+    applyTemplate: async (n: string, body: never, key: string) => { sent.push({ name: n, body, key }); return (fake.apply ?? (async () => ({ template: n, version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: [], triggers: [], warnings: [] })))(n, body, key); },
   };
   const host = document.body.appendChild(document.createElement("div"));
   root = createRoot(host);
@@ -366,7 +369,7 @@ describe("applying a template", () => {
   it("a server choice the apply refuses (deleted while the page was open) reads the saved servers again, so the next Apply sends what is saved now", async () => {
     const fake: Fake = { templates: [LEAD_MCP], servers: [{ name: "crm", source: "url", toolkit: "hubspot" }] };
     fake.apply = async () => {
-      if (fake.servers![0]!.name === "crm-2") return { template: "inbound-lead", version: "1.0.0", agent_id: "lead-1", trigger_ids: [], warnings: [] };
+      if (fake.servers![0]!.name === "crm-2") return { template: "inbound-lead", version: "1.0.0", agent_id: "lead-1", trigger_ids: [], triggers: [], warnings: [] };
       fake.servers = [{ name: "crm-2", source: "url", toolkit: "hubspot" }];
       throw Object.assign(new ClientError(422, "input_invalid", "The template's input is not valid."), { fields: [{ field: "servers.hubspot", reason: "not_an_option", message: "crm is not a saved MCP server that is url hubspot: crm-2 is." }] });
     };
@@ -436,7 +439,7 @@ describe("applying a template", () => {
 
   it("sends the parameters as typed and the grants as the ticks, under one Idempotency-Key a retry reuses", async () => {
     let calls = 0;
-    const t = await open("pr-reviewer", { apply: async () => { if (calls++ === 0) throw new ClientError(0, "network", "The request did not reach the server."); return { template: "pr-reviewer", version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: [], warnings: [] }; } });
+    const t = await open("pr-reviewer", { apply: async () => { if (calls++ === 0) throw new ClientError(0, "network", "The request did not reach the server."); return { template: "pr-reviewer", version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: [], triggers: [], warnings: [] }; } });
     await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
     await t.type(t.host.querySelector('[data-field="parameters.max_files"] input'), "3");
     await t.click(t.tick("mcp:github/create_review"));
@@ -517,7 +520,7 @@ describe("applying a template", () => {
       { field: "parameters.topic", reason: "missing", message: "parameters.topic is required" },
     ] });
     let calls = 0;
-    const t = await open("nightly", { templates: [NIGHTLY], apply: async () => { if (calls++ === 0) throw refusal; return { template: "nightly", version: "1.0.0", agent_id: "nightly-1", trigger_ids: [], warnings: [] }; } });
+    const t = await open("nightly", { templates: [NIGHTLY], apply: async () => { if (calls++ === 0) throw refusal; return { template: "nightly", version: "1.0.0", agent_id: "nightly-1", trigger_ids: [], triggers: [], warnings: [] }; } });
     const topic = t.host.querySelector('[data-field="parameters.topic"]')!;
     expect(topic.querySelector("label > span")!.textContent).toBe("Topic *");
     const words = t.host.querySelector('[data-field="parameters.words"]')!;
@@ -650,7 +653,7 @@ describe("applying a template", () => {
     await t.type(repo(), "acme/web");
     await act(async () => { t.button(/^Apply/)!.click(); });
     await t.type(repo(), "acme/api");
-    await act(async () => { answer({ template: "code-review", version: "1.0.0", agent_id: "cr-1", trigger_ids: [], warnings: [{ field: "mcp.github", reason: "not_set_up_here", message: "github is not set up here." }] }); });
+    await act(async () => { answer({ template: "code-review", version: "1.0.0", agent_id: "cr-1", trigger_ids: [], triggers: [], warnings: [{ field: "mcp.github", reason: "not_set_up_here", message: "github is not set up here." }] }); });
     await t.settle();
     expect(t.host.querySelector('section[aria-label="Applied"] h2')!.textContent).toContain("Code review: acme/web applied");
   });
@@ -658,7 +661,7 @@ describe("applying a template", () => {
   it("a webhook trigger the apply made: the server's warning in its words, with a link to that trigger for its signing secret", async () => {
     const LEAD: TemplateView = { ...REVIEWER, name: "inbound-lead", triggers: [{ name: "lead-webhook", source: { kind: "webhook" } }, { name: "weekly", source: { kind: "schedule" } }] };
     const SAYS = "This webhook trigger's signing secret is not in an apply answer. Open its trigger in the console to get it (Rotate).";
-    const t = await open("inbound-lead", { templates: [LEAD], apply: async () => ({ template: "inbound-lead", version: "1.0.0", agent_id: "lead-1", trigger_ids: ["trg_hook", "trg_cron"],
+    const t = await open("inbound-lead", { templates: [LEAD], apply: async () => ({ template: "inbound-lead", version: "1.0.0", agent_id: "lead-1", trigger_ids: ["trg_hook", "trg_cron"], triggers: LEAD_TRIGGERS,
       warnings: [{ field: "triggers.0.secret", reason: "not_allowed", message: SAYS }] }) });
     await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
     await t.click(t.button(/^Apply/));
@@ -668,7 +671,7 @@ describe("applying a template", () => {
     const link = [...made.querySelectorAll("a")].find((a) => a.getAttribute("href") === "#/triggers/trg_hook");
     expect(link?.textContent).toBe("Open lead-webhook to get its signing secret (Rotate)");
     // Only the webhook's: the schedule (trg_cron) has no secret and gets no link.
-    expect(made.querySelector('a[href="#/triggers/trg_cron"]')).toBeNull();
+    expect([...made.querySelectorAll('a[href="#/triggers/trg_cron"]')].map((a) => a.textContent)).toEqual(["weekly"]);
     // No secret is shown here any more.
     expect(made.textContent).not.toContain("You won't see this secret again.");
   });
@@ -679,7 +682,7 @@ describe("applying a template", () => {
 
   it("shows a webhook trigger's signing secret once, beside its hook URL, when the first answer carries it", async () => {
     const SECRET = "CANARY-VALUE-7c2e91d0aa";
-    const t = await open("inbound-lead", { templates: [LEAD_T], apply: async () => ({ template: "inbound-lead", version: "1.0.0", agent_id: "lead-1", trigger_ids: ["trg_hook", "trg_cron"],
+    const t = await open("inbound-lead", { templates: [LEAD_T], apply: async () => ({ template: "inbound-lead", version: "1.0.0", agent_id: "lead-1", trigger_ids: ["trg_hook", "trg_cron"], triggers: LEAD_TRIGGERS,
       warnings: [HOOK_WARNING], webhook_secrets: [{ trigger_id: "trg_hook", secret: META, signing_secret: SECRET }] }) });
     await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
     await t.click(t.button(/^Apply/));
@@ -691,12 +694,12 @@ describe("applying a template", () => {
     expect(once.textContent).toContain("You won't see this secret again.");
     expect([...once.querySelectorAll("button")].some((b) => /Copy secret/.test(b.textContent ?? ""))).toBe(true);
     // With the secret here, no link sends the person to rotate it.
-    expect(made.querySelector('a[href="#/triggers/trg_hook"]')).toBeNull();
+    expect([...made.querySelectorAll('a[href="#/triggers/trg_hook"]')].map((a) => a.textContent)).toEqual(["lead-webhook"]);
   });
 
   it("without the value (a replay, a token): the item's note in the server's words, and the link to rotate it", async () => {
     const NOTE = "shown once, in this apply's first answer; rotate it in the console to get a new one.";
-    const t = await open("inbound-lead", { templates: [LEAD_T], apply: async () => ({ template: "inbound-lead", version: "1.0.0", agent_id: "lead-1", trigger_ids: ["trg_hook", "trg_cron"],
+    const t = await open("inbound-lead", { templates: [LEAD_T], apply: async () => ({ template: "inbound-lead", version: "1.0.0", agent_id: "lead-1", trigger_ids: ["trg_hook", "trg_cron"], triggers: LEAD_TRIGGERS,
       warnings: [HOOK_WARNING], webhook_secrets: [{ trigger_id: "trg_hook", secret: META, secret_set: true, note: NOTE }] }) });
     await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
     await t.click(t.button(/^Apply/));
@@ -859,15 +862,15 @@ describe("applying a template", () => {
       created_at: "2026-11-11T00:00:00Z", updated_at: "2026-11-11T00:00:00Z", next_at: "2026-11-12T06:30:00Z", last_firing: null,
     };
     const t = await open("pr-reviewer", {
-      apply: async () => ({ template: "pr-reviewer", version: "1.0.0", agent_id: "market-monitor-1", trigger_ids: ["trg_m"], warnings: [] }),
+      apply: async () => ({ template: "pr-reviewer", version: "1.0.0", agent_id: "market-monitor-1", trigger_ids: ["trg_m"], triggers: [{ trigger_id: "trg_m", name: "weekly-digest", kind: "schedule", enabled: true }], warnings: [] }),
       triggers: { trg_m: DIGEST },
     });
     await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
     await t.click(t.button(/^Apply/));
     expect(t.went).toEqual([]);
-    const row = t.host.querySelector('[aria-label="Schedules"] [data-trigger="trg_m"]')!;
+    const row = t.host.querySelector('[aria-label="Triggers"] [data-trigger="trg_m"]')!;
     expect(row.querySelector("a")!.getAttribute("href")).toBe("#/triggers/trg_m");
-    expect(row.querySelector("p")!.textContent).toBe("At 10:30 PM your time the day before (07:30 Europe/Madrid), Monday through Friday · next Wed Nov 11, 10:30 PM PST");
+    expect(row.querySelector("p.font-mono")!.textContent).toBe("At 10:30 PM your time the day before (07:30 Europe/Madrid), Monday through Friday · next Wed Nov 11, 10:30 PM PST");
     expect(row.textContent).not.toContain("30 7 * * 1-5");
     const link = [...t.host.querySelectorAll("a")].find((a) => a.textContent?.includes("Open the agent"));
     expect(link?.getAttribute("href")).toBe("#/agents/market-monitor-1");
@@ -890,7 +893,7 @@ describe("applying a template", () => {
   // back its warning (a webhook's, which says where its secret is) nor the page.
   it("a webhook warning shows as soon as Apply answers, even while a trigger's read-back hangs", async () => {
     const SAYS = "This webhook trigger's signing secret is not in an apply answer. Open its trigger in the console to get it (Rotate).";
-    const t = await open("pr-reviewer", { stallTriggers: true, apply: async () => ({ template: "pr-reviewer", version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: ["trg_hook"],
+    const t = await open("pr-reviewer", { stallTriggers: true, apply: async () => ({ template: "pr-reviewer", version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: ["trg_hook"], triggers: [LEAD_TRIGGERS[0]],
       warnings: [{ field: "triggers.0.secret", reason: "not_allowed", message: SAYS }] }) });
     await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
     await t.click(t.button(/^Apply/));
@@ -901,7 +904,7 @@ describe("applying a template", () => {
   it("an Apply whose trigger read-back ends after the owner left the page never takes them to the agent", async () => {
     let release!: () => void;
     const after = new Promise<void>((resolve) => (release = resolve));
-    const t = await open("pr-reviewer", { triggersAfter: after, apply: async () => ({ template: "pr-reviewer", version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: ["trg_gone"], warnings: [] }) });
+    const t = await open("pr-reviewer", { triggersAfter: after, apply: async () => ({ template: "pr-reviewer", version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: ["trg_gone"], triggers: [{ trigger_id: "trg_gone", name: "nightly", kind: "schedule", enabled: true }], warnings: [] }) });
     await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
     await t.click(t.button(/^Apply/));
     expect(t.went).toEqual([]);
@@ -912,11 +915,44 @@ describe("applying a template", () => {
     expect(t.went).toEqual([]);
   });
 
-  it("after Apply, a trigger that can't be read back (or isn't a schedule) leaves the agent to open at once", async () => {
-    const t = await open("pr-reviewer", { apply: async () => ({ template: "pr-reviewer", version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: ["trg_gone"], warnings: [] }) });
+  it("after Apply, a schedule that can't be read back is still listed, by the answer's name and kind, with no line of its times", async () => {
+    const t = await open("pr-reviewer", { apply: async () => ({ template: "pr-reviewer", version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: ["trg_gone"], triggers: [{ trigger_id: "trg_gone", name: "nightly", kind: "schedule", enabled: true }], warnings: [] }) });
     await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
     await t.click(t.button(/^Apply/));
-    expect(t.went).toEqual(["#/agents/pr-reviewer-1"]);
+    expect(t.went).toEqual([]);
+    const row = t.host.querySelector('[aria-label="Triggers"] [data-trigger="trg_gone"]')!;
+    expect(row.textContent).toContain("nightly");
+    expect(row.textContent).toContain("A schedule: it starts a run at its times.");
+    expect(row.querySelector("p.font-mono")).toBeNull();
+  });
+
+  // The inbox assistant: an email trigger beside two schedules, one of them off. The result lists all three, each by the
+  // package's name for it and what starts it, on or off; the schedules with their line and next run as on Triggers.
+  it("after Apply, every trigger it made is listed, an email trigger beside its schedules, each by name and kind, on or off", async () => {
+    vi.stubEnv("TZ", "UTC");
+    const DIGEST: Trigger = {
+      id: "trg_d", name: "evening-digest", enabled: true, source: { kind: "schedule", cron: "0 18 * * *", timezone: "UTC" },
+      target: { kind: "start_run", agent_id: "inbox-1", input: { content: "Write the digest." }, max_cost_usd: 1 },
+      catchup_window_s: 0, max_active_runs: 1, failures_in_a_row: 0, disabled: null, last_run_id: null,
+      created_at: "2026-11-11T00:00:00Z", updated_at: "2026-11-11T00:00:00Z", next_at: "2026-11-11T18:00:00Z", last_firing: null,
+    };
+    const BRIEF: Trigger = { ...DIGEST, id: "trg_w", name: "monday-brief", enabled: false, source: { kind: "schedule", cron: "0 8 * * 1", timezone: "UTC" }, next_at: null };
+    const triggers = [{ trigger_id: "trg_mail", name: "new-mail", kind: "email", enabled: true }, { trigger_id: "trg_d", name: "evening-digest", kind: "schedule", enabled: true }, { trigger_id: "trg_w", name: "monday-brief", kind: "schedule", enabled: false }];
+    const t = await open("pr-reviewer", {
+      apply: async () => ({ template: "pr-reviewer", version: "1.0.0", agent_id: "inbox-1", trigger_ids: triggers.map((x) => x.trigger_id), triggers, warnings: [] }),
+      triggers: { trg_d: DIGEST, trg_w: BRIEF },
+    });
+    await t.type(t.host.querySelector('[data-field="parameters.repo"] input'), "acme/web");
+    await t.click(t.button(/^Apply/));
+    expect(t.went).toEqual([]);
+    const rows = [...t.host.querySelectorAll('section[aria-label="Applied"] [aria-label="Triggers"] [data-trigger]')];
+    expect(rows.map((r) => r.querySelector("a")!.textContent)).toEqual(["new-mail", "evening-digest", "monday-brief"]);
+    expect(rows.map((r) => r.querySelector("a")!.getAttribute("href"))).toEqual(["#/triggers/trg_mail", "#/triggers/trg_d", "#/triggers/trg_w"]);
+    expect(rows[0]!.textContent).toContain("Email: it starts a run on each new mail.");
+    expect(rows.map((r) => r.querySelector("span.caps")?.textContent)).toEqual(["on", "on", "off"]);
+    expect(rows[1]!.querySelector("p.font-mono")!.textContent).toContain("next ");
+    expect(rows[2]!.textContent).toContain("It is off: it starts nothing until it is turned on.");
+    expect(rows[2]!.querySelector("p.font-mono")!.textContent).toContain("no next time");
   });
 
   it("opens the made agent at once when there are no warnings", async () => {
@@ -927,7 +963,7 @@ describe("applying a template", () => {
   });
 
   it("with warnings, stays to show them in the server's words, with a link to the made agent", async () => {
-    const t = await open("pr-reviewer", { apply: async () => ({ template: "pr-reviewer", version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: [], warnings: [
+    const t = await open("pr-reviewer", { apply: async () => ({ template: "pr-reviewer", version: "1.0.0", agent_id: "pr-reviewer-1", trigger_ids: [], triggers: [], warnings: [
       { field: "mcp.github", reason: "not_set_up_here", message: "github is not set up on this server: its tools are left out until it is." },
       { field: "grants.mcp:github/create_review", reason: "not_allowed", message: "The server denies mcp:github/create_review, so it stays denied." },
     ] }) });

@@ -232,6 +232,15 @@ const installHash = (source: string) => `#/templates/install?src=${encodeURIComp
 export const TRIGGER_READ_MS = 3_000;
 /** What an Update says it did: the revision it wrote when that was read back ("Updated: rev 2"), else "Updated". */
 const updatedWords = (rev: number | null) => (rev === null ? "Updated" : `Updated: rev ${rev}`);
+/** What starts a run of each kind of trigger, in plain words: an apply's result says it of each trigger it made. */
+const TRIGGER_WORDS: Record<TemplateApplied["triggers"][number]["kind"], string> = {
+  schedule: "A schedule: it starts a run at its times.",
+  email: "Email: it starts a run on each new mail.",
+  webhook: "A webhook: it starts a run on each signed request to its URL.",
+  github: "GitHub: it starts a run on each GitHub event it takes.",
+  composio: "An app's events: it starts a run on each event the app sends.",
+  feed: "A feed: it starts a run on each new item in its feeds.",
+};
 /** `promise`'s answer, or undefined once `ms` have passed without one. */
 function bounded<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -264,7 +273,7 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
   // An Update's (agent_id sent): the agent was updated, not made. `rev` is its revision as read back (GET /agents/{id}),
   // null until read, or when it can't be read within TRIGGER_READ_MS. Null for an Apply, which made a new agent.
   const [updated, setUpdated] = useState<{ rev: number | null } | null>(null);
-  // The schedules the apply made, each read back (GET /triggers/{id}) for its next run.
+  // The schedules the apply made, each read back (GET /triggers/{id}) for its line and next run.
   const [schedules, setSchedules] = useState<Schedule[]>([]);
   // The parameters an apply sent: what its "applied" title names, whatever was typed while it was under way.
   const [sentValues, setSentValues] = useState<ParameterText>({});
@@ -349,10 +358,10 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
     try {
       const done = await v2.applyTemplate(t.id, sent, keys.keyFor(t.id, sent));
       keys.done();
-      // Each trigger the apply made, read back: a schedule shows when it runs next. One that can't be read, or isn't
-      // answered within TRIGGER_READ_MS, is left out (the Triggers page has it): a slow read never holds the result back.
+      // Each schedule the apply made, read back for when it runs next. One that can't be read, or isn't answered within
+      // TRIGGER_READ_MS, is said by the answer's words alone: a slow read never holds the result back.
       const schedulesOf = async (): Promise<Schedule[]> => {
-        const read = await Promise.all(done.trigger_ids.map((id) => bounded(v2.getTrigger(id), TRIGGER_READ_MS).catch(() => null)));
+        const read = await Promise.all(done.triggers.filter((x) => x.kind === "schedule").map((x) => bounded(v2.getTrigger(x.trigger_id), TRIGGER_READ_MS).catch(() => null)));
         return read.filter((x): x is Schedule => x !== null && x !== undefined && isScheduleTrigger(x));
       };
       // An Update says the revision it wrote, read back; never "made". A slow or failed read says "Updated" alone.
@@ -364,22 +373,15 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
           if (shown.current && typeof rev === "number") setUpdated({ rev });
         }, () => {});
       };
-      // A warning or a webhook's once-shown secret is shown at once; its schedules are added as they are read.
-      if (done.warnings.length || done.webhook_secrets?.length) {
-        setSentValues(sending);
-        updating();
-        setMade(done);
-        void schedulesOf().then(setSchedules, () => {});
-        return;
-      }
-      // Otherwise the agent opens at once, unless a schedule's next run is there to show first.
-      const scheduled = done.trigger_ids.length ? await schedulesOf() : [];
+      // An apply that made no trigger and says nothing more opens the agent at once.
       if (!shown.current) return;
-      if (!scheduled.length) { go(agentHash(done.agent_id)); return; }
+      if (!done.warnings.length && !done.webhook_secrets?.length && !done.triggers.length) { go(agentHash(done.agent_id)); return; }
+      // Otherwise its result is shown at once: a warning, a webhook's once-shown secret, and every trigger it made or kept
+      // (the answer's own list); a schedule's line and next run are added as it is read back.
       setSentValues(sending);
-      setSchedules(scheduled);
       updating();
       setMade(done);
+      if (done.triggers.some((x) => x.kind === "schedule")) void schedulesOf().then((read) => { if (shown.current) setSchedules(read); }, () => {});
     } catch (e) {
       if (e instanceof ClientError && e.fields?.length) {
         setIssues(e.fields); setSaid({ text: e.message, withIssues: true });
@@ -436,15 +438,23 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
               </div>
             );
         })}
-        {/* Each schedule the apply made: its line (scheduleLine), as the Triggers page says it. */}
-        {schedules.length > 0 && (
-          <ul className="mt-4 divide-y border" aria-label="Schedules">
-            {schedules.map((s) => (
-              <li key={s.id} data-trigger={s.id} className="px-4 py-3">
-                <a href={`#/triggers/${encodeURIComponent(s.id)}`} className="break-words text-prose font-semibold hover:underline">{s.name}</a>
-                <p className="mt-1 break-words font-mono text-small text-muted-foreground">{scheduleLine(s.source, s.next_at)}</p>
-              </li>
-            ))}
+        {/* Every trigger the apply made or kept, of any kind, by the package's name for it: what starts it in words and
+            whether it is on. A schedule read back says its line and next run (scheduleLine), as the Triggers page does. */}
+        {made.triggers.length > 0 && (
+          <ul className="mt-4 divide-y border" aria-label="Triggers">
+            {made.triggers.map((x) => {
+              const s = schedules.find((one) => one.id === x.trigger_id);
+              return (
+                <li key={x.trigger_id} data-trigger={x.trigger_id} className="px-4 py-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <a href={`#/triggers/${encodeURIComponent(x.trigger_id)}`} className="break-words text-prose font-semibold hover:underline">{x.name}</a>
+                    <Chip tone={x.enabled ? "success" : "plain"}>{x.enabled ? "on" : "off"}</Chip>
+                  </div>
+                  <p className="mt-1 break-words text-body">{TRIGGER_WORDS[x.kind]}{x.enabled ? "" : " It is off: it starts nothing until it is turned on."}</p>
+                  {s && <p className="mt-1 break-words font-mono text-small text-muted-foreground">{scheduleLine(s.source, s.next_at)}</p>}
+                </li>
+              );
+            })}
           </ul>
         )}
         <div className="mt-5" />
