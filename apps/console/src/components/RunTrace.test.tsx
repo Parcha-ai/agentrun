@@ -391,12 +391,21 @@ describe("the Dev tools tab", () => {
     expect([...host.querySelectorAll("h2, h3")].map((h) => h.textContent)).not.toContain("Cost by line");
   });
 
-  it("shows lines only for the end they cover: an earlier end's lines, left by a reread that failed after a follow-up, are not shown as this one's", async () => {
-    const earlier: RunUsage = { ...USAGE_CLI, ended_at: new Date(TRACE_END - 60_000).toISOString() };
-    const host = await open(TRACE, { readUsage: async () => earlier, view: "breakdown" });
-    const cost = host.querySelector("section[aria-label='Where the cost went']")!;
-    expect(cost.textContent).toMatch(/claude-sonnet-5-5\$0\.6132 · 97%/);
-    expect(cost.textContent).not.toContain("Cost by line");
+  it("shows lines only as read at the run's version now: lines left by a reread that failed after the run moved are not shown as its own", async () => {
+    const host = await open(TRACE, { readUsage: async () => USAGE_CLI, view: "breakdown" });
+    const cost = () => host.querySelector("section[aria-label='Where the cost went']")!;
+    expect(cost().textContent).toContain("Cost by line");
+    // A follow-up moves the run; the reread fails.
+    act(() => root!.render(createElement(RunTrace, { run: RUN, read: async () => TRACE, readUsage: async () => { throw new Error("offline"); }, version: "2", live: false, now: TRACE_END, view: "breakdown" })));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 600)); });
+    await settle();
+    expect(cost().textContent).toMatch(/claude-sonnet-5-5\$0\.6132 · 97%/);
+    expect(cost().textContent).not.toContain("Cost by line");
+  });
+
+  it("shows a stopped run's lines, though the run reads no end (a follow-up may take it on) (#3281 review)", async () => {
+    const host = await open(TRACE, { run: { ...RUN, status: "input_required", state: "waiting", ended_at: null }, readUsage: async () => USAGE_CLI, view: "breakdown" });
+    expect(host.querySelector("section[aria-label='Where the cost went']")!.textContent).toContain("Cost by line");
   });
 
   it("gives a CLI run that called no tool its cost by line, though its trace has no span", async () => {
