@@ -31,7 +31,7 @@ import { unknownFields } from "./validate.js";
 import { ArchilClaimRefused } from "./workspace/archil-claim.js";
 import { type ArchilDisk, type ArchilDiskOptions, archilDisk } from "./workspace/archil-disk.js";
 import { deleteDisk, getDisk, listOneDisk } from "./workspace/archil-disks.js";
-import { archilWorkspace } from "./workspace/archil.js";
+import { archilWorkspace, spillFolderOf } from "./workspace/archil.js";
 import { agentDirName } from "./workspace/paths.js";
 import { WorkspaceError } from "./workspace/workspace.js";
 import { ARCHIL_API_KEY_ENV, archilApiKey } from "./workspace/archil-key.js";
@@ -303,8 +303,9 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
 
   /** Agent `agentId`'s learning folder on disk `diskId` deleted over the disk's file API: agents/<agent>/learning and
    *  everything under it (paths.ts learningKey), which a Mode 2 run's end writes on the disk its claim mounted, the
-   *  agent's own or one its launch named (the caller's: never made, renamed or removed here). Nothing else on the disk
-   *  is touched: the agent's runs' folders stay. Done again, it does nothing: a folder not there is gone, and so is the
+   *  agent's own or one its launch named (the caller's: never made, renamed or removed here), and the folder a learning
+   *  exec spills beside it (workspace/archil.ts spillFolderOf: a write's input text, left by a failed cleanup). Nothing
+   *  else on the disk is touched: the agent's runs' folders stay. Done again, it does nothing: a folder not there is gone, and so is the
    *  folder of a disk Archil says is gone. Archil off, or no account key, is 503 unavailable; a delete Archil refuses
    *  (a computer that still holds the folder, Archil not reached) is 424 upstream_failed, what was not deleted left for
    *  the next call. */
@@ -315,7 +316,8 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
     const key = await keyOr("unavailable", `${what} can't be deleted`);
     const disk = (options.control?.makeDisk ?? archilDisk)({ disk: diskId, region: settings.region, s3BaseUrl: settings.s3Url, key: () => key });
     try {
-      await archilWorkspace(disk, `agents/${agentDirName(agentId)}`, { queueMs: 5_000 }).remove("learning", { recursive: true, force: true });
+      const agent = archilWorkspace(disk, `agents/${agentDirName(agentId)}`, { queueMs: 5_000 });
+      for (const name of ["learning", spillFolderOf("learning")]) await agent.remove(name, { recursive: true, force: true });
     } catch (error) {
       if (await diskGone(settings, key, diskId)) return;
       throw new ApiError("upstream_failed", `${what} is not deleted there yet: ${describe(error).split(key).join("[the key]")}`);
