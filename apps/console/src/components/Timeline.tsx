@@ -244,7 +244,9 @@ function LearnedNodes({ nodes }: { nodes: LearnedNode[] }) {
 /** The run's live timeline as a step list (lib/timeline's `steps`: each tool once, from either of the server's shapes;
  *  a question once; repeated failures once): newest last, older steps folded behind "1 earlier step" or "N earlier steps". `asking`: the
  *  waiting row of the question the page shows above while the run waits on it; its step points there. */
-export function Timeline({ rows, live, fold = 6, asking, waitingOn, files, onOpen, ended = false }: { rows: TimelineRow[]; live: boolean; fold?: number; asking?: string;
+export function Timeline({ rows, live, fold = 6, asking, waitingOn, files, onOpen, ended = false, working }: { rows: TimelineRow[]; live: boolean; fold?: number; asking?: string;
+  /** What the live line under the steps says, when the run's work is not its job's (a grade's look-back). */
+  working?: { title: string; note: string };
   /** Whether the run has ended (runEnded of its status): a charge's words then say what is known, never "so far". The run
    *  page and the agent page's latest run both pass it. */
   ended?: boolean;
@@ -269,7 +271,7 @@ export function Timeline({ rows, live, fold = 6, asking, waitingOn, files, onOpe
         </button>
       )}
       <ol>{shown.map((step, i) => <Row key={step.row.id} step={step} last={i === shown.length - 1 && !live} ended={ended} waitingChip={step.row.id === current && waitingOn ? WAITING_CHIP[waitingOn] : undefined} files={files} onOpen={onOpen} />)}</ol>
-      {live && <Working title="Working" note="Steps appear as the agent takes them." spin />}
+      {live && <Working {...(working ?? { title: "Working", note: "Steps appear as the agent takes them." })} spin />}
     </div>
   );
 }

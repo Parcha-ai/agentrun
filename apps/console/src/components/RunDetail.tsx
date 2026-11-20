@@ -26,7 +26,7 @@ import { isEscalated, type MessageFeatures, type RunView, runState } from "@/lib
 import { cn } from "@/lib/utils";
 import { backendSdkLabel, backendSdkOf } from "@/lib/backendSdk";
 import { latest, NO_ANSWER, pendingQuestion } from "@/lib/viewing";
-import type { ComputerHoldAnswer, Computers, GradeAnswer, GradeBody, HandBackOutcome, Run, RunComputer, RunFile, RunLearningRead, RunTrace as RunTraceData, TimelineRow } from "@/lib/v2";
+import type { ComputerHoldAnswer, Computers, GradeAnswer, GradeBody, HandBackOutcome, Run, RunComputer, RunFile, RunGraded, RunLearningRead, RunTrace as RunTraceData, TimelineRow } from "@/lib/v2";
 
 export type RunDetailProps = {
   run: Run;
@@ -120,6 +120,18 @@ function beforeAnswer(run: Pick<Run, "status" | "state" | "pending">, view: RunV
   return { title: "Writing the answer", note: "The answer appears here when the run finishes. Follow it on the timeline.", spin: view.live };
 }
 
+/** What the run page says while a grade's look-back runs, on the Report and the Timeline. */
+export const LOOKING_BACK = { title: "Learning from your grade", note: "The answer stays as it is. The agent looks back on your grade; what it keeps shows on the Timeline when it finishes." };
+
+/** Whether the run is a finished run its grade opened again on a look-back: a grade with words opens one (serve's
+ *  feedback-round.ts), and while it runs the server reads the run as going again (working, no `result`, no `ended_at`).
+ *  It asks the agent no turn of the job's, only its end-of-run step, so the run is not doing its job: told apart by the
+ *  grade's round running (`feedback_status`), which a run doing its job (no grade, or a round that ended before a
+ *  follow-up) never has. A stop or a cancel there would end the run stopped or cancelled in place of its completed end. */
+export function lookingBackOn(view: Pick<RunView, "live">, graded: RunGraded | null): boolean {
+  return view.live && !!graded?.feedback && graded.feedback_status === "running";
+}
+
 /** The run page: Report / Timeline / Files tabs over AgentRun Server's run, timeline and files. */
 export function RunDetail({ run, agentName, messages, harnessSteers, rows, files, outputSchema, readFile, fileUrl, openFile = null, actions, onMessage, onApprove, tab: initial, graphView, costText, readLearningDiff, readLearning, readLearningResult, readComputer, computerEvery, onTakeOver, onHandBack, readComputers, onGrade, readTrace, traceAt }: RunDetailProps) {
   // A run paused at its spend cap takes no message until its cap is raised (409 budget_reached): no composer for it.
@@ -170,6 +182,8 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
   // round it opened. A grade this page sends is kept beside it from the PUT's answer, so a tab switch, a read still
   // pending or one begun before the grade still shows it.
   const { read: learning, grade: runGrade, graded } = useRunLearning(run, view.final, readLearning);
+  // A finished run its grade opened again on a look-back (lookingBack): no turn of the job's, and its answer stands.
+  const lookingBack = lookingBackOn(view, runGrade);
   const grade = onGrade && (async (body: GradeBody) => {
     const answer = await onGrade(body);
     graded(answer);
@@ -257,7 +271,7 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
     // On a short screen (a phone on its side) the page scrolls as a whole, in <main>: the header, the tabs and the composer
     // keep their own heights and the tab body takes what it needs, instead of what is left of 390 px (nothing).
     <div className="flex h-full min-h-0 flex-col short:h-auto">
-      <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} raiseBelow={bannerRaise ? toBannerRaise : undefined} />
+      <RunHeader run={run} agentName={agentName} actions={actions} costText={costText} raiseBelow={bannerRaise ? toBannerRaise : undefined} lookingBack={lookingBack} />
       <Tabs id="run-views" label="Run views" value={tab} onChange={(value) => setTab(value as Tab)} tabs={tabs.map(([id, label]) => ({ id, label }))} />
       {tab === "graph" ? <div {...tabPanelProps("run-views", tab)} className="min-h-0 flex-1 short:min-h-96">{graphView}</div>
         // The Dev tools tab is a page of data: it fills the width and scrolls in its own panes.
@@ -284,11 +298,11 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
           {/* With no served cap the banner names none to raise above; the run header's raise reads the run's own cap. */}
           {bannerRaise && <div ref={bannerRaiseRef}><RaiseCap key={`${run.run_id}:${budget!.at}`} cap={budget!.cap_usd!} suggested={suggestedCap(budget)} least={leastCap(budget)} paused onRaise={actions!.onRaiseCap!} /></div>}
           {tab === "report" && <RunResult run={run} rows={rows} files={files} onOpen={show} schema={outputSchema} />}
-          {tab === "report" && !run.result && !view.final && <Working {...beforeAnswer(run, view)} />}
+          {tab === "report" && !run.result && !view.final && !lookingBack && <Working {...beforeAnswer(run, view)} />}
           {tab === "report" && view.final && !run.result?.final_answer?.trim() && !run.result?.output && !rows.some((r) => r.kind === "final_answer" && r.text?.trim()) && run.status !== "failed" && run.status !== "cancelled" && !run.review && (
             <p className="font-mono text-body text-muted-foreground">{NO_ANSWER}{view.canMessage ? " Send a follow-up below to ask for one." : ""}</p>
           )}
-          {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} ended={runEnded(run.status)} asking={approvalRow?.id ?? (view.needsYou && !budget ? waiting?.id : undefined)} waitingOn={run.status === "input_required" ? run.pending?.kind : undefined} files={files} onOpen={show} />}
+          {tab === "timeline" && <Timeline rows={learningSteps(rows, run.learning)} live={view.live} working={lookingBack ? LOOKING_BACK : undefined} ended={runEnded(run.status)} asking={approvalRow?.id ?? (view.needsYou && !budget ? waiting?.id : undefined)} waitingOn={run.status === "input_required" ? run.pending?.kind : undefined} files={files} onOpen={show} />}
           {(tab === "report" || tab === "timeline") && <RunGrade run={run} graded={runGrade} onGrade={grade} onOpenTimeline={tab === "timeline" ? undefined : () => setTab("timeline")} />}
           {(tab === "report" || tab === "timeline") && <RunUsed used={learning?.used ?? null} agentId={run.agent_id} />}
           {(tab === "report" || tab === "timeline") && changes && <RunChanges got={changes.got} retry={changes.retry} />}
@@ -301,7 +315,8 @@ export function RunDetail({ run, agentName, messages, harnessSteers, rows, files
       {native && <p className="border-t px-5 py-4 text-small text-muted-foreground md:px-8">Native sessions cannot receive steering or follow-up messages. <a href={`#/playground?agent=${encodeURIComponent(run.agent_id)}`} className="underline underline-offset-2">Start a new native run</a> for another task.</p>}
       {sdk && <p className="border-t px-5 py-4 text-small text-muted-foreground md:px-8">{backendSdkLabel(sdk.runtime)} runs in your backend. Start, stop and follow up through that application's controls. AgentRun records the result and checked learning.</p>}
       {/* While a call waits on an approval, a message declines it, as its reason: the box says so. */}
-      {view.canMessage && (
+      {/* A message to a run looking back on its grade would only wait for its end: the box is back once it ends. */}
+      {view.canMessage && !lookingBack && (
         <div className="border-t px-5 py-4 md:px-8"><div className="mx-auto max-w-4xl"><Composer mode={view.messageMode!} onSend={onMessage} purpose={approval ? DECLINES : ask && askMode ? NOT_THE_ASK[askMode] : undefined} /></div></div>
       )}
       {open && <ArtifactViewer file={open.file} text={open.text} onClose={close} files={files} onOpen={show} />}

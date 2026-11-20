@@ -7,14 +7,16 @@ const ICON = { Queued: Loader, Starting: Loader, Working: Loader, Completed: Che
 
 /** The run's status as a chip: the label the console gives serve's status and state (and its error's code, for a run
  *  that ended escalated, its review, for one that waits for a person, and its computer, for one whose desktop or phone
- *  is starting). */
-export function StatusBadge({ run }: { run: Pick<Run, "status" | "state" | "kind"> & Partial<Pick<Run, "error" | "review" | "computer">> }) {
+ *  is starting). `lookingBack`: a finished run its grade opened again on a look-back (RunDetail's lookingBackOn), served as working:
+ *  it says that, never that the job works. */
+export function StatusBadge({ run, lookingBack = false }: { run: Pick<Run, "status" | "state" | "kind"> & Partial<Pick<Run, "error" | "review" | "computer">>; lookingBack?: boolean }) {
   const view = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review, run.computer);
-  const Icon = ICON[view.label as keyof typeof ICON];
+  const label = lookingBack ? "Learning from your grade" : view.label;
+  const Icon = lookingBack ? Loader : ICON[view.label as keyof typeof ICON];
   return (
-    <Chip tone={view.tone}>
+    <Chip tone={lookingBack ? "active" : view.tone}>
       <Icon className={view.live ? "size-3 animate-spin [animation-duration:2s]" : "size-3"} aria-hidden />
-      {view.label}
+      {label}
     </Chip>
   );
 }

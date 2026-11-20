@@ -41,13 +41,16 @@ const TOKENS_TITLE = "The run's model requests' tokens, as the provider or gatew
  *  Stop ends the turn and keeps the run open (it waits for a message); cancel ends the run for good, after a confirm.
  *  Archive hides the run from the runs list and keeps it; the server takes it in any state, as serve's own page offers it. */
 /** `raiseBelow`: the page already shows a raise form for this run (a run paused at its cap, under its banner). The header's
- *  Raise the cap button then takes the person to that form instead of opening a second one above it. */
-export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow }: { run: Run; agentName: string; actions?: RunActions; costText?: string; raiseBelow?: () => void }) {
+ *  Raise the cap button then takes the person to that form instead of opening a second one above it.
+ *  `lookingBack`: a finished run its grade opened again on a look-back (RunDetail's lookingBackOn). Its status says so, and
+ *  it offers no Stop, Cancel or raise: no turn of the job's runs, and a stop or a cancel would end the run stopped or
+ *  cancelled in place of the completed end it had. */
+export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow, lookingBack = false }: { run: Run; agentName: string; actions?: RunActions; costText?: string; raiseBelow?: () => void; lookingBack?: boolean }) {
   // Where it ran, as its start resolved it.
   const sdk = backendSdkOf(run);
   const ranIn = sdk ? "your backend" : runPlaceWords(run.place);
   const state = runState(run.status, run.state, run.kind, NO_MESSAGES, true, run.error, run.review, run.computer);
-  const view = sdk ? { ...state, canStop: false, canCancel: false } : state;
+  const view = sdk || lookingBack ? { ...state, canStop: false, canCancel: false } : state;
   const [confirming, setConfirming] = useState(false);
   const archived = !!run.archived_at;
   // A capped run that has not ended, agentic or workflow, takes a raise here too, so a working one is raised before it pauses.
@@ -55,7 +58,7 @@ export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow }
   // A run that waits on the person for something other than its cap (its served `pending`: an approval, a question, its
   // browser or computer) is not held by its cap: a raise changes nothing it waits on, so none is offered there.
   const waitsOnOther = !!run.pending && run.pending.kind !== "budget" && run.pending.kind !== "stopped";
-  const raisable = !sdk && !!actions.onRaiseCap && !view.final && typeof cap === "number" && !waitsOnOther;
+  const raisable = !sdk && !lookingBack && !!actions.onRaiseCap && !view.final && typeof cap === "number" && !waitsOnOther;
   const [raising, setRaising] = useState(false);
   const budget = run.pending?.kind === "budget" ? run.pending : null;
   const onPlan = !!planOf(run.cost);
@@ -83,7 +86,7 @@ export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow }
           {/* A workflow run's title can be its input as JSON: then the agent's name reads better. */}
           <h1 className="line-clamp-2 break-words text-2xl font-semibold leading-tight max-sm:basis-full max-sm:text-lg" title={runTitle(run)}>{run.kind === "workflow" && /^[[{]/.test(run.title.trim()) ? agentName : runTitle(run)}</h1>
           <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-small text-muted-foreground max-sm:contents">
-            <StatusBadge run={run} />
+            <StatusBadge run={run} lookingBack={lookingBack} />
             {archived && <Chip tone="muted">Archived</Chip>}
             {run.approvals === "never" && <Chip tone="warning" title="This run's agent never asks: no call of it waits for you.">Unattended</Chip>}
             <span className="font-mono"><RunKind run={run} named /> · rev {run.agent_version}{ranIn && ` · ${ranIn}`}</span>

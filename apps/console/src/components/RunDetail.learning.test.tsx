@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { RunDetail } from "@/components/RunDetail";
 import { messageFeatures, recorded } from "@/fixtures";
 import type { LearningDiff } from "@/lib/learning";
-import type { Run, TimelineRow } from "@/lib/v2";
+import type { Run, RunGraded, RunLearningRead, TimelineRow } from "@/lib/v2";
 
 // A run's timeline, as its page shows it: the end-of-run learning is one step, "Looked back: kept 2 workflows (…)", with
 // what it did behind it; the run's own steps are as they were.
@@ -139,3 +139,86 @@ describe("a run's page, what its learning changed", () => {
   });
 });
 
+
+// A grade with words of a run the agent finished opens the run again on a look-back (PUT /runs/{id}/grade, serve's
+// feedback-round.ts): no turn of the job's, only its end-of-run step, which takes the grade. While it runs the server reads
+// the run as one going again (store reopen: state running, ended_at and its end cleared), so GET /runs/{id} serves it
+// working with no `result` and no `ended_at`; the learning read says the grade's round runs (`graded.feedback_status`).
+// Stop and Cancel there would end the run stopped or cancelled in place of the completed end it had.
+describe("a run's page while its grade's look-back runs", () => {
+  const settle = async () => { for (let i = 0; i < 6; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+  const ANSWER = "Qualified: a 40-seat team on the annual plan.";
+  const JOB: TimelineRow[] = [
+    row("u1", 1, { kind: "user_message", summary: "You: Qualify this inbound lead" }),
+    row("a1", 2, { kind: "final_answer", summary: ANSWER, text: ANSWER }),
+  ];
+  const KEPT: Run["learning"] = { detail: null, at: "2026-11-03T18:50:09Z", state: "dropped", reason: "empty" };
+  const graded = (status: RunGraded["feedback_status"]): RunGraded => ({ run_id: "run-b", correct: false, source: "feedback", graded_at: "2026-11-03T18:51:00.000Z", path: "agent", workflow: null, workflow_digest: null, feedback: "correction", feedback_status: status });
+  const readOf = (g: RunGraded | null): RunLearningRead => ({ run: "run-b", state: "dropped", reason: "empty", detail: null, at: "2026-11-03T18:50:09Z", seed: "c1", merged: null, workflows: [], corrections: 0, problems: [], compiled: null, draft_errors: [], used: { workflows: [] }, ...(g ? { graded: g } : {}) });
+  /** The run as the server serves it: completed with its answer, or open again (working, no result, no end). */
+  const served = (over: Partial<Run> = {}): Run => ({ ...run(KEPT), status: "completed", state: "idle", result: { output: null, final_answer: ANSWER }, cost: { usd: 0.04, basis: "estimate", charge_state: null, cap_usd: 1 }, ...over } as Run);
+  const reopened = (over: Partial<Run> = {}) => served({ status: "working", state: "working", ended_at: null, result: null, ...over });
+
+  async function open(r: Run, g: RunGraded | null, tab: "report" | "timeline" = "report") {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    let stored = g;
+    const props = { agentName: "Inbound leads", messages: messageFeatures, harnessSteers: true, rows: JOB, files: [], tab,
+      readLearning: async () => readOf(stored),
+      onMessage: () => true,
+      actions: { onStop: () => {}, onCancel: () => {}, onArchive: () => {}, onRaiseCap: async (usd: number) => ({ run_id: "run-b", max_cost_usd: usd, resumed: false, status: "working", state: "working" }) as never } };
+    const show = async (next: Run, nextGrade = stored) => { stored = nextGrade; act(() => root!.render(createElement(RunDetail, { ...props, run: next }))); await settle(); };
+    await show(r);
+    const buttons = () => [...host.querySelectorAll("header button")].map((b) => b.textContent?.trim() ?? "");
+    const badge = () => host.querySelector("header [data-title-block]")?.textContent ?? "";
+    return { host, show, buttons, badge };
+  }
+
+  it("reads as a finished run learning from the grade: its answer, no Writing the answer, no job actions", async () => {
+    const t = await open(reopened(), graded("running"));
+    const text = t.host.textContent ?? "";
+    expect(text).toContain(ANSWER);
+    expect(text).not.toContain("Writing the answer");
+    expect(t.badge()).toContain("Learning from your grade");
+    expect(t.badge()).not.toContain("Working");
+    expect(t.buttons().some((b) => /Stop|Cancel run|Raise the cap/.test(b))).toBe(false);
+    expect(t.buttons().some((b) => b.includes("Archive"))).toBe(true);
+    // A message would wait for the look-back's end: none is offered while it runs.
+    expect(t.host.querySelector("#composer")).toBeNull();
+  });
+
+  it("says so on the Timeline too, not that the job works", async () => {
+    const t = await open(reopened(), graded("running"), "timeline");
+    const text = t.host.textContent ?? "";
+    expect(text).toContain("Learning from your grade");
+    expect(text).not.toContain("Steps appear as the agent takes them.");
+  });
+
+  it("shows its answer while the run is open again, then reads completed once the look-back ends", async () => {
+    const t = await open(served(), graded("running"));
+    expect(t.badge()).toContain("Completed");
+    await t.show(reopened());
+    expect(t.badge()).toContain("Learning from your grade");
+    expect(t.host.textContent).toContain(ANSWER);
+    await t.show(served({ ended_at: "2026-11-03T18:51:09Z" }), graded("ended"));
+    expect(t.badge()).toContain("Completed");
+    expect(t.badge()).not.toContain("Learning from your grade");
+  });
+
+  it("is not a run doing its job: no grade, or a grade whose look-back ended (a follow-up), or its first look-back before an answer", async () => {
+    for (const [r, g] of [
+      [reopened(), null],
+      [reopened(), graded("ended")],
+      [reopened(), graded("not_run")],
+      [reopened({ learning: { ...KEPT!, state: "reflecting", reason: null } }), null],
+    ] as [Run, RunGraded | null][]) {
+      const t = await open(r, g);
+      expect(t.badge()).toContain("Working");
+      expect(t.badge()).not.toContain("Learning from your grade");
+      expect(t.buttons().some((b) => b.includes("Cancel run"))).toBe(true);
+      expect(t.buttons().some((b) => b.includes("Raise the cap"))).toBe(true);
+      expect(t.host.textContent).toContain("Writing the answer");
+      act(() => root?.unmount()); root = undefined; document.body.innerHTML = "";
+    }
+  });
+});
