@@ -163,3 +163,19 @@ test("the gauge says its line on its interval until stopped", async () => {
   assert.deepEqual(fieldsOf(lines[0]), { event: "runner_gauge", runner: "r1", active: "1", slots: "3", rss_mib: "64" });
   assert.equal(fieldsOf(lines.at(-1)).active, "2");
 });
+
+test("a runner beside a server says a lost claim's metric line as well as its trouble line, and each other event's metric beside its own line", async () => {
+  const { besideLines } = await import("../dist/runner/beside.js");
+  const { troubleLine } = await import("../dist/runner/main.js");
+  const { runLine } = await import("../dist/print.js");
+  const say = { metricLine, troubleLine, runLine };
+  const lost = besideLines("r1", { type: "claim-lost", runId: "run-1", epoch: 2, why: "fenced" }, say);
+  assert.deepEqual(lost.map(({ line, error }) => [fieldsOf(line).event ?? line, error]), [["runner_hand_back", false], ["Runner r1 lost its claim on run-1 (fenced)", false]]);
+  assert.equal(fieldsOf(lost[0].line).cause, "claim_lost");
+  const claimed = besideLines("r1", { type: "claimed", claim: { runId: "run-1", runner: "r1", epoch: 1, until: 0, from: "queued" } }, say);
+  assert.deepEqual(claimed.map(({ line }) => fieldsOf(line).event), ["runner_claimed"]);
+  const started = besideLines("r1", { type: "started", runId: "run-1", agent: "a", kind: "agentic" }, say);
+  assert.deepEqual(started.map(({ line }) => fieldsOf(line).event), ["run_started"]);
+  const failed = besideLines("r1", { type: "error", step: "poll", message: "down" }, say);
+  assert.deepEqual(failed, [{ line: "Runner r1: poll: down", error: true }]);
+});

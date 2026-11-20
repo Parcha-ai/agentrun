@@ -2037,16 +2037,20 @@ class SqliteStore implements Store {
         await db.write([{ sql: "DELETE FROM runners WHERE runner = ? AND incarnation = ?", params: [runner, incarnation] }]);
       },
       capacity: async (windowMs) => {
-        // The deadlines' clock read once, then bound into every count, so the three counts judge one "now".
-        const now = clock();
-        const [read] = await db.all<{ at: number | string }>(`SELECT ${now.sql} AS at`, ...now.params);
-        const at = Number(read!.at);
-        const n = { sql: d.bigintParam, params: [at] };
-        const claimable = claimableIn(d, n);
-        const [queued] = await db.all<{ count: number | string }>(`SELECT count(*) AS count FROM runs WHERE ${claimable.sql}`, ...claimable.params);
-        const held = await db.all<{ runner: string; count: number | string }>(`SELECT runner, count(*) AS count FROM runs WHERE state IN ('running', 'parked') AND runner IS NOT NULL AND claimed_until >= ${n.sql} GROUP BY runner ORDER BY runner`, ...n.params);
-        const [handBacks] = await db.all<{ count: number | string }>(`SELECT count(*) AS count FROM hand_backs WHERE at >= ${n.sql} - ${d.bigintParam}`, ...n.params, windowMs);
-        return { at, queued: Number(queued?.count ?? 0), held: new Map(held.map((row) => [row.runner, Number(row.count)])), handBacks: Number(handBacks?.count ?? 0) };
+        // One read snapshot (Postgres: REPEATABLE READ READ ONLY; SQLite: one read transaction), so a claim or a release
+        // that lands meanwhile never counts a run as both waiting and held, or as neither. The deadlines' clock is read
+        // once in it, then bound into every count, so the counts judge one "now".
+        return db.transaction(async (tx) => {
+          const now = clock();
+          const [read] = await tx.all<{ at: number | string }>(`SELECT ${now.sql} AS at`, ...now.params);
+          const at = Number(read!.at);
+          const n = { sql: d.bigintParam, params: [at] };
+          const claimable = claimableIn(d, n);
+          const [queued] = await tx.all<{ count: number | string }>(`SELECT count(*) AS count FROM runs WHERE ${claimable.sql}`, ...claimable.params);
+          const held = await tx.all<{ runner: string; count: number | string }>(`SELECT runner, count(*) AS count FROM runs WHERE state IN ('running', 'parked') AND runner IS NOT NULL AND claimed_until >= ${n.sql} GROUP BY runner ORDER BY runner`, ...n.params);
+          const [handBacks] = await tx.all<{ count: number | string }>(`SELECT count(*) AS count FROM hand_backs WHERE at >= ${n.sql} - ${d.bigintParam}`, ...n.params, windowMs);
+          return { at, queued: Number(queued?.count ?? 0), held: new Map(held.map((row) => [row.runner, Number(row.count)])), handBacks: Number(handBacks?.count ?? 0) };
+        }, { read: true });
       },
     };
 
