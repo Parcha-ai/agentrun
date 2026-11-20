@@ -68,6 +68,8 @@ const marked = (step, pages, maxChars) => ({
   },
 });
 const withBody = (doc, body) => ({ ...doc, root: { ...doc.root, steps: doc.root.steps.map((step) => (step.node === "loop" ? { ...step, body } : step)) } });
+/** `doc` composed: a parent whose one step, the workflow node "cite", runs it whole and writes the answer. */
+const parent = (doc) => ({ ...doc, root: { node: "chain", steps: [{ node: "workflow", label: "cite", workflow: doc, input: { url: "{url}" }, out: "Answer", as: "answer" }] } });
 
 const COMPACT_PAGE = (label) => `the decide step "${label}" runs off the fast tier and reads "{page}", a page a call step fetched: a page reaches a step on the agent's model only through a fast-tier step's output. Give it a "state" map naming only compact keys (the facts a fast-tier extract step wrote from the pages; in a re-pick loop its own draft too, as "{<its as>?}"), or, for legwork, "tier": "fast"`;
 
@@ -118,6 +120,9 @@ test("the rewrite again: a rewritten doc re-derives from its pass 1 (the same at
   const once = repick.repickRewrite(draft, 150_000);
   assert.deepEqual(repick.repickRewrite(once, 150_000), once);
   assert.deepEqual(repick.repickRewrite(once, 5_000), repick.repickRewrite(draft, 5_000));
+  // A composed child's re-pick, where quoteRule finds it ("cite/repick"), is reached there: the loop in the child.
+  assert.deepEqual([...repickLabels(parent(draft))], ["cite/repick"]);
+  assert.deepEqual(repick.repickRewrite(parent(draft), 150_000), parent(once));
   // The step already names a key "page" (its facts): the page goes in beside it.
   const named = { ...ANSWER_STEP, state: { page: "{facts}", draft: "{answer?}" } };
   const clone = repick.repickRewrite(citedDraft(named), 150_000).root.steps[2].body.branches.pages.body;
@@ -185,7 +190,7 @@ test("the cap: a request over it has its longest strings cut first, to one lengt
 // The compile (runner/learning-end.ts checkDraftOf), over a store holding the run of an agent whose `learning` is given.
 const AGENT = "agent-1";
 const block = (flow) => `---\ndescription: Says whether a store gives refunds, quoting its page; use for refund questions\n---\n${JSON.stringify(flow)}\n`;
-async function compiled(t, learning, flow) {
+async function compiled(t, learning, flow, log) {
   const data = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-repick-setting-"));
   const store = await openSqliteStore({ dataDir: data, role: "server" });
   t.after(async () => {
@@ -196,7 +201,7 @@ async function compiled(t, learning, flow) {
   await store.runs.create({ id: "run-1", agentId: AGENT, revisionId: "rev-1" }, { body: { input: { content: "Refunds?" }, title: "t", place: { mode: "runner" } } });
   await store.flush?.();
   const { sha } = await seedOf(data, AGENT);
-  return checkDraftOf({ store, data, learningFolder: (id) => learningFolderOf(data, id) }, { runId: "run-1", agentId: AGENT, seed: sha, draft: { name: flow.name, text: block(flow) }, refuse: [] });
+  return checkDraftOf({ store, data, learningFolder: (id) => learningFolderOf(data, id), ...(log ? { log } : {}) }, { runId: "run-1", agentId: AGENT, seed: sha, draft: { name: flow.name, text: block(flow) }, refuse: [] });
 }
 const keptJson = (result) => result.kept?.files.find(({ path }) => path.endsWith("workflow.json"))?.text;
 
@@ -218,6 +223,17 @@ test("the compile: off, the committed workflow.json is the draft's text; on, its
   const kept = await compiled(t, { repick: true, repick_max_chars: 5_000 }, repick.repickRewrite(draft, 150_000));
   assert.deepEqual(kept.errors, [], JSON.stringify(kept));
   assert.deepEqual(JSON.parse(keptJson(kept)), repick.repickRewrite(draft, 5_000));
+  // A composed child's re-pick is rewritten in the child; a re-pick the rewrite does not reach (its body no single model
+  // step) is kept as compiled, and the log says so.
+  const composed = await compiled(t, { repick: true }, parent(draft));
+  assert.deepEqual(composed.errors, [], JSON.stringify(composed));
+  assert.deepEqual(JSON.parse(keptJson(composed)), parent(repick.repickRewrite(draft, 150_000)));
+  const lines = [];
+  const chained = citedDraft({ node: "chain", label: "write", steps: [ANSWER_STEP] });
+  const unreached = await compiled(t, { repick: true }, chained, (line) => lines.push(line));
+  assert.deepEqual(unreached.errors, [], JSON.stringify(unreached));
+  assert.equal(keptJson(unreached), `${JSON.stringify(chained)}\n`);
+  assert.deepEqual(lines, [`learning.repick: workflow find-policies is kept as compiled: its re-pick "repick" is not one the rewrite reaches`]);
   // Off, a draft that reads the pages in its re-pick's second pass is refused as any page read is.
   const refused = await compiled(t, true, repick.repickRewrite(draft, 150_000));
   assert.equal(refused.kept, undefined);
