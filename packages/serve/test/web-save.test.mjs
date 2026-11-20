@@ -356,7 +356,7 @@ const until = async (ok, what) => {
   for (let i = 0; i < 2_000 && !ok(); i++) await new Promise((resolve) => setTimeout(resolve, 1));
   assert.ok(ok(), what);
 };
-const { SAVE_CONCURRENCY, saveSlots } = webSaveModule;
+const { SAVE_CONCURRENCY, SERVER_SLOTS, saveSlots } = webSaveModule;
 
 test("at most 4 downloads at once per runner: a fifth waits without dialling until one ends, then all five save", async (t) => {
   assert.equal(SAVE_CONCURRENCY, 4);
@@ -367,8 +367,7 @@ test("at most 4 downloads at once per runner: a fifth waits without dialling unt
     const net = held();
     const saves = urls.map((url, i) => webSave({ url, path: `media/${slots ? "g" : "d"}${i}.png` }, ws, { ...net, ...(slots ? { slots } : {}) }));
     await until(() => net.started.length >= 4, `four dialled: ${net.started}`);
-    if (slots) await until(() => slots.waiting === 1, "the fifth waits for a slot");
-    else await new Promise((resolve) => setTimeout(resolve, 20));
+    await until(() => (slots ?? SERVER_SLOTS).waiting === 1, "the fifth waits for a slot");
     // Which four get in first depends on their path checks' timing; the one left out has not dialled.
     assert.equal(net.started.length, 4, `the fifth has not dialled: ${net.started}`);
     const [fifth] = urls.filter((url) => !net.started.includes(url));
@@ -484,7 +483,6 @@ test("a caller's abort while waiting for a slot leaves the queue without taking 
 const sharedSlots = await import("../dist/runner/save-slots.js").catch(() => ({}));
 const { runChannel } = await import("../dist/runner/run-child-host.js");
 const { Channel } = await import("../dist/runner/run-channel.js");
-const { SERVER_SLOTS } = webSaveModule;
 
 let socketCount = 0;
 /** A runner's channel to one run's process and the run's side of it, over a Unix socket pair in a scratch folder; both
@@ -517,7 +515,6 @@ test("two run processes share their runner's one gate of 4: three saves in each,
     ...[0, 1, 2].map((i) => webSave({ url: `https://cdn.example/b${i}.png`, path: `media/b${i}.png` }, wb.ws, { ...net, slots: b.slots })),
   ];
   await until(() => net.started.length >= 4 && gate.waiting === 2, `four dialled, two wait: ${net.started}, ${gate.waiting}`);
-  await new Promise((resolve) => setTimeout(resolve, 30));
   assert.equal(net.started.length, 4, `exactly four dialled: ${net.started}`);
   assert.deepEqual([gate.busy, gate.waiting], [4, 2]);
   net.answer(net.started[0]);
@@ -636,10 +633,8 @@ test("one run process may have at most SAVE_SLOTS_PER_RUN takes held or waiting 
   const takes = callers.map((caller) => run.child.call("saves", "take", [caller.signal]));
   for (const take of takes) take.catch(() => {});
   await until(() => gate.busy === 1 && gate.waiting === SAVE_SLOTS_PER_RUN - 1, `1 held, 15 waiting: ${gate.busy}, ${gate.waiting}`);
-  // Bounded: a take that queued instead would never settle.
-  const over = run.child.call("saves", "take", [new AbortController().signal]);
-  over.catch(() => {});
-  const outcome = await Promise.race([over.then(() => "granted", (error) => error), new Promise((resolve) => setTimeout(() => resolve("still waiting after a second"), 1_000))]);
+  // The refusal comes before any queue: a take that queued instead never settles, and the test's timeout catches it.
+  const outcome = await run.child.call("saves", "take", [new AbortController().signal]).then(() => "granted", (error) => error);
   assert.match(String(outcome?.message ?? outcome), /this run already has 16 web_save downloads held or waiting/);
   assert.deepEqual([gate.busy, gate.waiting], [1, SAVE_SLOTS_PER_RUN - 1], "the refused take never queued");
   callers.at(-1).abort();

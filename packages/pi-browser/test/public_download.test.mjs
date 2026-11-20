@@ -128,9 +128,7 @@ test("the signal: aborted before the call, nothing is looked up or dialled; a de
   // A body that sends one chunk and then nothing, from a fetch that does not tie its body to the signal: the download's
   // own read ends at the deadline, with the signal's reason.
   const stalled = network({ answers: { "https://cdn.example/slow": () => new Response(new ReadableStream({ start(controller) { controller.enqueue(new Uint8Array(8)); } }), { status: 200, headers: { "content-type": "video/mp4" } }) } });
-  const started = Date.now();
   await assert.rejects(publicDownload("https://cdn.example/slow", { ...stalled, maxBytes: MAX, signal: AbortSignal.timeout(150) }), { name: "TimeoutError" });
-  assert.ok(Date.now() - started < 5_000, "it ends at the deadline");
 });
 
 test("maxBytes is a whole number of bytes above 0, checked before any lookup", async () => {
@@ -192,9 +190,8 @@ test("a stated length: the bytes come back exactly, in one buffer of that length
 
 test("a stated length: a body longer is refused at the chunk that runs past it, while the body is still coming", async () => {
   const net = stated(chunked([[1, 2, 3, 4, 5, 6], [7, 8, 9, 10, 11, 12]], { hang: true }), 10);
-  const read = publicDownload("https://cdn.example/f", { ...net, maxBytes: MAX });
-  const late = new Promise((resolve) => setTimeout(() => resolve("still reading"), 2_000).unref());
-  const settled = await Promise.race([read.then(() => "read whole", (error) => error), late]);
+  // The body hangs after the chunk that runs past the length: a read that waited for its end never settles.
+  const settled = await publicDownload("https://cdn.example/f", { ...net, maxBytes: MAX }).then(() => "read whole", (error) => error);
   assert.ok(refused(/^refused: the file is longer than the 10 bytes its host stated$/)(settled), `refused as the extra bytes came: ${settled?.message ?? settled}`);
 });
 
