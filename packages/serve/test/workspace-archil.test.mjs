@@ -846,6 +846,39 @@ test("ArchilWorkspace: a disk gone at Archil is UNAVAILABLE in its words on ever
   await assert.rejects(workspace.append("log.txt", big), (error) => gone(error) && error.message.startsWith(`0 of ${big.length} bytes were appended (the chunk that failed was refused`) && !/may also have landed/.test(error.message));
 });
 
+test("ArchilWorkspace: on a fresh folder of an Archil that makes no parent for a put (as staging's answered), a run's skills are laid and a nested write and append land, each missing folder made from the top down", async () => {
+  const disk = new FakeArchilDisk();
+  disk.parentless = true;
+  const workspace = archilWorkspace(disk, ROOT);
+  await layOwnSkills(workspace, { "triage/SKILL.md": "# triage\n" });
+  assert.equal(text(await workspace.read(".agents/skills/triage/SKILL.md")), "# triage\n");
+  await workspace.write("notes/2026/11/a.md", "a");
+  assert.equal(text(await workspace.read("notes/2026/11/a.md")), "a");
+  await workspace.append("logs/run/out.txt", "x");
+  assert.equal(text(await workspace.read("logs/run/out.txt")), "x");
+  for (const folder of [ROOT, `${ROOT}/.agents`, `${ROOT}/.agents/skills`, `${ROOT}/.agents/skills/triage`, `${ROOT}/notes/2026/11`, `${ROOT}/logs/run`]) {
+    assert.ok(disk.dirs.has(folder), `${folder} was made`);
+  }
+  // A folder already there is left as it is: the second skill's own folder alone is put.
+  const isPut = (call) => call.op === "putObject";
+  const puts = disk.calls.filter(isPut).length;
+  await workspace.write(".agents/skills/review/SKILL.md", "# review\n");
+  assert.deepEqual(disk.calls.filter(isPut).slice(puts).map((call) => call.key), [`${ROOT}/.agents/skills/review/SKILL.md`, `${ROOT}/.agents/skills/review/`, `${ROOT}/.agents/skills/review/SKILL.md`]);
+});
+
+test("ArchilWorkspace: a folder Archil still will not make names the call that failed, the path and Archil's words", async () => {
+  const disk = new FakeArchilDisk();
+  disk.parentless = true;
+  disk.dirs.add(ROOT);
+  const workspace = archilWorkspace(disk, ROOT);
+  const putObject = disk.putObject.bind(disk);
+  disk.putObject = async (key, body) => {
+    if (key === `${ROOT}/.agents/`) throw Object.assign(new Error("404 NoSuchKey: no such key"), { status: 404 });
+    return putObject(key, body);
+  };
+  await assert.rejects(workspace.mkdir(".agents/skills"), (error) => error.code === "NOT_FOUND" && /^"\.agents" is not there \(mkdir; Archil: 404 NoSuchKey: no such key\)/.test(error.message));
+});
+
 test("ArchilWorkspace: a file or folder that is not there stays NOT_FOUND with Archil's words kept, and a fresh folder's skills are laid", async () => {
   const disk = new FakeArchilDisk();
   const workspace = archilWorkspace(disk, ROOT);

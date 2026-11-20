@@ -6,7 +6,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { openRunWorkspace, runFolder, runKey } from "../dist/workspace/index.js";
+import { layOwnSkills, openRunWorkspace, runFolder, runKey } from "../dist/workspace/index.js";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 
 const AGENT = "acme";
@@ -103,6 +103,17 @@ test("run workspace (Mode 2): a run's folder already there is not put again, so 
   release();
   assert.equal(disk.calls.filter((call) => call.op === "putObject" && call.key === `${WORK}/`).length, 0, "no put of the folder");
   assert.equal(text(await run.workspace.read("notes.md")), "kept");
+  assert.deepEqual(logged, []);
+});
+
+test("run workspace (Mode 2): a fresh run's folder on an Archil that makes no parent for a put (as staging's answered) is made at the claim, and the run's skills are laid in it", async () => {
+  const disk = new FakeArchilDisk();
+  disk.parentless = true;
+  const logged = [];
+  const run = await openRunWorkspace({ mode: 2, agentId: AGENT, runId: RUN, archil: claimOf(disk), log: (message) => logged.push(message) });
+  assert.ok(disk.dirs.has(WORK), "the run's folder is there");
+  await layOwnSkills(run.workspace, { "triage/SKILL.md": "# triage\n" });
+  assert.equal(text(await run.workspace.read(".agents/skills/triage/SKILL.md")), "# triage\n");
   assert.deepEqual(logged, []);
 });
 
