@@ -18,6 +18,7 @@ import type { Duplex } from "node:stream";
 import type { AddressInfo } from "node:net";
 import proxyaddr from "proxy-addr";
 import { apiOnlyRefusal, servedApiOnly } from "./api-only.js";
+import { carriedFields } from "./answer-json.js";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Worker } from "node:worker_threads";
@@ -1830,7 +1831,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     completedOutput: async (runId: string) => {
       const view = await viewOverStore(store, runId, viewDepsFor(ownOriginOf()));
       if (view?.status !== "completed") return undefined;
-      return { output: (view.result as { output?: unknown } | null)?.output ?? null, endedAt: (view.ended_at as string | null | undefined) ?? null };
+      // The fields its next run is handed when the whole result is too large: its own revision's output schema's, the one
+      // its result.output was checked against (store-view.ts), never the agent's current one.
+      const carried = typeof view.revision === "string" ? carriedFields(((await store.agents.revision(view.revision))?.body as { outputSchema?: unknown } | undefined)?.outputSchema) : undefined;
+      return { output: (view.result as { output?: unknown } | null)?.output ?? null, endedAt: (view.ended_at as string | null | undefined) ?? null, ...(carried ? { carried } : {}) };
     },
   };
   const targets = triggerTargets(store, triggerDeps);

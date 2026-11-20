@@ -135,3 +135,27 @@ export function answerAsServed(output: string, schema: unknown): { text: string;
   const problems = compiled.check(shapes.find(isObject) ?? shapes[0]);
   return { why: `its answer does not meet the agent's output schema: ${problems.slice(0, 3).join("; ")}` };
 }
+
+/** The output-schema annotation naming the top-level fields of an answer that its agent's next run reads back: a list of
+ *  the root's property names (a scheduled watch's `seen`, a digest's `open_urgent`). The runtime reads it alone: when a
+ *  trigger's last completed result is too large to hand whole, its next run is handed those fields
+ *  (trigger-targets.ts previousResultOf). Never a tool's schema keyword: dsl submitParameters leaves it out. */
+export const X_CARRIED = "x-carried";
+
+/** Why `schema`'s `x-carried` is not a list of unique names of the root's `properties`; undefined when it is, or absent. */
+export function carriedProblem(schema: Record<string, unknown>): string | undefined {
+  const carried = schema[X_CARRIED];
+  if (carried === undefined) return undefined;
+  if (!Array.isArray(carried) || !carried.every((name) => typeof name === "string" && name !== "")) return "is a list of the names of the root's properties";
+  if (new Set(carried).size !== carried.length) return "names a property twice";
+  const properties = isObject(schema.properties) ? schema.properties : {};
+  const unknown = carried.filter((name) => !Object.hasOwn(properties, name));
+  return unknown.length ? `names ${unknown.map((name) => JSON.stringify(name)).join(", ")}, which the root's properties have no field for` : undefined;
+}
+
+/** The fields `schema` names in `x-carried`, when it names a list of them (one saved before the save checked it may not):
+ *  undefined for none. */
+export function carriedFields(schema: unknown): readonly string[] | undefined {
+  const carried = isObject(schema) ? schema[X_CARRIED] : undefined;
+  return Array.isArray(carried) && carried.length > 0 && carried.every((name) => typeof name === "string") ? carried : undefined;
+}
