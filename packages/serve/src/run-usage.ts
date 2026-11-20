@@ -6,7 +6,8 @@
 //
 // Nothing is measured again. The lines are the run's booking (runner/metrics.ts bookedSpend) split by what each charge
 // was: its model requests and its decisions by the model each was sent on (`tokens`), its paid tool calls by who charged
-// for them (`tools`, with the calls that ran unpriced beside them), and its browser session time by its provider
+// for them (`tools`, with the calls that ran unpriced beside them; a decision Parallel answered on its own API is one,
+// Parallel's, beside its web tools' calls), and its browser session time by its provider
 // (`browser_time`, with the seconds its BROWSER_CHARGED records keep). Each part is read by bookedSpend itself, over the
 // run's entries with only that part's requests left in, so a line's figure follows the one rule its sum does; and the
 // lines join (costWordsOf) to `total`, which is the run's `cost.usd`: the same booking outside its end-of-run (learning)
@@ -32,7 +33,7 @@ import { journalRecords } from "./runner/journal-reader.js";
 import { KINDS } from "./runner/journal-kinds.js";
 import { type BookedSpend, bookedSpend, type CostBasis, costBasisOf, costWordsOf, type CostWords } from "./runner/metrics.js";
 import { unbookedCli } from "./store-reads/cap.js";
-import { decisionsOverStore } from "./store-reads/decisions.js";
+import { booksDecisions, chargedByParallel, decisionsOverStore, PARALLEL_CHARGER, receiptIdOf } from "./store-reads/decisions.js";
 import { roundsOf } from "./store-reads/learning.js";
 import { MODEL_PROVIDER } from "./model.js";
 import type { RunLaunch } from "./run-launch.js";
@@ -199,6 +200,8 @@ export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLau
   // a paid charge's, who charged for it (`charged_by`), on browser_time when it is the browser's session time. A paid
   // charge settled at its provider's own figure says so on its request (`reported`). A decision's request names the
   // decision (`decision:<id>`): its receipt names the model and provider that answered it, and how its cost was reached.
+  // A decision Parallel answered on its own API (chargedByParallel) is a paid call Parallel charged at its list price, on
+  // Parallel's `tools` line beside its web tools' calls, not a model's tokens: it is on one line, never on both.
   const groups = new Map<string, Group>();
   const reported = new Set<string>();
   const estimated = new Set<string>();
@@ -211,6 +214,10 @@ export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLau
     if (conv(e) === paidConv) groups.set(turnOf(e), d.tool === COMPUTE_TOOL ? { meter: "compute_time", name: named(d.charged_by), tag: named(d.tag) } : { meter: d.tool === "browser" ? "browser_time" : "tools", name: named(d.charged_by) });
     else if (named(d.model)?.startsWith("decision:")) {
       const receipt = receipts.get(String(d.model).slice("decision:".length));
+      if (receipt && chargedByParallel(receipt)) {
+        groups.set(turnOf(e), { meter: "tools", name: PARALLEL_CHARGER });
+        continue;
+      }
       // A receipt that names no model leaves `model` null: its provider is said as the provider, never as a model.
       groups.set(turnOf(e), receipt ? { meter: "tokens", name: named(receipt.model), provider: named(receipt.provider) } : { meter: "tokens", name: null, provider: null });
       if (receipt?.cost_basis === "reported") reported.add(turnOf(e));
@@ -263,7 +270,8 @@ export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLau
   for (const group of found.values()) {
     const key = keyOf(group);
     const part = onlyRequests(entries, turnOf, (turn) => turnKeys.get(turn) === key);
-    const booked = group.meter === "tokens" ? joined([bookedSpend(part, "model"), bookedSpend(part, "decisions")]) : joined([bookedSpend(part, "paid")]);
+    // A `tools` line's part holds its charger's paid calls and, on Parallel's, the decisions Parallel charged.
+    const booked = joined(group.meter === "tokens" ? [bookedSpend(part, "model"), bookedSpend(part, "decisions")] : group.meter === "tools" ? [bookedSpend(part, "paid"), bookedSpend(part, "decisions")] : [bookedSpend(part, "paid")]);
     if (group.meter === "compute_time") {
       // A hold for a stretch names no resource (no tag) and books nothing: it is given back.
       if (group.tag !== null && group.tag !== undefined) computeBooked.set(computeKey(group.name ?? "", group.tag), booked);
@@ -286,7 +294,8 @@ export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLau
       lines.push({ meter: "tokens", model: group.name, provider: group.provider ?? null, charged_by: null, quantity: input + output + cacheRead + cacheWrite, unit: "token", basis: costBasisOf({ priced }), ...costWordsOf(booked.parts), requests: booked.requests, tokens: { input, output, cache_read: cacheRead, cache_write: cacheWrite }, unmetered_requests: unmetered });
     } else if (group.meter === "tools") {
       // `reported` when every charge with a figure was settled at its provider's own (monid's answer says what it
-      // charged); `estimate` when any was settled at a price this server holds (an MCP tool's owner's, Parallel's).
+      // charged); `estimate` when any was settled at a price this server holds (an MCP tool's owner's, Parallel's, a
+      // Parallel decision's list price).
       const basis = priced <= 0 ? "unpriced" : turns.every((turn) => reported.has(turn)) ? "reported" : "estimate";
       // Calls that ran unpriced only: none booked, so nothing is charged on the line, by its owner's choice of no price.
       const words: CostWords = booked.requests === 0 ? { usd: 0 } : costWordsOf(booked.parts);
@@ -403,8 +412,7 @@ export async function runUsageOverStore(store: Store, runId: string): Promise<Ru
     const turns = reflectRanges(records.submissions ?? [], records.entries);
     const entries = records.entries.filter((entry) => !inReflect(turns, Number(entry.id))) as EntryLike[];
     // A workflow's decision receipts, read only when it made a decision: the model and provider each was answered on.
-    const decided = entries.some((e) => e.kind === RUNNER_RECORDS.request && String((e.data as { model?: unknown } | undefined)?.model ?? "").startsWith("decision:"));
-    const receipts = decided ? new Map((await decisionsOverStore(snapshot, runId, BACKGROUND_CONTEXT)).map((receipt) => [String(receipt.decision_id ?? receipt.id), receipt])) : undefined;
+    const receipts = booksDecisions(entries) ? new Map((await decisionsOverStore(snapshot, runId, BACKGROUND_CONTEXT)).map((receipt) => [receiptIdOf(receipt), receipt])) : undefined;
     // Its computers in the same snapshot, an open one's time counted up to now; a store that keeps none (a test's) reads
     // as none made.
     const rows = snapshot.computerIntervals ? await snapshot.computerIntervals.forRun(runId) : [];
