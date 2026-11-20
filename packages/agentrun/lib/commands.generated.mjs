@@ -128,7 +128,7 @@ export const COMMANDS = [
     "bodyTypes": [],
     "secretBody": false,
     "raw": false,
-    "summary": "Delete an agent another system owns"
+    "summary": "Delete an agent"
   },
   {
     "command": [
@@ -2172,6 +2172,28 @@ export const COMMANDS = [
     },
     "raw": false,
     "summary": "Start a run of an agent another system owns, given inline"
+  },
+  {
+    "command": [
+      "runs",
+      "delete"
+    ],
+    "operationId": "deleteRun",
+    "method": "DELETE",
+    "path": "/runs/{run_id}",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Delete a run"
   },
   {
     "command": [

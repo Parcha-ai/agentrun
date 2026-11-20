@@ -97,10 +97,10 @@ import { type AgenticBody, type McpCredentialMark, type MonidPinBody, type NewRe
 import { agentDeleting, answerOf, logged } from "./agents.js";
 import { keepGrade } from "./runner/feedback-round.js";
 import { gradeRow, notAuditableOf } from "./runner/audit.js";
-import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf } from "./learn/audit.js";
+import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf, shadowRunId } from "./learn/audit.js";
 import { auditLoopOf, COMPILE_AFTER_MAX } from "./learning-setting.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
-import { championOf, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown, servingOf, servingStateOf, shownDeep } from "./learn/promote.js";
+import { championOf, dropGrades, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown, servingOf, servingStateOf, shownDeep } from "./learn/promote.js";
 import { workflowNodesOf } from "./learn/workflow-nodes.js";
 import { deleteLearning } from "./learn/delete.js";
 import { runModelRef } from "./model.js";
@@ -191,12 +191,12 @@ import { noAccount, openAccount } from "./email/account.js";
 import { emailRoute } from "./email/routes.js";
 import { addressForms, openCalendar } from "./calendar/address.js";
 import { calendarRoute } from "./calendar/routes.js";
-import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, runDiskKey } from "./archil-settings.js";
+import { agentDiskOf, ARCHIL_DISK_ID, archilSettingsFromEnv, inArchilMode, runDiskKept, runDiskKey } from "./archil-settings.js";
 import { computerOfPlace, type ComputerKind, type ComputerSetting, type PlaceView } from "./computer-setting.js";
 import { computerCapabilities, type ComputerRoutes, createComputerRoutes, folderModeOf, hostCommandRefusals, settingsComputerRoute } from "./computers.js";
 import { type FauxComputers, fauxComputers } from "./faux-computers.js";
 import { writesHeld } from "./workspace.js";
-import { type AgentDeleteHost, type AgentDeleteStep, type DeleteLearning, deleteExternalAgent, oneAtATime } from "./agent-delete.js";
+import { type AgentDeleteHost, type AgentDeleteStep, type DeleteLearning, deleteAgent, deleteRun, oneAtATime } from "./agent-delete.js";
 import { agentComputerHoldKey } from "./workspace/agent-computer.js";
 import { sdkRunKey } from "./sdk/runs.js";
 import { waitEndedKey } from "./browser-wait-ended.js";
@@ -425,9 +425,9 @@ export type ServeOptions = {
   /** A test's seam: step 2 of DELETE /agents/{id} (agent-delete.ts) in place of the learning module's deleteLearning over
    *  the agent's learning folder (learn/delete.ts), the server's own. */
   deleteLearning?: DeleteLearning;
-  /** A test's seam: awaited at each step's point of DELETE /agents/{id} (agent-delete.ts AgentDeleteStep), so a throw
-   *  there stops the delete as a crash would. */
-  agentDeleteAt?: (step: AgentDeleteStep, agentId: string) => void | Promise<void>;
+  /** A test's seam: awaited at each step's point of DELETE /agents/{id} and DELETE /runs/{id} (agent-delete.ts
+   *  AgentDeleteStep), with the agent's id or the run's, so a throw there stops the delete as a crash would. */
+  agentDeleteAt?: (step: AgentDeleteStep, id: string) => void | Promise<void>;
   /** A test's seam: awaited with a request's path and answer once its work under an Idempotency-Key is done, before the
    *  answer is kept, so a test can hold a request there while a DELETE /agents/{id} runs. */
   beforeKeep?: (path: string, answer: unknown) => void | Promise<void>;
@@ -586,6 +586,8 @@ export const ROUTES: readonly Route[] = [
   { method: "POST", pattern: /^\/runs$/, name: "createInlineRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)$/, name: "getRun" },
   { method: "PATCH", pattern: /^\/runs\/([^/]+)$/, name: "raiseRunCap" },
+  // A final run deleted whole, with the runs made from it (agent-delete.ts deleteRun).
+  { method: "DELETE", pattern: /^\/runs\/([^/]+)$/, name: "deleteRun" },
   { method: "GET", pattern: /^\/runs\/([^/]+)\/timeline$/, name: "getTimeline" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/messages$/, name: "sendMessage" },
   { method: "POST", pattern: /^\/runs\/([^/]+)\/stop$/, name: "stopRun" },
@@ -2335,8 +2337,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
    *  a person's start (createRun) and a replay's (startLearnedWorkflowReplay), asks this before it reserves or writes anything. */
   async function needRunnableAgent(id: string): Promise<AgentEntry> {
     const entry = await needAgent(id);
-    // Another system's agent is archived only by its delete (its archive route is refused).
-    if (entry.agent.archivedAt && entry.agent.externalRef !== null) throw agentDeleting(id);
+    // An agent being deleted (its delete archives it too), or another system's, archived only by its delete.
+    if (entry.agent.deleting || (entry.agent.archivedAt && entry.agent.externalRef !== null)) throw agentDeleting(id);
     if (entry.agent.archivedAt) throw new ApiError("agent_not_runnable", `The agent ${id} is archived: unarchive it to run it.`, { details: { archived_at: new Date(entry.agent.archivedAt).toISOString() } });
     return entry;
   }
@@ -2398,18 +2400,20 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const agentWrite = <T>(id: string, work: () => Promise<T>): Promise<T> =>
     deleteInTurn(id, async () => {
       const entry = await needAgent(id);
-      if (entry.agent.archivedAt && entry.agent.externalRef !== null) throw agentDeleting(id);
+      if (entry.agent.deleting) throw agentDeleting(id);
       return work();
     });
   const AGAIN = "It starts no run meanwhile: send the DELETE again to finish it.";
-  /** `work`, a thing a deleted agent owns elsewhere deleted there: a refusal of one of `codes` (it is not deleted there
-   *  yet) answered as the delete answers each such one, 503 unavailable, retryable, saying to send the DELETE again. */
-  const notYetWith = async (work: () => Promise<unknown>, codes: readonly string[] = ["unavailable"]): Promise<void> => {
+  const RUN_AGAIN = "The run is kept: send the DELETE again to finish it.";
+  /** `work`, a thing a deleted agent or run owns elsewhere deleted there: a refusal of one of `codes` (it is not deleted
+   *  there yet) answered as the delete answers each such one, 503 unavailable, retryable, saying to send the DELETE again
+   *  (`again`: the words for an agent's delete, or a run's). */
+  const notYetWith = async (work: () => Promise<unknown>, codes: readonly string[] = ["unavailable"], again = AGAIN): Promise<void> => {
     try {
       await work();
     } catch (error) {
       if (!(error instanceof ApiError && codes.includes(error.code))) throw error;
-      throw new ApiError("unavailable", `${error.message.replace(/[.\s]*$/, "")}. ${AGAIN}`, { retry_after_ms: 5_000 });
+      throw new ApiError("unavailable", `${error.message.replace(/[.\s]*$/, "")}. ${again}`, { retry_after_ms: 5_000 });
     }
   };
   /** What DELETE /agents/{id} does outside the store's rows, on this server (agent-delete.ts AgentDeleteHost). */
@@ -2420,7 +2424,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   const agentDeleteHost: AgentDeleteHost = {
     store,
     deleteLearning: learningDelete,
-    refuse: async (agentId) => void (await triggers.agentArchived(agentId)),
+    refuse: async (agentId) => {
+      await store.agents.markDeleting(agentId);
+      await triggers.agentArchived(agentId);
+    },
     cancel: async (runId) => {
       const moment = await momentOverStore(store, runId, viewDepsFor(ownOriginOf()));
       if (!moment) return true;
@@ -2454,12 +2461,18 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // Archil's failure (424), a live run of another agent on the disk (412) or no key (503): each is retried by the next DELETE.
       await notYetWith(() => archil.removeAgentDisk({ id: agentId, archived: true, external: true, liveOn: (diskId: string) => liveRunsOnDisk(store.runs, agentId, diskId) }), ["upstream_failed", "precondition_failed", "unavailable"]);
     },
-    forgetRun: async (agentId, runId) => {
+    forgetRun: async (agentId, runId, alone) => {
+      const again = alone ? RUN_AGAIN : AGAIN;
       // Its own folder on a disk its launch named (the caller's disk, which stays): read from its launch record, which goes
       // with the run's rows after this, so a failure or a stop here leaves the record that names the disk for the next
-      // DELETE. A run on its agent's own disk has none: that disk went whole (removeDisk), its folder with it.
+      // DELETE. A run on its agent's own disk: with its agent's delete that disk went whole (removeDisk), its folder with
+      // it; deleted alone, its folder there is deleted, the disk kept, read from its disk setting, which goes after.
       const launched = await store.runs.launch(runId).then((row) => readLaunchBody(row.body)?.archilDisk, (error: unknown) => (error instanceof StoreLaunchMissing ? undefined : Promise.reject(error)));
-      if (launched?.kind === "launch") await notYetWith(() => archil.removeRunFolder(agentId, runId, launched.diskId), ["unavailable", "upstream_failed"]);
+      if (launched?.kind === "launch") await notYetWith(() => archil.removeRunFolder(agentId, runId, launched.diskId), ["unavailable", "upstream_failed"], again);
+      else if (alone) {
+        const own = launched?.diskId ?? (await runDiskKept(store, runId));
+        if (own) await notYetWith(() => archil.removeRunFolder(agentId, runId, own, "agent"), ["unavailable", "upstream_failed"], again);
+      }
       // The run's folder (its work and what sits beside it), its scratch and its native context, on this machine.
       for (const folder of [dirname(runFolder(data, agentId, runId)), scratchFolder(data, agentId, runId), join(data, "native-context", runId)]) await rm(folder, { recursive: true, force: true });
       // Its settings: an SDK run's row, its browser wait's end, the Archil disk it resolved to. Its kept computer's row
@@ -2476,6 +2489,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       await rm(join(data, "scratch", agentDirName(agentId)), { recursive: true, force: true });
       await forgetKept("agent", agentId);
     },
+    // The replay runs of its input and a learning run it names (the store's), and its audit's shadow run.
+    madeFrom: async (runId) => [...(await store.runs.madeFrom(runId)), shadowRunId(runId)],
+    forgetGrades: (agentId, runId) => dropGrades(store.settings, agentId, runId),
     waitMs: options.agentDeleteWaitMs ?? 30_000,
     pollMs: 200,
     ...(options.agentDeleteAt ? { at: options.agentDeleteAt } : {}),
@@ -4213,12 +4229,11 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, agentView(moved, linkOrigin(req), await agentExtra(moved)), { etag: etagOf(moved) });
       }
       case "deleteAgent": {
-        // Another system's agent, deleted whole (agent-delete.ts); one delete of an agent at a time, the agent read in its
-        // turn, so a DELETE after one that finished is 404.
+        // The agent deleted whole, one made here or another system's (agent-delete.ts); one delete of an agent at a time,
+        // the agent read in its turn, so a DELETE after one that finished is 404.
         await deleteInTurn(id, async () => {
-          const entry = await needAgent(id);
-          if (entry.agent.externalRef === null) throw new ApiError("agent_not_external", `The agent ${id} was made here, not by another system's inline run, and is not deleted: archive it instead (POST /v2/agents/${id}/archive), which keeps its runs and stops new ones.`);
-          await deleteExternalAgent(agentDeleteHost, id);
+          await needAgent(id);
+          await deleteAgent(agentDeleteHost, id);
         });
         res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
         return void res.end();
@@ -4226,7 +4241,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       case "archiveAgent":
       case "unarchiveAgent": {
         // An agent another system owns is that system's to keep or drop: archiving it here is refused, as an edit is.
-        refuseExternal((await needAgent(id)).agent);
+        const before = (await needAgent(id)).agent;
+        refuseExternal(before);
+        // An agent being deleted stays archived until it is gone: its delete's next DELETE finishes it.
+        if (before.deleting) throw agentDeleting(id);
         // No run sweep on archive: a runner reads an archived agent's run rows directly, nothing to sweep.
         // The engine archives (or unarchives) the agent itself: archived, every trigger that runs as it turns off with
         // agent_archived in that same store transaction; unarchived, none turns on. Never archived first by another path,
@@ -4319,6 +4337,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         const { resumed, messageId, note } = await raiseCap(store, run, cap);
         const { status, state } = await runStatusState(run.id);
         return send(res, 200, { run_id: run.id, max_cost_usd: cap, resumed, ...(messageId ? { message_id: messageId } : {}), ...(note ? { note } : {}), status, state });
+      }
+      case "deleteRun": {
+        // In its agent's delete turn (an agent's delete, or another delete of one of its runs, finishes first), the run
+        // read in that turn, so a DELETE after one that finished is 404.
+        const row = ID.test(id) ? await store.runs.get(id) : undefined;
+        if (!row) throw new ApiError("not_found", `no run ${id}`);
+        await deleteInTurn(row.agentId, () => deleteRun(agentDeleteHost, id));
+        res.writeHead(204, { "cache-control": "no-store", "x-content-type-options": "nosniff" });
+        return void res.end();
       }
       case "stopRun": {
         const run = await needRun(id);

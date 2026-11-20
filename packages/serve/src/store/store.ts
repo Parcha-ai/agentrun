@@ -66,7 +66,16 @@ export interface AgentRow {
   /** The reference of the agent this one mirrors in another system ("<source>:<kind>:<id>"), or null for one made here. An
    *  agent with a reference is read-only from here: it is written on the first run that names it and never edited. */
   readonly externalRef: string | null;
+  /** The agent is being deleted (DELETE /agents/{id}, agent-delete.ts; Agents.markDeleting): from the commit of that mark
+   *  no run of it starts, none of its runs opens again, and no trigger of it is made, moved to it or turned on. Kept until
+   *  its rows go (Agents.remove), so a restart keeps it. */
+  readonly deleting: boolean;
 }
+
+/** The settings key of an agent's delete mark (Agents.markDeleting): a row, not a column, read in the transaction that
+ *  would start one of its runs. */
+export const AGENT_DELETING_PREFIX = "agent.deleting.";
+export const agentDeletingKey = (agentId: string): string => `${AGENT_DELETING_PREFIX}${agentId}`;
 
 /** The template package an agent was applied from, kept on the revision the apply made (its first): the package's id
  *  (a bundled one's name, an imported one's `github:<owner>/<repo>[/<path>]`), its SemVer version, and the commit SHA it
@@ -637,10 +646,10 @@ export class AgentArchived extends Error {
   }
 }
 
-/** A run of an agent being deleted, or a follow-up that would open one of its runs again: refused, nothing written. An
- *  agent another system owns is never archived here (its archive route is refused), so its archive time is the mark its
- *  delete leaves (DELETE /agents/{id}, agent-delete.ts): from that commit runs.create, runs.createInline, runs.reopen and
- *  triggers.fire refuse it, each in the transaction that would start the run, and a restart keeps the mark. */
+/** A run of an agent being deleted, or a follow-up that would open one of its runs again: refused, nothing written. The
+ *  mark its delete leaves (DELETE /agents/{id}, agent-delete.ts; Agents.markDeleting) is read by runs.create,
+ *  runs.createInline, runs.reopen and the trigger writes, each in the transaction that would write, and a restart keeps
+ *  it. The delete archives the agent too, which triggers.fire refuses (AgentArchived). */
 export class AgentDeleting extends Error {
   override name = "AgentDeleting";
   constructor(readonly agentId: string) {
@@ -700,8 +709,13 @@ export interface Agents {
    *  the revision still has none, and the pin it has then is the answer, so two first runs at once agree on one. Null when
    *  there is no such revision. */
   pinOnce(revisionId: string, pin: unknown): Promise<unknown>;
+  /** The first write of DELETE /agents/{id} (agent-delete.ts): the agent marked as being deleted (AgentRow.deleting, a
+   *  settings row under agentDeletingKey), under the agent row's lock, so a run start that read it unmarked commits
+   *  before it. Idempotent; an agent with no row is no write. */
+  markDeleting(agentId: string): Promise<void>;
   /** The agent's own rows gone, in one transaction (the last write of DELETE /agents/{id}, agent-delete.ts): its learning
-   *  rows and kept proposals, its sign-ins and their tombstones, its revisions and the agent. Only once it has no run and
+   *  rows and kept proposals, its sign-ins and their tombstones, its revisions, the answer a template apply kept naming
+   *  it, its delete mark and the agent. Only once it has no run and
    *  no trigger left (runs.remove and the trigger engine's remove each first): refused while a run is (StoreConstraint)
    *  or a trigger is (TriggersLeft), read under the agent row's lock, nothing written. An agent with no row is no write. */
   remove(agentId: string): Promise<void>;
@@ -847,10 +861,14 @@ export interface Runs {
   /** Every run of agent `agentId` with its state, oldest first, its built-in learning runs included (which list leaves
    *  out): what deleting the agent stops and removes. */
   every(agentId: string): Promise<{ id: string; state: RunState }[]>;
+  /** The runs made from run `runId` that hold what it was given or did, by id: each replay run whose launch replays its
+   *  input (the launch body's `replay.of`), and each learning run its kept learning names (learning_proposals'
+   *  learning_run_id). What deleting the run alone deletes with it (an audit's shadow run is found by its id). */
+  madeFrom(runId: string): Promise<string[]>;
   /** The run's rows gone, in one transaction: its journal, commands, origin, launch, live view and viewers, its channel
    *  posts with their tries and what each channel was told of it, its kept learning, its changes in the run-change feed,
    *  a trigger's conversation that names it, and the run (a firing or trigger that names it keeps no run: ON DELETE SET
-   *  NULL). Only a final run: one that is not is refused (StoreConstraint), nothing written, so no runner's claim is ever
+   *  NULL; a firing that waited behind it waits no more). Only a final run: one that is not is refused (StoreConstraint), nothing written, so no runner's claim is ever
    *  on a run that goes. A run with no row is no write. From then a late write under an old claim of it is Fenced and
    *  writes nothing (its row is gone), and a command for it is RunFinal. */
   remove(runId: string): Promise<void>;

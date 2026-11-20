@@ -188,9 +188,9 @@ export async function message(
   const launchBody = await controlLaunchBody(store, moment.id);
   if (isObject(launchBody) && launchBody.sdk) throw new ApiError("not_continuable", "Backend SDK runs are single-task sessions. Start a new SDK call for another task.");
   if (nativeOf(launchBody)) throw new ApiError("input_invalid", "Native jobs do not support in-session steering or follow-up messages. Start a new native run.");
-  // Archiving closes a run: it, or a run of its archived agent, takes no message, said as archived (never as finished). Another
-  // system's agent is archived only by its delete: said so, as every run of it is refused (AgentDeleting).
-  if (moment.archived === "agent" && (await store.agents.get(moment.agentId))?.externalRef != null) throw new AgentDeleting(moment.agentId);
+  // Archiving closes a run: it, or a run of its archived agent, takes no message, said as archived (never as finished). An
+  // agent being deleted (its delete archives it too) is said so, as every run of it is refused (AgentDeleting).
+  if (moment.archived === "agent" && (await store.agents.get(moment.agentId))?.deleting) throw new AgentDeleting(moment.agentId);
   if (moment.archived !== undefined) throw archivedRefusal(moment);
   // A cancelled run takes no message, whether or not its end is written yet.
   if (moment.cancelled) throw finished(moment);
@@ -604,9 +604,10 @@ export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "a
   if (storedRevision && canonical(storedRevision.body) !== canonical(revision.body)) throw bodyConflict(external);
   const mapped = await store.agents.byExternal(ref);
   const stored = mapped ? await getAgent(store, mapped.id) : null;
-  // Another system's agent is archived only by its delete (its archive route is refused): it starts nothing more, before
-  // anything is prepared. The store refuses it again in the run's own transaction (AgentDeleting), for a delete since.
-  if (stored?.agent.archivedAt) throw new AgentDeleting(stored.agent.id);
+  // Another system's agent is archived only by its delete (its archive route is refused): either way it starts nothing
+  // more, before anything is prepared. The store refuses it again in the run's own transaction (AgentDeleting), for a
+  // delete since.
+  if (stored?.agent.deleting || stored?.agent.archivedAt) throw new AgentDeleting(stored.agent.id);
   // A version's first run brings the agent's name and description up to it, in the start's own transaction (createInline),
   // so its launch is prepared under them: a workflow run's title names the version it runs. A run of a version already
   // stored keeps the agent's as they are, as a run of any agent's earlier revision does.
@@ -614,7 +615,7 @@ export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "a
   const entry: AgentEntry = stored
     ? firstOfVersion ? { ...stored, agent: { ...stored.agent, name: inline.name, description: inline.description } } : stored
     : {
-        agent: { id: uuidv7(), name: inline.name, description: inline.description, currentRevision: null, createdAt: Date.now(), archivedAt: null, externalRef: ref },
+        agent: { id: uuidv7(), name: inline.name, description: inline.description, currentRevision: null, createdAt: Date.now(), archivedAt: null, externalRef: ref, deleting: false },
         revision: null, version: 0, revisions: 0, sizes: new Map(),
       };
   // A store revision is the revision the run path reads as a pi Revision (its body is the revision body), as pinnedOf hands

@@ -36,7 +36,7 @@ Route: `POST /agents`.
 
 ### `agentrun agents delete-agent AGENT_ID`
 
-Delete an agent another system owns.
+Delete an agent.
 
 Route: `DELETE /agents/{agent_id}`.
 
@@ -678,6 +678,12 @@ Route: `POST /runs`.
 - `--hold-minutes INTEGER` (integer): With `hold: true`: how long the held computer waits with no call from its owner, before the start and after the agent's end. Absent: 30. Above 120, or without hold, is 422.
 - `--body JSON|@FILE|-` (application/json, required): The whole body: inline, from a file or from stdin. The flags above win over a JSON body's fields.
 - `--body-type TYPE` (string): The body's type, one of application/json; any other than JSON is sent as given.
+
+### `agentrun runs delete RUN_ID`
+
+Delete a run.
+
+Route: `DELETE /runs/{run_id}`.
 
 ### `agentrun runs files RUN_ID`
 

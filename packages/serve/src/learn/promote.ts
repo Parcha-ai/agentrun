@@ -248,6 +248,12 @@ export const putGrade = async (settings: Pick<Settings, "get" | "putIfAbsent" | 
   return kept;
 };
 
+/** Every kept grade of run `runId` dropped (the run's delete, agent-delete.ts); no write when the agent keeps no grades. */
+export const dropGrades = async (settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, runId: string): Promise<void> => {
+  if (!(await gradesOf(settings, agentId)).some((one) => one.run === runId)) return;
+  await updateKept<Grade>(settings, gradesKey(agentId), (items) => items.filter((one) => one.run !== runId));
+};
+
 /** Marks the kept grade `grade` (its run, given at its `at`, kept at its `seq`) with the feedback round it opened and
  *  that round's steer, in place: its `seq` stays. A newer grade of the run is left as it is, one given in the same
  *  millisecond too (its `seq` is another). The grade, marked. */

@@ -1,5 +1,5 @@
 // Archiving, a route of this server outside the /v2 contract: an archived agent or run is hidden from the lists and kept
-// with its history. Every read by id still answers, with archived_at; /usage still counts it; DELETE stays 405.
+// with its history. Every read by id still answers, with archived_at; /usage still counts it. Deleting is another route.
 import assert from "node:assert/strict";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -79,13 +79,12 @@ test("a run of an archived agent is refused, 409 agent_not_runnable saying it is
   assert.equal((await api("GET", `/runs/${run_id}`)).body.result.final_answer, "Now.");
 });
 
-test("archiving deletes nothing: a run has no DELETE (405), an agent made here is never deleted, and capabilities name the archive routes", async (t) => {
+test("archiving deletes nothing, and capabilities name the archive routes; a run's DELETE is its own route (run-delete.test.mjs)", async (t) => {
   const { api } = await serve(t);
   assert.equal((await api("POST", "/agents", agent("calc"))).status, 201);
-  assert.equal((await api("DELETE", "/runs/x")).status, 405);
-  // DELETE /agents/{id} deletes only another system's agent (agent-delete.test.mjs): this one is kept, whatever it answers.
-  assert.ok((await api("DELETE", "/agents/calc")).status >= 400);
-  assert.equal((await api("GET", "/agents/calc")).status, 200, "the agent is kept");
+  assert.equal((await api("POST", "/agents/calc/archive")).status, 200);
+  assert.equal((await api("GET", "/agents/calc")).status, 200, "an archived agent is kept");
+  assert.deepEqual([(await api("DELETE", "/runs/x")).status], [404], "a run not there is not found");
   const caps = (await api("GET", "/capabilities")).body;
   assert.deepEqual(caps.features.archive, {
     agents: true, runs: true, list_param: "archived",

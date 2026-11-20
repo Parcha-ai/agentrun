@@ -483,11 +483,11 @@ export class Triggers {
     if (agent?.archivedAt != null) throw new ApiError("agent_archived", archivedDetail(agent.name));
   }
 
-  /** Refused (409 agent_not_runnable, agents.ts agentDeleting) when agent `agentId` is being deleted: another system's
-   *  agent with an archive time, which only its delete writes (agent-delete.ts). */
+  /** Refused (409 agent_not_runnable, agents.ts agentDeleting) when agent `agentId` is being deleted: its delete's mark
+   *  (agent-delete.ts, store Agents.markDeleting). */
   private async needNotDeleting(agentId: string): Promise<void> {
     const agent = await this.store.agents.get(agentId);
-    if (agent?.archivedAt != null && agent.externalRef != null) throw agentDeleting(agentId);
+    if (agent?.deleting) throw agentDeleting(agentId);
   }
 
   /** The store's refusal of a trigger left on for an archived agent (an archive that committed past needAgentOn) as the

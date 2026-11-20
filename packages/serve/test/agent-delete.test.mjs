@@ -1,11 +1,11 @@
-// DELETE /v2/agents/{agent_id}: an agent another system owns (made by an inline run, POST /runs with `external`) deleted
-// whole, for a host with a data-deletion duty. In order: the agent refuses new runs (a state in the store, so it outlives a
-// restart) and its runs in flight and its learning work are stopped through the cancel path, each waited for until it is
-// terminal; then its learning (the learning module's deleteLearning, the server's own unless a test injects a fake that
-// records its calls); then its rows: its runs and everything kept by them, its triggers, its revisions and the agent. 204
-// when done; 404 for an unknown agent, and for a second DELETE after one that finished; 409 for an agent made here
-// (archive it instead); 409 learning_busy while learning work is in flight, the agent left refusing runs. A DELETE stopped
-// at any step (a crash) is finished by the next one.
+// DELETE /v2/agents/{agent_id}: an agent deleted whole, one another system owns (made by an inline run, POST /runs with
+// `external`) or one made here, archived or not, for a host or an owner with a data-deletion duty. In order: the agent
+// refuses new runs (a mark in the store, so it outlives a restart) and its runs in flight and its learning work are
+// stopped through the cancel path, each waited for until it is terminal; then its learning (the learning module's
+// deleteLearning, the server's own unless a test injects a fake that records its calls); then its rows: its runs and
+// everything kept by them, its triggers, its revisions and the agent. 204 when done; 404 for an unknown agent, and for a
+// second DELETE after one that finished; 409 learning_busy while learning work is in flight, the agent left refusing
+// runs. A DELETE stopped at any step (a crash) is finished by the next one. Another agent is never touched.
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
@@ -93,6 +93,16 @@ function rowsOf(data, agentId, runIds) {
       journal: byRun("pi_entries") + byRun("pi_metadata") + byRun("pi_tasks"),
       proposals: count("SELECT COUNT(*) AS n FROM learning_proposals WHERE agent_id = ?", agentId),
     };
+  } finally {
+    db.close();
+  }
+}
+
+/** The keys of the settings that name agent `agentId`, read from the store's file directly. */
+function settingsNaming(data, agentId) {
+  const db = new DatabaseSync(join(data, "store.sqlite"), { readOnly: true });
+  try {
+    return db.prepare("SELECT key FROM settings WHERE key LIKE ? ORDER BY key").all(`%${agentId}%`).map((row) => row.key);
   } finally {
     db.close();
   }
@@ -293,15 +303,85 @@ test("a learning delete that fails for another reason than work in flight is 500
   assert.deepEqual(rowsOf(data, agentId, [runId]), NONE);
 });
 
-test("an agent made here is not deleted: 409 that points at archive, nothing touched", { timeout: 60_000 }, async (t) => {
-  const learning = fakeLearning();
-  const { api } = await serve(t, { runner: false, deleteLearning: learning.deleteLearning });
-  assert.equal((await api("POST", "/agents", agent("local-1"))).status, 201);
-  const refused = await api("DELETE", "/agents/local-1");
-  assert.deepEqual([refused.status, refused.body.error?.code], [409, "agent_not_external"], JSON.stringify(refused.body));
-  assert.match(refused.body.error.message, /archive/);
-  assert.equal(learning.calls.length, 0);
-  assert.equal((await api("GET", "/agents/local-1")).status, 200);
+/** Agent `id` made here, with one completed run: the run's id. */
+async function madeHere(api, id) {
+  assert.equal((await api("POST", "/agents", agent(id))).status, 201);
+  const run = await api("POST", `/agents/${id}/runs`, { input: { content: "What is six times seven?" } });
+  assert.equal(run.status, 202, JSON.stringify(run.body));
+  await follow(api, run.body.run_id, ["completed"]);
+  return run.body.run_id;
+}
+
+for (const archived of [false, true]) {
+  test(`an agent made here${archived ? ", archived," : ""} is deleted whole: its runs 404, its learning, rows and folders gone; a second DELETE 404`, { timeout: 120_000 }, async (t) => {
+    const { api, data, store } = await serve(t);
+    const runId = await madeHere(api, "local-1");
+    await learned(store, data, "local-1");
+    if (archived) assert.equal((await api("POST", "/agents/local-1/archive")).status, 200);
+
+    const deleted = await api("DELETE", "/agents/local-1");
+    assert.equal(deleted.status, 204, `DELETE /agents/{id} of an agent made here: ${deleted.status} ${JSON.stringify(deleted.body)}`);
+    assert.equal((await api("GET", "/agents/local-1")).status, 404);
+    assert.equal((await api("GET", `/runs/${runId}`)).status, 404, "its run is gone");
+    assert.deepEqual(rowsOf(data, "local-1", [runId]), NONE, "no row of the agent or its run is left");
+    assert.deepEqual(await recordsOf(store, "local-1"), [], "nor its learning records");
+    assert.ok(!existsSync(join(data, "disk", "agents", agentDir("local-1"))), "nor its folder");
+    assert.deepEqual(settingsNaming(data, "local-1"), [], "nor a setting that names it (its delete's mark among them)");
+    const again = await api("DELETE", "/agents/local-1");
+    assert.deepEqual([again.status, again.body.error?.code], [404, "not_found"]);
+    // The same id makes a new agent after: nothing of the deleted one is in its way.
+    assert.equal((await api("POST", "/agents", agent("local-1"))).status, 201);
+  });
+}
+
+test("an agent made here whose DELETE stopped after step 1 refuses runs and its unarchive and archive, across a restart; the next DELETE finishes it", { timeout: 180_000 }, async (t) => {
+  const crash = { done: false };
+  const options = {
+    agentDeleteAt: (at) => {
+      if (at !== "after_step_1" || crash.done) return;
+      crash.done = true;
+      throw new Error(`stopped ${at}`);
+    },
+  };
+  const first = await serve(t, options);
+  const runId = await madeHere(first.api, "local-1");
+  assert.equal((await first.api("DELETE", "/agents/local-1")).status, 500);
+  await first.stop();
+  const { api, data } = await serve(t, { ...options, data: first.data });
+  for (const answer of [
+    await api("POST", "/agents/local-1/runs", { input: { content: "Another question." } }),
+    await api("POST", `/runs/${runId}/messages`, { content: "And six times eight?" }),
+    await api("POST", "/agents/local-1/unarchive"),
+    await api("POST", "/agents/local-1/archive"),
+  ]) {
+    assert.deepEqual([answer.status, answer.body.error?.code], [409, "agent_not_runnable"], JSON.stringify(answer.body));
+    assert.match(answer.body.error.message, /being deleted/);
+  }
+  assert.equal((await api("DELETE", "/agents/local-1")).status, 204);
+  assert.deepEqual(rowsOf(data, "local-1", [runId]), NONE);
+});
+
+test("deleting one agent never touches another: the other's runs, learning and folder stay intact", { timeout: 180_000 }, async (t) => {
+  const { api, data, store } = await serve(t);
+  const goneRun = await madeHere(api, "local-1");
+  const keptRun = await madeHere(api, "local-2");
+  const { agentId: external, runId: externalRun } = await finishedAgent(api);
+  for (const id of ["local-1", "local-2", external]) await learned(store, data, id);
+  const before = { local: rowsOf(data, "local-2", [keptRun]), external: rowsOf(data, external, [externalRun]) };
+  const timeline = (await api("GET", `/runs/${keptRun}/timeline`)).body.rows.length;
+
+  assert.equal((await api("DELETE", "/agents/local-1")).status, 204);
+  assert.equal((await api("GET", `/runs/${goneRun}`)).status, 404);
+  for (const [id, run, rows] of [["local-2", keptRun, before.local], [external, externalRun, before.external]]) {
+    assert.equal((await api("GET", `/agents/${id}`)).status, 200, `agent ${id} is kept`);
+    assert.deepEqual([(await api("GET", `/runs/${run}`)).body.status], ["completed"], `its run ${run} is kept`);
+    assert.deepEqual(rowsOf(data, id, [run]), rows, `every row of agent ${id} and its run is kept`);
+    assert.equal((await recordsOf(store, id)).length, 2, `its learning records are kept`);
+    assert.ok(existsSync(join(learningDir(data, id), "corrections.md")), "and its learning folder");
+    assert.ok(existsSync(join(data, "disk", "agents", agentDir(id))), "and its folder");
+    assert.equal((await api("POST", `/agents/${id}/runs`, { input: { content: "Still here?" } })).status, 202, `agent ${id} still runs`);
+  }
+  assert.equal((await api("GET", `/runs/${keptRun}/timeline`)).body.rows.length, timeline, "its run's timeline is as it was");
   const unknown = await api("DELETE", "/agents/no-such-agent");
   assert.deepEqual([unknown.status, unknown.body.error?.code], [404, "not_found"]);
 });
