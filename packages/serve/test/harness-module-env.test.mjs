@@ -86,6 +86,42 @@ export const entries = (_builtins, kit) => ({ ${JSON.stringify(id)}: kit.acpEntr
   }
 });
 
+/** A module whose harness `id` is kit.acpEntry over the fake ACP agent, its recipe declaring session/load as `load`,
+ *  with `resume` among its options when given. */
+function resumeModule(dir, id, load, resume) {
+  const path = join(dir, `${id}.mjs`);
+  writeFileSync(path, `import { gooseFacts, gooseProxy } from ${JSON.stringify(ACP_INDEX)};
+import { fakeAgentRecipe } from ${JSON.stringify(ACP_TESTING)};
+const facts = Object.freeze({ ...gooseFacts, id: ${JSON.stringify(id)}, label: "Resume ${id}" });
+export const entries = (_builtins, kit) => ({ ${JSON.stringify(id)}: kit.acpEntry({
+  facts,
+  ${resume ? `resume: ${JSON.stringify(resume)},` : ""}
+  recipe: () => ({ ...fakeAgentRecipe(${JSON.stringify(id)}, ${JSON.stringify(dir)}, [{ say: "NOT_RUN" }], { load: ${load} }), billing: { kind: "proxy" } }),
+  proxy: (launch) => gooseProxy({ model: launch.model, provider: launch.provider, price: launch.price, log: launch.log }),
+}) });\n`);
+  return path;
+}
+
+test("a module's kit.acpEntry that names no `resume` is offered resume \"restart\", the promise that is never wrong, whatever its recipe declares", async (t) => {
+  const { harnessOffers } = await import("../dist/harness.js");
+  const dir = await scratch(t);
+  const paths = [resumeModule(dir, "resume-unsaid", true), resumeModule(dir, "resume-unsaid-noload", false)];
+  const offers = await harnessOffers({ ...KEYED_ENV, AGENTRUN_HARNESS_MODULES: JSON.stringify(paths) });
+  for (const id of ["resume-unsaid", "resume-unsaid-noload"]) assert.equal(offers.find((offer) => offer.id === id)?.promises.resume, "restart", id);
+});
+
+test("a module's kit.acpEntry that promises resume \"load\" while its recipe's declares.load is false is refused at its first launch (HARNESS_RESUME_UNDECLARED), its start's reason naming it; \"restart\" over a recipe that loads is not", async (t) => {
+  const { harnessTable } = await import("../dist/harness-table.js");
+  const dir = await scratch(t);
+  const table = harnessTable({ AGENTRUN_HARNESS_MODULES: JSON.stringify([resumeModule(dir, "resume-overpromised", false, "load"), resumeModule(dir, "resume-underpromised", true, "restart"), resumeModule(dir, "resume-kept", true, "load")]) });
+  assert.equal(table["resume-overpromised"].promises.resume, "load");
+  for (const atStart of [false, true]) {
+    const refused = await table["resume-overpromised"].refusal(KEYED_ENV, undefined, { atStart });
+    assert.match(refused?.reason ?? "", /^HARNESS_RESUME_UNDECLARED: .*resume-overpromised.*declares\.load/, `atStart ${atStart}`);
+  }
+  for (const id of ["resume-underpromised", "resume-kept"]) assert.doesNotMatch((await table[id].refusal(KEYED_ENV, undefined, { atStart: true }))?.reason ?? "", /HARNESS_RESUME_UNDECLARED/, id);
+});
+
 test("a module's kit.acpEntry never builds a plan-billed entry: given facts on the plan wire it is refused at load, and its recipe and proxy never see a launch (nor its environment)", async (t) => {
   const { harnessTable } = await import("../dist/harness-table.js");
   const { cursorFacts } = await import(ACP_INDEX);
