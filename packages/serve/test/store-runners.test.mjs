@@ -4,22 +4,21 @@
 // still queued fail in its words while a run a runner claimed is left to it.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { setTimeout as sleep } from "node:timers/promises";
 import { keepPresence, PRESENCE_STALE_MS, refusedEnd, refusedEndMessage, runnersRefused } from "../dist/runner/presence.js";
 import { RUNNER_ROWS_KEPT_MS } from "../dist/store/store.js";
 import { queued, storeOn, T0 } from "./store-helpers.mjs";
 
 const WORDS = "AGENTRUN_RUN_USER=bogus is not a setting this runner knows: set AGENTRUN_RUN_USER=same.";
 
-test("a runner's row is its incarnation's: seen and removed only by it, put again by a new one, gone a day after its last word", async (t) => {
+test("a runner's row is its incarnation's: renewed and removed only by it, put again by a new one, gone a day after its last word", async (t) => {
   const clock = { now: T0 };
   const { store } = await storeOn(t, { clock });
-  await store.runners.put({ runner: "r1", incarnation: "a", refused: null });
+  assert.equal(await store.runners.put({ runner: "r1", incarnation: "a", refused: null }), true);
   assert.deepEqual(await store.runners.list(), [{ runner: "r1", incarnation: "a", refused: null, host: null, port: null, seenAt: T0 }], "a runner with no relay answers nowhere");
   clock.now = T0 + 5_000;
-  assert.equal(await store.runners.seen("r1", "a"), true);
-  assert.equal(await store.runners.seen("r1", "b"), false, "another incarnation's renewal is not this one's");
-  assert.equal((await store.runners.list())[0].seenAt, T0 + 5_000);
+  assert.equal(await store.runners.renew("r1", "a", null), true);
+  assert.equal(await store.runners.renew("r1", "b", { host: "x", port: 2 }), false, "another incarnation's renewal is not this one's");
+  assert.deepEqual((await store.runners.list()).map((row) => [row.seenAt, row.host]), [[T0 + 5_000, null]]);
   // A new start of the same name takes the row over, with its relay; the earlier one's remove leaves it.
   await store.runners.put({ runner: "r1", incarnation: "b", refused: WORDS, host: "r1.example", port: 40_000 });
   await store.runners.remove("r1", "a");
@@ -54,8 +53,8 @@ test("no runner can take a run only while every runner still there refused, and 
   assert.equal(await runnersRefused(store.runners), undefined, "one runner that claims is enough");
   // The runner that claims stops saying it is there (it died): past PRESENCE_STALE_MS it no longer counts.
   clock.now = at(PRESENCE_STALE_MS);
-  await store.runners.seen("refuses", "1");
-  await store.runners.seen("refuses-too", "1");
+  await store.runners.renew("refuses", "1", null);
+  await store.runners.renew("refuses-too", "1", null);
   clock.now = at(PRESENCE_STALE_MS + 1);
   assert.equal(await runnersRefused(store.runners), `No runner of this server can take a run: ${WORDS}`);
   // And refusing runners that died count for nothing either: no runner is there.
@@ -63,41 +62,72 @@ test("no runner can take a run only while every runner still there refused, and 
   assert.equal(await runnersRefused(store.runners), undefined);
 });
 
-test("keepPresence keeps its row renewed and puts it back when it went; its close removes it", async (t) => {
-  const { store } = await storeOn(t, { clock: { now: Date.now() } });
-  const presence = keepPresence(store.runners, "kept", WORDS, { renewMs: 50 });
-  t.after(() => presence.stop());
-  const until = async (done) => {
-    const end = Date.now() + 5_000;
-    while (!done(await store.runners.list()) && Date.now() < end) await sleep(20);
-    return store.runners.list();
+// The store's runners as keepPresence writes them, each write held until settled() has seen it land: a renewal's tick
+// starts a write (and, when its row went, a put after it), and settled() waits for every one, never for a wall-clock time.
+function tracked(runners) {
+  const open = new Set();
+  const track = (write) => (...args) => {
+    const landed = write(...args);
+    open.add(landed);
+    landed.then(() => open.delete(landed), () => open.delete(landed));
+    return landed;
   };
-  const [row] = await until((rows) => rows.length === 1);
+  return {
+    runners: { ...runners, put: track(runners.put), renew: track(runners.renew), remove: track(runners.remove) },
+    // A tick only queues its write behind the one before (writing.then), so each round first lets what is queued start
+    // (setImmediate is real here: only setInterval is mocked), then waits for every write started; done when none is.
+    async settled() {
+      for (;;) {
+        await new Promise((resolve) => setImmediate(resolve));
+        if (open.size === 0) return;
+        await Promise.allSettled([...open]);
+      }
+    },
+  };
+}
+
+const RENEW_MS = 50;
+
+test("keepPresence keeps its row renewed and puts it back when it went; its close removes it", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
+  const { store } = await storeOn(t, { clock: { now: Date.now() } });
+  const writes = tracked(store.runners);
+  const presence = keepPresence(writes.runners, "kept", WORDS, { renewMs: RENEW_MS });
+  t.after(() => presence.stop());
+  await writes.settled();
+  const [row] = await store.runners.list();
   assert.deepEqual({ runner: row.runner, refused: row.refused }, { runner: "kept", refused: WORDS });
   // Gone from under it (a row pruned): put again at its next renewal, its own incarnation.
   await store.runners.remove(row.runner, row.incarnation);
-  const [again] = await until((rows) => rows.length === 1);
-  assert.equal(again.incarnation, row.incarnation);
+  t.mock.timers.tick(RENEW_MS - 1);
+  await writes.settled();
+  assert.deepEqual(await store.runners.list(), [], "no renewal before renewMs");
+  t.mock.timers.tick(1);
+  await writes.settled();
+  assert.deepEqual((await store.runners.list()).map((kept) => [kept.runner, kept.incarnation]), [["kept", row.incarnation]]);
   await presence.close();
   assert.deepEqual(await store.runners.list(), []);
 });
 
-test("keepPresence's incarnation is the one it is given, its relay's: relay() says on its row where the relay answers, a re-put keeps it, relay(null) clears it, and the close removes the row", async (t) => {
+test("keepPresence's incarnation is the one it is given, its relay's: relay() says on its row where the relay answers, a renewal and a re-put keep it, relay(null) clears it, and the close removes the row", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
   const { store } = await storeOn(t, { clock: { now: Date.now() } });
-  const presence = keepPresence(store.runners, "relaying", null, { renewMs: 50, incarnation: "inc-given" });
+  const writes = tracked(store.runners);
+  const presence = keepPresence(writes.runners, "relaying", null, { renewMs: RENEW_MS, incarnation: "inc-given" });
   t.after(() => presence.stop());
   assert.equal(presence.incarnation, "inc-given");
   await presence.relay({ host: "127.0.0.1", port: 40_000 });
   const pick = (rows) => rows.map((row) => [row.runner, row.incarnation, row.host, row.port]);
   assert.deepEqual(pick(await store.runners.list()), [["relaying", "inc-given", "127.0.0.1", 40_000]]);
-  const until = async (done) => {
-    const end = Date.now() + 5_000;
-    while (!done(await store.runners.list()) && Date.now() < end) await sleep(20);
-    return store.runners.list();
-  };
+  // A renewal over its own row: the relay's place stays.
+  t.mock.timers.tick(RENEW_MS);
+  await writes.settled();
+  assert.deepEqual(pick(await store.runners.list()), [["relaying", "inc-given", "127.0.0.1", 40_000]]);
   // Gone from under it: put again at its next renewal, its relay's place with it.
   await store.runners.remove("relaying", "inc-given");
-  assert.deepEqual(pick(await until((rows) => rows.length === 1)), [["relaying", "inc-given", "127.0.0.1", 40_000]]);
+  t.mock.timers.tick(RENEW_MS);
+  await writes.settled();
+  assert.deepEqual(pick(await store.runners.list()), [["relaying", "inc-given", "127.0.0.1", 40_000]]);
   // Its relay's close: the row stays (the runner is still there), answering nowhere.
   await presence.relay(null);
   assert.deepEqual(pick(await store.runners.list()), [["relaying", "inc-given", null, null]]);
@@ -106,16 +136,20 @@ test("keepPresence's incarnation is the one it is given, its relay's: relay() sa
 });
 
 test("keepPresence never takes back a row a later process of the same name put: the later one's relay is the one the server reads", async (t) => {
+  t.mock.timers.enable({ apis: ["setInterval"] });
   const { store } = await storeOn(t, { clock: { now: Date.now() } });
-  const earlier = keepPresence(store.runners, "same", null, { renewMs: 30, incarnation: "inc-earlier" });
+  const earlier = keepPresence(store.runners, "same", null, { renewMs: RENEW_MS, incarnation: "inc-earlier" });
   t.after(() => earlier.stop());
   // relay() resolves once its write landed, after the first put.
-  await earlier.relay({ host: "127.0.0.1", port: 40_000 });
+  const at = { host: "127.0.0.1", port: 40_000 };
+  await earlier.relay(at);
   // The later one renews only after the test's end, so no renewal of its own puts the row back in between.
   const later = keepPresence(store.runners, "same", null, { renewMs: 60_000, incarnation: "inc-later" });
   t.after(() => later.stop());
   await later.relay({ host: "127.0.0.1", port: 40_001 });
-  await sleep(300);
+  for (let i = 0; i < 10; i += 1) t.mock.timers.tick(RENEW_MS);
+  // Its relay's write goes after the ten renewals' writes, so once it landed they all did.
+  await earlier.relay(at);
   assert.deepEqual((await store.runners.list()).map((row) => [row.incarnation, row.port]), [["inc-later", 40_001]], "ten renewals of the earlier one later, the row is still the later one's");
 });
 
@@ -133,23 +167,30 @@ test("an earlier process's relay close and its presence's close leave a later pr
   assert.deepEqual((await store.runners.list()).map((row) => [row.incarnation, row.host, row.port]), [["inc-later", "127.0.0.1", 40_001]], "the later one's row and relay stand");
 });
 
-test("putUnlessLive puts a row where none is, or over its own or a stale one, and leaves another incarnation's live row as it is", async (t) => {
+test("put unlessLiveMs puts a row where none is, or over its own or a stale one, and leaves another incarnation's live row as it is; a put without it takes the row", async (t) => {
   const clock = { now: T0 };
   const { store } = await storeOn(t, { clock });
-  assert.equal(await store.runners.putUnlessLive({ runner: "r", incarnation: "inc-a", refused: null }, 30_000), true, "no row: put");
+  const unlessLive = { unlessLiveMs: 30_000 };
+  assert.equal(await store.runners.put({ runner: "r", incarnation: "inc-a", refused: null }, unlessLive), true, "no row: put");
   // inc-a's row is older than now, and still within the 30 s.
   clock.now += 29_999;
-  assert.equal(await store.runners.putUnlessLive({ runner: "r", incarnation: "inc-b", refused: null, host: "h", port: 1 }, 30_000), false, "inc-a's live row: left");
+  assert.equal(await store.runners.put({ runner: "r", incarnation: "inc-b", refused: null, host: "h", port: 1 }, unlessLive), false, "inc-a's live row: left");
   assert.deepEqual((await store.runners.list()).map((row) => [row.incarnation, row.host]), [["inc-a", null]]);
-  assert.equal(await store.runners.putUnlessLive({ runner: "r", incarnation: "inc-a", refused: WORDS }, 30_000), true, "its own: put");
+  assert.equal(await store.runners.put({ runner: "r", incarnation: "inc-a", refused: WORDS }, unlessLive), true, "its own: put");
   assert.equal((await store.runners.list())[0].refused, WORDS);
   clock.now += 30_001;
-  assert.equal(await store.runners.putUnlessLive({ runner: "r", incarnation: "inc-b", refused: null, host: "h", port: 1 }, 30_000), true, "inc-a's row went stale: taken");
+  assert.equal(await store.runners.put({ runner: "r", incarnation: "inc-b", refused: null, host: "h", port: 1 }, unlessLive), true, "inc-a's row went stale: taken");
   assert.equal((await store.runners.list())[0].seenAt, clock.now, "seen at the store's now");
   assert.deepEqual((await store.runners.list()).map((row) => [row.incarnation, row.host, row.port]), [["inc-b", "h", 1]]);
-  assert.equal(await store.runners.relayAt("r", "inc-a", { host: "x", port: 2 }), false, "relayAt on another incarnation's row writes nothing");
-  assert.equal(await store.runners.relayAt("r", "inc-b", null), true);
+  clock.now += 1;
+  assert.equal(await store.runners.renew("r", "inc-a", { host: "x", port: 2 }), false, "a renewal on another incarnation's row writes nothing");
+  assert.equal(await store.runners.renew("r", "inc-b", { host: "h2", port: 3 }), true);
+  assert.deepEqual((await store.runners.list()).map((row) => [row.incarnation, row.host, row.port, row.seenAt]), [["inc-b", "h2", 3, clock.now]], "a renewal says where the relay answers now, seen now");
+  assert.equal(await store.runners.renew("r", "inc-b", null), true);
   assert.deepEqual((await store.runners.list()).map((row) => [row.incarnation, row.host, row.port]), [["inc-b", null, null]]);
+  // A first put (no unlessLiveMs) takes the name over from a live row of another incarnation.
+  assert.equal(await store.runners.put({ runner: "r", incarnation: "inc-c", refused: null }), true);
+  assert.deepEqual((await store.runners.list()).map((row) => row.incarnation), ["inc-c"]);
 });
 
 test("failUnclaimed fails every run still queued in the words given, refusing its untaken commands, and leaves a claimed run to its runner", async (t) => {

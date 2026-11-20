@@ -1,8 +1,9 @@
 // The start sweep over ended runs whose stored cost is unknown (Runs.costUnknown): each heals by the rule its run read
-// heals by (store-view.ts healedOverStore: its booking's exact figure, Runs.healCost: only null to a figure, at the end it
-// was read at), read from its row, launch and journal alone. So a run nobody reads again still heals, and every reader of
-// the stored cost (the runs list, /stats, /usage, the learning bill) reads the figure its run read shows. A run whose
-// cost is unknown for a charge of no known cost, or whose booking cannot be read, keeps its null.
+// heals by (store-view.ts healedOverStore: what its end would have stored from its booking, a bound when a hold is
+// counted in it; Runs.healCost: only null to a figure, at the end it was read at), read from its row, launch and journal
+// alone. So a run nobody reads again still heals, and every reader of the stored cost (the runs list, /stats, /usage, the
+// learning bill) reads the figure its run read shows. A run whose cost is unknown for a charge of no known cost keeps its
+// null; a run that can never heal (native, no booked answer, a person's stop) is not listed, so no start reads it again.
 //
 // Bounded: a page of ids at a time, one run after another, yielding between pages, from after the server listens and
 // never waited on by it, so a big store never holds its start. Stopped between runs by `stopped`. A run whose read or
