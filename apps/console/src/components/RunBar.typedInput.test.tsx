@@ -119,6 +119,22 @@ describe("RunBar, an agent with typed input", () => {
     expect(m.host.querySelector('[data-issue="input.content"]')).toBeNull();
   });
 
+  it("keeps the server's issue at a required message when another field is filled: only the message clears it", async () => {
+    const refusal = Object.assign(new ClientError(422, "input_invalid", "The run's input is not valid."), { fields: [
+      { field: "input.content", reason: "too_long", message: "input.content is longer than 20 characters" },
+    ] });
+    const m = mount(agent({ ...SCHEMA, properties: { content: { type: "string" }, ...SCHEMA.properties }, required: ["content", "company"] }), refusal);
+    const message = m.host.querySelector<HTMLTextAreaElement>('textarea[aria-label^="The run\'s message"]')!;
+    m.set(message, "Look into them, and everything they have ever shipped.");
+    m.set(m.at("company").querySelector("input")!, "Acme");
+    await m.run();
+    expect(m.host.querySelector('[data-issue="input.content"]')?.textContent).toBe("input.content is longer than 20 characters");
+    m.set(m.at("company").querySelector("input")!, "Acme Corp");
+    expect(m.host.querySelector('[data-issue="input.content"]')?.textContent, "a field fixes nothing about a required message").toBe("input.content is longer than 20 characters");
+    m.set(message, "Look into them.");
+    expect(m.host.querySelector('[data-issue="input.content"]')).toBeNull();
+  });
+
   it("types a schema it can't show as fields as the whole input in JSON, starting from its shape", async () => {
     const m = mount(agent({ type: "object", properties: { company: { type: "string" }, filters: { type: "object" } }, required: ["company"] }));
     const box = m.host.querySelector<HTMLTextAreaElement>('textarea[aria-label="The run\'s input, as JSON"]')!;

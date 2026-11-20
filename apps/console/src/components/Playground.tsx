@@ -126,7 +126,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
   useEffect(() => { setFixed(new Set()); }, [result]);
   const setField = (key: string, f: FieldSpec, value: string) => {
     setValues((was) => ({ ...was, [key]: value }));
-    setFixed((was) => { const n = new Set(was); if (fieldValid(f, value)) n.add(key); else n.delete(key); if (value) n.add("input.content"); return n; });
+    setFixed((was) => { const n = new Set(was); if (fieldValid(f, value)) n.add(key); else n.delete(key); if (value && !form?.contentRequired) n.add("input.content"); return n; });
   };
   const typeText = (value: string) => {
     setText(value);
