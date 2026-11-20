@@ -10,7 +10,9 @@
 // The whole file is held in memory and written once, through Workspace.write (a temporary name in the same folder,
 // renamed over the path on the local disk; one put on Archil's), so a download that fails, or goes past the cap, leaves
 // nothing at the path. So at most SAVE_CONCURRENCY downloads run at once per runner, across its runs (SERVER_SLOTS); the
-// rest wait, under their own deadline.
+// rest wait, under their own deadline. A download holds its file's size when its host states its length, about twice that
+// at its peak when it does not (publicDownload). In a Mode 2 run's own process the write crosses to the runner in pieces
+// and the runner writes it (runner/big-writes.ts), under a gate of its own.
 //
 // The type is checked against the bytes: a media type the server plays (file-types.ts) is saved only when its bytes
 // carry that type's signature (MEDIA), and the path's extension must name a type that agrees: the type is not stored, the
