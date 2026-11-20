@@ -1,10 +1,12 @@
-// An agent's learning, deleted: the learning half of an agent's delete. Its caller (DELETE /v2/agents/{id}) stops the
-// agent's runs and learning work first, then calls deleteLearning, then deletes the agent's store rows, in that order:
-// a call again after a crash finishes what a first one began, and no learning is left with no agent to own it.
+// An agent's learning, deleted: the learning half of an agent's delete, and the whole of a reset of its learning. Its
+// callers stop the agent's learning work first: DELETE /v2/agents/{id} stops all its runs, calls deleteLearning, then
+// deletes the agent's store rows, in that order, so a call again after a crash finishes what a first one began and no
+// learning is left with no agent to own it; DELETE /v2/agents/{id}/learning (learning-reset.ts) keeps the agent and its
+// runs.
 import { isWorkspaceError } from "../workspace/workspace.js";
 import { FINAL_STATES, type Store } from "../store/store.js";
 import type { LearningFolder } from "./folder.js";
-import { gradesKey, promotionsKey } from "./promote.js";
+import { gradesKey, promotionsKey, resetAtKey, resetLedgerKey } from "./promote.js";
 import { learningIdOf } from "./learning-of.js";
 
 /** A delete refused: work of the agent's learning is still in flight (`runs`: a run of the agent not ended, its
@@ -18,24 +20,28 @@ export class LearningInFlight extends Error {
   }
 }
 
-/** Agent `agentId`'s learning deleted: every file of its learning folder (`folder`, learning.ts learningFolderOf: its
- *  corrections.md and workflows, its git history and snapshot, audits.jsonl), then the learning records the store keeps
- *  for it (its promotions and grades). Refused (LearningInFlight), with nothing removed, while a run of the agent has not
- *  ended. Idempotent: what is gone already is skipped, so a second call removes nothing. `files`: the folder's entries it
- *  removed; `records`: the store's records. `folder` is ended here. */
-export async function deleteLearning(store: Store, agentId: string, folder: LearningFolder): Promise<{ files: number; records: number }> {
+/** Agent `agentId`'s learning deleted: its learning folder on each other disk it is on (`elsewhere`: a Mode 2 run's end
+ *  writes it on the Archil disk its claim mounted; server.ts names those disks), then every file of its learning folder
+ *  here (`folder`, learning.ts learningFolderOf: its corrections.md and workflows, its git history and snapshot,
+ *  audits.jsonl), then the learning records the store keeps for it (its promotions and grades, and the reset ledger and
+ *  watermark its earlier resets kept, unless `keepResetLedger`: a reset keeps them, the runs they cover staying). Refused
+ *  (LearningInFlight), with nothing removed, while a run of the agent has not ended; `elsewhere` failing leaves this
+ *  folder and the records for the next call. Idempotent: what is gone already is skipped, so a second call removes
+ *  nothing. `files`: this folder's entries it removed; `records`: the store's records. `folder` is ended here. */
+export async function deleteLearning(store: Store, agentId: string, folder: LearningFolder, { keepResetLedger = false, elsewhere }: { keepResetLedger?: boolean; elsewhere?: () => Promise<void> } = {}): Promise<{ files: number; records: number }> {
   try {
     // Its purged runs too: a run's tombstone keeps the disk it was on.
     const runs = (await store.runs.list({ agentId, purged: true })).filter((run) => run.agentId === agentId);
     const open = runs.filter((run) => !FINAL_STATES.includes(run.state)).map((run) => run.id);
     if (open.length) throw new LearningInFlight(agentId, open);
+    await elsewhere?.();
     const entries = await folder.workspace.list("").catch((error: unknown) => (isWorkspaceError(error, "NOT_FOUND") ? [] : Promise.reject(error)));
     for (const entry of entries) await folder.workspace.remove(entry.name, { recursive: true, force: true });
     let records = 0;
     // Its records on every disk it learned on (learn/learning-of.ts): the default disk's, and each named disk a run of it
     // was on.
     const learnings = [null, ...new Set(runs.map((run) => run.disk).filter((disk): disk is string => disk !== null))].map((disk) => learningIdOf({ agentId, disk }));
-    for (const key of learnings.flatMap((learning) => [promotionsKey(learning), gradesKey(learning)])) {
+    for (const key of [...learnings.flatMap((learning) => [promotionsKey(learning), gradesKey(learning)]), ...(keepResetLedger ? [] : [resetLedgerKey(agentId), resetAtKey(agentId)])]) {
       if ((await store.settings.get(key)) === undefined) continue;
       await store.settings.remove(key);
       records += 1;

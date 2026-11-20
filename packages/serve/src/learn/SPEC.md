@@ -333,3 +333,29 @@ snapshot (`.agentrun/snapshot.json`, what every read reads). A stop between the 
 ref with no diff: the next read of the round's merge (the end step's, or a second merge's) writes it from the ref. A person's replace of `corrections.md` is one commit the
 same way, under the ETag they read. A workflow is never deleted by a run: a retired one stays in the folder and
 serves no run.
+
+## The reset
+
+`DELETE /v2/agents/{id}/learning` (`learning-reset.ts`) deletes the folder whole, its git history and audit ledger
+included, on this server and on every Archil disk the agent's runs used (a Mode 2 run's end writes the folder on the
+disk its claim mounted: the agent's own, or one its launch named; `archil-routes.ts` removeLearningFolder, 503 while a
+disk can't be reached), then the agent's promotions and grades (`delete.ts` deleteLearning); the agent and its runs
+stay. The agent's delete takes the same step on the launch-named disks; its own disk goes whole there. It cancels
+the runs that exist only for learning (replays, audit shadows) and waits for them; a run of the agent's own still going
+refuses it (409 `learning_busy`), since its learning lives in it, and nothing is deleted. Before the records go, each
+revision they name is kept in the agent's reset ledger (`learning.reset-ledger.<agent>`: workflow, digest and K alone),
+so a kept served run's cost still carries its revision's compile and check; an agent's delete removes the ledger. Each
+run's diff (`.agentrun/diffs/`) goes with the folder. The folder's next write starts
+a new history.
+
+Before anything goes, the reset sets the agent's watermark (`learning.reset-at.<agent>`, beside the ledger; the agent's
+delete removes both): when it began, one setting for the agent whatever disk its runs used. Learning reads only the
+runs after it (`compile.ts` sinceReset): a run that started at or before it, or whose seed was read at or before it
+(its launch's `seededAt`, read in the same queue as the reset), counts toward no compile_after and is no compile's
+trace, no check's or owner's replay input, no audit's draw and no past run of the money rule, and the loop view lists
+none of its compiles. A run seeded before the reset whose row was made after it learns nothing: its learning end drops it at its entry
+(reason `reset`), before any look-back, merge, compile or record. That check reads time alone: a Mode 2 run's end
+writes the folder on its disk, which never held the seed the server read from its own, so a commit missing there says
+nothing of a reset. The learning script is a second wall: once the agent was reset, a run whose folder holds its seed
+at its end's entry names it on its merge (`seed <commit>`), which the script refuses when the folder no longer holds
+it, a correction alone included. The runs themselves, their costs and what each kept stay.

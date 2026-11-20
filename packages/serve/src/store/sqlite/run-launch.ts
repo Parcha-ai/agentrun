@@ -55,3 +55,10 @@ export async function readLearningStarts(executor: Pick<SqliteExecutor, "all"> &
   const rows = await executor.all<{ run_id: string; learning: string | null }>(`SELECT run_id, ${executor.dialect.jsonText("body", ["learning"])} AS learning FROM run_launch WHERE run_id IN (SELECT id FROM runs WHERE agent_id = ? AND ${where})`, agentId);
   return rows.map((row) => ({ runId: row.run_id, learning: row.learning === null ? undefined : JSON.parse(row.learning) }));
 }
+
+/** The ids of agent `agentId`'s runs started after `at` whose learning seed was read at or before it (the launch body's
+ *  `learning.seededAt`), in one read of that one number a run started after `at`: never a run's section or input. */
+export async function readSeededBefore(executor: Pick<SqliteExecutor, "all"> & { readonly dialect: Dialect }, agentId: string, at: number): Promise<string[]> {
+  const rows = await executor.all<{ run_id: string; seeded_at: string | number | null }>(`SELECT run_id, ${executor.dialect.jsonText("body", ["learning", "seededAt"])} AS seeded_at FROM run_launch WHERE run_id IN (SELECT id FROM runs WHERE agent_id = ? AND started_at > ?)`, agentId, at);
+  return rows.flatMap((row) => (row.seeded_at !== null && Number(row.seeded_at) <= at ? [row.run_id] : []));
+}

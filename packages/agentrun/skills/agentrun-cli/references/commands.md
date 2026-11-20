@@ -398,6 +398,12 @@ Read a replay's result: running, done or failed, its counts and its score (start
 
 Route: `GET /agents/{agent_id}/learning/workflows/{name}/revisions/{digest}/replays/{replay_id}`.
 
+### `agentrun learning reset AGENT_ID`
+
+Reset the agent's learning: everything it learned deleted, the agent and its runs kept.
+
+Route: `DELETE /agents/{agent_id}/learning`.
+
 ### `agentrun learning retire AGENT_ID FILE`
 
 Retire a workflow draft: out of every later run, kept in history.

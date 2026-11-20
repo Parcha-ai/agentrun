@@ -1259,6 +1259,28 @@ export const COMMANDS = [
   {
     "command": [
       "learning",
+      "reset"
+    ],
+    "operationId": "deleteAgentLearning",
+    "method": "DELETE",
+    "path": "/agents/{agent_id}/learning",
+    "pathParams": [
+      "agent_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "Reset the agent's learning: everything it learned deleted, the agent and its runs kept"
+  },
+  {
+    "command": [
+      "learning",
       "retire"
     ],
     "operationId": "retireLearningFile",

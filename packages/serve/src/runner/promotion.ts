@@ -56,7 +56,7 @@ import type { McpPin } from "../mcp-gateway.js";
 import { pinAnnotations, type Recorded, recordedCalls, type ReplayCalls, replayCalls, type Skipped, SKIPPED_WRITE, toolClassOf, toolWord, unmarkedWords } from "../learn/replay-calls.js";
 import { listed } from "../learning-words.js";
 import { isObject, type Json } from "../validate.js";
-import { agentRun, lastOwnRuns, newCompileAttempt } from "../learn/compile.js";
+import { agentRun, lastOwnRuns, newCompileAttempt, sinceReset } from "../learn/compile.js";
 import { learningDiskOf, learningIdOf, type LearningId, type LearningOf } from "../learn/learning-of.js";
 import { type CheckBar, type CheckDisagreement, type CheckRecord, checkPasses, checkShares, CHECK_TEXT_MAX, championOf, compareAnswers, type Compared, comparedOf, type PromotionRecord, promotionOf, promotionsOf, recordPromotion, type ReplayLaunch, type ReplayOutcomes, type ReplayScore, replayingOf, type SkippedTool, skippedToolsOf } from "../learn/promote.js";
 import { sendCommand } from "./commands.js";
@@ -391,13 +391,15 @@ async function checkInputs(deps: Pick<PromotionDeps, "store" | "agentId" | "runI
   const { resolveSchemaForWorkflow } = await import("@parcha/agentrun-dsl");
   const learning = learningOfDeps(deps);
   const onDisk = (row: RunRow) => (row.disk ?? null) === learning.disk;
-  const named = (await Promise.all(pick.of.map((id) => deps.store.runs.get(id)))).filter((row): row is RunRow => row !== undefined && checkable(deps, row) && onDisk(row));
+  // Every input is a run since the agent's learning's reset (sinceReset), the named and audited ones included.
+  const since = await sinceReset(deps.store, deps.agentId);
+  const named = (await Promise.all(pick.of.map((id) => deps.store.runs.get(id)))).filter((row): row is RunRow => row !== undefined && checkable(deps, row) && onDisk(row) && since(row));
   const last = pick.n ? await lastOwnRuns(deps.store, learning, pick.n + pick.of.length, deps.runId) : [];
   const own = [...named, ...last.filter((row) => !pick.of.includes(row.id)).slice(0, pick.n)];
   // And an audit hold's disagreeing shadow runs: the agent's answers the recompile must say too.
   for (const id of audited) {
     const row = await deps.store.runs.get(id);
-    if (row && row.state === "ended" && onDisk(row) && !own.some((one) => one.id === id)) own.push(row);
+    if (row && row.state === "ended" && onDisk(row) && since(row) && !own.some((one) => one.id === id)) own.push(row);
   }
   const out: ReplayInput[] = [];
   let files = 0;

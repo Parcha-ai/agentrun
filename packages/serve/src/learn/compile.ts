@@ -13,7 +13,7 @@ import type { RunRow, Store } from "../store/store.js";
 import type { AuthorHostAddendum } from "@parcha/agentrun-dsl";
 import { createHash } from "node:crypto";
 import { LEARNED_MAX_TURNS, WORKFLOW_NAME } from "./workflow-draft.js";
-import { type AuditDisagreement, type AuditHold, championOf, type CheckDisagreement, type CheckRecord, checkShares, type PromotionRecord, promotionOf } from "./promote.js";
+import { type AuditDisagreement, type AuditHold, championOf, type CheckDisagreement, type CheckRecord, checkShares, type PromotionRecord, promotionOf, resetAtOf } from "./promote.js";
 import { listed } from "../learning-words.js";
 import { excerptShown, redactSecrets } from "./secrets.js";
 import { isShadowRun } from "./audit.js";
@@ -201,12 +201,27 @@ export async function lastRunsOf(store: Pick<Store, "runs">, learning: LearningO
   }
 }
 
+/** Which of agent `agentId`'s runs its learning may read, by its reset watermark (learn/promote.ts resetAtOf): every run
+ *  when its learning was never reset; else only a run that started after it and did not read its learning seed at or
+ *  before it (its launch's `seededAt`: a run whose start read the seed before the reset, its row made after it). When
+ *  it was reset, one read of that one number of the runs started after it (Store.runs.seededBefore); none when not.
+ *  Every learning read of "the agent's runs" takes it: compile_after's count and a check's inputs (lastOwnRuns), a
+ *  compile's traces, an audit's draws, the money rule's past runs. */
+export async function sinceReset(store: Pick<Store, "runs" | "settings">, agentId: string): Promise<(row: Pick<RunRow, "id" | "startedAt">) => boolean> {
+  const at = await resetAtOf(store.settings, agentId);
+  if (at === undefined) return () => true;
+  const before = new Set(await store.runs.seededBefore(agentId, at));
+  return (row) => row.startedAt > at && !before.has(row.id);
+}
+
 /** The agent's last `n` completed runs of its own (agentRun: not one its learned workflow answered alone, not a replay
- *  nor a shadow audit; never `exceptRunId`, an archived run or an imported one), newest first (lastRunsOf: runs its
- *  workflow served since never push them out of the read), on `learning`'s disk alone. The one read of what compile_after
- *  counts and of a check's inputs. */
-export const lastOwnRuns = (store: Pick<Store, "runs">, learning: LearningOf, n: number, exceptRunId?: string): Promise<RunRow[]> =>
-  lastRunsOf(store, learning, n, (row) => row.id !== exceptRunId && agentRun(row) && row.archivedAt === null && !row.importedFrom, { state: "ended", archived: false });
+ *  nor a shadow audit; never `exceptRunId`, an archived run or an imported one), on `learning`'s disk alone and since
+ *  its agent's learning's reset (sinceReset), newest first (lastRunsOf: runs its workflow served since never push them
+ *  out of the read). The one read of what compile_after counts and of a check's inputs. */
+export const lastOwnRuns = async (store: Pick<Store, "runs" | "settings">, learning: LearningOf, n: number, exceptRunId?: string): Promise<RunRow[]> => {
+  const since = await sinceReset(store, learning.agentId);
+  return lastRunsOf(store, learning, n, (row) => row.id !== exceptRunId && agentRun(row) && row.archivedAt === null && !row.importedFrom && since(row), { state: "ended", archived: false });
+};
 
 /** Whether a run's look-back compiles its agent's job: the run completed, the agent has no learned workflow (active or
  *  waiting for its owner's OK), and it has `compileAfter` completed
