@@ -46,6 +46,13 @@ describe("LearningGlance", () => {
     expect(cell(host, "glance-headline")).toBe("7.7x cheaper a run, agreeing with the agent on 21 of 22 checked answers.");
     expect(cell(host, "glance-even")).toBe("Break-evenNo billThe cost read gave no bill.");
   });
+  it("draws the two cost levels as two equal slivers when a run cost nothing before takeover and nothing after", () => {
+    const free: LearningCost = { ...COST, summary: { ...COST.summary, before: { runs: 20, mean_usd: 0 }, after: { ...COST.summary.after!, mean_usd: 0 }, times_cheaper: null } };
+    const host = draw(createElement(LearningGlance, { cost: free, revisions: REVISIONS }));
+    const bars = [...host.querySelectorAll('[data-testid="glance-levels"] rect')].map((r) => r.getAttribute("width"));
+    expect(bars).toEqual(["1.00%", "1.00%"]);
+    expect(cell(host, "glance-cost")).toBe("Cost a run$0$0 all-in over 59 served runs, $0 by the agent before");
+  });
   it("says a figure is not there yet in words, never a 0% or a $0", () => {
     const bare: LearningCost = { ...COST, summary: { ...COST.summary, before: null, after: null, after_state: "cost_unknown", times_cheaper: null, hand_backs: null }, bill: { ...COST.bill, break_even: null, gap_usd: 2.5 } };
     const host = draw(createElement(LearningGlance, { cost: bare, revisions: [] }));

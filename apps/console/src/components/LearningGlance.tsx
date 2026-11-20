@@ -93,10 +93,11 @@ function Interval({ share, mark = null, markWords }: { share: Share; mark?: numb
   );
 }
 
-/** The two levels as two bars from one zero: the agent's run before takeover, and a served run after it. */
+/** The two levels as two bars from one zero: the agent's run before takeover, and a served run after it. A level of
+ *  $0 keeps the least width a bar has, so two free levels are two equal slivers and never a width that is no number. */
 function Levels({ before, after }: { before: number; after: number }) {
   const top = Math.max(before, after);
-  const wide = (v: number) => `${Math.max(1, (v / top) * 100).toFixed(2)}%`;
+  const wide = (v: number) => `${(top > 0 ? Math.max(1, (v / top) * 100) : 1).toFixed(2)}%`;
   return (
     <svg width="100%" height="16" className="block" data-testid="glance-levels">
       <rect x="0" y="1" width={wide(before)} height="6" className="fill-chart-agent" />
