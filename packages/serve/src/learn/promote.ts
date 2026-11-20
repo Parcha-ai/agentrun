@@ -252,21 +252,22 @@ async function updateKept<T>(settings: Pick<Settings, "get" | "putIfAbsent" | "r
 /** A learned workflow revision an agent's learning reset deleted (DELETE /agents/{id}/learning, learning-reset.ts): its
  *  workflow, its digest and its K (its check's compile_after; null when its records named none), nothing else of its
  *  records. What the runs it served carry of its compile and check (store-reads/learning.ts revisionLedgerOf) is read
- *  from it after the reset, so a kept run's cost reads as before. The runs keep the same names and digests. */
+ *  from it after the reset, so a kept run's cost reads as before. The runs keep the same names and digests. Kept per
+ *  (agent, disk), as the promotion records it is copied from are: a run's cost reads its own disk's. */
 export interface ResetRevision { readonly workflow: string; readonly digest: string; readonly k: number | null }
-export const resetLedgerKey = (agentId: string): string => `learning.reset-ledger.${agentId}`;
+export const resetLedgerKey = (learning: LearningId): string => `learning.reset-ledger.${learning}`;
 
-/** The revisions the agent's learning resets deleted, first reset first. */
-export const resetLedgerOf = async (settings: Pick<Settings, "get">, agentId: string): Promise<ResetRevision[]> => itemsOf<ResetRevision>(await settings.get(resetLedgerKey(agentId)));
+/** The revisions the resets of `learning` (an agent's on one disk) deleted, first reset first. */
+export const resetLedgerOf = async (settings: Pick<Settings, "get">, learning: LearningId): Promise<ResetRevision[]> => itemsOf<ResetRevision>(await settings.get(resetLedgerKey(learning)));
 
-/** Each revision `records` name (one per workflow and digest, its newest record's K) added to the agent's reset ledger,
+/** Each revision `records` name (one per workflow and digest, its newest record's K) added to `learning`'s reset ledger,
  *  before a reset deletes the records. A revision it holds already keeps its place and takes the records' K: while they
  *  stood, the ledger read their K (revisionLedgerOf), so the runs' shares read the same after this reset too. */
-export async function keepResetLedger(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, records: readonly PromotionRecord[]): Promise<void> {
+export async function keepResetLedger(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, learning: LearningId, records: readonly PromotionRecord[]): Promise<void> {
   const newest = new Map<string, ResetRevision>();
   for (const record of records) newest.set(`${record.workflow}\0${record.digest}`, { workflow: record.workflow, digest: record.digest, k: record.check?.compile_after ?? null });
   if (!newest.size) return;
-  await updateKept<ResetRevision>(settings, resetLedgerKey(agentId), (items) => {
+  await updateKept<ResetRevision>(settings, resetLedgerKey(learning), (items) => {
     const held = new Set(items.map((one) => `${one.workflow}\0${one.digest}`));
     return [...items.map((one) => newest.get(`${one.workflow}\0${one.digest}`) ?? one), ...[...newest].filter(([key]) => !held.has(key)).map(([, one]) => one)];
   });

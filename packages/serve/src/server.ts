@@ -98,7 +98,7 @@ import { type AgenticBody, type AgentRow, type McpCredentialMark, type MonidPinB
 import { agentDeleting, answerOf, logged, purgedAgent } from "./agents.js";
 import { keepGrade } from "./runner/feedback-round.js";
 import { gradeRow, notAuditableOf } from "./runner/audit.js";
-import { defaultLearningOf, learningIdOf } from "./learn/learning-of.js";
+import { defaultLearningOf, learningIdOf, learningsOf } from "./learn/learning-of.js";
 import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf, shadowRunId } from "./learn/audit.js";
 import { auditLoopOf, COMPILE_AFTER_MAX } from "./learning-setting.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
@@ -2469,17 +2469,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   };
   /** The Archil disks agent `agentId`'s learning folder may be on: a Mode 2 run's end writes it on the disk its claim
    *  mounted (workspace/learning-workspace.ts, at learningKey), the agent's stored disk (named here only for
-   *  `agentDisk`) or one a launch named (kind "launch", a customer's). A run's kept disk, or a launch's kind "agent", is
-   *  the agent's own disk, mounted only while it is still the stored one (workspace/run-disk.ts runDiskOf): one no longer
-   *  stored was removed at Archil, its folder with it. */
+   *  `agentDisk`) or one a launch named (kind "launch", a customer's: each run's disk, learn/learning-of.ts learningsOf,
+   *  read off its row, so a purged run whose launch is gone still names it). A run's kept disk, or a launch's kind
+   *  "agent", is the agent's own disk, mounted only while it is still the stored one (workspace/run-disk.ts runDiskOf):
+   *  one no longer stored was removed at Archil, its folder with it. */
   const learningDisksOf = async (agentId: string, agentDisk: boolean): Promise<string[]> => {
     const disks = new Set<string>();
     const stored = agentDisk ? await agentDiskOf(store, agentId) : undefined;
     if (stored) disks.add(stored.diskId);
-    for (const run of await store.runs.every(agentId)) {
-      const named = await store.runs.launch(run.id).then((row) => readLaunchBody(row.body)?.archilDisk, (error: unknown) => (error instanceof StoreLaunchMissing ? undefined : Promise.reject(error)));
-      if (named?.kind === "launch") disks.add(named.diskId);
-    }
+    for (const { disk } of await learningsOf(store, agentId)) if (disk !== null) disks.add(disk);
     return [...disks];
   };
   /** Step 2 of DELETE /agents/{id}, and DELETE /agents/{id}/learning: the learning module's delete over the agent's

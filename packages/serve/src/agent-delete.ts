@@ -56,9 +56,10 @@ import type { LearningOf } from "./learn/learning-of.js";
 import { FINAL_STATES, type PurgeKept, type RunState, RunsMadeFromLeft, type Store, StoreConstraint, TriggersLeft } from "./store/index.js";
 
 /** The delete of an agent's learning: the server's is the learning module's deleteLearning over the agent's learning
- *  folder, and its folder on each Archil disk a launch of its runs named (learn/delete.ts; server.ts learningDisksOf).
- *  Idempotent; refuses with LearningInFlight while learning work of the agent is in flight. A reset of the agent's
- *  learning (learning-reset.ts), whose agent and runs stay, keeps their reset ledger (`keepResetLedger`) and deletes the
+ *  folder, and its folder on each Archil disk a launch of its runs named (learn/delete.ts; server.ts learningDisksOf),
+ *  and its records on every disk. Idempotent; refuses with LearningInFlight while learning work of the agent is in
+ *  flight. A reset of the agent's learning (learning-reset.ts), whose agent and runs stay, keeps every disk's reset
+ *  ledger and the watermark (`keepResetLedger`) and deletes the
  *  folder on the agent's own disk too (`agentDisk`), which the agent's delete removes whole in its step 3. */
 export type DeleteLearning = (store: Store, agentId: string, options?: { keepResetLedger?: boolean; agentDisk?: boolean }) => Promise<unknown>;
 

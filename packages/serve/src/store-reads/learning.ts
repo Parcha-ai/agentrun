@@ -271,7 +271,7 @@ export async function agentCostOverStore(store: Store, agentId: string, limit = 
   // not be the first promotion), and each revision's compile and check over the served runs that carry it: the default
   // disk's runs alone, as its promotions are (a run's own figures read its disk's ledger the same way, runAllInOverStore), so a run on a
   // named disk never takes a share of a default-disk revision's cost nor adds its replays to it.
-  const ledger = await agentLedgerOf(records, promotions, listed.filter((run) => run.disk === learning.disk), await resetLedgerOf(store.settings, agentId));
+  const ledger = await agentLedgerOf(records, promotions, listed.filter((run) => run.disk === learning.disk), await resetLedgerOf(store.settings, learningIdOf(learning)));
   const summary = costSummary(runs, replay);
   const booked = billOf(runs, summary);
   // What no run carries is the booked total less every run's all-in (A8), so a revision whose records aged out of the
@@ -418,7 +418,7 @@ export async function runAllInOverStore(store: Store, runId: string, rowUsd?: nu
     // The served run's learning: the agent's on the run's own disk, its runs and promotions alone (learn/learning-of.ts).
     const learning = { agentId: run.agentId, disk: run.disk ?? null };
     const listed = (await store.runs.list(learning)).filter((one) => one.agentId === run.agentId);
-    shares = (await agentLedgerOf(await agentRecordsOf(store, run.agentId, listed), await promotionsOf(store.settings, learningIdOf(learning)), listed, await resetLedgerOf(store.settings, run.agentId))).shares;
+    shares = (await agentLedgerOf(await agentRecordsOf(store, run.agentId, listed), await promotionsOf(store.settings, learningIdOf(learning)), listed, await resetLedgerOf(store.settings, learningIdOf(learning)))).shares;
   }
   const figures = { run_id: run.id, ...cost };
   const compiles = await compilesOf(store, run.id);

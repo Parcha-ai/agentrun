@@ -339,12 +339,15 @@ serves no run.
 `DELETE /v2/agents/{id}/learning` (`learning-reset.ts`) deletes the folder whole, its git history and audit ledger
 included, on this server and on every Archil disk the agent's runs used (a Mode 2 run's end writes the folder on the
 disk its claim mounted: the agent's own, or one its launch named; `archil-routes.ts` removeLearningFolder, 503 while a
-disk can't be reached), then the agent's promotions and grades (`delete.ts` deleteLearning); the agent and its runs
+disk can't be reached), then the agent's promotions and grades on every disk (`delete.ts` deleteLearning;
+`learning-of.ts` learningsOf: the default disk and each disk a run of the agent named, a purged run's included); the agent and its runs
 stay. The agent's delete takes the same step on the launch-named disks; its own disk goes whole there. It cancels
 the runs that exist only for learning (replays, audit shadows) and waits for them; a run of the agent's own still going
 refuses it (409 `learning_busy`), since its learning lives in it, and nothing is deleted. Before the records go, each
-revision they name is kept in the agent's reset ledger (`learning.reset-ledger.<agent>`: workflow, digest and K alone),
-so a kept served run's cost still carries its revision's compile and check; an agent's delete removes the ledger. Each
+revision they name is kept in the reset ledger of its disk's learning (`learning.reset-ledger.<agent>` for the default
+disk, `learning.reset-ledger.<agent>@<disk>` for a named one: workflow, digest and K alone, per (agent, disk) as the
+records are), so a kept served run's cost still carries its own disk's revision's compile and check; an agent's delete
+removes every ledger. Each
 run's diff (`.agentrun/diffs/`) goes with the folder. The folder's next write starts
 a new history.
 

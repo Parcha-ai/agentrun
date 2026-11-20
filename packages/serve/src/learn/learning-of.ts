@@ -4,6 +4,7 @@
 // (RunRow.disk, store.runs.list's `disk`), and the records learning keeps beside the folder (its promotions and grades,
 // learn/promote.ts) are kept per (agent, disk), so one customer's runs never reach another customer's learning.
 import type { RunLaunch } from "../run-launch.js";
+import type { Store } from "../store/store.js";
 
 /** An agent's learning on one disk: `disk` the id of the disk its launch named, null for the default disk. */
 export interface LearningOf {
@@ -30,3 +31,11 @@ export const learningOfRun = (agentId: string, launch: Pick<RunLaunch, "archilDi
 /** The learning of agent `agentId` on its default disk: what the server's agent-wide views and routes read (their folder
  *  is the server's own, the default disk's). */
 export const defaultLearningOf = (agentId: string): LearningOf => ({ agentId, disk: null });
+
+/** Every learning agent `agentId` has: its default disk's, then one for each disk a run of it named (Store.runs.every:
+ *  its built-in learning runs and purged runs included, a purged run's tombstone keeping its disk). What the agent's
+ *  delete and its learning's reset cover (learn/delete.ts, learning-reset.ts). */
+export async function learningsOf(store: Pick<Store, "runs">, agentId: string): Promise<LearningOf[]> {
+  const named = new Set((await store.runs.every(agentId)).map((run) => run.disk).filter((disk): disk is string => disk !== null));
+  return [defaultLearningOf(agentId), ...[...named].map((disk) => ({ agentId, disk }))];
+}

@@ -875,8 +875,7 @@ export interface Runs {
    *  false: not); its agent's archive is read apart. A built-in learning run (one a kept learning names) is never listed. `labels`: only runs holding every one of these labels, key and value.
    *  `disk`: only the runs on that disk (RunRow.disk), null for the default disk's; not given, every disk's.
    *  A purged run (Runs.purge) only with `purged`: the readers of money and counts (usage, stats, analytics) and an
-   *  import's read of the sessions it holds, and the delete of an agent's learning (the disks it learned on), never a
-   *  reader of a run's content. */
+   *  import's read of the sessions it holds, never a reader of a run's content. */
   list(filter: { agentId?: string; revisionId?: string; state?: RunState; archived?: boolean; labels?: RunLabels; disk?: string | null; limit?: number; purged?: boolean }): Promise<RunRow[]>;
   /** A page of a runs list, in one read: newest first, `offset` rows on, at most `limit`, and whether more follow (`more`).
    *  Each with its listing as its row keeps it (RUN_LISTING_COLUMNS: null while none has been built), whether that is
@@ -918,9 +917,10 @@ export interface Runs {
   costUnknown(options: { limit: number; after?: string }): Promise<string[]>;
   /** Archives the run (its own archive time), or unarchives it: idempotent. */
   archive(runId: string, archived: boolean): Promise<void>;
-  /** Every run of agent `agentId` with its state, oldest first, its built-in learning runs included (which list leaves
-   *  out): what deleting the agent stops and removes, with the runner that holds each (null: none) and its purge time. */
-  every(agentId: string): Promise<{ id: string; state: RunState; runner: string | null; purgedAt: number | null }[]>;
+  /** Every run of agent `agentId` with its state, oldest first, its built-in learning runs and purged runs included
+   *  (which list leaves out): what deleting the agent stops and removes, with the runner that holds each (null: none),
+   *  its purge time and its disk (RunRow.disk: the disks the agent learned on, learn/learning-of.ts learningsOf). */
+  every(agentId: string): Promise<{ id: string; state: RunState; runner: string | null; purgedAt: number | null; disk: string | null }[]>;
   /** The runs made from run `runId` that hold what it was given or did, by id: each run whose launch replays its input
    *  (the launch body's `replay.of`) or audits it (`audit.of`: its audit's shadow run), and each learning run its kept
    *  learning names (learning_proposals' learning_run_id). What purging the run purges with it. */
