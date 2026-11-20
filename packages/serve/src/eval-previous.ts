@@ -6,15 +6,16 @@
 // said so. Each result is written as the store writes an ended run it did not run (Store.importRun, its transcript as
 // import.ts transcriptOf lays one out): its answer the output as one fenced json block, on the agent's current revision,
 // or on a revision of its own whose output schema is the result's `output_schema` (the trim reads the producing run's
-// schema), the agent's current one left as it was. What the run was handed is read back from its input (handedPrevious),
-// for its graders and its report.
-import { carriedProblem, lastJsonBlock, schemaCheck } from "./answer-json.js";
+// schema), the agent's current one left as it was. What the run was handed is the server's own handover of the last result
+// (trigger-targets.ts previousHandover), when its input carries that handover's words (handedPrevious), for its graders
+// and its report.
+import { carriedFields, carriedProblem, schemaCheck } from "./answer-json.js";
 import { transcriptOf } from "./import.js";
 import type { Session } from "./import-sources.js";
 import { launchBody } from "./run-launch.js";
 import { uuidv7 } from "./runs-over-store.js";
 import type { Store } from "./store/index.js";
-import { PREVIOUS_HEADS } from "./trigger-targets.js";
+import { type CompletedOutput, type PreviousHandover, previousHandover } from "./trigger-targets.js";
 import { isObject, type Json } from "./validate.js";
 
 /** One earlier completed run of the trigger: its result.output, and the output schema it was checked against when that
@@ -77,8 +78,9 @@ export function previousFixtureOf(value: unknown, at: string, packageSchema: unk
   return { ...(typeof value.description === "string" ? { description: value.description } : {}), results, ...(typeof value.trigger === "string" ? { trigger: value.trigger } : {}) };
 }
 
-/** A result seeded: its run's id, and its output as written. */
-export type Seeded = { runId: string; output: Json };
+/** A result seeded: its run's id, and the fields the output schema of its run's revision names in x-carried (the ones the
+ *  server reads back for it, TriggerTargetDeps.completedOutput), absent when it names none. */
+export type Seeded = { runId: string; carried?: readonly string[] };
 
 /** How far apart the seeded results ended, the last that far before the case's run. */
 const SEEDED_APART_MS = 24 * 60 * 60_000;
@@ -120,50 +122,27 @@ export async function seedPrevious(store: Store, fixture: PreviousFixture, { age
     // with its run, which moves the trigger's last run to it.
     await store.triggers.record(triggerId, [{ key, by: "schedule", nominalAt: Math.floor(startedAt / 1000) * 1000, status: "skipped" }]);
     await store.triggers.settle(triggerId, key, { status: "started", runId }, { reset: true });
-    seeded.push({ runId, output: result.output });
+    const carried = carriedFields(result.outputSchema ?? (revision.body as { outputSchema?: unknown }).outputSchema);
+    seeded.push({ runId, ...(carried ? { carried } : {}) });
   }
   return seeded;
 }
 
-/** What a previous case's run was handed after its trigger's message: `whole`, the last result's output as it is;
- *  `carried`, its carried `fields` alone, `dropped` the entries each carried array gave up from its front, by field, 0
- *  for one that gave up none (a carried field that is not an array in both is not in it); `too_large`, nothing, said so; `none`, nothing at all. `text` is the words as handed, `run_id` the
- *  seeded run they name. */
-export type HandedPrevious = { kind: "whole" | "carried" | "too_large" | "none"; text: string; run_id?: string; fields?: string[]; dropped?: Record<string, number> };
-export const HANDED_KINDS = ["whole", "carried", "too_large", "none"] as const;
+/** The kinds a `handed` grader expects, PreviousHandover's. */
+export const HANDED_KINDS = ["whole", "carried", "too_large", "none"] as const satisfies readonly PreviousHandover["kind"][];
 
-/** What the run whose input content is `content` was handed, against the results `seeded` for it: the text from the
- *  first of the handover's heads (PREVIOUS_HEADS) after the run's own line (the schedule's "(Started by ...)", the last
- *  line of the trigger's message: its words can't be the package's text). For carried fields, how many entries each
- *  carried array lost from its front is the seeded output's length less the handed one's. */
-export function handedPrevious(content: string, seeded: readonly Seeded[]): HandedPrevious {
-  const line = content.lastIndexOf("\n\n(Started by ");
-  const after = line < 0 ? -1 : content.indexOf("\n", line + 2);
-  const rest = after < 0 ? "" : content.slice(after);
-  const kind = (Object.keys(PREVIOUS_HEADS) as (keyof typeof PREVIOUS_HEADS)[]).find((one) => rest.startsWith(PREVIOUS_HEADS[one]));
-  if (!kind) return { kind: "none", text: "" };
-  const from = [...seeded].reverse().find((one) => rest.includes(`(${one.runId}`));
-  const handed: HandedPrevious = { kind, text: rest, ...(from ? { run_id: from.runId } : {}) };
-  if (kind !== "carried") return handed;
-  let picked: unknown;
-  try {
-    picked = JSON.parse(lastJsonBlock(rest) ?? "null");
-  } catch {
-    return handed;
-  }
-  if (!isObject(picked)) return handed;
-  const output = (from?.output ?? {}) as Json;
-  const dropped = Object.fromEntries(Object.entries(picked).flatMap(([field, value]) => {
-    const was = output[field];
-    return Array.isArray(was) && Array.isArray(value) ? [[field, Math.max(0, was.length - value.length)]] : [];
-  }));
-  return { ...handed, fields: Object.keys(picked), dropped };
+/** What the run whose input content is `content` was handed of its trigger's last result, the last one seeded (`last`),
+ *  `done` as the server reads it back (its result.output and end as GET /runs/{id} serves them): the handover the trigger
+ *  makes of it (previousHandover), when the run's input ends with that handover's words; else none. */
+export function handedPrevious(content: string, last: Seeded, done: Omit<CompletedOutput, "carried">): PreviousHandover {
+  const handover = previousHandover(last.runId, { ...done, ...(last.carried ? { carried: last.carried } : {}) });
+  return handover.text && content.endsWith(handover.text) ? handover : { kind: "none", text: "" };
 }
 
 /** A `handed` grader's verdict: the run was handed its previous result as `expect` says (and, for carried fields, each
  *  array in `dropped` gave up exactly that many first entries, 0 for none). A field the grader counts that is no carried
  *  array the run was handed (a misspelled name, a scalar) fails it by name: never read as 0 dropped. */
-export function handedVerdict(handed: HandedPrevious | undefined, expect: HandedPrevious["kind"], dropped?: Readonly<Record<string, number>>): { pass: boolean; reason: string } {
+export function handedVerdict(handed: PreviousHandover | undefined, expect: PreviousHandover["kind"], dropped?: Readonly<Record<string, number>>): { pass: boolean; reason: string } {
   if (!handed) return { pass: false, reason: "the run has no previous result seeded to read" };
   const said = handedWords(handed);
   if (handed.kind !== expect) return { pass: false, reason: `${said}; the grader expects ${KIND_WORDS[expect]}` };
@@ -175,7 +154,7 @@ export function handedVerdict(handed: HandedPrevious | undefined, expect: Handed
   return { pass: true, reason: said };
 }
 
-const KIND_WORDS: Record<HandedPrevious["kind"], string> = {
+const KIND_WORDS: Record<PreviousHandover["kind"], string> = {
   whole: "its trigger's last result whole",
   carried: "its trigger's last result as its carried fields",
   too_large: "nothing of its trigger's last result, too large to hand",
@@ -183,7 +162,7 @@ const KIND_WORDS: Record<HandedPrevious["kind"], string> = {
 };
 
 /** What a run was handed, in words. */
-function handedWords(handed: HandedPrevious): string {
+function handedWords(handed: PreviousHandover): string {
   if (handed.kind !== "carried") return `the run was handed ${KIND_WORDS[handed.kind]}`;
   const dropped = Object.entries(handed.dropped ?? {}).filter(([, n]) => n > 0);
   return `the run was handed ${KIND_WORDS.carried} (${(handed.fields ?? []).join(", ")})${dropped.length ? `, ${dropped.map(([field, n]) => `${field}: the first ${n} ${n === 1 ? "entry" : "entries"} dropped`).join("; ")}` : ", nothing dropped"}`;

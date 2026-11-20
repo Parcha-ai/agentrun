@@ -25,7 +25,8 @@ import type { EvalFakes } from "./runner/adapter-run-spec.js";
 import { type EvalClock, evalClock, type Layout, LAYOUTS, type MailboxAfter, type MailboxFixture, mailboxAfter, mailboxFixtureOf, type MailboxRecord, mailboxText, mailboxVerdict, seed, seededFaux, type Snapshot, snapshot } from "./eval-mailbox.js";
 import type { EmailFaux } from "./email/email-faux.js";
 import { type CaseFeeds, caseFeeds, type FeedFixture, feedFixtureOf } from "./eval-feed.js";
-import { HANDED_KINDS, type HandedPrevious, handedPrevious, handedVerdict, type PreviousFixture, previousFixtureOf, type Seeded, seedPrevious } from "./eval-previous.js";
+import { HANDED_KINDS, handedPrevious, handedVerdict, type PreviousFixture, previousFixtureOf, type Seeded, seedPrevious } from "./eval-previous.js";
+import type { PreviousHandover } from "./trigger-targets.js";
 import type { Store } from "./store/index.js";
 import { EMAIL_TOOLS } from "./email/names.js";
 import { CALENDAR_EVENTS } from "./calendar/names.js";
@@ -102,7 +103,7 @@ export type Grader = (
   | { file: string; type: "tool_used"; tools: string[]; expect: "called" | "not_called"; count?: number; atLeast?: number; args?: Json }
   | { file: string; type: "file_exists"; path: string }
   | { file: string; type: "mailbox"; messageId: string; in?: string; notIn: string[] }
-  | { file: string; type: "handed"; expect: HandedPrevious["kind"]; dropped?: Record<string, number> }
+  | { file: string; type: "handed"; expect: PreviousHandover["kind"]; dropped?: Record<string, number> }
 ) & {
   /** An email case's layouts this grader grades the runs of; absent, every run. */
   layouts?: Layout[];
@@ -315,7 +316,7 @@ function graderOfType(p: Package, file: string, text: string, bad: (message: str
       const dropped = data.dropped;
       if (dropped !== undefined && !(isObject(dropped) && Object.values(dropped).every((n) => Number.isSafeInteger(n) && (n as number) >= 0))) return bad(`${file}: dropped is a mapping of a carried array's field to how many of its first entries were dropped, 0 or more`), undefined;
       if (dropped !== undefined && data.expect !== "carried") return bad(`${file}: dropped counts a carried array's entries, and expect is ${String(data.expect)}, not carried`), undefined;
-      return { file, type, expect: data.expect as HandedPrevious["kind"], ...(isObject(dropped) ? { dropped: dropped as Record<string, number> } : {}) };
+      return { file, type, expect: data.expect as PreviousHandover["kind"], ...(isObject(dropped) ? { dropped: dropped as Record<string, number> } : {}) };
     }
   }
   return undefined;
@@ -553,7 +554,7 @@ export type RunRecord = {
   /** Its fake mailbox after it, for a case with `email` (eval-mailbox.ts). */
   mailbox?: MailboxRecord;
   /** What it was handed of its trigger's last result after its message, for a case with `previous` (eval-previous.ts). */
-  handed?: HandedPrevious;
+  handed?: PreviousHandover;
 };
 export type Verdict = { pass: boolean; reason: string; cost_usd?: number | null; run_id?: string };
 
@@ -1059,7 +1060,7 @@ export type RunMetrics = { input: number; cache_read: number; cache_write: numbe
  *  run itself after the eval's temp server is gone (a hill climb's parser and judge, say). An email case's run carries
  *  its fake mailbox's `layout` and what it left there (`mailbox_after`); a previous case's run, what it was handed of its
  *  trigger's last result (`handed_previous`). */
-export type RunResult = { run: number; agent_id: string | null; run_id: string | null; status: string; pass: boolean; error?: string; cost_usd: number | null; graders: GraderResult[]; answer?: string; calls?: ToolCall[]; mcp_calls?: ToolCall[]; created_at?: string | null; ended_at?: string | null; metrics?: RunMetrics | null; layout?: Layout; mailbox_after?: MailboxAfter; handed_previous?: HandedPrevious };
+export type RunResult = { run: number; agent_id: string | null; run_id: string | null; status: string; pass: boolean; error?: string; cost_usd: number | null; graders: GraderResult[]; answer?: string; calls?: ToolCall[]; mcp_calls?: ToolCall[]; created_at?: string | null; ended_at?: string | null; metrics?: RunMetrics | null; layout?: Layout; mailbox_after?: MailboxAfter; handed_previous?: PreviousHandover };
 export type CaseResult = { name: string; description: string; pass: boolean; runs: RunResult[]; error?: string; cost_usd: number };
 export type Report = {
   package: { name: string; version: string; dir: string };
@@ -1516,6 +1517,15 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
  *  ended; `previous`, a previous case's earlier runs as seeded, what its input is read against. */
 type Fired = { mailbox?: () => Promise<MailboxRecord>; previous?: readonly Seeded[] };
 
+/** What a previous case's run, its input content `content`, was handed of the last result `seeded`: that run read back as
+ *  the trigger reads it (its result.output and end, GET /runs/{id}), handed over as the trigger hands it (handedPrevious). */
+async function handedOf(api: Api, content: string, seeded: readonly Seeded[]): Promise<PreviousHandover> {
+  const last = seeded.at(-1)!;
+  const read = expectOk(`reading the seeded run ${last.runId}`, await api("GET", `/runs/${last.runId}`));
+  const output = isObject(read.result) ? (read.result.output ?? null) : null;
+  return handedPrevious(content, last, { output, endedAt: typeof read.ended_at === "string" ? read.ended_at : null });
+}
+
 /** The started run `runId` of `agentId` waited on, read and graded; its calls on the saved servers `used` gave its needs
  *  ({toolkit: server}) named on the package's toolkits; a run its trigger started (`fired`) graded on the input it was
  *  given, an email run's fake mailbox read once it has ended. */
@@ -1529,7 +1539,7 @@ async function ranOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   // Its metrics once it has ended (a cancelled run's end writes them too), before the eval's server can go.
   const metrics = await metricsOf(api, agentId, options.signal);
   const mailbox = fired?.mailbox ? await fired.mailbox() : undefined;
-  const handed = fired?.previous ? handedPrevious(isObject(view.input) && typeof view.input.content === "string" ? view.input.content : "", fired.previous) : undefined;
+  const handed = fired?.previous ? await handedOf(api, isObject(view.input) && typeof view.input.content === "string" ? view.input.content : "", fired.previous) : undefined;
   stopped();
   const result = isObject(view.result) ? view.result : {};
   const harness = isObject(agent.definition) && typeof agent.definition.harness === "string" ? agent.definition.harness : "pi";
