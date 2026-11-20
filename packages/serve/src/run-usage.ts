@@ -27,6 +27,10 @@ import { decisionsOverStore } from "./store-reads/decisions.js";
 import { roundsOf } from "./store-reads/learning.js";
 import { MODEL_PROVIDER } from "./model.js";
 import type { RunLaunch } from "./run-launch.js";
+import { ApiError } from "./errors.js";
+import { redacted } from "./key-refusal.js";
+import { runCutValues } from "./run-cut.js";
+import { type SignInReader, WITHHELD_SIGN_IN } from "./run-view.js";
 import { FINAL_STATES, type Store } from "./store/index.js";
 import { type EntryLike, TOOL_UNMETERED } from "./timeline/index.js";
 
@@ -263,4 +267,18 @@ export async function runUsageOverStore(store: Store, runId: string): Promise<Ru
     const { lines, total } = usageLinesOf(entries, launch, receipts);
     return { run_id: runId, ended_at: ended, currency: "USD", total, lines, reason: null };
   });
+}
+
+/** Run `runId`'s usage lines as served: each name taken from its record (a model, its provider, a tool's charger) through
+ *  the run's cut, as its trace serves a model's name, since a decision provider or a tool names itself in what it
+ *  returns. A run withheld (its sign-in can't be read back here) is refused (403), as its trace is. */
+export async function servedRunUsage(deps: { serverSecrets: () => string[]; signIns?: SignInReader }, store: Store, runId: string): Promise<RunUsage | undefined> {
+  if ((await runCutValues(deps, store, runId)) === "unreadable") throw new ApiError("forbidden", WITHHELD_SIGN_IN);
+  const usage = await runUsageOverStore(store, runId);
+  // The cut after the read: it only grows, so it holds every value the read could have seen.
+  const cut = await runCutValues(deps, store, runId);
+  if (cut === "unreadable") throw new ApiError("forbidden", WITHHELD_SIGN_IN);
+  if (!usage?.lines) return usage;
+  const said = (text: string | null) => (text === null ? null : redacted(text, cut.values));
+  return { ...usage, lines: usage.lines.map((line) => ({ ...line, model: said(line.model), provider: said(line.provider), charged_by: said(line.charged_by) })) };
 }

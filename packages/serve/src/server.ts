@@ -79,7 +79,7 @@ import { createLister } from "./run-listing.js";
 import { HELD_WAITS } from "./runner/journal-kinds.js";
 import { type ServedTimelineDeps, servedTimelineRows } from "./run-timeline-served.js";
 import { servedRunTrace } from "./run-trace.js";
-import { runUsageOverStore } from "./run-usage.js";
+import { servedRunUsage } from "./run-usage.js";
 import { servedRunDiff, servedRunLearning } from "./run-learning-served.js";
 import { agentPointers, WITHHELD_LEARNING } from "./handed-values.js";
 import { runCutValues } from "./run-cut.js";
@@ -4711,7 +4711,8 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         await needRun(id);
         // The run's lines from its booking (run-usage.ts), the figures its cost.usd joins: none, with why, while it is at work
         // or where its figure is not its booking's.
-        return send(res, 200, await runUsageOverStore(store, id));
+        // Names through the run's cut, and a withheld run refused (403), as its trace is.
+        return send(res, 200, await servedRunUsage({ serverSecrets, signIns }, store, id));
       case "getRunTrace":
         await needRun(id);
         // The run's spans over its served Timeline rows and its journal (run-trace.ts): cut by the run's one cut, as its
