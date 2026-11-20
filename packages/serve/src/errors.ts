@@ -84,6 +84,9 @@ export const ERROR_STATUS = {
   // DELETE /runs/{id} and /agents/{id} (agent-delete.ts purgeRun): a run, or a run made from it, that is live (not final,
   // or held by a runner). Nothing is purged.
   run_not_final: 409,
+  // PUT /runs/{id}/grade on a run that reads ended while it still learns from that end (its look-back: a fresh run's
+  // end-of-run step, or a grade's round): graded once that ends. The same grade sent then is taken.
+  run_learning: 409,
   // A run or an agent that was purged (DELETE /runs/{id}, /agents/{id}): every route of it reads its tombstone in the
   // error's details, and its DELETE answers 204 again.
   purged: 410,
@@ -98,7 +101,7 @@ export const ERROR_STATUS = {
 
 export type ErrorCode = keyof typeof ERROR_STATUS;
 
-const RETRYABLE = new Set<ErrorCode>(["home_busy", "idempotency_in_progress", "rate_limited", "internal", "unavailable", "github_failed", "runs_in_flight", "learning_busy"]);
+const RETRYABLE = new Set<ErrorCode>(["home_busy", "idempotency_in_progress", "rate_limited", "internal", "unavailable", "github_failed", "runs_in_flight", "learning_busy", "run_learning"]);
 
 /** A field that is missing or wrong. `example`: a value the field accepts, read from the request body's schema (explain.ts). */
 export type InputIssue = { field: string; reason: string; message: string; expected?: string; fix?: string; code?: string; example?: unknown };

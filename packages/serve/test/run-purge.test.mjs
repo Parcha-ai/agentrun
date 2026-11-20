@@ -293,7 +293,10 @@ test("a run that is live is 409 run_not_final, nothing purged; once cancelled, t
   assert.match(refused.body.error.message, /cancel it first/);
   assert.deepEqual(refused.body.error.details?.runs, [live.run_id]);
   assert.equal((await api("GET", `/runs/${live.run_id}`)).status, 200, "the run is kept");
-  assert.deepEqual(mentions(data, live.run_id), before, "nothing of it purged");
+  // Nothing purged: every place the run was written before is still there. The live run may be written in more places
+  // meanwhile (its listing, built by the lister's pass, can land after the first read), which is no purge.
+  const after = mentions(data, live.run_id);
+  assert.deepEqual(before.filter((place) => !after.includes(place)), [], "nothing of it purged");
   assert.ok(existsSync(dirname(runFolder(data, "slow", live.run_id))), "nor its folder");
 
   assert.equal((await api("POST", `/runs/${live.run_id}/cancel`)).status, 202);
