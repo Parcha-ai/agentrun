@@ -14,6 +14,7 @@ import { after, before, test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { archilDisk, archilWorkspace, layOwnSkills, learningKey, localWorkspace, READ_MAX, runFolder, runKey } from "../dist/workspace/index.js";
 import { runHands } from "../dist/workspace/run-tools.js";
+import { APPEND_MAX } from "../dist/workspace/archil.js";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 import { PATH, suite } from "./workspace-conformance.mjs";
 
@@ -837,6 +838,12 @@ test("ArchilWorkspace: a disk gone at Archil is UNAVAILABLE in its words on ever
   await assert.rejects(workspace.append("log.txt", "a"), (error) => gone(error) && !/may also have landed/.test(error.message));
   await assert.rejects(workspace.stat("notes"), gone);
   await assert.rejects(workspace.remove("notes", { force: true }), gone);
+  // A ranged read is no SDK call, so Archil answers it 404 as for a missing file: still the disk, never NOT_FOUND (a
+  // learning folder read as empty).
+  await assert.rejects(workspace.read("learning/notes.md"), gone);
+  // An append of more than one call refused at its first: none of it landed, and it says so.
+  const big = "x".repeat(APPEND_MAX + 1);
+  await assert.rejects(workspace.append("log.txt", big), (error) => gone(error) && error.message.startsWith(`0 of ${big.length} bytes were appended (the chunk that failed was refused`) && !/may also have landed/.test(error.message));
 });
 
 test("ArchilWorkspace: a file or folder that is not there stays NOT_FOUND with Archil's words kept, and a fresh folder's skills are laid", async () => {

@@ -263,9 +263,15 @@ class ArchilWorkspace implements Workspace {
     try {
       answer = await this.#disk.getRange(this.#key(rel), `bytes=${offset}-${last}`);
     } catch (error) {
-      if (statusOf(error) === 404 && (await this.#kind(rel).catch(() => undefined)) === "dir") {
-        throw new WorkspaceError("REFUSED", `${show(rel)} is a directory`, { path: rel, cause: error });
-      }
+      // A ranged read is no SDK call, so a disk that is not there answers it 404 as a missing file would: the look at what
+      // is there (an SDK call) is what tells them apart, and its ArchilDiskMissing is the read's failure.
+      const kind = statusOf(error) === 404
+        ? await this.#kind(rel).catch((lookup: unknown) => {
+            if (lookup instanceof ArchilDiskMissing) throw failed(lookup, rel, "read");
+            return undefined;
+          })
+        : undefined;
+      if (kind === "dir") throw new WorkspaceError("REFUSED", `${show(rel)} is a directory`, { path: rel, cause: error });
       if (statusOf(error) === 501) {
         throw new WorkspaceError("UNAVAILABLE", `${show(rel)} is a symbolic link (an exec made it): Archil's file API does not read one`, { path: rel, cause: error });
       }
@@ -318,12 +324,15 @@ class ArchilWorkspace implements Workspace {
         if (refused) throw why;
         throw new WorkspaceError(why.code, `the append to ${show(rel)} may also have landed: unknown, re-read the file before retrying: ${why.message}`, { path: rel, cause: error });
       }
-      // Part of it may be on the disk. Only what is known is said: the size read back, or else what was acknowledged,
-      // with the failed chunk's outcome unknown. A chunk may commit and lose its answer, so a count is never a guess.
+      // Part of it may be on the disk. Only what is known is said: the size read back, or else what was acknowledged, with
+      // the failed chunk's outcome unknown unless it was refused (as one chunk's refusal applied nothing). A chunk may
+      // commit and lose its answer, so a count is never a guess.
       const after = before === undefined ? undefined : await this.#sizeOf(rel).catch(() => undefined);
       const known = before !== undefined && after !== undefined && after - before >= landed && after - before <= bytes.length
         ? `${after - before} of ${bytes.length} bytes were appended (read back from the file: ${after} bytes now, ${before} before)`
-        : `at least ${landed} of ${bytes.length} bytes were appended; the failed chunk may also have landed: unknown, re-read the file before retrying`;
+        : refused
+          ? `${landed} of ${bytes.length} bytes were appended (the chunk that failed was refused, so none of it landed)`
+          : `at least ${landed} of ${bytes.length} bytes were appended; the failed chunk may also have landed: unknown, re-read the file before retrying`;
       throw new WorkspaceError(why.code, `${known} to ${show(rel)} before it failed: ${why.message}`, { path: rel, cause: error });
     }
   }
