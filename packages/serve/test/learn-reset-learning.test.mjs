@@ -7,15 +7,33 @@
 // with the token as the other learning writes take it.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { test } from "node:test";
+import { DatabaseSync } from "node:sqlite";
+import { after, test } from "node:test";
+import { keepRunDisk, saveArchilSettings, storeAgentDisk } from "../dist/archil-settings.js";
 import { agentFolderOf } from "../dist/files.js";
 import { deleteLearning } from "../dist/learn/delete.js";
-import { gradesKey, promotionsKey, resetLedgerKey } from "../dist/learn/promote.js";
-import { learningFolderOf, seedOf } from "../dist/learning.js";
+import { gradesKey, promotionsKey, promotionsOf, resetLedgerKey } from "../dist/learn/promote.js";
+import { learningFolderOf, seedOf, withAgentRepo } from "../dist/learning.js";
+import { resetLearning } from "../dist/learning-reset.js";
+import { readLaunchBody } from "../dist/run-launch.js";
+import { createAdapterLoop } from "../dist/runner/adapter-loop.js";
+import { adapterRunSpecFromLaunch } from "../dist/runner/adapter-run-spec.js";
+import { sendCommand } from "../dist/runner/commands.js";
+import { learningEndOfRun } from "../dist/runner/learning-end.js";
+import { startRunner } from "../dist/runner/runner.js";
+import { openSqliteStore } from "../dist/store/index.js";
+import { archilControlFetch } from "./archil-control-fake.mjs";
+import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
+import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
+import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
+import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
 import { git, resnap } from "./learn-support.mjs";
 import { agent, follow, serve, withEnv } from "./support.mjs";
+
+after(closeOpenSessions);
 
 const { ROUTES } = await import("../dist/server.js");
 const { API_ONLY_ROUTES } = await import("../dist/api-only.js");
@@ -40,6 +58,8 @@ const ASK = { content: "What is 1 plus 41?" };
 const FINAL = ["ended", "stopped", "failed"];
 
 const learningDir = (data, id) => join(agentFolderOf(data, id), "learning");
+/** The agent's folder's name on a disk (workspace/paths.ts agentDirName). */
+const agentDirOf = (id) => `${id.toLowerCase()}-${createHash("sha256").update(id, "utf8").digest("hex").slice(0, 16)}`;
 
 /** Agent `id`'s learning, as runs and a check leave it: corrections.md and the `answer` workflow on its folder's main,
  *  the workflow promoted by its check, and a grade. Answers main's commit. */
@@ -195,6 +215,68 @@ test("a served run's cost keeps its share of its revision's paid check after the
   assert.equal(await store.settings.get(resetLedgerKey("paid")), undefined, "the agent's delete removes it");
 });
 
+/** Run `runId`'s launch record naming disk `diskId` as the caller's, as POST /runs with `archil_disk` records it
+ *  (run-launch.ts: archil_disk { disk_id, kind: "launch" }), written into the store's file (agent-delete.test.mjs). */
+function launchOnDisk(data, runId, diskId) {
+  const db = new DatabaseSync(join(data, "store.sqlite"), { timeout: 10_000 });
+  try {
+    const changed = db.prepare("UPDATE run_launch SET body = json_set(body, '$.archil_disk', json(?)) WHERE run_id = ?").run(JSON.stringify({ disk_id: diskId, kind: "launch" }), runId);
+    assert.equal(Number(changed.changes), 1, "the run's launch record names the disk");
+  } finally {
+    db.close();
+  }
+}
+
+test("Mode 2: the agent's learning folder on every Archil disk its runs used (its own disk, and a disk a run's launch named) is deleted with the server's own; its runs' folders there and what is not the agent's stay; Archil off is 503 with the records kept, and the next call finishes", { timeout: 120_000 }, async (t) => {
+  const own = "dsk-0a0e1ea4e0000001";
+  const customer = "dsk-c0570e4e00000002";
+  const control = archilControlFetch({ region: "aws-us-east-1", strict: true, disks: [{ id: own, name: "its-own-disk" }, { id: customer, name: "a-customers-disk" }] });
+  withEnv(t, { ARCHIL_API_KEY: "fake-test-key" }, ["ARCHIL_API_KEY", "AGENTRUN_ARCHIL_REGION", "AGENTRUN_ARCHIL_S3_URL", "AGENTRUN_ARCHIL_IMAGE"]);
+  // Each disk's file API, as the server reaches it (archil-disk.ts), by its id.
+  const disks = new Map([own, customer].map((id) => [id, Object.assign(new FakeArchilDisk(), { id })]));
+  const reached = new Set();
+  const { api, data, store } = await serve(t, { learning: "on", runner: false, archilControl: { baseUrl: control.baseUrl, fetch: control.fetch, makeDisk: (options) => (reached.add(options.disk), disks.get(options.disk)) } });
+  assert.equal((await api("POST", "/agents", agent("spread", { learning: true }))).status, 201);
+  await learned(store, data, "spread");
+  // Two finished runs: one on the agent's own disk (kept for it as a run in Archil mode keeps it), one on the caller's.
+  const revisionId = (await store.agents.get("spread")).currentRevision;
+  for (const runId of ["on-own", "on-customer"]) {
+    await store.runs.create({ id: runId, agentId: "spread", revisionId }, { body: { input: ASK, title: "t", place: { mode: "runner" } } });
+    await endAsRunner(store, runId, "ended");
+  }
+  await storeAgentDisk(store, "spread", { diskId: own });
+  await keepRunDisk(store, "on-own", own);
+  launchOnDisk(data, "on-customer", customer);
+  // What Mode 2 runs left on each disk: the agent's learning folder (learningKey) and each run's folder (runKey), beside
+  // what is not the agent's.
+  const dir = `agents/${agentDirOf("spread")}`;
+  const learning = [`${dir}/learning/corrections.md`, `${dir}/learning/workflows/answer/workflow.json`, `${dir}/learning/.git/HEAD`, `${dir}/learning/.agentrun/snapshot.json`];
+  const kept = { [own]: [`${dir}/runs/on-own/work/notes.md`, `agents/${agentDirOf("another")}/learning/corrections.md`], [customer]: [`${dir}/runs/on-customer/work/notes.md`, "shared/customers.csv"] };
+  for (const [id, disk] of disks) for (const key of [...learning, ...kept[id]]) await disk.putObject(key, Buffer.from("bytes"));
+  const learningOn = (id) => [...disks.get(id).files.keys(), ...disks.get(id).dirs].filter((key) => key === `${dir}/learning` || key.startsWith(`${dir}/learning/`));
+
+  // Archil off (its settings not saved yet): the disks can't be reached, so nothing is deleted: 503, for the next call.
+  const off = await api("DELETE", "/agents/spread/learning");
+  assert.deepEqual([off.status, off.body.error?.code, off.body.error?.retryable], [503, "unavailable", true], JSON.stringify(off.body));
+  assert.match(off.body.error.message, /Archil is off/);
+  assert.deepEqual(await recordsOf(store, "spread"), [promotionsKey("spread"), gradesKey("spread")], "the records are kept");
+  assert.ok(existsSync(join(learningDir(data, "spread"), "corrections.md")), "and the server's own folder");
+  for (const id of [own, customer]) assert.equal(learningOn(id).length > 0, true, `and the folder on ${id}`);
+  await saveArchilSettings(store, { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" });
+
+  const reset = await api("DELETE", "/agents/spread/learning");
+  assert.equal(reset.status, 204, JSON.stringify(reset.body));
+  for (const id of [own, customer]) {
+    assert.deepEqual(learningOn(id), [], `no learning of the agent is left on ${id}`);
+    for (const key of kept[id]) assert.ok(disks.get(id).files.has(key), `${key} on ${id} is kept`);
+  }
+  assert.equal(existsSync(join(learningDir(data, "spread"), "corrections.md")), false, "the server's own folder is emptied too");
+  assert.deepEqual(await recordsOf(store, "spread"), []);
+  assert.ok(control.disks.has(own) && control.disks.has(customer), "both disks are kept");
+  assert.deepEqual([...reached].sort(), [own, customer].sort(), "only the disks its runs used were reached");
+  assert.equal((await api("DELETE", "/agents/spread/learning")).status, 204, "and again");
+});
+
 test("an agent that never learned: 204, and 204 again; an unknown agent is 404; without the token it is 401, as a learning write is", async (t) => {
   const { api, baseUrl, store } = await serve(t, { learning: "on", runner: false });
   assert.equal((await api("POST", "/agents", agent("fresh", { learning: true }))).status, 201);
@@ -291,4 +373,170 @@ test("the API-only profile serves it with the token: 409 while the agent's inlin
   const unknown = await send("DELETE", "/v2/agents/agent_missing/learning");
   assert.equal(unknown.status, 404);
   assert.ok(!unknown.body.error.message.includes("AGENTRUN_API_ONLY"), "the route's own, not the profile's");
+});
+
+// The gap between a run's job ending and its learning end settling, through real runners over a store of its own, the
+// reset as the server does it (learning-reset.ts resetLearning over the local folder, the cancel command and the
+// agent's learning queue). A run's row stays not final through its end-of-run step (adapter-loop.ts: the job's end is
+// kept, then the step, then writeEnd), so the reset reads that run as its own run still going.
+const HOOKS = { beforeIntent: async () => {}, beforeResult: async () => {} };
+const TIMING = { leaseMs: 60_000, renewEveryMs: 20_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
+const FEEDBACK = "Retry more slowly next time.";
+const WORKFLOW_JSON = "workflows/answer/workflow.json";
+/** A draft of `answer` the compile turn answers with, one that passes its checks (runner-learning-end.test.mjs). */
+const compiledBlock = () => `\`\`\`\`workflow answer\n---\ndescription: Answers a question as a number; use when asked\nexample: {"content":"What is six times seven?"}\n---\n${JSON.stringify({
+  v: 2, name: "answer",
+  schemas: { In: { type: "object", properties: { content: { type: "string" } }, required: ["content"] }, Answer: { type: "object", properties: { answer: { type: "number" }, confidence: { type: "number" } }, required: ["answer", "confidence"] } },
+  input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" },
+  root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question.", out: "Answer", as: "answer" }] },
+})}\n\`\`\`\``;
+
+const until = async (check, what, ms = 60_000) => {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const found = await check();
+    if (found) return found;
+    if (Date.now() > deadline) throw new Error(`not within ${ms} ms: ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+};
+
+/** A store in a directory of its own, agent-1 of `body` (compile_after 1 by default), and the reset over it. */
+async function storeWorld(t, body = { instructions: "Answer.", tools: ["read"], learning: { compile_after: 1 } }) {
+  const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "learn-reset-"));
+  const server = await openSqliteStore({ dataDir: dir, role: "server" });
+  const closing = [];
+  t.after(async () => {
+    for (const close of closing.reverse()) await close().catch(() => {});
+    await server.close().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  });
+  await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body });
+  const host = {
+    store: server,
+    deleteLearning: (store, agentId, kept) => deleteLearning(store, agentId, learningFolderOf(dir, agentId), kept),
+    cancel: async (runId) => (await sendCommand(server, runId, { kind: "cancel", body: {} }), true),
+    inQueue: (agentId, work) => withAgentRepo(dir, agentId, work),
+    waitMs: 30_000,
+    pollMs: 50,
+  };
+  /** 204, or the error the reset answered. */
+  const reset = () => resetLearning(host, "agent-1").then(() => 204, (error) => error);
+  const ended = (runId) => until(async () => {
+    const row = await server.runs.get(runId);
+    return FINAL.includes(row?.state) && row.runner === null && row;
+  }, `${runId} final`);
+  const repo = join(dir, "disk", "agents", agentDirOf("agent-1"), "learning");
+  /** The paths on the learning folder's main, or none once it is gone. */
+  const onMain = () => (existsSync(join(repo, ".git")) ? git(repo, ["ls-tree", "-r", "--name-only", "main"]).split("\n").filter(Boolean) : []);
+  return { dir, server, host, reset, ended, repo, onMain, closing };
+}
+
+/** Agent-1's learning before the run: a correction on its folder's main and a grade. */
+async function corrected(w) {
+  await seedOf(w.dir, "agent-1");
+  writeFileSync(join(w.repo, "corrections.md"), CORRECTION);
+  git(w.repo, ["add", "--", "corrections.md"]);
+  git(w.repo, ["commit", "-q", "-m", "corrected"]);
+  await resnap(w.dir, "agent-1");
+  await w.server.settings.put(gradesKey("agent-1"), { r1: { correct: true } });
+}
+
+/** A runner for the agent's runs, its end-of-run step learningEndOfRun of `launch` wrapped by `wrap`; `feedback` is
+ *  queued on `runId` first (the owner's words its end keeps as a correction). */
+async function runnerFor(w, runId, launch, { script, feedback, wrap = (step) => step }) {
+  if (feedback !== undefined) await sendCommand(w.server, runId, { kind: "steer", body: { text: feedback } });
+  const store = await openSqliteStore({ dataDir: w.dir, role: "runner" });
+  const spec = piAdapterSpec({ script, tools: {}, hooks: HOOKS }, { requests: [] });
+  const step = learningEndOfRun(launch, { store, data: w.dir, env: {}, learningFolder: (agentId) => learningFolderOf(w.dir, agentId) });
+  assert.ok(step, "the run learns at its end");
+  const createLoop = (deps) => createAdapterLoop(async (claim, run) => ({ ...(await spec(claim, run)), agentId: "agent-1" }))({ ...deps, endOfRun: wrap(step) });
+  const runner = startRunner({ store, createLoop, name: `runner-${runId}`, ...TIMING });
+  w.closing.push(() => store.close(), () => runner.close());
+}
+
+test("(a) a run whose job turn ended and whose end-of-run step is still at work (its compile held open): 409 learning_busy naming it, nothing deleted; released, its compile commits and it ends; then 204, and nothing that compile wrote is left", { timeout: 120_000 }, async (t) => {
+  const w = await storeWorld(t);
+  await corrected(w);
+  const launch = { input: { content: "What is six times seven?" }, title: "t", place: { mode: "runner" }, learning: { seed: (await seedOf(w.dir, "agent-1")).sha, section: "" } };
+  await w.server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launch });
+  let entered;
+  const inStep = new Promise((resolve) => (entered = resolve));
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  await runnerFor(w, "run-1", launch, { feedback: FEEDBACK, script: [{ say: "The job's answer." }, { say: "Noted." }, { say: compiledBlock() }], wrap: (step) => async (input) => {
+    entered();
+    await held;
+    return step(input);
+  } });
+  await inStep;
+  const row = await w.server.runs.get("run-1");
+  assert.ok(!FINAL.includes(row.state), `the job's turn ended, the run is not final: ${row.state}`);
+  const busy = await w.reset();
+  assert.equal(busy?.code, "learning_busy", String(busy?.message ?? busy));
+  assert.deepEqual(busy.extra?.details?.runs, ["run-1"]);
+  assert.deepEqual(w.onMain(), ["corrections.md"], "nothing of the folder is deleted");
+  assert.deepEqual(await recordsOf(w.server, "agent-1"), [gradesKey("agent-1")], "nor the grade");
+
+  release();
+  assert.equal((await w.ended("run-1")).state, "ended");
+  assert.ok(w.onMain().includes(WORKFLOW_JSON), `the compile committed its draft: ${w.onMain().join(", ")}`);
+  assert.equal(await w.reset(), 204);
+  assert.deepEqual(w.onMain(), [], "no workflow, no correction: the folder is empty");
+  assert.deepEqual(await promotionsOf(w.server.settings, "agent-1"), [], "no promotion record");
+  assert.deepEqual(await recordsOf(w.server, "agent-1"), []);
+});
+
+/** An agent's learned workflow on its own input (`question`), the check's subject (runner-promote-replay.test.mjs). */
+const answerFlow = {
+  v: 2, name: "answer",
+  schemas: {
+    In: { type: "object", required: ["question"], properties: { question: { type: "string" } } },
+    Answer: { type: "object", required: ["answer", "sure"], properties: { answer: { type: "number" }, sure: { type: "boolean" } } },
+  },
+  input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" },
+  root: { node: "chain", steps: [{ node: "extract", label: "answer", instructions: "Answer the question; say whether you are sure.", out: "Answer", as: "answer", tier: "fast" }] },
+};
+const offers = (body, name) => (body?.tools ?? []).some((tool) => tool?.name === name);
+const hasResult = (body) => (body?.messages ?? []).some((message) => Array.isArray(message.content) && message.content.some((block) => block?.type === "tool_result"));
+
+test("(b) a run whose claim started a check's replays, then ended: the reset cancels the replays and waits for them, and no promotion record is left, the replays' own ends included; the next run is the agent's and records none", { timeout: 180_000 }, async (t) => {
+  const w = await storeWorld(t, { instructions: "Answer.", tools: ["read"], learning: true });
+  // Each replay's workflow node asks the model and is held there, in flight, until its run is cancelled.
+  const gw = await startFauxGateway({
+    hang: ({ body }) => offers(body, "submit"),
+    call: ({ body }) => (offers(body, "submit") && !hasResult(body) ? { name: "submit", input: { value: { answer: 42, sure: true } } } : undefined),
+    text: () => JSON.stringify({ answer: 42, sure: true }),
+  });
+  w.closing.push(() => gw.close());
+  const store = await openSqliteStore({ dataDir: w.dir, role: "runner" });
+  const MODEL = "claude-sonnet-5-5";
+  const route = { model: MODEL, provider: { api: "anthropic-messages", origin: gw.url, credential: () => `not-a-secret-${"pi"}` }, cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, outputCeiling: 8_192, price: () => 0.001, fetch: globalThis.fetch };
+  const deps = { env: {}, data: w.dir, journal: (claim) => store.journal(claim), store, sealKey: Buffer.alloc(32, 7), routeOf: async () => route, computerForClaim: async () => ({ release: async () => {} }), log: () => {} };
+  const specOf = async (claim, run) => adapterRunSpecFromLaunch(readLaunchBody((await store.runs.launch(claim.runId)).body), run, deps, claim);
+  const runner = startRunner({ store, name: "runner-a", ...TIMING, renewEveryMs: 1_000, createLoop: createAdapterLoop(specOf) });
+  w.closing.push(() => store.close(), () => runner.close());
+  const launchOf = (question, at) => ({ input: { content: `${question}?`, question }, title: question, place: { mode: "runner" }, model: { provider: "anthropic", modelId: MODEL }, ...(at ? { learning: startAt(at) } : {}) });
+  // The agent's own earlier runs, the inputs its check replays.
+  for (let i = 0; i < 3; i++) {
+    await w.server.runs.create({ id: `prior-${i}`, agentId: "agent-1", revisionId: "rev-1" }, { body: launchOf(`Question ${i}`) });
+    assert.equal((await w.ended(`prior-${i}`)).state, "ended");
+  }
+  await landWorkflows(w.dir, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: answerFlow }]);
+  await w.server.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-1" }, { body: launchOf("What is six times seven", (await seedOf(w.dir, "agent-1")).sha) });
+  assert.equal((await w.ended("run-1")).metrics?.path, "agent", "the agent took the run while its workflow is checked");
+  const reserved = (await promotionsOf(w.server.settings, "agent-1")).find((one) => one.decided === "replaying");
+  assert.equal(reserved?.runs?.length, 3, "its claim reserved the check and started a replay per input");
+  await until(() => gw.requests.filter(({ body }) => offers(body, "submit")).length === 3, "each replay in flight, held at its model request");
+  for (const id of reserved.runs) assert.ok(!FINAL.includes((await w.server.runs.get(id)).state), `${id} is at work`);
+
+  assert.equal(await w.reset(), 204);
+  for (const id of reserved.runs) assert.equal((await w.server.runs.get(id)).state, "stopped", `${id} was cancelled and ended before anything was deleted`);
+  assert.deepEqual(await promotionsOf(w.server.settings, "agent-1"), [], "no promotion record");
+  assert.deepEqual(w.onMain(), []);
+  // Nothing comes back later: the next run takes the agent path, and no check is started or recorded.
+  await w.server.runs.create({ id: "run-2", agentId: "agent-1", revisionId: "rev-1" }, { body: launchOf("What is seven times six", (await seedOf(w.dir, "agent-1")).sha) });
+  assert.equal((await w.ended("run-2")).metrics?.path, "agent");
+  assert.deepEqual(await promotionsOf(w.server.settings, "agent-1"), [], "still none");
+  assert.deepEqual((await w.server.runs.every("agent-1")).filter((run) => !FINAL.includes(run.state)), [], "nothing at work");
 });
