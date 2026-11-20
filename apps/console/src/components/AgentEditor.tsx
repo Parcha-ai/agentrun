@@ -2,7 +2,7 @@ import { Archive, ArrowLeft, ArrowRight, Check, Eye, FileText, History, Monitor,
 import { useEffect, useRef, useState } from "react";
 import { LearningField } from "@/components/LearningSwitch";
 import { ListFilter, matchesFilter } from "@/components/ListFilter";
-import { McpToolPicker, mcpToolMatches } from "@/components/McpToolPicker";
+import { McpToolPicker, mcpShownCount } from "@/components/McpToolPicker";
 import { MonidGrants } from "@/components/MonidGrants";
 import { ComputerSetting } from "@/components/ComputerSetting";
 import { PlaceSetting } from "@/components/PlaceSetting";
@@ -204,9 +204,8 @@ export function AgentEditor({ agent, revisions = [], caps, onSave, onMakeCurrent
   // The Tools step's cards: the built-in tools offered (a call-only one to a workflow, or to an agent that names it) and,
   // where this agent grants MCP tools, every saved server's. `toolCount`: how many a filter query keeps ("": all).
   const offeredTools = caps.tools.filter((t) => workflow || !t.call_only || f.tools?.includes(t.name));
-  const mcpListed = caps.mcp && !workflow && Array.isArray(mcpServers) ? mcpServers : [];
   const toolCount = (query: string) => offeredTools.filter((t) => matchesFilter(query, t.name, t.blurb, t.summary)).length
-    + mcpListed.reduce((n, s) => n + s.tools.filter((t) => mcpToolMatches(s, t, query)).length, 0);
+    + (caps.mcp && !workflow ? mcpShownCount(mcpServers ?? null, f.tools ?? [], query) : 0);
   // What a new agent still needs before Create is on.
   const createNeeds = [...(!f.name?.trim() ? ["Give the agent a name to create it."] : []), ...(!workflow && !starting && !f.instructions?.trim() ? ["Write its instructions to create it."] : [])];
   // The agent's approvals as the form has them: changed here, else the definition's, else ask (the server's default).

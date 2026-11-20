@@ -58,6 +58,16 @@ export function McpToolPicker({ servers, tools, harness, harnesses, filter = "",
   );
 }
 
+/** How many cards McpToolPicker shows under `filter` ("": all): a server's tools the filter keeps and each kept grant no
+ *  saved server answers for; after a failed read, each kept grant; none while the servers are read. The Tools step's
+ *  "N of M shown" counts these, so a broken grant the filter finds is never "No tool matches". */
+export function mcpShownCount(servers: McpServer[] | null | "failed", tools: readonly string[], filter: string): number {
+  if (servers === "failed") return tools.filter((t) => grantOf(t) && matchesFilter(filter, t)).length;
+  if (!servers) return 0;
+  return servers.reduce((n, s) => n + s.tools.filter((t) => mcpToolMatches(s, t, filter)).length, 0)
+    + staleGrants(tools, servers).filter((x) => matchesFilter(filter, x.grant)).length;
+}
+
 /** Whether the Tools step's filter keeps one of a server's tools: by the server's name, the tool's name, title or
  *  description. */
 export function mcpToolMatches(server: Pick<McpServer, "name">, tool: Pick<McpTool, "name" | "title" | "description">, filter: string): boolean {
