@@ -213,6 +213,7 @@ test("a nested MCP call the gate parked runs once on the resume after the person
   assert.deepEqual(ran, [{ a: 2, b: 3 }], 'it ran once');
   assert.match(items[0].output, /\n1\. mcp_fake__add waited for a person's approval, then ran: "5"\. Its effect is done; it was not run again\./);
   assert.doesNotMatch(items[0].output, /may have taken effect|did not report a result/);
+  assert.doesNotMatch(items[0].output, /declined/, 'an allowed call is no refusal');
 });
 
 test("a nested call the gate parked and the person denied is never run: the exec's output carries the refusal", async () => {
@@ -220,6 +221,10 @@ test("a nested call the gate parked and the person denied is never run: the exec
   await recovered;
   assert.deepEqual(ran, [], 'never run');
   assert.match(items[0].output, /\n1\. mcp_fake__add waited for a person's approval, then: "Denied: not now\."\. It did not run\./);
+  // Told as the person's answer, never as a crash: a model told its script was cut short retried the declined call.
+  assert.match(items[0].output, /^The exec stopped at a call that waited for a person's approval/);
+  assert.doesNotMatch(items[0].output, /cut short|session stopped/);
+  assert.match(items[0].output, /A call a person declined is their answer, not a failure: don't make it again\./);
 });
 
 test("a nested call the gate parked after its exec yielded runs once on the person's allow, and the model's pending wait on the cell carries its result", async () => {
@@ -237,6 +242,7 @@ test("a nested call the gate parked after its exec yielded and the person denied
   await recovered;
   assert.deepEqual(ran, []);
   assert.match(items[0].output, /\n1\. mcp_fake__add waited for a person's approval, then: "Denied: not now\."\. It did not run\./);
+  assert.match(items[0].output, /A call a person declined is their answer, not a failure: don't make it again\./);
 });
 
 test("a cut-off exec whose recovered output tells a refused call still ends failed when a second crash kept its end off the host's record", async () => {
@@ -311,7 +317,7 @@ test("a yielded exec whose pending wait a resume answered with its parked call a
 test("an exec that ends ok after its parked call was allowed and ran shows its calls' outcomes on the host's record, never opening with the cut-short words", async () => {
   const { recovered, items, restart } = await gateParkedExec(async () => 'allow');
   await recovered;
-  assert.match(items[0].output, /^The exec was cut short after these calls/, 'the model is still told its script was cut');
+  assert.match(items[0].output, /^The exec stopped at a call that waited for a person's approval, and its script did not go on after their answer/, 'the model is still told its script did not go on');
   const [end] = await restart(true);
   assert.equal(end.failed, false);
   assert.doesNotMatch(end.output, /cut short|session stopped/, `an ok exec's row: ${end.output}`);
@@ -402,7 +408,7 @@ async function twoCrashes(at) {
 test("a crash, a resume whose gate refuses the exec's call, then a second crash after the recovery's record and before its output reached the rollout: the exec still ends failed", async () => {
   const { ran, ends, output } = await twoCrashes('flushed');
   assert.deepEqual(ran, [], 'never run');
-  assert.match(output, /^The exec was cut short after these calls/);
+  assert.match(output, /^The exec stopped at a call that waited for a person's approval/);
   assert.match(output, /\n1\. mcp_fake__add waited for a person's approval, then: "Denied: not now\."\. It did not run\./);
   assert.deepEqual(ends, [{ exec: EXEC, failed: true }]);
 });
