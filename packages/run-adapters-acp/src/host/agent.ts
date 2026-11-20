@@ -11,7 +11,7 @@ import { Readable, Writable } from "node:stream";
 import { client, ndJsonStream, type ClientConnection, type RequestPermissionRequest, type RequestPermissionResponse, type SessionNotification } from "@agentclientprotocol/sdk";
 import { parentWatched, type ParentWatch } from "@parcha/agentrun-kernel/host";
 import { childEnv, confined, type ConfineChild } from "./child.js";
-import { cutKeyEndAtHead, cutKeyEndAtTail, cutKeys, keysToCut } from "./key-cut.js";
+import { cutKeys, keysToCut } from "./key-cut.js";
 
 const STDERR_TAIL = 8 * 1024;
 
@@ -62,10 +62,7 @@ export function startAgent(options: AgentProcessOptions): AgentProcess {
   };
   // A key's start at the end goes at every read, the agent alive or not: alive, it may be a key still being written;
   // ended, the most it drops is a key's length less one, and only text that spells a key's start.
-  const stderrTail = (): string => {
-    const text = cutKeyEndAtTail(cutKeys(raw, keys), keys);
-    return (cut ? cutKeyEndAtHead(text, keys) : text).slice(-STDERR_TAIL);
-  };
+  const stderrTail = (): string => cutKeys(raw, keys, { head: cut, tail: true }).slice(-STDERR_TAIL);
   child.stderr!.setEncoding("utf8");
   child.stderr!.on("data", take);
   // A write to a stdin the agent closed is its exit's to report, never an unhandled error.

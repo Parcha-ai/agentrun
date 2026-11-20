@@ -16,11 +16,12 @@ const piecesIn = (text) => PIECES.filter((piece) => text.includes(piece)).length
 
 test("a text that ends on the key's first 20 characters keeps no piece of it", () => {
   const text = `vendor: refused ${KEY.slice(0, 20)}`;
-  const cut = keyCut.cutKeyEndAtTail(keyCut.cutKeys(text, [KEY]), [KEY]);
+  const cut = keyCut.cutKeys(text, [KEY], { tail: true });
   assert.equal(piecesIn(cut), 0, `the cut text holds ${piecesIn(cut)} pieces of the key`);
   assert.equal(cut, 'vendor: refused ', 'what came before the key is kept');
-  // The text's end that starts no key is kept as it is.
-  assert.equal(keyCut.cutKeyEndAtTail('vendor: refused (401)', [KEY]), 'vendor: refused (401)');
+  // The text's end that starts no key is kept as it is, and a whole key still becomes the cut's mark.
+  assert.equal(keyCut.cutKeys('vendor: refused (401)', [KEY], { tail: true }), 'vendor: refused (401)');
+  assert.equal(keyCut.cutKeys(`refused ${KEY} (401)`, [KEY], { head: true, tail: true }), `refused ${keyCut.KEY_CUT} (401)`);
 });
 
 test("the stderr a live agent keeps, read while it is still writing its key, holds no piece of it", async (t) => {
