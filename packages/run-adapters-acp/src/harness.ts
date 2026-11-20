@@ -365,26 +365,40 @@ export function acpHarness(options: AcpHarnessOptions, control?: (drive: DriveCo
     return records.filter((r) => r.at > since && r.data?.type === "asked" && !answered.has(r.data.callId)).map((r) => r.data);
   };
 
+  /** The recovery note's line for a settled answer: the request as the agent asked it (its kind, title and input, so an
+   *  agent started without session/load can ask for the same call) and what the person said. */
+  const answerLine = (asked: PermissionRecord | undefined, answer: PermissionRecord): string => {
+    const kind = asked?.kind ?? "other";
+    const input = asked?.input === undefined || asked.input === null ? "" : JSON.stringify(asked.input);
+    const shown = input ? ` Its input: ${clip(input, 1500)}${input.length > 1500 ? " (cut here: ask with the whole input you first sent)" : ""}.` : "";
+    const named = `${kind} ${JSON.stringify(clip(asked?.title ?? kind, 300))}.${shown}`;
+    return answer.answer === "deny"
+      ? `- ${named} The person refused it.${answer.words ? ` Their words: ${clip(answer.words, 500).replace(/\n/g, " ")}` : ""}`
+      : `- ${named} The person allowed it once. Ask for it again exactly as before (the same kind, title and input) and it runs; any other request waits for the person again.`;
+  };
+
   /** A resumed turn's waiting permission requests, each asked about again before the agent starts: the person's answer
    *  is taken whatever the agent asks next (an agent may write another command after its restart), and with none yet the
-   *  gate parks the drive here, before any prompt is sent. The lines say each answer, for the agent's recovery note. */
+   *  gate parks the drive here, before any prompt is sent. The lines say every answer of the open turn the agent has not
+   *  been given yet, those taken now and those an earlier drive took before it stopped, for the agent's recovery note. */
   const settlePermissions = async (ctx: DriveContext, journal: NativeJournal): Promise<string[]> => {
     const gate = options.gate;
     if (!gate) return [];
-    const turnId = openTurn(ctx.state())?.placed[0] ?? "";
-    const said: string[] = [];
+    const turn = openTurn(ctx.state());
+    const turnId = turn?.placed[0] ?? "";
+    const since = turn?.since ?? Number.POSITIVE_INFINITY;
+    const records = journalRecords<PermissionRecord>(ctx.state(), PERMISSION_STREAM).filter((r) => r.at > since).map((r) => r.data);
+    const askedOf = (callId: string) => records.find((r) => r?.type === "asked" && r.callId === callId);
+    const given = new Set(records.filter((r) => r?.type === "given").map((r) => r.callId));
+    const said = records.filter((r) => r?.type === "answered" && r.settled && r.turn === turnId && !given.has(r.callId)).map((r) => answerLine(askedOf(r.callId), r));
     for (const request of waitingPermissions(ctx.state())) {
       const kind = request.kind ?? "other";
       const title = request.title ?? kind;
       const refused = await askGate(gate, permissionGateCall(request.callId, kind, title, request.input ?? null), ctx.signal);
-      journal.append(PERMISSION_STREAM, { type: "answered", callId: request.callId, answer: refused ? "deny" : "allow", ...(refused ? { words: refused.deny } : {}), settled: true, turn: turnId } satisfies PermissionRecord);
+      const answer = { type: "answered", callId: request.callId, answer: refused ? "deny" : "allow", ...(refused?.deny ? { words: refused.deny } : {}), settled: true, turn: turnId } satisfies PermissionRecord;
+      journal.append(PERMISSION_STREAM, answer);
       await journal.flush();
-      const named = `${kind} ${JSON.stringify(clip(title, 300))}`;
-      said.push(
-        refused
-          ? `- ${named}: the person refused it.${refused.deny ? ` Their words: ${clip(refused.deny, 500).replace(/\n/g, " ")}` : ""}`
-          : `- ${named}: the person allowed it once. Ask for it again exactly as before (the same command and input) and it runs; any other command waits for the person again.`,
-      );
+      said.push(answerLine(request, answer));
     }
     return said;
   };

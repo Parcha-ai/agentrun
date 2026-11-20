@@ -77,6 +77,37 @@ for (const load of [true, false]) {
     const resumed = prompts(recipe).slice(sentBefore).map((e) => e.text.join('\n')).join('\n');
     assert.match(resumed, /Run ls/);
     assert.match(resumed, /allowed/i);
+    assert.ok(resumed.includes('{"command":"ls"}'), `the note carries the request's input, so the agent can ask for it again: ${resumed}`);
+  });
+
+  test(`an answer taken by a runner that stopped before its prompt still reaches the agent's note on the next one (${how})`, async (t) => {
+    const dir = scratch();
+    const { recipe } = reasking(dir, load);
+    const store = memorySessionStore();
+    const asked = [];
+    const parked = await parkFirst(t, recipe, store, asked);
+    const sentBefore = prompts(recipe).length;
+
+    // The second runner takes the person's answer and is lost right after, before the agent gets a prompt.
+    let second;
+    second = await openSession(t, recipe, { store, gate: async (call) => (asked.push(call), setImmediate(() => second.stop(new Error('the runner was lost'))), 'allow') });
+    second.session.recover().catch(() => undefined);
+    await until(() => asked.length === 2, 'the gate to be asked about the parked call');
+    await second.session.turnEnd().catch(() => undefined);
+    const records = await streamRecords(store, 'acp.permission');
+    assert.deepEqual(records.filter((r) => r.type === 'answered').map((r) => [r.callId, r.answer]), [[parked, 'allow']], 'the answer was taken and saved');
+    assert.equal(prompts(recipe).length, sentBefore, 'the lost runner sent the agent nothing');
+
+    // The third runner has nothing waiting to settle; the saved answer must still be in what the agent is told.
+    const third = await openSession(t, recipe, { store, gate: async (call) => (asked.push(call), PARK) });
+    third.session.recover().catch(() => undefined);
+    await until(() => prompts(recipe).length > sentBefore, 'a prompt to reach the agent');
+    await until(() => asked.length === 3, 'the agent to ask again');
+    third.stop(new Error('the run parked again'));
+    await third.session.turnEnd().catch(() => undefined);
+    const resumed = prompts(recipe).slice(sentBefore).map((e) => e.text.join('\n')).join('\n');
+    assert.match(resumed, /allowed it once/, `the saved answer is in the note: ${resumed}`);
+    assert.ok(resumed.includes('{"command":"ls"}'), 'with the input the person allowed');
   });
 
   test(`with no answer yet, a parked permission parks the run again and the agent is not started (${how})`, async (t) => {
