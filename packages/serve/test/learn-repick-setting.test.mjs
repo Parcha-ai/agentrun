@@ -94,7 +94,7 @@ test("the setting: learning.repick is true or false and learning.repick_max_char
 });
 
 test("the rewrite: the answer's re-pick loop gets the pass marker, pinned whole: pass 1 the step as compiled, pass 2 its clone reading the loop's pages with the note; valid in the DSL and through every check", () => {
-  constdraft = citedDraft();
+  const draft =citedDraft();
   const rewritten = rewrite(draft, 150_000);
   assert.deepEqual(rewritten, withBody(draft, marked(ANSWER_STEP, ["page"], 150_000)));
   assert.deepEqual(draft, citedDraft(), "the draft itself is left as it was");
@@ -118,7 +118,7 @@ test("the rewrite: the answer's re-pick loop gets the pass marker, pinned whole:
 });
 
 test("the rewrite again: a rewritten doc re-derives from its pass 1 (the same at the same cap, the new cap otherwise); a page key the step's state already names keeps both; none where the re-pick is no single model step or its names are taken", () => {
-  constdraft = citedDraft();
+  const draft =citedDraft();
   const once = rewrite(draft, 150_000);
   assert.deepEqual(rewrite(once, 150_000), once);
   assert.deepEqual(rewrite(once, 5_000), rewrite(draft, 5_000));
@@ -151,7 +151,7 @@ test("the rewrite again: a rewritten doc re-derives from its pass 1 (the same at
 });
 
 test("the check: off, the clone's page read is refused as any is; on, only the clone the rewrite derives passes, never a compiler's variation of it", () => {
-  constrewritten = rewrite(citedDraft(), 150_000);
+  const rewritten =rewrite(citedDraft(), 150_000);
   const checked = (doc, on) => checkDraft({ changes: [added(DRAFT_PATH, JSON.stringify(doc)), added(README_PATH, readme)], tools: ["web_fetch"], dsl, ...(on ? { repick: true } : {}) });
   assert.deepEqual(compactStateProblems(rewritten), [COMPACT_PAGE("answer_pages")]);
   assert.deepEqual(compactStateProblems(rewritten, { repick: true }), []);
@@ -181,7 +181,7 @@ test("the check: off, the clone's page read is refused as any is; on, only the c
 });
 
 test("the cap: a request over it has its longest strings cut first, to one length, each saying where it was cut and from how long; a request within it is sent as it is", () => {
-  constuser = JSON.stringify({ question: "Where is the workshop?", page: "a".repeat(10_000), other: "b".repeat(3_000), draft: null });
+  const user =JSON.stringify({ question: "Where is the workshop?", page: "a".repeat(10_000), other: "b".repeat(3_000), draft: null });
   assert.equal(repick.capState(user, user.length), user);
   const cut = repick.capState(user, 2_000);
   assert.ok(cut.length <= 2_000, `${cut.length}`);
@@ -218,7 +218,7 @@ async function compiled(t, learning, flow, log) {
 const keptJson = (result) => result.kept?.files.find(({ path }) => path.endsWith("workflow.json"))?.text;
 
 test("the compile: off, the committed workflow.json is the draft's text; on, its rewrite with the owner's cap, and the digest is of what is committed", async (t) => {
-  constdraft = citedDraft();
+  const draft =citedDraft();
   const off = await compiled(t, true, draft);
   assert.deepEqual(off.errors, [], JSON.stringify(off));
   assert.equal(keptJson(off), `${JSON.stringify(draft)}\n`, "off: the draft as written");
