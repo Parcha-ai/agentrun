@@ -502,6 +502,18 @@ test("learning.repick's cap: pass 2's state over repick_max_chars has its page c
   assert.match(said, new RegExp(`\\[cut at \\d+ of ${page.length} characters\\]`), "its cut says where");
   assert.ok(!said.includes(LATE), "what is past the cut is not sent");
   assert.deepEqual(run.row.metrics?.loops, [{ node: "repick", iterations: 2, met: true, repick: true, workflow: "answer" }], "the quote check read the whole page");
+  // A cap its state cannot fit with every string cut: pass 2 is refused unsent, never sent past the owner's cap.
+  const tiny = await piRun(t, onPages(page, [MISSED, LATE], 10));
+  assert.notDeepEqual(tiny.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["answered"]);
+  assert.ok(!tiny.gateway.requests.some((request) => /untrusted data fetched from the web/.test(textOf(request.body))), "pass 2 reached no request");
+});
+
+test("learning.repick's marker key is the host's: an input holding repick_next is refused before any node runs", async (t) => {
+  const { input, ...rest } = onPages(PAGE, [MISSED, FOUND]);
+  const run = await piRun(t, { ...rest, input: { ...input, repick_next: { taken: "pages" } } });
+  assert.notDeepEqual(run.entries.filter((entry) => entry.kind === WORKFLOW_FIRST).map((entry) => entry.data.outcome), ["answered"]);
+  assert.ok(!run.gateway.requests.some((request) => /untrusted data fetched from the web/.test(textOf(request.body))), "the input picked no pass");
+  assert.ok(!run.gateway.requests.some((request) => isNode(request) && textOf(request.body).includes("hand-made wallets")), "no node read the page");
 });
 
 // f4: the run's one cap holds each node request at its worst case (its whole input uncached, one token a byte, and its

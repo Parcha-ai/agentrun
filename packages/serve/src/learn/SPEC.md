@@ -339,11 +339,15 @@ Over a cap is refused, never cut.
   is committed as compiled. At run time (`learned-workflow.ts`), the clone's request state, the JSON the DSL sends,
   is cut to `max_chars` before it is sent, its longest strings first, each to one length and ending
   ` [cut at N of M characters]`; the workflow's own state stays whole, so the quote check after the loop reads every
-  page. Its request is the served run's, under the run's one cost cap: the cap admits each request at its worst case
+  page. A state that does not fit even with every string cut (its keys, or many short strings) is never sent: the node
+  fails and the run hands back. `repick_next` is the host's: a run whose input holds it is refused before any node
+  runs, whatever the input schema says (a `$ref`, `allOf` or extra property). Its request is the served run's, under the run's one cost cap: the cap admits each request at its worst case
   (the whole input uncached, a token for each byte, the output clamped to fit), and one that cannot fit parks the run.
   The setting is read when a draft is committed: a change reaches the workflows compiled after it, never one main
   already holds. An agent whose workflows run through an SDK bridge (`workflowAdapters`) ignores it: its bridge runs
-  its own model nodes. A composed child's re-pick is not rewritten.
+  its own model nodes. A composed child's re-pick is not rewritten, and the marker counts only at the draft's own top
+  level (`repick.ts` `repickMarked`): carried into a composed child, as a revision of a kept workflow could, its clone
+  is a page read like any other, refused.
 - Every problem is `{ rule, path?, detail }`, printable as it is: its path and detail are cut of the host's values and
   of secret shapes, and a field over 4096 bytes prints whole as `[redacted]`, never scanned.
 

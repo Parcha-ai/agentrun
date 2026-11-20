@@ -4,7 +4,7 @@
 // host's secrets and of text shaped like one, and a field over PRINT_MAX is redacted whole.
 import { placeholdersOf, placeholderValue } from "@parcha/agentrun-dsl";
 import { hiddenCharacter } from "./invisible.js";
-import { REPICK_PASSES, repickCheckOf, repickPassOne } from "./repick.js";
+import { REPICK_PASSES, repickCheckOf, repickMarked } from "./repick.js";
 import { learnedSecretShapes, redactLearned, valueMatcher } from "./secrets.js";
 import { childNodes, type DraftDecisions, type DraftDryRun, draftProblems, type DraftReader, decodedStrings, DECODED_DEPTH, DRY_RUN_FAILED, frontKeys, frontValues, LEARNED_KEYS, learnedPlace, type LearnedPlace, readmeProblems, WORKFLOW_NAME, WORKFLOWS_DIR } from "./workflow-draft.js";
 
@@ -224,11 +224,14 @@ function pagesRead(value: unknown, state: Record<string, unknown>, out = new Set
  *  child sees an input key as a page when its value reads one. Pages reach a step on the agent's model only through a fast-tier step's
  *  output: chain14b's drafts fed whole pages to the answering step (4.1 requests a run at ~70k cached tokens each,
  *  $0.364 a served run), where the research shape (a fast extract's compact facts to the answering step) booked ~$0.08.
- *  One line each, in words the compile retry acts on. With `repick` (the agent's learning.repick), a re-pick loop whose
- *  body is the host's pass marker is read as its pass 1 (learn/repick.ts repickPassOne): the clone its pass 2 runs reads
- *  the pages by the owner's setting, the one page read on the agent's model a draft may hold, and only that exact clone. */
+ *  One line each, in words the compile retry acts on. With `repick` (the agent's learning.repick), a top-level re-pick
+ *  loop of the draft whose body is the host's pass marker is read as its pass 1 (learn/repick.ts repickMarked): the
+ *  clone its pass 2 runs reads the pages by the owner's setting, the one page read on the agent's model a draft may
+ *  hold, and only that exact clone at that place. */
 export function compactStateProblems(doc: unknown, { repick = false }: { readonly repick?: boolean } = {}): string[] {
   const problems = new Set<string>();
+  // The draft's own top-level marked loops alone (repickMarked): a marker in a composed child is read as written.
+  const marked = new Map<unknown, Record<string, unknown>>(repick ? repickMarked(doc).map(({ loop, step }) => [loop, step]) : []);
   const walk = (node: unknown, pages: ReadonlySet<string>, depth: number): Set<string> => {
     const after = new Set(pages);
     if (!isNode(node) || depth > 32) return after;
@@ -266,7 +269,7 @@ export function compactStateProblems(doc: unknown, { repick = false }: { readonl
       // until the marks stop changing. The set read grows on each further pass, so it stops within one pass a key the
       // workflow names, and never past maxIters; each pass's way out holds the ones before it.
       const passes = typeof node.maxIters === "number" && node.maxIters >= 1 ? Math.floor(node.maxIters) : Number.POSITIVE_INFINITY;
-      const body = (repick ? repickPassOne(node) : undefined) ?? node.body;
+      const body = marked.get(node) ?? node.body;
       let read = after;
       let out = walk(body, read, depth + 1);
       for (let pass = 2; pass <= passes; pass++) {

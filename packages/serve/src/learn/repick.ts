@@ -140,18 +140,22 @@ export function repickRewrite(doc: unknown, maxChars: number): Record<string, un
   return { ...doc, root: isNode(doc.root) && doc.root.node === "chain" ? { ...doc.root, steps: marked } : marked[0] };
 }
 
-/** Each marked re-pick's pass-2 label in `doc`, with its cap (repickPassOne): what learned-workflow.ts runNode cuts. */
-export function repickPageCaps(doc: unknown): Map<string, number> {
-  const caps = new Map<string, number>();
-  if (!isObject(doc)) return caps;
-  for (const step of topSteps(doc)) {
-    const one = repickPassOne(step);
-    if (!one) continue;
-    const clone = ((step as { body: { branches: { pages: { body: { metadata: { repick: { max_chars: number } } } } } } }).body.branches.pages.body);
-    caps.set(`${String(one.label)}${PAGES_LABEL}`, clone.metadata.repick.max_chars);
-  }
-  return caps;
+/** The marked re-pick loops of `doc`: those of its own top-level steps whose body is the marker (repickPassOne), each with
+ *  its pass-1 step, its clone's label and cap. The one place a marker counts: the rewrite puts it nowhere else, so the
+ *  compact state rule (check.ts) reads only these as their pass 1, and the runner (repickPageCaps) cuts only their
+ *  clones. A marker in a composed child, which a revised draft could carry, is a page read like any other. */
+export function repickMarked(doc: unknown): { readonly loop: Record<string, unknown>; readonly step: Record<string, unknown>; readonly label: string; readonly cap: number }[] {
+  if (!isObject(doc)) return [];
+  return topSteps(doc).flatMap((loop) => {
+    const step = repickPassOne(loop);
+    if (!step) return [];
+    const clone = (loop as { body: { branches: { pages: { body: { metadata: { repick: { max_chars: number } } } } } } }).body.branches.pages.body;
+    return [{ loop: loop as Record<string, unknown>, step, label: `${String(step.label)}${PAGES_LABEL}`, cap: clone.metadata.repick.max_chars }];
+  });
 }
+
+/** Each marked re-pick's pass-2 label in `doc`, with its cap (repickMarked): what learned-workflow.ts runNode cuts. */
+export const repickPageCaps = (doc: unknown): Map<string, number> => new Map(repickMarked(doc).map(({ label, cap }) => [label, cap]));
 
 /** `text` cut to its first `at` UTF-16 units, never through a surrogate pair. */
 const headOf = (text: string, at: number): string => {
@@ -166,10 +170,11 @@ const longestString = (value: unknown): number =>
   typeof value === "string" ? value.length : Array.isArray(value) || isObject(value) ? Object.values(value).reduce<number>((most, one) => Math.max(most, longestString(one)), 0) : 0;
 
 /** A model request's state, `user` (the DSL's JSON of it), within `max` characters: as it is when it fits; else each of
- *  its longest strings cut to one length, the most that fits, each ending " [cut at N of M characters]". A state that
- *  does not fit with every string cut to nothing is sent so cut, as small as it can be. The workflow's own state is never
- *  cut: the quote check after the step reads every page whole. */
-export function capState(user: string, max: number): string {
+ *  its longest strings cut to one length, the most that fits, each ending " [cut at N of M characters]". Undefined when
+ *  even every string cut to nothing does not fit (its keys, or many short strings, alone past `max`): the request is
+ *  never sent over the owner's cap. The workflow's own state is never cut: the quote check after the step reads every
+ *  page whole. */
+export function capState(user: string, max: number): string | undefined {
   if (user.length <= max) return user;
   let value: unknown;
   try {
@@ -185,7 +190,7 @@ export function capState(user: string, max: number): string {
   // Its length grows with the level: the most that fits, by halves.
   let [low, high] = [0, longestString(value)];
   let best = cutAt(0);
-  if (best.length > max) return best;
+  if (best.length > max) return undefined;
   while (low < high) {
     const mid = Math.ceil((low + high) / 2);
     const text = cutAt(mid);

@@ -154,6 +154,12 @@ test("the check: off, the clone's page read is refused as any is; on, only the c
   assert.deepEqual(varied((_clone, body) => (body.otherwise = "pages")), refusedPage, "pass 1 reads the pages");
   // A cap the setting allows other than the default is the owner's: it passes.
   assert.deepEqual(varied((clone) => (clone.metadata.repick.max_chars = 5_000)), []);
+  // The exact marker counts only where the rewrite puts it, at the draft's own top level: carried into a composed child
+  // (a revision reads the workflow it revises), it is a page read, and no cap reaches its clone at run time.
+  const child = { v: 2, name: "child", schemas: rewritten.schemas, input: { schemaId: "Store" }, output: { schemaId: "Answer", path: "answer" }, root: rewritten.root };
+  const parent = { ...citedDraft(), root: { node: "chain", steps: [{ node: "workflow", label: "inner", workflow: child, input: { url: "{url}" }, as: "answer" }] } };
+  assert.deepEqual(compactStateProblems(parent, { repick: true }), [COMPACT_PAGE("answer_pages")]);
+  assert.deepEqual([...repick.repickPageCaps(parent)], []);
 });
 
 test("the cap: a request over it has its longest strings cut first, to one length, each saying where it was cut and from how long; a request within it is sent as it is", () => {
@@ -170,6 +176,10 @@ test("the cap: a request over it has its longest strings cut first, to one lengt
   assert.match(other, /^b+ \[cut at \d+ of 3000 characters\]$/);
   assert.equal(page.match(/^a+/)[0].length, other.match(/^b+/)[0].length, "both cut to one length");
   assert.ok(cut.length > 1_800, `cut no further than it must: ${cut.length}`);
+  // A state that cannot fit with every string cut (many short ones, or its keys alone) is never sent over the cap.
+  const many = JSON.stringify({ pages: Array.from({ length: 10_000 }, (_, i) => `p${i}`) });
+  assert.equal(repick.capState(many, 2_000), undefined);
+  assert.equal(repick.capState(user, 10), undefined);
 });
 
 // The compile (runner/learning-end.ts checkDraftOf), over a store holding the run of an agent whose `learning` is given.
