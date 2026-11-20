@@ -52,6 +52,8 @@ import { childLoops, isolationLoops, type RunIsolation, RunIsolationRefused, run
 import { sweepEndedScratch } from "./scratch-sweep.js";
 import { RUNNER_RENEW_EVERY_MS, runnerName, startRunner, type Runner, type RunnerEvent, type RunnerMemory } from "./runner.js";
 import { keepPresence, type Presence } from "./presence.js";
+import { diskFreeGate } from "./disk-free.js";
+import { checkLines, checkRunnerEnv, type CheckRow } from "./runner-check.js";
 
 export { RUNNER_RENEW_EVERY_MS } from "./runner.js";
 
@@ -306,6 +308,9 @@ export async function startRunnerProcess(options: RunnerProcessOptions): Promise
       memory,
       ...(options.onEvent ? { onEvent: options.onEvent } : {}),
       ...(runEnded ? { runEnded } : {}),
+      // A runner on a disk of its own claims nothing while the server keeps runs' folders on the server's disk (Mode 1),
+      // and says why on its presence row (disk-free.ts): those runs wait for a runner on the server's disk.
+      claimGate: diskFreeGate(store, options.dataDir, env, kind),
       onBeat: heartbeat(options.dataDir, name, options.now ?? Date.now),
     });
   } catch (error) {
@@ -392,8 +397,10 @@ export function runnerHolds(args: { loops?: number; drainMs?: number }, env: Nod
  *  directory that starts with "-" so, never read as an option); an empty one is refused like a missing one. `--faux`: the
  *  faux model module, a test switch, as the server's own --faux; the only way a runner loads one. `--faux-browser`: the
  *  fake browser's module, with --faux only, as the server's. */
-export function runnerArgs(argv: readonly string[]): { dataDir: string; loops?: number; drainMs?: number; name?: string; faux?: string; fauxBrowser?: string; check?: true; harnessModules?: string[] } {
+export function runnerArgs(argv: readonly string[]): { dataDir: string; loops?: number; drainMs?: number; name?: string; faux?: string; fauxBrowser?: string; check?: true; envOnly?: true; heartbeatOnly?: true; harnessModules?: string[] } {
   let dataDir: string | undefined;
+  let envOnly = false;
+  let heartbeatOnly = false;
   let loops: number | undefined;
   let drainMs: number | undefined;
   let name: string | undefined;
@@ -424,9 +431,17 @@ export function runnerArgs(argv: readonly string[]): { dataDir: string; loops?: 
     else if (arg === "--faux-browser") fauxBrowser = value();
     else if (arg === "--harness-module") harnessModules.push(value());
     else if (arg === "--check") check = true;
-    else throw new RunnerRefused(`unknown argument ${JSON.stringify(arg)}: a runner takes --data D [--loops N] [--drain-timeout D] [--name N] [--faux M [--faux-browser M]] [--harness-module M ...], or --check --data D [--name N]`);
+    else if (arg === "--env") envOnly = true;
+    else if (arg === "--heartbeat") heartbeatOnly = true;
+    else throw new RunnerRefused(`unknown argument ${JSON.stringify(arg)}: a runner takes --data D [--loops N] [--drain-timeout D] [--name N] [--faux M [--faux-browser M]] [--harness-module M ...], or --check --data D [--name N], or --check --env [--data D], or --check --heartbeat --data D [--name N]`);
   }
+  if (envOnly && !check) throw new RunnerRefused("--env goes with --check: runner --check --env [--data D]");
+  if (heartbeatOnly && !check) throw new RunnerRefused("--heartbeat goes with --check: runner --check --heartbeat --data D [--name N]");
+  if (heartbeatOnly && envOnly) throw new RunnerRefused("--check takes --env (its environment alone) or --heartbeat (its heartbeat alone), not both: give neither to check both");
+  // `--check --env` checks the environment alone, which needs no data directory where the store is AGENTRUN_STORE_URL's.
+  if (envOnly) return { dataDir: dataDir ?? "", check: true, envOnly: true, ...(name === undefined ? {} : { name }) };
   if (!dataDir) throw new RunnerRefused("a runner needs its data directory: --data D");
+  if (heartbeatOnly) return { dataDir, check: true, heartbeatOnly: true, ...(name === undefined ? {} : { name }) };
   if (fauxBrowser !== undefined && faux === undefined) throw new RunnerRefused("--faux-browser goes with --faux");
   return { dataDir, ...(harnessModules.length ? { harnessModules } : {}),...(loops === undefined ? {} : { loops }), ...(drainMs === undefined ? {} : { drainMs }), ...(name === undefined ? {} : { name }), ...(faux === undefined ? {} : { faux }), ...(fauxBrowser === undefined ? {} : { fauxBrowser }), ...(check ? { check: true as const } : {}) };
 }
@@ -462,6 +477,7 @@ export function lastResort(name: string, write: (line: string) => void = (line) 
 
 /** One line of what the runner did, in its name. */
 function said(name: string, event: RunnerEvent): string | undefined {
+  if (event.type === "refusing") return event.reason === null ? `Runner ${name} claims runs again` : undefined;
   if (event.type === "claimed") return `Runner ${name} claimed ${event.claim.runId} (epoch ${event.claim.epoch})`;
   if (event.type === "released") return `Runner ${name} released ${event.runId} (${event.end})`;
   if (event.type === "started" || event.type === "ended") return runLine(event);
@@ -472,6 +488,7 @@ function said(name: string, event: RunnerEvent): string | undefined {
  *  goes to stderr. Undefined for any other event. The runner beside a server says them the same way (beside.ts), so a
  *  lapse of every claim at once shows its cause. */
 export function troubleLine(name: string, event: RunnerEvent): string | undefined {
+  if (event.type === "refusing" && event.reason !== null) return `Runner ${name} claims nothing: ${event.reason}`;
   if (event.type === "claim-lost") return `Runner ${name} lost its claim on ${event.runId} (${event.why})`;
   if (event.type === "error") return `Runner ${name}: ${event.step}${event.runId ? ` ${event.runId}` : ""}: ${event.message}`;
   return undefined;
@@ -507,19 +524,7 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
   }
   const env: NodeJS.ProcessEnv = { ...withoutFaux(given), ...modules, ...(args.faux ? { [FAUX_ENV]: resolve(args.faux) } : {}), ...(args.fauxBrowser ? { [FAUX_BROWSER_ENV]: resolve(args.fauxBrowser) } : {}) };
   const name = args.name ?? env.AGENTRUN_RUNNER_NAME ?? undefined;
-  if (args.check) {
-    if (!name) {
-      console.error("agentrun-serve runner: --check needs the runner's name: --name N or AGENTRUN_RUNNER_NAME");
-      return 2;
-    }
-    const checked = checkRunner({ dataDir: args.dataDir, name });
-    if (checked.ok) {
-      console.log(`Runner ${name} is alive`);
-      return 0;
-    }
-    console.error(`agentrun-serve runner: ${checked.why}`);
-    return 1;
-  }
+  if (args.check) return runnerCheck(args, env, name);
   let holds: ReturnType<typeof runnerHolds>;
   try {
     holds = runnerHolds(args, env);
@@ -585,7 +590,7 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
       // The runner subcommand ends what a crashed runner of this server left (never under --faux).
       janitor: true,
       onEvent: (event) => {
-        if (event.type === "error") return void console.error(troubleLine(runnerOf, event));
+        if (event.type === "error" || (event.type === "refusing" && event.reason !== null)) return void console.error(troubleLine(runnerOf, event));
         const line = said(runnerOf, event);
         if (line) console.log(line);
       },
@@ -611,6 +616,26 @@ export async function runnerMain(argv: readonly string[], given: NodeJS.ProcessE
     console.log(`Runner ${started.runner.name} memory: ${started.memoryMib} MiB for runs, each weighed by its harness`);
   });
   return 0;
+}
+
+/** `runner --check`: the runner's environment (runner-check.ts checkRunnerEnv), by name, never by value, then, without
+ *  --env, its heartbeat in --data under its name (checkRunner). `--heartbeat`: the heartbeat alone, with no store and no
+ *  secret (a liveness check a database blip does not fail). Each row on stdout, each gap on stderr too. 0 when nothing is
+ *  missing or bad and the heartbeat is fresh, 1 otherwise, 2 for a heartbeat check with no name. */
+async function runnerCheck(args: ReturnType<typeof runnerArgs>, env: NodeJS.ProcessEnv, name: string | undefined): Promise<number> {
+  if (!args.envOnly && !name) {
+    console.error("agentrun-serve runner: --check needs the runner's name: --name N or AGENTRUN_RUNNER_NAME (or --check --env, for its environment alone)");
+    return 2;
+  }
+  const rows: CheckRow[] = args.heartbeatOnly ? [] : await checkRunnerEnv({ ...(args.dataDir ? { dataDir: args.dataDir } : {}), env, read: (one) => secret(one) ?? env[one] });
+  if (!args.envOnly && name) {
+    const checked = checkRunner({ dataDir: args.dataDir, name });
+    rows.push(checked.ok ? { state: "ok", name: "heartbeat", why: `Runner ${name} is alive` } : { state: "bad", name: "heartbeat", why: checked.why });
+  }
+  const { lines, ok } = checkLines(rows);
+  for (const line of lines) console.log(line);
+  for (const row of rows) if (row.state === "missing" || row.state === "bad") console.error(`agentrun-serve runner: ${row.name}: ${row.why}`);
+  return ok ? 0 : 1;
 }
 
 /** The signals that stop a runner process. */

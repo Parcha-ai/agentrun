@@ -31,6 +31,10 @@ export interface Presence {
   /** Says on its row where its relay answers (`at`), or that it answers nowhere (null, the relay's close), and keeps that
    *  through every put again. Rejects when that write fails, which the renewals then try again. */
   relay(at: RelayAt | null): Promise<void>;
+  /** Says on its row why this runner claims nothing now (`words`), or that it claims again (null), and keeps that through
+   *  every put again: a runner that cannot serve the runs this store holds for a while (runner.ts claimGate) says so where
+   *  the server reads it (runnersRefused). Rejects when that write fails, which the renewals then try again. */
+  refuse(words: string | null): Promise<void>;
   /** Stops renewing it and removes the row (its incarnation's alone). */
   close(): Promise<void>;
   /** Stops renewing it and leaves the row to go stale, as a crash would. */
@@ -50,7 +54,8 @@ export function keepPresence(runners: Runners, runner: string, refused: string |
     warn(`could not say in the store that runner ${runner} is there: ${error instanceof Error ? error.message : String(error)}`);
   };
   let at: RelayAt | null = null;
-  const row = () => ({ runner, incarnation, refused, host: at?.host ?? null, port: at?.port ?? null });
+  let said = refused;
+  const row = () => ({ runner, incarnation, refused: said, host: at?.host ?? null, port: at?.port ?? null });
   // Its first put takes the name over from an earlier process's row. Every write after it (a renewal, the relay's place:
   // one Runners.renew, with the place it holds now) touches its own row only, or puts one where no other process of the
   // name is live (Runners.put unlessLiveMs): an older process overlapping a restart never takes the later one's row back,
@@ -75,6 +80,16 @@ export function keepPresence(runners: Runners, runner: string, refused: string |
       const wrote = writing.then(renew);
       writing = wrote.catch(failed);
       return wrote;
+    },
+    refuse(words) {
+      if (words === said) return Promise.resolve();
+      said = words;
+      if (stopped) return Promise.resolve();
+      // Its words are on the row, not on a renewal (Runners.renew writes the seen time and the relay's place alone): the
+      // row is put again, its own incarnation's, never over a later process's of the same name.
+      const wrote = writing.then(again);
+      writing = wrote.catch(failed);
+      return wrote.then(() => undefined);
     },
     async close() {
       if (stopped) return;

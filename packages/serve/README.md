@@ -375,8 +375,10 @@ time, writes nothing more to the run, and the store refuses any write under a cl
 claim lapses another runner claims the run and resumes it from its journal. A run's own computer doesn't survive a
 runner loss, a crash, a server stop or a park (the claim that resumes the run starts a new one, and says so on the
 timeline and, once, to the model as an "AgentRun server note"), and the agent's own computer, a persistent setting, does. `agentrun-serve runner --check --data DIR --name N`
-(or `AGENTRUN_RUNNER_NAME=N` in place of `--name`) says whether the runner named `N` has a fresh heartbeat: it exits 0
-when it does and 1 when it does not, and 2 when no name is given. Name a runner you start yourself with
+(or `AGENTRUN_RUNNER_NAME=N` in place of `--name`) checks the runner's environment by name (its store, its seal key,
+every run-facing name its server holds, a forwarder on loopback) and whether the runner named `N` has a fresh
+heartbeat: it exits 0 when both hold, 1 when either does not, and 2 when no name is given. `--check --env` checks the
+environment alone, and `--check --heartbeat` the heartbeat alone ([deploy/README.md](../../deploy/README.md#the-runners-environment-runner---check)). Name a runner you start yourself with
 `agentrun-serve runner --data DIR --name N`.
 
 ## Start-time switches

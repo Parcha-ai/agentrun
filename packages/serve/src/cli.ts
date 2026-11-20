@@ -42,6 +42,8 @@ const USAGE = `usage: agentrun-serve [--data DIR] [--listen ADDR] [--port N] [--
        agentrun-serve import [--data DIR] [--from claude-code,codex,pi] [--dry-run] [--include-deleted] [--all] [--verbose] [--port N]
        agentrun-serve runner --data DIR [--loops N] [--drain-timeout D] [--name NAME]
        agentrun-serve runner --check --data DIR [--name NAME]
+       agentrun-serve runner --check --env [--data DIR]
+       agentrun-serve runner --check --heartbeat --data DIR [--name NAME]
        agentrun-serve native discover|connect --project PATH [--runtime claude-code|codex] [--agent NAME|--profile NAME] [--url URL] [--data DIR]
 
   --data DIR        the agent store and its runs (default ~/.local/share/agentrun/agents); the token is DIR/.token, mode 0600
@@ -359,8 +361,8 @@ if (process.argv[2] === "eval-template") {
 }
 
 // The runner process (runner/main.ts): beside the server, its own store connection in --data, claiming runs until SIGTERM
-// or SIGINT. Its exit: 2 bad arguments, 3 a store schema it does not know, 1 anything else, 0 closed. `--check` reads its
-// heartbeat (0 fresh, 1 not).
+// or SIGINT. Its exit: 2 bad arguments, 3 a store schema it does not know, 1 anything else, 0 closed. `--check` checks its
+// environment by name (runner-check.ts) and its heartbeat; `--check --env` its environment alone (0 complete, 1 a gap).
 if (process.argv[2] === "runner") {
   const { runnerMain } = await import("./runner/main.js");
   process.exit(await runnerMain(process.argv.slice(3)));

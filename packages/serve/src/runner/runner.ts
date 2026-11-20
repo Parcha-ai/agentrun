@@ -152,6 +152,14 @@ export interface RunnerOptions {
    *  loop is turning. The runner process writes its heartbeat from it (runner/main.ts), so a check sees a runner that is
    *  idle and well, and not one whose loop has stopped. A throw is the caller's. */
   onBeat?: () => void;
+  /** Whether this runner may claim now: undefined while it may, else why not, in words a person can act on (runner/main.ts
+   *  diskFreeGate: a runner whose data directory is not the server's, while the server keeps runs' folders on its own
+   *  disk). Asked before each poll's claims (`fresh` false: an answer a few seconds old will do) and again, fresh, once a
+   *  poll claimed any, before a loop starts on them: a run claimed as the answer changed is released at once, untouched,
+   *  for a runner that can serve it. While it refuses, the runner claims nothing and says why on its presence row, where
+   *  the server reads it (presence.ts runnersRefused); a throw is said as an error and that poll claims nothing. Absent:
+   *  always. */
+  claimGate?: (fresh: boolean) => Promise<string | undefined>;
   /** For tests: the claim deadline's clock (the deadline a claim not renewed in time is lost at, and the time its claimed
    *  until is reckoned from). Default: the real one. Nothing else in the runner reads it. */
   clock?: { now(): number; setTimeout(fn: () => void, ms: number): unknown; clearTimeout(handle: unknown): void };
@@ -174,6 +182,8 @@ export type RunnerEvent =
   | { type: "claim-lost"; runId: string; epoch: number; why: "fenced" | "not-renewed" }
   | { type: "released"; runId: string; epoch: number; end: LoopEnd["state"] }
   | { type: "refused"; runId: string; commandId: number; reason: string }
+  /** The runner stopped claiming (`reason`, its claimGate's words) or claims again (null): said once at each change. */
+  | { type: "refusing"; reason: string | null }
   | { type: "error"; runId?: string; step: string; message: string };
 
 export interface Runner {
@@ -885,6 +895,7 @@ export function startRunner(options: RunnerOptions): Runner {
     try {
       const free = loops - runs.size - replaced.size;
       if (free <= 0) return;
+      if (!(await gateOpen(false))) return;
       // By count alone, one store call claims the batch, each run at its own epoch + 1 (store.runs.claimMany): filling 300
       // loops, or taking a dead runner's runs over, is one transaction, not 300. By memory, each run that fits is claimed
       // on its own (claimByMemory).
@@ -896,6 +907,12 @@ export function startRunner(options: RunnerOptions): Runner {
       } catch (error) {
         if (error instanceof Unanswered) await giveBackUnknown([]);
         throw error;
+      }
+      // Asked again, fresh, before any loop starts on what this poll claimed: a run claimed as the gate's answer changed is
+      // given back untouched (released at its epoch, as a closing runner gives back a batch), for a runner that can serve it.
+      if (claims.length > 0 && !(await gateOpen(true))) {
+        for (const claim of claims) await release(claim, {}).catch((error: unknown) => emit({ type: "error", runId: claim.runId, step: "claim give-back", message: message(error) }));
+        return;
       }
       // A claim whose run must only end, with no loop (endRetried), so no turn, model request or tool runs on it:
       // - a run stopped or cancelled while it had not started: claimed from queued, or claimed from running when an earlier
@@ -980,6 +997,27 @@ export function startRunner(options: RunnerOptions): Runner {
       holding += 1;
     }
     return claims;
+  };
+  /** The claim gate's last answer (RunnerOptions.claimGate): null while it lets this runner claim. */
+  let refusing: string | null = null;
+  /** Whether this runner may claim now (claimGate), its presence row and its lines told at each change of answer. A gate
+   *  that throws is said, and claims nothing this poll; its last answer stands. */
+  const gateOpen = async (fresh: boolean): Promise<boolean> => {
+    if (!options.claimGate) return true;
+    let words: string | undefined;
+    try {
+      words = await options.claimGate(fresh);
+    } catch (error) {
+      emit({ type: "error", step: "claim gate", message: message(error) });
+      return false;
+    }
+    const now = words ?? null;
+    if (now !== refusing) {
+      refusing = now;
+      emit({ type: "refusing", reason: now });
+      await (options.presence ?? presence)?.refuse(now).catch(() => undefined);
+    }
+    return now === null;
   };
   /** The poll's claim in flight, if any: close() waits for it, so a runner whose close resolved claims nothing after it. */
   let claiming: Promise<void> | undefined;
