@@ -1,9 +1,7 @@
 import { maintainObservations, Observations } from './observation/observer.js';
 import { isObservationRoute, observationHttp } from './observation/http.js';
 import { SdkRuns, sdkOf, sdkRunSecret } from "./sdk/runs.js";
-import { askRouteOf } from "./runner/sdk-ask.js";
-import { PI_WIRES } from "./runner/adapter-run-spec.js";
-import { routeOf as sdkModelRoute } from "./runner/model-route.js";
+import { learningModelOf, type LearningModel } from "./learning-model.js";
 import { answerSkill } from './skill-route.js';
 import { RemoteConnectors, verifyRemote, REMOTE_COMPLETION_BODY_BYTES } from './native/remote.js';
 import { REMOTE_HISTORY_BODY_BYTES } from './native/history.js';
@@ -839,11 +837,12 @@ async function planStep<T>(step: () => Promise<T>): Promise<T> {
  *  `needs`, a provider's key or another model; and whether that model has a price here (`models.priced`: unpricedModels,
  *  a gateway id serve has no price for), which a run's spend cap needs: null with no model, as nothing is there to price.
  *  Made from `env` alone, so it is remade only when env is. */
-type ModelState = { needs: ModelNeeds | null; priced: boolean | null };
+type ModelState = { needs: ModelNeeds | null; priced: boolean | null; learning_model: LearningModel };
 async function needsOf(env: NodeJS.ProcessEnv): Promise<ModelState> {
   const chosen = await chooseModel(env, undefined);
-  if ("why" in chosen) return { needs: chosen.needs, priced: null };
-  return { needs: null, priced: (await unpricedModels(env, undefined)).length === 0 };
+  const learning_model = await learningModelOf(env);
+  if ("why" in chosen) return { needs: chosen.needs, priced: null, learning_model };
+  return { needs: null, priced: (await unpricedModels(env, undefined)).length === 0, learning_model };
 }
 
 /** The server's reading of `base`, whole: its secrets, saved keys among them (`env`), the harnesses' offers, probed from
@@ -890,7 +889,7 @@ export function forCaller<T extends { learning: LearningCaps }>(caps: T, ownerSe
  *  needsOf says it for a revision that names no model (null when it runs). `runnerShell`: the sandbox-only tools a run
  *  on the runner has a shell for here (tools.ts shellTools; bash in Mode 2), available with no box. `switched`: the two
  *  start-time switches the server takes as options (switchedOnBy reads them from `env`, as the CLI sets them). */
-function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, { needs, priced }: ModelState, toolSettings: ToolSettingsMap, boxes: readonly BoxOffer[], refused: Readonly<Record<string, string>> = {}, runnerShell?: ReadonlySet<string>, isolation: "uid" | "process" = "process", switched: SwitchedOn = switchedOnBy(env)) {
+function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: HarnessCapability[], learning: LearningMode, { needs, priced, learning_model }: ModelState, toolSettings: ToolSettingsMap, boxes: readonly BoxOffer[], refused: Readonly<Record<string, string>> = {}, runnerShell?: ReadonlySet<string>, isolation: "uid" | "process" = "process", switched: SwitchedOn = switchedOnBy(env)) {
   const models = { ...modelSource(env), ready: needs === null, needs, priced };
   // Both limits apply: the cap on the count, and the memory each run reserves (host.ts).
   const memory = hostMemory();
@@ -913,6 +912,7 @@ function capabilitiesWith(env: NodeJS.ProcessEnv, maxRuns: number, harnesses: Ha
     /** The places a revision may name (`definition.place`), this host's default, and whether this server has each box. */
     places: placesOf(boxes, boxAllowOf(env)),
     models,
+    learning_model,
     /** `pending`: a workflow draft with a call no price covers is kept to wait for its owner's OK, served to no run;
      *  `approve`: whether the caller can approve one, which takes the owner's password session (forCaller), and
      *  `approve_needs` when not. */
@@ -4070,11 +4070,15 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // A learning SDK run's compile turn is asked on its agent's own model: checked reachable before the run starts.
         let compileModel: string | undefined;
         if(sdkOf(entry.revision?.body) && learnsOf((entry.revision!.body as AgenticBody).learning) && learning!=="off"){
-          try{const chosen=await runModelRef(env,(await pinnedOf(entry,{}))!.revision);if(chosen)compileModel=`${chosen.provider}/${chosen.modelId}`;}catch{}
+          const configured = await learningModelOf(env, (await pinnedOf(entry, {}))!.revision);
+          compileModel = configured.model ?? undefined;
         }
         const sdk=new SdkRuns(store,data,sdkSecret,serverSecrets,tokens.map((entry) => entry.token));
-        const compile={...(compileModel?{model:compileModel}:{}),check:async(model:string)=>{
-          try{const route=await askRouteOf(model,env,(one)=>sdkModelRoute(one,env,"default",PI_WIRES));await route.provider.credential();}catch{throw new ApiError("agent_not_runnable","Self-improving SDK runs need a working server model key to compile workflows. Configure Model keys or turn self-improving off.");}
+        const compile={...(compileModel?{model:compileModel}:{}),check:async()=>{
+          // SdkRuns checks this only after its durable origin lookup, so a successful admission remains recoverable
+          // when the owner has since changed its model or removed its key.
+          const configured = await learningModelOf(env, entry.revision, { checkCredential: true });
+          if (!configured.ready) throw new ApiError("agent_not_runnable", configured.reason ?? "Configure a server learning model in Settings → API Keys.");
         }};
         const answer=await idempotent(req,path,body,async origin=>({status:201,body:await sdk.start(entry,body,startDeps,origin,compile,linkOrigin(req))}));
         // Re-read the pinned receipt even on an in-memory replay: credentials saved since
@@ -4863,7 +4867,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       // they are now and of the agent's own sign-in pointers, live and forgotten (agentPointers); a write as the
       // definition's: an archived agent's too.
       case "getAgentLearning": {
-        await needAgent(id);
+        const entry = await needAgent(id);
         // The agent's learning view: its corrections, workflows and log from its learning folder; its run-fared counts and
         // its impact over the one store (agentLearningOverStore), from each run's launch, journal and learning end.
         const { counts, impact } = await agentLearningOverStore(store, id);
@@ -4872,7 +4876,9 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         // that does not run first.
         const records = await promotionsOf(store.settings, id);
         const costStop = await costStopOverStore(store, id);
-        return send(res, 200, await agentLearning(data, id, await learningShown(id), counts, impact, (workflow) => servingStateOf(records, workflow, costStop)));
+        const body = entry.revision?.body as AgenticBody | undefined;
+        const modelEnv = !body || sdkOf(body) || nativeOf(body) ? env : envAtPlace(env, resolvePlace(body.place as Place | undefined, fallbackPlace(entry.revision!.kind === "workflow" ? "workflow" : "agentic", body.tools ?? [])));
+        return send(res, 200, { ...await agentLearning(data, id, await learningShown(id), counts, impact, (workflow) => servingStateOf(records, workflow, costStop)), learning_model: await learningModelOf(modelEnv, entry.revision) });
       }
       case "getLearningCost": {
         await needAgent(id);

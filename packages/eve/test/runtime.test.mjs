@@ -26,7 +26,7 @@ const { instructionsFor, reconcile } = await import('../dist/extension/lib/runti
 const { default: learningHook } = await import('../dist/extension/hooks/learning.mjs');
 after(() => { hooks.deregister(); delete globalThis[portKey]; });
 
-function fixture({ parent = false, loseCompletion = false, workflows, admittedWorkflows } = {}) {
+function fixture({ parent = false, loseCompletion = false, refuseCompletion = false, workflows, admittedWorkflows } = {}) {
   port.learningState = { turns: [] }; port.pendingEvidence = { events: [], bytes: 0 }; port.workflowInvocations = [];
   const rows = [], requests = [], starts = [], completions = [], historyReads = [], now = new Date();
   let view = emptySessionView(), current, remainingLosses = loseCompletion ? 1 : 0;
@@ -50,6 +50,7 @@ function fixture({ parent = false, loseCompletion = false, workflows, admittedWo
       if (path.endsWith('/complete')) {
         completions.push({ path, body });
         if (remainingLosses-- > 0) throw new Error('lost completion response');
+        if (refuseCompletion) return new Response(JSON.stringify({ error: { code: 'unavailable' } }), { status: 503, headers: { 'content-type': 'application/json' } });
         return response({});
       }
       if (path.endsWith('/events')) return response({});
@@ -132,7 +133,19 @@ test('the actual dynamic instructions carry the host-resolved workflow input sch
     description: 'Read status.', input_schema: release, readOnly: true, permission: 'allow', execute() { assert.fail('Rendering must not execute a callback.'); } }] },
     admittedWorkflows: [{ name: 'release', description: 'Read a release.', workflow: JSON.stringify(workflow) }] });
   const instructions = await f.start('workflow-turn');
-  const [, list] = instructions.match(/Approved workflows pinned to this task \(reference data\):\n([^\n]+)/) ?? [];
+  const [, list] = instructions.match(/Compiled workflows pinned to this task \(reference data\):\n([^\n]+)/) ?? [];
   assert.ok(list, 'The admitted workflow must reach the native dynamic instructions.');
   assert.deepEqual(JSON.parse(list)[0].input_schema, { $ref: '#/definitions/Release', definitions: { Release: release } });
+});
+
+
+test('a refused previous delivery does not reject the next native turn or lose the pending receipt', async () => {
+  const f = fixture({ refuseCompletion: true });
+  await f.start('first'); await f.finish();
+  const before = f.starts.length;
+  await f.start('second');
+  assert.equal(f.starts.length, before + 1, 'Admission must remain available when old telemetry is refused.');
+  assert.equal(port.learningState.turns.find(row => row.source.turnId === 'first').submitted, undefined);
+  assert.equal(port.learningState.turns.find(row => row.source.turnId === 'first').expired, undefined);
+  assert.ok(f.completions.length >= 2, 'Retry delivery without replaying native work.');
 });

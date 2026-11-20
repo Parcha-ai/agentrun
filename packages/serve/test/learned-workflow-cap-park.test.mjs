@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { LEARNED_WORKFLOW_TOOL } from "../dist/learned-workflow.js";
-import { landWorkflows } from "./learned-workflow-seed-support.mjs";
+import { landWorkflows, promoteChecked } from "./learned-workflow-seed-support.mjs";
 import { sleep } from "./learn-support.mjs";
 import { agent, answerFlow, follow, serve, withEnv } from "./support.mjs";
 
@@ -36,7 +36,7 @@ test("a learned workflow's node refused for room parks the run: pi's next reques
   t.after(() => gw.close());
   const price = (model) => PRICES[model].join(",");
   withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL_API_KEY: ["not-a-secret", "gateway"].join("-"), AGENT_MODEL: "gpt-run", AGENT_MODEL_PRICE: price("gpt-run"), AGENT_MODEL_FAST: "gpt-fast", AGENT_MODEL_FAST_PRICE: price("gpt-fast") }, ["ANTHROPIC_BASE_URL", "OPENROUTER_API_KEY", "AGENT_MODEL_STRONG", "AGENT_MODEL_STRONG_PRICE"]);
-  const { api, data } = await serve(t, { learning: "on", faux: undefined });
+  const { api, data, store } = await serve(t, { learning: "on", faux: undefined });
   const id = "cap-park-node";
   const flow = answerFlow();
   flow.root.steps = [
@@ -45,6 +45,8 @@ test("a learned workflow's node refused for room parks the run: pi's next reques
   ];
   assert.equal((await api("POST", "/agents", agent(id, { learning: true, harness: "pi", instructions: ASK }))).status, 201);
   await landWorkflows(data, id, [{ name: "answer", description: "Answers a question as a number; use when the person asks for the answer", workflow: flow }]);
+  // The cap still governs a workflow that already passed its independent check.
+  await promoteChecked(store.settings, id, [{ name: "answer", workflow: flow }]);
   /** Each request the gateway took: its model, and ":node" for a workflow node's (it offers submit). */
   const sent = () => gw.requests.map((request) => `${request.body?.model}${(request.body?.tools ?? []).some((tool) => tool?.name === "submit") ? ":node" : ""}`);
 

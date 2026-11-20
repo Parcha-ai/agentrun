@@ -35,10 +35,12 @@ const SHAPES = [
   /gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{20,}/, /(?<![A-Za-z0-9])sk-[A-Za-z0-9_-]{20,}/,
   /xox[abposre]-[A-Za-z0-9-]{10,}|xapp-[A-Za-z0-9-]{10,}/, /eyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/,
   /:\/\/[^\s/?#@:]+:[^\s/?#@]*@/,
+  /(?<=\bBearer\s{1,3})(?=[A-Za-z._~+/-]*\d)[A-Za-z0-9._~+/-]{20,}={0,2}/i,
+  /(?<=[?&](?:api[_-]?key|access[_-]?token|auth[_-]?token|id[_-]?token|refresh[_-]?token|client[_-]?secret|x-amz-signature|x-amz-security-token|x-goog-signature|token|secret|password|passwd|signature|sig)=)[^\s&#"'`<>\\[\]]{16,}/i,
 ];
 function reference(text) {
   const found = SHAPES.flatMap((pattern) => {
-    const re = new RegExp(pattern.source, "g");
+    const re = new RegExp(pattern.source, `${pattern.flags}g`);
     const out = [];
     for (let m = re.exec(text); m; m = re.exec(text)) {
       out.push([m.index, m.index + m[0].length]);
@@ -63,7 +65,7 @@ function reference(text) {
 }
 
 test("over 3,000 random texts of the shapes' own pieces, what is redacted is what reading from every character redacts", () => {
-  const PIECES = ["github_pat_", "ghp_", "gh", "eyJ", "sk-", "xoxb-", "xapp-", ".", "_", "-", "a", "Z", "0", "7", " ", "github", "_pat_", "abcdefgh"];
+  const PIECES = ["github_pat_", "ghp_", "gh", "eyJ", "sk-", "xoxb-", "xapp-", ".", "_", "-", "a", "Z", "0", "7", " ", "github", "_pat_", "abcdefgh", "Bearer ", "bearer  ", "?token=", "&sig=", "=", "abcdefgh01234567"];
   let seed = 20261104;
   const random = () => ((seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648);
   for (let i = 0; i < 3011; i++) {

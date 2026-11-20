@@ -43,7 +43,8 @@ test("a person sees what the agent learned and controls it: the view, the log by
   // An agent whose learning was never on has no folder: an empty view; its run has no learning and no diff.
   await made(api, agent("plain"));
   const plain = (await api("GET", "/agents/plain/learning")).body;
-  assert.deepEqual(plain, { agent: "plain", main: null, corrections: "", workflows: [], log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 }, impact: null });
+  assert.deepEqual(plain, { agent: "plain", main: null, corrections: "", workflows: [], log: { items: [], total: 0, next_cursor: null }, counts: { merged: 0, dropped: {}, in_progress: 0 }, impact: null,
+    learning_model: { location: "server", ready: true, model: "faux/faux-1", needs: null, reason: null } });
   meets("/agents/{agent_id}/learning", plain);
   const plainRun = await started(api, "plain");
   await follow(api, plainRun, ["completed"]);

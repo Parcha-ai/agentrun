@@ -87,11 +87,20 @@ test("every production startRunner call passes an object literal of named fields
 
 // The conformance suite's own code (runner/conformance/: the harness and its runner process, child.ts, whose test hooks
 // read the environment) is reached only by tests: production code takes types from subject.ts and nothing else, only the
-// harness starts child.js, and the package's exports and bin never name it.
-test("the conformance suite's code is the tests' alone: production takes only types from it, only the harness starts its runner process, and the package never exports it", () => {
+// harness starts child.js, and the package's exports and bin never name it. The one door is src/conformance.ts, the
+// `./conformance` subpath a harness author's own tests import (HARNESS.md "Prove it"): no server code imports it, so a
+// server never loads the suite.
+const DOOR = "conformance.ts";
+test("the conformance suite's code is the tests' alone: production takes only types from it, only the harness starts its runner process, and the package exports it only through its ./conformance door", () => {
   // Serve's own src outside the suite: no other package reaches serve's internals but through its exports, read below.
   const SERVE_SRC = join(PACKAGES, "serve", "src");
-  const production = sources().filter((file) => file.startsWith(SERVE_SRC) && !file.startsWith(SUITE));
+  const door = join(SERVE_SRC, DOOR);
+  const production = sources().filter((file) => file.startsWith(SERVE_SRC) && !file.startsWith(SUITE) && file !== door);
+  for (const file of production) {
+    assert.doesNotMatch(readFileSync(file, "utf8"), /from\s+["']\.{1,2}\/(?:\.\.\/)*conformance\.js["']|import\(\s*["'][^"']*\/conformance\.js["']/, `${relative(ROOT, file)} imports the conformance door`);
+  }
+  const reached = [...readFileSync(door, "utf8").matchAll(/from\s+["']\.\/runner\/conformance\/([^"']+)["']/g)].map((match) => match[1]);
+  assert.deepEqual([...new Set(reached)].sort(), ["harness.js", "host-tools.js", "subject.js"], "the door reaches the suite's harness, host tools and types, never its runner process");
   for (const file of production) {
     const where = relative(ROOT, file);
     const text = readFileSync(file, "utf8");
@@ -107,7 +116,10 @@ test("the conformance suite's code is the tests' alone: production takes only ty
     assert.doesNotMatch(readFileSync(file, "utf8"), /conformance\/child/, `${relative(ROOT, file)} names the conformance runner process`);
   }
   const pkg = JSON.parse(readFileSync(join(PACKAGES, "serve", "package.json"), "utf8"));
-  assert.doesNotMatch(JSON.stringify({ exports: pkg.exports ?? {}, bin: pkg.bin ?? {} }), /conformance/, "the package's exports and bin never name the conformance suite");
+  const { "./conformance": exported, ...rest } = pkg.exports ?? {};
+  assert.match(JSON.stringify(exported ?? null), /dist\/conformance\.(js|d\.ts)/, "./conformance is the door's build");
+  assert.doesNotMatch(JSON.stringify(exported ?? null), /runner\/conformance/, "./conformance never names the suite's files");
+  assert.doesNotMatch(JSON.stringify({ exports: rest, bin: pkg.bin ?? {} }), /conformance/, "the package's other exports and bin never name the conformance suite");
 });
 
 test("the runner reads its clock from its options alone: never the environment or argv", () => {

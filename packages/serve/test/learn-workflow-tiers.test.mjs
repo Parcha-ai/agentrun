@@ -3,6 +3,7 @@
 // priced at its own model's price, never the session's. A tier the agent has no model of runs on the run's own model. pi,
 // on an operator's gateway (a faux one on loopback), each model with its own price.
 import assert from "node:assert/strict";
+import { promoteChecked } from "./learned-workflow-seed-support.mjs";
 import { test } from "node:test";
 import { startFauxGateway } from "./fixtures/faux-gateway.mjs";
 import { LEARNED_WORKFLOW_TOOL } from "../dist/learned-workflow.js";
@@ -54,11 +55,13 @@ async function tiered(t, id, tier, env) {
   t.after(() => gw.close());
   const price = (model) => PRICES[model].join(",");
   withEnv(t, { AGENT_MODEL_BASE_URL: gw.url, AGENT_MODEL_API_KEY: ["not-a-secret", "gateway"].join("-"), AGENT_MODEL: "gpt-run", AGENT_MODEL_PRICE: price("gpt-run"), ...env(price) }, ["ANTHROPIC_BASE_URL", "OPENROUTER_API_KEY", "AGENT_MODEL_FAST", "AGENT_MODEL_FAST_PRICE", "AGENT_MODEL_STRONG", "AGENT_MODEL_STRONG_PRICE"].filter((name) => !(name in env(price))));
-  const { api, data } = await serve(t, { learning: "on", faux: undefined });
+  const { api, data, store } = await serve(t, { learning: "on", faux: undefined });
   const flow = answerFlow();
   if (tier) flow.root.steps[0].tier = tier;
   assert.equal((await api("POST", "/agents", agent(id, { learning: true, harness: "pi", instructions: ASK }))).status, 201);
   await folderWith(data, id, flowFiles("answer", flow));
+  // Tier routing starts from a workflow whose independent check already passed.
+  await promoteChecked(store.settings, id, [{ name: "answer", workflow: flow }]);
   // Capped: every request is admitted under the run's one cap, held at its model's price before it leaves.
   const started = await api("POST", `/agents/${id}/runs`, { input: { content: ASK }, max_cost_usd: 5 });
   assert.equal(started.status, 202, JSON.stringify(started.body));

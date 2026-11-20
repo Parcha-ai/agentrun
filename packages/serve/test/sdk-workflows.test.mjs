@@ -6,8 +6,14 @@ import { checkDraft } from "../dist/learn/check.js";
 import { compilePrompt, compileReference } from "../dist/learn/compile.js";
 import { said } from "../dist/learning-words.js";
 import { serve } from "./support.mjs";
-import { landWorkflows } from "./learned-workflow-seed-support.mjs";
+import { landWorkflows, promoteChecked } from "./learned-workflow-seed-support.mjs";
 import { schemaProblems } from "./schema-support.mjs";
+
+// These tests isolate callback and schema admission after a workflow has passed its independent check.
+async function landPromoted(data, store, id, flows) {
+  await landWorkflows(data, id, flows);
+  await promoteChecked(store.settings, id, flows);
+}
 
 const tool = { name: "mcp:backend/status", description: "Read release status.", input_schema: { type: "object" }, permission: "allow", price_usd: 0 };
 const body = { runtime: "claude-agent-sdk", input: "Check release status.", instructions: "Use the backend tools.", workflow_tools: [tool] };
@@ -64,7 +70,7 @@ test("SDK run selection withholds an approved workflow that requires automatic t
   const { api, data, store } = await serve(t, { runner: false });
   const id = "sdk-retry-selection";
   assert.equal((await api("POST", "/agents", { definition: { id, name: id, instructions: body.instructions, sdk: { runtime: body.runtime }, learning: true, tools: [] } })).status, 201);
-  await landWorkflows(data, id, [
+  await landPromoted(data, store, id, [
     { name: "single-call", description: "Read status once.", workflow: toolFlow },
     { name: "retry-call", description: "Retry the status tool.", workflow: { ...toolFlow, root: { ...toolFlow.root, retry: { attempts: 2 } } } },
   ]);
@@ -82,7 +88,7 @@ test("SDK workflow selection combines scoped labels, declared callbacks and retr
   const scoped = labels => ({ ...toolFlow, root: { node: "chain", steps: labels.map(child) } });
   const judged = { ...modelFlow, schemas: { ...modelFlow.schemas, Check: { type: "object", properties: { right: { type: "boolean", description: "Is the answer correct?" } }, required: ["right"] } }, root: { node: "chain", steps: [modelFlow.root, { node: "judge", label: "check", state: { answer: "{answer}" }, out: "Check", as: "check" }] } };
   // Include active snapshots made before these admission checks existed; delivery must independently validate them.
-  await landWorkflows(data, id, [
+  await landPromoted(data, store, id, [
     { name: "scoped-distinct", description: "Distinct parents may each have a status step.", workflow: scoped(["left", "right"]) },
     { name: "scoped-repeated", description: "The same scoped step is repeated.", workflow: scoped(["same", "same"]) },
     { name: "needs-node", description: "Needs the backend model callback.", workflow: modelFlow },
@@ -148,7 +154,7 @@ test("SDK delivery withholds approved workflows above the bridge static node lim
   const { api, data, store } = await serve(t, { runner: false });
   const id = "sdk-static-node-boundary";
   assert.equal((await api("POST", "/agents", { definition: { id, name: id, instructions: body.instructions, sdk: { runtime: body.runtime }, learning: true, tools: [] } })).status, 201);
-  await landWorkflows(data, id, [false, true].flatMap(nested => [128, 129].map(count => ({
+  await landPromoted(data, store, id, [false, true].flatMap(nested => [128, 129].map(count => ({
     name: `${nested ? "nested" : "chain"}-${count}`, description: `Read status with ${count} static nodes.`, workflow: nodeBoundaryFlow(count, nested),
   }))));
   const started = await api("POST", `/agents/${id}/sdk-runs`, body, { "Idempotency-Key": "static-node-boundary" });
@@ -284,9 +290,20 @@ for (const [runtime, priced] of [["claude-agent-sdk", true], ["codex-sdk", true]
     await client(server.baseUrl, next.body.token)("POST", `/sdk-runs/${next.body.run_id}/complete`, { status: "cancelled", answer: "" });
     return;
   }
-  assert.deepEqual(next.body.learning.workflows.map((workflow) => workflow.name), ["release-status"]);
-  assert.equal(JSON.parse(next.body.learning.workflows[0].workflow).root.tool, tool.name);
-  const launch = (await store.runs.launch(next.body.run_id)).body;
+  assert.deepEqual(next.body.learning.workflows, [], "the compiled draft is withheld pending native comparison");
+  assert.equal(next.body.learning.check.workflow.name, "release-status");
+  const shadowSdk = client(server.baseUrl, next.body.token), shadowPath = `/sdk-runs/${next.body.run_id}`;
+  assert.equal((await shadowSdk("POST", `${shadowPath}/events`, { sequence: 1, events: [
+    { type: "tool", id: "fresh-status", name: tool.name, status: "started", input: { release: "current" } },
+    { type: "tool", id: "fresh-status", name: tool.name, status: "completed", output: { ready: true } },
+    { type: "workflow_check", id: next.body.learning.check.id, digest: next.body.learning.check.digest, outcome: "answered", answer: '{"ready":true}' },
+  ] })).status, 200);
+  assert.equal((await shadowSdk("POST", `${shadowPath}/complete`, { status: "completed", answer: '{"ready":true}' })).status, 200);
+  await follow(api, next.body.run_id, ["completed"]);
+  const promoted = await start("Check release readiness.", "promoted-workflow");
+  assert.deepEqual(promoted.body.learning.workflows.map((workflow) => workflow.name), ["release-status"]);
+  assert.equal(JSON.parse(promoted.body.learning.workflows[0].workflow).root.tool, tool.name);
+  const launch = (await store.runs.launch(promoted.body.run_id)).body;
   assert.deepEqual(launch.learning.workflows, ["release-status"]);
   // Delivery is pinned and remains identical on idempotent retries, even when owner changes learning for future runs.
   await api("PUT", `/agents/${id}/definition`, { definition: { instructions: body.instructions, learning: false } });
@@ -298,5 +315,5 @@ for (const [runtime, priced] of [["claude-agent-sdk", true], ["codex-sdk", true]
   assert.deepEqual(incompatible.body.learning.workflows, []);
   const protectedNow = new SdkRuns(store, data, server.token, () => ["mcp:backend/status"]);
   await assert.rejects(protectedNow.receipt(next.body.run_id, "https://console.example"), (error) => error.code === "unavailable");
-  for (const receipt of [next.body, off.body, incompatible.body]) await client(server.baseUrl, receipt.token)("POST", `/sdk-runs/${receipt.run_id}/complete`, { status: "cancelled", answer: "" });
+  for (const receipt of [promoted.body, off.body, incompatible.body]) await client(server.baseUrl, receipt.token)("POST", `/sdk-runs/${receipt.run_id}/complete`, { status: "cancelled", answer: "" });
 });

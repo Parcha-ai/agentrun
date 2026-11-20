@@ -10,7 +10,7 @@ import { sealKeyOf } from "../dist/tool-keys.js";
 
 const ROOT = new URL("../../../", import.meta.url);
 const { differences, loadTemplate, onlyService, renderValue, renderVariables, startArgv } = await import(new URL("deploy/railway/template.mjs", ROOT));
-const { BUTTON_MARK, BUTTON_PLACEHOLDER, FIRST_RUN, PRICE_PER_MINUTE, PUBLISH, WALK_MAX_MS, buttonLine, curlArgs, curlConfig, formValues, planClient, run, sourcePatch, usageOf } = await import(new URL("deploy/railway/publish-and-walk.mjs", ROOT));
+const { BUTTON_MARK, BUTTON_PLACEHOLDER, FIRST_RUN, buttonCode, PRICE_PER_MINUTE, PUBLISH, WALK_MAX_MS, buttonLine, curlArgs, curlConfig, formValues, planClient, run, sourcePatch, usageOf } = await import(new URL("deploy/railway/publish-and-walk.mjs", ROOT));
 const { dockerRunArgs } = await import(new URL("deploy/railway/local-walk.mjs", ROOT));
 const read = (path) => readFile(new URL(path, ROOT), "utf8");
 const { service } = onlyService(loadTemplate());
@@ -349,4 +349,12 @@ test("deploy/README.md has the Railway button on its one marked line: the placeh
   const code = /new\/template\/([^?]+)\?/.exec(button ?? "")?.[1];
   assert.ok(button === BUTTON_PLACEHOLDER || (code && code !== "TEMPLATE_CODE" && button === buttonLine(code)), button);
   assert.equal(lines.filter((l) => l.includes("railway.com/new/template/")).length, 1, "the button is on the marked line alone");
+});
+
+test("--walk alone walks the template of deploy/README.md's button, and none while the button is the placeholder", async () => {
+  const readme = await read("deploy/README.md");
+  const button = readme.split("\n")[readme.split("\n").indexOf(BUTTON_MARK) + 1];
+  assert.equal(buttonCode(readme), button === BUTTON_PLACEHOLDER ? undefined : /new\/template\/([^?]+)\?/.exec(button)[1]);
+  assert.equal(buttonCode(`${BUTTON_MARK}\n${buttonLine("abc-12")}\n`), "abc-12");
+  assert.equal(buttonCode(`${BUTTON_MARK}\n${BUTTON_PLACEHOLDER}\n`), undefined);
 });
