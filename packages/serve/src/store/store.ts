@@ -40,6 +40,50 @@ export interface Claim {
   /** The runner that held the run when this claim took it over: its lease ran out with the run still running (that
    *  runner was lost, or lost its claim). Its loop says so on the run's timeline. Absent for any other claim. */
   readonly lost?: { readonly runner: string };
+  /** Which turn of the run this claim works and which attempt at it (run_attempts, RunAttemptRow): set by the claim that
+   *  took the run, absent on a claim read back (claimsOf) and on a store that keeps none (a test's). */
+  readonly turn?: number;
+  readonly attempt?: number;
+}
+
+/** Why a claim let its run go while the run was still at work, so another claim does that work again: `drain`, its
+ *  runner closed (a deploy, a scale-down) and handed the run back; `retry`, its loop ended interrupted on its own (or its
+ *  end was refused) and the run was released to be tried again; `lease_lapse`, its runner was there but could not renew
+ *  the claim before it ran out; `crash`, the claim's lease ran out with nothing said of it (its runner died). */
+export type AttemptCause = "drain" | "crash" | "lease_lapse" | "retry";
+
+/** One claim of a run (store schema `run_attempts`), written by the claim itself: the turn it works and its attempt at
+ *  it. A turn is the work one claim starts afresh: the run's first, a follow-up's, a resume after a park. A claim that
+ *  takes over a turn another claim was cut from (its run still running, and that claim let it go for `cut`, or its lease
+ *  ran out) works the same turn again: its attempt is one more, and `cause` says why the one before was cut. Infra's
+ *  work, not the run's: every request the cut attempt made is made again. `journalFrom`: the first journal entry id this
+ *  claim could write (the run's next id when it claimed), so each entry of the run's journal is read as its claim's. */
+export interface RunAttemptRow {
+  readonly runId: string;
+  readonly epoch: number;
+  readonly turn: number;
+  readonly attempt: number;
+  /** Why the attempt before was cut; null on a turn's first attempt. */
+  readonly cause: AttemptCause | null;
+  /** Why this claim let the run go with its turn unfinished (`drain`, `retry`, `lease_lapse`); null while it holds the
+   *  run, and when it ended the turn (an answer, a park, the run's end) or died without a word. */
+  readonly cut: Exclude<AttemptCause, "crash"> | null;
+  readonly runner: string;
+  readonly from: RunState;
+  readonly journalFrom: number;
+  /** When the claim took the run, on the store's clock (ms). */
+  readonly claimedAt: number;
+}
+
+/** Each claim of a run, its turn and attempt (RunAttemptRow): written in the claim's own transaction, its `cut` in its
+ *  release's. Data only: nothing reads it to decide what a run does. */
+export interface RunAttempts {
+  /** The claim at `epoch` lost its lease while its runner was there (runner.ts loseClaim): its cut, and the cause of the
+   *  claim that took the run over from it if that one was read as a crash. Unfenced and idempotent: a cut already said, or
+   *  a claim with no row, is left as it is. */
+  lapsed(runId: string, epoch: number): Promise<void>;
+  /** The run's claims, by epoch. */
+  forRun(runId: string): Promise<RunAttemptRow[]>;
 }
 
 /** A command the server wrote for a run (stop, cancel, steer, approve, deny, raise): one row, read by the run's runner in id order
@@ -1654,6 +1698,8 @@ export interface Store {
   readonly computerLedger: ComputerLedger;
   /** Each computer a run made, from its create to its proven delete. */
   readonly computerIntervals: ComputerIntervals;
+  /** Each claim of a run: the turn it works and its attempt at it, and why it let the run go unfinished. */
+  readonly runAttempts: RunAttempts;
   /** The people's own machines paired with this server, and the codes that pair them (spec/computer/attach.md). */
   readonly pairedComputers: PairedComputers;
   /** The tokens minted for hosted machines that dial this server, each kept as its SHA-256. */
@@ -1692,7 +1738,7 @@ export interface Store {
   /** Gives the run back (no runner, no claimed_until; `state` when given; `wakeAt` and `backoffUntil` or none), in a
    *  durable commit (as flush). Fenced when the epoch moved on. Never a final state: the run's end commit is the one write
    *  that makes it final (a release asked for one is refused with a TypeError). */
-  release(claim: Claim, options?: { state?: ReleasedState; wakeAt?: number | null; backoffUntil?: number | null }): Promise<void>;
+  release(claim: Claim, options?: { state?: ReleasedState; wakeAt?: number | null; backoffUntil?: number | null; cut?: "drain" | "retry" }): Promise<void>;
   /** The run's journal: pi-durable's Storage for this one run, every commit fenced by the claim (store/journal). Its commit
    *  holds the store's one connection while it runs, so it awaits nothing but its own statements, under a deadline. */
   journal(claim: Claim): Journal;

@@ -5839,6 +5839,7 @@ class GetRunUsageResponse(TypedDict):
     lines: list[GetRunUsageResponseLinesItem] | None
     browser_sessions: list[GetRunUsageResponseBrowserSessionsItem] | None
     computer_intervals: list[GetRunUsageResponseComputerIntervalsItem] | None
+    infra_usd: float | None
     reason: Literal["running", "not_booked", "reopened"] | None
 
 
@@ -5860,6 +5861,8 @@ class _GetRunUsageResponseLinesItemRequired(TypedDict):
     quantity: float | None
     unit: Literal["token", "call", "second", "vcpu_second", "gib_second", "gpu_second", "gb_month"]
     basis: Literal["reported", "estimate", "unpriced"]
+    attempt: int | None
+    billable: bool
     usd: float | None
 
 
@@ -5895,6 +5898,8 @@ class GetRunUsageResponseBrowserSessionsItem(TypedDict):
     charged_seconds: float | None
     provider_record: GetRunUsageResponseBrowserSessionsItemProviderRecord | None
     provider_record_status: Literal["read", "not_offered", "not_found", "failed", "no_session"] | None
+    attempt: int | None
+    billable: bool
 
 
 class GetRunUsageResponseBrowserSessionsItemProviderRecord(TypedDict):
@@ -5915,6 +5920,8 @@ class GetRunUsageResponseComputerIntervalsItem(TypedDict):
     ended_at: str | None
     kept: bool
     booked_seconds: float
+    attempt: int | None
+    billable: bool
 
 
 class GetRunUsageResponseComputerIntervalsItemGpu(TypedDict):

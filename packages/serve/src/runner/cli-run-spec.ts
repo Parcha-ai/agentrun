@@ -179,9 +179,10 @@ export async function cliCapModel(entry: HarnessEntry & { facts: AdapterFacts },
  *  run whose plane resolves it to native gets the harness's own search (#2458), this run's alone; whatever the runner's
  *  own environment says of a plane is never the run's. Whether each search runs is the tool's setting at that search
  *  (SessionIO.permission, the gate), never this plane, which is frozen when the run is made. */
-export function cliRunEnv(env: NodeJS.ProcessEnv | undefined, data: string, claimed: NodeJS.ProcessEnv = {}, plane?: RunLaunch["plane"], runKey?: ClaimModelKey): NodeJS.ProcessEnv {
-  // A run with its own model key: that key alone, in the variables its route sends (claimModelEnv, never enumerable).
-  const out = claimModelEnv(env ?? {}, claimed, runKey);
+export function cliRunEnv(env: NodeJS.ProcessEnv | undefined, data: string, claimed: NodeJS.ProcessEnv = {}, plane?: RunLaunch["plane"], runKey?: ClaimModelKey, claim?: Pick<Claim, "runId" | "turn" | "attempt">): NodeJS.ProcessEnv {
+  // A run with its own model key: that key alone, in the variables its route sends (claimModelEnv, never enumerable), and
+  // the claim's request metadata beside it (request-metadata.ts, never enumerable either).
+  const out = claimModelEnv(env ?? {}, claimed, runKey, claim);
   Object.defineProperty(out, DATA_ENV, { value: data, enumerable: true, writable: true, configurable: true });
   delete out[TOOL_PLANE_ENV];
   if (plane && Object.keys(plane).length) Object.defineProperty(out, TOOL_PLANE_ENV, { value: JSON.stringify(plane), enumerable: true, writable: true, configurable: true });
@@ -474,7 +475,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // carries only where it is, and its CLI says it is signed in before the run starts. A run that brought its own key
   // runs on that key, and a run in a sandbox place on the model keys.
   const login = keyed ? undefined : await loginForRun(deps.store.settings, deps.data, deps.env ?? {}, name, launch.place);
-  const env = withClaudeLogin(cliRunEnv(deps.env, deps.data, claimed, launch.plane, runKey), login);
+  const env = withClaudeLogin(cliRunEnv(deps.env, deps.data, claimed, launch.plane, runKey, claim), login);
   const chosen = await modelsOf(entry, env, modelAskOf(launch.model, body.model));
   await planBeforeRun(env, chosen.model);
   if (login && entry.priceModel(env, chosen.model).provider === CLAUDE_LOGIN_PROVIDER) {
@@ -662,7 +663,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
       // A run with its own model key: these tiers carry that key too, and no saved key is read.
       const tierKeys = keyed ? {} : await tierModelKeys({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, learnedTiers(workflows));
       for (const redact of new Set([held, cut])) holdClaimed(redact, tierKeys);
-      const modelEnv = claimModelEnv(deps.env, { ...claimed, ...tierKeys }, runKey);
+      const modelEnv = claimModelEnv(deps.env, { ...claimed, ...tierKeys }, runKey, claim);
       const tiers = new Map<string, LearnedTier>();
       for (const [tier, routed] of await learnedTierRoutes(workflows, modelEnv, (tier) => deps.routeOf(undefined, modelEnv, tier, PI_WIRES, undefined, cut))) {
         if ("why" in routed) tiers.set(tier, { why: routed.why });

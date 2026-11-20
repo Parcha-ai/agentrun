@@ -27,8 +27,8 @@ import { stranger } from "./stranger.mjs";
 
 /** The routes answered, by the end of the request's path. */
 export const ROUTES = Object.freeze({ responses: "/v1/responses", messages: "/v1/messages", chat: "/v1/chat/completions" });
-/** The headers recorded for each request: the two that carry a key, and Anthropic's API version. */
-export const RECORDED_HEADERS = Object.freeze(["authorization", "x-api-key", "anthropic-version"]);
+/** The headers recorded for each request: the two that carry a key, Anthropic's API version, and LiteLLM's spend-logs metadata. */
+export const RECORDED_HEADERS = Object.freeze(["authorization", "x-api-key", "anthropic-version", "x-litellm-spend-logs-metadata"]);
 
 /**
  * Starts the gateway on 127.0.0.1, on a port of its own.
