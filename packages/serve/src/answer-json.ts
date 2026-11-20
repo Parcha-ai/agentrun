@@ -153,9 +153,8 @@ export function carriedProblem(schema: Record<string, unknown>): string | undefi
   return unknown.length ? `names ${unknown.map((name) => JSON.stringify(name)).join(", ")}, which the root's properties have no field for` : undefined;
 }
 
-/** The fields `schema` names in `x-carried`, when it names a list of them (one saved before the save checked it may not):
- *  undefined for none. */
+/** The fields `schema` names in `x-carried`, read by the save's rule (carriedProblem): undefined for none, or for one the
+ *  save would refuse, so its run gets the too-large line. */
 export function carriedFields(schema: unknown): readonly string[] | undefined {
-  const carried = isObject(schema) ? schema[X_CARRIED] : undefined;
-  return Array.isArray(carried) && carried.length > 0 && carried.every((name) => typeof name === "string") ? carried : undefined;
+  return isObject(schema) && !carriedProblem(schema) ? (schema[X_CARRIED] as readonly string[] | undefined) : undefined;
 }
