@@ -176,9 +176,9 @@ test("the computer ledger is STRICT, its labels and detail JSON and its time INT
 test("a run's computer intervals: opened once, kept, ended once and never moved, read by run in the order they were made", async (t) => {
   const { store } = await storeOn(t);
   const at = (minutes) => T0 + minutes * 60_000;
-  const none = { gpuType: null, gpuCount: null, cpus: null, memoryMb: null };
+  const none = { gpuType: null, gpuCount: null, cpus: null, memoryMb: null, diskGb: null };
   await store.computerIntervals.opened({ runId: "run-1", provider: "e2b", providerId: "sbx-b", kind: "sandbox", ...none, startedAt: at(5) });
-  await store.computerIntervals.opened({ runId: "run-1", provider: "daytona", providerId: "gpu-1", kind: "sandbox", gpuType: "H100", gpuCount: 1, cpus: 4, memoryMb: 8192, startedAt: at(1) });
+  await store.computerIntervals.opened({ runId: "run-1", provider: "daytona", providerId: "gpu-1", kind: "sandbox", gpuType: "H100", gpuCount: 1, cpus: 4, memoryMb: 8192, diskGb: 10, startedAt: at(1) });
   await store.computerIntervals.opened({ runId: "run-2", provider: "e2b", providerId: "sbx-c", kind: "desktop", ...none, startedAt: at(2) });
   // A retried create answers the computer it made: its second opened changes nothing, its time and run included.
   await store.computerIntervals.opened({ runId: "run-9", provider: "e2b", providerId: "sbx-b", kind: "phone", ...none, startedAt: at(9) });
@@ -188,8 +188,8 @@ test("a run's computer intervals: opened once, kept, ended once and never moved,
   await store.computerIntervals.ended("e2b", "sbx-b", at(30));
   await store.computerIntervals.ended("e2b", "sbx-none", at(30));
   assert.deepEqual(await store.computerIntervals.forRun("run-1"), [
-    { runId: "run-1", provider: "daytona", providerId: "gpu-1", kind: "sandbox", gpuType: "H100", gpuCount: 1, cpus: 4, memoryMb: 8192, startedAt: at(1), kept: false, endedAt: null },
-    { runId: "run-1", provider: "e2b", providerId: "sbx-b", kind: "sandbox", ...none, startedAt: at(5), kept: true, endedAt: at(20) },
+    { runId: "run-1", provider: "daytona", providerId: "gpu-1", kind: "sandbox", gpuType: "H100", gpuCount: 1, cpus: 4, memoryMb: 8192, diskGb: 10, startedAt: at(1), kept: false, endedAt: null, bookedMs: 0 },
+    { runId: "run-1", provider: "e2b", providerId: "sbx-b", kind: "sandbox", ...none, startedAt: at(5), kept: true, endedAt: at(20), bookedMs: 0 },
   ]);
   assert.deepEqual((await store.computerIntervals.forRun("run-2")).map((row) => [row.providerId, row.endedAt]), [["sbx-c", null]], "another run's own");
   assert.deepEqual(await store.computerIntervals.forRun("run-9"), [], "the ignored second opened made no row of its run");
@@ -197,9 +197,36 @@ test("a run's computer intervals: opened once, kept, ended once and never moved,
   assert.equal((await store.snapshot((snapshot) => snapshot.computerIntervals.forRun("run-1"))).length, 2);
 });
 
+test("a computer's booked time adds up, by whole ms above 0 alone, and a computer with no row gets none", async (t) => {
+  const { store } = await storeOn(t);
+  await store.computerIntervals.opened({ runId: "run-1", provider: "e2b", providerId: "sbx-a", kind: "sandbox", gpuType: null, gpuCount: null, cpus: 2, memoryMb: 512, diskGb: null, startedAt: T0 });
+  await store.computerIntervals.booked("e2b", "sbx-a", 300_000);
+  await store.computerIntervals.booked("e2b", "sbx-a", 45_500);
+  for (const ignored of [0, -5, 1.5, Number.NaN]) await store.computerIntervals.booked("e2b", "sbx-a", ignored);
+  await store.computerIntervals.booked("e2b", "sbx-none", 1_000);
+  assert.deepEqual((await store.computerIntervals.forRun("run-1")).map((row) => row.bookedMs), [345_500]);
+});
+
+test("a computer_intervals an earlier build made, with no disk or booked time, gets both at the server's open: its rows' disk unknown and none booked", sqliteOnly("an earlier build's store file"), async (t) => {
+  const { store, file } = await storeOn(t);
+  await store.computerIntervals.opened({ runId: "run-1", provider: "e2b", providerId: "sbx-a", kind: "sandbox", gpuType: null, gpuCount: null, cpus: 2, memoryMb: 512, diskGb: 4, startedAt: T0 });
+  await store.flush();
+  await store.close();
+  const db = await raw(file);
+  try {
+    await db.run("ALTER TABLE computer_intervals DROP COLUMN disk_gb");
+    await db.run("ALTER TABLE computer_intervals DROP COLUMN booked_ms");
+  } finally {
+    await db.close();
+  }
+  const again = await storeOn(t, { file });
+  await again.store.computerIntervals.booked("e2b", "sbx-a", 1_000);
+  assert.deepEqual((await again.store.computerIntervals.forRun("run-1")).map((row) => [row.diskGb, row.bookedMs]), [[null, 1_000]]);
+});
+
 test("computer_intervals is STRICT (SQLite), keyed by provider and its id, and outlives the store that wrote it", async (t) => {
   const { store, file } = await storeOn(t);
-  await store.computerIntervals.opened({ runId: "run-1", provider: "e2b", providerId: "sbx-a", kind: "sandbox", gpuType: null, gpuCount: null, cpus: null, memoryMb: null, startedAt: T0 });
+  await store.computerIntervals.opened({ runId: "run-1", provider: "e2b", providerId: "sbx-a", kind: "sandbox", gpuType: null, gpuCount: null, cpus: null, memoryMb: null, diskGb: null, startedAt: T0 });
   await store.flush();
   await store.close();
   const db = await raw(file);
@@ -207,6 +234,7 @@ test("computer_intervals is STRICT (SQLite), keyed by provider and its id, and o
     if (db.kind === "sqlite") assert.match((await db.get("SELECT sql FROM sqlite_schema WHERE name = 'computer_intervals'")).sql, /\)\s*STRICT$/);
     await assert.rejects(db.run("INSERT INTO computer_intervals (provider, provider_id, run_id, started_at) VALUES ('e2b', 'sbx-a', 'run-2', 1)"), /UNIQUE|duplicate key/);
     await assert.rejects(db.run("INSERT INTO computer_intervals (provider, provider_id, run_id, started_at, kept) VALUES ('e2b', 'sbx-z', 'run-2', 1, 2)"), /CHECK|check constraint/);
+    await assert.rejects(db.run("INSERT INTO computer_intervals (provider, provider_id, run_id, started_at, booked_ms) VALUES ('e2b', 'sbx-y', 'run-2', 1, -1)"), /CHECK|check constraint/);
   } finally {
     await db.close();
   }

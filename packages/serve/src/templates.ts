@@ -45,7 +45,7 @@ export const MODEL_TIERS: Readonly<Record<string, Tier>> = { fast: "fast", balan
 const SCALAR_TYPES = ["string", "number", "integer", "boolean"] as const;
 /** A case's grader types. The answer's output schema is no grader's: every graded run of a package with `output` is held
  *  to it by the server's own verdict (template-eval.ts outputVerdict). */
-export const GRADER_TYPES = ["llm", "regex", "tool_used", "file_exists", "mailbox"] as const;
+export const GRADER_TYPES = ["llm", "regex", "tool_used", "file_exists", "mailbox", "handed"] as const;
 /** The entries of a package's `computer` preference list: `shell`, a computer that gives the agent a shell here (bash);
  *  `none`, no shell, the file tools alone. Apply takes the first this server meets now (pickComputer). */
 export const COMPUTER_ENTRIES = ["shell", "none"] as const;
@@ -901,9 +901,10 @@ export function readPackage(from: string | PackageFiles, { evalFixtures = true }
     for (const path of own.filter((p) => !(p === "prompt.md" || p === "case.yaml" || /^graders\/[^/]+\.md$/.test(p) || p.startsWith("fixtures/")))) bad(`${at}/${path}`, "a case holds prompt.md, graders/*.md, case.yaml and fixtures/ only");
     const caseDoc = own.includes("case.yaml") ? parseDocument(text(`${at}/case.yaml`), { uniqueKeys: true }) : undefined;
     if (caseDoc?.errors.length) bad(`${at}/case.yaml`, "is not YAML");
-    // An email or feed case's run is its trigger's, on the trigger's input (template-eval.ts): its prompt.md has no body.
+    // An email, feed or previous case's run is its trigger's, on the trigger's input (template-eval.ts): its prompt.md has
+    // no body.
     const caseJs = !!caseDoc && !caseDoc.errors.length && isObject(caseDoc.toJS()) ? (caseDoc.toJS() as Json) : undefined;
-    const triggeredCase = caseJs !== undefined && (caseJs.email !== undefined || caseJs.feed !== undefined);
+    const triggeredCase = caseJs !== undefined && (caseJs.email !== undefined || caseJs.feed !== undefined || caseJs.previous !== undefined);
     if (!own.includes("prompt.md")) bad(at, "has no prompt.md");
     else if (!triggeredCase && !front(`${at}/prompt.md`, false)?.body.trim()) bad(`${at}/prompt.md`, "its body is empty: the body is the run's input");
     // A case's web fixture is checked as eval-template checks it, in the same words (web-fake.ts).

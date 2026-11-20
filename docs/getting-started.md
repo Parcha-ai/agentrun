@@ -41,6 +41,10 @@ The README's [three-step local quickstart](../README.md#set-it-up-with-one-promp
 through a due diligence agent and its results. The [inbox quickstart](inbox-quickstart.md) sets up an assistant that
 files your new mail and drafts your replies, on your ChatGPT plan, in three minutes.
 
+AgentRun counts itself anonymously (a random id, version and platform; never prompts, files or keys). Set
+`AGENTRUN_TELEMETRY=0` or `DO_NOT_TRACK=1` where it starts to turn that off; [anonymous usage counts](telemetry.md)
+says how for the installer, a service and a server you deploy.
+
 ## Self-host
 
 Deploy the open-source platform when you want to operate it on your own infrastructure. Start with

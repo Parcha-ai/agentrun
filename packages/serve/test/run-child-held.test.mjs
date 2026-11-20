@@ -317,3 +317,53 @@ test("a function handed across the channel is let go by its sender once the rece
   runner.close();
   child.close();
 });
+
+// A Mode 2 run's folder is its runner's Workspace on the run's disk, which its process holds by handle (held.ts archil,
+// archil-claim.ts archilWhereHeld): a write through it is a call of the run's channel, one frame. A write bigger than a
+// frame crosses in pieces the runner pulls, and the runner writes the file once, on that Workspace (runner/big-writes.ts).
+const { saveArchilSettings, storeAgentDisk } = await import("../dist/archil-settings.js");
+const { ARCHIL_API_KEY_ROW } = await import("../dist/workspace/index.js");
+const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
+const { FakeArchilDisk } = await import("./fixtures/archil-fake.mjs");
+const { archilControlFetch } = await import("./archil-control-fake.mjs");
+const { saveSlots } = await import("../dist/web-save.js");
+const { setHeld } = await import("../dist/runner/held.js");
+const { archilWhereHeld } = await import("../dist/workspace/archil-claim.js");
+const { openRunWorkspace } = await import("../dist/workspace/run-workspace.js");
+const bigWrites = await import("../dist/runner/big-writes.js").catch(() => ({}));
+
+test("a Mode 2 run's process writes a file bigger than its channel's frame through its held Workspace: its runner pulls the pieces and writes it once, byte for byte", async (t) => {
+  const { store } = await storeOn(t);
+  const DISK = { diskId: "dsk-0000000000000001", region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" };
+  await saveArchilSettings(store, DISK);
+  await storeAgentDisk(store, "agent-own", { diskId: DISK.diskId });
+  await store.sealedKeys.put(ARCHIL_API_KEY_ROW, sealColumn(KEY, sealedAt.sealedKey(ARCHIL_API_KEY_ROW), "fake-test-key-api-0001"));
+  const disk = new FakeArchilDisk();
+  const control = archilControlFetch();
+  const deps = { store, sealKey: KEY, env: {}, data: "/nonexistent-data", makeArchilDisk: () => disk, mountControl: { baseUrl: control.baseUrl, fetch: control.fetch } };
+  const reads = { claim: { runId: "run-own", epoch: 1 }, run: { agentId: "agent-own", revisionId: "rev-own", signInHanded: null }, launch: { input: { content: "Hello." } }, revision: { kind: "agentic", body: {} }, claimed: {} };
+  // A channel of 1 MiB frames, its runner's side as the runner wires it (runChannel, heldFor's answers as "held"), the
+  // pieces a quarter of a frame.
+  const FRAME = 1024 * 1024;
+  const bigs = bigWrites.runBigWrites?.({ gate: saveSlots(4), piece: FRAME / 4 });
+  const side = bigs ? host.heldFor(deps, reads, (text) => text, () => {}, bigs) : host.heldFor(deps, reads, (text) => text, () => {});
+  const [runnerEnd, childEnd] = duplexPair();
+  const runner = host.runChannel(runnerEnd, () => {}, saveSlots(4), { ...(bigs ? { bigs } : {}), maxFrame: FRAME });
+  runner.expose("held", (method, args) => side.held[method](...args));
+  const child = new Channel(childEnd, { maxFrame: FRAME });
+  t.after(async () => { setHeld(undefined); child.close(); runner.close(); await side.release(); });
+  // The run's process opens its folder as a Mode 2 claim's does: the Workspace its runner opened on the disk.
+  setHeld(child.remote("held"));
+  const claim = await archilWhereHeld({ signal: new AbortController().signal });
+  const ws = (await openRunWorkspace({ mode: 2, agentId: "agent-own", runId: "run-own", archil: claim, log: () => {} })).workspace;
+  const bytes = randomBytes(3 * FRAME + 123);
+  await ws.write("media/big.bin", bytes);
+  // Read back on the runner's side of the disk (a read of it would not fit the channel's frame either).
+  const there = await (await side.held.archil()).workspace.read("media/big.bin");
+  assert.equal(Buffer.compare(Buffer.from(there), bytes), 0, "the file on the disk is the bytes written");
+  const puts = disk.calls.filter((call) => call.key?.endsWith("/media/big.bin") && call.op !== "getRange" && call.op !== "head");
+  assert.deepEqual(puts.map((call) => [call.op, call.size]), [["putObject", bytes.length]], "the runner wrote it once, whole");
+  // A write of one piece or less is one call, as before.
+  await ws.write("media/small.txt", "small");
+  assert.equal(Buffer.from(await (await side.held.archil()).workspace.read("media/small.txt")).toString(), "small");
+});

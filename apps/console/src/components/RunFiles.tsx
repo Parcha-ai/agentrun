@@ -1,10 +1,10 @@
 import { Copy, Download, FileText, Folder, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { bytes, markdown, openLinkedFile, when } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { RunFile } from "@/lib/v2";
-import { hiddenFile, viewKind } from "@/lib/viewing";
+import { hiddenFile, isMedia, viewKind } from "@/lib/viewing";
 
 type View = "rendered" | "raw";
 const VIEWS: { id: View; label: string }[] = [{ id: "rendered", label: "Rendered" }, { id: "raw", label: "Raw" }];
@@ -65,8 +65,10 @@ export function RunFiles({ files, onOpen, showHidden, onShowHidden }: { files: R
 /** The file viewer: the file's name, Copy, Download and its characters. Text and Markdown show here, Rendered (Markdown,
  *  sanitized) or Raw (the exact text, each line its own, in monospace): a Markdown file opens Rendered, any other text
  *  Raw, and the toggle switches either. Rendered, a link to another of the run's `files`, read from this file's folder,
- *  opens that one with `onOpen`. Anything else is offered as a download only. */
-export function ArtifactViewer({ file, text, onClose, files = [], onOpen }: { file: RunFile; text: string | null; onClose: () => void; files?: RunFile[]; onOpen?: (file: RunFile) => void }) {
+ *  opens that one with `onOpen`. An image, a video or a sound shows from `src`, the file's URL on the run's file route
+ *  (never read as text), and Download fetches that URL as an attachment. Anything else, and media with no `src`, is
+ *  offered as a download only. */
+export function ArtifactViewer({ file, text, onClose, files = [], onOpen, src }: { file: RunFile; text: string | null; onClose: () => void; files?: RunFile[]; onOpen?: (file: RunFile) => void; src?: string }) {
   const [copied, setCopied] = useState(false);
   const dialog = useRef<HTMLDialogElement>(null);
   // A native modal dialog: focus moves in and stays in, the page behind is inert, Escape closes it, and focus goes back
@@ -85,6 +87,8 @@ export function ArtifactViewer({ file, text, onClose, files = [], onOpen }: { fi
   const pressedOutside = useRef(false);
   const releasedOutside = useRef(false);
   const kind = viewKind(file);
+  const media = isMedia(kind) && src !== undefined ? kind : undefined;
+  const textual = kind === "markdown" || kind === "text";
   const [view, setView] = useState<View>(kind === "markdown" ? "rendered" : "raw");
   // A link can move this viewer to another file: that file starts as its own kind does, not as the last one was left.
   useEffect(() => setView(kind === "markdown" ? "rendered" : "raw"), [file.path]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -107,18 +111,22 @@ export function ArtifactViewer({ file, text, onClose, files = [], onOpen }: { fi
           <Button size="icon" variant="ghost" onClick={onClose} aria-label="Close"><X aria-hidden /></Button>
           <FileText className="size-4 text-muted-foreground" aria-hidden />
           <span className="min-w-0 flex-1 truncate font-mono text-body">{file.path}</span>
-          {kind !== "download" && <div className="order-last basis-full sm:order-none sm:basis-auto"><ViewToggle view={view} onView={setView} /></div>}
-          <Button size="sm" disabled={text === null} onClick={async () => { if (text !== null) { await navigator.clipboard?.writeText(text); setCopied(true); } }}><Copy aria-hidden /> {copied ? "Copied" : "Copy"}</Button>
-          <Button size="sm" disabled={text === null} onClick={download}><Download aria-hidden /> Download</Button>
+          {textual && <div className="order-last basis-full sm:order-none sm:basis-auto"><ViewToggle view={view} onView={setView} /></div>}
+          <Button size="sm" disabled={text === null || media !== undefined} onClick={async () => { if (text !== null) { await navigator.clipboard?.writeText(text); setCopied(true); } }}><Copy aria-hidden /> {copied ? "Copied" : "Copy"}</Button>
+          {media ? <a href={`${src}?download=1`} download={file.path.split("/").pop()} className={buttonVariants({ size: "sm" })}><Download aria-hidden /> Download</a>
+            : <Button size="sm" disabled={text === null} onClick={download}><Download aria-hidden /> Download</Button>}
         </header>
         <div className="min-h-0 flex-1 overflow-auto px-6 py-8 md:px-16">
-          {text === null ? <p className="font-mono text-body text-muted-foreground">Loading the file...</p>
-            : kind === "download" ? <p className="font-mono text-body text-muted-foreground">This file type is not shown here. Download it to open it.</p>
+          {media === "image" ? <img src={src} alt={file.path} className="mx-auto max-h-full max-w-full object-contain" />
+            : media === "video" ? <video src={src} controls playsInline preload="metadata" aria-label={file.path} className="mx-auto max-h-full max-w-full" />
+            : media === "audio" ? <audio src={src} controls preload="metadata" aria-label={file.path} className="mx-auto w-full max-w-xl" />
+            : text === null ? <p className="font-mono text-body text-muted-foreground">Loading the file...</p>
+            : !textual ? <p className="font-mono text-body text-muted-foreground">This file type is not shown here. Download it to open it.</p>
             : view === "rendered" ? <article className="report mx-auto max-w-3xl" onClick={open}
                 dangerouslySetInnerHTML={{ __html: markdown(text, onOpen && { paths: files.map((f) => f.path), from: file.path.split("/").slice(0, -1).join("/") }) }} />
             : <pre className="whitespace-pre-wrap break-words font-mono text-small leading-[1.8]">{text}</pre>}
         </div>
-        <footer className="border-t px-4 py-2 font-mono text-label text-muted-foreground">File · {text === null ? "..." : `${text.length.toLocaleString("en-US")} characters`} · {file.content_type ?? "unknown type"}</footer>
+        <footer className="border-t px-4 py-2 font-mono text-label text-muted-foreground">File · {media ? bytes(file.size_bytes) : text === null ? "..." : `${text.length.toLocaleString("en-US")} characters`} · {file.content_type ?? "unknown type"}</footer>
       </div>
     </dialog>
   );

@@ -434,6 +434,10 @@ export interface RunLedger {
   /** The store's flush (what the runner's flush before a side effect runs): a record a tool writes during its call that
    *  must be on disk before the call's next step leaves the box (a browser session's open, before its vendor is asked). */
   flush(): Promise<void>;
+  /** Whether the run's cap can judge a paid step now. False while the run's spec is built (its cap is the spec's): a paid
+   *  step asked then waits for the spec, so a step the build itself waits on (a computer's hold before its create,
+   *  compute-cost.ts) is not asked until this is true. Absent: it always can. */
+  judges?(): boolean;
 }
 
 /** pi's retry of a model request that failed in a way it retries (a provider's 429, overload or 5xx, a dropped connection,
@@ -1719,7 +1723,15 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         const decisionsOf = () => (decisionsOpen ??= sessions.open(DECISION_SESSION).then((w) => theCap().decisions(w, flushed)).then((d) => (decisionsReady = d)));
         let paidReady: RunTools | undefined;
         let paidOpen: Promise<RunTools> | undefined;
-        const paidOf = () => (paidOpen ??= sessions.open(TOOL_SESSION).then((w) => theCap().tools(w, flushed)).then((p) => (paidReady = p)));
+        // The run's cap is its spec's (theCap): a paid step asked while the spec is still built (a computer's time, metered
+        // from its create, compute-cost.ts) waits for it, and fails as the spec's build does. `capJudges` says whether it
+        // can judge now, so a caller inside the build never waits on itself.
+        let capJudges = false;
+        let specBuilt!: () => void;
+        let specFailed!: (error: unknown) => void;
+        const specSet = new Promise<void>((resolve, reject) => ((specBuilt = resolve), (specFailed = reject)));
+        specSet.catch(() => undefined);
+        const paidOf = () => (paidOpen ??= specSet.then(() => sessions.open(TOOL_SESSION)).then((w) => theCap().tools(w, flushed)).then((p) => (paidReady = p)));
         /** The pause of a paid call the cap refused (ledger.pause), set once the claim's booking is: below. */
         let pauseFor: ((refusal: Refusal) => Promise<void>) | undefined;
         const ledger: RunLedger = {
@@ -1742,6 +1754,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             await pauseFor?.(refusal);
           },
           flush: () => deps.flush(),
+          judges: () => capJudges,
         };
         // A phase of the host's, on the run's timeline while its step runs. Said before the root exists (the claim's computer
         // waiting on its image build, inside specOf), it makes the root then, the row in its creating commit (above), so a
@@ -1779,6 +1792,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         try {
           spec = await specOf(claim, runOf);
         } catch (error) {
+          // A paid step that waited on the spec (paidOf) fails with it: nothing was booked.
+          specFailed(error);
           if (error instanceof Fenced) return await interrupted("its claim was lost while its MCP credentials were made fresh");
           if (error instanceof McpClaimRefused) return await writeEnd(harness, await harness.root(context), gate, { state: "failed", summary: error.message }, []);
           if (error instanceof ClaimRefused) return await writeEnd(harness, await harness.root(context), gate, { state: "failed", summary: error.message }, []);
@@ -1798,6 +1813,9 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         mcp = spec.mcp;
         specNow = spec;
         specKnown = true;
+        // The run's cap can judge from here: a paid step that waited on the spec goes on.
+        capJudges = true;
+        specBuilt();
         // The spec's resources are the pass's from here: a claim lost in any write below still lets them go (closeSession).
         releaseNow = spec.release;
         // A root a phase made while the spec was built (on this claim or an earlier one lost before this point) took none
