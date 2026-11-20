@@ -1478,7 +1478,9 @@ file is at most 200 MiB and a download at most 10 minutes. It writes through the
 `work/`, or its folder on the run's disk in Mode 2), so a path with `..`, an absolute path, and a link on the way or as
 the file are refused, and a path that already holds a file or folder is refused rather than overwritten (checked before
 the download and again before the write). The whole file is held in memory and written once (a temporary name renamed over the path
-on a local folder, one put on the run's disk), so a download that fails or passes the cap leaves nothing at the path. Its type is checked
+on a local folder, one put on the run's disk), so a download that fails or passes the cap leaves nothing at the path.
+A server runs at most 4 downloads at once (`SAVE_CONCURRENCY`), so it holds at most 800 MiB of them; the rest wait for
+a free slot under their own 10-minute deadline, and one whose deadline passes while it waits answers that. Its type is checked
 against its bytes: an image (png, jpeg, gif, webp), audio (mp3, wav, ogg, m4a) or video (mp4, webm) is saved only when
 its bytes carry that type's signature, the type the host declares agrees (or it declares none, or
 `application/octet-stream`), and the path's extension names a type that agrees (`media/card.png`; `media/card` and

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { localWorkspace } from "../dist/workspace/index.js";
 import { SAVE_MAX_BYTES, SAVE_TIMEOUT_MS, WEB_SAVE_TOOL, webSave, webSaveTool } from "../dist/web-save.js";
+import * as webSaveModule from "../dist/web-save.js";
 import { CALL_TOOLS, NODE_TOOLS, TOOLS } from "../dist/tools.js";
 import { isAskable, isHostTool, isTableTool, isWebHostTool, replayOf } from "../dist/tool-list.js";
 import { webHostTools } from "../dist/runner/adapter-run-spec.js";
@@ -327,4 +328,147 @@ test("a web fixture's save section is checked whole: each answer {url, content_t
   const fine = [];
   assert.ok(webFixtureOf(base, "web.json", (problem) => fine.push(problem)), "a fixture with no save section is still whole");
   assert.deepEqual(fine, []);
+});
+
+/** A network whose downloads wait until the test answers them: `started` the URLs dialled, in order, and `answer(url)` lets
+ *  one through with `body` (a PNG by default). A dial whose signal aborts rejects with its reason, as a real fetch does. */
+function held() {
+  const started = [];
+  const waiting = new Map();
+  return {
+    started,
+    lookup: async () => ["93.184.216.34"],
+    fetchImpl: (url, init) => new Promise((resolve, reject) => {
+      started.push(url.href);
+      init.signal?.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+      waiting.set(url.href, (response) => {
+        try { resolve(response()); } catch (error) { reject(error); }
+      });
+    }),
+    answer: (href, response = () => new Response(BODY.png, { status: 200, headers: { "content-type": "image/png" } })) => waiting.get(href)(response),
+  };
+}
+/** Waits, a millisecond at a time and at most two seconds, until `ok()`; then asserts it. */
+const until = async (ok, what) => {
+  for (let i = 0; i < 2_000 && !ok(); i++) await new Promise((resolve) => setTimeout(resolve, 1));
+  assert.ok(ok(), what);
+};
+const { SAVE_CONCURRENCY, saveSlots } = webSaveModule;
+
+test("at most 4 downloads at once per server: a fifth waits without dialling until one ends, then all five save", async (t) => {
+  assert.equal(SAVE_CONCURRENCY, 4);
+  assert.equal(typeof saveSlots, "function", "web-save.js exports saveSlots");
+  const { work, ws } = await folders(t);
+  const urls = [1, 2, 3, 4, 5].map((n) => `https://cdn.example/v${n}.png`);
+  const run = async (slots) => {
+    const net = held();
+    const saves = urls.map((url, i) => webSave({ url, path: `media/${slots ? "g" : "d"}${i}.png` }, ws, { ...net, ...(slots ? { slots } : {}) }));
+    await until(() => net.started.length >= 4, `four dialled: ${net.started}`);
+    if (slots) await until(() => slots.waiting === 1, "the fifth waits for a slot");
+    else await new Promise((resolve) => setTimeout(resolve, 20));
+    // Which four get in first depends on their path checks' timing; the one left out has not dialled.
+    assert.equal(net.started.length, 4, `the fifth has not dialled: ${net.started}`);
+    const [fifth] = urls.filter((url) => !net.started.includes(url));
+    net.answer(net.started[1]);
+    await until(() => net.started.length === 5, "the fifth dials once one ends");
+    assert.equal(net.started[4], fifth);
+    for (const url of net.started.filter((_, i) => i !== 1)) net.answer(url);
+    const answers = await Promise.all(saves);
+    assert.deepEqual(answers.map((answer) => answer.ok), [true, true, true, true, true], JSON.stringify(answers));
+    if (slots) assert.deepEqual([slots.busy, slots.waiting], [0, 0]);
+  };
+  await run(saveSlots(4));
+  await run(undefined);
+  assert.equal(readdirSync(join(work, "media")).length, 10);
+});
+
+test("a save whose deadline passes while it waits for a slot answers the timeout, never dials, writes nothing, and holds no slot", async (t) => {
+  const { work, ws } = await folders(t);
+  const slots = saveSlots(1);
+  const net = held();
+  const first = webSave({ url: "https://cdn.example/a.png", path: "media/a.png" }, ws, { ...net, slots });
+  await until(() => net.started.length === 1, "the first holds the slot");
+  const late = await webSave({ url: "https://cdn.example/late.png", path: "media/late.png" }, ws, { ...net, slots, timeoutMs: 50 });
+  assert.deepEqual(late, { ok: false, url: "https://cdn.example/late.png", path: "media/late.png", error: "the download did not finish in 0.05 s: it waited all that time for a free download slot (at most 1 at once)" });
+  assert.deepEqual(net.started, ["https://cdn.example/a.png"], "the late save never dialled");
+  assert.deepEqual([slots.busy, slots.waiting], [1, 0], "it left the queue");
+  net.answer("https://cdn.example/a.png");
+  assert.equal((await first).ok, true);
+  assert.equal(existsSync(join(work, "media", "late.png")), false);
+  assert.deepEqual([slots.busy, slots.waiting], [0, 0]);
+  const next = webSave({ url: "https://cdn.example/b.png", path: "media/b.png" }, ws, { ...net, slots });
+  await until(() => net.started.length === 2, "a new save gets the slot at once");
+  net.answer("https://cdn.example/b.png");
+  assert.equal((await next).ok, true);
+});
+
+test("a slot is freed on every failing path: a refused type, an error status, a download error, a path taken at the second check, a failed write", async (t) => {
+  const { work, ws } = await folders(t);
+  const slots = saveSlots(1);
+  const failing = [
+    ["refused type", "media/t.png", () => new Response(BODY.html, { status: 200, headers: { "content-type": "image/png" } }), (a) => /bytes are not image\/png/.test(a.refused)],
+    ["error status", "media/s.png", () => new Response("no", { status: 500 }), (a) => /answered 500/.test(a.error)],
+    ["download error", "media/d.png", () => { throw new Error("connection reset"); }, (a) => /connection reset/.test(a.error)],
+    ["taken at the second check", "media/race.png", () => {
+      writeFileSync(join(work, "media", "race.png"), "theirs");
+      return new Response(BODY.png, { status: 200, headers: { "content-type": "image/png" } });
+    }, (a) => /already holds/.test(a.refused)],
+  ];
+  mkdirSync(join(work, "media"), { recursive: true });
+  const unwritable = { ...ws, stat: (path) => ws.stat(path), write: async () => { throw new Error("the disk is full"); } };
+  for (const [name, path, response, expected] of failing) {
+    const net = held();
+    const saving = webSave({ url: "https://cdn.example/f", path }, ws, { ...net, slots });
+    await until(() => net.started.length === 1, name);
+    net.answer("https://cdn.example/f", response);
+    const answer = await saving;
+    assert.ok(answer.ok === false && expected(answer), `${name}: ${JSON.stringify(answer)}`);
+    assert.deepEqual([slots.busy, slots.waiting], [0, 0], `${name} freed its slot`);
+  }
+  const net = held();
+  const saving = webSave({ url: "https://cdn.example/w", path: "media/w.png" }, unwritable, { ...net, slots });
+  await until(() => net.started.length === 1, "write failure");
+  net.answer("https://cdn.example/w");
+  assert.match((await saving).error ?? "", /disk is full/);
+  assert.deepEqual([slots.busy, slots.waiting], [0, 0], "a failed write freed its slot");
+  // And a save after all of them dials at once.
+  const after = held();
+  const ok = webSave({ url: "https://cdn.example/ok", path: "media/ok.png" }, ws, { ...after, slots });
+  await until(() => after.started.length === 1, "the slot is free");
+  after.answer("https://cdn.example/ok");
+  assert.equal((await ok).ok, true);
+});
+
+test("bad arguments and a path already taken are answered at once, never waiting for a slot", async (t) => {
+  const { work, ws } = await folders(t);
+  const slots = saveSlots(1);
+  const net = held();
+  const busy = webSave({ url: "https://cdn.example/a.png", path: "media/a.png" }, ws, { ...net, slots });
+  await until(() => net.started.length === 1, "the slot is held");
+  mkdirSync(join(work, "media"), { recursive: true });
+  writeFileSync(join(work, "media", "taken.png"), "x");
+  assert.match((await webSave({ url: "not a url", path: "media/x.png" }, ws, { ...net, slots, timeoutMs: 2_000 })).error, /absolute URL/);
+  assert.match((await webSave({ url: "https://cdn.example/x", path: "media/taken.png" }, ws, { ...net, slots, timeoutMs: 2_000 })).refused ?? "", /already holds/);
+  assert.equal(slots.waiting, 0);
+  net.answer("https://cdn.example/a.png");
+  assert.equal((await busy).ok, true);
+});
+
+test("a caller's abort while waiting for a slot leaves the queue without taking one, answered as an abort is", async (t) => {
+  const { ws } = await folders(t);
+  const slots = saveSlots(1);
+  const net = held();
+  const first = webSave({ url: "https://cdn.example/a.png", path: "media/a.png" }, ws, { ...net, slots });
+  await until(() => net.started.length === 1, "the first holds the slot");
+  const caller = new AbortController();
+  const waiting = webSave({ url: "https://cdn.example/w.png", path: "media/w.png" }, ws, { ...net, slots, signal: caller.signal });
+  await until(() => slots.waiting === 1, "the second waits");
+  caller.abort();
+  const answer = await waiting;
+  assert.deepEqual(answer, { ok: false, url: "https://cdn.example/w.png", path: "media/w.png", error: "This operation was aborted" });
+  assert.deepEqual([slots.busy, slots.waiting], [1, 0]);
+  net.answer("https://cdn.example/a.png");
+  assert.equal((await first).ok, true);
+  assert.deepEqual(net.started, ["https://cdn.example/a.png"], "the aborted save never dialled");
+  assert.deepEqual([slots.busy, slots.waiting], [0, 0]);
 });

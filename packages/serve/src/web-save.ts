@@ -9,7 +9,7 @@
 //
 // The whole file is held in memory and written once, through Workspace.write (a temporary name in the same folder,
 // renamed over the path on the local disk; one put on Archil's), so a download that fails, or goes past the cap, leaves
-// nothing at the path.
+// nothing at the path. So at most SAVE_CONCURRENCY downloads run at once (saveSlots); the rest wait, under their own deadline.
 //
 // The type is checked against the bytes: a media type the server plays (file-types.ts) is saved only when its bytes
 // carry that type's signature (MEDIA), and the path's extension must name a type that agrees: the type is not stored, the
@@ -41,8 +41,56 @@ export const WORDS_MAX_CHARS = 2_000;
 
 export type Saved = { ok: true; path: string; bytes: number; content_type: string; url: string };
 export type Unsaved = { ok: false; url: string; path?: string; refused: string } | { ok: false; url: string; path?: string; error: string };
-/** The guard's resolver and fetch (a test's, or the fakes'), the caller's signal, and a lower cap. */
-export type SaveOptions = Omit<PublicFetchOptions, "maxBytes"> & { maxBytes?: number; timeoutMs?: number };
+/** The guard's resolver and fetch (a test's, or the fakes'), the caller's signal, a lower cap, and other slots than the
+ *  server's (a test's). */
+export type SaveOptions = Omit<PublicFetchOptions, "maxBytes"> & { maxBytes?: number; timeoutMs?: number; slots?: SaveSlots };
+
+/** The most web_save downloads held in memory at once (at most SAVE_MAX_BYTES each). */
+export const SAVE_CONCURRENCY = 4;
+/** Slots for downloads, handed out first come first served. `take` answers the slot's release (once), or rejects with
+ *  the signal's reason if it aborts first, leaving the queue. */
+export type SaveSlots = { readonly size: number; readonly busy: number; readonly waiting: number; take(signal: AbortSignal): Promise<() => void> };
+export function saveSlots(size: number): SaveSlots {
+  let busy = 0;
+  const queue: Array<() => void> = [];
+  const releaser = () => {
+    let done = false;
+    return () => {
+      if (done) return;
+      done = true;
+      // The slot goes straight to the next waiter, so busy only drops when no one waits.
+      const next = queue.shift();
+      if (next) next();
+      else busy--;
+    };
+  };
+  return {
+    size,
+    get busy() { return busy; },
+    get waiting() { return queue.length; },
+    take(signal) {
+      if (signal.aborted) return Promise.reject(signal.reason);
+      if (busy < size) {
+        busy++;
+        return Promise.resolve(releaser());
+      }
+      return new Promise((resolve, reject) => {
+        const leave = () => {
+          queue.splice(queue.indexOf(grant), 1);
+          reject(signal.reason);
+        };
+        const grant = () => {
+          signal.removeEventListener("abort", leave);
+          resolve(releaser());
+        };
+        queue.push(grant);
+        signal.addEventListener("abort", leave, { once: true });
+      });
+    },
+  };
+}
+// Per process: every run this server holds shares these.
+const SERVER_SLOTS = saveSlots(SAVE_CONCURRENCY);
 
 /** A media type the server plays, by its signature: `types`, the types those bytes may be declared or named as, the first
  *  the one they are answered as. */
@@ -129,30 +177,44 @@ export async function webSave(args: unknown, work: Workspace, options: SaveOptio
     return failed(error);
   }
   const { BrowserFailureError, publicDownload } = await import("@parcha/pi-browser");
-  const { timeoutMs = SAVE_TIMEOUT_MS, maxBytes = SAVE_MAX_BYTES, ...guard } = options;
-  let file: Awaited<ReturnType<typeof publicDownload>>;
-  try {
-    const signal = AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(guard.signal ? [guard.signal] : [])]);
-    file = await publicDownload(url, { ...guard, maxBytes, signal });
-  } catch (error) {
-    if (error instanceof BrowserFailureError && error.failure.code === "refused") return { ok: false, url: shown, path: at, refused: clip(error.message, WORDS_MAX_CHARS) };
+  const { timeoutMs = SAVE_TIMEOUT_MS, maxBytes = SAVE_MAX_BYTES, slots = SERVER_SLOTS, ...guard } = options;
+  const signal = AbortSignal.any([AbortSignal.timeout(timeoutMs), ...(guard.signal ? [guard.signal] : [])]);
+  const cut = (error: unknown, waited: string): Unsaved => {
     const name = (error as Error)?.name;
-    if (name === "TimeoutError" && !guard.signal?.aborted) return { ok: false, url: shown, path: at, error: `the download did not finish in ${timeoutMs / 1000} s` };
+    if (name === "TimeoutError" && !guard.signal?.aborted) return { ok: false, url: shown, path: at, error: `the download did not finish in ${timeoutMs / 1000} s${waited}` };
     return { ok: false, url: shown, path: at, error: wordsOf(error) };
-  }
-  const final = clip(file.url, URL_MAX);
-  if (file.bytes === null) return { ok: false, url: final, path: at, error: `the host answered ${file.status}` };
-  const typed = typeFor(file.bytes, file.contentType, at);
-  if ("refused" in typed) return { ok: false, url: final, path: at, refused: clip(typed.refused, WORDS_MAX_CHARS) };
+  };
+  let release: () => void;
   try {
-    // Again just before the write: a file made at the path while the download ran is kept, not replaced.
-    const after = await taken();
-    if (after) return { ...after, url: final };
-    await work.write(at, file.bytes);
+    release = await slots.take(signal);
   } catch (error) {
-    return { ...failed(error), url: final };
+    return cut(error, `: it waited all that time for a free download slot (at most ${slots.size} at once)`);
   }
-  return { ok: true, path: at, bytes: file.bytes.length, content_type: typed.type, url: final };
+  // The slot is held while the bytes are in memory: through the download, the type check and the write.
+  try {
+    let file: Awaited<ReturnType<typeof publicDownload>>;
+    try {
+      file = await publicDownload(url, { ...guard, maxBytes, signal });
+    } catch (error) {
+      if (error instanceof BrowserFailureError && error.failure.code === "refused") return { ok: false, url: shown, path: at, refused: clip(error.message, WORDS_MAX_CHARS) };
+      return cut(error, "");
+    }
+    const final = clip(file.url, URL_MAX);
+    if (file.bytes === null) return { ok: false, url: final, path: at, error: `the host answered ${file.status}` };
+    const typed = typeFor(file.bytes, file.contentType, at);
+    if ("refused" in typed) return { ok: false, url: final, path: at, refused: clip(typed.refused, WORDS_MAX_CHARS) };
+    try {
+      // Again just before the write: a file made at the path while the download ran is kept, not replaced.
+      const after = await taken();
+      if (after) return { ...after, url: final };
+      await work.write(at, file.bytes);
+    } catch (error) {
+      return { ...failed(error), url: final };
+    }
+    return { ok: true, path: at, bytes: file.bytes.length, content_type: typed.type, url: final };
+  } finally {
+    release();
+  }
 }
 
 /** The words the model reads: the answer's JSON. */
