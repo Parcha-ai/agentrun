@@ -89,7 +89,7 @@ test("a run's input is checked against the agent's input_schema with the full co
   assert.equal((await api("POST", "/agents/loose/runs", { input: { content: "Go." } })).status, 202);
   const empty = await api("POST", "/agents/loose/runs", { input: {} });
   assert.deepEqual([empty.status, fields(empty.body)], [422, [["input.content", "missing"]]], "an input that says nothing");
-  assert.equal(empty.body.error.fields[0].message, "input.content is required, or one of input.company");
+  assert.match(empty.body.error.fields[0].message, /^input\.content is required, or one of input\.company\b/, "the route adds its example after the fields that would do");
 });
 
 test("a closed schema with one optional field (a template's pr_number): a run by hand gives the field alone, a trigger's run gives content alone, and an empty input is refused", { timeout: 60_000 }, async (t) => {
