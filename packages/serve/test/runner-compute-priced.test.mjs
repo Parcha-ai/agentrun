@@ -85,7 +85,9 @@ function fauxVendor() {
   return { provider, computers };
 }
 
-test("a run on a priced computer runs (its computer is made before the cap can judge), and its end's cost holds every stretch it booked, the last one included", { timeout: 120_000 }, async (t) => {
+/** run-1 on a priced faux desktop, run by a runner on the pi spec with a scripted model that answers at once, until it
+ *  rests (within `ms`); `patch` changes the vendor first. Its row and vendor. */
+async function pricedRun(t, { patch = () => {}, ms = 60_000 } = {}) {
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), "runner-compute-priced-"));
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -101,6 +103,7 @@ test("a run on a priced computer runs (its computer is made before the cap can j
   await server.flush?.();
   const route = { model: "faux-1", provider: { api: "anthropic-messages", origin: "https://route.invalid", credential: () => "not-a-secret" }, fetch: scriptedOrigin([{ say: "done" }], []), price: () => 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, outputCeiling: 100 };
   const vendor = fauxVendor();
+  patch(vendor);
   const computerDeps = { kinds: FAUX.kinds, keyTable: FAUX.keyTable, providers: { "faux-desktop": () => vendor.provider }, spec: () => ({ image: "faux", lifetimeMs: 600_000, network: "open", cpus: 2, memoryMb: 4096 }), check: { readBackOf } };
   const deps = { env: PRICES, data: dir, journal: (claim) => store.journal(claim), store, sealKey: SEAL_KEY, routeOf: async () => route, computerForClaim, computerDeps };
   runner = startRunner({
@@ -110,7 +113,28 @@ test("a run on a priced computer runs (its computer is made before the cap can j
   const row = await until(async () => {
     const now = await server.runs.get(RUN);
     return ["ended", "failed", "stopped", "parked"].includes(now.state) && now.runner === null && now;
-  }, "the run rests");
+  }, "the run rests", ms);
+  return { server, vendor, row };
+}
+
+test("a priced computer whose connect fails after its create is deleted, and the run fails in its words: its setup never waits on a cap that will not come (#3338 review)", { timeout: 120_000 }, async (t) => {
+  const { server, vendor, row } = await pricedRun(t, {
+    ms: 30_000,
+    patch: (one) => {
+      one.provider.connect = async () => ({ ok: false, error: { code: "unavailable", message: "the desktop did not answer" } });
+    },
+  });
+  assert.equal(row.state, "failed", JSON.stringify(row));
+  assert.match(row.summary, /the desktop did not answer/);
+  assert.equal(vendor.computers.size, 0, "the computer it made is deleted");
+  // Its time was never booked (the run's cap never judged): it is the run's unheld time, on its interval.
+  const [interval] = await server.computerIntervals.forRun(RUN);
+  assert.equal(interval.bookedMs, 0);
+  assert.notEqual(interval.endedAt, null, "its delete answered ok: ended");
+});
+
+test("a run on a priced computer runs (its computer is made before the cap can judge), and its end's cost holds every stretch it booked, the last one included", { timeout: 120_000 }, async (t) => {
+  const { server, row } = await pricedRun(t);
   assert.equal(row.state, "ended", `the run ran on its priced computer: ${JSON.stringify(row)}`);
 
   // Every computer-time booking of the run, as its journal keeps them: owed steps tagged by resource, each settled.

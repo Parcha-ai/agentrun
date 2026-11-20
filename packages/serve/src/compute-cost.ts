@@ -172,6 +172,8 @@ export function computeMeter(options: ComputeMeterOptions): ComputeMeter {
     let dropped = false;
     return { hold: { drop: () => void (dropped || ((dropped = true), paid.settle(id, 0, { givenBack: true }).catch(() => undefined))) } };
   };
+  /** Whether the run's cap can judge a step now: false while the run's spec, whose cap it is, is built. */
+  const judging = () => ledger.judges?.() !== false;
   const stretchUsd = (priced: readonly Priced[]) => microUsd(priced.reduce((sum, one) => sum + one.usdPerSecond, 0) * COMPUTE_STRETCH_S);
   const basisOf = (provider: string, priced: readonly Priced[]) =>
     `${provider}'s computer time for its next ${COMPUTE_STRETCH_S} s: ${priced.map((one) => `${one.perSecond} ${COMPUTE_UNITS[one.resource].replace("_second", "")}${one.gpuType ? ` ${one.gpuType}` : ""} at $${one.rate} a ${COMPUTE_UNITS[one.resource].replace(/^[a-z]+_/, "")}`).join(", ")}`;
@@ -185,6 +187,9 @@ export function computeMeter(options: ComputeMeterOptions): ComputeMeter {
   /** The time `one` ran since its last booking, up to `to`, booked on the ledger: one owed step per priced resource, each
    *  named by its computer, resource and time (ref), so it is booked once; then its interval's booked time. */
   const book = async (one: Held, to: number): Promise<void> => {
+    // A cap that can't judge yet would keep this booking waiting on the run's spec, which may be what is let go now (a
+    // computer deleted because its spec's build failed): nothing is booked, and its time is the run's unheld time.
+    if (!judging()) return;
     const from = one.from;
     const ms = Math.max(0, Math.floor(to - from));
     one.from = from + ms;
@@ -203,6 +208,9 @@ export function computeMeter(options: ComputeMeterOptions): ComputeMeter {
 
   /** Each stretch: what ran booked, the next stretch held (owed while the computer runs; a refusal pauses the run once). */
   const tick = async (one: Held): Promise<void> => {
+    // A stretch that passes while the run's spec is still built (a long image build) waits for the next: what ran is
+    // booked from where it was then.
+    if (!judging()) return;
     await book(one, now());
     const next = await holdOf(one.provider, stretchUsd(one.priced), basisOf(one.provider, one.priced));
     one.hold?.drop();
@@ -251,14 +259,18 @@ export function computeMeter(options: ComputeMeterOptions): ComputeMeter {
       const one: Held = { provider, providerId, priced, from: now(), hold: undefined, cancel: () => {}, ticking: Promise.resolve(), paused: false };
       held.set(k, one);
       // Its first stretch held at what it was made with (owed: it is made, so never refused), then the hold taken before
-      // its create let go. The stretch's ticks wait for it, so a tick never drops a hold this has not set yet.
-      one.ticking = holdOf(provider, stretchUsd(priced), basisOf(provider, priced), { owed: true }).then((first) => {
-        if ("hold" in first) {
-          if (one.stopped) first.hold.drop();
-          else one.hold = first.hold;
+      // its create let go. The stretch's ticks wait for it, so a tick never drops a hold this has not set yet. Made
+      // while the run's spec is built, the hold waits for the spec's cap: then nothing waits on it (a stop while the spec
+      // fails would wait forever), and the hold, once the cap can judge, is let go at once if the computer was stopped.
+      const first = holdOf(provider, stretchUsd(priced), basisOf(provider, priced), { owed: true }).then((answer) => {
+        if ("hold" in answer) {
+          if (one.stopped) answer.hold.drop();
+          else one.hold = answer.hold;
         }
         ahead?.drop();
       });
+      if (judging()) one.ticking = first;
+      else void first.catch(() => undefined);
       const cancel = every(() => {
         one.ticking = one.ticking.then(() => (one.stopped ? undefined : tick(one))).catch(() => undefined);
       }, COMPUTE_STRETCH_S * 1000);
