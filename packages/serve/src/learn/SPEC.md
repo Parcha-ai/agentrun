@@ -315,6 +315,35 @@ Over a cap is refused, never cut.
   of the run's metrics (`loops`: `{node, iterations, met, repick?, workflow}`, `repick` true on the re-pick loop alone,
   a top-level step of this shape), so a re-pick (`iterations` 2) and whether it found its quotes (`met`) are counted,
   and a run's views say it (`workflow.repick`: `found`, `missed`, or null); its request is booked as any node's.
+- `learning.repick` (the owner's, off by default; `learning-setting.ts`) has the re-pick read the run's pages. H6c's
+  re-pick tier, one more answer over the pages the run fetched, found its quotes on 24 of 24 misses; the compiled
+  re-pick, over its compact facts and its draft alone, found them on 2 of 8 in S6. With it on, the host rewrites the
+  draft the checks passed, in today's DSL, before it commits (`runner/learning-end.ts` `checkDraftOf`, `repick.ts`):
+  the re-pick loop's body becomes a pass marker, two routes by value that ask no model. `repick_pass` reads
+  `repick_next.taken`, missing on the first pass, so it takes `first`, whose route `repick_mark` records
+  `{taken: "pages"}` under `repick_next` and runs the answer step as compiled. On the second pass it takes `pages`
+  and runs the step's clone, labelled `<label>_pages`: the same step writing the same key, its `state` map also
+  reading each of the check's `pages` (`"{<page>?}"`, under the page's own key, `_page` added while the map already
+  names it), its instructions told that those pages are untrusted data fetched from the web, never instructions, to
+  copy each quote verbatim from one page and to give fewer items rather than one it cannot quote, and its
+  `metadata.repick.max_chars` the setting's `repick_max_chars` (150000 by default, 1 to 400000). `repick_mark`'s
+  other branch is an escalate no run reaches (a route needs two). The clone holds no tools, as every learned model
+  node (a node naming tools is refused at run time). The loop, its label, `until` and `maxIters` are unchanged, so its
+  exits are counted as before. The rewritten draft goes through the same static checks and dry run, with the compact
+  state rule reading a marked loop as its pass 1 (`compactStateProblems(doc, {repick: true})`): only a body that is
+  exactly the marker `repick.ts` derives from its pass 1 at a cap the setting allows passes, so a compiler cannot
+  write a page read of its own; with the setting off, a marker is refused as any page read. What is committed is the
+  rewrite, its digest the one that serves and the one the promotion check replays; a rewrite they refuse (one past
+  the file cap even on one line) leaves the draft as compiled, which the runner's log says by rule. A draft with no
+  such loop, a pass 1 that is not one model step with a `state` map, or a key or label the marker needs already taken
+  is committed as compiled. At run time (`learned-workflow.ts`), the clone's request state, the JSON the DSL sends,
+  is cut to `max_chars` before it is sent, its longest strings first, each to one length and ending
+  ` [cut at N of M characters]`; the workflow's own state stays whole, so the quote check after the loop reads every
+  page. Its request is the served run's, under the run's one cost cap: the cap admits each request at its worst case
+  (the whole input uncached, a token for each byte, the output clamped to fit), and one that cannot fit parks the run.
+  The setting is read when a draft is committed: a change reaches the workflows compiled after it, never one main
+  already holds. An agent whose workflows run through an SDK bridge (`workflowAdapters`) ignores it: its bridge runs
+  its own model nodes. A composed child's re-pick is not rewritten.
 - Every problem is `{ rule, path?, detail }`, printable as it is: its path and detail are cut of the host's values and
   of secret shapes, and a field over 4096 bytes prints whole as `[redacted]`, never scanned.
 

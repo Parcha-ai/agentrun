@@ -35,6 +35,7 @@ import { registerLabel, registerOutcome } from "./timeline/index.js";
 import { LEARNED_NODES, LEARNED_NODES_MAX, type LearnedEnded, type LearnedNode, type LoopRow } from "./learned-nodes.js";
 import { draftProblems, LEARNED_MAX_TURNS } from "./learn/index.js";
 import { repickLabels } from "./learn/check.js";
+import { capState, repickPageCaps } from "./learn/repick.js";
 import { decisionsAsked, deniedDecisionWords } from "./learn/workflow-draft.js";
 import { DEFAULT_DECISION_PROVIDER } from "./decisions.js";
 import { type LearnedWorkflow, workflowLine } from "./learning.js";
@@ -416,6 +417,10 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
   const doc = JSON.parse(flow.workflow);
   // Its quote re-pick loops (check.ts repickLabels): their exits are the run's re-picks (LoopRow `repick`).
   const repickAt = repickLabels(doc);
+  // Each re-pick's pass over the run's pages (learning.repick, learn/repick.ts), by its label, with the most characters
+  // of state it sends: its prompt state is cut to that (capState), its longest strings first; the workflow's state, which
+  // the quote check after it reads, stays whole.
+  const pageCaps = repickPageCaps(doc);
   // What a node answered the first time this call ran it, in every rerun of the call (`nested.memo`, by `key`): a rerun
   // after a park or a crash goes on from the same answers, so its MCP calls are asked with the arguments a person saw,
   // and never does a node's work again: `work` is called only while no answer is recorded, so a model's request or a paid
@@ -467,8 +472,10 @@ export async function runLearned(run: LearnedWorkflowRun, flow: LearnedWorkflow,
     const ref = run.modelOf(tier);
     const model = !ref ? undefined : ref.provider === PORT_PROVIDER ? (run.modelName?.(tier) ?? undefined) : ref.modelId;
     if (model && typeof request.executionPath === "string") ranOn.set(request.executionPath, { model, ...(tier ? { tier } : {}) });
+    const cap = pageCaps.get(request.label);
+    const sent = cap === undefined ? request : { ...request, user: capState(request.user, cap) };
     // Its own signal, which the DSL ties to the call's (a sibling's failure, a deadline, the call's stop).
-    return fixed(`node:${nestedKey(request.label, request.executionPath, request.item)}`, async () => (await runnerFor(request.tier as string | undefined))(request));
+    return fixed(`node:${nestedKey(request.label, request.executionPath, request.item)}`, async () => (await runnerFor(request.tier as string | undefined))(sent));
   };
   type EffectRequest = { node: { label: string; via: string; tool?: string }; input: Record<string, unknown>; signal: AbortSignal; executionPath?: string; item?: { index: number } };
   const liveEffect = async ({ node, input: given, signal: own, executionPath, item }: EffectRequest) => {
