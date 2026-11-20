@@ -103,5 +103,6 @@ export const USAGE_CLI: RunUsage = {
     { meter: "tools", model: null, provider: null, charged_by: "monid", quantity: 3, unit: "call", basis: "estimate", usd: 0.015, not_metered_calls: 2 },
     { meter: "browser_time", model: null, provider: "browserbase", charged_by: null, quantity: 312, unit: "second", basis: "estimate", usd: null, so_far_usd: 0.0104, unpriced: 1 },
   ],
+  browser_sessions: [],
   reason: null,
 };
