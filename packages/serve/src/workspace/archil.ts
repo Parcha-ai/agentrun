@@ -98,10 +98,19 @@ const pause = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 const quiet = <T>(promise: Promise<T>): Promise<T> => { promise.catch(() => undefined); return promise; };
 const byName = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
 
+/** A put Archil refused (404) for a folder above it that was not there, a folder that then could not be made (`why`):
+ *  nothing of the put landed. Kept apart from the folder's own failure so an append can say so. */
+class FolderNotMade extends Error {
+  constructor(readonly why: WorkspaceError) {
+    super(why.message, { cause: why });
+  }
+}
+
 /** A disk API failure as a WorkspaceError, Archil's words kept. A disk that is not there is UNAVAILABLE, never a file or
  *  folder that is not there: no caller takes it for an empty folder. */
 function failed(error: unknown, path: string, what: string): WorkspaceError {
   if (error instanceof WorkspaceError) return error;
+  if (error instanceof FolderNotMade) return error.why;
   const status = statusOf(error);
   const at = { path, cause: error };
   if (error instanceof ArchilDiskMissing) return new WorkspaceError("UNAVAILABLE", `${what} ${show(path)}: ${error.message}`, at);
@@ -230,7 +239,7 @@ class ArchilWorkspace implements Workspace {
       try {
         await call(this.#relOf(folder), () => this.#disk.putObject(`${folder}/`, new Uint8Array(0)));
       } catch (error) {
-        throw failed(error, this.#relOf(folder) || folder, "mkdir");
+        throw new FolderNotMade(failed(error, this.#relOf(folder), "mkdir"));
       }
     }
     return call(this.#relOf(key), put);
@@ -356,7 +365,8 @@ class ArchilWorkspace implements Workspace {
       const why = await this.#writeFailed(error, rel, "file", "append");
       const status = statusOf(error);
       // A disk that is not there took nothing either.
-      const refused = error instanceof ArchilDiskMissing || (status !== undefined && status >= 400 && status < 500);
+      // So did a put refused for a folder that could not be made.
+      const refused = error instanceof ArchilDiskMissing || error instanceof FolderNotMade || (status !== undefined && status >= 400 && status < 500);
       if (chunks === 1) {
         // A refusal (4xx) applied nothing; any other failure may have come after the bytes were committed.
         if (refused) throw why;
