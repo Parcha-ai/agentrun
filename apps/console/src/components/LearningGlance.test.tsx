@@ -110,6 +110,23 @@ describe("CostAgreement", () => {
       expect(x1, t.textContent ?? "").toBeLessThanOrEqual(300);
     }
   });
+  it("moves the plot down under a tall stack of labels, so a crowd of revisions keeps every label on the chart", () => {
+    // Four revisions of two workflows that cost nearly the same and all agreed on every checked answer: their long
+    // labels touch each other, so they stack four high over the plot's top.
+    const crowd = [0, 1, 2, 3].map((i) => ({ ...REVISIONS[1]!, workflow: i % 2 ? "support-triage-priority" : "sort-invoice-by-vendor", digest: `${i}`.repeat(12), label: `${i % 2 ? "support-triage-priority" : "sort-invoice-by-vendor"} v${i + 1}`, served: { runs: 20, mean_usd: 0.1 + i * 0.001 }, check: { agreed: 20, alone: 20, n: 20, agree_min: 0.8 }, audits: null }));
+    const host = draw(createElement(CostAgreement, { cost: COST, revisions: crowd, width: 560 }));
+    const svg = host.querySelector("svg[aria-hidden][width='560']")!;
+    const labels = [...svg.querySelectorAll("text")].filter((t) => /v\d 100%$/.test(t.textContent ?? ""));
+    expect(labels).toHaveLength(4);
+    const ys = labels.map((t) => Number(t.getAttribute("y")));
+    expect(new Set(ys).size).toBe(4);
+    // A label's letters are 12px tall: its baseline that far under the chart's top keeps all of it drawn.
+    for (const [i, at] of ys.entries()) expect(at, labels[i]!.textContent ?? "").toBeGreaterThanOrEqual(12);
+    // The plot moved down by what the stack needs: the 100% line is under the lowest label, and the chart is taller.
+    const full = [...svg.querySelectorAll("text")].find((t) => t.textContent === "100%")!;
+    expect(Number(full.getAttribute("y"))).toBe(Math.max(...ys) + 10);
+    expect(Number(svg.getAttribute("height"))).toBe(Number(full.getAttribute("y")) + 220 + 42);
+  });
   it("leaves the agent off the log axis when a run cost it nothing before takeover, and still draws the revisions", () => {
     const free: LearningCost = { ...COST, summary: { ...COST.summary, before: { runs: 20, mean_usd: 0 } } };
     const host = draw(createElement(CostAgreement, { cost: free, revisions: REVISIONS, width: 560 }));

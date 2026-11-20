@@ -20,6 +20,8 @@ const DODGE = 13;
 /** The least room between two revisions' marks: revisions that cost nearly the same stand side by side, never on each
  *  other. The readout and the table say each one's cost exactly. */
 const APART = 36;
+/** The least room between the chart's top and a label's baseline: the height of a label's letters. */
+const LABEL_TOP = 12;
 const STATE_WORDS: Record<RevisionPoint["state"], string> = { serving: "serving", held: "held", served: "served earlier" };
 
 type Mark = { key: string; label: string; usd: number; share: number; lo: number; hi: number; revision: RevisionPoint | null; agreement: Agreement | null; audits: Share | null };
@@ -68,15 +70,13 @@ export function CostAgreement({ cost, revisions, width: fixed }: { cost: Learnin
   const least = Math.min(...marks.map((m) => Math.min(m.lo, m.audits?.lo ?? 1)), needed ?? 1);
   const step = least < 0.4 ? 0.25 : 0.1;
   const floor = Math.max(0, Math.min(0.5, Math.floor(least / step + 1e-9) * step));
-  const y = (v: number) => M.top + H - ((v - floor) / (1 - floor)) * H;
-  const yTicks = Array.from({ length: Math.round((1 - floor) / step) + 1 }, (_, i) => Math.round((floor + i * step) * 100) / 100);
-  // Fewer x ticks on a narrow plot: the decades only.
-  const xTicks = axis.ticks.filter((t) => plotW / axis.ticks.length > 44 || Number.isInteger(Math.log10(t)));
-  const walk = marks.map((m, i) => `${i ? "L" : "M"}${px[i]!.toFixed(1)},${y(m.share).toFixed(1)}`).join("");
+  /** How far under the plot's top a share stands. */
+  const down = (v: number) => H - ((v - floor) / (1 - floor)) * H;
   // Each label stands over its mark, above the taller interval; one that would touch another is stacked over it. The
-  // agent's ends at its mark, which is the rightmost of the plot; a revision's is centred over its two marks.
+  // agent's ends at its mark, which is the rightmost of the plot; a revision's is centred over its two marks. A label
+  // is placed from the plot's top (`y` under it, less over it), so the stack says how much room it needs.
   const placed: { x0: number; x1: number; y: number }[] = [];
-  const labels = marks.map((m, i) => {
+  const stacked = marks.map((m, i) => {
     const words = m.revision ? `${m.label} ${percent(m.share)}` : `The agent ${level(m.usd)}`;
     const wide = words.length * 6.7;
     const anchor = m.revision ? "middle" as const : "end" as const;
@@ -85,11 +85,20 @@ export function CostAgreement({ cost, revisions, width: fixed }: { cost: Learnin
     const [left, right] = m.revision ? [wide / 2, wide / 2] : [wide, 0];
     const lx = Math.max(left + 2, Math.min(want, width - right - 2));
     const [x0, x1] = [lx - left, lx + right];
-    let ly = Math.min(y(m.hi), m.audits ? y(m.audits.hi) : Infinity) - 10;
+    let ly = Math.min(down(m.hi), m.audits ? down(m.audits.hi) : Infinity) - 10;
     while (placed.some((t) => x0 < t.x1 + 6 && x1 > t.x0 - 6 && Math.abs(t.y - ly) < 13)) ly -= 13;
     placed.push({ x0, x1, y: ly });
     return { m, words, x: lx, y: ly, anchor };
   });
+  // The room over the plot: what the tallest stack of labels needs, so the plot moves down under a crowd of revisions
+  // and no label leaves the chart.
+  const top = Math.max(M.top, LABEL_TOP - Math.min(...stacked.map((l) => l.y)));
+  const y = (v: number) => top + down(v);
+  const labels = stacked.map((l) => ({ ...l, y: top + l.y }));
+  const yTicks = Array.from({ length: Math.round((1 - floor) / step) + 1 }, (_, i) => Math.round((floor + i * step) * 100) / 100);
+  // Fewer x ticks on a narrow plot: the decades only.
+  const xTicks = axis.ticks.filter((t) => plotW / axis.ticks.length > 44 || Number.isInteger(Math.log10(t)));
+  const walk = marks.map((m, i) => `${i ? "L" : "M"}${px[i]!.toFixed(1)},${y(m.share).toFixed(1)}`).join("");
   const headline = `${serving.label} ${STATE_WORDS[serving.revision!.state]}: ${level(serving.usd)} a run, agreed on ${agreedWords(serving.agreement!)} (${percent(serving.share)})`;
   const readout = (m: Mark): string[] => m.revision && m.agreement
     ? [
@@ -142,7 +151,7 @@ export function CostAgreement({ cost, revisions, width: fixed }: { cost: Learnin
         <p className="caps font-mono text-label text-muted-foreground" style={{ paddingLeft: M.left }} aria-hidden>Agrees with the agent</p>
         <div className="relative" tabIndex={0} onKeyDown={move} onBlur={() => setActive(null)}
           aria-label={`Cost against agreement. ${headline}. Arrow keys step through the agent and each revision.`}>
-          <svg width={width} height={M.top + H + M.bottom} className="block select-none font-mono" onPointerLeave={() => setActive(null)} aria-hidden>
+          <svg width={width} height={top + H + M.bottom} className="block select-none font-mono" onPointerLeave={() => setActive(null)} aria-hidden>
             {yTicks.map((t) => (
               <g key={t}>
                 <path d={`M${M.left},${y(t)}H${M.left + plotW}`} className={t === floor ? "stroke-border-strong" : "stroke-border"} strokeWidth={1} />
@@ -151,21 +160,21 @@ export function CostAgreement({ cost, revisions, width: fixed }: { cost: Learnin
             ))}
             {xTicks.map((t) => (
               <g key={t}>
-                <path d={`M${x(t)},${M.top + H}v4`} className="stroke-border-strong" strokeWidth={1} />
-                <text x={x(t)} y={M.top + H + 18} textAnchor="middle" className="fill-muted-foreground text-label">{usd(t)}</text>
+                <path d={`M${x(t)},${top + H}v4`} className="stroke-border-strong" strokeWidth={1} />
+                <text x={x(t)} y={top + H + 18} textAnchor="middle" className="fill-muted-foreground text-label">{usd(t)}</text>
               </g>
             ))}
-            <text x={M.left + plotW} y={M.top + H + 36} textAnchor="end" className="caps fill-muted-foreground text-label">$ a run, all-in (log)</text>
+            <text x={M.left + plotW} y={top + H + 36} textAnchor="end" className="caps fill-muted-foreground text-label">$ a run, all-in (log)</text>
             {needed !== null && needed >= floor && <path d={`M${M.left},${y(needed)}H${M.left + plotW}`} data-testid="agreement-needed" className="stroke-muted-foreground" strokeWidth={1.5} strokeDasharray="6 4" />}
             <path d={walk} data-testid="agreement-walk" fill="none" className="stroke-muted-foreground" strokeWidth={1.5} strokeLinejoin="round" />
             {marks.map((m, i) => {
               const cx = px[i]!, ax = cx + DODGE;
-              const top = Math.min(y(m.hi), m.audits ? y(m.audits.hi) : Infinity, y(m.share) - 14);
-              const bottom = Math.max(y(m.lo), m.audits ? y(m.audits.lo) : -Infinity, y(m.share) + 14);
+              const from = Math.min(y(m.hi), m.audits ? y(m.audits.hi) : Infinity, y(m.share) - 14);
+              const to = Math.max(y(m.lo), m.audits ? y(m.audits.lo) : -Infinity, y(m.share) + 14);
               return (
                 <g key={m.key} data-testid={m.revision ? "agreement-revision" : "agreement-agent"} onPointerEnter={() => setActive(i)} opacity={active === null || active === i ? 1 : 0.55}>
                   {/* The hover's target: wider than the marks, the whole height of their intervals. */}
-                  <rect x={cx - 14} y={top} width={m.audits ? 28 + DODGE : 28} height={bottom - top} className="fill-card" fillOpacity={0} />
+                  <rect x={cx - 14} y={from} width={m.audits ? 28 + DODGE : 28} height={to - from}className="fill-card" fillOpacity={0} />
                   {m.audits && (
                     <g data-testid="agreement-audits">
                       <path d={`M${ax},${y(m.audits.hi)}V${y(m.audits.lo)}M${ax - 3},${y(m.audits.hi)}h6M${ax - 3},${y(m.audits.lo)}h6`} className="stroke-muted-foreground" strokeWidth={1} />
@@ -185,7 +194,7 @@ export function CostAgreement({ cost, revisions, width: fixed }: { cost: Learnin
           </svg>
           {at && (
             <div className={cn("pointer-events-none absolute z-raised max-w-[22rem] border bg-card px-2 py-1 font-mono text-label shadow-float", px[active!]! > width * 0.55 && "-translate-x-full")} data-testid="agreement-tip"
-              style={{ left: px[active!]! > width * 0.55 ? px[active!]! - 14 : px[active!]! + 14 + (at.audits ? DODGE : 0), top: M.top }}>
+              style={{ left: px[active!]! > width * 0.55 ? px[active!]! - 14 : px[active!]! + 14 + (at.audits ? DODGE : 0), top }}>
               {readout(at).map((l, i) => <span key={l} className={cn("block", i === 0 ? "font-semibold" : "text-muted-foreground")}>{l}</span>)}
             </div>
           )}
