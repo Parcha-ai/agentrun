@@ -32,7 +32,9 @@ const { purgeRun } = await import("../dist/agent-delete.js");
 const { SCHEMA_VERSION } = await import("../dist/store/index.js");
 const { learningIdOf } = await import("../dist/learn/learning-of.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
-const { startAudit } = await import("../dist/runner/audit.js");
+const { notAuditableOf, startAudit } = await import("../dist/runner/audit.js");
+const { lastOwnRuns } = await import("../dist/learn/compile.js");
+const { pastRunsOverStore } = await import("../dist/store-reads/learning.js");
 
 const quiet = { beforeIntent: async () => {}, beforeResult: async () => {} };
 const TIMING = { leaseMs: 60_000, renewEveryMs: 20_000, stopMarginMs: 5_000, pollMs: 20, commandPollMs: 30 };
@@ -140,6 +142,36 @@ test("a purged run's tombstone keeps its disk: deleting the agent's learning sti
   await store.settings.put(gradesKey(onB), { v: 1, items: [{ run: "purged-b", correct: true, source: "feedback", at: new Date().toISOString(), path: "agent" }] });
   assert.deepEqual(await deleteLearning(store, "agent-1", learningFolderOf(dir, "agent-1")), { files: 0, records: 2 });
   assert.deepEqual([await store.settings.get(promotionsKey(onB)), await store.settings.get(gradesKey(onB))], [undefined, undefined], "disk B's records are gone with the agent's learning");
+});
+
+test("the reset's watermark and the run's disk are two filters, both taken: on disk B only B's runs after the reset are read (compile_after's count and a check's inputs, the money rule's past runs, the audit's served runs); the default disk's after it are its own", async (t) => {
+  const dir = scratch("agentrun-per-disk-watermark-");
+  const store = await openSqliteStore({ dataDir: dir, role: "server" });
+  t.after(async () => { await store.close(); rmSync(dir, { recursive: true, force: true }); });
+  await store.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
+  const ended = async (id, disk, metrics = { path: "agent" }) => {
+    await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: launchBody({ ...BASE, ...launchDisk(disk) }) });
+    const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
+    await store.runs.update(claim, { state: "ended", costUsd: 0.1, metrics });
+  };
+  const DIGEST = "d".repeat(16);
+  const served = { path: "workflow", workflow: "answer", workflow_digest: DIGEST, not_auditable: true };
+  await ended("pre-b", "disk-b");
+  await ended("pre-b-served", "disk-b", served);
+  await ended("pre-default", null);
+  // The agent's reset watermark (learn/promote.ts resetAtKey), set as the reset sets it, the clock moved past it.
+  const at = Date.now();
+  await store.settings.put("learning.reset-at.agent-1", { at });
+  while (Date.now() <= at) await new Promise((resolve) => setTimeout(resolve, 2));
+  await ended("post-b", "disk-b");
+  await ended("post-b-served", "disk-b", served);
+  await ended("post-default", null);
+  const onB = { agentId: "agent-1", disk: "disk-b" };
+  assert.deepEqual((await lastOwnRuns(store, onB, 10)).map((row) => row.id), ["post-b"], "compile_after's count and a check's inputs");
+  assert.deepEqual((await lastOwnRuns(store, { agentId: "agent-1", disk: null }, 10)).map((row) => row.id), ["post-default"]);
+  const past = await pastRunsOverStore(store, onB);
+  assert.deepEqual([past.length, past.every((run) => run.startedAt > at)], [2, true], "the money rule's past runs: post-b and post-b-served");
+  assert.equal(await notAuditableOf(store, onB, "answer", DIGEST, { stop_window: 10 }), 1, "the audit's served runs: post-b-served alone");
 });
 
 test("purging a run on a named disk forgets what that disk's learning copied from it: its grade there dropped, the default disk's records untouched", async (t) => {
