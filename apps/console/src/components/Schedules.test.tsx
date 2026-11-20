@@ -173,9 +173,14 @@ describe("the schedules list", () => {
       on("t_email", { kind: "email", account: "default", mailbox: "INBOX", every_s: 60 }),
     ];
     const quiet = on("t_quiet", { kind: "webhook" }, "triage");
-    const s = server({ triggers: [...kinds, quiet] });
-    const t = await open(s.v2, {});
+    const triggers = [...kinds];
+    const s = server({ triggers });
+    const t = await open(s.v2, {}, undefined, 30);
     const row = (id: string) => t.host.querySelector(`[data-trigger="${id}"]`)!;
+    // A later read of the list names an agent the first did not: that one is read then, and the others not again.
+    triggers.push(quiet);
+    for (let i = 0; i < 20 && !row("t_quiet"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    for (let i = 0; i < 5; i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
     for (const k of kinds) {
       const cue = row(k.id).querySelector("[data-asks]");
       expect(cue?.textContent, k.id).toBe("Waits for your approval: send_email and create_issue_comment");
