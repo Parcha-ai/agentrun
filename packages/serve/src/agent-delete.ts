@@ -30,8 +30,9 @@ import { LearningInFlight } from "./learn/delete.js";
 import { FINAL_STATES, type RunState, type Store, TriggersLeft } from "./store/index.js";
 
 /** The delete of an agent's learning: the server's is the learning module's deleteLearning over the agent's learning
- *  folder (learn/delete.ts). Idempotent; refuses with LearningInFlight while learning work of the agent is in flight. */
-export type DeleteLearning = (store: Store, agentId: string) => Promise<unknown>;
+ *  folder (learn/delete.ts). Idempotent; refuses with LearningInFlight while learning work of the agent is in flight.
+ *  `keepResetLedger`: a reset of the agent's learning (learning-reset.ts), whose runs stay, keeps their reset ledger. */
+export type DeleteLearning = (store: Store, agentId: string, options?: { keepResetLedger?: boolean }) => Promise<unknown>;
 
 /** A point of a delete a test may stop it at (AgentDeleteHost.at): after step 1, after step 2, in step 3 between a
  *  trigger's removal upstream and its settings', between its settings' and its row's, and in step 3 once its triggers

@@ -2423,7 +2423,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
   /** Step 2 of DELETE /agents/{id}: the learning module's delete over the agent's learning folder on this server's disk,
    *  as the learning routes open it (learningFolderOf), which deleteLearning ends in its finally. A learning folder on
    *  the agent's Archil disk goes with that disk in step 3. */
-  const learningDelete: DeleteLearning = options.deleteLearning ?? ((given, agentId) => deleteLearning(given, agentId, learningFolderOf(data, agentId)));
+  const learningDelete: DeleteLearning = options.deleteLearning ?? ((given, agentId, kept) => deleteLearning(given, agentId, learningFolderOf(data, agentId), kept));
   const agentDeleteHost: AgentDeleteHost = {
     store,
     deleteLearning: learningDelete,

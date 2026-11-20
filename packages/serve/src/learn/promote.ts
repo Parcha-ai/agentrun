@@ -246,6 +246,28 @@ async function updateKept<T>(settings: Pick<Settings, "get" | "putIfAbsent" | "r
   throw new Error(`${key} kept changing under this write; try again`);
 }
 
+/** A learned workflow revision an agent's learning reset deleted (DELETE /agents/{id}/learning, learning-reset.ts): its
+ *  workflow, its digest and its K (its check's compile_after; null when its records named none), nothing else of its
+ *  records. What the runs it served carry of its compile and check (store-reads/learning.ts revisionLedgerOf) is read
+ *  from it after the reset, so a kept run's cost reads as before. The runs keep the same names and digests. */
+export interface ResetRevision { readonly workflow: string; readonly digest: string; readonly k: number | null }
+export const resetLedgerKey = (agentId: string): string => `learning.reset-ledger.${agentId}`;
+
+/** The revisions the agent's learning resets deleted, first reset first. */
+export const resetLedgerOf = async (settings: Pick<Settings, "get">, agentId: string): Promise<ResetRevision[]> => itemsOf<ResetRevision>(await settings.get(resetLedgerKey(agentId)));
+
+/** Each revision `records` name (one per workflow and digest, its newest record's K) added to the agent's reset ledger,
+ *  before a reset deletes the records. A revision it holds already keeps its place. */
+export async function keepResetLedger(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, records: readonly PromotionRecord[]): Promise<void> {
+  const newest = new Map<string, ResetRevision>();
+  for (const record of records) newest.set(`${record.workflow}\0${record.digest}`, { workflow: record.workflow, digest: record.digest, k: record.check?.compile_after ?? null });
+  if (!newest.size) return;
+  await updateKept<ResetRevision>(settings, resetLedgerKey(agentId), (items) => {
+    const held = new Set(items.map((one) => `${one.workflow}\0${one.digest}`));
+    return [...items, ...[...newest].filter(([key]) => !held.has(key)).map(([, one]) => one)];
+  });
+}
+
 /** The agent's grades, oldest first. */
 export const gradesOf = async (settings: Pick<Settings, "get">, agentId: string): Promise<Grade[]> => itemsOf<Grade>(await settings.get(gradesKey(agentId)));
 

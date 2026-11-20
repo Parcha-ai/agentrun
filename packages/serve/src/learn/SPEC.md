@@ -339,7 +339,10 @@ serves no run.
 `DELETE /v2/agents/{id}/learning` (`learning-reset.ts`) deletes the folder whole, its git history and audit ledger
 included, then the agent's promotions and grades (`delete.ts` deleteLearning); the agent and its runs stay. It cancels
 the runs that exist only for learning (replays, audit shadows) and waits for them; a run of the agent's own still going
-refuses it (409 `learning_busy`), since its learning lives in it, and nothing is deleted. The folder's next write starts
+refuses it (409 `learning_busy`), since its learning lives in it, and nothing is deleted. Before the records go, each
+revision they name is kept in the agent's reset ledger (`learning.reset-ledger.<agent>`: workflow, digest and K alone),
+so a kept served run's cost still carries its revision's compile and check; an agent's delete removes the ledger. Each
+run's diff (`.agentrun/diffs/`) goes with the folder. The folder's next write starts
 a new history. A run that read its seed before the reset holds a commit the folder no longer has: no workflow is laid
 at its claim, and its merge's `same` names that commit, which the script refuses, so it is a conflict and nothing it
 drafted lands.

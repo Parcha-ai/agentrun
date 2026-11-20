@@ -1,7 +1,13 @@
 // DELETE /v2/agents/{agent_id}/learning: an agent's learning reset, the agent kept. What it learned goes (the learning
 // module's deleteLearning: its learning folder's files, its git history and audit ledger among them, then its promotions
 // and grades); the agent, its definition, its runs and everything kept of them (their files, journals, costs, the
-// learning each one kept) stay, so the run list, the stats and the usage read the same before and after.
+// learning each one kept) stay, so the run list, the stats and the usage read the same before and after. A served run's
+// cost carries its share of its revision's compile and check, read from the promotion records the reset deletes: each
+// revision they name is kept first in the agent's reset ledger (learn/promote.ts keepResetLedger: workflow, digest and
+// K alone), so the share reads the same after.
+//
+// What goes with the folder: each run's learning diff (GET /runs/{id}/learning/diff, the text it merged) is the folder's,
+// so it is 404 after; what the run's own record keeps of its learning end stays with the run.
 //
 // In order, in the agent's delete turn (server.ts agentWrite: one learning write of an agent at a time, and none once
 // its DELETE began):
@@ -24,6 +30,7 @@ import { ApiError } from "./errors.js";
 import type { DeleteLearning } from "./agent-delete.js";
 import { LearningInFlight } from "./learn/delete.js";
 import { isShadowRun } from "./learn/audit.js";
+import { keepResetLedger, promotionsOf } from "./learn/promote.js";
 import { readLaunchBody } from "./run-launch.js";
 import { FINAL_STATES, type RunState, type Store, StoreLaunchMissing } from "./store/index.js";
 
@@ -76,8 +83,10 @@ export async function resetLearning(host: LearningResetHost, agentId: string): P
   await host.inQueue(agentId, async () => {
     const still = await goingOf(host.store, agentId);
     if (still.length) throw busy(agentId, still.map((run) => run.id), still.some((run) => !run.learning) ? OWN(still.filter((run) => !run.learning).length) : "its learning work started again");
+    // What the agent's kept runs carry of their revisions' compile and check, kept before the records it is read from go.
+    await keepResetLedger(host.store.settings, agentId, await promotionsOf(host.store.settings, agentId));
     try {
-      await host.deleteLearning(host.store, agentId);
+      await host.deleteLearning(host.store, agentId, { keepResetLedger: true });
     } catch (error) {
       if (!(error instanceof LearningInFlight)) throw error;
       throw busy(agentId, error.runs, "its learning work is in flight");

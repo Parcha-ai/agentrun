@@ -11,8 +11,9 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { agentFolderOf } from "../dist/files.js";
-import { gradesKey, promotionsKey } from "../dist/learn/promote.js";
-import { seedOf } from "../dist/learning.js";
+import { deleteLearning } from "../dist/learn/delete.js";
+import { gradesKey, promotionsKey, resetLedgerKey } from "../dist/learn/promote.js";
+import { learningFolderOf, seedOf } from "../dist/learning.js";
 import { git, resnap } from "./learn-support.mjs";
 import { agent, follow, serve, withEnv } from "./support.mjs";
 
@@ -149,6 +150,39 @@ test("a reset after a learned workflow served: nothing learned is left or served
   const launch = (await store.runs.launch(next)).body;
   assert.ok(!launch.learning?.workflows?.length, `no workflow started with: ${JSON.stringify(launch.learning)}`);
   assert.doesNotMatch(launch.learning?.section ?? "", /42/, "no correction of before");
+});
+
+test("a served run's cost keeps its share of its revision's paid check after the reset (the reset ledger), as do the bill's booked total and what no run carries; an agent delete's learning step removes the ledger", async (t) => {
+  const { api, data, store } = await serve(t, { learning: "on", runner: false });
+  assert.equal((await api("POST", "/agents", agent("paid", { learning: true }))).status, 201);
+  const revisionId = (await store.agents.get("paid")).currentRevision;
+  const LEARNS = { input: ASK, title: "t", place: { mode: "runner" }, learning: { given: [], seed: "a".repeat(40), section: "", seedNotes: 0 } };
+  // The check: two replays of `answer` at its digest, $0.30 each; then two runs it served at $0.10, K = 2.
+  const ended = async (id, cost, metrics, body = LEARNS) => {
+    await store.runs.create({ id, agentId: "paid", revisionId }, { body });
+    const claim = await store.claim(id, "runner-cost", { leaseMs: 60_000 });
+    await store.runs.update(claim, { state: "ended", costUsd: cost, metrics });
+  };
+  for (const id of ["replay-a", "replay-b"]) await ended(id, 0.3, { path: "replay", workflow: "answer", workflow_digest: DIGEST, replay: { of: "run-of-before", outcome: "answered" } }, { ...LEARNS, replay: { of: "run-of-before", workflow: "answer", digest: DIGEST } });
+  for (const id of ["served-a", "served-b"]) await ended(id, 0.1, { path: "workflow", workflow: "answer", workflow_digest: DIGEST });
+  await store.settings.put(promotionsKey("paid"), { v: 1, items: [{ workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", reason: "checked: promoted", check: { compile_after: 2, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 2, agreed: 2, alone: 2, of: [] } }] });
+
+  const costs = async () => ({
+    runs: Object.fromEntries(await Promise.all(["served-a", "served-b", "replay-a"].map(async (id) => [id, (await api("GET", `/runs/${id}`)).body.cost]))),
+    bill: await api("GET", "/agents/paid/learning/cost").then(({ body }) => [body.bill?.booked_usd, body.bill?.unattributed_usd]),
+  });
+  const before = await costs();
+  assert.equal(before.runs["served-a"].learning_usd, 0.3, `its share of the $0.60 check over K = 2: ${JSON.stringify(before)}`);
+  const reset = await api("DELETE", "/agents/paid/learning");
+  assert.equal(reset.status, 204, JSON.stringify(reset.body));
+  assert.deepEqual(await recordsOf(store, "paid"), [], "the records are gone");
+  assert.deepEqual(await costs(), before, "each run's cost and the bill read as before");
+  assert.deepEqual((await store.settings.get(resetLedgerKey("paid")))?.items, [{ workflow: "answer", digest: DIGEST, k: 2 }], "the revision's workflow, digest and K alone");
+  // A second reset keeps it as it is.
+  assert.equal((await api("DELETE", "/agents/paid/learning")).status, 204);
+  assert.deepEqual(await costs(), before);
+  await deleteLearning(store, "paid", learningFolderOf(data, "paid"));
+  assert.equal(await store.settings.get(resetLedgerKey("paid")), undefined, "the agent's delete removes it");
 });
 
 test("an agent that never learned: 204, and 204 again; an unknown agent is 404; without the token it is 401, as a learning write is", async (t) => {
