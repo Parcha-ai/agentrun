@@ -208,7 +208,7 @@ test("a previous result over the limit whose run's output schema names x-carried
   assert.ok(!carried.handed.includes("word word") && !carried.handed.includes('"tag"'), "nothing of the fields it does not carry");
 });
 
-test("beside it, over the limit with no x-carried, or carried fields over the limit themselves: the too-large line; under the limit: the whole result", { timeout: 180_000 }, async (t) => {
+test("beside it, over the limit with no x-carried, or a carried string over the limit itself (a scalar is never cut, only a carried array's oldest entries): the too-large line; under the limit: the whole result", { timeout: 180_000 }, async (t) => {
   const { api } = await serve(t, { triggerClock: fakeClock("2026-06-01T00:00:00Z") });
   // The positive control in the same run: a schema that carries `seen` is handed {seen}.
   const control = await firedTwice(api, "control", carrying(["seen"]), BIG);
@@ -217,7 +217,7 @@ test("beside it, over the limit with no x-carried, or carried fields over the li
   assert.equal(TOO_LARGE.exec(plain.handed)?.[1], plain.first.runId, `no x-carried, the too-large line: ${plain.handed.slice(0, 300)}`);
   assert.ok(!plain.handed.includes(CARRIED) && !plain.handed.includes("```json"), "and nothing of the result");
   const heavy = await firedTwice(api, "heavy", carrying(["noise"]), BIG);
-  assert.equal(TOO_LARGE.exec(heavy.handed)?.[1], heavy.first.runId, `carried fields over the limit, the too-large line: ${heavy.handed.slice(0, 300)}`);
+  assert.equal(TOO_LARGE.exec(heavy.handed)?.[1], heavy.first.runId, `a carried string over the limit is never cut, the too-large line: ${heavy.handed.slice(0, 300)}`);
   assert.ok(!heavy.handed.includes(CARRIED) && !heavy.handed.includes("```json"), "and nothing of the result");
   const under = await firedTwice(api, "under", carrying(["seen"]), SMALL);
   assert.match(under.handed, new RegExp(`${PREVIOUS} \\(${under.first.runId}, ended `));
