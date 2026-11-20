@@ -45,20 +45,37 @@ async function seeded(store, id, { costUsd = null, ended = true, booked = true, 
 }
 
 const near = (got, want) => typeof got === "number" && Math.abs(got - want) < 1e-9;
+/** An exact figure, as endCostOf gives one; `atMost`: the most the run can have cost. */
+const exact = (costUsd) => ({ costUsd, costUpperBound: false });
+const atMost = (costUsd) => ({ costUsd, costUpperBound: true });
 
 test("healCost writes a figure only over an ended run's unknown cost, only at the end it was read at, and once", async (t) => {
   const { store } = await storeOn(t);
   await seeded(store, "run-1");
   const row = await store.runs.get("run-1");
   const at = { epoch: row.epoch, endedAt: row.endedAt };
-  assert.equal(await store.runs.healCost("run-1", { ...at, endedAt: at.endedAt + 1 }, 0.03), false, "another end: nothing written");
-  assert.equal(await store.runs.healCost("run-1", { ...at, epoch: at.epoch + 1 }, 0.03), false, "another epoch: nothing written");
+  assert.equal(await store.runs.healCost("run-1", { ...at, endedAt: at.endedAt + 1 }, exact(0.03)), false, "another end: nothing written");
+  assert.equal(await store.runs.healCost("run-1", { ...at, epoch: at.epoch + 1 }, exact(0.03)), false, "another epoch: nothing written");
   assert.equal((await store.runs.get("run-1")).costUsd, null);
-  assert.equal(await store.runs.healCost("run-1", at, 0.03), true);
+  assert.equal(await store.runs.healCost("run-1", at, exact(0.03)), true);
   assert.ok(near((await store.runs.get("run-1")).costUsd, 0.03));
-  assert.equal(await store.runs.healCost("run-1", at, 0.5), false, "never over a stored figure");
+  assert.equal(await store.runs.healCost("run-1", at, exact(0.5)), false, "never over a stored figure");
+  assert.equal(await store.runs.healCost("run-1", at, atMost(0.5)), false, "nor with a bound");
   assert.ok(near((await store.runs.get("run-1")).costUsd, 0.03));
-  await assert.rejects(store.runs.healCost("run-1", at, -1), TypeError);
+  await assert.rejects(store.runs.healCost("run-1", at, exact(-1)), TypeError);
+});
+
+test("healCost writes a bound as the end writes one: the figure as at most, read back as costAtMostUsd, and never written over", async (t) => {
+  const { store } = await storeOn(t);
+  await seeded(store, "run-1");
+  const row = await store.runs.get("run-1");
+  const at = { epoch: row.epoch, endedAt: row.endedAt };
+  assert.equal(await store.runs.healCost("run-1", at, atMost(0.8)), true);
+  const healed = await store.runs.get("run-1");
+  assert.ok(healed.costUsd === null && near(healed.costAtMostUsd, 0.8), JSON.stringify(healed));
+  assert.equal(await store.runs.healCost("run-1", at, exact(0.03)), false, "a bound is a stored figure: never written over");
+  assert.ok(near((await store.runs.get("run-1")).costAtMostUsd, 0.8));
+  assert.deepEqual(await store.runs.costUnknown({ limit: 10 }), [], "nothing left for the sweep");
 });
 
 test("healCost never writes a run still going, and costUnknown lists only ended runs whose stored cost is unknown", async (t) => {
@@ -68,7 +85,7 @@ test("healCost never writes a run still going, and costUnknown lists only ended 
   await seeded(store, "run-c", { ended: false });
   await seeded(store, "run-d");
   const going = await store.runs.get("run-c");
-  assert.equal(await store.runs.healCost("run-c", { epoch: going.epoch, endedAt: T0 + 10 }, 0.03), false, "a run still going");
+  assert.equal(await store.runs.healCost("run-c", { epoch: going.epoch, endedAt: T0 + 10 }, exact(0.03)), false, "a run still going");
   assert.deepEqual(await store.runs.costUnknown({ limit: 10 }), ["run-a", "run-d"]);
   assert.deepEqual(await store.runs.costUnknown({ limit: 1 }), ["run-a"], "a page");
   assert.deepEqual(await store.runs.costUnknown({ limit: 10, after: "run-a" }), ["run-d"], "after the page's last id");
@@ -83,7 +100,7 @@ test("healCost never writes a run whose stored cost carries a bound, even called
   t.after(() => db.close());
   assert.equal((await db.run("UPDATE runs SET cost_upper_bound = 1 WHERE id = ?", "run-1")).changes, 1);
   const row = await store.runs.get("run-1");
-  assert.equal(await store.runs.healCost("run-1", { epoch: row.epoch, endedAt: row.endedAt }, 0.03), false, "a bound: nothing written");
+  assert.equal(await store.runs.healCost("run-1", { epoch: row.epoch, endedAt: row.endedAt }, exact(0.03)), false, "a bound: nothing written");
   assert.deepEqual(await db.get("SELECT cost_usd, cost_upper_bound FROM runs WHERE id = ?", "run-1"), { cost_usd: null, cost_upper_bound: 1 });
   assert.deepEqual(await store.runs.costUnknown({ limit: 10 }), [], "not listed for the sweep");
 });

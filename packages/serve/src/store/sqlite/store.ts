@@ -1164,14 +1164,15 @@ class SqliteStore implements Store {
         const row = await db.get<{ list_mark: number }>("SELECT list_mark FROM runs WHERE id = ?", runId);
         return row === undefined ? undefined : Number(row.list_mark);
       },
-      // A heal of an ended run's unknown cost from its priced booking: one conditional UPDATE, only null to a figure with no
-      // bound beside it (cost_upper_bound 0, the column's no-bound value: it is never NULL), only at the end it was read at
-      // (a reopen or a later end moves ended_at or the epoch), so it never overwrites a figure, whatever its caller read.
-      healCost: async (runId, { epoch, endedAt }, usd) => {
-        if (!Number.isFinite(usd) || usd < 0) throw new TypeError(`a healed cost is a figure of $0 or more (got ${usd})`);
+      // A heal of an ended run's unknown cost from its priced booking, as its end writes one (the bound beside the figure
+      // with it, applyRunPatch): one conditional UPDATE, only over a null with no bound beside it (cost_upper_bound 0, the
+      // column's no-bound value: it is never NULL), only at the end it was read at (a reopen or a later end moves ended_at
+      // or the epoch), so it never overwrites a figure or a bound, whatever its caller read.
+      healCost: async (runId, { epoch, endedAt }, { costUsd, costUpperBound }) => {
+        if (!Number.isFinite(costUsd) || costUsd < 0) throw new TypeError(`a healed cost is a figure of $0 or more (got ${costUsd})`);
         const [result] = await db.write([{
-          sql: `UPDATE runs SET cost_usd = ?, cost_upper_bound = 0 WHERE id = ? AND ${COST_UNKNOWN} AND epoch = ? AND ended_at = ? RETURNING id`,
-          params: [usd, runId, epoch, endedAt],
+          sql: `UPDATE runs SET cost_usd = ?, cost_upper_bound = ? WHERE id = ? AND ${COST_UNKNOWN} AND epoch = ? AND ended_at = ? RETURNING id`,
+          params: [costUsd, costUpperBound ? 1 : 0, runId, epoch, endedAt],
         }]);
         return (result?.rows.length ?? 0) > 0;
       },
@@ -1181,8 +1182,8 @@ class SqliteStore implements Store {
       // (its end reads its own cost; a launch whose `native` is no connection is one no runner could read, so it booked
       // nothing either), and a run whose journal holds no runner.turn (no request booked with an answer: no figure to heal
       // to). Kept, and read at each start while their cost stays null: runs with a booked request whose booking still
-      // gives no exact figure (a charge of no known cost, a hold, every request given back). Telling them apart is the
-      // booking rule itself (turnCostOf over each turn's data), which no column holds.
+      // gives no figure (a charge of no known cost, every request given back). Telling them apart is the booking rule
+      // itself (turnCostOf over each turn's data), which no column holds.
       costUnknown: async ({ limit, after }) => {
         const agentic = "COALESCE((SELECT kind FROM revisions WHERE revisions.id = runs.revision_id), 'agentic') = 'agentic'";
         const rows = await db.all<{ id: string }>(
@@ -1803,37 +1804,23 @@ class SqliteStore implements Store {
     // runs on, so a runner on another host whose own clock is behind the server's never reads as gone (nor its relay).
     const RUNNERS_SELECT = "SELECT runner, incarnation, refused, host, port, seen_at FROM runners";
     this.runners = {
-      put: async ({ runner, incarnation, refused, host = null, port = null }) => {
+      put: async ({ runner, incarnation, refused, host = null, port = null }, { unlessLiveMs } = {}) => {
         const n = clock();
-        await db.write([
-          { sql: `DELETE FROM runners WHERE seen_at < ${n.sql} - ${d.bigintParam}`, params: [...n.params, RUNNER_ROWS_KEPT_MS] },
-          {
-            sql: `INSERT INTO runners (runner, incarnation, refused, host, port, seen_at) VALUES (?, ?, ?, ?, ?, ${n.sql}) ON CONFLICT (runner) DO UPDATE SET incarnation = excluded.incarnation, refused = excluded.refused, host = excluded.host, port = excluded.port, seen_at = excluded.seen_at`,
-            params: [runner, incarnation, refused, host, port, ...n.params],
-          },
-        ]);
-      },
-      putUnlessLive: async ({ runner, incarnation, refused, host = null, port = null }, staleMs) => {
-        const n = clock();
-        // The upsert's WHERE leaves a row another incarnation renewed within staleMs as it is, in the same statement: no
-        // read between, so a later process's put can never land between a look and this write.
+        // With unlessLiveMs, the upsert's WHERE leaves a row another incarnation renewed within it as it is, in the same
+        // statement: no read between, so a later process's put can never land between a look and this write.
+        const unlessLive = unlessLiveMs === undefined ? "" : ` WHERE runners.incarnation = excluded.incarnation OR runners.seen_at < excluded.seen_at - ${d.bigintParam}`;
         const [, result] = await db.write([
           { sql: `DELETE FROM runners WHERE seen_at < ${n.sql} - ${d.bigintParam}`, params: [...n.params, RUNNER_ROWS_KEPT_MS] },
           {
-            sql: `INSERT INTO runners (runner, incarnation, refused, host, port, seen_at) VALUES (?, ?, ?, ?, ?, ${n.sql}) ON CONFLICT (runner) DO UPDATE SET incarnation = excluded.incarnation, refused = excluded.refused, host = excluded.host, port = excluded.port, seen_at = excluded.seen_at WHERE runners.incarnation = excluded.incarnation OR runners.seen_at < excluded.seen_at - ${d.bigintParam}`,
-            params: [runner, incarnation, refused, host, port, ...n.params, staleMs],
+            sql: `INSERT INTO runners (runner, incarnation, refused, host, port, seen_at) VALUES (?, ?, ?, ?, ?, ${n.sql}) ON CONFLICT (runner) DO UPDATE SET incarnation = excluded.incarnation, refused = excluded.refused, host = excluded.host, port = excluded.port, seen_at = excluded.seen_at${unlessLive}`,
+            params: [runner, incarnation, refused, host, port, ...n.params, ...(unlessLiveMs === undefined ? [] : [unlessLiveMs])],
           },
         ]);
         return (result?.changes ?? 0) === 1;
       },
-      relayAt: async (runner, incarnation, at) => {
+      renew: async (runner, incarnation, at) => {
         const n = clock();
         const [result] = await db.write([{ sql: `UPDATE runners SET host = ?, port = ?, seen_at = ${n.sql} WHERE runner = ? AND incarnation = ?`, params: [at?.host ?? null, at?.port ?? null, ...n.params, runner, incarnation] }]);
-        return (result?.changes ?? 0) === 1;
-      },
-      seen: async (runner, incarnation) => {
-        const n = clock();
-        const [result] = await db.write([{ sql: `UPDATE runners SET seen_at = ${n.sql} WHERE runner = ? AND incarnation = ?`, params: [...n.params, runner, incarnation] }]);
         return (result?.changes ?? 0) === 1;
       },
       list: async () => (await db.all<RunnerRecord>(`${RUNNERS_SELECT} ORDER BY runner`)).map(runnerOf),

@@ -51,7 +51,7 @@ import {
 } from "./run-view.js";
 import { reflects, type Reflect } from "./reflect-range.js";
 import { freeCeilingMessage, overCapMessage, SPEND_CAP_REACHED } from "@parcha/agentrun-kernel/kernel/cap";
-import { type BookedSpend, bookedSpend, cliModelWorked, type CostBasis, costBasisOf, costWordsOf, planSpend, type RunCost, runCostOf, storedBasisOf } from "./runner/metrics.js";
+import { type BookedSpend, bookedSpend, cliModelWorked, type CostBasis, costBasisOf, costWordsOf, endCostOf, planSpend, type RunCost, runCostOf, storedBasisOf } from "./runner/metrics.js";
 import { journalRecords, recordOf } from "./runner/journal-reader.js";
 import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
 import { laidOf, pathViewOf, roundsOf, runLearningEnd, usedOnly } from "./store-reads/learning.js";
@@ -259,9 +259,10 @@ interface StoreRun {
   /** Whether its end stored its cost unknown while this read, which reads its cost from its booking (an ended agentic run
    *  not native, or workflow, not imported), found no booked request: the end could not read the booking, nor can this. */
   readonly endUnread?: boolean;
-  /** The figure its store's unknown cost heals to (Runs.healCost), at the end it was read at: set while its stored cost is
-   *  null with no bound and its booking gives an exact figure (no hold counted in it). */
-  readonly heal?: { readonly epoch: number; readonly endedAt: number; readonly usd: number };
+  /** The cost its store's unknown one heals to (Runs.healCost), at the end it was read at: set while its stored cost is
+   *  null with no bound and its booking gives a figure, written by the end's own rule (endCostOf: a bound when a cut
+   *  request's hold is counted in it). */
+  readonly heal?: { readonly epoch: number; readonly endedAt: number; readonly costUsd: number; readonly costUpperBound: boolean };
 }
 
 /** A runner holds the run's claim now: it is not in a final state, a runner is named on its row, and its lease has not run
@@ -313,7 +314,7 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
  *  never fails on its heal, and the next read or start sweep writes it again). */
 export async function healStoredCost(store: Store, runId: string, heal: NonNullable<StoreRun["heal"]>): Promise<boolean> {
   try {
-    return await store.runs.healCost(runId, heal, heal.usd);
+    return await store.runs.healCost(runId, heal, heal);
   } catch (error) {
     console.warn(`[serve] an ended run's cost read from its booking could not be stored: ${(error as Error).message}; the next read stores it`);
     return false;
@@ -621,12 +622,14 @@ function bookedCostOf(row: { readonly state: string; readonly kind: string; read
   return runCostOf(entries as never, { unbooked: isCliRecord(entries as never) && cliModelWorked(entries as never) });
 }
 
-/** What an ended run's stored cost heals to (Runs.healCost), at the end it was read at: its booking's figure, when that
- *  booking has a request and an exact figure (no hold counted in it) while the stored cost is null with no bound. */
+/** What an ended run's stored cost heals to (Runs.healCost), at the end it was read at: what its end would have stored
+ *  had it read its booking (endCostOf, the one rule every end writes by: its figure, a bound when a cut request's hold is
+ *  counted in it), when that booking has a request and a figure while the stored cost is null with no bound. */
 function healOf(endCost: RunCost | undefined, runRow: RunRow): StoreRun["heal"] {
-  if (!endCost || endCost.usd === null || endCost.atMost !== 0) return undefined;
+  if (!endCost || endCost.usd === null) return undefined;
   if (runRow.costUsd !== null || runRow.costAtMostUsd !== null || runRow.endedAt === null) return undefined;
-  return { epoch: runRow.epoch, endedAt: runRow.endedAt, usd: endCost.usd };
+  const { costUpperBound } = endCostOf(endCost);
+  return { epoch: runRow.epoch, endedAt: runRow.endedAt, costUsd: endCost.usd, costUpperBound };
 }
 
 /** The start sweep's heal of run `runId` (cost-heal.ts): the same rule as its run read's (bookedCostOf, healOf), from its
@@ -641,7 +644,7 @@ export async function healedOverStore(store: Store, runId: string): Promise<bool
     const booked = bookedCostOf(row, Boolean(launch?.native), (await journalRecords(snapshot.readJournal(runId), BACKGROUND_CONTEXT)).entries);
     return healOf(booked?.requests ? booked : undefined, runRow);
   });
-  return heal !== undefined && (await store.runs.healCost(runId, heal, heal.usd));
+  return heal !== undefined && (await store.runs.healCost(runId, heal, heal));
 }
 
 /** GET /runs/{id}'s answer from the store, byte-identical to runs.ts's view for the same run. Undefined for an unknown run. */
