@@ -104,6 +104,31 @@ test("an archived agent made here is purged: its runs tombstones, its definition
   assert.deepEqual(await money(api), before);
 });
 
+test("an archived agent one of whose runs has an audit's shadow and a replay of its input (each started after it) is purged: 204, each run a tombstone, the money kept", { timeout: 180_000 }, async (t) => {
+  const { api, store, halt } = await haltable(t);
+  const source = await agentWithRun(api, "audited", "Answer.");
+  await halt();
+  const revisionId = (await store.agents.get("audited")).currentRevision;
+  // Made from the source after it, as an audit and a replay make them: the store refuses the source's purge while either
+  // is not purged.
+  const made = [
+    [shadowRunId(source), { input: { content: "A question for audited." }, audit: { of: source, workflow: "flow", digest: "d1" } }, 0.07],
+    ["replay-1", { input: { content: "A question for audited." }, replay: { of: source, workflow: "flow", digest: "d1" } }, 0.05],
+  ];
+  for (const [id, body, costUsd] of made) {
+    await store.runs.create({ id, agentId: "audited", revisionId }, { body });
+    await store.runs.update(await store.claim(id, "runner-test", { leaseMs: 60_000 }), { state: "ended", costUsd });
+  }
+  assert.equal((await api("POST", "/agents/audited/archive")).status, 200);
+  const before = await money(api);
+
+  const deleted = await api("DELETE", "/agents/audited");
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  for (const run of [source, ...made.map(([id]) => id)]) assert.equal((await api("GET", `/runs/${run}`)).status, 410, `its run ${run} is a tombstone`);
+  assert.equal((await api("GET", "/agents/audited")).status, 410);
+  assert.deepEqual(await money(api), before, "/usage by meter and agent, and /stats, are as they were");
+});
+
 test("an archived agent with a live run is 409 run_not_final, nothing purged; once the run ends, the DELETE purges it", { timeout: 120_000 }, async (t) => {
   const { api, store, halt } = await haltable(t);
   const done = await agentWithRun(api, "busy", "Answer.");

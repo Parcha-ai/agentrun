@@ -19,9 +19,9 @@
 // tombstone.
 //
 // An archived agent made here (purgeAgent), by the same rule: 409 run_not_final while a run of it is live. Then its
-// learning, its things (triggers, sign-ins, its own computer, its disk), each of its runs by purgeOne, its folders,
-// settings and kept answers, and its rows (store agents.purge: its revisions' content, its name and description blanked,
-// its purge time last). Each step is idempotent, so a DELETE stopped part way is finished by the next. Archived, the agent
+// learning, its things (triggers, sign-ins, its own computer, its disk), each of its runs by purgeOne (the runs made from
+// it first, as a run's purge does them), its folders, settings and kept answers, and its rows (store agents.purge: its
+// revisions' content, its name and description blanked, its purge time last). Each step is idempotent, so a DELETE stopped part way is finished by the next. Archived, the agent
 // takes no new run and no trigger fires it; a run that reached it anyway keeps it unpurged (the store refuses), for the
 // next DELETE.
 //
@@ -160,7 +160,12 @@ export async function purgeAgent(host: AgentDeleteHost, agentId: string): Promis
   let first = true;
   for (const run of await host.store.runs.every(agentId)) {
     if (run.purgedAt !== null) continue;
-    // Its disk went whole above, each run's folder there with it.
+    // The runs made from it first, each one's own before it, as purgeRun does: the store refuses a run's purge while one
+    // made from it (an audit's shadow, a replay, each started after it) is not purged. Its disk went whole above, each
+    // of its runs' folders there with it; a run of another agent keeps that agent's disk.
+    for (const one of await madeFromAll(host, run.id)) await purgeOneOrRefuse(host, one.agentId, one.id, agentId, one.agentId !== agentId);
+    // A later run of the list may be gone as one made from an earlier.
+    if ((await host.store.runs.get(run.id))?.purgedAt !== null) continue;
     await purgeOneOrRefuse(host, agentId, run.id, agentId, false);
     if (first) await host.at?.("in_step_3", agentId);
     first = false;
