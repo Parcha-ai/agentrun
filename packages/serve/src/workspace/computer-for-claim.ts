@@ -51,7 +51,7 @@ import { type AgentComputerHold, agentComputerOf, forgetAgentComputer, holdAgent
 import type { MountCheck } from "./attach.js";
 import { type AttachedComputers, pairedProvider, withPaired } from "./attached-computers.js";
 import { computerHold, type HeldComputer, heldHands } from "./computer-hold.js";
-import { type IntervalWrites, intervalWrites } from "./computer-intervals.js";
+import { endingDeletes, type IntervalWrites, intervalWrites } from "./computer-intervals.js";
 import { deleteKept, endKept, KEEP_MS, type Kept, type ParkCause, type ParkedEnd, readKept, takeKept, writeKept } from "./computer-kept.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
 import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer } from "./resolve-computer.js";
@@ -266,12 +266,13 @@ const claimRequestId = (claim: { readonly runId: string; readonly epoch: number 
  *  lost, a crash). A run's first claim is epoch 1 (a queued run is epoch 0; each claim and release moves it up one): no
  *  claim came before it to leave a computer, so the provider is not asked (its list is a vendor round trip before the
  *  create). */
-async function releaseOlderClaims(provider: ComputerProvider, claim: { readonly runId: string; readonly epoch: number }, signal: AbortSignal | undefined, ended?: (id: string) => Promise<void>): Promise<boolean> {
+async function releaseOlderClaims(provider: ComputerProvider, claim: { readonly runId: string; readonly epoch: number }, signal: AbortSignal | undefined, ending?: { readonly entry: string; readonly writes: IntervalWrites }): Promise<boolean> {
   if (claim.epoch <= 1) return false;
-  const older = await releaseOlder(provider, claim.runId, claim.epoch, signal ? { signal } : {});
+  // Each delete that answers ok ends its interval as it answers (computer-intervals.ts endingDeletes), so one deleted
+  // before another failed, or before the call was cut, keeps its end; one detached or not let go is left open.
+  const releasing = ending ? endingDeletes(provider, ending.entry, ending.writes) : provider;
+  const older = await releaseOlder(releasing, claim.runId, claim.epoch, signal ? { signal } : {});
   if (!older.ok) throw new Error(older.error.message);
-  // Each one deleted ends its interval (computer-intervals.ts); one detached or not let go is left open.
-  if (ended) for (const ref of older.value.released) await ended(ref.id);
   return older.value.released.length > 0;
 }
 
@@ -468,7 +469,7 @@ async function providerLaunch(
   interval: { readonly writes: IntervalWrites; readonly entry: string; readonly kind: string },
 ): Promise<ProviderComputer & { releasedOlder: boolean }> {
   const { writes, entry } = interval;
-  const releasedOlder = await releaseOlderClaims(provider, claim, signal, (id) => writes.ended(entry, id));
+  const releasedOlder = await releaseOlderClaims(provider, claim, signal, { entry, writes });
   // The claim is the request: a retry of this launch under the same epoch gets the computer it made, never a second.
   const created = await provider.create(spec, { requestId: claimRequestId(claim), ...(signal ? { signal } : {}) });
   if (!created.ok) throw new Error(created.error.message);
@@ -1013,7 +1014,7 @@ export async function computerForClaim(
       // booked) only while the tool holds it.
       if (kind === "browser") {
         // The run's sessions of a lower claim epoch go first, as a computer's do (the janitor's releaseOlder).
-        await releaseOlderClaims(provider, launch, signal, (id) => writes.ended(entry.id, id));
+        await releaseOlderClaims(provider, launch, signal, { entry: entry.id, writes });
         const opened = claimBrowser(provider, spec);
         madeBy = entry;
         return { id: entry.id, groups: ["cdp"], browser: opened.browser, release: opened.release };

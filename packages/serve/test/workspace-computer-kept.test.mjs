@@ -627,6 +627,18 @@ test("an earlier claim's computer let go by a later claim's launch is ended; the
   await later.release();
 });
 
+test("an earlier claim's computer deleted before another one's delete failed keeps its end, though the later claim fails (#3332 review)", async () => {
+  const one = await server();
+  await one.claim(3);
+  // A second computer of claim 3 (a lost runner's retry), whose delete the vendor refuses.
+  one.account.computers.set("x9", { id: "x9", labels: { ...one.account.computers.get("c1").labels } });
+  const release = one.account.provider.release.bind(one.account.provider);
+  one.account.provider.release = async (ref, how) => (ref.id === "x9" ? { ok: false, error: { code: "unavailable", message: "the vendor did not answer" } } : release(ref, how));
+  one.clock.now = T0 + 60_000;
+  await assert.rejects(one.claim(5), /the vendor did not answer/);
+  assert.deepEqual((await intervalsOf(one)).map((row) => [row.providerId, row.endedAt]), [["c1", T0 + 60_000]], "c1's delete answered ok: its end is kept");
+});
+
 test("a resumed kept desktop is the same interval: no second row, and the run's end ends it", async () => {
   const one = await server();
   await (await one.claim(3)).park();
