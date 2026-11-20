@@ -961,7 +961,8 @@ function ComposioForm({ v2, go, noAddress }: { v2: Client; go: (hash: string) =>
         {event && (
           <>
             {event.polled && <p className="text-small text-muted-foreground" role="note">Composio checks for it every few minutes, so a run starts some minutes after the event.</p>}
-            {event.instructions && <p className="whitespace-pre-wrap text-small text-muted-foreground">{event.instructions}</p>}
+            {/* Its instructions are Composio's Markdown as its description is: rendered (sanitized), never shown as marks. */}
+            {event.instructions && <div data-event-instructions className="report report-sm text-muted-foreground" dangerouslySetInnerHTML={{ __html: markdown(event.instructions) }} />}
             <fieldset className="min-w-0">
               <legend className="caps text-label text-muted-foreground">Config</legend>
               <p className="mb-2 mt-1 text-small text-muted-foreground">What Composio watches for <span className="font-mono">{event.slug}</span>.</p>
