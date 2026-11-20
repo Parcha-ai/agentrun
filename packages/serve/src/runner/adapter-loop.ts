@@ -1443,13 +1443,19 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     if (followUp && (askedLast || (reopen !== undefined && (reopen === waitTurn || reopen === askReopen)))) return { later: "the run is waiting on a person: the message runs as a turn of its own after the answer" };
     // A grade's feedback round (feedback-round.ts): the run opened again on the grade's words, which are never a turn of
     // the job's. Kept on the root as a FEEDBACK entry, whose commit takes the row; the claim goes to its end-of-run turn.
+    // The same commit keeps the end the run had when the grade opened it as its job's end (KINDS.jobEnd): from the taking
+    // on, the round is a look-back with its job's end kept, which every reader serves and its claim ends on (jobEndKept).
     const fed = reopen && !reopen.sent && (session.state === "idle" || session.state === "new") ? feedbackOf(command.body) : undefined;
     if (fed && reopen && harness && root) {
       const [on, theRoot, mine] = [harness, root, reopen];
       const taken = gate.expect(writesEntry(KINDS.feedback, (data) => data.requestId === requestId), { take: [command.id] });
       taken.catch(() => undefined);
-      mine.feedback = fed;
-      mine.sent = on.commit((tx) => tx.appendEntry(theRoot.id, { kind: KINDS.feedback, data: { ...fed, requestId, at: now() } as unknown as JsonValue }), context).then(() => undefined);
+      const { kept: { endedAt, ...end }, ...round } = fed;
+      mine.feedback = round;
+      mine.sent = on.commit(async (tx) => {
+        await tx.appendEntry(theRoot.id, { kind: KINDS.feedback, data: { ...round, requestId, at: now() } as unknown as JsonValue });
+        await tx.appendEntry(theRoot.id, { kind: KINDS.jobEnd, data: jobEndOf(end, undefined, endedAt) as unknown as JsonValue });
+      }, context).then(() => undefined);
       mine.placed?.();
       try {
         await mine.sent;
@@ -2932,15 +2938,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         let parkOn: string | undefined;
         /** The ask_person call the run waits on in its claim, while it does. */
         let waitingOn: string | undefined;
-        /** When the job's end was, once it is kept (keepJobEnd): the look-back after it never moves it, and its end is
-         *  written at that time. A grade's round keeps the end the run had when the grade opened it (feedbackNow.kept). */
+        /** When the job's end was, once it is kept (keepJobEnd; a grade's round's, by its steer's taking): the look-back
+         *  after it never moves it, and its end is written at that time. */
         let keptAt: number | undefined;
-        if (alone && lookingBack) ({ end: data, failedWith, endedAt: keptAt } = await jobEndKept(root));
-        else if (alone && feedbackNow?.kept) {
-          const { endedAt, ...end } = feedbackNow.kept;
-          data = end;
-          keptAt = endedAt;
-        }
+        if (alone && (lookingBack || feedbackNow)) ({ end: data, failedWith, endedAt: keptAt } = await jobEndKept(root));
         else if (alone) data = { state: "ended" };
         else for (;;) {
           let end = await Promise.race([turn.then((ended) => (ended === "lapsed" ? ("lapsed" as const) : ("answered" as const))), parking.then(() => "parked" as const), stopping.then(() => "stop" as const), harness.closed.then(() => "closed" as const), askCut.asked.then(() => "cut" as const)]);
@@ -3151,12 +3152,12 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // takes the run past its cap is the learning's (askEndOfRun reads overCap after each of its turns), never the run's.
         // That end is kept before the step's first ask, so a claim that finds its turn open ends the run on it (jobEndKept).
         // Kept with its time: from then on every reader serves it, and the run's end is written at it (writeEnd `keptAt`).
-        if (!lookingBack) keptAt = await keepJobEnd(harness, root, spec, data, failedWith, keptAt);
+        if (!lookingBack && !feedbackNow) keptAt = await keepJobEnd(harness, root, spec, data, failedWith);
         const step = await endOfRunStep(claim, spec, data.state === "failed" ? "failed" : "completed", overCap, keptAt);
         // A stop or cancel the runner took during the step (one that raced the read refusing it, its row written while the
         // run still read as going on) cuts the look-back alone: the run ends on its job's end, the row taken by that end.
-        if (step.kind === "stopped" && keptAt !== undefined) return await writeEnd(harness, root, gate, data, [step.commandId], await cutRows(claim, spec, "stopped-looking"), failedWith, keptAt);
-        if (step.kind === "stopped") return await writeEnd(harness, root, gate, stopEnd(stopReason?.kind === "command" ? stopReason.cancel : undefined), [step.commandId], await cutRows(claim, spec, "stopped-looking"));
+        // A step that runs always has its job's end kept (`keptAt`), so a stop there never ends the run stopped.
+        if (step.kind === "stopped") return await writeEnd(harness, root, gate, data, [step.commandId], await cutRows(claim, spec, "stopped-looking"), failedWith, keptAt);
         if (step.kind === "interrupted") return await interrupted(stopReason?.kind ?? "its claim's signal aborted");
         return await writeEnd(harness, root, gate, data, [], step.also, failedWith, keptAt);
       }
@@ -3520,20 +3521,24 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   }
 
   /** How the job's own turn ended (`data`, and a CLI's error answer `failedWith`), as this claim decided it, kept on the
-   *  root before the end-of-run step asks its first turn (KINDS.jobEnd), for a run with a step to ask (stepOf). Its
-   *  summary is cut of every secret the runner holds, as every summary is when served. Kept with its time, `at` (a grade's
-   *  round keeps the end it found) or now, which it answers; with no step to ask, nothing is kept and `at` comes back. */
-  async function keepJobEnd(on: Harness, conversation: Conversation, spec: AdapterRunSpec, data: EndData, failedWith: string | undefined, at: number | undefined): Promise<number | undefined> {
-    if (!stepOf(spec)) return at;
-    const end = data.summary !== undefined && deps.redact ? { ...data, summary: deps.redact(data.summary) } : data;
-    const endedAt = at ?? now();
-    const kept: JobEndData = { end, ...(failedWith !== undefined ? { failedWith } : {}), endedAt };
+   *  root before the end-of-run step asks its first turn (KINDS.jobEnd), for a run with a step to ask (stepOf). Kept with
+   *  its time, now, which it answers; with no step to ask, nothing is kept. */
+  async function keepJobEnd(on: Harness, conversation: Conversation, spec: AdapterRunSpec, data: EndData, failedWith: string | undefined): Promise<number | undefined> {
+    if (!stepOf(spec)) return undefined;
+    const kept = jobEndOf(data, failedWith, now());
     await on.commit((tx) => tx.appendEntry(conversation.id, { kind: KINDS.jobEnd, data: kept as unknown as JsonValue }), context);
-    return endedAt;
+    return kept.endedAt;
   }
 
-  /** The job's end for a claim that found the end-of-run turn open (lookingBackOpen): the newest keepJobEnd kept (a
-   *  follow-up's round keeps its own), never worked out again. */
+  /** A job's end as KINDS.jobEnd keeps it: its summary cut of every secret the runner holds, as every summary is when
+   *  served. */
+  function jobEndOf(data: EndData, failedWith: string | undefined, endedAt: number): JobEndData {
+    const end = data.summary !== undefined && deps.redact ? { ...data, summary: deps.redact(data.summary) } : data;
+    return { end, ...(failedWith !== undefined ? { failedWith } : {}), endedAt };
+  }
+
+  /** The job's end for a claim that found the end-of-run turn open (lookingBackOpen), or a grade's round (its steer's
+   *  taking kept it): the newest one kept (a follow-up's round keeps its own), never worked out again. */
   async function jobEndKept(conversation: Conversation): Promise<JobEndData> {
     const kept = (await entriesOf(gate!.journal, conversation.id, context)).filter((entry) => entry.kind === KINDS.jobEnd).at(-1);
     if (!kept) throw new Error("the end-of-run turn is open, but the job's end was never kept before it");

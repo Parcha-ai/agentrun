@@ -6,10 +6,10 @@ import type { Agent } from "@/lib/agentForm";
 import { SERVED_AGENT } from "@/test/agent";
 import { ClientError } from "@/lib/client";
 
-// An agentic agent with an input_schema: the run bar shows its message box (optional when the schema requires another
-// field) and one field for each other property, and sends them as one typed input. A refusal's issue at input.<key> is
-// said at that field; one the form has no field for is listed under the refusal. A schema it can't show as fields is
-// typed as JSON, whole.
+// An agentic agent with an input_schema: the run bar shows its message box (optional unless the schema lists it) and
+// one field for each other property, and sends them as one typed input. A refusal's issue at input.<key> is said at that
+// field, and one at input.content at the message; one the form has no field for is listed under the refusal. A schema it
+// can't show as fields is typed as JSON, whole.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 globalThis.ResizeObserver ??= class { observe() {} unobserve() {} disconnect() {} } as unknown as typeof ResizeObserver;
 let root: ReturnType<typeof createRoot> | undefined;
@@ -88,6 +88,35 @@ describe("RunBar, an agent with typed input", () => {
     expect(listed.textContent).not.toContain("input.company");
     m.set(m.at("company").querySelector("input")!, "Acme");
     expect(m.at("company").querySelector('[role="alert"]')).toBeNull();
+  });
+
+  // A schema whose own fields are all optional (a template's `{pr_number}`, no `required`): the server takes one of them
+  // in place of the message, and refuses an input with neither at input.content.
+  const OPTIONAL = { type: "object", properties: { pr_number: { type: "integer", title: "Pull request" } } };
+
+  it("starts a run of an agent whose fields are all optional with only a field filled, no message", async () => {
+    const m = mount(agent(OPTIONAL));
+    expect(m.host.querySelector<HTMLTextAreaElement>('textarea[aria-label="The run\'s message (optional)"]')).not.toBeNull();
+    m.set(m.at("pr_number").querySelector("input")!, "3318");
+    expect(m.runButton().disabled).toBe(false);
+    await m.run();
+    expect(m.starts).toEqual([{ input: { pr_number: 3318 } }]);
+  });
+
+  it("says the server's refusal of an input with neither a field nor a message at the message, and drops it once one is typed", async () => {
+    const refusal = Object.assign(new ClientError(422, "input_invalid", "The run's input is not valid."), { fields: [
+      { field: "input.content", reason: "missing", message: "input.content is required, or one of input.pr_number" },
+    ] });
+    const m = mount(agent(OPTIONAL), refusal);
+    await m.run();
+    expect(m.starts).toEqual([{ input: {} }]);
+    const message = m.host.querySelector<HTMLTextAreaElement>('textarea[aria-label^="The run\'s message"]')!;
+    expect(message.getAttribute("aria-invalid")).toBe("true");
+    expect(m.host.querySelector('[data-issue="input.content"]')?.textContent).toBe("input.content is required, or one of input.pr_number");
+    const listed = [...m.host.querySelectorAll('[role="alert"]')].find((x) => x.textContent?.startsWith("The run did not start"))!;
+    expect(listed.textContent, "said at the message, not listed again").not.toContain("input.content");
+    m.set(message, "Review it.");
+    expect(m.host.querySelector('[data-issue="input.content"]')).toBeNull();
   });
 
   it("types a schema it can't show as fields as the whole input in JSON, starting from its shape", async () => {

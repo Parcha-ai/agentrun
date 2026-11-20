@@ -2672,6 +2672,7 @@ class _RunSummaryPending2Required(TypedDict):
 
 class RunSummaryPending2(_RunSummaryPending2Required, total=False):
     summary: str
+    asks_because: str
     price: float | Literal["not metered"] | Literal["priced by usage"]
     destructive: Literal[True]
 
@@ -5203,6 +5204,7 @@ class _RunPending2Required(TypedDict):
 
 class RunPending2(_RunPending2Required, total=False):
     summary: str
+    asks_because: str
     price: float | Literal["not metered"] | Literal["priced by usage"]
     destructive: Literal[True]
 

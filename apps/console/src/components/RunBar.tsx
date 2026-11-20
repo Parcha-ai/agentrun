@@ -35,8 +35,8 @@ type Sent = { status: number; runId?: string; problem?: Problem };
  *  issue at one is said at that field. */
 export function RunBar({ agent, efforts, v2, go, blocked, limits, freeNote, upload = sendUpload }: { agent: Agent; efforts: string[]; v2: Client; go: (hash: string) => void; blocked?: string; limits?: UploadLimits; freeNote?: string | null; upload?: Upload }) {
   const workflow = agent.kind === "workflow";
-  // An agentic agent's input_schema: its fields under the message box (the message optional when the schema requires
-  // another field), or, for one the fields can't show, the whole input as JSON in the box, as a workflow's is.
+  // An agentic agent's input_schema: its fields under the message box (the message optional unless the schema lists
+  // it), or, for one the fields can't show, the whole input as JSON in the box, as a workflow's is.
   const shape = useMemo(() => (workflow ? null : agentInputOf(agent.definition.input_schema)), [workflow, agent.definition.input_schema]);
   const form = shape?.kind === "fields" ? shape.form : null;
   const json = workflow || shape?.kind === "json";
@@ -58,7 +58,14 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, freeNote, uplo
   // A field's value as typed or picked: an issue at it goes as soon as the value is one the server takes.
   const setField = (key: string, f: FieldSpec, value: string) => {
     setValues((was) => ({ ...was, [key]: value }));
-    if (fieldValid(f, value)) setProblem((p) => (p?.fields ? { ...p, fields: p.fields.filter((i) => atField(i) !== key) } : p));
+    if (fieldValid(f, value)) setProblem((p) => (p?.fields ? { ...p, fields: p.fields.filter((i) => atField(i) !== key && !(value && i.field === "input.content")) } : p));
+  };
+  // With typed fields the message may be optional: the server's issue at it (an input giving neither the message nor a
+  // field) is said at the box, until the message or a field is filled.
+  const contentIssue = form ? problem?.fields?.find((f) => f.field === "input.content") : undefined;
+  const typeText = (value: string) => {
+    setText(value);
+    if (contentIssue && value.trim()) setProblem((p) => (p?.fields ? { ...p, fields: p.fields.filter((i) => i !== contentIssue) } : p));
   };
   // The agent's own default cap, which an empty box leaves in force.
   const agentCap = typeof agent.definition.max_cost_usd === "number" ? agent.definition.max_cost_usd : null;
@@ -90,7 +97,7 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, freeNote, uplo
   // What is wrong with the cap: the box's own check, else the server's refusal of it. Said at the box, not again below.
   const capIssue = !workflow ? (!built.ok && built.field === "max_cost_usd" ? built.message : problem?.fields?.find((f) => f.field === "max_cost_usd")?.message ?? null) : null;
   // A 422 names its fields; each one whose message says more than the refusal's is listed under it (the cap's at its box).
-  const more = (problem?.fields ?? []).filter((f) => f.message !== problem?.message && !(capIssue && f.field === "max_cost_usd") && atField(f) === null);
+  const more = (problem?.fields ?? []).filter((f) => f.message !== problem?.message && !(capIssue && f.field === "max_cost_usd") && atField(f) === null && f !== contentIssue);
   const messageLabel = form ? (form.contentRequired ? "The run's message" : "The run's message (optional)") : "The run's first message";
   return (
     <section className="border-b px-5 py-4 max-sm:py-3 md:px-8" aria-label="Start a run">
@@ -98,8 +105,8 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, freeNote, uplo
           row with Effort and Run: the textarea and the controls come out of their box, so the three wrap as one row. */}
       <div data-phone-row className="max-sm:flex max-sm:flex-wrap max-sm:items-center max-sm:gap-x-2 max-sm:gap-y-2">
         <div className="flex flex-col gap-3 max-sm:contents lg:flex-row lg:items-start">
-          <Textarea value={text} onChange={(e) => setText(e.target.value)} rows={json ? 6 : 2} spellCheck={!json}
-            aria-label={json ? "The run's input, as JSON" : messageLabel}
+          <Textarea value={text} onChange={(e) => typeText(e.target.value)} rows={json ? 6 : 2} spellCheck={!json}
+            aria-label={json ? "The run's input, as JSON" : messageLabel} aria-invalid={contentIssue ? true : undefined}
             placeholder={workflow ? "The workflow's input, as JSON" : json ? "The agent's input, as JSON" : messageLabel}
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) { e.preventDefault(); void start(); } }}
             className={cn("min-w-0 flex-1 resize-y max-sm:order-first max-sm:basis-full", json ? "leading-[1.6]" : "max-sm:h-10")} />
@@ -149,6 +156,7 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, freeNote, uplo
       </div>
       {example && <p className="mt-2 font-mono text-label text-muted-foreground">{exampleHint(example, "run", workflow ? "workflow" : "agent")}</p>}
       {!built.ok && built.field !== "max_cost_usd" && text.trim() && <p className="mt-2 font-mono text-small text-destructive-text" role="alert">{built.message}</p>}
+      {contentIssue && <p className="mt-2 font-mono text-small text-destructive-text" role="alert" data-issue="input.content">{contentIssue.message}</p>}
       {problem && (
         <div className="mt-3 border border-destructive/50 bg-destructive/10 px-3 py-2 font-mono text-small text-destructive-text" role="alert">
           <p>The run did not start: {problem.message}</p>

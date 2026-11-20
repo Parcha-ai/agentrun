@@ -53,6 +53,21 @@ describe("Playground, an agent with typed input", () => {
     expect(m.at("company").querySelector('[role="alert"]')?.textContent).toBe("Company is required.");
   });
 
+  it("sends only a field for an agent whose fields are all optional, and says a refusal of neither at the message", () => {
+    const OPTIONAL = { type: "object", properties: { pr_number: { type: "integer" } } };
+    const m = mount(OPTIONAL);
+    m.set(m.at("pr_number").querySelector("input")!, "3318");
+    expect(m.host.textContent).toContain(`'{"input":{"pr_number":3318}}'`);
+    act(() => root?.unmount()); document.body.innerHTML = "";
+    const refusal = Object.assign(new ClientError(422, "input_invalid", "The run's input is not valid."), { fields: [{ field: "input.content", reason: "missing", message: "input.content is required, or one of input.pr_number" }] });
+    const refused = mount(OPTIONAL, startFailure(refusal, 5));
+    const message = refused.host.querySelector<HTMLTextAreaElement>("#playground-input")!;
+    expect(message.getAttribute("aria-invalid")).toBe("true");
+    expect(message.parentElement!.querySelector('[role="alert"]')?.textContent).toBe("input.content is required, or one of input.pr_number");
+    refused.set(message, "Review it.");
+    expect(message.parentElement!.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it("types a schema it can't show as fields as the whole input in JSON", () => {
     const m = mount({ type: "object", properties: { rows: { type: "array", items: { type: "object" } } }, required: ["rows"] });
     const box = m.host.querySelector("textarea")!;

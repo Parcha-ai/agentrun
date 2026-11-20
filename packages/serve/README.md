@@ -2846,7 +2846,8 @@ after asks, saying "this run has sent 5 emails" (the count is the run's own reco
 stops two auto-responders answering each other. On a run an email started whose `email_read` is thread-scoped (no
 `scope: "mailbox"`), a send to anyone outside the thread's people
 (the account's own address and every From, To and Cc of the thread's messages) asks too, naming them ("eve@example.com
-is outside this email's thread"). The approval's `summary` ends "Asks because ...". With accounts off, where no one can
+is outside this email's thread"). The pending approval carries the reason as `asks_because`, which the console's card
+says above the call's arguments ("Asks because ..."). With accounts off, where no one can
 approve, such a send is refused in those words.
 
 ## Templates

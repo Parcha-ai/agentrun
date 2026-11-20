@@ -930,6 +930,7 @@ export interface components {
       call_id: string;
       args_preview: string;
       summary?: string;
+      asks_because?: string;
       requested_at: string;
       price?: number | "not metered" | "priced by usage";
       destructive?: true;
@@ -1142,6 +1143,7 @@ export interface components {
       call_id: string;
       args_preview: string;
       summary?: string;
+      asks_because?: string;
       requested_at: string;
       price?: number | "not metered" | "priced by usage";
       destructive?: true;

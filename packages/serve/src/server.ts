@@ -4475,7 +4475,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         if (body.label !== undefined && (typeof body.label !== "string" || body.label.length > LABEL_MAX)) throw invalid([{ field: "label", reason: "wrong_type", message: `label is a string of at most ${LABEL_MAX} characters: the grade's words` }]);
         // A run that reads ended while it still learns from that end (its look-back: store-view.ts lookingBackEnd) is graded
         // once that ends: its row is not ended yet, and the round a grade opens reopens only an ended run.
-        if (!FINAL_STATES.includes(row.state) && (await lookingBackEnd(store, row.id))) throw new ApiError("run_learning", "The run is still learning from its answer: grade it once that ends.");
+        if (!FINAL_STATES.includes(row.state) && (await lookingBackEnd(store, row))) throw new ApiError("run_learning", "The run is still learning from its answer: grade it once that ends.");
         if (!FINAL_STATES.includes(row.state)) throw invalid([{ field: "run_id", reason: "not_allowed", message: "A run is graded once it has ended." }]);
         const m = (isObject(row.metrics as Json) ? row.metrics : {}) as { path?: unknown; workflow?: unknown; workflow_digest?: unknown; workflow_promotion?: unknown };
         if (m.path === "replay") throw invalid([{ field: "run_id", reason: "not_allowed", message: "A replay run is never graded: its answer is scored against the run it replays." }]);
