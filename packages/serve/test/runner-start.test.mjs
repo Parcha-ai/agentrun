@@ -230,7 +230,8 @@ test("a store a later server moved past this runner while it ran: it stops claim
   const child = runnerChild(t, ["--data", dir], { AGENTRUN_RUNNER_NAME: "runner-floor" });
   await child.line(READY);
   // A later release's server upgraded the file: on SQLite a runner opens only its own version, so its floor is the version.
-  const db = new DatabaseSync(join(dir, STORE_FILE));
+  // The running runner writes the same file (its presence, its claims' polls): this write waits its turn, as a server's would.
+  const db = new DatabaseSync(join(dir, STORE_FILE), { timeout: 10_000 });
   db.prepare("UPDATE store_meta SET schema_version = ?").run(SCHEMA_VERSION + 1);
   db.close();
   // Read again at its next renewal (every 10 s), idle as it is.
