@@ -333,7 +333,7 @@ export async function harnessCheck(options: HarnessCheckOptions): Promise<Harnes
       };
     },
     beforeStart,
-  }, { log, env: true }) : acpEntryOf({
+  }, { log }) : acpEntryOf({
     facts: { ...acp.cursorFacts, id: recipe.id, label: recipe.label },
     recipe: () => acpRecipeOf(),
     beforeStart,

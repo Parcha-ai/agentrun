@@ -273,12 +273,21 @@ function moduleAdapter(facts: AdapterFacts, build: (launch: ModuleLaunch) => Age
 }
 
 /** What serve's own check of a recipe (harness-check.ts) gives acpEntryOf beside a module's options, so it runs the
- *  launch a server runs and still reads it: the log every launch writes to (the check reads the adapter's `acp:` lines),
- *  and, with `env`, the agent's allowlist and keys read from the launch's environment, not this process's. Never the
- *  kit's: a module's launches log as their harness. */
+ *  launch a server runs and still reads it: the log every launch writes to (the check reads the adapter's `acp:` lines).
+ *  Never the kit's: a module's launches log as their harness. */
 export interface AcpEntryHost {
   readonly log?: ModuleLaunch["log"];
-  readonly env?: boolean;
+}
+
+/** `recipe`, once its `keys` name no key this server holds for something else (harness-recipe.ts serverKey, the
+ *  loader's rule 1) but its own built-in harness's (builtinOwns: Cursor's CURSOR_API_KEY). Its keys are read from the
+ *  launch's environment, where a server key is readable by name, and a module's or a check's recipe is not the loader's:
+ *  checked as each launch's recipe is made, before its agent starts, so the harness's offer at start says it. */
+async function ownKeysOnly(facts: AdapterFacts, recipe: AcpRecipe): Promise<AcpRecipe> {
+  const { RECIPE_CODES, serverKey } = await import("./harness-recipe.js");
+  const named = (recipe.keys ?? []).filter((name) => serverKey(name) && !builtinOwns(facts.id, name));
+  if (named.length) throw new HarnessUnavailable(`${RECIPE_CODES.keys}: ${facts.label}'s recipe names ${named.join(", ")} in keys, a key this server holds for something else; a recipe names only keys saved for its own harness.`);
+  return recipe;
 }
 
 /** A module's entry is run on serve's table (its facts' adapter, cli-run-spec.ts), never by a runner's adapter of its
@@ -301,17 +310,18 @@ const moduleEntryOf = (facts: AdapterFacts, adapter: (launch: ModuleLaunch) => A
 const moduleEntry: HarnessModuleKit["adapterEntry"] = (facts, adapter, extra) => moduleEntryOf(facts, adapter, extra);
 
 /** A proxy-billed ACP agent's whole entry, moduleEntry over serve's own ACP adapter: a module's (HarnessModuleKit.acpEntry,
- *  `host` none) and a proxy-billed recipe's under harness-check (AcpEntryHost). */
+ *  `host` none) and a proxy-billed recipe's under harness-check (AcpEntryHost). Its agent's allowlist and keys are read
+ *  from the launch's environment, never this process's, and its recipe names no server key (ownKeysOnly). */
 function acpProxyEntryOf(options: AcpEntryOptions, host: AcpEntryHost = {}): HarnessEntry {
-  return moduleEntryOf(options.facts, (launch) => {
+  return moduleEntryOf(options.facts, async (launch) => {
     const acp = acpPackage();
     if (!acp) throw new HarnessUnavailable(`${options.facts.label} needs the ACP adapter (${ACP_PACKAGE}) beside this server`);
     return acp.acpAdapter({
-      recipe: options.recipe(launch),
+      recipe: await ownKeysOnly(options.facts, options.recipe(launch)),
       proxy: options.proxy(launch),
       ...(options.beforeStart ? { beforeStart: options.beforeStart } : {}),
       ...(launch.confine ? { confine: launch.confine } : {}),
-      ...(host.env ? { env: launch.env } : {}),
+      env: launch.env,
       log: launch.log,
     });
   }, { promises: options.promises ?? ACP_PROMISES, ...(options.missing ? { missing: options.missing } : {}) }, host);
@@ -355,7 +365,7 @@ function acpPlanEntryOf(options: AcpPlanEntryOptions, host: AcpEntryHost = {}): 
     if (needs.model.provider !== id) throw new HarnessUnavailable(`${label} runs ${label}'s models, named ${prefix}<model-id>; the run's model is ${needs.model.provider}/${needs.model.modelId}.`);
     const log = host.log ?? harnessLog(id, env);
     try {
-      const recipe = await options.recipe({ model: needs.model.modelId, log, ...(needs.confine ? { confine: needs.confine } : {}), env });
+      const recipe = await ownKeysOnly(facts, await options.recipe({ model: needs.model.modelId, log, ...(needs.confine ? { confine: needs.confine } : {}), env }));
       // Its keys (recipe.keys) are read from the run's environment, which holds its own (ownKeys: run-secrets.ts keysFor).
       return acp.acpAdapter({ recipe, ...(options.beforeStart ? { beforeStart: options.beforeStart } : {}), ...(needs.confine ? { confine: needs.confine } : {}), env, log });
     } catch (error) {
