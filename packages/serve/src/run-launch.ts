@@ -247,7 +247,7 @@ export const learningStartOfStored = (stored: unknown): RunLaunch["learning"] =>
 /** Why a learning run starts with nothing learned, as main says it: its agent's learning folder could not be read
  *  (`unreadable`, STOPPED.unreadable), what was read could not be made into its start (`not_copied`,
  *  STOPPED.notCopied), or its launch names a disk of its own, whose learning folder the server does not read
- *  (`other_disk`, STOPPED.otherDisk): learning is per (agent, disk), so it is never started from another disk's. */
+ *  (`other_disk`, STOPPED.otherDisk): a run on a named disk learns nothing (learn/learning-of.ts). */
 export type SeedFailed = "unreadable" | "not_copied" | "other_disk";
 const SEED_FAILURES: readonly string[] = ["unreadable", "not_copied", "other_disk"];
 

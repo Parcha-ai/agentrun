@@ -1743,14 +1743,11 @@ class SqliteStore implements Store {
           : await db.get<ProposalRecord>(`SELECT ${PROPOSAL_COLUMNS} FROM learning_proposals WHERE run_id = ? AND round = ? AND ${NOT_PURGED}`, runId, round);
         return row ? proposalOf(row) : undefined;
       },
-      proposals: async (agentId, { limit = 100, disk } = {}) => {
-        const onDisk = disk === undefined ? "" : ` AND run_id IN (SELECT id FROM runs WHERE agent_id = ? AND ${disk === null ? "disk IS NULL" : "disk = ?"})`;
-        const diskParams: SqliteValue[] = disk === undefined ? [] : disk === null ? [agentId] : [agentId, disk];
-        return (await db.all<ProposalRecord>(
-          `SELECT ${PROPOSAL_COLUMNS} FROM learning_proposals WHERE agent_id = ? AND ${NOT_PURGED}${onDisk} ORDER BY created_at DESC, run_id DESC, round DESC LIMIT ?`,
-          agentId, ...diskParams, limit,
-        )).map(proposalOf);
-      },
+      proposals: async (agentId, { limit = 100 } = {}) =>
+        (await db.all<ProposalRecord>(
+          `SELECT ${PROPOSAL_COLUMNS} FROM learning_proposals WHERE agent_id = ? AND ${NOT_PURGED} ORDER BY created_at DESC, run_id DESC, round DESC LIMIT ?`,
+          agentId, limit,
+        )).map(proposalOf),
       kept: async (agentId) => {
         const proposals = (await db.all<ProposalRecord>(`SELECT ${PROPOSAL_COLUMNS} FROM learning_proposals WHERE agent_id = ? AND ${NOT_PURGED} ORDER BY run_id, round`, agentId)).map(proposalOf);
         const learningRuns = (await db.all<RunRecord>(`SELECT ${RUN_COLUMNS} FROM runs WHERE id IN (SELECT learning_run_id FROM learning_proposals WHERE agent_id = ? AND learning_run_id IS NOT NULL AND ${NOT_PURGED})`, agentId)).map(runOf);

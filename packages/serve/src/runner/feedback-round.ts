@@ -10,7 +10,6 @@
 // adapter loop takes it (adapter-loop.ts steer: a FEEDBACK entry, no turn), and the end-of-run step reads it
 // (learning-end.ts: heard, never "nothing new"; adapter-loop.ts askEndOfRun: feedbackAsk before the prompt).
 import { type Grade, markGradeRound, putGrade } from "../learn/promote.js";
-import type { LearningId } from "../learn/learning-of.js";
 import type { RunPath } from "../learning-cost.js";
 import { readLaunchBody, type RunLaunch } from "../run-launch.js";
 import { type Command, RunFinal, type RunRow, type Store } from "../store/store.js";
@@ -178,13 +177,12 @@ export async function openFeedbackRound(store: Pick<Store, "runs" | "agents">, g
   }
 }
 
-/** A grade's write (PUT /runs/{id}/grade): keeps `grade` in `learning`'s grades (the graded run's agent on its disk,
- *  learn/learning-of.ts) naming no round, opens its run again on the round it asks for (openFeedbackRound), and only then
- *  marks the kept grade with that round and its steer. The grade is kept first, so the round's end reads it; the round is
- *  named last, so a reopen that fails (thrown, or a run that can't be opened again) leaves a grade naming none, never one
- *  claiming a round that didn't open. The grade as kept. */
-export async function keepGrade(store: Pick<Store, "runs" | "agents" | "settings">, learning: LearningId, grade: Grade, label: string | undefined, canTurn?: (launch: RunLaunch) => boolean): Promise<Grade> {
-  const kept = await putGrade(store.settings, learning, { ...grade, feedback: null });
+/** A grade's write (PUT /runs/{id}/grade): keeps `grade` for agent `agentId` naming no round, opens its run again on the
+ *  round it asks for (openFeedbackRound), and only then marks the kept grade with that round and its steer. The grade is
+ *  kept first, so the round's end reads it; the round is named last, so a reopen that fails (thrown, or a run that can't
+ *  be opened again) leaves a grade naming none, never one claiming a round that didn't open. The grade as kept. */
+export async function keepGrade(store: Pick<Store, "runs" | "agents" | "settings">, agentId: string, grade: Grade, label: string | undefined, canTurn?: (launch: RunLaunch) => boolean): Promise<Grade> {
+  const kept = await putGrade(store.settings, agentId, { ...grade, feedback: null });
   const opened = await openFeedbackRound(store, kept, label, canTurn);
-  return opened ? markGradeRound(store.settings, learning, kept, opened) : kept;
+  return opened ? markGradeRound(store.settings, agentId, kept, opened) : kept;
 }

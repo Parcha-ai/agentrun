@@ -510,8 +510,8 @@ const noShown: Shown = { text: (text) => text, name: (name) => name, holds: () =
  *  "use"`, so it starts from what its agent learned, its revision's own learning aside, and keeps nothing. `noWorkflows`:
  *  a run never answered by a learned workflow nor asked to draft one (a native run's, an SDK run's with no workflow
  *  binding). `model`: an SDK run's compile model. `disk`: the disk the run's launch names as its own (learn/learning-of.ts
- *  learningDiskOf), null for the default disk: learning is per (agent, disk), and the folder seedFor reads is the default
- *  disk's, so a run on a named disk is never started from it (seedFailed `other_disk`: it starts with nothing learned). */
+ *  learningDiskOf), null for the default disk: a run on a named disk learns nothing, so it is never started from the
+ *  folder seedFor reads (seedFailed `other_disk`: it starts with nothing learned). */
 export async function learningStartFor(deps: StartDeps, entry: AgentEntry, revision: Revision, rbody: StartBody, { use = false, noWorkflows = false, model, disk }: { use?: boolean; noWorkflows?: boolean; model?: string; disk: string | null }): Promise<NonNullable<RunLaunch["learning"]> | undefined> {
   // A run started with `learning: "use"` starts from what its agent learned whatever its revision says, and keeps
   // nothing; the server's learning off still gives it nothing.

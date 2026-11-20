@@ -239,7 +239,7 @@ export interface RunRow {
   readonly labels: RunLabels;
   /** The disk the run's launch named as its own (a customer's Archil disk: the launch body's `archil_disk` of kind "launch"),
    *  by its id, written once with the queued run; null for a run on the default disk (its launch named none, or its agent's
-   *  own). Learning is per (agent, disk): everything learning reads of an agent's runs reads only the runs on its disk. */
+   *  own). A run on a named disk learns nothing, so learning reads only runs with none (learn/learning-of.ts). */
   readonly disk: string | null;
   readonly startedAt: number;
   readonly endedAt: number | null;
@@ -386,9 +386,8 @@ export interface LearningProposal {
 export interface Learning {
   /** The run's kept proposal of round `round`, else its newest round's; undefined when its end kept none. */
   proposal(runId: string, round?: number): Promise<LearningProposal | undefined>;
-  /** The agent's kept proposals (each round of a run one), newest first. `disk`: only those of its runs on that disk
-   *  (RunRow.disk), null for the default disk's; not given, every disk's. */
-  proposals(agentId: string, options?: { limit?: number; disk?: string | null }): Promise<LearningProposal[]>;
+  /** The agent's kept proposals (each round of a run one), newest first. */
+  proposals(agentId: string, options?: { limit?: number }): Promise<LearningProposal[]>;
   /** Everything agent `agentId`'s runs' learning kept, in two reads whatever the number of its runs: every round of every
    *  run's kept proposal (oldest round first within a run), and the rows of the learning runs they name (as runs.get
    *  reads one; a learning run named and never written has none). An agent-wide read's, never a read a run. */
@@ -923,7 +922,7 @@ export interface Runs {
   archive(runId: string, archived: boolean): Promise<void>;
   /** Every run of agent `agentId` with its state, oldest first, its built-in learning runs and purged runs included
    *  (which list leaves out): what deleting the agent stops and removes, with the runner that holds each (null: none),
-   *  its purge time and its disk (RunRow.disk: the disks the agent learned on, learn/learning-of.ts learningsOf). */
+   *  its purge time and its disk (RunRow.disk: where a learning folder of the agent may be, learn/learning-of.ts namedDisksOf). */
   every(agentId: string): Promise<{ id: string; state: RunState; runner: string | null; purgedAt: number | null; disk: string | null }[]>;
   /** The runs made from run `runId` that hold what it was given or did, by id: each run whose launch replays its input
    *  (the launch body's `replay.of`) or audits it (`audit.of`: its audit's shadow run), and each learning run its kept

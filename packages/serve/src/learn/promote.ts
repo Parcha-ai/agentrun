@@ -14,7 +14,6 @@ import { answerJson } from "../answer-json.js";
 import { pathSegments } from "../learning-setting.js";
 import { isObject } from "../validate.js";
 import type { Skipped } from "./replay-calls.js";
-import type { LearningId } from "./learning-of.js";
 import type { ReplayOutcome } from "../runner/workflow-first.js";
 
 /** How many grades, and how many promotion records, an agent keeps (newest kept). */
@@ -225,10 +224,8 @@ export function skippedToolsOf(rows: readonly { readonly outcome: ReplayOutcome;
     .sort((a, b) => b.inputs - a.inputs || (a.tool < b.tool ? -1 : a.tool > b.tool ? 1 : 0));
 }
 
-/** The records' keys, per (agent, disk) (learn/learning-of.ts LearningId): a disk's grades and promotions are its own, so
- *  a workflow promoted on one disk never serves a run on another. */
-export const gradesKey = (learning: LearningId): string => `learning.grades.${learning}`;
-export const promotionsKey = (learning: LearningId): string => `learning.promotions.${learning}`;
+export const gradesKey = (agentId: string): string => `learning.grades.${agentId}`;
+export const promotionsKey = (agentId: string): string => `learning.promotions.${agentId}`;
 
 type Kept<T> = { readonly v: 1; readonly items: readonly T[] };
 const itemsOf = <T>(value: unknown): T[] => (value && typeof value === "object" && Array.isArray((value as { items?: unknown }).items) ? [...((value as Kept<T>).items)] : []);
@@ -252,31 +249,29 @@ async function updateKept<T>(settings: Pick<Settings, "get" | "putIfAbsent" | "r
 /** A learned workflow revision an agent's learning reset deleted (DELETE /agents/{id}/learning, learning-reset.ts): its
  *  workflow, its digest and its K (its check's compile_after; null when its records named none), nothing else of its
  *  records. What the runs it served carry of its compile and check (store-reads/learning.ts revisionLedgerOf) is read
- *  from it after the reset, so a kept run's cost reads as before. The runs keep the same names and digests. Kept per
- *  (agent, disk), as the promotion records it is copied from are: a run's cost reads its own disk's. */
+ *  from it after the reset, so a kept run's cost reads as before. The runs keep the same names and digests. */
 export interface ResetRevision { readonly workflow: string; readonly digest: string; readonly k: number | null }
-export const resetLedgerKey = (learning: LearningId): string => `learning.reset-ledger.${learning}`;
+export const resetLedgerKey = (agentId: string): string => `learning.reset-ledger.${agentId}`;
 
-/** The revisions the resets of `learning` (an agent's on one disk) deleted, first reset first. */
-export const resetLedgerOf = async (settings: Pick<Settings, "get">, learning: LearningId): Promise<ResetRevision[]> => itemsOf<ResetRevision>(await settings.get(resetLedgerKey(learning)));
+/** The revisions the agent's resets deleted, first reset first. */
+export const resetLedgerOf = async (settings: Pick<Settings, "get">, agentId: string): Promise<ResetRevision[]> => itemsOf<ResetRevision>(await settings.get(resetLedgerKey(agentId)));
 
-/** Each revision `records` name (one per workflow and digest, its newest record's K) added to `learning`'s reset ledger,
+/** Each revision `records` name (one per workflow and digest, its newest record's K) added to the agent's reset ledger,
  *  before a reset deletes the records. A revision it holds already keeps its place and takes the records' K: while they
  *  stood, the ledger read their K (revisionLedgerOf), so the runs' shares read the same after this reset too. */
-export async function keepResetLedger(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, learning: LearningId, records: readonly PromotionRecord[]): Promise<void> {
+export async function keepResetLedger(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, records: readonly PromotionRecord[]): Promise<void> {
   const newest = new Map<string, ResetRevision>();
   for (const record of records) newest.set(`${record.workflow}\0${record.digest}`, { workflow: record.workflow, digest: record.digest, k: record.check?.compile_after ?? null });
   if (!newest.size) return;
-  await updateKept<ResetRevision>(settings, resetLedgerKey(learning), (items) => {
+  await updateKept<ResetRevision>(settings, resetLedgerKey(agentId), (items) => {
     const held = new Set(items.map((one) => `${one.workflow}\0${one.digest}`));
     return [...items.map((one) => newest.get(`${one.workflow}\0${one.digest}`) ?? one), ...[...newest].filter(([key]) => !held.has(key)).map(([, one]) => one)];
   });
 }
 
-/** The agent's reset watermark: when its newest reset began (epoch ms), one setting for the agent whatever disk its runs
- *  use, as the store holds every disk's runs. Learning reads only the runs after it (learn/compile.ts sinceReset): a
- *  run that started, or read its learning seed, at or before it learns nothing and is read by no compile, check, audit
- *  or money rule. Kept with the reset ledger, and removed with it by the agent's delete (learn/delete.ts). */
+/** The agent's reset watermark: when its newest reset began (epoch ms). Learning reads only the runs after it
+ *  (learn/compile.ts sinceReset): a run that started, or read its learning seed, at or before it learns nothing and is
+ *  read by no compile, check, audit or money rule. Kept with the reset ledger, and removed with it by the agent's delete (learn/delete.ts). */
 export const resetAtKey = (agentId: string): string => `learning.reset-at.${agentId}`;
 
 /** The agent's reset watermark (resetAtKey), or undefined when its learning was never reset. */
@@ -289,24 +284,23 @@ export const resetAtOf = async (settings: Pick<Settings, "get">, agentId: string
 /** Agent `agentId`'s reset watermark set to `at`, in place of an earlier reset's. */
 export const keepResetAt = (settings: Pick<Settings, "put">, agentId: string, at: number): Promise<void> => settings.put(resetAtKey(agentId), { at });
 
-/** The grades of `learning` (an agent's on one disk), oldest first. */
-export const gradesOf = async (settings: Pick<Settings, "get">, learning: LearningId): Promise<Grade[]> => itemsOf<Grade>(await settings.get(gradesKey(learning)));
+/** The agent's grades, oldest first. */
+export const gradesOf = async (settings: Pick<Settings, "get">, agentId: string): Promise<Grade[]> => itemsOf<Grade>(await settings.get(gradesKey(agentId)));
 
 /** Keeps `grade`, in place of any earlier grade of the same run, the newest GRADES_KEPT kept, at the next `seq`. */
-export const putGrade = async (settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, learning: LearningId, grade: Grade): Promise<Grade> => {
+export const putGrade = async (settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, grade: Grade): Promise<Grade> => {
   let kept = grade;
-  await updateKept<Grade>(settings, gradesKey(learning), (items) => {
+  await updateKept<Grade>(settings, gradesKey(agentId), (items) => {
     kept = { ...grade, seq: Math.max(0, ...items.map((one) => one.seq ?? 0)) + 1 };
     return [...items.filter((one) => one.run !== grade.run), kept].slice(-GRADES_KEPT);
   });
   return kept;
 };
 
-/** Every kept grade of run `runId` in `learning` dropped (the run's delete, agent-delete.ts); no write when it keeps no
- *  grade of the run. */
-export const dropGrades = async (settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, learning: LearningId, runId: string): Promise<void> => {
-  if (!(await gradesOf(settings, learning)).some((one) => one.run === runId)) return;
-  await updateKept<Grade>(settings, gradesKey(learning), (items) => items.filter((one) => one.run !== runId));
+/** Every kept grade of run `runId` dropped (the run's delete, agent-delete.ts); no write when the agent keeps no grades. */
+export const dropGrades = async (settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, runId: string): Promise<void> => {
+  if (!(await gradesOf(settings, agentId)).some((one) => one.run === runId)) return;
+  await updateKept<Grade>(settings, gradesKey(agentId), (items) => items.filter((one) => one.run !== runId));
 };
 
 /** A check's disagreement with what it copied from its run blanked: its run id and which way the draft went (an answer,
@@ -339,22 +333,22 @@ function forgetRunIn(record: PromotionRecord, runId: string): PromotionRecord {
   };
 }
 
-/** What `learning` copied from run `runId`, gone (the run's purge, agent-delete.ts): its kept grades dropped
- *  (dropGrades), and its promotion records' disagreements naming it blanked (forgetRunIn), each record's decision,
+/** What agent `agentId`'s learning copied from run `runId`, gone (the run's purge, agent-delete.ts): its kept grades
+ *  dropped (dropGrades), and its promotion records' disagreements naming it blanked (forgetRunIn), each record's decision,
  *  numbers and run ids kept. No write when nothing names it. */
-export const forgetRunCopies = async (settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, learning: LearningId, runId: string): Promise<void> => {
-  await dropGrades(settings, learning, runId);
-  const records = itemsOf<PromotionRecord>(await settings.get(promotionsKey(learning)));
+export const forgetRunCopies = async (settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, runId: string): Promise<void> => {
+  await dropGrades(settings, agentId, runId);
+  const records = itemsOf<PromotionRecord>(await settings.get(promotionsKey(agentId)));
   if (records.every((one) => forgetRunIn(one, runId) === one)) return;
-  await updateKept<PromotionRecord>(settings, promotionsKey(learning), (items) => items.map((one) => forgetRunIn(one, runId)));
+  await updateKept<PromotionRecord>(settings, promotionsKey(agentId), (items) => items.map((one) => forgetRunIn(one, runId)));
 };
 
 /** Marks the kept grade `grade` (its run, given at its `at`, kept at its `seq`) with the feedback round it opened and
  *  that round's steer, in place: its `seq` stays. A newer grade of the run is left as it is, one given in the same
  *  millisecond too (its `seq` is another). The grade, marked. */
-export const markGradeRound = async (settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, learning: LearningId, grade: Grade, opened: OpenedRound): Promise<Grade> => {
+export const markGradeRound = async (settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, grade: Grade, opened: OpenedRound): Promise<Grade> => {
   const mark = { feedback: opened.round, feedbackCommand: opened.command };
-  await updateKept<Grade>(settings, gradesKey(learning), (items) => items.map((one) => (one.run === grade.run && one.at === grade.at && one.seq === grade.seq ? { ...one, ...mark } : one)));
+  await updateKept<Grade>(settings, gradesKey(agentId), (items) => items.map((one) => (one.run === grade.run && one.at === grade.at && one.seq === grade.seq ? { ...one, ...mark } : one)));
   return { ...grade, ...mark };
 };
 
@@ -364,10 +358,9 @@ const DECIDED: readonly string[] = ["promote", "hold", "replaying"] satisfies re
  *  checked again). */
 const writtenOf = (items: readonly PromotionRecord[]): PromotionRecord[] => items.filter((one) => DECIDED.includes(one?.decided));
 
-/** The promotion records of `learning` (an agent's on one disk), oldest first: only those in a state this code writes
- *  (writtenOf). */
-export const promotionsOf = async (settings: Pick<Settings, "get">, learning: LearningId): Promise<PromotionRecord[]> =>
-  writtenOf(itemsOf<PromotionRecord>(await settings.get(promotionsKey(learning))));
+/** The agent's promotion records, oldest first: only those in a state this code writes (writtenOf). */
+export const promotionsOf = async (settings: Pick<Settings, "get">, agentId: string): Promise<PromotionRecord[]> =>
+  writtenOf(itemsOf<PromotionRecord>(await settings.get(promotionsKey(agentId))));
 
 /** The newest record of `workflow` at `digest`, or undefined. */
 export const promotionOf = (records: readonly PromotionRecord[], workflow: string, digest: string): PromotionRecord | undefined =>
@@ -472,9 +465,9 @@ export type Recorded = { readonly record: PromotionRecord | undefined; readonly 
 /** Keeps `record` as the newest of its workflow at its digest, when `still` holds of the one there now (none: undefined)
  *  and of every record kept (`items`: a check across revisions, one at a time, in the same guarded write): so of two
  *  claims deciding at once only the first decision is kept, and only its claim acts on it (Recorded.won). */
-export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, learning: LearningId, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean): Promise<Recorded> {
+export async function recordPromotion(settings: Pick<Settings, "get" | "putIfAbsent" | "replaceIf">, agentId: string, record: PromotionRecord, still: (now: PromotionRecord | undefined, items: readonly PromotionRecord[]) => boolean): Promise<Recorded> {
   let out: Recorded = { record, won: true };
-  await updateKept<PromotionRecord>(settings, promotionsKey(learning), (saved) => {
+  await updateKept<PromotionRecord>(settings, promotionsKey(agentId), (saved) => {
     const items = writtenOf(saved);
     const now = promotionOf(items, record.workflow, record.digest);
     if (!still(now, items)) {

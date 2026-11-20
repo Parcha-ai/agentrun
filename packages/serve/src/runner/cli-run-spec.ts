@@ -38,7 +38,6 @@ import { learningEndOfRun, spentBesideOf } from "./learning-end.js";
 import { type ModelRef, type PinnedModel, providerModels, runModels, type Tier } from "../model.js";
 import { firstMessage, inputMessage, messageText } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
-import { learningDiskOf } from "../learn/learning-of.js";
 import { readsFiles, systemOf } from "../skills.js";
 import { DATA_ENV } from "../server-fs.js";
 import { placeRunInputs } from "../uploads.js";
@@ -617,7 +616,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   // Model spend beside the run that its caller's key does not pay for (claimSpendOff): a shadow audit and a replay check
   // are skipped, in words, where the run brought its own key or the server holds none.
   const spendOff = await claimSpendOff({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, runKey);
-  const audits = { store: deps.store, agentId: runRow.agentId, disk: learningDiskOf(launch), revisionId: runRow.revisionId, context, log, folder: learningFolder, shown, sealKey: deps.sealKey, spendOff };
+  const audits = { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, folder: learningFolder, shown, sealKey: deps.sealKey, spendOff };
   // A replay run's or a shadow's grader (runner/compare-end.ts), on a proxy of its own beside the CLI session's, as pi's
   // is (adapter-run-spec.ts graderRouteOf), reached through the session's port while it is up. None: compared whole.
   const graderRoute = launch.replay || launch.audit ? await graderRouteOf(body as { learning?: unknown }, keyed, runKey, claimed, cut, log, deps, [held, cut]) : undefined;

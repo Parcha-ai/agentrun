@@ -2,9 +2,8 @@
 // server owns the reservation (runner/promotion.ts reserveSdkCheck) and compares that result with the native answer
 // through the shared promotion gate.
 import type { Shown } from "../learning.js";
-import { decideCheck, learningOfDeps, releaseSdkCheck, sdkCheckDeadline, sdkInputText } from "../runner/promotion.js";
+import { decideCheck, releaseSdkCheck, sdkCheckDeadline, sdkInputText } from "../runner/promotion.js";
 import { promotionOf, promotionsOf } from "../learn/promote.js";
-import { learningIdOf } from "../learn/learning-of.js";
 import type { RunLaunch } from "../run-launch.js";
 import type { Store } from "../store/store.js";
 import type { SdkInbox } from "./runs.js";
@@ -45,7 +44,7 @@ export async function settleSdkCheck(deps: { store: Store; agentId: string; laun
   const { inbox } = deps;
   const check = inbox.learning_check;
   if (!check) return;
-  const record = promotionOf(await promotionsOf(deps.store.settings, learningIdOf(learningOfDeps(deps))), check.workflow.name, check.digest);
+  const record = promotionOf(await promotionsOf(deps.store.settings, deps.agentId), check.workflow.name, check.digest);
   if (record?.decided !== "replaying" || record.via !== "sdk" || record.replay_id !== check.id || !record.check || record.commit !== check.revision || record.runs?.[0] !== inbox.run_id) return;
   const completion = inbox.completion;
   if (!completion) {

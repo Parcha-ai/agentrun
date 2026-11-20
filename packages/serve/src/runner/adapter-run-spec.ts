@@ -28,7 +28,6 @@ import { liveForRun, type RunnerLive, runnerLiveOf } from "../live-reach.js";
 import { llmTiers, nodeTiers, type PinnedModel, type Tier, thinkingLevel, TIERS, tierModelOf, workflowNodes } from "../model.js";
 import { firstMessage, inputMessage, messageText } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
-import { learningDiskOf } from "../learn/learning-of.js";
 import type { Store } from "../store/store.js";
 import { isWebHostTool } from "../tool-list.js";
 import { ASKED_BECAUSE } from "../refusal-words.js";
@@ -736,7 +735,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // Model spend beside the run that its caller's key does not pay for (claimSpendOff): a shadow audit and a replay check
   // are skipped, in words, where the run brought its own key or the server holds none.
   const spendOff = await claimSpendOff({ store: deps.store, sealKey: deps.sealKey, env: deps.env }, runKey);
-  const audits = { store: deps.store, agentId: runRow.agentId, disk: learningDiskOf(launch), revisionId: runRow.revisionId, context, log, folder: learningFolder, shown, sealKey: deps.sealKey, spendOff };
+  const audits = { store: deps.store, agentId: runRow.agentId, revisionId: runRow.revisionId, context, log, folder: learningFolder, shown, sealKey: deps.sealKey, spendOff };
   // Each step writes the store or reads another run (runner/learned-first.ts): in a run's own process its runner takes
   // them (held.ts learnedFirst), over the workflows it reads at the claim's seed itself.
   const learned = await learnedFirstWhereHeld(deps, { agentId: runRow.agentId, runId: claim.runId, revisionId: runRow.revisionId, kind: revision.kind, outputSchema: (revision.body as { outputSchema?: unknown }).outputSchema, launch, context, log, folder: learningFolder, shown, spendOff }, seedLaid?.workflows ?? []);

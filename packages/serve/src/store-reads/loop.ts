@@ -5,7 +5,6 @@
 import { FINAL_STATES, type Store } from "../store/store.js";
 import { promotionOf, promotionsOf } from "../learn/promote.js";
 import { lastOwnRuns, promotedOf, sinceReset } from "../learn/compile.js";
-import { defaultLearningOf, learningIdOf } from "../learn/learning-of.js";
 import { loopOf } from "../learning-setting.js";
 import { roundsOf } from "./learning.js";
 
@@ -30,17 +29,16 @@ const texts = (list: unknown): string[] => (Array.isArray(list) ? list.filter((o
  *  (not imported, not archived) since its learning's reset (sinceReset: a compile before it wrote what the reset
  *  deleted), and how many completed runs of its own count toward its compile. A compile's `promoted` is its revision's
  *  promotion as the records say now (null while undecided): whether it serves now is the promotions read's `serving`.
- *  The agent's learning on the default disk, the one the server reads (learn/learning-of.ts): its runs there alone. */
+ *  Runs on no named disk alone: one on a named disk learns nothing (learn/learning-of.ts). */
 export async function agentLoopOverStore(store: Store, agentId: string): Promise<{ compiles: LoopCompile[]; completed_runs: number }> {
-  const learning = defaultLearningOf(agentId);
   const since = await sinceReset(store, agentId);
-  const ended = (await store.runs.list(learning)).filter((run) => run.agentId === agentId && FINAL_STATES.includes(run.state) && !run.importedFrom && run.archivedAt === null && since(run)).sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
+  const ended = (await store.runs.list({ agentId, disk: null })).filter((run) => run.agentId === agentId && FINAL_STATES.includes(run.state) && !run.importedFrom && run.archivedAt === null && since(run)).sort((a, b) => a.startedAt - b.startedAt || (a.id < b.id ? -1 : 1));
   // The completed runs of the agent's own toward its compile (what compileDue counts), at most compile_after: the tab
   // says "N of compile_after" from this, never from the one page of runs it reads.
   const current = (await store.agents.get(agentId))?.currentRevision;
   const body = current ? (await store.agents.revision(current))?.body as { learning?: unknown } | undefined : undefined;
-  const completed_runs = (await lastOwnRuns(store, learning, loopOf(body?.learning).compile_after)).length;
-  const promotions = await promotionsOf(store.settings, learningIdOf(learning)).catch(() => []);
+  const completed_runs = (await lastOwnRuns(store, agentId, loopOf(body?.learning).compile_after)).length;
+  const promotions = await promotionsOf(store.settings, agentId).catch(() => []);
   const compiles: (LoopCompile & { createdAt: number })[] = [];
   for (const run of ended) {
     for (const kept of await roundsOf(store, run.id).catch(() => [])) {

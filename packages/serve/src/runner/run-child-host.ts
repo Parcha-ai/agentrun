@@ -41,7 +41,6 @@ import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { runZone } from "../environment.js";
 import { shadowRunId } from "../learn/audit.js";
 import { LEARNING_SCRIPT, learningWorkspace } from "../learn/folder.js";
-import { learningDiskOf } from "../learn/learning-of.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { archilClaim, MOUNT_TTL_MS } from "../workspace/archil-claim.js";
 import { agentDirName, recordingsFolder, runFolder, scratchFolder } from "../workspace/paths.js";
@@ -857,7 +856,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         log,
         decisionProviders: async () => decisionProvidersIn({ ...(deps.env ?? {}), ...(await hostDecisionKeys(keys, DECISION_PROVIDER_KEYS)) }),
         learningFolder: made === undefined ? (agentId: string) => learningFolderOf(deps.data, agentId) : (agentId: string) => learningWorkspace({ mode: "archil", agentId, archil: made }),
-      }), { store, agentId: run.agentId, disk: learningDiskOf(launch), revisionId: run.revisionId, context: BACKGROUND_CONTEXT, folder: await folderNow(), shown, log, sealKey, spendOff, launch, redact: cut });
+      }), { store, agentId: run.agentId, revisionId: run.revisionId, context: BACKGROUND_CONTEXT, folder: await folderNow(), shown, log, sealKey, spendOff, launch, redact: cut });
       if (!step) return undefined;
       // keptOf is the run's process's, asked over the channel: read once, for the round learningEndOfRun reads (the
       // round after the newest the run kept), before the step reads it at once.

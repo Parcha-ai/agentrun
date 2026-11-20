@@ -1,11 +1,11 @@
 // DELETE /v2/agents/{agent_id}/learning: an agent's learning reset, the agent kept. What it learned goes (the learning
 // module's deleteLearning: its learning folder's files, its git history and audit ledger among them, on this server and
-// on every Archil disk its runs used, then its promotions and grades on every disk, learn/learning-of.ts learningsOf);
-// the agent, its definition, its runs and everything kept of them (their files, journals, costs, the learning each one
-// kept) stay, so the run list, the stats and the usage read the same before and after. A served run's cost carries its
-// share of its revision's compile and check, read from the promotion records the reset deletes: each revision they name
-// is kept first in the reset ledger of its disk's learning (learn/promote.ts keepResetLedger: workflow, digest and K
-// alone, per (agent, disk) as the records are), so the share reads the same after.
+// on every Archil disk its runs used, learn/learning-of.ts namedDisksOf, then its promotions and grades); the agent, its
+// definition, its runs and everything kept of them (their files, journals, costs, the learning each one kept) stay, so
+// the run list, the stats and the usage read the same before and after. A served run's cost carries its share of its
+// revision's compile and check, read from the promotion records the reset deletes: each revision they name is kept
+// first in the agent's reset ledger (learn/promote.ts keepResetLedger: workflow, digest and K alone), so the share reads
+// the same after.
 //
 // What goes with the folder: each run's learning diff (GET /runs/{id}/learning/diff, the text it merged) is the folder's,
 // so it is 404 after; what the run's own record keeps of its learning end stays with the run.
@@ -25,7 +25,7 @@
 //
 // Step 2 sets the agent's reset watermark (learn/promote.ts resetAtKey) before it deletes: from then on learning reads
 // only runs after it (learn/compile.ts sinceReset: compile_after's count, a compile's traces, a check's inputs, an
-// audit's draws, the money rule), whatever disk they ran on. A run whose start read the learning folder before step 2
+// audit's draws, the money rule). A run whose start read the learning folder before step 2
 // and whose row the store wrote after it keeps what it was started with (its corrections are in its launch), but
 // learns nothing: its seed was read before the watermark, so its learning end drops it whole at its entry
 // (runner/learning-end.ts, reason `reset`), and the learning script refuses a merge on a seed the folder no longer holds
@@ -35,7 +35,6 @@ import type { DeleteLearning } from "./agent-delete.js";
 import { LearningInFlight } from "./learn/delete.js";
 import { isShadowRun } from "./learn/audit.js";
 import { keepResetAt, keepResetLedger, promotionsOf, resetAtKey, resetAtOf } from "./learn/promote.js";
-import { learningIdOf, learningsOf } from "./learn/learning-of.js";
 import { readLaunchBody } from "./run-launch.js";
 import { FINAL_STATES, type RunState, type Store, StoreLaunchMissing } from "./store/index.js";
 
@@ -88,9 +87,8 @@ export async function resetLearning(host: LearningResetHost, agentId: string): P
   await host.inQueue(agentId, async () => {
     const still = await goingOf(host.store, agentId);
     if (still.length) throw busy(agentId, still.map((run) => run.id), still.some((run) => !run.learning) ? OWN(still.filter((run) => !run.learning).length) : "its learning work started again");
-    // What the agent's kept runs carry of their revisions' compile and check, kept before the records it is read from go:
-    // on every disk it learned on (learn/learning-of.ts learningsOf), each disk's in its own ledger, as its records are.
-    for (const learning of (await learningsOf(host.store, agentId)).map(learningIdOf)) await keepResetLedger(host.store.settings, learning, await promotionsOf(host.store.settings, learning));
+    // What the agent's kept runs carry of their revisions' compile and check, kept before the records it is read from go.
+    await keepResetLedger(host.store.settings, agentId, await promotionsOf(host.store.settings, agentId));
     // The watermark, before anything goes: learning reads no run that started, or read its seed, at or before it (each
     // seed is read in this queue, so one read before this moment holds an earlier time). Set first, so no moment has the
     // folder gone and the old runs still read; a delete that fails puts the earlier one back, its learning left as it was.

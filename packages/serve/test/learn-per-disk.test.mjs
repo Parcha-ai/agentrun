@@ -1,17 +1,15 @@
-// Learning is per (agent, disk). A run whose launch names a disk of its own (a customer's: run-launch.ts archilDisk, kind
-// "launch") keeps its learning folder on that disk, and everything learning reads of the agent's runs reads only the runs
-// on the disk of the folder it writes: compile's traces and its due count, a check's replay inputs, an audit's draw, the
-// promotions and grades kept for it. A run with no named disk (none, or its agent's own) is the default disk's. So one
-// customer's traces never reach another customer's learned workflow, and a workflow promoted on one disk never serves a
-// run on another.
+// A run's disk, for learning. A run whose launch names a disk of its own (a customer's: run-launch.ts archilDisk, kind
+// "launch") keeps that disk on its row (runs.disk) and learns nothing: it starts with no seed, no # Learned section and no
+// learned workflow, and every learning read of the agent's runs reads only runs on no named disk (compile's traces and
+// its due count, a check's inputs, the money rule's past runs, an audit's served runs, the cost page's ledger). A run
+// with no named disk (none, or its agent's own) is the default disk's, where the agent learns. So a customer's traces
+// never reach the agent's learned workflows. The disks a run named are where the reset and the delete remove a folder.
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { openSqliteStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { closeOpenSessions, piAdapterSpec } from "./conformance-pi-adapter.mjs";
@@ -19,20 +17,14 @@ import { storeOn } from "./store-helpers.mjs";
 
 const { createAdapterLoop } = await import("../dist/runner/adapter-loop.js");
 const { learningEndOfRun } = await import("../dist/runner/learning-end.js");
-const { seedOf, secretsShown } = await import("../dist/learning.js");
+const { seedOf } = await import("../dist/learning.js");
 const { learningWorkspace } = await import("../dist/workspace/index.js");
 const { launchBody, launchOnItsDisk, readLaunchBody } = await import("../dist/run-launch.js");
 const { createDispatchLoop } = await import("../dist/runner/dispatch.js");
 const { agentCostOverStore, runAllInOverStore } = await import("../dist/store-reads/learning.js");
-const { promotionGate } = await import("../dist/runner/promotion.js");
-const { forgetRunCopies, gradesKey, gradesOf, promotionsKey, promotionsOf, putGrade, recordPromotion } = await import("../dist/learn/promote.js");
-const { deleteLearning } = await import("../dist/learn/delete.js");
-const { learningFolderOf } = await import("../dist/learning.js");
-const { purgeRun } = await import("../dist/agent-delete.js");
 const { SCHEMA_VERSION } = await import("../dist/store/index.js");
-const { learningIdOf } = await import("../dist/learn/learning-of.js");
-const { workflowDigest } = await import("../dist/runner/workflow-first.js");
-const { notAuditableOf, startAudit } = await import("../dist/runner/audit.js");
+const { namedDisksOf } = await import("../dist/learn/learning-of.js");
+const { notAuditableOf } = await import("../dist/runner/audit.js");
 const { lastOwnRuns } = await import("../dist/learn/compile.js");
 const { pastRunsOverStore } = await import("../dist/store-reads/learning.js");
 
@@ -130,75 +122,44 @@ test("a store as the run purge left it (version 14, no runs.disk) comes to 15 at
   await (await openSqliteStore({ dataDir: dir, role: "runner" })).close();
 });
 
-test("a purged run's tombstone keeps its disk: deleting the agent's learning still clears that disk's promotions and grades", async (t) => {
+test("a purged run's tombstone keeps its disk: the disks the reset and the delete remove the agent's folder on still name it", async (t) => {
   const dir = scratch("agentrun-per-disk-purged-");
   const store = await openSqliteStore({ dataDir: dir, role: "server" });
   t.after(async () => { await store.close(); rmSync(dir, { recursive: true, force: true }); });
   await store.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
   await purgedRun(store, "purged-b", launchDisk("disk-b"));
+  await purgedRun(store, "purged-own", { archilDisk: { diskId: "agent-disk", kind: "agent" } });
+  await store.runs.create({ id: "on-none", agentId: "agent-1", revisionId: "rev-1" }, { body: launchBody(BASE) });
   assert.equal((await store.runs.get("purged-b")).disk, "disk-b", "its tombstone keeps its disk");
-  const onB = learningIdOf({ agentId: "agent-1", disk: "disk-b" });
-  await store.settings.put(promotionsKey(onB), { v: 1, items: [{ workflow: "answer", digest: "b".repeat(16), at: new Date().toISOString(), decided: "promote", reason: "checked" }] });
-  await store.settings.put(gradesKey(onB), { v: 1, items: [{ run: "purged-b", correct: true, source: "feedback", at: new Date().toISOString(), path: "agent" }] });
-  assert.deepEqual(await deleteLearning(store, "agent-1", learningFolderOf(dir, "agent-1")), { files: 0, records: 2 });
-  assert.deepEqual([await store.settings.get(promotionsKey(onB)), await store.settings.get(gradesKey(onB))], [undefined, undefined], "disk B's records are gone with the agent's learning");
+  assert.deepEqual(await namedDisksOf(store, "agent-1"), ["disk-b"], "a named disk alone: the agent's own disk and none are the default");
 });
 
-test("the reset's watermark and the run's disk are two filters, both taken: on disk B only B's runs after the reset are read (compile_after's count and a check's inputs, the money rule's past runs, the audit's served runs); the default disk's after it are its own", async (t) => {
-  const dir = scratch("agentrun-per-disk-watermark-");
-  const store = await openSqliteStore({ dataDir: dir, role: "server" });
-  t.after(async () => { await store.close(); rmSync(dir, { recursive: true, force: true }); });
+test("learning reads only runs on no named disk since the reset: compile_after's count and a check's inputs, the money rule's past runs and the audit's served runs", async (t) => {
+  const clock = { now: Date.parse("2026-11-20T06:00:00Z") };
+  const { store } = await storeOn(t, { clock });
   await store.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer." } });
   const ended = async (id, disk, metrics = { path: "agent" }) => {
+    clock.now += 1_000;
     await store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: launchBody({ ...BASE, ...launchDisk(disk) }) });
     const claim = await store.claim(id, "runner-a", { leaseMs: 60_000 });
     await store.runs.update(claim, { state: "ended", costUsd: 0.1, metrics });
   };
   const DIGEST = "d".repeat(16);
   const served = { path: "workflow", workflow: "answer", workflow_digest: DIGEST, not_auditable: true };
-  await ended("pre-b", "disk-b");
-  await ended("pre-b-served", "disk-b", served);
   await ended("pre-default", null);
-  // The agent's reset watermark (learn/promote.ts resetAtKey), set as the reset sets it, the clock moved past it.
-  const at = Date.now();
+  await ended("pre-served", null, served);
+  // The agent's reset watermark (learn/promote.ts resetAtKey) at the newest run before it: that run and every older one
+  // is before the reset.
+  const at = (await store.runs.get("pre-served")).startedAt;
   await store.settings.put("learning.reset-at.agent-1", { at });
-  while (Date.now() <= at) await new Promise((resolve) => setTimeout(resolve, 2));
   await ended("post-b", "disk-b");
   await ended("post-b-served", "disk-b", served);
   await ended("post-default", null);
-  const onB = { agentId: "agent-1", disk: "disk-b" };
-  assert.deepEqual((await lastOwnRuns(store, onB, 10)).map((row) => row.id), ["post-b"], "compile_after's count and a check's inputs");
-  assert.deepEqual((await lastOwnRuns(store, { agentId: "agent-1", disk: null }, 10)).map((row) => row.id), ["post-default"]);
-  const past = await pastRunsOverStore(store, onB);
-  assert.deepEqual([past.length, past.every((run) => run.startedAt > at)], [2, true], "the money rule's past runs: post-b and post-b-served");
-  assert.equal(await notAuditableOf(store, onB, "answer", DIGEST, { stop_window: 10 }), 1, "the audit's served runs: post-b-served alone");
-});
-
-test("purging a run on a named disk forgets what that disk's learning copied from it: its grade there dropped, the default disk's records untouched", async (t) => {
-  const dir = scratch("agentrun-per-disk-forget-");
-  const store = await openSqliteStore({ dataDir: dir, role: "server" });
-  t.after(async () => { await store.close(); rmSync(dir, { recursive: true, force: true }); });
-  const at = new Date().toISOString();
-  const grade = (run) => ({ run, correct: true, source: "feedback", at, path: "agent" });
-  const onB = learningIdOf({ agentId: "agent-1", disk: "disk-b" });
-  const onDefault = learningIdOf({ agentId: "agent-1", disk: null });
-  await putGrade(store.settings, onB, grade("run-b"));
-  await putGrade(store.settings, onB, grade("run-b2"));
-  await putGrade(store.settings, onDefault, grade("run-d"));
-  // The purge's host as the server wires it (server.ts forgetCopies), over a run on disk B.
-  const host = {
-    store: { runs: { get: async (id) => (id === "run-b" ? { id, agentId: "agent-1", state: "ended", runner: null, purgedAt: null, disk: "disk-b" } : undefined), purge: async () => {} } },
-    madeFrom: async () => [],
-    forgetCopies: (learning, runId) => forgetRunCopies(store.settings, learningIdOf(learning), runId),
-    forgetRun: async () => {},
-    kept: async () => KEPT,
-    turnOver: async () => true,
-    waitMs: 5_000,
-    pollMs: 20,
-  };
-  await purgeRun(host, "run-b");
-  assert.deepEqual((await gradesOf(store.settings, onB)).map((one) => one.run), ["run-b2"], "its grade on disk B dropped, its sibling's kept");
-  assert.deepEqual((await gradesOf(store.settings, onDefault)).map((one) => one.run), ["run-d"]);
+  await ended("post-served", null, served);
+  assert.deepEqual((await lastOwnRuns(store, "agent-1", 10)).map((row) => row.id), ["post-default"], "compile_after's count and a check's inputs");
+  const past = await pastRunsOverStore(store, "agent-1");
+  assert.deepEqual(past.map((run) => run.startedAt), [at + 4_000, at + 3_000], "the money rule's past runs: post-served and post-default");
+  assert.equal(await notAuditableOf(store, "agent-1", "answer", DIGEST, { stop_window: 10 }), 1, "the audit's served runs: post-served alone");
 });
 
 test("a runner runs a named-disk launch with no seed, no # Learned section and no learned workflow, whatever its body holds; the body read back keeps what it ran; the agent's own disk or none runs as written", async () => {
@@ -227,27 +188,25 @@ test("a runner runs a named-disk launch with no seed, no # Learned section and n
 // -------------------------------------------------------------------------------------------- compile (the look-back)
 
 /** One agent (compile_after 2) whose runs run through a real runner, one at a time, each on its disk (`disk`: a named
- *  one, or none for the default): a run that learns gets its learning end over the learning folder of its own disk, a
- *  directory per disk, as Mode 2 keeps one on each disk. Every model request a run makes is kept. */
+ *  one, or none for the default): a run that learns gets its learning end over the agent's learning folder. Every model
+ *  request a run makes is kept. */
 async function world(t) {
   const local = scratch("agentrun-per-disk-local-");
-  const folders = { "disk-a": scratch("agentrun-per-disk-a-"), "disk-b": scratch("agentrun-per-disk-b-"), default: scratch("agentrun-per-disk-default-") };
+  const data = scratch("agentrun-per-disk-default-");
   const server = await openSqliteStore({ dataDir: local, role: "server" });
   const open = [];
   t.after(async () => {
     for (const close of open.reverse()) await close().catch(() => {});
     await server.close().catch(() => {});
-    for (const dir of [local, ...Object.values(folders)]) rmSync(dir, { recursive: true, force: true });
+    for (const dir of [local, data]) rmSync(dir, { recursive: true, force: true });
   });
   await server.agents.create({ id: "agent-1", name: "Learns" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", tools: ["read"], learning: { compile_after: 2 } } });
   const run = async (runId, { disk, content, learns = false }) => {
-    const data = folders[disk ?? "default"];
     const seed = learns ? await seedOf(data, "agent-1") : undefined;
     const launch = { input: { content }, title: "t", place: { mode: "runner" }, ...launchDisk(disk), ...(learns ? { learning: { seed: seed.sha, section: "" } } : {}) };
     await server.runs.create({ id: runId, agentId: "agent-1", revisionId: "rev-1" }, { body: launchBody(launch) });
     const store = await openSqliteStore({ dataDir: local, role: "runner" });
     open.push(() => store.close());
-    // The folder of the run's own disk, as a Mode 2 claim opens it there (the claim's Archil disk).
     const endOfRun = learningEndOfRun(launch, { store, data: local, env: {}, learningFolder: (agentId) => learningWorkspace({ mode: "local", data, agentId }) });
     const requests = [];
     const spec = piAdapterSpec({ script: learns ? [{ say: "42" }, { say: DRAFT }] : [{ say: "42" }], tools: {}, hooks: quiet }, { requests });
@@ -274,25 +233,8 @@ async function world(t) {
     await runner.close();
     return { requests, said: JSON.stringify(requests), kept: await server.learning.proposal(runId) };
   };
-  return { run, folders, server };
+  return { run, server };
 }
-
-test("a run on disk A compiles from disk A's runs alone: no trace of a run on disk B or on the default disk reaches its compile turn or its folder", { timeout: 120_000 }, async (t) => {
-  const w = await world(t);
-  await w.run("b-1", { disk: "disk-b", content: `What is six times seven? ${MARK["disk-b"]}` });
-  await w.run("d-1", { content: `What is six times seven? ${MARK.default}` });
-  await w.run("a-1", { disk: "disk-a", content: `What is six times seven? ${MARK["disk-a"]}` });
-  const a2 = await w.run("a-2", { disk: "disk-a", content: "What is six times seven?", learns: true });
-  // Due on disk A's own two runs (compile_after 2): its compile turn reads a-1's trace, never b-1's or d-1's.
-  assert.ok(a2.said.includes("````workflow"), `a-2's compile turn was asked: ${a2.said.slice(0, 400)}`);
-  assert.ok(a2.said.includes(MARK["disk-a"]), "disk A's earlier run is read");
-  assert.equal(a2.said.includes(MARK["disk-b"]), false, "no run on disk B reaches disk A's compile");
-  assert.equal(a2.said.includes(MARK.default), false, "no run on the default disk reaches disk A's compile");
-  assert.equal(a2.kept?.proposal?.state, "merged", JSON.stringify(a2.kept?.proposal));
-  // Its merge is on disk A's folder; disk B's and the default disk's are as they were.
-  assert.equal((await seedOf(w.folders["disk-a"], "agent-1")).workflows.length, 1, "disk A's folder holds the compiled workflow");
-  for (const other of ["disk-b", "default"]) assert.equal((await seedOf(w.folders[other], "agent-1")).workflows.length, 0, `${other}'s folder learned nothing from disk A`);
-});
 
 test("a default-disk run and a named-disk run share no learning: the default disk's compile reads only default-disk runs", { timeout: 120_000 }, async (t) => {
   const w = await world(t);
@@ -305,131 +247,6 @@ test("a default-disk run and a named-disk run share no learning: the default dis
   assert.ok(d2.said.includes(MARK.default), "the default disk's earlier run is read");
   assert.equal(d2.said.includes(MARK["disk-a"]), false, "no run on disk A reaches the default disk's compile");
   assert.equal(d2.said.includes(MARK["disk-b"]), false, "no run on disk B reaches the default disk's compile");
-});
-
-test("the compile's due count is per disk: one earlier run on disk A and three on disk B leave disk A's second run due, and B's runs never make A's first run due", { timeout: 120_000 }, async (t) => {
-  const w = await world(t);
-  for (let i = 1; i <= 3; i++) await w.run(`b-${i}`, { disk: "disk-b", content: `What is six times seven? ${MARK["disk-b"]} ${i}` });
-  // Disk A's first run: no earlier run on disk A, so compile_after 2 is not met (disk B's three never count).
-  const a1 = await w.run("a-1", { disk: "disk-a", content: `What is six times seven? ${MARK["disk-a"]}`, learns: true });
-  assert.equal(a1.said.includes("````workflow"), false, "not due on disk A: no compile turn");
-  assert.equal(a1.said.includes(MARK["disk-b"]), false);
-});
-
-// ----------------------------------------------------------------------------------------------- check replay inputs
-
-const flowText = JSON.stringify({ v: 2, name: "answer", schemas: { In: { type: "object", required: ["question"], properties: { question: { type: "string" } } } }, input: { schemaId: "In" }, output: { schemaId: "In", path: "question" },
-  root: { node: "agent", label: "answer", instructions: "Answer.", out: "In", as: "answer", tools: [] } });
-const LEARNING = { seed: "s", section: "" };
-
-/** A store of the agent's runs (newest first, as the store lists them: `disk` filtered as the store's own list does), each
- *  with its launch on its disk, and its settings; replay runs created are kept. */
-function storeOf(rows, launches) {
-  const kv = new Map();
-  const settings = {
-    get: async (key) => (kv.has(key) ? structuredClone(kv.get(key)) : undefined),
-    putIfAbsent: async (key, value) => (kv.has(key) ? kv.get(key) : (kv.set(key, structuredClone(value)), value)),
-    replaceIf: async (key, was, value) => (JSON.stringify(kv.get(key)) === JSON.stringify(was) ? (kv.set(key, structuredClone(value)), true) : false),
-  };
-  const created = [];
-  const store = {
-    settings,
-    runs: {
-      get: async (id) => rows.find((row) => row.id === id),
-      list: async ({ agentId, disk, state, archived, limit } = {}) => rows
-        .filter((row) => (agentId === undefined || row.agentId === agentId) && (disk === undefined || row.disk === disk) && (state === undefined || row.state === state) && (archived === undefined || (row.archivedAt !== null) === archived))
-        .slice(0, limit ?? rows.length),
-      launch: async (id) => (launches.has(id) ? { runId: id, body: launchBody(launches.get(id)), sealed: null } : Promise.reject(new Error(`no run ${id}`))),
-      create: async (row, launch) => {
-        created.push({ id: row.id, launch: launch?.body });
-        rows.unshift({ id: row.id, agentId: row.agentId, state: "queued", metrics: null, archivedAt: null, importedFrom: null, outcome: null, disk: null });
-        return { id: row.id };
-      },
-    },
-    agents: { revision: async (id) => ({ id, body: { instructions: "Answer.", learning: { compile_after: 3 } } }) },
-    runOfOrigin: async () => undefined,
-    command: async () => ({ id: "c-1" }),
-  };
-  return { store, settings, created, kv };
-}
-
-test("a check on disk A replays the inputs of disk A's own runs alone: never a run on disk B or on the default disk", async () => {
-  const rows = [];
-  const launches = new Map();
-  const add = (id, disk) => {
-    rows.push({ id, agentId: "a", state: "ended", outcome: "completed", metrics: { path: "agent" }, archivedAt: null, importedFrom: null, disk: disk ?? null });
-    launches.set(id, { input: { question: `${id} ${MARK[disk ?? "default"]}` }, title: id, place: { mode: "runner" }, learning: LEARNING, ...launchDisk(disk) });
-  };
-  // Newest first: disk B's and the default disk's runs are the agent's newest; disk A's three are older.
-  for (let i = 0; i < 4; i++) add(`b-${i}`, "disk-b");
-  for (let i = 0; i < 2; i++) add(`d-${i}`, undefined);
-  for (let i = 0; i < 3; i++) add(`a-${i}`, "disk-a");
-  const { store, settings, created } = storeOf(rows, launches);
-  const logs = [];
-  const gate = promotionGate({ store, shown: async () => secretsShown([]), agentId: "a", runId: "now", revisionId: "rev", launch: { input: { question: "Now" }, title: "", place: { mode: "runner" }, learning: LEARNING, ...launchDisk("disk-a") }, context: ctx, log: (line) => logs.push(line) });
-  const digest = workflowDigest({ workflow: flowText });
-  assert.equal(await gate({ name: "answer", workflow: flowText }, digest), undefined, "it does not serve while it is checked");
-  const record = (await promotionsOf(settings, learningIdOf({ agentId: "a", disk: "disk-a" }))).at(-1);
-  assert.equal(record?.decided, "replaying", `${JSON.stringify(record)}\n${logs.join("\n")}`);
-  assert.deepEqual(record.inputs, ["a-0", "a-1", "a-2"], "disk A's own three runs");
-  for (const { launch } of created) {
-    const text = JSON.stringify(launch);
-    assert.equal(text.includes(MARK["disk-b"]) || text.includes(MARK.default), false, `a replay on disk A replays no other disk's input: ${text}`);
-    assert.deepEqual(launch.archil_disk, { disk_id: "disk-a", kind: "launch" }, "and runs on disk A");
-  }
-  assert.deepEqual(await promotionsOf(settings, learningIdOf({ agentId: "a", disk: "disk-b" })), [], "nothing is recorded for disk B");
-  assert.deepEqual(await promotionsOf(settings, learningIdOf({ agentId: "a", disk: null })), [], "nor for the default disk");
-  assert.equal(learningIdOf({ agentId: "a", disk: null }), "a", "the default disk's records keep the agent's own key");
-});
-
-// ------------------------------------------------------------------------------------------------------ serving
-
-test("a workflow promoted on disk A serves a run on disk A, never a run on disk B or on the default disk", async () => {
-  const promoted = { workflow: "answer", digest: workflowDigest({ workflow: flowText }), at: new Date(0).toISOString(), decided: "promote", reason: "checked: promoted", commit: "c-1",
-    check: { compile_after: 3, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 1, agreed: 1, alone: 1, of: [] } };
-  const gateOn = async (disk) => {
-    const { store, settings, created } = storeOf([], new Map());
-    assert.equal((await recordPromotion(settings, learningIdOf({ agentId: "a", disk: "disk-a" }), promoted, () => true)).won, true);
-    const logs = [];
-    const gate = promotionGate({ store, shown: async () => secretsShown([]), agentId: "a", runId: "now", revisionId: "rev", launch: { input: { question: "Now" }, title: "", place: { mode: "runner" }, learning: LEARNING, ...launchDisk(disk) }, context: ctx, log: (line) => logs.push(line) });
-    return { served: await gate({ name: "answer", workflow: flowText }, promoted.digest), created, logs };
-  };
-  const onA = await gateOn("disk-a");
-  assert.equal(onA.served?.workflow?.workflow, flowText, `disk A's promotion serves disk A: ${onA.logs.join("\n")}`);
-  for (const disk of ["disk-b", undefined]) {
-    const other = await gateOn(disk);
-    assert.equal(other.served, undefined, `disk A's promotion never serves ${disk ?? "the default disk"}: ${other.logs.join("\n")}`);
-  }
-});
-
-// ---------------------------------------------------------------------------------------------------- audit draw
-
-const drawn = (runId, k) => Number.parseInt(createHash("sha256").update(`audit:${runId}`).digest("hex").slice(0, 8), 16) % k === 0;
-
-test("an audit's draw counts the served runs on the run's own disk: 1,100 runs served on disk B leave disk A's first served run audited at audit_every", async (t) => {
-  const learning = { audit_every: 1, audit_every_later: 1000, audit_later_after: 1000 };
-  const digest = workflowDigest({ workflow: flowText });
-  const runId = Array.from({ length: 1000 }, (_, i) => `next-${i}`).find((id) => !drawn(id, 1000));
-  const rows = [];
-  for (let i = 0; i < 1100; i++) rows.push({ id: `b-${i}`, agentId: "agent-1", state: "ended", runner: null, archivedAt: null, importedFrom: null, outcome: "completed", startedAt: i, disk: "disk-b", metrics: { path: "workflow", workflow: "answer", workflow_digest: digest } });
-  rows.reverse();
-  const made = [];
-  const store = {
-    settings: { get: async () => undefined },
-    agents: { revision: async () => ({ id: "rev-1", body: { instructions: "Answer.", tools: [], learning }, mcpPin: null }) },
-    runs: {
-      list: async ({ disk, state, archived, limit } = {}) => rows.filter((row) => (disk === undefined || row.disk === disk) && (state === undefined || row.state === state) && (archived === undefined || (row.archivedAt !== null) === archived)).slice(0, limit ?? rows.length),
-      get: async (id) => rows.find((row) => row.id === id),
-      launch: async () => ({ body: {} }),
-      create: async (row, launch) => void made.push({ id: row.id, launch: launch?.body }),
-    },
-  };
-  const dir = scratch("agentrun-per-disk-audit-");
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
-  const launch = { input: { content: "Next?" }, title: "Next", place: { mode: "runner" }, learning: { seed: "0".repeat(40), section: "" }, ...launchDisk("disk-a") };
-  await startAudit({ store, agentId: "agent-1", disk: "disk-a", revisionId: "rev-1", context: {}, folder: () => learningWorkspace({ mode: "local", data: dir, agentId: "agent-1" }), shown: async () => ({ text: (text) => text }), log: () => {}, runId, launch }, { name: "answer", digest });
-  assert.deepEqual(made.map(({ id }) => id), [`audit.${runId}`], "disk A served none before: drawn at 1 in 1, disk B's 1,100 never counted");
-  assert.deepEqual(made[0].launch.archil_disk, { disk_id: "disk-a", kind: "launch" }, "its shadow runs on disk A");
 });
 
 // ---------------------------------------------------------------------------------------------------------- the bill

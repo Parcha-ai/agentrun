@@ -35,7 +35,6 @@ import { openRunMcpAuth, sealRunMcpAuth } from "../store/seal.js";
 import { isObject, type Json } from "../validate.js";
 import { type AuditRow, type AuditStarted, auditableLaunch, auditChange, auditEveryOf, auditDrawn, auditsOffWords, auditWriterOf, holdOf, type LedgerLine, ledgerOf, lineKey, openAudits, rowsOf, shadowRunId } from "../learn/audit.js";
 import { lastRunsOf, sinceReset } from "../learn/compile.js";
-import { learningIdOf, type LearningId, type LearningOf } from "../learn/learning-of.js";
 import { readLearning, writeLearning, type LearningFolder } from "../learn/folder.js";
 import { type AuditDisagreement, CHECK_TEXT_MAX, compareAnswers, comparedOf, type PromotionRecord, promotionOf, promotionsOf, promotionStartOf, recordPromotion, servingOf } from "../learn/promote.js";
 import { excerptShown } from "../learn/secrets.js";
@@ -57,10 +56,6 @@ const RUN_CAP_MIN_USD = 0.01;
 export type AuditDeps = {
   readonly store: Store;
   readonly agentId: string;
-  /** The disk of the learning the audit reads and writes (learn/learning-of.ts): the claimed run's (its launch's named
-   *  disk, null for the default disk), or the graded run's. Only served runs on it are counted, and only its promotions
-   *  are read and held. */
-  readonly disk: string | null;
   readonly revisionId: string;
   readonly context: Context;
   readonly folder: () => LearningFolder;
@@ -77,8 +72,6 @@ export type AuditDeps = {
 export const STOPPED_TWICE = "stopped: the workflow disagreed with the agent twice";
 
 const iso = (ms: number) => new Date(ms).toISOString();
-/** The key of the promotions the audit reads and holds: its learning's (AuditDeps.disk). */
-const recordsOf = (deps: Pick<AuditDeps, "agentId" | "disk">): LearningId => learningIdOf(deps);
 const ended = (row: RunRow | undefined) => row !== undefined && FINAL_STATES.includes(row.state) && row.runner === null;
 const inputText = (input: unknown): string => (typeof input === "string" ? input : JSON.stringify(input) ?? "");
 const metricsOf = (row: RunRow | undefined) => (isObject(row?.metrics as Json) ? (row!.metrics as { path?: unknown; workflow?: unknown; workflow_digest?: unknown }) : {});
@@ -113,18 +106,18 @@ export async function auditedAnswerOf(deps: Pick<AuditDeps, "store" | "context" 
   return open ? auditedAnswer(deps, open) : null;
 }
 
-/** The served runs of `workflow` (at `digest` when given) that `keep` keeps too, on `learning`'s disk alone and since
- *  its agent's learning's reset (sinceReset), the newest `n` of them (lastRunsOf: the shadows and the agent's own runs
- *  among them never push one out of the read). */
-const servedRuns = async (store: Pick<Store, "runs" | "settings">, learning: LearningOf, n: number, workflow: string, digest: string | undefined, keep: (row: RunRow) => boolean = () => true) => {
-  const since = await sinceReset(store, learning.agentId);
-  return lastRunsOf(store, learning, n, (row) => served(row) && metricsOf(row).workflow === workflow && (digest === undefined || metricsOf(row).workflow_digest === digest) && keep(row) && since(row));
+/** The served runs of `workflow` (at `digest` when given) that `keep` keeps too, since the agent's learning's reset
+ *  (sinceReset), the newest `n` of them (lastRunsOf: the shadows and the agent's own runs among them never push one out
+ *  of the read). */
+const servedRuns = async (store: Pick<Store, "runs" | "settings">, agentId: string, n: number, workflow: string, digest: string | undefined, keep: (row: RunRow) => boolean = () => true) => {
+  const since = await sinceReset(store, agentId);
+  return lastRunsOf(store, agentId, n, (row) => served(row) && metricsOf(row).workflow === workflow && (digest === undefined || metricsOf(row).workflow_digest === digest) && keep(row) && since(row));
 };
 
-/** How many of the newest stop_window runs `workflow` at `digest` served on the learning's disk were not auditable
- *  (auditableLaunch: a trigger started them): what the promotions read counts beside the audit line. */
-export async function notAuditableOf(store: Pick<Store, "runs" | "settings">, learning: LearningOf, workflow: string, digest: string, loop: Pick<AuditLoop, "stop_window">): Promise<number> {
-  return (await servedRuns(store, learning, loop.stop_window, workflow, digest)).filter((row) => (metricsOf(row) as { not_auditable?: unknown }).not_auditable === true).length;
+/** How many of the newest stop_window runs `workflow` at `digest` served were not auditable (auditableLaunch: a trigger
+ *  started them): what the promotions read counts beside the audit line. */
+export async function notAuditableOf(store: Pick<Store, "runs" | "settings">, agentId: string, workflow: string, digest: string, loop: Pick<AuditLoop, "stop_window">): Promise<number> {
+  return (await servedRuns(store, agentId, loop.stop_window, workflow, digest)).filter((row) => (metricsOf(row) as { not_auditable?: unknown }).not_auditable === true).length;
 }
 
 /** The words a shadow run ends failed with where it would wait on a person (AdapterRunSpec.neverWaits: an approval, a
@@ -189,7 +182,7 @@ export async function startAudit(deps: AuditDeps & { readonly runId: string; rea
       return;
     }
     const loop = auditLoopOf((revision?.body as { learning?: unknown } | undefined)?.learning);
-    const before = (await servedRuns(store, { agentId, disk: deps.disk }, loop.audit_later_after, serve.name, serve.digest, (row) => row.id !== runId)).length;
+    const before = (await servedRuns(store, agentId, loop.audit_later_after, serve.name, serve.digest, (row) => row.id !== runId)).length;
     const k = auditEveryOf(loop, before);
     if (!auditDrawn(runId, k)) return;
     const id = shadowRunId(runId);
@@ -197,7 +190,7 @@ export async function startAudit(deps: AuditDeps & { readonly runId: string; rea
     // line with no shadow (a crash between the two) is made now.
     if (await store.runs.get(id)) return;
     if ((await readLedger(deps)).some((line) => line.run === runId && line.source === "shadow")) return;
-    const promoted = promotionStartOf(await promotionsOf(store.settings, recordsOf(deps)), serve.name, serve.digest);
+    const promoted = promotionStartOf(await promotionsOf(store.settings, agentId), serve.name, serve.digest);
     // The answer audited: the run's newest answer now, at the end that drew it, kept by its row's id so a follow-up's
     // answer since is never the one compared.
     const turn = turnOf((await answerRowOf(store, runId, deps.context))?.id);
@@ -259,7 +252,7 @@ export async function settleAudits(deps: AuditDeps): Promise<void> {
   const { store, log } = deps;
   try {
     // An agent with no promotion record never served a learned workflow: it has no ledger to read.
-    if (!(await promotionsOf(store.settings, recordsOf(deps))).length) return;
+    if (!(await promotionsOf(store.settings, deps.agentId)).length) return;
     const lines = await readLedger(deps);
     const now = (deps.now ?? Date.now)();
     const rows: { row: AuditRow; at: number }[] = [];
@@ -300,7 +293,7 @@ export async function gradeRow(deps: AuditDeps, run: RunRow, correct: boolean): 
   const m = metricsOf(run);
   if (m.path !== "workflow" || typeof m.workflow !== "string" || typeof m.workflow_digest !== "string") return;
   if (!(await sinceReset(deps.store, deps.agentId))(run)) return;
-  const promoted = promotionStartOf(await promotionsOf(deps.store.settings, recordsOf(deps)), m.workflow, m.workflow_digest);
+  const promoted = promotionStartOf(await promotionsOf(deps.store.settings, deps.agentId), m.workflow, m.workflow_digest);
   // The answer graded: the run's newest now, kept by its row's id (as a shadow's audit keeps its turn).
   const turn = turnOf((await answerRowOf(deps.store, run.id, deps.context))?.id);
   const row: AuditRow = { run: run.id, shadow_run: null, workflow: m.workflow, digest: m.workflow_digest, promoted_at: promoted?.at ?? null, source: "grade", agreed: correct, served_cost: run.costUsd, shadow_cost: null, ...turn, at: iso((deps.now ?? Date.now)()) };
@@ -353,7 +346,7 @@ async function addLines(deps: AuditDeps, lines: readonly LedgerLine[], agreed?: 
 async function holdByLedger(deps: AuditDeps, all: readonly AuditRow[]): Promise<void> {
   if (!all.length) return;
   const loop = await auditLoopOfRevision(deps.store, deps.revisionId);
-  for (const { workflow, digest } of servingOf(await promotionsOf(deps.store.settings, recordsOf(deps)))) {
+  for (const { workflow, digest } of servingOf(await promotionsOf(deps.store.settings, deps.agentId))) {
     if (digest !== null) await applyHold(deps, all, loop, workflow, digest);
   }
 }
@@ -365,14 +358,14 @@ async function holdByLedger(deps: AuditDeps, all: readonly AuditRow[]): Promise<
  *  one holds). */
 async function applyHold(deps: AuditDeps, rows: readonly AuditRow[], loop: AuditLoop, workflow: string, digest: string): Promise<void> {
   const { store, agentId, log } = deps;
-  const records = await promotionsOf(store.settings, recordsOf(deps));
+  const records = await promotionsOf(store.settings, agentId);
   const current = promotionOf(records, workflow, digest);
   if (current?.decided !== "promote") return;
   const hold = holdOf(rows, workflow, digest, promotionStartOf(records, workflow, digest)?.at ?? null, loop);
   if (!hold) return;
   const first = records.findLast((one) => one.workflow === workflow && one.decided === "hold" && one.audit !== undefined);
   const since = first ? Date.parse(first.at) : undefined;
-  const servedSince = since === undefined ? 0 : (await servedRuns(store, { agentId, disk: deps.disk }, loop.stop_window, workflow, undefined, (row) => row.startedAt >= since)).length;
+  const servedSince = since === undefined ? 0 : (await servedRuns(store, agentId, loop.stop_window, workflow, undefined, (row) => row.startedAt >= since)).length;
   const stopped = first !== undefined && servedSince < loop.stop_window;
   // Each text cut of the host's secrets whole, then shortened (learn/secrets.ts excerptShown), as a check's are.
   const shown = await deps.shown();
@@ -392,6 +385,6 @@ async function applyHold(deps: AuditDeps, rows: readonly AuditRow[], loop: Audit
     audit: { window: loop.hold_window, disagree: loop.hold_disagree, rows: hold.rows.length, disagreements, ...(stopped ? { stopped: true as const } : {}) },
     ...(current.commit ? { commit: current.commit } : {}),
   };
-  const kept = await recordPromotion(store.settings, recordsOf(deps), record,(was) => was?.decided === "promote" && was.at === current.at);
+  const kept = await recordPromotion(store.settings, agentId, record, (was) => was?.decided === "promote" && was.at === current.at);
   if (kept.won) log(`workflow-first: ${workflow} at ${digest} ${stopped ? `stopped (${said}, a second hold within ${loop.stop_window} served runs)` : reason}`);
 }

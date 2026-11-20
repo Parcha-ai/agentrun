@@ -99,7 +99,7 @@ test("the money rule's read at a claim finds each run's shadow in the page it li
       return new Proxy(target.runs, { get: (runs, name) => (name === "get" ? (id) => (gets.push(id), runs.get(id)) : typeof runs[name] === "function" ? runs[name].bind(runs) : runs[name]) });
     },
   });
-  const past = await pastRunsOverStore(counted, { agentId: "agent-1", disk: null });
+  const past = await pastRunsOverStore(counted, "agent-1");
   assert.deepEqual(past.map((one) => one.allInUsd).sort(), [0.5, 0.5, 1], "each served run all in with its shadow's");
   assert.deepEqual(gets.filter((id) => id.startsWith("audit.")), [], `no shadow read one at a time: ${JSON.stringify(gets)}`);
 });

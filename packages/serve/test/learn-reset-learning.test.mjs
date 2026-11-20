@@ -18,7 +18,6 @@ import { deleteLearning } from "../dist/learn/delete.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { lastOwnRuns } from "../dist/learn/compile.js";
 import { gradesKey, promotionsKey, promotionsOf, resetLedgerKey } from "../dist/learn/promote.js";
-import { learningIdOf } from "../dist/learn/learning-of.js";
 import { getAgent } from "../dist/agents-store.js";
 import { SdkRuns } from "../dist/sdk/runs.js";
 import { learningFolderOf, secretsShown, seedOf, withAgentRepo } from "../dist/learning.js";
@@ -295,63 +294,6 @@ test("Mode 2: the agent's learning folder on every Archil disk its runs used (it
   assert.equal((await api("DELETE", "/agents/spread/learning")).status, 204, "and again");
 });
 
-test("per disk: an agent that learned on the default disk and on a disk a launch named, and ran on a third disk whose run was purged since. The reset clears every disk's records and folders, keeps each disk's revisions in that disk's ledger, and each run's cost reads the same after; the agent's delete removes every ledger", { timeout: 120_000 }, async (t) => {
-  const onB = "dsk-b0b0b0b0b0000001";
-  const onC = "dsk-c0c0c0c0c0000002";
-  const control = archilControlFetch({ region: "aws-us-east-1", strict: true, disks: [{ id: onB, name: "disk-b" }, { id: onC, name: "disk-c" }] });
-  withEnv(t, { ARCHIL_API_KEY: "fake-test-key" }, ["ARCHIL_API_KEY", "AGENTRUN_ARCHIL_REGION", "AGENTRUN_ARCHIL_S3_URL", "AGENTRUN_ARCHIL_IMAGE"]);
-  const disks = new Map([onB, onC].map((id) => [id, Object.assign(new FakeArchilDisk(), { id })]));
-  const { api, data, store } = await serve(t, { learning: "on", runner: false, archilControl: { baseUrl: control.baseUrl, fetch: control.fetch, makeDisk: (options) => disks.get(options.disk) } });
-  await saveArchilSettings(store, { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" });
-  assert.equal((await api("POST", "/agents", agent("two", { learning: true }))).status, 201);
-  await learned(store, data, "two");
-  const revisionId = (await store.agents.get("two")).currentRevision;
-  const LEARNS = { input: ASK, title: "t", place: { mode: "runner" }, learning: { given: [], seed: "a".repeat(40), section: "", seedNotes: 0 } };
-  const named = (disk) => (disk ? { archil_disk: { disk_id: disk, kind: "launch" } } : {});
-  const ended = async (id, cost, metrics, disk, body = LEARNS) => {
-    await store.runs.create({ id, agentId: "two", revisionId }, { body: { ...body, ...named(disk) } });
-    const claim = await store.claim(id, "runner-cost", { leaseMs: 60_000 });
-    await store.runs.update(claim, { state: "ended", costUsd: cost, metrics });
-  };
-  const replayOf = (of) => ({ ...LEARNS, replay: { of, workflow: "answer", digest: DIGEST } });
-  // The same revision of `answer` checked on each disk: on the default disk two $0.30 replays at K = 2; on disk B one
-  // $0.40 replay at K = 1. Two runs it served on the default disk, one on disk B.
-  for (const id of ["replay-d1", "replay-d2"]) await ended(id, 0.3, { path: "replay", workflow: "answer", workflow_digest: DIGEST, replay: { of: "before-d", outcome: "answered" } }, null, replayOf("before-d"));
-  await ended("replay-b", 0.4, { path: "replay", workflow: "answer", workflow_digest: DIGEST, replay: { of: "before-b", outcome: "answered" } }, onB, replayOf("before-b"));
-  for (const id of ["served-d1", "served-d2"]) await ended(id, 0.1, { path: "workflow", workflow: "answer", workflow_digest: DIGEST }, null);
-  await ended("served-b", 0.1, { path: "workflow", workflow: "answer", workflow_digest: DIGEST }, onB);
-  // A run on disk C, purged since: its tombstone alone says it ran there.
-  await ended("gone-c", 0.1, { path: "agent" }, onC);
-  assert.equal((await api("DELETE", "/runs/gone-c")).status, 204);
-  const promoted = (k) => ({ v: 1, items: [{ workflow: "answer", digest: DIGEST, at: new Date().toISOString(), decided: "promote", reason: "checked: promoted", check: { compile_after: k, agree_min: 0.8, alone_min: 0.7, attempt: 1, n: 2, agreed: 2, alone: 2, of: [] } }] });
-  const learnings = [null, onB, onC].map((disk) => learningIdOf({ agentId: "two", disk }));
-  const [onDefault, onDiskB] = learnings;
-  await store.settings.put(promotionsKey(onDefault), promoted(2));
-  await store.settings.put(promotionsKey(onDiskB), promoted(1));
-  for (const learning of learnings) await store.settings.put(gradesKey(learning), { v: 1, items: [{ run: "served-d1", correct: true, source: "feedback", at: new Date().toISOString(), path: "agent" }] });
-  // Its learning folder on disks B and C, as Mode 2 runs there left it.
-  const dir = `agents/${agentDirOf("two")}`;
-  for (const disk of disks.values()) await disk.putObject(`${dir}/learning/corrections.md`, Buffer.from(CORRECTION));
-  const learningOn = (id) => [...disks.get(id).files.keys()].filter((key) => key.startsWith(`${dir}/learning`));
-
-  const costs = async () => ({
-    runs: Object.fromEntries(await Promise.all(["served-d1", "served-b", "replay-b"].map(async (id) => [id, (await api("GET", `/runs/${id}`)).body.cost]))),
-    bill: await api("GET", "/agents/two/learning/cost").then(({ body }) => [body.bill?.booked_usd, body.bill?.unattributed_usd]),
-  });
-  const before = await costs();
-  assert.deepEqual([before.runs["served-d1"].learning_usd, before.runs["served-b"].learning_usd], [0.3, 0.4], `each disk's check over its own K: ${JSON.stringify(before)}`);
-  const reset = await api("DELETE", "/agents/two/learning");
-  assert.equal(reset.status, 204, JSON.stringify(reset.body));
-  const records = async () => (await Promise.all(learnings.flatMap((learning) => [promotionsKey(learning), gradesKey(learning)]).map(async (key) => ((await store.settings.get(key)) === undefined ? [] : [key])))).flat();
-  assert.deepEqual(await records(), [], "every disk's promotions and grades are gone");
-  for (const id of [onB, onC]) assert.deepEqual(learningOn(id), [], `no learning of the agent is left on ${id}`);
-  assert.deepEqual(await costs(), before, "each run's cost and the bill read as before");
-  assert.deepEqual([(await store.settings.get(resetLedgerKey(onDefault)))?.items, (await store.settings.get(resetLedgerKey(onDiskB)))?.items], [[{ workflow: "answer", digest: DIGEST, k: 2 }], [{ workflow: "answer", digest: DIGEST, k: 1 }]], "each disk's revision in its own ledger, at its own K");
-  assert.equal(typeof (await store.settings.get(resetAtKey("two")))?.at, "number", "one watermark for the agent");
-  await deleteLearning(store, "two", learningFolderOf(data, "two"));
-  assert.deepEqual(await Promise.all([...learnings.map(resetLedgerKey), resetAtKey("two")].map((key) => store.settings.get(key))), [undefined, undefined, undefined, undefined], "the agent's delete removes every disk's ledger and the watermark");
-});
-
 test("Mode 2, the last run naming a caller's disk purged (DELETE /runs/{id}, its launch record gone, its tombstone keeping the disk): the reset still deletes the agent's learning folder on that disk, and leaves no other learning setting of the agent", { timeout: 120_000 }, async (t) => {
   const customer = "dsk-c0570e4e00000003";
   const control = archilControlFetch({ region: "aws-us-east-1", strict: true, disks: [{ id: customer, name: "a-customers-disk" }] });
@@ -416,8 +358,8 @@ async function sdkAgent(t, id) {
   const entry = await getAgent(server.store, id);
   const sdk = new SdkRuns(server.store, server.data, "s".repeat(32));
   /** An SDK start of the agent through SdkRuns.start, as POST /agents/{id}/sdk-runs makes it, `afterSeed` called once its
-   *  learning seed is read. */
-  const start = (afterSeed) => sdk.start(entry, SDK_START, {
+   *  learning seed is read and `check` as its compile model's check, its last step before its queue entry. */
+  const start = (afterSeed, check = async () => {}) => sdk.start(entry, SDK_START, {
     learning: "on",
     shown: () => secretsShown([]),
     pinnedOf: async (one) => ({ revision: one.revision, version: one.version }),
@@ -426,7 +368,7 @@ async function sdkAgent(t, id) {
       await afterSeed(agentId);
       return { seed };
     },
-  }, undefined, { model: "test-model", check: async () => {} }, "http://console.test");
+  }, undefined, { model: "test-model", check }, "http://console.test");
   const admitted = async () => [(await server.store.runs.list({ agentId: id })).length, (await promotionsOf(server.store.settings, id)).length];
   return { ...server, start, admitted };
 }
@@ -446,11 +388,17 @@ test("an SDK start is admitted in its agent's learning queue (the reset's): its 
   let release;
   const gate = new Promise((resolve) => (release = resolve));
   let held;
-  const started = server.start(async (agentId) => void (held = withAgentRepo(server.data, agentId, () => gate)));
-  for (let waited = 0; waited < 2_000; waited += 50) {
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    assert.deepEqual(await server.admitted(), [0, 0], "nothing admitted while the queue is held");
-  }
+  let checked;
+  const entering = new Promise((resolve) => (checked = resolve));
+  let settled = false;
+  const started = server.start(async (agentId) => void (held = withAgentRepo(server.data, agentId, () => gate)), async () => checked());
+  void started.finally(() => (settled = true)).catch(() => {});
+  // Its compile model's check is the start's last step before its queue entry, which follows it with no await between:
+  // once the check returned and the microtasks ran (setImmediate), the start waits in the queue behind the held work.
+  await entering;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(await server.admitted(), [0, 0], "nothing admitted while the queue is held");
+  assert.equal(settled, false, "the start is still waiting in the queue");
   release();
   await held;
   const receipt = await started;
@@ -842,10 +790,9 @@ test("the watermark's readers: a run before the reset, or one whose seed was rea
   // The one store read the watermark adds: only runs started after it whose seed was read at or before it, by id.
   const { at } = await w.server.settings.get(resetAtKey("agent-1"));
   assert.deepEqual(await w.server.runs.seededBefore("agent-1", at), ["late-seed"], "the runs started after it, seeded before it");
-  const learning = { agentId: "agent-1", disk: null };
-  assert.deepEqual((await lastOwnRuns(w.server, learning, 10)).map((row) => row.id), ["post-0"], "compile_after's count and a check's inputs");
-  assert.equal(await notAuditableOf(w.server, learning, "answer", FLOW_DIGEST, { stop_window: 10 }), 1, "the audit's served runs");
-  assert.deepEqual((await pastRunsOverStore(w.server, learning)).length, 2, "the money rule's past runs: post-0 and post-served-0");
+  assert.deepEqual((await lastOwnRuns(w.server, "agent-1", 10)).map((row) => row.id), ["post-0"], "compile_after's count and a check's inputs");
+  assert.equal(await notAuditableOf(w.server, "agent-1", "answer", FLOW_DIGEST, { stop_window: 10 }), 1, "the audit's served runs");
+  assert.deepEqual((await pastRunsOverStore(w.server, "agent-1")).length, 2, "the money rule's past runs: post-0 and post-served-0");
   assert.equal((await agentLoopOverStore(w.server, "agent-1")).completed_runs, 1, "the loop view's count");
   // An owner's replay of a workflow learned after the reset: the runs before it would fit its input, and none is picked.
   await landWorkflows(w.dir, "agent-1", [{ name: "answer", description: "Answers a question as a number", workflow: answerFlow }]);

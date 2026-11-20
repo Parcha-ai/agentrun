@@ -37,7 +37,7 @@
 // such runner takes the dials the server relays to it (runners.host and .port, dial-relay.ts). Version 14 keeps when a run or
 // an agent was purged (runs.purged_at, agents.purged_at; DELETE /runs/{id} and /agents/{id}, agent-delete.ts): its row is
 // then a tombstone, its content gone and its cost kept. Version 15 keeps the disk a run's launch named as its own
-// (runs.disk; learning is per agent and disk, learn/learning-of.ts). The server upgrades these in place at its open
+// (runs.disk; a run on one learns nothing, learn/learning-of.ts). The server upgrades these in place at its open
 // (listingUpgrade from 11, relayUpgrade from 12, purgeUpgrade from 13, then diskUpgrade from 14); a runner waits for it.
 export const SCHEMA_VERSION = 15;
 

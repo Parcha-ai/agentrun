@@ -15,7 +15,7 @@ import { pastRunsOverStore } from "../store-reads/learning.js";
 import { learnsWorkflows } from "./adapter-run-spec.js";
 import { settleAudits } from "./audit.js";
 import { held } from "./held.js";
-import { claimPromotion, learningOfDeps, promotionGate, replayClaimed, replayLaid, replayRecordedFor, toolFlowsFor } from "./promotion.js";
+import { claimPromotion, promotionGate, replayClaimed, replayLaid, replayRecordedFor, toolFlowsFor } from "./promotion.js";
 import { type FirstChoice, workflowFirstOf } from "./workflow-first.js";
 
 /** The claim, as the runner read it, for learnedFirst. */
@@ -51,12 +51,9 @@ export async function learnedFirst(deps: LearnedFirstDeps, laid: readonly Learne
   const own = { ...(deps.sealKey ? { sealKey: deps.sealKey } : {}), ...(deps.spendOff ? { spendOff: deps.spendOff } : {}) };
   // A replay run lays only the workflow it replays (promotion.ts replayLaid).
   const laidFlows = replayLaid(launch, laid);
-  // The claim's learning is the agent's on its launch's disk (learn/learning-of.ts): the audits, promotions and past
-  // runs it reads are that disk's alone.
-  const learning = learningOfDeps({ agentId, launch });
-  if (launch.learning && !launch.replay && !launch.audit) await settleAudits({ store, agentId, disk: learning.disk, revisionId, context, log, folder, shown, ...own });
+  if (launch.learning && !launch.replay && !launch.audit) await settleAudits({ store, agentId, revisionId, context, log, folder, shown, ...own });
   const promotion = claimPromotion({ store, agentId, runId, revisionId, launch, context, log, folder, shown, ...own });
-  const choice = learnsWorkflows(deps.kind, laidFlows) ? await workflowFirstOf(deps.kind, laidFlows, launch, log, () => pastRunsOverStore(store, learning), promotionGate(promotion), deps.outputSchema) : {};
+  const choice = learnsWorkflows(deps.kind, laidFlows) ? await workflowFirstOf(deps.kind, laidFlows, launch, log, () => pastRunsOverStore(store, agentId), promotionGate(promotion), deps.outputSchema) : {};
   // A replay run runs only its revision, while it still replays: else its claim is refused (the run ends failed, no agent).
   await replayClaimed(store, agentId, runId, launch, choice);
   const recorded = await replayRecordedFor(store, launch, context);

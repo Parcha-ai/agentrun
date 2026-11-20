@@ -33,9 +33,9 @@
 //      the transaction that would start the run). Then each of its runs not yet final, its learning runs included, is
 //      cancelled through the cancel path, and waited for until it is final.
 //   2. Its learning, by the learning module's deleteLearning (learn/delete.ts: its learning folder's files, here and on
-//      each Archil disk a launch of its runs named, a purged run's included, then its promotions and grades; its own disk goes whole in step 3;
-//      idempotent; it refuses with LearningInFlight while learning work is in flight, which answers 409 learning_busy
-//      with the agent left refusing runs).
+//      each Archil disk a launch of its runs named, a purged run's included, then its promotions and grades; its own
+//      disk goes whole in step 3; idempotent; it refuses with LearningInFlight while learning work is in flight, which
+//      answers 409 learning_busy with the agent left refusing runs).
 //   3. Its things: its triggers through the trigger engine (each one's registration upstream first, then its adapter
 //      settings, then its row), its saved sign-ins (each vendor object too), its own computer, its Archil disk; then each
 //      run's folders (on a disk its launch named, the caller's, too: the run's own folder there, never the disk), settings
@@ -52,15 +52,14 @@
 // same 503, and the next DELETE removes that trigger as it removes the others.
 import { ApiError } from "./errors.js";
 import { LearningInFlight } from "./learn/delete.js";
-import type { LearningOf } from "./learn/learning-of.js";
 import { FINAL_STATES, type PurgeKept, type RunState, RunsMadeFromLeft, type Store, StoreConstraint, TriggersLeft } from "./store/index.js";
 
 /** The delete of an agent's learning: the server's is the learning module's deleteLearning over the agent's learning
  *  folder, and its folder on each Archil disk a launch of its runs named, a purged run's included (learn/delete.ts;
- *  server.ts learningDisksOf), and its records on every disk. Idempotent; refuses with LearningInFlight while learning
- *  work of the agent is in flight. A reset of the agent's learning (learning-reset.ts), whose agent and runs stay, keeps
- *  every disk's reset ledger and the watermark (`keepResetLedger`) and deletes the
- *  folder on the agent's own disk too (`agentDisk`), which the agent's delete removes whole in its step 3. */
+ *  server.ts learningDisksOf), and its records. Idempotent; refuses with LearningInFlight while learning work of the
+ *  agent is in flight. A reset of the agent's learning (learning-reset.ts), whose agent and runs stay, keeps its reset
+ *  ledger and watermark (`keepResetLedger`) and deletes the folder on the agent's own disk too (`agentDisk`), which the
+ *  agent's delete removes whole in its step 3. */
 export type DeleteLearning = (store: Store, agentId: string, options?: { keepResetLedger?: boolean; agentDisk?: boolean }) => Promise<unknown>;
 
 /** A point of a delete a test may stop it at (AgentDeleteHost.at). An agent's: after step 1, after step 2, in step 3
@@ -103,10 +102,10 @@ export interface AgentDeleteHost {
   forgetAgent(agentId: string): Promise<void>;
   /** The runs made from run `runId` (store runs.madeFrom, and its audit's shadow run), by id, whether there or not. */
   madeFrom(runId: string): Promise<string[]>;
-  /** What `learning` (the run's agent on the run's disk, learn/learning-of.ts) copied from run `runId`, gone: the grades it
-   *  keeps of the run dropped, its promotion records' disagreements naming the run blanked, their decisions, numbers and
-   *  run ids kept (learn/promote.ts forgetRunCopies). */
-  forgetCopies(learning: LearningOf, runId: string): Promise<void>;
+  /** What agent `agentId`'s learning copied from run `runId`, gone: the grades it keeps of the run dropped, its promotion
+   *  records' disagreements naming the run blanked, their decisions, numbers and run ids kept (learn/promote.ts
+   *  forgetRunCopies). */
+  forgetCopies(agentId: string, runId: string): Promise<void>;
   /** What run `runId`'s spend reads from its journal, read before its purge removes it (store-reads/cap.ts). */
   kept(runId: string): Promise<PurgeKept>;
   /** Whether run `runId`'s turn is over (it reads idle, a paused workflow aside): its runner writes it final next. */
@@ -201,7 +200,7 @@ export async function purgeRun(host: AgentDeleteHost, runId: string): Promise<vo
   if (live.length) throw notFinal(runId, live);
   for (const one of made) await purgeOneOrRefuse(host, one.agentId, one.id, runId, true);
   await host.at?.("run_made_from_gone", runId);
-  await host.forgetCopies({ agentId: run.agentId, disk: run.disk }, runId);
+  await host.forgetCopies(run.agentId, runId);
   await purgeOneOrRefuse(host, run.agentId, runId, runId, true);
 }
 

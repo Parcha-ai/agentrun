@@ -353,20 +353,21 @@ serves no run.
 `DELETE /v2/agents/{id}/learning` (`learning-reset.ts`) deletes the folder whole, its git history and audit ledger
 included, on this server and on every Archil disk the agent's runs used (a Mode 2 run's end writes the folder on the
 disk its claim mounted: the agent's own, or one its launch named; `archil-routes.ts` removeLearningFolder, 503 while a
-disk can't be reached), then the agent's promotions and grades on every disk (`delete.ts` deleteLearning;
-`learning-of.ts` learningsOf: the default disk and each disk a run of the agent named, a purged run's included); the agent and its runs
-stay. The agent's delete takes the same step on the launch-named disks; its own disk goes whole there. It cancels
-the runs that exist only for learning (replays, audit shadows) and waits for them; a run of the agent's own still going
-refuses it (409 `learning_busy`), since its learning lives in it, and nothing is deleted. Before the records go, each
-revision they name is kept in the reset ledger of its disk's learning (`learning.reset-ledger.<agent>` for the default
-disk, `learning.reset-ledger.<agent>@<disk>` for a named one: workflow, digest and K alone, per (agent, disk) as the
-records are), so a kept served run's cost still carries its own disk's revision's compile and check; an agent's delete
-removes every ledger. Each
-run's diff (`.agentrun/diffs/`) goes with the folder. The folder's next write starts
-a new history.
+disk can't be reached; `learning-of.ts` namedDisksOf: each disk a run of the agent named, a purged run's included),
+then the agent's promotions and grades (`delete.ts` deleteLearning); the agent and its runs stay. The agent's delete
+takes the same step on the launch-named disks; its own disk goes whole there. It cancels the runs that exist only for
+learning (replays, audit shadows) and waits for them; a run of the agent's own still going refuses it (409
+`learning_busy`), since its learning lives in it, and nothing is deleted. Before the records go, each revision they
+name is kept in the agent's reset ledger (`learning.reset-ledger.<agent>`: workflow, digest and K alone), so a kept
+served run's cost still carries its revision's compile and check; an agent's delete removes the ledger. Each run's
+diff (`.agentrun/diffs/`) goes with the folder. The folder's next write starts a new history.
+
+A run on a disk its launch named learns nothing (`learning-of.ts`): its start reads no seed (`other_disk`), the runner
+drops any seed and workflow from its launch, and with no seed it stops before its compile. So the agent's records are
+its own, and every learning read of its runs reads only runs on no named disk (`runs.disk` null).
 
 Before anything goes, the reset sets the agent's watermark (`learning.reset-at.<agent>`, beside the ledger; the agent's
-delete removes both): when it began, one setting for the agent whatever disk its runs used. Learning reads only the
+delete removes both): when it began. Learning reads only the
 runs after it (`compile.ts` sinceReset): a run that started at or before it, or whose seed was read at or before it
 (its launch's `seededAt`, read in the same queue as the reset), counts toward no compile_after and is no compile's
 trace, no check's or owner's replay input, no audit's draw and no past run of the money rule, and the loop view lists
