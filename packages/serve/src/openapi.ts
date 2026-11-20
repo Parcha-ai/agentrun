@@ -3704,7 +3704,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
         known: { type: "integer", description: "The schema version this server's build knows. A build that knows less than `version` cannot be deployed on this store: its server refuses it." },
       },
       description: "The store's schema and runner floor beside this server's own, for a deploy's check that refuses a build older than the store. `agentrun-serve store-schema --build` prints a build's `known` without a store.",
-      "x-agentrun-serve": "runner-floor/1",
+      "x-agentrun-serve": "runnerfloor/1",
     },
     learning: {
       type: "object", additionalProperties: false, required: ["pending", "approve"],

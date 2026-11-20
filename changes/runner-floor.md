@@ -1,5 +1,5 @@
 ---
-packages: @parcha/agentrun-serve
+packages: @parcha/agentrun-serve, @parcha/agentrun
 kind: feature
 ---
 A runner on Postgres no longer needs the store's schema to match its own version exactly. The server can migrate first while the earlier release's runners keep running, as long as the migrations are additive. Each store keeps a runner floor: the oldest schema version a runner's build must know. A migration marked `-- runners: breaking` raises the floor to its own version. Every runner reads the floor again every 10 s, whether or not it holds runs. When the floor rises above its version, it claims nothing more, drains, hands its runs back and exits 3. A runner that starts below the floor exits 3 and says to run a runner of the server's release. A runner on a store its server has not migrated yet still exits 3, as before.

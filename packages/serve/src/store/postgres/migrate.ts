@@ -33,8 +33,9 @@ export interface Migration {
    *  Not part of the file's hash: it runs only before the migration applies. */
   readonly check?: string;
   /** The file says RUNNERS_BREAKING in its leading comment: a runner of a build that does not know this version cannot run
-   *  on the schema it leaves, so applying it raises the runner floor to its version. */
-  readonly breaking: boolean;
+   *  on the schema it leaves, so applying it raises the runner floor to its version. Absent: read from its header
+   *  (marksBreaking). */
+  readonly breaking?: boolean;
 }
 
 /** The line of a migration's leading comment that marks it breaking for runners of earlier builds (Migration.breaking). */
@@ -203,7 +204,7 @@ export async function migrate(client: pg.ClientBase, schema: string, at: number,
         if (refusals.length > 0) throw new Error(`${placeOf(schema)} cannot take migration ${String(migration.version).padStart(4, "0")}_${migration.name}.sql, so nothing was applied: ${refusals.join("; ")}`);
       }
       await client.query(migration.sql);
-      await client.query("INSERT INTO schema_migrations (version, name, sha256, applied_at, runners_breaking) VALUES ($1, $2, $3, $4, $5)", [migration.version, migration.name, migration.sha256, at, migration.breaking]);
+      await client.query("INSERT INTO schema_migrations (version, name, sha256, applied_at, runners_breaking) VALUES ($1, $2, $3, $4, $5)", [migration.version, migration.name, migration.sha256, at, migration.breaking ?? marksBreaking(migration.sql)]);
     }
     await client.query("COMMIT");
     return known;
