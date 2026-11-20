@@ -390,9 +390,10 @@ async function findKeys(plan: Plan, add: (keys: readonly string[]) => void, cut:
 const projectText = (cwd: string, files: { instructions: Record<string, string>; skills: Record<string, string> }) =>
   [cwd, ...Object.values(files.instructions), ...Object.entries(files.skills).flat()].join("\n");
 export const agentIdOf = (cwd: string) => `imp-${hash(`dir:${cwd}`).slice(0, 32)}`;
-/** The sessions the store holds already, as `source:session`, to their run's id. */
+/** The sessions the store holds already, as `source:session`, to their run's id: a purged run's too, so a session its
+ *  owner purged is never imported again. */
 const importedIn = async (store: ImportStore): Promise<Map<string, string>> =>
-  new Map((await store.runs.list({})).flatMap((run) => (run.importedFrom ? [[`${run.importedFrom.source}:${run.importedFrom.session}`, run.id] as const] : [])));
+  new Map((await store.runs.list({ purged: true })).flatMap((run) => (run.importedFrom ? [[`${run.importedFrom.source}:${run.importedFrom.session}`, run.id] as const] : [])));
 /** A session file as an import read it: its size and its time, so an unchanged one is not parsed again. */
 /** The file by the sha256 of its path, never the path: a path can hold what the cut takes out of everything written. */
 type SourceFile = { path_sha256: string; size: number; mtime_ms: number };
@@ -401,7 +402,7 @@ const sameFile = (seen: SourceFile | undefined, stats: { size: number; mtimeMs: 
  *  on the run's `imported_from`, so an unchanged file is not parsed again. */
 async function filesIn(store: ImportStore): Promise<Map<string, SourceFile & { run: string }>> {
   const out = new Map<string, SourceFile & { run: string }>();
-  for (const run of await store.runs.list({})) {
+  for (const run of await store.runs.list({ purged: true })) {
     const seen = run.importedFrom?.file;
     if (seen) out.set(seen.path_sha256, { path_sha256: seen.path_sha256, size: seen.size, mtime_ms: seen.mtime_ms, run: run.id });
   }

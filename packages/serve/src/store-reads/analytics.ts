@@ -67,7 +67,8 @@ export async function analytics(store: Store, filter: AnalyticsFilter = {}): Pro
   }
   const fromMs = filter.from === undefined ? null : Date.parse(filter.from);
   const toMs = filter.to === undefined ? null : Date.parse(filter.to);
-  const runs = await store.runs.list(filter.agent !== undefined ? { agentId: filter.agent } : {});
+  // Purged runs too: a tombstone keeps its state, times, cost and metrics, which these figures read.
+  const runs = await store.runs.list({ purged: true, ...(filter.agent !== undefined ? { agentId: filter.agent } : {}) });
 
   const agentArchived = new Map<string, number | null>();
   const harnessOf = new Map<string, string>();
