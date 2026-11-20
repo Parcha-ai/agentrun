@@ -87,6 +87,7 @@ export function claudeAgentSpec(setup) {
       { run, model: MODEL, provider: { origin: "https://faux.invalid", credential: () => `not-a-secret-${"x"}` }, price: () => 0, sessionsDir: SESSIONS },
       { standIn: { command: process.execPath }, sdk: fakeSdk({ mirrorLagMs: 10, ...standInScript(script), ...(received ? { onMessage: ({ text, priority }) => received({ text, ...(priority ? { priority } : {}) }) } : {}) }) },
     )),
+    facts,
     record: harness.record,
     session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools(tools), context: "fresh" },
     input: INPUT,

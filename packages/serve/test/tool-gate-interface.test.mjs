@@ -34,11 +34,11 @@ test("on a run with no computer a tool no setting names takes the kernel's ruled
   // names is asked first, never run unasked.
   const dir = mkdtempSync(join(tmpdir(), "tool-gate-none-"));
   try {
-    const gate = runGate({ root: dir, work: dir, computer: false }, "run-1", { kind: "agentic", body: {} }, () => ({ settings: {}, problems: [] }), true);
+    const gate = runGate({ root: dir, work: dir, computer: false, facts: undefined }, "run-1", { kind: "agentic", body: {} }, () => ({ settings: {}, problems: [] }), true);
     assert.equal(gate.policy("bash"), "ask");
     assert.equal(await gate.decide("bash", { command: "ls" }), "ask");
     assert.equal(gate.policy("bash_background"), "deny");
-    const onComputer = runGate({ root: dir, work: dir, computer: true }, "run-2", { kind: "agentic", body: {} }, () => ({ settings: {}, problems: [] }), true);
+    const onComputer = runGate({ root: dir, work: dir, computer: true, facts: undefined }, "run-2", { kind: "agentic", body: {} }, () => ({ settings: {}, problems: [] }), true);
     assert.equal(await onComputer.decide("bash", { command: "ls" }), "allow");
   } finally {
     rmSync(dir, { recursive: true, force: true });

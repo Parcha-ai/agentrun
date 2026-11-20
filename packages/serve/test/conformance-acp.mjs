@@ -71,6 +71,7 @@ export function acpSpec(setup, mode) {
   return async () => ({
     ...(agentId ? { agentId } : {}),
     adapter: tracked(acpAdapter({ recipe, sessionsDir: join(dir, "sessions") })),
+    facts: acpFacts(TEST_ID),
     record: "loop",
     session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools(tools), context: "fresh" },
     input: "Follow the script.",

@@ -113,6 +113,7 @@ export function codexSpec(setup, options = {}) {
       },
       { standIn: { command: process.execPath, args: [STAND_IN], env: { FAKE_CODEX_MODEL: "responses" } } },
     )),
+    facts,
     session: { key: "root", label: "root", system: ["Follow the script."], tools: hostTools(tools), context: "fresh" },
     input: "Follow the script.",
     runCap: { capUsd: () => undefined, modelOf: () => undefined },

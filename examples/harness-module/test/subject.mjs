@@ -9,10 +9,15 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acpAdapter, acpFacts } from "@parcha/agentrun-harness-acp";
+import { acpAdapter } from "@parcha/agentrun-harness-acp";
 import { fakeAgentRecipe } from "@parcha/agentrun-harness-acp/testing";
 import { createAdapterLoop, MAX_RESTARTS, suiteHostTools } from "@parcha/agentrun-serve/conformance";
-import { ID } from "../index.mjs";
+import { facts, ID } from "../index.mjs";
+
+/** The module's own facts, as a server's table reads them: the loop reads them from the run's spec (how Goose names our
+ *  tools, among them), and the suite skips the cases they rule out (an ACP agent's: no steer, no rerun of a started
+ *  call, no recovery of a cut answer) and says why. */
+const FACTS = facts;
 
 /** The folders this module's loops made, removed by closeAll. */
 const dirs = /** @type {string[]} */ ([]);
@@ -49,6 +54,7 @@ function spec(setup) {
   const run = {
     ...(agentId ? { agentId } : {}),
     adapter: tracked(acpAdapter({ recipe, sessionsDir: join(dir, "sessions") })),
+    facts: FACTS,
     record: "loop",
     session: { key: "root", label: "root", system: ["Follow the script."], tools: suiteHostTools(tools), context: "fresh" },
     input: "Follow the script.",
@@ -64,9 +70,7 @@ export const subject = {
   name: `${ID} on the fake ACP agent`,
   createLoop: (setup) => createAdapterLoop(spec(setup), { restartLimit: MAX_RESTARTS }),
   process: { module: import.meta.url, export: "subject" },
-  // What an ACP adapter declares (no steer, no rerun of a started call, no recovery of a cut answer): the suite skips
-  // the cases those rule out and says why.
-  facts: acpFacts(ID),
+  facts: FACTS,
 };
 
 /** Closes the sessions still open, then removes the folders the loops made. */

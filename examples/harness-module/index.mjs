@@ -51,6 +51,8 @@ async function missing(/** @type {NodeJS.ProcessEnv} */ env) {
 export const entries = (_builtins, kit) => ({
   [ID]: kit.acpEntry({
     facts,
+    // Goose's recipe declares session/load, so a crashed run resumes its own session (else the default, "restart").
+    resume: "load",
     missing,
     // The run's recipe: Goose's file, the binary `missing` checked and the model serve chose for the run, under this
     // harness's id.

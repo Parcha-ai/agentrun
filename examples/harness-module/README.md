@@ -17,8 +17,9 @@ From the repository root, after `npm ci --ignore-scripts` and `npm run build`:
 npm run test:harness-module-example
 ```
 
-It typechecks the module and runs the suite with no binary, no model and no key. It passes with `ℹ pass 25`,
-`ℹ fail 0` and `ℹ skipped 6`. The skipped cases are the ones an ACP agent rules out by its facts, and each says why.
+It typechecks the module and runs the suite with no binary, no model and no key. It passes as
+[HARNESS.md](../../HARNESS.md#what-passing-looks-like) shows. The skipped cases are the ones an ACP agent rules out by
+its facts, and each says why.
 
 ## Run it
 

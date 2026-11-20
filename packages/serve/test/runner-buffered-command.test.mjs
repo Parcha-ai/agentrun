@@ -254,7 +254,7 @@ test("an approve for a parked call, buffered on a resume claim whose loop closes
   // session opens.
   let resumes = 0;
   const adapter = createAdapterLoop(async (claim, run) => {
-    const gate = await adapterRunGate(store, claim, { kind: "agentic", body: { approvals: "ask" } }, root);
+    const gate = await adapterRunGate(store, claim, { kind: "agentic", body: { approvals: "ask" } }, root, undefined, { facts: undefined });
     const given = await base(claim, run);
     if (claim.from !== "parked" || (resumes += 1) > 1) return { ...given, gate };
     return { ...given, gate, adapter: { ...given.adapter, open: async () => { throw new Error("the session did not open in time"); } } };
