@@ -12,7 +12,7 @@ import type { Agent } from "@/lib/agentForm";
 import { agentsByName } from "@/lib/agents";
 import { Picker } from "@/components/ui/picker";
 import { ScheduleWhen } from "@/components/ScheduleWhen";
-import { UnattendedWarning } from "@/components/UnattendedWarning";
+import { askCue, UnattendedWarning, useAskingTools } from "@/components/UnattendedWarning";
 import { ZonePicker } from "@/components/ZonePicker";
 import { type Client, ClientError } from "@/lib/client";
 import { httpHref } from "@/lib/safeUrl";
@@ -105,6 +105,9 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddres
   };
   useEffect(read, [v2, tries]); // eslint-disable-line react-hooks/exhaustive-deps
   useRereads(read, every, [v2]);
+  // Each row's agent, read once, for the tools of it that ask: such a row says so, as its trigger's page does.
+  const startsOf = (t: Trigger) => (t.target.kind === "start_run" ? t.target.agent_id : null);
+  const { asks, outcome } = useAskingTools(v2, (triggers ?? []).flatMap((t) => startsOf(t) ?? []));
   return (
     // The page's frame is every list page's (Connected agents, Runs): a header bar with the place's icon and name in caps
     // and its actions at the right, the main one last, then the content.
@@ -141,6 +144,7 @@ function ScheduleList({ v2, go, agentName, every, now, failuresToPause, noAddres
                   </div>
                   <p className="mt-1 break-words font-mono text-small text-muted-foreground" title={cronOf(t)}>{whatWords(t, agentName, now())}</p>
                   {disabledWords(t, failuresToPause) && <p className="mt-1 break-words text-small text-warning-text">{disabledWords(t, failuresToPause)}</p>}
+                  {asks[startsOf(t) ?? ""] && <p data-asks="" className="mt-1 break-words text-small text-warning-text">{askCue(asks[startsOf(t)!]!, outcome)}</p>}
                 </div>
                 <div className="min-w-0 font-mono text-small text-muted-foreground md:text-right">
                   <p className="break-words">{lastWords(t)}</p>

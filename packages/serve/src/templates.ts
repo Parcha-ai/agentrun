@@ -97,8 +97,9 @@ const WHOLE = /^\$\{parameters\.([^}]*)\}$/;
 const FRONT = /^---\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/;
 
 /** An MCP server a package uses, by where it comes from (`source`, `toolkit`), never by the name an owner saves it under:
- *  inside the package its tools are `mcp:<toolkit>/<tool>`. `tools`, those the agent may be granted, and `allow`, those of
- *  them the package asks the owner to grant (a consent screen shows it, with `reason`). Neither the package nor an apply
+ *  inside the package its tools are `mcp:<toolkit>/<tool>`. `tools`, those the agent uses and the package asks the owner to
+ *  grant (a consent screen shows each, with `reason`), and `allow`, those of them expected to run without asking (reads);
+ *  the rest (writes) wait for the owner's OK on each call (packageView's `asks`). Neither the package nor an apply
  *  sets a permission: an apply's `grants`, the owner's ticks, grant the tools, and each call follows this server's tool settings
  *  (a write asks unless the owner allowed it there, a read follows the server's Allow reads, approvals never lifts an ask). `pin`, by tool: the arguments each of its calls must carry (a value, or
  *  `${parameters.<name>}`), which apply writes as the tool's pin in the agent's tool settings, so a send goes only to the

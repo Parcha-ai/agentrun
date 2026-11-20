@@ -427,8 +427,12 @@ describe("applying a template", () => {
     const reads = t.host.querySelector('[data-tool="mcp:github/get_pull_request"]')!.textContent ?? "";
     const writes = t.host.querySelector('[data-tool="mcp:github/create_review"]')!.textContent ?? "";
     for (const row of [reads, writes]) expect(row).not.toContain("without asking you");
-    expect(reads).toContain("The template asks you to grant this.");
-    expect(writes).toContain("The template does not ask for this; unticked, the agent doesn't get it.");
+    // Every tool the package lists is one the template uses and asks you to grant; `asks: "ask"` only means its calls
+    // wait for approval, said in one clause. No listed tool reads as not asked for.
+    for (const row of [reads, writes]) expect(row).toContain("The template asks you to grant this.");
+    for (const row of [reads, writes]) expect(row).not.toMatch(/does not ask for this|doesn't get it/);
+    expect(reads).not.toContain("waits for your OK");
+    expect(writes).toContain("The template asks you to grant this. Each call waits for your OK unless you allowed it in Settings or pick Never ask.");
     expect(t.host.textContent).not.toContain("asks you before each call");
     // The MCP need, by its source and the saved server it uses, with its reason; and the secrets by name only.
     const need = t.host.querySelector('[data-mcp="github"]')!.textContent ?? "";

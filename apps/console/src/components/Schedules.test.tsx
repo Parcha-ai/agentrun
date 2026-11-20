@@ -20,6 +20,8 @@ const NIGHTLY: Trigger = {
 const firing = (over: Partial<Firing>): Firing => ({ key: "fir_x", by: "schedule", nominal_at: "2026-11-04T09:30:00Z", status: "started", at: "2026-11-04T09:30:01Z", run_id: null, reason: null, error: null, ...over });
 const AGENTS = [
   { agent_id: "triage", kind: "agentic", definition: { name: "Triage" }, archived_at: null },
+  // An agent whose tools ask (GET /v2/agents/{id}'s `tools`, each with the permission in force): a run of it waits at them.
+  { agent_id: "mailer", kind: "agentic", definition: { name: "Mailer" }, archived_at: null, tools: [{ name: "send_email", permission: "ask" }, { name: "read_email", permission: "allow" }, { name: "create_issue_comment", permission: "ask" }] },
   { agent_id: "flow", kind: "workflow", definition: { name: "Refund flow" }, archived_at: null },
   // An agent with a default cap per run (definition.max_cost_usd): a schedule on it may leave its own cap out.
   { agent_id: "story", kind: "agentic", definition: { name: "Story", max_cost_usd: 0.5 }, archived_at: null },
@@ -157,6 +159,31 @@ describe("the schedules list", () => {
     expect([...t.host.querySelectorAll("[data-trigger]")].map((r) => r.getAttribute("data-trigger"))).toEqual(["trg_1", "trg_hook", "trg_msg"]);
     expect(t.text()).not.toContain("not shown here");
     expect(t.text()).not.toContain("undefined");
+  });
+  // A row whose agent has tools that ask says so, as the trigger's own page does (UnattendedWarning's title), naming those
+  // tools, on every kind of trigger. The page reads each agent once, however many rows start it.
+  it("says on each row of every kind whose agent has tools that ask that it waits for your approval, naming them, reading each agent once", async () => {
+    const on = (id: string, source: unknown, agent = "mailer") => ({ ...NIGHTLY, id, name: id, next_at: null, last_firing: null, source, target: { ...NIGHTLY.target, agent_id: agent } }) as unknown as Trigger;
+    const kinds = [
+      on("t_schedule", { kind: "schedule", cron: "0 9 * * *", timezone: "UTC" }),
+      on("t_webhook", { kind: "webhook" }),
+      on("t_github", { kind: "github", accept: [{ event: "pull_request", actions: ["opened"] }] }),
+      on("t_app", { kind: "composio", server: "gh", event: "GITHUB_ISSUE_ADDED_EVENT", config: { owner: "acme", repo: "web" } }),
+      on("t_feed", { kind: "feed", urls: ["https://status.example.test/feed"], every_s: 900 }),
+      on("t_email", { kind: "email", account: "default", mailbox: "INBOX", every_s: 60 }),
+    ];
+    const quiet = on("t_quiet", { kind: "webhook" }, "triage");
+    const s = server({ triggers: [...kinds, quiet] });
+    const t = await open(s.v2, {});
+    const row = (id: string) => t.host.querySelector(`[data-trigger="${id}"]`)!;
+    for (const k of kinds) {
+      const cue = row(k.id).querySelector("[data-asks]");
+      expect(cue?.textContent, k.id).toBe("Waits for your approval: send_email and create_issue_comment");
+    }
+    expect(row("t_quiet").querySelector("[data-asks]")).toBeNull();
+    expect(row("t_quiet").textContent).not.toContain("Waits for your approval");
+    expect(s.calls.filter((c) => c.path === "/v2/agents/mailer").length).toBe(1);
+    expect(s.calls.filter((c) => c.path === "/v2/agents/triage").length).toBe(1);
   });
   // The page is framed as every list page is (Connected agents, Runs): a header bar with the place's icon and its name in
   // caps, and the actions in that bar, the one main action last.

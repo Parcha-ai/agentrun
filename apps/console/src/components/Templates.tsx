@@ -515,8 +515,9 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
                         <span className="min-w-0">
                           <span className="font-mono text-body">{tool.name}</span> <span className="font-mono text-label text-muted-foreground">{tool.tool}</span>
                           {/* A tick is a grant, with no permission set: the section's note says what a granted tool then does.
-                              What the template asks for is said apart. */}
-                          <span className="block text-small text-muted-foreground">{tool.asks === "allow" ? "The template asks you to grant this." : "The template does not ask for this; unticked, the agent doesn't get it."}</span>
+                              Every tool the package lists is one the template uses, so each row asks for it; `asks: "ask"`
+                              (a write) only means each of its calls waits for approval, said in one clause. */}
+                          <span className="block text-small text-muted-foreground">The template asks you to grant this.{tool.asks === "ask" && " Each call waits for your OK unless you allowed it in Settings or pick Never ask."}</span>
                         </span>
                       </label>
                       {index >= 0 && <Issues issues={at(`grants.${index}`)} />}

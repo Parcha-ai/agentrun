@@ -23,6 +23,8 @@ const triggerOf = (id: string, name: string, source: Trigger["source"]): Trigger
 const MADE = [
   triggerOf("trg_mail", "new-mail", { kind: "email", account: "default", mailbox: "INBOX", every_s: 60 }),
   triggerOf("trg_eve", "evening-digest", { kind: "schedule", cron: "0 18 * * *", timezone: "UTC" }),
+  // An app trigger (Composio's), as a template's apply makes one: named the same way as the rest.
+  triggerOf("trg_app", "new-issue", { kind: "composio", server: "gh", event: "GITHUB_ISSUE_ADDED_EVENT", config: { owner: "acme", repo: "web" } } as Trigger["source"]),
 ];
 
 /** A server whose agents and triggers grow while the console is open (`state.applied`: the apply has run). */
@@ -61,7 +63,7 @@ describe("App, Triggers names an agent made after the console opened", () => {
     await until(() => !host.textContent?.includes("No triggers yet"));
     await act(async () => { location.hash = "#/triggers"; });
     const rows = () => [...host.querySelectorAll("[data-trigger]")].map((r) => r.textContent ?? "");
-    await until(() => rows().length === 2);
+    await until(() => rows().length === MADE.length);
     for (let i = 0; i < 40 && !rows().every((r) => r.includes("Inbox assistant")); i++) await act(async () => { await new Promise((r) => setTimeout(r, 25)); });
     expect(rows().filter((r) => r.includes(INBOX.agent_id))).toEqual([]);
     expect(rows().every((r) => r.includes("Inbox assistant"))).toBe(true);
