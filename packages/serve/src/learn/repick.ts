@@ -1,11 +1,11 @@
 // learning.repick (learning-setting.ts), the owner's, off by default: the answer's quote re-pick (check.ts quoteRule, a
-// loop of REPICK_PASSES until its quote_missing check passes) reads the run's fetched pages on its second pass. H6c's
-// re-pick tier, one more answer over the pages the run fetched, found its quotes on 24 of 24 misses; the compiled re-pick,
-// which reads its compact facts and its draft alone (check.ts compactStateProblems), found them on 2 of 8 in S6.
+// loop of REPICK_PASSES until its quote_missing check passes) reads the run's fetched pages on its second pass, where the
+// compiled re-pick reads its compact facts and its draft alone (check.ts compactStateProblems).
 //
 // The host does it, at compile time, in today's DSL: runner/learning-end.ts checkDraftOf rewrites the loop of a draft
 // the checks passed, and commits the rewrite, so the digest that serves is the doc the promotion check replayed. The
-// loop's body becomes a pass marker, two routes by value (no model asked):
+// loop is the one quoteRule finds (its RepickSite): a top-level step of the draft, or of the composed child writing its
+// answer, at any depth. Its body becomes a pass marker, two routes by value (no model asked):
 //   repick_pass reads repick_next.taken: missing on pass 1, so it takes "first", whose route repick_mark records
 //     {taken: "pages"} under repick_next before running the answer step as compiled;
 //   on pass 2 it reads "pages", and runs the step's clone: the same step, labelled <label>_pages, that also reads each
@@ -16,13 +16,20 @@
 // (check.ts repickLabels, learned-nodes.ts LoopRow). The compile prompt never names any of it.
 import { isDeepStrictEqual } from "node:util";
 import { isRepickMaxChars } from "../learning-setting.js";
-import { childNodes } from "./workflow-draft.js";
+import { childNodes, isNode, isObject } from "./workflow-draft.js";
 
 /** The passes of a checked answer's re-pick loop: the draft, then one re-pick. */
 export const REPICK_PASSES = 2;
 
-const isObject = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === "object" && !Array.isArray(value);
-const isNode = (value: unknown): value is Record<string, unknown> => isObject(value) && typeof value.node === "string";
+/** Where a workflow's answer is re-picked, as check.ts quoteRule finds it: `step`, its top-level step `at` writing the
+ *  answer, is the re-pick loop, or a composed workflow node whose child's answer is re-picked at `inner`. */
+export type RepickSite = { readonly at: number; readonly step: Record<string, unknown>; readonly inner?: RepickSite };
+/** `label`, a step's in the workflow holding `site`'s loop, as a run labels it: the DSL prefixes a composed child's `<step>/`. */
+const scoped = (site: RepickSite, label: string): string => (site.inner ? `${String(site.step.label)}/${scoped(site.inner, label)}` : label);
+/** The site of the loop itself, the innermost. */
+const loopSite = (site: RepickSite): RepickSite => (site.inner ? loopSite(site.inner) : site);
+/** The label a run's loop events give the re-pick loop at `site`. */
+export const repickLabelOf = (site: RepickSite): string => scoped(site, String(loopSite(site).step.label));
 
 /** The quote_missing a re-pick loop waits on: `step`'s, when it is a loop of REPICK_PASSES until `not` of a quote_missing. */
 export const repickCheckOf = (step: unknown): Record<string, unknown> | undefined =>
@@ -102,60 +109,54 @@ export function repickPassOne(loop: unknown): Record<string, unknown> | undefine
   return isDeepStrictEqual(body, markerOf(step, pages, cap)) ? step : undefined;
 }
 
-/** A workflow's top-level steps: its root chain's, else its root. */
-const topSteps = (doc: Record<string, unknown>): unknown[] => (isNode(doc.root) && doc.root.node === "chain" && Array.isArray(doc.root.steps) ? doc.root.steps : [doc.root]);
-
-/** `doc` with its answer's re-pick loop's body the pass marker, its clone capped at `maxChars`; a loop already marked is
- *  marked again from its pass 1. Undefined when there is none to mark: no top-level re-pick loop whose pass 1 is one model
- *  step writing the answer (isPassOne), or the marker's key or a label it adds is one the doc or its input already has.
- *  Given a draft the checks passed (check.ts checkDraft), whose answer step that loop is (quoteRule). `doc` is unchanged. */
-export function repickRewrite(doc: unknown, maxChars: number): Record<string, unknown> | undefined {
-  if (!isObject(doc) || !isRepickMaxChars(maxChars)) return undefined;
-  const head = isObject(doc.output) && typeof doc.output.path === "string" ? doc.output.path.split(".")[0]! : "";
-  const steps = topSteps(doc);
-  const passOneOf = (step: unknown) => (repickCheckOf(step) ? repickPassOne(step) ?? (step as Record<string, unknown>).body : undefined);
-  const at = steps.findLastIndex((step) => {
-    const one = passOneOf(step);
-    return isPassOne(one) && keyOf(one) === head;
-  });
-  if (!head || at < 0) return undefined;
-  const loop = steps[at] as Record<string, unknown>;
-  const step = passOneOf(loop) as Record<string, unknown>;
-  const pages = pagesOf(repickCheckOf(loop)!);
-  if (!pages) return undefined;
+/** `doc` with its answer's re-pick loop, at `site` (check.ts repickSiteOf of `doc`), its body the pass marker, its clone
+ *  capped at `maxChars`; a loop already marked is marked again from its pass 1. Undefined when the rewrite does not reach
+ *  it: its pass 1 is not one model step writing its workflow's answer (isPassOne), or the marker's key or a label it adds
+ *  is one that workflow or its input already has. Given a draft the checks passed (check.ts checkDraft). `doc` is
+ *  unchanged. */
+export function repickRewrite(doc: unknown, site: RepickSite | undefined, maxChars: number): Record<string, unknown> | undefined {
+  return isObject(doc) && site && isRepickMaxChars(maxChars) ? rewriteAt(doc, site, maxChars) : undefined;
+}
+function rewriteAt(workflow: Record<string, unknown>, { at, step: node, inner }: RepickSite, maxChars: number): Record<string, unknown> | undefined {
+  const replace = (step: Record<string, unknown>) => (isNode(workflow.root) && workflow.root.node === "chain" && Array.isArray(workflow.root.steps)
+    ? { ...workflow, root: { ...workflow.root, steps: workflow.root.steps.with(at, step) } }
+    : { ...workflow, root: step });
+  // A composed child's: rewritten in the child, whose state starts from the node's `input`, which may not hold the key.
+  if (inner) {
+    const child = isObject(node.workflow) && !(isObject(node.input) && Object.hasOwn(node.input, REPICK_MARK)) ? rewriteAt(node.workflow, inner, maxChars) : undefined;
+    return child && replace({ ...node, workflow: child });
+  }
+  const head = isObject(workflow.output) && typeof workflow.output.path === "string" ? workflow.output.path.split(".")[0]! : "";
+  const step = repickPassOne(node) ?? node.body;
+  const pages = pagesOf(repickCheckOf(node) ?? {});
+  if (!isPassOne(step) || keyOf(step) !== head || !pages) return undefined;
   // The run's input is the state the run starts from: a key its schema names there is the input's.
-  const schemas = isObject(doc.schemas) ? doc.schemas : {};
-  const input = isObject(doc.input) && typeof doc.input.schemaId === "string" ? schemas[doc.input.schemaId] : undefined;
+  const schemas = isObject(workflow.schemas) ? workflow.schemas : {};
+  const input = isObject(workflow.input) && typeof workflow.input.schemaId === "string" ? schemas[workflow.input.schemaId] : undefined;
   if (isObject(input) && isObject(input.properties) && Object.hasOwn(input.properties, REPICK_MARK)) return undefined;
-  // Every other node's labels and the keys it writes: none may be the marker's.
+  // Every other node's labels and the keys it writes, in this workflow: none may be the marker's.
   const taken = new Set<string>();
-  const walk = (node: unknown, depth: number): void => {
-    if (!isNode(node) || depth > 32) return;
-    for (const name of [node.label, node.as]) if (typeof name === "string") taken.add(name);
-    if (node.node !== "workflow") for (const child of childNodes(node)) walk(child, depth + 1);
+  const walk = (one: unknown, depth: number): void => {
+    if (!isNode(one) || one === node || depth > 32) return;
+    for (const name of [one.label, one.as]) if (typeof name === "string") taken.add(name);
+    if (one.node !== "workflow") for (const child of childNodes(one)) walk(child, depth + 1);
   };
-  steps.forEach((one, i) => i !== at && walk(one, 0));
+  walk(workflow.root, 0);
   if ([REPICK_MARK, PASS_ROUTE, MARK_ROUTE, UNREACHED, `${String(step.label)}${PAGES_LABEL}`].some((name) => taken.has(name))) return undefined;
-  const marked = steps.map((one, i) => (i === at ? { ...loop, body: markerOf(step, pages, maxChars) } : one));
-  return { ...doc, root: isNode(doc.root) && doc.root.node === "chain" ? { ...doc.root, steps: marked } : marked[0] };
+  return replace({ ...node, body: markerOf(step, pages, maxChars) });
 }
 
-/** The marked re-pick loops of `doc`: those of its own top-level steps whose body is the marker (repickPassOne), each with
- *  its pass-1 step, its clone's label and cap. The one place a marker counts: the rewrite puts it nowhere else, so the
- *  compact state rule (check.ts) reads only these as their pass 1, and the runner (repickPageCaps) cuts only their
- *  clones. A marker in a composed child, which a revised draft could carry, is a page read like any other. */
-export function repickMarked(doc: unknown): { readonly loop: Record<string, unknown>; readonly step: Record<string, unknown>; readonly label: string; readonly cap: number }[] {
-  if (!isObject(doc)) return [];
-  return topSteps(doc).flatMap((loop) => {
-    const step = repickPassOne(loop);
-    if (!step) return [];
-    const clone = (loop as { body: { branches: { pages: { body: { metadata: { repick: { max_chars: number } } } } } } }).body.branches.pages.body;
-    return [{ loop: loop as Record<string, unknown>, step, label: `${String(step.label)}${PAGES_LABEL}`, cap: clone.metadata.repick.max_chars }];
-  });
+/** The marked re-pick loop at `site` (check.ts repickSiteOf), when its body is the marker (repickPassOne): its pass-1
+ *  step, and its clone's label as a run gives it and its cap. The one place a marker counts, the one the rewrite puts it:
+ *  the compact state rule (check.ts) reads only this loop as its pass 1, and the runner (learned-workflow.ts runNode)
+ *  cuts only this clone. A marker anywhere else, which a revised draft could carry, is a page read like any other. */
+export function repickMarked(site: RepickSite | undefined): { readonly loop: Record<string, unknown>; readonly step: Record<string, unknown>; readonly label: string; readonly cap: number } | undefined {
+  const loop = site && loopSite(site).step;
+  const step = loop && repickPassOne(loop);
+  if (!site || !loop || !step) return undefined;
+  const clone = (loop as { body: { branches: { pages: { body: { metadata: { repick: { max_chars: number } } } } } } }).body.branches.pages.body;
+  return { loop, step, label: scoped(site, `${String(step.label)}${PAGES_LABEL}`), cap: clone.metadata.repick.max_chars };
 }
-
-/** Each marked re-pick's pass-2 label in `doc`, with its cap (repickMarked): what learned-workflow.ts runNode cuts. */
-export const repickPageCaps = (doc: unknown): Map<string, number> => new Map(repickMarked(doc).map(({ label, cap }) => [label, cap]));
 
 /** `text` cut to its first `at` UTF-16 units, never through a surrogate pair. */
 const headOf = (text: string, at: number): string => {
