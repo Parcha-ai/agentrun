@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { request } from "node:http";
 import { test } from "node:test";
-import { savedOf } from "./learn-support.mjs";
+import { ended } from "./learn-support.mjs";
 import { serve, withEnv } from "./support.mjs";
 
 const { API_ONLY_ENV, API_ONLY_ROUTES, apiOnlyFrom, servedApiOnly } = await import("../dist/api-only.js");
@@ -125,13 +125,7 @@ test("an API-only server serves an inline-run agent's learning reads with the to
   assert.equal(inline.status, 202, JSON.stringify(inline.body));
   const { agent_id: agent, run_id: run } = inline.body;
   // The run ends, then its learning (the look-back the runner beside the server runs): both read by the token.
-  for (let i = 0; ; i++) {
-    const view = await send(server, "GET", `/v2/runs/${run}`);
-    if (["completed", "failed"].includes(view.body.status)) break;
-    assert.ok(i < 600, `the run ends: ${JSON.stringify(view.body)}`);
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  await savedOf(server.data, run);
+  await ended(server.api, run);
 
   const [loop, promotions, cost, learning] = await Promise.all(LEARNING_READS.map((path) => send(server, "GET", at(path, agent, run))));
   assert.equal(loop.status, 200, JSON.stringify(loop.body));
