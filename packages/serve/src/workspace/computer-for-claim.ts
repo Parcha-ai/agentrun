@@ -55,7 +55,10 @@ import { endingDeletes, figuresOf, type IntervalWrites, intervalWrites } from ".
 import { type ComputeLedger, type ComputeMeter, computeMeter, type ComputeMeterOptions } from "../compute-cost.js";
 import { deleteKept, endKept, KEEP_MS, type Kept, type ParkCause, type ParkedEnd, readKept, takeKept, writeKept } from "./computer-kept.js";
 import { type ProviderLedger, storeLedger } from "./computer-ledger.js";
-import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer } from "./resolve-computer.js";
+import { type ClaimBrowser, type ClaimSide, type ComputerSetting, type ComputerSettingKind, type KindCapabilities, type KindRegistry, type LaunchedComputer, type ProviderEntry, providerKeys, registryHere, resolveComputer, runShellOf, type ShellPlace } from "./resolve-computer.js";
+import { computerDenied } from "../tool-gate.js";
+import { loadToolSettings } from "../tool-plane.js";
+import { computerDeniedWords } from "../refusal-words.js";
 import type { RunComputer, RunHold } from "./run-tools.js";
 import { claimHolds, fencedStore, type FolderStore, type HeldFolder, holdSynced, storedFolder } from "./synced-folder.js";
 import type { Workspace } from "./workspace.js";
@@ -227,6 +230,9 @@ export interface ComputerForClaimDeps {
  *  owner's view let go, then the computer. */
 export interface ClaimComputer {
   readonly computer?: RunComputer;
+  /** The agent's computer was not started: every tool it serves the run is set to deny (tool-gate.ts computerDenied). The
+   *  run goes on without it, and its kind's skill is not named to the model. */
+  readonly off?: true;
   readonly hold?: RunHold;
   readonly held?: HeldComputer;
   /** The computer is a new one that replaced an earlier claim's (Replaced): what was on that one is gone. Absent: the
@@ -294,6 +300,18 @@ export async function settingOf(launch: ClaimLaunch, store: Pick<Store, "agents"
   if (body?.computer) return body.computer;
   if (body?.place) return computerOfPlace(body.place);
   return launch.place ? computerOfPlace(launch.place) : undefined;
+}
+
+/** The kind of the claim's computer `setting` when every tool it serves the run is set to deny (tool-gate.ts
+ *  computerDenied): the revision's grants and tool settings over the server's, as the run's gate reads them. `shell`: where
+ *  the run's shell would be with it. A store with no settings, or settings that do not read, deny nothing. */
+async function deniedKind(launch: ClaimLaunch, setting: ComputerSetting, store: Pick<Store, "agents"> & { readonly settings?: Store["settings"] }, shell: ShellPlace): Promise<string | undefined> {
+  if (setting.kind === "none" || !store.settings || !launch.revisionId) return undefined;
+  const revision = await store.agents.revision(launch.revisionId);
+  if (!revision || revision.kind !== "agentic") return undefined;
+  const server = await loadToolSettings({ settings: store.settings }).catch(() => undefined);
+  if (!server || server.unreadable) return undefined;
+  return computerDenied({ kind: revision.kind, body: { ...(revision.body as object), computer: setting } }, shell, server);
 }
 
 /** A phone's platform: what the phone says it is, else its provider's phone configuration's machine kind; android when
@@ -1105,6 +1123,13 @@ export async function computerForClaim(
   };
 
   const setting = await settingOf(launch, store);
+  // A computer every tool of which is set to deny (tool-gate.ts computerDenied) serves the run nothing: none is started,
+  // nothing is rented or checked, and the run goes on without it, its timeline saying why.
+  const denied = setting && (await deniedKind(launch, setting, store, runShellOf(setting, deps.mode, kinds)));
+  if (denied) {
+    deps.onComputerNote?.(computerDeniedWords(denied));
+    return { computer: undefined, off: true, release: noop };
+  }
   const resolved = await resolveComputer(setting, deps.mode, kinds, side);
   if ("refused" in resolved) throw unavailable(resolved.refused);
   if (resolved.kind === "none") return { computer: undefined, release: noop };
