@@ -14,7 +14,7 @@ import { RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNNERS, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
-  AgentArchived, AgentDeleting, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, RunPurged, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, type AgentRow, type Agents,
+  AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, RunPurged, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
   type JournalReads, type KeptListing, type LaunchSealedWrite, type RunLabels, type UpdatedRun,
   type ReleasedState, type RunState, type SecureRewriteOptions, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
@@ -610,13 +610,23 @@ class SqliteStore implements Store {
 
     const insertAgent = (tx: SqliteExecutor, agent: { id: string; name: string; description?: string | null }, at: number) =>
       tx.run("INSERT INTO agents (id, name, description, created_at) VALUES (?, ?, ?, ?)", agent.id, agent.name, agent.description ?? null, at);
+    /** Agent `agentId`'s row, held (a writer's row lock, as its purge takes it), or undefined when there is none; refused
+     *  (AgentPurged) once it is purged: a write that waited on the purge's lock reads its purge time, and one that took the
+     *  lock first commits before the purge reads anything. */
+    const heldAgent = async (tx: SqliteExecutor, agentId: string) => {
+      await d.lockRow(tx, "agents", "id", agentId);
+      const agent = await tx.get<{ current_revision: string | null; archived_at: number | null; external_ref: string | null; purged_at: number | null }>(
+        "SELECT current_revision, archived_at, external_ref, purged_at FROM agents WHERE id = ?", agentId,
+      );
+      if (agent && agent.purged_at != null) throw new AgentPurged(agentId, agent.archived_at, agent.purged_at);
+      return agent;
+    };
     const insertRevision = async (tx: SqliteExecutor, agentId: string, revision: NewRevision, at: number, ifCurrent?: string | null) => {
       // The parent is the agent's current revision now (null for its first): the agent must exist, which its first revision
       // (create) and a later one (addRevision, upgrade) both guarantee before this. Held (a writer's row lock), so two
       // revisions added at once, by this server or another on the same store, never both name the same parent, and
-      // `ifCurrent` is compared with what no other writer can move until this commits.
-      await d.lockRow(tx, "agents", "id", agentId);
-      const agent = await tx.get<{ current_revision: string | null }>("SELECT current_revision FROM agents WHERE id = ?", agentId);
+      // `ifCurrent` is compared with what no other writer can move until this commits. Never one of a purged agent.
+      const agent = await heldAgent(tx, agentId);
       if (!agent) throw new StoreConstraint(`no agent ${agentId}`);
       if (ifCurrent !== undefined && agent.current_revision !== ifCurrent) throw new RevisionMoved(agentId, agent.current_revision);
       await tx.run("INSERT INTO revisions (id, agent_id, parent_id, kind, body, skills, note, package, created_at, mcp_pin, monid_pin) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -637,10 +647,10 @@ class SqliteStore implements Store {
     /** Refused (AgentDeleting) when agent `agentId` is being deleted: another system's agent with an archive time, which
      *  only its delete writes (AgentDeleting). The agent's row is held first (a writer's row lock, as the archive's UPDATE
      *  takes it), so on Postgres a delete's archive that commits first is read here, and one that commits after waits for
-     *  this run to be in the store, where the delete's listing of the agent's runs finds it. */
+     *  this run to be in the store, where the delete's listing of the agent's runs finds it. A purged agent is refused too
+     *  (AgentPurged): it takes no run and no trigger. */
     const refuseDeleting = async (tx: SqliteExecutor, agentId: string) => {
-      await d.lockRow(tx, "agents", "id", agentId);
-      const agent = await tx.get<{ archived_at: number | null; external_ref: string | null }>("SELECT archived_at, external_ref FROM agents WHERE id = ?", agentId);
+      const agent = await heldAgent(tx, agentId);
       if (agent?.archived_at != null && agent.external_ref != null) throw new AgentDeleting(agentId);
     };
     /** The runs whose launch is made from run `runId` (madeOf: a replay of its input, an audit's shadow), by id. Every
@@ -692,7 +702,11 @@ class SqliteStore implements Store {
 
     this.agents = {
       put: async ({ id, name, description = null }) => {
-        await db.write([{ sql: "INSERT INTO agents (id, name, description, created_at) VALUES (?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET name = excluded.name, description = excluded.description", params: [id, name, description, now()] }]);
+        await db.transaction(async (tx) => {
+          // Never a purged agent's name or description written back.
+          await heldAgent(tx, id);
+          await tx.run("INSERT INTO agents (id, name, description, created_at) VALUES (?, ?, ?, ?) ON CONFLICT (id) DO UPDATE SET name = excluded.name, description = excluded.description", id, name, description, now());
+        });
       },
       create: async (agent, firstRevision) => {
         await db.transaction(async (tx) => {
@@ -719,6 +733,8 @@ class SqliteStore implements Store {
       archive: async (id, archived, why) =>
         db.transaction(async (tx) => {
           const at = now();
+          // A purged agent stays as its purge left it: archived, never unarchived.
+          await heldAgent(tx, id);
           await tx.run("UPDATE agents SET archived_at = ? WHERE id = ?", archived ? at : null, id);
           if (!archived) return [];
           // Its triggers that are on, off in this same commit: a firing's fire reads the archive in its own transaction.
@@ -737,10 +753,14 @@ class SqliteStore implements Store {
         });
       },
       setCurrent: async (agentId, revisionId) => {
-        const changed = await db.transaction((tx) => tx.runCounted(
-          "UPDATE agents SET current_revision = ? WHERE id = ? AND EXISTS (SELECT 1 FROM revisions WHERE id = ? AND agent_id = ?)",
-          revisionId, agentId, revisionId, agentId,
-        ));
+        const changed = await db.transaction(async (tx) => {
+          // Never a purged agent's: its current revision stays the one its runs' tombstones read.
+          await heldAgent(tx, agentId);
+          return tx.runCounted(
+            "UPDATE agents SET current_revision = ? WHERE id = ? AND EXISTS (SELECT 1 FROM revisions WHERE id = ? AND agent_id = ?)",
+            revisionId, agentId, revisionId, agentId,
+          );
+        });
         if (changed === 0) throw new StoreConstraint(`${revisionId} is not a revision of agent ${agentId}`);
       },
       revision: async (id) => {
@@ -749,9 +769,14 @@ class SqliteStore implements Store {
       },
       revisions: async (agentId) => (await db.all<RevisionRecord>(`SELECT ${REVISION_COLUMNS} FROM revisions WHERE agent_id = ? ORDER BY created_at, id`, agentId)).map(revisionOf),
       // Written only while the revision has none (the one place a revision changes after its save), then read back in the
-      // same transaction: the pin that stood, this one or another first run's.
+      // same transaction: the pin that stood, this one or another first run's. Never on a purged agent's revision (its purge
+      // cleared every pin): its agent's row held first, as the purge holds it, and none written once it is purged.
       pinOnce: async (revisionId, pin) => {
         const row = await db.transaction(async (tx) => {
+          const of = await tx.get<{ agent_id: string }>("SELECT agent_id FROM revisions WHERE id = ?", revisionId);
+          if (!of) return undefined;
+          await d.lockRow(tx, "agents", "id", of.agent_id);
+          if ((await tx.get<{ purged_at: number | null }>("SELECT purged_at FROM agents WHERE id = ?", of.agent_id))?.purged_at != null) return undefined;
           await tx.run("UPDATE revisions SET mcp_pin = ? WHERE id = ? AND mcp_pin IS NULL", pinText(pin), revisionId);
           return tx.get<{ mcp_pin: string | null }>("SELECT mcp_pin FROM revisions WHERE id = ?", revisionId);
         });

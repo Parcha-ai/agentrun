@@ -71,7 +71,7 @@ export class ConsoleSessions {
 }
 /** One name per port: cookies are kept per host, not per port, and another server on this machine has another token. */
 const cookieName = (req: IncomingMessage) => `agentrun-${req.socket.localPort}`;
-const cookiesOf = (req: IncomingMessage, name: string) =>
+export const cookiesOf = (req: IncomingMessage, name: string) =>
   String(req.headers.cookie ?? "").split(";").map((part) => part.trim()).filter((part) => part.startsWith(`${name}=`)).map((part) => part.slice(name.length + 1));
 export const overHttps = (req: IncomingMessage) => String(req.headers["x-forwarded-proto"] ?? "").split(",")[0]!.trim().toLowerCase() === "https";
 export const ownOrigin = (req: IncomingMessage) => `${overHttps(req) ? "https" : "http"}://${String(req.headers.host ?? "").toLowerCase()}`;

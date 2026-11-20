@@ -89,9 +89,10 @@ test("the contract's operations are as vendored; this server's own are added and
   const gone = [];
   for (let { path, method, op } of operations(doc)) {
     const original = vendored.get(`${method} ${path}`);
-    // purge/1: every route of a run or an agent answers 410 purged (its DELETE aside); without it, the operation is what
-    // its other marks say.
-    const ofRunOrAgent = /^\/(runs\/\{run_id\}|agents\/\{agent_id\})(\/|$)/.test(path) && !["deleteRun", "deleteAgent"].includes(op.operationId);
+    // purge/1: every route of a run or an agent answers 410 purged (its DELETE aside), and so does each that writes to an
+    // agent its body names (a trigger made for it or moved to it, a template applied onto it); without it, the operation
+    // is what its other marks say.
+    const ofRunOrAgent = (/^\/(runs\/\{run_id\}|agents\/\{agent_id\})(\/|$)/.test(path) && !["deleteRun", "deleteAgent"].includes(op.operationId)) || ["createTrigger", "updateTrigger", "applyTemplate"].includes(op.operationId);
     assert.equal(op.responses?.["410"]?.$ref, ofRunOrAgent ? "#/components/responses/Gone" : original?.responses?.["410"]?.$ref, `${method.toUpperCase()} ${path}: 410 purged where a run or agent is named`);
     if (ofRunOrAgent) {
       gone.push(`${method.toUpperCase()} ${path}`);
@@ -254,7 +255,7 @@ test("the contract's operations are as vendored; this server's own are added and
   assert.deepEqual(notServed.map((at) => vendored.get(at.replace(/^\S+/, (method) => method.toLowerCase()))?.operationId), ["exportHome", "importHome", "killRun"]);
   assert.equal(vendored.size - notServed.length + own.length, operations(doc).length, "no other contract operation is gone");
   assert.deepEqual(own.sort(), [...doc.info["x-agentrun-serve"].extensions].sort(), "info lists the server's own");
-  assert.ok(["GET /runs/{run_id}", "GET /runs/{run_id}/timeline", "GET /agents/{agent_id}", "POST /runs/{run_id}/messages"].every((one) => gone.includes(one)), `a purged run's and agent's routes answer 410: ${gone}`);
+  assert.ok(["GET /runs/{run_id}", "GET /runs/{run_id}/timeline", "GET /agents/{agent_id}", "POST /runs/{run_id}/messages", "POST /triggers", "PATCH /triggers/{trigger_id}"].every((one) => gone.includes(one)),`a purged run's and agent's routes answer 410: ${gone}`);
   assert.equal(doc.components.responses.Gone["x-agentrun-serve"], "purge/1");
   // Every property this server adds is marked with the addition that made it, and listed; without them, the
   // contract's components are as vendored.

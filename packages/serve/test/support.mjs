@@ -347,8 +347,10 @@ const FAST_MODEL_RETRY = { retry: { enabled: true, maxRetries: 8, baseDelayMs: 1
  *  stops the runner and closes its store handle, and whose `beats()` counts the runner's polls and renewal passes
  *  (RunnerOptions.onBeat), so a test can wait for polls to pass without a clock. `computers`: a test's kind registry and
  *  provider loader for the run's claim-time computer. Its store is the one the server opens (store/open.ts openStore):
- *  SQLite in `data`, or the Postgres AGENTRUN_STORE_URL names. */
-export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, gradeTimeoutMs, computerForClaim, computers: own, mcpOwn, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, failRunsUpdate, fauxVendorApi, evalFakes, childRuns, ...switches } = {}) {
+ *  SQLite in `data`, or the Postgres AGENTRUN_STORE_URL names. `archil`: a test's Archil fakes for a Mode 2 claim, the
+ *  disk's file API (`makeDisk`, AdapterSpecDeps.makeArchilDisk) and the control plane (`control`,
+ *  AdapterSpecDeps.mountControl). */
+export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, gradeTimeoutMs, computerForClaim, computers: own, mcpOwn, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, failRunsUpdate, fauxVendorApi, evalFakes, childRuns, archil, ...switches } = {}) {
   const opened = await openStore({ dataDir: data, role: "runner" });
   // The runner's store, as a crash would leave its writes: once kill() has run, a journal commit of its loops never
   // lands while the test runs (a dead process writes nothing more), and fails when the runner's handle is closed.
@@ -411,7 +413,7 @@ export async function startInProcessRunner(data, { faux, githubApi, githubWeb, g
   let runner;
   let beats = 0;
   try {
-    const deps = { env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computerForClaim ?? computers.computerForClaim, computerDeps: computers.computerDeps, mcpLoopback: true, ...(mcpOwn ? { mcpOwn } : {}), ...(githubApi ? { githubApi } : {}), ...(githubWeb ? { githubWeb } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}), ...(harnessLocks ? { harnessLocks } : {}), ...(evalFakes ? { evalFakes } : {}), modelRetry, ...(gradeTimeoutMs ? { gradeBound: () => AbortSignal.timeout(gradeTimeoutMs) } : {}) };
+    const deps = { env, data, journal: (claim) => store.journal(claim), store, sealKey, routeOf, computerForClaim: computerForClaim ?? computers.computerForClaim, computerDeps: computers.computerDeps, mcpLoopback: true, ...(mcpOwn ? { mcpOwn } : {}), ...(githubApi ? { githubApi } : {}), ...(githubWeb ? { githubWeb } : {}), ...(githubMcpOrigin ? { githubMcpOrigin } : {}), ...(harnessLocks ? { harnessLocks } : {}), ...(evalFakes ? { evalFakes } : {}), ...(archil ? { makeArchilDisk: archil.makeDisk, mountControl: archil.control } : {}), modelRetry, ...(gradeTimeoutMs ? { gradeBound: () => AbortSignal.timeout(gradeTimeoutMs) } : {}) };
     // `childRuns` (a test's): each run a process of its own (run-child-host.ts childLoops), as the CLI's start runs them,
     // its keys and calls the runner's across the channel; the same user unless `childRuns.isolation` says otherwise (a
     // stand-in helper's), its lines on `childRuns.log`.

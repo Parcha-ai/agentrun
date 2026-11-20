@@ -364,7 +364,7 @@ test("the constructor refuses a dial host with exec or upload", () => {
 	assert.throws(() => new HostedProvider({ ...host, upload: async () => {} }, { daemonPath: DAEMON_PATH }), /has no exec and no upload/);
 });
 
-test("a dial desktop boots init with DISPLAY, starts the X server and the window manager over the socket it dialed, and declares the screen", async () => {
+test("a dial desktop boots init with DISPLAY and --window-manager, starts the X server over the socket it dialed, waits until computerd's window manager runs, and declares the screen", async () => {
 	const { fake, provider, hub } = setup({ facts: { windowManager: true } }, { kind: "desktop" });
 	const ref = made(await create(provider));
 	const [, request] = fake.calls.find(([what]) => what === "create");
@@ -372,15 +372,18 @@ test("a dial desktop boots init with DISPLAY, starts the X server and the window
 	assert.equal(fake.machines.get(ref.id).init.display, ":0", "init started with the display");
 	assert.deepEqual(fake.events.filter(({ what }) => what.startsWith("run ")), [], "nothing was run in the machine through the host");
 	assert.deepEqual(fake.uploads, [], "and nothing uploaded");
-	// The X server, then the window manager, started by computerd as any program, over the socket the machine dialed.
+	assert.match(request.boot.env.AGENTRUN_INIT_ARGS, / --window-manager$/, "init is asked to start the window manager");
+	assert.equal(fake.machines.get(ref.id).init.windowManager, true);
+	// The X server alone, started by computerd as any program, over the socket the machine dialed: computerd starts the
+	// window manager itself.
 	assert.deepEqual(
 		fake.machines.get(ref.id).processes.map(({ argv }) => argv[0]),
-		["Xvfb", "unshare"],
+		["Xvfb"],
 	);
-	assert.ok(fake.machines.get(ref.id).processes[1].argv.some((arg) => arg.includes("xfwm4")));
 	const connection = made(await provider.connect(ref));
 	assert.equal(connection.hello.kind, "desktop");
 	assert.ok(connection.hello.groups.includes("screen"));
+	assert.deepEqual(connection.hello.windowManager, { state: "running" });
 	await connection.close();
 	assert.equal(hub.online(ref.name), true);
 	made(await provider.release(ref, "delete"));

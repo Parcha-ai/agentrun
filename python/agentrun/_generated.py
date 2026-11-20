@@ -92,6 +92,8 @@ __all__ = [
     "CreateInlineRunResponse",
     "CreatePairingResponse",
     "CreateRunBody",
+    "CreateRunComputerViewerBody",
+    "CreateRunComputerViewerResponse",
     "CreateRunResponse",
     "CreateTriggerBody",
     "CreateTriggerBodySource1",
@@ -3826,6 +3828,7 @@ class _ListComputersResponseKindsItemProvidersItemRequired(TypedDict):
     required: list[str]
     ready: bool
     runs_refused: str | None
+    folder: Literal["bind", "archil", "sync"] | None
     shell: Literal["computer", "local", "none"]
     host_tools: list[str]
 
@@ -4089,6 +4092,7 @@ class _SaveComputerKeysResponseRequired(TypedDict):
     required: list[str]
     ready: bool
     runs_refused: str | None
+    folder: Literal["bind", "archil", "sync"] | None
     shell: Literal["computer", "local", "none"]
     host_tools: list[str]
 
@@ -5242,6 +5246,14 @@ class RunWorkflow(TypedDict):
     name: str | None
     digest: str | None
     repick: Literal["found", "missed"] | None
+
+
+CreateRunComputerViewerBody: TypeAlias = "dict[str, Any]"
+
+
+class CreateRunComputerViewerResponse(TypedDict):
+    url: str
+    expires_at: str
 
 
 ListRunFilesResponse: TypeAlias = "RunFileList"
@@ -9061,6 +9073,7 @@ OPERATIONS: dict[str, Operation] = {
     "callRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/call", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "releaseRunComputer": Operation(method="POST", path="/runs/{run_id}/computer/release", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "createInlineRun": Operation(method="POST", path="/runs", path_params=(), multi_segment=(), query=(), headers=("Idempotency-Key",), body=OperationBody(required=True, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
+    "createRunComputerViewer": Operation(method="POST", path="/runs/{run_id}/computer/viewer", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=OperationBody(required=False, types=("application/json",)), answer="json", secret=False, public_fields=(), tagged=False),
     "deleteRun": Operation(method="DELETE", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="none", secret=False, public_fields=(), tagged=False),
     "listRunFiles": Operation(method="GET", path="/runs/{run_id}/files", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
     "getRun": Operation(method="GET", path="/runs/{run_id}", path_params=("run_id",), multi_segment=(), query=(), headers=(), body=None, answer="json", secret=False, public_fields=(), tagged=False),
@@ -9572,6 +9585,10 @@ class RunsResource(Group):
     def create_inline_run(self, body: CreateInlineRunBody, *, idempotency_key: str | None = None, timeout: float | None = None) -> CreateInlineRunResponse:
         """Start a run of an agent another system owns, given inline (POST /runs)."""
         return self._call("createInlineRun", (), body, {"Idempotency-Key": idempotency_key}, timeout=timeout)
+
+    def create_run_computer_viewer(self, run_id: str, body: CreateRunComputerViewerBody | None = None, *, timeout: float | None = None) -> CreateRunComputerViewerResponse:
+        """Mint a link to the run's live view for the backend's user (POST /runs/{run_id}/computer/viewer)."""
+        return self._call("createRunComputerViewer", (run_id,), body, None, timeout=timeout)
 
     def delete(self, run_id: str, *, timeout: float | None = None) -> None:
         """Purge a run's content and keep its cost (DELETE /runs/{run_id})."""

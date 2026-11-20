@@ -683,6 +683,17 @@ export class AgentDeleting extends Error {
   }
 }
 
+/** A write to a purged agent (Agents.purge): a revision, its current revision moved, its name or description, its archive,
+ *  a run or a trigger of it. Refused, nothing written: its purge time is read under the agent row's lock, in the
+ *  transaction that would write, so of a purge and such a write one commits first and the other sees it (the purge blanks
+ *  what the write wrote, or the write is refused). A purged agent's row is its tombstone: nothing of it is written again. */
+export class AgentPurged extends Error {
+  override name = "AgentPurged";
+  constructor(readonly agentId: string, readonly archivedAt: number | null, readonly purgedAt: number) {
+    super(`the agent ${agentId} is purged`);
+  }
+}
+
 /** An agent's removal refused while a trigger of it is left (Agents.remove): a trigger keeps things outside its row (its
  *  registration upstream, its adapter settings) that only the trigger engine removes, so its row never goes with the
  *  agent's. Nothing written. */
@@ -702,6 +713,8 @@ export class ExternalBodyConflict extends Error {
   }
 }
 
+/** An agent's rows. Every write to an agent that exists (put, archive, addRevision, setCurrent; templates.upgrade; a run
+ *  or a trigger of it) is refused once it is purged (AgentPurged), nothing written, and pinOnce writes no pin then. */
 export interface Agents {
   /** Creates the agent, or renames it (name, description) when it exists. */
   put(agent: { id: string; name: string; description?: string | null }): Promise<void>;
@@ -734,7 +747,7 @@ export interface Agents {
   revisions(agentId: string): Promise<RevisionRow[]>;
   /** Pins a revision saved with no MCP pin (before pins were made at save) at its first run: `pin` is written only while
    *  the revision still has none, and the pin it has then is the answer, so two first runs at once agree on one. Null when
-   *  there is no such revision. */
+   *  there is no such revision, or its agent is purged (nothing written). */
   pinOnce(revisionId: string, pin: unknown): Promise<unknown>;
   /** The agent's own rows gone, in one transaction (the last write of DELETE /agents/{id}, agent-delete.ts): its learning
    *  rows and kept proposals, its sign-ins and their tombstones, its revisions and the agent. Only once it has no run and
