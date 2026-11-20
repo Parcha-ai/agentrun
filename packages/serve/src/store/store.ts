@@ -1238,6 +1238,41 @@ export interface ComputerLedgerRow {
   readonly updatedAt: number;
 }
 
+/** One computer a run's claim made through its provider (store schema `computer_intervals`): by the provider's own id
+ *  for it (`providerId`), what its create asked for (null where it asked none), when it was made, whether the run's park
+ *  kept it past its claim, and when the provider's delete of it answered ok (`endedAt`; null while none did). */
+export interface ComputerIntervalRow {
+  readonly runId: string;
+  /** The provider's id in this server's registry (its setting's provider: "docker", "e2b", ...). */
+  readonly provider: string;
+  /** The provider's own id for the computer: what its invoice and console name it by. */
+  readonly providerId: string;
+  /** sandbox, desktop or phone; null when not known. */
+  readonly kind: string | null;
+  readonly gpuType: string | null;
+  readonly gpuCount: number | null;
+  readonly cpus: number | null;
+  readonly memoryMb: number | null;
+  readonly startedAt: number;
+  readonly kept: boolean;
+  readonly endedAt: number | null;
+}
+
+/** Each computer a run made, from its create to its proven delete: how long it lived for its run, and one left running
+ *  after its run (no `endedAt`). Every write is idempotent. */
+export interface ComputerIntervals {
+  /** The computer's row, made: a second call for the same provider and id changes nothing (a retried create answers the
+   *  computer it made). */
+  opened(row: Omit<ComputerIntervalRow, "kept" | "endedAt">): Promise<void>;
+  /** The computer was kept past its claim (the run's park). */
+  kept(provider: string, providerId: string): Promise<void>;
+  /** The provider's delete of the computer answered ok at `at`: its end, written only while none is (a later delete of
+   *  one already ended never moves it). A computer with no row is left without one. */
+  ended(provider: string, providerId: string, at: number): Promise<void>;
+  /** The run's computers, by when each was made. */
+  forRun(runId: string): Promise<ComputerIntervalRow[]>;
+}
+
 /** The labels of the sessions a provider runs with none of its own (a phone provider's), so its list, an attach by
  *  labels and the janitor outlive a restart. */
 export interface ComputerLedger {
@@ -1605,6 +1640,8 @@ export interface Store {
   readonly sealedKeys: SealedKeys;
   /** The labels of the sessions a provider runs with none of its own (a phone provider's). */
   readonly computerLedger: ComputerLedger;
+  /** Each computer a run made, from its create to its proven delete. */
+  readonly computerIntervals: ComputerIntervals;
   /** The people's own machines paired with this server, and the codes that pair them (spec/computer/attach.md). */
   readonly pairedComputers: PairedComputers;
   /** The tokens minted for hosted machines that dial this server, each kept as its SHA-256. */

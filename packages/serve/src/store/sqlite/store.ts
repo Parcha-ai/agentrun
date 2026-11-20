@@ -12,7 +12,7 @@ import { watchCommandsAt, wakeCommands } from "../command-wake.js";
 import { claimFence, storeNow, type StoreNow } from "../fence.js";
 import { RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
-import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNNERS, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
+import { COMMANDS_ONE_ANSWER, COMPUTER_INTERVALS, COMPUTER_INTERVALS_RUN, DDL, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNNERS, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
   AgentArchived, AgentDeleting, AgentPurged, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, RunPurged, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
@@ -21,7 +21,7 @@ import {
   FINAL_STATES, MCP_REFRESH_CALL_MS, MCP_REFRESH_LEASE_MS, type Learning, type LearningProposal, type LearningSpend, type Live, type LiveRow, type LiveViewerRow, type LiveViewers, type Mcp, type McpCredentialMark, type McpPinRow, type McpRemoved, type McpServerRow, type McpServerWrite,
   type McpOauth, type McpOauthPendingRow, type SealedKeyRow, type SealedKeys, type SealedSecretRow, type SealedSecrets, type Settings, type SettingRow, type TriggerSettingRow, type TriggerSettings, type Channels, type ChannelAttemptRow, type ChannelPostRow,
   RevisionMoved, SignInHandedTo, SignInMissing, type SignIns, type SignInRow, type SignInTombstoneRow, type ViewerKind,
-  type ComputerLedger, type ComputerLedgerRow, type PairedComputerRow, type PairedComputers, RUN_CHANGES_PAGE, type RunChangeCursor,
+  type ComputerIntervalRow, type ComputerIntervals, type ComputerLedger, type ComputerLedgerRow, type PairedComputerRow, type PairedComputers, RUN_CHANGES_PAGE, type RunChangeCursor,
   type ImportedTemplates, type MintedTokenRow, type MintedTokens, type SecureRewrite,
   RUNNER_ROWS_KEPT_MS, type RunnerRow, type Runners, tombstoneMetrics,
 } from "../store.js";
@@ -222,6 +222,12 @@ const settingOf = (r: SettingRecord): SettingRow => ({ key: r.key, value: JSON.p
 type SealedKeyRecord = { name: string; sealed: Uint8Array; updated_at: number };
 const sealedKeyOf = (r: SealedKeyRecord): SealedKeyRow => ({ name: r.name, sealed: Uint8Array.from(r.sealed), updatedAt: r.updated_at });
 type ComputerLedgerRecord = { provider: string; session_id: string; labels: string; detail: string; updated_at: number };
+type ComputerIntervalRecord = { run_id: string; provider: string; provider_id: string; kind: string | null; gpu_type: string | null; gpu_count: number | string | null; cpus: number | string | null; memory_mb: number | string | null; started_at: number | string; kept: number | string; ended_at: number | string | null };
+const orNull = (value: number | string | null): number | null => (value === null ? null : Number(value));
+const intervalOf = (r: ComputerIntervalRecord): ComputerIntervalRow => ({
+  runId: r.run_id, provider: r.provider, providerId: r.provider_id, kind: r.kind, gpuType: r.gpu_type, gpuCount: orNull(r.gpu_count), cpus: orNull(r.cpus),
+  memoryMb: orNull(r.memory_mb), startedAt: Number(r.started_at), kept: Number(r.kept) === 1, endedAt: orNull(r.ended_at),
+});
 const ledgerRowOf = (r: ComputerLedgerRecord): ComputerLedgerRow => ({ provider: r.provider, sessionId: r.session_id, labels: JSON.parse(r.labels), detail: JSON.parse(r.detail), updatedAt: r.updated_at });
 type ImportedTemplateRecord = { id: string; source: string; sha: string; publisher: string; files: string; imported_at: number };
 type PairedRecord = { id: string; name: string; hello: string; driver: string; labels: string; pairing_id: string; created_at: number; seen_at: number | null; revoked_at: number | null };
@@ -424,6 +430,9 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
         // dropped, its rows heartbeats that each relay's runner writes again within its renewal, so none is copied.
         { sql: "DROP TABLE IF EXISTS runner_relays" },
         { sql: RUNNERS },
+        // Nor any computer a run made (schema.ts COMPUTER_INTERVALS): a computer made before it has no row.
+        { sql: COMPUTER_INTERVALS },
+        { sql: COMPUTER_INTERVALS_RUN },
         { sql: NATIVE_COMMANDS_INDEX },
       ], { full: true });
       await backfillNativeCommandOwners(connection);
@@ -567,6 +576,7 @@ class SqliteStore implements Store {
   readonly settings: Settings;
   readonly sealedKeys: SealedKeys;
   readonly computerLedger: ComputerLedger;
+  readonly computerIntervals: ComputerIntervals;
   readonly pairedComputers: PairedComputers;
   readonly mintedTokens: MintedTokens;
   readonly runners: Runners;
@@ -1396,6 +1406,7 @@ class SqliteStore implements Store {
           await tx.run("DELETE FROM learning_proposals WHERE run_id = ?", runId);
           await tx.run("DELETE FROM trigger_conversations WHERE run_id = ?", runId);
           await tx.run("DELETE FROM run_changes WHERE run_id = ?", runId);
+          await tx.run("DELETE FROM computer_intervals WHERE run_id = ?", runId);
           await tx.run("DELETE FROM runs WHERE id = ?", runId);
         });
       },
@@ -1881,6 +1892,23 @@ class SqliteStore implements Store {
         }]);
         return (result?.changes ?? 0) === 1;
       },
+    };
+
+    this.computerIntervals = {
+      opened: async (row) => {
+        await db.write([{
+          sql: "INSERT INTO computer_intervals (provider, provider_id, run_id, kind, gpu_type, gpu_count, cpus, memory_mb, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (provider, provider_id) DO NOTHING",
+          params: [row.provider, row.providerId, row.runId, row.kind, row.gpuType, row.gpuCount, row.cpus, row.memoryMb, row.startedAt],
+        }]);
+      },
+      kept: async (provider, providerId) => {
+        await db.write([{ sql: "UPDATE computer_intervals SET kept = 1 WHERE provider = ? AND provider_id = ?", params: [provider, providerId] }]);
+      },
+      ended: async (provider, providerId, at) => {
+        await db.write([{ sql: "UPDATE computer_intervals SET ended_at = ? WHERE provider = ? AND provider_id = ? AND ended_at IS NULL", params: [at, provider, providerId] }]);
+      },
+      forRun: async (runId) =>
+        (await db.all<ComputerIntervalRecord>("SELECT run_id, provider, provider_id, kind, gpu_type, gpu_count, cpus, memory_mb, started_at, kept, ended_at FROM computer_intervals WHERE run_id = ? ORDER BY started_at, provider, provider_id", runId)).map(intervalOf),
     };
 
     const PAIRED = "SELECT id, name, hello, driver, labels, pairing_id, created_at, seen_at, revoked_at FROM paired_computers";
