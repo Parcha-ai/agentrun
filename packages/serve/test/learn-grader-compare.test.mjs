@@ -272,7 +272,9 @@ test("(6) the grader's requests are its check's cost: each replay books its node
   assert.ok(Math.abs(revision.check_usd - 3 * 2 * each) < 1e-9, JSON.stringify(revision));
 });
 
-test("(7) a person's stop while each replay's grader request hangs: every replay stops at once, keeps no verdict, and its pair counts as differing", { timeout: 300_000 }, async (t) => {
+// The replay's job ended before its grader is asked (its look-back), and that end is kept: a stop cuts the look-back
+// only, so the replay ends with its job's end, never stopped.
+test("(7) a person's stop while each replay's grader request hangs: every replay ends at once with its job's end, keeps no verdict, and its pair counts as differing", { timeout: 300_000 }, async (t) => {
   const ids = undrawn("stop");
   const w = await world(t, { learning: { compile_after: 3 }, prior: 3, hang: (request) => isGrader(request.body) });
   await landRevision(w.dir, answerFlow(REVISED), ids[0]);
@@ -282,7 +284,7 @@ test("(7) a person's stop while each replay's grader request hangs: every replay
   // A stop never waits on the grader: well inside the 60 s a hung request would hold it, and the gateway never answers.
   const stopped = await w.replaysEnded(3, 20_000);
   for (const row of stopped) {
-    assert.equal(row.state, "stopped", `${row.id}: ${row.summary}`);
+    assert.equal(row.state, "ended", `${row.id}: ${row.summary}`);
     assert.equal(row.metrics?.replay?.compared, undefined, `${row.id} keeps no verdict`);
   }
   await w.start(ids[1], "Question 11");
