@@ -178,6 +178,11 @@ test("a reply that carries no job was never billed: booked $0; a job that failed
   const prose = await setup(t, { run: () => ({ content: [{ type: "text", text: "Something went wrong." }], isError: true }) });
   await prose.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "x", num_images: 1 } });
   assert.deepEqual(await prose.turns(), [0.03], "booked at its hold");
+  // A structured error with no request_id that is not a refusal of the input (a timeout after the request left): the
+  // job may exist, so at its hold, never $0.
+  const timedOut = await setup(t, { run: () => ({ content: [{ type: "text", text: JSON.stringify({ status: "error", error: { type: "upstream_timeout", message: "the queue closed before its reply arrived" } }) }], isError: true }) });
+  await timedOut.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "x", num_images: 1 } });
+  assert.deepEqual(await timedOut.turns(), [0.03], "a timeout is booked at its hold");
 });
 
 test("a reply lost after the job left is booked as an unknown charge, counted at its hold", async (t) => {

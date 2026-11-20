@@ -201,15 +201,21 @@ export const publicMedia = (guard: () => Promise<Omit<PublicFetchOptions, "maxBy
 type Priced = { job: FalJob; holdUsd: number; unitPrice: number; unit: string; words: string; at: number };
 type Unpriced = { job: FalJob; why: string };
 
+/** A reply in which fal says it refused the job's input: status "rejected", or an error of type validation_error or
+ *  with field_errors. */
+const refusedInput = (item: Record<string, unknown>): boolean =>
+  item.status === "rejected" || (isObject(item.error) && (item.error.type === "validation_error" || Array.isArray(item.error.field_errors)));
+
 /** What one job charged, by its reply `item` (run_model's reply, or its own entry of submit_jobs'): $0 when the
- *  submission was replayed or the reply carries no job; a completed job's stated units at its unit price; else its hold
+ *  submission was replayed or fal refused its input; a completed job's stated units at its unit price; else its hold
  *  (still running, or nothing stated). Null for a job with no price whose reply says it was accepted. */
 function chargeOfJob(quote: Priced | Unpriced, item: unknown): number | null {
   const hold = "holdUsd" in quote ? quote.holdUsd : null;
   if (!isObject(item)) return hold;
   if (item.submission_replayed === true) return 0;
-  // No request_id: fal accepted no job (an input it refused, a billing block), so there is nothing to bill.
-  if (typeof item.request_id !== "string" && item.status !== "completed" && item.result === undefined) return 0;
+  // fal refused the input before it made a job (no request_id, and a validation error or a rejection it says so in):
+  // nothing to bill. Any other reply without a job (a timeout, an unknown error) may hide one, so it stays at its hold.
+  if (typeof item.request_id !== "string" && refusedInput(item)) return 0;
   if (!("holdUsd" in quote)) return null;
   const after = item.status === "completed" ? unitsAfter(quote.unit, item.result) : undefined;
   return after === undefined ? quote.holdUsd : usd(quote.unitPrice * after);
