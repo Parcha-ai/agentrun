@@ -13,8 +13,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { MACHINE_TOKEN_SOURCE, newMachineToken } from "@parcha/agentrun-computer";
-import { driftedVersion, fixtureFor, frameLines, keepingFrames, patchVersion, reachesThisRun, scrubMachineTokens } from "../scripts/dial-conformance.mjs";
+import { conformanceCases, MACHINE_TOKEN_SOURCE, newMachineToken, readPng, runConformance } from "@parcha/agentrun-computer";
+import { fakeDevices, fakeFetch, testClock } from "../../computer/test/fake-device.mjs";
+import { driftedVersion, fixtureFor, frameLines, patchVersion, reachesThisRun, scrubMachineTokens } from "../scripts/dial-conformance.mjs";
 
 const SCRIPT = fileURLToPath(new URL("../scripts/dial-conformance.mjs", import.meta.url));
 const FIXTURE = fileURLToPath(new URL("./fixtures/dial-fake-provider.mjs", import.meta.url));
@@ -120,46 +121,44 @@ test("a desktop run is given computerd-fixture (without it the screen and input 
 	assert.equal(fixtureFor("linux", "/fixture"), undefined);
 });
 
-test("a run keeps the last whole-screen shot a case read to its end, as the computer gave it, and prints it between its markers with its sha256", async () => {
-	// A computer whose shots come in two chunks: screen.shot's data, then one screen.read to eof.
-	const pngs = [Buffer.from("first-whole-screen"), Buffer.from("a-region"), Buffer.from("never-read-to-eof"), Buffer.from("second-whole-screen")];
-	let shots = 0;
-	const daemon = {
-		call: async (method, params) => {
-			if (method === "screen.shot") {
-				const png = pngs[shots];
-				return { ok: true, value: { id: `shot-${shots++}`, size: png.length, data: png.subarray(0, 5).toString("base64"), eof: false } };
-			}
-			if (method === "screen.read") {
-				const png = pngs[Number(params.id.slice(5))];
-				return { ok: true, value: { data: png.subarray(params.offset).toString("base64"), eof: true } };
-			}
-			return { ok: true, value: {} };
-		},
-		close: () => undefined,
-	};
-	const provider = { connect: async () => ({ ok: true, value: { client: daemon, hello: {}, close: async () => undefined } }) };
-	const kept = keepingFrames(provider);
-	const { client } = (await provider.connect({ name: "one" })).value;
-	const read = async (params) => {
-		const shot = (await client.call("screen.shot", params)).value;
-		if (!shot.eof) await client.call("screen.read", { id: shot.id, offset: Buffer.from(shot.data, "base64").length });
-	};
-	await read({});
-	assert.deepEqual(kept.png, pngs[0]);
-	await read({ region: [0, 0, 1, 1] });
-	assert.deepEqual(kept.png, pngs[0], "a region's shot is not the screen's");
-	// A shot never read to its end is not kept.
-	await client.call("screen.shot", {});
-	assert.deepEqual(kept.png, pngs[0], "a shot not read to eof is not kept");
-	await read({});
-	assert.deepEqual(kept.png, pngs[3], "the last whole shot is kept");
-	const lines = frameLines(kept.png, 8);
-	const sha256 = createHash("sha256").update(pngs[3]).digest("hex");
-	assert.equal(lines[0], `DIAL-CONFORMANCE-FRAME-BEGIN ${sha256} ${pngs[3].length}`);
-	assert.equal(lines.at(-1), "DIAL-CONFORMANCE-FRAME-END");
-	assert.ok(lines.slice(1, -1).every((line) => line.length <= 8));
-	assert.deepEqual(Buffer.from(lines.slice(1, -1).join(""), "base64"), pngs[3]);
+test("the screen case hands the run's onScreenshot its last whole shot once, a PNG that decodes, and frameLines prints it between its markers with its sha256; a desktop case that ends before its fixture's shot still hands its first", async () => {
+	const dir = mkdtempSync(join(tmpdir(), "dial-conformance-frame-"));
+	try {
+		// The fake knows the fixture by where the case puts it, not by what it is.
+		const fixture = join(dir, "fixture.bin");
+		writeFileSync(fixture, Buffer.alloc(16, 7));
+		const screen = async (given) => {
+			const shots = [];
+			const report = await runConformance(fakeDevices({ kind: "desktop" }).provider, {
+				image: "fixture:image",
+				cases: conformanceCases.filter(({ id }) => id === "screen.screenshot-size"),
+				...(given ? { fixture: given } : {}),
+				fetch: fakeFetch,
+				clock: testClock,
+				patience: 1000,
+				onScreenshot: (png) => shots.push(png),
+			});
+			return { status: report.results.map(({ id, status }) => [id, status]), shots };
+		};
+		const early = await screen(undefined);
+		assert.notDeepEqual(early.status, [["screen.screenshot-size", "pass"]], "no fixture: the desktop case ends before the painted shot");
+		assert.equal(early.shots.length, 1, "its first whole shot, handed over all the same");
+		assert.deepEqual((({ width, height }) => [width, height])(readPng(Buffer.from(early.shots[0]))), [320, 240]);
+		const { status, shots } = await screen(fixture);
+		assert.deepEqual(status, [["screen.screenshot-size", "pass"]]);
+		assert.equal(shots.length, 1);
+		const png = Buffer.from(shots[0]);
+		const image = readPng(png);
+		assert.deepEqual([image.width, image.height], [320, 240], "the fake desktop's whole screen");
+		const lines = frameLines(shots[0], 8);
+		const sha256 = createHash("sha256").update(png).digest("hex");
+		assert.equal(lines[0], `DIAL-CONFORMANCE-FRAME-BEGIN ${sha256} ${png.length}`);
+		assert.equal(lines.at(-1), "DIAL-CONFORMANCE-FRAME-END");
+		assert.ok(lines.slice(1, -1).every((line) => line.length <= 8));
+		assert.deepEqual(Buffer.from(lines.slice(1, -1).join(""), "base64"), png);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
 });
 
 test("the drift case's patch writes the version string over where it occurs exactly once, the same length and printable, and refuses anything else", () => {

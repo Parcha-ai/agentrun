@@ -2,12 +2,12 @@
 // the daemon with process.start, as any program, so the server is in init's process table and ends with the computer.
 // The daemon reaches the display once it answers, and hello declares screen, input.pointer, input.keys and apps from then
 // on (hello re-checks the display on each call). A window manager, when the desktop has one, comes next: computerd starts
-// it itself when init was asked to (init --window-manager; hello's windowManager says how it goes), and create starts
-// it the same way as the server, through process.start, for a computerd that says nothing of one.
+// it itself when init was asked to (init --window-manager; see daemon/internal/windowmanager), and create waits on
+// hello's windowManager until it runs.
 // Docker's desktops, E2B's, Agent37's and Daytona's start the display this way.
 import { setTimeout as sleep } from "node:timers/promises";
 import type { ComputerClient } from "./protocol.js";
-import { type ComputerErrorCode, fail, ok, type Result, vendorFail } from "./result.js";
+import { fail, ok, type Result, vendorFail } from "./result.js";
 
 export interface DesktopOptions {
 	/** The display the daemon and the X server use, given to the daemon as DISPLAY. Default ":0". */
@@ -21,62 +21,10 @@ export interface DesktopOptions {
 /** The groups a desktop declares besides exec, files and processes: apps is computerd's, from the desktop's .desktop files. */
 export const DESKTOP_GROUPS = ["screen", "input.pointer", "input.keys", "apps"] as const;
 
-/**
- * The session bus the window manager reads its settings over: dbus's own session config, but listening on an abstract
- * name, which only a program in the bus's own network namespace reaches. dbus's unix:tmpdir is a socket under /tmp
- * with dbus 1.16 (Agent37's box), which every program of the user reaches.
- */
-const WINDOW_MANAGER_BUS = `<busconfig>
-  <type>session</type>
-  <keep_umask/>
-  <listen>unix:abstract=/agentrun/window-manager</listen>
-  <auth>EXTERNAL</auth>
-  <standard_session_servicedirs/>
-  <policy context="default">
-    <allow send_destination="*" eavesdrop="true"/>
-    <allow eavesdrop="true"/>
-    <allow own="*"/>
-  </policy>
-</busconfig>`;
-
-/**
- * The window manager a host's desktops run where its facts say so (HostFacts.windowManager: E2B's, Fly's, Cloudflare's,
- * Modal's, Agent37's and Daytona's), once the display answers: it frames, stacks and focuses the windows apps.launch
- * opens. xfwm4, which the box image has, with no compositor and no session manager. It reads its settings from xfconfd
- * over a session bus, and exits at once without one ("Xfconf could not be initialized"). So it runs in a session bus of
- * its own (dbus-run-session, WINDOW_MANAGER_BUS, written to a file of its own under /tmp), in a network namespace of its
- * own: a program of the computer's user reaches no socket of that bus, unless it joins that namespace (nsenter), as the
- * same uid may ptrace xfwm4. xfwm4 reaches the display as any program does, by its path. First, xsetroot paints the
- * screen behind every window one slate colour, so a desktop with no window open is not a black screen a person reads as
- * broken; a paint that fails starts xfwm4 all the same.
- *
- * computerd starts it itself (init --window-manager), as root makes the network namespace and then becomes the
- * computer's user, so no user namespace is needed there: the user can make neither on some hosts (Daytona's sandboxes,
- * under AppArmor's restrict_unprivileged_userns). This argv is create's own start, through process.start as the
- * computer's user, for a computerd whose hello says nothing of one: the user makes the network namespace inside a user
- * namespace (the same uid) of its own.
- */
-export const WINDOW_MANAGER: readonly string[] = [
-	"unshare",
-	"--user",
-	"--map-current-user",
-	"--net",
-	"--",
-	"sh",
-	"-c",
-	'xsetroot -solid "#3b4b5c"; bus=$(mktemp) && printf "%s" "$1" > "$bus" && exec dbus-run-session --config-file="$bus" -- xfwm4 --compositor=off --sm-client-disable',
-	"sh",
-	WINDOW_MANAGER_BUS,
-];
-/** WINDOW_MANAGER as create's errors name it: what runs, without the shell line and the bus's config. */
-const WINDOW_MANAGER_WORDS = "unshare --user --map-current-user --net -- dbus-run-session -- xfwm4 --compositor=off --sm-client-disable";
-
 const DISPLAY = /^:\d{1,5}(\.\d{1,5})?$/;
 /** How often create asks the daemon whether the display is up yet. */
 const DISPLAY_POLL_MS = 100;
-/** How long create watches a window manager it started: one that ends within it (it could not take the display) fails create. */
-const WM_SETTLE_MS = 1_000;
-/** The longest create gives a window manager's start and that watch, apart from the display's own timeoutMs. */
+/** The longest create waits on the window manager computerd starts, apart from the display's own timeoutMs. */
 const WM_BOUND_MS = 15_000;
 /** The longest a Node timer or AbortSignal.timeout holds. */
 const MAX_TIMER_MS = 2 ** 31 - 1;
@@ -99,13 +47,12 @@ export function desktopOf({ display = ":0", server, timeoutMs = 30_000 }: Deskto
  * Starts the desktop's X server through the daemon (process.start) and waits until hello declares the display: the
  * server ending first, or the bound passing, is a failure in words, with the server's own last words, as the vendor's
  * (code vendor, vendor the provider's id). version is the client's, sent with each hello. Once the display answers, a
- * hello with windowManager (computerd was asked to start it) is waited on until the manager runs; else, with
- * windowManager (the host's desktops run one, HostFacts.windowManager), create starts WINDOW_MANAGER itself.
+ * hello with windowManager (computerd was asked to start it) is waited on until the manager runs.
  */
 export async function startDisplay(
 	client: ComputerClient,
 	desktop: Required<DesktopOptions>,
-	{ version, vendor, signal, windowManager = false }: { version: string; vendor: string; signal?: AbortSignal | undefined; windowManager?: boolean },
+	{ version, vendor, signal }: { version: string; vendor: string; signal?: AbortSignal | undefined },
 ): Promise<Result<void>> {
 	const server = desktop.server.join(" ");
 	// Every call takes a signal that ends at the bound, so a hello the X connection setup holds, or a daemon that stops
@@ -122,8 +69,7 @@ export async function startDisplay(
 		const hello = await client.call("hello", { client: `@parcha/agentrun-computer ${version}` }, { signal: either });
 		if (!hello.ok) return timedOut() ? late() : hello;
 		if (Array.isArray(hello.value.groups) && hello.value.groups.includes("screen")) {
-			if (hello.value.windowManager) return await awaitWindowManager(client, desktop, { version, vendor, caller: signal });
-			return windowManager ? await startWindowManager(client, desktop, vendor, signal) : ok(undefined);
+			return hello.value.windowManager ? await awaitWindowManager(client, desktop, { version, vendor, caller: signal }) : ok(undefined);
 		}
 		const waited = await client.call("process.wait", { id, timeoutMs: 0 }, { signal: either });
 		if (waited.ok && !waited.value.running) {
@@ -141,8 +87,8 @@ export async function startDisplay(
 
 /**
  * Waits on the window manager computerd starts itself (hello's windowManager, init --window-manager) until hello says it
- * runs: one that ended fails create in computerd's words, its last lines among them. The bound is WM_BOUND_MS, as for a
- * manager create starts. The caller's abort still ends it.
+ * runs: one that ended fails create in computerd's words, its last lines among them. The bound is WM_BOUND_MS; the
+ * caller's abort still ends it.
  */
 async function awaitWindowManager(
 	client: ComputerClient,
@@ -164,41 +110,4 @@ async function awaitWindowManager(
 		await sleep(DISPLAY_POLL_MS, undefined, { signal }).catch(() => undefined);
 		if (signal.aborted) return stopped();
 	}
-}
-
-/**
- * Starts WINDOW_MANAGER on the display that answers, for a computerd that starts none (its hello has no
- * windowManager). A manager that cannot start, or ends
- * within WM_SETTLE_MS (xfwm4 with no session bus, or no display it may open), fails create with its last words. It has
- * its own bound, WM_BOUND_MS, not what is left of the display's: a display that came up late still gets its manager's
- * full second. The caller's abort still ends it.
- */
-async function startWindowManager(
-	client: ComputerClient,
-	desktop: Required<DesktopOptions>,
-	vendor: string,
-	caller: AbortSignal | undefined,
-): Promise<Result<void>> {
-	const manager = WINDOW_MANAGER_WORDS;
-	const bound = AbortSignal.timeout(WM_BOUND_MS);
-	const signal = caller ? AbortSignal.any([caller, bound]) : bound;
-	const stopped = (code: ComputerErrorCode, message: string) =>
-		caller?.aborted
-			? fail("aborted", "create was aborted while the window manager started")
-			: bound.aborted
-				? fail("timeout", `the window manager (${manager}) did not start on ${desktop.display} within ${WM_BOUND_MS / 1000} s`)
-				: fail(code, message);
-	// NO_AT_BRIDGE: GTK (xfwm4's toolkit) asks its session bus for no accessibility bus. On E2B Desktop, which has
-	// at-spi2-core, that bus is an at-spi-bus-launcher and a socket of the user's under its home (~/.cache/at-spi/bus_0).
-	const env = { DISPLAY: desktop.display, NO_AT_BRIDGE: "1" };
-	const started = await client.call("process.start", { argv: [...WINDOW_MANAGER], env }, { signal });
-	if (!started.ok) return stopped(started.error.code, `the window manager (${manager}) did not start on ${desktop.display}: ${started.error.message}`);
-	const { id } = started.value;
-	const waited = await client.call("process.wait", { id, timeoutMs: WM_SETTLE_MS }, { signal });
-	if (!waited.ok) return stopped(waited.error.code, `the window manager (${manager}) could not be waited on: ${waited.error.message}`);
-	if (waited.value.running) return ok(undefined);
-	const read = await client.call("process.read", { id, stream: "stderr", offset: 0 }, { signal });
-	const words = read.ok ? Buffer.from(read.value.data, "base64").toString("utf8").trim().split("\n").slice(-5).join("; ") : "";
-	const how = waited.value.signal ? `signal ${waited.value.signal}` : `exit code ${waited.value.exitCode}`;
-	return vendorFail(vendor, `the window manager (${manager}) ended with ${how} within ${WM_SETTLE_MS / 1000} s of starting on ${desktop.display}${words ? `: ${words}` : ""}`);
 }
