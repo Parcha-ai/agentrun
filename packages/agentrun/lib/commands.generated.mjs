@@ -2936,6 +2936,28 @@ export const COMMANDS = [
   },
   {
     "command": [
+      "runs",
+      "usage"
+    ],
+    "operationId": "getRunUsage",
+    "method": "GET",
+    "path": "/runs/{run_id}/usage",
+    "pathParams": [
+      "run_id"
+    ],
+    "multiSegment": [],
+    "query": [],
+    "headers": [],
+    "bodyFlags": [],
+    "hasBody": false,
+    "bodyRequired": false,
+    "bodyTypes": [],
+    "secretBody": false,
+    "raw": false,
+    "summary": "What a run cost, by model, by who charged for its tools, and by browser provider"
+  },
+  {
+    "command": [
       "sdk-runs",
       "complete"
     ],

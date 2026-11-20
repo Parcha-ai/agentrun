@@ -66,6 +66,8 @@ export type SqliteStoreOptions = (
   now?: () => number;
   /** How long a write waits for another process's lock before StoreBusy. */
   busyTimeoutMs?: number;
+  /** Told what a person should know that no caller is answered (a purge's checkpoint that left the WAL): stderr by default. */
+  warn?: (message: string) => void;
 };
 
 type AgentRecord = { id: string; name: string; description: string | null; current_revision: string | null; created_at: number; archived_at: number | null; external_ref: string | null; purged_at: number | null };
@@ -444,7 +446,7 @@ export async function openSqliteStore(options: SqliteStoreOptions): Promise<Stor
     await connection.close().catch(() => undefined);
     throw error;
   }
-  return storeOver(connection, options.now ?? Date.now, inMemory(file) ? undefined : file);
+  return storeOver(connection, options.now ?? Date.now, inMemory(file) ? undefined : file, options.warn);
 }
 
 /** Every unrefused approve or deny after the first for one approval of a run, refused with why (the open above). */
@@ -516,10 +518,19 @@ function readOnly(tx: Tx): Tx {
 
 /** The Store over `connection`, on whichever database it is (SQLite here, Postgres in postgres/store.ts), on the store's
  *  clock `now` (ms), its identity `where` (Store.where). The opener sets the schema up and checks its version first.
- *  `file`: a SQLite store's database file, beside which secureRewrite keeps its marker (SCRUB_SUFFIX). */
-export function storeOver(connection: StoreConnection, now: () => number, file?: string): Store {
-  return new SqliteStore(connection, now, undefined, file === undefined ? undefined : `${file}${SCRUB_SUFFIX}`);
+ *  `file`: a SQLite store's database file, beside which secureRewrite keeps its marker (SCRUB_SUFFIX), and whose WAL a
+ *  purge checkpoints. `warn`: told when that checkpoint could not empty the WAL (stderr by default). */
+export function storeOver(connection: StoreConnection, now: () => number, file?: string, warn: (message: string) => void = stderrWarn): Store {
+  return new SqliteStore(connection, now, undefined, file === undefined ? undefined : `${file}${SCRUB_SUFFIX}`, warn);
 }
+
+const stderrWarn = (message: string): void => void process.stderr.write(`agentrun-serve: ${message}\n`);
+/** How long a purge's checkpoint waits, once SQLite's busy wait ran out on another connection's reader or writer, before
+ *  its one retry. */
+const PURGE_CHECKPOINT_RETRY_MS = 200;
+/** How long a purge's checkpoint waits for another connection's reader or writer before it gives up (and is retried):
+ *  short, since every other request of the store's connection queues behind it. */
+const PURGE_CHECKPOINT_BUSY_MS = 20;
 
 /** The suffix, after the database file's name, of the marker secureRewrite writes before a rewrite and removes once no
  *  file of the store keeps the bytes it replaced: a start that finds it finishes the scrub. */
@@ -585,10 +596,13 @@ class SqliteStore implements Store {
   readonly #released = new Map<string, number>();
   /** secureRewrite's marker (SCRUB_SUFFIX): set on a SQLite store with a file, never on a snapshot. */
   readonly #scrubMarker: string | undefined;
+  /** Told what a person should know that no caller is answered (a purge's checkpoint that left the WAL as it was). */
+  readonly #warn: (message: string) => void;
 
-  constructor(db: StoreConnection, now: () => number, origin?: Store, scrubMarker?: string) {
+  constructor(db: StoreConnection, now: () => number, origin?: Store, scrubMarker?: string, warn: (message: string) => void = stderrWarn) {
     this.#db = db;
     this.#scrubMarker = scrubMarker;
+    this.#warn = warn;
     this.#now = now;
     this.origin = origin ?? this;
     this.where = db.where;
@@ -792,10 +806,10 @@ class SqliteStore implements Store {
         });
       },
       purge: async (agentId) => {
-        await db.transaction(async (tx) => {
+        const purged = await db.transaction(async (tx) => {
           await d.lockRow(tx, "agents", "id", agentId);
           const agent = await tx.get<{ purged_at: number | null }>("SELECT purged_at FROM agents WHERE id = ?", agentId);
-          if (!agent || agent.purged_at !== null) return;
+          if (!agent || agent.purged_at !== null) return false;
           // Each run a tombstone first (Runs.purge): a run started past the delete's listing keeps the agent for the next one.
           const left = await tx.get<{ id: string }>("SELECT id FROM runs WHERE agent_id = ? AND purged_at IS NULL LIMIT 1", agentId);
           if (left) throw new StoreConstraint(`agent ${agentId} still has run ${left.id} not purged: each is purged first (runs.purge)`);
@@ -810,7 +824,9 @@ class SqliteStore implements Store {
           await tx.run("UPDATE revisions SET body = '{}', skills = NULL, package = NULL, note = NULL, mcp_pin = NULL, monid_pin = NULL WHERE agent_id = ?", agentId);
           // Its purge time last, in the same write as its name and description.
           await tx.run("UPDATE agents SET name = '', description = NULL, purged_at = ? WHERE id = ?", now(), agentId);
+          return true;
         });
+        if (purged) await this.#purged(`agent ${agentId}`);
       },
     };
 
@@ -1319,11 +1335,11 @@ class SqliteStore implements Store {
         return [...new Set([...(await launchedFrom(db, runId)), ...learning])].sort();
       },
       purge: async (runId, kept) => {
-        await db.transaction(async (tx) => {
+        const purged = await db.transaction(async (tx) => {
           // Held as a run's end holds it: a write under a claim of it is either in before this, or finds it final.
           await d.lockRow(tx, "runs", "id", runId, "update");
           const run = await tx.get<{ state: RunState; runner: string | null; metrics: string | null; purged_at: number | null }>("SELECT state, runner, metrics, purged_at FROM runs WHERE id = ?", runId);
-          if (!run || run.purged_at !== null) return;
+          if (!run || run.purged_at !== null) return false;
           if (!(FINAL_STATES as readonly string[]).includes(run.state) || run.runner !== null) throw new StoreConstraint(`run ${runId} is ${run.state}${run.runner === null ? "" : ` under ${run.runner}'s claim`}: only a final run no runner holds is purged`);
           // A replay or shadow made from it after its purge read them (runs.create, under this row's lock) holds a copy of
           // its input: each is purged first.
@@ -1362,7 +1378,9 @@ class SqliteStore implements Store {
           await tx.run("UPDATE runs SET summary = NULL, labels = NULL, sign_in_handed = NULL, metrics = ? WHERE id = ?", json(metrics), runId);
           // Its listing, and its purge time last: no list shows it, and no lister builds it again.
           await tx.run("UPDATE runs SET listing = NULL, list_status = NULL, listing_mark = list_mark, listing_live = 0, listing_until = NULL, listing_flags = 0, purged_at = ? WHERE id = ?", now(), runId);
+          return true;
         });
+        if (purged) await this.#purged(`run ${runId}`);
       },
       remove: async (runId) => {
         await db.transaction(async (tx) => {
@@ -2206,6 +2224,32 @@ class SqliteStore implements Store {
     };
   }
 
+  /** After a purge of `what` committed (runs.purge, agents.purge), on a SQLite store with a file: a WAL checkpoint
+   *  (TRUNCATE). secure_delete (worker.ts open) zeroed the purged bytes in the pages the purge wrote, but those pages are
+   *  new frames in the WAL: the file keeps its earlier images of them, and the WAL its earlier frames, until a checkpoint
+   *  copies the zeroed pages into the file and truncates the log. A reader in another connection (a runner's read, a
+   *  backup) may hold the log back: the checkpoint waits PURGE_CHECKPOINT_BUSY_MS for it, not the connection's own busy
+   *  wait, since every request of the store's one connection queues behind it (the purge already committed). One retry
+   *  after a short pause, then a warning, and the old frames stay until the next purge's checkpoint (or the last
+   *  connection's close, which checkpoints and removes the log). An automatic checkpoint (PASSIVE) copies the zeroed
+   *  pages into the file but leaves the log's old frames in place. Never fails the purge, which committed. */
+  async #purged(what: string): Promise<void> {
+    const db = this.#db;
+    if (this.#scrubMarker === undefined || !(db instanceof Connection)) return;
+    let why = "";
+    for (let tries = 1; tries <= 2; tries++) {
+      try {
+        const checkpoint = await db.checkpoint(PURGE_CHECKPOINT_BUSY_MS);
+        if (checkpoint?.busy === 0) return;
+        why = "another connection held the log";
+      } catch (error) {
+        why = error instanceof StoreBusy ? "another connection held the log" : `the checkpoint failed: ${error instanceof Error ? error.message : String(error)}`;
+      }
+      if (tries === 1) await new Promise((resolve) => setTimeout(resolve, PURGE_CHECKPOINT_RETRY_MS));
+    }
+    this.#warn(`the purge of ${what} committed, but its WAL checkpoint did not finish (${why}): the purged content's earlier page images may stay in the store's file and its -wal until the next purge's checkpoint or the server's stop`);
+  }
+
   async secureRewrite(work: () => Promise<number>, options: SecureRewriteOptions = {}): Promise<SecureRewrite> {
     const marker = this.#scrubMarker;
     if (this.#db.dialect.name !== "sqlite" || marker === undefined) return { rewritten: await work() };
@@ -2213,21 +2257,16 @@ class SqliteStore implements Store {
     // leaves it, and its next start scrubs though no row is left in the clear.
     const pending = existsSync(marker);
     markScrub(marker);
-    let rewritten: number;
-    await this.#db.all("PRAGMA secure_delete = ON");
-    try {
-      rewritten = await work();
-    } finally {
-      await this.#db.all("PRAGMA secure_delete = OFF");
-    }
+    // secure_delete is on for the connection's whole life (worker.ts open): a rewritten row's old bytes are zeroed in its page.
+    const rewritten = await work();
     if (rewritten === 0 && !pending) {
       rmSync(marker, { force: true });
       return { rewritten };
     }
     // Asked with no VACUUM (a server already serving): the marker stays, and the next start's scrub runs it before it serves.
     if (options.vacuum === false) return { rewritten, left: "deferred" };
-    // secure_delete zeroes only the bytes `work` freed: a copy an earlier, ordinary update of the row left (a pause, a
-    // rename, a firing) is in a free block or page still. VACUUM rebuilds the file with neither, through the log; the
+    // A copy an update of the row left before secure_delete was on (a store an earlier server wrote: a pause, a rename, a
+    // firing) is in a free block or page still. VACUUM rebuilds the file with neither, through the log; the
     // checkpoint copies it into the file and truncates the log. Run outside any transaction.
     try {
       // Another connection's write (a runner's) may hold the lock past the busy wait: one retry after a short pause.

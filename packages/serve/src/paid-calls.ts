@@ -88,8 +88,9 @@ const pauseOn = async (error: unknown, pause: Ledger["pause"] = ledgers.getStore
 export type PaidBooking = {
   /** `chargedBy`: who charges for it (the charge's `charged_by` on main's records: parallel, monid, an MCP server, a
    *  browser vendor), named on its runner.request. `under`: the model session whose tool call it runs in (RunTools.admit),
-   *  whose requests in flight it is judged beside and never waits on. */
-  admit(request: { id: string; name: string; holdUsd: number; basis: string; call?: string; chargedBy?: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string; under?: string }): Promise<unknown>;
+   *  whose requests in flight it is judged beside and never waits on. `reported`: it settles at the provider's own figure
+   *  for the call, written on its runner.request (GET /runs/{run_id}/usage says a `tools` line's basis by it). */
+  admit(request: { id: string; name: string; holdUsd: number; basis: string; call?: string; chargedBy?: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string; under?: string; reported?: true }): Promise<unknown>;
   /** `givenBack`: the hold let go unused, nothing sent (RunTools.settle). */
   settle(id: string, usd: number | null, options?: { readonly givenBack?: true }): Promise<unknown>;
 };
@@ -187,11 +188,11 @@ export const stopRunWith = (pause: NonNullable<Ledger["pause"]>) => async (words
  *  given back, nothing charged, as a hold-only step's: a request its provider refused unrun leaves no charge row). One refused
  *  for room pauses the run through `pause`, else through the ledger of the call it runs in (bookedIn's), as main's
  *  paidCall pauses: a step outside any host tool call (a pi-native tool's, the browser's) passes the run's own. */
-export async function paidStep<T>(paid: PaidBooking, call: string | undefined, fee: { name: string; holdUsd: number; basis: string; by: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string }, run: () => Promise<T>, chargeOf: (outcome: { result: T } | { thrown: unknown }) => number | null | typeof GIVEN_BACK, pause?: Ledger["pause"]): Promise<{ refused: string } | { result: T }> {
+export async function paidStep<T>(paid: PaidBooking, call: string | undefined, fee: { name: string; holdUsd: number; basis: string; by: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string; reported?: true }, run: () => Promise<T>, chargeOf: (outcome: { result: T } | { thrown: unknown }) => number | null | typeof GIVEN_BACK, pause?: Ledger["pause"]): Promise<{ refused: string } | { result: T }> {
   const id = `${call ?? fee.ref ?? fee.name}#${(paidSeq += 1)}`;
   let admitted: unknown;
   try {
-    admitted = await paid.admit({ id, name: fee.name, holdUsd: fee.holdUsd, basis: fee.basis, ...(call === undefined ? {} : { call }), chargedBy: fee.by, ...(fee.tool ? { tool: fee.tool } : {}), ...(fee.tag ? { tag: fee.tag } : {}), ...(fee.owed ? { owed: true as const } : {}), ...(fee.hold ? { hold: true as const } : {}), ...(fee.ref === undefined ? {} : { ref: fee.ref }) });
+    admitted = await paid.admit({ id, name: fee.name, holdUsd: fee.holdUsd, basis: fee.basis, ...(call === undefined ? {} : { call }), chargedBy: fee.by, ...(fee.tool ? { tool: fee.tool } : {}), ...(fee.tag ? { tag: fee.tag } : {}), ...(fee.owed ? { owed: true as const } : {}), ...(fee.hold ? { hold: true as const } : {}), ...(fee.ref === undefined ? {} : { ref: fee.ref }), ...(fee.reported ? { reported: true as const } : {}) });
   } catch (error) {
     await pauseOn(error, pause);
     return { refused: (error as { code?: unknown })?.code === "spend_cap_reached" ? String((error as Error).message) : holdRefusal(fee.name, error) };

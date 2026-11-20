@@ -200,8 +200,10 @@ export interface ModelRequest {
    *  `under`: the key of the model session whose tool call it runs in (the CLI's session): a request of that session
    *  still in flight may be the one that asked for the call, unbooked until the call returns (Claude Code books its
    *  cost after its calls, Codex starts a call with its response open), so the call never waits on it (runBooking).
-   *  Not written on its record. */
-  paid?: { name: string; basis: string; call?: string; charged_by?: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string; under?: string };
+   *  Not written on its record. `reported`: what it is settled at is the provider's own figure for the call (its answer
+   *  says what it charged), not a price this server set; written on its record, so a read of the booking can say how a
+   *  charge's figure was reached. */
+  paid?: { name: string; basis: string; call?: string; charged_by?: string; tool?: string; tag?: string; owed?: true; hold?: true; ref?: string; under?: string; reported?: true };
   /** A side call, never its turn's own: on another model than the session's (a client's title, a summary), or the
    *  host's own request beside the harness's (`host`). */
   side?: true;

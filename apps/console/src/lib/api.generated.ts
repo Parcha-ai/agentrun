@@ -2885,6 +2885,43 @@ export interface operations {
       dropped: number;
     };
   };
+  getRunUsage: {
+    body: never;
+    answer: {
+      run_id: components["Id"];
+      ended_at: string | null;
+      currency: "USD";
+      total: {
+        usd: number | null;
+        so_far_usd?: number;
+        unpriced?: number;
+        upper_bound?: true;
+      } | null;
+      lines: {
+        meter: "tokens" | "tools" | "browser_time";
+        model: string | null;
+        provider: string | null;
+        charged_by: string | null;
+        quantity: number | null;
+        unit: "token" | "call" | "second";
+        basis: "reported" | "estimate" | "unpriced";
+        usd: number | null;
+        so_far_usd?: number;
+        unpriced?: number;
+        upper_bound?: true;
+        requests?: number;
+        tokens?: {
+          input: number;
+          output: number;
+          cache_read: number;
+          cache_write: number;
+        };
+        unmetered_requests?: number;
+        not_metered_calls?: number;
+      }[] | null;
+      reason: "running" | "not_booked" | "reopened" | null;
+    };
+  };
   getSdkRun: {
     body: never;
     answer: {
