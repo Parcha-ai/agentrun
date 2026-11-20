@@ -158,6 +158,38 @@ const ANALYTICS = closed({
   tools: { type: "array", maxItems: 20, description: "The 20 tools with the most calls, by name on a tie; `errors` counts the calls that failed (an error, a result the tool reads as failed such as a refused fetch, or no result at all).", items: closed({ tool: { type: "string", description: "The name the tool was called by." }, label: { type: "string", description: "What a person calls the tool, from the timeline's label registry; the name it was called by when it has none.", "x-agentrun-serve": "stats/3" }, calls: COUNT, errors: COUNT }) },
 }, "The runs' tokens, requests, time and tool calls from their metrics, over the runs not archived that the query picks; a run with no metrics counts in `runs` alone.");
 /** GET /stats's answer (stats.ts). */
+/** GET /capacity's answer (capacity.ts CapacityView). */
+const CAPACITY = closed({
+  at: { type: "string", format: "date-time", description: "When it was read, on the store's clock (the database's on Postgres)." },
+  runs: closed(
+    {
+      queued: { ...COUNT, description: "Runs waiting for a runner now: queued, handed back or with their claim run out (past any backoff), or parked with something to wake them. The backlog a scaler reads." },
+      executing: { ...COUNT, description: "Runs a live claim holds now, on any runner." },
+    },
+    "The store's runs, by whether a runner holds them.",
+  ),
+  runners: {
+    type: "array", description: "Each live runner (it said it was there within the last 30 s), by name.",
+    items: closed({
+      id: { type: "string", description: "The runner's name." },
+      version: { type: ["string", "null"], description: "Its build's version; null for a runner of an earlier build." },
+      slots: { type: ["integer", "null"], minimum: 0, description: "The most runs it holds at once; null when it did not say (an earlier build, or a runner that refused to claim)." },
+      executing: { ...COUNT, description: "The runs its live claims hold now." },
+      free_slots: { type: ["integer", "null"], minimum: 0, description: "`slots` less `executing`, never below 0; 0 for a runner that refused to claim, null with no `slots`. A runner also claims by its host's memory, so a free slot is the most it may take." },
+      refused: { type: "boolean", description: "It refused to claim any run; capabilities' `runner_refused` has its words." },
+      seen_at: { type: "string", format: "date-time", description: "When it last said it was there." },
+    }),
+  },
+  free_slots: { ...COUNT, description: "The free slots of every live runner that said its slots." },
+  hand_backs: closed(
+    {
+      window_minutes: { type: "integer", minimum: 1, maximum: 1440, description: "The window asked for (`window`)." },
+      count: { ...COUNT, description: "Runs a runner gave back still running within the window: a drain, a loop that closed itself, a claim given back. A claim whose lease ran out is not counted here." },
+    },
+    "The hand-backs within the window.",
+  ),
+});
+
 const STATS = closed({
   agents: { ...COUNT, description: "Agents not archived." },
   runs: closed(
@@ -2029,6 +2061,17 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       ],
       responses: { "200": json(STATS, "The counts and the cost."), ...errors(400, 401, 429, 500) },
       "x-agentrun-serve": "stats/1",
+    },
+  },
+  "/capacity": {
+    get: {
+      operationId: "getCapacity", tags: ["capabilities"], summary: "The runs waiting and held, the live runners and the recent hand-backs",
+      description: "Read from the store alone, so a server with no runner beside it (`--no-runner`, `AGENTRUN_API_ONLY=1`) answers for every runner on its store: what an operator or a scaler reads to size the runners. Counts, runner names and versions only, never a run, an agent or an address.",
+      parameters: [
+        { name: "window", in: "query", required: false, description: "The hand-back window in minutes, from 1 to 1440. Default 15.", schema: { type: "integer", minimum: 1, maximum: 1440 } },
+      ],
+      responses: { "200": json(CAPACITY, "The capacity, read now."), ...errors(400, 401, 429, 500) },
+      "x-agentrun-serve": "capacity/1",
     },
   },
   "/runs/{run_id}/graph": {

@@ -1411,6 +1411,24 @@ export interface RunnerRow {
   readonly host: string | null;
   readonly port: number | null;
   readonly seenAt: number;
+  /** The runner's build (the serve package's version), and the most runs it holds at once (its loops): each null on a
+   *  row a runner of an earlier build wrote, or one that said neither (a refusing runner says no slots). */
+  readonly version: string | null;
+  readonly slots: number | null;
+}
+
+/** The store's runs and hand-backs as the capacity read counts them (GET /v2/capacity, capacity.ts), on the deadlines'
+ *  clock (fence.ts storeNow), read once for the whole answer. Counts and runner names only. */
+export interface RunCapacity {
+  /** The deadlines' clock when it was read. */
+  readonly at: number;
+  /** Runs a runner may claim now, by the claim's own rule (queued; handed back or its claim run out, past any backoff; a
+   *  parked run something wakes). */
+  readonly queued: number;
+  /** Runs a claim holds now (its lease not run out), by the runner that holds them. */
+  readonly held: ReadonlyMap<string, number>;
+  /** The hand-backs (hand_backs) within the window asked for. */
+  readonly handBacks: number;
 }
 
 /** How long a runner's row is kept once it stopped saying it is there (a runner that died without its close): its next
@@ -1424,7 +1442,7 @@ export interface Runners {
    *  `unlessLiveMs`, not over another incarnation's row of the same name seen within that: a process's put again of a row
    *  that went (pruned, a store restored) never takes back a later process's live one. False when such a row is there and
    *  nothing was written. */
-  put(row: Omit<RunnerRow, "seenAt" | "host" | "port"> & { readonly host?: string | null; readonly port?: number | null }, options?: { readonly unlessLiveMs?: number }): Promise<boolean>;
+  put(row: Omit<RunnerRow, "seenAt" | "host" | "port" | "version" | "slots"> & { readonly host?: string | null; readonly port?: number | null; readonly version?: string | null; readonly slots?: number | null }, options?: { readonly unlessLiveMs?: number }): Promise<boolean>;
   /** Marks the runner's row seen now and says on it where its relay answers (`at`, or null for nowhere), while the row is
    *  still this incarnation's. False when it is not (or there is none), and nothing was written. */
   renew(runner: string, incarnation: string, at: { readonly host: string; readonly port: number } | null): Promise<boolean>;
@@ -1435,6 +1453,8 @@ export interface Runners {
   live(staleMs: number): Promise<RunnerRow[]>;
   /** The runner's row gone, while it is still this incarnation's. */
   remove(runner: string, incarnation: string): Promise<void>;
+  /** The runs waiting for a runner and held by one, and the hand-backs within the last `windowMs` (RunCapacity). */
+  capacity(windowMs: number): Promise<RunCapacity>;
 }
 
 /** A template package imported from GitHub (store schema `imported_templates`, POST /v2/templates/import): its id
