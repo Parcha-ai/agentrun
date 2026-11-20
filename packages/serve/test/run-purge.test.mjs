@@ -251,7 +251,7 @@ function hostOver(rows, turnOver, { waitMs = 5_000 } = {}) {
   const host = {
     store,
     madeFrom: async () => [],
-    forgetGrades: async () => {},
+    forgetCopies: async () => {},
     forgetRun: async () => {},
     kept: async () => ({ meters: null, spend: { usd: null }, learning: null }),
     turnOver: async (id) => turnOver[id] === true,
@@ -428,6 +428,38 @@ test("a grade whose body arrives after its run's purge is 410 purged: no grade o
   purged(await grading.answer, "the grade");
   assert.deepEqual(((await store.settings.get(gradesKey("calc")))?.items ?? []).map((grade) => grade.run), [kept], "no grade of the purged run");
   assert.deepEqual(mentions(data, gone), ["runs.id"], "no table names it but its tombstone");
+});
+
+test("a replay of a run's input made while its DELETE runs (the runs made from it purged, its tombstone not yet written) holds the DELETE: 409 naming it, the run kept; once it ends, the next DELETE purges both; a replay or an audit's shadow made after is refused, nothing written", { timeout: 120_000 }, async (t) => {
+  const { api, data, store, halt, gate } = await heldAt(t, "run_made_from_gone");
+  const [gone] = await twoRuns(api, store);
+  await halt();
+  const { currentRevision } = await store.agents.get("calc");
+  // The launch a live run's claim read before the DELETE (checkInputs), as reserve hands it to startReplay.
+  const read = (await store.runs.launch(gone)).body;
+  const replayOf = (id, link) => store.runs.create({ id, agentId: "calc", revisionId: currentRevision }, { body: { ...read, ...link } });
+  gate.arm(gone);
+  const deleting = api("DELETE", `/runs/${gone}`);
+  await within(gate.reached, 60_000, "the DELETE purged the runs made from it");
+  await replayOf("replay-late", { replay: { of: gone, workflow: "flow", digest: "d1" } });
+  gate.release();
+  const refused = await deleting;
+  assert.deepEqual([refused.status, refused.body.error?.code, refused.body.error?.details?.runs], [409, "run_not_final", ["replay-late"]], `the DELETE names the replay: ${JSON.stringify(refused.body)}`);
+  assert.equal((await store.runs.get(gone)).purgedAt, null, "the run is kept for the next DELETE");
+
+  // The replay ends (its claim refused, say); the next DELETE purges both.
+  const claim = await store.claim("replay-late", "runner-test", { leaseMs: 120_000 });
+  await store.runs.update(claim, { state: "ended" });
+  assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+  for (const id of [gone, "replay-late"]) assert.ok((await store.runs.get(id)).purgedAt !== null, `${id} is a tombstone`);
+  assert.deepEqual(mentions(data, "six times seven"), [], "its input is in no table");
+
+  // Made after its purge: refused at the create, nothing written.
+  for (const [id, link] of [["replay-after", { replay: { of: gone, workflow: "flow", digest: "d1" } }], [shadowRunId(gone), { audit: { of: gone, workflow: "flow", digest: "d1" } }]]) {
+    await assert.rejects(replayOf(id, link), (error) => error?.name === "RunPurged" && error.runId === gone, `${id} is refused`);
+    assert.equal(await store.runs.get(id), undefined, `${id}: nothing written`);
+  }
+  assert.deepEqual(mentions(data, "six times seven"), [], "its input is in no table after");
 });
 
 /** A test's owner password (no secret: joined so a scan for a literal one never reads it as one). */

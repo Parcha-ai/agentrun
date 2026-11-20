@@ -3320,11 +3320,14 @@ stays in every total.
 | --- | --- |
 | Its launch record (input, prompt), journal and timeline, messages and commands, outputs and files, the answers kept under its idempotency keys, its folders (here, and its own folder on an Archil disk; the disk is kept), its settings, its labels and summary, its agent's grades of it, and its kept learning's content | Its row, as its tombstone: id, agent, state, how it ended (a code), started and ended, `cost_usd` (an upper bound when that is all it has), its paid tools' cost, its purge time, how its learning ended (for `/stats`), and the spend figures `/usage` and a cap read from its journal. Its metrics keep their figures alone: counts by tool name, the effort and the cost basis, no grader's words, call arguments or results |
 | Its kept learning's turn and proposal | Each kept learning row as a link alone (the run's and its learning run's ids, its state): `/usage`'s learning line reads it, and it keeps its learning run out of every run list |
+| What a promotion record copied from it: a check's or an audit's disagreement's input, answers and the grader's words, and the words a hold's reason quoted from them | The record's decision, numbers and run ids, the run's among them |
 
 - Every route of a purged run is `410 purged`, `details` its tombstone; no run list shows it. `/usage`, `/stats` and
   the spend a cap reads are as they were. A second `DELETE` is `204`; a run never here is `404`.
 - The runs made from it are purged with it, each a tombstone: its audit's shadow run, the replay runs of its input,
-  and a learning run its kept learning names.
+  and a learning run its kept learning names. A replay or a shadow run a check or an audit starts while the `DELETE`
+  runs holds it: `409 run_not_final` naming that run, the run not purged, and the next `DELETE` purges both. Once the
+  run is purged, no replay or shadow run of it is started.
 - A live run (queued, working, waiting on a person or an approval, or held by a runner), or a live run made from it,
   is `409 run_not_final` (`details.runs`), nothing purged: cancel it first. A run that ended and takes a follow-up
   (idle), or that a person stopped, is not live. Such a run reads idle a moment before its runner writes it ended: a
@@ -3333,7 +3336,7 @@ stays in every total.
   nothing opens the run again or keeps a grade of it under its purge.
 - `503 unavailable` while its folder on an Archil disk is not deleted there yet: the run is not purged, and the next
   `DELETE` finishes it, as it finishes a purge that stopped part way (its purge time is set last).
-- Its agent's other runs and what the agent learned are kept: a promotion's record and the learning folder's history
+- Its agent's other runs and what the agent learned are kept: a promotion record and the learning folder's history
   may still name the run's id.
 - It takes the owner's session (the password sign-in, or the console on a server bound to loopback) or the API token;
   any other console session is `403 forbidden`, no credential `401`.

@@ -101,7 +101,7 @@ import { gradeRow, notAuditableOf } from "./runner/audit.js";
 import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf, shadowRunId } from "./learn/audit.js";
 import { auditLoopOf, COMPILE_AFTER_MAX } from "./learning-setting.js";
 import { FINAL_STATES, RUN_CHANGES_PAGE, type RunChange, type RunChangeCursor } from "./store/store.js";
-import { championOf, dropGrades, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown, servingOf, servingStateOf, shownDeep } from "./learn/promote.js";
+import { championOf, forgetRunCopies, type Grade, GRADE_SOURCES, GRADES_KEPT, type GradeSource, gradeView, LABEL_MAX, promotionsOf, promotionsShown, servingOf, servingStateOf, shownDeep } from "./learn/promote.js";
 import { workflowNodesOf } from "./learn/workflow-nodes.js";
 import { deleteLearning } from "./learn/delete.js";
 import { runModelRef } from "./model.js";
@@ -2527,9 +2527,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       await rm(join(data, "scratch", agentDirName(agentId)), { recursive: true, force: true });
       await forgetKept("agent", agentId);
     },
-    // The replay runs of its input and a learning run it names (the store's), and its audit's shadow run.
-    madeFrom: async (runId) => [...(await store.runs.madeFrom(runId)), shadowRunId(runId)],
-    forgetGrades: (agentId, runId) => dropGrades(store.settings, agentId, runId),
+    // The replay runs of its input, its audit's shadow run and a learning run it names (the store's), and its audit's shadow
+    // run by its id (one whose launch is gone too).
+    madeFrom: async (runId) => [...new Set([...(await store.runs.madeFrom(runId)), shadowRunId(runId)])],
+    forgetCopies: (agentId, runId) => forgetRunCopies(store.settings, agentId, runId),
     // /usage's meters and a live read's spend, from its journal, as they read now (store-reads/cap.ts), and how its
     // learning ended as /stats counts it (its state and reason alone).
     kept: async (runId) => {

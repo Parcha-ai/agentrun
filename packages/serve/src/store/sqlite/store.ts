@@ -14,7 +14,7 @@ import { RunStorage } from "../journal/storage.js";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { COMMANDS_ONE_ANSWER, DDL, IMPORTED_TEMPLATES, listingUpgrade, MINTED_TOKENS, purgeUpgrade, relayUpgrade, NATIVE_COMMANDS_INDEX, PI_TABLE, PI_TABLES, REVISIONS_MCP_PIN, REVISIONS_MONID_PIN, RUNNERS, RUNS_COST_UPPER_BOUND, RUNS_LABELS, SCHEMA_VERSION, SETTLED_LIST_STATUS, TRIGGERS_TEMPLATE_ID } from "../schema.js";
 import {
-  AgentArchived, AgentDeleting, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, type AgentRow, type Agents,
+  AgentArchived, AgentDeleting, CommandTaken, ExternalBodyConflict, Fenced, RunFinal, RunPurged, RunsMadeFromLeft, SchemaVersionUnknown, STORE_WRITE_DEADLINE_MS, StoreAwaitsServer, StoreBusy, StoreConstraint, StoreFromEarlierVersion, TriggerFull, TriggersLeft, type AgentRow, type Agents,
   type Claim, type Command, type FiringRow, type FiringStatus, type ImportRunInput, type Journal, type NewRevision, type RevisionRow, type RunRow, type Runs,
   type JournalReads, type KeptListing, type LaunchSealedWrite, type RunLabels, type UpdatedRun,
   type ReleasedState, type RunState, type SecureRewriteOptions, type Store, type StoreRole, type TemplatePackage, type Templates, type TriggerDef, type TriggerPatch, type TriggerRow, type Triggers, type TriggerScope,
@@ -25,6 +25,15 @@ import {
   type ImportedTemplates, type MintedTokenRow, type MintedTokens, type SecureRewrite,
   RUNNER_ROWS_KEPT_MS, type RunnerRow, type Runners, tombstoneMetrics,
 } from "../store.js";
+
+/** The run a launch body is made from (Runs.madeFrom): the run whose input it replays (`replay.of`) or audits (`audit.of`). */
+const madeOf = (body: unknown): string | undefined => {
+  for (const link of ["replay", "audit"] as const) {
+    const of = (body as Record<string, { of?: unknown } | null | undefined> | null)?.[link]?.of;
+    if (typeof of === "string") return of;
+  }
+  return undefined;
+};
 
 /** The seq a run-change cursor names (Runs.changedSince): only a cursor this store handed back, a whole number. */
 const seqOf = (cursor: RunChangeCursor): number => {
@@ -620,6 +629,13 @@ class SqliteStore implements Store {
       const agent = await tx.get<{ archived_at: number | null; external_ref: string | null }>("SELECT archived_at, external_ref FROM agents WHERE id = ?", agentId);
       if (agent?.archived_at != null && agent.external_ref != null) throw new AgentDeleting(agentId);
     };
+    /** The runs whose launch is made from run `runId` (madeOf: a replay of its input, an audit's shadow), by id. Every
+     *  launch is read (no index names its source): a purge's read, never a hot path. */
+    const launchedFrom = async (ex: Pick<SqliteExecutor, "all">, runId: string): Promise<string[]> =>
+      (await ex.all<{ id: string }>(
+        `SELECT run_id AS id FROM run_launch WHERE (${d.jsonText("body", ["replay", "of"])} = ? OR ${d.jsonText("body", ["audit", "of"])} = ?) AND run_id <> ? ORDER BY run_id`,
+        runId, runId, runId,
+      )).map((row) => row.id);
     /** Inserts the trigger, or (on its name for the agent) changes it in place, keeping its id; then its scope rows, only
      *  while it is enabled. `insertOnly` (an apply's new agent): no ON CONFLICT, and the package check keeps the names
      *  distinct, so the store's one name per agent is never what refuses an apply (templates.apply below). */
@@ -1063,6 +1079,15 @@ class SqliteStore implements Store {
         return this.#queued(await db.transaction(async (tx) => {
           const at = now();
           await refuseDeleting(tx, agentId);
+          // A run made from another (a replay of its input, an audit's shadow) never of a purged one: its source's row
+          // held as its purge holds it, so either this commits first and the purge finds it (RunsMadeFromLeft), or the
+          // purge does and this reads its purge time.
+          const of = launch ? madeOf(launch.body) : undefined;
+          if (of !== undefined) {
+            await d.lockRow(tx, "runs", "id", of);
+            const source = await tx.get<{ purged_at: number | null }>("SELECT purged_at FROM runs WHERE id = ?", of);
+            if (source && source.purged_at !== null) throw new RunPurged(of, id);
+          }
           const row = await tx.get<RunRecord>(insert, id, agentId, revisionId, labelled, at);
           if (origin) await tx.run("INSERT INTO run_origins (key, run_id, fingerprint, created_at) VALUES (?, ?, ?, ?)", origin.key, id, origin.fingerprint ?? null, at);
           if (launch) await writeLaunch(tx, id, launch, at);
@@ -1256,14 +1281,13 @@ class SqliteStore implements Store {
       every: async (agentId) =>
         (await db.all<{ id: string; state: RunState; runner: string | null; purged_at: number | null }>("SELECT id, state, runner, purged_at FROM runs WHERE agent_id = ? ORDER BY started_at, id", agentId))
           .map((row) => ({ id: row.id, state: row.state, runner: row.runner, purgedAt: row.purged_at ?? null })),
-      // Every launch is read for its `replay.of` (no index names it): a purge's read, never a hot path.
-      madeFrom: async (runId) =>
-        (await db.all<{ id: string }>(
-          `SELECT run_id AS id FROM run_launch WHERE ${d.jsonText("body", ["replay", "of"])} = ? AND run_id <> ?
-           UNION SELECT learning_run_id AS id FROM learning_proposals WHERE run_id = ? AND learning_run_id IS NOT NULL AND learning_run_id <> ?
-           ORDER BY id`,
-          runId, runId, runId, runId,
-        )).map((row) => row.id),
+      madeFrom: async (runId) => {
+        const learning = (await db.all<{ id: string }>(
+          "SELECT DISTINCT learning_run_id AS id FROM learning_proposals WHERE run_id = ? AND learning_run_id IS NOT NULL AND learning_run_id <> ?",
+          runId, runId,
+        )).map((row) => row.id);
+        return [...new Set([...(await launchedFrom(db, runId)), ...learning])].sort();
+      },
       purge: async (runId, kept) => {
         await db.transaction(async (tx) => {
           // Held as a run's end holds it: a write under a claim of it is either in before this, or finds it final.
@@ -1271,6 +1295,13 @@ class SqliteStore implements Store {
           const run = await tx.get<{ state: RunState; runner: string | null; metrics: string | null; purged_at: number | null }>("SELECT state, runner, metrics, purged_at FROM runs WHERE id = ?", runId);
           if (!run || run.purged_at !== null) return;
           if (!(FINAL_STATES as readonly string[]).includes(run.state) || run.runner !== null) throw new StoreConstraint(`run ${runId} is ${run.state}${run.runner === null ? "" : ` under ${run.runner}'s claim`}: only a final run no runner holds is purged`);
+          // A replay or shadow made from it after its purge read them (runs.create, under this row's lock) holds a copy of
+          // its input: each is purged first.
+          const left: string[] = [];
+          for (const id of await launchedFrom(tx, runId)) {
+            if ((await tx.get<{ purged_at: number | null }>("SELECT purged_at FROM runs WHERE id = ?", id))?.purged_at === null) left.push(id);
+          }
+          if (left.length) throw new RunsMadeFromLeft(runId, left);
           for (const table of PI_TABLES) await tx.run(`DELETE FROM ${table} WHERE run_id = ?`, runId);
           await tx.run("DELETE FROM commands WHERE run_id = ?", runId);
           await tx.run("DELETE FROM run_origins WHERE run_id = ?", runId);

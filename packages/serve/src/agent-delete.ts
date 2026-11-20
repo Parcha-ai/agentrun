@@ -7,11 +7,16 @@
 // A run's purge (purgeRun), only once it is not live (409 run_not_final otherwise, nothing purged: live is not final, or
 // held by a runner; a run that ended and can take a follow-up is not live), nor any run made from it: first each run made
 // from it (the replay runs of its input, its audit's shadow run, a learning run its kept learning names; each one's own
-// such runs before it), then the grades its agent keeps of it, then the run, each by purgeOne: the figures its spend's
+// such runs before it), then the grades its agent keeps of it and the content its promotion records copied from it (each
+// disagreement's input and answers, learn/promote.ts forgetRunCopies), then the run, each by purgeOne: the figures its spend's
 // readers read from its journal (kept on the tombstone, PurgeKept), its folders (its own folder on the agent's Archil disk
 // it resolved to, and on a disk its launch named), settings and kept answers, then its rows (store runs.purge, which sets
-// its purge time last). A DELETE stopped part way finds the run not purged yet and the next DELETE finishes it; a DELETE
-// of a purged run is 204 again, and every other route of it is 410 purged with its tombstone.
+// its purge time last). A replay of its input or an audit's shadow made by a claim (in a runner, maybe another process)
+// after the DELETE read the runs made from it is found by the store's purge, under the run's row lock: 409 run_not_final
+// naming it, the run kept for the next DELETE, which purges it first (RunsMadeFromLeft); one made once the run is purged
+// is refused at its create, nothing written (RunPurged). A DELETE stopped part way finds the run not purged yet and the
+// next DELETE finishes it; a DELETE of a purged run is 204 again, and every other route of it is 410 purged with its
+// tombstone.
 //
 // An archived agent made here (purgeAgent), by the same rule: 409 run_not_final while a run of it is live. Then its
 // learning, its things (triggers, sign-ins, its own computer, its disk), each of its runs by purgeOne, its folders,
@@ -46,7 +51,7 @@
 // same 503, and the next DELETE removes that trigger as it removes the others.
 import { ApiError } from "./errors.js";
 import { LearningInFlight } from "./learn/delete.js";
-import { FINAL_STATES, type PurgeKept, type RunState, type Store, StoreConstraint, TriggersLeft } from "./store/index.js";
+import { FINAL_STATES, type PurgeKept, type RunState, RunsMadeFromLeft, type Store, StoreConstraint, TriggersLeft } from "./store/index.js";
 
 /** The delete of an agent's learning: the server's is the learning module's deleteLearning over the agent's learning
  *  folder (learn/delete.ts). Idempotent; refuses with LearningInFlight while learning work of the agent is in flight. */
@@ -92,8 +97,10 @@ export interface AgentDeleteHost {
   forgetAgent(agentId: string): Promise<void>;
   /** The runs made from run `runId` (store runs.madeFrom, and its audit's shadow run), by id, whether there or not. */
   madeFrom(runId: string): Promise<string[]>;
-  /** The grades agent `agentId` keeps of run `runId` dropped (learn/promote.ts). */
-  forgetGrades(agentId: string, runId: string): Promise<void>;
+  /** What agent `agentId`'s learning copied from run `runId`, gone: the grades it keeps of the run dropped, its promotion
+   *  records' disagreements naming the run blanked, their decisions, numbers and run ids kept (learn/promote.ts
+   *  forgetRunCopies). */
+  forgetCopies(agentId: string, runId: string): Promise<void>;
   /** What run `runId`'s spend reads from its journal, read before its purge removes it (store-reads/cap.ts). */
   kept(runId: string): Promise<PurgeKept>;
   /** Whether run `runId`'s turn is over (it reads idle, a paused workflow aside): its runner writes it final next. */
@@ -183,7 +190,7 @@ export async function purgeRun(host: AgentDeleteHost, runId: string): Promise<vo
   if (live.length) throw notFinal(runId, live);
   for (const one of made) await purgeOneOrRefuse(host, one.agentId, one.id, runId, true);
   await host.at?.("run_made_from_gone", runId);
-  await host.forgetGrades(run.agentId, runId);
+  await host.forgetCopies(run.agentId, runId);
   await purgeOneOrRefuse(host, run.agentId, runId, runId, true);
 }
 
@@ -198,6 +205,8 @@ async function purgeOneOrRefuse(host: AgentDeleteHost, agentId: string, runId: s
   try {
     await host.store.runs.purge(runId, kept);
   } catch (error) {
+    // A replay or shadow made from it after the runs made from it were read: named, for the next DELETE to purge first.
+    if (error instanceof RunsMadeFromLeft) throw notFinal(purged, error.runs);
     if (error instanceof StoreConstraint) throw notFinal(purged, [runId]);
     throw error;
   }

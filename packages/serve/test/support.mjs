@@ -20,7 +20,7 @@ import { hostAddressesOnce } from "../dist/docker-host-addresses.js";
 import { fauxEnvOf } from "../dist/server.js";
 import { FAUX_VENDOR_API_ENV } from "../dist/tools.js";
 import { resolve } from "node:path";
-import { openSqliteStore } from "../dist/store/index.js";
+import { openSqliteStore, openStore } from "../dist/store/index.js";
 import { startRunner } from "../dist/runner/runner.js";
 import { maxRunsOf } from "../dist/host.js";
 import { claimInstallsStopped } from "../dist/harness-install.js";
@@ -346,9 +346,10 @@ const FAST_MODEL_RETRY = { retry: { enabled: true, maxRetries: 8, baseDelayMs: 1
  *  either waits queued. Returns a close() that
  *  stops the runner and closes its store handle, and whose `beats()` counts the runner's polls and renewal passes
  *  (RunnerOptions.onBeat), so a test can wait for polls to pass without a clock. `computers`: a test's kind registry and
- *  provider loader for the run's claim-time computer. */
+ *  provider loader for the run's claim-time computer. Its store is the one the server opens (store/open.ts openStore):
+ *  SQLite in `data`, or the Postgres AGENTRUN_STORE_URL names. */
 export async function startInProcessRunner(data, { faux, githubApi, githubWeb, githubMcpOrigin, gradeTimeoutMs, computerForClaim, computers: own, mcpOwn, harnessLocks, runnerTiming, modelRetry = FAST_MODEL_RETRY, log, failRunsUpdate, fauxVendorApi, evalFakes, childRuns, ...switches } = {}) {
-  const opened = await openSqliteStore({ dataDir: data, role: "runner" });
+  const opened = await openStore({ dataDir: data, role: "runner" });
   // The runner's store, as a crash would leave its writes: once kill() has run, a journal commit of its loops never
   // lands while the test runs (a dead process writes nothing more), and fails when the runner's handle is closed.
   let dead = false;
@@ -482,8 +483,9 @@ export async function serve(t, { harnesses: asked, runner: wantRunner = true, co
   let closeRunner = wantRunner === false ? undefined : await startInProcessRunner(data, runnerOptions);
   // Runners a test crashed (crashRunner), closed with the rest at the stop.
   const crashed = [];
-  // A handle of the test's own on the server's store (as a runner's), for what a test reads of its rows: server.store.
-  const store = await openSqliteStore({ dataDir: data, role: "runner" });
+  // A handle of the test's own on the server's store (as a runner's), for what a test reads of its rows: server.store. The
+  // store the server opened: SQLite in its data, or the Postgres AGENTRUN_STORE_URL names (openStore).
+  const store = await openStore({ dataDir: data, role: "runner" });
   // A server on another's data (a restart's): its owner's hook closes it before the directory goes.
   if (dir) sharing.set(data, new Set());
   else sharing.get(data)?.add(server);

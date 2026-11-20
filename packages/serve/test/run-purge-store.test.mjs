@@ -155,3 +155,47 @@ test("agents.purge refuses while a run of the agent is not a tombstone, or a tri
   await store.agents.purge("agent-1");
   assert.equal((await store.agents.get("agent-1")).purgedAt, agent.purgedAt);
 });
+
+test("a run made from another (a replay of its input, an audit's shadow) is never made of a purged run: runs.create refuses it (RunPurged), nothing written; runs.purge refuses a run while one made from it is not purged (RunsMadeFromLeft), nothing written", async (t) => {
+  const { store, file } = await storeOn(t);
+  await agentWithRevision(store, "agent-1", "rev-1");
+  const INPUT = "What the source run was asked.";
+  const made = (id, link) => store.runs.create({ id, agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: INPUT }, ...link } });
+  for (const id of ["run-a", "run-b"]) {
+    await made(id, {});
+    await ended(store, id);
+  }
+  // A replay of run-a's input made before its purge (a live claim read its launch first): its purge waits for it.
+  await made("replay-a", { replay: { of: "run-a", workflow: "flow", digest: "d1" } });
+  const left = await store.runs.purge("run-a", KEPT).then(() => undefined, (error) => error);
+  assert.ok(left instanceof StoreConstraint, `refused as a constraint: ${left}`);
+  assert.deepEqual([left.name, left.runs], ["RunsMadeFromLeft", ["replay-a"]], "the purge names the replay");
+  assert.equal((await store.runs.get("run-a")).purgedAt, null, "nothing written");
+  assert.ok(await store.runs.launch("run-a"), "its launch is kept");
+  // An audit's shadow of run-b holds run-b's purge the same way, and the store finds it as it finds a replay.
+  await made("audit.run-b", { audit: { of: "run-b", workflow: "flow", digest: "d1" } });
+  const shadowLeft = await store.runs.purge("run-b", KEPT).then(() => undefined, (error) => error);
+  assert.deepEqual([shadowLeft?.name, shadowLeft?.runs], ["RunsMadeFromLeft", ["audit.run-b"]], `the purge names the shadow: ${shadowLeft}`);
+  assert.deepEqual(await store.runs.madeFrom("run-b"), ["audit.run-b"]);
+
+  // Each made-from run purged first, then its run: the purges go through.
+  for (const id of ["replay-a", "audit.run-b"]) {
+    await ended(store, id);
+    await store.runs.purge(id, KEPT);
+  }
+  await store.runs.purge("run-a", KEPT);
+  await store.runs.purge("run-b", KEPT);
+  assert.ok((await store.runs.get("run-a")).purgedAt !== null);
+
+  // Made after the purge (a claim that read run-a's launch before it): refused, nothing written.
+  for (const [id, link] of [["replay-late", { replay: { of: "run-a", workflow: "flow", digest: "d1" } }], ["audit.late", { audit: { of: "run-a", workflow: "flow", digest: "d1" } }]]) {
+    const refused = await made(id, link).then(() => undefined, (error) => error);
+    assert.deepEqual([refused?.name, refused?.runId], ["RunPurged", "run-a"], `${id} is refused: ${refused}`);
+    assert.equal(await store.runs.get(id), undefined, `${id}: nothing written`);
+  }
+  assert.deepEqual(await mentions(file, INPUT), [], "the source's input is nowhere in the store");
+  // A replay of a run that is not purged is made as before.
+  await store.runs.create({ id: "run-c", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Another." } } });
+  await store.runs.create({ id: "replay-c", agentId: "agent-1", revisionId: "rev-1" }, { body: { input: { content: "Another." }, replay: { of: "run-c", workflow: "flow", digest: "d1" } } });
+  assert.ok(await store.runs.get("replay-c"));
+});

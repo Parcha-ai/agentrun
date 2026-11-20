@@ -825,8 +825,9 @@ export interface Runs {
   /** A queued run of `revisionId`, its row's only writer until a runner claims it. With `origin`, the origin row is written
    *  in the same transaction, so a retry under the same key finds this run (runOfOrigin); a key already used is refused
    *  (StoreConstraint), and nothing is written. With `launch`, its launch row is written in the same transaction too (all
-   *  or nothing). */
-  create(run: { id: string; agentId: string; revisionId: string; origin?: RunOrigin; labels?: RunLabels }, launch?: RunLaunchInput): Promise<RunRow>;
+   *  or nothing). A launch made from another run (its body's `replay.of`, `audit.of`) takes that run's row lock and
+   *  reads it in the same transaction: made from a purged run, it is refused (RunPurged), nothing written. */
+  create(run:{ id: string; agentId: string; revisionId: string; origin?: RunOrigin; labels?: RunLabels }, launch?: RunLaunchInput): Promise<RunRow>;
   /** A run whose agent is given inline and mapped to a source system by `agent.ref` and `revision.version`. In one
    *  transaction: the agent (one per `ref`, written on its first run, its name and description brought up to the version
    *  whose first use this is) and the revision (one per `version`, made current on its first use) are written or read, then
@@ -896,9 +897,9 @@ export interface Runs {
   /** Every run of agent `agentId` with its state, oldest first, its built-in learning runs included (which list leaves
    *  out): what deleting the agent stops and removes, with the runner that holds each (null: none) and its purge time. */
   every(agentId: string): Promise<{ id: string; state: RunState; runner: string | null; purgedAt: number | null }[]>;
-  /** The runs made from run `runId` that hold what it was given or did, by id: each replay run whose launch replays its
-   *  input (the launch body's `replay.of`), and each learning run its kept learning names (learning_proposals'
-   *  learning_run_id). What purging the run purges with it (an audit's shadow run is found by its id). */
+  /** The runs made from run `runId` that hold what it was given or did, by id: each run whose launch replays its input
+   *  (the launch body's `replay.of`) or audits it (`audit.of`: its audit's shadow run), and each learning run its kept
+   *  learning names (learning_proposals' learning_run_id). What purging the run purges with it. */
   madeFrom(runId: string): Promise<string[]>;
   /** A run purged, in one transaction under its row's lock (DELETE /runs/{id}, agent-delete.ts): its journal, commands,
    *  origin, launch, live view and viewers, its channel posts with their tries and what each channel was told of it, a
@@ -908,7 +909,9 @@ export interface Runs {
    *  (summary, labels, handed sign-ins, listing) with `kept` folded into its metrics (`purged`), and its purge time set
    *  last. Its id, agent, revision, state, outcome, times, cost and metrics stay: a tombstone, which every total sums as
    *  before. Only a run that is final and that no runner holds: one that is not is refused (StoreConstraint), nothing
-   *  written. A run with no row, or one purged already, is no write. */
+   *  written; so is one a run made from it (madeFrom's replays and shadow) not purged names (RunsMadeFromLeft): each is
+   *  purged first, and Runs.create, under the same row lock, makes none once it is purged. A run with no row, or one
+   *  purged already, is no write. */
   purge(runId: string, kept: PurgeKept): Promise<void>;
   /** The run's rows gone, in one transaction: its journal, commands, origin, launch, live view and viewers, its channel
    *  posts with their tries and what each channel was told of it, its kept learning, its changes in the run-change feed,
@@ -1848,6 +1851,25 @@ export class AnswerTaken extends StoreConstraint {
   constructor(message: string, index: string) {
     super(message, { rule: "unique", index });
     this.name = "AnswerTaken";
+  }
+}
+
+/** A run's purge refused while a run made from it (a replay of its input, its audit's shadow run: Runs.madeFrom) is not
+ *  purged: one was made after the purge read them (a claim that read the run's launch before). `runs`: those runs. A
+ *  StoreConstraint, so the caller answers it as a run not final; nothing written. */
+export class RunsMadeFromLeft extends StoreConstraint {
+  constructor(readonly runId: string, readonly runs: readonly string[]) {
+    super(`run ${runId} has runs made from it not purged (${runs.join(", ")}): each is purged first`);
+    this.name = "RunsMadeFromLeft";
+  }
+}
+
+/** A run made from a purged run (its launch's `replay.of` or `audit.of` names it): refused, nothing written. Its source's
+ *  input is gone, and a copy of it is never made again (Runs.create). `runId`: the purged run. */
+export class RunPurged extends Error {
+  constructor(readonly runId: string, readonly made: string) {
+    super(`run ${made} is made from run ${runId}, which is purged: it is not started`);
+    this.name = "RunPurged";
   }
 }
 
