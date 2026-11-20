@@ -1383,6 +1383,8 @@ class SqliteStore implements Store {
           await tx.run("DELETE FROM channel_told WHERE run_id = ?", runId);
           await tx.run("DELETE FROM trigger_conversations WHERE run_id = ?", runId);
           await tx.run("DELETE FROM run_changes WHERE run_id = ?", runId);
+          // Its claims' attempts: what each cost is in its tombstone's money, and no read of a purged run splits it.
+          await tx.run("DELETE FROM run_attempts WHERE run_id = ?", runId);
           // What names it, let go: a trigger's last run, the firing that started it (its key and status kept, so it never
           // fires again; the event it was given, its payload and attributes, gone), a firing's wait behind it (the
           // trigger's room is read again, as for a run that ended), the run a machine's token was minted for.
