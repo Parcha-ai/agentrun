@@ -18,14 +18,14 @@ import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
 import { facts as openCodeFacts } from "./harness-opencode/facts.js";
 import { CURSOR_FACTS, GOOSE_FACTS } from "./adapter-facts.js";
 import { ACP_PACKAGE, acpPackage } from "./acp-package.js";
-import { gooseHidden } from "./harness-goose.js";
+import { gooseHidden, type GooseMissing, gooseMissing } from "./harness-goose.js";
 import { CURSOR_DEFAULT_MODEL, CURSOR_KEY, cursorCardOf, cursorHidden, cursorLimitsOf, cursorMissing } from "./harness-cursor.js";
 import type { AdapterNeeds } from "./adapters.js";
 import { DEFAULT_HARNESS, HARNESS_ID_PATTERN, type HarnessId, PLAN_HARNESSES, RESERVED_HARNESS_IDS } from "./harness.js";
 import { HARNESS_INSTALLS, type HarnessInstallEntry, type HarnessPins } from "./harness-install.js";
 import { chooseModel } from "./model.js";
 import { HarnessUnavailable, type ModelChoice, modelOn, openRouterOnly, priceModelFor, providerFor } from "./provider.js";
-import { modelWire, WIRES } from "./wires.js";
+import { modelWire, wireOf, WIRES } from "./wires.js";
 import type { SkillCheck } from "./skills.js";
 import type { RunnerHarness } from "./runner/adapters/index.js";
 import { PLAN_PROVIDER, signedIn } from "./chatgpt-plan.js";
@@ -141,7 +141,8 @@ export interface AcpEntryOptions extends ModuleChecks {
 export interface ModuleChecks {
   /** Why it cannot run on `env` whatever key is saved (its binary is not where its setting says, say), in words that end
    *  with what to do; undefined when nothing is missing. Its offer then says this and names no key, where without it a
-   *  harness that lacks both would be offered as one a key runs. */
+   *  harness that lacks both would be offered as one a key runs. An error it throws whose `code` is one its facts'
+   *  `install.codes` name is refused with that fix (install, pins), so the start's reason says to restart once fixed. */
   missing?(env: NodeJS.ProcessEnv): string | undefined | Promise<string | undefined>;
 }
 
@@ -249,26 +250,38 @@ function adapterEntry(facts: AdapterFacts, make: (env: NodeJS.ProcessEnv, needs:
   return Object.freeze(entry);
 }
 
-/** A module's adapter for one run, from `facts` and its builder: the launch serve chooses for the run's model on this
- *  server's keys (providerFor, priceOf), as gooseOf does for the built-in ACP harness. */
+/** An adapter harness's adapter for one run, from `facts` and its builder: the launch serve chooses for the run's model
+ *  on this server's keys (providerFor, priceOf). A module's, and the built-in Goose's. An error `missing` or the builder
+ *  throws is a HarnessUnavailable with the fix its code names in the facts (fixOf: install, pins). */
 function moduleAdapter(facts: AdapterFacts, build: (launch: ModuleLaunch) => AgentAdapter | Promise<AgentAdapter>, { missing }: ModuleChecks, host: AcpEntryHost = {}) {
   return async (env: NodeJS.ProcessEnv, needs: AdapterNeeds): Promise<AgentAdapter> => {
-    const { harnessLog, priceOf } = await import("./adapters.js");
-    // What no key fixes is said first, as gooseOf says Goose's binary: a refusal for it names no key.
-    const lacks = await missing?.(env);
+    const { fixOf, harnessLog, priceOf } = await import("./adapters.js");
+    const unavailable = (error: unknown) => (error instanceof HarnessUnavailable ? error : new HarnessUnavailable((error as Error).message, fixOf(facts, error)));
+    // What no key fixes is said first (a binary): a refusal for it names no key.
+    let lacks: string | undefined;
+    try {
+      lacks = await missing?.(env);
+    } catch (error) {
+      throw unavailable(error);
+    }
     if (lacks) throw new HarnessUnavailable(lacks);
     const provider = providerFor(facts.wire, env, needs.model, facts.id);
-    // A person's Claude Code login is its CLI's alone (claude-login.ts): a module's requests never go on it.
-    if (provider.login) throw new HarnessUnavailable(`${facts.label} runs on a model key: Claude Code's login on this machine is its CLI's alone.`);
-    return build({
-      model: provider.modelId,
-      provider: { origin: provider.origin, credential: provider.credential, ...(provider.auth ? { auth: provider.auth } : {}) },
-      price: priceOf({ ...needs, model: provider.priceModel }),
-      log: host.log ?? harnessLog(facts.id, env),
-      ...(needs.confine ? { confine: needs.confine } : {}),
-      ...(needs.skills?.length ? { skills: needs.skills } : {}),
-      env,
-    });
+    // A person's Claude Code login is its CLI's alone (claude-login.ts): no request of this harness goes on it; a key of
+    // its wire's vendor's, or OpenRouter's, runs it.
+    if (provider.login) throw new HarnessUnavailable(`${facts.label} runs on a model key: Claude Code's login on this machine is its CLI's alone.`, undefined, [wireOf(facts.wire)!.key, "OPENROUTER_API_KEY"]);
+    try {
+      return await build({
+        model: provider.modelId,
+        provider: { origin: provider.origin, credential: provider.credential, ...(provider.auth ? { auth: provider.auth } : {}) },
+        price: priceOf({ ...needs, model: provider.priceModel }),
+        log: host.log ?? harnessLog(facts.id, env),
+        ...(needs.confine ? { confine: needs.confine } : {}),
+        ...(needs.skills?.length ? { skills: needs.skills } : {}),
+        env,
+      });
+    } catch (error) {
+      throw unavailable(error);
+    }
   };
 }
 
@@ -303,10 +316,15 @@ const ON_TABLE: RunnerHarness = Object.freeze({
  *  its model through the session's proxy (Goose's). */
 const ACP_PROMISES: HarnessPromises = Object.freeze({ resume: "load", tool_gate: "permission", billing: "proxy" });
 
-/** A module's adapter harness's whole entry (HarnessModuleKit.adapterEntry): the built-in harnesses' builder over the
- *  module's adapter, run from the table (ON_TABLE). */
-const moduleEntryOf = (facts: AdapterFacts, adapter: (launch: ModuleLaunch) => AgentAdapter | Promise<AgentAdapter>, { missing, ...extra }: Pick<HarnessEntry, "skillCheck" | "promises" | "hidden"> & ModuleChecks = {}, host: AcpEntryHost = {}): HarnessEntry =>
-  Object.freeze({ ...adapterEntry(facts, moduleAdapter(facts, adapter, missing ? { missing } : {}, host), extra), runner: ON_TABLE });
+/** An adapter harness's entry over the builder of its adapter for one run (moduleAdapter): the built-in Goose's, and
+ *  under each module's (moduleEntryOf). */
+const launchedEntryOf = (facts: AdapterFacts, adapter: (launch: ModuleLaunch) => AgentAdapter | Promise<AgentAdapter>, { missing, ...extra }: Pick<HarnessEntry, "skillCheck" | "promises" | "hidden"> & ModuleChecks = {}, host: AcpEntryHost = {}): HarnessEntry =>
+  adapterEntry(facts, moduleAdapter(facts, adapter, missing ? { missing } : {}, host), extra);
+
+/** A module's adapter harness's whole entry (HarnessModuleKit.adapterEntry): launchedEntryOf, run from the table
+ *  (ON_TABLE). The built-in Goose's runner is the runner's own (RUNNER_HARNESSES), so it has none here. */
+const moduleEntryOf = (facts: AdapterFacts, adapter: (launch: ModuleLaunch) => AgentAdapter | Promise<AgentAdapter>, extra: Pick<HarnessEntry, "skillCheck" | "promises"> & ModuleChecks = {}, host: AcpEntryHost = {}): HarnessEntry =>
+  Object.freeze({ ...launchedEntryOf(facts, adapter, extra, host), runner: ON_TABLE });
 const moduleEntry: HarnessModuleKit["adapterEntry"] = (facts, adapter, extra) => moduleEntryOf(facts, adapter, extra);
 
 /** A proxy-billed ACP agent's whole entry, moduleEntry over serve's own ACP adapter: a module's (HarnessModuleKit.acpEntry,
@@ -425,6 +443,23 @@ const MODULE_KIT: HarnessModuleKit = Object.freeze({
   acpEntry: acpModuleEntry,
 });
 
+/** Why Goose cannot run here (harness-goose.ts gooseMissing: not installed, or not the pinned binary) as an error of its
+ *  code, so moduleAdapter refuses it with the install fix its facts name. */
+const gooseRefused = (missing: GooseMissing): Error => Object.assign(new Error(missing.message), { code: missing.code });
+
+/** Goose's adapter for one run (moduleAdapter's builder, after its `missing`): its package's gooseAdapter on the binary
+ *  its owner installed into the data's harnesses directory (`agentrun harness install goose`) and from nowhere else,
+ *  looked up and verified again (its sha256 is kept per file identity, so only the first look reads it). Its model goes
+ *  where claude-agent's does, the host's Anthropic Messages provider, through a model proxy of its own. */
+async function gooseLaunch(launch: ModuleLaunch): Promise<AgentAdapter> {
+  const found = await gooseMissing(launch.env);
+  if ("missing" in found) throw gooseRefused(found.missing);
+  return acpPackage()!.gooseAdapter({
+    binary: found.binary, sha256: found.sha256, model: launch.model, provider: launch.provider, price: launch.price, log: launch.log,
+    ...(launch.confine ? { confine: launch.confine } : {}),
+  });
+}
+
 /** What Cursor gives acpEntryOf for its plan-billed entry: billed to its owner's Cursor plan on the owner's Cursor API key
  *  (`ownKeys`), its model one Cursor lists for that key (`cursor/<model-id>`, `cursor/default` for Cursor's own). Listed
  *  only once its owner has installed it (`agentrun harness install cursor`): `missing` is its release, looked up and
@@ -494,7 +529,12 @@ const BUILTIN: Readonly<Record<HarnessId, HarnessEntry>> = Object.freeze({
   // Goose, over ACP, where its package is beside serve (acp-package.ts): its owner installs its pinned binary
   // (`agentrun harness install goose`, harness-goose.ts), never a run; listed only once it is installed and verified.
   ...(GOOSE_FACTS ? {
-    [GOOSE_FACTS.id]: adapterEntry(GOOSE_FACTS, async (env, needs) => (await import("./adapters.js")).gooseOf(env, needs), {
+    [GOOSE_FACTS.id]: launchedEntryOf(GOOSE_FACTS, gooseLaunch, {
+      missing: async (env) => {
+        const found = await gooseMissing(env);
+        if ("missing" in found) throw gooseRefused(found.missing);
+        return undefined;
+      },
       promises: ACP_PROMISES,
       hidden: gooseHidden,
     }),
