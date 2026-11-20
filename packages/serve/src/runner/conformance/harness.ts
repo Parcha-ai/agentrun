@@ -93,6 +93,10 @@ export function suiteTools(countFile?: string) {
   const slowGate = new Promise<void>((resolve) => (letGo = resolve));
   let slowStarted: () => void = () => {};
   const started = new Promise<void>((resolve) => (slowStarted = resolve));
+  // Held (holdAsked), an approved `asked` call runs until the suite lets it go (letAskedGo), so its run cannot end first.
+  let askedGate: Promise<void> | undefined;
+  let letAskedGoNow: () => void = () => {};
+  const holdAsked = () => void (askedGate = new Promise<void>((resolve) => (letAskedGoNow = resolve)));
   const tool = (name: ToolName, replaySafe: boolean, ask: boolean, run: SuiteTool["run"]): SuiteTool => ({ name, replaySafe, ask, run });
   const tools: Record<ToolName, SuiteTool> = {
     effect: tool("effect", false, false, async () => {
@@ -109,12 +113,13 @@ export function suiteTools(countFile?: string) {
       await Promise.race([slowGate, new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))]);
       return signal.aborted ? "cut" : "slow done";
     }),
-    asked: tool("asked", false, true, async () => {
+    asked: tool("asked", false, true, async (_args, signal) => {
       ran.asked += 1;
+      if (askedGate) await Promise.race([askedGate, new Promise<void>((resolve) => signal.addEventListener("abort", () => resolve(), { once: true }))]);
       return "asked done";
     }),
   };
-  return { tools, ran, letSlowGo: () => letGo(), slowStarted: started };
+  return { tools, ran, letSlowGo: () => letGo(), slowStarted: started, holdAsked, letAskedGo: () => letAskedGoNow() };
 }
 
 /** Catalog tools (an MCP server's, by wire name) that do nothing, enough of them to pass DEFER_CATALOG_OVER: a run with that
@@ -1042,23 +1047,24 @@ const CASES: readonly Case[] = [
     title: "a double-clicked approval runs the call once: the first answers it, and the store refuses the second (one answer per approval)",
     async body(subject, t) {
       const w = await world(subject, t);
-      const { tools, ran, letSlowGo } = suiteTools();
-      // The gated `slow` call after it keeps the run from ending until the second click is sent: a run that ended first
+      const { tools, ran, holdAsked, letAskedGo } = suiteTools();
+      // The approved call is held until the second click is answered, so the run cannot end first: a run that ended
       // refuses any command as final (RunFinal) before the one-answer index is reached, which is not this case.
-      await w.start("runner-a", { script: [{ call: "asked" }, { call: "slow" }, { say: "done" }], tools, hooks: quiet });
+      holdAsked();
+      await w.start("runner-a", { script: [{ call: "asked" }, { say: "done" }], tools, hooks: quiet });
       await w.ended("parked");
       const callId = await w.askedCall();
       const first = await sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } });
       try {
         await assert.rejects(sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } }), AnswerTaken, "a second answer to one approval is never written: the store says it is answered already");
       } finally {
-        letSlowGo();
+        letAskedGo();
       }
       await w.ended("ended");
       assert.equal(ran.asked, 1, "the call ran once");
       assert.equal((await w.commandRow(first.id)).refused, null, "the first approve answered it");
       const { calls } = await w.read();
-      assert.deepEqual(calls.map((call) => [call.tool, call.status]), [["asked", "done"], ["slow", "done"]]);
+      assert.deepEqual(calls.map((call) => [call.tool, call.status]), [["asked", "done"]]);
     },
   },
   {
