@@ -304,6 +304,13 @@ async function layRunFolders(isolation: Extract<RunIsolation, { kind: "uid" }>, 
  *  Debian, swept as itself where it is a folder of its own). SysV IPC is not swept. */
 const SWEPT = ["/tmp", "/var/tmp", "/dev/shm", "/run/lock", "/var/lock", "/dev/mqueue"] as const;
 
+/** At a claim, before anything of the run is placed: its top folders and everything in them the server's user's again
+ *  (the helper's `own runner`), whoever an earlier claim left them to. Throws, in words, when they could not be. */
+export async function takeBackRunFolders(isolation: Extract<RunIsolation, { kind: "uid" }>, tops: readonly string[]): Promise<void> {
+  const taken = await execText(isolation.helper, ["own", "runner", ...tops], 120_000);
+  if (taken.code !== 0) throw new Error(`the run's folders could not be taken back from the slot an earlier claim left them to: ${taken.stderr.trim() || `${isolation.helper} own exited ${taken.code}`}`);
+}
+
 /** After the run's process ended: every process of the slot's uid killed, its files in the shared temporary folders
  *  removed, and its top folders with everything in them given back to the server's user (the helper's `own runner`:
  *  the server's uid and group, folders 2770), which the slot's next run cannot enter. Whether the reap held: the helper
@@ -1093,6 +1100,10 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         try {
           let extra: Record<string, string> = {};
           let argv = [...(options.argv ?? childArgv())];
+          // A claim that resumes a run whose last runner ended before giving its folders back finds them its last slot's,
+          // perhaps shut (a run's own chmod 700): taken back first, so the inputs and folders below are laid as the
+          // server's, then given to this slot.
+          if (isolation.kind === "uid" && slot !== undefined) await takeBackRunFolders(isolation, tops);
           // The run's uploads and opening message, placed by the runner before its process starts (their hold is the
           // server's alone), then given to the slot with its folders.
           await heldSide.inputs();
