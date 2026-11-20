@@ -416,6 +416,10 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
   a tunnel (cloudflared, tailscale funnel) works. Run one server process: a machine's socket lands on the process it
   dialed. Without the address, or from a process with no attach hub, create is refused in words before your API is
   called. The daemon your machines fetch is `hostedDaemonPath(arch)`, the file whose SHA-256 they check.
+- **Machines that reach listed addresses alone** dial through a relay the operator runs on that list: give it as
+  `attachEgress` (`<IPv4 relay>:<port>`; Daytona's key `DAYTONA_ATTACH_EGRESS`). Create adds `AGENTRUN_ATTACH_EGRESS`
+  to the boot env, and the daemon fetch and the attach socket open TCP to the relay and speak TLS and HTTP to the public
+  host through it, unchanged.
 - **The token sits in the machine's env**, scoped to that machine (its kind, os and arch) until delete or its
   `backstopAt`, whichever comes first. A machine that never dials within `createMs` is deleted.
 - **No Archil mount.** A spec with one is refused in words (`mountsOf` drops it on dial).
@@ -446,7 +450,8 @@ new HostedProvider(host, { daemonPath, dial: { url: process.env.AGENTRUN_PUBLIC_
     (`unshare: write failed /proc/self/uid_map: Operation not permitted`). computerd starts it now, as root makes its
     network namespace. On `connect: "exec"` the constructor refuses a desktop in kindRefusal's words, because a
     desktop's sandbox boots from the snapshot and dials, and none has run through the toolbox's session commands. The
-    descriptor's desktop configuration selects dial itself.
+    descriptor's desktop configuration selects dial itself. A self-hosted target whose runners let sandboxes reach
+    listed addresses alone needs `DAYTONA_ATTACH_EGRESS`, the operator's relay on that list (above).
 
   Xvfb and the window manager over the dial were verified live (dial desktop runs 11-18/19: E2B, Fly, Cloudflare,
   Modal), with the client starting the manager. computerd's own start of it ran live on Daytona over dial (11-20):

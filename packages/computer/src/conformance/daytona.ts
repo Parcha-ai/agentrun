@@ -45,6 +45,8 @@ export const DAYTONA_ENV = {
 	 * provider takes an Archil mount; unset, it refuses one (Archil's client hangs on Daytona's hosted cloud).
 	 */
 	archilEgress: "COMPUTER_DAYTONA_ARCHIL_EGRESS",
+	/** attachEgress: a self-hosted Daytona target's attach relay, <IPv4 relay>:<port>, which its machines that dial go through. */
+	attachEgress: "COMPUTER_DAYTONA_ATTACH_EGRESS",
 	/** connect: exec (default) or dial, which needs the public server's process (dialKit). */
 	connect: "COMPUTER_DAYTONA_CONNECT",
 	/** kind: linux (default) or desktop, which create() takes on dial alone. */
@@ -70,6 +72,7 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 	const user = named(DAYTONA_ENV.user);
 	const gpuSnapshot = named(DAYTONA_ENV.gpuSnapshot);
 	const archilEgress = named(DAYTONA_ENV.archilEgress);
+	const attachEgress = named(DAYTONA_ENV.attachEgress);
 	const connect = named(DAYTONA_ENV.connect);
 	return {
 		apiKey,
@@ -85,6 +88,8 @@ export function settingsFromEnv(env: Record<string, string | undefined> = proces
 		...(gpuSnapshot ? { gpuSnapshot: gpuSnapshot.value } : {}),
 		// create() refuses one of another shape in words.
 		...(archilEgress ? { archilEgress: archilEgress.value } : {}),
+		// create() refuses one of another shape in words.
+		...(attachEgress ? { attachEgress: attachEgress.value } : {}),
 		// create() refuses any other value in words.
 		...(connect ? { connect: connect.value as "exec" | "dial" } : {}),
 	};

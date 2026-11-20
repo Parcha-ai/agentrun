@@ -56,6 +56,13 @@ export interface DaytonaProviderOptions extends Omit<HostedOptions, "desktop" | 
 	 */
 	archilEgress?: string;
 	/**
+	 * The operator's attach relay, `<IPv4 relay>:<port>` (HostedOptions.attachEgress, attachEgressOf): for a self-hosted
+	 * Daytona target whose runners drop every sandbox connection outside an allow list that the public address is not on.
+	 * A machine that dials (connect dial, and every desktop) fetches the daemon and opens its attach socket through it,
+	 * with TLS end to end to the public host. Unset, it dials the public host; a machine on exec never reads it.
+	 */
+	attachEgress?: string;
+	/**
 	 * The snapshot GPU computers are made from: one of ours, box/Dockerfile built with a GPU (box/build-daytona.py --gpu
 	 * H100 prints its name, agentrun-archil-gpu-h100-<hash>), whose user is root; its GPU is the one its name says.
 	 * Default Daytona's own daytona-gpu. Either way a GPU computer takes no mount: Daytona's GPU host gives no /dev/fuse.
