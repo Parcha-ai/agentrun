@@ -51,6 +51,10 @@
   .report table { @apply mb-4 w-full border-collapse text-lead leading-5; }
   .report th, .report td { @apply border px-3 py-2 text-left align-top; }
   .report th { @apply caps text-label text-muted-foreground; }
+  /* A short note's Markdown (an app event's description under its picker): the report's marks at small text, tighter. */
+  .report.report-sm p, .report.report-sm li { @apply text-small leading-[1.6]; }
+  .report.report-sm p, .report.report-sm ul, .report.report-sm ol { @apply mb-2; }
+  .report.report-sm code { @apply text-small; }
   .report a, .report button[data-run-file] { @apply text-primary-text underline underline-offset-2; }
   /* A run file the answer links (format.ts markdown): a button that opens it in the viewer, read as a link. */
   .report button[data-run-file] { @apply cursor-pointer text-left; font: inherit; }

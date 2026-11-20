@@ -2,6 +2,7 @@ import { agentHash } from "@/components/AgentPage";
 import { ArrowLeft, Blocks, CalendarClock, GitPullRequest, KeyRound, Pause, Pencil, Play, Plus, Rss, Trash2, Webhook, Zap } from "lucide-react";
 import { type FormEvent, type ReactNode, useEffect, useRef, useState } from "react";
 import { AcceptEditor, ConditionList, EVENT_HINTS, Said } from "@/components/AcceptEditor";
+import { ListFilter, matchesFilter } from "@/components/ListFilter";
 import { ProblemCard } from "@/components/Problem";
 import { ListSkeleton } from "@/components/Skeleton";
 import { Button } from "@/components/ui/button";
@@ -16,7 +17,7 @@ import { UnattendedWarning } from "@/components/UnattendedWarning";
 import { ZonePicker } from "@/components/ZonePicker";
 import { type Client, ClientError } from "@/lib/client";
 import { httpHref } from "@/lib/safeUrl";
-import { runLabel, when } from "@/lib/format";
+import { markdown, runLabel, when } from "@/lib/format";
 import { keeper, uuid } from "@/lib/idempotency";
 import { type Problem, problem } from "@/lib/problem";
 import type { Tone } from "@/lib/runState";
@@ -203,6 +204,8 @@ function whatWords(t: Trigger, agentName: (id: string) => string, now: number): 
 
 /** Whether Composio has a trigger from an app's instance on, in words. */
 type OnComposio = ComposioTriggers["triggers"][number]["on_composio"];
+/** An app event as the New app trigger list says it: its name, else its slug. */
+const eventLabel = (e: Pick<ComposioEvent, "name" | "slug">) => e.name || e.slug;
 const ON_COMPOSIO: Record<OnComposio, string> = {
   on: "On", off: "Off", missing: "Composio no longer has it: delete this trigger and make it again.", unknown: "Composio didn't say",
 };
@@ -821,6 +824,8 @@ function ComposioForm({ v2, go, noAddress }: { v2: Client; go: (hash: string) =>
   const [readError, setReadError] = useState<Problem | null>(null);
   const [tries, setTries] = useState(0);
   const [events, setEvents] = useState<{ server: string; events: ComposioEvent[] } | null>(null);
+  // The filter box over the server's events: another server starts it empty.
+  const [eventQuery, setEventQuery] = useState("");
   const [eventsError, setEventsError] = useState<Problem | null>(null);
   const [eventTries, setEventTries] = useState(0);
   const [draft, setDraft] = useState<ComposioDraft>(emptyComposio);
@@ -863,9 +868,13 @@ function ComposioForm({ v2, go, noAddress }: { v2: Client; go: (hash: string) =>
   const edit = (next: (d: ComposioDraft) => ComposioDraft) => { setElsewhere(null); setDraft(next); };
   const set = <K extends keyof ComposioDraft>(k: K) => (value: ComposioDraft[K]) => edit((d) => ({ ...d, [k]: value }));
   // Another server or event starts its config and filter afresh.
-  const pickServer = (server: string) => edit((d) => (d.server === server ? d : { ...d, server, event: "", config: {}, where: [] }));
+  const pickServer = (server: string) => { if (server !== draft.server) setEventQuery(""); edit((d) => (d.server === server ? d : { ...d, server, event: "", config: {}, where: [] })); };
   const pickEvent = (event: string) => { edit((d) => (d.event === event ? d : { ...d, event, config: {}, where: [] })); setIssues({}); };
   const event = events?.server === draft.server ? events.events.find((e) => e.slug === draft.event) : undefined;
+  // The server's events A to Z by the words the list shows (Composio sends them in no order a person reads by), and those
+  // the filter box keeps; the picked one stays in the list, so the field still says it while a query hides it.
+  const listedEvents = events?.server === draft.server ? [...events.events].sort((a, b) => eventLabel(a).localeCompare(eventLabel(b), undefined, { sensitivity: "base" })) : [];
+  const keptEvents = listedEvents.filter((e) => e.slug === draft.event || matchesFilter(eventQuery, e.name, e.slug, e.description));
   const fields: ConfigField[] = configFieldsOf(event?.config, event?.sealed);
   const agentCapRaw = (agents ?? []).find((a) => a.agent_id === draft.agentId)?.definition.max_cost_usd;
   const agentCap = typeof agentCapRaw === "number" && agentCapRaw > 0 ? agentCapRaw : undefined;
@@ -937,10 +946,15 @@ function ComposioForm({ v2, go, noAddress }: { v2: Client; go: (hash: string) =>
             options={[{ value: "", label: "Pick a server" }, ...servers.map((x) => ({ value: x.name, label: x.toolkit ? `${x.name} (${x.toolkit})` : x.name }))]} />
         </Field>
         {draft.server && (eventsError ? <ProblemCard problem={eventsError} onRetry={() => setEventTries((n) => n + 1)} className="" /> : (
-          <Field label="Event" field="source.event" issue={issues["source.event"]} hint={event?.description}>
-            <Picker name="event" label="Event" className="w-full" value={draft.event} onChange={pickEvent} disabled={!events}
-              options={[{ value: "", label: events ? (events.events.length ? "Pick an event" : "Composio offers no event for this toolkit") : "Loading the events" }, ...(events?.events ?? []).map((x) => ({ value: x.slug, label: x.name || x.slug }))]} />
-          </Field>
+          <div className="space-y-2">
+            {listedEvents.length > 0 && <ListFilter value={eventQuery} onChange={setEventQuery} label="Filter events" placeholder="Filter by name, slug or description" shown={keptEvents.length} total={listedEvents.length} />}
+            <Field label="Event" field="source.event" issue={issues["source.event"]}>
+              <Picker name="event" label="Event" className="w-full" value={draft.event} onChange={pickEvent} disabled={!events}
+                options={[{ value: "", label: !events ? "Loading the events" : !listedEvents.length ? "Composio offers no event for this toolkit" : keptEvents.length ? "Pick an event" : `No event matches “${eventQuery.trim()}”` }, ...keptEvents.map((x) => ({ value: x.slug, label: eventLabel(x) }))]} />
+            </Field>
+            {/* Composio writes an event's description in Markdown (lists, ``code``): rendered, never shown as its marks. */}
+            {event?.description && <div data-event-description className="report report-sm text-muted-foreground" dangerouslySetInnerHTML={{ __html: markdown(event.description) }} />}
+          </div>
         ))}
         {event && (
           <>
