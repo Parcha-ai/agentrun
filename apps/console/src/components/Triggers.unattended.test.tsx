@@ -5,6 +5,7 @@ import { SchedulesPage } from "./Schedules";
 import { createClient } from "@/lib/client";
 import type { Trigger } from "@/lib/v2";
 import { pick, picker } from "@/test/picker";
+import { route } from "@/App";
 
 // A trigger starts runs with no one there. A tool whose permission is ask parks such a run until someone answers, and
 // a schedule's later firings are skipped while it waits (serve's triggers.ts); with accounts off no one can answer, so
@@ -46,7 +47,7 @@ const MAIL_FIRINGS = [{ key: "f_mail", by: "email", status: "started", nominal_a
 type Call = { method: string; path: string; body: unknown; ifMatch: string | null };
 const json = (status: number, body: unknown, headers: Record<string, string> = {}) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
 
-function server(agents: FakeAgent[] = [MAILER(), READER(), UNATTENDED()], { accounts = true }: { accounts?: boolean } = {}) {
+function server(agents: FakeAgent[] = [MAILER(), READER(), UNATTENDED()], { accounts = true, mail = true }: { accounts?: boolean; mail?: boolean } = {}) {
   const calls: Call[] = [];
   const byId = new Map(agents.map((a) => [a.agent_id, structuredClone(a)]));
   const fetch = (async (url: string, init?: RequestInit) => {
@@ -72,8 +73,9 @@ function server(agents: FakeAgent[] = [MAILER(), READER(), UNATTENDED()], { acco
     if (call.path === "/v2/integrations/github") return json(200, { app_id: "1", slug: "agentrun-test", installations: [{ id: 7, account: "acme" }] });
     if (call.path === "/v2/settings/mcp-servers") return json(200, { servers: [{ name: "gh", url: "https://backend.composio.test/mcp", auth: { type: "headers", headers: ["x-api-key"] }, source: "composio", toolkit: "github", credential: "sealed", tools: [], listed_at: "2026-11-04T10:00:00Z", updated_at: "2026-11-04T10:00:00Z" }] });
     if (call.path === "/v2/settings/mcp-servers/gh/composio/events") return json(200, { events: [] });
-    if (call.path === "/v2/settings/email") return json(200, { configured: true, preset: "gmail", address: "inbox@example.com", user: "inbox@example.com", imap: { host: "imap.gmail.com", port: 993 }, smtp: { host: "smtp.gmail.com", port: 465 }, password_unreadable: false });
+    if (call.path === "/v2/settings/email") return json(200, mail ? { configured: true, preset: "gmail", address: "inbox@example.com", user: "inbox@example.com", imap: { host: "imap.gmail.com", port: 993 }, smtp: { host: "smtp.gmail.com", port: 465 }, password_unreadable: false } : { configured: false });
     if (call.path === "/v2/triggers" && call.method === "GET") return json(200, { triggers: [NIGHTLY, NEW_MAIL] });
+    if (call.path === "/v2/triggers" && call.method === "POST") return json(201, { ...NEW_MAIL, ...(call.body as object), id: "trg_made", last_check: null });
     const m = /^\/v2\/triggers\/([^/]+)(\/firings)?$/.exec(call.path);
     if (m?.[2]) return json(200, { firings: decodeURIComponent(m[1]!) === NEW_MAIL.id ? MAIL_FIRINGS : [] });
     if (m && decodeURIComponent(m[1]!) === NIGHTLY.id) return json(200, NIGHTLY);
@@ -143,7 +145,7 @@ describe("Triggers: an agent whose tools ask", () => {
   });
 
   it("Run unattended never submits a trigger form, filled in or not", async () => {
-    for (const kind of ["schedule", "webhook", "github", "composio", "feed"] as const) {
+    for (const kind of ["schedule", "webhook", "github", "composio", "feed", "email"] as const) {
       const s = server();
       const t = await open(s.v2, kind === "schedule" ? { trigger: null } : { trigger: null, kind });
       await t.agent("mailer");
@@ -190,8 +192,8 @@ describe("Triggers: an agent whose tools ask", () => {
     expect(t.warning()).toBeNull();
   });
 
-  it("the webhook, GitHub, app and feed forms warn the same way, without claiming later firings are skipped", async () => {
-    for (const kind of ["webhook", "github", "composio", "feed"] as const) {
+  it("the webhook, GitHub, app, feed and email forms warn the same way, without claiming later firings are skipped", async () => {
+    for (const kind of ["webhook", "github", "composio", "feed", "email"] as const) {
       const t = await open(server().v2, { trigger: null, kind });
       await t.agent("mailer");
       expect(t.warning()?.textContent, kind).toContain(WAITS_ONLY);
@@ -255,5 +257,105 @@ describe("Triggers: an agent whose tools ask", () => {
     const t = await open(s.v2, { trigger: "trg_1" });
     expect(s.calls.some((c) => c.path === "/v2/agents/mailer")).toBe(true);
     expect(t.warning()).toBeNull();
+  });
+});
+
+// Triggers → New → Email: the list's "New email trigger" goes to its address, the address opens the email form, and the
+// form posts an email source on the server's account with the run each message starts.
+describe("Triggers → New → Email", () => {
+  const settle = async () => { for (let i = 0; i < 10; i++) await act(async () => { await new Promise((r) => setTimeout(r, 0)); }); };
+  const type = async (el: HTMLInputElement | HTMLTextAreaElement, value: string) => {
+    await act(async () => {
+      const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(el, value);
+      el.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  };
+  // The list, then the page the address its "New email trigger" goes to opens, as App routes it.
+  async function newEmail(s: ReturnType<typeof server>) {
+    const host = document.body.appendChild(document.createElement("div"));
+    root = createRoot(host);
+    const went: string[] = [];
+    const go = (hash: string) => { went.push(hash); };
+    act(() => root!.render(createElement(SchedulesPage, { v2: s.v2, view: route("#/triggers") as never, go, agentName: (id: string) => id })));
+    await settle();
+    const button = [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "New email trigger");
+    expect(button).toBeDefined();
+    await act(async () => { button!.click(); });
+    expect(went.at(-1)).toBe("#/triggers/new-email");
+    const where = route(went.at(-1)!);
+    expect(where).toMatchObject({ section: "triggers", trigger: null, kind: "email" });
+    act(() => root!.render(createElement(SchedulesPage, { v2: s.v2, view: where as never, go, agentName: (id: string) => id })));
+    await settle();
+    return { host, went };
+  }
+
+  it("fills the form and posts an email source on INBOX with the run each message starts", async () => {
+    const s = server();
+    const { host, went } = await newEmail(s);
+    expect(host.querySelector("h1")!.textContent).toBe("New email trigger");
+    const mailbox = host.querySelector<HTMLInputElement>("input[name=mailbox]")!;
+    expect(mailbox.value).toBe("INBOX");
+    await type(host.querySelector<HTMLInputElement>("input[name=name]")!, "support mail");
+    await pick(picker(host, "Agent")!, "mailer");
+    await settle();
+    await type(host.querySelector<HTMLTextAreaElement>("textarea[name=content]")!, "Sort the new mail.");
+    await type(host.querySelector<HTMLInputElement>("input[name=maxCost]")!, "0.5");
+    const create = [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Create email trigger")!;
+    await act(async () => { create.click(); });
+    await settle();
+    const posts = s.calls.filter((c) => c.method === "POST" && c.path === "/v2/triggers");
+    expect(posts).toHaveLength(1);
+    expect(posts[0]!.body).toEqual({
+      name: "support mail", enabled: true,
+      source: { kind: "email", mailbox: "INBOX", every_s: 60 },
+      target: { kind: "start_run", agent_id: "mailer", input: { content: "Sort the new mail." }, max_cost_usd: 0.5 },
+    });
+    expect(went.at(-1)).toBe("#/triggers/trg_made");
+  });
+
+  it("sends the mailbox, interval and enabled as set, and says what is missing before posting", async () => {
+    const s = server();
+    const { host } = await newEmail(s);
+    const create = () => [...host.querySelectorAll("button")].find((b) => b.textContent?.trim() === "Create email trigger")!;
+    await act(async () => { create().click(); });
+    await settle();
+    expect(s.calls.some((c) => c.method === "POST")).toBe(false);
+    expect(host.querySelector('[data-issue="target.agent_id"]')?.textContent).toBe("Pick an agent.");
+    expect(host.querySelector('[data-issue="target.input"]')?.textContent).toBe("Say what each run is asked.");
+    await type(host.querySelector<HTMLInputElement>("input[name=mailbox]")!, "Support");
+    await type(host.querySelector<HTMLInputElement>("input[name=every]")!, "5");
+    await pick(picker(host, "Agent")!, "mailer");
+    await settle();
+    await type(host.querySelector<HTMLTextAreaElement>("textarea[name=content]")!, "Answer it.");
+    await type(host.querySelector<HTMLInputElement>("input[name=maxCost]")!, "1");
+    await act(async () => { host.querySelector<HTMLInputElement>("input[name=enabled]")!.click(); });
+    await act(async () => { create().click(); });
+    await settle();
+    const post = s.calls.find((c) => c.method === "POST" && c.path === "/v2/triggers");
+    expect(post?.body).toMatchObject({ enabled: false, source: { kind: "email", mailbox: "Support", every_s: 300 }, target: { agent_id: "mailer", max_cost_usd: 1 } });
+  });
+
+  it("carries the approval warning and Run unattended for an agent whose tools ask", async () => {
+    const s = server();
+    const { host } = await newEmail(s);
+    await pick(picker(host, "Agent")!, "mailer");
+    await settle();
+    const warning = host.querySelector<HTMLElement>("[data-unattended-warning]");
+    expect(warning?.textContent).toContain("Waits for your approval");
+    expect(warning?.textContent).toContain(WAITS_ONLY);
+    expect(warning?.textContent).toContain(FIX);
+  });
+
+  it("with no account saved, says so and links to Settings → Email", async () => {
+    const { host } = await newEmail(server(undefined, { mail: false }));
+    const note = host.querySelector<HTMLElement>("[data-no-email-account]");
+    expect(note?.textContent).toContain("No email account is saved");
+    expect(note?.querySelector('a[href="#/settings/email"]')?.textContent).toBe("Settings → Email");
+  });
+
+  it("with an account saved, says nothing about one", async () => {
+    const { host } = await newEmail(server());
+    expect(host.querySelector("[data-no-email-account]")).toBeNull();
   });
 });
