@@ -459,7 +459,7 @@ export const differentDecisionWords = (k: number, n: number, example: string | u
  *  and naming the cause, which the compile's draft errors show (store-reads/loop.ts). It asks no recompile: a revision
  *  would have nothing to be checked on either, and a stop with nothing checked never counts as a compile's first check
  *  (attemptOf). Kept only while `still` holds of the digest's record (the one write). */
-async function stopUnchecked(deps: DecideDeps, name: string, digest: string, bar: CheckBar, why: string, still: (was: PromotionRecord | undefined) => boolean, check: Partial<CheckRecord> = {}, extra: Partial<PromotionRecord> = {}) {
+async function stopUnchecked(deps: DecideDeps, name: string, digest: string, bar: CheckBar, why: string, still: Parameters<typeof recordPromotion>[3], check: Partial<CheckRecord> = {}, extra: Partial<PromotionRecord> = {}) {
   const reason = `${NOTHING_TO_CHECK}: ${why}. It is not promoted, and it stops: nothing compiles again until a hold or its owner acts`;
   const decided = await recordPromotion(deps.store.settings, deps.agentId, { workflow: name, digest, at: iso((deps.now ?? Date.now)()), decided: "hold", reason, check: { ...bar, n: 0, agreed: 0, alone: 0, of: [], ...check, stopped: true }, ...seedOf(deps), ...extra }, still);
   if (decided.won) deps.log(`workflow-first: ${name} at ${digest} stopped: ${reason}`);
@@ -561,7 +561,7 @@ async function settleCheck(deps: PromotionDeps, workflow: LearnedWorkflow, diges
  *  agent's next run's compile turn reads as data (its one recompile); a recompile's check that holds it too stops:
  *  nothing compiles again. No grade, refit, queue or second replay. Kept only while `still` holds of the digest's record
  *  (the one write: of two claims at once, one decides). */
-export async function decideCheck(deps: DecideDeps, name: string, digest: string, bar: CheckBar, read: { rows: readonly CheckRow[]; cost: number | null; outcomes: ReplayOutcomes; unstarted: number; exactMismatchReason?: string; fresh_reads?: number }, still: (was: PromotionRecord | undefined) => boolean, extra: Partial<PromotionRecord>) {
+export async function decideCheck(deps: DecideDeps, name: string, digest: string, bar: CheckBar, read: { rows: readonly CheckRow[]; cost: number | null; outcomes: ReplayOutcomes; unstarted: number; exactMismatchReason?: string; fresh_reads?: number }, still: Parameters<typeof recordPromotion>[3], extra: Partial<PromotionRecord>) {
   const now = deps.now ?? Date.now;
   const ran = read.rows.filter((row) => row.outcome !== "skipped_write");
   const alone = (row: CheckRow) => row.outcome === "answered";
@@ -716,7 +716,7 @@ export async function sdkCheckDeadline(deps: DecideDeps, pending: PromotionRecor
   return decideCheck(deps, pending.workflow, pending.digest, pending.check, {
     rows: [{ of: runId, input: sdkInputText(launch), agent: null, outcome: "failed", answer: null }],
     cost: null, outcomes: { ...NO_OUTCOMES, failed: 1 }, unstarted: 0,
-  }, (was) => sameReplay(was, pending), sdkExtra(pending));
+  }, (was, current) => sameReplay(was, pending) && !overtaken(current, was!), sdkExtra(pending));
 }
 
 /** Gives back a connected agent's reserved native turn that cannot be its check's baseline (`cause`): the check waits for
@@ -731,7 +731,8 @@ export async function releaseSdkCheck(deps: DecideDeps, record: PromotionRecord,
   }
   const released = (record.check.released ?? 0) + (counted ? 1 : 0);
   const why = excerptShown(cause, await deps.shown(), CHECK_TEXT_MAX);
-  const still = (was: PromotionRecord | undefined) => sameReplay(was, record);
+  // Overtaken is read again inside the write: a newer revision's record can land while the cause is being cut.
+  const still = (was: PromotionRecord | undefined, current: readonly PromotionRecord[]) => sameReplay(was, record) && !overtaken(current, was!);
   const bar = { ...record.check, ...(released ? { released } : {}) };
   if (released >= SDK_CHECK_RELEASES) return stopUnchecked(deps, record.workflow, record.digest, bar, `the connected agent gave back ${plural(released, "reserved native turn")} with no answer to check it against (the last: ${why})`, still, {}, sdkExtra(record));
   const { runs: _runs, inputs: _inputs, ...rest } = record;

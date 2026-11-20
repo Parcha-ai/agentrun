@@ -272,6 +272,18 @@ test('a given-back turn of a check a newer revision overtook writes nothing over
   assert.ok(heldNamesOf(await server.records()).has(flow.name));
 });
 
+test('a newer revision\'s hold that lands while a release is written is not hidden by it', async t => {
+  const server = await setup(t, 'eve', false);
+  const { releaseSdkCheck } = await import('../dist/runner/promotion.js');
+  await server.start('racing');
+  const pending = await server.latest(flow.name);
+  const owner = { workflow: flow.name, digest: workflowDigest({ workflow: JSON.stringify(nextFlow.workflow) }), at: new Date().toISOString(), decided: 'hold', reason: 'The owner held this revision for correction.' };
+  // The newer hold lands during the release's own await, after its first read of the records.
+  const shown = async () => { await recordPromotion(server.store.settings, server.id, owner, () => true); return secretsShown([]); };
+  await releaseSdkCheck({ store: server.store, agentId: server.id, shown, log() {} }, pending, 'its native turn was cancelled');
+  assert.deepEqual(await server.latest(flow.name), owner);
+});
+
 test('fresh reads the shadow made are kept on the check record', async t => {
   const server = await setup(t);
   const first = await server.start('fresh');
