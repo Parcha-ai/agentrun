@@ -160,7 +160,7 @@ export function replayLaid(launch: RunLaunch, laid: readonly LearnedWorkflow[]):
  *  champion in place of the laid revision) as chosen; any other the records name, its champion (championOf: the laid
  *  text when that is the champion, else its text at its record's commit), and none while nothing of it serves (none
  *  promoted yet, or the champion held): a revision replaying, held or never decided is never handed to the agent to run
- *  in its place. One the records never named (no run's input fit it, so no claim asked) runs as laid. A replay run's as
+ *  in its place. One the records never named is an unchecked draft and is not offered. A replay run's as
  *  laid (replayLaid). The records unread: only the chosen one, as the gate leaves a run to its agent. */
 export async function toolFlowsFor(deps: Pick<PromotionDeps, "store" | "agentId" | "champion" | "log">, launch: RunLaunch, laid: readonly LearnedWorkflow[], choice: FirstChoice): Promise<LearnedWorkflow[]> {
   const chosen = laidFor(laid, choice);
@@ -175,7 +175,7 @@ export async function toolFlowsFor(deps: Pick<PromotionDeps, "store" | "agentId"
   }
   const out: LearnedWorkflow[] = [];
   for (const one of chosen) {
-    if (one.name === name || !records.some((record) => record.workflow === one.name)) {
+    if (one.name === name) {
       out.push(one);
       continue;
     }
@@ -337,7 +337,7 @@ async function loopOfRevision(deps: Pick<PromotionDeps, "store" | "revisionId">)
  *  first compile's failed draft (this revision is its one recompile), else 1. A stop with nothing checked
  *  (stopUnchecked) is no first check's hold: it spends no recompile. A workflow's first revision after a first compile
  *  whose drafts failed under another name (learn/compile.ts newCompileAttempt) is that compile's recompile too. */
-function attemptOf(records: readonly PromotionRecord[], name: string, digest: string): 1 | 2 {
+export function attemptOf(records: readonly PromotionRecord[], name: string, digest: string): 1 | 2 {
   const before = records.findLast((one) => one.workflow === name && one.digest !== digest);
   if (!before) return newCompileAttempt(records.filter((one) => one.digest !== digest));
   if (before.decided !== "hold") return 1;
@@ -550,7 +550,7 @@ async function settleCheck(deps: PromotionDeps, workflow: LearnedWorkflow, diges
  *  agent's next run's compile turn reads as data (its one recompile); a recompile's check that holds it too stops:
  *  nothing compiles again. No grade, refit, queue or second replay. Kept only while `still` holds of the digest's record
  *  (the one write: of two claims at once, one decides). */
-export async function decideCheck(deps: PromotionDeps, name: string, digest: string, bar: CheckBar, read: { rows: readonly CheckRow[]; cost: number | null; outcomes: ReplayOutcomes; unstarted: number }, still: (was: PromotionRecord | undefined) => boolean, extra: Partial<PromotionRecord>) {
+export async function decideCheck(deps: PromotionDeps, name: string, digest: string, bar: CheckBar, read: { rows: readonly CheckRow[]; cost: number | null; outcomes: ReplayOutcomes; unstarted: number; exactMismatchReason?: string }, still: (was: PromotionRecord | undefined) => boolean, extra: Partial<PromotionRecord>) {
   const now = deps.now ?? Date.now;
   const ran = read.rows.filter((row) => row.outcome !== "skipped_write");
   const alone = (row: CheckRow) => row.outcome === "answered";
@@ -600,7 +600,7 @@ export async function decideCheck(deps: PromotionDeps, name: string, digest: str
   // once the same (no grader): free text two runs never repeat, most likely, so the owner is told what to set.
   const differed = score.alone - score.agreed;
   const example = disagreements.find((one) => one.differs_on !== undefined)?.differs_on;
-  const verbatim = ok || bar.agree_on?.length ? "" : grader ? (differed > 0 ? `; ${differentDecisionWords(differed, score.alone, example)}` : "") : score.alone > 0 && score.agreed === 0 ? `; ${NEVER_WORD_FOR_WORD}` : "";
+  const verbatim = ok || bar.agree_on?.length ? "" : grader ? (differed > 0 ? `; ${differentDecisionWords(differed, score.alone, example)}` : "") : score.alone > 0 && score.agreed === 0 ? `; ${read.exactMismatchReason ?? NEVER_WORD_FOR_WORD}` : "";
   const reason = ok ? `${said}: promoted` : stopped ? `${said}: held${verbatim}, and this was the recompile's check, so it stops: nothing compiles again until a hold or its owner acts` : `${said}: held${verbatim}; the agent's next run recompiles it once with the inputs it did not agree on`;
   const check: CheckRecord = { ...bar, ...score, ...numbers, ...(disagreements.length ? { disagreements } : {}), ...(stopped ? { stopped: true as const } : {}), ...(grader ? { grader } : {}) };
   const decided = await recordPromotion(deps.store.settings, deps.agentId, { workflow: name, digest, at: iso(now()), decided: ok ? "promote" : "hold", reason, check, ...seedOf(deps), ...extra }, still);

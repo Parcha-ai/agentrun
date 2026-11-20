@@ -19,7 +19,7 @@ const [{ harnessIds, harnessOf }, { harnessOffers }, { DATA_ENV }, { HarnessUnav
 ]);
 
 const { CURSOR_PIN, cursorRelease } = await import("@parcha/agentrun-harness-acp");
-/** Whether Cursor has a release pinned for this host (cursorRelease, the one test serve's lookup makes). CURSOR_PIN pins
+/** Whether Cursor has a release pinned for this host (cursorRelease: pinnedRelease's tree test on CURSOR_PIN, the one serve's lookup makes). CURSOR_PIN pins
  *  linux-x86_64 alone: on any other host (a Mac) Cursor is refused ACP_BINARY_UNPINNED before its install is looked at,
  *  and the tests here that look at one assert that refusal instead (refusedHere). */
 const PINNED = cursorRelease() !== undefined;
@@ -158,6 +158,23 @@ test("a server whose data has no Cursor lists none, saves an agent on it with a 
   assert.equal(run.status, 409, JSON.stringify(run.body));
   assert.equal(run.body.error.code, "agent_not_runnable");
   assert.ok(refusedHere(data)(run.body.error.message), run.body.error.message);
+});
+
+test("on a host no release is pinned for (process.arch said arm64), Cursor is refused ACP_BINARY_UNPINNED before its install is looked at, listed or run", async (t) => {
+  const { cursorHidden, cursorMissing } = await import("../dist/harness-cursor.js");
+  const env = { [DATA_ENV]: await dataWith(t) };
+  const arch = process.arch;
+  const own = Object.getOwnPropertyDescriptor(process, "arch");
+  Object.defineProperty(process, "arch", { value: "arm64", configurable: true, enumerable: true });
+  try {
+    assert.match(cursorHidden(env) ?? "", /^ACP_BINARY_UNPINNED: Cursor \S+ has no release pinned for \S+-aarch64/);
+    const found = await cursorMissing(env);
+    assert.equal(found.missing?.code, "ACP_BINARY_UNPINNED", JSON.stringify(found));
+  } finally {
+    if (own) Object.defineProperty(process, "arch", own);
+    else delete process.arch;
+  }
+  assert.equal(process.arch, arch, "process.arch is put back");
 });
 
 test("installed and verified with no key, Cursor is listed and refused for want of CURSOR_API_KEY; with one, it runs here", { skip: needsCursor, timeout: 120_000 }, async (t) => {

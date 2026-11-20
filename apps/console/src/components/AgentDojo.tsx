@@ -2,13 +2,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { agentHash } from "./AgentPage";
 import { ArrowUpRight, RefreshCw } from "lucide-react";
 import { DojoIcon } from "./DojoIcon";
-import { Button } from "./ui/button";
+import { Button, buttonVariants } from "./ui/button";
+import { Banner } from "./ui/banner";
+import { LearningModelSetup } from "./LearningModelSetup";
 import { Chip } from "./ui/chip";
 import { ProblemCard } from "./Problem";
 import { ListSkeleton } from "./Skeleton";
 import { allPages, type Client, ClientError } from "@/lib/client";
 import { type Agent, learningOn } from "@/lib/agentForm";
-import { type AgentLearning, correctionLines, givenToRuns } from "@/lib/learning";
+import { type AgentLearning, type LearningModelAccess, correctionLines, givenToRuns } from "@/lib/learning";
 import { when } from "@/lib/format";
 import { problem, type Problem } from "@/lib/problem";
 import { pageTitleClass, pageToolbarClass } from "@/components/ui/toolbar";
@@ -38,7 +40,7 @@ function total(rows: Row[], of: (r: Row) => Measure | null): string {
 
 /** The existing learning repository and ledger, gathered across this server's agentic agents. No action here runs,
  * imports, enables or approves anything: each agent's Learning tab owns those controls. */
-export function AgentDojo({ v2, server }: { v2: Client; server?: "on" | "off" | null }) {
+export function AgentDojo({ v2, server, modelAccess }: { v2: Client; server?: "on" | "off" | null; modelAccess?: LearningModelAccess | null }) {
   const [rows, setRows] = useState<Row[] | null>(null);
   const [error, setError] = useState<Problem | null>(null);
   const [loading, setLoading] = useState(false);
@@ -113,6 +115,7 @@ export function AgentDojo({ v2, server }: { v2: Client; server?: "on" | "off" | 
   }, [server, read]);
   const eligible = rows?.filter((row) => row.agent.kind === "agentic") ?? [];
   const loaded = eligible.filter((row) => row.view).length;
+  const blocked = eligible.filter((row) => !row.stale && row.view?.learning_model?.location === "server" && !row.view.learning_model.ready);
   const stale = eligible.some((row) => row.stale);
   const changes = eligible.flatMap((row) => (row.view?.log.items ?? []).map((change) => ({ agent: row.agent, change })))
     .sort((a, b) => b.change.at.localeCompare(a.change.at)).slice(0, 8);
@@ -129,6 +132,11 @@ export function AgentDojo({ v2, server }: { v2: Client; server?: "on" | "off" | 
           {server === "off" && <p role="status" className="border border-warning/40 bg-warning/5 p-4 text-lead text-warning-text">This server has learning turned off. Saved learning remains available; new runs will learn only after the server's learning setting is on.</p>}
           {error && <><ProblemCard problem={error} onRetry={() => void read()} className="" />{rows && <p className="text-small text-warning-text">Showing the last read. Refresh to update these counts.</p>}</>}
           {!rows && !error ? <ListSkeleton label="Loading Learning Dojo" rows={4} /> : rows && <>
+            {server === "on" && !rows.length && modelAccess && <LearningModelSetup access={modelAccess} scope="default" />}
+            {server === "on" && blocked.length > 0 && <Banner tone="warning" title={`${blocked.length} ${blocked.length === 1 ? "agent needs" : "agents need"} model access`}>
+              <div className="flex flex-wrap items-start gap-3"><p className="min-w-0 flex-1">Workflow drafting uses a model on this server and has separate model usage. Set up access for the models listed below. Your connected agents keep their own model and tool credentials.</p><a className={buttonVariants({ variant: "primary", size: "sm" })} href="#/settings/keys">Set up model access</a></div>
+              <p className="mt-2 text-small text-muted-foreground">Settings → API Keys → Model keys. Tool API keys and AgentRun connection keys do not provide model access.</p>
+            </Banner>}
             <dl className="grid grid-cols-2 gap-3 xl:grid-cols-4">{measures.map(({ label, of }) => <div key={label} aria-label={label} className="border bg-card p-4"><dt className="caps text-micro text-muted-foreground">{label}</dt><dd className="mt-3 font-mono text-display">{total(eligible, of)}</dd></div>)}</dl>
             <p className="text-small leading-relaxed text-muted-foreground">{loaded} of {eligible.length} agent histories read. Counts show active drafts; drafts that wait for your OK are counted under review. + means a minimum from incomplete data; — means not reported.{stale ? " Last-read totals include saved histories that may have changed; they are not current minimums." : updated && !loading ? ` Updated ${when(updated)}.` : ""}{loading ? " Loading learning…" : ""}</p>
             {!rows.length ? <div className="border px-6 py-10 text-center"><h3 className="font-semibold">No agents yet</h3><p className="mt-2 text-lead text-muted-foreground">Create an agent, then open its Learning tab to let its runs build on what they learn.</p><a className="mt-4 inline-block text-lead text-primary-text underline underline-offset-4" href="#/agents/new">Build an agent</a><span className="mx-3 text-muted-foreground">·</span><a className="text-lead text-primary-text underline underline-offset-4" href="#/agents">Import existing agents</a></div>
@@ -147,8 +155,17 @@ function AgentCard({ row, server }: { row: Row; server: "on" | "off" }) {
   const { agent, view, error } = row;
   const supported = agent.kind === "agentic";
   const on = learningOn(agent.definition.learning);
+  const access = view?.learning_model;
+  const needsSetup = supported && access?.location === "server" && !access.ready;
+  const waiting = needsSetup && on && server === "on";
   return <article className="flex min-w-0 flex-col border bg-card p-5">
-    <div className="flex flex-wrap items-start justify-between gap-2"><h3 className="min-w-0 break-words text-lead font-semibold">{agent.definition.name || agent.agent_id}</h3><Chip tone={supported && on && server === "on" ? "success" : "plain"}>{!supported ? "Workflow" : server === "off" && on ? "Paused by server" : on ? "Learning on" : "Learning off"}</Chip></div>
+    <div className="flex flex-wrap items-start justify-between gap-2"><h3 className="min-w-0 break-words text-lead font-semibold">{agent.definition.name || agent.agent_id}</h3><Chip tone={waiting ? "warning" : supported && on && server === "on" ? "success" : "plain"}>{!supported ? "Workflow" : server === "off" && on ? "Paused by server" : waiting ? row.stale ? "Model setup (last read)" : "Needs model access" : on ? "Learning on" : "Learning off"}</Chip></div>
+    {needsSetup && <div className="mt-4 space-y-2 text-small" role="status">
+      <p className="text-warning-text">{row.stale ? "Last read: " : ""}{access.needs === "model" ? "Choose a model for learning." : "Model access is required for workflow drafting."}</p>
+      {access.model && <p className="text-muted-foreground">Learning model: <span className="break-all font-mono">{access.model}</span></p>}
+      {access.reason && <p className="text-muted-foreground">{access.reason}</p>}
+      <a className={buttonVariants({ variant: "outline", size: "xs" })} href="#/settings/keys">Set up model access</a>
+    </div>}
     {!supported ? <p className="mt-4 text-lead text-muted-foreground">Workflow runs do not learn. Enable learning on an agentic agent.</p>
       : <>{error && <div role="alert" className="mt-4 text-small text-destructive-text"><p>{row.unavailable ? "Learning unavailable for this agent." : error.title}</p><p className="mt-1">{error.why} {error.said}</p></div>}
       {!view ? !error && <p role="status" className="mt-4 text-lead text-muted-foreground">Loading learning…</p>

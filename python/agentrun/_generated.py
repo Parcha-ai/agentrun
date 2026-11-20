@@ -47,6 +47,7 @@ __all__ = [
     "CapabilitiesHarnessesItemPromises",
     "CapabilitiesHome",
     "CapabilitiesLearning",
+    "CapabilitiesLearningModel",
     "CapabilitiesLinks",
     "CapabilitiesModels",
     "CapabilitiesPlaces",
@@ -303,6 +304,7 @@ __all__ = [
     "GetAgentLearningResponseImpact",
     "GetAgentLearningResponseImpactAfter",
     "GetAgentLearningResponseImpactBefore",
+    "GetAgentLearningResponseLearningModel",
     "GetAgentLearningResponseLog",
     "GetAgentLearningResponseLogItemsItem",
     "GetAgentLearningResponseLogItemsItemBy1",
@@ -871,6 +873,8 @@ __all__ = [
     "SdkRunEventsBodyEventsItem1",
     "SdkRunEventsBodyEventsItem2",
     "SdkRunEventsBodyEventsItem3",
+    "SdkRunEventsBodyEventsItem3Skipped",
+    "SdkRunEventsBodyEventsItem4",
     "SdkRunEventsResponse",
     "SdkRunsResource",
     "SecretMeta",
@@ -897,6 +901,8 @@ __all__ = [
     "StartSdkRunBodyWorkflowToolsItem",
     "StartSdkRunResponse",
     "StartSdkRunResponseLearning",
+    "StartSdkRunResponseLearningCheck",
+    "StartSdkRunResponseLearningCheckWorkflow",
     "StartSdkRunResponseLearningWorkflowsItem",
     "StopResult",
     "StopRunResponse",
@@ -3268,6 +3274,7 @@ class GetLearningCostResponseBillHoldsItem(TypedDict):
 
 
 class GetAgentLearningResponse(TypedDict):
+    learning_model: GetAgentLearningResponseLearningModel
     agent: str
     main: str | None
     corrections: str
@@ -3275,6 +3282,14 @@ class GetAgentLearningResponse(TypedDict):
     log: GetAgentLearningResponseLog
     counts: GetAgentLearningResponseCounts
     impact: GetAgentLearningResponseImpact | None
+
+
+class GetAgentLearningResponseLearningModel(TypedDict):
+    location: Literal["server", "native"]
+    ready: bool
+    model: str | None
+    needs: Literal["key", "model"] | None
+    reason: str | None
 
 
 class _GetAgentLearningResponseWorkflowsItemRequired(TypedDict):
@@ -5801,7 +5816,7 @@ class CompleteSdkRunResponse(TypedDict):
 
 class SdkRunEventsBody(TypedDict):
     sequence: int
-    events: list[SdkRunEventsBodyEventsItem1 | SdkRunEventsBodyEventsItem2 | SdkRunEventsBodyEventsItem3]
+    events: list[SdkRunEventsBodyEventsItem1 | SdkRunEventsBodyEventsItem2 | SdkRunEventsBodyEventsItem3 | SdkRunEventsBodyEventsItem4]
 
 
 class SdkRunEventsBodyEventsItem1(TypedDict):
@@ -5815,13 +5830,34 @@ class SdkRunEventsBodyEventsItem2(TypedDict):
 
 
 class _SdkRunEventsBodyEventsItem3Required(TypedDict):
+    type: Literal["workflow_check"]
+    id: str
+    digest: str
+    outcome: Literal["answered", "handed_back", "failed", "skipped_write"]
+
+
+class SdkRunEventsBodyEventsItem3(_SdkRunEventsBodyEventsItem3Required, total=False):
+    answer: str
+    reason: str
+    skipped: SdkRunEventsBodyEventsItem3Skipped
+
+
+class _SdkRunEventsBodyEventsItem3SkippedRequired(TypedDict):
+    tool: str
+
+
+class SdkRunEventsBodyEventsItem3Skipped(_SdkRunEventsBodyEventsItem3SkippedRequired, total=False):
+    unmarked: Literal[True]
+
+
+class _SdkRunEventsBodyEventsItem4Required(TypedDict):
     type: Literal["tool"]
     id: str
     name: str
     status: Literal["started", "completed", "failed"]
 
 
-class SdkRunEventsBodyEventsItem3(_SdkRunEventsBodyEventsItem3Required, total=False):
+class SdkRunEventsBodyEventsItem4(_SdkRunEventsBodyEventsItem4Required, total=False):
     input: Any
     output: Any
     parent_tool_use_id: str
@@ -5873,14 +5909,31 @@ class StartSdkRunResponse(TypedDict):
     learning: StartSdkRunResponseLearning
 
 
-class StartSdkRunResponseLearning(TypedDict):
+class _StartSdkRunResponseLearningRequired(TypedDict):
     enabled: bool
     revision: str | None
     context: str
     workflows: list[StartSdkRunResponseLearningWorkflowsItem]
 
 
+class StartSdkRunResponseLearning(_StartSdkRunResponseLearningRequired, total=False):
+    check: StartSdkRunResponseLearningCheck
+
+
 class StartSdkRunResponseLearningWorkflowsItem(TypedDict):
+    name: str
+    workflow: str
+    description: str
+
+
+class StartSdkRunResponseLearningCheck(TypedDict):
+    id: str
+    revision: str
+    digest: str
+    workflow: StartSdkRunResponseLearningCheckWorkflow
+
+
+class StartSdkRunResponseLearningCheckWorkflow(TypedDict):
     name: str
     workflow: str
     description: str
@@ -5898,6 +5951,7 @@ class _CapabilitiesRequired(TypedDict):
     features: Features
     regions: list[Region]
     limits: Limits
+    learning_model: CapabilitiesLearningModel
     learning: CapabilitiesLearning
     places: CapabilitiesPlaces
     harnesses: list[CapabilitiesHarnessesItem]
@@ -6113,6 +6167,14 @@ class LimitsMaxCostUsd(TypedDict):
 
 
 Usd: TypeAlias = "float"
+
+
+class CapabilitiesLearningModel(TypedDict):
+    location: Literal["server", "native"]
+    ready: bool
+    model: str | None
+    needs: Literal["key", "model"] | None
+    reason: str | None
 
 
 class _CapabilitiesLearningRequired(TypedDict):

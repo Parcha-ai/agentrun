@@ -216,13 +216,13 @@ if (process.argv[2] === "install-harness") {
       process.exit(1);
     }
   }
-  const [{ GOOSE_ID, installGoose }, { CURSOR_ID, installCursor }] = await Promise.all([import("./harness-goose.js"), import("./harness-cursor.js")]);
-  const installers = { [GOOSE_ID]: { label: "Goose", install: installGoose, binary: "the binary's sha256 matches the pin" }, [CURSOR_ID]: { label: "Cursor", install: installCursor, binary: "its launcher's sha256 and every file's tree digest match the pin" } } as const;
-  const names = Object.keys(installers).join(" or ");
+  // The owner-installed harnesses (harness-owned.ts), each one's id, label, install and what its install checks.
+  const installers = await Promise.all([import("./harness-goose.js").then((m) => m.GOOSE), import("./harness-cursor.js").then((m) => m.CURSOR)]);
+  const names = installers.map((each) => each.id).join(" or ");
   if (positionals.length !== 1) usage(`it takes one harness: ${names}.`);
-  const chosen = Object.hasOwn(installers, positionals[0]!) ? installers[positionals[0] as keyof typeof installers] : undefined;
+  const chosen = installers.find((each) => each.id === positionals[0]);
   if (!chosen) usage(`it installs ${names}, not ${positionals[0]}: claude-agent and codex install on first use, and pi and opencode come with AgentRun.`);
-  const { label, install } = chosen!;
+  const { label, install, verified } = chosen!;
   const [{ ArchiveInstallFailed }, { acpPackage, ACP_PACKAGE }] = await Promise.all([import("./harness-archive.js"), import("./acp-package.js")]);
   if (!acpPackage()) {
     console.error(`${label}'s adapter (${ACP_PACKAGE}) is not installed beside this server, so it has no pinned release to install.`);
@@ -230,7 +230,7 @@ if (process.argv[2] === "install-harness") {
   }
   const data = resolve(values.data ?? defaultData());
   try {
-    const said = { downloaded: "the archive is downloaded and its sha256 matches the pin", unpacked: "unpacked", verified: chosen!.binary } as const;
+    const said = { downloaded: "the archive is downloaded and its sha256 matches the pin", unpacked: "unpacked", verified } as const;
     const { version, installed, binary } = await install(data, { onStep: (step) => console.error(`${label}: ${said[step]}`) });
     console.log(installed === "already"
       ? `${label} ${version} is installed in ${dirname(binary)} (already: the pinned release is there, so nothing was downloaded).`

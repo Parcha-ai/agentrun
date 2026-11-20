@@ -98,6 +98,16 @@ export function acpPlatform(platform: string = process.platform, arch: string = 
   return os && cpu ? (`${os}-${cpu}` as AcpPlatform) : undefined;
 }
 
+/** A release pinned with its binary's digest (and, for an agent pinned by its tree, the tree's). */
+export type PinnedRelease = AcpArchivePin & { readonly binarySha256: string; readonly treeSha256?: string };
+
+/** `pin`'s release for `platform` (default this host's) with its binary's digest, and its tree's when `tree`; undefined
+ *  where none is pinned so, where the agent is refused ACP_BINARY_UNPINNED (unpinned) before any file of it is read. */
+export function pinnedRelease(pin: AcpBinaryPin, platform: string | undefined = acpPlatform(), tree = false): PinnedRelease | undefined {
+  const release = platform ? pin.archives[platform as AcpPlatform] : undefined;
+  return release?.binarySha256 && (!tree || release.treeSha256) ? (release as PinnedRelease) : undefined;
+}
+
 /** A binary the adapter will not start: its code says why (ACP_CODES.binaryMismatch, binaryUnreadable). */
 export class AcpBinaryRefused extends Error {
   constructor(readonly code: string, message: string) {
@@ -105,6 +115,10 @@ export class AcpBinaryRefused extends Error {
     this.name = "AcpBinaryRefused";
   }
 }
+
+/** The refusal of `label` `version` on a host its pin names no release for. */
+export const unpinned = (label: string, version: string, platform: string | undefined = acpPlatform()): AcpBinaryRefused =>
+  new AcpBinaryRefused(ACP_CODES.binaryUnpinned, `no digest is pinned for ${label} ${version} on ${platform ?? `${process.platform}-${process.arch}`}`);
 
 const SHA256 = /^[0-9a-f]{64}$/;
 /** The check's one step: the file's sha256. */

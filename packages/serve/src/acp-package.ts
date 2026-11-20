@@ -30,11 +30,12 @@ export type AcpPackage = {
   cursorRecipe(options: { command: string; limits: { readonly maxTurns: number; readonly maxToolCalls: number }; model?: string }): AcpRecipe;
   /** The folder Cursor was installed into, from its launcher's path and the pin's `cmd`; undefined when it is not there. */
   cursorRootOf(binary: string, cmd: string): string | undefined;
-  /** Cursor's release pinned for `platform` (default this host's), its launcher's and tree's digests; undefined where none is. */
-  cursorRelease(platform?: string): { readonly cmd: string; readonly binarySha256: string; readonly treeSha256: string } | undefined;
   /** The form a model id an ACP agent lists takes (Cursor's `gpt-5.4-nano[reasoning=medium]` among them). */
   readonly MODEL_ID: RegExp;
   acpPlatform(): string | undefined;
+  /** `pin`'s release for `platform` (default this host's) with its binary's digest, and its tree's when `tree`; undefined
+   *  where none is pinned so. */
+  pinnedRelease(pin: AcpPin, platform?: string, tree?: boolean): (AcpRelease & { readonly binarySha256: string }) | undefined;
   gooseAdapter(options: Record<string, unknown>): AgentAdapter;
   /** Any ACP agent's adapter, from its recipe (a harness module's, harness-table.ts acpEntry). */
   acpAdapter(options: Record<string, unknown>): AgentAdapter;

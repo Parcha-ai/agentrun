@@ -97,6 +97,21 @@ async function open(a: Agent, fake: Fake = {}, props: Partial<LearningProps> = {
 }
 const focus = async () => { await act(async () => { window.dispatchEvent(new Event("focus")); }); await settle(); };
 
+describe("learning model setup", () => {
+  it("shows the missing learning route and clears setup after it is configured, without changing learning", async () => {
+    let current = view({ learning_model: { location: "server", ready: false, model: "openrouter/example-model", needs: "key", reason: "Add OPENROUTER_API_KEY for this model." } });
+    const t = await open(agent(true), { learning: async () => current });
+    expect(t.host.querySelector('[aria-label="Learning model setup"]')).not.toBeNull();
+    expect(t.text()).toContain("openrouter/example-model");
+    expect(t.host.querySelector('a[href="#/settings/keys"]')).not.toBeNull();
+    current = view({ learning_model: { ...current.learning_model!, ready: true, needs: null, reason: null } });
+    await t.click(/^Refresh learning$/);
+    expect(t.host.querySelector('[aria-label="Learning model setup"]')).toBeNull();
+    expect(t.text()).toContain("openrouter/example-model");
+    expect(t.calls.filter((call) => /^(put |write )/.test(call))).toEqual([]);
+  });
+});
+
 describe("refreshing learning after external work", () => {
   it("reads the corrections, the workflows and the runs again when returning to the window", async () => {
     let current = view();

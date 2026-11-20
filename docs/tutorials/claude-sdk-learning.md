@@ -1,6 +1,6 @@
 # Add learning to a Claude Agent SDK backend
 
-Wrap your existing `query` function, keep its options and tools, and give the backend agent a stable AgentRun id. Each fresh session receives the agent's learning (its owner's corrections, and accepted workflows through the bridge) before its first task. The application still starts the work and handles the stream.
+Wrap your existing `query` function, keep its options and tools, and give the backend agent a stable AgentRun id. Each fresh session receives the agent's learning (its owner's corrections, and promoted workflows through the bridge) before its first task. The application still starts the work and handles the stream.
 
 This integration requires the client and server from the same reviewed development checkout. Use its built `packages/client` package in your backend; these new exports are not yet a published-release guarantee. The executable example is tested against `@anthropic-ai/claude-agent-sdk` 0.3.286.
 
@@ -37,7 +37,7 @@ async function answerRequest(prompt: string, existingOptions: Parameters<typeof 
 
 The original task result reaches your application before AgentRun finishes recording it. AgentRun records the original request, standing instructions, assistant text, tool names/status, session id and reported usage. The wrapper does not upload raw tool arguments/results, SDK configuration, credentials or reasoning blocks.
 
-An SDK task carries no owner feedback of its own. The agent's `corrections.md` changes when its owner edits it: in the console's Learning tab, or with `PUT /v2/agents/{id}/learning/corrections` on the version just read. A later fresh session is given that file whole, under `# Learned`. The wrapper never starts a hidden second turn in your Claude conversation, installs no local files and adds no native tools. Once the agent has its `learning.compile_after` completed runs (20 by default), the server's compile turn may draft a workflow from them; to let an accepted workflow call your existing tools, explicitly configure the [workflow MCP bridge](sdk-workflow-learning.md).
+An SDK task carries no owner feedback of its own. The agent's `corrections.md` changes when its owner edits it: in the console's Learning tab, or with `PUT /v2/agents/{id}/learning/corrections` on the version just read. A later fresh session is given that file whole, under `# Learned`. The wrapper never starts a hidden second turn in your Claude conversation, installs no local files and adds no native tools. Once the agent has its `learning.compile_after` completed runs (20 by default), the server's compile turn may draft a workflow from them; to let a promoted workflow call your existing tools, explicitly configure the [workflow MCP bridge](sdk-workflow-learning.md).
 
 Call `await query.flushLearning()` before shutting down a worker or starting the next run. It waits for the pending evidence and for the run's learning (a compile turn, when one is due) to settle. Persistence failures, a failed learning turn and timeouts are observable errors, not successful learning. The original SDK failure/result remains unchanged. For a request server, you can deliver the answer first and wait in your existing background-job lifecycle, but keep the process alive until flushing finishes.
 

@@ -5,7 +5,7 @@ import { mkdirSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { ACP_CODES, CURSOR_CODES, CURSOR_INSTALL, CURSOR_LIMITS, CURSOR_PIN, cursorAdapter, cursorCard, cursorFacts, cursorRecipe, cursorRelease, cursorRootOf, recipeFile, recipeProblems, RESERVED_ENV, treeDigest, verifyPinnedTree } from '@parcha/agentrun-harness-acp';
-import { onCursorPin, scratch } from './helpers.mjs';
+import { onArch, onCursorPin, scratch } from './helpers.mjs';
 
 const BINARY = '/opt/agents/cursor-2026.11.13/dist-package/cursor-agent';
 
@@ -131,6 +131,17 @@ test("Cursor's adapter refuses a launcher that is not the pin's, and one outside
 test('cursorRelease is the pin for a platform CURSOR_PIN names, with its digests, and none for any other', () => {
   assert.equal(cursorRelease('linux-x86_64'), CURSOR_PIN.archives['linux-x86_64']);
   for (const platform of ['darwin-aarch64', 'darwin-x86_64', 'linux-aarch64', 'windows-x86_64', 'plan9']) assert.equal(cursorRelease(platform), undefined, platform);
+});
+
+test("on a host no release is pinned for (process.arch said arm64), Cursor's adapter is refused ACP_BINARY_UNPINNED before it reads a file", () => {
+  // No file is made: the refusal comes before any is read.
+  const binary = join(scratch(), 'dist-package', 'cursor-agent');
+  const arch = process.arch;
+  onArch('arm64', () => {
+    assert.equal(cursorRelease(), undefined, 'no release is pinned for this host now');
+    assert.throws(() => cursorAdapter({ binary, sessionsDir: scratch() }), (error) => error.code === ACP_CODES.binaryUnpinned && /no digest is pinned for Cursor/.test(error.message));
+  });
+  assert.equal(process.arch, arch, 'process.arch is put back');
 });
 
 test("its facts: plan billed (no wire of the host's), its own model, no steer, the owner's install line", () => {

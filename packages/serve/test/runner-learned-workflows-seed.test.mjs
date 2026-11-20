@@ -1,7 +1,7 @@
 // A run on the runner lists its agent's learned workflows: the claim reads them from the agent's learning folder at the
 // commit the run's learning start pinned (runner/learning-seed.ts, the one read the seed lay makes), never from a pin in
 // the run's directory, which no runner writes. On both spec builders: pi's (adapterRunSpecFromLaunch) and the CLI
-// harnesses' (cliRunSpecFromLaunch: claude-agent, codex). The learned_workflow tool names each ACTIVE learned workflow,
+// harnesses' (cliRunSpecFromLaunch: claude-agent, codex). The learned_workflow tool names each promoted ACTIVE workflow,
 // as main's start chose them (learning.ts chooseWorkflows): never one pending its owner's OK, never a retired one, never
 // one holding a key saved on the server (left out, in one line of the run's log). As on main (app.ts), the tool is the
 // run's whenever its agent learned a workflow: a revision never names learned_workflow among its tools, so it is never
@@ -16,7 +16,7 @@ import { createRegistry, Harness } from "@earendil-works/pi-durable";
 import { BACKGROUND_CONTEXT as ctx } from "@earendil-works/chord/context";
 import { specFor } from "./runner-spec-support.mjs";
 import { answerFlow, linkHarnesses } from "./support.mjs";
-import { landWorkflows, startAt } from "./learned-workflow-seed-support.mjs";
+import { landWorkflows, promoteChecked, startAt } from "./learned-workflow-seed-support.mjs";
 
 const { openSqliteStore } = await import("../dist/store/sqlite/store.js");
 const { cliRunSpecFromLaunch } = await import("../dist/runner/cli-run-spec.js");
@@ -61,7 +61,7 @@ function listsAnswerOnly(spec) {
 
 /** pi's spec for a learning run whose seed holds FLOWS (`seed`: "landed", or "none": no learning start), of a revision of
  *  `kind`. */
-async function piSpec(t, { seed = "landed", kind } = {}) {
+async function piSpec(t, { seed = "landed", kind, promoted = true } = {}) {
   const launch = {};
   return specFor(t, {
     ...(kind ? { kind } : {}),
@@ -69,15 +69,16 @@ async function piSpec(t, { seed = "landed", kind } = {}) {
     keys: { [SAVED.name]: SAVED.value },
     launch,
     ledger,
-    before: async (_server, _key, dir) => {
+    before: async (server, _key, dir) => {
       if (seed === "landed") launch.learning = startAt(await landWorkflows(dir, AGENT, FLOWS));
+      if (seed === "landed" && promoted) await promoteChecked(server.settings, AGENT, FLOWS.filter(({ status }) => !status));
     },
   });
 }
 
 /** A CLI harness's spec for a learning run whose seed holds FLOWS, built for its claim as the dispatch builds it (no
  *  session opened), as runner-learning-seed-lay's cliSpec builds it. `log`: the spec's log lines. */
-async function cliSpec(t, harness, { seed = "landed" } = {}) {
+async function cliSpec(t, harness, { seed = "landed", promoted = true } = {}) {
   const dir = scratch("runner-learned-workflows-seed-");
   const server = await openSqliteStore({ dataDir: dir, role: "server" });
   const store = await openSqliteStore({ dataDir: dir, role: "runner" });
@@ -91,6 +92,7 @@ async function cliSpec(t, harness, { seed = "landed" } = {}) {
     rmSync(dir, { recursive: true, force: true });
   });
   const sha = seed === "landed" ? await landWorkflows(dir, AGENT, FLOWS) : undefined;
+  if (seed === "landed" && promoted) await promoteChecked(server.settings, AGENT, FLOWS.filter(({ status }) => !status));
   const model = harness === "claude-agent" ? { provider: "anthropic", modelId: "claude-haiku-5-5" } : { provider: "openai", modelId: "gpt-6.1-sol" };
   await server.agents.create({ id: AGENT, name: "Agent" }, { id: "rev-1", kind: "agentic", body: { instructions: "Answer.", harness, tools: GRANTED, learning: true } });
   const launch = { input: { content: "Run what you learned." }, title: "t", place: { mode: "runner" }, harness, model, ...(sha !== undefined ? { learning: startAt(sha) } : {}) };
@@ -130,6 +132,13 @@ for (const harness of ["claude-agent", "codex"]) {
 
 test("a run of a workflow revision (kind workflow) lists no learned workflow, though its agent learned one", async (t) => {
   assert.equal(learnedOf((await piSpec(t, { kind: "workflow" })).spec), undefined);
+});
+
+test("active drafts with no check promotion are not offered to pi, Claude or Codex as learned_workflow", async (t) => {
+  assert.equal(learnedOf((await piSpec(t, { promoted: false })).spec), undefined);
+  for (const harness of ["claude-agent", "codex"]) {
+    assert.equal(learnedOf((await cliSpec(t, harness, { promoted: false })).spec), undefined, harness);
+  }
 });
 
 test("a seed read whose secrets read fails starts the run with no learned workflow and says so: it never stops the run", async () => {

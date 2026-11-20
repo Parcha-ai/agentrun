@@ -18,7 +18,8 @@ import { facts as codexFacts } from "@parcha/agentrun-harness-codex/facts";
 import { facts as openCodeFacts } from "./harness-opencode/facts.js";
 import { CURSOR_FACTS, GOOSE_FACTS } from "./adapter-facts.js";
 import { ACP_PACKAGE, acpPackage } from "./acp-package.js";
-import { gooseHidden, type GooseMissing, gooseMissing } from "./harness-goose.js";
+import { gooseHidden, gooseMissing } from "./harness-goose.js";
+import type { OwnerMissing } from "./harness-owned.js";
 import { CURSOR_DEFAULT_MODEL, CURSOR_KEY, cursorCardOf, cursorHidden, cursorLimitsOf, cursorMissing } from "./harness-cursor.js";
 import type { AdapterNeeds } from "./adapters.js";
 import { DEFAULT_HARNESS, HARNESS_ID_PATTERN, type HarnessId, PLAN_HARNESSES, RESERVED_HARNESS_IDS } from "./harness.js";
@@ -60,8 +61,9 @@ export interface HarnessEntry {
   readonly label: string;
   /** What it promises (HarnessPromises). Absent: a native harness's (NATIVE_PROMISES). */
   readonly promises?: HarnessPromises;
-  /** The runner's harness for it (runner/adapters/index.ts RunnerHarness): absent on a built-in, whose runner is the
-   *  runner's own (RUNNER_HARNESSES); a harness module's entry brings its own. */
+  /** The runner's harness for it (runner/adapters/index.ts RunnerHarness): ON_TABLE on an entry moduleEntryOf builds (a
+   *  module's, Goose's); absent on another built-in, whose runner is the runner's own (RUNNER_HARNESSES), else ON_TABLE
+   *  for one run from its facts and adapter (Cursor). */
   readonly runner?: RunnerHarness;
   /** Whether it takes a message mid-turn; else a message waits for the turn's end. */
   readonly steer: boolean;
@@ -302,12 +304,13 @@ async function ownKeysOnly(facts: AdapterFacts, recipe: AcpRecipe): Promise<AcpR
   return recipe;
 }
 
-/** A module's entry is run on serve's table (its facts' adapter, cli-run-spec.ts), never by a runner's adapter of its
- *  own: this one says so if it is ever asked. The loop keeps the run's record, as for every CLI harness. */
-const ON_TABLE: RunnerHarness = Object.freeze({
+/** The runner of an entry run on serve's table (its facts' adapter, cli-run-spec.ts), never by a runner's adapter of its
+ *  own: a module's, and Goose's and Cursor's (resolveHarness). Its adapter says so if it is ever asked. The loop keeps the
+ *  run's record, as for every CLI harness. */
+export const ON_TABLE: RunnerHarness = Object.freeze({
   record: "loop" as const,
   adapter: async () => {
-    throw new Error("a harness module's adapter harness runs from its table entry (facts and adapter), not a runner adapter");
+    throw new Error("this harness runs from its table entry (facts and adapter), not a runner adapter");
   },
 });
 
@@ -315,15 +318,10 @@ const ON_TABLE: RunnerHarness = Object.freeze({
  *  its model through the session's proxy (Goose's). */
 const ACP_PROMISES: HarnessPromises = Object.freeze({ resume: "load", tool_gate: "permission", billing: "proxy" });
 
-/** An adapter harness's entry over the builder of its adapter for one run (moduleAdapter): the built-in Goose's, and
- *  under each module's (moduleEntryOf). */
-const launchedEntryOf = (facts: AdapterFacts, adapter: (launch: ModuleLaunch) => AgentAdapter | Promise<AgentAdapter>, { missing, ...extra }: Pick<HarnessEntry, "skillCheck" | "promises" | "hidden"> & ModuleChecks = {}, host: AcpEntryHost = {}): HarnessEntry =>
-  adapterEntry(facts, moduleAdapter(facts, adapter, missing ? { missing } : {}, host), extra);
-
-/** A module's adapter harness's whole entry (HarnessModuleKit.adapterEntry): launchedEntryOf, run from the table
- *  (ON_TABLE). The built-in Goose's runner is the runner's own (RUNNER_HARNESSES), so it has none here. */
-const moduleEntryOf = (facts: AdapterFacts, adapter: (launch: ModuleLaunch) => AgentAdapter | Promise<AgentAdapter>, extra: Pick<HarnessEntry, "skillCheck" | "promises"> & ModuleChecks = {}, host: AcpEntryHost = {}): HarnessEntry =>
-  Object.freeze({ ...launchedEntryOf(facts, adapter, extra, host), runner: ON_TABLE });
+/** An adapter harness's whole entry over the builder of its adapter for one run (moduleAdapter), run from the table
+ *  (ON_TABLE): a module's (HarnessModuleKit.adapterEntry, which takes no `hidden`) and the built-in Goose's. */
+const moduleEntryOf = (facts: AdapterFacts, adapter: (launch: ModuleLaunch) => AgentAdapter | Promise<AgentAdapter>, { missing, ...extra }: Pick<HarnessEntry, "skillCheck" | "promises" | "hidden"> & ModuleChecks = {}, host: AcpEntryHost = {}): HarnessEntry =>
+  Object.freeze({ ...adapterEntry(facts, moduleAdapter(facts, adapter, missing ? { missing } : {}, host), extra), runner: ON_TABLE });
 
 /** A proxy-billed ACP agent's whole entry, moduleEntryOf over serve's own ACP adapter: a module's (HarnessModuleKit.acpEntry,
  *  `host` none) and a proxy-billed recipe's under harness-check (AcpEntryHost). Its agent's allowlist and keys are read
@@ -440,9 +438,9 @@ const MODULE_KIT: HarnessModuleKit = Object.freeze<HarnessModuleKit>({
   acpEntry: (options) => acpProxyEntryOf(options),
 });
 
-/** Why Goose cannot run here (harness-goose.ts gooseMissing: not installed, or not the pinned binary) as an error of its
+/** Why Goose cannot run here (harness-owned.ts `missing`: not installed, or not the pinned binary) as an error of its
  *  code, so moduleAdapter refuses it with the install fix its facts name. */
-const gooseRefused = (missing: GooseMissing): Error => Object.assign(new Error(missing.message), { code: missing.code });
+const gooseRefused = (missing: OwnerMissing): Error => Object.assign(new Error(missing.message), { code: missing.code });
 
 /** Goose's adapter for one run (moduleAdapter's builder, after its `missing`): its package's gooseAdapter on the binary
  *  its owner installed into the data's harnesses directory (`agentrun harness install goose`) and from nowhere else,
@@ -490,11 +488,11 @@ function cursorOptions(facts: AdapterFacts): AcpPlanEntryOptions {
     },
     beforeStart: async (command) => {
       const acp = acpPackage()!;
-      const release = acp.cursorRelease(acp.acpPlatform());
+      const release = acp.pinnedRelease(acp.CURSOR_PIN, acp.acpPlatform(), true);
       const root = release && acp.cursorRootOf(command, release.cmd);
       // The launcher is the one cursorMissing found at its pinned path: a release or folder lost since is refused.
-      if (!release || !root) throw new Error(`ACP_BINARY_MISMATCH: the Cursor launcher at ${command} is not at its pinned path inside its folder`);
-      await acp.verifyPinnedBinaryAsync(command, release.binarySha256);
+      if (!release?.treeSha256 || !root) throw new Error(`ACP_BINARY_MISMATCH: the Cursor launcher at ${command} is not at its pinned path inside its folder`);
+      // The tree's digest covers every file it runs, the launcher among them (as cursorAdapter's check does).
       await acp.verifyPinnedTree(root, release.treeSha256);
     },
   };
@@ -526,7 +524,7 @@ const BUILTIN: Readonly<Record<HarnessId, HarnessEntry>> = Object.freeze({
   // Goose, over ACP, where its package is beside serve (acp-package.ts): its owner installs its pinned binary
   // (`agentrun harness install goose`, harness-goose.ts), never a run; listed only once it is installed and verified.
   ...(GOOSE_FACTS ? {
-    [GOOSE_FACTS.id]: launchedEntryOf(GOOSE_FACTS, gooseLaunch, {
+    [GOOSE_FACTS.id]: moduleEntryOf(GOOSE_FACTS, gooseLaunch, {
       missing: async (env) => {
         const found = await gooseMissing(env);
         if ("missing" in found) throw gooseRefused(found.missing);
