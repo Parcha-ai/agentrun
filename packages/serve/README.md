@@ -3013,7 +3013,8 @@ serves these routes alone:
 - what an agent learned, for the backend whose runs it learned from: the loop's compile turns
   (`GET /agents/{id}/learning/loop`), each learned workflow's promotion and what serves
   (`GET /agents/{id}/learning/promotions`), the cost per run (`GET /agents/{id}/learning/cost`) and a run's learning
-  (`GET /runs/{id}/learning`), each cut of the host's secrets as the console's reads are;
+  (`GET /runs/{id}/learning`), each cut of the host's secrets as the console's reads are; and its reset
+  (`DELETE /agents/{id}/learning`, the agent and its runs kept), its one learning write served here;
 - a run's hosted machine fetching this server's computerd build (`GET /computers/daemon`), with the token its create
   minted;
 - `GET /capabilities`, `GET /health` and `GET /usage`;
