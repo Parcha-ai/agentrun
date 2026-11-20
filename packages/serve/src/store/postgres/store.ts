@@ -8,6 +8,10 @@ import { storeOver } from "../sqlite/store.js";
 import { PgConnection, SCHEMA_NAME } from "./connection.js";
 import { migrate, migrationsIn, placeOf, refuseBelowFloor, runnerFloorOf, versionOf } from "./migrate.js";
 
+/** How long Store.schemaState waits for the database before it is Unanswered and its connection is dropped (ms): under
+ *  the runner's 10 s floor read, so a read that hangs never outlasts the next one. */
+export const SCHEMA_STATE_MS = 5_000;
+
 /** The schema a store is in when none is named. */
 export const DEFAULT_SCHEMA = "agentrun";
 
@@ -107,6 +111,8 @@ export async function openPostgresStore(options: PostgresStoreOptions): Promise<
     throw error;
   }
   const store = storeOver(connection, now);
-  const schemaState = async () => ({ ...(await connection.withClient((client) => runnerFloorOf(client, schema))), known });
+  // Bounded: a runner reads it on a timer, and a database that stops answering must neither hold that timer's read for good
+  // nor the store's close, which waits for every call in flight.
+  const schemaState = async () => ({ ...(await connection.withClient((client) => runnerFloorOf(client, schema), SCHEMA_STATE_MS)), known });
   return Object.assign(store, { schemaState });
 }

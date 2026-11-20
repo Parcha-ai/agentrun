@@ -72,12 +72,15 @@ const BREAKING: readonly { readonly why: string; readonly test: (statement: stri
   },
 ];
 
-/** `clause` with what each parenthesis holds emptied: a CHECK's `x IS NOT NULL` is no NOT NULL of the column's own. */
+/** `clause` with everything inside its parentheses removed, at any depth: a CHECK's `x IS NOT NULL`, however nested, is
+ *  no NOT NULL of the column's own. */
 function outerWords(clause: string): string {
-  let out = clause;
-  for (let before = ""; before !== out; ) {
-    before = out;
-    out = out.replace(/\([^()]*\)/g, "()");
+  let out = "";
+  let depth = 0;
+  for (const c of clause) {
+    if (c === "(") depth += 1;
+    else if (c === ")") depth = Math.max(0, depth - 1);
+    else if (depth === 0) out += c;
   }
   return out;
 }

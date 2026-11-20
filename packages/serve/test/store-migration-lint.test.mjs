@@ -75,6 +75,7 @@ test("the lint passes additive steps, and reads no comment or string as a statem
     "DO $$ BEGIN PERFORM 1; END $$;",
     "ALTER TABLE runs ADD COLUMN IF NOT EXISTS labels TEXT CHECK (labels IS NULL OR labels IS NOT NULL);",
     "DROP TRIGGER IF EXISTS runs_changed ON runs;",
+    "ALTER TABLE runs ADD COLUMN note TEXT CHECK (note IS NULL OR (note IS NOT NULL AND length(note) > 0));",
   ]) {
     assert.deepEqual(breakingStatements(sql), [], sql);
   }

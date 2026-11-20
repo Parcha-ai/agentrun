@@ -12,12 +12,14 @@
 import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
+import { connect, createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { startRunnerProcess } from "../dist/runner/main.js";
-import { LAST_UNMARKED, migrate, migrationsIn, openPostgresStore, RunnerBelowFloor, runnerFloorOf, StoreAwaitsServer } from "../dist/store/index.js";
+import { LAST_UNMARKED, migrate, Unanswered, migrationsIn, openPostgresStore, RunnerBelowFloor, runnerFloorOf, StoreAwaitsServer } from "../dist/store/index.js";
 import { readStoreSchema } from "../dist/store-schema.js";
+import { SCHEMA_STATE_MS } from "../dist/store/postgres/store.js";
 import { fauxLoops, until } from "./runner-support.mjs";
 import { client, dropSchema, freshSchema, PG_URL, postgresOnly } from "./store-target.mjs";
 
@@ -210,4 +212,50 @@ test("store-schema reads the live schema and floor beside this build's version, 
   const ledger = (await sql.query(`SELECT * FROM ${schema}.schema_migrations ORDER BY version`)).rows;
   await read();
   assert.deepEqual((await sql.query(`SELECT * FROM ${schema}.schema_migrations ORDER BY version`)).rows, ledger, "a read changes nothing");
+});
+
+/** A link to the test database that forwards until `stall()`, then passes nothing on either way: a database that stopped
+ *  answering, its connections still open. */
+async function stallingLink() {
+  const target = new URL(PG_URL);
+  const sockets = new Set();
+  let stalled = false;
+  const server = createServer((socket) => {
+    const upstream = connect(Number(target.port || 5432), target.hostname);
+    for (const [from, to] of [[socket, upstream], [upstream, socket]]) {
+      sockets.add(from);
+      from.on("error", () => undefined);
+      from.on("data", (chunk) => void (!stalled && to.writable && to.write(chunk)));
+      from.on("close", () => to.destroy());
+    }
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const url = new URL(PG_URL);
+  url.host = `127.0.0.1:${server.address().port}`;
+  return {
+    url: url.toString(),
+    stall: () => void (stalled = true),
+    close: () => new Promise((resolve) => {
+      for (const socket of sockets) socket.destroy();
+      server.close(resolve);
+    }),
+  };
+}
+
+test("a floor read on a database that stopped answering gives up at its deadline, dropping its connection: the next read and the close are never held", ONLY, async (t) => {
+  const { schema } = await schemaFor(t);
+  await setUp(schema, []);
+  const link = await stallingLink();
+  t.after(() => link.close());
+  const store = await openPostgresStore({ url: link.url, schema, role: "runner" });
+  assert.equal((await store.schemaState()).version, KNOWN, "read through the link while it answers");
+  link.stall();
+  const began = Date.now();
+  await assert.rejects(store.schemaState(), Unanswered);
+  const took = Date.now() - began;
+  assert.ok(took >= SCHEMA_STATE_MS - 100 && took < SCHEMA_STATE_MS + 2_000, `gave up at its deadline: ${took} ms`);
+  // The close waits for every call in flight: none is left to hold it.
+  const closing = Date.now();
+  await store.close();
+  assert.ok(Date.now() - closing < 5_000, `closed promptly: ${Date.now() - closing} ms`);
 });

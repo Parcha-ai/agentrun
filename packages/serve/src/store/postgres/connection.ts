@@ -748,14 +748,18 @@ export class PgConnection implements StoreConnection {
     return Number((await this.get<{ now: string | number }>("SELECT (extract(epoch FROM clock_timestamp()) * 1000)::bigint AS now"))!.now);
   }
 
-  /** One client of the pool for setup (migrations), released after `work`. */
-  async withClient<T>(work: (client: pg.PoolClient) => Promise<T>): Promise<T> {
+  /** One client of the pool for setup (migrations), released after `work`. With `deadlineMs`, `work` unanswered past it is
+   *  Unanswered and its client destroyed, never waited on (a read that runs on a timer: Store.schemaState). */
+  async withClient<T>(work: (client: pg.PoolClient) => Promise<T>, deadlineMs?: number): Promise<T> {
     return this.#call(async () => {
       const client = await this.#pool.connect();
       try {
-        return await work(client);
-      } finally {
+        const result = await (deadlineMs === undefined ? work(client) : answered(work(client), deadlineMs, "a read of the schema's version"));
         client.release();
+        return result;
+      } catch (error) {
+        client.release(error instanceof Unanswered ? error : undefined);
+        throw error;
       }
     });
   }
