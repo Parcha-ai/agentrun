@@ -15,12 +15,18 @@ export const API_ONLY_ENV = "AGENTRUN_API_ONLY";
  *    which the backend that made it sends.
  *  - getRunComputer, takeOverRunComputer, handBackRunComputer, createRunComputerViewer: a run's computer, its take-over
  *    and hand-back, and its viewer credential's mint (viewer-credential.ts), by the server's token, the backend's own;
- *    the live page and socket take that credential. */
+ *    the live page and socket take that credential.
+ *  - getLearningLoop, listLearningPromotions, getLearningCost, getRunLearning: a backend reads what its agents learned
+ *    (the loop's compile turns, each workflow's promotion and what serves, the cost per run, a run's learning), by the
+ *    server's token, each text cut as the console's reads cut it. Every learning write (corrections, approvals, retires,
+ *    replays) and every read of the learning's own text (the learning view, corrections, files, log, revisions, audits,
+ *    a run's diff) stays the console's. */
 export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createRun", "createInlineRun", "getComputerDaemon",
   "getRunComputer", "takeOverRunComputer", "handBackRunComputer", "createRunComputerViewer",
   "listComputers", "getWorkspaceArchil",
   "getAgentArchil", "deleteAgentArchil", "deleteAgent",
+  "getLearningLoop", "listLearningPromotions", "getLearningCost", "getRunLearning",
   "getRun", "listRuns", "listAllRuns", "getTimeline",
   "sendMessage", "stopRun", "cancelRun", "raiseRunCap", "gradeRun",
   "listRunFiles", "readRunFile",

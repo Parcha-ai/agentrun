@@ -2985,6 +2985,12 @@ serves these routes alone:
   key names and whether each is saved, and whether it is ready) and `GET /workspace/archil` (whether runs' folders are
   on Archil, and whether its account key is saved). Neither answers a key's value. Their writes, tests and key choices
   are the console's, refused here;
+- what an agent learned, for the backend whose runs it learned from: the loop's compile turns
+  (`GET /agents/{id}/learning/loop`), each learned workflow's promotion and what serves
+  (`GET /agents/{id}/learning/promotions`), the cost per run (`GET /agents/{id}/learning/cost`) and a run's learning
+  (`GET /runs/{id}/learning`), each cut of the host's secrets as the console's reads are. Every learning write
+  (corrections, approvals, retires, replays) and every read of the learning's own text (the learning view, corrections,
+  files, log, revisions, audits, a run's diff) is the console's, refused here;
 - `GET /capabilities`, `GET /health` and `GET /usage`;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 

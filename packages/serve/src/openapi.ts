@@ -1687,7 +1687,7 @@ const LEARNING_EXTENSIONS: Record<string, Record<string, Json>> = {
         { name: "limit", in: "query", required: false, description: `The latest runs to answer, each keeping its number. At most ${COST_RUNS_MAX}.`, schema: { type: "integer", minimum: 1, maximum: COST_RUNS_MAX, default: COST_RUNS_DEFAULT } },
         { name: "format", in: "query", required: false, description: "`csv`: the runs as CSV, columns " + COST_CSV_COLUMNS.join(", ") + ".", schema: { enum: ["json", "csv"], default: "json" } },
       ],
-      responses: { "200": { description: "The agent's cost per run.", content: { "application/json": { schema: LEARNING_COST }, "text/csv": { schema: { type: "string" } } } }, ...errors(400, 401, 404, 429, 500) },
+      responses: { "200": { description: "The agent's cost per run.", content: { "application/json": { schema: LEARNING_COST }, "text/csv": { schema: { type: "string" } } } }, ...errors(400, 401, 403, 404, 429, 500) },
       "x-agentrun-serve": "learningcost/1",
     },
   },

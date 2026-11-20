@@ -2,7 +2,9 @@
 // backend, and refuses every other address with a 404 before the request is read further: the console, the store page's
 // data, sign-in, setup, settings writes, MCP, triggers and their webhook hooks, agents, and a live view's WebSocket. It
 // has no owner. The computer settings' two reads (GET /computers, GET /workspace/archil) are served by the token, their
-// writes, tests and key choices refused. Off by default: the same server without it serves those routes as before.
+// writes, tests and key choices refused. So are an agent's learning reads (the loop, promotions, cost per run and a
+// run's learning), its learning's writes and its own texts refused. Off by default: the same server without it serves
+// those routes as before.
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { request } from "node:http";
