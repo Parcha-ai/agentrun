@@ -166,3 +166,23 @@ test("Mode 2: a start whose files can't be copied into the run's folder is refus
   assert.equal(again.status, 202, JSON.stringify(again.body));
   assert.equal((await api("GET", "/runs?agent=mode2-refused")).body.runs.length, runsBefore + 1);
 });
+
+test("Mode 2: two first starts of one inline agent at once both place their files under the agent the store keeps, and both runs complete", { timeout: 120_000 }, async (t) => {
+  const { api, disks, store, upload } = await split(t);
+  const a = await upload("a.txt", Buffer.from("first"));
+  const b = await upload("b.txt", Buffer.from("second"));
+  const body = (content, fileId) => ({ external: { source: "host", kind: "expert", id: "inline-race", version: 1 }, definition: { name: "Race", description: "Answers.", instructions: "Answer.", skills: [], tools: ["read"] }, input: { content }, file_ids: [fileId] });
+  const [one, two] = await Promise.all([api("POST", "/runs", body("One.", a.file_id)), api("POST", "/runs", body("Two.", b.file_id))]);
+  assert.equal(one.status, 202, JSON.stringify(one.body));
+  assert.equal(two.status, 202, JSON.stringify(two.body));
+  const rows = await Promise.all([one, two].map(async (started) => store.runs.get(started.body.run_id)));
+  assert.equal(rows[0].agentId, rows[1].agentId, "one agent for the reference");
+  for (const [started, file, text] of [[one, "a.txt", "first"], [two, "b.txt", "second"]]) {
+    const runId = started.body.run_id;
+    const launch = readLaunchBody((await store.runs.launch(runId)).body);
+    const placedAt = Buffer.from(disks.get(launch.archilDisk.diskId).files.get(`${runKey(rows[0].agentId, runId)}/inputs/${file}`) ?? "").toString("utf8");
+    assert.equal(placedAt, text, "placed under the agent the run is written with");
+    await follow(api, runId, ["completed", "failed"], { deadlineMs: 90_000 });
+    assert.equal((await api("GET", `/runs/${runId}`)).body.status, "completed");
+  }
+});

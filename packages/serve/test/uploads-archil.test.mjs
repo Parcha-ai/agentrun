@@ -6,9 +6,15 @@ import assert from "node:assert/strict";
 import { createHash, randomBytes } from "node:crypto";
 import { test } from "node:test";
 import { ApiError } from "../dist/errors.js";
-import { archilPathProblem, DEFAULT_UPLOAD_RETENTION_MS, MARK_GRACE_MS, uploadRetentionMs, uploadsDiskName, WorkspaceUploads } from "../dist/uploads-archil.js";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { saveArchilSettings } from "../dist/archil-settings.js";
+import { openSqliteStore } from "../dist/store/sqlite/store.js";
+import { archilPathProblem, archilUploads, DEFAULT_UPLOAD_RETENTION_MS, MARK_GRACE_MS, uploadRetentionMs, uploadsDiskName, WorkspaceUploads } from "../dist/uploads-archil.js";
+import { archilControlFetch } from "./archil-control-fake.mjs";
 import { launchBody, readLaunchBody } from "../dist/run-launch.js";
-import { filesToCopy } from "../dist/uploads.js";
+import { copyFilesInto, filesToCopy } from "../dist/uploads.js";
 import { archilWorkspace } from "../dist/workspace/index.js";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 
@@ -126,4 +132,88 @@ test("a launch whose files the server placed says so, read back the same, and it
   assert.equal(readLaunchBody(launchBody(launch)).filesPlaced, undefined);
   assert.deepEqual(filesToCopy(readLaunchBody(launchBody(placed))), []);
   assert.deepEqual(filesToCopy(readLaunchBody(launchBody(launch))), ["f1", "f2"]);
+});
+
+/** archilUploads over a store in Mode 2 and the Archil fakes: the control plane, and one in-memory disk per id, each
+ *  made through `wrap` (a test's proxy) when given. */
+async function mode2(t, { wrap = (disk) => disk, placeTimeoutMs } = {}) {
+  const dir = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), "uploads-archil-"));
+  const store = await openSqliteStore({ dataDir: dir });
+  t.after(async () => { await store.close(); await rm(dir, { recursive: true, force: true }); });
+  await saveArchilSettings(store, { region: "aws-us-east-1", s3Url: "https://s3.green.us-east-1.aws.prod.archil.com" });
+  const disks = new Map();
+  const diskOf = (id) => {
+    if (!disks.has(id)) disks.set(id, Object.assign(new FakeArchilDisk(), { id }));
+    return disks.get(id);
+  };
+  const control = archilControlFetch({ region: "aws-us-east-1" });
+  const files = archilUploads({ store, sealKey: undefined, env: { ARCHIL_API_KEY: "fake-test-key-archil-unit-01" }, control: { baseUrl: control.baseUrl, fetch: control.fetch, makeDisk: ({ disk }) => wrap(diskOf(disk)) }, ...(placeTimeoutMs ? { placeTimeoutMs } : {}) });
+  return { files, disks, store };
+}
+
+test("two PUTs of one file in two requests take turns on the uploads disk: one makes it ready, the other's different bytes are a 422", async (t) => {
+  const { files, disks } = await mode2(t);
+  const { file } = await (await files.here(true)).reserve({ path: "race.txt", size_bytes: 5 });
+  const [first, second] = [await files.here(false), await files.here(false)];
+  const disk = [...disks.values()][0];
+  let release;
+  disk.hold = new Promise((resolve) => (release = resolve));
+  const one = first.receive(file.file_id, [Buffer.from("aaaaa")]);
+  const two = second.receive(file.file_id, [Buffer.from("bbbbb")]);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  disk.hold = undefined;
+  release();
+  const [a, b] = await Promise.allSettled([one, two]);
+  assert.equal(a.status, "fulfilled");
+  assert.equal(b.status, "rejected");
+  assert.equal(b.reason.extra.fields?.[0]?.field, "sha256");
+  const kept = await first.get(file.file_id);
+  assert.equal(kept.sha256, sha(Buffer.from("aaaaa")));
+  assert.deepEqual(Buffer.from(await first.bytes(kept)), Buffer.from("aaaaa"), "the record's hash is its bytes'");
+});
+
+test("a placement past its deadline answers then, and what it wrote is removed only once the read it waited on has settled", async (t) => {
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  let slowId;
+  const wrap = (disk) => new Proxy(disk, {
+    get(target, name) {
+      const value = Reflect.get(target, name, target);
+      if (name === "getRange") return async (key, range) => {
+        if (slowId !== undefined && key === `files/${slowId}/bytes`) await gate;
+        return value.call(target, key, range);
+      };
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
+  const { files, disks } = await mode2(t, { wrap, placeTimeoutMs: 300 });
+  const uploads = await files.here(true);
+  const ids = [];
+  for (const name of ["fast.txt", "slow.bin"]) ids.push((await (await uploads.take(new URLSearchParams({ path: name }), "text/plain", [Buffer.from(name)])).commit()).file.file_id);
+  slowId = ids[1];
+  const launch = { input: { content: "x" }, title: "x", place: { mode: "runner" }, files: ids };
+  const at = Date.now();
+  await assert.rejects(files.place("run-late", "agent-late", launch), (error) => error instanceof ApiError && error.code === "upstream_failed" && /took longer than 0.3 s/.test(error.message));
+  assert.ok(Date.now() - at < 2_000, "answered by the deadline, not by the stuck read");
+  const runFiles = () => [...disks.values()].flatMap((disk) => [...disk.files.keys()]).filter((key) => key.includes("/runs/run-late/work/"));
+  release();
+  for (let i = 0; i < 100 && runFiles().length; i++) await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.deepEqual(runFiles(), [], "nothing the late copy wrote is left");
+});
+
+test("a copy that fails waits for every file already started before it answers", async () => {
+  const disk = new FakeArchilDisk();
+  const ws = archilWorkspace(disk, "run/work");
+  let slowDone = false;
+  const file = (id, path) => ({ file_id: id, path, size_bytes: 1, content_type: "text/plain", sha256: null, status: "ready", created_at: new Date().toISOString(), expires_at: null });
+  const read = async (f) => {
+    if (f.file_id === "bad") throw new Error("read failed");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    slowDone = true;
+    return Buffer.from("slow");
+  };
+  await assert.rejects(copyFilesInto(ws, [file("slow", "slow.txt"), file("bad", "bad.txt"), file("never", "never.txt")], read, { concurrency: 2 }), /read failed/);
+  assert.ok(slowDone, "the slow file had settled before the copy answered");
+  assert.ok(disk.files.has("run/work/inputs/slow.txt"), "its write landed before the answer, so a cleanup after sees it");
+  assert.ok(!disk.files.has("run/work/inputs/never.txt"), "no file was started after the failure");
 });

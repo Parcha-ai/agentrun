@@ -1,4 +1,5 @@
 import { NATIVE_RUN_OVERRIDES_UNSUPPORTED, nativeOf, nativeRunOverrides } from "./native/binding.js";
+import { serialBy } from "./files.js";
 import { launchNative } from "./native/connection.js";
 // The write half of the run's server cut (design 2.1, "the runner takes every run"): the functions the v2 routes call to
 // start a run and to act on one (message, stop, raise, approve, archive), over the one store (A). The old per-run-process
@@ -618,7 +619,20 @@ const bodyConflict = ({ source, kind, id, version }: InlineAgent["external"]): A
  *  agent already mapped to the reference is the run's (its id, its learning), so a run of a later version learns from the
  *  earlier ones. A different definition under a version already run is 409 external_body_conflict, nothing written; under
  *  `origin`, a key that already started a run gets that run, as startRun's. */
-export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "agents">, deps: StartDeps, inline: InlineAgent, body: Json, { origin, sealed }: Pick<StartOptions, "origin" | "sealed"> = {}): Promise<RunRow> {
+export async function startInline(store: Pick<Store, "runs" | "runOfOrigin" | "agents">, deps: StartDeps, inline: InlineAgent, body: Json, options: Pick<StartOptions, "origin" | "sealed"> = {}): Promise<RunRow> {
+  const ref = externalKey(inline.external);
+  if (await store.agents.byExternal(ref)) return await startInlineOnce(store, deps, inline, body, options);
+  // A reference's first starts take turns in this server: each prepares its launch, and in Mode 2 places its files, under
+  // the agent id it will be written with. Two at once would each mint an agent id, and the one whose transaction found
+  // the other's agent would keep files placed under its own (uploads-archil.ts place). The second reads the agent the
+  // first wrote. (One server writes a store: its owner lock.)
+  return await serialBy(firstInlineStarts, ref, () => startInlineOnce(store, deps, inline, body, options));
+}
+
+/** Each reference's first inline starts in progress (startInline). */
+const firstInlineStarts = new Map<string, Promise<unknown>>();
+
+async function startInlineOnce(store: Pick<Store, "runs" | "runOfOrigin" | "agents">, deps: StartDeps, inline: InlineAgent, body: Json, { origin, sealed }: Pick<StartOptions, "origin" | "sealed"> = {}): Promise<RunRow> {
   const { external, revision, stored: storedRevision } = inline;
   const ref = externalKey(external);
   // A version's body never changes here: a different one is refused before anything else is read or written.

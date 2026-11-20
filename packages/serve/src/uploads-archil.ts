@@ -107,10 +107,9 @@ const tooLarge = (): ApiError => new ApiError("payload_too_large", `the body is 
 /** Uploads kept in a Workspace: `<file_id>/bytes`, `<file_id>/file.json` and `<file_id>/runs/<run id>` at its root (the
  *  uploads disk's files/ folder). The routes' rules are Mode 1's (uploads.ts): the same checks, words and answers. */
 export class WorkspaceUploads implements UploadStore {
-  /** Each file's commit or delete in progress: one at a time per file, as Mode 1's. */
-  private readonly commits = new Map<string, Promise<unknown>>();
-
-  constructor(readonly workspace: Workspace) {}
+  /** `commits`: each file's commit or delete in progress, one at a time per file as Mode 1's. Shared by every store over
+   *  the same uploads disk (archilUploads keeps one per disk), so two requests on one file take turns. */
+  constructor(readonly workspace: Workspace, private readonly commits: Map<string, Promise<unknown>> = new Map()) {}
 
   private exclusive<T>(id: string, work: () => Promise<T>): Promise<T> {
     return serialBy(this.commits, id, work);
@@ -287,6 +286,13 @@ export function archilUploads(options: ArchilUploadsOptions) {
   const { store, sealKey, env = {} } = options;
   /** The uploads disk's id by the settings it was found under (its region and S3 URL), once found or made. */
   const disks = new Map<string, string>();
+  /** Each uploads disk's per-file turns (WorkspaceUploads commits), by its id: one map for every request on it. */
+  const turns = new Map<string, Map<string, Promise<unknown>>>();
+  const turnsOf = (diskId: string): Map<string, Promise<unknown>> => {
+    let held = turns.get(diskId);
+    if (!held) turns.set(diskId, (held = new Map()));
+    return held;
+  };
 
   /** The settings and the account key, or undefined in Mode 1. A key that can't be read is 503 in words naming what to
    *  save, never a value. */
@@ -332,7 +338,7 @@ export function archilUploads(options: ArchilUploadsOptions) {
     const open = await opened();
     if (open === undefined) return undefined;
     const diskId = await uploadsDiskId(open.settings, open.key, open.control, make);
-    return new WorkspaceUploads(diskId === undefined ? emptyWorkspace : archilWorkspace(diskOf(open.settings, open.key, diskId), UPLOADS_KEY));
+    return diskId === undefined ? new WorkspaceUploads(emptyWorkspace) : new WorkspaceUploads(archilWorkspace(diskOf(open.settings, open.key, diskId), UPLOADS_KEY), turnsOf(diskId));
   }
 
   /** In Mode 2, run `runId`'s files (`launch.files`, checked ready) copied into its folder before its row is written: its
@@ -347,29 +353,51 @@ export function archilUploads(options: ArchilUploadsOptions) {
     const timeoutMs = options.placeTimeoutMs ?? PLACE_TIMEOUT_MS;
     const signal = AbortSignal.timeout(timeoutMs);
     const refused = (why: string): ApiError => new ApiError("upstream_failed", `The run's files could not be copied into its folder on Archil, so it was not started: ${why.split(open.key).join("[the key]")}`);
-    const uploads = await here(false);
-    const files = await uploads!.readyFiles(ids);
-    let disk: { diskId: string; kind: "launch" | "agent" };
-    try {
-      // The claim's resolver, without the run (its row is not written yet): the disk then rides the launch, so every
-      // claim of the run mounts this one.
-      disk = await runDiskOf({ store, agentId, ...(launch.archilDisk ? { launch: launch.archilDisk } : {}), control: open.control, signal, availableMs: timeoutMs });
-    } catch (error) {
-      throw refused(error instanceof ArchilClaimRefused ? error.message : signal.aborted ? `its disk was not ready within ${Math.round(timeoutMs / 1000)} s` : String((error as Error)?.message ?? error));
-    }
-    const runDisk = diskOf(open.settings, open.key, disk.diskId);
-    const runs = `agents/${agentDirName(agentId)}/runs`;
+    const late = `it took longer than ${timeoutMs / 1000} s`;
+    /** The run's folder's parent on its disk, once the disk is resolved: what undo removes the run's folder from. */
+    let runs: Workspace | undefined;
+    let disk: { diskId: string; kind: "launch" | "agent" } | undefined;
+    // All of the placing (the records read, the run's disk, the marks, the copy) is one piece of work, raced against the
+    // deadline: the start answers by then whatever a call to Archil is still waiting on.
+    const work = (async () => {
+      const uploads = (await here(false))!;
+      const files = await uploads.readyFiles(ids);
+      try {
+        // The claim's resolver, without the run (its row is not written yet): the disk then rides the launch, so every
+        // claim of the run mounts this one.
+        disk = await runDiskOf({ store, agentId, ...(launch.archilDisk ? { launch: launch.archilDisk } : {}), control: open.control, signal, availableMs: timeoutMs });
+      } catch (error) {
+        throw refused(error instanceof ArchilClaimRefused ? error.message : signal.aborted ? `its disk was not ready: ${late}` : String((error as Error)?.message ?? error));
+      }
+      signal.throwIfAborted();
+      const runDisk = diskOf(open.settings, open.key, disk.diskId);
+      runs = archilWorkspace(runDisk, `agents/${agentDirName(agentId)}/runs`, { queueMs: 5_000 });
+      await uploads.mark(ids, runId);
+      await copyFilesInto(archilWorkspace(runDisk, runKey(agentId, runId)), files, (file) => uploads.bytes(file), { concurrency: PLACE_CONCURRENCY, signal });
+    })();
+    /** Removes what the placing wrote, once every read and write it started has settled, so none lands after. */
     const undo = async (): Promise<void> => {
-      await archilWorkspace(runDisk, runs, { queueMs: 5_000 }).remove(runId, { recursive: true, force: true }).catch(() => undefined);
+      await work.catch(() => undefined);
+      await runs?.remove(runId, { recursive: true, force: true }).catch(() => undefined);
     };
     try {
-      await uploads!.mark(ids, runId);
-      await copyFilesInto(archilWorkspace(runDisk, runKey(agentId, runId)), files, (file) => uploads!.bytes(file), { concurrency: PLACE_CONCURRENCY, signal });
+      await new Promise<void>((resolve, reject) => {
+        const onAbort = () => reject(signal.reason);
+        signal.addEventListener("abort", onAbort, { once: true });
+        work.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+      });
+      // A copy that ended just as the deadline passed is late all the same: its start has been given up on.
+      signal.throwIfAborted();
     } catch (error) {
+      if (signal.aborted) {
+        // Answered now; what is still in flight is removed once it settles.
+        void undo();
+        throw refused(`the copy of its files: ${late}`);
+      }
       await undo();
-      throw refused(signal.aborted ? `the copy took longer than ${Math.round(timeoutMs / 1000)} s` : String((error as Error)?.message ?? error));
+      throw error instanceof ApiError ? error : refused(String((error as Error)?.message ?? error));
     }
-    const launchDisk: LaunchDisk = launch.archilDisk ?? { diskId: disk.diskId, kind: disk.kind };
+    const launchDisk: LaunchDisk = launch.archilDisk ?? { diskId: disk!.diskId, kind: disk!.kind };
     return { launch: { ...launch, archilDisk: launchDisk, filesPlaced: true }, undo };
   }
 

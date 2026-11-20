@@ -552,7 +552,10 @@ export async function copyFilesInto(workspace: Workspace, files: readonly Upload
       }
     }
   };
-  await Promise.all(Array.from({ length: Math.max(1, Math.min(concurrency, targets.length)) }, worker));
+  // Every worker settles before the copy answers, so nothing it started is still writing once a caller cleans up.
+  const settled = await Promise.allSettled(Array.from({ length: Math.max(1, Math.min(concurrency, targets.length)) }, worker));
+  const first = settled.find((one): one is PromiseRejectedResult => one.status === "rejected");
+  if (first) throw first.reason;
 }
 
 /** The files a run's claim copies in (placeRunInputs): its launch's, unless the server already placed them in its folder
