@@ -240,6 +240,45 @@ const RUN_GRAPH = {
     },
   },
 };
+/** GET /runs/{run_id}/usage's answer (run-usage.ts): one run's cost by line. Its line is not the contract's UsageLine
+ *  (GET /usage's, a sum over runs by group). */
+const COST_WORDS = {
+  so_far_usd: { type: "number", minimum: 0, description: "Beside a null `usd`, or a bound: what is known of it, the charges' own figures alone." },
+  unpriced: { type: "integer", minimum: 0, description: "Beside `so_far_usd`: how many of its charges have no known figure, or count at their hold." },
+  upper_bound: { const: true, description: "`usd` counts a request a crash or a stop cut at the hold its cap kept for it: the most it can have cost." },
+};
+const RUN_USAGE_LINE = {
+  type: "object", additionalProperties: false, required: ["meter", "model", "provider", "charged_by", "quantity", "unit", "basis", "usd"],
+  properties: {
+    meter: { enum: ["tokens", "tools", "browser_time"], description: "`tokens`: model requests, by model. `tools`: paid tool calls, by who charged for them. `browser_time`: browser session time, by browser provider. A computer's own time is not on a line yet." },
+    model: { type: ["string", "null"], description: "On `tokens`: the model the requests were sent on, as the run's booking names it (a workflow decision's model too). One line per model and route: the same model reached two ways is two lines. Null on the other meters, and when the record names none." },
+    provider: { type: ["string", "null"], description: "On `tokens`: the provider the requests went to, named only when this server sent them there itself (the run's own model on a provider's key). Null behind a model gateway, whose upstream this server does not know, and for a model it did not route (a workflow decision's). On `browser_time`: the browser provider. Null on `tools`." },
+    charged_by: { type: ["string", "null"], description: "On `tools`: who charged for the calls, whose invoice they land on (`monid`, an MCP server's name, `parallel`). Null on the other meters, and when the record names none." },
+    quantity: { type: ["number", "null"], minimum: 0, description: "In `unit`, as measured: never rounded to a billing increment, never topped up to a minimum. On `tokens`, the requests' input, cache read, cache write and output tokens as each reported them (a workflow decision's as its receipt does; a request that reported none is in `unmetered_requests`, in no token); on `tools`, the charges booked, one per paid call; on `browser_time`, the seconds this server's clock charged the provider's sessions for, its minimum per session included as the browser charged it. Null when nothing measured it." },
+    unit: { enum: ["token", "call", "second"] },
+    basis: { enum: ["reported", "estimate", "unpriced"], description: "How `usd` was reached. On `tokens`, as the run's `cost.basis` is, over the line's requests alone: `reported` when every request priced had its gateway's or provider's own figure, `estimate` when any was priced from a price table, `unpriced` when none was priced. On `tools`, `reported` when every charge with a figure is the provider's own (monid's answer says what it charged), `estimate` when any is a price this server holds (an MCP tool's saved price, Parallel's), `unpriced` when none has a figure. On `browser_time`, `estimate` when any charge has a figure (the provider's price per hour on this server's clock, never its invoice), else `unpriced`." },
+    usd: { type: ["number", "null"], minimum: 0, description: "The line's cost on this server, as booked, joined by the rule `cost.usd` is (float noise rounded off at 1e-12). Null when a charge of it is unknown: never $0 for unknown." },
+    ...COST_WORDS,
+    requests: { type: "integer", minimum: 0, description: "On `tokens`: the model requests booked." },
+    tokens: closed({ input: { type: "integer", minimum: 0, description: "Input not read from cache." }, output: { type: "integer", minimum: 0 }, cache_read: { type: "integer", minimum: 0 }, cache_write: { type: "integer", minimum: 0 } }, "On `tokens`: `quantity` by kind."),
+    unmetered_requests: { type: "integer", minimum: 0, description: "On `tokens`: requests that reported no tokens (booked with no usage, or sent and never answered), in no token count." },
+    not_metered_calls: { type: "integer", minimum: 1, description: "On `tools`: calls with no price set (an MCP tool its owner set none for), as GET /usage counts them. They ran outside the run's cost and its cap, so they are in neither `quantity` nor `usd`: a line of such calls alone has `quantity` 0 and `usd` 0." },
+  },
+};
+const RUN_USAGE = {
+  type: "object", additionalProperties: false, required: ["run_id", "ended_at", "currency", "total", "lines", "reason"],
+  properties: {
+    run_id: ref("schemas/Id"),
+    ended_at: { type: ["string", "null"], format: "date-time", description: "When the run ended: the moment the lines cover. Null while it is at work. The lines change only while the run works, and a follow-up can open an ended run again (a trigger's often does); its next end is a later one. Keep `ended_at` beside the lines: a later read with another `ended_at`, or null, means the run moved since. `run.ended` fires at each end." },
+    currency: { const: "USD" },
+    total: {
+      type: ["object", "null"], additionalProperties: false, required: ["usd"], description: "The run's cost, joined from its lines. Null with no lines.",
+      properties: { usd: { type: ["number", "null"], minimum: 0, description: "The lines joined by the rule `cost.usd` is: the run's `cost.usd` on GET /runs/{run_id}. Null when a line's charge is unknown." }, ...COST_WORDS },
+    },
+    lines: { type: ["array", "null"], items: RUN_USAGE_LINE, description: "`tokens` lines first, then `tools`, then `browser_time`, each by its model, charger or provider. A meter the run used nothing of has no line. Null when the server can't split the run (`reason`)." },
+    reason: { enum: ["running", "not_booked", "reopened", null], description: "Why `lines` is null: `running`, the run is at work and its booking still moves; `not_booked`, its figure is not its booking's (an imported run's, a native or SDK run's harness figure, a CLI run whose model requests went past its model proxy); `reopened`, a learning run a follow-up opened again, whose `cost.usd` is its first round's and whose booking can't be split by round. Null with lines." },
+  },
+};
 /** GET /runs/{run_id}/trace's answer (run-trace.ts). */
 const RUN_TRACE = {
   type: "object", additionalProperties: false, required: ["run_id", "model_requests", "spans", "dropped"],
@@ -1953,6 +1992,15 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       description: "Each model request that answered and each tool call of the run as one span: when it started and ended, how it ended, a request's model, tokens (input, cache read, cache write, output) and cost, and a call's tool, the head of its arguments and output, and what was charged under it. Readable while the run goes: read it again to see new spans. Its words are the run's Timeline's, cut the same way. 403 `forbidden` while this server can't read the browser sign-in the run was handed, as its graph answers. A trace says only what the run's record keeps: see `model_requests`.",
       parameters: [ref("parameters/RunId")],
       responses: { "200": json(RUN_TRACE, "The run's spans as they stand."), ...errors(401, 403, 404, 429, 500) },
+    },
+  },
+  "/runs/{run_id}/usage": {
+    get: {
+      operationId: "getRunUsage", tags: ["runs"], summary: "What a run cost, by model, by who charged for its tools, and by browser provider",
+      description: "One run's cost, line by line: its model requests by model (and the provider they went to, where this server sent them itself), its paid tool calls by who charged for them, and its browser time by provider. Each line has its quantity as measured, its dollars as the run's booking holds them, and how those were reached (`basis`). This server prices nothing here: the lines are the charges `cost.usd` already joins, so they add up to the run's `cost.usd` (`total`), and a charge no one knows is null, never $0. It reads the same for every kind of run that books its cost: an agentic run on any harness that sends its model requests through this server, and a workflow run with its decisions. Learning's spend for the run is not here: its end-of-run learning turn is this server's work for the agent, which `cost.usd` leaves out too; it is on the run read's `learning_usd`. While the run works, and for a run the server cannot split, `lines` is null and `reason` says why. A name on a line (a model, a provider, a charger) is cut of this server's secrets and the sign-ins the run was handed, as the run's trace is; 403 `forbidden` while this server can't read the browser sign-in the run was handed, as its trace answers.",
+      parameters: [ref("parameters/RunId")],
+      responses: { "200": json(RUN_USAGE, "The run's usage lines, or why it has none."), ...errors(401, 403, 404, 429, 500) },
+      "x-agentrun-serve": "runusage/1",
     },
   },
   "/runs/{run_id}/browser": {

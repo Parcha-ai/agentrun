@@ -9,7 +9,7 @@ import { isCliRecord, runEntries, withPaidCosts } from "./journal.js";
 
 /** A CLI run whose model answered or called a tool with no model request booked (metrics.ts cliModelWorked): what it
  *  spent no booking read, so its spend is unknown. */
-const unbookedCli = (entries: Parameters<typeof cliModelWorked>[0]): boolean => isCliRecord(entries) && bookedSpend(entries, "model").requests === 0 && cliModelWorked(entries);
+export const unbookedCli = (entries: Parameters<typeof cliModelWorked>[0]): boolean => isCliRecord(entries) && bookedSpend(entries, "model").requests === 0 && cliModelWorked(entries);
 
 /** What a purged run's tombstone keeps of its journal's figures (Runs.purge folds them into its metrics), read only for a
  *  run whose journal reads empty; undefined for any other run. */
