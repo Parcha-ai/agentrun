@@ -88,8 +88,8 @@ Give `kit.acpEntry`:
 - `beforeStart(command)`, optional: a check before each process starts, a restart included. The example checks the
   binary against its pin there.
 
-Its offer promises a resume by `session/load`, each tool call through the agent's permission ask, and billing through
-the proxy.
+Its offer promises each tool call through the agent's permission ask and billing through the proxy. `resume` defaults
+to `"restart"`; `"load"` needs the recipe's `declares.load`, else its first launch is refused (`HARNESS_RESUME_UNDECLARED`).
 
 Any other agent runs on an adapter you write (the kernel's `AgentAdapter`). Give `kit.adapterEntry(facts, adapter)`,
 where `adapter(launch)` builds it for one run. `launch` holds the model, where to forward its requests

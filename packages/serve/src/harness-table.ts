@@ -128,10 +128,13 @@ export interface ModuleLaunch {
 
 /** What an ACP agent's module gives acpEntry: its facts, its recipe for a run (the binary, the run's model), and the model
  *  proxy each of its processes reaches the session's booking through (its wire's policy: what may leave on this server's
- *  key). It promises ACP_PROMISES: a resume by session/load, tool calls through its permission asks, billing through
- *  the proxy. */
+ *  key). It promises tool calls through its permission asks, billing through the proxy, and the resume `resume` says. */
 export interface AcpEntryOptions extends ModuleChecks {
   readonly facts: AdapterFacts;
+  /** How its run resumes after a crash, as capabilities show it: "restart" (the default, never wrong: a new session
+   *  with the conversation so far) or "load" (the agent's own session/load), which its recipe must declare
+   *  (`declares.load`), else its first launch is refused (HARNESS_RESUME_UNDECLARED). */
+  readonly resume?: "load" | "restart";
   recipe(launch: ModuleLaunch): AcpRecipe;
   proxy(launch: ModuleLaunch): AcpProxy;
   beforeStart?(command: string): Promise<void>;
@@ -317,6 +320,13 @@ export const ON_TABLE: RunnerHarness = Object.freeze({
 /** What an ACP harness promises by default: a resume by the agent's session/load, tool calls through its permission asks,
  *  its model through the session's proxy (Goose's). */
 const ACP_PROMISES: HarnessPromises = Object.freeze({ resume: "load", tool_gate: "permission", billing: "proxy" });
+/** As ACP_PROMISES, with a resume by a new session given the conversation so far: a module's ACP agent's, unless it
+ *  says "load" (AcpEntryOptions.resume). */
+const ACP_RESTART_PROMISES: HarnessPromises = Object.freeze({ ...ACP_PROMISES, resume: "restart" });
+
+/** The code a module's ACP entry is refused by at its first launch when it promises resume "load" and its recipe
+ *  declares no session/load (AcpEntryOptions.resume). */
+export const HARNESS_RESUME_UNDECLARED = "HARNESS_RESUME_UNDECLARED";
 
 /** An adapter harness's whole entry over the builder of its adapter for one run (moduleAdapter), run from the table
  *  (ON_TABLE): a module's (HarnessModuleKit.adapterEntry, which takes no `hidden`) and the built-in Goose's. */
@@ -327,18 +337,22 @@ const moduleEntryOf = (facts: AdapterFacts, adapter: (launch: ModuleLaunch) => A
  *  `host` none) and a proxy-billed recipe's under harness-check (AcpEntryHost). Its agent's allowlist and keys are read
  *  from the launch's environment, never this process's, and its recipe names no server key (ownKeysOnly). */
 function acpProxyEntryOf(options: AcpEntryOptions, host: AcpEntryHost = {}): HarnessEntry {
-  return moduleEntryOf(options.facts, async (launch) => {
+  const { facts, resume = "restart" } = options;
+  return moduleEntryOf(facts, async (launch) => {
     const acp = acpPackage();
-    if (!acp) throw new HarnessUnavailable(`${options.facts.label} needs the ACP adapter (${ACP_PACKAGE}) beside this server`);
+    if (!acp) throw new HarnessUnavailable(`${facts.label} needs the ACP adapter (${ACP_PACKAGE}) beside this server`);
+    const recipe = await ownKeysOnly(facts, options.recipe(launch));
+    // Promising less than the recipe declares is allowed; promising a session/load the agent is never asked for is not.
+    if (resume === "load" && !recipe.declares.load) throw new HarnessUnavailable(`${HARNESS_RESUME_UNDECLARED}: ${facts.label} (${facts.id}) promises resume "load", but its recipe's declares.load is false, so its run would restart instead: declare session/load in the recipe, or leave resume at "restart".`);
     return acp.acpAdapter({
-      recipe: await ownKeysOnly(options.facts, options.recipe(launch)),
+      recipe,
       proxy: options.proxy(launch),
       ...(options.beforeStart ? { beforeStart: options.beforeStart } : {}),
       ...(launch.confine ? { confine: launch.confine } : {}),
       env: launch.env,
       log: launch.log,
     });
-  }, { promises: ACP_PROMISES, ...(options.missing ? { missing: options.missing } : {}) }, host);
+  }, { promises: resume === "load" ? ACP_PROMISES : ACP_RESTART_PROMISES, ...(options.missing ? { missing: options.missing } : {}) }, host);
 }
 
 /** What a run of a plan-billed ACP agent is given (acpEntryOf's plan branch): its model as its vendor names it (`default`
