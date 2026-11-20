@@ -86,7 +86,7 @@ import type { ClaimMcp } from "./mcp-run.js";
 import { type RequestFigures, reserveFor, stepAndAnswerFor, wrappingUp, wrapUpText } from "../wrap-up.js";
 import { LEARNED_CARD_FIELDS, LEARNED_CLIP, LEARNED_WORKFLOW_TOOL, learnedApprovedTools } from "../learned-workflow.js";
 import { warnHoldShort } from "../print.js";
-import { type FeedbackData, feedbackAsk, feedbackOf, pendingFeedbackOf } from "./feedback-round.js";
+import { type FeedbackData, feedbackAsk, feedbackOf, jobEndOpen, pendingFeedbackOf } from "./feedback-round.js";
 import { handbackText, servedAnswerOf, servedAnswerText, WORKFLOW_FIRST, WORKFLOW_FIRST_CALL, type WorkflowFirst, type WorkflowFirstData, type WorkflowRevise } from "./workflow-first.js";
 
 /** The end of a harness's own call (Claude Code's WebSearch) the gate held and then let run: the host ran nothing of it,
@@ -2536,7 +2536,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // CLI's look-back has no submission until it ends: its record's lookingBack, below). Read before the session
         // opens, so its first request is already learning's.
         const lookingBackOpen = (await harness.inspect(context)).submissions.filter((one) => one.type === "input" && Number(one.conversationId) === Number(ROOT_CONVERSATION_ID)).at(-1)?.requestId?.startsWith(REFLECT_PREFIX) === true;
-        reflecting = lookingBackOpen;
+        // The job's end an earlier claim kept for its look-back, with no run end after it (feedback-round.ts jobEndOpen):
+        // its runner was lost after keeping it, maybe before the look-back's first ask (no input in flight then). The job
+        // ended there too: this pass runs no job turn, and the run ends on that end at its time (jobEndKept), never on one
+        // worked out again now, which would move the end every reader served. A follow-up's turn after the run's last end
+        // has kept none, so it is never taken for one.
+        const rootFound = await harness.conversation(ROOT_CONVERSATION_ID, context);
+        const jobKept = rootFound ? jobEndOpen(await entriesOf(gate.journal, rootFound.id, context)) : false;
+        reflecting = lookingBackOpen || jobKept;
         // The MCP tools are host tools like any other (mcp.tools, wrapped above): every harness gets them on its own channel
         // for host tools, each call through the gate before its intent.
         session = await spec.adapter.open({ ...spec.session, tools, deferCatalog: deferred }, io);
@@ -2860,7 +2867,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             }, context);
           }
         }
-        if (firstToServe && !followedUp && !firstUnplaced && session!.state === "new") {
+        // Never again for a job whose end is kept (jobKept): what the workflow did is in that end.
+        if (firstToServe && !followedUp && !firstUnplaced && !jobKept && session!.state === "new") {
           let release!: () => void;
           servingFirst = new Promise<void>((resolve) => (release = resolve));
           try {
@@ -2894,9 +2902,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           }
         }
         const placed = served !== undefined || followedUp || (session!.state !== "idle" && !firstUnplaced);
-        // The end-of-run turn found open (lookingBackOpen), with no turn of this claim's sent before it: never recovered as
-        // the job's; the run goes to its end-of-run step, on the job's end the claim that asked it kept (jobEndKept).
-        const lookingBack = lookingBackOpen && !followedUp && served === undefined;
+        // The end-of-run turn found open (lookingBackOpen), or the job's end found kept before that turn's first ask
+        // (jobKept), with no turn of this claim's sent before it: never recovered as the job's; the run goes to its
+        // end-of-run step, on the job's end the claim that kept it kept (jobEndKept).
+        const lookingBack = (lookingBackOpen || jobKept) && !followedUp && served === undefined;
         if (served || followedUp || firstUnplaced || lookingBack) {
           // The workflow answered, or handed back and its handback is the turn; the follow-up is the turn this claim runs,
           // or there is none.

@@ -58,6 +58,13 @@ function keptEndOfRow(run: Pick<RunRow, "state" | "summary" | "outcome" | "ended
   return { state: run.state, ...(run.summary !== null ? { summary: run.summary } : {}), ...(run.outcome !== null ? { outcome: run.outcome } : {}), endedAt: run.endedAt };
 }
 
+/** Whether the run's root `entries` hold a job's end kept for its look-back (KINDS.jobEnd) with no run end after it: the
+ *  job ended and its look-back is under way, whether or not that look-back has asked anything yet. A follow-up's turn
+ *  keeps none until its own job's end is kept, so a turn after the run's last end reads false. */
+export function jobEndOpen(entries: readonly { readonly kind: string }[]): boolean {
+  return entries.findLastIndex((entry) => entry.kind === KINDS.jobEnd) > entries.findLastIndex((entry) => entry.kind === KINDS.end);
+}
+
 /** The end run's look-back keeps while it runs, from the run's root `entries` and its command rows, else undefined (no
  *  look-back under way, or one whose job's end was never kept):
  *  - the job's end its claim kept before the end-of-run step (KINDS.jobEnd, with its time), newer than the run's last end;
@@ -67,9 +74,8 @@ function keptEndOfRow(run: Pick<RunRow, "state" | "summary" | "outcome" | "ended
 export function keptEndOf(entries: readonly { readonly kind: string; readonly data?: unknown }[], commands: readonly Pick<Command, "kind" | "body" | "takenAt" | "refused">[]): KeptEnd | undefined {
   const last = (kind: string) => entries.findLastIndex((entry) => entry.kind === kind);
   const end = last(KINDS.end);
-  const job = last(KINDS.jobEnd);
-  if (job > end) {
-    const data = entries[job]!.data as Partial<JobEndData> | undefined;
+  if (jobEndOpen(entries)) {
+    const data = entries[last(KINDS.jobEnd)]!.data as Partial<JobEndData> | undefined;
     return keptOf(data?.end && data.endedAt !== undefined ? { ...data.end, endedAt: data.endedAt } : undefined);
   }
   const fed = last(KINDS.feedback);
