@@ -37,7 +37,7 @@ const reply = (args, { status = "completed", result, replayed = false } = {}) =>
   content: [{ type: "text", text: JSON.stringify({ status, ...(args.submission_key ? { submission_key: args.submission_key } : {}), submission_replayed: replayed, submission_journal_status: "confirmed", endpoint_id: args.endpoint_id, request_id: "01a1fa6e-6585-7862-9e90-77c1ea3097af", status_url: "https://queue.fal.run/x/requests/1/status", response_url: "https://queue.fal.run/x/requests/1", ...(result ? { result, has_result: true } : {}) }) }],
 });
 
-/** A fake fal server, a gateway pinned to it and the run's ledger. `capUsd`: the run's cap (undefined: none). `entry`:
+/** A fake fal server, a gateway pinned to it and the run's ledger. `capUsd`: the run's cap (null: none). `entry`:
  *  what the pin holds of the server beside its URL and tools. `run`: what a job answers. `pricing`: what get_pricing
  *  answers (a function of its arguments), by default PRICES. `gate`: the fake's own (a transport failure). */
 async function setup(t, { capUsd = 1, entry = { meter: "fal" }, run, pricing, gate, media, now = () => T0, url, ledger = true } = {}) {
@@ -60,7 +60,7 @@ async function setup(t, { capUsd = 1, entry = { meter: "fal" }, run, pricing, ga
   const work = await mkdtemp(join(tmpdir(), "fal-meter-"));
   t.after(() => rm(work, { recursive: true, force: true }));
   const store = memorySessionStore();
-  const tools = await cap.runCap({ sessions: store, capUsd: () => capUsd, now: () => T0, modelOf: () => undefined }).tools(await store.open(cap.TOOL_SESSION));
+  const tools = await cap.runCap({ sessions: store, capUsd: () => capUsd ?? undefined, now: () => T0, modelOf: () => undefined }).tools(await store.open(cap.TOOL_SESSION));
   const admits = [];
   const paid = { admit: (request) => (admits.push(request), tools.admit(request)), settle: (id, usd, options) => tools.settle(id, usd, options) };
   const root = [];
@@ -70,7 +70,7 @@ async function setup(t, { capUsd = 1, entry = { meter: "fal" }, run, pricing, ga
     credentials: { fal: { url: pinned, headers: { authorization: `Bearer ${TOKEN}` } } },
     work: () => work,
     commit: () => async (change) => change({ appendEntry: async (_conversation, value) => void root.push(value) }),
-    capped: () => capUsd !== undefined,
+    capped: () => capUsd !== null,
     now,
     // A pin at fal's own address is sent to the fake.
     ...(url ? { fetch: (input, init) => fetch(String(input instanceof Request ? input.url : input).replace(url, fake.url), init) } : {}),
@@ -199,7 +199,7 @@ test("a unit that can't be known before the job runs: refused unsent under a cap
   assert.equal(capped.received("run_model"), 0, "fal never received the job");
   assert.deepEqual(await capped.records(), [], "nothing booked");
 
-  const open = await setup(t, { capUsd: undefined, run: (args) => reply(args, { result: { text: "hello" } }) });
+  const open = await setup(t, { capUsd: null, run: (args) => reply(args, { result: { text: "hello" } }) });
   const result = await open.call("run_model", job);
   assert.equal(result.isError, undefined, textOf(result));
   assert.equal(open.received("run_model"), 1, "with no cap it runs");
@@ -223,7 +223,7 @@ test("a price that can't be read makes the job unpriceable: get_pricing failing,
   assert.match(textOf(await noEndpoint.call("run_model", { input: { prompt: "x" } })), /^mcp:fal\/run_model was not sent: this job names no endpoint_id to price/);
   assert.equal(noEndpoint.received("get_pricing"), 0);
 
-  const open = await setup(t, { capUsd: undefined, pricing: () => ({ content: [{ type: "text", text: "rate limited" }], isError: true }) });
+  const open = await setup(t, { capUsd: null, pricing: () => ({ content: [{ type: "text", text: "rate limited" }], isError: true }) });
   await open.call("run_model", { endpoint_id: "fal-ai/ideogram/v3", input: { prompt: "x" } });
   assert.equal(open.received("run_model"), 1, "with no cap it runs");
   assert.deepEqual(await open.turns(), [null], "an unknown charge");

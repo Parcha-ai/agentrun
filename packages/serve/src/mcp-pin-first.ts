@@ -60,7 +60,7 @@ export async function pinFirst(revision: { readonly id: string; readonly kind: s
   }
   let pin: McpPin;
   try {
-    pin = mcpPinOf(granted, { server: (name) => { const listing = listings.get(name); return listing && { url: listing.url, tools: listing.tools.map(boundTool), prices: listing.prices }; } });
+    pin = mcpPinOf(granted, { server: (name) => { const listing = listings.get(name); return listing && { url: listing.url, tools: listing.tools.map(boundTool), prices: listing.prices, toolkit: listing.toolkit }; } });
   } catch {
     return undefined;
   }
