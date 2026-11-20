@@ -16,6 +16,7 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { RUNNER_RECORDS } from "@parcha/agentrun-kernel";
 import { TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { type BrowserSessionLine, browserSessionsOf } from "./browser-sessions.js";
 import { BROWSER_CHARGED } from "./cap.js";
 import { launchOf } from "./handed-values.js";
 import { inReflect, reflectRanges } from "./runner/end-of-run.js";
@@ -77,6 +78,9 @@ export type RunUsage = {
    *  (`so_far_usd`, `unpriced`) and `upper_bound` when it is a bound. Null with no lines. */
   total: CostWords | null;
   lines: RunUsageLine[] | null;
+  /** One record per browser session the run opened (browser-sessions.ts), for matching `browser_time` to the provider's
+   *  own records by its session id; null exactly when `lines` is. */
+  browser_sessions: BrowserSessionLine[] | null;
   reason: UsageReason | null;
 };
 
@@ -243,6 +247,20 @@ export function usageLinesOf(entries: readonly EntryLike[], launch?: Pick<RunLau
   return { lines, total: { usd: null, so_far_usd: known, unpriced: (total.usd === null ? (total.unpriced ?? 0) : 0) + unbooked } };
 }
 
+/** The run's own browser sessions: those its job opened or charged (`job`, the journal less the end-of-run learning
+ *  turn), each with its end read from the whole journal (`all`). The run's end lets its browsers go inside the learning
+ *  turn's range (reflectRanges runs to the run's end), so an end read from `job` alone would be missing for a session
+ *  released there. A session the learning turn opened is not the job's, as its cost is not. */
+function jobSessions(job: readonly EntryLike[], all: readonly EntryLike[]): BrowserSessionLine[] {
+  const ends = new Map(browserSessionsOf(all).map((one) => [one.tag, one]));
+  return browserSessionsOf(job).map((one) => {
+    const whole = ends.get(one.tag);
+    if (one.ended_at !== null || !whole || whole.ended_at === null) return one;
+    const { provider_session_id, started_at, ended_at, release_reason, provider_record, provider_record_status } = whole;
+    return { ...one, provider: one.provider || whole.provider, provider_session_id, started_at, ended_at, release_reason, provider_record, provider_record_status };
+  });
+}
+
 /** Run `runId`'s usage lines (GET /runs/{run_id}/usage); undefined for an unknown run. No lines (`reason`) while it is at
  *  work, for a run whose figure is not its booking's, and for a learning run a follow-up opened again: the cases where
  *  `cost.tools_usd` is null for the same reasons. Its state, launch, learning rounds and journal are read in one snapshot
@@ -252,7 +270,7 @@ export async function runUsageOverStore(store: Store, runId: string): Promise<Ru
     const run = await snapshot.runs.get(runId);
     if (!run) return undefined;
     const ended = FINAL_STATES.includes(run.state) && run.endedAt !== null ? new Date(run.endedAt).toISOString() : null;
-    const none = (reason: UsageReason): RunUsage => ({ run_id: runId, ended_at: reason === "running" ? null : ended, currency: "USD", total: null, lines: null, reason });
+    const none = (reason: UsageReason): RunUsage => ({ run_id: runId, ended_at: reason === "running" ? null : ended, currency: "USD", total: null, lines: null, browser_sessions: null, reason });
     if (!FINAL_STATES.includes(run.state)) return none("running");
     const launch = await launchOf(snapshot, runId);
     if (run.importedFrom || launch?.native || launch?.sdk) return none("not_booked");
@@ -265,7 +283,7 @@ export async function runUsageOverStore(store: Store, runId: string): Promise<Ru
     const decided = entries.some((e) => e.kind === RUNNER_RECORDS.request && String((e.data as { model?: unknown } | undefined)?.model ?? "").startsWith("decision:"));
     const receipts = decided ? new Map((await decisionsOverStore(snapshot, runId, BACKGROUND_CONTEXT)).map((receipt) => [String(receipt.decision_id ?? receipt.id), receipt])) : undefined;
     const { lines, total } = usageLinesOf(entries, launch, receipts);
-    return { run_id: runId, ended_at: ended, currency: "USD", total, lines, reason: null };
+    return { run_id: runId, ended_at: ended, currency: "USD", total, lines, browser_sessions: jobSessions(entries, records.entries as unknown as readonly EntryLike[]), reason: null };
   });
 }
 
@@ -280,5 +298,20 @@ export async function servedRunUsage(deps: { serverSecrets: () => string[]; sign
   if (cut === "unreadable") throw new ApiError("forbidden", WITHHELD_SIGN_IN);
   if (!usage?.lines) return usage;
   const said = (text: string | null) => (text === null ? null : redacted(text, cut.values));
-  return { ...usage, lines: usage.lines.map((line) => ({ ...line, model: said(line.model), provider: said(line.provider), charged_by: said(line.charged_by) })) };
+  // A browser session's words too, every one its records keep: its provider names it, and the provider's record says the rest.
+  const session = (one: BrowserSessionLine): BrowserSessionLine => ({
+    ...one,
+    provider: redacted(one.provider, cut.values),
+    tag: redacted(one.tag, cut.values),
+    provider_session_id: said(one.provider_session_id),
+    started_at: said(one.started_at),
+    ended_at: said(one.ended_at),
+    release_reason: said(one.release_reason),
+    provider_record: one.provider_record && { ...one.provider_record, started_at: said(one.provider_record.started_at), ended_at: said(one.provider_record.ended_at) },
+  });
+  return {
+    ...usage,
+    lines: usage.lines.map((line) => ({ ...line, model: said(line.model), provider: said(line.provider), charged_by: said(line.charged_by) })),
+    browser_sessions: usage.browser_sessions && usage.browser_sessions.map(session),
+  };
 }

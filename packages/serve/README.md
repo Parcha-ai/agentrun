@@ -3973,6 +3973,16 @@ were reached. Nothing is priced here, and nothing is rounded to a billing increm
   booking's (`not_booked`: an imported, native or SDK run, or a CLI run whose model requests went past its proxy), and
   for a learning run a follow-up opened again (`reopened`, whose booking can't be split by round).
 - Computer time is not a line yet: this server meters no computer time.
+- `browser_sessions` (`runusage/2`) holds one record per browser session the run opened, in the order it opened them.
+  With it you can see how long each session ran, spot one that ended late or was lost, and find each on the provider's
+  own dashboard and invoice by its id: the provider's id for the session (`provider_session_id`), when
+  this server opened it and let it go (`started_at`, `ended_at`), why it ended (`release_reason`), the seconds charged
+  for it (`charged_seconds`, what the line sums), and the provider's own record of it, read once when it was let go
+  (`provider_record`: its `started_at`, `ended_at` and `proxy_bytes`). Browserbase keeps such a record; a provider that
+  keeps none says `provider_record_status: "not_offered"`, and a read that failed says `failed`, with `provider_record`
+  null, never zeros. A session whose end was never recorded (its run's process lost first) has `ended_at` null.
+  `charged_seconds` are the seconds charged for the session, its provider's minimum included where the browser charged
+  one at the release, as on the `browser_time` line; how long it ran is `ended_at` less `started_at`.
 
 ## Spend cap
 

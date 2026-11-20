@@ -442,12 +442,26 @@ export interface BrowserDownloads {
 }
 
 /**
+ * A session as its vendor itself records it, for a host that reconciles its own measure of a session with the vendor's
+ * bill: when the vendor says the session started and ended, and the bytes it moved through the vendor's proxy. Each
+ * field is null where the vendor's record does not say it (a session still running has no end; a vendor that reports no
+ * proxy traffic has no bytes), never a zero standing in for one.
+ */
+export interface BrowserSessionUsage {
+	startedAt: string | null;
+	endedAt: string | null;
+	proxyBytes: number | null;
+}
+
+/**
  * A provider of browsers, with the members its features may bring: profiles where capabilities().browser declares
- * profiles, downloads where it declares downloads.
+ * profiles, downloads where it declares downloads. sessionUsage, where the vendor keeps a record of each session it ran:
+ * that record, read once (a host reads it when the session is let go); undefined for a session the vendor does not know.
  */
 export interface BrowserComputerProvider extends ComputerProvider {
 	readonly profiles?: BrowserProfiles;
 	readonly downloads?: BrowserDownloads;
+	sessionUsage?(ref: ComputerRef, context?: CallContext): Promise<Result<BrowserSessionUsage | undefined>>;
 }
 
 /** Whether a provider is a browser provider: its capabilities are of kind browser and declare its sessions' features. */
