@@ -9,14 +9,15 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { acpAdapter, acpFacts } from "@parcha/agentrun-harness-acp";
+import { acpAdapter } from "@parcha/agentrun-harness-acp";
 import { fakeAgentRecipe } from "@parcha/agentrun-harness-acp/testing";
 import { createAdapterLoop, MAX_RESTARTS, suiteHostTools } from "@parcha/agentrun-serve/conformance";
-import { ID } from "../index.mjs";
+import { facts, ID } from "../index.mjs";
 
-/** What an ACP adapter declares (no steer, no rerun of a started call, no recovery of a cut answer): the loop reads them
- *  from the run's spec, and the suite skips the cases they rule out and says why. */
-const FACTS = acpFacts(ID);
+/** The module's own facts, as a server's table reads them: the loop reads them from the run's spec (how Goose names our
+ *  tools, among them), and the suite skips the cases they rule out (an ACP agent's: no steer, no rerun of a started
+ *  call, no recovery of a cut answer) and says why. */
+const FACTS = facts;
 
 /** The folders this module's loops made, removed by closeAll. */
 const dirs = /** @type {string[]} */ ([]);
