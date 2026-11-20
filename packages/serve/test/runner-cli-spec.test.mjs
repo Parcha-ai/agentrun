@@ -503,9 +503,10 @@ test("Mode 2 (the server's Archil settings saved): the CLI still works in the ru
   assert.equal(ran.isError, false, ran.text);
   assert.ok(disk.calls.some((one) => one.op === "exec"), "bash ran as the disk's exec");
   assert.equal(Buffer.from(disk.files.get(`${runKey("agent-1", RUN)}/y.txt`) ?? "").toString("utf8"), "hi");
-  // No computer: the run's mount credential is never minted, so Archil's control plane hears nothing, from build to end.
+  // No computer: the run's mount credential is never minted, so Archil's control plane hears only the claim's read of its
+  // disk (run-disk.ts), from build to end.
   await built.release();
   // Every request the claim made: the fake is a function only the claim holds, so nothing else on this machine reaches it.
-  assert.deepEqual(control.requests, [], "no request at all: no list, no mint, no remove");
+  assert.deepEqual(control.requests.map((one) => `${one.method} ${one.path}`), [`GET /api/disks/${ARCHIL_SETTINGS.diskId}`], "the disk read once; no list, no mint, no remove");
   assert.deepEqual(outbound, [], "and nothing left this machine");
 });
