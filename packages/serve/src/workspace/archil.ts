@@ -105,7 +105,7 @@ function failed(error: unknown, path: string, what: string): WorkspaceError {
   const status = statusOf(error);
   const at = { path, cause: error };
   if (error instanceof ArchilDiskMissing) return new WorkspaceError("UNAVAILABLE", `${what} ${show(path)}: ${error.message}`, at);
-  if (status === 404) return new WorkspaceError("NOT_FOUND", `${show(path)} is not there (Archil: ${describe(error)})`, at);
+  if (status === 404) return new WorkspaceError("NOT_FOUND", `${show(path)} is not there (${what}; Archil: ${describe(error)})`, at);
   if (status === 413 || (error as { code?: unknown })?.code === "EntityTooLarge") return new WorkspaceError("TOO_LARGE", `${what} ${show(path)}: more than the disk takes in one call`, at);
   if (status === 401 || status === 403) return new WorkspaceError("UNAVAILABLE", `${what} ${show(path)}: Archil refused the key: ${describe(error)}`, at);
   return new WorkspaceError("UNAVAILABLE", `${what} ${show(path)}: ${describe(error)}`, at);
@@ -196,6 +196,44 @@ class ArchilWorkspace implements Workspace {
   async #write<T>(rel: string, call: () => Promise<T>): Promise<T> {
     await this.#execs;
     return this.#settle(rel, call);
+  }
+
+  /** Relative path of disk key `key` under the root ("" for the root, or for a folder above or beside it). */
+  #relOf(key: string): string {
+    return key.startsWith(`${this.#root}/`) ? key.slice(this.#root.length + 1) : "";
+  }
+
+  /** Whether folder `key` (a disk key, no trailing "/") is on the disk. */
+  async #folderThere(key: string): Promise<boolean> {
+    for await (const page of this.#pages(key, false)) {
+      if (page.commonPrefixes.includes(`${key}/`) || page.objects.some((o) => o.key === `${key}/`)) return true;
+    }
+    return false;
+  }
+
+  /** `put`, which puts disk key `key` (a file, or a folder ending in "/"), after this workspace's execs (`inExec`: made
+   *  from inside the exec queue, so not after it). Archil may make no folder above a put (staging's answered 404 for an
+   *  expert run's `.agents/skills/` on a fresh run folder), so on a 404 each folder above `key` that is not there is
+   *  made, from the highest down, and `put` is made once more. A folder already there is left as it is. */
+  async #put<T>(key: string, put: () => Promise<T>, inExec = false): Promise<T> {
+    const call = <U>(rel: string, fn: () => Promise<U>): Promise<U> => (inExec ? this.#settle(rel, fn) : this.#write(rel, fn));
+    try {
+      return await call(this.#relOf(key), put);
+    } catch (error) {
+      if (statusOf(error) !== 404 || error instanceof ArchilDiskMissing) throw error;
+    }
+    const above = key.replace(/\/$/, "").split("/").slice(0, -1);
+    let there = above.length;
+    while (there > 0 && !(await this.#folderThere(above.slice(0, there).join("/")))) there--;
+    for (let depth = there + 1; depth <= above.length; depth++) {
+      const folder = above.slice(0, depth).join("/");
+      try {
+        await call(this.#relOf(folder), () => this.#disk.putObject(`${folder}/`, new Uint8Array(0)));
+      } catch (error) {
+        throw failed(error, this.#relOf(folder) || folder, "mkdir");
+      }
+    }
+    return call(this.#relOf(key), put);
   }
 
   /** Every page of the listing of `prefix`. */
@@ -291,7 +329,7 @@ class ArchilWorkspace implements Workspace {
     const bytes = bytesOf(data);
     const rel = ArchilWorkspace.#below(path, "a file").join("/");
     try {
-      await this.#write(rel, () => this.#disk.putObject(this.#key(rel), bytes));
+      await this.#put(this.#key(rel), () => this.#disk.putObject(this.#key(rel), bytes));
     } catch (error) {
       throw await this.#writeFailed(error, rel, "file", "write");
     }
@@ -311,7 +349,7 @@ class ArchilWorkspace implements Workspace {
       // land in order.
       for (let at = 0; at === 0 || at < bytes.length; at += APPEND_MAX) {
         const part = bytes.subarray(at, at + APPEND_MAX);
-        await this.#write(rel, () => this.#disk.appendObject(this.#key(rel), part));
+        await this.#put(this.#key(rel), () => this.#disk.appendObject(this.#key(rel), part));
         landed += part.length;
       }
     } catch (error) {
@@ -399,8 +437,9 @@ class ArchilWorkspace implements Workspace {
   async mkdir(dir: string): Promise<void> {
     const rel = relativeSegments(dir).join("/");
     try {
-      // A directory is a key ending in "/"; its parents are made with it, and one already there is left as it is.
-      await this.#write(rel, () => this.#disk.putObject(`${this.#key(rel)}/`, new Uint8Array(0)));
+      // A directory is a key ending in "/"; a parent that is not there is made first (#put), and one already there is
+      // left as it is.
+      await this.#put(`${this.#key(rel)}/`, () => this.#disk.putObject(`${this.#key(rel)}/`, new Uint8Array(0)));
     } catch (error) {
       throw await this.#writeFailed(error, rel, "dir", "mkdir");
     }
@@ -414,7 +453,7 @@ class ArchilWorkspace implements Workspace {
       for await (const page of this.#pages(this.#root, false)) {
         if (page.commonPrefixes.includes(marker) || page.objects.some((o) => o.key === marker)) return;
       }
-      await this.#write("", () => this.#disk.putObject(marker, new Uint8Array(0)));
+      await this.#put(marker, () => this.#disk.putObject(marker, new Uint8Array(0)));
     } catch (error) {
       throw failed(error, "", "mkdir");
     }
@@ -647,7 +686,7 @@ class ArchilWorkspace implements Workspace {
    *  exec queue, so it does not wait for it. */
   async #makeRoot(): Promise<void> {
     for (const folder of [this.#root, this.#spill]) {
-      await this.#settle("", () => this.#disk.putObject(`${folder}/`, new Uint8Array(0))).catch((error: unknown) => { throw failed(error, "", "mkdir"); });
+      await this.#put(`${folder}/`, () => this.#disk.putObject(`${folder}/`, new Uint8Array(0)), true).catch((error: unknown) => { throw failed(error, "", "mkdir"); });
     }
     this.#rooted = true;
   }
@@ -736,7 +775,9 @@ class ArchilWorkspace implements Workspace {
     const wrote = async (path: string, what: string, call: (key: string) => Promise<unknown>): Promise<Result<void>> => {
       try {
         const rel = relativeSegments(path).join("/");
-        await this.#write(rel, () => call(this.#key(rel)));
+        const key = this.#key(rel);
+        // A put or a folder makes the folders above it that are not there; a remove makes none.
+        await (what === "remove" ? this.#write(rel, () => call(key)) : this.#put(what === "mkdir" ? `${key}/` : key, () => call(key)));
         return { ok: true, value: undefined };
       } catch (error) {
         const why = failed(error, path, what);
@@ -749,7 +790,7 @@ class ArchilWorkspace implements Workspace {
       remove: (path, type) => wrote(path, "remove", (key) => this.#disk.deleteObject(type === "dir" ? `${key}/` : key)),
       meta: async (folder) => {
         try {
-          await this.#write("", () => this.#disk.putObject(meta, Buffer.from(JSON.stringify(folder))));
+          await this.#put(meta, () => this.#disk.putObject(meta, Buffer.from(JSON.stringify(folder))));
           return { ok: true, value: undefined };
         } catch (error) {
           return { ok: false, error: { code: "refused", message: `the folder's sync.json: ${describe(error)}` } };
