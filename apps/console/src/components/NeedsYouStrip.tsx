@@ -281,7 +281,7 @@ function Failure({ message, runs: all, agentName, at, onRunAgain }: { message: s
 /** Backend SDK calls are observed here; their application owns cancellation and fresh-task retries. */
 function BackendRun({ run, agentName }: { run: Run; agentName: string }) {
   return <li className="flex flex-wrap items-center gap-3 border-b px-4 py-3 last:border-b-0">
-    <div className="min-w-0 flex-1"><p className="text-small text-muted-foreground">{agentName} · {backendSdkLabel(backendSdkOf(run)!.runtime)}</p><a href={runHref(run.run_id)} className="text-lead hover:underline">{runTitle(run)}</a>
+    <div className="min-w-0 flex-1"><p className="text-small text-muted-foreground">{agentName} · {backendSdkLabel(backendSdkOf(run)!)}</p><a href={runHref(run.run_id)} className="text-lead hover:underline">{runTitle(run)}</a>
       {run.status === "failed" && <p className="mt-1 break-words text-small text-destructive-text">{run.error?.message || "The run failed."}</p>}
       <p className="mt-1 text-small text-muted-foreground">Control and retries stay in your backend. {run.status === "failed" ? "Start another task in the original application." : "Stop or cancel this task in the original application."}</p>
     </div>

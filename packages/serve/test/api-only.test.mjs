@@ -55,6 +55,7 @@ test("the profile serves a run's routes by method and path, and nothing else", (
   for (const [method, raw] of [
     ["POST", "/v2/agents/a1/runs"], ["POST", "/v2/runs"], ["GET", "/v2/runs"], ["GET", "/v2/agents/a1/runs"],
     ["GET", "/v2/runs/run_1"], ["HEAD", "/v2/runs/run_1"], ["PATCH", "/v2/runs/run_1"], ["GET", "/v2/runs/run_1/timeline"],
+    ["GET", "/v2/runs/run_1/usage"], ["HEAD", "/v2/runs/run_1/usage"],
     ["PUT", "/v2/runs/run_1/grade"], ["POST", "/v2/runs/run_1/messages"], ["POST", "/v2/runs/run_1/stop"], ["POST", "/v2/runs/run_1/cancel"],
     ["GET", "/v2/runs/run_1/files"], ["GET", "/v2/runs/run_1/files/out/report.md"], ["POST", "/v2/files"], ["GET", "/v2/files/file_1"],
     ["GET", "/v2/capabilities"], ["GET", "/v2/health"], ["GET", "/v2/usage"],
@@ -105,6 +106,27 @@ test("an API-only server serves a run's routes with the token", async (t) => {
   assert.equal((await send(server, "GET", "/v2/runs/run_missing")).status, 404, "a run it does not have is the route's own 404");
   assert.notEqual((await send(server, "GET", "/v2/runs/run_missing")).body.error?.message?.includes("AGENTRUN_API_ONLY"), true, "not the profile's");
   assert.equal((await send(server, "GET", "/v2/runs", { token: false })).status, 401, "and still takes the token");
+});
+
+test("an API-only server serves a run's usage lines with the token, and still refuses a settings route", { timeout: 120_000 }, async (t) => {
+  const server = await serve(t, { apiOnly: true });
+  const inline = await send(server, "POST", "/v2/runs", { body: { external: { source: "backend", kind: "expert", id: "usage-1", version: 1 }, definition: { name: "Counter", instructions: "Answer the question.", skills: [], tools: [], harness: "pi" }, input: { content: "What is six times seven." } } });
+  assert.equal(inline.status, 202, JSON.stringify(inline.body));
+  const { run_id: run } = inline.body;
+  await ended(server.api, run);
+
+  const usage = await send(server, "GET", `/v2/runs/${run}/usage`);
+  assert.equal(usage.status, 200, JSON.stringify(usage.body));
+  assert.ok(Array.isArray(usage.body.lines), "its lines");
+  const read = await send(server, "GET", `/v2/runs/${run}`);
+  assert.equal(usage.body.total?.usd ?? null, read.body.cost?.usd ?? null, "its total is the run read's cost.usd");
+  assert.equal((await send(server, "GET", `/v2/runs/${run}/usage`, { token: false })).status, 401, "and still takes the token");
+  const missing = await send(server, "GET", "/v2/runs/run_missing/usage");
+  assert.equal(missing.status, 404, "a run it does not have is the route's own 404");
+  assert.notEqual(missing.body.error?.message?.includes("AGENTRUN_API_ONLY"), true, "not the profile's");
+
+  const settings = await send(server, "GET", "/v2/settings/tools");
+  assert.deepEqual([settings.status, settings.body.error?.message], [404, "this server serves the run API only (AGENTRUN_API_ONLY=1): /v2/settings/tools is not served here"], "a settings route is the profile's 404");
 });
 
 test("an API-only server serves an agent's Archil disk, read and removed, with the token", async (t) => {

@@ -131,7 +131,7 @@ export function AgentEditPage({ v2, caps, choices = [], gates = [], focusTool, a
     agent && backendSdkOf(agent.definition) ? <section className="space-y-4 p-5 md:p-8">
       <h1 className="text-2xl font-semibold">Edit {agent.definition.name}</h1>
       <Banner>This agent runs in your backend. Edit its application code with your coding agent; manage self-improving in its Learning tab.</Banner>
-      <CodingAgentAction label="Edit agent" prompt={editAgentPrompt(location.origin, agent.agent_id, false, backendSdkOf(agent.definition)!.runtime)} />
+      <CodingAgentAction label="Edit agent" prompt={editAgentPrompt(location.origin, agent.agent_id, false, backendSdkOf(agent.definition))} />
       <a href={agentHash(agent.agent_id)} className="block text-body underline underline-offset-2">Back to agent</a>
     </section> : <AgentEditor key={`${agent?.agent_id ?? "new"}:${version}`} agent={agent} revisions={revisions} caps={{ ...caps, computers }} providerChoices={choices} permissionGates={gates} mcpServers={mcpServers} serverToolSettings={serverTools} onRetryMcp={loadMcp} {...(focusTool ? { focusTool, step: "tools" as const } : {})} notice={notice} validate={v2.validateWorkflow} onBack={() => go("#/agents")} onReload={() => { void load(); loadMcp(); }}
       onSave={async (fields, note) => {

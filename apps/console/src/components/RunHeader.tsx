@@ -87,7 +87,7 @@ export function RunHeader({ run, agentName, actions = {}, costText, raiseBelow }
             {archived && <Chip tone="muted">Archived</Chip>}
             {run.approvals === "never" && <Chip tone="warning" title="This run's agent never asks: no call of it waits for you.">Unattended</Chip>}
             <span className="font-mono"><RunKind run={run} named /> · rev {run.agent_version}{ranIn && ` · ${ranIn}`}</span>
-            {sdk && <span className="font-mono">{backendSdkLabel(sdk.runtime)} · {run.sdk?.model ?? "Model not reported"}</span>}
+            {sdk && <span className="font-mono">{backendSdkLabel(sdk)} · {run.sdk?.model ?? "Model not reported"}</span>}
             <span className="font-mono">{when(run.created_at)}</span>
             {/* A workflow run's cost is its graph's totals (`costText`), the same the totals bar shows. Beside it, the run's
                 spend cap when it has one, as the run is read now (a raise reads the run again, so the new cap shows). */}

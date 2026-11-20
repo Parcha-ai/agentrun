@@ -12,14 +12,15 @@ export const API_ONLY_ENV = "AGENTRUN_API_ONLY";
  *  - an agent its inline runs made has its disk and its delete sent by the backend that made it;
  *  - a run's computer, take-over, hand-back and viewer link go to the backend, which has no owner's session here;
  *  - a backend reads what its agents learned (loop, promotions, cost per run, a run's learning), cut as the console's,
- *    and resets it (deleteAgentLearning: the agent and its runs kept) when it erases what an agent learned. */
+ *    and resets it (deleteAgentLearning: the agent and its runs kept) when it erases what an agent learned;
+ *  - a run's usage lines (what its cost.usd joins, by meter) are a read of that run alone, cut as the run's read is. */
 export const API_ONLY_ROUTES: ReadonlySet<string> = new Set([
   "createRun", "createInlineRun", "getComputerDaemon",
   "getRunComputer", "takeOverRunComputer", "handBackRunComputer", "createRunComputerViewer",
   "listComputers", "getWorkspaceArchil",
   "getAgentArchil", "deleteAgentArchil", "deleteAgent", "deleteAgentLearning",
   "getLearningLoop", "listLearningPromotions", "getLearningCost", "getRunLearning",
-  "getRun", "listRuns", "listAllRuns", "getTimeline",
+  "getRun", "getRunUsage", "listRuns", "listAllRuns", "getTimeline",
   "sendMessage", "stopRun", "cancelRun", "raiseRunCap", "gradeRun",
   "listRunFiles", "readRunFile",
   "createFile", "listFiles", "getFile", "uploadFile", "deleteFile",

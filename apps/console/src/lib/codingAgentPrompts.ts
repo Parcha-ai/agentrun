@@ -1,7 +1,7 @@
 import type { AgentCreateDraft } from "./agentDraft";
 import type { RemoteConnectionIntent } from "./connectors";
 import type { TemplateApply, TemplateView } from "./v2";
-import { backendSdkLabel, type BackendSdkRuntime } from "./backendSdk";
+import { backendSdkLabel, type BackendSdkBinding } from "./backendSdk";
 
 // Prompts carry only the public server address and the selected task, never browser credentials. The bundled skill
 // handles local-store imports and remote connection/history scopes through the matching CLI.
@@ -81,9 +81,12 @@ ${JSON.stringify(selection, null, 2)}
 Preserve these parameter values, explicit grants, MCP server choices and approvals. Omitted parameters use the package defaults; ask only for missing required values. Do not add tool grants or broaden approvals without my explicit consent. Copying or opening this prompt itself sends no API request.` : ""}${brief.trim() ? `\n\nMy additional requirements:\n${brief.trim()}` : ""}`;
 }
 
-export function editAgentPrompt(origin: string, agentId: string, native = false, sdk?: BackendSdkRuntime): string {
+export function editAgentPrompt(origin: string, agentId: string, native = false, sdk?: BackendSdkBinding): string {
   const root = server(origin).origin;
-  if (sdk === "eve") return `${setup(origin)}
+  if (sdk?.runtime === "external") return `${setup(origin)}
+
+Help me edit the existing backend agent ${JSON.stringify(agentId)} on the external platform ${JSON.stringify(sdk.platform)} (a display label). Read ${root}/v2/agents/${encodeURIComponent(agentId)} and locate its original platform setup. Ask where that source lives if needed. Clarify the change, then edit the source with my approval. Preserve the platform's tools, authentication, scheduling and normal entrypoint, and its AgentRun run reporting with the same agentId and server address. Keep the original instructions reported for each task accurate. Do not replace this agent with a managed definition or treat its recorded definition as executable source. Keep the server's existing self-improving setting. Test the changed source and return its console link. Do not start a production task without my approval.`;
+  if (sdk?.runtime === "eve") return `${setup(origin)}
 
 Help me edit the existing backend agent ${JSON.stringify(agentId)}, using Vercel eve. Read ${root}/v2/agents/${encodeURIComponent(agentId)} and locate its existing eve project. Ask where that source lives if needed. Clarify the change, then edit the application code with my approval. Preserve its eve extension mount, tools, authentication, instructions, approvals, durable execution and the AgentRun agentId and server address. Keep the source instructions reported by the AgentRun eve extension accurate when changing its policy. Do not replace this agent with a managed definition or treat the recorded definition as the executable source. Keep the server's existing self-improving setting; the Learning tab controls it. Test the changed eve agent and return its console link. Do not start a production task without my approval.`;
   if (sdk) return `${setup(origin)}
@@ -105,9 +108,12 @@ export function queryRunsPrompt(origin: string, agentId?: string): string {
 Help me investigate ${agentId === undefined ? "runs across all agents" : `runs of agent ${JSON.stringify(agentId)}`}. Ask what I want to know and the time range if unclear, then make read-only requests to ${root}/v2${path}, following pagination, and inspect relevant run timelines/files. Include server-run sessions and imported history; for an unfiltered cross-agent query, also read /v2/observations for independently running sessions. Identify the source and data freshness; observed idle sessions are not proof of completed tasks. Summarize findings with links to the runs, distinguish unknown metrics from zero, and do not create, edit, rerun or cancel anything.`;
 }
 
-export function runAgentPrompt(origin: string, agentId: string, sdk?: BackendSdkRuntime): string {
+export function runAgentPrompt(origin: string, agentId: string, sdk?: BackendSdkBinding): string {
   const root = server(origin).origin;
-  if (sdk === "eve") return `${setup(origin)}
+  if (sdk?.runtime === "external") return `${setup(origin)}
+
+Help me run the existing backend agent ${JSON.stringify(agentId)} on the external platform ${JSON.stringify(sdk.platform)} (a display label). Read ${root}/v2/agents/${encodeURIComponent(agentId)} and locate the platform's normal entrypoint. Ask where that source runs if needed, and clarify the task, required inputs and spending limits. Preserve its tools, credentials and AgentRun run reporting. Trigger the task through the platform's normal invocation after my approval. Do not launch it with AgentRun's managed run API or create a replacement agent. The platform reports its own task, events and completion to AgentRun; a platform label does not grant a workflow bridge. Report the platform result and recorded AgentRun console link. Any stop, cancel, retry or follow-up must use the platform's own controls.`;
+  if (sdk?.runtime === "eve") return `${setup(origin)}
 
 Help me run the existing backend agent ${JSON.stringify(agentId)}, using Vercel eve. Read ${root}/v2/agents/${encodeURIComponent(agentId)} and locate its existing eve project and normal invocation. Ask where that source runs if needed, and clarify the task, required inputs and spending limits. Preserve its eve extension mount, tools, credentials, approvals and durable execution. Trigger the task through eve after my approval. Do not launch it with AgentRun's managed run API or create a replacement agent. The AgentRun eve extension reports this task and uses the enabled owner corrections and compatible committed workflows. Automatic workflow learning needs bindings to the application's approved original tools. Before a fresh test task that must reuse a learned workflow, wait for the recorded AgentRun run's learning status to finish and confirm that the compiled workflow is committed and available; task completion alone does not prove that a workflow was learned. Report the eve result and recorded AgentRun console link. Any stop, retry or follow-up must use eve's own controls.`;
   if (sdk) return `${setup(origin)}

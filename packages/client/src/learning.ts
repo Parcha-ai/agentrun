@@ -3,7 +3,15 @@
 import { AgentRun, type ClientOptions } from './client.js';
 import { AgentRunRefused, AgentRunTimeout, AgentRunUsage } from './errors.js';
 
-export type BackendSdkRuntime = 'claude-agent-sdk' | 'codex-sdk' | 'eve';
+/** Where a backend run comes from. External platforms report execution through these calls; their display label
+ *  never selects a managed runtime or grants workflow capabilities. */
+export const BACKEND_SDK_RUNTIMES = ['claude-agent-sdk', 'codex-sdk', 'eve', 'external'] as const;
+export type BackendSdkRuntime = (typeof BACKEND_SDK_RUNTIMES)[number];
+export type BackendSdkBinding =
+  | { runtime: Exclude<BackendSdkRuntime, 'external'>; platform?: never }
+  | { runtime: 'external'; platform: string };
+/** Only these SDK integrations support an explicit host workflow bridge. */
+const WORKFLOW_RUNTIMES: readonly BackendSdkRuntime[] = ['claude-agent-sdk', 'codex-sdk', 'eve'];
 
 export interface BackendWorkflowToolManifest {
   name: string;
@@ -78,7 +86,7 @@ type SdkReceipt = Awaited<ReturnType<AgentRun['sdkRuns']['start']>>;
 export interface BackendLearningCheckpoint {
   baseUrl: string;
   agentId: string;
-  source: BackendLearningStart;
+  source: BackendLearningSource;
   receipt: SdkReceipt;
   /** A completed shadow result is replayed verbatim after transport ambiguity; it never reruns a host callback. */
   shadow?: { fingerprint: string; redacted?: true; state: 'started' } | { fingerprint: string; redacted?: true; state: 'complete'; event: Extract<SdkLearningEvent, { type: 'workflow_check' }> };
@@ -94,12 +102,19 @@ export interface BackendLearningSubmitOptions {
   onCheckpoint?(checkpoint: BackendLearningCheckpoint): void | Promise<void>;
 }
 
+/** The existing SDK start remains an interface so applications can extend it with their own task fields. */
 export interface BackendLearningStart {
-  runtime: BackendSdkRuntime;
+  runtime: Exclude<BackendSdkRuntime, 'external'>;
+  platform?: never;
   input: string;
   instructions: string;
   model?: string;
 }
+export interface ExternalLearningStart extends Omit<BackendLearningStart, 'runtime' | 'platform'> {
+  runtime: 'external';
+  platform: string;
+}
+export type BackendLearningSource = BackendLearningStart | ExternalLearningStart;
 
 export type SdkLearningEvent =
   | { type: 'text'; text: string }
@@ -164,6 +179,18 @@ const duration = (value: number | undefined, fallback: number, name: string) => 
 };
 const clone = <T>(value: T): T => JSON.parse(JSON.stringify(value)) as T;
 const size = (text: string) => new TextEncoder().encode(text).byteLength;
+const bindingOf = (source: BackendLearningSource): BackendSdkBinding => {
+  if (!(BACKEND_SDK_RUNTIMES as readonly unknown[]).includes(source.runtime)) throw new AgentRunUsage('Unsupported backend SDK runtime.');
+  if (source.runtime === 'external') {
+    const { platform } = source;
+    if (typeof platform !== 'string' || !platform || platform.trim() !== platform || [...platform].length > 80 || /[\u0000-\u001f\u007f-\u009f\ud800-\udfff]/u.test(platform))
+      throw new AgentRunUsage('An external platform must be 1–80 Unicode characters without surrounding whitespace, control characters or unpaired surrogates.');
+    return { runtime: 'external', platform };
+  }
+  if (source.platform !== undefined) throw new AgentRunUsage('A platform label is only allowed for the external runtime.');
+  return { runtime: source.runtime };
+};
+const sameBinding = (left: BackendSdkBinding, right: BackendSdkBinding) => left.runtime === right.runtime && left.platform === right.platform;
 const statusOf = (value: unknown, runId: string): BackendLearningStatus => {
   const row = value as Partial<BackendLearningStatus> | null;
   if (!row || row.run_id !== runId || !['running', 'processing', 'completed', 'failed', 'cancelled'].includes(row.state ?? '')) {
@@ -217,7 +244,7 @@ export class BackendLearningClient {
   readonly #pending = new Set<Promise<void>>();
   readonly #errors: unknown[] = [];
   #registration?: Promise<void>;
-  #runtime?: BackendSdkRuntime;
+  #binding?: BackendSdkBinding;
 
   constructor(config: BackendLearningConfig) {
     if (typeof config.agentId !== 'string' || !config.agentId.trim()) throw new AgentRunUsage('agentId must be a stable, nonempty agent id.');
@@ -227,16 +254,17 @@ export class BackendLearningClient {
     this.#owner = new AgentRun(config);
   }
 
-  async begin(source: BackendLearningStart, signal?: AbortSignal, options: BackendLearningBeginOptions = {}): Promise<BackendLearningSession> {
+  async begin(source: BackendLearningSource, signal?: AbortSignal, options: BackendLearningBeginOptions = {}): Promise<BackendLearningSession> {
     if (options.idempotencyKey !== undefined && (!options.idempotencyKey.trim() || options.idempotencyKey.length > 256 || /[^\x21-\x7e]/.test(options.idempotencyKey)))
       throw new AgentRunUsage('idempotencyKey must be a nonempty printable ASCII string of at most 256 characters.');
     signal?.throwIfAborted();
-    if (source.runtime !== 'claude-agent-sdk' && source.runtime !== 'codex-sdk' && source.runtime !== 'eve') throw new AgentRunUsage('Unsupported backend SDK runtime.');
+    const binding = bindingOf(source);
+    if (this.#config.workflows && !WORKFLOW_RUNTIMES.includes(binding.runtime)) throw new AgentRunUsage('External runs cannot use a workflow bridge; report their execution from the platform.');
     if (typeof source.input !== 'string' || typeof source.instructions !== 'string') throw new AgentRunUsage('SDK input and source instructions must be strings.');
     // Freeze the source before the registration request: caller mutation cannot change the policy after validation.
     const start = clone({ ...source, ...(this.#config.workflows ? { workflow_tools: [...this.#config.workflows.catalog], workflow_adapters: [...this.#config.workflows.adapters] } : {}) });
-    if (this.#runtime !== undefined && this.#runtime !== start.runtime) throw new AgentRunUsage('A backend learning client belongs to one SDK runtime.');
-    this.#runtime = start.runtime;
+    if (this.#binding !== undefined && !sameBinding(this.#binding, binding)) throw new AgentRunUsage('A backend learning client belongs to one runtime and platform.');
+    this.#binding = binding;
     this.#registration ??= this.#register(start).catch(error => { this.#registration = undefined; throw error; });
     await waitFor(this.#registration, signal);
     signal?.throwIfAborted();
@@ -249,7 +277,7 @@ export class BackendLearningClient {
     });
   }
 
-  async #start(start: BackendLearningStart, idempotencyKey: string = uuid()): Promise<BackendLearningSession> {
+  async #start(start: BackendLearningSource, idempotencyKey: string = uuid()): Promise<BackendLearningSession> {
     const receipt = await this.#owner.sdkRuns.start(this.#config.agentId, start, { 'Idempotency-Key': idempotencyKey });
     if (!receipt || typeof receipt.run_id !== 'string' || typeof receipt.token !== 'string' || receipt.agent_id !== this.#config.agentId || !receipt.learning) {
       throw new AgentRunUsage('The SDK start response is missing its scoped run receipt.');
@@ -273,10 +301,12 @@ export class BackendLearningClient {
     const saved = clone(checkpoint), { receipt, source } = saved;
     if (saved.baseUrl !== this.#owner.baseUrl || saved.agentId !== this.#config.agentId || receipt?.agent_id !== saved.agentId ||
       typeof receipt.run_id !== 'string' || !receipt.run_id || typeof receipt.token !== 'string' || !receipt.token || !receipt.learning ||
-      !source || !['claude-agent-sdk', 'codex-sdk', 'eve'].includes(source.runtime) || typeof source.input !== 'string' || typeof source.instructions !== 'string')
+      !source || typeof source.input !== 'string' || typeof source.instructions !== 'string')
       throw new AgentRunUsage('The SDK receipt belongs to another server or agent, or has no original source.');
-    if (this.#runtime !== undefined && this.#runtime !== source.runtime) throw new AgentRunUsage('A backend learning client belongs to one SDK runtime.');
-    this.#runtime = source.runtime;
+    const binding = bindingOf(source);
+    if (this.#config.workflows && !WORKFLOW_RUNTIMES.includes(binding.runtime)) throw new AgentRunUsage('External runs cannot use a workflow bridge; report their execution from the platform.');
+    if (this.#binding !== undefined && !sameBinding(this.#binding, binding)) throw new AgentRunUsage('A backend learning client belongs to one runtime and platform.');
+    this.#binding = binding;
     const scoped = new AgentRun({ baseUrl: saved.baseUrl, apiKey: receipt.token,
       fetch: this.#config.fetch, timeoutMs: this.#config.timeoutMs, maxRetries: this.#config.maxRetries });
     const session = new BackendLearningSession(scoped, {
@@ -290,7 +320,7 @@ export class BackendLearningClient {
     return session;
   }
 
-  async #register(source: BackendLearningStart): Promise<void> {
+  async #register(source: BackendLearningSource): Promise<void> {
     const { agentId } = this.#config;
     const read = () => this.#owner.agents.get(agentId);
     let agent;
@@ -303,7 +333,7 @@ export class BackendLearningClient {
       const on = learning === true || (typeof learning === 'object' && learning !== null);
       const definition = {
         id: agentId, name: this.#config.name ?? agentId, instructions: source.instructions,
-        sdk: { runtime: source.runtime }, learning: on ? (learning === true ? true as const : { ...(learning as BackendLearningLoop), agree_on: (learning as BackendLearningLoop).agree_on ? [...(learning as BackendLearningLoop).agree_on!] : undefined }) : false as const,
+        sdk: bindingOf(source), learning: on ? (learning === true ? true as const : { ...(learning as BackendLearningLoop), agree_on: (learning as BackendLearningLoop).agree_on ? [...(learning as BackendLearningLoop).agree_on!] : undefined }) : false as const,
       };
       try { await this.#owner.agents.create({ definition }, { 'Idempotency-Key': uuid() }); }
       catch (conflict) {
@@ -312,7 +342,9 @@ export class BackendLearningClient {
       }
       agent = (await read()).body;
     }
-    if (agent.definition.sdk?.runtime !== source.runtime) throw new AgentRunUsage('The existing agent uses a different runtime; choose its matching SDK wrapper or a new agentId.');
+    const sdk = agent.definition.sdk;
+    if (!sdk || sdk.runtime !== source.runtime || (sdk.runtime === 'external' ? sdk.platform : undefined) !== source.platform)
+      throw new AgentRunUsage('The existing agent uses a different runtime or platform; choose its matching source or a new agentId.');
   }
 
   /** Observe completion immediately; the original SDK call can return without waiting for the run's learning. */
