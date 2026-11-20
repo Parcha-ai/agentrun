@@ -28,7 +28,7 @@ import { rm } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import type { Revision, RunOrigin } from "./agent-rows.js";
 import { pinFirst as pinFirstOf } from "./mcp-pin-first.js";
-import { type AgentEntry, agentRevision, agentRevisions, agentView, commitAgent, createAgent, etagOf, externalKey, getAgent, listAgents, makeRevision, refuseExternal, revisionView, type SaveCheck, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
+import { type AgentEntry, type InTurn, agentRevision, agentRevisions, agentView, commitAgent, createAgent, etagOf, externalKey, getAgent, listAgents, makeRevision, refuseExternal, revisionView, type SaveCheck, type SaveStamp, setAgentArchived, setCurrentRevision } from "./agents-store.js";
 import { WORKFLOW_ADAPTERS } from "./runner/workflow-adapters.js";
 import { DECISION_ADAPTER, decisionsOf, FAUX_JEV_ENV, FAUX_OPENROUTER_ENV, FAUX_PARALLEL_ENV, fauxFetch } from "./decisions.js";
 import { FAUX_WEB_ENV } from "./web-fetch-direct.js";
@@ -95,7 +95,7 @@ import { stats as statsOverStore } from "./store-reads/stats.js";
 import { analytics as analyticsOverStore } from "./store-reads/analytics.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { type AgenticBody, type AgentRow, type McpCredentialMark, type MonidPinBody, type NewRevision, openStore, type RevisionPlace, type RevisionRow, type LaunchSealed, openRunLaunch, type RunMcpAuth, type RunRow, sealRunLaunch, type Store, StoreLaunchMissing, StoreOwned, storeTarget, type TemplatePackage, type WorkflowBody } from "./store/index.js";
-import { agentDeleting, answerOf, logged } from "./agents.js";
+import { agentDeleting, answerOf, logged, purgedAgent } from "./agents.js";
 import { keepGrade } from "./runner/feedback-round.js";
 import { gradeRow, notAuditableOf } from "./runner/audit.js";
 import { auditsOffWords, auditWriterOf, isShadowRun, readAudits, servingLinesOf, shadowRunId } from "./learn/audit.js";
@@ -544,11 +544,6 @@ function purgedRun(row: RunRow): ApiError {
     },
   });
 }
-/** 410 purged for a route of a purged agent (Agents.purge): its tombstone. */
-const purgedAgent = (agent: AgentRow) =>
-  new ApiError("purged", `The agent ${agent.id} was purged: its definition, learning and runs' content are gone, and its runs' cost stays in every total.`, {
-    details: { agent_id: agent.id, archived_at: isoOrNull(agent.archivedAt), purged_at: isoOrNull(agent.purgedAt) },
-  });
 
 /** A route: `name` is its operationId in the OpenAPI document (openapi.ts); `capability`, when this server turns it off;
  *  `raw`, a route whose body is bytes and not JSON, which the page's session may send with any content type, still only
@@ -1585,7 +1580,7 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
     list: (options: { archived?: boolean } = {}) => listAgents(store, options),
     create: (body: DefinitionBody, check?: SaveCheck, fresh?: { place: RevisionPlace; tools: readonly string[] }, template?: TemplatePackage) =>
       createAgent(store, body, { ...(check ? { check } : {}), ...(fresh ? { fresh } : {}), ...(template ? { template } : {}) }),
-    commit: (entry: AgentEntry, body: DefinitionBody, options: { ifCurrent?: string | null; check?: SaveCheck; contract?: boolean; template?: TemplatePackage; fromPackage?: boolean } = {}) => commitAgent(store, entry, body, options),
+    commit: (entry: AgentEntry, body: DefinitionBody, options: { ifCurrent?: string | null; check?: SaveCheck; contract?: boolean; template?: TemplatePackage; fromPackage?: boolean; inTurn?: InTurn } = {}) => commitAgent(store, entry, body, options),
     revisions: (id: string) => agentRevisions(store, id),
     revision: (agentId: string, revisionId: string) => agentRevision(store, agentId, revisionId),
     setCurrent: (entry: AgentEntry, revisionId: string) => setCurrentRevision(store, entry, revisionId),
@@ -2892,7 +2887,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
       warnings = saved.warnings;
       return saved.stamp;
     };
-    const edited = await agents.commit(entry, checkDefinitionBody(body, { creating: false, harnesses }), { check, ...options });
+    // Its last read and its commit in the agent's delete turn (agentWrite), the check outside it: an edit or a template
+    // update whose commit comes once the agent is purged is 410, and one after a purge stopped part way is 409, nothing
+    // written (the store refuses a purged agent's revision too, AgentPurged).
+    const edited = await agents.commit(entry, checkDefinitionBody(body, { creating: false, harnesses }), { check, ...options, inTurn: (work) => agentWrite(entry.agent.id, work) });
     reconcileComputer(entry.agent.id);
     return { entry: edited, warnings };
   }
@@ -4280,8 +4278,10 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
           if (match === undefined) throw new ApiError("precondition_failed", "If-Match is required: the agent's ETag, as GET /agents/{agent_id} returned it.");
           if (body.version === undefined || (typeof body.version === "number" && body.version <= entry.version)) throw invalid([{ field: "definition.version", reason: body.version === undefined ? "missing" : "not_an_option", message: `definition.version must be greater than the current one, ${entry.version}` }]);
         }
-        // The check above is a fast path; the store compares If-Match again inside the commit, so of two edits that read
-        // the same revision exactly one lands.
+        // The checks above are a fast path on the agent as the request found it, its body read after. The commit reads the
+        // agent again in its delete turn (reviseAgentOf, agentWrite): one whose body arrived once the agent was purged is
+        // 410, nothing written. The store compares If-Match again inside the commit, so of two edits that read the same
+        // revision exactly one lands.
         const { entry: edited, warnings } = await reviseAgentOf(entry, contract ? { definition: body } : body, { contract, ...(match === undefined ? {} : { ifCurrent: entry.revision?.id ?? null }) });
         return send(res, 200, { ...agentView(edited, linkOrigin(req), await agentExtra(edited)), warnings }, { etag: etagOf(edited) });
       }
@@ -4295,22 +4295,26 @@ async function startHolding(options: ServeOptions, data: string, checked: { maxR
         return send(res, 200, { revisions: page, next_cursor: nextCursor(offset + limit, all.length) });
       }
       case "setCurrent": {
-        const entry = await needAgent(id);
+        // The body read first, outside the agent's delete turn; the move made in it (agentWrite), as an edit's revision is:
+        // one whose body arrives while the agent is purged is 410 (the store refuses it too, AgentPurged).
         const body = await bodyOf(req);
-        const extra = unknownFields(body, ["revision"]);
-        if (extra.length) throw invalid(extra);
-        const revision = body.revision;
-        if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
-        const candidate = await agents.revision(id, revision);
-        if (!candidate) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
-        if (stable(nativeOf(candidate.revision.body)) !== stable(nativeOf(entry.revision?.body))) throw new ApiError("input_invalid", "This revision changes the native connection. Reconnect or verify through the native connection controls; ordinary revision restore cannot change its source or connection state.");
-        if (nativeOf(candidate.revision.body)) {
-          const overrides = nativeModelOverrides(candidate.revision.body);
-          if (overrides.length) throw invalid(overrides.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_MODEL_SETTINGS_UNSUPPORTED })));
-          const execution = nativeExecutionOverrides(candidate.revision.body);
-          if (execution.length) throw invalid(execution.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_EXECUTION_SETTINGS_UNSUPPORTED })));
-        }
-        const moved = await agents.setCurrent(entry, revision);
+        const moved = await agentWrite(id, async () => {
+          const entry = await needAgent(id);
+          const extra = unknownFields(body, ["revision"]);
+          if (extra.length) throw invalid(extra);
+          const revision = body.revision;
+          if (typeof revision !== "string" || !ID.test(revision)) throw invalid([{ field: "revision", reason: revision === undefined ? "missing" : "wrong_type", message: "revision is a revision id of this agent" }]);
+          const candidate = await agents.revision(id, revision);
+          if (!candidate) throw invalid([{ field: "revision", reason: "not_an_option", message: `${revision} is not a revision of the agent ${id}` }]);
+          if (stable(nativeOf(candidate.revision.body)) !== stable(nativeOf(entry.revision?.body))) throw new ApiError("input_invalid", "This revision changes the native connection. Reconnect or verify through the native connection controls; ordinary revision restore cannot change its source or connection state.");
+          if (nativeOf(candidate.revision.body)) {
+            const overrides = nativeModelOverrides(candidate.revision.body);
+            if (overrides.length) throw invalid(overrides.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_MODEL_SETTINGS_UNSUPPORTED })));
+            const execution = nativeExecutionOverrides(candidate.revision.body);
+            if (execution.length) throw invalid(execution.map(field => ({ field: `definition.${field}`, reason: "not_allowed", message: NATIVE_EXECUTION_SETTINGS_UNSUPPORTED })));
+          }
+          return agents.setCurrent(entry, revision);
+        });
         reconcileComputer(id);
         return send(res, 200, agentView(moved, linkOrigin(req), await agentExtra(moved)), { etag: etagOf(moved) });
       }

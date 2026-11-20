@@ -3,11 +3,13 @@
 // of its runs becomes a tombstone; its own row stays as its tombstone (its id, archive and purge times), and every route
 // of it is 410 purged. What its runs cost stays in every total. Not archived: 409 agent_not_archived. A run of it live:
 // 409 run_not_final, nothing purged. Purging one agent never touches another. An unarchive or a write sent while its
-// purge runs is 410 once it ends; after a purge stopped part way, each is 409 agent_not_runnable. Another system's agent keeps its delete
-// whole (agent-delete.test.mjs).
+// purge runs is 410 once it ends; after a purge stopped part way, each is 409 agent_not_runnable. An edit whose body
+// arrives after the purge is 410 too, and so is a trigger made for it or moved to it: nothing of it is written again.
+// Another system's agent keeps its delete whole (agent-delete.test.mjs).
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { request } from "node:http";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { shadowRunId } from "../dist/learn/audit.js";
@@ -177,7 +179,7 @@ for (const step of ["after_step_2", "in_step_3"]) {
 /** `promise`, or a failure in words once `ms` have passed. */
 const within = (promise, ms, what) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${what}: not within ${ms} ms`)), ms).unref())]);
 
-test("an agent being purged takes no unarchive and no write: after a purge stopped part way each is 409 agent_not_runnable until a DELETE finishes it; one sent while the DELETE runs waits for it and is 410 purged, its home never made again", { timeout: 180_000 }, async (t) => {
+test("an agent being purged takes no unarchive and no write (its home, its definition, its current revision): after a purge stopped part way each is 409 agent_not_runnable until a DELETE finishes it; one sent while the DELETE runs waits for it and is 410 purged, its home and definition never written again",{ timeout: 180_000 }, async (t) => {
   const gate = { stop: false, hold: false };
   const { api, data, store } = await serve(t, {
     agentDeleteAt: async (at) => {
@@ -196,10 +198,15 @@ test("an agent being purged takes no unarchive and no write: after a purge stopp
   assert.equal((await api("PUT", homeFile("notes.md"), "kept notes")).status, 200);
   assert.equal((await api("POST", "/agents/held/archive")).status, 200);
 
-  // A purge stopped once its learning went: the agent stays archived and takes no unarchive or write.
+  // A purge stopped once its learning went: the agent stays archived and takes no unarchive or write (its home's, its
+  // definition's, a move of its current revision).
+  const LATE = "Instructions sent while the agent was being purged.";
+  const [revision] = (await store.agents.revisions("held")).map((one) => one.id);
+  const edit = ["PUT", "/agents/held/definition", { definition: { instructions: LATE } }];
+  const move = ["POST", "/agents/held/current", { revision }];
   gate.stop = true;
   assert.equal((await api("DELETE", "/agents/held")).status, 500);
-  for (const [method, path, body] of [["POST", "/agents/held/unarchive"], ["PUT", homeFile("late.md"), "late notes"]]) {
+  for (const [method, path, body] of [["POST", "/agents/held/unarchive"], ["PUT", homeFile("late.md"), "late notes"], edit, move]) {
     const answer = await api(method, path, body);
     assert.deepEqual([answer.status, answer.body.error?.code], [409, "agent_not_runnable"], `${method} ${path} after a purge stopped part way: ${JSON.stringify(answer.body)}`);
   }
@@ -213,11 +220,83 @@ test("an agent being purged takes no unarchive and no write: after a purge stopp
   await within(reached, 60_000, "the DELETE reached its runs");
   const unarchiving = api("POST", "/agents/held/unarchive");
   const writing = api("PUT", homeFile("late.md"), "late notes");
+  const editing = api(...edit);
+  const moving = api(...move);
   await new Promise((resolve) => setTimeout(resolve, 500));
   gate.release();
-  const [deleted, unarchived, written] = await Promise.all([deleting, unarchiving, writing]);
+  const [deleted, unarchived, written, edited, moved] = await Promise.all([deleting, unarchiving, writing, editing, moving]);
   assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
-  for (const [answer, what] of [[unarchived, "the unarchive"], [written, "the home write"]]) assert.deepEqual([answer.status, answer.body.error?.code], [410, "purged"], `${what}: ${JSON.stringify(answer.body)}`);
+  for (const [answer, what] of [[unarchived, "the unarchive"], [written, "the home write"], [edited, "the edit"], [moved, "the move"]]) assert.deepEqual([answer.status, answer.body.error?.code], [410, "purged"], `${what}: ${JSON.stringify(answer.body)}`);
   assert.ok(!existsSync(agentHomeFolder(data, "held")), "its home is not made again");
+  assert.deepEqual(mentions(data, LATE), [], "nor its definition written again");
   assert.equal(await store.settings.get("agent.purging.held"), undefined, "its purge's mark goes with it");
+});
+
+/** A `method` request of `path` whose JSON body is sent in two parts, its last byte once `finish()` is called: its answer. */
+function slowSend(port, token, method, path, body) {
+  const text = JSON.stringify(body);
+  let finish;
+  const answer = new Promise((resolve, reject) => {
+    const req = request({ host: "127.0.0.1", port, method, path, headers: { host: `127.0.0.1:${port}`, authorization: `Bearer ${token}`, "content-type": "application/json", "content-length": Buffer.byteLength(text) } }, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => chunks.push(chunk));
+      res.on("end", () => resolve({ status: res.statusCode, body: JSON.parse(Buffer.concat(chunks).toString("utf8") || "null") }));
+    });
+    req.on("error", reject);
+    req.write(text.slice(0, -1));
+    finish = () => req.end(text.slice(-1));
+  });
+  return { answer, finish };
+}
+
+test("an edit of an agent's definition, or a move of its current revision, whose body arrives after its purge is 410 purged: no revision, text or move of it is written", { timeout: 120_000 }, async (t) => {
+  const { api, data, store, port, token, halt } = await haltable(t);
+  await agentWithRun(api, "edited", "The instructions before.");
+  await halt();
+  // A second revision, so a move of its current revision back to the first is a write.
+  const second = await api("PUT", "/agents/edited/definition", { definition: { instructions: "The instructions after." } });
+  assert.equal(second.status, 200, JSON.stringify(second.body));
+  const [first, current] = (await store.agents.revisions("edited")).map((revision) => revision.id);
+  assert.equal((await api("POST", "/agents/edited/archive")).status, 200);
+
+  // Both routes read the agent when they are sent; their bodies come once it is purged.
+  const LATE = "Instructions sent while the agent was purged.";
+  const editing = slowSend(port, token, "PUT", "/v2/agents/edited/definition", { definition: { instructions: LATE, description: LATE } });
+  const moving = slowSend(port, token, "POST", "/v2/agents/edited/current", { revision: first });
+  await new Promise((resolve) => setTimeout(resolve, 500));
+  const deleted = await api("DELETE", "/agents/edited");
+  assert.equal(deleted.status, 204, JSON.stringify(deleted.body));
+  editing.finish();
+  moving.finish();
+  for (const [answer, what] of [[await editing.answer, "the edit"], [await moving.answer, "the move"]]) {
+    assert.deepEqual([answer.status, answer.body?.error?.code], [410, "purged"], `${what}: ${JSON.stringify(answer.body)}`);
+  }
+  assert.deepEqual((await store.agents.revisions("edited")).map((revision) => [revision.id, revision.body, revision.skills, revision.note]), [[first, {}, null, null], [current, {}, null, null]], "no revision is added, and each is blank");
+  const row = await store.agents.get("edited");
+  assert.deepEqual([row.currentRevision, row.name, row.description], [current, "", null], "its current revision is not moved, nor its description written");
+  assert.deepEqual(mentions(data, LATE), [], "nothing the edit sent is in the store");
+  assert.equal((await api("DELETE", "/agents/edited")).status, 204, "a second DELETE is 204");
+  assert.equal((await api("GET", "/agents/edited")).status, 410);
+});
+
+test("a trigger made for a purged agent, or moved to it, is 410 purged: nothing written", { timeout: 120_000 }, async (t) => {
+  const { api, data, store, halt } = await haltable(t);
+  await agentWithRun(api, "gone", "Answer.");
+  await agentWithRun(api, "other", "Answer.");
+  await halt();
+  const LATE = "A trigger named after the purge";
+  const trigger = (agentId, extra = {}) => ({ name: LATE, enabled: false, source: { kind: "schedule", every_s: 600 }, target: { kind: "start_run", agent_id: agentId, input: { content: LATE }, max_cost_usd: 0.5 }, ...extra });
+  const others = await api("POST", "/triggers", { ...trigger("other"), name: "the other's", target: { kind: "start_run", agent_id: "other", input: { content: "Answer." }, max_cost_usd: 0.5 } });
+  assert.equal(others.status, 201, JSON.stringify(others.body));
+  assert.equal((await api("POST", "/agents/gone/archive")).status, 200);
+  assert.equal((await api("DELETE", "/agents/gone")).status, 204);
+
+  const made = await api("POST", "/triggers", trigger("gone"));
+  const moved = await api("PATCH", `/triggers/${others.body.id}`, { target: trigger("gone").target });
+  for (const [answer, what] of [[made, "a trigger made for it"], [moved, "a trigger moved to it"]]) {
+    assert.deepEqual([answer.status, answer.body?.error?.code], [410, "purged"], `${what}: ${JSON.stringify(answer.body)}`);
+  }
+  assert.deepEqual((await store.triggers.list("gone")).map((one) => one.id), [], "no trigger of it");
+  assert.equal((await store.triggers.get(others.body.id)).agentId, "other", "the other's trigger stays the other's");
+  assert.deepEqual(mentions(data, LATE), [], "nothing of either is in the store");
 });

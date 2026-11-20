@@ -4341,13 +4341,17 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   ((doc.info["x-agentrun-serve"] as Json).extensions as string[]).push(...Object.entries({...NATIVE_PATHS,...SDK_PATHS,...OBSERVATION_PATHS}).flatMap(([path,item])=>Object.keys(item).map(method=>`${method.toUpperCase()} ${path}`)));
   ((doc.info["x-agentrun-serve"] as Json).extensions as string[]).push(...Object.keys(hooks).map((path) => `POST ${path}`));
   // purge/1, on every operation there is by now (each rewritten, never a shared constant's own object changed); `changed`
-  // is info's own list.
+  // is info's own list. Every route of a purged run or agent, and each that writes to an agent its body names (a trigger
+  // made for it or moved to it, a template applied onto it), which a purged one refuses.
+  const namesAgent = new Set(["createTrigger", "updateTrigger", "applyTemplate"]);
   for (const [path, item] of Object.entries(doc.paths)) {
-    if (!/^\/(runs\/\{run_id\}|agents\/\{agent_id\})(\/|$)/.test(path)) continue;
+    const ofPurgeable = /^\/(runs\/\{run_id\}|agents\/\{agent_id\})(\/|$)/.test(path);
+    if (!ofPurgeable && !Object.values(item).some((op) => typeof op === "object" && op !== null && namesAgent.has((op as Json).operationId as string))) continue;
     const ops = { ...item } as Record<string, Json & { responses?: Record<string, Json> }>;
     for (const [method, op] of Object.entries(ops)) {
       if (method === "parameters" || method.startsWith("x-") || !op.responses) continue;
       if (op.operationId === "deleteRun" || op.operationId === "deleteAgent") continue;
+      if (!ofPurgeable && !namesAgent.has(op.operationId as string)) continue;
       ops[method] = { ...op, responses: { ...op.responses, "410": ref("responses/Gone") } };
       if (op["x-agentrun-serve"] !== undefined) continue;
       // An operation whose responses an earlier addition changed keeps that one's mark, as a schema two additions widen does.

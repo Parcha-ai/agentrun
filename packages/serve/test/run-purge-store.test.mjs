@@ -3,8 +3,8 @@
 // time set last) and removes every other row of it: no table but runs names it after, read from every table the schema
 // made, except its kept learning's rows, blanked to their state (the learning meter, learning.spend, reads them). A run
 // not final, or held by a runner, is refused, nothing written. agents.purge does the same for an archived agent once each
-// of its runs is a tombstone: its revisions' content, its name and description go, its row stays. Another agent's rows
-// are never touched.
+// of its runs is a tombstone: its revisions' content, its name and description go, its row stays, and nothing of it is
+// written again (AgentPurged). Another agent's rows are never touched.
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -154,6 +154,45 @@ test("agents.purge refuses while a run of the agent is not a tombstone, or a tri
   // A second purge writes nothing.
   await store.agents.purge("agent-1");
   assert.equal((await store.agents.get("agent-1")).purgedAt, agent.purgedAt);
+});
+
+test("a purged agent takes no write: a revision (an edit's, an upgrade's), its current revision moved, its name or description, its archive, a run, a trigger or a pin of it, each refused (AgentPurged) or a no-op, nothing written", async (t) => {
+  const { store, file } = await storeOn(t);
+  await agentWithRevision(store, "agent-1", "rev-1");
+  await store.agents.addRevision({ agentId: "agent-1", id: "rev-2", kind: "agentic", body: { instructions: "Answer again." } });
+  await store.runs.create({ id: "run-1", agentId: "agent-1", revisionId: "rev-2" }, { body: { input: { content: "What is six times seven?" } } });
+  await ended(store, "run-1");
+  await store.runs.purge("run-1", KEPT);
+  await store.agents.archive("agent-1", true);
+  await store.agents.purge("agent-1");
+  const agent = await store.agents.get("agent-1");
+  const revisions = await store.agents.revisions("agent-1");
+
+  // Each write a request read the agent for before its purge, and sends once it is done.
+  const LATE = "Words sent after the purge.";
+  const late = {
+    "an edit's revision": () => store.agents.addRevision({ agentId: "agent-1", id: "rev-late", kind: "agentic", body: { instructions: LATE }, skills: { "a.md": LATE }, note: LATE, description: LATE }),
+    "an edit's revision on the one it read": () => store.agents.addRevision({ agentId: "agent-1", ifCurrent: "rev-2", id: "rev-late", kind: "agentic", body: { instructions: LATE } }),
+    "an upgrade's revision": () => store.templates.upgrade("agent-1", { id: "rev-up", kind: "agentic", body: { instructions: LATE } }, { upsert: [], remove: [] }),
+    "its current revision moved": () => store.agents.setCurrent("agent-1", "rev-1"),
+    "its name and description": () => store.agents.put({ id: "agent-1", name: LATE, description: LATE }),
+    "its unarchive": () => store.agents.archive("agent-1", false),
+    "a run of it": () => store.runs.create({ id: "run-late", agentId: "agent-1", revisionId: "rev-2" }, { body: { input: { content: LATE } } }),
+    "a trigger of it, off": () => store.triggers.create({ id: "trig-late", agentId: "agent-1", name: LATE, enabled: false, source: { kind: "schedule", every_s: 600 }, target: { kind: "start_run", agent_id: "agent-1", input: { content: LATE } }, nextAt: null, catchupWindowS: 0 }),
+  };
+  for (const [what, write] of Object.entries(late)) {
+    const refused = await write().then(() => undefined, (error) => error);
+    assert.deepEqual([refused?.name, refused?.agentId, refused?.purgedAt], ["AgentPurged", "agent-1", agent.purgedAt], `${what} is refused: ${refused}`);
+  }
+  // A first run's MCP pin is written only on a revision with none, and a purge left each with none: never on one of a
+  // purged agent (no run of it is claimed, so none asks; the store holds to it all the same).
+  assert.equal(await store.agents.pinOnce("rev-2", { server: { url: LATE, tools: [] } }), null, "no pin on a purged agent's revision");
+
+  assert.deepEqual(await store.agents.get("agent-1"), agent, "its row is as the purge left it");
+  assert.deepEqual(await store.agents.revisions("agent-1"), revisions, "and its revisions");
+  assert.equal(await store.runs.get("run-late"), undefined);
+  assert.equal(await store.triggers.get("trig-late"), undefined);
+  assert.deepEqual(await mentions(file, LATE), [], "nothing sent after the purge is in the store");
 });
 
 test("a run made from another (a replay of its input, an audit's shadow) is never made of a purged run: runs.create refuses it (RunPurged), nothing written; runs.purge refuses a run while one made from it is not purged (RunsMadeFromLeft), nothing written", async (t) => {
