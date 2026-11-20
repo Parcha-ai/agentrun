@@ -84,6 +84,16 @@ async function storedRun(store, id, runId, body) {
   return runId;
 }
 
+/** Run `runId` ended `state` as a runner ends it: claimed, then its end written (these servers have no runner). */
+async function endAsRunner(store, runId, state) {
+  const claim = await store.claim(runId, "runner-test", { leaseMs: 60_000 });
+  assert.ok(claim, `${runId} claimed`);
+  await store.runs.update(claim, { state });
+}
+
+/** A read without the time it was read at. */
+const untimed = ({ to: _to, ...rest }) => rest;
+
 test("both profiles route DELETE /agents/{id}/learning, and its document is the operation's", () => {
   const route = ROUTES.find((one) => one.name === "deleteAgentLearning");
   assert.ok(route, "a route of the server");
@@ -117,7 +127,8 @@ test("a reset after a learned workflow served: nothing learned is left or served
     return {
       list: list.runs.map((row) => [row.run_id, row.status]), all: all.runs.map((row) => [row.run_id, row.status]),
       count: (await store.runs.every("source")).length,
-      stats: (await api("GET", "/stats")).body, usage: (await api("GET", "/usage")).body,
+      // `to`: the window's end, the time of the read.
+      stats: untimed((await api("GET", "/stats")).body), usage: untimed((await api("GET", "/usage")).body),
       view: { status: view.status, path: view.path, cost: view.cost, answer: view.result?.final_answer }, files,
     };
   };
@@ -171,8 +182,8 @@ test("a run of the agent's own still going: 409 learning_busy naming it, the run
   assert.equal((await api("GET", "/agents/busy/learning")).body.main, main, "the folder as it was");
   assert.equal((await recordsOf(store, "busy")).length, 2, "the records kept");
 
-  assert.equal((await api("POST", `/runs/${runId}/cancel`, {})).status < 300, true);
-  await quiet(store, "busy");
+  assert.deepEqual(await store.commands(runId, 0), [], "nor sent a cancel");
+  await endAsRunner(store, runId, "ended");
   const done = await api("DELETE", "/agents/busy/learning");
   assert.equal(done.status, 204, JSON.stringify(done.body));
   assert.deepEqual(await recordsOf(store, "busy"), []);
@@ -182,12 +193,21 @@ test("a run of the agent's own still going: 409 learning_busy naming it, the run
 test("a check's replay in flight is cancelled and waited for, then the learning deleted: 204", async (t) => {
   const { api, data, store } = await serve(t, { learning: "on", runner: false });
   assert.equal((await api("POST", "/agents", agent("checking", { learning: true }))).status, 201);
-  await learned(store, data, "checking");
+  const main = await learned(store, data, "checking");
   const replay = await storedRun(store, "checking", "replay-1", { input: ASK, title: "t", place: { mode: "runner" }, replay: { of: "run-of-before", workflow: "answer", digest: DIGEST } });
 
-  const done = await api("DELETE", "/agents/checking/learning");
+  const reset = api("DELETE", "/agents/checking/learning");
+  // The cancel is the run's command; while the run has not ended, nothing of the learning is deleted. The runner takes
+  // the cancel and stops the run, as this test does in its place.
+  const end = Date.now() + 30_000;
+  while (!(await store.commands(replay, 0)).some((command) => command.kind === "cancel")) {
+    assert.ok(Date.now() < end, "a cancel sent to the replay");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  assert.equal((await api("GET", "/agents/checking/learning")).body.main, main, "nothing deleted while the replay goes");
+  await endAsRunner(store, replay, "stopped");
+  const done = await reset;
   assert.equal(done.status, 204, JSON.stringify(done.body));
-  assert.ok(FINAL.includes((await store.runs.get(replay)).state), "the replay ended");
   assert.deepEqual(await recordsOf(store, "checking"), []);
   assert.equal((await api("GET", "/agents/checking/learning")).body.main, null);
 });
@@ -222,8 +242,7 @@ test("the API-only profile serves it with the token: 409 while the agent's inlin
   const busy = await send("DELETE", `/v2/agents/${agentId}/learning`);
   assert.deepEqual([busy.status, busy.body?.error?.code, busy.body?.error?.details?.runs], [409, "learning_busy", [runId]], JSON.stringify(busy.body));
   assert.equal((await send("DELETE", `/v2/agents/${agentId}/learning`, { token: false })).status, 401);
-  assert.ok((await send("POST", `/v2/runs/${runId}/cancel`, { body: {} })).status < 300);
-  await quiet(server.store, agentId);
+  await endAsRunner(server.store, runId, "ended");
   for (const time of ["first", "second"]) assert.equal((await send("DELETE", `/v2/agents/${agentId}/learning`)).status, 204, time);
   const unknown = await send("DELETE", "/v2/agents/agent_missing/learning");
   assert.equal(unknown.status, 404);
