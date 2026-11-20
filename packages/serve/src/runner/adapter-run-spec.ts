@@ -55,7 +55,7 @@ import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { layOwnSkills } from "../workspace/revision-skills.js";
 import { COMPUTER_ROOT, recordingsFolder, runFolder, scratchFolder } from "../workspace/paths.js";
 import { runTools, type ToolResults, withKindTools } from "../workspace/run-tools.js";
-import { placeRunInputs } from "../uploads.js";
+import { filesToCopy, placeRunInputs } from "../uploads.js";
 import { handedSignInReadsBack, signInReads } from "../sign-ins-store.js";
 import { UNREADABLE_SIGN_IN } from "../run-view.js";
 import { durableWait } from "../workflow/pi-versions.js";
@@ -506,7 +506,7 @@ async function adapterSpec(launch: RunLaunch, run: AdapterRun, deps: AdapterSpec
   // per run (uploads.ts copyRunFiles), and its opening message saved beside them as inputs/message.md (placeRunInputs);
   // a copy that fails ends the run failed, saying why. A run's own process copies nothing: its runner placed them before
   // the process started (run-child-host.ts), as the server's held uploads are never the run's to read.
-  if (!(deps.sealKey === undefined && runnerSeam())) await placeRunInputs(deps.data, claim.runId, ws.workspace, launch.files ?? [], messageText(launch.input));
+  if (!(deps.sealKey === undefined && runnerSeam())) await placeRunInputs(deps.data, claim.runId, ws.workspace, filesToCopy(launch), messageText(launch.input));
 
   // The pull request's checkout, when the revision asks for one (pr-checkout.ts): the server's own fetch before the first
   // turn, with the GitHub App's read-only token for that one repository (or none); the run is told what it holds, or why

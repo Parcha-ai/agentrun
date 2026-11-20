@@ -40,7 +40,7 @@ import { firstMessage, inputMessage, messageText } from "../run-manifest.js";
 import { learningStartOf, seedFailed, type RunLaunch } from "../run-launch.js";
 import { readsFiles, systemOf } from "../skills.js";
 import { DATA_ENV } from "../server-fs.js";
-import { placeRunInputs } from "../uploads.js";
+import { filesToCopy, placeRunInputs } from "../uploads.js";
 import { recordingsFolder, runFolder, scratchFolder } from "../workspace/paths.js";
 import { openRunWorkspace } from "../workspace/run-workspace.js";
 import { layOwnSkills } from "../workspace/revision-skills.js";
@@ -381,7 +381,7 @@ async function cliSpec(launch: RunLaunch, run: AdapterRun, deps: CliSpecDeps, cl
   const checkout = body.checkout === "pull_request" ? await prCheckoutForClaim(deps, ws.workspace, launch, cut, run.stopped ?? run.signal, (part) => holds.hold({ checkout: part })) : undefined;
   holds.hold({ checkout });
   // A run's own process copies nothing: its runner placed them before the process started (run-child-host.ts).
-  if (!(deps.sealKey === undefined && runnerSeam())) await placeRunInputs(deps.data, claim.runId, ws.workspace, launch.files ?? [], messageText(launch.input));
+  if (!(deps.sealKey === undefined && runnerSeam())) await placeRunInputs(deps.data, claim.runId, ws.workspace, filesToCopy(launch), messageText(launch.input));
   // The run's skills and its learning seed laid before its computer exists, as the pi spec lays them (adapter-run-spec.ts):
   // on Archil the computer's mount takes the disk's write delegation, and a lay over the disk's file API after it is
   // refused (409) while the mount holds it.
