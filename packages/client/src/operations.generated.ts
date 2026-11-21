@@ -1592,6 +1592,28 @@ export type ListLearningPromotionsResponse = {
       stopped?: true;
       released?: number;
       fresh_reads?: number;
+      turns?: {
+        n: number;
+        agreed: number;
+        alone: number;
+        of: Array<string>;
+        outcomes: {
+          answered: number;
+          handed_back: number;
+          failed: number;
+          skipped_write: number;
+        };
+        disagreements?: Array<{
+          run: string;
+          input: string;
+          agent: string | null;
+          draft?: string;
+          escalated?: string;
+          failed?: true;
+          differs_on?: string;
+        }>;
+        fresh_reads?: number;
+      };
     };
     runs?: Array<string>;
     inputs?: Array<string>;
@@ -1681,6 +1703,28 @@ export type ListLearningPromotionsResponse = {
         stopped?: true;
         released?: number;
         fresh_reads?: number;
+        turns?: {
+          n: number;
+          agreed: number;
+          alone: number;
+          of: Array<string>;
+          outcomes: {
+            answered: number;
+            handed_back: number;
+            failed: number;
+            skipped_write: number;
+          };
+          disagreements?: Array<{
+            run: string;
+            input: string;
+            agent: string | null;
+            draft?: string;
+            escalated?: string;
+            failed?: true;
+            differs_on?: string;
+          }>;
+          fresh_reads?: number;
+        };
       } | null;
     } | null;
   }>;

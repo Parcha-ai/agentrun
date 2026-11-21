@@ -586,6 +586,9 @@ __all__ = [
     "ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem",
     "ListLearningPromotionsResponsePromotionsItemCheckOutcomes",
     "ListLearningPromotionsResponsePromotionsItemCheckSkippedToolsItem",
+    "ListLearningPromotionsResponsePromotionsItemCheckTurns",
+    "ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItem",
+    "ListLearningPromotionsResponsePromotionsItemCheckTurnsOutcomes",
     "ListLearningPromotionsResponseServingItem",
     "ListLearningPromotionsResponseServingItemAudit",
     "ListLearningPromotionsResponseServingItemChampion",
@@ -593,6 +596,9 @@ __all__ = [
     "ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem",
     "ListLearningPromotionsResponseServingItemChampionCheckOutcomes",
     "ListLearningPromotionsResponseServingItemChampionCheckSkippedToolsItem",
+    "ListLearningPromotionsResponseServingItemChampionCheckTurns",
+    "ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItem",
+    "ListLearningPromotionsResponseServingItemChampionCheckTurnsOutcomes",
     "ListLearningPromotionsResponseServingItemChampionNodesItem",
     "ListLearningPromotionsResponseServingItemChampionNodesItemChecksItem",
     "ListLearningPromotionsResponseServingItemCheck",
@@ -2329,6 +2335,7 @@ class ListLearningPromotionsResponsePromotionsItemCheck(_ListLearningPromotionsR
     stopped: Literal[True]
     released: int
     fresh_reads: int
+    turns: ListLearningPromotionsResponsePromotionsItemCheckTurns
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckOutcomes(TypedDict):
@@ -2351,6 +2358,39 @@ class _ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemRequire
 
 
 class ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItem(_ListLearningPromotionsResponsePromotionsItemCheckDisagreementsItemRequired, total=False):
+    draft: str
+    escalated: str
+    failed: Literal[True]
+    differs_on: str
+
+
+class _ListLearningPromotionsResponsePromotionsItemCheckTurnsRequired(TypedDict):
+    n: int
+    agreed: int
+    alone: int
+    of: list[str]
+    outcomes: ListLearningPromotionsResponsePromotionsItemCheckTurnsOutcomes
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckTurns(_ListLearningPromotionsResponsePromotionsItemCheckTurnsRequired, total=False):
+    disagreements: list[ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItem]
+    fresh_reads: int
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckTurnsOutcomes(TypedDict):
+    answered: int
+    handed_back: int
+    failed: int
+    skipped_write: int
+
+
+class _ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemRequired(TypedDict):
+    run: str
+    input: str
+    agent: str | None
+
+
+class ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItem(_ListLearningPromotionsResponsePromotionsItemCheckTurnsDisagreementsItemRequired, total=False):
     draft: str
     escalated: str
     failed: Literal[True]
@@ -2448,6 +2488,7 @@ class ListLearningPromotionsResponseServingItemChampionCheck(_ListLearningPromot
     stopped: Literal[True]
     released: int
     fresh_reads: int
+    turns: ListLearningPromotionsResponseServingItemChampionCheckTurns
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckOutcomes(TypedDict):
@@ -2470,6 +2511,39 @@ class _ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemRe
 
 
 class ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItem(_ListLearningPromotionsResponseServingItemChampionCheckDisagreementsItemRequired, total=False):
+    draft: str
+    escalated: str
+    failed: Literal[True]
+    differs_on: str
+
+
+class _ListLearningPromotionsResponseServingItemChampionCheckTurnsRequired(TypedDict):
+    n: int
+    agreed: int
+    alone: int
+    of: list[str]
+    outcomes: ListLearningPromotionsResponseServingItemChampionCheckTurnsOutcomes
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckTurns(_ListLearningPromotionsResponseServingItemChampionCheckTurnsRequired, total=False):
+    disagreements: list[ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItem]
+    fresh_reads: int
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckTurnsOutcomes(TypedDict):
+    answered: int
+    handed_back: int
+    failed: int
+    skipped_write: int
+
+
+class _ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemRequired(TypedDict):
+    run: str
+    input: str
+    agent: str | None
+
+
+class ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItem(_ListLearningPromotionsResponseServingItemChampionCheckTurnsDisagreementsItemRequired, total=False):
     draft: str
     escalated: str
     failed: Literal[True]
