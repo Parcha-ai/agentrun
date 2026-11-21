@@ -14,7 +14,7 @@ import { agentDiskOf, diskNameOf, keepRunDisk, runDiskKept, serverIdOf, storeAge
 import type { Settings } from "../store/index.js";
 import type { LaunchDisk } from "../run-launch.js";
 import { ArchilClaimRefused } from "./archil-claim.js";
-import { ArchilDiskError, type ArchilDiskInfo, ArchilDiskLimit, availableDisk, ensureDisk, getDisk } from "./archil-disks.js";
+import { type ArchilDiskInfo, ArchilDiskLimit, availableDisk, ensureDisk, getDisk } from "./archil-disks.js";
 import type { ArchilControlOptions } from "./archil-mount-credential.js";
 
 /** The disk a run uses, and whose it is: the launch's (a customer's) or its agent's. */
@@ -42,13 +42,29 @@ export interface RunDiskOptions {
 export const diskLimitWords = (limit: number | undefined): string =>
   limit === undefined ? "your Archil plan's disk limit is reached; upgrade or delete an agent" : `your Archil plan allows ${limit} disks; upgrade or delete an agent`;
 
-/** Why disk `diskId`, named by a launch, can't hold a run here, in words naming the region; undefined when it can. A call
- *  that fails (Archil not reached, or refusing the key) throws its ArchilDiskError. */
+/** Disk `diskId` read at Archil once: `gone` when Archil has none of that id (404) or reads it deleted, `elsewhere` when it
+ *  is in another region than the key's, else the disk as read. */
+export type DiskProblem =
+  | { readonly problem: "gone" }
+  | { readonly problem: "elsewhere"; readonly region: string }
+  | { readonly problem?: undefined; readonly disk: ArchilDiskInfo };
+
+/** Why disk `diskId` can't hold a run here (DiskProblem), from one read. A read that fails (Archil not reached, or
+ *  refusing the key) throws its ArchilDiskError. */
+export async function diskProblem(control: ArchilControlOptions, diskId: string, context: { readonly signal?: AbortSignal } = {}): Promise<DiskProblem> {
+  const disk = await getDisk(control, diskId, context);
+  if (disk === undefined || disk.status === "deleted") return { problem: "gone" };
+  if (disk.region !== "" && disk.region !== control.region) return { problem: "elsewhere", region: disk.region };
+  return { disk };
+}
+
+/** Why disk `diskId`, named by a launch, can't hold a run here, in words naming the region; undefined when it can. A read
+ *  that fails throws its ArchilDiskError. */
 export async function launchDiskProblem(control: ArchilControlOptions, diskId: string, context: { readonly signal?: AbortSignal } = {}): Promise<string | undefined> {
   const region = control.region;
-  const disk = await getDisk(control, diskId, context);
-  if (disk === undefined) return `Archil has no disk ${diskId} in region ${region}, the region of this server's Archil key: name a disk in ${region}.`;
-  if (disk.region !== "" && disk.region !== region) return `The disk ${diskId} is in region ${disk.region}, and this server's Archil key is for region ${region}: name a disk in ${region}.`;
+  const read = await diskProblem(control, diskId, context);
+  if (read.problem === "gone") return `Archil has no disk ${diskId} in region ${region}, the region of this server's Archil key: name a disk in ${region}.`;
+  if (read.problem === "elsewhere") return `The disk ${diskId} is in region ${read.region}, and this server's Archil key is for region ${region}: name a disk in ${region}.`;
   return undefined;
 }
 
@@ -65,31 +81,29 @@ export async function runDiskOf(options: RunDiskOptions): Promise<RunDisk> {
     return { diskId: launch.diskId, kind: "launch" };
   }
   const stored = await agentDiskOf(options.store, options.agentId);
-  /** Waits for the disk to read available at Archil (one just made reads `creating` for a while; one made before reads
-   *  available at once, one read), then clears a pending mark (unless it was removed or replaced meanwhile). */
-  const ready = async (diskId: string, pending: boolean): Promise<ArchilDiskInfo> => {
-    const disk = await availableDisk(control, diskId, { ...(options.availableMs !== undefined ? { timeoutMs: options.availableMs } : {}), ...(signal ? { signal } : {}) });
-    if (!pending) return disk;
+  /** Waits for the disk to read available at Archil (one just made reads `creating` for a while), unless `read`, this
+   *  claim's read of it, reads it so already; then clears a pending mark (unless it was removed or replaced meanwhile). */
+  const ready = async (diskId: string, pending: boolean, read?: ArchilDiskInfo): Promise<void> => {
+    if (read?.status !== "available") await availableDisk(control, diskId, { ...(options.availableMs !== undefined ? { timeoutMs: options.availableMs } : {}), ...(signal ? { signal } : {}) });
+    if (!pending) return;
     const now = await agentDiskOf(options.store, options.agentId);
     if (now?.diskId === diskId && !now.removing) await storeAgentDisk(options.store, options.agentId, { diskId });
-    return disk;
   };
-  /** The agent's disk made at an earlier claim, read at Archil again at this one, as a launch's is: one Archil no longer
-   *  has, or one in another region than the key's, refuses the run in words before any call on it. A disk that is gone is
+  /** The agent's disk made at an earlier claim, read at Archil again at this one (diskProblem), as a launch's is: one that
+   *  is gone, or in another region than the key's, refuses the run in words before any call on it. A disk that is gone is
    *  never made again in its place: the agent's learning and its runs' folders were on it, and a new empty disk would
    *  hide that they are lost. Its owner drops it, and the next run makes a new one. */
   const readyReused = async (diskId: string, pending: boolean): Promise<void> => {
-    let disk: ArchilDiskInfo;
+    let read: DiskProblem;
     try {
-      disk = await ready(diskId, pending);
+      read = await diskProblem(control, diskId, signal ? { signal } : {});
+      if (read.problem === undefined) await ready(diskId, pending, read.disk);
     } catch (error) {
-      if (error instanceof ArchilDiskError && error.status === 404) {
-        const agent = options.agentId;
-        throw new ArchilClaimRefused(`This agent's Archil disk ${diskId} is gone: Archil has no disk ${diskId} in region ${region}. The agent's learning and its runs' folders were on it, so no new disk is made in its place. DELETE /v2/agents/${agent}/archil drops it (an agent made here is archived first, POST /v2/agents/${agent}/archive, and unarchived after), and the agent's next run makes a new one.`, { cause: error });
-      }
       throw new ArchilClaimRefused(`This agent's Archil disk ${diskId} is not ready in region ${region}: ${(error as Error).message}`, { cause: error });
     }
-    if (disk.region !== "" && disk.region !== region) throw new ArchilClaimRefused(`This agent's Archil disk ${diskId} is in region ${disk.region}, and this server's Archil key is for region ${region}: a run's folder is only on a disk in the key's region.`);
+    const agent = options.agentId;
+    if (read.problem === "gone") throw new ArchilClaimRefused(`This agent's Archil disk ${diskId} is gone: Archil has no disk ${diskId} in region ${region}. The agent's learning and its runs' folders were on it, so no new disk is made in its place. DELETE /v2/agents/${agent}/archil drops it (an agent made here is archived first, POST /v2/agents/${agent}/archive, and unarchived after), and the agent's next run makes a new one.`);
+    if (read.problem === "elsewhere") throw new ArchilClaimRefused(`This agent's Archil disk ${diskId} is in region ${read.region}, and this server's Archil key is for region ${region}: a run's folder is only on a disk in the key's region.`);
   };
   // A launch that names no disk resolved to its agent's on its first claim, and that disk was kept for the run: a later
   // claim of the same run (a reopened one) mounts it or is refused, never another disk.

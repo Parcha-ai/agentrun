@@ -30,12 +30,12 @@ import type { RunState, Store } from "./store/index.js";
 import { unknownFields } from "./validate.js";
 import { ArchilClaimRefused } from "./workspace/archil-claim.js";
 import { type ArchilDisk, type ArchilDiskOptions, archilDisk } from "./workspace/archil-disk.js";
-import { deleteDisk, getDisk, listOneDisk } from "./workspace/archil-disks.js";
+import { deleteDisk, listOneDisk } from "./workspace/archil-disks.js";
 import { archilWorkspace, spillFolderOf } from "./workspace/archil.js";
 import { agentDirName } from "./workspace/paths.js";
 import { WorkspaceError } from "./workspace/workspace.js";
 import { ARCHIL_API_KEY_ENV, archilApiKey } from "./workspace/archil-key.js";
-import { launchDiskProblem } from "./workspace/run-disk.js";
+import { diskProblem, launchDiskProblem } from "./workspace/run-disk.js";
 
 /** The routes, by their operation names. */
 export const ARCHIL_ROUTES: ReadonlySet<string> = new Set(["getWorkspaceArchil", "putWorkspaceArchil", "deleteWorkspaceArchil", "testWorkspaceArchil", "getAgentArchil", "deleteAgentArchil"]);
@@ -325,16 +325,11 @@ export function createArchilRoutes(options: ArchilRoutesOptions) {
     }
   }
 
-  /** Whether Archil's control plane says disk `diskId` is gone: its read answers that the account has no such disk (404,
-   *  getDisk's undefined) or reads it as deleted. Only Archil's word counts: a read that fails (not reached, a 5xx, the key
-   *  refused) says nothing, so the disk is taken as still there. */
+  /** Whether Archil's control plane says disk `diskId` is gone (run-disk.ts diskProblem). Only Archil's word counts: a read
+   *  that fails (not reached, a 5xx, the key refused) says nothing, so the disk is taken as still there. */
   async function diskGone(settings: ArchilSettings, key: string, diskId: string): Promise<boolean> {
-    try {
-      const disk = await getDisk(control(settings, key), diskId);
-      return disk === undefined || disk.status === "deleted";
-    } catch {
-      return false;
-    }
+    const read = await diskProblem(control(settings, key), diskId).catch(() => undefined);
+    return read?.problem === "gone";
   }
 
   return { view, save, off, test, agentView, removeAgentDisk, checkLaunchDisk, removeRunFolder, removeLearningFolder };
