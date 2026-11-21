@@ -9,7 +9,7 @@ import type { AgentEntry } from "../agents-store.js";
 import { uuidv7 } from "../agents-store.js";
 import { launchBody, type RunLaunch } from "../run-launch.js";
 import { learningStartFor, type StartDeps } from "../runs-over-store.js";
-import { chooseWorkflows, type LearnedWorkflow, learningFolderOf, seedAt, secretsShown } from "../learning.js";
+import { chooseWorkflows, type LearnedWorkflow, learningFolderOf, seedAt, secretsShown, withAgentRepo } from "../learning.js";
 import { INSTRUCTION_EVIDENCE_BYTES } from "../native/instructions.js";
 import { refuseWhileNoRunner } from "../runner/presence.js";
 import { secretRedactor } from "../runner/redact.js";
@@ -18,7 +18,7 @@ import { decodedStrings, draftProblems } from "../learn/workflow-draft.js";
 
 import { sdkWorkflowManifest, sdkDraftTools } from "./workflows.js";
 import type { SdkWorkflowCheckEvent } from "./check.js";
-import { promotionOf, promotionsOf } from "../learn/promote.js";
+import { promotionOf, promotionsOf, resetAtOf } from "../learn/promote.js";
 import { championTextOf, releaseSdkCheck, reserveSdkCheck, type SdkWorkflowCheck } from "../runner/promotion.js";
 import { fits, workflowDigest } from "../runner/workflow-first.js";
 
@@ -243,7 +243,9 @@ export class SdkRuns {
     // A runner keeps an SDK run's evidence and ends it: while every runner here refused to claim, the start is refused in
     // their words, as any start is (prepareLaunch), before the caller holds a receipt it would run on.
     await refuseWhileNoRunner(this.store.runners);
+    // A connected agent's run names no disk.
     const learning = await learningStartFor(deps, entry, pinned.revision, revisionBody as never, {
+      disk: null,
       noWorkflows: !workflow,
       ...(compile.model ? { model: compile.model } : {}),
     });
@@ -264,59 +266,73 @@ export class SdkRuns {
           "The learning seed could not be read. Retry after restoring the agent learning folder.",
         );
     }
-    const selected = learning && !learning.noWorkflows && workflow ? await this.selectedWorkflows(entry.agent.id, learning.seed, workflow) : { workflows: [], candidates: [] };
-    const cleaned = this.clean({ instructions, ...(model ? { model } : {}) });
-    const runId = uuidv7();
-    const redacted = cleanedInput !== input || cleaned.instructions !== instructions;
-    let task: unknown;
-    try { task = JSON.parse(input); } catch { /* A prose task: the client resolves the draft's input from the turn. */ }
-    // A turn is a check only when it can be one's baseline: no protected value in its task or policy, and an input the
-    // draft takes. A JSON object task is the input, so it must fit (the managed check's own rule); a prose task's input
-    // is resolved by the client from the turn's recorded tool inputs or the host's resolveCheckInput, and a turn it
-    // cannot resolve is given back (releaseSdkCheck), never counted.
-    const takes = (flow: LearnedWorkflow) => !redacted && (!isObject(task) || fits(flow, task, resolveSchemaForWorkflow as never));
-    const checkDeps = { store: this.store, agentId: entry.agent.id, log: () => {}, shown: async () => secretsShown(this.secrets(), { local: true }) };
-    const check = learning ? await reserveSdkCheck(checkDeps, { runId, revision: learning.seed, learning: revisionBody.learning, flows: selected.candidates, takes }) : undefined;
-    // A shadow check needs the original agent's own answer, not an answer produced by its existing champion.
-    const workflows = check ? [] : selected.workflows;
-    const launch: RunLaunch = {
-      input: { content: cleanedInput },
-      title: cleanedInput.trim().replace(/\s+/g, " ").slice(0, 80),
-      place: { mode: "runner" },
-      harness: "sdk",
-      sdk: {
-        ...binding,
-        ...workflow,
-        instructions: cleaned.instructions,
-        ...(cleaned.model ? { model: cleaned.model } : {}),
-      },
-      ...(learning ? { learning: { ...learning, workflows: workflows.map((flow) => flow.name) } } : {}),
-    };
-    const now = Date.now();
-    try {
-      await this.store.settings.put(keyOf(runId), {
-        run_id: runId,
-        created_at: now,
-        expires_at: now + 3_600_000,
-        batches: [],
-        learning_workflows: workflows,
-        ...(check ? { learning_check: check } : {}),
-        ...(redacted ? { check_redacted: true } : {}),
-      } satisfies SdkInbox);
-      await this.store.runs.create(
-        { id: runId, agentId: entry.agent.id, revisionId: entry.revision.id, ...(origin ? { origin } : {}) },
-        { body: launchBody(launch) },
-      );
-    } catch (error) {
-      await this.store.settings.remove(keyOf(runId));
-      // The reservation comes first because the launch it is created with withholds the champion from a check's turn.
-      // No turn ran, so the check waits for the next one, the release uncounted: never a hold of a draft never compared.
-      if (check) {
-        const record = promotionOf(await promotionsOf(this.store.settings, entry.agent.id).catch(() => []), check.workflow.name, check.digest);
-        if (record?.decided === "replaying" && record.replay_id === check.id) await releaseSdkCheck(checkDeps, record, "its start could not be admitted", false).catch(() => undefined);
+    const revision = entry.revision;
+    const admit = async (): Promise<string> => {
+      // The reset deletes the agent's learning in this queue after setting its watermark (learning-reset.ts): a seed
+      // read at or before it is of learning the reset deleted, so the start is refused, to start again on a new seed.
+      const reset = learning ? await resetAtOf(this.store.settings, entry.agent.id) : undefined;
+      if (learning && reset !== undefined && !(learning.seededAt !== undefined && learning.seededAt > reset))
+        throw new ApiError("unavailable", "The agent's learning was reset while this run started: start it again.", { retry_after_ms: 1_000 });
+      const selected = learning && !learning.noWorkflows && workflow ? await this.selectedWorkflows(entry.agent.id, learning.seed, workflow) : { workflows: [], candidates: [] };
+      const cleaned = this.clean({ instructions, ...(model ? { model } : {}) });
+      const runId = uuidv7();
+      const redacted = cleanedInput !== input || cleaned.instructions !== instructions;
+      let task: unknown;
+      try { task = JSON.parse(input); } catch { /* A prose task: the client resolves the draft's input from the turn. */ }
+      // A turn is a check only when it can be one's baseline: no protected value in its task or policy, and an input the
+      // draft takes. A JSON object task is the input, so it must fit (the managed check's own rule); a prose task's input
+      // is resolved by the client from the turn's recorded tool inputs or the host's resolveCheckInput, and a turn it
+      // cannot resolve is given back (releaseSdkCheck), never counted.
+      const takes = (flow: LearnedWorkflow) => !redacted && (!isObject(task) || fits(flow, task, resolveSchemaForWorkflow as never));
+      const checkDeps = { store: this.store, agentId: entry.agent.id, log: () => {}, shown: async () => secretsShown(this.secrets(), { local: true }) };
+      const check = learning ? await reserveSdkCheck(checkDeps, { runId, revision: learning.seed, learning: revisionBody.learning, flows: selected.candidates, takes }) : undefined;
+      // A shadow check needs the original agent's own answer, not an answer produced by its existing champion.
+      const workflows = check ? [] : selected.workflows;
+      const launch: RunLaunch = {
+        input: { content: cleanedInput },
+        title: cleanedInput.trim().replace(/\s+/g, " ").slice(0, 80),
+        place: { mode: "runner" },
+        harness: "sdk",
+        sdk: {
+          ...binding,
+          ...workflow,
+          instructions: cleaned.instructions,
+          ...(cleaned.model ? { model: cleaned.model } : {}),
+        },
+        ...(learning ? { learning: { ...learning, workflows: workflows.map((flow) => flow.name) } } : {}),
+      };
+      const now = Date.now();
+      try {
+        await this.store.settings.put(keyOf(runId), {
+          run_id: runId,
+          created_at: now,
+          expires_at: now + 3_600_000,
+          batches: [],
+          learning_workflows: workflows,
+          ...(check ? { learning_check: check } : {}),
+          ...(redacted ? { check_redacted: true } : {}),
+        } satisfies SdkInbox);
+        await this.store.runs.create(
+          { id: runId, agentId: entry.agent.id, revisionId: revision.id, ...(origin ? { origin } : {}) },
+          { body: launchBody(launch) },
+        );
+      } catch (error) {
+        await this.store.settings.remove(keyOf(runId));
+        // The reservation comes first because the launch it is created with withholds the champion from a check's turn.
+        // No turn ran, so the check waits for the next one, the release uncounted: never a hold of a draft never compared.
+        if (check) {
+          const record = promotionOf(await promotionsOf(this.store.settings, entry.agent.id).catch(() => []), check.workflow.name, check.digest);
+          if (record?.decided === "replaying" && record.replay_id === check.id) await releaseSdkCheck(checkDeps, record, "its start could not be admitted", false).catch(() => undefined);
+        }
+        throw error;
       }
-      throw error;
-    }
+      return runId;
+    };
+    // A learning start is admitted in its agent's learning queue (learning.ts withAgentRepo), the one a reset of the
+    // agent's learning deletes it in: either the reset comes first, and the seed read before it is refused above, or this
+    // run's row is made first, and the reset refuses while it goes (409 learning_busy). No check of a draft the reset
+    // deleted is reserved, and no run starts on it.
+    const runId = learning ? await withAgentRepo(this.data, entry.agent.id, admit) : await admit();
     return this.receipt(runId, consoleOrigin);
   }
   async receipt(runId: string, consoleOrigin: string) {

@@ -1077,7 +1077,9 @@ const CASES: readonly Case[] = [
       await w.ended("parked");
       const callId = await w.askedCall();
       // Both sent before either is awaited (on Postgres, each on its own pooled connection). Whichever is written first, the
-      // store's one-answer index refuses the other: no order is imposed, so the case holds for either winner.
+      // store refuses the other: no order is imposed, so the case holds for either winner. The other meets the one-answer
+      // index (AnswerTaken) or, when the winner's answer already ended the run, the run's end (RunFinal): which one is
+      // timing, so either stands, and the index itself is approval-double-click's (its call held so the run cannot end).
       const settled = await Promise.allSettled([
         sendCommand(w.server, RUN, { kind: "approve", body: { approval: callId } }),
         sendCommand(w.server, RUN, { kind: "deny", body: { approval: callId } }),
@@ -1085,7 +1087,7 @@ const CASES: readonly Case[] = [
       const won = settled.filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof sendCommand>>> => r.status === "fulfilled");
       const lost = settled.filter((r): r is PromiseRejectedResult => r.status === "rejected");
       assert.equal(won.length, 1, `one answer is written, not both: ${JSON.stringify(settled.map((r) => r.status))}`);
-      assert.ok(lost[0]?.reason instanceof AnswerTaken, `the other is refused by the store as answered already (AnswerTaken), never a bare constraint: ${String(lost[0]?.reason)}`);
+      assert.ok(lost[0]?.reason instanceof AnswerTaken || lost[0]?.reason instanceof RunFinal, `the other is refused by the store, answered already (AnswerTaken) or the run ended on the winner (RunFinal), never a bare constraint: ${String(lost[0]?.reason)}`);
       await w.ended("ended");
       const winner = won[0]!.value;
       assert.equal(ran.asked, winner.kind === "approve" ? 1 : 0, "the run acted on the answer written, never the other");

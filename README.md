@@ -241,7 +241,9 @@ flowchart LR
   once on those runs' inputs and serves only when it answers enough of them alone and agrees with the agent's answers.
 
 The agent's **Learning** tab shows its corrections, its workflows and the log of changes. Edit the corrections there,
-or with `PUT /v2/agents/{id}/learning/corrections`. Git keeps the history.
+or with `PUT /v2/agents/{id}/learning/corrections`. Git keeps the history. `DELETE /v2/agents/{id}/learning` resets
+it: everything the agent learned is deleted, history included, and the agent and its runs stay. Learning starts over
+from the runs after it: `compile_after` counts from the reset.
 
 <details>
 <summary>What gets kept, and what gets refused</summary>

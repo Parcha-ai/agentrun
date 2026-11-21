@@ -428,6 +428,34 @@ export function folderSuite(backend, make) {
     assert.deepEqual(await readSnapshot(ws), before);
   });
 
+  test(`${backend}: a draft or a correction alone that must find a commit the folder no longer holds (its learning reset since) is a conflict that says so, and nothing lands on the new history; a correction whose seed this folder never held (read from another folder) and that names none to find lands`, async () => {
+    const { ws } = await make();
+    const seeded = await learningCommit(ws, { runId: "run-r1", reason: "A draft.", files: draft("weekly-report") });
+    assert.equal(seeded.ok, true, JSON.stringify(seeded));
+    const seed = seeded.main;
+    // The reset (learn/delete.ts): every entry of the folder removed, its git history with it; the next write starts anew.
+    for (const entry of await ws.list("")) await ws.remove(entry.name, { recursive: true, force: true });
+    const fresh = await learningCommit(ws, { runId: "run-r2", reason: "After the reset.", files: draft("daily-report") });
+    assert.equal(fresh.ok, true, JSON.stringify(fresh));
+    const before = await readSnapshot(ws);
+    const stale = await learningCommit(ws, { runId: "run-r3", reason: "Drafted on the old history.", files: draft("monthly-report"), seed, mustHold: seed });
+    assert.deepEqual([stale.ok, stale.reason, stale.problems?.length], [false, "conflict", 1], JSON.stringify(stale));
+    assert.match(stale.problems[0].detail, /learning was reset after the run started/);
+    assert.deepEqual(await readSnapshot(ws), before, "nothing written");
+    assert.deepEqual((await gitMain(ws)).tree.map((entry) => entry.path).filter((path) => path.startsWith("workflows/monthly-report")), [], "the stale draft is not on main");
+    // A correction alone has no file a `same` covers: the commit it must find is the wall.
+    const line = await learningCommit(ws, { runId: "run-r4", reason: "Its owner's correction.", files: [], correction: "Retry more slowly next time.", seed, mustHold: seed });
+    assert.deepEqual([line.ok, line.reason], [false, "conflict"], JSON.stringify(line));
+    assert.match(line.problems[0].detail, /learning was reset after the run started/);
+    assert.deepEqual(await readSnapshot(ws), before, "nothing written");
+    assert.equal((await gitMain(ws)).tree.some((entry) => entry.path === CORRECTIONS), false, "no corrections line on the new history");
+    // A run whose seed was read from another folder (a Mode 2 run's end writes the folder on its disk) names nothing
+    // to find: its correction lands.
+    const other = await learningCommit(ws, { runId: "run-r5", reason: "Its owner's correction.", files: [], correction: "Retry more slowly next time.", seed });
+    assert.equal(other.ok, true, JSON.stringify(other));
+    assert.equal((await gitMain(ws)).tree.some((entry) => entry.path === CORRECTIONS), true, "its corrections line is on main");
+  });
+
   test(`${backend}: a tracked link in a draft's folder is named in its links, never one of its files; the same from the snapshot the script writes and from a rebuild of main`, async () => {
     const { ws } = await make();
     await learningInit(ws);
