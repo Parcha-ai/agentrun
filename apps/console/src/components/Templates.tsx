@@ -403,16 +403,18 @@ function ApplyTemplate({ v2, template: t, go, playground = false, draft }: Props
           <p className="mb-3 text-lead">{change.said(made.revision_version)}. The server says:</p>
           <ul className="mb-5 space-y-2 border bg-card px-4 py-3 text-body" role="status" aria-label="Warnings">
             {made.warnings.map((w, i) => {
-              // A webhook trigger's (triggers.<i>.secret, <i> the package's index): the trigger the apply made of that name
-              // (apply keys triggers by name; a skipped trigger is in no list of the answer, so the index is not its place there)
-              // opens from here, where its secret is shown with Rotate. One webhook_secrets speaks for gets its link there.
+              // A webhook trigger's (triggers.<i>.secret, <i> the package's index): the trigger the apply made of that name,
+              // trimmed as the server names it (apply keys triggers by name; a skipped trigger is not in the answer, so the
+              // index is not its place there) opens from here, where its secret is shown with Rotate. One webhook_secrets
+              // speaks for gets its link there.
               const hook = /^triggers\.(\d+)\.secret$/.exec(w.field);
-              const named = hook ? t.triggers[Number(hook[1])]?.name : undefined;
-              const id = typeof named === "string" && named ? made.triggers.find((x) => x.name === named)?.trigger_id : undefined;
+              const raw = hook ? t.triggers[Number(hook[1])]?.name : undefined;
+              const named = typeof raw === "string" ? raw.trim() : "";
+              const id = named ? made.triggers.find((x) => x.name === named)?.trigger_id : undefined;
               if (id && made.webhook_secrets?.some((x) => x.trigger_id === id)) return <li key={`${w.field}:${i}`}><span className="font-mono text-small text-muted-foreground">{w.field}</span> {w.message}</li>;
               return (
                 <li key={`${w.field}:${i}`}><span className="font-mono text-small text-muted-foreground">{w.field}</span> {w.message}{w.fix ? <span className="block text-muted-foreground">{w.fix}</span> : null}
-                  {id && <a href={`#/triggers/${encodeURIComponent(id)}`} className="mt-1 block font-mono text-small text-primary-text underline-offset-2 hover:underline">Open {typeof named === "string" && named ? named : id} to get its signing secret (Rotate)</a>}
+                  {id && <a href={`#/triggers/${encodeURIComponent(id)}`} className="mt-1 block font-mono text-small text-primary-text underline-offset-2 hover:underline">Open {named || id} to get its signing secret (Rotate)</a>}
                 </li>
               );
             })}
