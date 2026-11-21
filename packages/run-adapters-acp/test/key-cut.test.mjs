@@ -14,6 +14,10 @@ const KEY = 'fake-Qz7Wv9Lm2Np4Rs6Tx8Yb3Kc5Hd';
 const PIECES = Array.from({ length: KEY.length - 7 }, (_, i) => KEY.slice(i, i + 8));
 const piecesIn = (text) => PIECES.filter((piece) => text.includes(piece)).length;
 
+test('an empty key is no key: the text comes back as it was (indexOf finds "" past the end forever)', () => {
+  assert.equal(keyCut.cutKeys('vendor: refused', ['', KEY], { head: true, tail: true }), 'vendor: refused');
+});
+
 test("a text that ends on the key's first 20 characters keeps no piece of it", () => {
   const text = `vendor: refused ${KEY.slice(0, 20)}`;
   const cut = keyCut.cutKeys(text, [KEY], { tail: true });

@@ -26,6 +26,8 @@ export function cutKeys(text: string, keys: readonly string[], edges: KeyEdges =
   const EDGE = 2;
   const mark = new Uint8Array(text.length);
   for (const key of keys) {
+    // An empty key is no key, and "".indexOf past the end returns the end, never -1.
+    if (!key) continue;
     for (let at = text.indexOf(key); at !== -1; at = text.indexOf(key, at + 1)) mark.fill(WHOLE, at, at + key.length);
   }
   if (edges.head) mark.fill(EDGE, 0, edgeLength(keys, text.length, (key, n) => text.startsWith(key.slice(-n))));
