@@ -73,7 +73,7 @@ describe("a template that already made an agent here", () => {
     const host = await mount({ ...client([agentOf("notes-1", "Morning notes", base.id)]), applyTemplate: warned, getAgent } as never);
     await act(async () => button(host, "Update Morning notes")!.click());
     expect(host.querySelector("h1")?.textContent).toContain("Daily notes updated");
-    expect(result(host)).toContain("Updated: rev 2. The server says:");
+    expect(result(host)).toContain("rev 2");
     expect(result(host)).not.toContain("made");
     expect(result(host)).not.toContain("applied");
     expect(getAgent).not.toHaveBeenCalled();

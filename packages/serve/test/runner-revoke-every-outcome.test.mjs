@@ -89,7 +89,7 @@ async function revokeRun(t, { script, extra = () => ({}), holdRelease = () => un
       settings: SETTINGS, keys: store.sealedKeys, sealKey: undefined, env: { ARCHIL_API_KEY: "fake-test-key" },
       run: { agentId: "agent-1", launch: { diskId: SETTINGS.diskId, kind: "agent" }, store: agentDiskStore("agent-1", SETTINGS.diskId) },
       signal: new AbortController().signal, makeDisk: () => new FakeArchilDisk(),
-      mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: 60_000, baseUrl: control.baseUrl, fetch: control.fetch },
+      mount: { runId: claim.runId, epoch: claim.epoch, ttlMs: 60_000 }, control: { baseUrl: control.baseUrl, fetch: control.fetch },
     });
     await archil.token();
     minted.push(claim.epoch);
@@ -248,7 +248,8 @@ for (const held of [false, true]) {
     const calls = w.control.requests.map((one) => `${one.method}${one.query?.identifier ? ` ${one.query.identifier}` : ""}${one.body?.nickname ? ` ${one.body.nickname}` : ""}`);
     // The dead claim's token (agentrun:run-1:1), removed by the next claim (epoch 2) before it mints its own; then the
     // run's end removes that one, and its revoke reads the list for an earlier epoch's left.
-    assert.deepEqual(calls, ["GET", "POST agentrun:run-1:1", "GET", `DELETE ${left}`, "POST agentrun:run-1:2", "DELETE tok-2", "GET"], "the next claim's removal of the dead one's token comes before its own mint, and the run's end removes its own");
+    // Each claim reads its disk first (run-disk.ts), then sweeps and mints.
+    assert.deepEqual(calls, ["GET", "GET", "POST agentrun:run-1:1", "GET", "GET", `DELETE ${left}`, "POST agentrun:run-1:2", "DELETE tok-2", "GET"], "the next claim's removal of the dead one's token comes before its own mint, and the run's end removes its own");
     assert.equal(w.control.users.size, 0, "no token left with the control plane");
   });
 }
@@ -325,8 +326,8 @@ test("a run held when the runner closes keeps its mount credential through the d
   assert.equal(w.control.users.size, 1, "the run holds its token while it runs");
   const deletes = () => w.control.requests.filter((one) => one.method === "DELETE");
   const calls = () => w.control.requests.map((one) => `${one.method}${one.query?.identifier ? ` ${one.query.identifier}` : ""}${one.body?.nickname ? ` ${one.body.nickname}` : ""}`);
-  /** The control plane's calls up to the close: the claim's sweep and its mint. */
-  const minting = ["GET", "POST agentrun:run-1:1"];
+  /** The control plane's calls up to the close: the claim's read of its disk, its sweep and its mint. */
+  const minting = ["GET", "GET", "POST agentrun:run-1:1"];
   assert.deepEqual(calls(), minting);
 
   const bound = holdTimerOf(DRAIN_MS);

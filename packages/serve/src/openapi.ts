@@ -1374,8 +1374,7 @@ const TEMPLATE_APPLIED = closedWith({
   version: { type: "string" },
   agent_id: { type: "string", description: "The agent made, or the one updated (GET /agents/{agent_id})." },
   revision_version: { type: "integer", minimum: 1, description: "The number of the agent's revision this apply wrote, its current one now (its `definition.version`): 1 for an agent it made; on an update with agent_id, the new revision's; on one that changed nothing (`agent_change` unchanged), the current revision it kept." },
-  agent_change: { enum: ["made", "updated", "unchanged"], description: "What the apply did to the agent: `made` it (201); `updated` it, a new revision written (an update with agent_id); or left it `unchanged`: an update whose package and parameters its current revision already holds writes no revision, and `revision_version` is that current one. Its triggers are reconciled either way (`triggers`)." },
-  servers: { type: "object", additionalProperties: { type: ["string", "null"] }, description: "The saved MCP server each of the package's toolkits runs on, by toolkit; null: none here matches it (said under `mcp.<toolkit>`)." },
+  agent_change: { enum: ["made", "updated", "unchanged"], description: "What the apply did to the agent: `made` it (201); `updated` it, a new revision written (an update with agent_id); or left it `unchanged`: an update whose package and parameters its current revision already holds writes no revision, and `revision_version` is that current one. Its triggers are reconciled either way (`triggers`)." },  servers: { type: "object", additionalProperties: { type: ["string", "null"] }, description: "The saved MCP server each of the package's toolkits runs on, by toolkit; null: none here matches it (said under `mcp.<toolkit>`)." },
   trigger_ids: { type: "array", items: { type: "string" }, description: "Its triggers, in the package's order (GET /triggers/{trigger_id})." },
   triggers: {
     type: "array",

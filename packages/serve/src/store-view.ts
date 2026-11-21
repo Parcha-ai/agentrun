@@ -58,7 +58,7 @@ import { capNowOf, type EndData, KINDS } from "./runner/journal-kinds.js";
 import { laidOf, pathViewOf, roundsOf, runLearningEnd, usedOnly } from "./store-reads/learning.js";
 import { inReflect, reflectRanges } from "./runner/end-of-run.js";
 import { correctionCount } from "./learn/corrections.js";
-import { isCliRecord, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
+import { forgetServedAnswers, isCliRecord, servedSince, runReflect, runTimeline, wholeAnswerFor, wholeAnswers, withoutFeedbackRounds } from "./store-reads/journal.js";
 import { costOfRun, type RunReadState, readRun, runReadState } from "./store-reads/runs.js";
 import { feedbackOf, type KeptEnd, keptEndOf } from "./runner/feedback-round.js";
 import { runCutValues, runErrorWordsOf, underCut } from "./run-cut.js";
@@ -116,16 +116,18 @@ const iso = (ms: number): string => new Date(ms).toISOString();
 /** What a view last made of a run's text, by store and slot (a run's answer, or its input): the text it read (`input`),
  *  the digest of the values it was redacted of (`key`) and what that gave (`out`), so a second view of the same text and
  *  values reads nothing again (main's runs.ts servedOnce: a console polls a run's view, and an answer or an input can be
- *  large). Newest SERVED_KEPT slots of each store. */
+ *  large). Newest SERVED_KEPT slots of each store. What a read made is kept only while no run's text was forgotten since
+ *  `since` (servedSince, taken before the read began), so a read a purge overtook never keeps the purged text. */
 const servedByStore = new WeakMap<Store, Map<string, { input: string; key: string; out: unknown }>>();
 const SERVED_KEPT = 64;
-function keptOnce<T>(store: Store, slot: string, input: string, values: readonly string[], make: () => T): T {
+function keptOnce<T>(store: Store, slot: string, input: string, values: readonly string[], since: number, make: () => T): T {
   let served = servedByStore.get(store.origin);
   if (!served) servedByStore.set(store.origin, (served = new Map()));
   const key = wholeAnswerFor(values).key;
   const last = served.get(slot);
   if (last && last.key === key && last.input === input) return last.out as T;
   const out = make();
+  if (servedSince(store) !== since) return out;
   served.delete(slot);
   served.set(slot, { input, key, out });
   for (const oldest of served.keys()) {
@@ -134,13 +136,22 @@ function keptOnce<T>(store: Store, slot: string, input: string, values: readonly
   }
   return out;
 }
+/** Run `runId`'s text dropped from what the readers of `store` last served: its view's slots (its answer's, its input's)
+ *  and its whole answer rows (store-reads/journal.ts forgetServedAnswers), so a purged or deleted run's text stays in no
+ *  memory of this process (agent-delete.ts). What it dropped, by slot and key. */
+export function forgetServed(store: Store, runId: string): string[] {
+  const served = servedByStore.get(store.origin);
+  const dropped = [`answer ${runId}`, `input ${runId}`].filter((slot) => served?.has(slot));
+  for (const slot of dropped) served!.delete(slot);
+  return [...dropped, ...forgetServedAnswers(store, runId)];
+}
 /** A run's answer as served: redactedAnswer's, once per answer and held value set. */
-const servedOnce = (store: Store, runId: string, input: string, values: readonly string[]): string =>
-  keptOnce(store, `answer ${runId}`, input, values, () => redactedAnswer(input, values));
+const servedOnce = (store: Store, runId: string, input: string, values: readonly string[], since: number): string =>
+  keptOnce(store, `answer ${runId}`, input, values, since, () => redactedAnswer(input, values));
 /** Whether a run's input is served (store-view's `input`): only when the cut a run's words get (redactedOutput) leaves it
  *  exactly as given, so "Run again" never sends an altered task. Read once per input and held value set. */
-const inputWhole = (store: Store, runId: string, input: Record<string, unknown>, values: readonly string[]): boolean =>
-  keptOnce(store, `input ${runId}`, JSON.stringify(input), values, () => isDeepStrictEqual(redactedOutput(input, values), input));
+const inputWhole = (store: Store, runId: string, input: Record<string, unknown>, values: readonly string[], since: number): boolean =>
+  keptOnce(store, `input ${runId}`, JSON.stringify(input), values, since, () => isDeepStrictEqual(redactedOutput(input, values), input));
 
 /** A run's whole answer as answerOfRun read it from the rows: its newest final-answer row, never the learning turn's, and
  *  never an earlier turn's: a final answer row before the person's last message belongs to the turn that message
@@ -291,8 +302,11 @@ export function standsOnPerson(approvals: ReadonlyMap<string, { readonly resolve
  *  journal, live tick and commands) is made in one snapshot of the store (Store.snapshot), so the view is of one moment: a
  *  runner's commit that lands while it is built is in all of it or in none. What is read through the server's own handles
  *  (the run's cut, which reads the agent's sign-ins, and the learning statuses of its folder) is read outside the snapshot,
- *  before and after it: neither is part of the run's moment, and neither may wait on the snapshot's connection. */
-async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<(StoreRun & { readonly shownEnd: Learning | null }) | undefined> {
+ *  before and after it: neither is part of the run's moment, and neither may wait on the snapshot's connection. `since`
+ *  is what the run's text was forgotten as before anything was read (servedSince): what the read made of that text is
+ *  kept only while it is the same (keptOnce, wholeAnswers), so a read a purge overtook keeps none of it. */
+async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<(StoreRun & { readonly shownEnd: Learning | null; readonly since: number }) | undefined> {
+  const since = servedSince(store);
   // The run's one cut (run-cut.ts): the pointers it was handed read back and every secret this server never shows, so a
   // run whose words could repeat one is cut of it, rows and all, or withheld when this server cannot read back what it
   // was handed (rowShown's choke point). The snapshot renders under it, so it is read first, and read again after: the cut
@@ -303,15 +317,15 @@ async function storeRunOf(store: Store, runId: string, deps: ViewDeps): Promise<
     return known ? runCutValues(deps, store, runId, { runRow: known, launch: await launchOf(store, runId) }) : undefined;
   };
   if (!(await store.runs.get(runId))) return undefined;
-  const run = await underCut(async () => (await cutOf()) ?? "unreadable", (cut) => store.snapshot((snapshot) => storeRunIn(snapshot, runId, deps, cut)));
+  const run = await underCut(async () => (await cutOf()) ?? "unreadable", (cut) => store.snapshot((snapshot) => storeRunIn(snapshot, runId, deps, cut, since)));
   // An ended run whose end stored its cost unknown while its booking is priced: its store is healed now, after the
   // snapshot (which may not write), so every reader of the stored cost (the list, /stats, /usage, the learning bill)
   // reads the figure this read shows. One conditional write (Runs.healCost); a failure is said and the next read tries again.
   if (run?.heal) await healStoredCost(store, runId, run.heal);
-  if (!run?.shownEnd || !holdsForOk(run.shownEnd as Learning) || !deps.statuses) return run && { ...run, learningEnd: run.shownEnd };
+  if (!run?.shownEnd || !holdsForOk(run.shownEnd as Learning) || !deps.statuses) return run && { ...run, learningEnd: run.shownEnd, since };
   // What the learning end held for its owner's OK reads as it stands now on its agent's folder's main (learning.ts
   // currentLearning); its record stays as the merge wrote it.
-  return { ...run, learningEnd: currentLearning(run.shownEnd, await deps.statuses(run.row.agent)) };
+  return { ...run, learningEnd: currentLearning(run.shownEnd, await deps.statuses(run.row.agent)), since };
 }
 
 /** Heals run `runId`'s stored unknown cost to the figure its booking gives (Runs.healCost), at the end it was read at.
@@ -348,8 +362,8 @@ export async function lookingBackEnd(store: Store, stored: RunRow): Promise<Kept
   return lookingBackOf(stored, (await journalRecords(store.readJournal(stored.id), BACKGROUND_CONTEXT)).entries, () => store.commands(stored.id, 0));
 }
 
-/** `storeRunOf`'s reads, over `store` (a snapshot) and the run's cut. */
-async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awaited<ReturnType<typeof runCutValues>>): Promise<(StoreRun & { readonly shownEnd: Learning | null }) | undefined> {
+/** `storeRunOf`'s reads, over `store` (a snapshot) and the run's cut, begun at `since` (servedSince). */
+async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awaited<ReturnType<typeof runCutValues>>, since: number): Promise<(StoreRun & { readonly shownEnd: Learning | null }) | undefined> {
   const context = BACKGROUND_CONTEXT;
   const read = await readRun(store, runId, context);
   if (!read) return undefined;
@@ -384,7 +398,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // A run that ended reads settled, and its usage row says its cost ("Cost: …"), never what it has cost so far. One
   // looking back is still going: its look-back's rows come yet.
   const timelineOptions = { settled: terminal && !lookingBack, ended: terminal && !lookingBack, redact: (text: string) => redacted(text, values) };
-  const timeline = withAsks(await wholeAnswers(store, runId, context, await runTimeline(store, runId, context, timelineOptions), timelineOptions, wholeAnswerFor(values)));
+  const timeline = withAsks(await wholeAnswers(store, runId, context, await runTimeline(store, runId, context, timelineOptions), timelineOptions, wholeAnswerFor(values), since));
   const revisions = await store.agents.revisions(row.agent);
   const version = revisions.findIndex((r) => r.id === row.revision) + 1;
   const ended = await runLearningEnd(store, runId);
@@ -401,7 +415,7 @@ async function storeRunIn(store: Store, runId: string, deps: ViewDeps, cut: Awai
   // (runReflect). progressAt reads the latest tick, so a working run's last_progress_at advances as today.
   const sdkCompletion = records.entries.findLast(entry => entry.kind === "agentrun.sdk.completion")?.data as import("./sdk/runs.js").SdkCompletion | undefined;
   const sdkSession = records.entries.findLast(entry => entry.kind === "agentrun.sdk.session")?.data as {session_id:string} | undefined;
-  const sdk = launch?.sdk ? {runtime:launch.sdk.runtime,model:sdkCompletion?.model??launch.sdk.model??null,session_id:sdkCompletion?.session_id??sdkSession?.session_id??null,learning_revision:launch.learning?.seed??null,usage:sdkCompletion?.usage??null} : undefined;
+  const sdk = launch?.sdk ? {runtime:launch.sdk.runtime,...(launch.sdk.runtime === "external" ? {platform:launch.sdk.platform} : {}),model:sdkCompletion?.model??launch.sdk.model??null,session_id:sdkCompletion?.session_id??sdkSession?.session_id??null,learning_revision:launch.learning?.seed??null,usage:sdkCompletion?.usage??null} : undefined;
   const nativeConfiguration = records.entries.findLast(e=>e.kind === "agentrun.native.configuration")?.data as Record<string,unknown>|undefined;
   const nativeEvents = records.entries.filter(e=>e.kind === "agentrun.native.usage").map(e=>e.data as {phase:string;model?:string;usage:import("./native/types.js").NativeUsage;session_id:string});
   const reflectRange = (await runReflect(store, runId, context)) as Reflect | undefined;
@@ -702,7 +716,7 @@ export async function viewOverStore(store: Store, runId: string, deps: ViewDeps)
 
 /** GET /runs/{id}'s answer for a run already read (storeRunOf). `read.withheld` is set to whether the answer withholds the
  *  run because this server could not read back the sign-in it was handed (its cut, or its error's words). */
-async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: StoreRun, read?: { withheld: boolean }): Promise<Record<string, unknown>> {
+async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: StoreRun & { readonly since: number }, read?: { withheld: boolean }): Promise<Record<string, unknown>> {
   const { row, runRow, launch, view, unshown, values, output, review: kept, structured } = run;
   const { status, state } = statusOf(view, factsOf(run));
   const terminal = TERMINAL.has(status);
@@ -714,7 +728,7 @@ async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: Store
   const shownWords = (text: string): string => withoutLoopback(redacted(text, values));
   // The answer row's text is the answer as served (whole, through redactedAnswer, once per held value set, when the row
   // was cut; else the rows' redactor over what was never cut): served again through redactedAnswer once per that set.
-  const servedAnswer = (text: string | null): string | null => (text ? servedOnce(store, runId, text, values) : text);
+  const servedAnswer = (text: string | null): string | null => (text ? servedOnce(store, runId, text, values, run.since) : text);
 
   const finalAnswer = row.kind === "workflow" || unshown ? null : answerOf(run.rows) ?? row.summary ?? null;
   // A workflow run's output, as its end kept it; an agentic run's, its final answer's structured part when its agent has
@@ -778,7 +792,7 @@ async function viewOfRun(store: Store, runId: string, deps: ViewDeps, run: Store
     // The input the run was started with, as its launch keeps it, whole (never the first message the timeline caps): what
     // "Run again" sends again. Null when the cut a run's words get would change it (inputWhole: a held value, a long run
     // with no whitespace), for a withheld run, and for one whose launch holds no input object.
-    input: !unshown && isObject(launch?.input) && inputWhole(store, runId, launch?.input, values) ? launch?.input : null,
+    input: !unshown && isObject(launch?.input) && inputWhole(store, runId, launch?.input, values, run.since) ? launch?.input : null,
     file_ids: [...(launch?.files ?? [])],
     place: launch?.place ?? { mode: "runner" },
     // The runner holding the run now, when one does (a running run with a live claim): its id, the claim's count (up one each

@@ -166,7 +166,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
           <Picker id="playground-agent" label="Agent" value={agentId} onChange={(id) => { setAgentId(id); setRevision(""); onAgent?.(id); }}
             options={agentsByName(agents).map((a) => ({ value: a.agent_id, label: a.definition.name }))} className="w-56 max-w-[60vw]" />
         </div>
-        {sdk ? <span className="font-mono text-small">{backendSdkLabel(sdk.runtime)} · Your backend</span> : <span className="font-mono text-small"><span className="text-primary-text">POST</span> <span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>}
+        {sdk ? <span className="font-mono text-small">{backendSdkLabel(sdk)} · Your backend</span> : <span className="font-mono text-small"><span className="text-primary-text">POST</span> <span className="text-muted-foreground">/v2/agents/{agentId || "{agent_id}"}/runs</span></span>}
       </div>
       {/* Two columns only when the window is wide AND tall enough: a short one folds to one panel (short:), full width.
           With the code panel folded, one column at any size. Where the two stood side by side, the button that shows
@@ -176,7 +176,7 @@ export function Playground({ agents, revisions = [], efforts, origin, agentId: i
       {sdk ? <section className="space-y-4 p-5 md:p-8">
         <h2 className="text-lg font-semibold">Run through your backend</h2>
         <p className="text-body text-muted-foreground">This agent keeps its existing SDK, tools and job entrypoint. Your coding agent can run it there; AgentRun records its progress and learning.</p>
-        <CodingAgentAction variant="primary" label="Run agent" prompt={runAgentPrompt(origin, agentId, sdk.runtime)} />
+        <CodingAgentAction variant="primary" label="Run agent" prompt={runAgentPrompt(origin, agentId, sdk)} />
       </section> : <div className={cn("relative grid min-h-0 flex-1 grid-cols-1", showCode ? "lg:[@media(min-height:501px)]:grid-cols-2" : "grid-rows-[minmax(0,1fr)_auto]")}>
         <section aria-label="Request" className={cn("flex min-h-0 flex-col border-b", showCode ? "lg:border-b-0 lg:border-r short:hidden" : "lg:[@media(min-height:501px)]:border-b-0 short:border-b-0")}>
           <header className={cn(BAR, "justify-between border-b", !showCode && "lg:[@media(min-height:501px)]:pr-80 short:pr-72")}>

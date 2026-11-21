@@ -131,7 +131,13 @@ function typesOf() {
   }
   function refer(node) {
     const { name, ...rest } = node;
-    return register(pascal(name), JSON.stringify(rest), () => define(pascal(name), rest));
+    return declare(pascal(name), rest, JSON.stringify(rest));
+  }
+  /** An object expanded to a union can keep its published TypedDict constructor and nested names on the first
+   *  branch. References become the union; unrelated unions retain their established numbered names. */
+  function declare(name, node, source) {
+    return node['x-agentrun-python-preserve-object'] === true ? py(node, name)
+      : register(name, source, () => define(name, node));
   }
   /** The Python type expression of a schema; `hint` names an object type that has no name of its own. */
   function py(node, hint) {
@@ -156,12 +162,19 @@ function typesOf() {
     if (choices) {
       if (parts.length) problems.push(`${hint} is both ${parts.join(' | ')} and one of its choices: Python has no intersection`);
       const anonymous = choices.filter((c) => c.name === undefined && (c.properties || c.allOf || c.oneOf || c.anyOf)).length;
+      const preserve = node['x-agentrun-python-preserve-object'] === true;
+      if (preserve && choices.some(choice => choice.name !== undefined || !choice.properties || choice.oneOf || choice.anyOf || choice.allOf))
+        problems.push(`${hint} preserves an object constructor but has an alternative that is not an anonymous object`);
       let n = 0;
-      parts.push(...choices.map((choice) => py(choice, anonymous > 1 && choice.name === undefined && (choice.properties || choice.allOf || choice.oneOf || choice.anyOf) ? `${hint}${++n}` : hint)));
+      parts.push(...choices.map((choice) => {
+        const numbered = anonymous > 1 && choice.name === undefined && (choice.properties || choice.allOf || choice.oneOf || choice.anyOf);
+        if (numbered) n++;
+        return py(choice, numbered && !(preserve && n === 1) ? `${hint}${n}` : hint);
+      }));
     }
     return parts.length ? union(parts) : 'Any';
   }
-  return { py, define, register, named, problems };
+  return { py, declare, named, problems };
 }
 
 /** Each offered operation's method: its group (none for a one-word command), its name, and what the runtime needs. */
@@ -213,8 +226,8 @@ export function pythonText(ops, map, commandOf) {
     const rawBody = (op.body?.types ?? []).some((type) => !JSON_TYPE.test(type));
     const tagged = op.answerHeaders.some((h) => h.toLowerCase() === 'etag');
     const download = answer === 'bytes';
-    const body = op.body?.type ? types.register(`${P}Body`, `body ${id}`, () => types.define(`${P}Body`, op.body.type)) : undefined;
-    const json = op.answer !== null ? types.register(`${P}Response`, `answer ${id}`, () => types.define(`${P}Response`, op.answer)) : undefined;
+    const body = op.body?.type ? types.declare(`${P}Body`, op.body.type, `body ${id}`) : undefined;
+    const json = op.answer !== null ? types.declare(`${P}Response`, op.answer, `answer ${id}`) : undefined;
 
     const positional = pathParams.map((p) => `${pyName(p)}: str`);
     if (op.body) {
