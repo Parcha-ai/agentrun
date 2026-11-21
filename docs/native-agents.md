@@ -57,34 +57,18 @@ Connected agents use the ordinary agent, revision, skills and per-agent learning
 
 New jobs run in the original project and use native configuration resolution, model selection, MCP tools, hooks and sign-in. A named Claude agent is selected as the main session; a Codex profile is a profile, not a custom subagent. Each run records its exact session and resolved configuration fingerprint. Local reconnection updates the same agent; Verify refreshes metadata for an existing remote binding. Replacing a revoked remote connector requires a new grant and private state directory, and creates a new binding. Disconnect prevents future starts without changing the project or removing history. Imported conversations remain historical; they neither become live jobs nor enter this learning path.
 
-Turn **Self-improving** On to give each run the agent's corrections (its `corrections.md`, under `# Learned`) and to learn after completed tasks. An owner's feedback on a run becomes one line of `corrections.md` with no model turn. When the job is due to be compiled, the exact task session is resumed with tools disabled and asked once to write it as a workflow; a draft that passes the checks and its dry run is committed. AgentRun snapshots the source's declared instruction files (a separate 64 KiB UTF-8 limit); missing, incomplete, or oversized instruction files skip learning for the run, and the run's learning says why. The snapshot names the files it covers; recursively imported instruction files and native memory are not claimed as a complete reconstructed system prompt. The compile turn adds model usage; registration and sign-in verification do not.
+Turn **Self-improving** On to give each run the agent's corrections (its `corrections.md`, under `# Learned`). An owner's feedback on a run becomes one line of `corrections.md` with no model turn. You can also edit the corrections in the Learning tab. Native connections do not compile or run learned workflows; those require managed execution or a compatible backend workflow bridge. They do not generate automatic notes or skills or launch extra native reflection sessions.
 
-The corrections are additive context. AgentRun never overwrites `AGENTS.md`, `CLAUDE.md`, native settings, or native memory. Learned workflows never serve a native run in this release. Off means later runs neither load nor create AgentRun learning; saved learning remains available. A workflow that calls a tool with no price waits for the owner's password-session approval; API tokens cannot approve it. Retire and restore in Learning act on future runs while running jobs keep their pinned revision.
+The corrections are additive context. AgentRun never overwrites `AGENTS.md`, `CLAUDE.md`, native settings, or native memory. Off means later runs neither load nor create AgentRun learning; saved learning remains available. Running jobs keep their pinned learning revision.
 
 The bridge supports new jobs, native event history, supported usage counters, stop and cancel. Interactive approval handling and in-session steering are unavailable; a denied tool request is shown explicitly. No permission-bypass flags are added. Per-run effort overrides and uploaded attachments are unavailable: change the original native setup or source files. Native dollar limits cannot be enforced by AgentRun, so capped launches are refused. Unknown costs, token counters and model request counts remain unknown; native turns are not counted as model requests.
 
-Jobs for the same source directory are serialized. An interrupted native dispatch is never blindly replayed because its side effects may have happened. After a runner or source-worker crash, inspect the source project and its task-owned lock named by the failure before removing a stale lock and starting a new job. Native sessions launched independently in a terminal or desktop app are outside this bridge.
+Jobs for the same source directory are serialized. An interrupted native dispatch is never blindly replayed because its side effects may have happened. After a runner or source-worker crash, inspect the source project and its task-owned lock named by the failure before removing a stale lock and starting a new job. Native sessions launched independently in a terminal or desktop app use a separate [existing CLI learning integration](tutorials/existing-cli-learning.md): project hooks capture completed prompt windows and deliver explicit owner corrections without handing execution to this bridge. Source-hook capture does not generate automatic notes or skills, compile workflows, or launch extra native reflection calls.
 
-## Run the live acceptance test
+## Verify correction delivery
 
-The opt-in script makes real model calls using the server's native sign-in. Start a loopback instance from this checkout, then run:
+Use a disposable connected agent and its original source configuration. In Learning, add a harmless, distinctive owner correction such as a required answer prefix, then start a fresh task with learning On. Inspect the run's pinned learning revision and confirm its answer follows that correction. Start a fresh Off control and verify it receives no AgentRun learning. These tasks make real model calls through the selected source CLI.
 
-```sh
-AGENTRUN_NATIVE_E2E=1 node scripts/native-learning-e2e.mjs \
-  --url http://127.0.0.1:7340 --token-file /path/to/agentrun-data/.token \
-  --runtime all --out /path/to/private-evidence
-```
+For remote connections, use the actual source worker and also verify connector revocation, cancellation and source configuration preservation. Confirm that the worker cannot call unrelated server APIs. Preserve run/session IDs and reported usage as evidence without recording credentials.
 
-The script creates disposable projects with ordinary native instructions, connects each, enables learning, teaches a preference, waits for checked grading and promotion, and starts a fresh session that must use the exact promoted revision. It then turns learning Off and verifies a fresh control receives no AgentRun learning and no reflection. It checks source instruction and static native configuration hashes, exact distinct native session IDs, and records sanitized usage receipts. It does not write the taught rule into a project file. Claude’s own `.claude.json` bookkeeping can change during normal native CLI use and is excluded from the static-file hash comparison. `--claude-agent` and `--codex-profile` select existing named setups. Native global instructions and hooks still apply, so choose a compatible source setup. A grader rejection is a test failure, not a reason to bypass grading.
-
-This proves accepted learning reaches a later run. It does not establish a general quality improvement; that requires independent outcome evaluations.
-
-For remote acceptance, first connect disposable source projects with the actual CLI worker, preferably in a separate filesystem where their paths do not exist on the server. Supply a JSON file listing the selected fixture `agent_id` and `runtime` values:
-
-```sh
-AGENTRUN_REMOTE_E2E=1 node scripts/remote-learning-e2e.mjs \
-  --url https://console.example.com --token-file /private/server-token \
-  --agents /private/remote-fixtures.json --out /private/remote-evidence
-```
-
-This makes real model calls for each selected agent: teach a preference, wait for checked grading and promotion, verify a fresh remote session uses the exact accepted revision and answer format, then verify a fresh Off control receives no seed or reflection. Successful fixtures are left with learning On. The receipt records real run/session IDs, reported usage and live working visibility. Separately verify source configuration hashes, connector revocation, lost-lease behavior and that the source cannot call unrelated server APIs.
+The historical `native-learning-e2e.mjs` and `remote-learning-e2e.mjs` scripts target the retired notes/skills and grading pipeline. They are not acceptance tests for the current corrections model. The [backend SDK examples](../examples/sdk-learning/README.md) include automated fresh-session correction checks for SDK integrations.

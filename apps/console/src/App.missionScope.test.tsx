@@ -5,7 +5,7 @@ import { App } from "./App";
 import { ANALYTICS } from "@/components/AgentAnalytics.sample";
 import { optionsOf, pick } from "@/test/picker";
 
-// Mission Control with an agent picked over its analytics: every figure below the picker follows it. "Runs per agent"
+// Mission Control with an agent picked over its analytics: every figure below the picker follows it. "Connected agents"
 // shows that agent's row alone and "Recent runs" that agent's runs alone, read from its own runs; with All agents both
 // are as before. The picker itself still offers every agent.
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -24,7 +24,7 @@ const STATS = {
   cost: { usd: null, basis: null, unknown_runs: 3 }, archived: { agents: 0, runs: 0 }, analytics: ANALYTICS,
 };
 
-function serve() {
+function serve(sessions: unknown[] = []) {
   const asked: string[] = [];
   vi.stubGlobal("fetch", async (url: string, init?: RequestInit) => {
     const u = new URL(url, "http://serve.test");
@@ -33,7 +33,9 @@ function serve() {
     if (u.pathname === "/v2/capabilities") return json(200, CAPS);
     if (u.pathname === "/v2/health") return json(200, { status: "ok" });
     if (u.pathname === "/v2/stats") return json(200, STATS);
-    if (u.pathname === "/v2/agents") return json(200, { agents: [], next_cursor: null });
+    // The combined inventory comes from agent definitions, independently of scoped run statistics.
+    if (u.pathname === "/v2/agents") return json(200, { agents: u.searchParams.get("archived") === "true" ? [] : STATS.per_agent.map(a => ({ agent_id: a.agent_id, kind: "agentic", archived_at: null, revision: "r1", revisions: 1, definition: { version: 1, name: a.name, instructions: "Help", tools: [], skills: [] } })), next_cursor: null });
+    if (u.pathname === "/v2/observations") return json(200, { sessions, connectors: [], usage: { input_tokens: null, output_tokens: null, total_tokens: null, cache_read_tokens: null, cache_write_tokens: null, cache_hit_rate: null, status: "unavailable", models: [], daily: [] } });
     if (u.pathname === "/v2/runs") return json(200, { runs: u.searchParams.get("status") ? [] : [...NOTES, ...CALC], next_cursor: null });
     if (u.pathname === "/v2/agents/notes/runs") return json(200, { runs: NOTES, next_cursor: null });
     if (u.pathname === "/v2/agents/calc/runs") return json(200, { runs: CALC, next_cursor: null });
@@ -61,7 +63,7 @@ const pickAgent = async (host: HTMLElement, value: string) => {
 };
 
 describe("Mission Control's agent picker scopes every figure below it", () => {
-  it("an agent picked: Runs per agent shows its row alone, Recent runs its runs alone (read from its own runs), and the picker still offers every agent", async () => {
+  it("an agent picked: Connected agents shows its row alone, Recent runs its runs alone (read from its own runs), and the picker still offers every agent", async () => {
     const asked = serve();
     const host = mount();
     await wait(() => !!host.querySelector('button[aria-haspopup=listbox][aria-label="Agent"]') && rows(section(host, "Recent runs")).length === 3, "Mission Control with its picker and all three recent runs");
@@ -72,22 +74,44 @@ describe("Mission Control's agent picker scopes every figure below it", () => {
     const recent = rows(section(host, "Recent runs"));
     expect(recent.some((r) => r.includes("Notes run one"))).toBe(true);
     expect(recent.some((r) => r.includes("Calc run one"))).toBe(false);
-    const perAgent = rows(section(host, "Runs per agent"));
+    const perAgent = rows(section(host, "Connected agents"));
     expect(perAgent).toHaveLength(1);
     expect(perAgent[0]).toContain("Notes hand");
     const options = (await optionsOf((host.querySelector('button[aria-haspopup=listbox][aria-label="Agent"]') as HTMLButtonElement))).map((o) => o.text);
     expect(options).toEqual(["All agents", "Calculator", "Notes hand"]);
   });
 
-  it("All agents: Runs per agent and Recent runs list every agent, as before", async () => {
+  it("All agents: Connected agents and Recent runs list every agent, as before", async () => {
     const asked = serve();
     const host = mount();
     await wait(() => !!host.querySelector('button[aria-haspopup=listbox][aria-label="Agent"]') && rows(section(host, "Recent runs")).length === 3, "Mission Control with its picker and all three recent runs");
     await pickAgent(host, "notes");
     await wait(() => asked.some((a) => a.startsWith("GET /v2/stats?") && a.includes("agent=notes")), "the stats are read for the agent picked");
     await pickAgent(host, "");
-    await wait(() => rows(section(host, "Recent runs")).length === 3 && rows(section(host, "Runs per agent")).length === 2, "back to every agent");
-    expect(rows(section(host, "Runs per agent")).map((r) => r.replace(/\d+$/, ""))).toEqual(["Calculator", "Notes hand"]);
+    await wait(() => rows(section(host, "Recent runs")).length === 3 && rows(section(host, "Connected agents")).length === 2, "back to every agent");
+    expect(rows(section(host, "Connected agents")).map((r) => r.replace(/\d+ runs$/, ""))).toEqual(["Calculator", "Notes hand"]);
     expect(rows(section(host, "Recent runs")).some((r) => r.includes("Calc run one"))).toBe(true);
   });
+});
+
+it("filters a connected session without requesting a nonexistent server-agent run list", async () => {
+  const asked = serve([{ id: "os_coding", connector_id: "connection", source_id: "source", external_session_id: "session", display_name: "Coding agent", harness: "codex", activity: "working", reported_activity: "working", connection_state: "online", selection_active: true, models: [], occurred_at: "2026-11-20T00:00:00Z", received_at: "2026-11-20T00:00:00Z", created_at: "2026-11-20T00:00:00Z", updated_at: "2026-11-20T00:00:00Z", sequence: 1, observation_only: true, usage: { total_tokens: 200, status: "reported" } }]);
+  const host = mount();
+  await wait(() => !!host.querySelector('a[href="#/observations/os_coding"]'), "connected coding agent appears");
+  await pickAgent(host, "os_coding");
+  await wait(() => asked.some(a => a.startsWith("GET /v2/stats?") && a.includes("agent=os_coding")), "usage is scoped to the selected session");
+  expect(asked.some(a => a.startsWith("GET /v2/agents/os_coding/runs"))).toBe(false);
+  expect(rows(section(host, "Connected agents"))).toHaveLength(1);
+  expect(host.querySelector('[role="alert"]')).toBeNull();
+  await act(async () => host.querySelector<HTMLInputElement>('input[name="mission-range"][value="7d"]')!.click());
+  await wait(() => asked.filter(a => a.startsWith("GET /v2/stats?") && a.includes("agent=os_coding")).length >= 2, "the selected source survives the range refresh");
+  expect(asked.some(a => a.startsWith("GET /v2/agents/os_coding/runs"))).toBe(false);
+  await act(async () => host.querySelector<HTMLButtonElement>('[aria-label="Choose coding agent for Query"]')!.click());
+  expect(document.querySelector('a[role="menuitem"][href="#/observations/os_coding"]')?.textContent).toBe("Connected agent");
+  expect(document.querySelector('a[role="menuitem"][href*="agent=os_coding"]')).toBeNull();
+  await act(async () => [...document.querySelectorAll<HTMLButtonElement>('button[role="menuitem"]')].find(button => button.textContent === "Copy prompt")!.click());
+  const prompt = document.querySelector<HTMLTextAreaElement>('[role="dialog"] textarea')!.value;
+  expect(prompt).toContain("/v2/observations?session_id=os_coding");
+  expect(prompt).toContain("/v2/stats?agent=os_coding&from=");
+  expect(prompt).not.toContain("/v2/agents/os_coding/runs");
 });

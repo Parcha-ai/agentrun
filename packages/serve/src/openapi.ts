@@ -1,3 +1,4 @@
+import {CLI_LEARNING_BINDING,CLI_LEARNING_RUN,CLI_LEARNING_PATHS} from "./cli-learning/schema.js";
 import { OBSERVATION_PATHS } from './observation/schema.js';
 import { SDK_BINDING, SDK_PATHS, SDK_RUN } from "./sdk/schema.js";
 import { NATIVE_BINDING, NATIVE_RUN, NATIVE_PATHS } from "./native/schema.js";
@@ -141,11 +142,25 @@ const GROUP = {
   needs_review: { ...COUNT, description: "Of `completed`, the escalated runs, which wait for a person's review.", "x-agentrun-serve": "stats/3" },
   failed: { ...COUNT, description: "Failed: never an escalated run." },
   runs_with_metrics: { ...COUNT, description: "Of `runs`, those that ended with metrics: a running run, and a run whose end wrote none, has none." },
-  tokens: { ...COUNT, type:["integer","null"], description: "Input, cache read, cache write and output tokens, summed over `runs_with_metrics`; null if a native runtime cannot report a counter." },
+  runs_with_token_metrics: { ...COUNT, description: "Of `runs`, those that ended with all four token counters reported. Metrics objects with missing or null counters do not count." },
+  tokens: { ...COUNT, type:["integer","null"], description: "Input, cache read, cache write and output tokens, summed only over `runs_with_token_metrics`. A partial total remains visible when other runs have unknown usage. Null when runs exist but none has a complete token count; zero for an empty scope." },
   cost_usd: USD, unknown_cost_runs: { ...COUNT, description: "Runs with no known cost: running, or ended without one." },
 };
 /** GET /stats's `analytics` (stats.ts analyticsView). */
 const ANALYTICS = closed({
+  usage: closed({
+    tokens: { ...COUNT, type: ["integer", "null"], description: "Known token lower bound across recorded runs and connected source sessions. Ambiguous overlapping aggregates retain the larger coherent view; distinct immutable CLI prompt windows can sum. Null when no included source reports a total." },
+    input: { ...COUNT, type: ["integer", "null"], description: "Uncached input; null when a counted source cannot split cached input." },
+    output: { ...COUNT, type: ["integer", "null"] },
+    cache_read: { ...COUNT, type: ["integer", "null"] }, cache_write: { ...COUNT, type: ["integer", "null"] },
+    known_runs: { ...COUNT, description: "Runs contributing known usage to the selected lower bound." }, unknown_runs: { ...COUNT, description: "Runs with missing counters or unresolved overlap. A run can contribute a known lower bound and also have incomplete coverage." },
+    observed_sessions: { ...COUNT, description: "Distinct source session identities with usable reported tokens in scope, including when a larger captured view supplies the selected total." },
+    unknown_sessions: { ...COUNT, description: "Source session identities with missing reports or unresolved overlap between report copies. A session may have known usage and also incomplete coverage." },
+    partial_days: { ...COUNT, description: "UTC boundary days whose source aggregates cannot be split exactly and were excluded." },
+    retention_limited: { type: "boolean", description: "The requested observed range extends beyond the retained 90 days; older source usage is unavailable." },
+    by_day: { type: "array", items: closed({ day: { type: "string", format: "date" }, tokens: { ...COUNT, type: ["integer", "null"] } }) },
+    by_harness: { type: "array", items: closed({ harness: { type: "string" }, tokens: { ...COUNT, type: ["integer", "null"] } }) },
+  }, "Unified reported token usage. Runs use their server start date; connected usage uses its retained observation UTC day. Verified session identity groups potentially overlapping views, independently of learning state. Server receipt dates do not prove native execution intervals: unknown coverage remains explicit. Daily source buckets are included only when fully inside the requested range."),
   filter: closed({ from: { type: ["string", "null"], format: "date-time" }, to: { type: ["string", "null"], format: "date-time" }, agent: { type: ["string", "null"] } }, "The query's bounds, each null when not given: runs started at or after `from` and before `to`, of `agent`."),
   totals: closed({
     ...GROUP, input: {...COUNT,type:["integer","null"]}, cache_read: {...COUNT,type:["integer","null"]}, cache_write: {...COUNT,type:["integer","null"]}, output: {...COUNT,type:["integer","null"]},
@@ -2069,7 +2084,7 @@ const EXTENSIONS: Record<string, Record<string, Json>> = {
       parameters: [
         { name: "from", in: "query", required: false, description: "Runs started at or after this RFC 3339 date-time, to the millisecond (a finer fraction is a 400). Default no bound.", schema: { type: "string", format: "date-time" }, "x-agentrun-serve": "stats/2" },
         { name: "to", in: "query", required: false, description: "Runs started before this RFC 3339 date-time, to the millisecond (a finer fraction is a 400). Default no bound.", schema: { type: "string", format: "date-time" }, "x-agentrun-serve": "stats/2" },
-        { name: "agent", in: "query", required: false, description: "One agent's runs.", schema: ref("schemas/Id"), "x-agentrun-serve": "stats/2" },
+        { name: "agent", in: "query", required: false, description: "One agent's runs and associated source usage, or a connected session id to select that session's usage (with no recorded runs).", schema: ref("schemas/Id"), "x-agentrun-serve": "stats/2" },
       ],
       responses: { "200": json(STATS, "The counts and the cost."), ...errors(400, 401, 429, 500) },
       "x-agentrun-serve": "stats/1",
@@ -3443,6 +3458,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   UsageLine: { unpriced_runs: { type: "integer", minimum: 0, description: "How many of the runs counted on this line have a cost no one knows on it: they add no dollars to `usd`, so no sum passes them off as $0.", "x-agentrun-serve": "costsofar/1" }, not_metered_calls: { type: "integer", minimum: 1, description: "On the `tools` meter's line, set when the runs counted made tool calls with no price (an MCP tool its owner set none for): how many. They are outside `usd`.", "x-agentrun-serve": "mcpservers/1" } },
   Run: {
     sdk: SDK_RUN,
+    cli_learning: CLI_LEARNING_RUN,
     native: NATIVE_RUN,
     ...RUN_FIELDS,
     approvals: { enum: ["ask", "never"], description: "Whether the run runs unattended: its revision's approvals, as it started (a run keeps the revision it started on). never: each tool that would ask was allowed at its gate, a deny still refused; ask: a tool set to ask parks it for an approval.", "x-agentrun-serve": "unattended/1" },
@@ -3506,6 +3522,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
   },
   RunSummary: {
     sdk: SDK_RUN,
+    cli_learning: CLI_LEARNING_RUN,
     native: NATIVE_RUN,
     ...RUN_FIELDS,
     effort: { $ref: "#/components/schemas/Effort", description: "The effort the run was started with, as the run shows it; absent when it was started with none.", "x-agentrun-serve": "effort/1" },
@@ -3627,6 +3644,7 @@ const FIELD_EXTENSIONS: Record<string, Record<string, Json>> = {
     unreadable: { type: "boolean", const: true, description: "Present when this server cannot read the file: a tool in the run's box created it private (owner-only). Reading it answers 403 `system_file_forbidden` with `details.reason` `unreadable`.", "x-agentrun-serve": "unreadable/1" },
   },
   DefinitionInput: {
+    cli_learning: CLI_LEARNING_BINDING,
     sdk: {...SDK_BINDING, "x-agentrun-serve":"sdk/1", description:"An existing backend SDK agent. Execution stays in its application; register tasks through /agents/{agent_id}/sdk-runs."},
     native: NATIVE_BINDING,
     model: { type: "string", description: "`provider/model-id`, the model an agentic revision runs on; absent, this host's default. A workflow revision keeps none.", "x-agentrun-serve": "model/1" },
@@ -4507,8 +4525,8 @@ export function openapiDocument(capabilityOf: (operationId: string) => string | 
   if (adapters !== TRIGGER_ADAPTERS) withAdapters(doc, adapters);
   // Every server-wide pushed source's own hook, the registry's as a test's: this server's own, and listed so.
   const hooks = serverHooks(adapters);
-  Object.assign(doc.paths, hooks, NATIVE_PATHS, SDK_PATHS, OBSERVATION_PATHS);
-  ((doc.info["x-agentrun-serve"] as Json).extensions as string[]).push(...Object.entries({...NATIVE_PATHS,...SDK_PATHS,...OBSERVATION_PATHS}).flatMap(([path,item])=>Object.keys(item).map(method=>`${method.toUpperCase()} ${path}`)));
+  Object.assign(doc.paths, hooks, NATIVE_PATHS, SDK_PATHS, CLI_LEARNING_PATHS, OBSERVATION_PATHS);
+  ((doc.info["x-agentrun-serve"] as Json).extensions as string[]).push(...Object.entries({...NATIVE_PATHS,...SDK_PATHS,...CLI_LEARNING_PATHS,...OBSERVATION_PATHS}).flatMap(([path,item])=>Object.keys(item).map(method=>`${method.toUpperCase()} ${path}`)));
   ((doc.info["x-agentrun-serve"] as Json).extensions as string[]).push(...Object.keys(hooks).map((path) => `POST ${path}`));
   // purge/1, on every operation there is by now (each rewritten, never a shared constant's own object changed); `changed`
   // is info's own list. Every route of a purged run or agent, and each that writes to an agent its body names (a trigger

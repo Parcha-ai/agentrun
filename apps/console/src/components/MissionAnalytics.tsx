@@ -1,9 +1,9 @@
-import { type KeyboardEvent, useState } from "react";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import { Picker } from "@/components/ui/picker";
 import { Segmented } from "@/components/ui/segmented";
 import { Activity, Cpu } from "lucide-react";
-import { type Analytics, type AnalyticsGroup, cachedShare, compact, coverage, duration, groupCost, type MissionView, outcomes, percent, RANGES, type StatsRange, successRate, trendDays } from "@/lib/mission";
+import { type Analytics, type AnalyticsGroup, compact, coverage, duration, groupCost, type MissionView, outcomes, percent, RANGES, type StatsRange, successRate, trendDays } from "@/lib/mission";
 
 /** The range and agent picker over the analytics, one row above them. */
 export function AnalyticsFilter({ range, onRange, agent, agents, onAgent }: { range: StatsRange; onRange: (range: StatsRange) => void; agent: string | null; agents: MissionView["perAgent"]; onAgent?: (agent: string | null) => void }) {
@@ -21,16 +21,49 @@ export function AnalyticsFilter({ range, onRange, agent, agents, onAgent }: { ra
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
+/** Prefer the exact count. Measure in the actual font and column, including after a resize or font load. */
+function TokenCount({ value, missing = "Unknown" }: { value: number | null; missing?: string }) {
+  const full = value === null ? missing : value.toLocaleString("en-US");
+  const container = useRef<HTMLSpanElement>(null);
+  const measure = useRef<HTMLSpanElement>(null);
+  const [short, setShort] = useState(false);
+  useEffect(() => {
+    const box = container.current;
+    const text = measure.current;
+    if (!box || !text) return;
+    const fit = () => setShort(box.clientWidth > 0 && text.getBoundingClientRect().width > box.clientWidth);
+    fit();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(fit);
+    observer.observe(box);
+    observer.observe(text);
+    return () => observer.disconnect();
+  }, [full]);
+  return <span ref={container} className="relative block min-w-0 overflow-hidden">
+    <span ref={measure} aria-hidden className="pointer-events-none invisible absolute w-max whitespace-nowrap">{full}</span>
+    <span data-token-count title={full} aria-label={short ? full : undefined} className="whitespace-nowrap">{short && value !== null ? compact(value) : full}</span>
+  </span>;
+}
+
 /** Mission Control's analytics (GET /v2/stats's `analytics`): tokens, time, success and cost over the range; success by
  *  harness and effort; a per-day trend; the top tools; and live against imported runs. A token sum that leaves runs out
  *  says how many it holds, and a cost never reads $0 when it is not known. */
 export function MissionAnalytics({ a, basis, now = Date.now(), refreshing = false }: { a: Analytics; basis: MissionView["cost"]["basis"]; now?: number; refreshing?: boolean }) {
   const t = a.totals;
-  const cached = cachedShare(t);
+  const usage = a.usage;
+  const tokens = usage ?? t;
+  // Unified totals and output cover the same contributions, even when a source cannot split cached input.
+  // Legacy counters may cover different runs, so their input must come from the complete input components.
+  const input = usage
+    ? usage.tokens !== null && usage.output !== null && usage.output <= usage.tokens ? usage.tokens - usage.output : null
+    : t.input !== null && t.cache_read !== null && t.cache_write !== null ? t.input + t.cache_read + t.cache_write : null;
   const rate = successRate(t);
   const spent = groupCost(t, basis);
   const tiles: { label: string; value: string; notes: (string | undefined)[] }[] = [
-    { label: "Tokens", value: compact(t.tokens), notes: [`${cached === null ? "" : `${percent(cached)} of input cached · `}${compact(t.output)} output`, coverage(t), t.requests === null || t.unmetered === null ? "Model request counts unavailable" : t.unmetered ? `${plural(t.unmetered, "request")} with no token count` : undefined] },
+    { label: "Tokens", value: compact(tokens.tokens), notes:
+      usage ? [usage.tokens === null ? "Token counts unavailable" : undefined, usage.tokens !== null && (usage.unknown_runs || usage.unknown_sessions) ? "Usage coverage is incomplete" : undefined,
+        usage.partial_days ? `${plural(usage.partial_days, "partial day")} excluded` : undefined,
+        usage.retention_limited ? "Usage history may be incomplete beyond 90 days" : undefined] : [coverage(t)] },
     { label: "Run time", value: duration(a.time.wall_ms), notes: [`wall time of ${plural(a.time.ended_runs, "ended run")}`, a.time.active_runs ? `${duration(a.time.active_ms)} active, over ${plural(a.time.active_runs, "run")}` : undefined] },
     { label: "Success rate", value: percent(rate), notes: [t.completed + t.failed ? outcomes(t) : "No run completed or failed yet"] },
     { label: "Cost", value: spent.total, notes: [spent.note] },
@@ -39,16 +72,22 @@ export function MissionAnalytics({ a, basis, now = Date.now(), refreshing = fals
     <div className={cn("space-y-6 transition-opacity", refreshing && "opacity-60")} aria-busy={refreshing}>
       <ul className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         {tiles.map((tile) => (
-          <li key={tile.label} className="border bg-card p-5">
+          <li key={tile.label} className="min-w-0 border bg-card p-5">
             <p className="caps text-label text-muted-foreground">{tile.label}</p>
-            <p className="mt-3 font-mono text-2xl leading-tight">{tile.value}</p>
+            <p className="mt-3 font-mono text-2xl leading-tight">{tile.label === "Tokens" ? <TokenCount value={tokens.tokens} /> : tile.value}</p>
+            {tile.label === "Tokens" && <dl aria-label="Token breakdown" className="mt-3 grid grid-cols-2 gap-3 text-small">
+              {([["Input", input], ["Output", tokens.output]] as const).map(([label, value]) => <div key={label} className="min-w-0">
+                <dt className="text-muted-foreground">{label}</dt>
+                <dd className="mt-1 font-mono" aria-label={value === null ? "Not reported" : undefined}><TokenCount value={value} missing="—" /></dd>
+              </div>)}
+            </dl>}
             {tile.notes.filter(Boolean).map((n) => <p key={n} className="mt-2 text-small leading-relaxed text-muted-foreground">{n}</p>)}
           </li>
         ))}
       </ul>
-      <Trend days={trendDays(a.by_day, a.filter.from, now)} />
+      <Trend days={usageTrendDays(a, now)} unified={Boolean(usage)} reported={Boolean(usage?.by_day.length)} unknown={tokens.tokens === null} />
       <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
-        <HarnessTable rows={a.by_harness_effort} basis={basis} />
+        <HarnessTable rows={a.by_harness_effort} basis={basis} unified={Boolean(usage)} />
         <ToolsTable tools={a.tools} />
       </div>
       <Sources groups={a.by_source} />
@@ -62,12 +101,12 @@ function Section({ title, children }: { title: React.ReactNode; children: React.
 const th = "px-4 py-2 text-left font-normal";
 const td = "px-4 py-2.5 align-top";
 
-function HarnessTable({ rows, basis }: { rows: Analytics["by_harness_effort"]; basis: MissionView["cost"]["basis"] }) {
+function HarnessTable({ rows, basis, unified }: { rows: Analytics["by_harness_effort"]; basis: MissionView["cost"]["basis"]; unified: boolean }) {
   return (
     <Section title="Success by harness and effort">
       {rows.length ? (
         <div className="overflow-x-auto" role="region" aria-label="Success by harness and effort, table" tabIndex={0}><table className="w-full border-collapse text-body">
-          <thead><tr className="caps border-b text-label text-muted-foreground">{["Harness", "Effort", "Runs", "Success", "Tokens", "Cost"].map((h) => <th key={h} className={th}>{h}</th>)}</tr></thead>
+          <thead><tr className="caps border-b text-label text-muted-foreground">{["Harness", "Effort", "Runs", "Success", unified ? "Run tokens" : "Tokens", "Cost"].map((h) => <th key={h} className={th}>{h}</th>)}</tr></thead>
           <tbody>
             {rows.map((g) => {
               const c = groupCost(g, basis);
@@ -131,15 +170,29 @@ function niceTop(max: number): number {
 }
 const short = (day: string) => day.slice(5);
 
+/** Use the server's token buckets without attributing session activity to run outcomes or start dates. */
+function usageTrendDays(a: Analytics, now: number): Analytics["by_day"] {
+  if (!a.usage) return trendDays(a.by_day, a.filter.from, now);
+  const days = new Map(a.by_day.map(day => [day.day, day]));
+  const tokenDays = new Map(a.usage.by_day.map(day => [day.day, day.tokens]));
+  for (const day of a.usage.by_day) if (!days.has(day.day)) days.set(day.day, {
+    day: day.day, runs: 0, completed: 0, failed: 0, needs_review: 0, runs_with_metrics: 0, runs_with_token_metrics: 0,
+    tokens: day.tokens, cost_usd: null, unknown_cost_runs: 0,
+  });
+  return trendDays([...days.values()].map(day => ({ ...day,
+    tokens: tokenDays.has(day.day) ? tokenDays.get(day.day)! : day.runs ? null : 0,
+  })), a.filter.from, now);
+}
+
 /** Runs per day (completed, failed and other, stacked) and tokens per day: two charts, one scale each, on the same days,
  *  each bar a hover and focus readout below the chart, and a table view of every value. */
-function Trend({ days }: { days: Analytics["by_day"] }) {
-  const any = days.some((d) => d.runs > 0);
+function Trend({ days, unified, reported, unknown }: { days: Analytics["by_day"]; unified: boolean; reported: boolean; unknown: boolean }) {
+  const any = days.length > 0 && (reported || days.some((d) => d.runs > 0));
   const runTitle = <><Activity className="size-4" aria-hidden />Run activity</>;
   const tokenTitle = <><Cpu className="size-4" aria-hidden />Token usage</>;
   if (!any) return <div className="grid grid-cols-1 gap-5 lg:grid-cols-2">
     <Section title={runTitle}><p className="flex min-h-[220px] items-center justify-center px-5 py-6 text-center text-body text-muted-foreground">No runs started in this range{days.length ? " in the last 30 days" : ""}.</p></Section>
-    <Section title={tokenTitle}><p className="flex min-h-[220px] items-center justify-center px-5 py-6 text-center text-body text-muted-foreground">No token usage in this range.</p></Section>
+    <Section title={tokenTitle}><p className="flex min-h-[220px] items-center justify-center px-5 py-6 text-center text-body text-muted-foreground">{unknown ? "Token usage is unavailable for this range." : "No token usage in this range."}</p></Section>
   </div>;
   const runsTop = niceTop(Math.max(...days.map((d) => d.runs)));
   const tokensTop = niceTop(Math.max(...days.flatMap((d) => d.tokens === null ? [] : [d.tokens]), 0));
@@ -165,7 +218,7 @@ function Trend({ days }: { days: Analytics["by_day"] }) {
           <figcaption className="mb-2 text-small font-semibold">Tokens{days.some((day) => day.tokens === null) && <span className="ml-2 font-normal text-muted-foreground">? means unavailable</span>}</figcaption>
           <Bars days={days} top={tokensTop} label="Tokens per day" format={compact}
             stack={(d) => [{ className: "bg-primary", value: d.tokens }]}
-            readout={(d) => [`${compact(d.tokens)} tokens`, coverage(d) ?? `${d.runs} ${d.runs === 1 ? "run" : "runs"}`]} />
+            readout={(d) => [`${compact(d.tokens)} tokens`, ...(unified ? [] : [coverage(d) ?? `${d.runs} ${d.runs === 1 ? "run" : "runs"}`])]} />
         </figure></Section>
       </div>
       <details className="border bg-card px-5 py-3">
