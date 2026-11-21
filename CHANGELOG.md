@@ -4,13 +4,14 @@
 
 ## 0.1.0-beta.51 (2026-11-21)
 
-This release fixes two ways a run on an Archil disk failed as a missing file, lets a person's answer reach an ACP agent that asks for another command, and tidies email, templates and approvals. A pending approval says why it asks in a field of its own, `asks_because`, and no longer among the call's arguments (breaking for a client that read `args_preview.asked_because`). Settings → Email's Save signs in before it keeps the account, an email trigger has its own page and form in the console, and a template's apply answer says what it did to the agent (`agent_change`) and lists every trigger it made or kept. The store does not move, and the box image is beta.50's.
+This release fixes two ways a run on an Archil disk failed as a missing file, lets a person's answer reach an ACP agent that asks for another command, and tidies email, templates and approvals. A pending approval says why it asks in a field of its own, `asks_because`, and no longer among the call's arguments (breaking for a client that read `args_preview.asked_because`). Settings → Email's Save signs in before it keeps the account, an email trigger has its own page and form in the console, and a template's apply answer says what it did to the agent (`agent_change`) and lists every trigger it made or kept. A runner shared by many customers keeps per-run users with the server's user in one group, and its operator can bound the private hosts an owner may allow. The store does not move, and the box image is beta.50's.
 
 **Upgrading and going back:**
 
 - No store change: a SQLite store stays at version 14 and a Postgres store at migration `0023_computer_interval_resources.sql`, as beta.50 left them, so this release opens a store beta.50 used as it is, and going back to beta.50 is its image or package. An approval this release left pending shows in beta.50 without why it asks. From beta.49 or older, read beta.50's notes first: it moves a Postgres store to migration 0023, which beta.49 does not open.
 - The box image's recipe did not move since beta.50 (hash `ed5aee54d3ea`), so a Daytona snapshot or a relay set up for beta.50 holds.
 - `PUT /v2/settings/email` now signs in to IMAP and SMTP before it saves, as `POST /v2/settings/email/test` does. A password either server refuses, or a server it can't reach, is `424 upstream_failed` with nothing saved; it used to save any password and answer 200 (#3357).
+- The image's run helper (`agentrun-runas`, per-run users) now needs a fourth capability, `CHOWN`, beside `SETUID`, `SETGID` and `SETPCAP`: it gives a run's folders to the run's user and back. The Helm chart keeps all four. A deployment of your own that drops every capability and adds the helper's back adds `CHOWN` too; without it the kernel refuses to start the helper (#3358).
 
 **Breaking:**
 
