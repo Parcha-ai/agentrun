@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import vm from "node:vm";
 import { COMPUTER_CALL_GLOBAL, chordKeys, createSurface, opsOf, outlineOf, scriptPrelude, SurfaceError, withoutImageData } from "../dist/surface/index.js";
+import { fakeUiConnection } from "../dist/fake-ui-driver.js";
 import { fakeComputer, PNG } from "./fake-surface-driver.mjs";
 
 const surfaceOf = (options) => {
@@ -259,6 +260,72 @@ test("an act that names a state and no app observes that state's app afterwards,
 	await surface.call("observe", { app: "com.example.background" });
 	await surface.call("act", { state: "s1", steps: [{ press: "@e3" }], observe: true });
 	assert.deepEqual(calls.at(-1), { method: "ui.observe", params: { target: { app: "com.example.background" } } });
+});
+
+// A phone's Settings, whose search is another package's page (Settings Intelligence), and whose Network & internet row
+// opens a page of its own.
+const SETTINGS = "com.android.settings";
+const SUGGESTIONS = "com.android.settings.intelligence";
+const PHONE_APPS = [
+	{
+		id: SETTINGS,
+		name: "Settings",
+		start: "home",
+		size: [412, 915],
+		screens: {
+			home: {
+				title: "Settings",
+				elements: [
+					{ key: "search", role: "button", name: "Search settings", bounds: [16, 80, 380, 56], press: { launch: SUGGESTIONS } },
+					{ key: "network", role: "button", name: "Network & internet", bounds: [0, 160, 412, 72], press: { go: "internet" } },
+					{ key: "about", role: "text", name: "About phone", bounds: [0, 240, 412, 72] },
+				],
+			},
+			internet: { title: "Internet", elements: [{ key: "wifi", role: "switch", name: "Wi-Fi", bounds: [0, 160, 412, 72] }] },
+		},
+	},
+	{ id: SUGGESTIONS, name: "Settings Suggestions", start: "search", size: [412, 915], screens: { search: { title: "Settings Suggestions", elements: [{ key: "query", role: "searchbox", name: "Search settings", bounds: [16, 80, 380, 56], flags: ["focused"] }] } } },
+];
+
+const phoneSurface = async () => {
+	const connection = await fakeUiConnection({ os: "android", kind: "android", apps: PHONE_APPS });
+	const launched = await connection.client.call("apps.launch", { id: SETTINGS });
+	assert.ok(launched.ok, launched.error?.message);
+	return { connection, surface: createSurface(connection.client, connection.hello) };
+};
+const refOf = (state, name) => state.elements.find((element) => element.name === name)?.ref;
+
+test("a phone press that opens another app's page, with observe: the press answers verified and changed, and the look after is that page", async () => {
+	const { connection, surface } = await phoneSurface();
+	try {
+		const seen = await surface.call("observe", { app: SETTINGS });
+		const answer = await surface.call("act", { app: SETTINGS, steps: [{ press: refOf(seen.value, "Search settings") }], observe: true });
+		assert.deepEqual(answer.value.steps, [{ route: "semantic", verified: true }]);
+		assert.equal(answer.value.changed, true);
+		assert.equal(answer.value.after.app.id, SUGGESTIONS);
+		assert.equal(answer.value.after.window.title, "Settings Suggestions");
+		assert.ok(refOf(answer.value.after, "Search settings"), "the look after lists the search page's field");
+	} finally {
+		await connection.close();
+	}
+});
+
+test("a phone act with observe that stays in its app: the look after is that app's window; a press that changes nothing answers unchanged", async () => {
+	const { connection, surface } = await phoneSurface();
+	try {
+		const seen = await surface.call("observe", { app: SETTINGS });
+		const still = await surface.call("act", { app: SETTINGS, steps: [{ press: refOf(seen.value, "About phone") }], observe: true });
+		assert.deepEqual(still.value.steps, [{ route: "semantic", verified: false }]);
+		assert.equal(still.value.changed, false);
+		assert.equal(still.value.after.app.id, SETTINGS);
+		const page = await surface.call("act", { app: SETTINGS, steps: [{ press: refOf(seen.value, "Network & internet") }], observe: true });
+		assert.deepEqual(page.value.steps, [{ route: "semantic", verified: true }]);
+		assert.equal(page.value.changed, true);
+		assert.equal(page.value.after.app.id, SETTINGS);
+		assert.equal(page.value.after.window.title, "Internet");
+	} finally {
+		await connection.close();
+	}
 });
 
 test("a directory listing past its pages throws a limit error instead of returning part of it", async () => {

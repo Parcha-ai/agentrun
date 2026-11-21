@@ -14,6 +14,7 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { request } from "node:http";
 import { networkInterfaces } from "node:os";
 import { dirname, join } from "node:path";
@@ -26,7 +27,8 @@ import { shadowRunId } from "../dist/learn/audit.js";
 import { StoreConstraint } from "../dist/store/index.js";
 import { gradesKey, putGrade } from "../dist/learn/promote.js";
 import { metersOverStore, spendOverStore, spentOverStore } from "../dist/store-reads/cap.js";
-import { runFolder, scratchFolder } from "../dist/workspace/paths.js";
+import { forgetServed, viewOverStore } from "../dist/store-view.js";
+import { agentLearningFolder, runFolder, scratchFolder } from "../dist/workspace/paths.js";
 import { archilControlFetch } from "./archil-control-fake.mjs";
 import { FakeArchilDisk } from "./fixtures/archil-fake.mjs";
 import { builtConsole, call, cookieOf, FAUX, follow, serve, startInProcessRunner, startRun, withEnv } from "./support.mjs";
@@ -237,11 +239,23 @@ test("a run that is idle (completed, a follow-up away) or that a person stopped 
 
 /** A purge's host (agent-delete.ts AgentDeleteHost) over rows the test holds: run `rows[id]` read as the test sets it, its
  *  turn over while `turnOver[id]`, its purge recorded. */
-function hostOver(rows, turnOver, { waitMs = 5_000 } = {}) {
+function hostOver(rows, turnOver, { waitMs = 5_000, flips = {} } = {}) {
   const purgedRuns = [];
+  // How often each run was read (runs.get) and asked whether its turn is over (turnOver). `flips[id]`: {at, row}, the
+  // row the run reads from its at-th read on (its runner wrote it ended meanwhile).
+  const reads = {};
+  const asked = {};
   const store = {
+    // A store's own origin is itself (Store.origin): the readers' caches key on it (store-view.ts forgetServed).
+    get origin() {
+      return this;
+    },
     runs: {
-      get: async (id) => (rows[id] ? { id, agentId: "calc", purgedAt: null, ...rows[id] } : undefined),
+      get: async (id) => {
+        reads[id] = (reads[id] ?? 0) + 1;
+        if (flips[id] && reads[id] === flips[id].at) rows[id] = flips[id].row;
+        return rows[id] ? { id, agentId: "calc", purgedAt: null, ...rows[id] } : undefined;
+      },
       purge: async (id) => {
         if (rows[id].state === "running" || rows[id].runner !== null) throw new StoreConstraint(`run ${id} is live`);
         purgedRuns.push(id);
@@ -254,26 +268,30 @@ function hostOver(rows, turnOver, { waitMs = 5_000 } = {}) {
     forgetCopies: async () => {},
     forgetRun: async () => {},
     kept: async () => ({ meters: null, spend: { usd: null }, learning: null }),
-    turnOver: async (id) => turnOver[id] === true,
+    turnOver: async (id) => {
+      asked[id] = (asked[id] ?? 0) + 1;
+      return turnOver[id] === true;
+    },
     waitMs,
     pollMs: 20,
   };
-  return { host, purgedRuns };
+  return { host, purgedRuns, reads, asked };
 }
 
 test("a run that reads idle before its runner wrote it ended is waited for, then purged; one whose turn is not over is 409 at once", async () => {
-  // Its turn is over (a person's stop): the runner writes it stopped and lets it go 300 ms after the DELETE comes.
+  // Its turn is over (a person's stop): the runner writes it stopped and lets it go before the DELETE's second read of it
+  // (the first is the DELETE's own, the second its wait's first poll).
   const rows = { ending: { state: "running", runner: "runner-1" } };
-  const { host, purgedRuns } = hostOver(rows, { ending: true });
-  setTimeout(() => (rows.ending = { state: "stopped", runner: null }), 300);
+  const { host, purgedRuns, reads } = hostOver(rows, { ending: true }, { flips: { ending: { at: 2, row: { state: "stopped", runner: null } } } });
   await purgeRun(host, "ending");
   assert.deepEqual(purgedRuns, ["ending"]);
+  assert.equal(reads.ending, 2, "purged once its wait read it ended");
 
-  // A run working on: refused at once, nothing purged, never waited for.
+  // A run working on: refused at once, nothing purged, never waited for: its turn is asked once, and it is read no more.
   const working = hostOver({ busy: { state: "running", runner: "runner-1" } }, {});
-  const started = Date.now();
   await assert.rejects(purgeRun(working.host, "busy"), (error) => error.code === "run_not_final" && error.extra.details.runs[0] === "busy");
-  assert.ok(Date.now() - started < 1_000, "answered at once");
+  assert.equal(working.asked.busy, 1, "its turn asked once: answered at once");
+  assert.equal(working.reads.busy, 1, "never read again");
   assert.deepEqual(working.purgedRuns, []);
 
   // One whose end never comes within the wait: refused.
@@ -365,21 +383,26 @@ for (const step of ["run_made_from_gone", "run_forgotten"]) {
 const within = (promise, ms, what) => Promise.race([promise, new Promise((_, reject) => setTimeout(() => reject(new Error(`${what}: not within ${ms} ms`)), ms).unref())]);
 
 /** A server whose run DELETE holds at `step` for the run `gate.run` once `gate.arm()` was called: `gate.reached` settles
- *  when it holds there, `gate.release()` lets it go on. */
+ *  when it holds there, `gate.release()` lets it go on. `gate.queued(agentId, n)` settles once `n` requests wait in that
+ *  agent's delete turn (the server's deleteTurnQueued seam): each is provably behind the held DELETE. */
 async function heldAt(t, step) {
-  const gate = { armed: false, run: undefined };
+  const gate = { armed: false, run: undefined, waits: [] };
   gate.arm = (run) => {
     gate.run = run;
     gate.armed = true;
     gate.reached = new Promise((resolve) => (gate.reach = resolve));
     gate.held = new Promise((resolve) => (gate.release = resolve));
   };
+  gate.queued = (agentId, n) => new Promise((resolve) => gate.waits.push({ agentId, n, resolve }));
   const server = await haltable(t, {
     agentDeleteAt: async (at, id) => {
       if (at !== step || !gate.armed || id !== gate.run) return;
       gate.armed = false;
       gate.reach();
       await gate.held;
+    },
+    deleteTurnQueued: (agentId, waiting) => {
+      for (const one of gate.waits) if (one.agentId === agentId && waiting >= one.n) one.resolve();
     },
   });
   return { ...server, gate };
@@ -394,7 +417,7 @@ test("a message sent while a run's DELETE runs (its folders gone, its tombstone 
   const deleting = api("DELETE", `/runs/${gone}`);
   await within(gate.reached, 60_000, "the DELETE reached its folders' end");
   const sending = api("POST", `/runs/${gone}/messages`, { content: "And eight?" });
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  await within(gate.queued("calc", 1), 60_000, "the message waits in the DELETE's turn");
   gate.release();
   const [deleted, sent] = await Promise.all([deleting, sending]);
   assert.equal(deleted.status, 204, `the DELETE: ${deleted.status} ${JSON.stringify(deleted.body)}`);
@@ -419,15 +442,19 @@ function slowPut(port, token, path, head, tail) {
   return { answer, finish };
 }
 
-test("a grade whose body arrives after its run's purge is 410 purged: no grade of the run is kept", { timeout: 120_000 }, async (t) => {
-  const { api, data, store, port, token, halt } = await haltable(t);
+test("a grade whose body arrives while its run's DELETE runs (its run read live when it was sent) waits for the DELETE and is 410 purged: no grade of the run is kept", { timeout: 120_000 }, async (t) => {
+  const { api, data, store, port, token, halt, gate } = await heldAt(t, "run_forgotten");
   const [gone, kept] = await twoRuns(api, store);
   await halt();
-  // The grade's run is read when it is sent; its body comes once the run is purged.
+  // The grade's run is read when it is sent, before the purge's tombstone; its body comes while the DELETE holds the turn.
   const grading = slowPut(port, token, `/v2/runs/${gone}/grade`, '{"correct":', " false}");
-  await new Promise((resolve) => setTimeout(resolve, 500));
-  assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+  gate.arm(gone);
+  const deleting = api("DELETE", `/runs/${gone}`);
+  await within(gate.reached, 60_000, "the DELETE reached its folders' end");
   grading.finish();
+  await within(gate.queued("calc", 1), 60_000, "the grade waits in the DELETE's turn");
+  gate.release();
+  assert.equal((await deleting).status, 204);
   purged(await grading.answer, "the grade");
   assert.deepEqual(((await store.settings.get(gradesKey("calc")))?.items ?? []).map((grade) => grade.run), [kept], "no grade of the purged run");
   assert.deepEqual(mentions(data, gone), ["runs.id"], "no table names it but its tombstone");
@@ -549,4 +576,97 @@ test("a run on its agent's own Archil disk: its folder there is deleted, the dis
   assert.equal(await store.settings.get(runDiskKey(gone)), undefined, "the run's disk setting is gone");
   assert.deepEqual(await store.settings.get(runDiskKey(kept)), { diskId: own }, "its sibling's is kept");
   assert.equal((await api("GET", `/runs/${kept}`)).status, 200);
+});
+
+test("a purged run's answer and input stay in no in-process cache of its store: a read keeps both (its view's answer and input, its whole answer row), and its purge drops them", { timeout: 120_000 }, async (t) => {
+  const { api, store, halt } = await haltable(t);
+  // The faux model answers "On <the message>: done.": an answer one past a Timeline row's cap is read again whole, and
+  // kept by the journal's reader as well as the view's.
+  const content = `${"z".repeat(1991 - 4)} end`;
+  const { run_id: run } = await startRun(api, "calc", content);
+  await follow(api, run, ["completed"]);
+  await halt();
+  const deps = { origin: "", serverSecrets: () => [] };
+  const read = async () => assert.equal((await viewOverStore(store, run, deps)).result.final_answer, `On ${content}: done.`);
+  await read();
+  const held = forgetServed(store, run);
+  assert.deepEqual(held.slice(0, 2), [`answer ${run}`, `input ${run}`], `a read keeps its answer and input: ${JSON.stringify(held)}`);
+  assert.equal(held.length, 3, `and its whole answer row: ${JSON.stringify(held)}`);
+  await read();
+
+  const host = {
+    store,
+    madeFrom: async () => [],
+    forgetCopies: async () => {},
+    forgetRun: async () => {},
+    kept: async () => ({ meters: null, spend: { usd: null }, learning: null }),
+    turnOver: async () => false,
+    waitMs: 0,
+    pollMs: 20,
+  };
+  await purgeRun(host, run);
+  assert.notEqual((await store.runs.get(run)).purgedAt, null, "the run is purged");
+  assert.deepEqual(forgetServed(store, run), [], "nothing of it is kept once it is purged");
+});
+
+test("a read begun before a run's purge and finished after it keeps none of the purged run's text: its answer and input stay in no in-process cache, and no later read serves them", { timeout: 120_000 }, async (t) => {
+  const { store, halt } = await haltable(t);
+  await halt();
+  // A run whose learning held a draft for its owner's OK: its read checks the agent's folder (deps.statuses) after its
+  // snapshot, and the test holds it there.
+  const run = "run-read-over-purge";
+  const answer = "The held answer, purged.";
+  const input = { content: "The held input, purged." };
+  await store.agents.create({ id: "calc", name: "Calc" }, { id: "rev-calc", kind: "agentic", body: { instructions: "Answer.", learning: true } });
+  const claim = await storedRun(store, "calc", run, null, { input, title: "Held", place: { mode: "runner" } });
+  const file = "workflows/held/workflow.json";
+  await store.runs.update(claim, { state: "ended", outcome: "completed", summary: answer, costUsd: 0, endedAt: Date.now() }, { also: [{ table: "learning_proposals", row: { turn: {}, proposal: { state: "merged", merged: "c1", detail: "Waiting for your OK: workflow held.", workflows: [{ file, name: "held", pending: true }] } } }] });
+  let asked;
+  const askedFolder = new Promise((resolve) => (asked = resolve));
+  let release;
+  const folderRead = new Promise((resolve) => (release = resolve));
+  const deps = { origin: "", serverSecrets: () => [], statuses: async () => (asked(), folderRead) };
+  const reading = viewOverStore(store, run, deps);
+  await askedFolder;
+
+  const host = {
+    store,
+    madeFrom: async () => [],
+    forgetCopies: async () => {},
+    forgetRun: async () => {},
+    kept: async () => ({ meters: null, spend: { usd: null }, learning: null }),
+    turnOver: async () => false,
+    waitMs: 0,
+    pollMs: 20,
+  };
+  await purgeRun(host, run);
+  assert.notEqual((await store.runs.get(run)).purgedAt, null, "the run is purged while its read waits");
+  release(new Map([[file, { status: "pending" }]]));
+  const held = await reading;
+  assert.deepEqual([held.result.final_answer, held.input], [answer, input], "the read served what it read before the purge");
+
+  assert.deepEqual(forgetServed(store, run), [], "the read that the purge overtook kept none of the run's text");
+  const after = JSON.stringify((await viewOverStore(store, run, { origin: "", serverSecrets: () => [] })) ?? null);
+  assert.ok(!after.includes(answer) && !after.includes(input.content), `no read after the purge serves its answer or input: ${after}`);
+});
+
+test("a run's purge leaves what its agent learned from it in the agent's learning folder (its merge's diff, a corrections line), as the README says; the agent's purge removes the folder", { timeout: 120_000 }, async (t) => {
+  const { api, data, store, halt } = await haltable(t);
+  const [gone] = await twoRuns(api, store);
+  await halt();
+  // What a learning run's merge writes there (learn/folder.ts): the run's diff, with its patches, and a feedback line.
+  // Written by hand: the faux model makes no merge.
+  const folder = agentLearningFolder(data, "calc");
+  const diff = join(folder, ".agentrun", "diffs", `${gone}.json`);
+  await mkdir(dirname(diff), { recursive: true });
+  await writeFile(diff, JSON.stringify({ commit: "c1", parent: "c0", files: [{ path: "corrections.md", patch: "+- Say six times seven is 42." }] }));
+  await writeFile(join(folder, "corrections.md"), "- Say six times seven is 42.\n");
+
+  assert.equal((await api("DELETE", `/runs/${gone}`)).status, 204);
+  assert.match(await readFile(diff, "utf8"), /six times seven/, "the run's diff stays in its agent's learning folder");
+  assert.match(await readFile(join(folder, "corrections.md"), "utf8"), /six times seven/, "and its corrections line");
+
+  assert.equal((await api("POST", "/agents/calc/archive")).status, 200);
+  assert.equal((await api("DELETE", "/agents/calc")).status, 204);
+  assert.equal(existsSync(folder), false, "the agent's purge removes its learning folder");
 });
