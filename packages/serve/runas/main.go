@@ -2,11 +2,18 @@
 
 // Command agentrun-runas starts a run's process as a uid of its own.
 //
-// The runner runs as uid 1000 with no root. This helper is installed
-// root:node 0750 with file capabilities cap_setuid,cap_setgid,cap_setpcap+ep
-// and can only reach the compiled range firstID..firstID+slots-1. It never
-// takes an id from its input except through that slot mapping, and it
-// refuses uid and gid 0 outright.
+// The runner runs as uid 1000 with no root, in its own group (1000) alone.
+// This helper is installed root:node 0750 with file capabilities
+// cap_chown,cap_setuid,cap_setgid,cap_setpcap+ep and can only reach the
+// compiled range firstID..firstID+slots-1. It never takes an id from its
+// input except through that slot mapping, and it refuses uid and gid 0
+// outright.
+//
+// A slot's uid is in its own group alone, never the runner's: a run's
+// folders are its slot's uid's and the runner's group's (2770, setgid), so
+// the runner reads them through its one group and no other slot reaches
+// them. Between runs they are the runner's (own runner), so a slot's next
+// run reaches nothing an earlier one left. The runner is in no slot's group.
 //
 // Build with CGO_ENABLED=0: Go's syscall.Setresuid, Setresgid and Setgroups
 // then apply to every thread (AllThreadsSyscall).
@@ -29,8 +36,8 @@ import (
 const (
 	firstID = 1001
 	slots   = 256
-	// serverGID is the runner's group. reap --fix adds it so chmod may keep
-	// the setgid bit on directories whose group is the runner's.
+	// serverGID is the runner's group: every run folder's group, the one
+	// group through which the runner reads what a run writes.
 	serverGID = 1000
 
 	exitRefused = 126
@@ -41,8 +48,8 @@ const (
 )
 
 const usageLine = "usage: agentrun-runas run <slot> [--keep-fd N]... -- <program> [args...]" +
-	" | reap <slot> [--sweep DIR]... [--fix DIR]..." +
-	" | reown <fromSlot> <toSlot> DIR | check"
+	" | reap <slot> [--sweep DIR]..." +
+	" | own <slot>|runner DIR... | check"
 
 // Capabilities are per thread, so every step runs on the main thread.
 func init() { runtime.LockOSThread() }
@@ -71,8 +78,8 @@ func runMain(args []string, s sys, stdout, stderr io.Writer) int {
 		return cmdRun(args[1:], s, stderr)
 	case "reap":
 		return cmdReap(args[1:], s, stderr)
-	case "reown":
-		return cmdReown(args[1:], s, stderr)
+	case "own":
+		return cmdOwn(args[1:], s, stderr)
 	case "check":
 		return cmdCheck(args[1:], s, stdout, stderr)
 	}
@@ -126,12 +133,13 @@ func checkIDs(uid, gid int) error {
 	return nil
 }
 
-// checkGroup allows a slot group or the runner's group, never 0.
+// checkGroup allows a slot group alone, never 0 and never the runner's: a
+// process this helper starts holds no group of the runner's.
 func checkGroup(g int) error {
 	if g == 0 {
 		return errors.New("refusing group 0")
 	}
-	if !inRange(g) && g != serverGID {
+	if !inRange(g) {
 		return fmt.Errorf("group %d outside %d-%d", g, firstID, firstID+slots-1)
 	}
 	return nil
@@ -320,26 +328,19 @@ func cmdReap(args []string, s sys, stderr io.Writer) int {
 	if err != nil {
 		return fail(stderr, exitRefused, "%v", err)
 	}
-	var sweep, fix []string
+	var sweep []string
 	rest := args[1:]
 	for len(rest) > 0 {
-		if len(rest) < 2 || (rest[0] != "--sweep" && rest[0] != "--fix") {
+		if len(rest) < 2 || rest[0] != "--sweep" {
 			return usage(stderr)
 		}
 		if !filepath.IsAbs(rest[1]) {
 			return fail(stderr, exitRefused, "%s %q must be an absolute path", rest[0], rest[1])
 		}
-		if rest[0] == "--sweep" {
-			sweep = append(sweep, rest[1])
-		} else {
-			fix = append(fix, rest[1])
-		}
+		sweep = append(sweep, rest[1])
 		rest = rest[2:]
 	}
 	groups := []int{id}
-	if len(fix) > 0 {
-		groups = append(groups, serverGID)
-	}
 	if err := dropPrivs(s, id, groups); err != nil {
 		return fail(stderr, exitRefused, "%v", err)
 	}
@@ -352,11 +353,6 @@ func cmdReap(args []string, s sys, stderr io.Writer) int {
 	ok := true
 	for _, dir := range sweep {
 		if !sweepDir(dir, id, stderr) {
-			ok = false
-		}
-	}
-	for _, dir := range fix {
-		if !fixDir(dir, id, stderr) {
 			ok = false
 		}
 	}
@@ -392,41 +388,53 @@ func killAll(s sys, id int) error {
 	return fmt.Errorf("processes of uid %d still alive after %d kills", id, killTries)
 }
 
-func cmdReown(args []string, s sys, stderr io.Writer) int {
-	if len(args) != 3 {
+// cmdOwn gives a run's folders to a slot (`own <slot> DIR...`, before its
+// run starts) or back to the runner (`own runner DIR...`, after its reap):
+// every entry under each DIR owned by the runner or any slot, to that uid
+// and the runner's group, its mode fixMode's. It keeps CAP_CHOWN alone, the
+// one it uses, and runs as the runner (its real uid), never as a slot.
+func cmdOwn(args []string, s sys, stderr io.Writer) int {
+	if len(args) < 2 {
 		return usage(stderr)
 	}
-	from, err := parseSlot(args[0])
+	runner := s.Getuid()
+	if runner == 0 || inRange(runner) {
+		return fail(stderr, exitRefused, "refusing to run as uid %d: own runs as the runner", runner)
+	}
+	to := runner
+	if args[0] != "runner" {
+		slot, err := parseSlot(args[0])
+		if err != nil {
+			return fail(stderr, exitRefused, "%v", err)
+		}
+		if to, err = slotID(slot); err != nil {
+			return fail(stderr, exitRefused, "%v", err)
+		}
+	}
+	dirs := args[1:]
+	for _, dir := range dirs {
+		if !filepath.IsAbs(dir) {
+			return fail(stderr, exitRefused, "DIR %q must be an absolute path", dir)
+		}
+	}
+	if err := s.CapsetOnly(1 << capChown); err != nil {
+		return fail(stderr, exitRefused, "capset: %v", err)
+	}
+	text, err := s.ReadStatus()
 	if err != nil {
-		return fail(stderr, exitRefused, "%v", err)
+		return fail(stderr, exitRefused, "read status: %v", err)
 	}
-	to, err := parseSlot(args[1])
-	if err != nil {
-		return fail(stderr, exitRefused, "%v", err)
+	if err := verifyOnlyCap(text, capChown); err != nil {
+		return fail(stderr, exitRefused, "status check: %v", err)
 	}
-	if from == to {
-		return fail(stderr, exitRefused, "from and to slot are both %d", from)
+	owned := func(uid int) bool { return uid == runner || inRange(uid) }
+	ok := true
+	for _, dir := range dirs {
+		if !s.Own(dir, owned, runner, to, serverGID, stderr) {
+			ok = false
+		}
 	}
-	fromID, err := slotID(from)
-	if err != nil {
-		return fail(stderr, exitRefused, "%v", err)
-	}
-	toID, err := slotID(to)
-	if err != nil {
-		return fail(stderr, exitRefused, "%v", err)
-	}
-	dir := args[2]
-	if !filepath.IsAbs(dir) {
-		return fail(stderr, exitRefused, "DIR %q must be an absolute path", dir)
-	}
-	groups := []int{fromID, toID}
-	if err := dropPrivs(s, fromID, groups); err != nil {
-		return fail(stderr, exitRefused, "%v", err)
-	}
-	if err := verifyDropped(s, fromID, groups); err != nil {
-		return fail(stderr, exitRefused, "%v", err)
-	}
-	if !reownDir(dir, fromID, toID, stderr) {
+	if !ok {
 		return 1
 	}
 	return 0

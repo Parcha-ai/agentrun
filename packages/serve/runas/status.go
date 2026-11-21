@@ -134,6 +134,7 @@ func verifyStatus(text string, id int, groups []int) error {
 }
 
 const (
+	capChown   = 0
 	capSetgid  = 6
 	capSetuid  = 7
 	capSetpcap = 8
@@ -153,12 +154,34 @@ func missingCaps(text string) ([]string, error) {
 	for _, c := range []struct {
 		bit  uint
 		name string
-	}{{capSetuid, "CAP_SETUID"}, {capSetgid, "CAP_SETGID"}, {capSetpcap, "CAP_SETPCAP"}} {
+	}{{capChown, "CAP_CHOWN"}, {capSetuid, "CAP_SETUID"}, {capSetgid, "CAP_SETGID"}, {capSetpcap, "CAP_SETPCAP"}} {
 		if eff&(1<<c.bit) == 0 {
 			missing = append(missing, c.name)
 		}
 	}
 	return missing, nil
+}
+
+// verifyOnlyCap accepts a status whose effective and permitted sets hold
+// capability c alone, and whose inheritable and ambient sets are empty.
+func verifyOnlyCap(text string, c uint) error {
+	st, err := parseStatus(text)
+	if err != nil {
+		return err
+	}
+	for _, k := range []string{"CapInh", "CapPrm", "CapEff", "CapAmb"} {
+		if !st.seen[k] {
+			return fmt.Errorf("%s is missing", k)
+		}
+		want := uint64(0)
+		if k == "CapPrm" || k == "CapEff" {
+			want = 1 << c
+		}
+		if st.caps[k] != want {
+			return fmt.Errorf("%s is %016x, want %016x", k, st.caps[k], want)
+		}
+	}
+	return nil
 }
 
 // procAlive reports a process that is not a zombie and whose real or saved
