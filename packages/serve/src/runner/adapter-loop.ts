@@ -50,7 +50,7 @@ const outputRetried = (entries: readonly { readonly kind?: string; readonly data
   return at >= 0 && entries.slice(at + 1).some((entry) => entry.kind === "pi.assistant" || (entry.kind === KINDS.message && (entry.data as { role?: unknown } | undefined)?.role === "model"));
 };
 import { type AlsoRow, type Claim, ClaimRefused, type Command, type CommandOutcome, deniedText, type EndOfRunAnswer, type EndOfRunKept, type EndOfRunTurn, type Loop, type LoopDeps, type LoopEnd, type LoopFactory, noteOf, stopEnd, type StopReason } from "./loop-contract.js";
-import { ASKED_BECAUSE, deniedText as setToDenyText, ENDED_WHILE_WAITING, refusedText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
+import { deniedText as setToDenyText, ENDED_WHILE_WAITING, refusedText, STOPPED_WHILE_WAITING } from "../refusal-words.js";
 import { ADAPTER_API } from "../turn-end.js";
 import { answerText, REFLECT_PREFIX, reflectRequestId } from "./end-of-run.js";
 import { agentEntriesOf, approvalOf, BOOKING_WRITE_MS, CLOSE_MS, CUT_STEP_MS, END_PATCH_MS, END_PATCH_UNKNOWN, PARK_SIBLINGS_MS, readAgain, STOP_SETTLE_MS, commandRequest, cutLast, DEFAULT_RESTART_LIMIT, entriesOf, findData, Gate, heldReporter, INPUT_REQUEST, Interrupted, KernelFault, lastAnswerText, Parked, quiet, restartLimited, writesEntry, writesSubmission } from "./loop.js";
@@ -106,16 +106,19 @@ export type RaiseCheck =
   | { refused: string; raised?: undefined; retry?: undefined };
 
 /** The gate's answer for a call: run it, ask a person (`ask` with fields its card shows before the call's input: a
- *  learned workflow's MCP actions), or refuse it (with the words the model reads, or generic ones). */
-export type GateAnswer = "allow" | "ask" | "deny" | { readonly deny: string } | { readonly ask: Readonly<Record<string, unknown>> };
+ *  learned workflow's MCP actions; `because`, why a call its setting allows asks anyway, its ask's own field and never
+ *  one of the call's arguments), or refuse it (with the words the model reads, or generic ones). */
+export type GateAnswer = "allow" | "ask" | "deny" | { readonly deny: string } | { readonly ask: Readonly<Record<string, unknown>>; readonly because?: string };
+
+/** A call put to a person: its card's input, and the gate's reason when a call its setting allows asks anyway. */
+type AskedCall = PreIntentCall & { readonly because?: string };
 
 /** An asked call's card: the gate's own fields (`shown`) first, so a card cut at its preview's bound (ARGS_PREVIEW_BYTES)
  *  still names them whatever the input's size, then the call's input, which the model wrote, without any field of
- *  theirs; a learned_workflow call's card fields (LEARNED_CARD_FIELDS) are only ever the gate's, and so is the reason a
- *  call its setting allows asks anyway (ASKED_BECAUSE). */
+ *  theirs; a learned_workflow call's card fields (LEARNED_CARD_FIELDS) are only ever the gate's. */
 function cardOf<A extends Record<string, unknown> | undefined>(tool: string, shown: Readonly<Record<string, unknown>> | undefined, args: A): A | Record<string, unknown> {
-  if (!shown && tool !== LEARNED_WORKFLOW_TOOL && !(args && Object.hasOwn(args, ASKED_BECAUSE))) return args;
-  return { ...shown, ...Object.fromEntries(Object.entries(args ?? {}).filter(([key]) => !(shown && Object.hasOwn(shown, key)) && key !== ASKED_BECAUSE && !(tool === LEARNED_WORKFLOW_TOOL && LEARNED_CARD_FIELDS.has(key)))) };
+  if (!shown && tool !== LEARNED_WORKFLOW_TOOL) return args;
+  return { ...shown, ...Object.fromEntries(Object.entries(args ?? {}).filter(([key]) => !(shown && Object.hasOwn(shown, key)) && !(tool === LEARNED_WORKFLOW_TOOL && LEARNED_CARD_FIELDS.has(key)))) };
 }
 /** The gate before a call's intent; `askedAs`, when it has one, names a call as a person is asked about it (its settings
  *  key, as main's pending approval names it), else the call is asked about by its own name. `replayed`: asked again for a
@@ -2274,6 +2277,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               if (typeof given === "object" && "deny" in given) return { text: given.deny, isError: true };
               // An ask with its card's own fields is an ask, its card as the gate shows it.
               const shown = typeof given === "object" ? given.ask : undefined;
+              const because = typeof given === "object" ? given.because : undefined;
               const now = shown ? "ask" : (given as "allow" | "ask");
               // Set to ask since (or asked, and answered before the crash): asked as any call is, as main's gate parked a
               // replayed call as a request of its own. Its answer stands; else the run parks on it, the call held unrun until
@@ -2281,7 +2285,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
               // the setting at allow now: the setting answers the ask (allowedBySetting).
               const bySetting = now === "allow" && (await askStands(toolContext.callId));
               if (now === "ask" || bySetting) {
-                const call = { callId: toolContext.callId, tool: name, args: cardOf(name, shown, (args ?? {}) as Record<string, unknown>) };
+                const call = { callId: toolContext.callId, tool: name, args: cardOf(name, shown, (args ?? {}) as Record<string, unknown>), ...(because !== undefined ? { because } : {}) };
                 const price = mcp?.priceOf(name) ?? null;
                 const answer = bySetting ? await allowedBySetting(call, price, asked) : await answerOf(call, price, asked);
                 if (answer === "park") return await heldUntilAborted(toolContext.signal);
@@ -3227,8 +3231,10 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // A CLI bridge's call run again after an attempt that may have been sent: its refusals say so (RAN_UNKNOWN).
       const replayed = call.replayed === true;
       const given = (await spec.gate?.(kernelCall, { ...(replayed ? { replayed } : {}), ran: ranOf })) ?? "allow";
-      // An ask with its card's own fields (a learned workflow's MCP actions set to ask, each with its arguments' shape).
+      // An ask with its card's own fields (a learned workflow's MCP actions set to ask, each with its arguments' shape), or
+      // with the reason a call its setting allows asks anyway (`because`).
       const shown = typeof given === "object" && "ask" in given ? given.ask : undefined;
+      const because = typeof given === "object" && "ask" in given ? given.because : undefined;
       let decision = shown ? ("ask" as const) : (given as Exclude<GateAnswer, { readonly ask: unknown }>);
       // A call nested in a learned_workflow call a person approved, of an MCP tool that call's card named: its ask is
       // answered by that approval, as the card they saw named it (never one built again now). Any other asks for itself.
@@ -3267,7 +3273,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
       // Marked destructive when the tool is, or when any MCP tool the one allow lets run is (the card's `mcp_calls`, a
       // learned workflow's MCP actions set to ask): that allow takes the second confirm too.
       const destructive = [asked, ...learnedApprovedTools(shown)].some((name) => mcp?.effectOf(name) === "destructive");
-      const answer = bySetting ? await allowedBySetting({ ...call, tool, args }, price, asked) : await answerOf({ ...call, tool, args }, price, asked, destructive);
+      const card = { ...call, tool, args, ...(because !== undefined ? { because } : {}) };
+      const answer = bySetting ? await allowedBySetting(card, price, asked) : await answerOf(card, price, asked, destructive);
       if (answer === "park") return { park: true };
       if (answer.approved) return "allow";
       return { deny: replayed ? refusedText(asked, answer.note?.trim() ? answer.note : undefined, "unknown") : deniedText(asked, answer.note) };
@@ -3292,7 +3299,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
   /** An ask's answer: one in the journal stands; else the approve or deny the runner hands over on a resume; else ask and
    *  park (the ask entry with the run parked, in one commit). The ask is main's approval card: the call's input, when it
    *  was asked and its `price`; asked again on a resume, it is the same request. */
-  async function answerOf(call: PreIntentCall, price: ApprovalPrice | null, asked: string = call.tool, destructive = mcp?.effectOf(asked) === "destructive"): Promise<AnswerData | "park"> {
+  async function answerOf(call: AskedCall, price: ApprovalPrice | null, asked: string = call.tool, destructive = mcp?.effectOf(asked) === "destructive"): Promise<AnswerData | "park"> {
     const conversation = await harness!.root(context);
     const entries = await entriesOf(gate!.journal, conversation.id, context);
     const first = findData<AskData>(entries, KINDS.ask, (data) => data.callId === call.callId);
@@ -3303,7 +3310,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
     // run's pending approval, its approval row, an "always" answer pinned by it) has the one name main gives it.
     // An MCP tool its run's pin marks destructive (ClaimMcp.effectOf), or a call whose allow covers one (`destructive`):
     // its card asks a second confirm of an allow.
-    const ask: AskData = first ?? { callId: call.callId, tool: asked, args: call.args ?? null, requestedAt: isoNow(), price, ...(destructive ? { destructive: true as const } : {}) };
+    const ask: AskData = first ?? { callId: call.callId, tool: asked, args: call.args ?? null, ...(call.because !== undefined ? { because: call.because } : {}), requestedAt: isoNow(), price, ...(destructive ? { destructive: true as const } : {}) };
     const entryLands = (kind: string, data: AskData | AnswerData, staged: Parameters<Gate["expect"]>[1]) => landEntry(conversation, kind, data, staged);
     if (first === undefined) {
       // Asked and parked; or held as the parked call is, when another call of the round parked the run first.
@@ -3357,7 +3364,7 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
    *  answers it. The ask closes with an allow row of its own (by "setting": "Allowed by the tool's setting"), the call
    *  runs, and the person is never asked again. A person's answer already in the inbox for the call stands over it when it
    *  is a deny; an allow of theirs is taken with the setting's answer, so no row is left untaken. */
-  async function allowedBySetting(call: PreIntentCall, price: ApprovalPrice | null, asked: string): Promise<AnswerData | "park"> {
+  async function allowedBySetting(call: AskedCall, price: ApprovalPrice | null, asked: string): Promise<AnswerData | "park"> {
     // Decided only once the claim's stored commands are with the loop (deps.delivered): pi's recovery starts tool tasks while
     // the session opens, before command() can put a person's stored deny into the inbox, and the setting must not win over it.
     await (deps.delivered ?? Promise.resolve());

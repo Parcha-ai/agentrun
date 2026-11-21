@@ -45,14 +45,14 @@ test("apply and update answer every trigger they made or kept, by name, kind and
   meets("201", applied.body);
   const wanted = [["new-mail", "email", true], ["evening-digest", "schedule", true], ["monday-brief", "schedule", false]];
   assert.deepEqual(applied.body.triggers.map((one) => [one.name, one.kind, one.enabled]), wanted);
-  assert.deepEqual(applied.body.triggers.map((one) => one.trigger_id), applied.body.trigger_ids, "the same triggers, in the same order");
+  assert.equal(applied.body.trigger_ids, undefined, "one list of the triggers: triggers");
   for (const one of applied.body.triggers) {
     const read = (await api("GET", `/triggers/${one.trigger_id}`)).body;
     assert.deepEqual([read.name, read.source.kind, read.enabled], [one.name, one.kind, one.enabled], one.name);
   }
 
   // The owner turns the brief on; an Update keeps each trigger in place, and says so, on as the owner left it.
-  assert.equal((await api("PATCH", `/triggers/${applied.body.trigger_ids[2]}`, { enabled: true })).status, 200);
+  assert.equal((await api("PATCH", `/triggers/${applied.body.triggers[2].trigger_id}`, { enabled: true })).status, 200);
   const updated = await api("POST", "/templates/inbox/apply", { parameters: {}, agent_id: applied.body.agent_id });
   assert.equal(updated.status, 200, JSON.stringify(updated.body));
   meets("200", updated.body);

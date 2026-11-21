@@ -69,8 +69,8 @@ async function served(t, options, faux) {
 /** The apply's one trigger, as GET /triggers/{id} reads it. */
 async function madeTrigger(api, applied) {
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
-  assert.equal(applied.body.trigger_ids.length, 1, JSON.stringify(applied.body));
-  const read = await api("GET", `/triggers/${applied.body.trigger_ids[0]}`);
+  assert.equal(applied.body.triggers.length, 1, JSON.stringify(applied.body));
+  const read = await api("GET", `/triggers/${applied.body.triggers[0].trigger_id}`);
   assert.equal(read.status, 200, JSON.stringify(read.body));
   return read.body;
 }
@@ -168,7 +168,7 @@ test("vendor-outage-watch applied with its feeds left empty: the feed trigger is
     const { api } = await served(t, { urls, parameters }, status);
     const applied = await api("POST", "/templates/pulls/apply", { parameters: { status_feeds: [] } });
     assert.equal(applied.status, 201, JSON.stringify(applied.body));
-    assert.deepEqual(applied.body.trigger_ids, []);
+    assert.deepEqual(applied.body.triggers, []);
     assert.deepEqual(applied.body.warnings.filter((w) => w.field === "triggers.0"), [{ field: "triggers.0", reason: "not_set_up_here", message: words }]);
     assert.equal((await api("GET", `/agents/${applied.body.agent_id}`)).status, 200);
     assert.deepEqual((await api("GET", "/triggers")).body.triggers, []);
@@ -182,7 +182,7 @@ test("a feed's urls as one array parameter whose default is []: the package read
   const { api } = await served(t, options, status);
   const applied = await api("POST", "/templates/pulls/apply", { parameters: {} });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
-  assert.deepEqual(applied.body.trigger_ids, []);
+  assert.deepEqual(applied.body.triggers, []);
   assert.deepEqual(applied.body.warnings.filter((w) => w.field === "triggers.0").map((w) => w.reason), ["not_set_up_here"]);
 });
 

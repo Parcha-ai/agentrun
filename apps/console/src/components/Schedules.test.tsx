@@ -175,12 +175,18 @@ describe("the schedules list", () => {
     const quiet = on("t_quiet", { kind: "webhook" }, "triage");
     const triggers = [...kinds];
     const s = server({ triggers });
+    // Each agent read whose answer has come back: the page's own handler of it runs right after.
+    const answered: string[] = [];
+    const read = s.v2.getAgent;
+    s.v2.getAgent = (...args: Parameters<typeof read>) => read(...args).then((r) => { answered.push(args[0]); return r; });
     const t = await open(s.v2, {}, undefined, 30);
     const row = (id: string) => t.host.querySelector(`[data-trigger="${id}"]`)!;
     // A later read of the list names an agent the first did not: that one is read then, and the others not again.
     triggers.push(quiet);
-    for (let i = 0; i < 20 && !row("t_quiet"); i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
-    for (let i = 0; i < 5; i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    const triageRead = () => s.calls.some((c) => c.path === "/v2/agents/triage") && answered.includes("triage");
+    for (let i = 0; i < 50 && !(row("t_quiet") && triageRead()); i++) await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    // The page's handler of the triage answer, queued behind the one above, has run.
+    await act(async () => {});
     for (const k of kinds) {
       const cue = row(k.id).querySelector("[data-asks]");
       expect(cue?.textContent, k.id).toBe("Waits for your approval: send_email and create_issue_comment");
@@ -207,10 +213,10 @@ describe("the schedules list", () => {
     expect(actions.map((b) => /\bbg-primary\/10\b/.test(b.className))).toEqual([false, false, false, false, false, true]);
   });
 
-  it("offers the six kinds as peers, unframed, when there is none: no main action among them", async () => {
+  it("offers each kind as a peer, unframed, when there is none: no main action among them", async () => {
     const t = await open(server({ triggers: [] }).v2, {});
     const panel = t.host.querySelector('section[aria-labelledby="first-trigger"]')!;
-    // No frame around the panel: the six cards are its only boxes, and it starts at the page's own left edge.
+    // No frame around the panel: its cards are its only boxes, and it starts at the page's own left edge.
     expect(panel.className).not.toMatch(/primary|border|\bp-\d/);
     expect(panel.parentElement!.className.split(" ")).toContain("px-5");
     for (const b of panel.querySelectorAll("li button")) expect(b.className, b.textContent ?? "").not.toMatch(/bg-primary/);
@@ -672,6 +678,18 @@ describe("editing a schedule", () => {
 // Tester findings on the New schedule form (11-09): an empty cost cap means the agent's own default, so the field's
 // placeholder says that default as served (definition.max_cost_usd), never a made-up example; and a one time is to the
 // minute, so its field asks for no seconds.
+describe("every create form's run target", () => {
+  // The agent, what each run is asked and (with no default cap on the agent) the cap are required on every form: the
+  // email form marks them as the schedule, webhook and feed forms do.
+  for (const kind of ["schedule", "webhook", "feed", "email"] as const) {
+    it(`the ${kind} form marks its agent, what each run is asked and its cap required`, async () => {
+      const t = await open(server().v2, { trigger: null, kind });
+      const labels = [...t.host.querySelectorAll("label")].map((l) => l.textContent ?? "").filter((x) => /^(Agent|Each run is asked|Cost cap)/.test(x));
+      expect(labels).toEqual(["Agent *", "Each run is asked *", "Cost cap, US dollars a run *"]);
+    });
+  }
+});
+
 describe("the New schedule form's cost cap and one time", () => {
   const cap = (host: Element) => host.querySelector<HTMLInputElement>('input[name="maxCost"]')!;
 

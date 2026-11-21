@@ -10,7 +10,7 @@ import { Input, Textarea } from "@/components/ui/field";
 import { capWords } from "@/components/NeedsYou";
 import type { Agent } from "@/lib/agentForm";
 import { type Client, ClientError, type FieldIssue } from "@/lib/client";
-import { agentInputOf, type FieldSpec, fieldIssueWords, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, fieldValues } from "@/lib/inputForm";
+import { agentInputOf, clearsContentIssue, contentIssueOf, type FieldSpec, fieldIssueWords, fieldLabel, fieldOfIssue, fieldStartText, fieldValid, fieldValues } from "@/lib/inputForm";
 import { exampleHint, exampleInput, keeper, startBody, submitStart } from "@/lib/runStart";
 import { type ParameterText, paramHelp } from "@/lib/templatePackages";
 import { sendUpload, type Upload } from "@/lib/uploads";
@@ -55,15 +55,16 @@ export function RunBar({ agent, efforts, v2, go, blocked, limits, freeNote, uplo
   // A refusal's issue at one of the fields (input.<key>, or an item's input.<key>.<i>) is said there, not in the list.
   const fieldKeys = new Set(form?.fields.map(([k]) => k) ?? []);
   const atField = (f: FieldIssue) => { const k = fieldOfIssue(f.field); return k !== null && fieldKeys.has(k) ? k : null; };
-  // A field's value as typed or picked: an issue at it goes as soon as the value is one the server takes. A filled field
-  // clears the server's issue at the message only where the message is optional (a field can stand in for it there).
+  // A field's value as typed or picked: an issue at it goes as soon as the value is one the server takes, and so does the
+  // message's where that value stands in for it (clearsContentIssue).
   const setField = (key: string, f: FieldSpec, value: string) => {
     setValues((was) => ({ ...was, [key]: value }));
-    if (fieldValid(f, value)) setProblem((p) => (p?.fields ? { ...p, fields: p.fields.filter((i) => atField(i) !== key && !(value && !form?.contentRequired && i.field === "input.content")) } : p));
+    const clears = !!form && clearsContentIssue(form, f, value);
+    if (fieldValid(f, value)) setProblem((p) => (p?.fields ? { ...p, fields: p.fields.filter((i) => atField(i) !== key && !(clears && i.field === "input.content")) } : p));
   };
-  // With typed fields the message may be optional: the server's issue at it (an input giving neither the message nor a
-  // field) is said at the box, until the message or a field is filled.
-  const contentIssue = form ? problem?.fields?.find((f) => f.field === "input.content") : undefined;
+  // With typed fields the message may be optional: the server's issue at it is said at the box, until the message or a
+  // field is filled.
+  const contentIssue = contentIssueOf(form, problem?.fields);
   const typeText = (value: string) => {
     setText(value);
     if (contentIssue && value.trim()) setProblem((p) => (p?.fields ? { ...p, fields: p.fields.filter((i) => i !== contentIssue) } : p));
