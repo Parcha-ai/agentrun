@@ -362,6 +362,28 @@ entry (`max_concurrent_runs`, beside `run_memory_mib`).
 A data directory serves one AgentRun Server at a time: a second server on the same data root is refused at start
 (`server.lock`).
 
+`GET /v2/capacity`, with the token, says how much room the runners have, read from the store alone. A server with no
+runner beside it (`--no-runner`, `AGENTRUN_API_ONLY=1`) answers it for every runner on its store. Read it to size the
+runners by backlog, not by CPU. It gives:
+
+- `runs.queued`: the runs waiting for a runner now. These are queued runs, runs handed back or whose claim ran out (past
+  any backoff), and parked runs with something to wake them.
+- `runs.executing`: the runs a live claim holds now, on any runner.
+- `runners`: each runner that said it was there in the last 30 s, by name. Each has its build's `version`, its `slots`
+  (the most runs it holds at once), what it holds (`executing`), its `free_slots` and whether it `refused` to claim.
+  `version` and `slots` are null for a runner of an earlier build that is still running. (On Postgres, an earlier
+  runner refuses to start once the server has applied `0024_runner_capacity.sql`, so upgrade runners with the server.)
+  A runner also claims by its host's memory, so a free
+  slot is the most it may take.
+- `free_slots`: the sum of the live runners' free slots.
+- `hand_backs`: how many runs a runner gave back still running within `?window=` minutes (1 to 1440, default 15). A
+  drain, a loop that closed itself and a claim given back each count; a claim whose lease ran out does not.
+
+It names no run, agent or address. Each runner also prints metric lines in the server's log format, which a log-based
+metric counts: `runner_claimed` (`took_over=1` when it took over a run whose lease ran out), `runner_hand_back` with its
+`cause` (`drain`, `interrupted`, `end_retry`, `give_back`, or `claim_lost` with its `why`), `runner_drained` once per close
+that held a run (`ms`, `held`, `left`), and `runner_gauge` every minute (`active`, `slots`, `rss_mib`).
+
 `GET /v2/health`, with no credential like capabilities, answers `200 {status: "ok", checks: {store: "ok", disk: "ok"}}`
 when the agent store opens for a read and the data directory's disk has at least 64 MiB free (`AGENTRUN_MIN_FREE_MB`),
 and `503` with `status: "failing"` and which check failed (`store: "does_not_open"`, `disk: "below_floor"`, or
@@ -391,6 +413,7 @@ AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1 to allow it, only on a machine you alone use`
 | --- | --- | --- | --- |
 | `AGENTRUN_MCP_ALLOW_LOOPBACK=1` | An MCP server on this machine's loopback ([MCP servers](#mcp-servers)) | off | Loopback is this machine's other services too: set it only on a machine you alone use |
 | `AGENTRUN_WEBHOOK_PRIVATE_TARGETS=1` | The outbound webhook to a private network or this machine ([Webhooks](#webhooks)) | off | Whoever may set the webhook could make the server POST inside its network: only on a machine you alone use |
+| `AGENTRUN_PRIVATE_HOSTS` | Bounds the private-network hosts an owner may allow an MCP server or a calendar on (Settings → MCP servers): `none` allows none (and only an empty list can be saved), or a comma list of address ranges (`10.20.0.0/16,fd12:3456::/32`) every listed host's address must also fall in. Loopback, link-local (cloud metadata) and this machine's addresses stay refused whatever it says. A value that is neither reads as `none` | unset: the owner's list holds | On a server or runner many customers share, an owner's list would reach the operator's own private network: set `none` there, on the server and on each runner (each process holds to its own) |
 | `AGENTRUN_BOX_ALLOW` | The hosts a run's computer may reach: a comma list, or `none` ([A run in a Docker box](#a-run-in-a-docker-box)) | the package registries and GitHub | A run's network is the operator's policy, not a caller's |
 | `AGENTRUN_BOX_CPUS`, `AGENTRUN_BOX_MEMORY`, `AGENTRUN_BOX_PIDS` | A Docker computer's size ([Computers](#computers)) | 2 CPUs, 4 GiB, 1,024 processes | The machine's capacity is the operator's |
 
@@ -2897,6 +2920,7 @@ failed, 2 when nothing ran. The runner, the graders and the report are in
 | Route | Here |
 | --- | --- |
 | `GET /health` | Without a credential: whether the store reads and the disk has room ([capacity and health](#capacity-and-health)). |
+| `GET /capacity` | This server's own (`capacity/1`): the runs waiting for a runner and held by one, each live runner's version, slots and free slots, and the hand-backs within `?window=` minutes, read from the store ([capacity and health](#capacity-and-health)). Served under `AGENTRUN_API_ONLY=1` too. |
 | `GET /openapi.json` | Without a credential: this API as an OpenAPI 3.1 document, the `agentrun.v2/0` contract (vendored in `src/openapi/`, its source in `info`) with this server's own routes marked `x-agentrun-serve`, the operations it answers `501` marked `x-agentrun-serve-unsupported`, and a contract operation that takes more than the contract gives marked `x-agentrun-serve-changed` with each change named; `links.openapi` in capabilities points at it. |
 | `GET /capabilities` | Without a credential. `backend: local`, every feature flag present and true only when it works; `tools`, the tools an agentic revision may name; `workflows`, what a workflow revision's model nodes get and, in `workflows.decisions.providers`, the decision providers its typed questions run on; `models`, where models come from and the model of each tier. |
 | `POST /agents`, `GET /agents`, `GET /agents/{id}` | `POST` takes `{definition, skills?, note?}` and makes the agent with its first revision, current. A definition has `instructions` (an agentic revision) or `workflow` (a workflow revision, checked by the DSL first), and `name`, `description`, `model` and `thinking` (agentic only), `harness` ([harnesses](#harnesses)), `place` ([place](#place)), `tools`, `tool_settings` ([search and fetch](#search-and-fetch)), `skills` (names; each `<name>/SKILL.md` is in `skills`) and `version`, which is the number the revision gets, and `max_cost_usd`, the agent's default cap (an agentic agent's or a workflow's), kept by an edit that leaves it out and cleared only by 0 ([spend cap](#spend-cap)), and `output_schema` (agentic only, at most 64 KiB): the JSON Schema the final answer's last fenced json block meets, which a completed run's `result.output` then holds (null when the answer doesn't meet it), kept by an edit that leaves it out. A template's answer schema is set here at apply, and a run a schedule trigger starts is handed that trigger's last completed `result.output` after its message; no other source's runs are, since each of their firings is a different event. Over 32 KiB, a scheduled run is handed only the fields the producing run's schema names in `x-carried`; carried arrays lose entries from the front until they fit, and the run is told how many. A save refuses an `x-carried` that is not unique root property names. `checkout` (agentic only): `pull_request` has the server check out, before each run's first turn, the pull request the run's GitHub event names, in `repo/` at its head with its base and merge base, using a read-only token of its GitHub App that the agent never holds ([GitHub triggers](#github-triggers-connect-github)); `none` clears it, and an edit that leaves it out keeps it. A field the store does not keep (`input_schema`) is `422 input_invalid` by name, and so is a definition that can never run here; one this host cannot run yet saves with `warnings` ([models](#models)). The ETag (`home_etag`) is the current revision's id. `GET /agents/{id}` adds `tools`, the tools its current revision grants with each one's provider ([search and fetch](#search-and-fetch)). It also adds `run_blockers` (`x-agentrun-serve: "runblockers/1"`): `{message, fields}` as a start with no overrides would be refused now (`409 agent_not_runnable`), or null. It is always null for an archived, native or SDK agent and for a revision whose MCP tools its first run pins, and the read asks no other service, so under the agent's `max_cost_usd` an OpenRouter decision model's missing price is named only once a save or a start has read OpenRouter's catalog: null is no promise that a start is accepted. |
@@ -3008,7 +3032,7 @@ serves these routes alone:
   (`GET /runs/{id}/learning`), each cut of the host's secrets as the console's reads are;
 - a run's hosted machine fetching this server's computerd build (`GET /computers/daemon`), with the token its create
   minted;
-- `GET /capabilities`, `GET /health` and `GET /usage`;
+- `GET /capabilities`, `GET /health`, `GET /usage` and `GET /capacity`;
 - a run's desktop or phone, for a backend that shows its user the live view and lets them take over: see below.
 
 Here a run's computer routes take the server's token. `POST /runs/{id}/computer/viewer` mints a 5-minute link on
@@ -4505,16 +4529,23 @@ carries no cost at all, as from a provider that does not price the model. The te
   process of its uid).
 - In the image, each run's process also runs as a user of its own: slot `s` of its runner is uid and gid `1001 + s`
   (256 slots), started through `agentrun-runas`, a helper installed root:node `0750` with the file capabilities
-  `cap_setuid`, `cap_setgid` and `cap_setpcap`. The helper reaches only that range and refuses uid and gid 0; it sets
+  `cap_chown`, `cap_setuid`, `cap_setgid` and `cap_setpcap`. The helper reaches only that range and refuses uid and gid 0; it sets
   the run's uid, gid and groups (its slot's group alone: not node's, not the Docker socket's group compose gives the
   server), empties every capability set, sets `no_new_privs` and keeps only the run's two descriptors open. So one run
   reads neither another live run's folder nor its process's memory, environment or descriptors, and none reads the data
   directory (`0711`: crossed to its own folders, never listed), the store's files (`0600`), the seal key or the
-  server's memory. A run's folders are its slot group's (`2770`), which the server's user is in. At the run's end every
-  process of its uid is killed, one in a session of its own included, its files in `/tmp`, `/var/tmp`, `/dev/shm`,
-  `/run/lock` (`/var/lock`) and `/dev/mqueue` are removed, and its folders go back to the server's group, which the
-  slot's next run cannot enter. SysV IPC objects (`ipcs`) a run leaves are not removed.
-  `GET /v2/capabilities` says `run_isolation: "uid"`.
+  server's memory. The server's user (node) is in one group, its own (1000), and in no slot's; no slot is in node's.
+  Before a run starts, its folders and everything in them are given to its slot: the slot's uid, node's group, folders
+  `2770` with the setgid bit (`agentrun-runas own <slot>`, keeping `cap_chown` alone and changing each entry through a
+  descriptor it opened without following a link). The run reaches them as their owner and the server reads them through
+  its one group; no other slot can enter them. A folder the run itself shuts (`chmod 700`, which drops the setgid bit,
+  since node's group is not the run's) the server cannot read until the run ends. At the run's end every process of its
+  uid is killed, one in a session of its own included, its files in `/tmp`, `/var/tmp`, `/dev/shm`, `/run/lock`
+  (`/var/lock`) and `/dev/mqueue` are removed, and its folders and everything in them go back to node
+  (`agentrun-runas own runner`), which the slot's next run cannot enter. A give-back that fails retires the slot, as a
+  reap that does not hold does. SysV IPC objects (`ipcs`) a run leaves are not removed.
+  `GET /v2/capabilities` says `run_isolation: "uid"`. A runner shared by many customers: see the threat model,
+  [docs/multi-tenant-runners.md](../../docs/multi-tenant-runners.md).
 - A platform that strips the image's file capabilities, or starts it with `no-new-privileges` (Docker's
   `security_opt: no-new-privileges:true`, Kubernetes' `allowPrivilegeEscalation: false`), leaves the helper unable to
   switch, or unable to start (a spawn `EPERM`): the runner then refuses to claim, saying so and naming the setting, and

@@ -14,7 +14,7 @@ test("a runner's row is its incarnation's: renewed and removed only by it, put a
   const clock = { now: T0 };
   const { store } = await storeOn(t, { clock });
   assert.equal(await store.runners.put({ runner: "r1", incarnation: "a", refused: null }), true);
-  assert.deepEqual(await store.runners.list(), [{ runner: "r1", incarnation: "a", refused: null, host: null, port: null, seenAt: T0 }], "a runner with no relay answers nowhere");
+  assert.deepEqual(await store.runners.list(), [{ runner: "r1", incarnation: "a", refused: null, host: null, port: null, seenAt: T0, version: null, slots: null }], "a runner with no relay answers nowhere");
   clock.now = T0 + 5_000;
   assert.equal(await store.runners.renew("r1", "a", null), true);
   assert.equal(await store.runners.renew("r1", "b", { host: "x", port: 2 }), false, "another incarnation's renewal is not this one's");
@@ -22,7 +22,7 @@ test("a runner's row is its incarnation's: renewed and removed only by it, put a
   // A new start of the same name takes the row over, with its relay; the earlier one's remove leaves it.
   await store.runners.put({ runner: "r1", incarnation: "b", refused: WORDS, host: "r1.example", port: 40_000 });
   await store.runners.remove("r1", "a");
-  assert.deepEqual(await store.runners.list(), [{ runner: "r1", incarnation: "b", refused: WORDS, host: "r1.example", port: 40_000, seenAt: T0 + 5_000 }]);
+  assert.deepEqual(await store.runners.list(), [{ runner: "r1", incarnation: "b", refused: WORDS, host: "r1.example", port: 40_000, seenAt: T0 + 5_000, version: null, slots: null }]);
   // A put with no relay clears where it answered.
   await store.runners.put({ runner: "r1", incarnation: "b", refused: WORDS });
   assert.deepEqual((await store.runners.list()).map((row) => [row.host, row.port]), [[null, null]]);
