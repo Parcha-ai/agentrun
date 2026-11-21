@@ -271,11 +271,12 @@ class SdkArchilDisk implements ArchilDisk {
   }
 
   /** Throws `error`. A 404 is a missing key, or the disk itself removed at Archil since #sdk looked it up: the disk is
-   *  looked up again (one disks.get), so a disk not there fails the call that met it as ArchilDiskMissing. */
+   *  looked up again (one disks.get), so a disk not there fails the call that met it as ArchilDiskMissing. The 404 is
+   *  kept only once the lookup found the disk; a lookup that failed otherwise is the call's failure. */
   async #after(error: unknown): Promise<never> {
     if ((error as { status?: unknown } | null)?.status === 404) {
       this.#ready = undefined;
-      await this.#sdk().catch((lookup: unknown) => { if (lookup instanceof ArchilDiskMissing) throw lookup; });
+      await this.#sdk();
     }
     throw error;
   }

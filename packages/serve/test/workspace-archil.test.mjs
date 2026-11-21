@@ -828,6 +828,7 @@ test("archil-disk: a disk Archil does not have fails every SDK call naming the d
 test("archil-disk: a disk removed at Archil after the seam's first call fails the next SDK call and ranged read as ArchilDiskMissing; a missing key on a disk still there stays its own 404", async () => {
   const id = "dsk-00000000000000ab";
   let gone = false;
+  let refused = false;
   const seen = [];
   const server = createServer((request, response) => {
     request.resume();
@@ -835,6 +836,10 @@ test("archil-disk: a disk removed at Archil after the seam's first call fails th
       // The seam never asks for "/": a request there is another test's probe of a port this server reused, not the seam's.
       if (request.url === "/") { response.writeHead(404); return response.end(); }
       seen.push(`${request.method} ${request.url.split("?")[0]}`);
+      if (request.url === `/api/disks/${id}` && refused) {
+        response.writeHead(403, { "content-type": "application/json" });
+        return response.end(JSON.stringify({ success: false, error: "Forbidden", code: "forbidden" }));
+      }
       if (request.url === `/api/disks/${id}`) {
         response.writeHead(gone ? 404 : 200, { "content-type": "application/json" });
         return response.end(JSON.stringify(gone
@@ -865,9 +870,16 @@ test("archil-disk: a disk removed at Archil after the seam's first call fails th
     await assert.rejects(disk.putObject("agents/b/x.txt", new Uint8Array(1)), missingKey);
     await assert.rejects(disk.getRange("agents/a/nope.txt", "bytes=0-1"), missingKey);
     assert.equal(lookups(), 3, "one disks.get after each 404, no more");
+    // A look that fails otherwise can't tell a missing key from a gone disk: its failure is the call's, never the 404.
+    refused = true;
+    await assert.rejects(disk.putObject("agents/b/x.txt", new Uint8Array(1)), (error) => error.status === 403);
+    await assert.rejects(disk.getRange("agents/a/nope.txt", "bytes=0-1"), (error) => error.status === 403);
+    refused = false;
+    await disk.putObject("agents/a/x.txt", new Uint8Array(2));
     // Removed at Archil mid-run: the call that meets it fails as the disk being gone, never as a missing key.
     gone = true;
     await assert.rejects(disk.putObject("agents/a/y.txt", new Uint8Array(1)), missing);
+    assert.deepEqual(seen.slice(-2), [`PUT /${id}/agents/a/y.txt`, `GET /api/disks/${id}`], "the put met the 404, then the disk was looked up");
     await assert.rejects(disk.listPage("agents/a/", { recursive: false }), missing);
     await assert.rejects(disk.getRange("agents/a/x.txt", "bytes=0-1"), missing);
   } finally {
