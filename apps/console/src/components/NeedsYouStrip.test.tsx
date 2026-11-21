@@ -227,3 +227,12 @@ describe("NeedsYouStrip, backend SDK execution ownership", () => {
     expect([...host.querySelectorAll("button")].some((b) => b.textContent?.includes("Run again"))).toBe(false);
   });
 });
+
+it.each(["codex-cli", "claude-code-cli"] as const)("keeps live and failed %s prompt windows out of managed controls", (runtime) => {
+  const cli_learning = { runtime, session_id: "source-session", turn_id: "turn", model: null, learning_revision: null, seed_observed: false, policy_complete: true, evidence_complete: true, usage: null };
+  const host = mount({ asking: [], live: [{ ...run("cli/live", "coding", { status: "working", state: "working" }), cli_learning } as Run],
+    failed: [{ ...run("cli/failed", "coding", { status: "failed", error: overloaded }), cli_learning } as Run] });
+  expect(host.textContent).toContain("your CLI");
+  expect(host.textContent).not.toMatch(/Steer|Run again|Run all again|Open to cancel/);
+  expect([...host.querySelectorAll("button")].map((b) => b.textContent?.trim())).not.toContain("Stop");
+});

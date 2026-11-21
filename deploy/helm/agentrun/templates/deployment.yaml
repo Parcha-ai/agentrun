@@ -52,12 +52,13 @@ spec:
           args:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          # The run helper (agentrun-runas) switches each run's process to a user of its own with these three file
-          # capabilities, so they stay in the bounding set and privilege escalation stays allowed. Nothing else is kept.
+          # The run helper (agentrun-runas) switches each run's process to a user of its own, and gives a run's folders
+          # to it and back, with these four file capabilities, so they stay in the bounding set (the kernel refuses to
+          # start the helper when one is missing) and privilege escalation stays allowed. Nothing else is kept.
           securityContext:
             capabilities:
               drop: ["ALL"]
-              add: ["SETUID", "SETGID", "SETPCAP"]
+              add: ["CHOWN", "SETUID", "SETGID", "SETPCAP"]
           ports:
             - name: http
               containerPort: 7340

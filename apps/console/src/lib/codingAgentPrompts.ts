@@ -2,6 +2,8 @@ import type { AgentCreateDraft } from "./agentDraft";
 import type { RemoteConnectionIntent } from "./connectors";
 import type { TemplateApply, TemplateView } from "./v2";
 import { backendSdkLabel, type BackendSdkBinding } from "./backendSdk";
+import { cliLearningLabel, type CliLearningRuntime } from "./cliLearning";
+import type { ObservedSession } from "./observations";
 
 // Prompts carry only the public server address and the selected task, never browser credentials. The bundled skill
 // handles local-store imports and remote connection/history scopes through the matching CLI.
@@ -81,8 +83,11 @@ ${JSON.stringify(selection, null, 2)}
 Preserve these parameter values, explicit grants, MCP server choices and approvals. Omitted parameters use the package defaults; ask only for missing required values. Do not add tool grants or broaden approvals without my explicit consent. Copying or opening this prompt itself sends no API request.` : ""}${brief.trim() ? `\n\nMy additional requirements:\n${brief.trim()}` : ""}`;
 }
 
-export function editAgentPrompt(origin: string, agentId: string, native = false, sdk?: BackendSdkBinding): string {
+export function editAgentPrompt(origin: string, agentId: string, native = false, sdk?: BackendSdkBinding, cli?: CliLearningRuntime): string {
   const root = server(origin).origin;
+  if (cli) return `${setup(origin)}
+
+Edit the original CLI setup for agent ${JSON.stringify(agentId)}, using ${cliLearningLabel(cli)}. Read ${root}/v2/agents/${encodeURIComponent(agentId)} for its selected source project. Clarify the requested change, then edit that project's native instructions or skills within my authorization. Preserve its tools, permissions, sign-in and other hooks. Keep its AgentRun learning connection and check learning status after the edit. Do not replace this source-owned agent with a managed definition. The Learning tab controls owner corrections and whether later prompts receive them. Do not start a run.`;
   if (sdk?.runtime === "external") return `${setup(origin)}
 
 Help me edit the existing backend agent ${JSON.stringify(agentId)} on the external platform ${JSON.stringify(sdk.platform)} (a display label). Read ${root}/v2/agents/${encodeURIComponent(agentId)} and locate its original platform setup. Ask where that source lives if needed. Clarify the change, then edit the source with my approval. Preserve the platform's tools, authentication, scheduling and normal entrypoint, and its AgentRun run reporting with the same agentId and server address. Keep the original instructions reported for each task accurate. Do not replace this agent with a managed definition or treat its recorded definition as executable source. Keep the server's existing self-improving setting. Test the changed source and return its console link. Do not start a production task without my approval.`;
@@ -108,8 +113,20 @@ export function queryRunsPrompt(origin: string, agentId?: string): string {
 Help me investigate ${agentId === undefined ? "runs across all agents" : `runs of agent ${JSON.stringify(agentId)}`}. Ask what I want to know and the time range if unclear, then make read-only requests to ${root}/v2${path}, following pagination, and inspect relevant run timelines/files. Include server-run sessions and imported history; for an unfiltered cross-agent query, also read /v2/observations for independently running sessions. Identify the source and data freshness; observed idle sessions are not proof of completed tasks. Summarize findings with links to the runs, distinguish unknown metrics from zero, and do not create, edit, rerun or cancel anything.`;
 }
 
-export function runAgentPrompt(origin: string, agentId: string, sdk?: BackendSdkBinding): string {
+/** Session identities scope observation and usage reads; they are not managed agent IDs. */
+export function queryObservedSessionPrompt(origin: string, sessionId: string, from?: string): string {
   const root = server(origin).origin;
+  const usage = new URLSearchParams({ agent: sessionId, ...(from ? { from } : {}) });
+  return `${setup(origin)}
+
+Help me investigate connected session ${JSON.stringify(sessionId)}. Ask what I want to know if unclear, then make read-only requests to ${root}/v2/observations?session_id=${encodeURIComponent(sessionId)} for its source and activity, and ${root}/v2/stats?${usage} for usage in the selected range. This session ID is not a managed agent ID; do not request an agent-runs endpoint with it. Identify the source and data freshness; idle sessions are not proof of completed tasks. Distinguish unknown or incomplete metrics from zero. Link to ${root}/#/observations/${encodeURIComponent(sessionId)} and do not create, edit, rerun or cancel anything.`;
+}
+
+export function runAgentPrompt(origin: string, agentId: string, sdk?: BackendSdkBinding, cli?: CliLearningRuntime): string {
+  const root = server(origin).origin;
+  if (cli) return `${setup(origin)}
+
+Help me work with agent ${JSON.stringify(agentId)}, using ${cliLearningLabel(cli)}. Read ${root}/v2/agents/${encodeURIComponent(agentId)} for its source project and learning setting. Keep using the original CLI and its existing tools, permissions and sign-in. Clarify only missing task details, then do the requested work in that project. Do not use the managed runs API or launch a replacement agent. Check the learning hooks and their trust state; completed prompt windows are reported by those hooks. Return the actual task result and its AgentRun run link. Owner corrections come from the Learning tab; this connection does not automatically create notes or skills or execute learned workflows.`;
   if (sdk?.runtime === "external") return `${setup(origin)}
 
 Help me run the existing backend agent ${JSON.stringify(agentId)} on the external platform ${JSON.stringify(sdk.platform)} (a display label). Read ${root}/v2/agents/${encodeURIComponent(agentId)} and locate the platform's normal entrypoint. Ask where that source runs if needed, and clarify the task, required inputs and spending limits. Preserve its tools, credentials and AgentRun run reporting. Trigger the task through the platform's normal invocation after my approval. Do not launch it with AgentRun's managed run API or create a replacement agent. The platform reports its own task, events and completion to AgentRun; a platform label does not grant a workflow bridge. Report the platform result and recorded AgentRun console link. Any stop, cancel, retry or follow-up must use the platform's own controls.`;
@@ -141,6 +158,37 @@ export function connectExistingAgentsPrompt(origin: string): string {
 Clarify only missing choices: observe an already running agent, connect for AgentRun-triggered jobs, import history, or both; source machine, project, runtime and container/profile if relevant. Existing backend/Docker agents use native telemetry and Collector setup, preserving SDK configuration and job triggers. Other remote jobs use the remote worker flow. Observation alone does not enable self-improvement. Preserve original files, tools, permissions and sign-in.
 
 Never print credentials; I enter codes in the secure terminal prompt. Keep secrets out of prompts, URLs and logs. Get approval for the previewed history scope. Do not import history, enable self-improvement or start a paid run unless requested. Verify the result and return its console link.`;
+}
+
+/** Learning enrollment is separate from metadata observation; it never changes the original task launcher. */
+export function enableCliLearningPrompt(origin: string): string {
+  const root = server(origin).origin;
+  return `Read ${root}/skills/agentrun-serve/SKILL.md and its existing CLI learning instructions. Enable learning for my existing Codex CLI and Claude Code setup on this instance: ${root}/v2. Clarify only the missing runtime and selected project.
+
+Use the matching CLI's learning connect command on the source machine. Verify the intended local server and its data directory before enrolling. Keep starting sessions normally. No SDK wrapper or replacement agent launcher. Preserve other hooks, tools, permissions and sign-in; verify hook trust through /hooks. Never print credentials or include them in prompts.
+
+Begin with the next complete prompt after enrollment; do not import earlier conversations. Verify installation and status without starting an extra task. The hooks report future normal prompts and provide owner corrections; workflow learning requires an approved tool connection and is unavailable on this CLI connection. Show me the agent's Learning tab and how to turn learning off.`;
+}
+
+/** Observation identifies a source session; it does not grant a remote execution or definition-edit API. */
+export function observedAgentPrompt(origin: string, session: ObservedSession, intent: "run" | "edit" | "learning"): string {
+  const root = server(origin).origin;
+  const runtime = session.harness === "codex" ? "Codex CLI" : session.harness === "claude" ? "Claude Code" : session.harness;
+  const identity = { observation_id: session.id, connector_id: session.connector_id, source_id: session.source_id,
+    external_session_id: session.external_session_id, runtime,
+    ...(session.learning?.agent_id ? { learning_agent_id: session.learning.agent_id } : {}) };
+  const task = intent === "learning"
+    ? `Enable learning for this ${runtime} session's original project. Use the matching skill's existing CLI learning instructions and learning connect command on the source machine. Reuse and verify an existing connection before enrolling another. Learning is shared by sessions in this project and runtime; explain that scope. Preserve other hooks and verify installation, trust and activation. Begin with the next complete prompt; do not import earlier conversations. A delegated child cannot enable independent hook learning: locate its parent and ask before changing the parent's project. Verify hook configuration and distinguish setup from actual activation, then show the Learning tab for owner corrections and how to turn learning off. Do not start an extra task to verify setup. This CLI connection does not support workflow learning without an approved tool connection.`
+    : intent === "edit"
+      ? "Edit this agent's original native instructions, skills or configuration. Clarify the requested change and edit the verified source within my authorization, preserving its tools, permissions, sign-in and learning hooks. Do not edit an observation record as if it were an executable definition. Verify the change and return the original session's console link. Do not start a task."
+      : "Run work with this agent using its original coding application. Clarify the task and missing inputs, then continue the verified source session through its supported controls. If it cannot be resumed, explain and ask before starting a new session in the same project. Preserve its existing instructions, skills, model, permissions, sign-in and learning hooks. Do not interrupt an active task or duplicate work. Return the actual result and session link; do not claim that recording a task proves workflow learning or reuse.";
+  return `${setup(origin)}
+
+Read ${root}/v2/observations?session_id=${encodeURIComponent(session.id)} and verify this selected identity (JSON data): ${JSON.stringify(identity)}.
+
+Resolve the exact source mapping on the connector's machine before acting. If a verified learning profile is supplied, read it for the enrolled project, but still verify this particular session. Never select a project by its basename or session title. If the exact source is unavailable, ask me to open the original session or identify its project. Do not use the managed runs API or create a replacement agent definition.
+
+${task}`;
 }
 
 /** Enrollment credentials never travel through a prompt or a coding-app URL. */

@@ -124,6 +124,7 @@ const BROKEN = [
 test("a recipe is refused under every id the server's harness table already has, and every reserved one", async () => {
   const { BUILTIN_HARNESS_IDS } = await import("../dist/harness-table.js");
   const { HARNESS_ID_PATTERN, RESERVED_HARNESS_IDS } = await import("../dist/harness.js");
+  for (const id of ["cli", "codex-cli", "claude-code-cli"]) assert.ok(RESERVED_HARNESS_IDS.includes(id), `${id} is reserved for source CLI capture`);
   assert.ok(BUILTIN_HARNESS_IDS.includes("goose") && BUILTIN_HARNESS_IDS.includes("cursor"), BUILTIN_HARNESS_IDS.join(", "));
   for (const id of [...BUILTIN_HARNESS_IDS, ...RESERVED_HARNESS_IDS].filter((each) => new RegExp(HARNESS_ID_PATTERN).test(each))) {
     const refused = refusalOf(recipeOf(undefined, { id }));

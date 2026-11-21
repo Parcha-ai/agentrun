@@ -6,13 +6,15 @@
 // opens for the claim (held.ts), never the key. The runner keeps the claim, its renewals, its commands and its end.
 //
 // Where the image's helper can switch (agentrun-runas, root:node 0750 with file capabilities), each of the runner's claim
-// slots runs as a uid of its own (1001 + slot), in folders of the slot's group (2770) the server's user reads through its
-// membership of every slot group: one run can read neither another run's folder nor, being another uid, its memory. A
-// slot is reaped at each run's end (every process of its uid killed, its files in /tmp removed, what it left readable to
-// the server), and its folders are given back to the server's group.
+// slots runs as a uid of its own (1001 + slot), in its own group alone. While a run holds its slot, its folders are the
+// slot's uid's and the runner's group's (2770, setgid, the helper's `own <slot>`), which the server's user reads through
+// that one group: the server's user is in no slot's group, and no slot is in the server's, so one run can read neither
+// another run's folder nor, being another uid, its memory. A slot is reaped at each run's end (every process of its uid
+// killed, its files in /tmp removed), and its folders are given back to the server's user (`own runner`), so the slot's
+// next run reaches nothing of them.
 import { type ChildProcess, execFile, spawn } from "node:child_process";
-import { existsSync, type Stats } from "node:fs";
-import { chmod, chown, lchown, lstat, mkdir, readdir, rm } from "node:fs/promises";
+import { existsSync } from "node:fs";
+import { chmod, mkdir, rm } from "node:fs/promises";
 import type { Socket } from "node:net";
 import type { Duplex } from "node:stream";
 import { dirname, join } from "node:path";
@@ -54,7 +56,7 @@ import { liveForRun, runnerLiveOf } from "../live-reach.js";
 import { type LearnedWorkflow, learningFolderOf, secretsShown } from "../learning.js";
 import { learningStartOf, seedFailed } from "../run-launch.js";
 import { messageText } from "../run-manifest.js";
-import { placeRunInputs } from "../uploads.js";
+import { filesToCopy, placeRunInputs } from "../uploads.js";
 import { withAudit } from "./audit.js";
 import { compareEndOfRun } from "./compare-end.js";
 import type { Compared } from "../learn/promote.js";
@@ -283,113 +285,50 @@ const runParents = (data: string, agentId: string, runId: string): string[] => {
   return [data, join(data, "disk"), join(data, "disk", "agents"), join(data, "disk", "agents", agentDirName(agentId)), dirname(top), join(data, "scratch"), dirname(scratch)];
 };
 
-/** Before the run's process starts on `slot`: its parents traverse-only, its top folders the slot group's (2770), and
- *  what an earlier claim's slot left in them given to this slot (the helper's reown). */
+/** Before the run's process starts on `slot`: its parents traverse-only, the folders its process opens first made (its
+ *  folder, its recordings and its temporary folder, its TMPDIR), and its top folders with everything in them given to the
+ *  slot (the helper's `own <slot>`: the slot's uid, the runner's group, folders 2770). What an earlier claim's slot left,
+ *  and what the server's user placed at this claim, is the slot's with the rest. */
 async function layRunFolders(isolation: Extract<RunIsolation, { kind: "uid" }>, data: string, agentId: string, runId: string, slot: number): Promise<void> {
   for (const parent of runParents(data, agentId, runId)) {
     await mkdir(parent, { recursive: true });
     await chmod(parent, 0o711);
   }
-  const gid = slotId(slot);
-  for (const top of runTops(data, agentId, runId)) {
-    await mkdir(top, { recursive: true });
-    await chown(top, process.getuid!(), gid);
-    await chmod(top, 0o2770);
-    // An earlier claim of this run on another slot left its files that slot's: given to this one, so the run reads and
-    // writes what it wrote before.
-    for (const other of await slotsUnder(top, slot)) {
-      const moved = await execText(isolation.helper, ["reown", String(other), String(slot), top], 120_000);
-      if (moved.code !== 0) throw new Error(`the run's folder could not be given to its slot: ${moved.stderr.trim()}`);
-    }
-    // What the server's user made there (a run's inputs placed at this claim, an earlier run's folders on a volume from
-    // before runs had slots of their own): the slot group's, so the run writes there too.
-    await toSlotGroup(top, gid);
-  }
-  // The folders the run's process opens first, made here in the slot's group (setgid): its folder, its recordings and its
-  // temporary folder (its TMPDIR), each one the server reads through the group as the run writes it.
-  for (const folder of [runFolder(data, agentId, runId), recordingsFolder(data, agentId, runId), join(scratchFolder(data, agentId, runId), "tmp")]) {
-    await mkdir(folder, { recursive: true });
-    const stat = await lstat(folder);
-    if (stat.uid !== process.getuid!()) continue;
-    await chown(folder, process.getuid!(), gid);
-    await chmod(folder, 0o2770);
-  }
-}
-
-/** Every entry under `dir` the server's user owns, given to group `gid` as the helper's reown gives a slot's: a folder
- *  the group's to enter and write (2770), a file's owner bits copied to the group, none for others. The whole tree, a
- *  symlink never followed nor changed (an lstat's). Run while no process of the slot is alive (after its reap), so
- *  nothing it walks is swapped under it. */
-export async function toSlotGroup(dir: string, gid: number): Promise<void> {
-  const me = process.getuid!();
-  const walk = async (at: string): Promise<void> => {
-    let names: string[];
-    try {
-      names = await readdir(at);
-    } catch {
-      return;
-    }
-    for (const name of names) {
-      const path = join(at, name);
-      const stat = await lstat(path).catch(() => undefined);
-      if (!stat || stat.isSymbolicLink()) continue;
-      if (stat.uid === me) {
-        await lchown(path, me, gid);
-        const owner = stat.mode & 0o700;
-        await chmod(path, stat.isDirectory() ? 0o2770 : owner | (owner >> 3));
-      }
-      if (stat.isDirectory()) await walk(path);
-    }
-  };
-  await walk(dir);
-}
-
-/** The other slots that own an entry anywhere under `dir`, as the helper's reown walks it: the whole tree, a symlink
- *  never followed (an lstat's, never a directory). `statOf`: the stat it reads (a test's). */
-export async function slotsUnder(dir: string, slot: number, statOf: (path: string) => Promise<Stats> = lstat): Promise<number[]> {
-  const found = new Set<number>();
-  const look = async (at: string): Promise<void> => {
-    let names: string[];
-    try {
-      names = await readdir(at);
-    } catch {
-      return;
-    }
-    for (const name of names) {
-      const path = join(at, name);
-      const stat = await statOf(path).catch(() => undefined);
-      if (!stat) continue;
-      const other = stat.uid - FIRST_RUN_ID;
-      if (other >= 0 && other < RUN_SLOTS && other !== slot) found.add(other);
-      if (stat.isDirectory()) await look(path);
-    }
-  };
-  await look(dir);
-  return [...found];
+  const tops = runTops(data, agentId, runId);
+  for (const folder of [...tops, runFolder(data, agentId, runId), recordingsFolder(data, agentId, runId), join(scratchFolder(data, agentId, runId), "tmp")]) await mkdir(folder, { recursive: true });
+  const given = await execText(isolation.helper, ["own", String(slot), ...tops], 120_000);
+  if (given.code !== 0) throw new Error(`the run's folders could not be given to its slot: ${given.stderr.trim() || `${isolation.helper} own exited ${given.code}`}`);
 }
 
 /** The host's shared folders a slot's uid can leave a file in, each swept at its reap (/var/lock is /run/lock's link on
  *  Debian, swept as itself where it is a folder of its own). SysV IPC is not swept. */
 const SWEPT = ["/tmp", "/var/tmp", "/dev/shm", "/run/lock", "/var/lock", "/dev/mqueue"] as const;
 
+/** At a claim, before anything of the run is placed: its top folders and everything in them the server's user's again
+ *  (the helper's `own runner`), whoever an earlier claim left them to. Throws, in words, when they could not be. */
+export async function takeBackRunFolders(isolation: Extract<RunIsolation, { kind: "uid" }>, tops: readonly string[]): Promise<void> {
+  const taken = await execText(isolation.helper, ["own", "runner", ...tops], 120_000);
+  if (taken.code !== 0) throw new Error(`the run's folders could not be taken back from the slot an earlier claim left them to: ${taken.stderr.trim() || `${isolation.helper} own exited ${taken.code}`}`);
+}
+
 /** After the run's process ended: every process of the slot's uid killed, its files in the shared temporary folders
- *  removed, what it left in its folders readable and removable by the server's group, and its top folders the server's
- *  own again (0770), which the slot's next run cannot enter. Whether the reap held: the helper kills until no process of
- *  the uid is left, and says so; false when one still is, or the reap could not run (the slot is then never run on
- *  again by this runner). */
+ *  removed, and its top folders with everything in them given back to the server's user (the helper's `own runner`:
+ *  the server's uid and group, folders 2770), which the slot's next run cannot enter. Whether the reap held: the helper
+ *  kills until no process of the uid is left, and says so, and the folders were given back; false when a process still
+ *  is, or either step could not run (the slot is then never run on again by this runner). */
 export async function reapSlot(isolation: Extract<RunIsolation, { kind: "uid" }>, slot: number, tops: readonly string[], log: (line: string) => void): Promise<boolean> {
-  const args = ["reap", String(slot), ...SWEPT.flatMap((dir) => ["--sweep", dir]), ...tops.flatMap((top) => ["--fix", top])];
-  const reaped = await execText(isolation.helper, args, 120_000);
+  const reaped = await execText(isolation.helper, ["reap", String(slot), ...SWEPT.flatMap((dir) => ["--sweep", dir])], 120_000);
   if (reaped.code !== 0) log(`slot ${slot}'s reap said: ${reaped.stderr.trim()}`);
-  for (const top of tops) {
-    try {
-      await chown(top, process.getuid!(), process.getgid!());
-      await chmod(top, 0o770);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") log(`the run's folder ${top} was not given back to the server: ${(error as Error).message}`);
+  // Given back whether or not the reap held: a process of the slot's uid still alive then reaches its folders no more.
+  let back = true;
+  if (tops.length) {
+    const given = await execText(isolation.helper, ["own", "runner", ...tops], 120_000);
+    if (given.code !== 0) {
+      log(`slot ${slot}'s folders were not all given back to the server: ${given.stderr.trim()}`);
+      back = false;
     }
   }
-  return reaped.code === 0;
+  return reaped.code === 0 && back;
 }
 
 /** After a reap that held: the run's scratch folder as a claim's end in the runner's own process leaves it (cli-run-spec.ts
@@ -907,7 +846,7 @@ export function heldFor(deps: AdapterSpecDeps & { readonly sealKey: Buffer }, re
         ? await openRunWorkspace({ mode: 1, agentId: run.agentId, runId: claim.runId, data: deps.data, log })
         : await openRunWorkspace({ mode: 2, agentId: run.agentId, runId: claim.runId, archil: made, log });
       try {
-        await placeRunInputs(deps.data, claim.runId, ws.workspace, launch.files ?? [], messageText(launch.input));
+        await placeRunInputs(deps.data, claim.runId, ws.workspace, filesToCopy(launch), messageText(launch.input));
       } finally {
         await ws.end();
       }
@@ -982,9 +921,10 @@ export const childArgv = (): string[] => [process.execPath, "--import", new URL(
  *  A built-in learning run (its launch names harness "learning"): its grade is one ask through the runner's model route,
  *  and its one write is the merge into the agent's learning folder, which no run's process may write. An SDK backend
  *  run (launch.sdk): its agent runs in the caller's application, and its loop here reads the evidence it posts and closes
- *  its inbox. A native run (launch.native): its agent is the source machine's own sign-in, reached through the server's
+ *  its inbox. A CLI capture (launch.cli_learning) likewise only receives source evidence and serves owner corrections.
+ *  A native run (launch.native): its agent is the source machine's own sign-in, reached through the server's
  *  connectors, whose rows are the server's. */
-export const runsInRunner = (harness: string, launch: Pick<RunLaunch, "sdk" | "native">): boolean => harness === "learning" || Boolean(launch.sdk) || Boolean(launch.native);
+export const runsInRunner = (harness: string, launch: Pick<RunLaunch, "sdk" | "native" | "cli_learning">): boolean => harness === "learning" || Boolean(launch.sdk) || Boolean(launch.native) || Boolean(launch.cli_learning);
 
 /** The words a run on Claude Code's login on this machine is refused in where each run is a user of its own. */
 export const LOGIN_NEEDS_SERVER_USER = `A run on Claude Code's login on this machine needs runs under the server's own user, and this runner runs each run as a user of its own: set ${RUN_USER_ENV}=same, or give the run a model_key.`;
@@ -1161,6 +1101,10 @@ function childLoop(options: ChildLoopsOptions, slots: Slots | undefined, loopDep
         try {
           let extra: Record<string, string> = {};
           let argv = [...(options.argv ?? childArgv())];
+          // A claim that resumes a run whose last runner ended before giving its folders back finds them its last slot's,
+          // perhaps shut (a run's own chmod 700): taken back first, so the inputs and folders below are laid as the
+          // server's, then given to this slot.
+          if (isolation.kind === "uid" && slot !== undefined) await takeBackRunFolders(isolation, tops);
           // The run's uploads and opening message, placed by the runner before its process starts (their hold is the
           // server's alone), then given to the slot with its folders.
           await heldSide.inputs();
