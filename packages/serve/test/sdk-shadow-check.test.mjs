@@ -140,11 +140,13 @@ test('one agreeing native turn does not promote a draft its agent checks on comp
   const server = await setup(t, 'eve', true, { compile_after: 3 });
   const first = await checkTurn(server, 'turn-1');
   stillChecking(await server.records(), 1);
+  const second = await server.start('turn-2');
+  assert.equal(second.learning.check?.digest, DIGEST, 'the next turn the draft takes checks it');
   const concurrent = await server.start('while-checking');
   assert.equal(concurrent.learning.check, undefined, 'one turn at a time is reserved');
   assert.deepEqual(concurrent.learning.workflows, [], 'an unpromoted draft never serves');
   await cancel(server, concurrent);
-  const second = await checkTurn(server, 'turn-2');
+  await finish(server, second, report(second));
   stillChecking(await server.records(), 2);
   const third = await checkTurn(server, 'turn-3');
   const champion = championOf(await server.records(), flow.name);
