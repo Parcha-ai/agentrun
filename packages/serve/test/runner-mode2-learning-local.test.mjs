@@ -9,7 +9,7 @@
 //   - run-2 is served the workflow first.
 // Nothing of the learning folder is on the disk, and no exec was asked of it.
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -25,7 +25,7 @@ const { promotionsOf } = await import("../dist/learn/promote.js");
 const { workflowDigest } = await import("../dist/runner/workflow-first.js");
 const { seedOf } = await import("../dist/learning.js");
 const { saveArchilSettings, storeAgentDisk } = await import("../dist/archil-settings.js");
-const { ARCHIL_API_KEY_ROW } = await import("../dist/workspace/index.js");
+const { agentLearningFolder, ARCHIL_API_KEY_ROW } = await import("../dist/workspace/index.js");
 const { sealColumn, sealedAt } = await import("../dist/store/seal.js");
 const { FakeArchilDisk, FakeDiskError } = await import("./fixtures/archil-fake.mjs");
 const { archilControlFetch } = await import("./archil-control-fake.mjs");
@@ -46,11 +46,10 @@ const answerFlow = {
   },
   input: { schemaId: "In" }, output: { schemaId: "Answer", path: "answer" },
   root: { node: "chain", steps: [
-    { node: "extract", label: "answer", instructions: "Answer the question; say whether you are sure.", out: "Answer", as: "answer", tier: "fast" },
+    { node: "extract", label: "answer", instructions: "Answer the question; say whether you are sure.", out: "Answer", as: "answer" },
     { node: "escalate", label: "unsure", when: { predicate: "field_equals", path: "answer.sure", value: false }, kind: "unsure", stage: "answer", summary: "not sure of {answer.answer}" },
   ] },
 };
-const DIGEST = workflowDigest({ workflow: JSON.stringify(answerFlow) });
 const DRAFT = `\`\`\`\`workflow answer\n---\ndescription: Answers a question as a number; use when asked\nexample: {"question":"What is six times seven?"}\n---\n${JSON.stringify(answerFlow)}\n\`\`\`\``;
 
 /** An Archil disk in a region with no serverless exec: every exec refused, as Archil refuses it there. */
@@ -138,6 +137,8 @@ test("a Mode 2 run on its Archil disk, whose exec is refused, compiles a learned
   const main = await seedOf(dir, "agent-1");
   assert.notEqual(main.sha, c.at, "main moved");
   assert.equal(kept.proposal.merged, main.sha, "the merge is the data directory's main");
+  // The workflow as it landed in the folder: its digest is the one served.
+  const DIGEST = workflowDigest({ workflow: readFileSync(join(agentLearningFolder(dir, "agent-1"), "workflows", "answer", "workflow.json"), "utf8") });
 
   // run-1: the new digest is checked on run-c's input while the agent takes the run.
   const first = await start("run-1", "What is seven times six");
@@ -155,6 +156,6 @@ test("a Mode 2 run on its Archil disk, whose exec is refused, compiles a learned
   assert.ok((await promotionsOf(server.settings, "agent-1")).some(({ digest, decided }) => digest === DIGEST && decided === "promote"));
 
   // The disk holds nothing of the learning folder, and no exec was ever asked of it.
-  assert.deepEqual([...disk.files.keys()].filter((key) => key.startsWith("agents/agent-1/learning")), [], "no learning key on the disk");
+  assert.deepEqual([...disk.files.keys(), ...disk.dirs].filter((key) => key.split("/").some((part) => part === "learning" || part === "learning.exec-out")), [], "no learning key on the disk");
   assert.equal(disk.execs, 0, "no exec was asked of the disk");
 });
