@@ -2,7 +2,8 @@ import { SettingsSection, settingsBodyClass, settingsIntroClass, settingsPageCla
 import { pasteFromClipboard } from "@/lib/paste";
 import { Plug } from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
-import { ListFilter, matchesFilter } from "@/components/ListFilter";
+import { ListFilter } from "@/components/ListFilter";
+import { matchesFilter } from "@/lib/filter";
 import { SecretRow } from "@/components/SecretRow";
 import { ToolTable } from "@/components/ToolSettings";
 import { Button } from "@/components/ui/button";
