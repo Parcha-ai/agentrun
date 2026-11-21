@@ -67,7 +67,7 @@ import type { ParkCause } from "../workspace/computer-kept.js";
 import type { ScriptComputer } from "../workspace/run-tools.js";
 import { COMPUTER_HANDOVER_KIND, COMPUTER_HOLD_KIND } from "../computer-commands.js";
 import { journalSessions } from "./sessions.js";
-import { DECISION_SESSION, FIT_TOLERANCE, freeModel, freeRequestsIn, freeWrapUpDue, freeWrapUpWords, noteFor, overCapOf, paidRefusal, type PricedRequest, requestFigures, runCap, SERVER_NOTE_LABEL, typicalCost, wrapUpWords, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
+import { DECISION_SESSION, FIT_TOLERANCE, freeModel, freeRequestsIn, freeWrapUpDue, freeWrapUpWords, noteFor, overCapEnd, overCapOf, paidRefusal, type PricedRequest, requestFigures, runCap, SERVER_NOTE_LABEL, typicalCost, wrapUpWords, type RunCap, type RunCapOptions, type RunDecisions, type RunTools, TOOL_SESSION } from "@parcha/agentrun-kernel/kernel/cap";
 import { PORT_PROVIDER, portModels, type PortModels, tierProvider } from "../port-models.js";
 
 /** The run's cap's config, as its spec gives it: the kernel runCap's options but its sessions (the loop's own), and
@@ -75,6 +75,19 @@ import { PORT_PROVIDER, portModels, type PortModels, tierProvider } from "../por
  *  run), which every gate of the run reads with its sessions' spend (runBooking's sessions.beside, overCap, the
  *  wrap-ups). None: nothing is. */
 export type RunCapConfig = Omit<RunCapOptions, "sessions"> & { beside?(): Promise<number | null> };
+
+/** What a session's requests were charged (sessionSpendOf's figures of those answered, a crash's cut one at its hold among
+ *  them), never one still in flight at its hold. Null: one charged has no figure. */
+function chargedOf(records: readonly SessionRecord[]): number | null {
+  const read = sessionSpendOf(records);
+  let usd = 0;
+  for (const figure of read.figures) {
+    if (!read.answered.has(figure.turn)) continue;
+    if (figure.usd === null) return null;
+    usd += figure.usd;
+  }
+  return usd;
+}
 import { bookedIn, type PaidBooking, stopRunWith } from "../paid-calls.js";
 import { sideEffect } from "./side-effects.js";
 import { McpClaimRefused } from "./mcp-claim.js";
@@ -1846,10 +1859,14 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         // A host tool call's paid requests name the session the call runs in (RunTools.admit `under`): a request of it still
         // in flight may be the one that asked for the call (Claude Code books its cost after its calls; Codex starts a call
         // with its response open), so the call is judged beside it and never waits on it. pi's request has answered by then.
-        // A call settled above its hold (a fal job whose output states more than its input asked) that takes the run's spend
-        // past its cap stops the run at once in the cap's words (overCap), as a stop for good (paid-calls.ts stopRun): no
-        // tool runs after it, a script's own calls included. Its hold, kept from its admission, tells it.
+        // A call settled above its hold (a fal job whose output states more than its input asked) can take what the run was
+        // charged past its cap. From then on, a settle that leaves the run's charges over its cap stops the run at once in
+        // the cap's words (overCap, settled charges only), as a stop for good (paid-calls.ts stopRun): no tool runs after it,
+        // a script's own calls included. A charge is never given back, so that stop holds; a call still in flight counts
+        // only toward admissions (the cap's rule), where it refuses a new call, never stops the run. Its hold, kept from its
+        // admission, tells an overrun.
         const holds = new Map<string, number>();
+        let overran = false;
         const paidUnder: PaidBooking = {
           admit: async (request) => {
             const admitted = await paid.admit({ ...request, under: spec.session.key });
@@ -1860,7 +1877,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
             const held = holds.get(id);
             holds.delete(id);
             const settled = await paid.settle(id, usd, options);
-            const over = typeof usd === "number" && held !== undefined && Math.round(usd * 1e6) > Math.round(held * 1e6) ? await overCap() : undefined;
+            if (typeof usd === "number" && held !== undefined && Math.round(usd * 1e6) > Math.round(held * 1e6)) overran = true;
+            const over = overran ? await overCap({ settled: true }) : undefined;
             if (over) await stopRunWith(ledger.pause)(over);
             return settled;
           },
@@ -1873,8 +1891,8 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
         /** How the run ends once its booked spend passed its cap (the kernel's overCapEnd, main's run end): every session's
          *  booked spend summed, as the cap reads it; the bound, its model session's requests' since the cost last fit, so a
          *  cache miss within that bound pauses the run at its next request instead. Undefined while it fits, with no cap, or
-         *  with a spend unknown. */
-        const overCap = async (): Promise<string | undefined> => {
+         *  with a spend unknown. `settled`: what its sessions were charged only, never a request still in flight at its hold. */
+        const overCap = async ({ settled = false } = {}): Promise<string | undefined> => {
           // A run whose spec gives no cap (no runCap, or no cap's rule) has none to pass.
           if (!spec.cap || !spec.runCap) return undefined;
           const cap = capNow();
@@ -1885,9 +1903,13 @@ function adapterLoop(specOf: (claim: Claim, run: AdapterRun) => AdapterRunSpec |
           let others = beside;
           for (const key of await sessions.keys()) {
             if (key === spec.session.key) continue;
-            const spent = sessionSpendOf(await sessions.read(key)).spentUsd;
+            const spent = settled ? chargedOf(await sessions.read(key)) : sessionSpendOf(await sessions.read(key)).spentUsd;
             if (spent === null) return undefined;
             others += spent;
+          }
+          if (settled) {
+            const own = chargedOf(await sessions.read(spec.session.key));
+            return own === null ? undefined : overCapEnd(others + own, cap);
           }
           // Its model session read as the cap reads it (the kernel's overCapOf: a request cut by a crash at its hold plus its
           // bound, and that bound kept, so a possible cache miss pauses the run, never fails it).
