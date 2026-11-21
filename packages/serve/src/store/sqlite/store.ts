@@ -1992,11 +1992,14 @@ class SqliteStore implements Store {
 
     this.runAttempts = {
       lapsed: async (runId, epoch) => {
-        await db.write([
-          { sql: "UPDATE run_attempts SET cut = 'lease_lapse' WHERE run_id = ? AND epoch = ? AND cut IS NULL", params: [runId, epoch] },
+        await db.transaction(async (tx) => {
+          // Held as a claim holds it, from its UPDATE of the run to its attempt row: a takeover in flight writes its row
+          // (with the cause it read) before this reads it, and one after this reads the cut. Never a cause left unsaid.
+          await d.lockRow(tx, "runs", "id", runId);
+          await tx.run("UPDATE run_attempts SET cut = 'lease_lapse' WHERE run_id = ? AND epoch = ? AND cut IS NULL", runId, epoch);
           // The claim that took the run over read the lapse as a crash, if it came first: this says what it was.
-          { sql: "UPDATE run_attempts SET cause = 'lease_lapse' WHERE run_id = ? AND cause = 'crash' AND epoch = (SELECT min(epoch) FROM run_attempts WHERE run_id = ? AND epoch > ?)", params: [runId, runId, epoch] },
-        ]);
+          await tx.run("UPDATE run_attempts SET cause = 'lease_lapse' WHERE run_id = ? AND cause = 'crash' AND epoch = (SELECT min(epoch) FROM run_attempts WHERE run_id = ? AND epoch > ?)", runId, runId, epoch);
+        });
       },
       forRun: async (runId) =>
         (await db.all<RunAttemptRecord>("SELECT run_id, epoch, turn, attempt, cause, cut, runner, from_state, journal_from, claimed_at FROM run_attempts WHERE run_id = ? ORDER BY epoch", runId)).map(attemptOf),

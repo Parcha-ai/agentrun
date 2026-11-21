@@ -213,3 +213,69 @@ test("a claim an earlier build's runner made writes no row: when it crashes, the
   // next attempt, and no row of turn 1 is attempt 2.
   assert.deepEqual(rows.filter((row) => row.turn === 1).map((row) => row.attempt), [1]);
 });
+
+/** A takeover held part way, as a claim's transaction is between its UPDATE of the run and its attempt row: the run's row
+ *  locked, as a claim's UPDATE locks it, on the store at `file` (stores' `file`). `insert` writes the takeover's row with
+ *  the cause it read before the lapse was said (crash); `commit` ends it. */
+async function heldTakeover(file, runId) {
+  const row = (epoch) => ({ sql: "INSERT INTO run_attempts (run_id, epoch, turn, attempt, cause, runner, from_state, journal_from, claimed_at) VALUES (?, ?, 1, 2, 'crash', 'runner-b', 'running', 1, ?)", params: [runId, epoch, Date.now()] });
+  if (file.startsWith("pg:")) {
+    const { PgConnection } = await import("../dist/store/index.js");
+    const connection = await PgConnection.open({ url: PG_URL, schema: file.slice(3) });
+    let insert, commit;
+    const held = new Promise((resolveHeld) => {
+      const done = connection.transaction(async (tx) => {
+        await tx.run("SELECT 1 FROM runs WHERE id = ? FOR NO KEY UPDATE", runId);
+        let inserted;
+        const wrote = new Promise((resolve) => (inserted = resolve));
+        let ended;
+        const ending = new Promise((resolve) => (ended = resolve));
+        insert = async (epoch) => {
+          const { sql, params } = row(epoch);
+          await tx.run(sql, ...params);
+          inserted();
+        };
+        commit = async () => {
+          ended();
+          await done;
+          await connection.close();
+        };
+        resolveHeld();
+        await wrote;
+        await ending;
+      });
+    });
+    await held;
+    return { insert: (epoch) => insert(epoch), commit: () => commit() };
+  }
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(file, { timeout: 5_000 });
+  db.exec("BEGIN IMMEDIATE");
+  return {
+    insert: async (epoch) => {
+      const { sql, params } = row(epoch);
+      db.prepare(sql).run(...params);
+    },
+    commit: async () => {
+      db.exec("COMMIT");
+      db.close();
+    },
+  };
+}
+
+test("a lapse said while the claim taking the run over is between its read and its row waits for that row, then corrects its crash to lease_lapse", async (t) => {
+  const { server, runners: [a], file } = await stores();
+  await queue(server, RUN);
+  const one = await a.claim(RUN, "runner-a", { leaseMs: 1 });
+  await until(async () => (await server.runs.claimable()).includes(RUN), "the lease ran out");
+  // The takeover has read attempt 1's row (no cut yet: a crash) and holds the run's row, its own row not yet written.
+  const takeover = await heldTakeover(file, RUN);
+  let said = false;
+  const lapse = a.runAttempts.lapsed(RUN, one.epoch).then(() => (said = true));
+  await new Promise((resolve) => setTimeout(resolve, 300));
+  assert.equal(said, false, "the lapse waits for the takeover in flight");
+  await takeover.insert(one.epoch + 1);
+  await takeover.commit();
+  await lapse;
+  assert.deepEqual((await server.runAttempts.forRun(RUN)).map((row) => [row.attempt, row.cause, row.cut]), [[1, null, "lease_lapse"], [2, "lease_lapse", null]], "the takeover's crash, said as the lapse it was");
+});
