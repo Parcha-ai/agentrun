@@ -12,6 +12,7 @@ import { commitWrites } from "@earendil-works/pi-durable/testing";
 import { startRunner } from "../dist/runner/runner.js";
 import { runUsageOverStore } from "../dist/run-usage.js";
 import { queue, STEADY_LEASE, stores, until } from "./runner-support.mjs";
+import { PG_URL } from "./store-target.mjs";
 
 const ROOT = 1;
 const RUN = "run-1";
@@ -167,4 +168,48 @@ test("a claim that does not take over a cut turn starts the run's next turn, att
   const rows = await server.runAttempts.forRun(RUN);
   assert.deepEqual(rows.map((row) => [row.turn, row.attempt, row.cause, row.cut]), [[1, 1, null, null], [2, 1, null, null], [3, 1, null, "retry"], [3, 2, "retry", null]]);
   assert.ok(rows.every((row, i) => i === 0 || row.journalFrom >= rows[i - 1].journalFrom), "each claim's first journal id is at or after the one before");
+});
+
+/** Removes the attempt row of `runId`'s claim at `epoch` from the store at `file` (stores' `file`: a SQLite path, or
+ *  `pg:<schema>`), as a runner of an earlier build, which writes none, would have left that claim. */
+async function forgetAttempt(file, runId, epoch) {
+  if (file.startsWith("pg:")) {
+    const { PgConnection } = await import("../dist/store/index.js");
+    const connection = await PgConnection.open({ url: PG_URL, schema: file.slice(3) });
+    try {
+      await connection.write([{ sql: "DELETE FROM run_attempts WHERE run_id = ? AND epoch = ?", params: [runId, epoch] }]);
+    } finally {
+      await connection.close();
+    }
+    return;
+  }
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(file, { timeout: 5_000 });
+  try {
+    db.prepare("DELETE FROM run_attempts WHERE run_id = ? AND epoch = ?").run(runId, epoch);
+  } finally {
+    db.close();
+  }
+}
+
+test("a claim an earlier build's runner made writes no row: when it crashes, the claim that takes over starts a new turn, and the turn before it is never read as redone", async (t) => {
+  const { server, runners: [a], file } = await stores();
+  await queue(server, RUN);
+  // A runner of this build works turn 1 and lets the run go with nothing cut (its turn done, a follow-up to come).
+  const one = await a.claim(RUN, "runner-new");
+  await a.release(one, {});
+  // A runner of the earlier build (beside this server through a rolling upgrade) claims the run, writes no attempt row,
+  // and dies: its lease runs out.
+  const old = await a.claim(RUN, "runner-old", { leaseMs: 1 });
+  await forgetAttempt(file, RUN, old.epoch);
+  await until(async () => (await server.runs.claimable()).includes(RUN), "the earlier runner's lease ran out");
+  const three = await a.claim(RUN, "runner-new");
+  assert.deepEqual([three.from, three.lost?.runner], ["running", "runner-old"], "taken from the crashed claim");
+  // The latest row is turn 1's (epoch 1), not the claim taken over (epoch 3): no redo of turn 1.
+  assert.deepEqual([three.turn, three.attempt], [2, 1]);
+  const rows = await server.runAttempts.forRun(RUN);
+  assert.deepEqual(rows.map((row) => [row.epoch, row.turn, row.attempt, row.cause, row.cut]), [[one.epoch, 1, 1, null, null], [three.epoch, 2, 1, null, null]]);
+  // Turn 1's work stays billable: attemptTags marks an attempt not billable only when a later claim of its turn is the
+  // next attempt, and no row of turn 1 is attempt 2.
+  assert.deepEqual(rows.filter((row) => row.turn === 1).map((row) => row.attempt), [1]);
 });

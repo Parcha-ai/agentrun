@@ -2469,23 +2469,29 @@ class SqliteStore implements Store {
    *  land after this one: each commit is fenced on the run's row, which this transaction holds). A claim that takes a run
    *  still running from a claim that was cut (that claim's release said why, or its lease ran out) works that claim's turn
    *  again, one attempt more; any other claim starts the run's next turn (a follow-up, a resume after a park, the first).
-   *  The cause is the cut claim's word, else a crash (a lease that ran out with no word), else a retry. */
+   *  The cause is the cut claim's word, else a crash (a lease that ran out with no word), else a retry. Only when the
+   *  latest row is that cut claim's own: a claim moves the epoch one and a release one more, so the claim taken over is at
+   *  epoch - 1 (its lease ran out) or epoch - 2 (released). A row further back belongs to an earlier claim, past one that
+   *  wrote none (a runner of an earlier build, beside this server): that unrecorded claim's turn is not that row's, so this
+   *  claim starts a new turn, and nothing that row's claim did is read as redone. */
   async #attemptsAt(tx: Tx, runner: string, stamp: StoreNow, claims: readonly { runId: string; epoch: number; from: RunState; lost: boolean }[]): Promise<Map<string, { turn: number; attempt: number }>> {
     const out = new Map<string, { turn: number; attempt: number }>();
     if (claims.length === 0) return out;
     const ids = claims.map((claim) => claim.runId);
     const marks = ids.map(() => "?").join(", ");
-    const before = new Map((await tx.all<{ run_id: string; turn: number | string; attempt: number | string; cut: string | null }>(
-      `SELECT run_id, turn, attempt, cut FROM run_attempts a WHERE run_id IN (${marks}) AND epoch = (SELECT max(epoch) FROM run_attempts b WHERE b.run_id = a.run_id)`, ...ids,
+    const before = new Map((await tx.all<{ run_id: string; epoch: number | string; turn: number | string; attempt: number | string; cut: string | null }>(
+      `SELECT run_id, epoch, turn, attempt, cut FROM run_attempts a WHERE run_id IN (${marks}) AND epoch = (SELECT max(epoch) FROM run_attempts b WHERE b.run_id = a.run_id)`, ...ids,
     )).map((row) => [row.run_id, row]));
     const next = new Map((await tx.all<{ run_id: string; next_id: string }>(`SELECT run_id, next_id FROM pi_metadata WHERE run_id IN (${marks})`, ...ids)).map((row) => [row.run_id, Number(row.next_id)]));
     const rows: SqliteValue[][] = [];
     for (const claim of claims) {
       const prev = before.get(claim.runId);
-      const redo = claim.from === "running" && (claim.lost || (prev !== undefined && prev.cut !== null));
-      const turn = prev === undefined ? 1 : Number(prev.turn) + (redo ? 0 : 1);
-      const attempt = redo ? (prev === undefined ? 1 : Number(prev.attempt)) + 1 : 1;
-      const cause: AttemptCause | null = redo ? ((prev?.cut as AttemptCause | null | undefined) ?? (claim.lost ? "crash" : "retry")) : null;
+      // The claim taken over is the latest row's only at epoch - 1 (lost: no release moved it) or epoch - 2 (released, cut).
+      const replaced = prev !== undefined && Number(prev.epoch) === claim.epoch - (claim.lost ? 1 : 2) ? prev : undefined;
+      const redone = claim.from === "running" && replaced !== undefined && (claim.lost || replaced.cut !== null) ? replaced : undefined;
+      const turn = prev === undefined ? 1 : Number(prev.turn) + (redone ? 0 : 1);
+      const attempt = redone ? Number(redone.attempt) + 1 : 1;
+      const cause: AttemptCause | null = redone ? ((redone.cut as AttemptCause | null) ?? (claim.lost ? "crash" : "retry")) : null;
       out.set(claim.runId, { turn, attempt });
       rows.push([claim.runId, claim.epoch, turn, attempt, cause, runner, claim.from, next.get(claim.runId) ?? JOURNAL_FIRST_ID]);
     }

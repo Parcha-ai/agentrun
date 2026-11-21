@@ -4087,8 +4087,12 @@ row holds the claim's turn and attempt, and `cause`, which says why the attempt 
 | `lease_lapse` | Its runner was still there but could not renew the claim in time. |
 | `retry` | Its loop ended interrupted on its own, and the run was released to be tried again. A stopped run whose end was refused is no cut: the claim that retries the end runs no turn, so it starts a new one and redoes nothing. |
 
-A turn is the work one claim starts afresh: the run's first, a follow-up's, or a resume after a park. Each part of the
-usage is matched to its claim this way:
+A turn is the work one claim starts afresh: the run's first, a follow-up's, or a resume after a park. A claim is a redo
+only of the claim it takes over, and only when that claim wrote its row. A runner of an earlier build, running beside
+this server through an upgrade, writes none. When the claim after it takes over, it starts a new turn, so no earlier
+recorded turn is read as redone.
+
+Each part of the usage is matched to its claim this way:
 
 - **Journal entries:** a claim's entries start at the run's next entry id at the moment it claimed. Anything written
   before the run's first recorded claim belongs to no attempt and stays billable, unless that claim was the run's first.
