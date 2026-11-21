@@ -325,6 +325,27 @@ test(`${RELEASES} give-backs in a row hold the check, never for good: the next c
   assert.equal(championOf(await server.records(), flow.name)?.digest, digest, 'and it can promote');
 });
 
+// #3390 review: the revise a give-back hold asks is no recompile either. Its draft failing its checks is that attempt's
+// failed draft (asked once more), and only a second failed revise is the recompile's, which stops.
+test('a revise of a give-back hold whose draft fails is asked once more; a second failure stops', async t => {
+  const server = await setup(t);
+  for (let at = 1; at <= RELEASES; at++) await giveBack(server, `failed-${at}`);
+  const held = await server.latest(flow.name);
+  const { recordDraftFailed } = await import('../dist/runner/learning-end.js');
+  const runId = held.runs[0];
+  const compile = { mode: 'revise', workflow: flow.name, held: { workflow: flow.name, digest: held.digest, reason: held.reason, check: held.check }, reference: '', traces: [], tools: [], judges: false };
+  await recordDraftFailed({ store: server.store, log() {} }, { runId, agentId: server.id, compile, workflow: flow.name, errors: ['workflow: no root'] });
+  const first = await server.latest(flow.name);
+  assert.deepEqual([first.check.attempt, first.check.stopped], [1, undefined], 'the held attempt, not the recompile');
+  assert.match(first.reason, /compiles it once more/);
+  assert.ok(heldNamesOf(await server.records()).has(flow.name), 'still asks a revision');
+  const later = await server.start('compiles-again');
+  await cancel(server, later);
+  await recordDraftFailed({ store: server.store, log() {} }, { runId: later.run_id, agentId: server.id, compile, workflow: flow.name, errors: ['workflow: no root'] });
+  const second = await server.latest(flow.name);
+  assert.deepEqual([second.check.attempt, second.check.stopped], [2, true], 'the second failed revise is the recompile, and it stops');
+});
+
 test('a JSON task the draft does not take, and a protected start, reserve no check', async t => {
   const server = await setup(t, 'eve', false);
   const other = await server.start('other-task', '{"build":7}');
