@@ -491,7 +491,7 @@ function main(args) {
     const command = suite.command({ concurrency });
     console.error(`test-affected: ${suite.name}, ${suite.files.length} file${suite.files.length === 1 ? '' : 's'}: ${shellLine(command)}`);
     const started = Date.now();
-    const run = spawnSync(command.argv[0], command.argv.slice(1), { cwd: join(root, command.cwd ?? '.'), stdio: 'inherit', env: { ...env, ...command.env } });
+    const run = (command.argv[0] === 'npm' ? npmSpawnSync(command.argv.slice(1), { cwd: join(root, command.cwd ?? '.'), stdio: 'inherit', env: { ...env, ...command.env } }) : spawnSync(command.argv[0], command.argv.slice(1), { cwd: join(root, command.cwd ?? '.'), stdio: 'inherit', env: { ...env, ...command.env } }));
     const seconds = ((Date.now() - started) / 1000).toFixed(1);
     console.error(`test-affected: ${suite.name} ${run.status === 0 ? 'passed' : `failed (exit ${run.status ?? run.signal})`} in ${seconds} s`);
     if (run.status !== 0) failed.push(`${suite.name} (exit ${run.status ?? run.signal})`);

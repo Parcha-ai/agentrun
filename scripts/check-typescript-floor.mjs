@@ -5,6 +5,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { npmExecFile } from './npm-command.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const exec = promisify(execFile);
@@ -20,7 +21,6 @@ import {defineWorkflow,runTypedWorkflow} from '../packages/dsl/dist/index.js';
 import {createJevRunner,type JevOptions} from '../packages/jev/dist/index.js';
 import {AgentRun,AgentRunError,type ClientOptions,type Run} from '../packages/client/dist/index.js';
 import {openRecovery,withRecovery,memoryStore,type RecoveryJournal,type RecoveryStore} from '../packages/dsl/dist/recovery/index.js';
-import { npmExecFile } from './npm-command.mjs';
 const workflow=defineWorkflow({name:'floor',schemas:{Input:z.strictObject({text:z.string()}),Output:z.strictObject({text:z.string()})},input:'Input',output:{schema:'Output',path:'result'},steps:[{node:'code',label:'copy',code:'s=>({result:{text:s.text}})'}]});
 async function consumer(jev:JevOptions,options:ClientOptions,runId:string){
  const result=await runTypedWorkflow(workflow,{text:'typed'},{runJudge:createJevRunner(jev)});

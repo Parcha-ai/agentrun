@@ -5,7 +5,7 @@
 // with neither is npm spawned by name: `npm` on PATH, or on Windows `npm.cmd` through cmd.exe, each argument quoted.
 import { execFile, spawn, spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { posix, win32 } from 'node:path';
 import { promisify } from 'node:util';
 
 /** cmd.exe's reading of one argument: as it is when nothing in it is special to cmd, else in double quotes with each
@@ -17,6 +17,8 @@ export function cmdQuote(arg) {
 /** What to spawn to run npm with `args`: `{ command, args, shell }`. `env`, `platform`, `execPath` and `exists` are the
  *  process's own unless a test passes them. */
 export function npmCommand(args, { env = process.env, platform = process.platform, execPath = process.execPath, exists = existsSync } = {}) {
+  // The platform's own paths, so a test of another platform gets that platform's.
+  const { dirname, join } = platform === 'win32' ? win32 : posix;
   const ran = env.npm_execpath;
   if (ran && /\.c?js$/.test(ran) && exists(ran)) return { command: execPath, args: [ran, ...args], shell: false };
   const node = dirname(execPath);

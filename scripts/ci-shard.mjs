@@ -14,6 +14,7 @@
 //   started, those after it are not run, and an ::error:: line names each. This catches a suite whose tests all end but
 //   whose process stays alive. The slowest shard takes 5 min; the steps before this one, up to 3.
 import { spawn } from 'node:child_process';
+import { npmSpawn } from './npm-command.mjs';
 import { once } from 'node:events';
 import { constants } from 'node:os';
 import { commandsOf, testShards, timingDrift } from './ci-plan.mjs';
@@ -50,7 +51,7 @@ const signalGroup = (pid, signal) => { try { process.kill(-pid, signal); return 
 // and each test file's process), not npm alone, which would leave the suite running. Its exit status, or 'killed' when it
 // was still running after `ms`.
 async function run(command, ms) {
-  const child = spawn(command[0], command.slice(1), { stdio: 'inherit', detached: true });
+  const child = command[0] === 'npm' ? npmSpawn(command.slice(1), { stdio: 'inherit', detached: true }) : spawn(command[0], command.slice(1), { stdio: 'inherit', detached: true });
   // The one way a command is stopped, by the limit or by a cancel: `signal` to its group (on SIGTERM node --test prints its
   // summary), SIGKILL to what is left 10 s on. Begun once; a second caller waits on the first.
   let stopping;
