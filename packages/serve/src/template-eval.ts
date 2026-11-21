@@ -1450,9 +1450,9 @@ async function runOnce(ctx: Ctx, one: EvalCase, n: number, fakes: readonly Fake[
   // their own, into the fakes' logs, and outlive the eval. Each one the apply made is deleted at once.
   // An email or feed case's run is its one trigger's: that one stays, until the run is read.
   let kept: string | undefined;
-  for (const id of Array.isArray(applied.trigger_ids) ? (applied.trigger_ids as unknown[]).map(String) : []) {
-    if (via !== undefined && !kept && expectOk(`reading the package's trigger ${id}`, await api("GET", `/triggers/${encodeURIComponent(id)}`)).name === via) kept = id;
-    else made.triggers.add(id);
+  for (const one of Array.isArray(applied.triggers) ? (applied.triggers as { trigger_id: string; name: string }[]) : []) {
+    if (via !== undefined && !kept && one.name === via) kept = one.trigger_id;
+    else made.triggers.add(one.trigger_id);
   }
   await deleteTriggers(api, made, true);
   if (via !== undefined && !kept) throw new ApiFailure(`the apply made no trigger named ${via}`);

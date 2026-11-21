@@ -7292,7 +7292,6 @@ class _ApplyTemplateResponseRequired(TypedDict):
     revision_version: int
     agent_change: Literal["made", "updated", "unchanged"]
     servers: dict[str, str | None]
-    trigger_ids: list[str]
     triggers: list[ApplyTemplateResponseTriggersItem]
     warnings: list[InputIssue]
 

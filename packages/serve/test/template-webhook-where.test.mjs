@@ -60,7 +60,7 @@ test("apply fills a webhook trigger's where, and a delivery for another reposito
   const server = await serve(t, { templates: await templates(t) });
   const applied = await asOwner(server)("POST", "/templates/issues/apply", { parameters: { owner: "acme", repo: "widgets" } }, { "idempotency-key": "issues-1" });
   assert.equal(applied.status, 201, JSON.stringify(applied.body));
-  const [id] = applied.body.trigger_ids;
+  const [{ trigger_id: id }] = applied.body.triggers;
   const stored = (await server.api("GET", `/triggers/${id}`)).body.source;
   assert.deepEqual(stored.accept[0].where, [{ pointer: "/data/repository_owner", in: ["acme"] }, { pointer: "/data/repository_name", in: ["widgets"] }]);
   const secret = applied.body.webhook_secrets.find((one) => one.trigger_id === id).signing_secret;
