@@ -13,6 +13,9 @@ import type { TemplateApply, TemplateView } from "./v2";
 export const titleOf = (t: TemplateView, values: ParameterText = {}) =>
   (t.display_name || t.name).replace(/\$\{parameters\.([A-Za-z0-9_]+)\}/g, (_, key: string) => (Object.hasOwn(values, key) ? linesOf(values[key]).join(", ") : "") || "…");
 
+/** The public template marketplace: ready-made packages whose GitHub address goes in Add from URL. */
+export const MARKETPLACE_URL = "https://marketplace.agentrun.ai";
+
 /** A template's Apply screen. */
 export const templateHash = (id: string) => `#/templates/${encodeURIComponent(id)}`;
 
